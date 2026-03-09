@@ -127,37 +127,8 @@ The forgebox firmware is built with Rust and C and uses FreeRTOS as the underlyi
 
 - docs: This directory contains the documentation for the forgebox Firmware.
 - external: This directory houses the essential external dependencies for the forgebox Firmware, including libraries from MH1903, Microchip, and various open-source libraries such as cjson, ctaes, and others. It's important to note that the MH1903 library is incorporated as a pre-compiled library rather than source code due to intellectual property restrictions. At present, only the [QRCode library](https://github.com/KeystoneHQ/forgebox-firmware/blob/master/external/mh1903_lib/MHSCPU_Driver/lib/MH1903_QRDecodeLib.a) is utilized, taking advantage of the hardware optimization capabilities specific to this MCU for enhanced performance.
-- hardware: This directory contains hardware-related files and schematics for the forgebox device.
-- images: This directory contains the image assets used in the firmware's user interface.
-- lv_img_converter: This directory contains the tool script for converting images to a format compatible with the LVGL graphics library.
-- rust: This directory contains the Rust code for blockchain support. Most of the blockchain-related functionality is implemented in Rust, including transaction signing, address generation, and cryptographic operations.
 - src: This directory contains the main C source code for the firmware, including the FreeRTOS implementation, device drivers, and the core application logic.
-- test: This directory contains test scripts and commands for local development and testing.
 - tools: This directory contains various tools used in the development process, including the astyle tool for code formatting, tools related to check the integrity of the firmware.
-- ui_simulator: This directory contains the UI simulator for the firmware. For more details about the UI simulator, please check the [Simulator Documentation](docs/SIMULATOR.md).
-
-## Simulator
-
-Please follow this [Doc](docs/SIMULATOR.md).
-
-## Contributing
-
-We welcome contributions! Here's how you can contribute:
-
--   Fork the repository.
--   Create your feature branch: `git checkout -b feature/xxx`.
--   Commit your changes: `git commit -m 'Add some xxx'`.
--   Push to the branch: `git push origin feature/xxx`.
--   Submit a pull request.
-
-Before submitting, ensure your code follows our formatting standards:
-
-
-## FAQ
-
-Q. How to build and verify the firmware?
-
-A. Please check the detail guide on `docs/verify.md`
 
 ## License
 
