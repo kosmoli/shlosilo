@@ -103,6 +103,7 @@ set(APP_SRC
     src/utils/user_utils.c
     src/config/version.c
     src/driver/drv_power.c
+    src/driver/low_power.c
     src/ui/imgDevLogo.c
     src/ui/openSansEnTitle.c
 )

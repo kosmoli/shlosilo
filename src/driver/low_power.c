@@ -15,20 +15,6 @@
 #include "drv_button.h"
 #include "drv_battery.h"
 #include "drv_aw32001.h"
-#include "drv_usb.h"
-#include "fingerprint_process.h"
-#include "fingerprint_task.h"
-#include "ui_display_task.h"
-#include "user_msg.h"
-#include "background_task.h"
-#include "user_fatfs.h"
-#include "gui_views.h"
-#include "gui_api.h"
-#include "power_manager.h"
-#include "screen_manager.h"
-#include "usb_task.h"
-#include "gui_setup_widgets.h"
-#include "device_setting.h"
 
 #define RTC_WAKE_UP_INTERVAL_CHARGING                   (80)                // 80 seconds
 #define RTC_WAKE_UP_INTERVAL_DISCHARGE                  (60 * 15)           // 15 minutes
@@ -39,131 +25,6 @@ int32_t GetWalletAmountAfterWakeup(const void *inData, uint32_t inDataLen);
 
 volatile LowPowerState g_lowPowerState = LOW_POWER_STATE_WORKING;
 volatile WakeUpMethod g_wakeUpMethod = WAKE_UP_BY_BUTTON;
-
-void LowPowerTest(int argc, char *argv[])
-{
-    if (strcmp(argv[0], "enter") == 0) {
-        printf("enter low power\r\n");
-        EnterLowPower();
-        RecoverFromLowPower();
-        printf("exit low power\r\n");
-    } else if (strcmp(argv[0], "cpu_sleep") == 0) {
-        printf("enter cpu sleep\r\n");
-        EnterCpuSleep();
-        printf("exit cpu sleep\r\n");
-    } else {
-        printf("error low power cmd\r\n");
-    }
-}
-
-static void FpLowerPowerHandle(void *argument)
-{
-    uint32_t wakeUpCount = EnterLowPower();
-    RecoverFromLowPower();
-    ClearLockScreenTime();
-    ClearShutdownTime();
-    printf("wakeUpCount=%d\r\n", wakeUpCount);
-}
-
-void LowerPowerTimerStart(void)
-{
-    static osTimerId_t lowPowerTimer = NULL;
-    if (lowPowerTimer == NULL) {
-        lowPowerTimer = osTimerNew(FpLowerPowerHandle, osTimerOnce, NULL, NULL);
-    }
-
-    osTimerStart(lowPowerTimer, 10);
-}
-
-/// @brief Enter low power.
-/// @return wake up count.
-uint32_t EnterLowPower(void)
-{
-    uint32_t sleepSecond, wakeUpSecond, wakeUpCount = 0;
-    g_lowPowerState = LOW_POWER_STATE_DEEP_SLEEP;
-    printf("enter deep sleep\r\n");
-    sleepSecond = RTC_WAKE_UP_INTERVAL_CHARGING;
-    printf("sleepSecond=%d\n", sleepSecond);
-    TouchClose();
-    UserDelay(10);
-#ifdef WEB3_VERSION
-    SetNftLockState();
-#endif
-    SetLvglHandlerAndSnapShot(false);
-    CloseUsb();
-    while (GetUsbState()) {
-        UserDelay(1);
-    }
-    DisableAllHardware();
-    ExtInterruptInit();
-    SetRtcWakeUp(sleepSecond);
-    wakeUpSecond = GetRtcCounter() + sleepSecond;
-    EnterDeepSleep();
-    while ((ButtonPress() == false) && (FingerPress() == false)) {
-        RecoverFromDeepSleep();
-        Uart0OpenPort();
-        wakeUpCount++;
-        if (GetRtcCounter() >= wakeUpSecond) {
-            Gd25FlashOpen();
-            Aw32001RefreshState();
-            BatteryIntervalHandler();
-            if (GetChargeState() != CHARGE_STATE_NOT_CHARGING) {
-                sleepSecond = RTC_WAKE_UP_INTERVAL_CHARGING;
-            } else if (GetBatterPercent() > 20) {
-                sleepSecond = RTC_WAKE_UP_INTERVAL_DISCHARGE;
-            } else {
-                sleepSecond = RTC_WAKE_UP_INTERVAL_LOW_BATTERY;
-            }
-            AutoShutdownHandler(sleepSecond);
-            SetRtcWakeUp(sleepSecond);
-            wakeUpSecond = GetRtcCounter() + sleepSecond;
-        }
-        printf("enter low power\n");
-        DisableAllHardware();
-        UserDelay(10);
-        ExtInterruptInit();
-        EnterDeepSleep();
-    }
-    if (ButtonPress() == true) {
-        g_wakeUpMethod = WAKE_UP_BY_BUTTON;
-    } else {
-        g_wakeUpMethod = WAKE_UP_BY_FINGER;
-    }
-    return wakeUpCount;
-}
-
-bool IsWakeupByFinger(void)
-{
-    return (g_wakeUpMethod == WAKE_UP_BY_FINGER);
-}
-
-void RecoverFromLowPower(void)
-{
-    RecoverFromDeepSleep();
-    SetGpioPullUp(GPIOD, GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_3 | GPIO_Pin_4 | GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7);
-    Uart0OpenPort();
-    PowerInit();
-    TouchOpen();
-    Uart2OpenPort();
-    FingerPrintGroupSetBit(FINGER_PRINT_EVENT_RESTART);
-    PsramOpen();
-    Gd25FlashOpen();
-    DS28S60_Open();
-    LcdInit();
-    LcdClear(0x0000);
-    PubValueMsg(BACKGROUND_MSG_BATTERY_INTERVAL, 1);
-    SetLvglHandlerAndSnapShot(true);
-    g_lowPowerState = LOW_POWER_STATE_WORKING;
-    PubValueMsg(BACKGROUND_MSG_SD_CARD_CHANGE, 0);
-    LcdBacklightOn();
-#if (USB_POP_WINDOW_ENABLE == 0)
-    if (GetUSBSwitch() && GetUsbDetectState()) {
-        OpenUsb();
-    }
-#else
-    AsyncExecute(GetWalletAmountAfterWakeup, NULL, 0);
-#endif
-}
 
 void EnterDeepSleep(void)
 {
@@ -329,25 +190,3 @@ static void SetRtcWakeUp(uint32_t second)
     GPIO->WAKE_TYPE_EN |= BIT(12);
 }
 
-int32_t InitSdCardAfterWakeup(const void *inData, uint32_t inDataLen)
-{
-    bool sdCardState = GPIO_ReadInputDataBit(GPIOD, GPIO_Pin_7);
-    if (sdCardState == false) {
-        if (!MountSdFatfs()) {
-            GuiApiEmitSignalWithValue(SIG_INIT_SDCARD_CHANGE_IMG, sdCardState);
-        }
-    } else {
-        UnMountSdFatfs();
-        GuiApiEmitSignalWithValue(SIG_INIT_SDCARD_CHANGE, sdCardState);
-    }
-    return 0;
-}
-
-int32_t GetWalletAmountAfterWakeup(const void *inData, uint32_t inDataLen)
-{
-    if (GuiIsSetup()) {
-        UserDelay(200);
-        GuiApiEmitSignalWithValue(SIG_INIT_USB_CONNECTION, 1);
-    }
-    return 0;
-}

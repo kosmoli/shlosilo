@@ -47,14 +47,15 @@ int main(void)
     SystemClockInit();
     Uart0Init(CmdIsrRcvByte);
     PowerInit();
+    LcdBacklightOff();
     LcdBrightInit();
     LcdCheck();
-    SetLcdBright(100);
     LcdInit();
     NvicInit();
     PsramInit();
     BatteryInit();
     Aw32001Init();
+    SetLcdBright(100);
 
     printf("Starting Hello World Application\r\n");
     
