@@ -6,13 +6,6 @@ This is a Hello World example program for the ForgeBox, developed based on the M
 
 This project is streamlined from the complete forgebox firmware project, specifically designed for learning and demonstration purposes on the ForgeBox.
 
-## Features
-
-- System clock initialization
-- LCD screen initialization
-- Display "Hello World" text in the center of the screen using LVGL
-- FreeRTOS-based task scheduling
-
 ## Getting Started
 
 ### Build Requirements
