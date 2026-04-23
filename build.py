@@ -67,16 +67,6 @@ def build_firmware(environment, options, bin_type):
     return os.system('python padding_bin_file.py mh1903.bin')
 
 
-def ota_maker():
-    os.chdir(source_path)
-    if platform.system() == 'Darwin':
-        cpu = platform.processor()
-        if cpu == "arm":
-            args = ("./tools/mac_arm/ota-maker", "--source", "./build/mh1903.bin", "--destination", "./build/forgebox.bin")
-        else:
-            args = ("./tools/mac/ota-maker", "--source", "./build/mh1903.bin", "--destination", "./build/forgebox.bin")
-    popen = subprocess.Popen(args, stdout=subprocess.PIPE)
-    popen.wait()
 
 if __name__ == '__main__':
     args = argParser.parse_args()
@@ -97,9 +87,3 @@ if __name__ == '__main__':
     build_result = build_firmware(env, options, bin_type)
     if build_result != 0:
         exit(1)
-    if platform.system() == 'Darwin':
-        ota_maker()
-    purpose = args.purpose
-    if purpose and purpose == "debug":
-        ota_maker()
-
