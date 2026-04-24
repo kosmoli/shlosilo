@@ -106,6 +106,7 @@ set(APP_SRC
     src/driver/low_power.c
     src/ui/imgDevLogo.c
     src/ui/openSansEnTitle.c
+    src/ui/openSansEnText.c
 )
 
 set(objsrc 

@@ -7,12 +7,22 @@
 #include "drv_lcd_bright.h"
 #include "hal_lcd.h"
 #include "cmsis_os.h"
+#include "mhscpu_wdt.h"
 #include "helloworld_task.h"
 #include "cmsis_os.h"
 
 #define TEST_CMD_MAX_LENGTH     3072
+#define WDT_RELOAD_MAX          (0xC300000U)  // 2 seconds
 uint8_t g_testCmdRcvBuffer[TEST_CMD_MAX_LENGTH];
 uint32_t g_testCmdRcvCount = 0;
+
+static void WdtInit(void)
+{
+    WDT_ModeConfig(WDT_Mode_CPUReset);
+    WDT_SetReload(WDT_RELOAD_MAX);
+    WDT_ReloadCounter();
+    WDT_Enable();
+}
 
 void CmdIsrRcvByte(uint8_t byte)
 {
@@ -61,6 +71,7 @@ int main(void)
     
     osKernelInitialize();
     CreateHelloWorldTask();
+    WdtInit();
 
     printf("start FreeRTOS scheduler\r\n");
     osKernelStart();
