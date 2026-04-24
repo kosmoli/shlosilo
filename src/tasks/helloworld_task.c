@@ -2,6 +2,7 @@
 #include "stdio.h"
 #include "cmsis_os.h"
 #include "mhscpu.h"
+#include "mhscpu_wdt.h"
 #include "hal_lcd.h"
 #include "lvgl.h"
 #include "stdlib.h"
@@ -15,6 +16,7 @@
 #define BUTTON_INT_PIN                  GPIO_Pin_14
 #define BUTTON_LONG_PRESS_MS            3000
 #define BUTTON_CHECK_INTERVAL_MS        50
+#define WDT_FEED_INTERVAL_MS            100
 
 // Snake game constants
 #define GRID_SIZE       20
@@ -67,7 +69,7 @@ osTimerId_t g_lvglTickTimer;
 static lv_disp_draw_buf_t g_dispBuf;
 static lv_color_t g_lvglCache[LCD_DISPLAY_WIDTH * LCD_DISPLAY_HEIGHT / 10];
 static lv_obj_t *g_container;
-static lv_obj_t *g_scoreLabel;
+static lv_obj_t *g_hintLabel;
 static lv_obj_t *g_snakeObjs[MAX_SNAKE_LEN];
 static lv_obj_t *g_foodObj;
 static lv_obj_t *g_logoObj;
@@ -84,6 +86,8 @@ static bool g_gameOver;
 
 static uint32_t g_buttonPressStartTime = 0;
 static bool g_buttonPressed = false;
+
+LV_FONT_DECLARE(openSansEnText);
 
 void CreateHelloWorldTask(void)
 {
@@ -139,7 +143,18 @@ static void HelloWorldTask(void *argument)
     // lv_obj_set_style_text_color(g_scoreLabel, lv_color_hex(0xFFFFFF), 0);
     // lv_label_set_text(g_scoreLabel, "Score: 0");
     // printf("Score label created\n");
-    
+
+    g_hintLabel = lv_label_create(lv_scr_act());
+    lv_obj_align(g_hintLabel, LV_ALIGN_BOTTOM_MID, 0, -5);
+    lv_obj_set_style_text_color(g_hintLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_width(g_hintLabel, LCD_DISPLAY_WIDTH - 20);
+    lv_obj_set_style_text_font(g_hintLabel, &openSansEnText, 0);
+    const char *hintText = "To flash your next firmware:\n"
+                           "1. Hold power key to restart\n"
+                           "2. Keep holding until Recovery Mode appears";
+    lv_label_set_long_mode(g_hintLabel, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(g_hintLabel, hintText);
+
     // Create snake segments
     for (uint16_t i = 0; i < MAX_SNAKE_LEN; i++) {
         g_snakeObjs[i] = lv_obj_create(g_container);
@@ -168,16 +183,21 @@ static void HelloWorldTask(void *argument)
 
     PowerButtonInit();
     
-    // Initialize game
     SnakeGameInit();
     printf("Game initialized\n");
     
     uint32_t lastUpdate = osKernelGetTickCount();
     uint32_t lastButtonCheck = osKernelGetTickCount();
+    uint32_t lastWdtFeed = osKernelGetTickCount();
     
     // Main game loop
     while (1) {
         uint32_t now = osKernelGetTickCount();
+
+        if (now - lastWdtFeed >= WDT_FEED_INTERVAL_MS) {
+            lastWdtFeed = now;
+            WDT_ReloadCounter();
+        }
 
         if (now - lastButtonCheck >= BUTTON_CHECK_INTERVAL_MS) {
             lastButtonCheck = now;
@@ -192,7 +212,10 @@ static void HelloWorldTask(void *argument)
                 SnakeGameDraw();
             } else {
                 printf("Game Over! Score: %d. Restarting...\n", g_score);
-                osDelay(2000);
+                for (uint32_t t = 0; t < 2000; t += 50) {
+                    WDT_ReloadCounter();
+                    osDelay(50);
+                }
                 SnakeGameInit();
             }
         }
@@ -262,20 +285,39 @@ static bool IsInLogoArea(int16_t x, int16_t y)
 
 static bool IsInLabelArea(int16_t x, int16_t y)
 {
-    if (g_helloLabel == NULL) {
-        return false;
+    // Check hintLabel area (bottom label)
+    if (g_hintLabel != NULL) {
+        lv_coord_t label_x = lv_obj_get_x(g_hintLabel);
+        lv_coord_t label_y = lv_obj_get_y(g_hintLabel);
+        lv_coord_t label_w = lv_obj_get_width(g_hintLabel);
+        lv_coord_t label_h = lv_obj_get_height(g_hintLabel);
+        int16_t grid_x1 = label_x / GRID_SIZE;
+        int16_t grid_y1 = label_y / GRID_SIZE;
+        int16_t grid_x2 = (label_x + label_w) / GRID_SIZE + 1;
+        int16_t grid_y2 = (label_y + label_h) / GRID_SIZE + 1;
+        
+        if (x >= grid_x1 && x < grid_x2 && y >= grid_y1 && y < grid_y2) {
+            return true;
+        }
     }
+    
+    // Check g_helloLabel area (if exists)
+    if (g_helloLabel != NULL) {
+        lv_coord_t label_x = lv_obj_get_x(g_helloLabel);
+        lv_coord_t label_y = lv_obj_get_y(g_helloLabel);
+        lv_coord_t label_w = lv_obj_get_width(g_helloLabel);
+        lv_coord_t label_h = lv_obj_get_height(g_helloLabel);
+        int16_t grid_x1 = label_x / GRID_SIZE;
+        int16_t grid_y1 = label_y / GRID_SIZE;
+        int16_t grid_x2 = (label_x + label_w) / GRID_SIZE + 1;
+        int16_t grid_y2 = (label_y + label_h) / GRID_SIZE + 1;
 
-    lv_coord_t label_x = lv_obj_get_x(g_helloLabel);
-    lv_coord_t label_y = lv_obj_get_y(g_helloLabel);
-    lv_coord_t label_w = lv_obj_get_width(g_helloLabel);
-    lv_coord_t label_h = lv_obj_get_height(g_helloLabel);
-    int16_t grid_x1 = label_x / GRID_SIZE;
-    int16_t grid_y1 = label_y / GRID_SIZE;
-    int16_t grid_x2 = (label_x + label_w) / GRID_SIZE + 1;
-    int16_t grid_y2 = (label_y + label_h) / GRID_SIZE + 1;
-
-    return (x >= grid_x1 && x < grid_x2 && y >= grid_y1 && y < grid_y2);
+        if (x >= grid_x1 && x < grid_x2 && y >= grid_y1 && y < grid_y2) {
+            return true;
+        }
+    }
+    
+    return false;
 }
 
 static bool IsSafePosition(int16_t x, int16_t y)
@@ -503,11 +545,6 @@ static void SnakeGameDraw(void)
     lv_obj_set_pos(g_foodObj, 
                    g_food.x * GRID_SIZE + 2, 
                    g_food.y * GRID_SIZE + 2);
-    
-    // Update score label
-    char scoreText[32];
-    snprintf(scoreText, sizeof(scoreText), "Score: %d", g_score);
-    // lv_label_set_text(g_scoreLabel, scoreText);
 }
 
 static void LvglTickTimerFunc(void *argument)
