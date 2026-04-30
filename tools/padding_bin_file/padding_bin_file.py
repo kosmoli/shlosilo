@@ -64,7 +64,7 @@ def padding_bin_file(file_name):
         current_size = f.tell()
         # Calculate required padding
         required_padding = BLOCK_SIZE - (current_size % BLOCK_SIZE)
-        write_checked(f, b'\xff' * required_padding)
+        write_checked(f, b'\xfe' * required_padding)
                 
         # provides source code check for the app
         write_checked(f, APP_END_NUMBER)
