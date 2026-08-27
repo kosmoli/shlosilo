@@ -1,0 +1,108 @@
+[package]
+name = "shlosilo"
+version = "0.4.0"
+edition = "2021"
+
+# shlosilo-poc4: Phase 2.0 + Phase 4 真实算法（编码 + 密码学原语）— native target
+#
+# Phase 4 v2: base58 + bech32 自实现（v2 §3.5 零堆分配原则）
+#
+# 范围：
+#   - 五层目录结构（types / derivation / entropy / business）
+#   - 错误码体系（error.rs）
+#   - Network enum + ChainKind enum
+#   - Mnemonic struct + WordCount enum
+#   - DerivationPath struct
+#   - 4 个业务函数签名（unimplemented!() stub）
+#
+# 不在范围（Phase 2.1 / 2.2 / 2.3 后续 session 补）：
+#   - Layer A/B/C/D/E 五层 stub 模块（crypto / signature / address / ur codec）
+#   - sr25519 / cosmos / polkadot 新文件（Phase 8+ 才真实实现）
+#   - L2a / L2b / L3 imperative shell
+#   - 真实算法（Phase 4）
+#
+# 与 shlosilo-poc3 区别：poc3 是 thumbv7em-none-eabihf embedded target + staticlib，
+# poc4 是 native target + rlib，专门跑 cargo check 验证 Phase 2.0 编译。
+
+[dependencies]
+# no_std 支持 + zeroize
+zeroize = { version = "1.7", default-features = false, features = ["zeroize_derive"] }
+# heapless 栈分配容器（v1.0 接口决策）
+heapless = "0.7"
+
+# ===== Phase 4 真实算法依赖（v2 §2.3 算法决策）=====
+# sha2 / sha3（hash 函数族）
+sha2 = { version = "0.10", default-features = false }   # SHA-256 / SHA-512
+tiny-keccak = { version = "2.0", features = ["keccak"] }  # Keccak-256（**不是** SHA3-256）
+
+# 编码（base58 + bech32 都自己实现，不引入 crate — v2 §3.5 零堆分配）
+# base58: src/encoding/base58.rs 自实现（核心算法 ~50 行）
+# bech32: src/encoding/bech32.rs 自实现（sipa reference 算法 + GEN 常数）
+
+# 椭圆曲线（BTC/ETH secp256k1 + XMR/通用 ed25519）
+k256 = { version = "0.14", default-features = false, features = ["ecdsa", "schnorr", "arithmetic"] }  # secp256k1；precomputed-tables 关闭——once_cell Lazy 表占 31KB RAM（SRAM 溢出），签名慢 ~2-4x 可接受（P6.2c 真机实测）
+# BIP-32 HD 派生（BTC + ETH + Cosmos）
+bip32 = { version = "0.5", default-features = false, features = ["secp256k1", "alloc"] }
+# primeorder = k256 0.14 内部 Field/PrimeField trait
+primeorder = { version = "0.14", default-features = false, features = ["critical-section"] }
+ed25519-dalek = { version = "2.1", default-features = false, features = ["fast", "zeroize"] }  # Ed25519（XMR / SOL / Cardano）；std 只在 host（见下方 target 配置）
+monero-ed25519 = { version = "0.1", default-features = false }  # Ed25519 + Pedersen commitment (XMR)
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize", "precomputed-tables", "rand_core"] }  # Ed25519底层（curve25519-dalek 4 已是 SemVer 抽象层）
+monero-clsag = { version = "0.1", default-features = false }  # CLSAG ring signature (XMR)
+monero-bulletproofs = { version = "0.1", default-features = false }  # Bulletproofs+ range proof (XMR RingCTType 2/3)
+monero-bulletproofs-generators = { version = "0.1", default-features = false }  # Pedersen commitment generators for Bulletproofs+
+std-shims = { version = "0.1", default-features = false }  # XMR io compat (Cursor/Read for Scalar::read)
+base58-monero = { version = "2", default-features = false }  # XMR base58 (编码类，已审计, 不带 check feature 因为 encode_check 有 bug 我们手写)
+cuprate-cryptonight = { path = "vendor/cryptonight" }  # CryptoNight V0 (XMR txset chacha key 派生)；vendored no_std 版，见 vendor/cryptonight/Cargo.toml 注释
+chacha20 = { version = "0.9", default-features = false }  # ChaCha20 + ChaCha20Legacy (XMR txset 解密，keystone 同款 0.9.1)
+subtle = { version = "2", default-features = false }  # CtOption/ct_eq（XMR Schnorr 验签 + curve25519 scalar canonical）
+bitcoin_hashes = { version = "0.14", default-features = false, package = "bitcoin_hashes" }  # RIPEMD-160 + SHA-256 (BTC P2WPKH witness program + hash160)
+ripemd = { version = "0.1", default-features = false }  # RIPEMD-160
+digest = { version = "0.10", default-features = false }  # Digest trait for k256 sign_digest_recoverable
+rand_core = { version = "0.6", default-features = false }  # CLSAG 签名 RNG (XMR)
+# BIP-32 HD 派生（BTC + ETH + Cosmos）
+
+# PBKDF2（BIP-39 seed 派生）
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }  # PBKDF2-HMAC-SHA512
+
+[dev-dependencies]
+# property-based 测试（Phase 3）
+proptest = "1.4"
+# XMR cross-validation 直接 import curve25519-dalek 做 ECDH + cofactor 参考计算（keystone oracle 复现）
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize", "precomputed-tables", "rand_core"] }
+# P1-06 oracle：官方格式 tx 解析器（monero-rs），诊断我们 wire 序列化的偏差
+monero = { version = "0.21" }
+
+[features]
+default = ["std"]
+# 启用 std（默认开，仅 cargo test 跑通；Phase 5 真实实现改 panic = "abort" 不依赖 std）
+std = []
+# 启用 alloc（ffi 模块用 Vec 中转路径元素）
+# alloc = []  # heapless 本身是 no_std
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+# host（Linux/macOS）：critical-section 用 std 实现，ed25519-dalek 开 std
+[target.'cfg(not(target_os = "none"))'.dependencies]
+critical-section = { version = "1", features = ["std"] }
+ed25519-dalek = { version = "2.1", features = ["std"] }
+
+# embedded（thumbv7em-none-eabihf 等）：critical-section 单线程 restore-state-bool
+[target.'cfg(target_os = "none")'.dependencies]
+critical-section = { version = "1", features = ["restore-state-bool"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = false
+panic = "abort"
+
+[profile.dev]
+opt-level = "s"
+debug = true
+
+[profile.test]
+opt-level = "s"
+debug = true

@@ -1,0 +1,8 @@
+/target
+proptest-regressions
+*.bin
+*.elf
+*.a
+*.o
+simulator-l3/sim_l3
+vendor/cryptonight/target

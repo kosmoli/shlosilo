@@ -1,0 +1,24 @@
+[package]
+name = "cuprate-cryptonight"
+version = "0.1.0"
+edition = "2021"
+description = "A wrapper around Monero's CryptoNight hash function (V0, no_std)."
+license = "MIT"
+authors = ["dimalinux", "Boog900", "The Monero Project"]
+repository = "https://github.com/Cuprate/cuprate/tree/main/cryptonight"
+
+# Vendored from Cuprate/cuprate main (dbd4c2c; cryptonight/ identical to upstream main).
+# shlosilo patch: no_std-only V0 build following KeystoneHQ/cuprate fork's approach —
+# V1/V2/R variants and their v2/v4 hash modules removed (wallet-layer key derivation
+# only needs cryptonight_hash_v0). Upstream PR pending; drop this vendor when merged.
+
+[dependencies]
+sha3 = { version = "0.10.8", default-features = false, features = ["oid"] }
+groestl = { version = "0.10.1", default-features = false }
+skein = { version = "0.1.0", default-features = false }
+jh = { version = "0.1.0", default-features = false }
+keccak = "0.1.5"
+digest = "0.10.7"
+
+[dev-dependencies]
+hex = "0.4"
