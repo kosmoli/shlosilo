@@ -20,9 +20,8 @@ pub fn create_account(
     word_count: WordCount,
     entropy_source_sides: u8,
     entropy_source_rolls: &[u8],
-    passphrase: &[u8],
+    _passphrase: &[u8], // P1-04：仅保留契约位（上限校验在 FFI 层）；seed 不再产出故此处不消费
     mnemonic_buf: &mut [u8],
-    seed_out: &mut [u8; 64],
 ) -> Result<()> {
     let required_entropy_bytes = word_count.entropy_bytes();
     // P0-01 审计整改：入口强制最少骰子次数（12 次 d6 只有 ~31 bit，不可穷举下限 128 bit）
@@ -63,8 +62,8 @@ pub fn create_account(
         *slot = 0;
     }
 
-    let seed = crate::entropy::bip39_passphrase::mnemonic_to_seed(&mnemonic, passphrase)?;
-    seed_out.copy_from_slice(seed.as_ref());
+    // P1-04：seed 不再产出（不跨 FFI）。passphrase 保留为钱包元数据；
+    // 签名/导出路径由调用方传 mnemonic，库内现场恢复。
 
     Ok(())
 }
@@ -78,14 +77,12 @@ mod tests {
     fn create_account_rejects_insufficient_rolls_12_d6() {
         let rolls = [3u8, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4];
         let mut mnemonic_buf = [0u8; 64];
-        let mut seed_out = [0u8; 64];
         let result = create_account(
             WordCount::Words12,
             6,
             &rolls,
             b"",
             &mut mnemonic_buf,
-            &mut seed_out,
         );
         let err = result.expect_err("12 d6 = ~31 bit < 128 bit required");
         assert!(matches!(err.kind, ShlosiloErrorKind::DiceRollsInvalidCount));
@@ -95,14 +92,12 @@ mod tests {
     fn create_account_invalid_sides() {
         let rolls = [1u8; 12];
         let mut mnemonic_buf = [0u8; 64];
-        let mut seed_out = [0u8; 64];
         let result = create_account(
             WordCount::Words12,
             1,  // sides < 2
             &rolls,
             b"",
             &mut mnemonic_buf,
-            &mut seed_out,
         );
         assert!(result.is_err());
     }
@@ -111,14 +106,12 @@ mod tests {
     fn create_account_buffer_too_small() {
         let rolls = [3u8, 5, 1, 6];
         let mut mnemonic_buf = [0u8; 8];  // 太小
-        let mut seed_out = [0u8; 64];
         let result = create_account(
             WordCount::Words24,  // 需要 32 bytes entropy
             6,
             &rolls,
             b"",
             &mut mnemonic_buf,
-            &mut seed_out,
         );
         assert!(result.is_err());
     }

@@ -13,8 +13,7 @@ use shlosilo::error::ShlosiloErrorKind;
 fn p0_01_reject_12_d6_for_12_words() {
     let rolls = [3u8; 12];
     let mut mbuf = [0u8; 24];
-    let mut seed = [0u8; 64];
-    let result = create_account(WordCount::Words12, 6, &rolls, b"", &mut mbuf, &mut seed);
+    let result = create_account(WordCount::Words12, 6, &rolls, b"", &mut mbuf);
     let err = result.expect_err("31-bit entropy must be rejected");
     assert!(matches!(err.kind, ShlosiloErrorKind::DiceRollsInvalidCount));
 }
@@ -27,14 +26,12 @@ fn p0_01_accept_minimum_boundary() {
     // 64 rolls ∈ [1,6]：用确定性序列
     let rolls: heapless::Vec<u8, 128> = (0..n).map(|i| (i % 6) as u8 + 1).collect();
     let mut mbuf = [0u8; 24];
-    let mut seed = [0u8; 64];
     let result = create_account(
         WordCount::Words12,
         6,
         &rolls,
         b"",
         &mut mbuf,
-        &mut seed,
     );
     assert!(result.is_ok(), "exactly minimum_rolls must succeed");
 }
@@ -45,8 +42,7 @@ fn p0_01_reject_below_minimum_by_one() {
     let n = minimum_rolls(6, 128) as usize - 1; // 63
     let rolls: heapless::Vec<u8, 128> = (0..n).map(|i| (i % 6) as u8 + 1).collect();
     let mut mbuf = [0u8; 24];
-    let mut seed = [0u8; 64];
-    let result = create_account(WordCount::Words12, 6, &rolls, b"", &mut mbuf, &mut seed);
+    let result = create_account(WordCount::Words12, 6, &rolls, b"", &mut mbuf);
     assert!(result.is_err());
 }
 
@@ -57,7 +53,6 @@ fn p0_01_24_words_requires_128_d6() {
     // 127 次拒绝
     let rolls: heapless::Vec<u8, 128> = (0..127).map(|i| (i % 6) as u8 + 1).collect();
     let mut mbuf = [0u8; 48];
-    let mut seed = [0u8; 64];
-    let result = create_account(WordCount::Words24, 6, &rolls, b"", &mut mbuf, &mut seed);
+    let result = create_account(WordCount::Words24, 6, &rolls, b"", &mut mbuf);
     assert!(result.is_err());
 }

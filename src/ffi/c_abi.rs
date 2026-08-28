@@ -40,6 +40,7 @@ use crate::ffi::error_code::{
     to_ffi_code, ERR_BUFFER_TOO_SMALL, ERR_NULL_POINTER, ERR_PANIC, OK,
 };
 use crate::network::Network;
+use crate::types::SecretBytes;
 
 fn err(kind: ShlosiloErrorKind) -> ShlosiloError {
     ShlosiloError::new(kind)
@@ -230,14 +231,20 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
     }
 }
 
-/// shlosilo_export_readonly_ffi — seed + path → 只读凭证 UR
+/// shlosilo_export_readonly_ffi — mnemonic + path → 只读凭证 UR
+///
+/// **P1-04（2026-08-29）**：seed 不再跨 FFI。入口收 mnemonic indices + passphrase，
+/// 库内现场恢复 BIP-39 seed（栈 buffer，`SecretBytes::take` 接管清零），导出完成即弃。
 ///
 /// paths 为 flat u32 数组（hardened bit = 0x8000_0000），
 /// `path_elem_count` 是这一个 path 的元素数（v1 单 path）。
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)] // 契约：入口先 null-check 再 from_raw_parts；C 侧保证指针有效性或接受 NULL 错误码
 pub extern "C" fn shlosilo_export_readonly_ffi(
-    seed: *const u8, // [u8; 64]
+    mnemonic_indices: *const u16,
+    mnemonic_count: c_int,
+    passphrase: *const u8,
+    passphrase_len: c_uint,
     network: c_uint,
     path_elems: *const u32,
     path_elem_count: c_uint,
@@ -246,16 +253,22 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
-    if seed.is_null() || path_elems.is_null() || output_buf.is_null() {
+    if mnemonic_indices.is_null() || path_elems.is_null() || output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
 
-        let seed_slice = unsafe { slice::from_raw_parts(seed, 64) };
+        let mnem_slice =
+            unsafe { slice::from_raw_parts(mnemonic_indices, mnemonic_count as usize) };
         let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
         let elem_slice = unsafe { slice::from_raw_parts(path_elems, path_elem_count as usize) };
         let path = DerivationPath::from_flat(elem_slice.iter().copied())
             .map_err(|_| err(ShlosiloErrorKind::DerivationPathInvalidSyntax))?;
+
+        let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
+        if pass_slice.len() > PASSPHRASE_MAX_LEN {
+            return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
 
         let network = Network::try_from_u8(network as u8)
             .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
@@ -269,7 +282,16 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
             _ => return Err(err(ShlosiloErrorKind::ExportProtocolUnimplemented)),
         };
 
-        business::export_readonly::export_readonly(protocol, seed_slice, network, &[path], out_slice)
+        // seed 现场恢复：栈 buffer → SecretBytes 接管（原副本清零）→ 导出 → scope 末 ZeroizeOnDrop
+        let wc = WordCount::try_from_count(mnemonic_count as usize)
+            .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
+        let mnemonic = Mnemonic::from_indices(mnem_slice, wc)
+            .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
+        let mut seed_buf = [0u8; 64];
+        business::restore_seed::restore_seed(&mnemonic, pass_slice, &mut seed_buf)?;
+        let seed = SecretBytes::take(&mut seed_buf);
+
+        business::export_readonly::export_readonly(protocol, seed.expose(), network, &[path], out_slice)
     });
 
     match result {
@@ -282,7 +304,11 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
     }
 }
 
-/// shlosilo_create_account_ffi — dice entropy → mnemonic(u16 LE 索引对) + seed
+/// shlosilo_create_account_ffi — dice entropy → mnemonic(u16 LE 索引对)
+///
+/// **P1-04（2026-08-29）**：`seed_out` 删除——seed 不跨 FFI（v2 安全模型）。
+/// dice → mnemonic 是唯一产出；后续签名/导出直接收 mnemonic（库内现场恢复 seed）。
+/// passphrase 保留（未来离线 create 时写进设备存储的元数据），当前仅做上限校验。
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)] // 契约：入口先 null-check 再 from_raw_parts；C 侧保证指针有效性或接受 NULL 错误码
 pub extern "C" fn shlosilo_create_account_ffi(
@@ -294,9 +320,8 @@ pub extern "C" fn shlosilo_create_account_ffi(
     passphrase_len: c_uint,
     mnemonic_buf: *mut u8, // word_count × 2 bytes（u16 LE 索引）
     mnemonic_buf_len: c_uint,
-    seed_out: *mut u8, // [u8; 64]
 ) -> c_int {
-    if rolls.is_null() || mnemonic_buf.is_null() || seed_out.is_null() {
+    if rolls.is_null() || mnemonic_buf.is_null() {
         return ERR_NULL_POINTER;
     }
     let result = ffi_catch_unwind!(|| -> Result<(), ShlosiloError> {
@@ -307,7 +332,6 @@ pub extern "C" fn shlosilo_create_account_ffi(
         let rolls_slice = unsafe { slice::from_raw_parts(rolls, rolls_count as usize) };
         let mnemonic_slice =
             unsafe { slice::from_raw_parts_mut(mnemonic_buf, mnemonic_buf_len as usize) };
-        let seed_slice = unsafe { slice::from_raw_parts_mut(seed_out, 64) };
         let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
         if pass_slice.len() > PASSPHRASE_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -322,8 +346,6 @@ pub extern "C" fn shlosilo_create_account_ffi(
             rolls_slice,
             pass_slice,
             mnemonic_slice,
-            // safe: len == 64 由 from_raw_parts_mut(…, 64) 保证
-            unsafe { &mut *(seed_slice.as_mut_ptr() as *mut [u8; 64]) },
         )
     });
 
@@ -334,48 +356,8 @@ pub extern "C" fn shlosilo_create_account_ffi(
     }
 }
 
-/// shlosilo_restore_seed_ffi — mnemonic indices + passphrase → BIP-39 seed
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // 契约：入口先 null-check 再 from_raw_parts；C 侧保证指针有效性或接受 NULL 错误码
-pub extern "C" fn shlosilo_restore_seed_ffi(
-    mnemonic_indices: *const u16,
-    mnemonic_count: c_int,
-    passphrase: *const u8,
-    passphrase_len: c_uint,
-    seed_out: *mut u8, // [u8; 64]
-) -> c_int {
-    if mnemonic_indices.is_null() || seed_out.is_null() {
-        return ERR_NULL_POINTER;
-    }
-    let result = ffi_catch_unwind!(|| -> Result<(), ShlosiloError> {
-
-        let mnem_slice =
-            unsafe { slice::from_raw_parts(mnemonic_indices, mnemonic_count as usize) };
-        let seed_slice = unsafe { slice::from_raw_parts_mut(seed_out, 64) };
-        let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
-        if pass_slice.len() > PASSPHRASE_MAX_LEN {
-            return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
-
-        let wc = WordCount::try_from_count(mnemonic_count as usize)
-            .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
-        let mnemonic = Mnemonic::from_indices(mnem_slice, wc)
-            .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
-
-        business::restore_seed::restore_seed(
-            &mnemonic,
-            pass_slice,
-            // safe: len == 64
-            unsafe { &mut *(seed_slice.as_mut_ptr() as *mut [u8; 64]) },
-        )
-    });
-
-    match result {
-        Ok(Ok(())) => OK,
-        Ok(Err(e)) => to_ffi_code(&e),
-        Err(_) => ERR_PANIC,
-    }
-}
+// P1-04（2026-08-29）：shlosilo_restore_seed_ffi 已删除——seed 不跨 FFI 后该入口
+// 无存在价值（Kosmo 拍板）。mnemonic 合法性校验在 sign/export 入口内联完成。
 
 /// 支持的 Network u8 列表（L3 启动时 UI dispatch 用）
 #[no_mangle]
@@ -471,8 +453,12 @@ mod tests {
 
     #[test]
     fn ffi_export_signature_exists() {
+        // P1-04：seed → mnemonic indices + passphrase
         const _: extern "C" fn(
+            *const u16,
+            c_int,
             *const u8,
+            c_uint,
             c_uint,
             *const u32,
             c_uint,
@@ -485,6 +471,7 @@ mod tests {
 
     #[test]
     fn ffi_create_signature_exists() {
+        // P1-04：seed_out 参数删除
         const _: extern "C" fn(
             c_uint,
             c_uint,
@@ -494,47 +481,7 @@ mod tests {
             c_uint,
             *mut u8,
             c_uint,
-            *mut u8,
         ) -> c_int = shlosilo_create_account_ffi;
-    }
-
-    #[test]
-    fn ffi_restore_seed_signature_exists() {
-        const _: extern "C" fn(*const u16, c_int, *const u8, c_uint, *mut u8) -> c_int =
-            shlosilo_restore_seed_ffi;
-    }
-
-    /// 真实调用：官方 BIP-39 向量经 FFI restore_seed 得到正确 seed
-    #[test]
-    fn ffi_restore_seed_official_vector() {
-        let idx: [u16; 12] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3];
-        let mut seed_out = [0xFFu8; 64];
-        let rc = shlosilo_restore_seed_ffi(idx.as_ptr(), 12, null(), 0, seed_out.as_mut_ptr());
-        assert_eq!(rc, OK, "rc={rc}");
-        assert_ne!(seed_out, [0u8; 64]);
-
-        // 与 L1 直调一致
-        let m = Mnemonic::from_indices(&idx, WordCount::Words12).unwrap();
-        let direct = crate::entropy::bip39_passphrase::mnemonic_to_seed(&m, b"").unwrap();
-        assert_eq!(seed_out, direct.as_ref());
-    }
-
-    /// 真实调用：错误词数 → MnemonicInvalidWordCount 错误码
-    #[test]
-    fn ffi_restore_seed_bad_word_count() {
-        let idx: [u16; 11] = [0; 11];
-        let mut seed_out = [0u8; 64];
-        let rc = shlosilo_restore_seed_ffi(idx.as_ptr(), 11, null(), 0, seed_out.as_mut_ptr());
-        assert_eq!(rc, ShlosiloErrorKind::MnemonicInvalidWordCount as i32);
-    }
-
-    /// null 指针拒绝（不崩）
-    #[test]
-    /// P2-02 审计整改：null 指针 → ERR_NULL_POINTER（文档契约，不再是 BufferTooSmall）
-    #[test]
-    fn ffi_restore_seed_null_rejected() {
-        let rc = shlosilo_restore_seed_ffi(null(), 12, null(), 0, null_mut());
-        assert_eq!(rc, ERR_NULL_POINTER);
     }
 
     /// 真实调用：create_account 经 FFI 出 mnemonic + seed
@@ -548,7 +495,6 @@ mod tests {
             r
         };
         let mut mnemonic_buf = [0u8; 24];
-        let mut seed_out = [0u8; 64];
         let rc = shlosilo_create_account_ffi(
             12,
             6,
@@ -558,10 +504,8 @@ mod tests {
             0,
             mnemonic_buf.as_mut_ptr(),
             mnemonic_buf.len() as c_uint,
-            seed_out.as_mut_ptr(),
         );
         assert_eq!(rc, OK, "rc={rc}");
-        assert_ne!(seed_out, [0u8; 64]);
         // 第一个词索引应为合法 BIP-39 index
         let first = u16::from_le_bytes([mnemonic_buf[0], mnemonic_buf[1]]);
         assert!(first < 2048);
@@ -570,7 +514,8 @@ mod tests {
     /// 真实调用：export_readonly(CryptoHdKey) 出 ur:crypto-hdkey/
     #[test]
     fn ffi_export_hdkey_smoke() {
-        let seed = [7u8; 64];
+        // P1-04：入口收 mnemonic（官方向量 abandon×11 + about），seed 库内现场恢复
+        let idx: [u16; 12] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3];
         // m/44'/0'/0'/0/0 flat: hardened bit 0x80000000
         let elems: [u32; 5] = [
             44 | 0x8000_0000,
@@ -582,8 +527,11 @@ mod tests {
         let mut buf = [0u8; 1024];
         let mut actual: c_uint = 0;
         let rc = shlosilo_export_readonly_ffi(
-            seed.as_ptr(),
-            0, // BitcoinMainnet
+            idx.as_ptr(),
+            idx.len() as c_int,
+            null(), // passphrase
+            0,
+            0,      // BitcoinMainnet
             elems.as_ptr(),
             elems.len() as c_uint,
             0, // CryptoHdKey
@@ -625,28 +573,43 @@ mod tests {
     /// passphrase 超上限（>256B）→ EncodingInvalidFormat
     #[test]
     fn ffi_passphrase_over_limit_rejected() {
+        // P1-04：restore_seed_ffi 已删——passphrase 上限改经 export_readonly_ffi 验证
         let idx: [u16; 12] = [0; 12];
         let long_pass = [0x41u8; 257]; // 257 > 256
-        let mut seed_out = [0u8; 64];
-        let rc = shlosilo_restore_seed_ffi(
+        let elems: [u32; 1] = [44 | 0x8000_0000];
+        let mut buf = [0u8; 64];
+        let mut actual: c_uint = 0;
+        let rc = shlosilo_export_readonly_ffi(
             idx.as_ptr(),
-            12,
+            idx.len() as c_int,
             long_pass.as_ptr(),
             long_pass.len() as c_uint,
-            seed_out.as_mut_ptr(),
+            0, // network
+            elems.as_ptr(),
+            elems.len() as c_uint,
+            0, // protocol
+            buf.as_mut_ptr(),
+            buf.len() as c_uint,
+            &mut actual,
         );
         assert_eq!(rc, ShlosiloErrorKind::EncodingInvalidFormat as i32);
-        // 256 = 上限内 → 通过（合法 checksum 向量：abandon×11 + about）
+        // 256 = 上限内 → 通过 passphrase 校验（后续 BIP-39 checksum 拒绝全 0 词组，非 EncodingInvalidFormat）
         let ok_pass = [0x41u8; 256];
-        let idx_ok: [u16; 12] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3];
-        let rc = shlosilo_restore_seed_ffi(
-            idx_ok.as_ptr(),
-            12,
+        let rc = shlosilo_export_readonly_ffi(
+            idx.as_ptr(),
+            idx.len() as c_int,
             ok_pass.as_ptr(),
             ok_pass.len() as c_uint,
-            seed_out.as_mut_ptr(),
+            0,
+            elems.as_ptr(),
+            elems.len() as c_uint,
+            0,
+            buf.as_mut_ptr(),
+            buf.len() as c_uint,
+            &mut actual,
         );
-        assert_eq!(rc, OK, "256B passphrase should pass, rc={rc}");
+        // 全 0 词组 checksum 不合法 → MnemonicInvalidChecksum（P1-05 行为，非 passphrase 上限错误）
+        assert_eq!(rc, ShlosiloErrorKind::MnemonicInvalidChecksum as i32, "256B passphrase passes the limit check, rc={rc}");
     }
 
     /// dice rolls 超上限（>1024）→ DiceRollsInvalidCount
@@ -654,7 +617,6 @@ mod tests {
     fn ffi_rolls_over_limit_rejected() {
         let rolls = [1u8; 1025];
         let mut mnemonic_buf = [0u8; 24];
-        let mut seed_out = [0u8; 64];
         let rc = shlosilo_create_account_ffi(
             12,
             6,
@@ -664,7 +626,6 @@ mod tests {
             0,
             mnemonic_buf.as_mut_ptr(),
             mnemonic_buf.len() as c_uint,
-            seed_out.as_mut_ptr(),
         );
         assert_eq!(rc, ShlosiloErrorKind::DiceRollsInvalidCount as i32);
     }
@@ -766,27 +727,20 @@ mod tests {
         .unwrap();
         let uri = enc.as_str();
 
-        let seed = [7u8; 64];
-        // 用 Seed 路径对照：mnemonic indices 全 0 的 seed ≠ [7;64]，
-        // 所以这里用 restore_seed 先把 mnemonic→seed，再直签对照
-        // P1-05：mnemonic 必须 checksum 合法——全 0 (abandon×12) 校验和不合法，
-        // 改用官方向量 abandon×11 + about (idx[11]=3)
+        // 直签对照：mnemonic → seed 用 L1 直调（P1-04：restore_seed_ffi 已删，seed 不跨 FFI）
+        // P1-05：mnemonic 必须 checksum 合法——用官方向量 abandon×11 + about (idx[11]=3)
         let mut idx: [u16; 12] = [0; 12];
         idx[11] = 3;
-        let mut ff_seed = [0u8; 64];
-        assert_eq!(
-            shlosilo_restore_seed_ffi(idx.as_ptr(), 12, null(), 0, ff_seed.as_mut_ptr()),
-            OK
-        );
+        let m = Mnemonic::from_indices(&idx, WordCount::Words12).unwrap();
+        let ff_seed = crate::entropy::bip39_passphrase::mnemonic_to_seed(&m, b"").unwrap();
         let path = crate::derivation::path::DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
         let sk =
-            crate::derivation::bip32_secp256k1::derive_from_seed(&ff_seed, &path).unwrap();
+            crate::derivation::bip32_secp256k1::derive_from_seed(ff_seed.as_ref(), &path).unwrap();
         let expected = eip1559::sign_eip1559(&eip1559::Eip1559SignInput {
             tx,
             private_key: crate::types::SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk)),
         })
         .unwrap();
-        drop(seed);
 
         let uri_c = alloc::ffi::CString::new(uri).unwrap();
         let mut out = [0u8; 512];
