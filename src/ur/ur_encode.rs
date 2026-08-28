@@ -57,7 +57,9 @@ impl core::fmt::Debug for UrEncoded {
 pub enum UrTypeTag {
     CryptoPsbt,         // BTC
     EthSignRequest,     // ETH
-    CryptoMoneroTx,     // XMR
+    CryptoMoneroTx,     // XMR（兼容别名，deprecated——官方为 xmr-txunsigned/signed）
+    XmrTxUnsigned,      // XMR 官方 registry 8303（payload = 完整加密 unsigned txset blob）
+    XmrTxSigned,        // XMR 官方 registry 8304（payload = 完整加密 signed txset blob）
     SolanaSignRequest,  // SOL
     CardanoSignRequest, // ADA
     CosmosSignRequest,  // Cosmos 系
@@ -73,6 +75,8 @@ impl UrTypeTag {
             "crypto-psbt" => Self::CryptoPsbt,
             "eth-sign-request" => Self::EthSignRequest,
             "crypto-monero-tx" => Self::CryptoMoneroTx,
+            "xmr-txunsigned" => Self::XmrTxUnsigned,
+            "xmr-txsigned" => Self::XmrTxSigned,
             "solana-sign-request" => Self::SolanaSignRequest,
             "cardano-sign-request" => Self::CardanoSignRequest,
             "cosmos-sign-request" => Self::CosmosSignRequest,
@@ -88,6 +92,8 @@ impl UrTypeTag {
             Self::CryptoPsbt => "crypto-psbt",
             Self::EthSignRequest => "eth-sign-request",
             Self::CryptoMoneroTx => "crypto-monero-tx",
+            Self::XmrTxUnsigned => "xmr-txunsigned",
+            Self::XmrTxSigned => "xmr-txsigned",
             Self::SolanaSignRequest => "solana-sign-request",
             Self::CardanoSignRequest => "cardano-sign-request",
             Self::CosmosSignRequest => "cosmos-sign-request",
@@ -183,5 +189,44 @@ mod tests {
     #[test]
     fn payload_max_len() {
         assert_eq!(UR_PAYLOAD_MAX_LEN, 2048);
+    }
+}
+// ============================================================================
+// §B.5 定案 1 测试（2026-08-28）：官方 XMR UR tag
+// ============================================================================
+#[cfg(test)]
+mod xmr_tag_tests {
+    use super::*;
+
+    /// 官方 registry 名称 ↔ tag 双向映射
+    #[test]
+    fn xmr_official_tags_round_trip() {
+        assert_eq!(
+            UrTypeTag::from_name("xmr-txunsigned"),
+            UrTypeTag::XmrTxUnsigned
+        );
+        assert_eq!(UrTypeTag::XmrTxUnsigned.type_name(), "xmr-txunsigned");
+        assert_eq!(UrTypeTag::from_name("xmr-txsigned"), UrTypeTag::XmrTxSigned);
+        assert_eq!(UrTypeTag::XmrTxSigned.type_name(), "xmr-txsigned");
+    }
+
+    /// encode/decode round-trip 用官方 tag
+    #[test]
+    fn xmr_official_tag_encode_decode() {
+        let payload = b"Monero unsigned tx set\x05fake";
+        let enc = encode(UrTypeTag::XmrTxUnsigned, payload).unwrap();
+        assert!(enc.as_str().starts_with("ur:xmr-txunsigned/"));
+        let dec = crate::ur::ur_decode::decode(enc.as_str()).unwrap();
+        assert_eq!(dec.type_tag(), UrTypeTag::XmrTxUnsigned);
+        assert_eq!(dec.as_ref(), payload);
+    }
+
+    /// 兼容别名 crypto-monero-tx 仍 dispatch 到 XMR（三个 tag → 同一 ChainKind）
+    #[test]
+    fn legacy_alias_still_dispatches_xmr() {
+        for tag in [UrTypeTag::CryptoMoneroTx, UrTypeTag::XmrTxUnsigned, UrTypeTag::XmrTxSigned] {
+            let t = crate::tx::tx_normalize::to_template(tag, b"x").unwrap();
+            assert_eq!(t.chain_kind, crate::types::chain_kind::ChainKind::Xmr, "tag {:?}", tag);
+        }
     }
 }

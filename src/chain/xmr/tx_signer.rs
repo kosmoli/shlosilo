@@ -175,22 +175,38 @@ fn payment_id_xor(ecdh_view_times_tx_pub: &[u8; 32]) -> [u8; 8] {
 /// - rng: 随机源（L3 注入；真机 = TRNG）
 ///
 /// **输出**: 完整签名的 Transaction（wire 格式直接可用）
-pub fn sign_tx_from_construction<R: RngCore + CryptoRng>(
+pub fn sign_tx_from_construction<R: RngCore + CryptoRng + Clone>(
     tx_data: &TxConstructionData,
     spend_sec: &[u8; 32],
     view_sec: &[u8; 32],
     rng: &mut R,
+) -> Result<Vec<u8>> {
+    // 便捷包装：r 现场随机生成（§B.5 目的子域由调用方决定时用 _with_rngs 版本）。
+    // 单一 rng 时按顺序消费：先 32B 给 r，剩余流供 BP+/CLSAG（兼容旧行为）。
+    let mut r_bytes = [0u8; 32];
+    rng.fill_bytes(&mut r_bytes);
+    let r = Scalar::from_bytes_mod_order(r_bytes);
+    let mut rng2 = rng.clone();
+    sign_tx_from_construction_with_rngs(tx_data, spend_sec, view_sec, &r, rng, &mut rng2)
+}
+
+/// 核心签名（§B.5 定案）：tx_key r 由调用方注入（purpose 子域派生），
+/// bp_rng 供 Bulletproof+，clsag_rng 供 CLSAG（per-input 子域在调用方拆分；
+/// v1 单输入时传入 Clsag(0) 派生流即可）。
+pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + CryptoRng>(
+    tx_data: &TxConstructionData,
+    spend_sec: &[u8; 32],
+    view_sec: &[u8; 32],
+    r: &Scalar,
+    bp_rng: &mut B,
+    clsag_rng: &mut C,
 ) -> Result<Vec<u8>> {
     if tx_data.splitted_dsts.is_empty() || tx_data.sources.is_empty() {
         return Err(err());
     }
     let rct_type = resolve_rct_type(tx_data.rct_config.bp_version)?;
 
-    // ---- 1. tx_key r = 随机标量（keystone transaction_keys）----
-    let mut r_bytes = [0u8; 32];
-    rng.fill_bytes(&mut r_bytes);
-    let r = Scalar::from_bytes_mod_order(r_bytes);
-
+    // r 由调用方注入（§B.5：TxKey purpose 子域派生）
     // 有 subaddress 输出且无 additional keys 时：tx_pub = r·B_sub
     // （keystone transaction_keys has_payments_to_subaddresses 分支）
     let has_subaddress_dest = tx_data.splitted_dsts.iter().any(|d| d.is_subaddress);
@@ -377,7 +393,7 @@ pub fn sign_tx_from_construction<R: RngCore + CryptoRng>(
             )
         })
         .collect();
-    let bp = prove_bulletproofs_plus(rng, commitments.clone())?;
+    let bp = prove_bulletproofs_plus(bp_rng, commitments.clone())?;
     // Σ out masks：curve25519_dalek 标量域算术，再转回 monero 字节
     let mut sum_out_masks = curve25519_dalek::Scalar::from_bytes_mod_order(
         monerod_scalar_to_bytes(&bytes_to_monerod_scalar(&outs[0].deriv.commitment_mask)),
@@ -448,7 +464,7 @@ pub fn sign_tx_from_construction<R: RngCore + CryptoRng>(
             src.amount,
             &pseudo_mask_bytes,
             &msg_hash,
-            rng,
+            clsag_rng,
         )?;
         // proof.bytes 布局 = pseudo_out(32) ‖ s[mixin+1] ‖ c1(32) ‖ D(32)
         let body: Vec<u8> = clsag_proof.wire_body().to_vec();

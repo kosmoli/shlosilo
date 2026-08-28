@@ -39,7 +39,9 @@ pub fn to_template(type_tag: UrTypeTag, payload: &[u8]) -> Result<TxTemplate> {
     let chain_kind = match type_tag {
         UrTypeTag::CryptoPsbt => ChainKind::Btc,
         UrTypeTag::EthSignRequest => ChainKind::Eth,
-        UrTypeTag::CryptoMoneroTx => ChainKind::Xmr,
+        UrTypeTag::CryptoMoneroTx
+        | UrTypeTag::XmrTxUnsigned
+        | UrTypeTag::XmrTxSigned => ChainKind::Xmr,
         UrTypeTag::SolanaSignRequest => ChainKind::Sol,
         UrTypeTag::CardanoSignRequest => ChainKind::Ada,
         UrTypeTag::CosmosSignRequest => ChainKind::Cosmos,

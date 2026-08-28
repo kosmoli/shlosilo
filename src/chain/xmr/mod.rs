@@ -11,6 +11,8 @@ pub mod clsag;
 pub mod commitment;
 pub mod rct_sig;
 pub mod reduce_scalar;
+pub mod signed_txset;
+pub mod signing_rng;
 pub mod subaddress;
 pub mod transaction;
 pub mod tx_builder;

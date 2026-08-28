@@ -55,6 +55,9 @@ std-shims = { version = "0.1", default-features = false }  # XMR io compat (Curs
 base58-monero = { version = "2", default-features = false }  # XMR base58 (编码类，已审计, 不带 check feature 因为 encode_check 有 bug 我们手写)
 cuprate-cryptonight = { path = "vendor/cryptonight" }  # CryptoNight V0 (XMR txset chacha key 派生)；vendored no_std 版，见 vendor/cryptonight/Cargo.toml 注释
 chacha20 = { version = "0.9", default-features = false }  # ChaCha20 + ChaCha20Legacy (XMR txset 解密，keystone 同款 0.9.1)
+# §B.5 RNG 注入定案：entropy → HKDF-SHA256 → ChaCha20Rng（零自制 DRBG）
+hkdf = { version = "0.12", default-features = false }  # HKDF-SHA256 (RFC 5869) seed 派生
+rand_chacha = { version = "0.3", default-features = false }  # ChaCha20Rng CSPRNG（keystone monero app 同款）
 subtle = { version = "2", default-features = false }  # CtOption/ct_eq（XMR Schnorr 验签 + curve25519 scalar canonical）
 bitcoin_hashes = { version = "0.14", default-features = false, package = "bitcoin_hashes" }  # RIPEMD-160 + SHA-256 (BTC P2WPKH witness program + hash160)
 ripemd = { version = "0.1", default-features = false }  # RIPEMD-160

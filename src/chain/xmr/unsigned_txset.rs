@@ -250,6 +250,15 @@ fn check_monero_signature(hash: &[u8; 32], pubkey: &[u8; 32], sig: &[u8]) -> Res
     Ok(bool::from((c2_scalar - c_scalar).ct_eq(&Scalar::ZERO)))
 }
 
+/// pub 包装：Monero Schnorr 验签（供 signed_txset 加密往返互验复用）
+pub fn verify_monero_signature_pubkey(
+    hash: &[u8; 32],
+    pubkey: &[u8; 32],
+    sig: &[u8],
+) -> Result<bool> {
+    check_monero_signature(hash, pubkey, sig)
+}
+
 /// 解密 unsigned_txset（对齐 keystone decrypt_data_with_pvk）
 ///
 /// 流程：magic 校验 → nonce=8B → Ed25519 验签（view_pub 对

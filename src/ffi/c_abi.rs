@@ -125,8 +125,13 @@ pub extern "C" fn shlosilo_sign_ffi(
 
 /// shlosilo_sign_ur_ffi — 完整 UR 字符串 + mnemonic → 签名（P6.1d）
 ///
-/// L3 直接喂 `ur:crypto-psbt/...` / `ur:eth-sign-request/...`，
+/// L3 直接喂 `ur:crypto-psbt/...` / `ur:eth-sign-request/...` / `ur:xmr-txunsigned/...`，
 /// UR 解码 + type tag 校验都在库内做（L3 薄、L1 厚）。
+///
+/// **§B.5 RNG 注入扩展（2026-08-28）**：新增 entropy_ptr / entropy_len 参数——
+/// XMR 签名 REQUIRED（≥16B，L3 承诺来源与 min-entropy）；BTC/ETH deterministic
+/// backend 传 NULL/0 即可。同一 (keys, tx, entropy) → 同一签名（deterministic retry）。
+///
 /// 返回 0 = Ok，负数 = 错误码；签名 bytes 写 output_buf。
 #[no_mangle]
 pub extern "C" fn shlosilo_sign_ur_ffi(
@@ -136,6 +141,8 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
     passphrase: *const u8,
     passphrase_len: c_uint,
     network: c_uint,
+    entropy_ptr: *const u8, // §B.5：可 NULL（BTC/ETH 不需要）
+    entropy_len: c_uint,
     output_buf: *mut u8,
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
@@ -165,6 +172,9 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
         // UR 解码
         let decoded = crate::ur::ur_decode::decode(uri_str)?;
 
+        // §B.5 entropy 注入（NULL → 空切片；XMR 分支内部做 ≥16B misuse guard）
+        let entropy_slice = unsafe { bytes_in(entropy_ptr, entropy_len as usize) };
+
         let mnem_slice =
             unsafe { slice::from_raw_parts(mnemonic_indices, mnemonic_count as usize) };
         let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
@@ -183,7 +193,14 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
             passphrase: pass_slice,
         };
         // P1-01：UR type tag 贯通到业务层（不再靠 payload 首字节推断）
-        business::sign::sign(input, decoded.type_tag(), decoded.as_ref(), out_slice)
+        // §B.5：entropy 透传（XMR REQUIRED / BTC-ETH NOT REQUIRED）
+        business::sign::sign_with_entropy(
+            input,
+            decoded.type_tag(),
+            decoded.as_ref(),
+            entropy_slice,
+            out_slice,
+        )
     });
 
     match result {
@@ -592,6 +609,8 @@ mod tests {
             *const u8,
             c_uint,
             c_uint,
+            *const u8, // entropy_ptr (§B.5)
+            c_uint,    // entropy_len
             *mut u8,
             c_uint,
             *mut c_uint,
@@ -679,6 +698,8 @@ mod tests {
             null(),
             0,
             0, // network
+            null(), // entropy (§B.5)
+            0,
             out.as_mut_ptr(),
             out.len() as c_uint,
             &mut actual,
@@ -702,6 +723,8 @@ mod tests {
             null(),
             0,
             0,
+            null(), // entropy (§B.5)
+            0,
             out.as_mut_ptr(),
             out.len() as c_uint,
             &mut actual,
@@ -720,6 +743,8 @@ mod tests {
             12,
             null(),
             0,
+            0,
+            null(), // entropy (§B.5)
             0,
             out.as_mut_ptr(),
             out.len() as c_uint,
