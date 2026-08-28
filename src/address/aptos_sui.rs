@@ -57,7 +57,8 @@ impl_address_traits!(SuiAddress, SUI_ADDRESS_LEN);
 /// # Phase 4 实现
 /// - hex("0x" || pubkey.to_bytes()) — Aptos 直接用 32-byte ed25519 pubkey
 pub fn encode_aptos(_pubkey: &Ed25519Point, _network: Network) -> Result<AptosAddress> {
-    unimplemented!("Phase 2.3 stub: aptos_sui::encode_aptos 将在 Phase 4 接入 hex")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 /// SUI 地址编码
@@ -65,7 +66,8 @@ pub fn encode_aptos(_pubkey: &Ed25519Point, _network: Network) -> Result<AptosAd
 /// # Phase 4 实现
 /// - hex("0x" || pubkey.to_bytes()) — Sui 用 ed25519 scheme flag + pubkey（实际 hex 前缀 + 64 chars）
 pub fn encode_sui(_pubkey: &Ed25519Point, _network: Network) -> Result<SuiAddress> {
-    unimplemented!("Phase 2.3 stub: aptos_sui::encode_sui 将在 Phase 4 接入 hex + scheme flag")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 #[cfg(test)]
@@ -86,9 +88,12 @@ mod tests {
     }
 
     #[test]
-    fn stub_phase_documented() {
-        let source = include_str!("aptos_sui.rs");
-        assert!(source.contains("unimplemented!"));
-        assert!(source.contains("Phase 4"));
+    fn stub_no_panic_marker() {
+        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        for line in include_str!("aptos_sui.rs").lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") { continue; }
+            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+        }
     }
 }

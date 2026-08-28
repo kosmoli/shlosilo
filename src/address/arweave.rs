@@ -41,7 +41,8 @@ impl fmt::Debug for ArweaveAddress {
 /// # Phase 4 实现
 /// - sha256(modulus_bytes) → 32-byte digest → base64url（43 字符）
 pub fn encode(_pubkey: &RsaPubKey, _network: Network) -> Result<ArweaveAddress> {
-    unimplemented!("Phase 2.3 stub: arweave::encode 将在 Phase 4 接入 sha256 + base64url")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 #[cfg(test)]
@@ -56,10 +57,12 @@ mod tests {
     }
 
     #[test]
-    fn stub_phase_documented() {
-        let source = include_str!("arweave.rs");
-        assert!(source.contains("unimplemented!"));
-        assert!(source.contains("Phase 4"));
-        assert!(source.contains("sha256"));
+    fn stub_no_panic_marker() {
+        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        for line in include_str!("arweave.rs").lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") { continue; }
+            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+        }
     }
 }

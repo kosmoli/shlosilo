@@ -17,14 +17,16 @@ pub type BtcLegacyAddress = super::btc_segwit::BtcAddress;
 /// - P2PKH: base58check(0x00 || ripemd160(sha256(pubkey)))
 /// - P2SH:  base58check(0x05 || ripemd160(sha256(redeem_script)))
 pub fn encode_p2pkh(_pubkey: &Secp256k1Point, _network: Network) -> Result<BtcLegacyAddress> {
-    unimplemented!("Phase 2.3 stub: btc_legacy::encode_p2pkh 将在 Phase 4 接入 bitcoin base58")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 pub fn encode_p2sh(
     _redeem_script_hash: &[u8; 20],
     _network: Network,
 ) -> Result<BtcLegacyAddress> {
-    unimplemented!("Phase 2.3 stub: btc_legacy::encode_p2sh 将在 Phase 4 接入 bitcoin base58")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 #[cfg(test)]
@@ -35,10 +37,12 @@ mod tests {
     const _: fn(&[u8; 20], Network) -> Result<BtcLegacyAddress> = encode_p2sh;
 
     #[test]
-    fn stub_phase_documented() {
-        let source = include_str!("btc_legacy.rs");
-        assert!(source.contains("unimplemented!"));
-        assert!(source.contains("Phase 4"));
-        assert!(source.contains("base58"));
+    fn stub_no_panic_marker() {
+        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        for line in include_str!("btc_legacy.rs").lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") { continue; }
+            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+        }
     }
 }

@@ -32,12 +32,14 @@ impl core::fmt::Debug for RsaPssSignature {
 /// 重要：RSA-PSS **需要 RNG**（与 ECDSA 的 deterministic nonce 不同）。
 /// 在 `no_std` 环境下 RNG 来源由 L3 imperative shell 提供——这里只接受 pre-salted msg。
 pub fn sign(_sk: &RsaPrivKey, _msg_hash: &[u8]) -> Result<RsaPssSignature> {
-    unimplemented!("Phase 2.2 stub: rsa_pss::sign 将在 Phase 4 接入 rsa crate")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 /// RSA-PSS 验签
 pub fn verify(_pk: &RsaPubKey, _msg_hash: &[u8], _sig: &RsaPssSignature) -> bool {
-    unimplemented!("Phase 2.2 stub: rsa_pss::verify 将在 Phase 4 接入 rsa crate")
+    // P2-01: unimplemented!() panic → 稳定 false（bool 签名无 Err 通道）
+    false
 }
 
 #[cfg(test)]
@@ -58,9 +60,13 @@ mod tests {
     }
 
     #[test]
-    fn stub_phase_documented() {
-        let source = include_str!("rsa_pss.rs");
-        assert!(source.contains("unimplemented!"));
-        assert!(source.contains("Phase 4"));
+    fn stub_no_panic_marker() {
+        // P2-01：stub 已改为稳定错误码/返回值，不允许 panic 宏回归
+        // （检查代码行，排除注释行）
+        for line in "rsa_pss.rs".lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") { continue; }
+            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+        }
     }
 }

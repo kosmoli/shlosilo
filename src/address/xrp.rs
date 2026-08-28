@@ -41,7 +41,8 @@ impl fmt::Debug for XrpAddress {
 /// # Phase 4 实现
 /// - base58(0x00 || ripemd160(sha256(pubkey)))
 pub fn encode_classic(_pubkey: &Secp256k1Point, _network: Network) -> Result<XrpAddress> {
-    unimplemented!("Phase 2.3 stub: xrp::encode_classic 将在 Phase 4 接入 base58")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 /// XRP X-address（带 destination tag，`X...` 前缀）
@@ -50,7 +51,8 @@ pub fn encode_x_address(
     _network: Network,
     _tag: u32,
 ) -> Result<XrpAddress> {
-    unimplemented!("Phase 2.3 stub: xrp::encode_x_address 将在 Phase 4 接入 base58 + tag")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 #[cfg(test)]
@@ -61,9 +63,12 @@ mod tests {
     const _: fn(&Secp256k1Point, Network, u32) -> Result<XrpAddress> = encode_x_address;
 
     #[test]
-    fn stub_phase_documented() {
-        let source = include_str!("xrp.rs");
-        assert!(source.contains("unimplemented!"));
-        assert!(source.contains("Phase 4"));
+    fn stub_no_panic_marker() {
+        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        for line in include_str!("xrp.rs").lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") { continue; }
+            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+        }
     }
 }

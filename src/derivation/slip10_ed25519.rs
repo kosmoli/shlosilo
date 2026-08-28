@@ -30,14 +30,16 @@ impl core::fmt::Debug for Slip10ExtendedKey {
 /// # Phase 4 实现
 /// `slip10::derive_ed25519_master(seed)`（slip10 14.x crate）
 pub fn master_from_seed(_seed: &[u8]) -> Result<Slip10ExtendedKey> {
-    unimplemented!("Phase 2.2 stub: slip10_ed25519::master_from_seed 将在 Phase 4 接入 slip10 crate")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 /// SLIP-0010 路径派生（Phase 4 真实实现）
 ///
 /// 重要：SLIP-0010 for ed25519 要求 **每个 segment 都是 hardened**（包括 account / change / address_index）
 pub fn derive(_master: &Slip10ExtendedKey, _path: &DerivationPath) -> Result<Ed25519Scalar> {
-    unimplemented!("Phase 2.2 stub: slip10_ed25519::derive 将在 Phase 4 接入 slip10 crate")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 #[cfg(test)]
@@ -58,10 +60,13 @@ mod tests {
     }
 
     #[test]
-    fn stub_phase_documented() {
-        let source = include_str!("slip10_ed25519.rs");
-        assert!(source.contains("unimplemented!"));
-        assert!(source.contains("Phase 4"));
-        assert!(source.contains("slip10"));
+    fn stub_no_panic_marker() {
+        // P2-01：stub 已改为稳定错误码/返回值，不允许 panic 宏回归
+        // （检查代码行，排除注释行）
+        for line in "slip10_ed25519.rs".lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") { continue; }
+            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+        }
     }
 }

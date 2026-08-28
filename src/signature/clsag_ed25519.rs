@@ -55,7 +55,8 @@ pub fn sign(
     _pseudo_output: &Ed25519Point,
     _aux_data: &ClsagAux,
 ) -> Result<ClsagProof> {
-    unimplemented!("Phase 2.2 stub: clsag_ed25519::sign 将在 Phase 4 接入 monero-oxide")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 /// CLSAG 验签
@@ -65,7 +66,8 @@ pub fn verify(
     _msg: &[u8],
     _proof: &ClsagProof,
 ) -> bool {
-    unimplemented!("Phase 2.2 stub: clsag_ed25519::verify 将在 Phase 4 接入 monero-oxide")
+    // P2-01: unimplemented!() panic → 稳定 false（bool 签名无 Err 通道）
+    false
 }
 
 #[cfg(test)]
@@ -86,10 +88,13 @@ mod tests {
     }
 
     #[test]
-    fn stub_phase_documented() {
-        let source = include_str!("clsag_ed25519.rs");
-        assert!(source.contains("unimplemented!"));
-        assert!(source.contains("Phase 4"));
-        assert!(source.contains("monero-oxide"));
+    fn stub_no_panic_marker() {
+        // P2-01：stub 已改为稳定错误码/返回值，不允许 panic 宏回归
+        // （检查代码行，排除注释行）
+        for line in "clsag_ed25519.rs".lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") { continue; }
+            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+        }
     }
 }

@@ -44,7 +44,8 @@ pub fn encode(
     _view_priv: &Ed25519Scalar,
     _restore_height: u64,
 ) -> Result<JsonMoneroViewkey> {
-    unimplemented!("Phase 2.3 stub: json_monero_viewkey::encode 将在 Phase 4 接入 JSON 序列化")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 #[cfg(test)]
@@ -59,10 +60,12 @@ mod tests {
     }
 
     #[test]
-    fn stub_phase_documented() {
-        let source = include_str!("json_monero_viewkey.rs");
-        assert!(source.contains("unimplemented!"));
-        assert!(source.contains("Phase 4"));
-        assert!(source.contains("Feather"));
+    fn stub_no_panic_marker() {
+        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        for line in include_str!("json_monero_viewkey.rs").lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") { continue; }
+            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+        }
     }
 }

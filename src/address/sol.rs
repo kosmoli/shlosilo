@@ -44,7 +44,8 @@ impl fmt::Debug for SolAddress {
 /// # Phase 4 实现
 /// - base58(pubkey_32_bytes) — Solana 直接用 ed25519 32-byte pubkey 作为地址
 pub fn encode(_pubkey: &Ed25519Point, _network: Network) -> Result<SolAddress> {
-    unimplemented!("Phase 2.3 stub: sol::encode 将在 Phase 4 接入 base58 + ed25519 pubkey")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 #[cfg(test)]
@@ -54,9 +55,12 @@ mod tests {
     const _: fn(&Ed25519Point, Network) -> Result<SolAddress> = encode;
 
     #[test]
-    fn stub_phase_documented() {
-        let source = include_str!("sol.rs");
-        assert!(source.contains("unimplemented!"));
-        assert!(source.contains("Phase 4"));
+    fn stub_no_panic_marker() {
+        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        for line in include_str!("sol.rs").lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") { continue; }
+            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+        }
     }
 }

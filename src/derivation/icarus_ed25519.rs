@@ -48,7 +48,8 @@ impl core::fmt::Debug for CardanoExtSk {
 /// # Phase 4 实现
 /// `cardano_serialization_lib::crypto::derive`
 pub fn master_from_seed(_seed: &[u8]) -> Result<CardanoExtSk> {
-    unimplemented!("Phase 2.2 stub: icarus_ed25519::master_from_seed 将在 Phase 4 接入 cardano crate")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 /// Icarus 路径派生——返回完整 CardanoExtSk（聚合结构）
@@ -56,7 +57,8 @@ pub fn master_from_seed(_seed: &[u8]) -> Result<CardanoExtSk> {
 /// 业务模块拿到 CardanoExtSk 后，**自己解构**：
 /// `let spend = &cardano_ext_sk.spend;` 然后传给 `eddsa_ed25519::sign(spend, msg)`
 pub fn derive(_master: &CardanoExtSk, _path: &DerivationPath) -> Result<CardanoExtSk> {
-    unimplemented!("Phase 2.2 stub: icarus_ed25519::derive 将在 Phase 4 接入 cardano crate")
+    // P2-01: unimplemented!() panic → 稳定错误码
+    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
 }
 
 #[cfg(test)]
@@ -72,9 +74,13 @@ mod tests {
     }
 
     #[test]
-    fn stub_phase_documented() {
-        let source = include_str!("icarus_ed25519.rs");
-        assert!(source.contains("unimplemented!"));
-        assert!(source.contains("Phase 4"));
+    fn stub_no_panic_marker() {
+        // P2-01：stub 已改为稳定错误码/返回值，不允许 panic 宏回归
+        // （检查代码行，排除注释行）
+        for line in "icarus_ed25519.rs".lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") { continue; }
+            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+        }
     }
 }

@@ -83,6 +83,8 @@ pub enum ShlosiloErrorKind {
     NetworkUnrecognized = 0x0303_0001,
     /// v1 不支持多签
     MultisigNotSupported = 0x0304_0001,
+    /// Phase 2 stub：算法/编码未接入（原 unimplemented!() panic，P2-01 改稳定错误码）
+    FeatureNotImplemented = 0x0305_0001,
 
     // ─── L2a marshaling（0x04xx_xxxx） ───
     /// output_buf 容量不足
@@ -174,6 +176,7 @@ pub enum ShlosiloErrorCode {
     UnsupportedExportProtocol = -11,
     UnsupportedNetwork       = -12,
     MultisigNotSupported     = -13,
+    FeatureNotImplemented    = -14,
     BufferTooSmall           = -20,
     EncodingError            = -21,
     InvalidUrPayload         = -30,
@@ -193,6 +196,7 @@ impl ShlosiloErrorCode {
             ShlosiloErrorKind::ExportProtocolUnimplemented => Self::UnsupportedExportProtocol,
             ShlosiloErrorKind::NetworkUnrecognized => Self::UnsupportedNetwork,
             ShlosiloErrorKind::MultisigNotSupported => Self::MultisigNotSupported,
+            ShlosiloErrorKind::FeatureNotImplemented => Self::FeatureNotImplemented,
             ShlosiloErrorKind::BufferTooSmall => Self::BufferTooSmall,
             ShlosiloErrorKind::EncodingBufferOverflow
             | ShlosiloErrorKind::EncodingInvalidFormat
