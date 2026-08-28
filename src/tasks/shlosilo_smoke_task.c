@@ -91,8 +91,8 @@ static int run_checks(void)
         log_line("create: FAIL");
     }
 
-    /* 4. export_readonly (mnemonic 入口，替代原 restore 步骤；只验错误路径
-     *    即可——用 idx12 导出合法 xpub 走 CRYPTO_HDKEY，路径非空) */
+    /* 4. export_readonly (mnemonic 入口，替代原 restore 步骤) */
+    log_line("export: start...");
     {
         uint32_t path_elems[5] = {44u | 0x80000000u, 0u | 0x80000000u,
                                   0u | 0x80000000u, 0u, 0u};
@@ -141,7 +141,7 @@ static int run_checks(void)
 void CreateShlosiloSmokeTask(void) {
     const osThreadAttr_t smoke_attr = {
         .name = "shlosilo_smoke",
-        .stack_size = 32768, /* sign/ECDSA 深调用栈（k256 无 precomputed-tables 栈需求大）*/
+        .stack_size = 65536, /* 64KB: export(PBKDF2+BIP32 chain) + sign(ECDSA, no precomputed-tables) deep call stacks */
         .priority = (osPriority_t)osPriorityNormal,
     };
     osThreadId_t tid = osThreadNew(ShlosiloSmokeTask, NULL, &smoke_attr);

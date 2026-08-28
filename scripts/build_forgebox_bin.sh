@@ -27,8 +27,8 @@ python3 padding_bin_file.py mh1903.bin
 forgebox sign --s mh1903_full.bin --d forgebox.bin --key ~/.forgebox/keys/private.pem
 
 # 3. 验证 header（单层 fwdata 封装的特征字节）
-HEADER=$(xxd -l 16 -p forgebox.bin)
-EXPECTED="5c0100007e667764617421"
+HEADER=$(xxd -l 12 -p forgebox.bin)
+EXPECTED="5c0100007e66776461746121"
 echo "header: $HEADER"
 case "$HEADER" in
     "$EXPECTED"*) echo "OK: single-layer fwdata header confirmed" ;;
