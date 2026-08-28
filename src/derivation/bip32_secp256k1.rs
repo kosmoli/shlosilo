@@ -1,34 +1,60 @@
 //! BIP-32 派生 over secp256k1（BTC + ETH + Cosmos + Tron + XRP）
 //!
-//! Phase 5 v2 真实实现：wrap `bip32 0.5.3` crate
+//! Phase 5 v3 自实现（P2-04 选 1）：不再 wrap `bip32` crate，
+//! 直接按 BIP-32 规范实现 CKDpriv——与 §2.3「密钥派生自实现」对齐。
 //!
-//! ## 设计要点
+//! ## 算法（BIP-32 §Child key derivation (CKD) functions）
 //!
-//! - shlosilo `DerivationPath` → `bip32::DerivationPath` 通过字符串格式转换
-//! - 内部把 `bip32::XPrv` 的 secp256k1 私钥部分提取出来作为 `Secp256k1Scalar`
+//! master（种子 → 主扩展私钥）：
+//!   `I = HMAC-SHA512(key = "Bitcoin seed", data = seed)`
+//!   `master.sk = I[..32]`，`master.chain_code = I[32..]`
+//!   种子长度只接受 16/32/64 bytes（BIP-32 / bip32 crate 同款约束）。
 //!
-//! ## 安全约束（v2 §2.1）
+//! CKDpriv((k_par, c_par), i)：
+//!   hardened (i ≥ 2^31)：`I = HMAC-SHA512(c_par, 0x00 ‖ ser256(k_par) ‖ ser32(i))`
+//!   normal  (i < 2^31)： `I = HMAC-SHA512(c_par, ser_P(point(k_par)) ‖ ser32(i))`
+//!   `k_i = I_L + k_par (mod n)`（IL ≥ n 或 k_i = 0 → 无效，规范要求继续迭代；
+//!   概率 < 2^-127，此处按 bip32 crate 同款策略直接报错）
+//!   `c_i = I_R`
 //!
-//! - `ExtendedPrivKey` 字段全部私有
+//! ## 公开 API（与 v2 兼容，调用方零改动）
+//!
+//! - `master_from_seed(seed) -> ExtendedPrivKey`（78 bytes 序列化）
+//! - `derive_from_seed(seed, path) -> Secp256k1Scalar`
+//! - `xpub_from_seed(seed, path) -> [u8; 78]`
+//! - `derive(master, path) -> Secp256k1Scalar`（v3 起真实实现：从 78 bytes 反序列化继续派生）
+//!
+//! ## oracle
+//!
+//! - BIP-32 官方 Test Vector 1/2/3（tests/bip32_vectors_self_impl.rs）
+//! - keystone 交叉验证（tests/xmr_keystone_cross_validation.rs，既有）
+//!
+//! ## 安全约束（v2 §2.1，沿用）
+//!
+//! - `ExtendedPrivKey` 字段私有、ZeroizeOnDrop
 //! - `derive_from_seed` 接受 `&[u8]` seed（BIP-39 输出 64 bytes）
 //! - 返回的 `Secp256k1Scalar` 直接受 Zeroize 保护
-//!
-//! ## v2 §2.3 算法决策
-//!
-//! ✅ **接受审计过的 bip32 crate**（RustCrypto 维护，多次审计）
 
-extern crate alloc;
-use alloc::format;
-use alloc::string::String;
-
-use crate::curve_primitive::secp256k1::Secp256k1Scalar;
+use crate::curve_primitive::secp256k1::{
+    self as secp, Secp256k1Point, Secp256k1Scalar,
+};
 use crate::derivation::path::DerivationPath;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
-use bip32::{DerivationPath as Bip32Path, Prefix, XPrv, XPub};
+use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha256, Sha512};
+
+type HmacSha512 = Hmac<Sha512>;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// BIP-32 扩展私钥（78 bytes：version + depth + fp + chain_code + key + ...）
 pub const EXTENDED_PRIVKEY_LEN: usize = 78;
+
+/// master 派生 domain separator：ASCII "Bitcoin seed"
+const BITCOIN_SEED: &[u8] = b"Bitcoin seed";
+
+/// secp256k1 曲线阶 n 的高位对齐前缀（压缩公钥 / 私钥序列化长度）
+const SCALAR_LEN: usize = 32;
+const COMPRESSED_POINT_LEN: usize = 33;
 
 /// BIP-32 扩展私钥包装
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -48,95 +74,230 @@ impl core::fmt::Debug for ExtendedPrivKey {
     }
 }
 
-/// 从 BIP-32 master XPrv 提取 78 bytes 序列化（零 alloc 路径）
-///
-/// 直接从 `ExtendedKey` 公开字段拼 78 bytes serialized form，**不**走
-/// `xprv.to_string()` 的 base58check round-trip（避免 alloc String）。
-///
-/// **结构**（78 bytes）：
-/// - bytes[0..4]   = prefix (`xprv` = 0x0488ADE4)
-/// - bytes[4]      = depth
-/// - bytes[5..9]   = parent fingerprint (4 bytes)
-/// - bytes[9..13]  = child number (4 bytes big-endian)
-/// - bytes[13..45] = chain code (32 bytes)
-/// - bytes[45..78] = key (33 bytes, prefix 0x00 + 32 bytes scalar)
-fn xprv_to_bytes(xprv: &XPrv) -> Result<[u8; EXTENDED_PRIVKEY_LEN]> {
-    // to_extended_key 内部仅栈操作：key_bytes: [u8; 33] + attrs.clone() (Copy fields)
-    let ek = xprv.to_extended_key(Prefix::XPRV);
+/// 内部扩展私钥（派生过程中的工作形态；drop 时零化）
+struct ExtSk {
+    key: [u8; SCALAR_LEN],      // 私钥 scalar（大端）
+    chain_code: [u8; 32],
+    depth: u8,
+    parent_fingerprint: [u8; 4],
+    child_number: u32,
+}
+
+impl ZeroizeOnDrop for ExtSk {}
+impl Drop for ExtSk {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
+}
+// chain_code / fingerprint / child_number 是公开材料，无需零化
+
+fn err_invalid() -> ShlosiloError {
+    ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
+}
+
+/// 78 bytes 序列化（xprv 布局）
+fn extsk_to_bytes(k: &ExtSk, key_or_pub: KeyOrPub) -> [u8; EXTENDED_PRIVKEY_LEN] {
     let mut bytes = [0u8; EXTENDED_PRIVKEY_LEN];
-    bytes[..4].copy_from_slice(&ek.prefix.to_bytes());
-    bytes[4] = ek.attrs.depth;
-    bytes[5..9].copy_from_slice(&ek.attrs.parent_fingerprint);
-    bytes[9..13].copy_from_slice(&ek.attrs.child_number.to_bytes());
-    bytes[13..45].copy_from_slice(&ek.attrs.chain_code);
-    bytes[45..78].copy_from_slice(&ek.key_bytes);
-    Ok(bytes)
+    match key_or_pub {
+        KeyOrPub::Xprv => {
+            bytes[..4].copy_from_slice(&0x0488_ADE4u32.to_be_bytes());
+            bytes[45] = 0x00;
+            bytes[46..78].copy_from_slice(&k.key);
+        }
+        KeyOrPub::Xpub => {
+            bytes[..4].copy_from_slice(&0x0488_B21Eu32.to_be_bytes());
+            // key = 压缩公钥（33 bytes）
+            if let Ok(sk) = secp::scalar_from_bytes(&k.key) {
+                let pk = secp::base_mul(&sk);
+                let compressed = secp::point_to_compressed(&pk);
+                bytes[45..78].copy_from_slice(&compressed);
+            }
+        }
+    }
+    bytes[4] = k.depth;
+    bytes[5..9].copy_from_slice(&k.parent_fingerprint);
+    bytes[9..13].copy_from_slice(&k.child_number.to_be_bytes());
+    bytes[13..45].copy_from_slice(&k.chain_code);
+    bytes
+}
+
+enum KeyOrPub {
+    Xprv,
+    Xpub,
+}
+
+/// 4-byte key fingerprint = RIPEMD160(SHA256(compressed_pub))[..4]
+fn fingerprint(compressed_pub: &[u8; COMPRESSED_POINT_LEN]) -> [u8; 4] {
+    let sha = Sha256::digest(compressed_pub);
+    let ripemd = ripemd::Ripemd160::digest(&sha);
+    [ripemd[0], ripemd[1], ripemd[2], ripemd[3]]
+}
+
+/// master 派生：`I = HMAC-SHA512("Bitcoin seed", seed)`
+fn master_extsk(seed: &[u8]) -> Result<ExtSk> {
+    // 与 bip32 crate / BIP-32 实践一致：只接受 16/32/64 bytes 种子
+    if ![16, 32, 64].contains(&seed.len()) {
+        return Err(err_invalid());
+    }
+    let mut mac = <HmacSha512 as Mac>::new_from_slice(BITCOIN_SEED).map_err(|_| err_invalid())?;
+    Mac::update(&mut mac, seed);
+    let out = mac.finalize().into_bytes();
+    let mut key = [0u8; SCALAR_LEN];
+    key.copy_from_slice(&out[..SCALAR_LEN]);
+    let mut chain_code = [0u8; 32];
+    chain_code.copy_from_slice(&out[SCALAR_LEN..]);
+
+    // 私钥为 0 或 ≥ n → 无效种子（BIP-32：概率可忽略，直接拒绝）
+    let ok = secp::scalar_from_bytes(&key).is_ok() && key.iter().any(|&b| b != 0);
+    if !ok {
+        return Err(err_invalid());
+    }
+
+    Ok(ExtSk {
+        key,
+        chain_code,
+        depth: 0,
+        parent_fingerprint: [0; 4],
+        child_number: 0,
+    })
+}
+
+/// CKDpriv 一步
+fn ckd_priv(parent: &ExtSk, index: DerivationIndex) -> Result<ExtSk> {
+    let mut mac = <HmacSha512 as Mac>::new_from_slice(&parent.chain_code)
+        .map_err(|_| err_invalid())?;
+
+    let data = MacData::new(parent, index)?;
+    Mac::update(&mut mac, &data.buf);
+
+    let out = mac.finalize().into_bytes();
+    let mut tweak = [0u8; SCALAR_LEN];
+    tweak.copy_from_slice(&out[..SCALAR_LEN]);
+    let mut chain_code = [0u8; 32];
+    chain_code.copy_from_slice(&out[SCALAR_LEN..]);
+
+    // IL ≥ n → 无效（概率 < 2^-127）
+    let tweak_scalar = secp::scalar_from_bytes(&tweak).map_err(|_| err_invalid())?;
+    let parent_scalar = secp::scalar_from_bytes(&parent.key).map_err(|_| err_invalid())?;
+    let child_scalar = secp::scalar_add(&tweak_scalar, &parent_scalar);
+    let child_key = secp::scalar_to_bytes(&child_scalar);
+
+    // k_i = 0 → 无效（概率 < 2^-127）
+    if child_key.iter().all(|&b| b == 0) {
+        return Err(err_invalid());
+    }
+
+    // parent fingerprint = RIPEMD160(SHA256(parent 压缩公钥))[..4]
+    let parent_pk = secp::base_mul(&parent_scalar);
+    let parent_compressed = secp::point_to_compressed(&parent_pk);
+
+    Ok(ExtSk {
+        key: child_key,
+        chain_code,
+        depth: parent.depth.checked_add(1).ok_or_else(err_invalid)?,
+        parent_fingerprint: fingerprint(&parent_compressed),
+        child_number: index.0,
+    })
+}
+
+/// HMAC 数据缓冲（hardened: 1+32+4=37B；normal: 33+4=37B）
+struct MacData {
+    buf: [u8; 37],
+}
+
+impl MacData {
+    fn new(parent: &ExtSk, index: DerivationIndex) -> Result<Self> {
+        let mut buf = [0u8; 37];
+        if index.is_hardened() {
+            buf[0] = 0x00;
+            buf[1..33].copy_from_slice(&parent.key);
+        } else {
+            // normal：需要父公钥压缩形式
+            let parent_scalar = secp::scalar_from_bytes(&parent.key).map_err(|_| err_invalid())?;
+            let pk = secp::base_mul(&parent_scalar);
+            buf[..33].copy_from_slice(&secp::point_to_compressed(&pk));
+        }
+        // ser32(i)：hardened 时 i 含 2^31 位（BIP-32 规范），即原始 u32
+        buf[33..37].copy_from_slice(&index.0.to_be_bytes());
+        Ok(Self { buf })
+    }
+}
+
+use crate::derivation::path::DerivationIndex;
+
+/// 从 BIP-32 master XPrv 提取 78 bytes 序列化（零 alloc，保留 v2 API）
+fn xprv_to_bytes(k: &ExtSk) -> [u8; EXTENDED_PRIVKEY_LEN] {
+    extsk_to_bytes(k, KeyOrPub::Xprv)
 }
 
 /// BIP-32 master 派生（从 BIP-39 seed 派生 master key）
 pub fn master_from_seed(seed: &[u8]) -> Result<ExtendedPrivKey> {
-    let xprv = XPrv::new(seed).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
-    let bytes = xprv_to_bytes(&xprv)?;
-    Ok(ExtendedPrivKey { bytes })
+    let k = master_extsk(seed)?;
+    Ok(ExtendedPrivKey {
+        bytes: xprv_to_bytes(&k),
+    })
 }
 
-/// 把 shlosilo DerivationPath 转换为 bip32 DerivationPath (via string format)
-fn to_bip32_path(path: &DerivationPath) -> Result<Bip32Path> {
-    // shlosilo DerivationPath Display → "m/44'/0'/..." 字符串 → bip32 parse
-    let s = format!("{:?}", path);
-    s.parse::<Bip32Path>().map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::DerivationPathInvalidSyntax)
+/// 从 78 bytes xprv 反序列化（v3 起支持 derive(master, path)）
+fn extsk_from_bytes(bytes: &[u8; EXTENDED_PRIVKEY_LEN]) -> Result<ExtSk> {
+    // version 必须 xprv
+    if bytes[..4] != 0x0488_ADE4u32.to_be_bytes() {
+        return Err(err_invalid());
+    }
+    // key 部分：0x00 前缀 + 32 bytes
+    if bytes[45] != 0x00 {
+        return Err(err_invalid());
+    }
+    let mut key = [0u8; SCALAR_LEN];
+    key.copy_from_slice(&bytes[46..78]);
+    secp::scalar_from_bytes(&key).map_err(|_| err_invalid())?;
+    let mut chain_code = [0u8; 32];
+    chain_code.copy_from_slice(&bytes[13..45]);
+    Ok(ExtSk {
+        key,
+        chain_code,
+        depth: bytes[4],
+        parent_fingerprint: [bytes[5], bytes[6], bytes[7], bytes[8]],
+        child_number: u32::from_be_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]),
     })
+}
+
+/// 沿路径逐步 CKDpriv
+fn derive_path(mut k: ExtSk, path: &DerivationPath) -> Result<ExtSk> {
+    for idx in path.as_slice() {
+        k = ckd_priv(&k, *idx)?;
+    }
+    Ok(k)
 }
 
 /// BIP-32 路径派生（从 seed 直接派生 child key，返回 32 bytes scalar）
 pub fn derive_from_seed(seed: &[u8], path: &DerivationPath) -> Result<Secp256k1Scalar> {
-    let bip32_path = to_bip32_path(path)?;
-    let xprv = XPrv::derive_from_path(seed, &bip32_path).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
-    // 提取 raw 私钥 (32 bytes)
-    let sk_bytes = xprv.to_bytes();
-    crate::curve_primitive::secp256k1::scalar_from_bytes(&sk_bytes)
+    let k = derive_path(master_extsk(seed)?, path)?;
+    secp::scalar_from_bytes(&k.key).map_err(|_| err_invalid())
 }
 
 /// BIP-32 路径派生（从 master extended key 派生 child scalar）
 ///
-/// 简化实现：master 只持有 78 bytes 序列化，不持有 bip32::XPrv
-/// 实际业务中应该直接用 derive_from_seed（持有 seed 即可）
-pub fn derive(_master: &ExtendedPrivKey, _path: &DerivationPath) -> Result<Secp256k1Scalar> {
-    Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
+/// v3 真实实现：从 78 bytes 反序列化 master，逐步 CKDpriv。
+pub fn derive(master: &ExtendedPrivKey, path: &DerivationPath) -> Result<Secp256k1Scalar> {
+    let k = derive_path(extsk_from_bytes(&master.bytes)?, path)?;
+    secp::scalar_from_bytes(&k.key).map_err(|_| err_invalid())
 }
 
 /// 从 seed + path 导出 BIP-32 xpub（78 bytes，version = 0x0488B21E）
 pub fn xpub_from_seed(seed: &[u8], path: &DerivationPath) -> Result<[u8; EXTENDED_PRIVKEY_LEN]> {
-    let bip32_path = to_bip32_path(path)?;
-    let xprv = XPrv::derive_from_path(seed, &bip32_path).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
-    let xpub: XPub = xprv.public_key();
-    let ek = xpub.to_extended_key(Prefix::XPUB);
-    let mut bytes = [0u8; EXTENDED_PRIVKEY_LEN];
-    bytes[..4].copy_from_slice(&ek.prefix.to_bytes());
-    bytes[4] = ek.attrs.depth;
-    bytes[5..9].copy_from_slice(&ek.attrs.parent_fingerprint);
-    bytes[9..13].copy_from_slice(&ek.attrs.child_number.to_bytes());
-    bytes[13..45].copy_from_slice(&ek.attrs.chain_code);
-    bytes[45..78].copy_from_slice(&ek.key_bytes);
-    Ok(bytes)
-}
-
-// 抑制 unused Prefix 警告（bip32 0.5 需要使用）
-#[allow(dead_code)]
-fn _use_prefix() -> Prefix {
-    Prefix::XPRV
+    let k = derive_path(master_extsk(seed)?, path)?;
+    Ok(extsk_to_bytes(&k, KeyOrPub::Xpub))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SEED16: [u8; 16] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f,
+    ];
 
     #[test]
     fn extended_privkey_len() {
@@ -151,11 +312,7 @@ mod tests {
     /// BIP-32 Test Vector 1 (basic master_from_seed)
     #[test]
     fn master_from_seed_basic() {
-        let seed = [
-            0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ];
-        let master = master_from_seed(&seed).unwrap();
+        let master = master_from_seed(&SEED16).unwrap();
         assert_eq!(master.bytes.len(), EXTENDED_PRIVKEY_LEN);
         // Version bytes = 0x0488ade4 (BIP-32 mainnet xprv version)
         assert_eq!(&master.bytes[0..4], &[0x04, 0x88, 0xad, 0xe4]);
@@ -166,26 +323,18 @@ mod tests {
     /// BIP-32 派生：seed → master scalar (m)
     #[test]
     fn derive_from_seed_master() {
-        let seed = [
-            0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ];
         let path = DerivationPath::parse("m").unwrap();
-        let scalar = derive_from_seed(&seed, &path).unwrap();
-        let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&scalar);
+        let scalar = derive_from_seed(&SEED16, &path).unwrap();
+        let sk_bytes = secp::scalar_to_bytes(&scalar);
         assert_eq!(sk_bytes.len(), 32);
     }
 
     /// BIP-32 派生：seed → m/0
     #[test]
     fn derive_from_seed_m_0() {
-        let seed = [
-            0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ];
         let path = DerivationPath::parse("m/0").unwrap();
-        let scalar = derive_from_seed(&seed, &path).unwrap();
-        let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&scalar);
+        let scalar = derive_from_seed(&SEED16, &path).unwrap();
+        let sk_bytes = secp::scalar_to_bytes(&scalar);
         assert_eq!(sk_bytes.len(), 32);
         assert_ne!(sk_bytes, [0u8; 32]);
     }
@@ -193,78 +342,118 @@ mod tests {
     /// BIP-32 派生：seed → m/44'/0'/0'/0/0 (BTC BIP-44 标准路径)
     #[test]
     fn derive_from_seed_bip44() {
-        let seed = [
-            0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ];
         let path = DerivationPath::parse("m/44'/0'/0'/0/0").unwrap();
-        let scalar = derive_from_seed(&seed, &path).unwrap();
-        let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&scalar);
+        let scalar = derive_from_seed(&SEED16, &path).unwrap();
+        let sk_bytes = secp::scalar_to_bytes(&scalar);
         assert_eq!(sk_bytes.len(), 32);
     }
 
     /// BIP-32 派生一致性：相同 seed + path 产生相同 scalar
     #[test]
     fn derive_from_seed_deterministic() {
-        let seed = [
-            0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ];
         let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
-        let s1 = derive_from_seed(&seed, &path).unwrap();
-        let s2 = derive_from_seed(&seed, &path).unwrap();
+        let s1 = derive_from_seed(&SEED16, &path).unwrap();
+        let s2 = derive_from_seed(&SEED16, &path).unwrap();
         assert_eq!(
-            crate::curve_primitive::secp256k1::scalar_to_bytes(&s1),
-            crate::curve_primitive::secp256k1::scalar_to_bytes(&s2)
+            secp::scalar_to_bytes(&s1),
+            secp::scalar_to_bytes(&s2)
         );
     }
 
     /// BIP-32 派生：不同 path 产生不同 scalar
     #[test]
     fn derive_from_seed_different_paths() {
-        let seed = [
-            0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ];
         let path_a = DerivationPath::parse("m/44'/0'/0'/0/0").unwrap();
         let path_b = DerivationPath::parse("m/44'/0'/0'/0/1").unwrap();
-        let s_a = derive_from_seed(&seed, &path_a).unwrap();
-        let s_b = derive_from_seed(&seed, &path_b).unwrap();
+        let s_a = derive_from_seed(&SEED16, &path_a).unwrap();
+        let s_b = derive_from_seed(&SEED16, &path_b).unwrap();
         assert_ne!(
-            crate::curve_primitive::secp256k1::scalar_to_bytes(&s_a),
-            crate::curve_primitive::secp256k1::scalar_to_bytes(&s_b)
+            secp::scalar_to_bytes(&s_a),
+            secp::scalar_to_bytes(&s_b)
         );
     }
 
-    /// BIP-32 标准测试向量（bip32 0.5.3 官方）：
-    /// seed = 000102030405060708090a0b0c0d0e0f
-    /// m → xprv = xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi
-    /// m/0' → xprv = xprv9uHRZZhk6KAJC1avXpDAp4MDc3sQKNxDiPvvkX8Br5ngLNv1TxvUxt4cV1rGL5hj6KCesnDYUhd7oWgT11eZG7XnxHrnYeSvkzY7d2bhkJ7
+    /// BIP-32 Test Vector 1: master xprv 序列化（BIP-32 官方向量）
+    /// xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi
     #[test]
     fn bip32_test_vector_1_master() {
-        let seed = [
-            0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
+        let master = master_from_seed(&SEED16).unwrap();
+        // 官方向量 xprv base58check 解码后的核心字段（chain code + key）：
+        // chain_code = 873dff81c02f525623fd1fe5167eac3a55a049de3d314bb42ee227ffed37d508
+        // key        = e8f32e723decf4051aefac8e2c93c9c5b214313817cdb01a1494b917c8436b35
+        let expected_chain: [u8; 32] = [
+            0x87, 0x3d, 0xff, 0x81, 0xc0, 0x2f, 0x52, 0x56, 0x23, 0xfd, 0x1f, 0xe5, 0x16, 0x7e,
+            0xac, 0x3a, 0x55, 0xa0, 0x49, 0xde, 0x3d, 0x31, 0x4b, 0xb4, 0x2e, 0xe2, 0x27, 0xff,
+            0xed, 0x37, 0xd5, 0x08,
         ];
-        let xprv = bip32::XPrv::new(&seed).unwrap();
-        let s = xprv.to_string(bip32::Prefix::XPRV);
-        let expected = "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi";
-        assert_eq!(&s as &str, expected);
+        let expected_key: [u8; 32] = [
+            0xe8, 0xf3, 0x2e, 0x72, 0x3d, 0xec, 0xf4, 0x05, 0x1a, 0xef, 0xac, 0x8e, 0x2c, 0x93,
+            0xc9, 0xc5, 0xb2, 0x14, 0x31, 0x38, 0x17, 0xcd, 0xb0, 0x1a, 0x14, 0x94, 0xb9, 0x17,
+            0xc8, 0x43, 0x6b, 0x35,
+        ];
+        assert_eq!(&master.bytes[13..45], &expected_chain[..]);
+        assert_eq!(&master.bytes[46..78], &expected_key[..]);
     }
 
-    /// BIP-32 派生测试向量 1: m/0' (第一个 hardened child)
+    /// BIP-32 Test Vector 1: m/0'（第一个 hardened child）
+    /// 官方向量 (BIP-32 PDF): chain_code=47fdacbd0f1097043b78c63c20c34ef4ed9a111d980047ad16282c7ae6236141
+    ///           key=edb2e14f9ee77d26dd93b4ecede8d16ed408ce149b6cd80b0715a2d911a0afea
     #[test]
     fn bip32_test_vector_1_m_0h() {
-        let seed = [
-            0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ];
         let path = DerivationPath::parse("m/0'").unwrap();
-        let scalar = derive_from_seed(&seed, &path).unwrap();
-        // 验证 raw 私钥是有效的 secp256k1 scalar
-        let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&scalar);
-        assert_eq!(sk_bytes.len(), 32);
-        assert_ne!(sk_bytes, [0u8; 32]);
+        let scalar = derive_from_seed(&SEED16, &path).unwrap();
+        let sk_bytes = secp::scalar_to_bytes(&scalar);
+        let expected_key: [u8; 32] = [
+            0xed, 0xb2, 0xe1, 0x4f, 0x9e, 0xe7, 0x7d, 0x26, 0xdd, 0x93, 0xb4, 0xec, 0xed, 0xe8,
+            0xd1, 0x6e, 0xd4, 0x08, 0xce, 0x14, 0x9b, 0x6c, 0xd8, 0x0b, 0x07, 0x15, 0xa2, 0xd9,
+            0x11, 0xa0, 0xaf, 0xea,
+        ];
+        assert_eq!(sk_bytes, expected_key);
+    }
+
+    /// BIP-32 Test Vector 1: m/0'/1（normal child of hardened）
+    /// 官方向量: key=3c6cb8d0f6a264c91ea8b5030fadaa8e538b020f0a387421a12de9319dc93368
+    #[test]
+    fn bip32_test_vector_1_m_0h_1() {
+        let path = DerivationPath::parse("m/0'/1").unwrap();
+        let scalar = derive_from_seed(&SEED16, &path).unwrap();
+        let sk_bytes = secp::scalar_to_bytes(&scalar);
+        let expected_key: [u8; 32] = [
+            0x3c, 0x6c, 0xb8, 0xd0, 0xf6, 0xa2, 0x64, 0xc9, 0x1e, 0xa8, 0xb5, 0x03, 0x0f, 0xad,
+            0xaa, 0x8e, 0x53, 0x8b, 0x02, 0x0f, 0x0a, 0x38, 0x74, 0x21, 0xa1, 0x2d, 0xe9, 0x31,
+            0x9d, 0xc9, 0x33, 0x68,
+        ];
+        assert_eq!(sk_bytes, expected_key);
+    }
+
+    /// BIP-32 Test Vector 1: m/0'/1/2'/2（深层混合路径）
+    /// 官方向量 (BIP-32 PDF): key=0f479245fb19a38a1954c5c7c0ebab2f9bdfd96a17563ef28a6a4b1a2a764ef4
+    #[test]
+    fn bip32_test_vector_1_m_0h_1_2h_2() {
+        let path = DerivationPath::parse("m/0'/1/2'/2").unwrap();
+        let scalar = derive_from_seed(&SEED16, &path).unwrap();
+        let sk_bytes = secp::scalar_to_bytes(&scalar);
+        let expected_key: [u8; 32] = [
+            0x0f, 0x47, 0x92, 0x45, 0xfb, 0x19, 0xa3, 0x8a, 0x19, 0x54, 0xc5, 0xc7, 0xc0, 0xeb,
+            0xab, 0x2f, 0x9b, 0xdf, 0xd9, 0x6a, 0x17, 0x56, 0x3e, 0xf2, 0x8a, 0x6a, 0x4b, 0x1a,
+            0x2a, 0x76, 0x4e, 0xf4,
+        ];
+        assert_eq!(sk_bytes, expected_key);
+    }
+
+    /// BIP-32 Test Vector 1: m/0'/1/2'/2/1000000000（巨大 soft index）
+    /// 官方向量: key=471b76e389e528d6de6d816857e012c5455051cad6660850e58372a6c3e6e7c8
+    #[test]
+    fn bip32_test_vector_1_m_0h_1_2h_2_1000000000() {
+        let path = DerivationPath::parse("m/0'/1/2'/2/1000000000").unwrap();
+        let scalar = derive_from_seed(&SEED16, &path).unwrap();
+        let sk_bytes = secp::scalar_to_bytes(&scalar);
+        let expected_key: [u8; 32] = [
+            0x47, 0x1b, 0x76, 0xe3, 0x89, 0xe5, 0x28, 0xd6, 0xde, 0x6d, 0x81, 0x68, 0x57, 0xe0,
+            0x12, 0xc5, 0x45, 0x50, 0x51, 0xca, 0xd6, 0x66, 0x08, 0x50, 0xe5, 0x83, 0x72, 0xa6,
+            0xc3, 0xe6, 0xe7, 0xc8,
+        ];
+        assert_eq!(sk_bytes, expected_key);
     }
 
     /// master_from_seed 错误：seed 太短
@@ -273,5 +462,66 @@ mod tests {
         let seed = [0u8; 8];
         let result = master_from_seed(&seed);
         assert!(result.is_err());
+    }
+
+    /// seed 长度白名单：16/32/64 之外拒绝（bip32 crate 同款约束）
+    #[test]
+    fn master_from_seed_rejects_nonstandard_len() {
+        assert!(master_from_seed(&[0u8; 24]).is_err());
+        assert!(master_from_seed(&[0u8; 48]).is_err());
+        assert!(master_from_seed(&[0u8; 16]).is_ok());
+        assert!(master_from_seed(&[0u8; 32]).is_ok());
+        assert!(master_from_seed(&[0u8; 64]).is_ok());
+    }
+
+    /// v3: derive(master, path) 真实实现——与 derive_from_seed 等价
+    #[test]
+    fn derive_from_master_matches_seed() {
+        let master = master_from_seed(&SEED16).unwrap();
+        let path = DerivationPath::parse("m/44'/60'/0'/0/3").unwrap();
+        let from_seed = derive_from_seed(&SEED16, &path).unwrap();
+        let from_master = derive(&master, &path).unwrap();
+        assert_eq!(
+            secp::scalar_to_bytes(&from_seed),
+            secp::scalar_to_bytes(&from_master)
+        );
+    }
+
+    /// derive 拒绝非 xprv version（xpub 78 bytes 传入应报错）
+    #[test]
+    fn derive_rejects_xpub_version() {
+        let master = master_from_seed(&SEED16).unwrap();
+        let mut xpub_like = master.bytes;
+        xpub_like[..4].copy_from_slice(&0x0488_B21Eu32.to_be_bytes());
+        let fake = ExtendedPrivKey { bytes: xpub_like };
+        let path = DerivationPath::parse("m/0").unwrap();
+        assert!(derive(&fake, &path).is_err());
+    }
+
+    /// xpub_from_seed：78 bytes、version = 0x0488B21E、key = 压缩公钥
+    #[test]
+    fn xpub_from_seed_shape() {
+        let path = DerivationPath::parse("m/0").unwrap();
+        let xpub = xpub_from_seed(&SEED16, &path).unwrap();
+        assert_eq!(&xpub[..4], &[0x04, 0x88, 0xB2, 0x1E]);
+        assert_eq!(xpub[4], 1); // depth = 1
+        // 公钥前缀：02 或 03（压缩 SEC1）
+        assert!(xpub[45] == 0x02 || xpub[45] == 0x03);
+        // xpub[45..78] 必须等于 base_mul(sk)
+        let sk = derive_from_seed(&SEED16, &path).unwrap();
+        let pk = secp::base_mul(&sk);
+        assert_eq!(&xpub[45..78], &secp::point_to_compressed(&pk)[..]);
+    }
+
+    /// fingerprint 链路：m/0 的 parent_fingerprint = master 压缩公钥指纹
+    #[test]
+    fn parent_fingerprint_chain() {
+        let master_path = DerivationPath::parse("m").unwrap();
+        let master_sk = derive_from_seed(&SEED16, &master_path).unwrap();
+        let master_pk = secp::base_mul(&master_sk);
+        let expected_fp = fingerprint(&secp::point_to_compressed(&master_pk));
+
+        let xpub = xpub_from_seed(&SEED16, &DerivationPath::parse("m/0").unwrap()).unwrap();
+        assert_eq!(&xpub[5..9], &expected_fp[..]);
     }
 }
