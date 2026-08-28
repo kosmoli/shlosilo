@@ -200,13 +200,15 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
         let mnemonic = Mnemonic::from_indices(mnem_slice, word_count)
             .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
 
-        let _network = Network::try_from_u8(network as u8)
+        let network_parsed = Network::try_from_u8(network as u8)
             .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
 
         let input = business::sign::SignInput::Mnemonic {
             mnemonic,
             passphrase: pass_slice,
         };
+        // P1-02：network 进决策（BTC mainnet-only / ETH chain_id 映射校验）
+        business::sign::check_network(decoded.type_tag(), decoded.as_ref(), network_parsed)?;
         // P1-01：UR type tag 贯通到业务层（不再靠 payload 首字节推断）
         // §B.5：entropy 透传（XMR REQUIRED / BTC-ETH NOT REQUIRED）
         business::sign::sign_with_entropy(
@@ -795,7 +797,7 @@ mod tests {
             12,
             null(),
             0,
-            0, // network
+            10, // network = EthereumMainnet（P1-02：ETH chain_id=1 匹配）
             null(), // entropy (§B.5)
             0,
             out.as_mut_ptr(),

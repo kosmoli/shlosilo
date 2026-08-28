@@ -270,6 +270,19 @@ fn derive_path(mut k: ExtSk, path: &DerivationPath) -> Result<ExtSk> {
     Ok(k)
 }
 
+/// master key fingerprint = RIPEMD160(SHA256(master 压缩公钥))[..4]
+/// （P1-02：PSBT BIP32_DERIVATION 的 fingerprint 比对本机用）
+pub fn master_fingerprint_from_seed(seed: &[u8]) -> Result<[u8; 4]> {
+    let k = master_extsk(seed)?;
+    if let Ok(sk) = secp::scalar_from_bytes(&k.key) {
+        let pk = secp::base_mul(&sk);
+        let compressed = secp::point_to_compressed(&pk);
+        Ok(fingerprint(&compressed))
+    } else {
+        Err(err_invalid())
+    }
+}
+
 /// BIP-32 路径派生（从 seed 直接派生 child key，返回 32 bytes scalar）
 pub fn derive_from_seed(seed: &[u8], path: &DerivationPath) -> Result<Secp256k1Scalar> {
     let k = derive_path(master_extsk(seed)?, path)?;

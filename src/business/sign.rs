@@ -328,11 +328,12 @@ fn sign_xmr(
 }
 
 
-/// 从 BIP32_DERIVATION value 解析派生路径
+/// 从 BIP32_DERIVATION value 解析 master fingerprint + 派生路径
 /// value 格式（BIP-174）：master_key_fingerprint(4B) || derivation_index(u32LE) × depth
-fn read_bip32_derivation_path(
+/// P1-02：fingerprint 与路径一起返回（调用方比对本机 master fingerprint，防错链签名）
+fn read_bip32_derivation(
     input_map: &[crate::chain::btc::psbt::KeyValue],
-) -> Option<DerivationPath> {
+) -> Option<([u8; 4], DerivationPath)> {
     use crate::chain::btc::psbt::input_type;
     let kv = input_map
         .iter()
@@ -340,6 +341,8 @@ fn read_bip32_derivation_path(
     if kv.value.len() < 8 || (kv.value.len() - 4) % 4 != 0 {
         return None;
     }
+    let mut fp = [0u8; 4];
+    fp.copy_from_slice(&kv.value[..4]);
     let depth = (kv.value.len() - 4) / 4;
     let mut flat = alloc::vec::Vec::with_capacity(depth);
     for j in 0..depth {
@@ -352,7 +355,7 @@ fn read_bip32_derivation_path(
         ]);
         flat.push(raw);
     }
-    DerivationPath::from_flat(flat).ok()
+    DerivationPath::from_flat(flat).ok().map(|p| (fp, p))
 }
 
 /// BTC：crypto-psbt CBOR（裸 bytes item）→ PSBT 签名
@@ -371,15 +374,29 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
 
     let mut psbt = psbt_mod::parse_psbt(psbt_bytes)?;
 
+    // P1-02：本机 master fingerprint（BIP-32 序列化字段 5..9），PSBT 提示的
+    // fingerprint 不一致 = 该 PSBT 不是本机钱包的（错 seed/错钱包），拒绝签名
+    let local_fp =
+        crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(seed)?;
+
     let default_path = DerivationPath::parse("m/84'/0'/0'/0/0")?;
     for idx in 0..psbt.unsigned_tx.inputs.len() {
-        // P1-02（P6.3 修复）：BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth)，
-        // 路径必须从 PSBT 读出而非硬编码。无该字段时才 fallback 默认路径。
-        let path = psbt
+        // P1-02：BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth)，
+        // 路径从 PSBT 读出而非硬编码；fingerprint 与本机不一致 → 拒绝；
+        // 无该字段时才 fallback 默认路径（过渡行为，P6.4 收紧）。
+        let path = match psbt
             .inputs
             .get(idx)
-            .and_then(|map| read_bip32_derivation_path(map))
-            .unwrap_or(default_path);
+            .and_then(|map| read_bip32_derivation(map))
+        {
+            Some((fp, path)) => {
+                if fp != local_fp {
+                    return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+                }
+                path
+            }
+            None => default_path,
+        };
         let sk =
             crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path)?;
         let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
@@ -459,7 +476,11 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
         }
     }
-    let path = DerivationPath::parse("m/44'/60'/0'/0/0")?;
+    // P1-02：请求带 derivation_path 时用它派生；缺省 fallback 标准 path
+    let path = match req.derivation_path {
+        Some(p) => p,
+        None => DerivationPath::parse("m/44'/60'/0'/0/0")?,
+    };
     let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path)?;
     let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
 
@@ -477,7 +498,12 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     Ok(signed.tx_bytes.len())
 }
 
-/// Phase 4 实际签名时需要的网络信息（业务模块通过 `Network` 传入）
+/// 签名（network 进决策，P1-02 收口）
+///
+/// 校验规则：
+/// - BTC：只支持 BitcoinMainnet（v1 范围；非 mainnet 显式拒绝，与 P2-05 xpub 策略一致）
+/// - ETH：tx.chain_id 必须 = network 映射的 EIP-155 chain id
+/// - 其他链：network 仅校验合法性（FFI 层 from_u8 已做），业务层不再拦截
 pub fn sign_with_network(
     sign_input: SignInput<'_>,
     type_tag: crate::ur::ur_encode::UrTypeTag,
@@ -485,8 +511,52 @@ pub fn sign_with_network(
     network: Network,
     output_buf: &mut [u8],
 ) -> Result<usize> {
-    let _ = network;
+    check_network(type_tag, ur_payload, network)?;
     sign(sign_input, type_tag, ur_payload, output_buf)
+}
+
+/// P1-02：network 参数进决策
+///
+/// - BTC（crypto-psbt）：v1 只支持 BitcoinMainnet（与 P2-05 xpub mainnet-only 策略一致）
+/// - ETH（eth-sign-request）：network 映射 EIP-155 chain id，必须与 tx 实际 chain_id
+///   （及请求自带 chain_id 字段，若给）一致
+/// - 其他链：FFI 层已校验 u8 合法性，业务层不拦
+pub(crate) fn check_network(
+    type_tag: crate::ur::ur_encode::UrTypeTag,
+    ur_payload: &[u8],
+    network: Network,
+) -> Result<()> {
+    match type_tag {
+        crate::ur::ur_encode::UrTypeTag::CryptoPsbt
+            if network != Network::BitcoinMainnet =>
+        {
+            return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+        }
+        crate::ur::ur_encode::UrTypeTag::EthSignRequest
+            if matches!(
+                network,
+                Network::EthereumMainnet | Network::EthereumSepolia | Network::EthereumGoerli
+            ) =>
+        {
+            let expected_chain_id = match network {
+                Network::EthereumMainnet => 1u64,
+                Network::EthereumSepolia => 11_155_111,
+                _ => 5, // Goerli
+            };
+            let req = crate::ur::codec::eth_sign_request::parse_eth_sign_request(ur_payload)?;
+            if let Some(req_chain) = req.chain_id {
+                if req_chain != expected_chain_id as i128 {
+                    return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+                }
+            }
+            let tx = crate::chain::eth::from_rlp::parse_eip1559_raw(&req.sign_data)?;
+            if tx.chain_id != expected_chain_id {
+                return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -701,12 +771,35 @@ mod tests {
         data_type: u64,
         chain_id: u64,
     ) -> alloc::vec::Vec<u8> {
+        encode_eth_sign_request_with_path_for_test(sign_data, data_type, chain_id, None)
+    }
+
+    /// + 可选 derivation_path（key 5, tag 305 crypto-keypath）
+    fn encode_eth_sign_request_with_path_for_test(
+        sign_data: &[u8],
+        data_type: u64,
+        chain_id: u64,
+        path: Option<&DerivationPath>,
+    ) -> alloc::vec::Vec<u8> {
         use crate::encoding::cbor;
-        let pairs = alloc::vec![
+        let mut pairs = alloc::vec![
             (cbor::encode_uint(2), cbor::encode_bytes(sign_data)),
             (cbor::encode_uint(3), cbor::encode_uint(data_type)),
             (cbor::encode_uint(4), cbor::encode_uint(chain_id)),
         ];
+        if let Some(p) = path {
+            // crypto-keypath: tag(305, {1: [idx, hardened, ...], 2: depth})
+            let mut comps = alloc::vec::Vec::new();
+            for idx in p.as_slice() {
+                comps.push(cbor::encode_uint(idx.value() as u64));
+                comps.push(cbor::encode_bool(idx.is_hardened()));
+            }
+            let inner = cbor::encode_map(&[
+                (cbor::encode_uint(1), cbor::encode_array(&comps)),
+                (cbor::encode_uint(2), cbor::encode_uint(p.len() as u64)),
+            ]);
+            pairs.push((cbor::encode_uint(5), cbor::encode_tag(305, &inner)));
+        }
         cbor::encode_map(&pairs)
     }
 
@@ -770,12 +863,13 @@ mod tests {
                     k.extend_from_slice(&compressed_pk);
                     k
                 },
-                // 正确形状：fp(4) || depth(1) || child(4×n)
+                // BIP-174 规范形状：master_fingerprint(4B) || child(u32LE) × depth
                 value: {
-                    let mut vv = alloc::vec![0u8; 4]; // master fingerprint（测试用 0）
-                    vv.push(path.len() as u8);
+                    let local_fp = crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed).unwrap();
+                    let mut vv = alloc::vec::Vec::new();
+                    vv.extend_from_slice(&local_fp);
                     for c in path.as_slice() {
-                        vv.extend_from_slice(&c.0.to_be_bytes());
+                        vv.extend_from_slice(&c.0.to_le_bytes());
                     }
                     vv
                 },
@@ -828,5 +922,289 @@ mod tests {
             &sighash,
             &ecdsa_sig
         ));
+    }
+
+    /// P1-02：PSBT 用非默认路径（m/84'/0'/1'/0/0）→ 签名用该路径派生 key（贯通证明）
+    #[test]
+    fn sign_btc_psbt_uses_psbt_derivation_path() {
+        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+        use crate::chain::btc::psbt::{self, input_type, Psbt};
+        use crate::encoding::cbor;
+
+        let seed = [0xA5u8; 64];
+        let path = DerivationPath::parse("m/84'/0'/1'/0/0").unwrap();
+        let sk = crate::derivation::bip32_secp256k1::derive_from_seed(&seed, &path).unwrap();
+        let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
+        let sk_scalar = crate::curve_primitive::secp256k1::scalar_from_bytes(&sk_bytes).unwrap();
+        let pk_point = crate::curve_primitive::secp256k1::base_mul(&sk_scalar);
+        let compressed_pk = crate::curve_primitive::secp256k1::point_to_compressed(&pk_point);
+        let h = crate::encoding::sha256::hash(&compressed_pk).unwrap();
+        let pk_hash = crate::encoding::ripemd160::hash(&h).unwrap();
+
+        let mut spk = alloc::vec![0x00u8, 0x14];
+        spk.extend_from_slice(&pk_hash);
+        let mut psbt = Psbt {
+            unsigned_tx: Transaction {
+                version: 2,
+                inputs: alloc::vec![TxIn {
+                    prev_out: OutPoint { txid: [0xABu8; 32], vout: 0 },
+                    script_sig: Vec::new(),
+                    sequence: 0xffff_ffff,
+                    witness: Vec::new(),
+                }],
+                outputs: alloc::vec![TxOut { value: 90_000, script_pubkey: spk.clone() }],
+                lock_time: 0,
+            },
+            inputs: alloc::vec![],
+            outputs: alloc::vec![alloc::vec![]],
+        };
+        let mut wu_value = alloc::vec::Vec::new();
+        wu_value.extend_from_slice(&100_000u64.to_le_bytes());
+        wu_value.push(22);
+        wu_value.extend_from_slice(&spk);
+        let local_fp = crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed).unwrap();
+        psbt.inputs.push(alloc::vec![
+            psbt::KeyValue {
+                key: alloc::vec![input_type::WITNESS_UTXO],
+                value: wu_value,
+            },
+            psbt::KeyValue {
+                key: {
+                    let mut k = alloc::vec![input_type::BIP32_DERIVATION];
+                    k.extend_from_slice(&compressed_pk);
+                    k
+                },
+                value: {
+                    let mut vv = alloc::vec::Vec::new();
+                    vv.extend_from_slice(&local_fp);
+                    for c in path.as_slice() {
+                        vv.extend_from_slice(&c.0.to_le_bytes());
+                    }
+                    vv
+                },
+            },
+        ]);
+
+        let psbt_bytes = psbt::serialize_psbt(&psbt);
+        let ur_payload = cbor::encode_bytes(&psbt_bytes);
+
+        let mut output_buf = [0u8; 4096];
+        let input = SignInput::Seed { seed: &seed };
+        let result = sign(
+            input,
+            crate::ur::ur_encode::UrTypeTag::CryptoPsbt,
+            &ur_payload,
+            &mut output_buf,
+        );
+        // 路径贯通证明：若 fallback 默认路径，派生 key ≠ fixture key → 签名失败
+        assert!(result.is_ok(), "non-default-path PSBT must sign via BIP32_DERIVATION path");
+    }
+
+    /// P1-02：BIP32_DERIVATION fingerprint 与本机不一致 → 拒绝（防错钱包签名）
+    #[test]
+    fn sign_btc_psbt_rejects_fingerprint_mismatch() {
+        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+        use crate::chain::btc::psbt::{self, input_type, Psbt};
+        use crate::encoding::cbor;
+
+        let seed = [0xA5u8; 64];
+        let path = DerivationPath::parse("m/84'/0'/0'/0/0").unwrap();
+        let sk = crate::derivation::bip32_secp256k1::derive_from_seed(&seed, &path).unwrap();
+        let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
+        let sk_scalar = crate::curve_primitive::secp256k1::scalar_from_bytes(&sk_bytes).unwrap();
+        let pk_point = crate::curve_primitive::secp256k1::base_mul(&sk_scalar);
+        let compressed_pk = crate::curve_primitive::secp256k1::point_to_compressed(&pk_point);
+        let h = crate::encoding::sha256::hash(&compressed_pk).unwrap();
+        let pk_hash = crate::encoding::ripemd160::hash(&h).unwrap();
+
+        let mut spk = alloc::vec![0x00u8, 0x14];
+        spk.extend_from_slice(&pk_hash);
+        let mut psbt = Psbt {
+            unsigned_tx: Transaction {
+                version: 2,
+                inputs: alloc::vec![TxIn {
+                    prev_out: OutPoint { txid: [0xABu8; 32], vout: 0 },
+                    script_sig: Vec::new(),
+                    sequence: 0xffff_ffff,
+                    witness: Vec::new(),
+                }],
+                outputs: alloc::vec![TxOut { value: 90_000, script_pubkey: spk.clone() }],
+                lock_time: 0,
+            },
+            inputs: alloc::vec![],
+            outputs: alloc::vec![alloc::vec![]],
+        };
+        let mut wu_value = alloc::vec::Vec::new();
+        wu_value.extend_from_slice(&100_000u64.to_le_bytes());
+        wu_value.push(22);
+        wu_value.extend_from_slice(&spk);
+        let wrong_fp = [0xDE, 0xAD, 0xBE, 0xEF];
+        psbt.inputs.push(alloc::vec![
+            psbt::KeyValue {
+                key: alloc::vec![input_type::WITNESS_UTXO],
+                value: wu_value,
+            },
+            psbt::KeyValue {
+                key: {
+                    let mut k = alloc::vec![input_type::BIP32_DERIVATION];
+                    k.extend_from_slice(&compressed_pk);
+                    k
+                },
+                value: {
+                    let mut vv = alloc::vec::Vec::new();
+                    vv.extend_from_slice(&wrong_fp);
+                    for c in path.as_slice() {
+                        vv.extend_from_slice(&c.0.to_le_bytes());
+                    }
+                    vv
+                },
+            },
+        ]);
+
+        let psbt_bytes = psbt::serialize_psbt(&psbt);
+        let ur_payload = cbor::encode_bytes(&psbt_bytes);
+
+        let mut output_buf = [0u8; 4096];
+        let input = SignInput::Seed { seed: &seed };
+        let result = sign(
+            input,
+            crate::ur::ur_encode::UrTypeTag::CryptoPsbt,
+            &ur_payload,
+            &mut output_buf,
+        );
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::NetworkUnrecognized
+        );
+    }
+
+    /// P1-02：eth-sign-request 带 derivation_path → 用该路径派生 key 签名（贯通证明）
+    #[test]
+    fn sign_eth_uses_request_derivation_path() {
+        use crate::chain::eth::eip1559::Eip1559Transaction;
+
+        let tx = Eip1559Transaction {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x11u8; 20]),
+            amount: 12345,
+            data: Vec::new(),
+            access_list: Vec::new(),
+        };
+        let test_seed = [7u8; 64];
+        // 非默认路径：account 1
+        let path = DerivationPath::parse("m/44'/60'/1'/0/0").unwrap();
+        let derived = crate::derivation::bip32_secp256k1::derive_from_seed(&test_seed, &path).unwrap();
+        let derived_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&derived);
+        let expected = crate::chain::eth::eip1559::sign_eip1559(
+            &crate::chain::eth::eip1559::Eip1559SignInput {
+                tx: tx.clone(),
+                private_key: derived_bytes,
+            },
+        )
+        .unwrap();
+
+        let raw = encode_unsigned_tx_for_test(&tx);
+        let ur_payload =
+            encode_eth_sign_request_with_path_for_test(&raw, 1, 1, Some(&path));
+
+        let mut output_buf = [0u8; 512];
+        let input = SignInput::Seed { seed: &test_seed };
+        let n = sign(
+            input,
+            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+            &ur_payload,
+            &mut output_buf,
+        )
+        .expect("sign ok");
+
+        // 签名 bytes 与该路径派生 key 的直签结果一致 → 路径贯通
+        assert_eq!(&output_buf[..n], expected.tx_bytes.as_slice());
+    }
+
+    /// P1-02：network 进决策——BTC 非 mainnet 拒绝
+    #[test]
+    fn sign_with_network_btc_rejects_testnet() {
+        let seed = [0xA5u8; 64];
+        let input = SignInput::Seed { seed: &seed };
+        let ur_payload = [1u8, 2, 3]; // 内容无关紧要：network 检查在解析前
+        let mut output_buf = [0u8; 4096];
+        let result = sign_with_network(
+            input,
+            crate::ur::ur_encode::UrTypeTag::CryptoPsbt,
+            &ur_payload,
+            Network::BitcoinTestnet,
+            &mut output_buf,
+        );
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::NetworkUnrecognized
+        );
+    }
+
+    /// P1-02：network 进决策——ETH network(10=mainnet,chain_id=1) 与 tx chain_id 不匹配拒绝
+    #[test]
+    fn sign_with_network_eth_rejects_chain_id_mismatch() {
+        use crate::chain::eth::eip1559::Eip1559Transaction;
+        let tx = Eip1559Transaction {
+            chain_id: 137, // polygon，≠ mainnet 1
+            nonce: 0,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x11u8; 20]),
+            amount: 1,
+            data: Vec::new(),
+            access_list: Vec::new(),
+        };
+        let raw = encode_unsigned_tx_for_test(&tx);
+        let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);
+        let seed = [7u8; 64];
+        let input = SignInput::Seed { seed: &seed };
+        let mut output_buf = [0u8; 4096];
+        let result = sign_with_network(
+            input,
+            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+            &ur_payload,
+            Network::EthereumMainnet,
+            &mut output_buf,
+        );
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::NetworkUnrecognized
+        );
+    }
+
+    /// P1-02：network 进决策——ETH network 与 tx chain_id 匹配时放行（成功签名）
+    #[test]
+    fn sign_with_network_eth_accepts_matching() {
+        use crate::chain::eth::eip1559::Eip1559Transaction;
+        let tx = Eip1559Transaction {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x11u8; 20]),
+            amount: 1,
+            data: Vec::new(),
+            access_list: Vec::new(),
+        };
+        let raw = encode_unsigned_tx_for_test(&tx);
+        let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);
+        let seed = [7u8; 64];
+        let input = SignInput::Seed { seed: &seed };
+        let mut output_buf = [0u8; 4096];
+        let result = sign_with_network(
+            input,
+            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+            &ur_payload,
+            Network::EthereumMainnet,
+            &mut output_buf,
+        );
+        assert!(result.is_ok());
     }
 }

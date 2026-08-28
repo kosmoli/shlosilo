@@ -51,6 +51,9 @@ pub struct EthSignRequest {
     pub sign_data: alloc::vec::Vec<u8>,
     pub data_type: EthSignDataType,
     pub chain_id: Option<i128>,
+    /// derivation_path（key 5，tag 305 crypto-keypath，可选）
+    /// P1-02：给定则签名用该路径派生；缺省 fallback m/44'/60'/0'/0/0
+    pub derivation_path: Option<crate::derivation::path::DerivationPath>,
 }
 
 /// 解析 eth-sign-request CBOR payload → EthSignRequest
@@ -79,10 +82,40 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
         None => None,
     };
 
+    // derivation_path（key 5，可选）— tag 305 内 map {1: components[(idx u64, hardened bool)...], 2: depth}
+    let derivation_path = match map.map_get_uint(5)? {
+        Some(v) => {
+            let inner = match v {
+                Cbor::Tag(_, boxed) => boxed.as_ref(),
+                _ => return Err(err()),
+            };
+            // components（key 1）：扁平 [idx0, hardened0, idx1, hardened1, ...]
+            let comps = inner
+                .map_get_uint(1)?
+                .ok_or_else(err)?
+                .as_array()?;
+            let mut flat = alloc::vec::Vec::with_capacity(comps.len() / 2);
+            let mut i = 0;
+            while i + 1 < comps.len() {
+                let idx = comps[i].as_uint()?;
+                let hardened = match comps[i + 1] {
+                    Cbor::Bool(b) => b,
+                    _ => return Err(err()),
+                };
+                let raw = if hardened { idx as u32 | 0x8000_0000 } else { idx as u32 };
+                flat.push(raw);
+                i += 2;
+            }
+            Some(crate::derivation::path::DerivationPath::from_flat(flat)?)
+        }
+        None => None,
+    };
+
     Ok(EthSignRequest {
         sign_data,
         data_type,
         chain_id,
+        derivation_path,
     })
 }
 
