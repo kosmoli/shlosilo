@@ -98,7 +98,7 @@ pub fn sign_with_entropy(
     entropy: &[u8],
     output_buf: &mut [u8],
 ) -> Result<usize> {
-    let (seed) = resolve_seed(&sign_input)?;
+    let seed = resolve_seed(&sign_input)?;
 
     let template = tx_normalize::to_template(type_tag, ur_payload)?;
     let chain_kind = template.chain_kind;
@@ -194,7 +194,7 @@ fn sign_xmr(
 
         // tx_key r：独立 TxKey 子域流（§B.5）
         let mut tx_key_rng = purpose_rng(entropy, RngPurpose::TxKey, &context)
-            .map_err(|e| crate::error::ShlosiloError::from(e))?;
+            .map_err(crate::error::ShlosiloError::from)?;
         let mut r_bytes = [0u8; 32];
         use rand_chacha::rand_core::RngCore as _;
         tx_key_rng.fill_bytes(&mut r_bytes);
@@ -280,7 +280,7 @@ fn sign_xmr(
                 .to_bytes();
             let hp: curve25519_dalek::EdwardsPoint =
                 monero_ed25519::Point::biased_hash(stealth).into();
-            let image = (hp * &hs).compress().to_bytes();
+            let image = (hp * hs).compress().to_bytes();
             tx_key_images.push(TxKeyImageEntry {
                 output_pubkey: stealth,
                 key_image: image,
@@ -379,7 +379,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             .inputs
             .get(idx)
             .and_then(|map| read_bip32_derivation_path(map))
-            .unwrap_or_else(|| default_path.clone());
+            .unwrap_or(default_path);
         let sk =
             crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path)?;
         let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
@@ -396,8 +396,8 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         let pubkey_hash: [u8; 20] = match &compressed_pk {
             Some(pk) => {
                 let h = crate::encoding::sha256::hash(pk)?;
-                let r = crate::encoding::ripemd160::hash(&h)?;
-                r
+                
+                crate::encoding::ripemd160::hash(&h)?
             }
             None => return Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
         };

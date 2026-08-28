@@ -28,12 +28,10 @@
 //! - 比特币交易 preimage 算法 (<https://en.bitcoin.it/wiki/OP_CHECKSIG>)
 
 extern crate alloc;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::chain::btc::p2wpkh::{
-    encode_varint, segwit_sighash_p2wpkh, OutPoint, Transaction, TxIn, TxOut, Txid,
-    SIGHASH_ALL,
+    encode_varint, segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL,
 };
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -150,6 +148,8 @@ mod tests {
     extern crate std;
     use super::*;
     use alloc::string::String;
+    use alloc::vec;
+    use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut, Txid};
     use std::eprintln;
 
     fn hex_decode(s: &str) -> Vec<u8> {

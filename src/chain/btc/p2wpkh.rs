@@ -296,7 +296,7 @@ pub fn sign_p2wpkh(
     tx: &mut Transaction,
     sign_input: &P2WPKHSignInput,
 ) -> Result<P2WPKHSignedTx> {
-    /// 1. scriptCode = `76a914{20-byte-pubkey-hash}88ac` (raw P2PKH，**不含** length prefix)
+    // 1. scriptCode = `76a914{20-byte-pubkey-hash}88ac` (raw P2PKH，**不含** length prefix)
         let mut script_code = Vec::with_capacity(25);
         script_code.push(0x76); // OP_DUP
         script_code.push(0xa9); // OP_HASH160
@@ -322,7 +322,9 @@ pub fn sign_p2wpkh(
 
     // 4. DER + sighash byte
     let mut sig_with_sighash = ecdsa::to_der(&sig)?;
-    sig_with_sighash.push(SIGHASH_ALL as u8);
+    // DER 最长 72B + sighash 1B = 73B > 72 容量上界只在极端 l 值出现；溢出必须显式报错而非忽略
+    sig_with_sighash.push(SIGHASH_ALL as u8)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
 
     // 5. compressed pubkey
     let pk = base_mul(&sk);
@@ -350,9 +352,10 @@ pub fn sign_p2wpkh(
 
 // ─── 辅助：hex decode ──────────────────────────────────────────────
 
+#[cfg(test)]
 /// hex string → bytes
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -367,6 +370,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+#[cfg(test)]
 fn hex_nibble(c: u8) -> Result<u8> {
     match c {
         b'0'..=b'9' => Ok(c - b'0'),

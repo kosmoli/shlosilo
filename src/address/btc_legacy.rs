@@ -6,7 +6,6 @@
 use crate::curve_primitive::secp256k1::Secp256k1Point;
 use crate::error::Result;
 use crate::network::Network;
-use core::fmt;
 
 /// BTC legacy 地址（同 BtcAddress，用 heapless::String<64>）
 pub type BtcLegacyAddress = super::btc_segwit::BtcAddress;

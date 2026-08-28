@@ -7,11 +7,9 @@
 //!
 //! 参考: <https://eips.ethereum.org/EIPS/eip-191>
 
-extern crate alloc;
+    extern crate alloc;
 
 use alloc::format;
-use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::chain::eth::sign;
@@ -48,7 +46,7 @@ pub fn personal_signing_hash(msg: &[u8]) -> Result<[u8; 32]> {
     let mut full = Vec::with_capacity(prefix_str.len() + msg.len());
     full.extend_from_slice(prefix_str.as_bytes());
     full.extend_from_slice(msg);
-    Ok(keccak256::hash(&full)?)
+    keccak256::hash(&full)
 }
 
 /// 签名 personal message
@@ -91,8 +89,8 @@ pub fn personal_ec_recover(
 mod tests {
     extern crate std;
     use super::*;
-    use alloc::format;
     use alloc::string::String;
+    use alloc::vec;
     use std::eprintln;
 
     fn hex_decode(s: &str) -> Vec<u8> {
@@ -231,7 +229,6 @@ mod tests {
     /// round-trip: sign + recover (验证签名者公钥一致)
     #[test]
     fn personal_sign_recover_round_trip() {
-        use crate::chain::eth::sign;
         use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed};
 
         // 测试私钥

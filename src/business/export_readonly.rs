@@ -41,9 +41,9 @@ pub fn export_readonly(
 ) -> Result<usize> {
     match protocol {
         ExportProtocol::ZcashAccounts => {
-            return Err(ShlosiloError::new(
+            Err(ShlosiloError::new(
                 ShlosiloErrorKind::ExportProtocolUnimplemented,
-            ));
+            ))
         }
         ExportProtocol::CryptoHdKey => {
             // P2-05：crypto-hdkey UR 的 xpub 字段固定 mainnet version（0x0488B21E）。
@@ -67,14 +67,14 @@ pub fn export_readonly(
                 ));
             }
             output_buf[..bytes.len()].copy_from_slice(bytes);
-            return Ok(bytes.len());
+            Ok(bytes.len())
         }
         _ => {
             // P0-02 审计整改：未真实实现的协议必须显式拒绝——
             // 不得返回 stub_len（调用者缓冲区旧内容会被当导出结果泄露）
-            return Err(ShlosiloError::new(
+            Err(ShlosiloError::new(
                 ShlosiloErrorKind::ExportProtocolUnimplemented,
-            ));
+            ))
         }
     }
 }

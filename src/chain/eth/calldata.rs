@@ -8,7 +8,6 @@
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
@@ -43,7 +42,7 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-fn word<'a>(input: &'a [u8], i: usize) -> Result<&'a [u8; 32]> {
+fn word(input: &[u8], i: usize) -> Result<&[u8; 32]> {
     let start = 4 + i * 32;
     let end = start + 32;
     if input.len() < end {
@@ -165,6 +164,7 @@ pub fn format_token_amount(amount: &[u8; 32], decimals: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use crate::encoding::keccak256;
 
     fn hex_decode(s: &str) -> Vec<u8> {

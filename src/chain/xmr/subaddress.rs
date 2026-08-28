@@ -419,7 +419,7 @@ pub fn derive_key_image_with_offset(
     // image = input_sk · Hp(output_pubkey)
     let hp: curve25519_dalek::EdwardsPoint =
         monero_ed25519::Point::biased_hash(*output_pubkey).into();
-    let image = (hp * &input_sk_dalek).compress().to_bytes();
+    let image = (hp * input_sk_dalek).compress().to_bytes();
     Ok(image)
 }
 

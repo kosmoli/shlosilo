@@ -86,12 +86,9 @@ fn shlosilo_panic(info: &PanicInfo) -> ! {
         }
         pos = w.pos;
     } // w drop，buf 借用结束
+    // 契约：hook 返回 !（LCD 显示 + 死循环保持系统运行），永不返回
     unsafe {
         shlosilo_panic_hook(buf.as_ptr(), pos);
-    }
-    // 不应返回（hook 死循环）；防御性兜底
-    loop {
-        core::hint::spin_loop();
     }
 }
 

@@ -5,7 +5,7 @@
 use crate::curve_primitive::secp256k1::{Secp256k1Point, Secp256k1Scalar};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use k256::ecdsa::{
-    signature::{hazmat::PrehashSigner, hazmat::PrehashVerifier, Signer, Verifier},
+    signature::{hazmat::PrehashSigner, hazmat::PrehashVerifier},
     Signature, SigningKey, VerifyingKey,
 };
 use k256::FieldBytes;

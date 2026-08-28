@@ -5,7 +5,6 @@
 
 extern crate alloc;
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use crate::chain::eth::calldata::{decode_calldata, format_token_amount, DecodedCalldata};
 use crate::chain::eth::eip155::Eip155Transaction;
@@ -108,6 +107,7 @@ mod tests {
     use super::*;
     use crate::encoding::hex;
     use alloc::vec;
+    use alloc::vec::Vec;
 
     fn hex_decode(s: &str) -> Vec<u8> {
         let s: alloc::string::String = s.chars().filter(|c| !c.is_whitespace()).collect();

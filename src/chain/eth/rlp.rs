@@ -65,8 +65,7 @@ pub fn encode_uint(n: u128) -> Vec<u8> {
         return alloc::vec![0x80]; // RLP empty string (= 0)
     }
     // 计算有效字节数
-    let bytes_needed = (128 - n.leading_zeros() + 7) / 8;
-    let mut buf = [0u8; 16];
+    let bytes_needed = (128 - n.leading_zeros()).div_ceil(8);
     let be = &n.to_be_bytes();
     let start = 16 - bytes_needed as usize;
     encode_bytes(&be[start..])

@@ -24,7 +24,7 @@ pub fn create_account(
     mnemonic_buf: &mut [u8],
     seed_out: &mut [u8; 64],
 ) -> Result<()> {
-    let required_entropy_bytes = word_count.entropy_bytes() as usize;
+    let required_entropy_bytes = word_count.entropy_bytes();
     // P0-01 审计整改：入口强制最少骰子次数（12 次 d6 只有 ~31 bit，不可穷举下限 128 bit）
     if entropy_source_sides < 2 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::InvalidDiceConfig));
@@ -59,8 +59,8 @@ pub fn create_account(
         mnemonic_buf[i * 2] = b[0];
         mnemonic_buf[i * 2 + 1] = b[1];
     }
-    for i in needed..mnemonic_buf.len() {
-        mnemonic_buf[i] = 0;
+    for slot in &mut mnemonic_buf[needed..] {
+        *slot = 0;
     }
 
     let seed = crate::entropy::bip39_passphrase::mnemonic_to_seed(&mnemonic, passphrase)?;

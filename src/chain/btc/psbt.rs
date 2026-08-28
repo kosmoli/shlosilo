@@ -38,13 +38,12 @@
 //! **参考**: <https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki>
 
 extern crate alloc;
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
 use crate::chain::btc::p2pkh::sign_p2pkh;
-use crate::chain::btc::p2wpkh::{sign_p2wpkh, OutPoint, Transaction, TxIn, TxOut, Txid};
+use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
+use crate::chain::btc::p2wpkh::{sign_p2wpkh, OutPoint, Transaction, TxIn, TxOut};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 /// PSBT magic bytes: "psbt" + 0xff
@@ -55,7 +54,6 @@ pub mod global_type {
     pub const UNSIGNED_TX: u8 = 0x00;
 }
 
-/// Input map types (BIP-174)
 pub mod input_type {
     //! BIP-174 标准输入类型编号。
     //! P6.3 审计后修正（2026-08-26）：原常量整体偏移 +1（NON_WITNESS_UTXO=0x01 等），
@@ -324,7 +322,6 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     let lock_time = u32::from_le_bytes(bytes[pos..pos + 4].try_into().map_err(|_| {
         ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
     })?);
-    pos += 4;
 
     Ok(Transaction {
         version,
@@ -610,7 +607,6 @@ pub fn sign_psbt_p2sh_p2wpkh(
     Ok(())
 }
 
-/// 单元测试
 
 // === v9.9 P2TR PSBT helpers (BIP-371) ===
 
@@ -796,8 +792,8 @@ pub fn is_p2tr_input(input_map: &[KeyValue]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    extern crate std;
     use alloc::string::String;
+    extern crate std;
     use std::eprintln;
 
     fn hex_decode(s: &str) -> Vec<u8> {

@@ -3,7 +3,6 @@
 use crate::curve_primitive::secp256k1::Secp256k1Point;
 use crate::error::Result;
 use crate::network::Network;
-use core::fmt;
 
 /// TRON 地址（同 ETH 长度限制 + base58check）
 pub type TronAddress = super::eth::EthAddress;

@@ -16,7 +16,6 @@ extern crate alloc;
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::scalar::Scalar;
-use monero_ed25519::CompressedPoint;
 
 use crate::chain::xmr::subaddress::hash_to_scalar;
 use crate::chain::xmr::unsigned_txset::{TxConstructionData, TxDestinationEntry};
@@ -204,13 +203,13 @@ impl SignedTxSet {
 
 // ============ key image 环签名（tx_key_images 用） ============
 
-/// Monero 环签名（对齐 keystone `generate_ring_signature`）：
-/// 输出 [π0, π1] 数组；真成员位置由 sec_idx 决定。
-///
-/// 返回扁平 (s0, s1) 对（keystone SignatureTrait 的 [Scalar; 2]），
-/// 这里只用于 tx_key_images 的 key image 生成，与 wire 无关（wire 只存 image）。
-/// shlosilo 中 image 已由 sign 路径计算；此函数仅供 host 侧一致性验证，
-/// 故未导出为 pub——避免无人调用的死代码进 staticlib。
+// Monero 环签名（对齐 keystone `generate_ring_signature`）：
+// 输出 [π0, π1] 数组；真成员位置由 sec_idx 决定。
+//
+// 返回扁平 (s0, s1) 对（keystone SignatureTrait 的 [Scalar; 2]），
+// 这里只用于 tx_key_images 的 key image 生成，与 wire 无关（wire 只存 image）。
+// shlosilo 中 image 已由 sign 路径计算；此函数仅供 host 侧一致性验证，
+// 故未导出为 pub——避免无人调用的死代码进 staticlib。
 
 // ============ Monero Schnorr 签名（加密 blob 尾部 64B） ============
 
@@ -278,8 +277,8 @@ pub fn encrypt_signed_txset(
 
     // 2. 密文（原位加密）
     let mut buffer = plain;
-    let nonce = chacha20::LegacyNonce::from_slice(&nonce_num_bytes);
-    let mut cipher = ChaCha20Legacy::new_from_slices(&key, nonce).map_err(|_| err())?;
+    let nonce: chacha20::LegacyNonce = nonce_num_bytes.into();
+    let mut cipher = ChaCha20Legacy::new_from_slices(&key, &nonce).map_err(|_| err())?;
     cipher.apply_keystream(&mut buffer);
 
     // 3. 签名 = Monero Schnorr over keccak256(nonce ‖ 密文)，公钥 = view_pub
@@ -327,8 +326,10 @@ pub fn decrypt_signed_txset(data: &[u8], view_sk: &[u8; 32]) -> Result<Vec<u8>> 
 
     let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
     let mut plain = raw[NONCE_LEN..].to_vec();
-    let nonce = chacha20::LegacyNonce::from_slice(nonce_bytes);
-    let mut cipher = ChaCha20Legacy::new_from_slices(&key, nonce).map_err(|_| err())?;
+    let mut nb = [0u8; 8];
+    nb.copy_from_slice(nonce_bytes);
+    let nonce: chacha20::LegacyNonce = nb.into();
+    let mut cipher = ChaCha20Legacy::new_from_slices(&key, &nonce).map_err(|_| err())?;
     cipher.apply_keystream(&mut plain);
     Ok(plain)
 }

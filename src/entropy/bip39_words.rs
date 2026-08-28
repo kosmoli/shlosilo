@@ -1,7 +1,7 @@
 //! BIP-39 英文 2048 词表（官方 english.txt）
 
 /// BIP-39 英文单词表
-pub const BIP39_WORDLIST: [&str; 2048] = [
+pub static BIP39_WORDLIST: [&str; 2048] = [
     "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract",
     "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid",
     "acoustic", "acquire", "across", "act", "action", "actor", "actress", "actual",

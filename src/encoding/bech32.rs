@@ -56,9 +56,9 @@ fn bech32_polymod(values: &[u8]) -> u32 {
     for &v in values.iter() {
         let b = chk >> 25;
         chk = ((chk & 0x1ffffff) << 5) ^ v as u32;
-        for i in 0..5 {
+        for (i, gen) in GEN.iter().enumerate() {
             if (b >> i) & 1 != 0 {
-                chk ^= GEN[i];
+                chk ^= *gen;
             }
         }
     }
@@ -91,8 +91,8 @@ fn bech32_create_checksum(hrp: &str, data: &[u8], spec: u32) -> [u8; 6] {
     let expanded_full = bech32_hrp_expand(hrp);
 
     let mut values: heapless::Vec<u8, 256> = heapless::Vec::new();
-    for i in 0..(2 * n + 1) {
-        let _ = values.push(expanded_full[i]);
+    for &v in expanded_full.iter().take(2 * n + 1) {
+        let _ = values.push(v);
     }
     for &b in data.iter() {
         let _ = values.push(b);
@@ -102,8 +102,8 @@ fn bech32_create_checksum(hrp: &str, data: &[u8], spec: u32) -> [u8; 6] {
     }
     let polymod = bech32_polymod(&values) ^ spec;
     let mut checksum = [0u8; 6];
-    for i in 0..6 {
-        checksum[i] = ((polymod >> (5 * (5 - i))) & 0x1f) as u8;
+    for (i, slot) in checksum.iter_mut().enumerate() {
+        *slot = ((polymod >> (5 * (5 - i))) & 0x1f) as u8;
     }
     checksum
 }
@@ -204,16 +204,16 @@ pub fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8, 128>)>
     }
 
     for &b in s.as_bytes().iter() {
-        if b < 33 || b > 126 {
+        if !(33..=126).contains(&b) {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
     }
     let mut has_lower = false;
     let mut has_upper = false;
     for &b in s.as_bytes().iter() {
-        if b >= b'a' && b <= b'z' {
+        if b.is_ascii_lowercase() {
             has_lower = true;
-        } else if b >= b'A' && b <= b'Z' {
+        } else if b.is_ascii_uppercase() {
             has_upper = true;
         }
     }
@@ -247,8 +247,8 @@ pub fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8, 128>)>
     let n = hrp_bytes.len();
     let expanded_full = bech32_hrp_expand(hrp);
     let mut values_with_chk: heapless::Vec<u8, 256> = heapless::Vec::new();
-    for i in 0..(2 * n + 1) {
-        let _ = values_with_chk.push(expanded_full[i]);
+    for &v in expanded_full.iter().take(2 * n + 1) {
+        let _ = values_with_chk.push(v);
     }
     for &b in data_5bit.iter() {
         let _ = values_with_chk.push(b);

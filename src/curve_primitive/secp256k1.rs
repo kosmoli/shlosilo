@@ -59,7 +59,7 @@ pub fn generator() -> Secp256k1Point {
 ///
 /// 接受 `&Secp256k1Scalar` + `&Secp256k1Point`，返回 owned `Secp256k1Point`
 pub fn scalar_mul(s: &Secp256k1Scalar, p: &Secp256k1Point) -> Secp256k1Point {
-    let proj = ProjectivePoint::from(&p.inner) * &s.inner;
+    let proj = ProjectivePoint::from(&p.inner) * s.inner;
     let affine = proj.to_affine();
     Secp256k1Point { inner: affine }
 }
@@ -142,7 +142,7 @@ pub fn scalar_to_bytes(s: &Secp256k1Scalar) -> [u8; SCALAR_LEN] {
 /// secp256k1 标量 → 压缩公钥（33 bytes）
 pub fn point_to_compressed(p: &Secp256k1Point) -> [u8; COMPRESSED_POINT_LEN] {
     use k256::elliptic_curve::sec1::ToSec1Point;
-    let encoded = p.inner.to_encoded_point(true);
+    let encoded = p.inner.to_sec1_point(true);
     let bytes = encoded.as_bytes();
     let mut arr = [0u8; COMPRESSED_POINT_LEN];
     arr.copy_from_slice(bytes);
@@ -152,7 +152,7 @@ pub fn point_to_compressed(p: &Secp256k1Point) -> [u8; COMPRESSED_POINT_LEN] {
 /// secp256k1 标量 → 未压缩公钥（65 bytes）
 pub fn point_to_uncompressed(p: &Secp256k1Point) -> [u8; UNCOMPRESSED_POINT_LEN] {
     use k256::elliptic_curve::sec1::ToSec1Point;
-    let encoded = p.inner.to_encoded_point(false);
+    let encoded = p.inner.to_sec1_point(false);
     let bytes = encoded.as_bytes();
     let mut arr = [0u8; UNCOMPRESSED_POINT_LEN];
     arr.copy_from_slice(bytes);
@@ -168,7 +168,7 @@ pub fn point_from_compressed(bytes: &[u8]) -> Result<Secp256k1Point> {
     let encoded = k256::Sec1Point::from_bytes(bytes).map_err(|_| {
         ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
     })?;
-    let affine = Option::from(AffinePoint::from_encoded_point(&encoded))
+    let affine = Option::from(AffinePoint::from_sec1_point(&encoded))
         .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     Ok(Secp256k1Point { inner: affine })
 }

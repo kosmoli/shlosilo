@@ -27,8 +27,6 @@
 //! - BIP-86 (P2TR key-path-only) — https://github.com/bitcoin/bips/blob/master/bip-0086.mediawiki
 
 extern crate alloc;
-use alloc::string::String;
-use alloc::vec;
 
 use sha2::Sha256 as Sha256Std;
 use sha2::Digest as _;
@@ -70,8 +68,8 @@ fn tagged_hash(tag: &[u8], msg: &[u8]) -> [u8; 32] {
         h.finalize()
     };
     let mut h = Sha256Std::new();
-    h.update(&tag_hash);
-    h.update(&tag_hash);
+    h.update(tag_hash);
+    h.update(tag_hash);
     h.update(msg);
     let result = h.finalize();
     let mut out = [0u8; 32];
@@ -570,7 +568,9 @@ pub fn build_control_block(
 }
 
 /// Parse control block (returns leaf_version, parity_bit, internal_key_x, merkle_path)
-pub fn parse_control_block(cb: &[u8]) -> Option<(u8, u8, [u8; 32], alloc::vec::Vec<[u8; 32]>)> {
+/// 返回：(leaf_version, parity_bit, internal_key_x, merkle_path)
+type ParsedControlBlock = (u8, u8, [u8; 32], alloc::vec::Vec<[u8; 32]>);
+pub fn parse_control_block(cb: &[u8]) -> Option<ParsedControlBlock> {
     if cb.len() < 33 {
         return None;
     }
@@ -595,6 +595,8 @@ pub fn parse_control_block(cb: &[u8]) -> Option<(u8, u8, [u8; 32], alloc::vec::V
 mod tests {
     extern crate std;
     use super::*;
+    use alloc::string::String;
+    use alloc::vec;
     use crate::curve_primitive::secp256k1::{
         base_mul, point_add, scalar_from_bytes, scalar_to_bytes,
     };

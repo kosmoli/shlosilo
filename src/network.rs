@@ -7,9 +7,8 @@
 //! - KujiraMainnet/Testnet 状态待 v1.1.2 二次确认
 //!
 //! **Phase 4 真实实现**（v2.3 优先级）：
-//! - BTC 三种（Mainnet / Testnet / Regtest）
-//! - ETH 三种（Mainnet / Sepolia / Goerli）
-//! - XMR 三种（Mainnet / Stagenet / Testnet）
+//! BTC 三种（Mainnet / Testnet / Regtest）、ETH 三种（Mainnet / Sepolia / Goerli）、
+//! XMR 三种（Mainnet / Stagenet / Testnet）。
 //! 其他 13+ 个变体 Phase 8+ 才动。
 
 use crate::types::chain_kind::ChainKind;

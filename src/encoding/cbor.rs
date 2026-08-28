@@ -27,15 +27,15 @@ fn push_head(out: &mut Vec<u8>, major: u8, arg: u64) {
     let m = major << 5;
     match arg {
         0..=23 => out.push(m | arg as u8),
-        0..=0xff => {
+        24..=0xff => {
             out.push(m | 24);
             out.push(arg as u8);
         }
-        0..=0xffff => {
+        0x100..=0xffff => {
             out.push(m | 25);
             out.extend_from_slice(&(arg as u16).to_be_bytes());
         }
-        0..=0xffff_ffff => {
+        0x1_0000..=0xffff_ffff => {
             out.push(m | 26);
             out.extend_from_slice(&(arg as u32).to_be_bytes());
         }
@@ -139,11 +139,8 @@ impl<'a> Cbor<'a> {
     /// 有符号 int：Uint / NegInt（neg = -1 - n）
     pub fn as_int(&self) -> Result<i128> {
         match self {
-            Cbor::Uint(n) => i128::try_from(*n).map_err(|_| err()),
-            Cbor::NegInt(n) => {
-                let n = i128::try_from(*n).map_err(|_| err())?;
-                Ok(-1 - n)
-            }
+            Cbor::Uint(n) => Ok(*n as i128),
+            Cbor::NegInt(n) => Ok(-1 - (*n as i128)),
             _ => Err(err()),
         }
     }

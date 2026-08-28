@@ -41,7 +41,6 @@
 
 extern crate alloc;
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use chacha20::cipher::{KeyIvInit, StreamCipher};
@@ -138,6 +137,7 @@ pub struct MultisigKLRki {
 }
 
 #[derive(Clone, Debug)]
+#[allow(non_snake_case)] // multisig_kLRki 字段名对齐 Monero 官方 wire 命名
 pub struct TxSourceEntry {
     pub outputs: Vec<OutputEntry>,
     pub real_output: u64,
@@ -147,6 +147,7 @@ pub struct TxSourceEntry {
     pub amount: u64,
     pub rct: bool,
     pub mask: [u8; 32],
+    #[allow(non_snake_case)] // 字段名对齐 Monero 官方 MultisigKLRki 结构
     pub multisig_kLRki: MultisigKLRki,
 }
 

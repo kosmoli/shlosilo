@@ -11,6 +11,7 @@
 
 extern crate alloc;
 
+use crate::chain::xmr::rct_sig::prove_bulletproofs_plus;
 use alloc::vec::Vec;
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::scalar::Scalar;
@@ -18,13 +19,9 @@ use monero_ed25519::CompressedPoint;
 use rand_core::{CryptoRng, RngCore};
 
 use crate::chain::xmr::clsag::{self as clsag_mod};
-use crate::chain::xmr::rct_sig::{
-    prove_bulletproofs_plus, RctSig, RctSigBase, RctSigPrunable,
-};
 use crate::chain::xmr::subaddress::hash_to_scalar;
 use crate::chain::xmr::transaction::{
-    bytes_to_monerod_scalar, monero_encode_varint, monerod_scalar_to_bytes, shlosilo_scalar_to_monerod,
-    Transaction, TransactionPrefix, TxExtra, TxInput, TxOutput,
+    bytes_to_monerod_scalar, monero_encode_varint, monerod_scalar_to_bytes, TransactionPrefix, TxExtra, TxInput, TxOutput,
 };
 use crate::chain::xmr::unsigned_txset::{TxConstructionData, TxDestinationEntry};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -53,6 +50,7 @@ fn bytes_to_scalar(bytes: &[u8; 32]) -> Scalar {
 /// per-output 派生（shared key + mask + encrypted amount）——keystone commitments_and_encrypted_amounts
 struct OutputDerivation {
     /// 8Ra = r·A_v·8（或 change: view_sec·tx_pub·8）
+    #[allow(dead_code)] // 预留给 P2 后续输出验证
     shared_key: [u8; 32],
     commitment_mask: [u8; 32],
     encrypted_amount: [u8; 8],
@@ -70,9 +68,9 @@ struct OutputDerivation {
 /// - change（回自己）：ecdh = view_sec · TxPub（接收方视角推导，Keystone is_change_dest 分支）
 fn derive_output(
     r: &Scalar,
-    view_sec: &[u8; 32],
+    _view_sec: &[u8; 32],
     dest: &TxDestinationEntry,
-    tx_pub: &[u8; 32],
+    _tx_pub: &[u8; 32],
     index: usize,
 ) -> Result<OutputDerivation> {
     // ecdh 点
@@ -224,7 +222,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             .into();
         b_sub * r
     } else {
-        ED25519_BASEPOINT_TABLE * &r
+        ED25519_BASEPOINT_TABLE * r
     };
     let tx_pub = tx_pub_point.compress().to_bytes();
 
@@ -292,7 +290,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
                 eight_ra_for_pid: Some(change_eight_ra),
             });
         } else {
-            let deriv = derive_output(&r, view_sec, dest, &tx_pub, i)?;
+            let deriv = derive_output(r, view_sec, dest, &tx_pub, i)?;
             outs.push(OutInfo {
                 deriv,
                 is_change: false,
@@ -402,7 +400,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         let m = curve25519_dalek::Scalar::from_bytes_mod_order(monerod_scalar_to_bytes(
             &bytes_to_monerod_scalar(&o.deriv.commitment_mask),
         ));
-        sum_out_masks = sum_out_masks + m;
+        sum_out_masks += m;
     }
 
     // ---- 8. full_message = H(prefix_hash ‖ H(rct_base) ‖ H(BP+ fields)) ----
@@ -480,7 +478,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         b
     };
-    return build_official_wire(
+    build_official_wire(
         &prefix_bytes,
         &rct_base_bytes,
         &bp_buf,

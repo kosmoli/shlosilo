@@ -32,8 +32,7 @@ use alloc::vec::Vec;
 
 use crate::chain::btc::p2pkh::p2pkh_script_code;
 use crate::chain::btc::p2wpkh::{
-    encode_varint, segwit_sighash_p2wpkh, OutPoint, Transaction, TxIn, TxOut, Txid,
-    SIGHASH_ALL,
+    segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL,
 };
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -164,6 +163,8 @@ mod tests {
     extern crate std;
     use super::*;
     use alloc::string::String;
+    use alloc::vec;
+    use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut};
     use std::eprintln;
 
     fn hex_decode(s: &str) -> Vec<u8> {

@@ -36,12 +36,11 @@ use alloc::vec::Vec;
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::Scalar as DScalar;
-use monero_ed25519::{Commitment as MoneroCommitment, CompressedPoint, Scalar};
+use monero_ed25519::{Commitment as MoneroCommitment, CompressedPoint};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
 
-use crate::chain::xmr::clsag::{self as clsag_mod, derive_key_image, ClsagProof};
+use crate::chain::xmr::clsag::{self as clsag_mod};
 use crate::chain::xmr::rct_sig::{
     prove_bulletproofs_plus, pseudo_out_commitment, RctSig, RctSigBase, RctSigPrunable,
     verify_bulletproofs_plus,
@@ -116,6 +115,9 @@ pub fn encrypt_amount(amount: u64, shared_key: &[u8; 32]) -> [u8; 8] {
 }
 
 /// 解密 amount (8 bytes) using simplified shared_key
+/// 构造输出：TxOutput + 可选 encrypted payment id (8B) + 可选 view tag 派生辅助
+type BuiltOutput = (TxOutput, Option<[u8; 8]>, Option<[u8; 32]>);
+
 pub fn decrypt_amount(encrypted: &[u8; 8], shared_key: &[u8; 32]) -> u64 {
     let mut amount_bytes = [0u8; 8];
     for i in 0..8 {
@@ -166,7 +168,7 @@ fn resolve_tx_output(
     tx_secret: &[u8; 32],
     index: u64,
     spec: &TxOutputSpec,
-) -> Result<(TxOutput, Option<[u8; 8]>, Option<[u8; 32]>)> {
+) -> Result<BuiltOutput> {
     match (spec.dest_view_pub, spec.dest_spend_pub) {
         (Some(view), Some(spend)) => {
             let eight = eight_ra(tx_secret, &view)?;
@@ -177,7 +179,7 @@ fn resolve_tx_output(
                 .map(|pid| encrypt_payment_id(&pid, &payment_id_xor(&eight)));
             // 子地址：additional key = r_i · B_sub（单 output 复用主 tx secret r）
             let add_key = if spec.is_subaddress {
-                use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+                
                 use monero_ed25519::CompressedPoint;
                 let r = DScalar::from_bytes_mod_order(*tx_secret);
                 let b_point: curve25519_dalek::EdwardsPoint =
@@ -937,7 +939,6 @@ mod tests {
     /// v9.20c: 打子地址 → extra 带 additional_pub_keys（tag 0x03），每 output r_i·B_i
     #[test]
     fn subaddress_dest_emits_additional_pub_keys() {
-        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 
         let mut rng = OsRng;
         let spend_key = scalar_to_bytes(&rs(&[0x11u8; 32]).unwrap());

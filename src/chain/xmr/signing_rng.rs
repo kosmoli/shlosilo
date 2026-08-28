@@ -17,7 +17,6 @@
 //! 同 entropy + 同 construction → 同签名流：**feature**（deterministic retry
 //! property），r 只服务本交易 outputs，无跨交易碰撞。
 
-use rand_chacha::rand_core::{CryptoRng, RngCore};
 use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use sha2::Sha256;
@@ -117,6 +116,7 @@ pub fn purpose_rng(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand_chacha::rand_core::RngCore;
 
     const CTX_A: [u8; 32] = [1u8; 32];
     const CTX_B: [u8; 32] = [2u8; 32];

@@ -45,7 +45,7 @@ pub fn sign(
     let sig: Signature = signing_key.sign_raw(msg, aux_rand).map_err(|_| {
         ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
     })?;
-    let sig_bytes: [u8; SCHNORR_SIGNATURE_LEN] = sig.to_bytes().into();
+    let sig_bytes: [u8; SCHNORR_SIGNATURE_LEN] = sig.to_bytes();
     Ok(SchnorrSignature { bytes: sig_bytes })
 }
 

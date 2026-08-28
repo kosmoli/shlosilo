@@ -127,7 +127,6 @@ pub fn sk_from_pk(pk: &[u8; 32]) -> Result<crate::curve_primitive::secp256k1::Se
 /// 用于 EIP-191 personal_ecRecover, 未来可用作 wallet 端 verify 工具.
 pub fn ecdsa_recover(prehash: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 64]> {
     use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
-    use k256::elliptic_curve::sec1::ToSec1Point;
 
     // 解析 r || s
     let mut sig_64 = [0u8; 64];

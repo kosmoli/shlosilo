@@ -86,7 +86,7 @@ fn decode_table(s: &str, table: &[u8; 64]) -> Result<heapless::Vec<u8, 192>> {
     }
 
     let chars: heapless::Vec<u8, BASE64_MAX_LEN> = s.bytes().collect();
-    if chars.len() % 4 != 0 {
+    if !chars.len().is_multiple_of(4) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 

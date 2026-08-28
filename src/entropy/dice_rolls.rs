@@ -91,9 +91,9 @@ pub fn dice_rolls_to_entropy(
     for &r in rolls {
         // acc = acc * sides + r
         let mut carry: u64 = r as u64;
-        for i in 0..LIMBS {
-            let product = (acc[i] as u64) * (sides as u64) + carry;
-            acc[i] = product as u32;
+        for limb in acc.iter_mut() {
+            let product = (*limb as u64) * (sides as u64) + carry;
+            *limb = product as u32;
             carry = product >> 32;
         }
         // 溢出位丢弃（256-bit mod）
@@ -101,8 +101,8 @@ pub fn dice_rolls_to_entropy(
 
     // 转换成 bytes（little-endian）
     let mut result: heapless::Vec<u8, 64> = heapless::Vec::new();
-    for i in 0..LIMBS {
-        let bytes = acc[i].to_le_bytes();
+    for &limb in acc.iter() {
+        let bytes = limb.to_le_bytes();
         for b in bytes {
             if result.len() >= required_len.min(64) {
                 break;

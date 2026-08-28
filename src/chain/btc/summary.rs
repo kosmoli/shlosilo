@@ -192,7 +192,7 @@ pub fn summarize_tx(
         if is_huge {
             has_huge_output = true;
         }
-        let is_own = own_spks.iter().any(|s| *s == txout.script_pubkey.as_slice());
+        let is_own = own_spks.contains(&txout.script_pubkey.as_slice());
         if !is_own {
             external_out = external_out.saturating_add(txout.value);
         }

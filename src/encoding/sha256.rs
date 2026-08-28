@@ -1,6 +1,6 @@
 //! SHA-256 hash（BTC double-SHA256 用）
 
-use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::error::Result;
 use sha2::{Digest, Sha256};
 
 /// SHA-256 输出长度

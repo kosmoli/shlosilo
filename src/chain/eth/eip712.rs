@@ -26,14 +26,13 @@
 //!   - arrayN[k] of T: keccak256(encodeData(t1) || ... || encodeData(tk))
 //! ```text
 
-extern crate alloc;
+    extern crate alloc;
 use crate::chain::eth::sign;
 use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 #[cfg(test)]
@@ -153,7 +152,7 @@ fn add_subtypes(
                 crate::error::ErrorContext::None /* was format */,
             )
         })?;
-        out.push_str(&sub);
+        out.push_str(sub);
         out.push('(');
         for (i, (name, ty)) in sub_fields.iter().enumerate() {
             if i > 0 {
@@ -196,7 +195,7 @@ fn is_numeric_suffix(s: &str) -> bool {
 /// 算 typeHash: `keccak256(type_signature_string)`
 pub fn type_hash(primary_type: &str, types: &Types) -> Result<[u8; 32]> {
     let type_str = encode_type(primary_type, types)?;
-    Ok(keccak256::hash(type_str.as_bytes())?)
+    keccak256::hash(type_str.as_bytes())
 }
 
 // ─── encode_data ──────────────────────────────────────────────────
@@ -212,7 +211,7 @@ pub fn hash_struct(
     let mut concat = Vec::with_capacity(32 + encoded.len());
     concat.extend_from_slice(&type_hash_bytes);
     concat.extend_from_slice(&encoded);
-    Ok(keccak256::hash(&concat)?)
+    keccak256::hash(&concat)
 }
 
 /// 编码结构体 (不含 typeHash prefix)
@@ -384,7 +383,7 @@ pub fn signing_hash(
     concat.push(0x01);
     concat.extend_from_slice(&domain_separator);
     concat.extend_from_slice(&struct_hash);
-    Ok(keccak256::hash(&concat)?)
+    keccak256::hash(&concat)
 }
 
 /// EIP-712 签名输入
@@ -528,6 +527,7 @@ impl Eip712Domain {
 }
 
 /// 递归生成 value 摘要
+#[allow(clippy::only_used_in_recursion)] // 数组元素递归时沿用外层 type_name
 fn summary_value(
     type_name: &str,
     value: &Eip712Value,
@@ -1062,7 +1062,7 @@ fn json_to_eip712_value(
 /// 解析 "0x..." 格式 hex 字符串
 fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
     let hex = s.strip_prefix("0x").unwrap_or(s);
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(hex.len() / 2);
@@ -1174,7 +1174,7 @@ fn parse_int256_string(s: &str) -> Option<[u8; 32]> {
             let mut result = [0u8; 32];
             let mut borrow: u16 = 0;
             for i in (0..32).rev() {
-                let diff = (0 as u16) - (bytes[i] as u16) - borrow;
+                let diff = 0_u16 - (bytes[i] as u16) - borrow;
                 result[i] = diff as u8;
                 borrow = (diff >> 15) & 1; // borrow if diff > 255
                 if (diff & 0xFF00) != 0 {
@@ -1296,8 +1296,8 @@ impl<'a> HumanReadableParser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::eprintln;
     use alloc::vec;
+    use std::eprintln;
 
     fn hex_encode(b: &[u8]) -> String {
         let mut s = String::with_capacity(b.len() * 2);

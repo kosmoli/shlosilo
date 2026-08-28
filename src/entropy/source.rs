@@ -6,7 +6,6 @@
 //! - `MnemonicRestore`：已有助记词，恢复时直接从 mnemonics 转 seed
 
 use crate::entropy::mnemonic::Mnemonic;
-use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 /// Entropy 源
 ///

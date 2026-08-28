@@ -42,7 +42,6 @@
 //! **参考**: <https://github.com/monero-project/monero/blob/master/src/cryptonote_basic/cryptonote_format_utils.cpp>
 
 extern crate alloc;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::chain::xmr::clsag::derive_key_image;
@@ -272,20 +271,17 @@ impl TxExtra {
             *pos += 1;
             // 官方格式：tx_extra_pub_key(0x01) 后直接 32B 裸 key，无 length 字段；
             // 其余字段为 varint 长度前缀
-            match tag {
-                0x01 => {
-                    if *pos + 32 > bytes.len() {
-                        return Err(ShlosiloError::new(
-                            ShlosiloErrorKind::EncodingInvalidFormat,
-                        ));
-                    }
-                    let mut pk = [0u8; 32];
-                    pk.copy_from_slice(&bytes[*pos..*pos + 32]);
-                    extra.tx_pub_key = Some(pk);
-                    *pos += 32;
-                    continue;
+            if tag == 0x01 {
+                if *pos + 32 > bytes.len() {
+                    return Err(ShlosiloError::new(
+                        ShlosiloErrorKind::EncodingInvalidFormat,
+                    ));
                 }
-                _ => {}
+                let mut pk = [0u8; 32];
+                pk.copy_from_slice(&bytes[*pos..*pos + 32]);
+                extra.tx_pub_key = Some(pk);
+                *pos += 32;
+                continue;
             }
             let len = monero_decode_varint(bytes, pos)?;
             if *pos + len as usize > bytes.len() {
@@ -505,8 +501,7 @@ impl std_shims::io::Read for Read32Cursor {
 
 /// Convert monero-ed25519 CompressedPoint to 32-byte array
 pub fn compressed_point_to_bytes(p: &CompressedPoint) -> [u8; 32] {
-    let bytes = p.to_bytes();
-    <[u8; 32]>::try_from(bytes).expect("32 bytes")
+    p.to_bytes()
 }
 
 /// Convert monero-ed25519 Scalar to 32-byte array
@@ -571,6 +566,7 @@ mod tests {
     extern crate std;
     use super::*;
     use alloc::string::String;
+    use alloc::vec;
     use std::eprintln;
 
     fn hex_encode(b: &[u8]) -> String {

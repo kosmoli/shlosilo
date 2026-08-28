@@ -27,18 +27,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::curve_primitive::ed25519::{Ed25519Scalar, SCALAR_LEN};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// H basepoint (HashToPoint(G)) 压缩字节
-///
-/// 通过 SHA-512(G_compressed) 派生 Ed25519 H point（XMR 协议）
-/// 实际值是 XMR 协议固定常数，详 monero src/ringct/constants.rs
-const H_BASEPOINT_COMPRESSED: [u8; 32] = [
-    // XMR H = 8 * HashToPoint(G)
-    // 简化版本：使用标准 H basepoint
-    // 实际值参见 monero source code
-    // 这里用 monero-ed25519::Commitment 内部自动使用正确 H
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0,
-];
+// H basepoint (HashToPoint(G)) 压缩字节——见上面 dead_code 常量注释
 
 /// XMR Pedersen commitment 包装
 ///

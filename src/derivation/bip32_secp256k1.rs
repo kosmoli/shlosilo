@@ -36,7 +36,7 @@
 //! - 返回的 `Secp256k1Scalar` 直接受 Zeroize 保护
 
 use crate::curve_primitive::secp256k1::{
-    self as secp, Secp256k1Point, Secp256k1Scalar,
+    self as secp, Secp256k1Scalar,
 };
 use crate::derivation::path::DerivationPath;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -129,7 +129,7 @@ enum KeyOrPub {
 /// 4-byte key fingerprint = RIPEMD160(SHA256(compressed_pub))[..4]
 fn fingerprint(compressed_pub: &[u8; COMPRESSED_POINT_LEN]) -> [u8; 4] {
     let sha = Sha256::digest(compressed_pub);
-    let ripemd = ripemd::Ripemd160::digest(&sha);
+    let ripemd = ripemd::Ripemd160::digest(sha);
     [ripemd[0], ripemd[1], ripemd[2], ripemd[3]]
 }
 

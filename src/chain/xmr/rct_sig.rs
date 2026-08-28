@@ -33,15 +33,14 @@
 //! - <https://github.com/monero-project/monero/blob/master/src/ringct/rctSigs.cpp>
 //! - <https://github.com/monero-project/monero/blob/master/src/ringct/rctTypes.h>
 
+use crate::chain::xmr::clsag::ClsagProof;
 extern crate alloc;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use monero_bulletproofs::{Bulletproof, MAX_COMMITMENTS};
 use monero_ed25519::{Commitment as MoneroCommitment, CompressedPoint, Scalar};
 use rand_core::{CryptoRng, RngCore};
 
-use crate::chain::xmr::clsag::{self as clsag_mod, ClsagProof, KeyImage, KEY_IMAGE_LEN};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 /// RingCTType (BIP-compatible with XMR consensus)
@@ -245,6 +244,8 @@ pub fn pseudo_out_commitment(pseudo_mask: &Scalar) -> [u8; 32] {
 mod tests {
     extern crate std;
     use super::*;
+    use alloc::vec;
+    use crate::chain::xmr::clsag as clsag_mod;
     use crate::chain::xmr::reduce_scalar::reduce_scalar;
     use alloc::string::String;
     use rand_core::OsRng;

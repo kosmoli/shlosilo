@@ -33,7 +33,7 @@
 //!
 //! **y_parity**: 0 或 1（不是 legacy 的 27/28）
 
-extern crate alloc;
+    extern crate alloc;
 extern crate digest;
 use crate::chain::eth::rlp;
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
@@ -41,7 +41,6 @@ use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
 use alloc::vec::Vec;
-use digest::Digest;
 
 // ─── 数据结构 ──────────────────────────────────────────────────────
 
@@ -167,7 +166,7 @@ fn compute_y_parity(
     s_bytes: &[u8; 32],
 ) -> Result<u8> {
     use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
-    use k256::elliptic_curve::sec1::ToEncodedPoint;
+    
 
     // 构造 signature (r || s, 64 bytes)
     let mut sig_64 = [0u8; 64];
@@ -312,8 +311,9 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
 
 // ─── 辅助：hex decode ──────────────────────────────────────────────
 
+#[cfg(test)]
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -328,6 +328,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+#[cfg(test)]
 fn hex_nibble(c: u8) -> Result<u8> {
     match c {
         b'0'..=b'9' => Ok(c - b'0'),
@@ -487,13 +488,4 @@ mod tests {
 
         assert_ne!(hash_mainnet, hash_sepolia);
     }
-}
-fn hex_debug_print(b: &[u8]) -> alloc::string::String {
-    let mut s = alloc::string::String::with_capacity(b.len() * 2);
-    for byte in b {
-        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
-        s.push(HEX_CHARS[(byte >> 4) as usize] as char);
-        s.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
-    }
-    s
 }

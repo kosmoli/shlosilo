@@ -106,6 +106,7 @@ impl ClsagProof {
 /// `verify` 立即返回 `Err(InvalidD)`）。这是 anti-malleability 设计：让 sig 唯一化。
 ///
 /// 同时 `sum_pseudo_outs = pseudo_mask`（单 input，amount 自平衡）。
+#[allow(clippy::too_many_arguments)] // 签名参数形状对齐 keystone generate_ring_signature
 pub fn sign<R: RngCore + CryptoRng>(
     input_skey: &[u8; 32],
     ring: &[(CompressedPoint, CompressedPoint)], // (dest, **链上 C 点**，非 blinding)
@@ -192,7 +193,7 @@ pub fn sign<R: RngCore + CryptoRng>(
     let key_image_gen_point: curve25519_dalek::EdwardsPoint =
         Point::biased_hash(key_image_gen_bytes).into();
     let key_image_point: curve25519_dalek::EdwardsPoint =
-        key_image_gen_point * &spend_scalar_dalek;
+        key_image_gen_point * spend_scalar_dalek;
     let key_image_bytes = key_image_point.compress().to_bytes();
 
     // 8. 序列化 Clsag（pseudo_out bytes + Clsag 内部 bytes）
@@ -241,7 +242,7 @@ pub fn derive_key_image(spend_key: &[u8; 32]) -> Result<[u8; KEY_IMAGE_LEN]> {
 
     // 4. key image I = x * Hp(P)
     let key_image_point: curve25519_dalek::EdwardsPoint =
-        key_image_gen_point * &spend_scalar_dalek;
+        key_image_gen_point * spend_scalar_dalek;
 
     Ok(key_image_point.compress().to_bytes())
 }

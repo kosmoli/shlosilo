@@ -79,7 +79,7 @@ monero = { version = "0.21" }
 [features]
 default = ["std"]
 # 启用 std（默认开，仅 cargo test 跑通；Phase 5 真实实现改 panic = "abort" 不依赖 std）
-std = []
+std = ["rand_core/std"]
 # 启用 alloc（ffi 模块用 Vec 中转路径元素）
 # alloc = []  # heapless 本身是 no_std
 

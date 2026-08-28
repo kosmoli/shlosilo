@@ -10,18 +10,11 @@
 //! 全模块无 IO/全局状态。
 
 extern crate alloc;
-use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::chain::btc::p2wpkh::{
-    encode_varint, OutPoint, Transaction, TxIn, TxOut, Txid, SIGHASH_ALL,
-};
-use crate::curve_primitive::secp256k1::{
-    base_mul, point_to_compressed, scalar_from_bytes,
-};
+use crate::chain::btc::p2wpkh::Transaction;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use sha2::{Digest as _, Sha256};
-use k256::sha2::Digest as _;
 
 /// Multi-sig M-of-N parameters
 #[derive(Clone, Debug)]
@@ -367,6 +360,9 @@ pub fn p2sh_p2wsh_multisig_address(network: Network, config: &MultisigConfig) ->
 mod tests {
     extern crate std;
     use super::*;
+    use alloc::vec;
+    use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut};
+    use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
     use std::eprintln;
 
     fn hex_encode(b: &[u8]) -> alloc::string::String {

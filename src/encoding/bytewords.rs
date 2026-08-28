@@ -14,6 +14,7 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
+#[allow(dead_code)] // 官方词表参考（BCR-2020-012）；minimal 编码只用了两字母缩写
 #[rustfmt::skip]
 const WORDS: [&str; 256] = [
     "able", "acid", "also", "apex", "aqua", "arch", "atom", "aunt",
@@ -145,7 +146,7 @@ pub fn encode_minimal(data: &[u8]) -> String {
 /// minimal style 解码：两字母一组反查 + 验证 CRC32
 pub fn decode_minimal(encoded: &str) -> Result<Vec<u8>> {
     let bytes = encoded.as_bytes();
-    if encoded.len() % 2 != 0 || !encoded.is_ascii() {
+    if !encoded.len().is_multiple_of(2) || !encoded.is_ascii() {
         return Err(err());
     }
     let mut data = Vec::with_capacity(encoded.len() / 2);

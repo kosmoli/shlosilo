@@ -32,10 +32,6 @@ macro_rules! ffi_catch_unwind {
 
 use core::ffi::{c_char, c_int, c_uint};
 use core::slice;
-
-#[cfg(feature = "std")]
-use alloc::vec::Vec;
-
 use crate::business;
 use crate::derivation::path::DerivationPath;
 use crate::entropy::mnemonic::{Mnemonic, WordCount};
@@ -78,6 +74,7 @@ unsafe fn bytes_in<'a>(p: *const u8, len: usize) -> &'a [u8] {
 ///
 /// 返回 0 = Ok（长度写 *actual_len），负数 = 错误码。
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // 契约：入口先 null-check 再 from_raw_parts；C 侧保证指针有效性或接受 NULL 错误码
 pub extern "C" fn shlosilo_sign_ffi(
     mnemonic_indices: *const u16,
     mnemonic_count: c_int, // 12 / 15 / 18 / 21 / 24
@@ -148,6 +145,7 @@ pub extern "C" fn shlosilo_sign_ffi(
 ///
 /// 返回 0 = Ok，负数 = 错误码；签名 bytes 写 output_buf。
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // 契约：入口先 null-check 再 from_raw_parts；C 侧保证指针有效性或接受 NULL 错误码
 pub extern "C" fn shlosilo_sign_ur_ffi(
     uri: *const c_char, // null-terminated C string
     mnemonic_indices: *const u16,
@@ -235,6 +233,7 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
 /// paths 为 flat u32 数组（hardened bit = 0x8000_0000），
 /// `path_elem_count` 是这一个 path 的元素数（v1 单 path）。
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // 契约：入口先 null-check 再 from_raw_parts；C 侧保证指针有效性或接受 NULL 错误码
 pub extern "C" fn shlosilo_export_readonly_ffi(
     seed: *const u8, // [u8; 64]
     network: c_uint,
@@ -283,6 +282,7 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
 
 /// shlosilo_create_account_ffi — dice entropy → mnemonic(u16 LE 索引对) + seed
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // 契约：入口先 null-check 再 from_raw_parts；C 侧保证指针有效性或接受 NULL 错误码
 pub extern "C" fn shlosilo_create_account_ffi(
     word_count: c_uint, // 12 / 15 / 18 / 21 / 24
     sides: c_uint,
@@ -334,6 +334,7 @@ pub extern "C" fn shlosilo_create_account_ffi(
 
 /// shlosilo_restore_seed_ffi — mnemonic indices + passphrase → BIP-39 seed
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // 契约：入口先 null-check 再 from_raw_parts；C 侧保证指针有效性或接受 NULL 错误码
 pub extern "C" fn shlosilo_restore_seed_ffi(
     mnemonic_indices: *const u16,
     mnemonic_count: c_int,
@@ -376,6 +377,7 @@ pub extern "C" fn shlosilo_restore_seed_ffi(
 
 /// 支持的 Network u8 列表（L3 启动时 UI dispatch 用）
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // 契约：入口先 null-check 再 from_raw_parts；C 侧保证指针有效性或接受 NULL 错误码
 pub extern "C" fn shlosilo_supported_networks_ffi(
     output_buf: *mut u8,
     output_buf_len: c_uint,
@@ -408,6 +410,7 @@ pub extern "C" fn shlosilo_supported_networks_ffi(
 
 /// 支持的 ExportProtocol u8 列表
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // 契约：入口先 null-check 再 from_raw_parts；C 侧保证指针有效性或接受 NULL 错误码
 pub extern "C" fn shlosilo_supported_protocols_ffi(
     output_buf: *mut u8,
     output_buf_len: c_uint,
@@ -442,12 +445,10 @@ pub extern "C" fn shlosilo_supported_protocols_ffi(
 // 保留常量引用避免 unused warning
 const _: c_int = ERR_NULL_POINTER;
 const _: c_int = ERR_BUFFER_TOO_SMALL;
-#[allow(unused_imports)]
-use alloc::vec::Vec as _VecUnused;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use core::ptr::{null, null_mut};
 
     #[test]

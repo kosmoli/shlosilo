@@ -21,7 +21,6 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use k256::sha2::Digest as K256Digest;
 use sha2::{Digest, Sha256};
 
 use crate::curve_primitive::secp256k1::{
@@ -35,8 +34,8 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 fn hash_tagged(tag: &[u8], x: &[u8]) -> [u8; 32] {
     let tag_hash = Sha256::digest(tag);
     let mut hasher = Sha256::new();
-    hasher.update(&tag_hash);
-    hasher.update(&tag_hash);
+    hasher.update(tag_hash);
+    hasher.update(tag_hash);
     hasher.update(x);
     let result = hasher.finalize();
     let mut out = [0u8; 32];
@@ -155,7 +154,7 @@ pub fn key_sort_vec(pubkeys: &[Vec<u8>]) -> Vec<Vec<u8>> {
     v
 }
 
-pub fn key_sort(pubkeys: &mut Vec<Vec<u8>>) {
+pub fn key_sort(pubkeys: &mut [alloc::vec::Vec<u8>]) {
     pubkeys.sort();
 }
 
@@ -235,7 +234,7 @@ fn key_agg_coeff_internal(pubkeys: &[Vec<u8>], pk_prime: &[u8], pk2: &[u8]) -> S
                 } else {
                     // Underflow → wraps to all 0xff, which is also >= n
                     // Just give up and use 0...0 (statistically impossible case)
-                    bytes = [0u8; 32];
+                    for b in bytes.iter_mut() { *b = 0; }
                     break;
                 }
             }
@@ -689,6 +688,7 @@ fn hex_encode(b: &[u8]) -> alloc::string::String {
     s
 }
 
+#[cfg(test)]
 fn hex_decode_pubkey(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len() / 2);
     let bytes = s.as_bytes();
