@@ -64,29 +64,29 @@
 
 #define UNSIGNED_TX 0
 
-#define NON_WITNESS_UTXO 1
+#define NON_WITNESS_UTXO 0
 
-#define WITNESS_UTXO 2
+#define WITNESS_UTXO 1
 
-#define PARTIAL_SIG 3
+#define PARTIAL_SIG 2
 
-#define SIGHASH_TYPE 4
+#define SIGHASH_TYPE 3
 
-#define REDEEM_SCRIPT 5
+#define REDEEM_SCRIPT 4
 
-#define WITNESS_SCRIPT 6
+#define WITNESS_SCRIPT 5
 
-#define BIP32_DERIVATION 7
+#define BIP32_DERIVATION 6
 
 /**
  * Final scriptSig (for legacy P2PKH + P2SH inputs)
  */
-#define FINAL_SCRIPT_SIG 8
+#define FINAL_SCRIPT_SIG 7
 
 /**
  * Final script Witness (for segwit P2WPKH/P2WSH inputs)
  */
-#define FINAL_SCRIPTWITNESS 9
+#define FINAL_SCRIPTWITNESS 8
 
 /**
  * 0x13: Taproot key-path signature (key = [0x13], value = 64-byte Schnorr sig)
@@ -204,6 +204,11 @@
  * Type 3: bulletproofs2 (aggregated BP+, post-fork 1788000)
  */
 #define BULLETPROOFS_PLUS 3
+
+/**
+ * entropy 长度下限（misuse guard，非熵质量验证——见模块文档）。
+ */
+#define ENTROPY_MIN_LEN 16
 
 /**
  * XMR tx version: 2 = RingCT (post-fork, only valid in mainnet)
@@ -394,6 +399,21 @@
 #define UR_URI_MAX_LEN 8192
 
 /**
+ * L3 提供：FreeRTOS pvPortMalloc 包装
+ */
+extern uint8_t *shlosilo_embedded_malloc(uintptr_t size);
+
+/**
+ * L3 提供：vPortFree 包装
+ */
+extern void shlosilo_embedded_free(uint8_t *ptr);
+
+/**
+ * L3 提供：panic 信息显示（LCD）+ 保持系统运行/刷新
+ */
+extern void shlosilo_panic_hook(const uint8_t *msg, uintptr_t len);
+
+/**
  * shlosilo_sign_ffi — mnemonic + UR payload → 签名
  *
  * 返回 0 = Ok（长度写 *actual_len），负数 = 错误码。
@@ -412,8 +432,13 @@ int shlosilo_sign_ffi(const uint16_t *mnemonic_indices,
 /**
  * shlosilo_sign_ur_ffi — 完整 UR 字符串 + mnemonic → 签名（P6.1d）
  *
- * L3 直接喂 `ur:crypto-psbt/...` / `ur:eth-sign-request/...`，
+ * L3 直接喂 `ur:crypto-psbt/...` / `ur:eth-sign-request/...` / `ur:xmr-txunsigned/...`，
  * UR 解码 + type tag 校验都在库内做（L3 薄、L1 厚）。
+ *
+ * **§B.5 RNG 注入扩展（2026-08-28）**：新增 entropy_ptr / entropy_len 参数——
+ * XMR 签名 REQUIRED（≥16B，L3 承诺来源与 min-entropy）；BTC/ETH deterministic
+ * backend 传 NULL/0 即可。同一 (keys, tx, entropy) → 同一签名（deterministic retry）。
+ *
  * 返回 0 = Ok，负数 = 错误码；签名 bytes 写 output_buf。
  */
 int shlosilo_sign_ur_ffi(const char *uri,
@@ -422,17 +447,25 @@ int shlosilo_sign_ur_ffi(const char *uri,
                          const uint8_t *passphrase,
                          unsigned int passphrase_len,
                          unsigned int network,
+                         const uint8_t *entropy_ptr,
+                         unsigned int entropy_len,
                          uint8_t *output_buf,
                          unsigned int output_buf_len,
                          unsigned int *actual_len);
 
 /**
- * shlosilo_export_readonly_ffi — seed + path → 只读凭证 UR
+ * shlosilo_export_readonly_ffi — mnemonic + path → 只读凭证 UR
+ *
+ * **P1-04（2026-08-29）**：seed 不再跨 FFI。入口收 mnemonic indices + passphrase，
+ * 库内现场恢复 BIP-39 seed（栈 buffer，`SecretBytes::take` 接管清零），导出完成即弃。
  *
  * paths 为 flat u32 数组（hardened bit = 0x8000_0000），
  * `path_elem_count` 是这一个 path 的元素数（v1 单 path）。
  */
-int shlosilo_export_readonly_ffi(const uint8_t *seed,
+int shlosilo_export_readonly_ffi(const uint16_t *mnemonic_indices,
+                                 int mnemonic_count,
+                                 const uint8_t *passphrase,
+                                 unsigned int passphrase_len,
                                  unsigned int network,
                                  const uint32_t *path_elems,
                                  unsigned int path_elem_count,
@@ -442,7 +475,11 @@ int shlosilo_export_readonly_ffi(const uint8_t *seed,
                                  unsigned int *actual_len);
 
 /**
- * shlosilo_create_account_ffi — dice entropy → mnemonic(u16 LE 索引对) + seed
+ * shlosilo_create_account_ffi — dice entropy → mnemonic(u16 LE 索引对)
+ *
+ * **P1-04（2026-08-29）**：`seed_out` 删除——seed 不跨 FFI（v2 安全模型）。
+ * dice → mnemonic 是唯一产出；后续签名/导出直接收 mnemonic（库内现场恢复 seed）。
+ * passphrase 保留（未来离线 create 时写进设备存储的元数据），当前仅做上限校验。
  */
 int shlosilo_create_account_ffi(unsigned int word_count,
                                 unsigned int sides,
@@ -451,17 +488,7 @@ int shlosilo_create_account_ffi(unsigned int word_count,
                                 const uint8_t *passphrase,
                                 unsigned int passphrase_len,
                                 uint8_t *mnemonic_buf,
-                                unsigned int mnemonic_buf_len,
-                                uint8_t *seed_out);
-
-/**
- * shlosilo_restore_seed_ffi — mnemonic indices + passphrase → BIP-39 seed
- */
-int shlosilo_restore_seed_ffi(const uint16_t *mnemonic_indices,
-                              int mnemonic_count,
-                              const uint8_t *passphrase,
-                              unsigned int passphrase_len,
-                              uint8_t *seed_out);
+                                unsigned int mnemonic_buf_len);
 
 /**
  * 支持的 Network u8 列表（L3 启动时 UI dispatch 用）

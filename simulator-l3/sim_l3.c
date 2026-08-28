@@ -2,8 +2,8 @@
  * shlosilo L3 模拟器骨架 — 纯 C host 程序（P6.1c）
  *
  * 模拟完整签名流程（无 SDL/GUI；QR 进/出在 P6.1d 接屏幕层时替换）：
- *   1. create_account：dice rolls → mnemonic + seed
- *   2. export_readonly：seed → ur:crypto-hdkey（只读凭证）
+ *   1. create_account：dice rolls → mnemonic（P1-04：seed 不再出 FFI）
+ *   2. export_readonly：mnemonic → ur:crypto-hdkey（只读凭证）
  *   3. sign：mnemonic + crypto-psbt UR → 签名 PSBT
  *
  * 链接：target/release/libshlosilo.a（strip 后 3.37 MB）
@@ -56,6 +56,7 @@ static void cbor_head(uint8_t **p, uint8_t major, uint64_t arg) {
 /* 构造 crypto-psbt UR payload: type_tag(0x00=CryptoPsbt) || CBOR bytes(PSBT) */
 static int build_crypto_psbt_payload(const uint8_t *psbt, size_t psbt_len,
                                      uint8_t *out, size_t out_cap) {
+    (void)out_cap;
     uint8_t *p = out;
     *p++ = 0x00; /* UrTypeTag::CryptoPsbt */
     cbor_head(&p, 2, psbt_len);
@@ -140,32 +141,36 @@ int main(void) {
                               SHLOSILO_CABI_VERSION_PATCH) == 0,
           "cabi check");
 
-    /* ── Step 1: create_account ── */
-    uint8_t rolls[12] = {3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4};
+    /* ── Step 1: create_account（P1-04：只出 mnemonic，无 seed）── */
+    /* P0-01：12 词需 minimum_rolls(6,128)=64 次 d6 */
+    uint8_t rolls[64];
+    for (int i = 0; i < 64; i++) rolls[i] = (uint8_t)(i % 6) + 1;
     uint8_t mnemonic_buf[24] = {0};
-    uint8_t seed[64];
-    int rc = shlosilo_create_account_ffi(12, 6, rolls, 12, NULL, 0,
-                                         mnemonic_buf, sizeof(mnemonic_buf), seed);
+    int rc = shlosilo_create_account_ffi(12, 6, rolls, sizeof(rolls), NULL, 0,
+                                         mnemonic_buf, sizeof(mnemonic_buf));
     CHECK(rc == 0, "create_account");
     uint16_t idx0 = (uint16_t)(mnemonic_buf[0] | (mnemonic_buf[1] << 8));
-    printf("create_account ok: word0 index=%u, seed[0..8]=",
+    printf("create_account ok: word0 index=%u (seed not exported — P1-04)\n",
            idx0);
-    for (int i = 0; i < 8; i++) printf("%02x", seed[i]);
-    printf("\n");
 
     /* ── Step 2: export_readonly (crypto-hdkey) ── */
     uint32_t path_elems[5] = {44 | 0x80000000u, 0 | 0x80000000u,
                               0 | 0x80000000u, 0, 0};
     uint8_t export_buf[2048];
     unsigned export_len = 0;
-    rc = shlosilo_export_readonly_ffi(seed, 0 /* mainnet */, path_elems, 5,
-                                      0 /* CryptoHdKey */, export_buf,
-                                      sizeof(export_buf), &export_len);
+    /* P1-04：mnemonic indices 直接当输入（库内现场恢复 seed） */
+    uint16_t indices[12];
+    for (int i = 0; i < 12; i++) {
+        indices[i] = (uint16_t)(mnemonic_buf[i * 2] | (mnemonic_buf[i * 2 + 1] << 8));
+    }
+    rc = shlosilo_export_readonly_ffi(indices, 12, NULL, 0, 0 /* mainnet */,
+                                      path_elems, 5, 0 /* CryptoHdKey */,
+                                      export_buf, sizeof(export_buf), &export_len);
     CHECK(rc == 0, "export_readonly");
     printf("export_readonly ok: %.*s\n", (int)export_len, export_buf);
 
-    /* ── Step 3: 从 seed 派生 BTC key，构造 PSBT fixture ── */
-    /* 这里直接用 restore_seed 得到的 seed + 固定路径派生的公钥。
+    /* ── Step 3: 构造 PSBT fixture ── */
+    /* 公钥来自库内导出的 hdkey（P1-04：L3 侧无 seed 可用，也不需要）。
        为了让 C 端独立于 Rust 测试代码，用固定测试私钥的公钥：
        sk = 0x0101...01 的压缩公钥（与 keystone cross-validation 同源）。 */
     static const uint8_t test_compressed_pk[33] = {
@@ -183,14 +188,9 @@ int main(void) {
     size_t psbt_len = build_test_psbt(test_compressed_pk, test_pk_hash,
                                       psbt, sizeof(psbt));
     uint8_t payload[1024];
-    int payload_len =
-        build_crypto_psbt_payload(psbt, psbt_len, payload, sizeof(payload));
+    (void)build_crypto_psbt_payload(psbt, psbt_len, payload, sizeof(payload));
 
     /* ── Step 4: sign via UR（P6.1d：L3 直接喂 UR 字符串）── */
-    uint16_t indices[12];
-    for (int i = 0; i < 12; i++) {
-        indices[i] = (uint16_t)(mnemonic_buf[i * 2] | (mnemonic_buf[i * 2 + 1] << 8));
-    }
     uint8_t signed_out[4096];
     unsigned actual = 0;
 
@@ -200,7 +200,7 @@ int main(void) {
 
     /* 4a. 非 UR 输入 → 错误码 */
     const char *bad_uri = "not-a-ur";
-    rc = shlosilo_sign_ur_ffi(bad_uri, indices, 12, NULL, 0, 0,
+    rc = shlosilo_sign_ur_ffi(bad_uri, indices, 12, NULL, 0, 0, NULL, 0,
                               signed_out, sizeof(signed_out), &actual);
     printf("sign_ur(bad) rc=%d (expected != 0)\n", rc);
 
@@ -208,8 +208,8 @@ int main(void) {
        所以用固定测试向量（Rust 测试生成的 eth-sign-request 单分片 UR）。
        P6.1d 完成后此向量替换为 Sparrow/MetaMask 真实导出。 */
     const char *fixture_uri =
-        "ur:eth-sign-request/adaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalasrjpbdwz";
-    rc = shlosilo_sign_ur_ffi(fixture_uri, indices, 12, NULL, 0, 0,
+        "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
+    rc = shlosilo_sign_ur_ffi(fixture_uri, indices, 12, NULL, 0, 0, NULL, 0,
                               signed_out, sizeof(signed_out), &actual);
     if (rc == 0) {
         hexdump("signed tx", signed_out, actual);
