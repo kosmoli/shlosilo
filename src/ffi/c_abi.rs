@@ -49,6 +49,14 @@ fn err(kind: ShlosiloErrorKind) -> ShlosiloError {
     ShlosiloError::new(kind)
 }
 
+// ─── P2-03：FFI 入口资源上限（外部 payload 预算）───
+/// passphrase 上限：BIP-39 无协议上限，BIP-32 实践 ≤ 256B；超长视为非法输入
+const PASSPHRASE_MAX_LEN: usize = 256;
+/// dice rolls 上限：24 词 = 256 bit 熵，6 面骰需 ≥ 99 rolls；1024 已超裕量
+const ROLLS_MAX_COUNT: usize = 1024;
+/// 遗留 sign_ffi payload 上限（与 UR_PAYLOAD_MAX_LEN 对齐）
+const LEGACY_PAYLOAD_MAX_LEN: usize = 2048;
+
 /// 把实际长度写回 out-param；null 指针允许（调用方可以只查状态）
 fn write_actual_len(ptr: *mut c_uint, len: usize) {
     if !ptr.is_null() {
@@ -92,9 +100,15 @@ pub extern "C" fn shlosilo_sign_ffi(
 
         let mnem_slice =
             unsafe { slice::from_raw_parts(mnemonic_indices, mnemonic_count as usize) };
+        if ur_payload_len as usize > LEGACY_PAYLOAD_MAX_LEN {
+            return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
         let payload_slice = unsafe { slice::from_raw_parts(ur_payload, ur_payload_len as usize) };
         let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
         let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
+        if pass_slice.len() > PASSPHRASE_MAX_LEN {
+            return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
 
         let word_count = WordCount::try_from_count(mnemonic_count as usize)
             .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
@@ -179,6 +193,9 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
             unsafe { slice::from_raw_parts(mnemonic_indices, mnemonic_count as usize) };
         let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
         let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
+        if pass_slice.len() > PASSPHRASE_MAX_LEN {
+            return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
 
         let word_count = WordCount::try_from_count(mnemonic_count as usize)
             .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
@@ -282,11 +299,17 @@ pub extern "C" fn shlosilo_create_account_ffi(
     }
     let result = ffi_catch_unwind!(|| -> Result<(), ShlosiloError> {
 
+        if rolls_count as usize > ROLLS_MAX_COUNT {
+            return Err(err(ShlosiloErrorKind::DiceRollsInvalidCount));
+        }
         let rolls_slice = unsafe { slice::from_raw_parts(rolls, rolls_count as usize) };
         let mnemonic_slice =
             unsafe { slice::from_raw_parts_mut(mnemonic_buf, mnemonic_buf_len as usize) };
         let seed_slice = unsafe { slice::from_raw_parts_mut(seed_out, 64) };
         let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
+        if pass_slice.len() > PASSPHRASE_MAX_LEN {
+            return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
 
         let wc = WordCount::try_from_count(word_count as usize)
             .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
@@ -327,6 +350,9 @@ pub extern "C" fn shlosilo_restore_seed_ffi(
             unsafe { slice::from_raw_parts(mnemonic_indices, mnemonic_count as usize) };
         let seed_slice = unsafe { slice::from_raw_parts_mut(seed_out, 64) };
         let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
+        if pass_slice.len() > PASSPHRASE_MAX_LEN {
+            return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
 
         let wc = WordCount::try_from_count(mnemonic_count as usize)
             .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
@@ -589,6 +615,77 @@ mod tests {
         );
         assert_eq!(rc, OK);
         assert_eq!(p, 5);
+    }
+
+    // ── P2-03：FFI 入口资源上限 ──
+
+    /// passphrase 超上限（>256B）→ EncodingInvalidFormat
+    #[test]
+    fn ffi_passphrase_over_limit_rejected() {
+        let idx: [u16; 12] = [0; 12];
+        let long_pass = [0x41u8; 257]; // 257 > 256
+        let mut seed_out = [0u8; 64];
+        let rc = shlosilo_restore_seed_ffi(
+            idx.as_ptr(),
+            12,
+            long_pass.as_ptr(),
+            long_pass.len() as c_uint,
+            seed_out.as_mut_ptr(),
+        );
+        assert_eq!(rc, ShlosiloErrorKind::EncodingInvalidFormat as i32);
+        // 256 = 上限内 → 通过（合法 checksum 向量：abandon×11 + about）
+        let ok_pass = [0x41u8; 256];
+        let idx_ok: [u16; 12] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3];
+        let rc = shlosilo_restore_seed_ffi(
+            idx_ok.as_ptr(),
+            12,
+            ok_pass.as_ptr(),
+            ok_pass.len() as c_uint,
+            seed_out.as_mut_ptr(),
+        );
+        assert_eq!(rc, OK, "256B passphrase should pass, rc={rc}");
+    }
+
+    /// dice rolls 超上限（>1024）→ DiceRollsInvalidCount
+    #[test]
+    fn ffi_rolls_over_limit_rejected() {
+        let rolls = [1u8; 1025];
+        let mut mnemonic_buf = [0u8; 24];
+        let mut seed_out = [0u8; 64];
+        let rc = shlosilo_create_account_ffi(
+            12,
+            6,
+            rolls.as_ptr(),
+            rolls.len() as c_uint,
+            null(),
+            0,
+            mnemonic_buf.as_mut_ptr(),
+            mnemonic_buf.len() as c_uint,
+            seed_out.as_mut_ptr(),
+        );
+        assert_eq!(rc, ShlosiloErrorKind::DiceRollsInvalidCount as i32);
+    }
+
+    /// 遗留 sign_ffi payload 超上限（>2048B）→ EncodingInvalidFormat
+    #[test]
+    fn ffi_legacy_payload_over_limit_rejected() {
+        let idx: [u16; 12] = [0; 12];
+        let big_payload = [0u8; 2049];
+        let mut out = [0u8; 4096];
+        let mut actual: c_uint = 0;
+        let rc = shlosilo_sign_ffi(
+            idx.as_ptr(),
+            12,
+            null(),
+            0,
+            big_payload.as_ptr(),
+            big_payload.len() as c_uint,
+            0, // network
+            out.as_mut_ptr(),
+            out.len() as c_uint,
+            &mut actual,
+        );
+        assert_eq!(rc, ShlosiloErrorKind::EncodingInvalidFormat as i32);
     }
 
     #[test]

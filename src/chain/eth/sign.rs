@@ -7,11 +7,9 @@
 //!
 //! 所有 ETH tx 类型的业务函数复用此模块，避免代码重复。
 
-extern crate alloc;
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
-use alloc::vec::Vec;
 
 /// 计算 y_parity (recovery_id) — 从 (r, s, sighash, sk) 推 R.y parity
 ///
