@@ -71,6 +71,8 @@ pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }  # 
 [dev-dependencies]
 # property-based 测试（Phase 3）
 proptest = "1.4"
+# P1-03 compile-fail：assert_not_impl_any! 常量断言（trybuild 的零进程等价物）
+static_assertions = "1"
 # XMR cross-validation 直接 import curve25519-dalek 做 ECDH + cofactor 参考计算（keystone oracle 复现）
 curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize", "precomputed-tables", "rand_core"] }
 # P1-06 oracle：官方格式 tx 解析器（monero-rs），诊断我们 wire 序列化的偏差

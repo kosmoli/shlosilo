@@ -10,6 +10,7 @@ use crate::derivation::path::DerivationPath;
 use crate::entropy::mnemonic::Mnemonic;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::network::Network;
+use crate::types::SecretBytes;
 use crate::tx::tx_normalize;
 
 extern crate alloc;
@@ -50,17 +51,18 @@ pub fn stub_signature_len(chain_kind: crate::types::chain_kind::ChainKind) -> us
     }
 }
 
-/// 从 SignInput 拿 BIP-39 seed（borrow；Mnemonic 路径现场恢复到栈 buffer）
-fn resolve_seed(sign_input: &SignInput<'_>) -> Result<[u8; 64]> {
+/// 从 SignInput 拿 BIP-39 seed（P1-03：SecretBytes 承载——Mnemonic 路径现场恢复，
+/// restore 写入的栈 buffer 被 take 接管并清零原副本）
+fn resolve_seed(sign_input: &SignInput<'_>) -> Result<SecretBytes<64>> {
     let mut restored = [0u8; 64];
     match sign_input {
-        SignInput::Seed { seed } => Ok(**seed),
+        SignInput::Seed { seed } => Ok(SecretBytes::new(**seed)),
         SignInput::Mnemonic {
             mnemonic,
             passphrase,
         } => {
             crate::business::restore_seed::restore_seed(mnemonic, passphrase, &mut restored)?;
-            Ok(restored)
+            Ok(SecretBytes::take(&mut restored))
         }
     }
 }
@@ -110,15 +112,15 @@ pub fn sign_with_entropy(
 
     match chain_kind {
         crate::types::chain_kind::ChainKind::Btc => {
-            let n = sign_btc(&seed, payload, output_buf)?;
+            let n = sign_btc(seed.expose(), payload, output_buf)?;
             Ok(n)
         }
         crate::types::chain_kind::ChainKind::Eth => {
-            let n = sign_eth(&seed, payload, output_buf)?;
+            let n = sign_eth(seed.expose(), payload, output_buf)?;
             Ok(n)
         }
         crate::types::chain_kind::ChainKind::Xmr => {
-            let n = sign_xmr(&seed, payload, entropy, output_buf)?;
+            let n = sign_xmr(seed.expose(), payload, entropy, output_buf)?;
             Ok(n)
         }
         _ => Err(err(ShlosiloErrorKind::ChainKindUnsupported)),
@@ -431,7 +433,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             &mut psbt,
             &psbt_mod::PsbtSignInput {
                 input_index: idx,
-                private_key: sk_bytes,
+                private_key: SecretBytes::new(sk_bytes),
                 pubkey_hash,
                 amount,
             },
@@ -486,7 +488,7 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
 
     let signed = eip1559::sign_eip1559(&eip1559::Eip1559SignInput {
         tx,
-        private_key: sk_bytes,
+        private_key: SecretBytes::new(sk_bytes),
     })?;
     if output_buf.len() < signed.tx_bytes.len() {
         return Err(ShlosiloError::with_context(
@@ -643,7 +645,7 @@ mod tests {
         let direct = crate::chain::eth::eip1559::sign_eip1559(
             &crate::chain::eth::eip1559::Eip1559SignInput {
                 tx: tx.clone(),
-                private_key: crate::curve_primitive::secp256k1::scalar_to_bytes(&sk),
+                private_key: SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk)),
             },
         )
         .unwrap();
@@ -659,7 +661,7 @@ mod tests {
         let expected = crate::chain::eth::eip1559::sign_eip1559(
             &crate::chain::eth::eip1559::Eip1559SignInput {
                 tx: tx.clone(),
-                private_key: derived_bytes,
+                private_key: SecretBytes::new(derived_bytes),
             },
         )
         .unwrap();
@@ -1102,7 +1104,7 @@ mod tests {
         let expected = crate::chain::eth::eip1559::sign_eip1559(
             &crate::chain::eth::eip1559::Eip1559SignInput {
                 tx: tx.clone(),
-                private_key: derived_bytes,
+                private_key: SecretBytes::new(derived_bytes),
             },
         )
         .unwrap();

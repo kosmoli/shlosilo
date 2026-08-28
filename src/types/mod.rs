@@ -5,3 +5,6 @@
 //!   - 其他共享类型
 
 pub mod chain_kind;
+pub mod secret_bytes;
+
+pub use secret_bytes::SecretBytes;

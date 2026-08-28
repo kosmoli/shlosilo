@@ -57,7 +57,8 @@ const SCALAR_LEN: usize = 32;
 const COMPRESSED_POINT_LEN: usize = 33;
 
 /// BIP-32 扩展私钥包装
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+// P1-03：禁 Clone（v2-安全 §2）
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct ExtendedPrivKey {
     bytes: [u8; EXTENDED_PRIVKEY_LEN],
 }

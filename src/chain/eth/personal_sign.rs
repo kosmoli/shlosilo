@@ -15,14 +15,15 @@ use alloc::vec::Vec;
 use crate::chain::eth::sign;
 use crate::encoding::keccak256;
 use crate::error::Result;
+use crate::types::SecretBytes;
 
 /// personal_sign 输入
-#[derive(Clone, Debug)]
+/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
 pub struct PersonalSignInput {
     /// 待签名任意 UTF-8 字符串
     pub message: Vec<u8>,
     /// 32 字节私钥
-    pub private_key: [u8; 32],
+    pub private_key: SecretBytes<32>,
 }
 
 /// personal_sign 输出: 65 字节签名 (r || s || v)
@@ -56,7 +57,7 @@ pub fn personal_sign(input: &PersonalSignInput) -> Result<PersonalSignature> {
     let sighash = personal_signing_hash(&input.message)?;
 
     // private_key: [u8; 32] → Secp256k1Scalar
-    let sk = sign::sk_from_pk(&input.private_key)?;
+    let sk = sign::sk_from_pk(input.private_key.expose())?;
 
     let mut r_bytes = [0u8; 32];
     let mut s_bytes = [0u8; 32];
@@ -189,7 +190,7 @@ mod tests {
 
         let input = PersonalSignInput {
             message: b"test message".to_vec(),
-            private_key: pk,
+            private_key: SecretBytes::new(pk),
         };
         let sig = personal_sign(&input).unwrap();
 
@@ -216,7 +217,7 @@ mod tests {
 
         let input1 = PersonalSignInput {
             message: msg.to_vec(),
-            private_key: pk,
+            private_key: SecretBytes::new(pk),
         };
         let sig1 = personal_sign(&input1).unwrap();
         let sig2 = personal_sign(&input1).unwrap();
@@ -238,7 +239,7 @@ mod tests {
 
         let input = PersonalSignInput {
             message: b"Hello, world!".to_vec(),
-            private_key: pk_bytes,
+            private_key: SecretBytes::new(pk_bytes),
         };
 
         // 1. 签名

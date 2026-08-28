@@ -29,6 +29,7 @@
     extern crate alloc;
 use crate::chain::eth::sign;
 use crate::encoding::keccak256;
+use crate::types::SecretBytes;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -387,13 +388,13 @@ pub fn signing_hash(
 }
 
 /// EIP-712 签名输入
-#[derive(Clone, Debug)]
+/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
 pub struct Eip712SignInput {
     pub domain: Eip712Domain,
     pub primary_type: String,
     pub message: Eip712Value,
     pub types: Types,
-    pub private_key: [u8; 32],
+    pub private_key: SecretBytes<32>,
 }
 
 /// EIP-712 签名输出
@@ -408,7 +409,7 @@ pub struct Eip712SignedTx {
 
 /// 签名 EIP-712 typed data
 pub fn sign_eip712(input: &Eip712SignInput) -> Result<Eip712SignedTx> {
-    let sk = sign::sk_from_pk(&input.private_key)?;
+    let sk = sign::sk_from_pk(input.private_key.expose())?;
     let sighash = signing_hash(&input.domain, &input.primary_type, &input.message, &input.types)?;
 
     let mut r_bytes = [0u8; 32];
@@ -455,7 +456,7 @@ impl TypedData {
     }
 
     /// 签名 (复用于 v9.1 的 sign_eip712)
-    pub fn sign(&self, private_key: [u8; 32]) -> Result<Eip712SignedTx> {
+    pub fn sign(&self, private_key: SecretBytes<32>) -> Result<Eip712SignedTx> {
         let input = Eip712SignInput {
             domain: self.domain.clone(),
             primary_type: self.primary_type.clone(),
@@ -1491,6 +1492,7 @@ mod tests {
             hex_decode("c85ef7d16391b42513a3f97753017c4d7343c8406e034a8cbf16d6dc7c6e3c89");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let types = mail_types();
         let domain = Eip712Domain {
@@ -1572,6 +1574,7 @@ mod tests {
             hex_decode("4646464646464646464646464646464646464646464646464646464646464646");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let types = mail_types();
         let domain = Eip712Domain {
@@ -1814,6 +1817,7 @@ mod tests {
             hex_decode("c85ef7d16391b42513a3f97753017c4d7343c8406e034a8cbf16d6dc7c6e3c89");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let json = r#"{
             "types": {

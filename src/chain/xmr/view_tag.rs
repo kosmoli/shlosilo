@@ -105,6 +105,7 @@ pub fn verify_payment(
 mod tests {
     use super::*;
     use crate::chain::xmr::tx_builder::TxKeyPair;
+    use crate::types::SecretBytes;
     use crate::encoding::keccak256;
 
     #[test]
@@ -134,24 +135,24 @@ mod tests {
 
     #[test]
     fn eight_ra_matches_r_times_a_times_8() {
-        let keys = TxKeyPair::from_secret([2u8; 32]).unwrap();
+        let keys = TxKeyPair::from_secret(SecretBytes::new([2u8; 32])).unwrap();
         // view_pub = 3*G
-        let view = TxKeyPair::from_secret([3u8; 32]).unwrap();
-        let d = eight_ra(&keys.secret, &view.public).unwrap();
+        let view = TxKeyPair::from_secret(SecretBytes::new([3u8; 32])).unwrap();
+        let d = eight_ra(keys.secret.expose(), &view.public).unwrap();
         assert_ne!(d, [0u8; 32]);
         // 不同 view → 不同 derivation
-        let view2 = TxKeyPair::from_secret([5u8; 32]).unwrap();
-        assert_ne!(d, eight_ra(&keys.secret, &view2.public).unwrap());
+        let view2 = TxKeyPair::from_secret(SecretBytes::new([5u8; 32])).unwrap();
+        assert_ne!(d, eight_ra(keys.secret.expose(), &view2.public).unwrap());
     }
 
     #[test]
     fn payment_proof_verifies_own_stealth() {
-        let tx = TxKeyPair::from_secret([7u8; 32]).unwrap();
-        let dest_view = TxKeyPair::from_secret([9u8; 32]).unwrap();
-        let dest_spend = TxKeyPair::from_secret([11u8; 32]).unwrap();
-        let eight = eight_ra(&tx.secret, &dest_view.public).unwrap();
+        let tx = TxKeyPair::from_secret(SecretBytes::new([7u8; 32])).unwrap();
+        let dest_view = TxKeyPair::from_secret(SecretBytes::new([9u8; 32])).unwrap();
+        let dest_spend = TxKeyPair::from_secret(SecretBytes::new([11u8; 32])).unwrap();
+        let eight = eight_ra(tx.secret.expose(), &dest_view.public).unwrap();
         let stealth = stealth_address(&eight, 0, &dest_spend.public).unwrap();
-        let proof = export_payment_proof(&tx.secret, &tx.public);
+        let proof = export_payment_proof(tx.secret.expose(), &tx.public);
         assert_eq!(proof.tx_pub, tx.public);
         assert!(verify_payment(
             &proof.tx_secret,

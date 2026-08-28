@@ -42,6 +42,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::chain::btc::p2pkh::sign_p2pkh;
+use crate::types::SecretBytes;
 use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
 use crate::chain::btc::p2wpkh::{sign_p2wpkh, OutPoint, Transaction, TxIn, TxOut};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -443,12 +444,13 @@ pub fn serialize_psbt(psbt: &Psbt) -> Vec<u8> {
 }
 
 /// PSBT 签名输入 (per-input 信息)
-#[derive(Clone, Debug)]
+///
+/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
 pub struct PsbtSignInput {
     /// input index
     pub input_index: usize,
     /// 这个 input 的私钥 (32 bytes)
-    pub private_key: [u8; 32],
+    pub private_key: SecretBytes<32>,
     /// pubkey hash (20 bytes) — P2WPKH witness program
     pub pubkey_hash: [u8; 20],
     /// 这个 input 的 value (satoshis) — 用于 BIP-143 sighash
@@ -471,7 +473,7 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtSignInput) -> Result<(
     // 2. 调用 v9.3 sign_p2wpkh 写入 witness
     let p2wpkh_input = crate::chain::btc::p2wpkh::P2WPKHSignInput {
         input_index: sign_input.input_index,
-        private_key: sign_input.private_key,
+        private_key: &sign_input.private_key,
         amount: sign_input.amount,
         pubkey_hash: sign_input.pubkey_hash,
     };
@@ -497,18 +499,20 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtSignInput) -> Result<(
 }
 
 /// PSBT 签名输入 (P2PKH 专用, 不需要 amount)
-#[derive(Clone, Debug)]
+///
+/// P1-03：私钥走 `SecretBytes<32>`。
 pub struct PsbtP2PKHSignInput {
     pub input_index: usize,
-    pub private_key: [u8; 32],
+    pub private_key: SecretBytes<32>,
     pub pubkey_hash: [u8; 20],
 }
 
 /// PSBT 签名输入 (P2SH-P2WPKH 专用, 需要 amount)
-#[derive(Clone, Debug)]
+///
+/// P1-03：私钥走 `SecretBytes<32>`。
 pub struct PsbtP2SHP2WPKHSignInput {
     pub input_index: usize,
-    pub private_key: [u8; 32],
+    pub private_key: SecretBytes<32>,
     pub pubkey_hash: [u8; 20],
     pub amount: u64,
 }
@@ -529,7 +533,7 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt, sign_input: &PsbtP2PKHSignInput) -> Resu
     // 2. 调用 v9.3 sign_p2pkh
     let p2pkh_input = crate::chain::btc::p2pkh::P2PKHSignInput {
         input_index: sign_input.input_index,
-        private_key: sign_input.private_key,
+        private_key: &sign_input.private_key,
         pubkey_hash: sign_input.pubkey_hash,
     };
     let _signed = sign_p2pkh(&mut tx, &p2pkh_input)?;
@@ -569,7 +573,7 @@ pub fn sign_psbt_p2sh_p2wpkh(
     // 2. 调用 v9.3 sign_p2sh_p2wpkh
     let p2sh_input = crate::chain::btc::p2sh::P2SHP2WPKHSignInput {
         input_index: sign_input.input_index,
-        private_key: sign_input.private_key,
+        private_key: &sign_input.private_key,
         pubkey_hash: sign_input.pubkey_hash,
         amount: sign_input.amount,
     };
@@ -1022,6 +1026,7 @@ mod tests {
             hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let sign_input = PsbtSignInput {
             input_index: 0,
@@ -1068,7 +1073,7 @@ mod tests {
         let mut psbt = psbt;
         let sign_input = PsbtSignInput {
             input_index: 0,
-            private_key: [0; 32],
+            private_key: SecretBytes::new([0; 32]),
             pubkey_hash: [0; 20],
             amount: 0,
         };
@@ -1118,6 +1123,7 @@ mod tests {
             hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let sign_input = PsbtP2PKHSignInput {
             input_index: 0,
@@ -1162,7 +1168,7 @@ mod tests {
         let mut psbt = psbt;
         let sign_input = PsbtP2PKHSignInput {
             input_index: 0,
-            private_key: [0; 32],
+            private_key: SecretBytes::new([0; 32]),
             pubkey_hash: [0; 20],
         };
         assert!(sign_psbt_p2pkh(&mut psbt, &sign_input).is_err());
@@ -1208,6 +1214,7 @@ mod tests {
             hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let pk_hash = [0x42; 20]; // 与 sign_p2sh_p2wpkh 一致
 
@@ -1263,7 +1270,7 @@ mod tests {
         let mut psbt = psbt;
         let sign_input = PsbtP2SHP2WPKHSignInput {
             input_index: 0,
-            private_key: [0; 32],
+            private_key: SecretBytes::new([0; 32]),
             pubkey_hash: [0; 20],
             amount: 0,
         };

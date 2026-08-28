@@ -30,6 +30,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+use crate::types::SecretBytes;
 use crate::chain::btc::p2wpkh::{
     encode_varint, segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL,
 };
@@ -55,12 +56,13 @@ pub fn p2pkh_script_pubkey(pubkey_hash: &[u8; 20]) -> Vec<u8> {
 }
 
 /// P2PKH 签名输入 (per-input 信息)
-#[derive(Clone, Debug)]
-pub struct P2PKHSignInput {
+///
+/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+pub struct P2PKHSignInput<'k> {
     /// 正在签名的 input index
     pub input_index: usize,
-    /// 这个 input 的私钥 (32 bytes)
-    pub private_key: [u8; 32],
+    /// 这个 input 的私钥 (32 bytes)——借用，零副本转发
+    pub private_key: &'k SecretBytes<32>,
     /// pubkey hash (20 bytes)
     pub pubkey_hash: [u8; 20],
 }
@@ -78,7 +80,7 @@ pub struct P2PKHSignedTx {
 ///
 /// **副作用**: 修改 `tx.inputs[input_index].script_sig` (注入签名 + pubkey),
 /// 设置其他 inputs 的 script_sig 为空.
-pub fn sign_p2pkh(tx: &mut Transaction, input: &P2PKHSignInput) -> Result<P2PKHSignedTx> {
+pub fn sign_p2pkh(tx: &mut Transaction, input: &P2PKHSignInput<'_>) -> Result<P2PKHSignedTx> {
     if input.input_index >= tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -94,7 +96,7 @@ pub fn sign_p2pkh(tx: &mut Transaction, input: &P2PKHSignInput) -> Result<P2PKHS
     )?;
 
     // 2. ECDSA 签名 (DER + sighash byte)
-    let sig_scalar = scalar_from_bytes(&input.private_key)?;
+    let sig_scalar = scalar_from_bytes(input.private_key.expose())?;
     let pk_point = base_mul(&sig_scalar);
     let pk_compressed = point_to_compressed(&pk_point);
 
@@ -238,12 +240,13 @@ mod tests {
             hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let pubkey_hash = [0x42; 20];
 
         let input = P2PKHSignInput {
             input_index: 0,
-            private_key,
+            private_key: &private_key,
             pubkey_hash,
         };
 
@@ -337,7 +340,7 @@ mod tests {
 
         let input = P2PKHSignInput {
             input_index: 0,
-            private_key: [1u8; 32],
+            private_key: &SecretBytes::new([1u8; 32]),
             pubkey_hash: [0x42; 20],
         };
 
@@ -362,7 +365,7 @@ mod tests {
         };
         let input = P2PKHSignInput {
             input_index: 0,
-            private_key: [1u8; 32],
+            private_key: &SecretBytes::new([1u8; 32]),
             pubkey_hash: [0u8; 20],
         };
         let mut tx = tx;
@@ -391,7 +394,7 @@ mod tests {
 
         let input = P2PKHSignInput {
             input_index: 0,
-            private_key: [2u8; 32],
+            private_key: &SecretBytes::new([2u8; 32]),
             pubkey_hash: [0x42; 20],
         };
 

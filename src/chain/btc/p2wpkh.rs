@@ -39,6 +39,7 @@
 //! BIP-143 Native P2WPKH 官方 test vector（已验证 sighash + signature + 完整 signed tx）
 
 extern crate alloc;
+use crate::types::SecretBytes;
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -264,12 +265,13 @@ pub fn segwit_sighash_p2wpkh(
 // ─── P2WPKH 签名业务 ───────────────────────────────────────────────
 
 /// P2WPKH 签名输入（per-input 信息）
-#[derive(Clone, Debug)]
-pub struct P2WPKHSignInput {
+///
+/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+pub struct P2WPKHSignInput<'k> {
     /// 正在签名的 input index
     pub input_index: usize,
-    /// 这个 input 的私钥（32 bytes）
-    pub private_key: [u8; 32],
+    /// 这个 input 的私钥（32 bytes）——借用，零副本转发
+    pub private_key: &'k SecretBytes<32>,
     /// 这个 input 的 value (satoshis)
     pub amount: u64,
     /// pubkey hash (20 bytes) = witness program
@@ -294,7 +296,7 @@ pub struct P2WPKHSignedTx {
 /// 5. 序列化完整交易 (BIP-144 segwit format)
 pub fn sign_p2wpkh(
     tx: &mut Transaction,
-    sign_input: &P2WPKHSignInput,
+    sign_input: &P2WPKHSignInput<'_>,
 ) -> Result<P2WPKHSignedTx> {
     // 1. scriptCode = `76a914{20-byte-pubkey-hash}88ac` (raw P2PKH，**不含** length prefix)
         let mut script_code = Vec::with_capacity(25);
@@ -317,7 +319,7 @@ pub fn sign_p2wpkh(
     )?;
 
     // 3. ECDSA sign_prehash
-    let sk = scalar_from_bytes(&sign_input.private_key)?;
+    let sk = scalar_from_bytes(sign_input.private_key.expose())?;
     let sig = ecdsa::sign(&sk, &sighash)?;
 
     // 4. DER + sighash byte
@@ -478,12 +480,13 @@ mod tests {
         assert_eq!(&sighash[..], &expected_sighash[..], "BIP-143 Native P2WPKH sighash mismatch");
 
         // 签名
-        let private_key = {
+        let mut key_buf = {
             let mut k = [0u8; 32];
             k.copy_from_slice(&hex_decode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9").unwrap());
             k
         };
-        let sk = scalar_from_bytes(&private_key).unwrap();
+        let private_key = SecretBytes::take(&mut key_buf);
+        let sk = scalar_from_bytes(private_key.expose()).unwrap();
         let sig = ecdsa::sign(&sk, &sighash).unwrap();
 
         // 预期 signature
@@ -550,11 +553,12 @@ mod tests {
             lock_time: 0x11,
         };
 
-        let private_key = {
+        let mut key_buf = {
             let mut k = [0u8; 32];
             k.copy_from_slice(&hex_decode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9").unwrap());
             k
         };
+        let private_key = SecretBytes::take(&mut key_buf);
 
         let pubkey_hash = {
             let mut p = [0u8; 20];
@@ -564,7 +568,7 @@ mod tests {
 
         let sign_input = P2WPKHSignInput {
             input_index: 1,
-            private_key,
+            private_key: &private_key,
             amount: 600_000_000,
             pubkey_hash,
         };
@@ -679,11 +683,12 @@ mod tests {
             lock_time: 0x11,
         };
 
-        let private_key = {
+        let mut key_buf = {
             let mut k = [0u8; 32];
             k.copy_from_slice(&hex_decode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9").unwrap());
             k
         };
+        let private_key = SecretBytes::take(&mut key_buf);
         let pubkey_hash = {
             let mut p = [0u8; 20];
             p.copy_from_slice(&hex_decode("1d0f172a0ecb48aee1be1f2687d2963ae33f71a1").unwrap());
@@ -692,7 +697,7 @@ mod tests {
 
         let sign_input = P2WPKHSignInput {
             input_index: 1,
-            private_key,
+            private_key: &private_key,
             amount: 600_000_000,
             pubkey_hash,
         };

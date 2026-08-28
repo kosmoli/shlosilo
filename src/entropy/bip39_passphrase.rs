@@ -16,7 +16,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// BIP-39 seed 长度（64 bytes）
 pub const BIP39_SEED_LEN: usize = 64;
 
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+// P1-03：禁 Clone——每 clone 一次 RAM 多一份活跃 seed（v2-安全 §2）
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct Bip39Seed {
     bytes: [u8; BIP39_SEED_LEN],
 }

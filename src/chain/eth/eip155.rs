@@ -39,6 +39,7 @@ use crate::chain::eth::rlp;
 use crate::chain::eth::sign;
 use crate::encoding::keccak256;
 use crate::error::Result;
+use crate::types::SecretBytes;
 use alloc::vec::Vec;
 
 /// EIP-155 Legacy transaction（未签名）
@@ -55,10 +56,11 @@ pub struct Eip155Transaction {
 }
 
 /// 签名输入
-#[derive(Clone, Debug)]
+///
+/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
 pub struct Eip155SignInput {
     pub tx: Eip155Transaction,
-    pub private_key: [u8; 32],
+    pub private_key: SecretBytes<32>,
 }
 
 /// 签名输出
@@ -120,7 +122,7 @@ pub fn signing_preimage(tx: &Eip155Transaction) -> Vec<u8> {
 
 /// 签名 EIP-155 legacy transaction
 pub fn sign_eip155(input: &Eip155SignInput) -> Result<Eip155SignedTx> {
-    let sk = sign::sk_from_pk(&input.private_key)?;
+    let sk = sign::sk_from_pk(input.private_key.expose())?;
 
     // 1. signing hash
     let sighash = signing_hash(&input.tx)?;
@@ -231,6 +233,7 @@ mod tests {
             hex_decode("4646464646464646464646464646464646464646464646464646464646464646");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let tx = Eip155Transaction {
             chain_id: 1,
@@ -270,6 +273,7 @@ mod tests {
             hex_decode("4646464646464646464646464646464646464646464646464646464646464646");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let tx = Eip155Transaction {
             chain_id: 1,

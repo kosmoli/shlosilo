@@ -30,6 +30,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::types::SecretBytes;
 use crate::chain::btc::p2pkh::p2pkh_script_code;
 use crate::chain::btc::p2wpkh::{
     segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL,
@@ -86,12 +87,13 @@ pub fn p2sh_p2wpkh_redeem_script(pubkey_hash: &[u8; 20]) -> [u8; 22] {
 }
 
 /// P2SH-P2WPKH 签名输入 (per-input 信息)
-#[derive(Clone, Debug)]
-pub struct P2SHP2WPKHSignInput {
+///
+/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+pub struct P2SHP2WPKHSignInput<'k> {
     /// 正在签名的 input index
     pub input_index: usize,
-    /// 这个 input 的私钥 (32 bytes)
-    pub private_key: [u8; 32],
+    /// 这个 input 的私钥 (32 bytes)——借用，零副本转发
+    pub private_key: &'k SecretBytes<32>,
     /// pubkey hash (20 bytes) — P2WPKH witness program 内的 pubkey hash
     pub pubkey_hash: [u8; 20],
     /// 这个 input 的 value (satoshis) — 用于 BIP-143 sighash
@@ -114,7 +116,7 @@ pub struct P2SHP2WPKHSignedTx {
 /// - 修改 `tx.inputs[input_index].witness` (注入 signature + pubkey)
 pub fn sign_p2sh_p2wpkh(
     tx: &mut Transaction,
-    input: &P2SHP2WPKHSignInput,
+    input: &P2SHP2WPKHSignInput<'_>,
 ) -> Result<P2SHP2WPKHSignedTx> {
     if input.input_index >= tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -131,7 +133,7 @@ pub fn sign_p2sh_p2wpkh(
     )?;
 
     // 2. ECDSA 签名
-    let sig_scalar = scalar_from_bytes(&input.private_key)?;
+    let sig_scalar = scalar_from_bytes(input.private_key.expose())?;
     let pk_point = base_mul(&sig_scalar);
     let pk_compressed = point_to_compressed(&pk_point);
 
@@ -259,10 +261,11 @@ mod tests {
             hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let input = P2SHP2WPKHSignInput {
             input_index: 0,
-            private_key,
+            private_key: &private_key,
             pubkey_hash: [0x42; 20],
             amount: 300_000,
         };
@@ -307,9 +310,10 @@ mod tests {
             outputs: vec![],
             lock_time: 0,
         };
+        let secret = SecretBytes::new([1u8; 32]);
         let input = P2SHP2WPKHSignInput {
             input_index: 0,
-            private_key: [1u8; 32],
+            private_key: &secret,
             pubkey_hash: [0u8; 20],
             amount: 0,
         };

@@ -55,13 +55,16 @@ use crate::chain::xmr::view_tag::{
 };
 use crate::curve_primitive::ed25519::scalar_to_bytes;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::types::SecretBytes;
 
 /// 一次性密钥对 (per-tx, EphemeralKeyPair in keystone 命名)
-#[derive(Clone, Debug)]
+///
+/// P1-03：`secret` 走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+/// 整个结构体不再 derive Clone/Debug（secret 字段主导纪律）。
 pub struct TxKeyPair {
     /// tx_secret_key (32 bytes reduced scalar)
-    pub secret: [u8; 32],
-    /// tx_pub_key (32 bytes compressed Ed25519 point)
+    pub secret: SecretBytes<32>,
+    /// tx_pub_key (32 bytes compressed Ed25519 point)——公开材料
     pub public: [u8; 32],
 }
 
@@ -72,12 +75,13 @@ impl TxKeyPair {
         rng.fill_bytes(&mut secret_bytes);
         // reduce to valid scalar
         let reduced = reduce_scalar(&secret_bytes)?;
-        Self::from_secret(scalar_to_bytes(&reduced))
+        let mut reduced_bytes = scalar_to_bytes(&reduced);
+        Self::from_secret(SecretBytes::take(&mut reduced_bytes))
     }
 
-    /// 从已 reduced secret 构造
-    pub fn from_secret(secret: [u8; 32]) -> Result<Self> {
-        let dalek = DScalar::from_bytes_mod_order(secret);
+    /// 从已 reduced secret 构造（取得所有权，零副本）
+    pub fn from_secret(secret: SecretBytes<32>) -> Result<Self> {
+        let dalek = DScalar::from_bytes_mod_order(*secret.expose());
         let point = ED25519_BASEPOINT_TABLE * &dalek;
         let compressed = point.compress();
         Ok(Self {
@@ -127,31 +131,33 @@ pub fn decrypt_amount(encrypted: &[u8; 8], shared_key: &[u8; 32]) -> u64 {
 }
 
 /// Tx input specification (for tx builder)
-#[derive(Clone, Debug)]
+///
+/// P1-03：spend_key / real_mask / pseudo_mask 走 `SecretBytes<32>`——不 Clone 不 Debug。
 pub struct TxInputSpec {
     /// key offsets (ring members' relative offsets)
     pub key_offsets: Vec<u64>,
     /// real index in ring (which member is the real spend)
     pub real_index: u8,
     /// real spend key (32 bytes reduced scalar)
-    pub spend_key: [u8; 32],
+    pub spend_key: SecretBytes<32>,
     /// real mask (32 bytes reduced scalar)
-    pub real_mask: [u8; 32],
+    pub real_mask: SecretBytes<32>,
     /// ring members' pubkeys (CompressedPoint, real + decoys)
     pub ring_pubkeys: Vec<CompressedPoint>,
     /// ring members' commitments (MoneroCommitment, real + decoys)
     pub ring_commitments: Vec<MoneroCommitment>,
     /// pseudo mask (32 bytes reduced scalar) for CLSAG balance
-    pub pseudo_mask: [u8; 32],
+    pub pseudo_mask: SecretBytes<32>,
 }
 
 /// Tx output specification (for tx builder)
-#[derive(Clone, Debug)]
+///
+/// P1-03：mask 走 `SecretBytes<32>`——不 Clone 不 Debug。
 pub struct TxOutputSpec {
     /// output amount
     pub amount: u64,
     /// output mask (32 bytes reduced scalar)
-    pub mask: [u8; 32],
+    pub mask: SecretBytes<32>,
     /// 调用方预计算的 stealth；有 dest 公钥时会被重算覆盖
     pub stealth_address: [u8; 32],
     /// 收款地址 view 公钥 A（有 A+B 时写 type 0x03 + view tag）
@@ -202,12 +208,13 @@ fn resolve_tx_output(
 }
 
 /// End-to-end tx builder result
-#[derive(Clone, Debug)]
+///
+/// P1-03：`tx_secret`（payment proof 的 r）走 `SecretBytes<32>`——不 Clone 不 Debug。
 pub struct SignedTx {
     pub transaction: Transaction,
     pub tx_pub_key: [u8; 32],
     /// per-tx secret r（payment proof 导出）
-    pub tx_secret: [u8; 32],
+    pub tx_secret: SecretBytes<32>,
     pub rct_sig: RctSig,
     /// outputs' encrypted amounts (separate from RctSig for hash)
     pub encrypted_amounts: Vec<[u8; 8]>,
@@ -239,7 +246,7 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
     for (i, output) in outputs.iter().enumerate() {
         let shared_key = match output.dest_view_pub {
             Some(view) => {
-                let eight = eight_ra(&tx_keys.secret, &view)?;
+                let eight = eight_ra(tx_keys.secret.expose(), &view)?;
                 let mut buf = Vec::with_capacity(33);
                 buf.extend_from_slice(&eight);
                 encode_varint(&mut buf, i as u64);
@@ -250,7 +257,7 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
         let encrypted = encrypt_amount(output.amount, &shared_key);
         encrypted_amounts.push(encrypted);
 
-        let mask = bytes_to_monerod_scalar(&output.mask);
+        let mask = bytes_to_monerod_scalar(output.mask.expose());
         let c = MoneroCommitment::new(mask, output.amount);
         commitments.push(c);
     }
@@ -258,7 +265,7 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
     // 3. Pseudo outs per input
     let mut pseudo_outs = Vec::with_capacity(inputs.len());
     for input in inputs {
-        let pm = bytes_to_monerod_scalar(&input.pseudo_mask);
+        let pm = bytes_to_monerod_scalar(input.pseudo_mask.expose());
         pseudo_outs.push(pseudo_out_commitment(&pm));
     }
 
@@ -270,7 +277,7 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
     let mut extra = TxExtra::new().with_tx_pub_key(tx_keys.public);
     let mut tx_outputs = Vec::with_capacity(outputs.len());
     for (i, spec) in outputs.iter().enumerate() {
-        let (out, enc_pid, add_key) = resolve_tx_output(&tx_keys.secret, i as u64, spec)?;
+        let (out, enc_pid, add_key) = resolve_tx_output(tx_keys.secret.expose(), i as u64, spec)?;
         if extra.encrypted_payment_id.is_none() {
             if let Some(enc) = enc_pid {
                 extra = extra.with_encrypted_payment_id(enc);
@@ -287,7 +294,7 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
     for input in inputs {
         tx_inputs.push(TxInput {
             key_offsets: input.key_offsets.clone(),
-            key_image: clsag_mod::derive_key_image(&input.spend_key)?,
+            key_image: clsag_mod::derive_key_image(input.spend_key.expose())?,
         });
     }
 
@@ -316,12 +323,12 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
         let input_amount = (total_out + fee) / inputs.len() as u64;
 
         let (clsag_proof, _key_image, pseudo_out_bytes) = clsag_mod::sign(
-            &input.spend_key,
+            input.spend_key.expose(),
             &ring,
             input.real_index,
-            &input.real_mask,
+            input.real_mask.expose(),
             input_amount,
-            &input.pseudo_mask,
+            input.pseudo_mask.expose(),
             &msg_hash,
             rng,
         )?;
@@ -509,6 +516,44 @@ mod tests {
     }
 
     /// TxKeyPair 派生 + verify
+
+    // P1-03：TxInputSpec/TxOutputSpec 含 SecretBytes（不可 Clone）——helper 重建替代 clone
+    fn mk_input_spec() -> TxInputSpec {
+        let spend_key = scalar_to_bytes(&rs(&[0x11u8; 32]).unwrap());
+        let real_mask = scalar_to_bytes(&rs(&[0x22u8; 32]).unwrap());
+        let spend_dalek = DScalar::from_bytes_mod_order(spend_key);
+        let real_pub = CompressedPoint::from((ED25519_BASEPOINT_TABLE * &spend_dalek).compress().to_bytes());
+        let real_commit =
+            MoneroCommitment::new(bytes_to_monerod_scalar(&real_mask), 100_000_000_000);
+        let decoy_dalek = DScalar::from_bytes_mod_order(scalar_to_bytes(&rs(&[0x99u8; 32]).unwrap()));
+        let decoy_pub =
+            CompressedPoint::from((ED25519_BASEPOINT_TABLE * &decoy_dalek).compress().to_bytes());
+        let decoy_commit = MoneroCommitment::new(
+            bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap())),
+            100_000_000_000,
+        );
+        TxInputSpec {
+            key_offsets: vec![1, 2],
+            real_index: 0,
+            spend_key: SecretBytes::new(spend_key),
+            real_mask: SecretBytes::new(real_mask),
+            ring_pubkeys: vec![real_pub, decoy_pub],
+            ring_commitments: vec![real_commit, decoy_commit],
+            pseudo_mask: SecretBytes::new(scalar_to_bytes(&rs(&[0x33u8; 32]).unwrap())),
+        }
+    }
+    fn mk_output_spec() -> TxOutputSpec {
+        TxOutputSpec {
+            amount: 99_999_900_000,
+            mask: SecretBytes::new(scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap())),
+            stealth_address: [0xccu8; 32],
+            dest_view_pub: None,
+            dest_spend_pub: None,
+            payment_id: None,
+            is_subaddress: false,
+        }
+    }
+
     #[test]
     fn tx_keypair_generation() {
         let mut rng = OsRng;
@@ -577,17 +622,17 @@ mod tests {
         let input_spec = TxInputSpec {
             key_offsets: vec![1, 2],
             real_index: 0,
-            spend_key,
-            real_mask,
+            spend_key: SecretBytes::new(spend_key),
+            real_mask: SecretBytes::new(real_mask),
             ring_pubkeys: vec![real_pub, decoy_pub],
             ring_commitments: vec![real_commit.clone(), decoy_commit],
-            pseudo_mask,
+            pseudo_mask: SecretBytes::new(pseudo_mask),
         };
 
         // 7. TxOutputSpec
         let output_spec = TxOutputSpec {
             amount: amount_out,
-            mask: out_mask,
+            mask: SecretBytes::new(out_mask),
             stealth_address,
             dest_view_pub: None,
             dest_spend_pub: None,
@@ -596,7 +641,7 @@ mod tests {
         };
 
         // 8. Sign
-        let signed = build_and_sign_tx(&[input_spec.clone()], &[output_spec.clone()], fee, &mut rng).unwrap();
+        let signed = build_and_sign_tx(&[mk_input_spec()], &[mk_output_spec()], fee, &mut rng).unwrap();
 
         eprintln!(
             "Tx: {} bytes, tx_pub_key: {}",
@@ -647,16 +692,16 @@ mod tests {
         let input_spec = TxInputSpec {
             key_offsets: vec![1],
             real_index: 0,
-            spend_key,
-            real_mask,
+            spend_key: SecretBytes::new(spend_key),
+            real_mask: SecretBytes::new(real_mask),
             ring_pubkeys: vec![real_pub, decoy_pub],
             ring_commitments: vec![real_commit, decoy_commit],
-            pseudo_mask,
+            pseudo_mask: SecretBytes::new(pseudo_mask),
         };
 
         let output_spec = TxOutputSpec {
             amount: 900,
-            mask: scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap()),
+            mask: SecretBytes::new(scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap())),
             stealth_address: [0xcc; 32],
             dest_view_pub: None,
             dest_spend_pub: None,
@@ -707,16 +752,16 @@ mod tests {
         let input_spec = TxInputSpec {
             key_offsets: vec![1],
             real_index: 0,
-            spend_key,
-            real_mask,
+            spend_key: SecretBytes::new(spend_key),
+            real_mask: SecretBytes::new(real_mask),
             ring_pubkeys: vec![real_pub, decoy_pub],
             ring_commitments: vec![real_commit, decoy_commit],
-            pseudo_mask,
+            pseudo_mask: SecretBytes::new(pseudo_mask),
         };
 
         let out1 = TxOutputSpec {
             amount: 800,
-            mask: scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap()),
+            mask: SecretBytes::new(scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap())),
             stealth_address: [0xcc; 32],
             dest_view_pub: None,
             dest_spend_pub: None,
@@ -725,7 +770,7 @@ mod tests {
         };
         let out2 = TxOutputSpec {
             amount: 1100,
-            mask: scalar_to_bytes(&rs(&[0x55u8; 32]).unwrap()),
+            mask: SecretBytes::new(scalar_to_bytes(&rs(&[0x55u8; 32]).unwrap())),
             stealth_address: [0xdd; 32],
             dest_view_pub: None,
             dest_spend_pub: None,
@@ -765,22 +810,22 @@ mod tests {
             bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap())),
             1000,
         );
-        let dest_view = TxKeyPair::from_secret([9u8; 32]).unwrap();
-        let dest_spend = TxKeyPair::from_secret([11u8; 32]).unwrap();
+        let dest_view = TxKeyPair::from_secret(SecretBytes::new([9u8; 32])).unwrap();
+        let dest_spend = TxKeyPair::from_secret(SecretBytes::new([11u8; 32])).unwrap();
         let pid = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
         let signed = build_and_sign_tx(
             &[TxInputSpec {
                 key_offsets: vec![1],
                 real_index: 0,
-                spend_key,
-                real_mask,
+                spend_key: SecretBytes::new(spend_key),
+                real_mask: SecretBytes::new(real_mask),
                 ring_pubkeys: vec![real_pub, decoy_pub],
                 ring_commitments: vec![real_commit, decoy_commit],
-                pseudo_mask,
+                pseudo_mask: SecretBytes::new(pseudo_mask),
             }],
             &[TxOutputSpec {
                 amount: 900,
-                mask: scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap()),
+                mask: SecretBytes::new(scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap())),
                 stealth_address: [0u8; 32],
                 dest_view_pub: Some(dest_view.public),
                 dest_spend_pub: Some(dest_spend.public),
@@ -794,14 +839,14 @@ mod tests {
 
         let out = &signed.transaction.prefix.outputs[0];
         assert_eq!(out.output_type, out_type::TX_OUT_TO_TAGGED_KEY);
-        let eight = eight_ra(&signed.tx_secret, &dest_view.public).unwrap();
+        let eight = eight_ra(signed.tx_secret.expose(), &dest_view.public).unwrap();
         assert_eq!(out.view_tag, Some(derive_view_tag(&eight, 0)));
         assert_eq!(
             out.stealth_address,
             stealth_address(&eight, 0, &dest_spend.public).unwrap()
         );
         assert!(verify_payment(
-            &signed.tx_secret,
+            signed.tx_secret.expose(),
             &dest_view.public,
             &dest_spend.public,
             0,
@@ -838,23 +883,23 @@ mod tests {
             bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap())),
             1000,
         );
-        let dest_view = TxKeyPair::from_secret([9u8; 32]).unwrap();
+        let dest_view = TxKeyPair::from_secret(SecretBytes::new([9u8; 32])).unwrap();
         let signed = build_and_sign_tx(
             &[TxInputSpec {
                 key_offsets: vec![1],
                 real_index: 0,
-                spend_key,
-                real_mask,
+                spend_key: SecretBytes::new(spend_key),
+                real_mask: SecretBytes::new(real_mask),
                 ring_pubkeys: vec![real_pub, decoy_pub],
                 ring_commitments: vec![real_commit, decoy_commit],
-                pseudo_mask,
+                pseudo_mask: SecretBytes::new(pseudo_mask),
             }],
             &[TxOutputSpec {
                 amount: 900,
-                mask: scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap()),
+                mask: SecretBytes::new(scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap())),
                 stealth_address: [0u8; 32],
                 dest_view_pub: Some(dest_view.public),
-                dest_spend_pub: Some(TxKeyPair::from_secret([11u8; 32]).unwrap().public),
+                dest_spend_pub: Some(TxKeyPair::from_secret(SecretBytes::new([11u8; 32])).unwrap().public),
                 payment_id: None,
                 is_subaddress: false,
             }],
@@ -895,21 +940,21 @@ mod tests {
             bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap())),
             1000,
         );
-        let dest_view = TxKeyPair::from_secret([9u8; 32]).unwrap();
-        let dest_spend = TxKeyPair::from_secret([11u8; 32]).unwrap();
+        let dest_view = TxKeyPair::from_secret(SecretBytes::new([9u8; 32])).unwrap();
+        let dest_spend = TxKeyPair::from_secret(SecretBytes::new([11u8; 32])).unwrap();
         let signed = build_and_sign_tx(
             &[TxInputSpec {
                 key_offsets: vec![1],
                 real_index: 0,
-                spend_key,
-                real_mask,
+                spend_key: SecretBytes::new(spend_key),
+                real_mask: SecretBytes::new(real_mask),
                 ring_pubkeys: vec![real_pub, decoy_pub],
                 ring_commitments: vec![real_commit, decoy_commit],
-                pseudo_mask,
+                pseudo_mask: SecretBytes::new(pseudo_mask),
             }],
             &[TxOutputSpec {
                 amount: 900,
-                mask: scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap()),
+                mask: SecretBytes::new(scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap())),
                 stealth_address: [0u8; 32],
                 dest_view_pub: Some(dest_view.public),
                 dest_spend_pub: Some(dest_spend.public),
@@ -922,7 +967,7 @@ mod tests {
         .unwrap();
 
         // 官方 shared_key = Hs(8·rA || varint(i))
-        let eight = eight_ra(&signed.tx_secret, &dest_view.public).unwrap();
+        let eight = eight_ra(signed.tx_secret.expose(), &dest_view.public).unwrap();
         let mut buf = Vec::new();
         buf.extend_from_slice(&eight);
         encode_varint(&mut buf, 0);
@@ -959,21 +1004,21 @@ mod tests {
             1000,
         );
         // 子地址 = 主地址 + m·G；这里用独立 keypair 模拟子地址 (A_s, B_s)
-        let dest_view = TxKeyPair::from_secret([21u8; 32]).unwrap();
-        let dest_spend = TxKeyPair::from_secret([23u8; 32]).unwrap();
+        let dest_view = TxKeyPair::from_secret(SecretBytes::new([21u8; 32])).unwrap();
+        let dest_spend = TxKeyPair::from_secret(SecretBytes::new([23u8; 32])).unwrap();
         let signed = build_and_sign_tx(
             &[TxInputSpec {
                 key_offsets: vec![1],
                 real_index: 0,
-                spend_key,
-                real_mask,
+                spend_key: SecretBytes::new(spend_key),
+                real_mask: SecretBytes::new(real_mask),
                 ring_pubkeys: vec![real_pub, decoy_pub],
                 ring_commitments: vec![real_commit, decoy_commit],
-                pseudo_mask,
+                pseudo_mask: SecretBytes::new(pseudo_mask),
             }],
             &[TxOutputSpec {
                 amount: 900,
-                mask: scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap()),
+                mask: SecretBytes::new(scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap())),
                 stealth_address: [0u8; 32],
                 dest_view_pub: Some(dest_view.public),
                 dest_spend_pub: Some(dest_spend.public),
@@ -989,8 +1034,8 @@ mod tests {
         assert_eq!(add_keys.len(), 1);
         // additional key = r_i · B_sub（r_i 为该 output 的 per-output secret；
         // 单 output 简化实现复用主 tx secret，与 keystone should_use_additional_keys 分支一致）
-        let r = DScalar::from_bytes_mod_order(signed.tx_secret);
-        let b = DScalar::from_bytes_mod_order(dest_spend.secret);
+        let r = DScalar::from_bytes_mod_order(*signed.tx_secret.expose());
+        let b = DScalar::from_bytes_mod_order(*dest_spend.secret.expose());
         let expected = (ED25519_BASEPOINT_TABLE * &(r * b)).compress().to_bytes();
         assert_eq!(add_keys[0], expected);
 

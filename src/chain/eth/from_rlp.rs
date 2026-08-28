@@ -13,6 +13,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+#[cfg(test)]
+use crate::types::SecretBytes;
 use crate::chain::eth::eip155::Eip155Transaction;
 use crate::chain::eth::eip1559::Eip1559Transaction;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -273,8 +275,7 @@ mod tests {
             amount: 1_000_000_000_000_000_000,
             data: Vec::new(),
         };
-        let private_key = [0x46u8; 32];
-        let signed = sign_eip155(&Eip155SignInput { tx, private_key }).unwrap();
+        let signed = sign_eip155(&Eip155SignInput { tx, private_key: SecretBytes::new([0x46u8; 32]) }).unwrap();
         let parsed = parse_eip155_raw(&signed.tx_bytes).unwrap();
         assert_eq!(parsed.chain_id, 1);
         assert_eq!(parsed.nonce, 9);

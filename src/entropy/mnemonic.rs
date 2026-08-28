@@ -64,7 +64,8 @@ impl WordCount {
 ///
 /// **安全约束（v2.3 §3.2）**：不 derive `Debug`——防止 key material 通过 Debug 输出泄露单词表内容。
 /// 手写 Debug 只输出词数。
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+// P1-03：禁 Clone（v2-安全 §2）；Debug 已手写只出词数
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct Mnemonic {
     indices: [u16; MAX_MNEMONIC_WORDS],
     len: u8,
@@ -439,7 +440,8 @@ mod tests {
         #[test]
         fn mnemonic_eq_reflexive(indices in (0u16..24u16).prop_map(|_| (0u16..12u16).map(|i| i * 100).collect::<Vec<u16>>())) {
             let m = Mnemonic::from_indices(&indices, WordCount::Words12).unwrap();
-            let m_ref = m.clone();  // v2.4 允许 Clone（聚合结构业务需要）
+            // P1-03 去 Clone：同 indices 重建等价副本做自反性断言
+            let m_ref = Mnemonic::from_indices(&indices, WordCount::Words12).unwrap();
             prop_assert_eq!(m, m_ref);
         }
 

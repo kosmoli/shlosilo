@@ -783,7 +783,7 @@ mod tests {
             crate::derivation::bip32_secp256k1::derive_from_seed(&ff_seed, &path).unwrap();
         let expected = eip1559::sign_eip1559(&eip1559::Eip1559SignInput {
             tx,
-            private_key: crate::curve_primitive::secp256k1::scalar_to_bytes(&sk),
+            private_key: crate::types::SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk)),
         })
         .unwrap();
         drop(seed);

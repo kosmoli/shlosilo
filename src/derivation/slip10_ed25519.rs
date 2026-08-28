@@ -8,7 +8,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// SLIP-0010 扩展私钥（ed25519 比特字段不同，长度 32 bytes）
 pub const SLIP10_EXTENDED_KEY_LEN: usize = 32;
 
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+// P1-03：禁 Clone（v2-安全 §2）
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct Slip10ExtendedKey {
     bytes: [u8; SLIP10_EXTENDED_KEY_LEN],
 }

@@ -36,6 +36,7 @@
     extern crate alloc;
 extern crate digest;
 use crate::chain::eth::rlp;
+use crate::types::SecretBytes;
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -64,10 +65,11 @@ pub struct Eip1559Transaction {
 pub type Address = [u8; 20];
 
 /// 签名输入
-#[derive(Clone, Debug)]
+///
+/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
 pub struct Eip1559SignInput {
     pub tx: Eip1559Transaction,
-    pub private_key: [u8; 32],
+    pub private_key: SecretBytes<32>,
 }
 
 /// 签名输出
@@ -200,7 +202,7 @@ fn compute_y_parity(
 
 /// 签名 EIP-1559 transaction
 pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
-    let sk = scalar_from_bytes(&input.private_key)?;
+    let sk = scalar_from_bytes(input.private_key.expose())?;
 
     // 1. signing hash
     let sighash = signing_hash(&input.tx)?;
@@ -378,6 +380,7 @@ mod tests {
         let private_key_bytes = hex_decode("4646464646464646464646464646464646464646464646464646464646464646").unwrap();
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let tx = Eip1559Transaction {
             chain_id: 1,
@@ -424,6 +427,7 @@ mod tests {
         let private_key_bytes = hex_decode("4646464646464646464646464646464646464646464646464646464646464646").unwrap();
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
+        let private_key = SecretBytes::take(&mut private_key);
 
         let tx = Eip1559Transaction {
             chain_id: 1,
