@@ -46,6 +46,14 @@ pub fn export_readonly(
             ));
         }
         ExportProtocol::CryptoHdKey => {
+            // P2-05：crypto-hdkey UR 的 xpub 字段固定 mainnet version（0x0488B21E）。
+            // testnet 需要 tpub（0x043587CF）——v1 先简单：仅支持 mainnet，
+            // 其他 network 显式拒绝（避免导出标记错误的 version bytes）。
+            if _network != Network::BitcoinMainnet {
+                return Err(ShlosiloError::new(
+                    ShlosiloErrorKind::NetworkUnrecognized,
+                ));
+            }
             let path = paths.first().ok_or_else(|| {
                 ShlosiloError::new(ShlosiloErrorKind::DerivationPathInvalidSyntax)
             })?;
@@ -96,6 +104,45 @@ mod tests {
         let n = result.unwrap();
         let uri = core::str::from_utf8(&output_buf[..n]).unwrap();
         assert!(uri.starts_with("ur:crypto-hdkey/"));
+    }
+
+    /// P2-05：CryptoHdKey 仅支持 mainnet——testnet 显式拒绝
+    /// （xpub version 固定 mainnet bytes，testnet 需要 tpub，v1 不做）
+    #[test]
+    fn export_crypto_hdkey_rejects_testnet() {
+        let seed = [0u8; 64];
+        let paths = test_paths();
+        let mut output_buf = [0xA5u8; 2048];
+        let result = export_readonly(
+            ExportProtocol::CryptoHdKey,
+            &seed,
+            Network::BitcoinTestnet,
+            &paths,
+            &mut output_buf,
+        );
+        let err = result.expect_err("testnet must be rejected for CryptoHdKey");
+        assert_eq!(err.kind, ShlosiloErrorKind::NetworkUnrecognized);
+        // 失败路径不得写缓冲区
+        assert!(output_buf.iter().all(|&b| b == 0xA5));
+    }
+
+    /// P2-05：ETH mainnet 同样拒绝（CryptoHdKey 是 BTC 专用导出协议）
+    #[test]
+    fn export_crypto_hdkey_rejects_non_btc_network() {
+        let seed = [0u8; 64];
+        let paths = test_paths();
+        let mut output_buf = [0xA5u8; 2048];
+        let result = export_readonly(
+            ExportProtocol::CryptoHdKey,
+            &seed,
+            Network::EthereumMainnet,
+            &paths,
+            &mut output_buf,
+        );
+        assert_eq!(
+            result.expect_err("non-BTC network must be rejected").kind,
+            ShlosiloErrorKind::NetworkUnrecognized
+        );
     }
 
     #[test]
