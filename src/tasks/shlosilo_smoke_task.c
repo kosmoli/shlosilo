@@ -108,6 +108,8 @@ static int run_checks(void)
             fail++;
             log_line("export: FAIL");
         }
+        memset(export_buf, 0, sizeof(export_buf));
+        memset(path_elems, 0, sizeof(path_elems));
     }
 
     /* 5. sign_ur — 真实 EIP-1559 签名 + 耗时基准 */
@@ -132,6 +134,11 @@ static int run_checks(void)
         fail++;
         log_line("bad-uri: FAIL (accepted!)");
     }
+
+    /* P6.4 v2-安全 §5：C L3 敏感缓冲用后清零（mnemonic 索引属敏感材料；
+     * out 是公开输出，一并清零是廉价纵深；export_buf/idx12 在各自作用域清） */
+    memset(out, 0, sizeof(out));
+    memset(mnemonic_buf, 0, sizeof(mnemonic_buf));
 
     return fail;
 }
