@@ -219,6 +219,10 @@ int main(void) {
                rc);
     }
 
+    /* P6.4 v2-安全 §5：C L3 敏感缓冲用后清零 */
+    memset(mnemonic_buf, 0, sizeof(mnemonic_buf));
+    memset(indices, 0, sizeof(indices));
+
     printf("=== all steps completed ===\n");
     return 0;
 }
