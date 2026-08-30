@@ -200,7 +200,7 @@ pub struct UnsignedTx {
 /// ```
 ///
 /// **注意**：这不是标准 Ed25519！Monero 自定义的 crypto_ops::check_signature。
-fn check_monero_signature(hash: &[u8; 32], pubkey: &[u8; 32], sig: &[u8]) -> Result<bool> {
+pub(crate) fn check_monero_signature(hash: &[u8; 32], pubkey: &[u8; 32], sig: &[u8]) -> Result<bool> {
     if sig.len() != 64 {
         return Err(err());
     }

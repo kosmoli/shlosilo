@@ -16,5 +16,7 @@ pub mod subaddress;
 pub mod transaction;
 pub mod tx_builder;
 pub mod tx_signer;
+pub mod key_image_export;
+pub mod output_export;
 pub mod unsigned_txset;
 pub mod view_tag;
