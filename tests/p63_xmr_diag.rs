@@ -19,7 +19,9 @@ fn hex(b: &[u8]) -> String {
 }
 
 #[test]
-fn diag_step_by_step() {
+/// 排障期一次性诊断: 需 SHLOSILO_TEST_XMR_* env（真 spend/view key），默认 ignore。
+    #[ignore]
+    fn diag_step_by_step() {
     let view_sk = env_hex("SHLOSILO_TEST_XMR_VIEW_SK").expect("VIEW_SK");
     let spend_sk = env_hex("SHLOSILO_TEST_XMR_SPEND_SK").expect("SPEND_SK");
 
@@ -45,7 +47,9 @@ fn diag_step_by_step() {
 }
 
 #[test]
-fn diag_clsag_with_fixture_ring() {
+/// 同上，env 驱动诊断。
+    #[ignore]
+    fn diag_clsag_with_fixture_ring() {
     use rand_core::OsRng;
     use shlosilo::chain::xmr::clsag;
     use shlosilo::chain::xmr::transaction::{
