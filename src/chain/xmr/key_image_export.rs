@@ -460,6 +460,47 @@ mod tests {
         let h = crate::chain::xmr::subaddress::hash_to_scalar(&vbuf).unwrap();
         assert_eq!(h, c.to_bytes());
     }
+
+    #[test]
+    fn keystone_cross_fixture_output_export() {
+        // fixture from keystone fork apps/monero test_generate_signature
+        const PVK_HEX: &str = "bb4346a861b208744ff939ff1faacbbe0c5298a4996f4de05e0d9c04c769d501";
+        const DATA_HEX: &str = "4d6f6e65726f206f7574707574206578706f727404eb5fb0d1fc8358931053f6e24d93ec0766aad43a54453593287d0d3dcfdef9371f411a0e179a9c1b0da94a3fe3d51cccf3573c01b6f8d6ee215caf3238976d8e9af5347e44b0d575fa622accdd4b4d5d272e13d77ff897752f52d7617be986efb4d2b1f841bae6c1d041d6ff9df46262b1251a988d5b0fbe5012d2af7b9ff318381bfd8cbe06af6e0750c16ff7a61d31d36526d83d7b6b614b2fd602941f2e94de01d0e3fc5a84414cdeabd943e5d8f0226ab7bea5e47c97253bf2f062e92a6bf27b6099a47cb8bca47e5ad544049611d77bfeb5c16b5b7849ce5d46bb928ce2e9a2b6679653a769f53c7c17d3e91df35ae7b62a4cffcea2d25df1c2e21a58b1746aae00a273317ec3873c53d8ae71d89d70637a6bd1da974e548b48a0f96d119f0f7d04ff034bb7fed3dbe9081d3e3a3212d330328c0edbacad85bab43780f9b5dfd81f359b0827146ebc421e60dba0badab1941bc31a0086aac99d59f55f07d58c02a48a3e1f70222bae1a612dacd09d0b176345a115e6ae6523ecbc346d8a8078111da7f9932f31d6e35500f5195cfdfe6b6eb2b223d171430a1cb7e11a51ac41d06f3a81546378b1ff342a18fb1f01cfd10df9c1ac86531456f240e5500d9c7ba4c47ba8d4455ea2b7e460ee207c064b76019f6bb4efe5a3e27a126b0c8be6a2e6f3d7ede9580ff49598501aafa36187896e245d64461f9f1c24323b1271af9e0a7a9108422de5ecfdaccdcb2b4520a6d75b2511be6f17a272d21e05ead99818e697559714af0a220494004e393eeefdfe029cff0db22c3adadf6f00edbf6bf4fcbcfc1e225451be3c1c700fe796fce6480b02d0cb1f9fbcf6c05895df2eeb8192980df50a0523922c1247fef83a5f631cf64132125477e1a3b13bcbaa691da1e9b45288eb6c7669e7a7857f87ed45f74725b72b4604fda6b44d3999e1d6fab0786f9b14f00a6518ca3fbc5f865d9fc8acd6e5773208";
+        let view_sk: [u8; 32] = hex_to_32(PVK_HEX);
+        let data = hex_bytes(DATA_HEX);
+        let _ = &data;
+
+        let (pk1, pk2, plain) =
+            crate::chain::xmr::key_image_export::decrypt_export_payload(
+                &data,
+                crate::chain::xmr::key_image_export::OUTPUT_EXPORT_MAGIC,
+                &view_sk,
+            ).expect("shlosilo must decrypt keystone fixture");
+        let _ = pk1;
+
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        use curve25519_dalek::scalar::Scalar;
+        let v = Scalar::from_bytes_mod_order(view_sk);
+        let view_pub = (ED25519_BASEPOINT_TABLE * &v).compress().to_bytes();
+        assert_eq!(pk2, view_pub);
+
+        let details = crate::chain::xmr::output_export::ExportedTransferDetails::from_bytes(&plain)
+            .expect("plaintext must parse as ExportedTransferDetails");
+        assert!(!details.details.is_empty());
+        assert!(details.details.len() <= 8);
+        // 首个 output 是 key_image_request 且 amount 已知(真钱包数据特征)
+        assert!(details.details[0].is_key_image_request());
+        assert!(details.details[0].amount > 0);
+    }
+
+    fn hex_to_32(h: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for i in 0..32 {
+            out[i] = u8::from_str_radix(&h[i*2..i*2+2], 16).unwrap();
+        }
+        out
+    }
+    fn hex_bytes(h: &str) -> Vec<u8> {
+        (0..h.len()/2).map(|i| u8::from_str_radix(&h[i*2..i*2+2], 16).unwrap()).collect()
+    }
 }
-
-
