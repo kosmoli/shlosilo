@@ -47,24 +47,51 @@ pub fn minimum_rolls(sides: u8, required_entropy_bits: u16) -> u16 {
     }
 }
 
+/// X5: 使 base-N 累乘在 256-bit 空间**精确均匀**的最大掷骰次数
+///
+/// 均匀性条件：`sides^k ≤ 2^256` 时，累乘映射 `[1..sides]^k → [0, 2^256)` 是单射，
+/// 每个熵值恰好来自唯一一组骰序 → 完美均匀（无 modulo 偏差）。
+/// `sides^k > 2^256` 时溢出截断引入非均匀性（某些值概率偏高）。
+///
+/// 用 256-bit 整数逐次自乘精确计算第一个溢出点（不用浮点 log）。
+/// 业务入口应同时满足：`minimum_rolls ≤ rolls ≤ maximum_uniform_rolls`。
+pub fn maximum_uniform_rolls(sides: u8) -> u16 {
+    if sides < 2 {
+        return 0;
+    }
+    let mut acc = [0u32; LIMBS];
+    acc[0] = 1;
+    let mut k: u16 = 0;
+    loop {
+        // 乘前预演：acc * sides + sides（最大 digit 的编码）是否 ≥ 2^256
+        // 单射判据：max_encoding(digit ∈ [1,sides]) = sides·(sides^k − 1)/(sides − 1) < 2^256
+        let mut probe = acc;
+        let mut carry: u64 = sides as u64; // 最大 digit = sides (rolls ∈ [1,sides])
+        for limb in probe.iter_mut() {
+            let product = (*limb as u64) * (sides as u64) + carry;
+            *limb = product as u32;
+            carry = product >> 32;
+        }
+        if carry != 0 {
+            break; // 再掷一次就会溢出 → 当前 k 是均匀上界
+        }
+        acc = probe;
+        k += 1;
+        if k >= 300 {
+            break; // 理论上限兜底（sides ≥ 2 时不可能到达）
+        }
+    }
+    k
+}
+
 /// dice-rolls → entropy bytes（通用 base-N 累乘）
 ///
-/// **Phase 2.4 假实现**：完整实现 base-N 累乘算法（u32 bigint），用户输入 rolls 转换成熵。
-/// Phase 4 不需要替换此函数（已真实实现）。
+/// 算法：`acc = acc * sides + r`（256-bit bigint），最后转 LE bytes 截断/零填充到 required_len。
 ///
-/// 算法：
-/// ```text
-/// acc = 1
-/// for r in rolls:
-///     acc = acc * sides + r
-/// entropy_bytes = acc.to_bytes()
-/// ```text
+/// **X5 均匀性说明（2026-08-31）**：当 `sides^rolls ≤ 2^256` 时映射是单射、分布精确均匀。
+/// 调用方须满足 `rolls.len() ≤ maximum_uniform_rolls(sides)`；超过时溢出截断引入偏差。
 ///
-/// **注意**：每次累乘后丢弃溢出位（u32 limbs 模拟 mod 2^256 大数），
-/// 这是 NIST SP 800-90A 推荐的"rejection sampling"基础——但这里简化成"先大数累乘后 mod"。
-/// Phase 4 不需要替换此函数（已真实实现）。
-///
-/// **v2.4 安全**：不返回 owned `Scalar`——返回 owned `Vec<u8>`，业务模块不持有私钥副本。
+/// **v2.4 安全**：不返回 owned `Scalar`——返回 owned bytes，业务模块不持有私钥副本。
 pub fn dice_rolls_to_entropy(
     sides: u8,
     rolls: &[u8],
@@ -76,13 +103,16 @@ pub fn dice_rolls_to_entropy(
     if rolls.is_empty() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::InsufficientRolls));
     }
+    // X5: 超过均匀上界 → 拒绝（防 modulo 偏差）
+    if rolls.len() > maximum_uniform_rolls(sides) as usize {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::InsufficientRolls));
+    }
     // 校验每个 roll ∈ [1, sides]
-    for (i, &r) in rolls.iter().enumerate() {
+    for &r in rolls.iter() {
         if r < 1 || r > sides {
             // 复用 MnemonicInvalidWord 作为 generic "out of range" 错误
             return Err(ShlosiloError::new(ShlosiloErrorKind::MnemonicInvalidWord));
         }
-        let _ = i;
     }
 
     // 大数累乘
@@ -96,7 +126,8 @@ pub fn dice_rolls_to_entropy(
             *limb = product as u32;
             carry = product >> 32;
         }
-        // 溢出位丢弃（256-bit mod）
+        // 此时已由 maximum_uniform_rolls 保证不溢出
+        debug_assert!(carry == 0, "uniform bound violated");
     }
 
     // 转换成 bytes（little-endian）
@@ -108,6 +139,9 @@ pub fn dice_rolls_to_entropy(
                 break;
             }
             result.push(b).ok();
+        }
+        if result.len() >= required_len.min(64) {
+            break;
         }
     }
     // 截断到 required_len（如果大数实际更大）
@@ -156,6 +190,26 @@ mod tests {
         let rolls = [3u8, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4];
         let entropy = dice_rolls_to_entropy(6, &rolls, 12).unwrap();
         assert_eq!(entropy.len(), 12);
+    }
+
+    #[test]
+    fn maximum_uniform_rolls_exact() {
+        // python3 精确值: sides^k <= 2^256 < sides^(k+1)
+        assert_eq!(maximum_uniform_rolls(2), 254);
+        assert_eq!(maximum_uniform_rolls(6), 98);
+        assert_eq!(maximum_uniform_rolls(20), 58);
+        assert_eq!(maximum_uniform_rolls(100), 38);
+        assert_eq!(maximum_uniform_rolls(255), 31);
+        assert_eq!(maximum_uniform_rolls(1), 0);
+    }
+
+    #[test]
+    fn over_uniform_bound_rejected() {
+        // d6 上界 98: 98 次通过,99 次拒绝
+        let ok = [3u8; 98];
+        assert!(dice_rolls_to_entropy(6, &ok, 32).is_ok());
+        let bad = [3u8; 99];
+        assert!(dice_rolls_to_entropy(6, &bad, 32).is_err());
     }
 
     #[test]

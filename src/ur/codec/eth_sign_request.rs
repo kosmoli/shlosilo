@@ -94,15 +94,24 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
                 .map_get_uint(1)?
                 .ok_or_else(err)?
                 .as_array()?;
+            // X2: components 必须是偶数长度 (idx, hardened) 对——奇数视为格式错误
+            if comps.len() % 2 != 0 {
+                return Err(err());
+            }
             let mut flat = alloc::vec::Vec::with_capacity(comps.len() / 2);
             let mut i = 0;
             while i + 1 < comps.len() {
                 let idx = comps[i].as_uint()?;
+                // X2: BIP-32 index 域是 u32——超域拒绝,不静默截断
+                if idx > u32::MAX as u64 {
+                    return Err(err());
+                }
+                let idx = idx as u32;
                 let hardened = match comps[i + 1] {
                     Cbor::Bool(b) => b,
                     _ => return Err(err()),
                 };
-                let raw = if hardened { idx as u32 | 0x8000_0000 } else { idx as u32 };
+                let raw = if hardened { idx | 0x8000_0000 } else { idx };
                 flat.push(raw);
                 i += 2;
             }
@@ -192,5 +201,26 @@ mod tests {
         assert_eq!(req.data_type, EthSignDataType::Transaction);
         assert_eq!(req.chain_id, Some(1));
         assert!(req.sign_data.len() > 40);
+    }
+
+    /// X2 负例: 奇数长度 components 静默忽略 → 显式拒绝
+    #[test]
+    fn keypath_odd_components_rejected() {
+        // tag 305, map{1: [0, false, 1], 2: 2}  — 3 个 comps(奇数)
+        let payload: alloc::vec::Vec<u8> = alloc::vec![
+            0xA1, 0x05, 0xD8, 0x31, 0xA2, 0x01, 0x83, 0x00, 0xF4, 0x01, 0x02, 0x02,
+        ];
+        assert!(parse_eth_sign_request(&payload).is_err(), "odd keypath must be rejected");
+    }
+
+    /// X2 负例: index 超出 u32 域拒绝(不截断)
+    #[test]
+    fn keypath_oversized_index_rejected() {
+        // tag 305, map{1: [0x1_0000_0000, false], 2: 1} — 2^32 超 u32
+        let payload: alloc::vec::Vec<u8> = alloc::vec![
+            0xA1, 0x05, 0xD8, 0x31, 0xA2, 0x01, 0x82, 0x1B, 0x00, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x00, 0xF4, 0x02, 0x01,
+        ];
+        assert!(parse_eth_sign_request(&payload).is_err(), "index > u32::MAX must be rejected");
     }
 }

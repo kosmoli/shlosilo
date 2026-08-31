@@ -314,9 +314,12 @@ pub fn p2sh_multisig_address_with_sort(
 }
 
 /// Build P2WSH multi-sig address (segwit v0, bech32): bech32(hrp, witness_v0, sha256(redeemScript))
-pub fn p2wsh_multisig_address(network: Network, config: &MultisigConfig) -> alloc::string::String {
+pub fn p2wsh_multisig_address(
+    network: Network,
+    config: &MultisigConfig,
+) -> Result<alloc::string::String> {
     if !network.supports_p2wsh() {
-        panic!("Network does not support P2WSH");
+        return Err(ShlosiloError::new(ShlosiloErrorKind::ChainKindUnsupported));
     }
     let redeem = multisig_redeem_script(config);
     let sha = {
@@ -335,22 +338,25 @@ pub fn p2wsh_multisig_address(network: Network, config: &MultisigConfig) -> allo
     // Convert 32 bytes to 5-bit groups for bech32
     let converted = crate::encoding::bech32::convertbits(&program, 8, 5, true).unwrap();
     let encoded = crate::encoding::bech32::encode(network.bech32_hrp(), &converted).unwrap();
-    alloc::format!("{}", encoded)
+    Ok(alloc::format!("{}", encoded))
 }
 
 /// Build P2SH-P2WSH multi-sig address (nested):
 /// redeemScript = P2WSH scriptPubKey (OP_0 0x20 <sha256>)
 /// address = base58check(version || hash160(redeemScript))
-pub fn p2sh_p2wsh_multisig_address(network: Network, config: &MultisigConfig) -> alloc::string::String {
+pub fn p2sh_p2wsh_multisig_address(
+    network: Network,
+    config: &MultisigConfig,
+) -> Result<alloc::string::String> {
     if !network.supports_p2wsh() {
-        panic!("Network does not support P2SH-P2WSH");
+        return Err(ShlosiloError::new(ShlosiloErrorKind::ChainKindUnsupported));
     }
     let redeem = p2sh_p2wsh_redeem_script(config);
     let h160 = hash160(&redeem);
     let mut data = alloc::vec![network.p2sh_version()];
     data.extend_from_slice(&h160);
     let encoded = crate::encoding::base58::encode_check(&data).unwrap();
-    alloc::format!("{}", encoded)
+    Ok(alloc::format!("{}", encoded))
 }
 
 
@@ -724,11 +730,11 @@ mod tests {
 
         // Sorted: BIP-67 sort enforced in MultisigConfig::new
         let cfg_sorted = MultisigConfig::new(2, pks_sorted.clone()).unwrap();
-        let addr_sorted = p2wsh_multisig_address(Network::Bitcoin, &cfg_sorted);
+        let addr_sorted = p2wsh_multisig_address(Network::Bitcoin, &cfg_sorted).unwrap();
 
         // Unsorted with sort_keys=true: also sorts via MultisigConfig::new
         let cfg_unsorted = MultisigConfig::new(2, pks_unsorted).unwrap();
-        let addr_unsorted = p2wsh_multisig_address(Network::Bitcoin, &cfg_unsorted);
+        let addr_unsorted = p2wsh_multisig_address(Network::Bitcoin, &cfg_unsorted).unwrap();
 
         assert_eq!(
             addr_sorted, addr_unsorted,
@@ -785,7 +791,7 @@ mod tests {
         let cfg = MultisigConfig::new(2, pks).unwrap();
 
         // Nested P2SH-P2WSH mainnet
-        let nested_addr = p2sh_p2wsh_multisig_address(Network::Bitcoin, &cfg);
+        let nested_addr = p2sh_p2wsh_multisig_address(Network::Bitcoin, &cfg).unwrap();
         // Verify it starts with '3' (P2SH mainnet)
         assert!(
             nested_addr.starts_with('3'),
@@ -793,7 +799,13 @@ mod tests {
         );
 
         // Nested P2SH-P2WSH testnet — should start with '2'
-        let nested_testnet = p2sh_p2wsh_multisig_address(Network::BitcoinTestnet, &cfg);
+        let nested_testnet = p2sh_p2wsh_multisig_address(Network::BitcoinTestnet, &cfg).unwrap();
+
+        // X6: 不支持 P2WSH 的网络走错误码,不 panic(公开 API 非 total)
+        let doge_err = p2wsh_multisig_address(Network::Dogecoin, &cfg).unwrap_err();
+        assert_eq!(doge_err.kind, ShlosiloErrorKind::ChainKindUnsupported);
+        let doge_err2 = p2sh_p2wsh_multisig_address(Network::Dogecoin, &cfg).unwrap_err();
+        assert_eq!(doge_err2.kind, ShlosiloErrorKind::ChainKindUnsupported);
         assert!(
             nested_testnet.starts_with('2'),
             "P2SH-P2WSH testnet should start with '2', got: {nested_testnet}"
