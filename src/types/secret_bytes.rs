@@ -14,12 +14,13 @@
 
 use core::fmt;
 use subtle::ConstantTimeEq;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// 定长敏感字节（私钥 / seed / mask / tx secret）。
 ///
 /// 不实现：`Clone`、`Copy`、`Debug`（内容）、`Display`、`AsRef<[u8]>`（防意外泄露）、
 /// `From<[u8; N]>`（构造必须显式走 `new`，grep 可查）。
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SecretBytes<const N: usize> {
     bytes: [u8; N],
 }
@@ -172,6 +173,16 @@ mod tests {
         let mut out = [0u8; 64];
         secret.write_into(&mut out);
         assert_eq!(out, [7u8; 64]);
+    }
+
+    #[test]
+    fn zeroize_on_drop_impl() {
+        // R1（2026-08-31）：文档承诺「scope 结束清内存」——类型系统必须兑现
+        assert!(core::mem::needs_drop::<SecretBytes<32>>());
+        // ZeroizeOnDrop 是零 Sized 自动 trait，用 trait bound 静态断言
+        fn assert_zod<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zod::<SecretBytes<32>>();
+        assert_zod::<SecretBytes<64>>();
     }
 
     #[test]

@@ -17,6 +17,7 @@ const PLAIN: &[u8] = include_bytes!("fixtures/txset_plain.bin");
 /// 其 view key 是 P6.3 wallet-rpc viewkey 命令取得的外部凭证。
 /// 测试用环境变量 SHLOSILO_TEST_XMR_VIEW_SK 注入（[REDACTED] 原则，不硬编码）。
 #[test]
+#[ignore = "X7: 需外部凭据/env（SHLOSILO_TEST_XMR_*）——缺 env 不再静默计入 passed；跑法: cargo test -- --ignored 并注入 env"]
 fn decrypt_with_external_view_key() {
     let view_hex = std::env::var("SHLOSILO_TEST_XMR_VIEW_SK");
     let Ok(view_hex) = view_hex else {

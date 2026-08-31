@@ -73,11 +73,31 @@ pub fn stealth_address(
 }
 
 /// 导出 r（业务 2：证明付给了地址 A）
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// R1 (2026-08-31 复审整改): tx_secret 是交易密钥 — 去 derive(Clone, Debug),
+/// 手写 Debug redacted; secret 字段保持借用消费 (v2-安全 §3 函数只收借用)。
 pub struct PaymentProof {
     pub tx_secret: [u8; 32],
     pub tx_pub: [u8; 32],
 }
+
+impl core::fmt::Debug for PaymentProof {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PaymentProof")
+            .field("tx_secret", &"[REDACTED]")
+            .field("tx_pub", &self.tx_pub)
+            .finish()
+    }
+}
+
+impl PartialEq for PaymentProof {
+    fn eq(&self, other: &Self) -> bool {
+        // 常时比较 tx_secret 防时序侧信道
+        use subtle::ConstantTimeEq;
+        bool::from(self.tx_secret.ct_eq(&other.tx_secret)) && self.tx_pub == other.tx_pub
+    }
+}
+
+impl Eq for PaymentProof {}
 
 pub fn export_payment_proof(
     tx_secret: &[u8; 32],
@@ -107,6 +127,7 @@ mod tests {
     use crate::chain::xmr::tx_builder::TxKeyPair;
     use crate::types::SecretBytes;
     use crate::encoding::keccak256;
+use subtle::ConstantTimeEq;
 
     #[test]
     fn view_tag_is_first_keccak_byte() {

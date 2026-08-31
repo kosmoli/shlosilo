@@ -3,6 +3,7 @@ use monero::consensus::Decodable;
 use std::io::Cursor;
 
 #[test]
+#[ignore = "X7: 需外部凭据/env（SHLOSILO_TEST_XMR_*）——缺 env 不再静默计入 passed；跑法: cargo test -- --ignored 并注入 env"]
 fn progressive_decode() {
     let Ok(s) = std::env::var("SHLOSILO_SIGNED_TX_IN") else {
         eprintln!("SKIP");

@@ -38,6 +38,7 @@ fn hex_to_32(s: &str) -> [u8; 32] {
 /// 4. 输出 = SIGNED_TX_PREFIX 加密 blob，可被我们自己的 decrypt 解回
 /// 5. 解密结果 = 合法 SignedTxSet（version 0、tx wire version 2、tx_key=ONE）
 #[test]
+#[ignore = "X7: 需外部凭据/env（SHLOSILO_TEST_XMR_*）——缺 env 不再静默计入 passed；跑法: cargo test -- --ignored 并注入 env"]
 fn sign_xmr_business_end_to_end() {
     let Ok(view_hex) = std::env::var("SHLOSILO_TEST_XMR_VIEW_SK") else {
         eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set");

@@ -130,8 +130,15 @@ pub extern "C" fn shlosilo_sign_ffi(
             write_actual_len(actual_len, length);
             OK
         }
-        Ok(Err(e)) => to_ffi_code(&e),
-        Err(_) => ERR_PANIC,
+        Ok(Err(e)) => {
+            // R2：失败路径 actual_len 清零——调用方不得读到残留值
+            write_actual_len(actual_len, 0);
+            to_ffi_code(&e)
+        }
+        Err(_) => {
+            write_actual_len(actual_len, 0);
+            ERR_PANIC
+        }
     }
 }
 
@@ -226,8 +233,15 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
             write_actual_len(actual_len, length);
             OK
         }
-        Ok(Err(e)) => to_ffi_code(&e),
-        Err(_) => ERR_PANIC,
+        Ok(Err(e)) => {
+            // R2：失败路径 actual_len 清零——调用方不得读到残留值
+            write_actual_len(actual_len, 0);
+            to_ffi_code(&e)
+        }
+        Err(_) => {
+            write_actual_len(actual_len, 0);
+            ERR_PANIC
+        }
     }
 }
 
@@ -299,8 +313,15 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
             write_actual_len(actual_len, length);
             OK
         }
-        Ok(Err(e)) => to_ffi_code(&e),
-        Err(_) => ERR_PANIC,
+        Ok(Err(e)) => {
+            // R2：失败路径 actual_len 清零——调用方不得读到残留值
+            write_actual_len(actual_len, 0);
+            to_ffi_code(&e)
+        }
+        Err(_) => {
+            write_actual_len(actual_len, 0);
+            ERR_PANIC
+        }
     }
 }
 
@@ -351,7 +372,7 @@ pub extern "C" fn shlosilo_create_account_ffi(
 
     match result {
         Ok(Ok(())) => OK,
-        Ok(Err(e)) => to_ffi_code(&e),
+        Ok(Err(e)) => to_ffi_code(&e), // create_account 无 actual_len out-param
         Err(_) => ERR_PANIC,
     }
 }
@@ -367,6 +388,9 @@ pub extern "C" fn shlosilo_supported_networks_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    if output_buf.is_null() {
+        return ERR_NULL_POINTER;
+    }
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
         let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
         let mut written = 0usize;
@@ -400,6 +424,9 @@ pub extern "C" fn shlosilo_supported_protocols_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    if output_buf.is_null() {
+        return ERR_NULL_POINTER;
+    }
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
         let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
         let protocols = [
@@ -592,7 +619,8 @@ mod tests {
             buf.len() as c_uint,
             &mut actual,
         );
-        assert_eq!(rc, ShlosiloErrorKind::EncodingInvalidFormat as i32);
+        // R2：FFI 错误码为稳定负码（ShlosiloErrorCode::EncodingError = -21）
+        assert_eq!(rc, crate::error::ShlosiloErrorCode::EncodingError as i32);
         // 256 = 上限内 → 通过 passphrase 校验（后续 BIP-39 checksum 拒绝全 0 词组，非 EncodingInvalidFormat）
         let ok_pass = [0x41u8; 256];
         let rc = shlosilo_export_readonly_ffi(
@@ -609,7 +637,7 @@ mod tests {
             &mut actual,
         );
         // 全 0 词组 checksum 不合法 → MnemonicInvalidChecksum（P1-05 行为，非 passphrase 上限错误）
-        assert_eq!(rc, ShlosiloErrorKind::MnemonicInvalidChecksum as i32, "256B passphrase passes the limit check, rc={rc}");
+        assert_eq!(rc, crate::error::ShlosiloErrorCode::InvalidMnemonic as i32, "256B passphrase passes the limit check, rc={rc}");
     }
 
     /// dice rolls 超上限（>1024）→ DiceRollsInvalidCount
@@ -627,7 +655,7 @@ mod tests {
             mnemonic_buf.as_mut_ptr(),
             mnemonic_buf.len() as c_uint,
         );
-        assert_eq!(rc, ShlosiloErrorKind::DiceRollsInvalidCount as i32);
+        assert_eq!(rc, crate::error::ShlosiloErrorCode::InvalidDiceRolls as i32);
     }
 
     /// 遗留 sign_ffi payload 超上限（>2048B）→ EncodingInvalidFormat
@@ -649,7 +677,7 @@ mod tests {
             out.len() as c_uint,
             &mut actual,
         );
-        assert_eq!(rc, ShlosiloErrorKind::EncodingInvalidFormat as i32);
+        assert_eq!(rc, crate::error::ShlosiloErrorCode::EncodingError as i32);
     }
 
     #[test]

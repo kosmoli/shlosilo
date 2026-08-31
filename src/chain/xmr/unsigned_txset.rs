@@ -128,7 +128,7 @@ pub struct OutputEntry {
     pub mask: [u8; 32],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct MultisigKLRki {
     pub k: [u8; 32],
     pub l: [u8; 32],
@@ -136,7 +136,19 @@ pub struct MultisigKLRki {
     pub ki: [u8; 32],
 }
 
-#[derive(Clone, Debug)]
+/// R1: k/r 是多签随机掩码（敏感）— Debug redacted
+impl core::fmt::Debug for MultisigKLRki {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MultisigKLRki")
+            .field("k", &"[REDACTED]")
+            .field("l", &"[REDACTED]")
+            .field("r", &"[REDACTED]")
+            .field("ki", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 #[allow(non_snake_case)] // multisig_kLRki 字段名对齐 Monero 官方 wire 命名
 pub struct TxSourceEntry {
     pub outputs: Vec<OutputEntry>,
@@ -149,6 +161,23 @@ pub struct TxSourceEntry {
     pub mask: [u8; 32],
     #[allow(non_snake_case)] // 字段名对齐 Monero 官方 MultisigKLRki 结构
     pub multisig_kLRki: MultisigKLRki,
+}
+
+/// R1: real_out_tx_key / mask / multisig_kLRki 均为敏感标量 — Debug redacted
+impl core::fmt::Debug for TxSourceEntry {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TxSourceEntry")
+            .field("outputs", &self.outputs.len())
+            .field("real_output", &self.real_output)
+            .field("real_out_tx_key", &"[REDACTED]")
+            .field("real_out_additional_tx_keys", &self.real_out_additional_tx_keys.len())
+            .field("real_output_in_tx_index", &self.real_output_in_tx_index)
+            .field("amount", &self.amount)
+            .field("rct", &self.rct)
+            .field("mask", &"[REDACTED]")
+            .field("multisig_kLRki", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -1132,7 +1132,7 @@ dependencies = [
 
 [[package]]
 name = "shlosilo"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base58-monero",
  "bitcoin_hashes",

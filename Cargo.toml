@@ -1,6 +1,6 @@
 [package]
 name = "shlosilo"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 
 # shlosilo-poc4: Phase 2.0 + Phase 4 真实算法（编码 + 密码学原语）— native target

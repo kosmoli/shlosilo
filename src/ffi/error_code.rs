@@ -7,11 +7,15 @@
 //! **Phase 2.5 stub**：直接 1:1 转换 ShlosiloErrorKind
 //! Phase 5 真实实现：增加 C-ABI 特有的 wrapping 错误码（-1 = Unknown）
 
-use crate::error::ShlosiloError;
+use crate::error::{ShlosiloError, ShlosiloErrorCode};
 
-/// ShlosiloError → i32（错误码同 ShlosiloErrorKind 数值布局）
-pub const fn to_ffi_code(err: &ShlosiloError) -> i32 {
-    err.kind as i32
+/// ShlosiloError → i32 C-ABI 错误码（稳定负数布局，见 `ShlosiloErrorCode`）
+///
+/// **R2 整改（2026-08-31）**：原实现直接 `err.kind as i32` 返回正数（如 0x0201_0003），
+/// 与「0 = Ok，负数 = 错误」的 C-ABI 契约矛盾。改走 `ShlosiloErrorCode::from_shlosilo_error`
+/// 的稳定负码映射（error.rs L2b 分类）。kind 原始值仍可经 Debug 日志获取。
+pub fn to_ffi_code(err: &ShlosiloError) -> i32 {
+    ShlosiloErrorCode::from_shlosilo_error(*err)
 }
 
 /// 通用错误（兜底）：调用方拿到这个 i32 应该 fall back 到 generic error UI
@@ -52,9 +56,14 @@ mod tests {
     }
 
     #[test]
-    fn ffi_code_matches_kind() {
+    fn ffi_code_is_negative_stable() {
+        // R2：FFI 错误码必须是负数（0=Ok 契约），走 ShlosiloErrorCode 稳定映射
         let err = ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall);
-        assert_eq!(to_ffi_code(&err), ShlosiloErrorKind::BufferTooSmall as i32);
+        assert_eq!(to_ffi_code(&err), -20);
+        assert!(to_ffi_code(&err) < 0);
+        let ur_err = ShlosiloError::new(ShlosiloErrorKind::UrPayloadInvalidCbor);
+        assert_eq!(to_ffi_code(&ur_err), -30);
+        assert_eq!(to_ffi_code(&ShlosiloError::ok()), 0);
     }
 
     #[test]

@@ -64,10 +64,10 @@ mod tests {
             crate::error::ShlosiloErrorKind::FeatureNotImplemented
         );
         // verify 未实现恒 false（无 panic 即通过）——EddsaSignature 无 pub 构造，
-        // 用 transmute 绕过私有字段仅限测试
+        // 用零化字节构造测试值（避免 MaybeUninit UB）
         let sig: EddsaSignature = {
             let mut bytes = [0u8; EDDSA_SIGNATURE_LEN];
-            let mut s: EddsaSignature = unsafe { core::mem::MaybeUninit::uninit().assume_init() };
+            let mut s: EddsaSignature = EddsaSignature { bytes: [0u8; EDDSA_SIGNATURE_LEN] };
             s.bytes = bytes;
             let _ = &mut bytes;
             s

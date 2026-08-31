@@ -27,6 +27,7 @@ fn hex4(b: &[u8]) -> String {
 
 /// P1-06：真实 fixture 的 key image 派生（oracle 对照 keystone 算法）
 #[test]
+#[ignore = "X7: 需外部凭据/env（SHLOSILO_TEST_XMR_*）——缺 env 不再静默计入 passed；跑法: cargo test -- --ignored 并注入 env"]
 fn derive_key_image_from_real_fixture() {
     let Some(view_sk) = env_hex("SHLOSILO_TEST_XMR_VIEW_SK") else {
         eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set");

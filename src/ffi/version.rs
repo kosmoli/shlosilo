@@ -14,11 +14,14 @@ pub const SHLOSILO_VERSION_STRING: &str = "v0.5.0-poc4\0";
 /// - major 版本不同 → ABI 不兼容
 /// - minor / patch 改变 → ABI 兼容
 pub const SHLOSILO_CABI_VERSION_MAJOR: u16 = 0;
-pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 1;
+pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 2;
 pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
 
 /// C ABI 版本字符串（带 \0 结尾）
-pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.1.0\0";
+///
+/// **R2 整改（2026-08-31）**：0.1.0 → 0.2.0——错误码布局从正数 kind 直映射
+/// 改为 ShlosiloErrorCode 稳定负码（ABI 行为变更），capability 查询补 null guard。
+pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.2.0\0";
 
 /// extern "C" 返回版本字符串（C 端 strdup 后用）
 #[no_mangle]
@@ -67,7 +70,7 @@ mod tests {
     #[test]
     fn cabi_version_constants() {
         assert_eq!(SHLOSILO_CABI_VERSION_MAJOR, 0);
-        assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 1);
+        assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 2);
         assert_eq!(SHLOSILO_CABI_VERSION_PATCH, 0);
     }
 

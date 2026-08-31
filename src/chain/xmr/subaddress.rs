@@ -92,16 +92,28 @@ pub fn calc_subaddress_m(
 }
 
 /// Subaddress key pair
-#[derive(Clone, Debug)]
+/// R1 (2026-08-31 复审整改): 秘密字段走 SecretBytes<32> (ZeroizeOnDrop、
+/// 不 Clone 不 Debug), 公开字段手写 Debug 照常输出。
 pub struct SubaddressKeys {
     /// subaddress spend public key (32 bytes compressed)
     pub spend_pub: [u8; 32],
     /// subaddress view public key (32 bytes compressed)
     pub view_pub: [u8; 32],
     /// subaddress spend private key (32 bytes reduced scalar)
-    pub spend_sec: [u8; 32],
+    pub spend_sec: crate::types::SecretBytes<32>,
     /// subaddress view private key (32 bytes reduced scalar)
-    pub view_sec: [u8; 32],
+    pub view_sec: crate::types::SecretBytes<32>,
+}
+
+impl core::fmt::Debug for SubaddressKeys {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SubaddressKeys")
+            .field("spend_pub", &self.spend_pub)
+            .field("view_pub", &self.view_pub)
+            .field("spend_sec", &"[REDACTED]")
+            .field("view_sec", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// 派生子地址 (完整 key pair)
@@ -157,8 +169,8 @@ pub fn derive_subaddress(
     Ok(SubaddressKeys {
         spend_pub: subaddr_spend_pub,
         view_pub: subaddr_view_pub,
-        spend_sec: subaddr_spend_sec,
-        view_sec: subaddr_view_sec,
+        spend_sec: crate::types::SecretBytes::new(subaddr_spend_sec),
+        view_sec: crate::types::SecretBytes::new(subaddr_view_sec),
     })
 }
 
@@ -245,7 +257,7 @@ mod tests {
         assert_ne!(sub0_1.spend_pub, sub1_0.spend_pub);
 
         // spend_pub 必须 = spend_sec * G
-        let sec_dalek = reduce_scalar_to_dalek(&sub0_0.spend_sec);
+        let sec_dalek = reduce_scalar_to_dalek(sub0_0.spend_sec.expose());
         let pub_point = ED25519_BASEPOINT_TABLE * &sec_dalek;
         assert_eq!(pub_point.compress().to_bytes(), sub0_0.spend_pub);
 
@@ -298,8 +310,8 @@ mod tests {
 
         assert_ne!(sub.spend_pub, spend_pub);
         assert_ne!(sub.view_pub, view_pub);
-        assert_ne!(sub.spend_sec, spend_sec);
-        assert_ne!(sub.view_sec, view_sec);
+        assert_ne!(*sub.spend_sec.expose(), spend_sec);
+        assert_ne!(*sub.view_sec.expose(), view_sec);
     }
 
     /// 跨 account / minor 大量派生 (100 个) 都不相同

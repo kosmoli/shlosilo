@@ -27,6 +27,7 @@ fn env_hex(name: &str) -> Option<[u8; 32]> {
 }
 
 #[test]
+#[ignore = "X7: 需外部凭据/env（SHLOSILO_TEST_XMR_*）——缺 env 不再静默计入 passed；跑法: cargo test -- --ignored 并注入 env"]
 fn sign_real_fixture_end_to_end() {
     let Some(view_sk) = env_hex("SHLOSILO_TEST_XMR_VIEW_SK") else {
         eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set");
