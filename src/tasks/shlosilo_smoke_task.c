@@ -140,7 +140,50 @@ static int run_checks(void)
     memset(out, 0, sizeof(out));
     memset(mnemonic_buf, 0, sizeof(mnemonic_buf));
 
-    return fail;
+        /* 7. R3 typed multipart UR roundtrip (2026-08-31) */
+    log_line("r3 multipart: start...");
+    {
+        static uint8_t mp_payload[1024];
+        for (int i = 0; i < 1024; i++) mp_payload[i] = (uint8_t)(i % 251);
+        shlosilo_ur_encoder_t *enc = shlosilo_ur_encode_begin(
+            "xmr-txunsigned", mp_payload, sizeof(mp_payload), 200);
+        shlosilo_ur_decoder_t *dec = shlosilo_ur_decode_new();
+        static uint8_t frame[SHLOSILO_MULTIPART_FRAME_BUF_MAX_LEN];
+        unsigned int flen = 0;
+        int mp_fail = 0;
+        int guard = 0;
+        while (!shlosilo_ur_decode_complete(dec)) {
+            if (shlosilo_ur_encode_next(enc, frame, sizeof(frame), &flen) != OK ||
+                shlosilo_ur_decode_feed(dec, (const char *)frame, NULL) != OK) {
+                mp_fail = 1;
+                break;
+            }
+            if (++guard > 500) { mp_fail = 1; break; }
+        }
+        static uint8_t mp_out[1024];
+        unsigned int mp_len = 0;
+        if (!mp_fail &&
+            shlosilo_ur_decode_payload(dec, mp_out, sizeof(mp_out), &mp_len) == OK &&
+            mp_len == sizeof(mp_payload) &&
+            memcmp(mp_out, mp_payload, mp_len) == 0) {
+            log_line("r3 multipart: PASS (%d frames)", guard);
+        } else {
+            fail++;
+            log_line("r3 multipart: FAIL");
+        }
+        /* cyclic frame smoke: OK return only */
+        if (shlosilo_ur_encode_next_cyclic(enc, frame, sizeof(frame), &flen) != OK) {
+            fail++;
+            log_line("r3 cyclic: FAIL");
+        }
+        shlosilo_ur_encode_free(enc);
+        shlosilo_ur_decode_free(dec);
+        memset(mp_payload, 0, sizeof(mp_payload));
+        memset(mp_out, 0, sizeof(mp_out));
+        memset(frame, 0, sizeof(frame));
+    }
+
+return fail;
 }
 
 

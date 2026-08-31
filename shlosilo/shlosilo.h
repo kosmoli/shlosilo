@@ -313,15 +313,32 @@
 #define SHA512_OUTPUT_LEN 64
 
 /**
- * 通用错误（兜底）：调用方拿到这个 i32 应该 fall back 到 generic error UI
+ * 错误码体系（2026-08-31 全量对齐 Rust `ShlosiloErrorCode` 稳定负码——单一真值源）
+ *
+ * 历史：0.1.x 时代只有 -1..-4 四个 define，与 R2 整改后 `to_ffi_code` 的映射码
+ * 冲突（如 buffer-too-small 一度既是 -3 又是 -20）。C 宿主接入前统一收口。
+ * **破坏性变更：ERR_BUFFER_TOO_SMALL 由 -3 改为 -20**（0.1.x 无宿主使用，安全）。
  */
-#define ERR_UNKNOWN -1
+#define ERR_UNKNOWN                -1
+#define ERR_INVALID_ARGUMENT       -2
+#define ERR_FFI_PANIC              -4
+#define ERR_UNSUPPORTED_CHAIN      -10
+#define ERR_UNSUPPORTED_EXPORT     -11
+#define ERR_UNSUPPORTED_NETWORK    -12
+#define ERR_MULTISIG_NOT_SUPPORTED -13
+#define ERR_FEATURE_NOT_IMPL       -14
+#define ERR_PSBT_OWNERSHIP         -15
+#define ERR_BUFFER_TOO_SMALL       -20
+#define ERR_ENCODING               -21
+#define ERR_INVALID_UR_PAYLOAD     -30
+#define ERR_INVALID_MNEMONIC       -31
+#define ERR_INVALID_DERIVATION     -32
+#define ERR_INVALID_DICE_ROLLS     -33
+#define ERR_CRYPTO                 -40
+#define ERR_INVARIANT              -99
 
-#define ERR_NULL_POINTER -2
-
-#define ERR_BUFFER_TOO_SMALL -3
-
-#define ERR_PANIC -4
+/* 向后兼容别名（0.2.x 过渡，勿在新代码使用） */
+#define ERR_NULL_POINTER ERR_INVALID_ARGUMENT
 
 /**
  * 成功
@@ -346,7 +363,7 @@
  */
 #define SHLOSILO_CABI_VERSION_MAJOR 0
 
-#define SHLOSILO_CABI_VERSION_MINOR 1
+#define SHLOSILO_CABI_VERSION_MINOR 2
 
 #define SHLOSILO_CABI_VERSION_PATCH 0
 
@@ -522,3 +539,108 @@ const uint8_t *shlosilo_cabi_version(void);
 int32_t shlosilo_cabi_check(uint16_t l3_expected_major,
                             uint16_t l3_expected_minor,
                             uint16_t l3_expected_patch);
+
+/* ============================================================================
+ * R3 typed 多分片 UR FFI（2026-08-31 定稿）
+ *
+ * 双通道架构（对齐 keystone gui_model.c）：
+ *   单帧大 QR   = shlosilo_sign_ur_ffi / shlosilo_version 系既有入口
+ *                 （payload <= UR_PAYLOAD_MAX_LEN = 2048）
+ *   多分片动画  = 本组函数（payload <= 16384，fountain 冗余帧流，
+ *                 帧格式 `ur:<type>/<seq>-<count>/<bytewords>`，XMR cyclic 补扫）
+ *
+ * 句柄契约：
+ *   - encode_begin / decode_new 成功返回非 null 句柄（库内 Box 裸指针）
+ *   - 句柄不可重复 free；encode_free / decode_free null 安全（幂等）
+ *   - 其余函数对 null 句柄返回 ERR_INVALID_ARGUMENT
+ *   - L3 缓冲区契约：frame_buf 必须 >= SHLOSILO_MULTIPART_FRAME_BUF_MAX_LEN
+ * ============================================================================
+ */
+
+/** 单帧 URI 字符串缓冲下限（200B 分片 -> 帧 ~420 字符，1024 充足） */
+#define SHLOSILO_MULTIPART_FRAME_BUF_MAX_LEN 1024
+
+/** 多分片 payload 上限（对齐 TxTemplate 16 KiB） */
+#define SHLOSILO_MULTIPART_PAYLOAD_MAX_LEN 16384
+
+/** 编码器句柄（不透明；L3 不得解引用） */
+typedef void shlosilo_ur_encoder_t;
+
+/** 解码器句柄（不透明；L3 不得解引用） */
+
+typedef void shlosilo_ur_decoder_t;
+
+/**
+ * 创建多分片编码器。
+ *
+ * @param type_name        UR type（ASCII 字母数字 + '-'，如 "xmr-txunsigned"，NUL 结尾，<=64）
+ * @param payload          原始 payload bytes（codec 产出的 CBOR）
+ * @param payload_len      <= SHLOSILO_MULTIPART_PAYLOAD_MAX_LEN
+ * @param max_fragment_len 每帧 payload 分片字节数（keystone 默认 200）
+ * @return 非 null = 句柄；null = 失败（参数非法 / payload 超限）。用完必须 encode_free。
+ */
+shlosilo_ur_encoder_t *shlosilo_ur_encode_begin(
+    const char *type_name,
+    const uint8_t *payload,
+    unsigned int payload_len,
+    unsigned int max_fragment_len);
+
+/**
+ * 取下一帧（fountain 冗余帧流，可无限调用产出新组合）。
+ *
+ * @return 0 = Ok（帧写入 frame_buf，NUL 结尾，长度写 *actual_len）；
+ *         ERR_INVALID_ARGUMENT = null 句柄/buf；ERR_BUFFER_TOO_SMALL = buf < 下限。
+ */
+int shlosilo_ur_encode_next(
+    shlosilo_ur_encoder_t *handle,
+    uint8_t *frame_buf,
+    unsigned int frame_buf_len,
+    unsigned int *actual_len);
+
+/**
+ * XMR cyclic 补扫帧：seq 到顶回 1，无限循环（软件钱包补扫用）。
+ * 参数与返回同 shlosilo_ur_encode_next。
+ */
+int shlosilo_ur_encode_next_cyclic(
+    shlosilo_ur_encoder_t *handle,
+    uint8_t *frame_buf,
+    unsigned int frame_buf_len,
+    unsigned int *actual_len);
+
+/** 释放编码器（null 安全幂等；调用后句柄失效） */
+void shlosilo_ur_encode_free(shlosilo_ur_encoder_t *handle);
+
+/** 创建多分片解码器。非 null = 句柄；null = 失败。用完必须 decode_free。 */
+shlosilo_ur_decoder_t *shlosilo_ur_decode_new(void);
+
+/**
+ * 喂一帧 URI（NUL 结尾 C string）。
+ *
+ * @param accepted_out 可为 null；非 null 时写 1 = 有新信息 / 0 = 重复帧
+ * @return 0 = Ok；负数 = 错误码（畸形帧 = ERR_ENCODING）
+ */
+int shlosilo_ur_decode_feed(
+    shlosilo_ur_decoder_t *handle,
+    const char *frame,
+    unsigned int *accepted_out);
+
+/** 解码进度 0..=99（100 用 complete 表达）；null 句柄 = ERR_INVALID_ARGUMENT */
+int shlosilo_ur_decode_progress(shlosilo_ur_decoder_t *handle);
+
+/** 是否完成：1 = 完成，0 = 未完成 */
+int shlosilo_ur_decode_complete(shlosilo_ur_decoder_t *handle);
+
+/**
+ * 取完整 payload。
+ *
+ * @return 0 = Ok；ERR_INVALID_ARGUMENT = null；ERR_UNKNOWN = 尚未完成；
+ *         ERR_BUFFER_TOO_SMALL = buf 不足（*actual_len 写需求值）。
+ */
+int shlosilo_ur_decode_payload(
+    shlosilo_ur_decoder_t *handle,
+    uint8_t *payload_buf,
+    unsigned int payload_buf_len,
+    unsigned int *actual_len);
+
+/** 释放解码器（null 安全幂等） */
+void shlosilo_ur_decode_free(shlosilo_ur_decoder_t *handle);
