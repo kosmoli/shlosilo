@@ -333,6 +333,28 @@ fn sign_xmr(
 /// 从 BIP32_DERIVATION value 解析 master fingerprint + 派生路径
 /// value 格式（BIP-174）：master_key_fingerprint(4B) || derivation_index(u32LE) × depth
 /// P1-02：fingerprint 与路径一起返回（调用方比对本机 master fingerprint，防错链签名）
+/// BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth)
+fn parse_derivation_value(value: &[u8]) -> Option<([u8; 4], DerivationPath)> {
+    if value.len() < 8 || !(value.len() - 4).is_multiple_of(4) {
+        return None;
+    }
+    let mut fp = [0u8; 4];
+    fp.copy_from_slice(&value[..4]);
+    let depth = (value.len() - 4) / 4;
+    let mut flat = alloc::vec::Vec::with_capacity(depth);
+    for j in 0..depth {
+        let o = 4 + 4 * j;
+        let raw = u32::from_le_bytes([
+            value[o],
+            value[o + 1],
+            value[o + 2],
+            value[o + 3],
+        ]);
+        flat.push(raw);
+    }
+    DerivationPath::from_flat(flat).ok().map(|p| (fp, p))
+}
+
 fn read_bip32_derivation(
     input_map: &[crate::chain::btc::psbt::KeyValue],
 ) -> Option<([u8; 4], DerivationPath)> {
@@ -340,24 +362,7 @@ fn read_bip32_derivation(
     let kv = input_map
         .iter()
         .find(|kv| kv.key.first() == Some(&input_type::BIP32_DERIVATION))?;
-    if kv.value.len() < 8 || (kv.value.len() - 4) % 4 != 0 {
-        return None;
-    }
-    let mut fp = [0u8; 4];
-    fp.copy_from_slice(&kv.value[..4]);
-    let depth = (kv.value.len() - 4) / 4;
-    let mut flat = alloc::vec::Vec::with_capacity(depth);
-    for j in 0..depth {
-        let o = 4 + 4 * j;
-        let raw = u32::from_le_bytes([
-            kv.value[o],
-            kv.value[o + 1],
-            kv.value[o + 2],
-            kv.value[o + 3],
-        ]);
-        flat.push(raw);
-    }
-    DerivationPath::from_flat(flat).ok().map(|p| (fp, p))
+    parse_derivation_value(&kv.value)
 }
 
 /// BTC：crypto-psbt CBOR（裸 bytes item）→ PSBT 签名
@@ -378,29 +383,25 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
 
     // P1-02：本机 master fingerprint（BIP-32 序列化字段 5..9），PSBT 提示的
     // fingerprint 不一致 = 该 PSBT 不是本机钱包的（错 seed/错钱包），拒绝签名
+    use alloc::vec::Vec;
     let local_fp =
         crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(seed)?;
 
-    let default_path = DerivationPath::parse("m/84'/0'/0'/0/0")?;
     for idx in 0..psbt.unsigned_tx.inputs.len() {
         // P1-02：BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth)，
         // 路径从 PSBT 读出而非硬编码；fingerprint 与本机不一致 → 拒绝；
         // 无该字段时才 fallback 默认路径（过渡行为，P6.4 收紧）。
-        let path = match psbt
-            .inputs
-            .get(idx)
-            .and_then(|map| read_bip32_derivation(map))
-        {
-            Some((fp, path)) => {
-                if fp != local_fp {
-                    return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
-                }
-                path
-            }
-            None => default_path,
-        };
+        // P1-B：无 BIP32_DERIVATION 的输入不再 fallback 默认路径（收紧），
+        // 所有输入必须显式携带 ownership records（P6.4 过渡行为提前落地）。
+        let (_fp0, path_used) = read_bip32_derivation(psbt.inputs.get(idx).ok_or_else(
+            || err(ShlosiloErrorKind::EncodingInvalidFormat),
+        )?)
+        .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        if _fp0 != local_fp {
+            return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+        }
         let sk =
-            crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path)?;
+            crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path_used)?;
         let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
 
         // R4 所有权绑定：派生公钥必须与 PSBT BIP32_DERIVATION 携带的 pubkey 一致。
@@ -410,35 +411,78 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             &crate::curve_primitive::secp256k1::base_mul(&sk),
         );
 
-        // pubkey hash：从 BIP32_DERIVATION key 里的压缩公钥算 HASH160
-        let compressed_pk = psbt
+        // P1-B（2026-09-01 再复审）：全部 BIP32_DERIVATION records 严格核验。
+        // 每条 record 的 (fingerprint, path, pubkey) 都要过三关：
+        //   fingerprint == 本机；path 派生公钥 == record 携带 pubkey；
+        //   且所有 record 核验结果一致（不同 pubkey = 多签/异源混合，单签设备拒绝）。
+        let input_map = psbt
             .inputs
             .get(idx)
-            .and_then(|map| {
-                map.iter()
-                    .find(|kv| kv.key.first() == Some(&psbt_mod::input_type::BIP32_DERIVATION))
-                    .map(|kv| kv.key[1..34].to_vec())
-            });
-        let pubkey_hash: [u8; 20] = match &compressed_pk {
-            Some(pk) => {
-                // R4: 等值断言——PSBT 声明的 pubkey 必须等于本设备派生钥对应的公钥
-                if pk.as_slice() != derived_pub {
+            .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        let mut records: Vec<([u8; 4], DerivationPath, Vec<u8>)> = Vec::new();
+        for kv in input_map.iter() {
+            if kv.key.first() != Some(&psbt_mod::input_type::BIP32_DERIVATION) {
+                continue;
+            }
+            if kv.key.len() != 1 + 33 {
+                return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+            }
+            let (fp, path) = parse_derivation_value(&kv.value)
+                .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            records.push((fp, path, kv.key[1..34].to_vec()));
+        }
+        if records.is_empty() {
+            return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        // R4 语义保留：签名 key 派生公钥与第一条 record pubkey 等值断言
+        if derived_pub != records[0].2.as_slice() {
+            return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
+        }
+        let mut pubkey_hash: Option<[u8; 20]> = None;
+        for (fp, path, pk) in &records {
+            if *fp != local_fp {
+                return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+            }
+            let rec_sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, path)?;
+            let rec_pub = crate::curve_primitive::secp256k1::point_to_compressed(
+                &crate::curve_primitive::secp256k1::base_mul(&rec_sk),
+            );
+            if rec_pub != pk.as_slice() {
+                return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
+            }
+            // 与本输入实际签名用的 (path, sk) 一致性：record path 必须等于签名 path
+            let h = crate::encoding::sha256::hash(pk)?;
+            let h20 = crate::encoding::ripemd160::hash(&h)?;
+            match &pubkey_hash {
+                Some(prev) if *prev != h20 => {
+                    // 多条 record 指向不同公钥 = 非 P2WPKH 单签语义
                     return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
                 }
-                let h = crate::encoding::sha256::hash(pk)?;
-
-                crate::encoding::ripemd160::hash(&h)?
+                Some(_) => {}
+                None => {
+                    pubkey_hash = Some(h20);
+                    // 签名 key 用第一条核验通过的 record path（与 derived_pub 对齐）
+                    if *path != path_used {
+                        return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
+                    }
+                }
             }
-            None => return Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
-        };
+        }
+        let pubkey_hash = pubkey_hash.ok_or_else(|| {
+            err(ShlosiloErrorKind::EncodingInvalidFormat)
+        })?;
 
-        // witness utxo value
-        let amount = psbt
+        // P1-B：witness utxo 绑定——金额与 scriptPubKey 必须是本输入自己的，
+        // 且 scriptPubKey 必须是 P2WPKH(OP_0 PUSH20) 且 HASH160 == 我们的 pubkey_hash
+        // （prevout txid 链上即指向该 script，从而把签名输入间接锚定到本 key）。
+        let (amount, spk) = psbt
             .inputs
             .get(idx)
             .and_then(|m| psbt_mod::get_witness_utxo(m))
-            .map(|(v, _)| v)
             .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        if spk.len() != 22 || spk[0] != 0x00 || spk[1] != 0x14 || spk[2..22] != pubkey_hash {
+            return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
+        }
 
         psbt_mod::sign_psbt_p2wpkh(
             &mut psbt,
@@ -1088,6 +1132,138 @@ mod tests {
         assert_eq!(
             result.unwrap_err().kind,
             ShlosiloErrorKind::NetworkUnrecognized
+        );
+    }
+
+    /// P1-B：witness_utxo scriptPubKey 与签名 key 不绑定（换到他人 P2WPKH）→ 拒绝
+    #[test]
+    fn p1b_rejects_witness_utxo_script_mismatch() {
+        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+        use crate::chain::btc::psbt::{self, input_type, Psbt};
+        use crate::encoding::cbor;
+
+        let seed = [0xA5u8; 64];
+        let path = DerivationPath::parse("m/84'/0'/0'/0/0").unwrap();
+        let sk = crate::derivation::bip32_secp256k1::derive_from_seed(&seed, &path).unwrap();
+        let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
+        let sk_scalar = crate::curve_primitive::secp256k1::scalar_from_bytes(&sk_bytes).unwrap();
+        let compressed_pk = crate::curve_primitive::secp256k1::point_to_compressed(
+            &crate::curve_primitive::secp256k1::base_mul(&sk_scalar),
+        );
+
+        // scriptPubKey 用别的 hash —— witness_utxo 与签名 key 脱钩
+        let mut spk = alloc::vec![0x00u8, 0x14];
+        spk.extend_from_slice(&[0x11u8; 20]);
+        let _ = compressed_pk;
+
+        let psbt = Psbt {
+            unsigned_tx: Transaction {
+                version: 2,
+                inputs: alloc::vec![TxIn {
+                    prev_out: OutPoint { txid: [0xABu8; 32], vout: 0 },
+                    script_sig: Vec::new(),
+                    sequence: 0xffff_ffff,
+                    witness: Vec::new(),
+                }],
+                outputs: alloc::vec![TxOut { value: 90_000, script_pubkey: spk.clone() }],
+                lock_time: 0,
+            },
+            inputs: alloc::vec![alloc::vec![
+                psbt::KeyValue {
+                    key: alloc::vec![input_type::WITNESS_UTXO],
+                    value: {
+                        let mut v = alloc::vec::Vec::new();
+                        v.extend_from_slice(&100_000u64.to_le_bytes());
+                        v.push(22);
+                        v.extend_from_slice(&spk);
+                        v
+                    },
+                },
+                psbt::KeyValue {
+                    key: {
+                        let mut k = alloc::vec![input_type::BIP32_DERIVATION];
+                        k.extend_from_slice(&compressed_pk);
+                        k
+                    },
+                    value: {
+                        let fp = crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed).unwrap();
+                        let mut vv = alloc::vec::Vec::new();
+                        vv.extend_from_slice(&fp);
+                        for c in path.as_slice() {
+                            vv.extend_from_slice(&c.0.to_le_bytes());
+                        }
+                        vv
+                    },
+                },
+            ]],
+            outputs: alloc::vec![alloc::vec![]],
+        };
+
+        let psbt_bytes = psbt::serialize_psbt(&psbt);
+        let ur_payload = cbor::encode_bytes(&psbt_bytes);
+        let mut output_buf = [0u8; 4096];
+        let input = SignInput::Seed { seed: &seed };
+        let result = sign(
+            input,
+            crate::ur::ur_encode::UrTypeTag::CryptoPsbt,
+            &ur_payload,
+            &mut output_buf,
+        );
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::PsbtOwnershipMismatch
+        );
+    }
+
+    /// P1-B：无 BIP32_DERIVATION record（旧 fallback 默认路径已删除）→ 拒绝
+    #[test]
+    fn p1b_rejects_missing_derivation_record() {
+        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+        use crate::chain::btc::psbt::{self, input_type, Psbt};
+        use crate::encoding::cbor;
+
+        let seed = [0xA5u8; 64];
+        let mut spk = alloc::vec![0x00u8, 0x14];
+        spk.extend_from_slice(&[0x22u8; 20]);
+
+        let psbt = Psbt {
+            unsigned_tx: Transaction {
+                version: 2,
+                inputs: alloc::vec![TxIn {
+                    prev_out: OutPoint { txid: [0xABu8; 32], vout: 0 },
+                    script_sig: Vec::new(),
+                    sequence: 0xffff_ffff,
+                    witness: Vec::new(),
+                }],
+                outputs: alloc::vec![TxOut { value: 90_000, script_pubkey: spk.clone() }],
+                lock_time: 0,
+            },
+            inputs: alloc::vec![alloc::vec![psbt::KeyValue {
+                key: alloc::vec![input_type::WITNESS_UTXO],
+                value: {
+                    let mut v = alloc::vec::Vec::new();
+                    v.extend_from_slice(&100_000u64.to_le_bytes());
+                    v.push(22);
+                    v.extend_from_slice(&spk);
+                    v
+                },
+            }]],
+            outputs: alloc::vec![alloc::vec![]],
+        };
+
+        let psbt_bytes = psbt::serialize_psbt(&psbt);
+        let ur_payload = cbor::encode_bytes(&psbt_bytes);
+        let mut output_buf = [0u8; 4096];
+        let input = SignInput::Seed { seed: &seed };
+        let result = sign(
+            input,
+            crate::ur::ur_encode::UrTypeTag::CryptoPsbt,
+            &ur_payload,
+            &mut output_buf,
+        );
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::EncodingInvalidFormat
         );
     }
 
