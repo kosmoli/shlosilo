@@ -35,7 +35,7 @@ use core::slice;
 use crate::business;
 use crate::derivation::path::DerivationPath;
 use crate::entropy::mnemonic::{Mnemonic, WordCount};
-use crate::error::{ShlosiloError, ShlosiloErrorKind};
+use crate::error::{ShlosiloError, ShlosiloErrorKind, ShlosiloErrorCode};
 use crate::ffi::error_code::{
     to_ffi_code, ERR_BUFFER_TOO_SMALL, ERR_NULL_POINTER, ERR_PANIC, OK,
 };
@@ -63,12 +63,46 @@ fn write_actual_len(ptr: *mut c_uint, len: usize) {
     }
 }
 
-unsafe fn bytes_in<'a>(p: *const u8, len: usize) -> &'a [u8] {
+/// P0-02（2026-09-01 第三次复审）：FFI 指针/长度组合的白名单校验 + safe slice 构造。
+///
+/// 契约（审计 #4 指控：`NULL + len>0` 曾被静默当空 slice——错误 passphrase 指针
+/// 会派生完全不同的钱包；负 count 曾被 `as usize` 零扩展后直通 `from_raw_parts` = UB）：
+/// - `(NULL, 0)` → 允许，返回空 slice（语义上"调用方无此参数"）
+/// - `(NULL, len>0)` → **拒绝**（返回 None → ERR_NULL_POINTER）
+/// - `(non-NULL, len)` → 构造 slice；len 由调用方先行做预算校验
+///
+/// 全部 FFI 可选输入（passphrase / entropy）必须经此 helper，禁止直调 `from_raw_parts`。
+fn optional_bytes_in(p: *const u8, len: usize) -> Option<&'static [u8]> {
+    // P0-02：len 上限在此类统一防线兜底 256B；调用方的专属预算校验在后
     if p.is_null() {
-        &[]
+        if len == 0 {
+            Some(&[])
+        } else {
+            None // NULL + len>0：非法组合，稳定拒绝
+        }
     } else {
-        slice::from_raw_parts(p, len)
+        // SAFETY: p 非 null；len ≤ 调用方预算（各入口的 MAX 常量已先行校验），
+        // 指针有效性是 C ABI 契约（L3 保证传入缓冲可达且长度如实）
+        Some(unsafe { slice::from_raw_parts(p, len) })
     }
+}
+
+/// P0-02：必填指针/长度输入的 safe slice 构造（null 或 len>usize 预算均拒绝）。
+/// 与 `optional_bytes_in` 的区别：`(NULL, 0)` 也拒绝——sign/export 的核心输入
+/// （mnemonic / payload / path_elems / rolls）不允许缺省。
+fn required_bytes_in(p: *const u8, len: usize) -> Option<&'static [u8]> {
+    if p.is_null() {
+        None
+    } else {
+        // SAFETY: 同 optional_bytes_in
+        Some(unsafe { slice::from_raw_parts(p, len) })
+    }
+}
+
+/// P0-02：c_int 计数参数的安全读取——负数一律拒绝，绝不 `as usize` 零扩展。
+/// 返回 None → 调用方返回 InvalidMnemonic（word-count 域错误）。
+fn mnemonic_count_usize(count: c_int) -> Option<usize> {
+    usize::try_from(count).ok()
 }
 
 /// shlosilo_sign_ffi — mnemonic + UR payload → 签名
@@ -88,32 +122,47 @@ pub extern "C" fn shlosilo_sign_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    write_actual_len(actual_len, 0); // P0-02 #4: out-param 序言清零（null early-return 也覆盖）
     if mnemonic_indices.is_null() || ur_payload.is_null() || output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
+    // P0-02 #1: count 域校验**先于**任何 unsafe 构造——负数/非法词数直接拒绝
+    let word_count = match mnemonic_count_usize(mnemonic_count)
+        .and_then(WordCount::try_from_count)
+    {
+        Some(wc) => wc,
+        None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
+    };
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-        if !(12..=24).contains(&mnemonic_count) {
-            return Err(err(ShlosiloErrorKind::MnemonicInvalidWordCount));
-        }
-
-        let mnem_slice =
-            unsafe { slice::from_raw_parts(mnemonic_indices, mnemonic_count as usize) };
+        // SAFETY: mnemonic_count 已过白名单（12..=24），指针 null 已排除
+        let mnem_slice = unsafe {
+            slice::from_raw_parts(mnemonic_indices, word_count as usize)
+        };
         if ur_payload_len as usize > LEGACY_PAYLOAD_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        let payload_slice = unsafe { slice::from_raw_parts(ur_payload, ur_payload_len as usize) };
-        let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
-        let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
+        // SAFETY: ur_payload 非 null（序言排除），len ≤ LEGACY_PAYLOAD_MAX_LEN
+        let payload_slice = unsafe {
+            slice::from_raw_parts(ur_payload, ur_payload_len as usize)
+        };
+        // SAFETY: output_buf 非 null（序言排除）；len 是 C 契约的真实缓冲长度
+        let out_slice = unsafe {
+            slice::from_raw_parts_mut(output_buf, output_buf_len as usize)
+        };
+        // P0-02 #2: (NULL, len>0) 拒绝——错误 passphrase 指针不得静默变空 passphrase
+        let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize)
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         if pass_slice.len() > PASSPHRASE_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
 
-        let word_count = WordCount::try_from_count(mnemonic_count as usize)
-            .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
         let mnemonic = Mnemonic::from_indices(mnem_slice, word_count)
             .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
 
-        let _network = Network::try_from_u8(network as u8)
+        // P0-02 #3: network as u8 窄化回绕（256→0）改为 u8::try_from 全值校验
+        let n8 = u8::try_from(network)
+            .map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+        let _network = Network::try_from_u8(n8)
             .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
 
         let input = business::sign::SignInput::Mnemonic {
@@ -167,14 +216,18 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    write_actual_len(actual_len, 0); // P0-02 #4: out-param 序言清零
     if uri.is_null() || mnemonic_indices.is_null() || output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
+    // P0-02 #1: count 域校验先于任何 unsafe 构造
+    let word_count = match mnemonic_count_usize(mnemonic_count)
+        .and_then(WordCount::try_from_count)
+    {
+        Some(wc) => wc,
+        None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
+    };
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-        if !(12..=24).contains(&mnemonic_count) {
-            return Err(err(ShlosiloErrorKind::MnemonicInvalidWordCount));
-        }
-
         // C string → &str（无 alloc：直接扫到 \0）
         let mut len = 0usize;
         unsafe {
@@ -193,22 +246,32 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
         let decoded = crate::ur::ur_decode::decode(uri_str)?;
 
         // §B.5 entropy 注入（NULL → 空切片；XMR 分支内部做 ≥16B misuse guard）
-        let entropy_slice = unsafe { bytes_in(entropy_ptr, entropy_len as usize) };
+        // P0-02 #2: (NULL, len>0) 拒绝
+        let entropy_slice = optional_bytes_in(entropy_ptr, entropy_len as usize)
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
 
-        let mnem_slice =
-            unsafe { slice::from_raw_parts(mnemonic_indices, mnemonic_count as usize) };
-        let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
-        let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
+        // SAFETY: mnemonic_count 已过白名单，指针 null 已排除
+        let mnem_slice = unsafe {
+            slice::from_raw_parts(mnemonic_indices, word_count as usize)
+        };
+        // SAFETY: output_buf 非 null（序言排除）
+        let out_slice = unsafe {
+            slice::from_raw_parts_mut(output_buf, output_buf_len as usize)
+        };
+        // P0-02 #2: (NULL, len>0) 拒绝
+        let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize)
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         if pass_slice.len() > PASSPHRASE_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
 
-        let word_count = WordCount::try_from_count(mnemonic_count as usize)
-            .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
         let mnemonic = Mnemonic::from_indices(mnem_slice, word_count)
             .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
 
-        let network_parsed = Network::try_from_u8(network as u8)
+        // P0-02 #3: network 窄化回绕改为 u8::try_from 全值校验
+        let n8 = u8::try_from(network)
+            .map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+        let network_parsed = Network::try_from_u8(n8)
             .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
 
         let input = business::sign::SignInput::Mnemonic {
@@ -267,24 +330,45 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    write_actual_len(actual_len, 0); // P0-02 #4: out-param 序言清零
     if mnemonic_indices.is_null() || path_elems.is_null() || output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
+    // P0-02 #1（本条 P0 主指控）：count 域校验先于任何 unsafe 构造——
+    // 负 mnemonic_count 曾直接 `as usize` 零扩展成 usize::MAX 进 from_raw_parts = UB
+    let word_count = match mnemonic_count_usize(mnemonic_count)
+        .and_then(WordCount::try_from_count)
+    {
+        Some(wc) => wc,
+        None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
+    };
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-
-        let mnem_slice =
-            unsafe { slice::from_raw_parts(mnemonic_indices, mnemonic_count as usize) };
-        let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
-        let elem_slice = unsafe { slice::from_raw_parts(path_elems, path_elem_count as usize) };
+        // SAFETY: mnemonic_count 已过白名单，指针 null 已排除
+        let mnem_slice = unsafe {
+            slice::from_raw_parts(mnemonic_indices, word_count as usize)
+        };
+        // SAFETY: path_elems 非 null（序言排除）；u32 元素数按 C 契约如实
+        let elem_slice = unsafe {
+            slice::from_raw_parts(path_elems, path_elem_count as usize)
+        };
         let path = DerivationPath::from_flat(elem_slice.iter().copied())
             .map_err(|_| err(ShlosiloErrorKind::DerivationPathInvalidSyntax))?;
 
-        let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
+        // SAFETY: output_buf 非 null（序言排除）
+        let out_slice = unsafe {
+            slice::from_raw_parts_mut(output_buf, output_buf_len as usize)
+        };
+        // P0-02 #2: (NULL, len>0) 拒绝
+        let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize)
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         if pass_slice.len() > PASSPHRASE_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
 
-        let network = Network::try_from_u8(network as u8)
+        // P0-02 #3: network 窄化回绕改为 u8::try_from 全值校验
+        let n8 = u8::try_from(network)
+            .map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+        let network = Network::try_from_u8(n8)
             .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
 
         let protocol = match protocol {
@@ -297,8 +381,8 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
         };
 
         // seed 现场恢复：栈 buffer → SecretBytes 接管（原副本清零）→ 导出 → scope 末 ZeroizeOnDrop
-        let wc = WordCount::try_from_count(mnemonic_count as usize)
-            .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
+        // P0-02: word_count 已在序言过白名单（原此处二次 `mnemonic_count as usize`）
+        let wc = word_count;
         let mnemonic = Mnemonic::from_indices(mnem_slice, wc)
             .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
         let mut seed_buf = [0u8; 64];
@@ -350,10 +434,14 @@ pub extern "C" fn shlosilo_create_account_ffi(
         if rolls_count as usize > ROLLS_MAX_COUNT {
             return Err(err(ShlosiloErrorKind::DiceRollsInvalidCount));
         }
+        // SAFETY: rolls 非 null（序言排除），len ≤ ROLLS_MAX_COUNT
         let rolls_slice = unsafe { slice::from_raw_parts(rolls, rolls_count as usize) };
+        // SAFETY: mnemonic_buf 非 null（序言排除）
         let mnemonic_slice =
             unsafe { slice::from_raw_parts_mut(mnemonic_buf, mnemonic_buf_len as usize) };
-        let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
+        // P0-02 #2: (NULL, len>0) 拒绝
+        let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize)
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         if pass_slice.len() > PASSPHRASE_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
@@ -361,9 +449,13 @@ pub extern "C" fn shlosilo_create_account_ffi(
         let wc = WordCount::try_from_count(word_count as usize)
             .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
 
+        // P0-02 #3: sides as u8 窄化回绕（262→6）改为 u8::try_from 全值校验
+        let sides8 = u8::try_from(sides)
+            .map_err(|_| err(ShlosiloErrorKind::InvalidDiceConfig))?;
+
         business::create_account::create_account(
             wc,
-            sides as u8,
+            sides8,
             rolls_slice,
             pass_slice,
             mnemonic_slice,
@@ -461,7 +553,7 @@ const _: c_int = ERR_NULL_POINTER;
 const _: c_int = ERR_BUFFER_TOO_SMALL;
 
 // ─── R3 typed 多分片 FFI（2026-08-31）─────────────────────────────
-mod r3 {
+pub mod r3 {
     use super::*;
     use crate::ur::ur_multipart::{UrMultipartDecoder, UrMultipartEncoder, MULTIPART_FRAME_MAX_LEN};
     use alloc::boxed::Box;
@@ -485,6 +577,7 @@ const FRAME_BUF_MAX_LEN: usize = 1024;
 /// type_name: ASCII 字母数字 + '-'（如 "xmr-txunsigned"）
 /// L3 完成后必须调用 shlosilo_ur_encode_free。
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: mod r3 转 pub 后 clippy 可见；契约同主入口（先 null-check）
 pub extern "C" fn shlosilo_ur_encode_begin(
     type_name: *const c_char,
     payload: *const u8,
@@ -507,7 +600,8 @@ pub extern "C" fn shlosilo_ur_encode_begin(
         }
         let tslice = unsafe { slice::from_raw_parts(type_name as *const u8, tlen) };
         let tname = core::str::from_utf8(tslice).ok()?;
-        let pslice = unsafe { slice::from_raw_parts(payload, payload_len as usize) };
+        // P0-02 #2: payload 必填——null 一律拒绝（(NULL,0) 也不允许，空 payload 编码无意义）
+        let pslice = required_bytes_in(payload, payload_len as usize)?;
         let enc = UrMultipartEncoder::new(tname, pslice, max_fragment_len as usize).ok()?;
         Some(Box::into_raw(Box::new(enc)))
     });
@@ -615,6 +709,7 @@ pub extern "C" fn shlosilo_ur_encode_next_cyclic(
 
 /// R3: 释放编码器句柄。null 安全（幂等）。
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: mod r3 转 pub 后 clippy 可见；free 契约：single-owner
 pub extern "C" fn shlosilo_ur_encode_free(handle: *mut UrMultipartEncoder) {
     if !handle.is_null() {
         unsafe { drop(Box::from_raw(handle)) };
@@ -847,10 +942,14 @@ pub extern "C" fn shlosilo_sign_typed_ffi(
     if type_name.is_null() || payload.is_null() || mnemonic_indices.is_null() || output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
+    // P0-02 #1: count 域校验先于任何 unsafe 构造（与主 sign 系同一序言纪律）
+    let word_count = match mnemonic_count_usize(mnemonic_count)
+        .and_then(WordCount::try_from_count)
+    {
+        Some(wc) => wc,
+        None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
+    };
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-        if !(12..=24).contains(&mnemonic_count) {
-            return Err(err(ShlosiloErrorKind::MnemonicInvalidWordCount));
-        }
         // C string → &str（type 名 ≤ 64 字符足够）
         let mut tlen = 0usize;
         unsafe {
@@ -872,19 +971,29 @@ pub extern "C" fn shlosilo_sign_typed_ffi(
             return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
         }
         let payload_slice = unsafe { slice::from_raw_parts(payload, payload_len as usize) };
-        let entropy_slice = unsafe { bytes_in(entropy_ptr, entropy_len as usize) };
-        let mnem_slice =
-            unsafe { slice::from_raw_parts(mnemonic_indices, mnemonic_count as usize) };
-        let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
-        let pass_slice = unsafe { bytes_in(passphrase, passphrase_len as usize) };
+        // P0-02 #2: (NULL, len>0) 拒绝
+        let entropy_slice = optional_bytes_in(entropy_ptr, entropy_len as usize)
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+        // SAFETY: mnemonic_count 已过白名单，指针 null 已排除
+        let mnem_slice = unsafe {
+            slice::from_raw_parts(mnemonic_indices, word_count as usize)
+        };
+        // SAFETY: output_buf 非 null（序言排除）
+        let out_slice = unsafe {
+            slice::from_raw_parts_mut(output_buf, output_buf_len as usize)
+        };
+        // P0-02 #2: (NULL, len>0) 拒绝
+        let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize)
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         if pass_slice.len() > PASSPHRASE_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        let word_count = WordCount::try_from_count(mnemonic_count as usize)
-            .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
         let mnemonic = Mnemonic::from_indices(mnem_slice, word_count)
             .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
-        let network_parsed = Network::try_from_u8(network as u8)
+        // P0-02 #3: network 窄化回绕改为 u8::try_from 全值校验
+        let n8 = u8::try_from(network)
+            .map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+        let network_parsed = Network::try_from_u8(n8)
             .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
         let input = business::sign::SignInput::Mnemonic {
             mnemonic,
@@ -911,6 +1020,7 @@ pub extern "C" fn shlosilo_sign_typed_ffi(
 
 /// R3: 释放解码器句柄。null 安全（幂等）。
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: mod r3 转 pub 后 clippy 可见；free 契约：single-owner
 pub extern "C" fn shlosilo_ur_decode_free(handle: *mut UrMultipartDecoder) {
     if !handle.is_null() {
         unsafe { drop(Box::from_raw(handle)) };
