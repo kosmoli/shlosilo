@@ -67,6 +67,41 @@ fn p63_sign_sparrow_psbt_end_to_end() {
 
 
 
+
+/// R4: ownership binding negative test - tampered BIP32_DERIVATION pubkey must
+/// be rejected. A malicious PSBT claiming someone else's pubkey must not yield
+/// a "successful but unusable" signature.
+#[test]
+fn r4_tampered_bip32_derivation_rejected() {
+    use shlosilo::ur::ur_encode::UrTypeTag;
+    let mnemonic = test_mnemonic();
+    let input = SignInput::Mnemonic {
+        mnemonic,
+        passphrase: b"",
+    };
+    // tamper fixture: flip 1 byte of the 33B pubkey inside BIP32_DERIVATION key
+    let mut psbt = PSBT_BYTES.to_vec();
+    let target = [0x02u8, 0x7b, 0x54, 0xf8, 0xc6, 0xf0]; // fixture pubkey prefix
+    let mut patched = false;
+    for i in 0..psbt.len() - 33 {
+        if psbt[i..i + 6] == target {
+            psbt[i + 32] ^= 0x01;
+            patched = true;
+            break;
+        }
+    }
+    assert!(patched, "fixture pubkey must be found");
+    let payload = cbor::encode_bytes(&psbt);
+    let mut out_buf = vec![0u8; PSBT_BYTES.len() + 512];
+    let r = sign(input, UrTypeTag::CryptoPsbt, &payload, &mut out_buf);
+    let e = r.expect_err("tampered ownership must be rejected");
+    assert_eq!(
+        e.kind,
+        shlosilo::error::ShlosiloErrorKind::PsbtOwnershipMismatch,
+        "must fail on ownership binding, not parse"
+    );
+}
+
 #[test]
 fn p63_dump_signed_psbt() {
     use shlosilo::ur::ur_encode::UrTypeTag;

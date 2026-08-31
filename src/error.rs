@@ -99,6 +99,8 @@ pub enum ShlosiloErrorKind {
     EncodingInvalidChecksum = 0x0402_0003,
     /// sign_input_kind / export_kind 越界
     BufferKindMismatch = 0x0401_0002,
+    /// R4: PSBT 所有权绑定失败——BIP32_DERIVATION pubkey ≠ 派生公钥
+    PsbtOwnershipMismatch = 0x0403_0001,
 
     // ─── Invariant 违反（0x05xx_xxxx） ───
     /// 内部不可能状态（unreachable 触发）
@@ -179,6 +181,7 @@ pub enum ShlosiloErrorCode {
     UnsupportedNetwork       = -12,
     MultisigNotSupported     = -13,
     FeatureNotImplemented    = -14,
+    PsbtOwnershipRejected    = -15,
     BufferTooSmall           = -20,
     EncodingError            = -21,
     InvalidUrPayload         = -30,
@@ -204,6 +207,7 @@ impl ShlosiloErrorCode {
             | ShlosiloErrorKind::EncodingInvalidFormat
             | ShlosiloErrorKind::EncodingInvalidChecksum => Self::EncodingError,
             ShlosiloErrorKind::BufferKindMismatch => Self::InvalidArgument,
+            ShlosiloErrorKind::PsbtOwnershipMismatch => Self::PsbtOwnershipRejected,
             ShlosiloErrorKind::UrPayloadInvalidCbor
             | ShlosiloErrorKind::UrPayloadUnknownType => Self::InvalidUrPayload,
             ShlosiloErrorKind::UrPayloadTooLarge => Self::BufferTooSmall,

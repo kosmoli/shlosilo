@@ -403,6 +403,13 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path)?;
         let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
 
+        // R4 所有权绑定：派生公钥必须与 PSBT BIP32_DERIVATION 携带的 pubkey 一致。
+        // 没有这条等值断言,恶意/构造 PSBT 可让设备对「成功但不可用」的输入签名
+        // (HASH160 匹配 ≠ 该哈希确实来自我们即将使用的私钥——碰撞或账本不一致均绕过)。
+        let derived_pub = crate::curve_primitive::secp256k1::point_to_compressed(
+            &crate::curve_primitive::secp256k1::base_mul(&sk),
+        );
+
         // pubkey hash：从 BIP32_DERIVATION key 里的压缩公钥算 HASH160
         let compressed_pk = psbt
             .inputs
@@ -414,8 +421,12 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             });
         let pubkey_hash: [u8; 20] = match &compressed_pk {
             Some(pk) => {
+                // R4: 等值断言——PSBT 声明的 pubkey 必须等于本设备派生钥对应的公钥
+                if pk.as_slice() != derived_pub {
+                    return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
+                }
                 let h = crate::encoding::sha256::hash(pk)?;
-                
+
                 crate::encoding::ripemd160::hash(&h)?
             }
             None => return Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
