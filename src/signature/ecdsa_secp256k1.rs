@@ -144,8 +144,8 @@ mod tests {
     fn sign_verify_roundtrip() {
         // big-endian 编码 0xdeadbeef... (32 bytes)
         let mut sk_bytes = [0u8; 32];
-        for i in 0..32 {
-            sk_bytes[i] = (i as u8).wrapping_mul(7).wrapping_add(0x13);
+        for (i, b) in sk_bytes.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(7).wrapping_add(0x13);
         }
         let sk = crate::curve_primitive::secp256k1::scalar_from_bytes(&sk_bytes).unwrap();
         let pk = crate::curve_primitive::secp256k1::base_mul(&sk);

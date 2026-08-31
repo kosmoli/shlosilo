@@ -479,13 +479,6 @@ pub fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<UnsignedTx> {
 mod tests {
     use super::*;
 
-    fn hex(s: &str) -> Vec<u8> {
-        (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
-            .collect()
-    }
-
     /// P6.3 真实 fixture 明文（/tmp/txset_plain.bin 1952B）——从文件 include
     /// 验证 deserialize 与 python 解析一致（1 输入 ring16、找零+dest、fee）
     #[test]

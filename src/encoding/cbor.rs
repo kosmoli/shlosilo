@@ -298,7 +298,7 @@ pub fn decode(bytes: &[u8]) -> Result<Cbor<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
+    
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len())
@@ -412,17 +412,11 @@ mod tests {
     #[test]
     fn deep_nesting_rejected() {
         // 200 层嵌套 array > MAX_DEPTH(64)
-        let mut deep = Vec::new();
-        for _ in 0..200 {
-            deep.push(0x81); // array(1)
-        }
+        let mut deep = alloc::vec![0x81u8; 200]; // 200 x array(1)
         deep.push(0x00); // uint 0
         assert!(decode(&deep).is_err());
         // 63 层(≤64)正常通过
-        let mut ok = Vec::new();
-        for _ in 0..63 {
-            ok.push(0x81);
-        }
+        let mut ok = alloc::vec![0x81u8; 63];
         ok.push(0x00);
         assert!(decode(&ok).is_ok());
     }

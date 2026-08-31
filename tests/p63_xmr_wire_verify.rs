@@ -6,10 +6,10 @@
 //!   - I = wire vin key image
 //!   - pseudo_out = wire pseudoOuts[0]
 //!   - D, s, c1 = wire CLSAGs[0]
-//!   - msg_hash = keccak(prefix_hash ‖ H(base) ‖ BP elements) —— 从 wire 重算
+//!   - msg_hash = keccak(prefix_hash + H(base) + BP elements) - 从 wire 重算
+//!
 //! 若本地 verify 失败 ⇒ msg_hash 与 wire 不一致（签名时用了别的值）；若成功 ⇒ mixRing 与 monerod 展开不同。
 
-use shlosilo::chain::xmr;
 use std::fs;
 
 #[test]

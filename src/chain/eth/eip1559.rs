@@ -139,14 +139,6 @@ pub fn signing_preimage(tx: &Eip1559Transaction) -> Result<Vec<u8>> {
     Ok(preimage)
 }
 
-/// debug helper for tests
-#[cfg(test)]
-fn debug_signing_preimage_bytes(tx: &Eip1559Transaction) -> Vec<u8> {
-    signing_preimage(tx).unwrap()
-}
-
-
-
 // ─── sign_eip1559 业务函数 ────────────────────────────────────────
 
 /// 计算 y_parity (recovery_id) — 从 (r, s, z, pk) 推 R.y parity

@@ -124,7 +124,7 @@ fn diag_bp_size_and_verify() {
     let mut rng = OsRng;
     // 与签名路径相同：2 outputs，金额 1869360000 / 100000000
     let masks: Vec<[u8; 32]> = vec![[0xaau8; 32], [0xbbu8; 32]];
-    use shlosilo::chain::xmr::transaction::{bytes_to_monerod_scalar, monerod_scalar_to_bytes};
+    use shlosilo::chain::xmr::transaction::bytes_to_monerod_scalar;
     let commitments = masks
         .iter()
         .map(|m| {

@@ -19,8 +19,6 @@ use shlosilo::chain::xmr::signed_txset::{decrypt_signed_txset, SIGNED_TX_PREFIX}
 use shlosilo::derivation::monero_reduce_scalar::{derive, MoneroPath};
 use shlosilo::ur::ur_encode::{encode, UrTypeTag};
 
-const ENCRYPTED: &[u8] = include_bytes!("fixtures/unsigned_txset.bin");
-
 fn hex_to_32(s: &str) -> [u8; 32] {
     let v: Vec<u8> = (0..s.len())
         .step_by(2)
@@ -93,7 +91,7 @@ fn sign_xmr_business_end_to_end() {
     //      purpose_rng 首次调用，即解密之后。短 payload fixture 解密会先成功，
     //      然后在签名 RNG 派生时触发 guard。无论如何 ≤ 报 EntropyInjectionInvalid 或
     //      数据错误，绝不会是 ChainKindUnsupported / panic）----
-    let ur = encode(UrTypeTag::XmrTxUnsigned, &encrypted_for_self).unwrap();
+    let _ur = encode(UrTypeTag::XmrTxUnsigned, &encrypted_for_self).unwrap();
     let mut out1 = vec![0u8; 16384];
 
     let r = sign_with_entropy(
@@ -143,7 +141,7 @@ fn sign_xmr_business_end_to_end() {
                 e1.kind, e2.kind
             );
         }
-        (a, b) => panic!("non-deterministic: {:?} vs {:?}", a.map(|n| n), b.map(|n| n)),
+        (a, b) => panic!("non-deterministic: {:?} vs {:?}", a, b),
     }
 
     // ---- (c) 管线可达性：解密自加密 blob 确认加密格式正确 ----
@@ -175,6 +173,7 @@ fn encrypt_unsigned_with_self_view(
     let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
     let nonce = rng.next_u64().to_be_bytes();
     let mut buf = plain.to_vec();
+    #[allow(deprecated)]
     let mut cipher =
         ChaCha20Legacy::new_from_slices(&key, chacha20::LegacyNonce::from_slice(&nonce)).unwrap();
     cipher.apply_keystream(&mut buf);

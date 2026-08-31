@@ -74,8 +74,11 @@ pub fn verify(
 mod tests {
     use super::*;
 
-    const _: fn(&Ed25519Scalar, &[u8], &[Ed25519Point], &Ed25519Point, &ClsagAux) -> Result<ClsagProof> = sign;
-    const _: fn(&[Ed25519Point], &Ed25519Point, &[u8], &ClsagProof) -> bool = verify;
+    // 签名/验证函数形状编译期锁定（复杂签名用别名压平）
+    type SignFn = fn(&Ed25519Scalar, &[u8], &[Ed25519Point], &Ed25519Point, &ClsagAux) -> Result<ClsagProof>;
+    type VerifyFn = fn(&[Ed25519Point], &Ed25519Point, &[u8], &ClsagProof) -> bool;
+    const _: SignFn = sign;
+    const _: VerifyFn = verify;
 
     #[test]
     fn proof_zeroize_on_drop() {

@@ -516,7 +516,6 @@ mod tests {
     }
 
     /// TxKeyPair 派生 + verify
-
     // P1-03：TxInputSpec/TxOutputSpec 含 SecretBytes（不可 Clone）——helper 重建替代 clone
     fn mk_input_spec() -> TxInputSpec {
         let spend_key = scalar_to_bytes(&rs(&[0x11u8; 32]).unwrap());
@@ -619,7 +618,7 @@ mod tests {
         let stealth_address = [0xccu8; 32];
 
         // 6. TxInputSpec
-        let input_spec = TxInputSpec {
+        let _input_spec = TxInputSpec {
             key_offsets: vec![1, 2],
             real_index: 0,
             spend_key: SecretBytes::new(spend_key),
@@ -630,7 +629,7 @@ mod tests {
         };
 
         // 7. TxOutputSpec
-        let output_spec = TxOutputSpec {
+        let _output_spec = TxOutputSpec {
             amount: amount_out,
             mask: SecretBytes::new(out_mask),
             stealth_address,
@@ -650,8 +649,8 @@ mod tests {
         );
 
         // 9. Verify
-        let msg_hash = {
-            let mut h = [0u8; 32];
+        let _msg_hash = {
+            let h = [0u8; 32];
             // 重新生成相同 msg hash (因 sign 内部用 rng, msg hash 不可重现)
             // 这里 verify 用 zeroed msg hash 仅作结构验证 — CLSAG verify 需要实际 msg hash
             // 简化为直接通过 (skip msg hash 验证)
@@ -977,7 +976,7 @@ mod tests {
         assert_eq!(decrypt_amount(&enc_amount, &expected_shared), 900);
 
         // PID xor 也用同一把（keccak(8Ra||0x8d)），与 view_tag 模块一致
-        let pid = [7u8; 8];
+        let _pid = [7u8; 8];
         assert_ne!(&payment_id_xor(&eight), &[0u8; 8]);
     }
 

@@ -23,7 +23,6 @@
 #![cfg(test)]
 extern crate alloc;
 #[allow(dead_code)]
-
 pub const BTC_P2WPKH_RAW_TX_GZ_HEX: &str =
     "1f8b0800000000000003ad8ebf4a9c4114c55193b06ce3c64ab6922590202c3b73e7def9d3258a189b9090252965ee9db92e6165935562bebc481a21e00bd85bf806fa0c965662a99d1f58da0aa7389ce2fc7e9dc595e52ff3cd59a96b9fe7b3c399cca6fd8ba576ed042754b2c983f3a5eeeb8df1e6eea70fe39d6f5bbb5fb7b6bfef8c57de8824f45c61182bca1081eb303bb043f2995c8ea264fddae9cdd5d9bd79d7e1fbc5cee56aefe4c5e078a1fbde4764e740935349290204b6accae0432a36a54460993d5a31d1a9c58c91b02dc65462f4d8dfee6e18e74c21d4624a4130d957d2589c075452871124574746db475213c8b112d7aa49a0249bd5c9ea5d1c2cef8f22be1d99c78ccce07fabc7ea538068034baa904553b6a2d9335b6f99aa5a170d65b05982154108583d297064e296d85be87f7c16c17fd72f9f18ae9bee3a8bfd7598ca5f7f7034f9d94cd39f1ff9f7fea4398a074d48cd7482d366deec65d86b7ab7c7af1e003f9faab8e3010000";
 
@@ -215,7 +214,7 @@ fn keystone_btc_priv3_matches_3g() {
 
 #[test]
 fn keystone_eth_eip1559_chain_id_parsing() {
-    use shlosilo::chain::eth::eip1559::Eip1559Transaction;
+    
     // keystone test_parsed_eip1559_transaction parses canonical EIP-1559 RLP
     // and asserts chain_id=1, nonce=1, etc.
     // shlosilo v9.4 has Eip1559Transaction::sign_eip1559 but no from_rlp parser yet.

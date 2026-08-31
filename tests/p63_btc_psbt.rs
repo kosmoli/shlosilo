@@ -49,7 +49,7 @@ fn p63_read_real_derivation_path() {
     assert_eq!(path[0], 84 | H);
     // coin type 1' = signet —— 若这里断言 0' 则说明读的是硬编码值而非 fixture
     assert_eq!(path[1], 1 | H, "coin type must come from PSBT (1'=signet), not hardcoded 0'");
-    assert_eq!(path[2], 0 | H);
+    assert_eq!(path[2], H);
     assert_eq!(path[3], 0);
     assert_eq!(path[4], 2, "address index 2 from fixture");
     assert_eq!(pk.len(), 33, "compressed pubkey");

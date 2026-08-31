@@ -332,14 +332,16 @@ mod tests {
     }
 
     /// proptest 策略：固定大小 entropy 数组（用 proptest::array::uniform 避免 Vec）
+    #[allow(dead_code)] // proptest 宏展开引用，clippy 误报
     fn arb_entropy(wc: WordCount) -> impl Strategy<Value = Vec<u8>> {
         // dev-dependencies 走 std target，Vec 是可用的
         proptest::collection::vec(any::<u8>(), wc.entropy_bytes())
     }
 
     /// proptest 策略：合法 u16 索引（0..2048）
+    #[allow(dead_code)] // 同上
     fn arb_valid_index() -> impl Strategy<Value = u16> {
-        (0u16..2048u16)
+        0u16..2048u16
     }
 
     proptest! {

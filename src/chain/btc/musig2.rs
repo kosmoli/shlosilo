@@ -276,8 +276,8 @@ pub fn key_agg(pubkeys: &[Vec<u8>]) -> Result<KeyAggContext> {
             extern crate std;
             use std::eprintln;
             eprintln!(
-                "[DEBUG key_agg] pk={} coef={} ap.x={} Q.x={}",
-                alloc::format!("{:02x?}", &pk[..4]),
+                "[DEBUG key_agg] pk={:?} coef={} ap.x={} Q.x={}",
+                &pk[..4],
                 hex_encode(&scalar_to_bytes(&a)),
                 hex_encode(&xbytes(&ap)),
                 q.as_ref().map(|p| hex_encode(&xbytes(p))).unwrap_or_default(),
@@ -788,7 +788,7 @@ mod tests {
     #[test]
     fn base_mul_two() {
         use crate::curve_primitive::secp256k1::generator;
-        let g = generator();
+        let _g = generator();
         let two_scalar = {
             let mut b = [0u8; 32];
             b[31] = 2;
@@ -956,7 +956,7 @@ mod tests {
             .map(|b| {
                 let s = scalar_from_bytes(b).unwrap();
                 let p = base_mul(&s);
-                let mut c = cbytes(&p);
+                let c = cbytes(&p);
                 c.to_vec()
             })
             .collect();

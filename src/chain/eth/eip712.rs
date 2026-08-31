@@ -1298,15 +1298,7 @@ impl<'a> HumanReadableParser<'a> {
 mod tests {
     use super::*;
     use alloc::vec;
-    use std::eprintln;
-
-    fn hex_encode(b: &[u8]) -> String {
-        let mut s = String::with_capacity(b.len() * 2);
-        for byte in b {
-            s.push_str(&alloc::format!("{:02x}", byte));
-        }
-        s
-    }
+    
 
     fn hex_decode(s: &str) -> Vec<u8> {
         let bytes = s.as_bytes();
@@ -1375,13 +1367,9 @@ mod tests {
                 b
             }),
             verifying_contract: Some({
-                let mut a = [0u8; 20];
-                a[0] = 0xCc; a[1] = 0xCC; a[2] = 0xcc; a[3] = 0xCC;
-                a[4] = 0xcC; a[5] = 0xCC; a[6] = 0xCC; a[7] = 0xCC;
-                a[8] = 0xCC; a[9] = 0xcC; a[10] = 0xCc; a[11] = 0xCc;
-                a[12] = 0xcC; a[13] = 0xCC; a[14] = 0xCC; a[15] = 0xCC;
-                a[16] = 0xCc; a[17] = 0xCc; a[18] = 0xcC; a[19] = 0xCC;
-                a
+                // EIP-712 官方测试向量: EtherMail verifying contract (全 CC 地址)
+                
+                [0xCCu8; 20]
             }),
             salt: None,
         };
@@ -1461,13 +1449,9 @@ mod tests {
                 b
             }),
             verifying_contract: Some({
-                let mut a = [0u8; 20];
-                a[0] = 0xCc; a[1] = 0xCC; a[2] = 0xcc; a[3] = 0xCC;
-                a[4] = 0xcC; a[5] = 0xCC; a[6] = 0xCC; a[7] = 0xCC;
-                a[8] = 0xCC; a[9] = 0xcC; a[10] = 0xCc; a[11] = 0xCc;
-                a[12] = 0xcC; a[13] = 0xCC; a[14] = 0xCC; a[15] = 0xCC;
-                a[16] = 0xCc; a[17] = 0xCc; a[18] = 0xcC; a[19] = 0xCC;
-                a
+                // EIP-712 官方测试向量: EtherMail verifying contract (全 CC 地址)
+                
+                [0xCCu8; 20]
             }),
             salt: None,
         };
@@ -1504,13 +1488,9 @@ mod tests {
                 b
             }),
             verifying_contract: Some({
-                let mut a = [0u8; 20];
-                a[0] = 0xCc; a[1] = 0xCC; a[2] = 0xcc; a[3] = 0xCC;
-                a[4] = 0xcC; a[5] = 0xCC; a[6] = 0xCC; a[7] = 0xCC;
-                a[8] = 0xCC; a[9] = 0xcC; a[10] = 0xCc; a[11] = 0xCc;
-                a[12] = 0xcC; a[13] = 0xCC; a[14] = 0xCC; a[15] = 0xCC;
-                a[16] = 0xCc; a[17] = 0xCc; a[18] = 0xcC; a[19] = 0xCC;
-                a
+                // EIP-712 官方测试向量: EtherMail verifying contract (全 CC 地址)
+                
+                [0xCCu8; 20]
             }),
             salt: None,
         };
