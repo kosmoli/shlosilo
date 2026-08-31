@@ -36,19 +36,8 @@ pub fn create_account(
             crate::error::ErrorContext::RequiredLength(min_rolls),
         ));
     }
-    // X5: 掷骰次数受均匀性上界约束（sides^k ≤ 256-bit 空间单射）
-    // 注意：最小次数需求（下界）与均匀上界可能无交集（如 d6+32B: min=128 > max=98）——
-    // 此时该组合无法均匀达成 256-bit 熵，应换更大面数的骰子。在 minimum_rolls 阶段即拒绝。
-    let max_uniform = dice_rolls::maximum_uniform_rolls(entropy_source_sides) as usize;
-    if max_uniform < min_rolls {
-        return Err(ShlosiloError::new(ShlosiloErrorKind::InvalidDiceConfig));
-    }
-    if entropy_source_rolls.len() > max_uniform {
-        return Err(ShlosiloError::with_context(
-            ShlosiloErrorKind::DiceRollsInvalidCount,
-            crate::error::ErrorContext::RequiredLength(max_uniform),
-        ));
-    }
+    // X5 v2（rejection sampling）：不再有均匀性上界——超过 minimum 的熵越多，
+    // rejection 概率越低，均匀性严格保持。N < T（熵不足）由 dice_rolls_to_entropy 判定。
 
     // Step 1: dice rolls → entropy
     let entropy = dice_rolls::dice_rolls_to_entropy(

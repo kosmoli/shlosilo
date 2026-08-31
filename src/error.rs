@@ -73,6 +73,8 @@ pub enum ShlosiloErrorKind {
     InsufficientRolls = 0x0204_0004,
     /// RNG 注入 entropy 不足（< ENTROPY_MIN_LEN，misuse guard）
     EntropyInjectionInvalid = 0x0204_0005,
+    /// X5 rejection sampling：骰序落入余数区（用户需补掷/重掷——概率 ~2^-75，实际不可遇）
+    DiceRejectionRolls = 0x0204_0006,
 
     // ─── 业务级（0x03xx_xxxx） ───
     /// ChainKind::Unknown（UR type tag 无法识别）
@@ -215,7 +217,8 @@ impl ShlosiloErrorCode {
             | ShlosiloErrorKind::DiceRollsInvalidCount
             | ShlosiloErrorKind::InvalidDiceConfig
             | ShlosiloErrorKind::InsufficientRolls
-            | ShlosiloErrorKind::EntropyInjectionInvalid => Self::InvalidDiceRolls,
+            | ShlosiloErrorKind::EntropyInjectionInvalid
+            | ShlosiloErrorKind::DiceRejectionRolls => Self::InvalidDiceRolls,
             ShlosiloErrorKind::CryptoSecp256k1InvalidScalar
             | ShlosiloErrorKind::CryptoSecp256k1InvalidPoint
             | ShlosiloErrorKind::CryptoSecp256k1SignFailed
