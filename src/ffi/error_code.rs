@@ -19,13 +19,22 @@ pub fn to_ffi_code(err: &ShlosiloError) -> i32 {
 }
 
 /// 通用错误（兜底）：调用方拿到这个 i32 应该 fall back 到 generic error UI
-pub const ERR_UNKNOWN: i32 = -1;
-pub const ERR_NULL_POINTER: i32 = -2;
-pub const ERR_BUFFER_TOO_SMALL: i32 = -3;
-pub const ERR_PANIC: i32 = -4;
+///
+/// **错误码对齐（2026-08-31，C 宿主接入前置）**：R2 整改后 `to_ffi_code` 走
+/// `ShlosiloErrorCode` 稳定负码，但这四个 FFI 早期返回常量仍是独立旧值
+/// （ERR_BUFFER_TOO_SMALL=-3 与映射码 BufferTooSmall=-20 冲突）。现全部并入
+/// `ShlosiloErrorCode` 枚举单一真值源：
+/// - ERR_UNKNOWN = UnknownError = -1
+/// - ERR_NULL_POINTER = InvalidArgument = -2（null 参数即非法参数）
+/// - ERR_BUFFER_TOO_SMALL = BufferTooSmall = **-20**（原 -3 作废，shlosilo.h 同步）
+/// - ERR_PANIC = FfiPanic = -4（FFI 特有，枚举新增）
+pub const ERR_UNKNOWN: i32 = ShlosiloErrorCode::UnknownError as i32;
+pub const ERR_NULL_POINTER: i32 = ShlosiloErrorCode::InvalidArgument as i32;
+pub const ERR_BUFFER_TOO_SMALL: i32 = ShlosiloErrorCode::BufferTooSmall as i32;
+pub const ERR_PANIC: i32 = ShlosiloErrorCode::FfiPanic as i32;
 
 /// 成功
-pub const OK: i32 = 0;
+pub const OK: i32 = ShlosiloErrorCode::Ok as i32;
 
 /// i32 → &'static str（错误描述，给 L3 UI 显示）
 ///
@@ -37,11 +46,20 @@ pub fn describe(code: i32) -> &'static str {
         ERR_NULL_POINTER => "Null pointer passed to FFI",
         ERR_BUFFER_TOO_SMALL => "Output buffer too small",
         ERR_PANIC => "Rust panic caught at FFI boundary",
-        _ => {
-            // Phase 5 真实实现：match ShlosiloErrorKind 全部变体
-            // 现在 stub：直接说 "Error code: N"
-            "Error code from Rust FFI"
-        }
+        -10 => "Unsupported chain kind",
+        -11 => "Unsupported export protocol",
+        -12 => "Unsupported network",
+        -13 => "Multisig not supported",
+        -14 => "Feature not implemented",
+        -15 => "PSBT ownership rejected",
+        -21 => "Encoding error",
+        -30 => "Invalid UR payload",
+        -31 => "Invalid mnemonic",
+        -32 => "Invalid derivation path",
+        -33 => "Invalid dice rolls",
+        -40 => "Crypto error",
+        -99 => "Invariant violation",
+        _ => "Error code from Rust FFI",
     }
 }
 

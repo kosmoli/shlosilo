@@ -721,13 +721,26 @@ pub extern "C" fn shlosilo_ur_decode_payload(
         }
         Ok(payload.len())
     });
+    // BufferTooSmall 特例：actual_len 写**需求值**（L3 据此重试分配），
+    // 其余失败路径保持 R2 清零纪律。
+    let required: usize = match &result {
+        Ok(Err(e)) if e.kind == ShlosiloErrorKind::BufferTooSmall => {
+            ffi_catch_unwind!(|| -> Option<usize> {
+                Some(unsafe { &*handle }.payload().ok()?.map(|p| p.len())?)
+            })
+            .ok()
+            .flatten()
+            .unwrap_or(0)
+        }
+        _ => 0,
+    };
     match result {
         Ok(Ok(n)) => {
             write_actual_len(actual_len, n);
             OK
         }
         Ok(Err(e)) => {
-            write_actual_len(actual_len, 0);
+            write_actual_len(actual_len, required);
             to_ffi_code(&e)
         }
         Err(_) => {

@@ -176,6 +176,8 @@ pub enum ShlosiloErrorCode {
     Ok                       = 0,
     UnknownError             = -1,
     InvalidArgument          = -2,
+    /// FFI 边界 catch_unwind 兜底（FFI 特有，L2b 映射不产出）
+    FfiPanic                 = -4,
     UnsupportedChainKind     = -10,
     UnsupportedExportProtocol = -11,
     UnsupportedNetwork       = -12,
