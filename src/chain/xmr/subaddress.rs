@@ -142,8 +142,7 @@ pub fn derive_subaddress(
     // 2. subaddr_spend_sec = (m + main_spend_sec) mod L
     let spend_sec_dalek = reduce_scalar_to_dalek(main_spend_sec);
     let subaddr_spend_sec_dalek = m_dalek + spend_sec_dalek;
-    let subaddr_spend_sec_bytes = subaddr_spend_sec_dalek.to_bytes();
-    let subaddr_spend_sec: [u8; 32] = subaddr_spend_sec_bytes;
+    let mut subaddr_spend_sec: [u8; 32] = subaddr_spend_sec_dalek.to_bytes();
 
     // 3. subaddr_spend_pub = main_spend_pub + m * G  (= subaddr_spend_sec * G)
     let m_g: curve25519_dalek::EdwardsPoint = ED25519_BASEPOINT_TABLE * &m_dalek;
@@ -159,8 +158,7 @@ pub fn derive_subaddress(
     //    (Monero 官方 sub view secret c = a * d, d = spend secret, a = view secret)
     let view_sec_dalek = reduce_scalar_to_dalek(main_view_sec);
     let subaddr_view_sec_dalek = view_sec_dalek * subaddr_spend_sec_dalek;
-    let subaddr_view_sec_bytes = subaddr_view_sec_dalek.to_bytes();
-    let subaddr_view_sec: [u8; 32] = subaddr_view_sec_bytes;
+    let mut subaddr_view_sec: [u8; 32] = subaddr_view_sec_dalek.to_bytes();
 
     // 5. subaddr_view_pub = subaddr_spend_pub * view_sec  (= subaddr_view_sec * G)
     let subaddr_view_pub_point = subaddr_spend_pub_point * view_sec_dalek;
@@ -169,8 +167,9 @@ pub fn derive_subaddress(
     Ok(SubaddressKeys {
         spend_pub: subaddr_spend_pub,
         view_pub: subaddr_view_pub,
-        spend_sec: crate::types::SecretBytes::new(subaddr_spend_sec),
-        view_sec: crate::types::SecretBytes::new(subaddr_view_sec),
+        // P1-C: take 接管并清零调用方中间数组（new 只清参数副本，此处 take 是正原语）
+        spend_sec: crate::types::SecretBytes::take(&mut subaddr_spend_sec),
+        view_sec: crate::types::SecretBytes::take(&mut subaddr_view_sec),
     })
 }
 

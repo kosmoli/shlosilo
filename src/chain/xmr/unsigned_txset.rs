@@ -136,6 +136,17 @@ pub struct MultisigKLRki {
     pub ki: [u8; 32],
 }
 
+/// P1-C（2026-09-01 再复审）：k/l/r 是多签随机掩码（敏感标量）——Drop 时清零。
+/// ki 是公开 key image，无需擦除。Clone 保留：wire DTO 重序列化的功能需求。
+impl Drop for MultisigKLRki {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.k.zeroize();
+        self.l.zeroize();
+        self.r.zeroize();
+    }
+}
+
 /// R1: k/r 是多签随机掩码（敏感）— Debug redacted
 impl core::fmt::Debug for MultisigKLRki {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

@@ -80,6 +80,15 @@ pub struct PaymentProof {
     pub tx_pub: [u8; 32],
 }
 
+/// P1-C（2026-09-01 再复审）：tx_secret 是交易密钥——Drop 时清零。
+/// 不实现 Clone/Copy（编译期断言见文件尾 inventory）。
+impl Drop for PaymentProof {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.tx_secret.zeroize();
+    }
+}
+
 impl core::fmt::Debug for PaymentProof {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PaymentProof")
@@ -192,4 +201,12 @@ use subtle::ConstantTimeEq;
         )
         .unwrap());
     }
+}
+
+#[cfg(test)]
+mod p1c_inventory {
+    use static_assertions::assert_not_impl_any;
+    use super::PaymentProof;
+    // P1-C: 秘密载体禁止值复制
+    assert_not_impl_any!(PaymentProof: Copy, Clone);
 }
