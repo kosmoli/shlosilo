@@ -186,18 +186,28 @@ impl<'a> Cbor<'a> {
     }
 }
 
+/// X1: 递归深度上限——深嵌套恶意输入在 panic=abort 下会栈溢出。
+/// UR registry 实际形状最深 ~4 层（tag→map→array→bytes），64 裕量充足。
+const MAX_DEPTH: usize = 64;
+
 struct Decoder<'a> {
     bytes: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> Decoder<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        if self.pos + n > self.bytes.len() {
+        // X1（2026-08-31 复审整改）：checked_add 防 pos+n 溢出（n 来自 wire 可控 u64）
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(err)?;
+        if end > self.bytes.len() {
             return Err(err());
         }
-        let s = &self.bytes[self.pos..self.pos + n];
-        self.pos += n;
+        let s = &self.bytes[self.pos..end];
+        self.pos = end;
         Ok(s)
     }
 
@@ -214,6 +224,18 @@ impl<'a> Decoder<'a> {
     }
 
     fn read_item(&mut self) -> Result<Cbor<'a>> {
+        // X1: depth budget——超限拒绝（错误码路径，非 panic）
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(err());
+        }
+        let r = self.read_item_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn read_item_inner(&mut self) -> Result<Cbor<'a>> {
         let head = self.take(1)?[0];
         let major = head >> 5;
         let info = head & 0x1f;
@@ -265,7 +287,7 @@ impl<'a> Decoder<'a> {
 
 /// 解码单个 CBOR item。要求 bytes 恰好包含一个完整 item（尾部垃圾报错）。
 pub fn decode(bytes: &[u8]) -> Result<Cbor<'_>> {
-    let mut d = Decoder { bytes, pos: 0 };
+    let mut d = Decoder { bytes, pos: 0, depth: 0 };
     let item = d.read_item()?;
     if d.pos != bytes.len() {
         return Err(err());
@@ -384,6 +406,35 @@ mod tests {
         assert!(decode(&hex("9fff")).is_err());
         // float 拒绝
         assert!(decode(&hex("fb3ff199999999999a")).is_err());
+    }
+
+    /// X1: 超深度嵌套拒绝（错误路径，不爆栈）
+    #[test]
+    fn deep_nesting_rejected() {
+        // 200 层嵌套 array > MAX_DEPTH(64)
+        let mut deep = Vec::new();
+        for _ in 0..200 {
+            deep.push(0x81); // array(1)
+        }
+        deep.push(0x00); // uint 0
+        assert!(decode(&deep).is_err());
+        // 63 层(≤64)正常通过
+        let mut ok = Vec::new();
+        for _ in 0..63 {
+            ok.push(0x81);
+        }
+        ok.push(0x00);
+        assert!(decode(&ok).is_ok());
+    }
+
+    /// X1: take() 长度溢出拒绝（u64 len as usize + pos 溢出）
+    #[test]
+    fn overflow_len_rejected() {
+        // bytes(8) 声明 8 字节长度但只给 1 字节
+        assert!(decode(&hex("4b01")).is_err());
+        // u64::MAX 长度声明（8-byte len = 0xffffffffffffffff）
+        let huge = hex("5bffffffffffffffff");
+        assert!(decode(&huge).is_err());
     }
 
     /// tag 304 + bool true
