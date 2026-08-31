@@ -345,6 +345,11 @@ pub struct FountainDecoder {
 /// TxTemplate 16 KiB / 最小帧 200B → 最多 ~82 分片；256 给足裕量。
 pub const MAX_SEQUENCE_COUNT: usize = 256;
 
+/// Gate4 #4（2026-09-01 再复审）：单 session 总接收帧数预算。
+/// BC-UR 允许无限冗余帧，但 decoder 资源必须有限：received(buffer/queue 同源)
+/// 都以 received 集合为闸，超过此上限的会话视为异常/攻击，稳定报错。
+pub const MAX_TOTAL_FRAMES: usize = 4096;
+
 impl FountainDecoder {
     pub fn new() -> Self {
         Self::default()
@@ -389,6 +394,10 @@ impl FountainDecoder {
         let indexes = part.indexes();
         if self.received.contains(&indexes) {
             return Ok(false);
+        }
+        // Gate4 #4: session frame budget——重复帧不计（幂等），新帧计入
+        if self.received.len() >= MAX_TOTAL_FRAMES {
+            return Err(FountainError::BudgetExceeded);
         }
         self.received.insert(indexes);
 

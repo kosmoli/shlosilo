@@ -111,10 +111,18 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
                     Cbor::Bool(b) => b,
                     _ => return Err(err()),
                 };
+                // Gate4 #5: 非规范值拒绝——hardened=true 且 idx 已带 0x80000000 高位
+                //（UR crypto-keypath 规范中 hardened 由独立 bool 表达，idx 高位应恒 0）
+                if hardened && idx >= 0x8000_0000 {
+                    return Err(err());
+                }
                 let raw = if hardened { idx | 0x8000_0000 } else { idx };
                 flat.push(raw);
                 i += 2;
             }
+            // Gate4 #5 备注：key 2 (depth) 不校验——ur-registry 官方测试向量
+            // （test_encode）的 depth 是占位值 0x12345678，registry 规范与上游
+            // 实现（keystone/ur-registry）均未赋予 depth 约束语义，depth 是信息性字段。
             Some(crate::derivation::path::DerivationPath::from_flat(flat)?)
         }
         None => None,
@@ -211,6 +219,23 @@ mod tests {
             0xA1, 0x05, 0xD8, 0x31, 0xA2, 0x01, 0x83, 0x00, 0xF4, 0x01, 0x02, 0x02,
         ];
         assert!(parse_eth_sign_request(&payload).is_err(), "odd keypath must be rejected");
+    }
+
+    /// Gate4 #5 负例: hardened=true 且 idx 已带 0x80000000 高位（非规范双表达）→ 拒
+    #[test]
+    fn keypath_hardened_high_bit_rejected() {
+        // tag 305, map{1: [0x80000001, true]}
+        let mut p: alloc::vec::Vec<u8> = alloc::vec![0xd9, 0x01, 0x31];
+        p.push(0xa1); // map(1)
+        p.push(0x01); // key 1 = components
+        p.push(0x82); // array(2)
+        p.push(0x1a); // uint32
+        p.extend_from_slice(&0x8000_0001u32.to_be_bytes());
+        p.push(0xf5); // hardened=true
+        assert!(
+            parse_eth_sign_request(&p).is_err(),
+            "hardened idx with high bit must be rejected"
+        );
     }
 
     /// X2 负例: index 超出 u32 域拒绝(不截断)

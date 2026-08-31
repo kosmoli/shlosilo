@@ -388,22 +388,27 @@ pub extern "C" fn shlosilo_supported_networks_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
     if output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
         let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
-        let mut written = 0usize;
-        for i in 0..=143u8 {
-            if Network::try_from_u8(i).is_some() {
-                if written >= out_slice.len() {
-                    return Err(err(ShlosiloErrorKind::BufferTooSmall));
-                }
-                out_slice[written] = i;
-                written += 1;
-            }
+        // Gate4 #1：真实矩阵——只列业务入口可成功完成的 network：
+        // BTC crypto-psbt 仅 mainnet（check_network 拒其余）；ETH mainnet/sepolia/goerli；
+        // XMR 固定 MoneroPath::mainnet。testnet/signet/stagenet 未支持，不宣称。
+        const SUPPORTED: [u8; 5] = [
+            0,  // BitcoinMainnet
+            10, // EthereumMainnet
+            11, // EthereumSepolia
+            12, // EthereumGoerli
+            90, // MoneroMainnet
+        ];
+        if out_slice.len() < SUPPORTED.len() {
+            return Err(err(ShlosiloErrorKind::BufferTooSmall));
         }
-        Ok(written)
+        out_slice[..SUPPORTED.len()].copy_from_slice(&SUPPORTED);
+        Ok(SUPPORTED.len())
     });
 
     match result {
@@ -424,18 +429,16 @@ pub extern "C" fn shlosilo_supported_protocols_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
     if output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
         let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
-        let protocols = [
-            0u8, // CryptoHdKey
-            1,   // CryptoAccount
-            2,   // CryptoMultiAccounts
-            3,   // JsonMoneroViewkey
-            4,   // ArweaveCryptoAccount
-        ];
+        // Gate4 #1（2026-09-01 再复审）：capability 只能宣称业务入口可成功完成的项。
+        // export_readonly 实际只实现 CryptoHdKey（且仅 mainnet），
+        // 其余 arm 全部返回 ExportProtocolUnimplemented——不得进入 capability 列表。
+        let protocols = [0u8]; // CryptoHdKey
         if out_slice.len() < protocols.len() {
             return Err(err(ShlosiloErrorKind::BufferTooSmall));
         }
@@ -524,6 +527,8 @@ pub extern "C" fn shlosilo_ur_encode_next(
     frame_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
+
     if handle.is_null() || frame_buf.is_null() {
         return ERR_NULL_POINTER;
     }
@@ -570,6 +575,8 @@ pub extern "C" fn shlosilo_ur_encode_next_cyclic(
     frame_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
+
     if handle.is_null() || frame_buf.is_null() {
         return ERR_NULL_POINTER;
     }
@@ -638,6 +645,10 @@ pub extern "C" fn shlosilo_ur_decode_feed(
     if handle.is_null() || frame.is_null() {
         return ERR_NULL_POINTER;
     }
+    // Gate4 #2：out-param 前置清零——任何后续失败路径下 C 侧都读到确定值 0
+    if !accepted_out.is_null() {
+        unsafe { *accepted_out = 0 };
+    }
     let result = ffi_catch_unwind!(|| -> Result<bool, ShlosiloError> {
         let mut flen = 0usize;
         unsafe {
@@ -704,6 +715,8 @@ pub extern "C" fn shlosilo_ur_decode_payload(
     payload_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
+
     if handle.is_null() || payload_buf.is_null() {
         return ERR_NULL_POINTER;
     }
@@ -763,6 +776,8 @@ pub extern "C" fn shlosilo_ur_decode_type(
     type_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
+
     if handle.is_null() || type_buf.is_null() {
         return ERR_NULL_POINTER;
     }
@@ -827,6 +842,8 @@ pub extern "C" fn shlosilo_sign_typed_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
+    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
+
     if type_name.is_null() || payload.is_null() || mnemonic_indices.is_null() || output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
@@ -983,7 +1000,7 @@ mod r3_tests {
             0x29, 0x16,
         ];
         let mnem = crate::entropy::mnemonic::Mnemonic::from_entropy(&ent).unwrap();
-        let idx: Vec<u16> = mnem.indices().iter().map(|&i| i as u16).collect();
+        let idx: Vec<u16> = mnem.indices().to_vec();
 
         // multipart encode
         let tname = c"crypto-psbt".as_ptr();
@@ -1067,7 +1084,7 @@ mod r3_tests {
         let mut tlen: c_uint = 0;
         let rc = shlosilo_ur_decode_type(dec, tbuf.as_mut_ptr(), tbuf.len() as c_uint, &mut tlen);
         assert_eq!(rc, to_ffi_code(&err(ShlosiloErrorKind::BufferTooSmall)));
-        assert!(tlen as usize >= "crypto-psbt".len() + 1);
+        assert!(tlen as usize > "crypto-psbt".len());
         shlosilo_ur_encode_free(enc);
         shlosilo_ur_decode_free(dec);
     }
@@ -1075,7 +1092,7 @@ mod r3_tests {
     #[test]
     fn ffi_multipart_null_guards() {
         assert!(shlosilo_ur_encode_begin(core::ptr::null(), core::ptr::null(), 0, 200).is_null());
-        assert!(shlosilo_ur_decode_new() != core::ptr::null_mut());
+        assert!(!shlosilo_ur_decode_new().is_null());
         let dec = shlosilo_ur_decode_new();
         assert_eq!(shlosilo_ur_decode_feed(core::ptr::null_mut(), c"x".as_ptr(), core::ptr::null_mut()), ERR_NULL_POINTER);
         assert_eq!(shlosilo_ur_decode_progress(core::ptr::null_mut()), ERR_NULL_POINTER);
@@ -1175,8 +1192,8 @@ mod tests {
         // m/44'/0'/0'/0/0 flat: hardened bit 0x80000000
         let elems: [u32; 5] = [
             44 | 0x8000_0000,
-            0 | 0x8000_0000,
-            0 | 0x8000_0000,
+            0x8000_0000,
+            0x8000_0000,
             0,
             0,
         ];
@@ -1211,7 +1228,9 @@ mod tests {
             &mut n,
         );
         assert_eq!(rc, OK);
-        assert!(n > 0);
+        // Gate4 #1: 真实矩阵 = BTC mainnet / ETH mainnet+sepolia+goerli / XMR mainnet
+        assert_eq!(n, 5);
+        assert_eq!(&net_buf[..5], &[0u8, 10, 11, 12, 90]);
 
         let mut proto_buf = [0u8; 16];
         let mut p: c_uint = 0;
@@ -1221,7 +1240,14 @@ mod tests {
             &mut p,
         );
         assert_eq!(rc, OK);
-        assert_eq!(p, 5);
+        assert_eq!(p, 1); // 只 CryptoHdKey（其余 export arm 均 Unimplemented）
+        assert_eq!(proto_buf[0], 0);
+
+        // BufferTooSmall 也要成立: 2 槽装不下 5
+        let mut tiny = [0u8; 2];
+        let mut t: c_uint = 0;
+        let rc = shlosilo_supported_networks_ffi(tiny.as_mut_ptr(), 2, &mut t);
+        assert_eq!(rc, ERR_BUFFER_TOO_SMALL);
     }
 
     // ── P2-03：FFI 入口资源上限 ──

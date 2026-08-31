@@ -190,10 +190,16 @@ impl<'a> Cbor<'a> {
 /// UR registry 实际形状最深 ~4 层（tag→map→array→bytes），64 裕量充足。
 const MAX_DEPTH: usize = 64;
 
+/// Gate4 #4（2026-09-01 再复审）：总节点数预算。
+/// 节点数天然受输入长度约束（每节点至少 1 字节），此上限是显式防线：
+/// 防深度×宽度组合构造（如 64 层 × 每层大数组）导致栈/堆放大超出调用层预期。
+const MAX_NODES: usize = 16384;
+
 struct Decoder<'a> {
     bytes: &'a [u8],
     pos: usize,
     depth: usize,
+    nodes: usize,
 }
 
 impl<'a> Decoder<'a> {
@@ -227,6 +233,12 @@ impl<'a> Decoder<'a> {
         // X1: depth budget——超限拒绝（错误码路径，非 panic）
         self.depth += 1;
         if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(err());
+        }
+        // Gate4 #4: node budget——每读一个 item 计一个节点
+        self.nodes += 1;
+        if self.nodes > MAX_NODES {
             self.depth -= 1;
             return Err(err());
         }
@@ -287,7 +299,7 @@ impl<'a> Decoder<'a> {
 
 /// 解码单个 CBOR item。要求 bytes 恰好包含一个完整 item（尾部垃圾报错）。
 pub fn decode(bytes: &[u8]) -> Result<Cbor<'_>> {
-    let mut d = Decoder { bytes, pos: 0, depth: 0 };
+    let mut d = Decoder { bytes, pos: 0, depth: 0, nodes: 0 };
     let item = d.read_item()?;
     if d.pos != bytes.len() {
         return Err(err());

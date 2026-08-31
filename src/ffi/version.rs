@@ -10,9 +10,14 @@ pub const SHLOSILO_VERSION_STRING: &str = "v0.5.0-poc4\0";
 
 /// C ABI 版本（**跟 runtime 版本独立**——L3 必须校验 ABI 版本匹配）
 ///
-/// ABI 版本不兼容规则：
-/// - major 版本不同 → ABI 不兼容
-/// - minor / patch 改变 → ABI 兼容
+/// ABI 版本不兼容规则（`shlosilo_cabi_check` 实现为**严格等值**）：
+/// - major 不同 → -1（ABI 不兼容，签名/错误码布局变更）
+/// - minor 不同 → -2（导出函数集合或语义变更，L3 必须对照新版 shlosilo.h 重编译）
+/// - patch 不同 → -3（行为微调，L3 应重新 smoke；检查同样拒绝以保证 determinism）
+///
+/// 注意：这与传统 semver「minor 增 = 向后兼容」**不同**——本项目 C ABI 处于
+/// 0.x 阶段，minor 即破坏性位（与 0.x semver 约定一致）。进入 1.x 后应放宽为
+/// major-only 检查。
 pub const SHLOSILO_CABI_VERSION_MAJOR: u16 = 0;
 pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 2;
 pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
