@@ -153,8 +153,8 @@ mod tests {
         let bytes = s.as_bytes();
         let mut out = [0u8; 64];
         for i in 0..64 {
-            let hi = hex_val(bytes[2 * i]) as u8;
-            let lo = hex_val(bytes[2 * i + 1]) as u8;
+            let hi = hex_val(bytes[2 * i]);
+            let lo = hex_val(bytes[2 * i + 1]);
             out[i] = (hi << 4) | lo;
         }
         out

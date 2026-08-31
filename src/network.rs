@@ -268,9 +268,20 @@ pub fn chain_kind(self) -> ChainKind {
     }
 }
 
+
+impl TryFrom<u8> for Network {
+    type Error = ();
+    /// Network u8 → Network enum
+    ///
+    /// **重要**：直接调 from_u8（from_u8 自身不递归）
+    fn try_from(n: u8) -> Result<Self, Self::Error> {
+        Self::from_u8(n).ok_or(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use proptest::prelude::*;
+    
     use super::*;
 
     #[test]
@@ -384,16 +395,5 @@ mod tests {
             let recovered = Network::try_from(n).unwrap();
             assert_eq!(recovered, *net_val);
         }
-    }
-}
-
-
-impl TryFrom<u8> for Network {
-    type Error = ();
-    /// Network u8 → Network enum
-    ///
-    /// **重要**：直接调 from_u8（from_u8 自身不递归）
-    fn try_from(n: u8) -> Result<Self, Self::Error> {
-        Self::from_u8(n).ok_or(())
     }
 }

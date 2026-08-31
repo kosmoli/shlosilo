@@ -33,7 +33,7 @@ fn hex_bytes(s: &str) -> Vec<u8> {
 }
 
 fn hex_encode(b: &[u8]) -> String {
-    b.iter().map(|x| alloc_format(x)).collect()
+    b.iter().map(alloc_format).collect()
 }
 
 fn alloc_format(x: &u8) -> String {

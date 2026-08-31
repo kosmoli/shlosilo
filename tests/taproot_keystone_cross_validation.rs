@@ -44,8 +44,8 @@ fn hex_decode_32(s: &str) -> [u8; 32] {
 fn tagged_hash(tag: &[u8], msg: &[u8]) -> [u8; 32] {
     let tag_hash = Sha256::digest(tag);
     let mut h = Sha256::new();
-    h.update(&tag_hash);
-    h.update(&tag_hash);
+    h.update(tag_hash);
+    h.update(tag_hash);
     h.update(msg);
     h.finalize().into()
 }
@@ -173,8 +173,8 @@ fn keystone_taproot_keypath_sighash_verifies_keystone_sig() {
 /// 生产路径用 shlosilo::signature::schnorr_secp256k1::verify，
 /// 但那需要构造 Secp256k1Point；这里直接做点运算以独立对照。
 fn bip340_verify(pk_x: &[u8; 32], msg: &[u8; 32], sig: &[u8]) -> bool {
-    use k256::elliptic_curve::sec1::ToEncodedPoint;
-    use k256::ProjectivePoint;
+    
+    
 
     let vk = match k256::schnorr::VerifyingKey::from_bytes(pk_x.into()) {
         Ok(v) => v,

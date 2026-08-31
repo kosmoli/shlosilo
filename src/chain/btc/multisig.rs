@@ -366,8 +366,8 @@ pub fn p2sh_p2wsh_multisig_address(
 mod tests {
     extern crate std;
     use super::*;
-    use alloc::vec;
-    use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut};
+    
+    use crate::chain::btc::p2wpkh::{OutPoint, TxIn};
     use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
     use std::eprintln;
 
@@ -567,7 +567,7 @@ mod tests {
 
         sign_p2sh_multisig(&mut tx, &sign_input).unwrap();
         let script_sig = &tx.inputs[0].script_sig;
-        assert!(script_sig.len() > 0);
+        assert!(!script_sig.is_empty());
         assert_eq!(script_sig[0], 0x00); // extra OP_0
         eprintln!("P2SH multisig scriptSig ({} bytes)", script_sig.len());
     }
@@ -644,8 +644,8 @@ mod tests {
         sign_p2sh_p2wsh_multisig(&mut tx, &sign_input).unwrap();
         let script_sig = &tx.inputs[0].script_sig;
         let witness = &tx.inputs[0].witness;
-        assert!(script_sig.len() > 0);
-        assert!(witness.len() > 0);
+        assert!(!script_sig.is_empty());
+        assert!(!witness.is_empty());
         eprintln!(
             "P2SH-P2WSH scriptSig ({} bytes) + witness ({} bytes)",
             script_sig.len(),

@@ -337,7 +337,7 @@ pub fn decrypt_signed_txset(data: &[u8], view_sk: &[u8; 32]) -> Result<Vec<u8>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::{format, string::String, string::ToString, vec, vec::Vec};
+    use alloc::{string::ToString, vec, vec::Vec};
     use rand_chacha::rand_core::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 

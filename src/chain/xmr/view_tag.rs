@@ -136,7 +136,6 @@ mod tests {
     use crate::chain::xmr::tx_builder::TxKeyPair;
     use crate::types::SecretBytes;
     use crate::encoding::keccak256;
-use subtle::ConstantTimeEq;
 
     #[test]
     fn view_tag_is_first_keccak_byte() {

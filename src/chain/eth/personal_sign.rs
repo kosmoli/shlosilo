@@ -247,8 +247,8 @@ mod tests {
 
         // 2. 构造 65-byte 签名
         let mut sig_65 = [0u8; 65];
-        sig_65[..32].copy_from_slice(&sig.r.as_slice());
-        sig_65[32..64].copy_from_slice(&sig.s.as_slice());
+        sig_65[..32].copy_from_slice(sig.r.as_slice());
+        sig_65[32..64].copy_from_slice(sig.s.as_slice());
         sig_65[64] = sig.v;
 
         // 3. 从签名恢复公钥

@@ -321,7 +321,7 @@ mod tests {
     use super::*;
     use rand_core::OsRng;
 
-    fn rand_scalar<R: RngCore + CryptoRng>(rng: &mut R) -> [u8; 32] {
+    fn rand_scalar<R: RngCore + CryptoRng>(_rng: &mut R) -> [u8; 32] {
         let mut b = [0u8; 32];
         OsRng.fill_bytes(&mut b);
         b
@@ -349,11 +349,11 @@ mod tests {
         let decoy_pub = CompressedPoint::from(decoy_pub_point.compress().to_bytes());
 
         let real_commit = MoneroCommitment::new(
-            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&real_mask).into()),
+            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&real_mask)),
             amount,
         );
         let decoy_commit = MoneroCommitment::new(
-            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&decoy_mask).into()),
+            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&decoy_mask)),
             decoy_amount,
         );
 
@@ -395,11 +395,11 @@ mod tests {
         if let Ok((clsag_proof, key_image, pseudo_out_bytes)) = result {
             // 3. verify 用 [CompressedPoint; 2]
             let real_commit_pt = MoneroCommitment::new(
-                Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&real_mask).into()),
+                Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&real_mask)),
                 amount,
             );
             let decoy_commit_pt = MoneroCommitment::new(
-                Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&decoy_mask).into()),
+                Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&decoy_mask)),
                 decoy_amount,
             );
             let ring_verify: Vec<(CompressedPoint, CompressedPoint)> = vec![
@@ -443,7 +443,7 @@ mod tests {
         let sk2_dalek = crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&sk2);
         let pk2 = ED25519_BASEPOINT_TABLE * &sk2_dalek;
         let commit2 = MoneroCommitment::new(
-            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&mask).into()),
+            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&mask)),
             0,
         );
         let ring = vec![(CompressedPoint::from(pk2.compress().to_bytes()), commit2.commit().compress().to_bytes().into())];

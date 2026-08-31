@@ -69,7 +69,7 @@ mod tests {
         }
         s
     }
-    use crate::encoding::hex;
+    
 
 
     const _: fn(&[u8]) -> Result<[u8; SHA512_OUTPUT_LEN]> = hash;

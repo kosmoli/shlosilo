@@ -214,7 +214,7 @@ mod tests {
     use proptest::prelude::*;
     extern crate alloc;
     use alloc::format;
-    use alloc::string::{String, ToString};
+    use alloc::string::ToString;
     use alloc::vec::Vec;
 
     #[test]
@@ -350,9 +350,9 @@ mod tests {
         write!(rendered, "{:?}", path).unwrap();
         prop_assert_eq!(rendered.as_str(), path_str);
     }
-    fn from_flat_round_trip(components in proptest::collection::vec((0u32..32u32), 1..8)) {
+    fn from_flat_round_trip(components in proptest::collection::vec(0u32..32u32, 1..8)) {
         let path = DerivationPath::from_flat(components.iter().copied()).unwrap();
-        prop_assert_eq!(path.len() as usize, components.len());
+        prop_assert_eq!(path.len(), components.len());
         for (i, &c) in components.iter().enumerate() {
             prop_assert_eq!(path.as_slice()[i].0, c);
         }

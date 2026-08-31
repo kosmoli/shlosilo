@@ -440,7 +440,7 @@ mod tests {
         // P 点：input_sk·G
         let p_point = ED25519_BASEPOINT_TABLE * &input_sk;
         let rb = (ED25519_BASEPOINT_TABLE * &r).compress().to_bytes();
-        let r_p = (&r * p_point).compress().to_bytes();
+        let r_p = (r * p_point).compress().to_bytes();
         let _ = lhs;
         let _ = rhs;
         let _ = r_p;
@@ -450,9 +450,9 @@ mod tests {
         buff.extend_from_slice(image);
         // k·B 不可重算（k 丢失）→ 验证式：Hs(prefix || r·B + c·P || r·I + c·I) == c
         //   r·B + c·P（P=input_sk·G=out_pub）
-        let s1 = (ED25519_BASEPOINT_TABLE * &r) + (&c * p_point);
+        let s1 = (ED25519_BASEPOINT_TABLE * &r) + (c * p_point);
         //   r·Hp(P) + c·I = (r + c·input_sk)·Hp(P)
-        let s2 = (&r + &c * &input_sk) * i_point;
+        let s2 = (r + c * input_sk) * i_point;
         let mut vbuf = Vec::new();
         vbuf.extend_from_slice(image);
         vbuf.extend_from_slice(&s1.compress().to_bytes());

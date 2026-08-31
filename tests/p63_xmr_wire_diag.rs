@@ -31,7 +31,7 @@ fn progressive_decode() {
                     amount.0, key_offsets.len(), &k_image.image.0[..6], c.position());
                 ins.push(monero::TxIn::ToKey { amount, key_offsets, k_image });
             }
-            Ok(other) => panic!("TxIn unexpected variant at pos {}", c.position()),
+            Ok(_other) => panic!("TxIn unexpected variant at pos {}", c.position()),
             Err(e) => panic!("TxIn decode FAIL at pos {}: {:?}", c.position(), e),
         }
     }

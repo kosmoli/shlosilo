@@ -894,7 +894,7 @@ mod tests {
             lock_time: 0,
         };
 
-        let mut psbt = Psbt {
+        let psbt = Psbt {
             unsigned_tx: unsigned_tx.clone(),
             inputs: vec![Vec::new()],
             outputs: vec![Vec::new()],
@@ -970,7 +970,7 @@ mod tests {
         );
         witness_utxo_bytes.extend_from_slice(&witness_utxo.script_pubkey);
 
-        let mut psbt = Psbt {
+        let psbt = Psbt {
             unsigned_tx: unsigned_tx.clone(),
             inputs: vec![vec![KeyValue {
                 key: vec![input_type::WITNESS_UTXO],

@@ -34,7 +34,7 @@ fn p63_sign_sparrow_psbt_end_to_end() {
     use shlosilo::ur::ur_encode::UrTypeTag;
     let mnemonic = test_mnemonic();
     let input = SignInput::Mnemonic {
-        mnemonic: mnemonic,
+        mnemonic,
         passphrase: b"",
     };
     let payload = ur_payload();

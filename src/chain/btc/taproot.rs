@@ -598,7 +598,7 @@ mod tests {
     use alloc::string::String;
     use alloc::vec;
     use crate::curve_primitive::secp256k1::{
-        base_mul, point_add, scalar_from_bytes, scalar_to_bytes,
+        base_mul, point_add, scalar_from_bytes,
     };
     use std::eprintln;
 
@@ -858,7 +858,7 @@ mod tests {
         // 验证 2: 签名对 output key + sighash 可验证（用 shlosilo 自己的 verify）
         let mut sig_bytes = [0u8; 64];
         sig_bytes.copy_from_slice(&witness_sig);
-        let sig_obj = schnorr_secp256k1::from_bytes(&sig_bytes).unwrap();
+        let _sig_obj = schnorr_secp256k1::from_bytes(&sig_bytes).unwrap();
         let mut q = [0u8; 32];
         q.copy_from_slice(&out_comp[1..]);
         // 用 k256 schnorr verify（x-only pubkey）

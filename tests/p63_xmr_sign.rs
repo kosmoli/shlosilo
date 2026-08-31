@@ -9,7 +9,6 @@
 //!
 //! oracle 终判 = wallet-rpc submit_transfer / monerod tx pool 接受。
 
-use shlosilo::chain::xmr::transaction::Transaction;
 use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction;
 use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
 

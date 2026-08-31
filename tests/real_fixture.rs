@@ -33,7 +33,7 @@ fn real_wallet_output_export_e2e() {
     let view_sk = hex_to_32(it.next().unwrap().trim());
 
     // ① 解密独立检查（签名/归属/解析）
-    let (pk1, _pk2, plain) =
+    let (_pk1, _pk2, plain) =
         decrypt_export_payload(&payload, OUTPUT_EXPORT_MAGIC, &view_sk).expect("decrypt failed");
     let details = ExportedTransferDetails::from_bytes(&plain).expect("parse failed");
     assert_eq!(details.details.len(), 1, "expected exactly 1 output");

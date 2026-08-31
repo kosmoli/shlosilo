@@ -21,7 +21,7 @@ mod tests {
     #[test]
     fn stub_returns_feature_not_implemented() {
         // P2-01：stub 不再 panic——返回稳定错误码
-        let e = from_signed(ChainKind::Unknown, &[]).err().expect("should err");
+        let e = from_signed(ChainKind::Unknown, &[]).expect_err("should err");
         assert_eq!(e.kind, crate::error::ShlosiloErrorKind::FeatureNotImplemented);
     }
 }

@@ -151,7 +151,7 @@ mod tests {
     use super::*;
     use alloc::string::String;
     use alloc::vec;
-    use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut, Txid};
+    use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut};
     use std::eprintln;
 
     fn hex_decode(s: &str) -> Vec<u8> {
@@ -257,7 +257,7 @@ mod tests {
 
         // 2. scriptSig 已注入 (signature + pubkey)
         let script_sig = &tx.inputs[0].script_sig;
-        assert!(script_sig.len() > 0, "script_sig must be populated");
+        assert!(!script_sig.is_empty(), "script_sig must be populated");
 
         // 3. tx_bytes 不含 marker/flag (legacy)
         assert_ne!(signed.tx_bytes[4], 0x00, "legacy tx has no marker 0x00");

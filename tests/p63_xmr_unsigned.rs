@@ -59,7 +59,7 @@ fn deserialize_p63_plain() {
     assert_eq!(src.outputs.len(), 16);
     assert_eq!(src.real_output, 13);
     assert_eq!(src.amount, 2_000_000_000);
-    assert_eq!(src.rct, true);
+    assert!(src.rct);
     assert_eq!(src.multisig_kLRki.k, [0u8; 32], "non-multisig kLRki zero");
     // outputs：splitted_dsts = [change(1869360000, main), dest(100000000, subaddress)]
     assert_eq!(tx.splitted_dsts.len(), 2, "change + dest (P6.3)");
