@@ -471,6 +471,31 @@ int shlosilo_sign_ur_ffi(const char *uri,
                          unsigned int *actual_len);
 
 /**
+ * P0-C（2026-09-01 再复审）：typed sign —— multipart 重组后的 (type, payload) 垂直贯通签名。
+ *
+ * type_name 为 NUL 结尾 ASCII（如 "crypto-psbt" / "xmr-txunsigned"），必须映射到
+ * 已知可签名 UrTypeTag（Unknown / 未注册名 = ERR_UNKNOWN）。
+ * payload = UR payload 本体（CBOR 语义与单帧 UR 一致，如 crypto-psbt = CBOR bytes item），
+ * 上限 SHLOSILO_MULTIPART_PAYLOAD_MAX_LEN（16 KiB）。
+ * 网络校验 / type-payload 校验与 shlosilo_sign_ur_ffi 完全一致。
+ *
+ * @return 0 = Ok，负数 = 错误码（签名 bytes 写 output_buf）
+ */
+int shlosilo_sign_typed_ffi(const char *type_name,
+                            const uint8_t *payload,
+                            unsigned int payload_len,
+                            const uint16_t *mnemonic_indices,
+                            int mnemonic_count,
+                            const uint8_t *passphrase,
+                            unsigned int passphrase_len,
+                            unsigned int network,
+                            const uint8_t *entropy_ptr,
+                            unsigned int entropy_len,
+                            uint8_t *output_buf,
+                            unsigned int output_buf_len,
+                            unsigned int *actual_len);
+
+/**
  * shlosilo_export_readonly_ffi — mnemonic + path → 只读凭证 UR
  *
  * **P1-04（2026-08-29）**：seed 不再跨 FFI。入口收 mnemonic indices + passphrase，
@@ -640,6 +665,19 @@ int shlosilo_ur_decode_payload(
     shlosilo_ur_decoder_t *handle,
     uint8_t *payload_buf,
     unsigned int payload_buf_len,
+    unsigned int *actual_len);
+
+/**
+ * P0-C（2026-09-01 再复审）：取解码帧序列的 UR type（NUL 结尾 ASCII）。
+ * 与 decode_payload 配对使用，供 L3 路由 typed sign。
+ *
+ * @return 0 = Ok；ERR_UNKNOWN = 尚未收到任何帧；
+ *         ERR_BUFFER_TOO_SMALL = buf 不足（*actual_len 写需求值，含 NUL）。
+ */
+int shlosilo_ur_decode_type(
+    shlosilo_ur_decoder_t *handle,
+    char *type_buf,
+    unsigned int type_buf_len,
     unsigned int *actual_len);
 
 /** 释放解码器（null 安全幂等） */

@@ -8,11 +8,6 @@
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// 256-bit 累乘器（32 bytes = 8 × u32 limbs）
-type U256 = [u32; 8];
-
-const LIMBS: usize = 8;
-
 /// 每掷一次获得的最大 entropy bit 数（floor(log2(sides))）
 ///
 /// 整数实现：避免 no_std 下浮点依赖。多掷 1-2 次补足上界，永远安全。
@@ -55,7 +50,9 @@ pub fn minimum_rolls(sides: u8, required_entropy_bits: u16) -> u16 {
 ///    X = Σ digitᵢ·sides^(k−1−i)，则 X 在 [0, N) 均匀分布，N = sides^k。
 /// 2. 目标空间 T = 2^(8·required_len)。若 N < T → 熵不足，拒绝整个输入。
 /// 3. q = ⌊N / T⌋；若 X ≥ q·T → rejection（该样本落入余数区），返回
-///    `DiceRejectionRolls` 错误，调用方让用户补掷/重掷。
+///    `DiceRejectionRolls` 错误。**安全语义：整组作废、完整重掷**——
+///    在已落入余数区的样本上追加骰子并把旧序列当前缀重算，得到的不再是
+///    [0, sides^(k+1)) 上的均匀样本（P0-A 附带整改，原「补掷」文案错误）。
 /// 4. 输出 = X mod T。
 ///
 /// **均匀性证明**：接受集 [0, q·T) 中每个 y ∈ [0, T) 恰有 q 个原像
@@ -82,7 +79,6 @@ pub fn dice_rolls_to_entropy(
     required_len: usize,
 ) -> Result<heapless::Vec<u8, 64>> {
     const ACC_LIMBS: usize = 12; // 384-bit
-    const ACC_BITS: usize = 384;
 
     if sides < 2 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::InvalidDiceConfig));
@@ -109,15 +105,11 @@ pub fn dice_rolls_to_entropy(
     //   log2(N) = Σ log2(sides) —— 改用精确判定：逐步乘并跟踪最高位。
     // 简化实现：先累乘（384-bit 足够：sides ≤ 255, rolls ≤ 47 → 47×8=376 bit 上限；
     //   rolls 更长时提前拒绝以防累加器溢出——见下方 rolls 上限注释）。
-    // rolls 数上限：47 掷 × 8 bit/掷 = 376 < 384。超过时 N 必然 >> T 很多，
-    // 但累加器会溢出——用精确 bit 预算拒绝：Σ bits_per_digit ≤ ACC_BITS。
-    let mut budget: u32 = 0;
-    for &_ in rolls.iter() {
-        budget += bits_per_digit(sides) as u32;
-        if budget > ACC_BITS as u32 {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::InvalidDiceConfig));
-        }
-    }
+    // 容量检查（P0-A 整改 2026-09-01）：不再用 Σ floor(log2(sides)) 估算——
+    // 该判据不精确（d6 按 2bit/掷允许 192 掷，但 6^k 在 k≥149 已超 384 bit）。
+    // 改为依赖下方 N/X 累乘的显式 carry 检查：任何一步 carry≠0 即 sides^k 超出
+    // 384-bit 容量 → 立即返回错误。这是精确判据（bit_length(sides^k) > 384 ⟺
+    // 累乘过程中最高位产生进位），release 与 debug 行为一致。
 
     // 大数累乘：X = Σ digitᵢ·sides^(k−1−i)，digit = roll − 1，X 从 0 起步
     let mut acc = [0u32; ACC_LIMBS];
@@ -129,7 +121,10 @@ pub fn dice_rolls_to_entropy(
             *limb = product as u32;
             carry = product >> 32;
         }
-        debug_assert!(carry == 0, "384-bit accumulator overflow (budget check failed)");
+        if carry != 0 {
+            // P0-A：显式错误分支（原 debug_assert 在 release 被移除 → 静默截断破坏无偏性）
+            return Err(ShlosiloError::new(ShlosiloErrorKind::InvalidDiceConfig));
+        }
     }
 
     // q = N >> target_bits … 但我们只有 X 没有 N。
@@ -146,7 +141,10 @@ pub fn dice_rolls_to_entropy(
             *limb = product as u32;
             carry = product >> 32;
         }
-        debug_assert!(carry == 0, "384-bit N overflow");
+        if carry != 0 {
+            // P0-A：N = sides^k 超 384-bit 容量——显式拒绝（release/debug 一致）
+            return Err(ShlosiloError::new(ShlosiloErrorKind::InvalidDiceConfig));
+        }
     }
 
     // q = N >> target_bits（target_bits ≤ 256 < 384，移位量按 limb 组合）
@@ -180,7 +178,7 @@ fn shr_limbs(v: &[u32; 12], bits: usize) -> [u32; 12] {
     let mut out = [0u32; 12];
     let limb_shift = bits / 32;
     let bit_shift = bits % 32;
-    for i in 0..12 {
+    for (i, o) in out.iter_mut().enumerate() {
         let src = i + limb_shift;
         if src >= 12 {
             continue;
@@ -189,7 +187,7 @@ fn shr_limbs(v: &[u32; 12], bits: usize) -> [u32; 12] {
         if bit_shift > 0 && src + 1 < 12 {
             word |= v[src + 1] << (32 - bit_shift);
         }
-        out[i] = word;
+        *o = word;
     }
     out
 }
@@ -206,6 +204,26 @@ fn ge_limbs(a: &[u32; 12], b: &[u32; 12]) -> bool {
     true // 全等
 }
 
+
+
+#[test]
+fn p0a_accumulator_overflow_rejected() {
+    // P0-A 回归（2026-09-01 再复审）: 6^k 超 384-bit 容量必须显式 Err 而非 panic/截断。
+    // 旧预算判据 rolls*floor(log2(sides)) 允许 192x d6, 但 6^149 已超 384 bit。
+    let rolls = [6u8; 149];
+    assert!(dice_rolls_to_entropy(6, &rolls, 32).is_err());
+    let rolls = [6u8; 192];
+    assert!(dice_rolls_to_entropy(6, &rolls, 32).is_err());
+    // 容量边界内仍可用: 6^148 = 383.4 bit <= 384 (X=0 全 1 序列)
+    let rolls = [1u8; 148];
+    assert!(dice_rolls_to_entropy(6, &rolls, 32).is_ok());
+    // d20 边界: 20^96 > 2^384 (floor(log2)=4bit/掷 曾允许 96 掷) -> Err
+    let rolls = [20u8; 96];
+    assert!(dice_rolls_to_entropy(20, &rolls, 32).is_err());
+    // d20 合法容量: 20^91 = 393.9 bit? no: 20^80 = 346 bit fits
+    let rolls = [1u8; 80];
+    assert!(dice_rolls_to_entropy(20, &rolls, 32).is_ok());
+}
 #[cfg(test)]
 mod tests {
     use super::*;

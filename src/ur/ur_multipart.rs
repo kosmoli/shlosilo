@@ -121,7 +121,15 @@ pub(crate) fn parse_frame(uri: &str) -> Result<Frame<'_>> {
             let count: usize = count
                 .parse()
                 .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-            if seq == 0 || count == 0 || seq > count || count > MAX_SEQUENCE_COUNT {
+            // P0-B (2026-09-01): seq > count 是标准 fountain 混合冗余帧
+            //（BC-UR 语义：sequence_count=原始分片数，seq 从 count+1 起为冗余），
+            // 不再拒绝——否则 decoder 拒收自家 encoder 的冗余帧。
+            // seq 上限仅为资源预算（长扫无限增长防护），非协议语义。
+            if seq == 0
+                || count == 0
+                || count > MAX_SEQUENCE_COUNT
+                || seq > MAX_SEQUENCE_COUNT * 4
+            {
                 return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
             }
             let part_cbor = bytewords::decode_minimal(body)?;
@@ -160,7 +168,12 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
     let data = arr[4]
         .as_bytes()
         .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
-    if sequence == 0 || sequence_count == 0 || sequence > sequence_count {
+    // P0-B: 允许 sequence > sequence_count（fountain 混合冗余帧）；上限同 parse_frame
+    if sequence == 0
+        || sequence_count == 0
+        || sequence_count > MAX_SEQUENCE_COUNT
+        || sequence > MAX_SEQUENCE_COUNT * 4
+    {
         return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor));
     }
     Ok(Part {
@@ -223,6 +236,12 @@ impl UrMultipartDecoder {
         self.inner.complete()
     }
 
+    /// P0-C（2026-09-01）：已完成帧序列的 UR type（首帧起记录，跨 type 混帧已拒）。
+    /// L3 据此路由 typed sign；None = 尚未收到任何帧。
+    pub fn ur_type(&self) -> Option<&str> {
+        self.type_name.as_deref()
+    }
+
     /// 完成后的 payload（None = 未完成）
     pub fn payload(&self) -> Result<Option<alloc::vec::Vec<u8>>> {
         self.inner
@@ -243,6 +262,84 @@ impl Default for UrMultipartDecoder {
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+
+
+    /// P0-B 回归（2026-09-01 再复审）: keystone-ur 0.1.1 上游混合冗余帧（seq > count）
+    /// 必须可被本 decoder 接受——golden 向量由 keystone-ur Encoder 生成（见排坑笔记）。
+    #[test]
+    fn p0b_keystone_upstream_mixed_frames_accepted() {
+        // keystone-ur: payload "12345678", max_fragment_len=4 → 2 fragments; seq 3/4/5 = 混合帧
+        let mut dec = UrMultipartDecoder::new();
+        for uri in [
+            "ur:bytes/3-2/lpaxaoaycynyvttnpefyeheyeoeeclmudtrd",
+            "ur:bytes/4-2/lpaaaoaycynyvttnpefyecenemetrhgynlfg",
+            "ur:bytes/5-2/lpahaoaycynyvttnpefyecenemetiestfzsr",
+        ] {
+            dec.receive_frame(uri).unwrap();
+        }
+        assert!(dec.complete());
+        assert_eq!(dec.payload().unwrap().as_deref(), Some(&b"12345678"[..]));
+    }
+
+    /// P0-B 验收: 丢系统帧后仅靠 seq>count 的混合帧恢复完整 payload
+    #[test]
+    fn p0b_loss_recovery_via_mixed_frames_only() {
+        // keystone-ur: 64B payload, max_fragment_len=8 → 8 fragments; BIG9..12 = 混合帧
+        // 丢 BIG3/BIG6 两个系统帧, 只喂 BIG9-12 混合帧恢复
+        let all: [(&str, &str); 18] = [
+            ("1-8", "ur:bytes/1-8/lpadaycsfzcyvaiowkkkfdaeatbabzcecndrehttzckeme"),
+            ("2-8", "ur:bytes/2-8/lpaoaycsfzcyvaiowkkkfdetfhfggtghhpidinfyvwhpwk"),
+            ("3-8", "ur:bytes/3-8/lpaxaycsfzcyvaiowkkkfdjoktkblplkmunyoycpvyhydy"),
+            ("4-8", "ur:bytes/4-8/lpaaaycsfzcyvaiowkkkfdpdperprysssbtdtarolademk"),
+            ("5-8", "ur:bytes/5-8/lpahaycsfzcyvaiowkkkfdvtvdwyykadaybscmrsdirljk"),
+            ("6-8", "ur:bytes/6-8/lpamaycsfzcyvaiowkkkfdcadkdneyesfzflglrtdwfepm"),
+            ("7-8", "ur:bytes/7-8/lpataycsfzcyvaiowkkkfdgohhiaimjskslblnchbyleti"),
+            ("8-8", "ur:bytes/8-8/lpayaycsfzcyvaiowkkkfdlgmwndoeptpfrlrnrfrycfsk"),
+            ("9-8", "ur:bytes/9-8/lpasaycsfzcyvaiowkkkfdskztvlbkjscsbsengtcentas"),
+            ("10-8", "ur:bytes/10-8/lpbkaycsfzcyvaiowkkkfdmhrlueahmetpzmswdeecuyeh"),
+            ("11-8", "ur:bytes/11-8/lpbdaycsfzcyvaiowkkkfdaeatbabzcecndrehsrksrhck"),
+            ("12-8", "ur:bytes/12-8/lpbnaycsfzcyvaiowkkkfdskwmryjlvtnblafzosahrpwt"),
+            ("13-8", "ur:bytes/13-8/lpbtaycsfzcyvaiowkkkfdgohhiaimjskslblnahmwgwhe"),
+            ("14-8", "ur:bytes/14-8/lpbaaycsfzcyvaiowkkkfdetfhfggtghhpidinhdcecpze"),
+            ("15-8", "ur:bytes/15-8/lpbsaycsfzcyvaiowkkkfdskztlslejzbwdrehcpsrrkot"),
+            ("16-8", "ur:bytes/16-8/lpbeaycsfzcyvaiowkkkfdpdpdropdtpvsyavstyhgetam"),
+            ("17-8", "ur:bytes/17-8/lpbyaycsfzcyvaiowkkkfdetbsenutsspyoeinehytbeem"),
+            ("18-8", "ur:bytes/18-8/lpbgaycsfzcyvaiowkkkfdgohpjnlbjnhpgorlmwmwdwpe"),
+        ];
+        let mut dec = UrMultipartDecoder::new();
+        // 系统帧: 1,2,4,5,7,8（丢 3、6）
+        for (_, uri) in all.iter().take(8).filter(|(s, _)| !(*s == "3-8" || *s == "6-8")) {
+            dec.receive_frame(uri).unwrap();
+        }
+        assert!(!dec.complete());
+        // 仅混合帧 9-18（Gaussian 消元逐 X² 降未知数,帧多几个必收齐）
+        for (_, uri) in all.iter().skip(8) {
+            dec.receive_frame(uri).unwrap();
+        }
+        assert!(dec.complete());
+        let msg = dec.payload().unwrap().unwrap();
+        assert_eq!(msg.len(), 64);
+        // 上游 payload = (0..64).map(|i| (i*7 % 251) as u8)
+        for (i, b) in msg.iter().enumerate() {
+            assert_eq!(*b, (i as u32 * 7 % 251) as u8, "byte {i}");
+        }
+    }
+
+    /// P0-B: 自家 encoder 的第一个 fountain 冗余帧（seq=count+1）必须能进自家 decoder
+    #[test]
+    fn p0b_own_encoder_mixed_frame_roundtrip() {
+        let payload: Vec<u8> = (0..2048).map(|i| (i * 13 % 251) as u8).collect();
+        let mut enc =
+            UrMultipartEncoder::new("xmr-txunsigned", &payload, DEFAULT_FRAGMENT_LEN).unwrap();
+        let n = enc.fragment_count();
+        let mut dec = UrMultipartDecoder::new();
+        // 先喂 count+1 帧（含第 count+1 个冗余帧）
+        for _ in 0..n + 1 {
+            dec.receive_frame(&enc.next_frame().unwrap()).unwrap();
+        }
+        assert!(dec.complete());
+        assert_eq!(dec.payload().unwrap().as_deref(), Some(payload.as_slice()));
+    }
 
     /// keystone-ur ur.rs doctest 向量（单帧语义对照——我们分片层帧形状一致性）
     #[test]
