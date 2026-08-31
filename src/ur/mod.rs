@@ -16,3 +16,4 @@
 pub mod codec;
 pub mod ur_decode;
 pub mod ur_encode;
+pub mod ur_multipart;

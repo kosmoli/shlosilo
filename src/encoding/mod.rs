@@ -10,6 +10,7 @@ pub mod base58;
 pub mod base64;
 pub mod bech32;
 pub mod bytewords;
+pub mod fountain;
 pub mod cbor;
 pub mod keccak256;
 pub mod ripemd160;
