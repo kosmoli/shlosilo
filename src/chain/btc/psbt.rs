@@ -304,11 +304,17 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     );
     pos += 4;
 
-    // inputs count（P0-01：计数域已受 PSBT_WIRE_MAX_LEN 预算约束，
-    // with_capacity 不会 capacity-overflow；每个 input wire 最少 41B，
-    // 实际可解析上限还受 bytes.len() 硬约束）
+    // inputs count（P0-01：计数域受 PSBT_WIRE_MAX_LEN 预算约束）
     let n_inputs = decode_compact_size(bytes, &mut pos)?;
     if n_inputs > PSBT_WIRE_MAX_LEN {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    // 审计 #5 P0-01: 分配前物理可行性——每个 input wire 至少 41B
+    // (txid 32 + vout 4 + script_sig_len ≥1 + seq 4),还需给 locktime 留 4B。
+    // n_inputs 超过剩余字节可容纳的物理最大数量 → 在 with_capacity 之前拒绝,
+    // 攻击者的小输入不能触发多 MB 预分配(Thumb allocator abort 风险)
+    let remaining = bytes.len() - pos;
+    if n_inputs as usize > remaining.saturating_sub(4) / 41 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let mut inputs = Vec::with_capacity(n_inputs as usize);
@@ -349,6 +355,12 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     // outputs count
     let n_outputs = decode_compact_size(bytes, &mut pos)?;
     if n_outputs > PSBT_WIRE_MAX_LEN {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    // 审计 #5 P0-01: 分配前物理可行性——每个 output wire 至少 9B
+    // (value 8 + spk_len ≥1)
+    let remaining = bytes.len() - pos;
+    if n_outputs as usize > remaining / 9 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let mut outputs = Vec::with_capacity(n_outputs as usize);
