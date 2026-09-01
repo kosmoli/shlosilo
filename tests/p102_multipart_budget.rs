@@ -69,3 +69,48 @@ fn p102_typed_sign_over_budget_rejected() {
     );
     assert_ne!(rc, 0, "typed sign payload > budget must be rejected");
 }
+
+// ── 审计 #6 P1-02:重复帧不消耗预算 + work 超限 reset ──
+
+/// 重复帧不消耗 retained budget——大量重复扫码不得触发 reset(可用性 DoS 修复)
+#[test]
+fn p102_duplicate_frames_do_not_consume_budget() {
+    let payload: std::vec::Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+    let mut enc =
+        shlosilo::ur::ur_multipart::UrMultipartEncoder::new("bytes", &payload, 200).unwrap();
+    let mut dec = UrMultipartDecoder::new();
+    let n = enc.fragment_count();
+    // 首轮:全部帧
+    let mut frames = Vec::new();
+    for _ in 0..n {
+        frames.push(enc.next_frame().unwrap());
+    }
+    for f in &frames {
+        assert!(dec.receive_frame(f.as_str()).unwrap());
+    }
+    // 重复扫同帧 10000 次:每次 Ok(false),不得 reset 会话(会话仍 complete)
+    for _ in 0..10_000 {
+        let accepted = dec.receive_frame(frames[0].as_str()).unwrap();
+        assert!(!accepted, "duplicate frame must not be accepted");
+        assert!(dec.complete(), "duplicate scan must not reset the session");
+    }
+}
+
+/// retained 预算接近上限时不误伤合法会话(16KB payload = 预算的一半)
+#[test]
+fn p102_max_payload_session_within_budget() {
+    let payload: std::vec::Vec<u8> = vec![0u8; MULTIPART_PAYLOAD_MAX_LEN];
+    let mut enc =
+        shlosilo::ur::ur_multipart::UrMultipartEncoder::new("bytes", &payload, 200).unwrap();
+    let mut dec = UrMultipartDecoder::new();
+    let n = enc.fragment_count();
+    for _ in 0..n {
+        let f = enc.next_frame().unwrap();
+        assert!(
+            dec.receive_frame(f.as_str()).is_ok(),
+            "16KiB payload must fit within 32KiB retained budget"
+        );
+    }
+    assert!(dec.complete());
+    assert_eq!(dec.payload().unwrap().unwrap(), payload);
+}

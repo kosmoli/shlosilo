@@ -279,15 +279,28 @@ impl UrMultipartDecoder {
         if part.sequence_count != frame.sequence_count || part.sequence != frame.sequence {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        // 审计 #5 P1-01: 累计保留内存,超预算 reset 会话
-        self.retained_bytes += part.data.len();
-        if self.retained_bytes > MULTIPART_SESSION_RETAINED_MAX {
-            self.reset();
-            return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
+        let last_part_data_len = part.data.len();
+        // 审计 #6 P1-02: 先喂 fountain 判定新/重复——只对真正进入
+        // retained collections 的唯一 equation 记账(重复帧不计,
+        // 修复"重复扫码耗尽 32KiB 计数触发 reset"的可用性 DoS)。
+        // BudgetExceeded(XOR work)统一 reset/poison 会话。
+        match self.inner.receive(part) {
+            Ok(true) => {
+                self.retained_bytes += last_part_data_len;
+                if self.retained_bytes > MULTIPART_SESSION_RETAINED_MAX {
+                    self.reset();
+                    return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
+                }
+                Ok(true)
+            }
+            Ok(false) => Ok(false), // 重复帧:不记账
+            Err(crate::encoding::fountain::FountainError::BudgetExceeded) => {
+                // XOR work 超限:reset 会话,后续调用稳定失败直到重新开始
+                self.reset();
+                Err(err(ShlosiloErrorKind::UrPayloadTooLarge))
+            }
+            Err(_) => Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
         }
-        self.inner
-            .receive(part)
-            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))
     }
 
     pub fn progress(&self) -> u8 {
