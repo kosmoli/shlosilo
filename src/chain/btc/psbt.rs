@@ -376,6 +376,12 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
     );
 
+    // 审计 #5 P0-02: exact-consumption——unsigned tx 必须恰好消费完,
+    // 内嵌尾随数据 = 隐藏语义(sighash preimage 与 wire 可能不一致)
+    if pos != bytes.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+
     Ok(Transaction {
         version,
         inputs,
@@ -388,6 +394,8 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
 ///
 /// P0-01 加固：key/value 长度经 `take_bytes` checked_add 取用，
 /// map 条目数受 bytes.len() 隐式约束（每条至少 2B）。
+/// 审计 #5 P0-02：**重复 key 拒绝**——BIP-174 同 key 单值，重复 = parser
+/// differential 向量（first-wins/last-wins 不一致）。
 fn decode_map(bytes: &[u8], pos: &mut usize) -> Result<EncodedMap> {
     let mut map = EncodedMap::new();
     loop {
@@ -406,6 +414,10 @@ fn decode_map(bytes: &[u8], pos: &mut usize) -> Result<EncodedMap> {
         let value_len = decode_compact_size(bytes, pos)? as usize;
         let value = take_bytes(bytes, pos, value_len)?.to_vec();
 
+        // 审计 #5：重复 key 稳定拒绝（BIP-174: "The key must be unique in a map"）
+        if map.entries.iter().any(|kv| kv.key == key) {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
         map.entries.push(KeyValue { key, value });
     }
 }
@@ -450,6 +462,12 @@ pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt> {
     let mut outputs = Vec::with_capacity(n_outputs);
     for _ in 0..n_outputs {
         outputs.push(decode_map(bytes, &mut pos)?.entries);
+    }
+
+    // 审计 #5 P0-02: exact-consumption——PSBT 整体必须恰好消费完,
+    // 尾随数据 = 非法输入(可能携带未解析的隐藏语义)
+    if pos != bytes.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
     Ok(Psbt {
@@ -767,6 +785,11 @@ pub fn decode_witness_utxo(value: &[u8]) -> Result<(u64, Vec<u8>)> {
     let mut pos = 8;
     let spk_len = decode_compact_size(value, &mut pos)? as usize;
     let spk = take_bytes(value, &mut pos, spk_len)?;
+    // 审计 #5 P0-02: exact-consumption——CTxOut 值必须恰好消费完,
+    // 尾随字节 = 非规范编码(此前测试错误地定义为"应接受")
+    if pos != value.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
     Ok((amount, spk.to_vec()))
 }
 

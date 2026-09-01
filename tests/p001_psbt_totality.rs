@@ -29,16 +29,23 @@ fn tx_with_script_sig_len(len_wire: &[u8]) -> Vec<u8> {
     tx
 }
 
-/// 把 global map(unsigned_tx)+ 空 input/output map 包成完整 PSBT
+/// 把 global map(unsigned_tx)+ 与之一致的空 input/output map 包成完整 PSBT
+/// (审计 #5 exact-consumption 后:map 数必须与 unsigned_tx 的 n_inputs/n_outputs
+/// 一致,多余 separator 会被整体消费检查拒绝)
 fn wrap_psbt(tx: &[u8]) -> Vec<u8> {
+    wrap_psbt_full(tx, 1, 0)
+}
+
+/// 显式指定 n_inputs/n_outputs 的版本(恶意 count / 多 output 测试用)
+fn wrap_psbt_full(tx: &[u8], n_inputs: usize, n_outputs: usize) -> Vec<u8> {
     let mut b = psbt_magic();
     b.push(1); // keylen
     b.push(0x00); // key = UNSIGNED_TX
     b.push(tx.len() as u8); // valuelen(< 0xfd)
     b.extend_from_slice(tx);
     b.push(0x00); // global separator
-    b.push(0x00); // input map separator
-    b.push(0x00); // output map separator
+    b.extend(std::iter::repeat_n(0x00, n_inputs)); // input map separators
+    b.extend(std::iter::repeat_n(0x00, n_outputs)); // output map separators
     b
 }
 
@@ -65,16 +72,20 @@ fn p001_witness_utxo_oversized_len_rejected() {
 }
 
 #[test]
-fn p001_witness_utxo_trailing_garbage_tolerated() {
-    // 合法 spk + 尾随垃圾:CTxOut 语义允许(上层只消费 spk);不 panic 即可
+fn p001_witness_utxo_trailing_garbage_rejected() {
+    // 审计 #5 P0-02(替换旧反向测试"trailing_garbage_tolerated"):
+    // exact-consumption——CTxOut 值尾随字节 = 非规范编码,必须拒绝
+    // (旧测试错误地把尾随垃圾定义为"应接受")
     let mut v = Vec::new();
     v.extend_from_slice(&651_157u64.to_le_bytes());
     v.push(3); // spk_len = 3
     v.extend_from_slice(&[0x00, 0x14, 0x99]); // 占位 spk
     v.push(0xde); // 尾随垃圾
     let r = decode_witness_utxo(&v);
-    assert!(r.is_ok());
-    assert_eq!(r.unwrap().1, vec![0x00, 0x14, 0x99]);
+    assert!(
+        r.is_err(),
+        "CTxOut trailing bytes must be rejected (exact-consumption)"
+    );
 }
 
 // ── 2. deserialize_unsigned_tx:script_sig_len / script_pubkey_len 溢出 ──
@@ -107,7 +118,7 @@ fn p001_script_pubkey_len_oversized_rejected() {
     tx.extend_from_slice(&1000u64.to_le_bytes()); // value
     tx.push(0xfe); // spk_len prefix
     tx.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // 超预算
-    let r = parse_psbt(&wrap_psbt(&tx));
+    let r = parse_psbt(&wrap_psbt_full(&tx, 1, 1));
     assert!(r.is_err());
 }
 
@@ -145,7 +156,7 @@ fn p001_huge_input_count_no_oom() {
     tx.extend_from_slice(&2i32.to_le_bytes());
     tx.push(0xff); // n_inputs prefix
     tx.extend_from_slice(&u64::MAX.to_le_bytes());
-    let r = parse_psbt(&wrap_psbt(&tx));
+    let r = parse_psbt(&wrap_psbt_full(&tx, 0, 0));
     assert!(
         r.is_err(),
         "恶意 input count 必须报错(修复前 capacity overflow abort)"
@@ -153,16 +164,71 @@ fn p001_huge_input_count_no_oom() {
 }
 
 #[test]
-fn p001_large_but_in_budget_input_count_no_huge_alloc() {
-    // n_inputs = 60000 < PSBT_WIRE_MAX_LEN(64KB) 预算内;
-    // with_capacity(60000) 可接受(真实输入会立即因字节不足报错,不循环分配)
+fn p001_count_exceeding_physical_bytes_rejected_before_alloc() {
+    // 审计 #5 P0-02(替换旧反向测试"60000 inputs 可先预分配"):
+    // 分配前校验——每个 input wire 至少 41B(txid32+vout4+seq4+len1),
+    // n_inputs=60000 需要至少 2.4MB 输入;实际只有十余字节 → 必须在
+    // Vec::with_capacity 之前拒绝,不允许先做 60000×sizeof(TxIn) 预分配
+    // (Thumb allocator 上 = alloc error/abort 风险)
     let mut tx = Vec::new();
     tx.extend_from_slice(&2i32.to_le_bytes());
     tx.push(0xfd); // n_inputs 2-byte prefix
     tx.extend_from_slice(&60_000u16.to_le_bytes());
-    // 后面没有 input bytes——必须快速报错而非挂起/崩溃
+    // 后面没有 input bytes——分配前即拒绝
+    let r = parse_psbt(&wrap_psbt_full(&tx, 0, 0));
+    assert!(
+        r.is_err(),
+        "count needing more wire bytes than available must be rejected before alloc"
+    );
+}
+
+#[test]
+fn p001_duplicate_map_key_rejected() {
+    // 审计 #5 P0-02:重复 key 拒绝——BIP-174 "key must be unique in a map",
+    // 重复 = first-wins/last-wins parser differential 向量
+    let mut b = psbt_magic();
+    // global map:两条相同 key=[0x00](UNSIGNED_TX)
+    b.push(1); // keylen
+    b.push(0x00); // key = UNSIGNED_TX
+    b.push(4); // valuelen
+    b.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // value1
+    b.push(1); // keylen
+    b.push(0x00); // key = UNSIGNED_TX(重复!)
+    b.push(4); // valuelen
+    b.extend_from_slice(&[0x05, 0x06, 0x07, 0x08]); // value2
+    let r = parse_psbt(&b);
+    assert!(r.is_err(), "duplicate map key must be rejected");
+}
+
+#[test]
+fn p001_psbt_trailing_bytes_after_output_maps_rejected() {
+    // 审计 #5 P0-02:整体 exact-consumption——所有 map 解析完后剩余字节 = 拒绝
+    let tx = tx_with_script_sig_len(&[0x00]);
+    let mut b = wrap_psbt(&tx);
+    b.push(0xde);
+    b.push(0xad); // 尾随垃圾
+    let r = parse_psbt(&b);
+    assert!(
+        r.is_err(),
+        "PSBT trailing bytes after output maps must be rejected"
+    );
+}
+
+#[test]
+fn p001_unsigned_tx_trailing_bytes_rejected() {
+    // 审计 #5 P0-02:unsigned tx 内嵌尾随——sighash preimage 一致性风险
+    let mut tx = Vec::new();
+    tx.extend_from_slice(&2i32.to_le_bytes());
+    tx.push(1); // n_inputs
+    tx.extend_from_slice(&[0u8; 32]);
+    tx.extend_from_slice(&0u32.to_le_bytes());
+    tx.push(0); // script_sig_len
+    tx.extend_from_slice(&0xffffffffu32.to_le_bytes()); // sequence
+    tx.push(0); // n_outputs
+    tx.extend_from_slice(&0u32.to_le_bytes()); // locktime
+    tx.push(0xde); // 内嵌尾随
     let r = parse_psbt(&wrap_psbt(&tx));
-    assert!(r.is_err());
+    assert!(r.is_err(), "unsigned tx trailing bytes must be rejected");
 }
 
 // ── 5. 非规范 CompactSize 拒绝 ──
