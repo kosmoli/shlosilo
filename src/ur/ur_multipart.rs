@@ -10,9 +10,7 @@
 extern crate alloc;
 
 use crate::encoding::bytewords;
-use crate::encoding::fountain::{
-    FountainDecoder, FountainEncoder, Part, MAX_SEQUENCE_COUNT,
-};
+use crate::encoding::fountain::{FountainDecoder, FountainEncoder, Part, MAX_SEQUENCE_COUNT};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 fn err(kind: ShlosiloErrorKind) -> ShlosiloError {
@@ -134,10 +132,7 @@ pub(crate) fn parse_frame(uri: &str) -> Result<Frame<'_>> {
             //（BC-UR 语义：sequence_count=原始分片数，seq 从 count+1 起为冗余），
             // 不再拒绝——否则 decoder 拒收自家 encoder 的冗余帧。
             // seq 上限仅为资源预算（长扫无限增长防护），非协议语义。
-            if seq == 0
-                || count == 0
-                || count > MAX_SEQUENCE_COUNT
-                || seq > MAX_SEQUENCE_COUNT * 4
+            if seq == 0 || count == 0 || count > MAX_SEQUENCE_COUNT || seq > MAX_SEQUENCE_COUNT * 4
             {
                 return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
             }
@@ -172,11 +167,27 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
     }
     // P1-02（审计 #4）：wire u64 → usize/u32 全部 fallible，禁止静默窄化
     //（32-bit Thumb 上 u64 截断语义危险）；message_length 受 payload 预算约束
-    let sequence = wire_len(arr[0].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?)?;
-    let sequence_count = wire_len(arr[1].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?)?;
-    let message_length = wire_len(arr[2].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?)?;
-    let checksum = u32::try_from(arr[3].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?)
-        .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
+    let sequence = wire_len(
+        arr[0]
+            .as_uint()
+            .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?,
+    )?;
+    let sequence_count = wire_len(
+        arr[1]
+            .as_uint()
+            .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?,
+    )?;
+    let message_length = wire_len(
+        arr[2]
+            .as_uint()
+            .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?,
+    )?;
+    let checksum = u32::try_from(
+        arr[3]
+            .as_uint()
+            .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?,
+    )
+    .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
     let data = arr[4]
         .as_bytes()
         .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
@@ -239,8 +250,7 @@ impl UrMultipartDecoder {
         let frame = parse_frame(uri)?;
         match &self.type_name {
             None => {
-                self.type_name =
-                    Some(alloc::string::String::from(frame.type_name));
+                self.type_name = Some(alloc::string::String::from(frame.type_name));
             }
             Some(t) if t != frame.type_name => {
                 return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -249,9 +259,7 @@ impl UrMultipartDecoder {
         }
         let part = part_from_cbor(&frame.part_cbor)?;
         // seq 元数据一致性（fountain 内部也校验，这里提前挡，错误语义更准）
-        if part.sequence_count != frame.sequence_count
-            || part.sequence != frame.sequence
-        {
+        if part.sequence_count != frame.sequence_count || part.sequence != frame.sequence {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
         self.inner
@@ -294,7 +302,6 @@ mod tests {
     use super::*;
     use alloc::vec::Vec;
 
-
     /// P0-B 回归（2026-09-01 再复审）: keystone-ur 0.1.1 上游混合冗余帧（seq > count）
     /// 必须可被本 decoder 接受——golden 向量由 keystone-ur Encoder 生成（见排坑笔记）。
     #[test]
@@ -318,28 +325,86 @@ mod tests {
         // keystone-ur: 64B payload, max_fragment_len=8 → 8 fragments; BIG9..12 = 混合帧
         // 丢 BIG3/BIG6 两个系统帧, 只喂 BIG9-12 混合帧恢复
         let all: [(&str, &str); 18] = [
-            ("1-8", "ur:bytes/1-8/lpadaycsfzcyvaiowkkkfdaeatbabzcecndrehttzckeme"),
-            ("2-8", "ur:bytes/2-8/lpaoaycsfzcyvaiowkkkfdetfhfggtghhpidinfyvwhpwk"),
-            ("3-8", "ur:bytes/3-8/lpaxaycsfzcyvaiowkkkfdjoktkblplkmunyoycpvyhydy"),
-            ("4-8", "ur:bytes/4-8/lpaaaycsfzcyvaiowkkkfdpdperprysssbtdtarolademk"),
-            ("5-8", "ur:bytes/5-8/lpahaycsfzcyvaiowkkkfdvtvdwyykadaybscmrsdirljk"),
-            ("6-8", "ur:bytes/6-8/lpamaycsfzcyvaiowkkkfdcadkdneyesfzflglrtdwfepm"),
-            ("7-8", "ur:bytes/7-8/lpataycsfzcyvaiowkkkfdgohhiaimjskslblnchbyleti"),
-            ("8-8", "ur:bytes/8-8/lpayaycsfzcyvaiowkkkfdlgmwndoeptpfrlrnrfrycfsk"),
-            ("9-8", "ur:bytes/9-8/lpasaycsfzcyvaiowkkkfdskztvlbkjscsbsengtcentas"),
-            ("10-8", "ur:bytes/10-8/lpbkaycsfzcyvaiowkkkfdmhrlueahmetpzmswdeecuyeh"),
-            ("11-8", "ur:bytes/11-8/lpbdaycsfzcyvaiowkkkfdaeatbabzcecndrehsrksrhck"),
-            ("12-8", "ur:bytes/12-8/lpbnaycsfzcyvaiowkkkfdskwmryjlvtnblafzosahrpwt"),
-            ("13-8", "ur:bytes/13-8/lpbtaycsfzcyvaiowkkkfdgohhiaimjskslblnahmwgwhe"),
-            ("14-8", "ur:bytes/14-8/lpbaaycsfzcyvaiowkkkfdetfhfggtghhpidinhdcecpze"),
-            ("15-8", "ur:bytes/15-8/lpbsaycsfzcyvaiowkkkfdskztlslejzbwdrehcpsrrkot"),
-            ("16-8", "ur:bytes/16-8/lpbeaycsfzcyvaiowkkkfdpdpdropdtpvsyavstyhgetam"),
-            ("17-8", "ur:bytes/17-8/lpbyaycsfzcyvaiowkkkfdetbsenutsspyoeinehytbeem"),
-            ("18-8", "ur:bytes/18-8/lpbgaycsfzcyvaiowkkkfdgohpjnlbjnhpgorlmwmwdwpe"),
+            (
+                "1-8",
+                "ur:bytes/1-8/lpadaycsfzcyvaiowkkkfdaeatbabzcecndrehttzckeme",
+            ),
+            (
+                "2-8",
+                "ur:bytes/2-8/lpaoaycsfzcyvaiowkkkfdetfhfggtghhpidinfyvwhpwk",
+            ),
+            (
+                "3-8",
+                "ur:bytes/3-8/lpaxaycsfzcyvaiowkkkfdjoktkblplkmunyoycpvyhydy",
+            ),
+            (
+                "4-8",
+                "ur:bytes/4-8/lpaaaycsfzcyvaiowkkkfdpdperprysssbtdtarolademk",
+            ),
+            (
+                "5-8",
+                "ur:bytes/5-8/lpahaycsfzcyvaiowkkkfdvtvdwyykadaybscmrsdirljk",
+            ),
+            (
+                "6-8",
+                "ur:bytes/6-8/lpamaycsfzcyvaiowkkkfdcadkdneyesfzflglrtdwfepm",
+            ),
+            (
+                "7-8",
+                "ur:bytes/7-8/lpataycsfzcyvaiowkkkfdgohhiaimjskslblnchbyleti",
+            ),
+            (
+                "8-8",
+                "ur:bytes/8-8/lpayaycsfzcyvaiowkkkfdlgmwndoeptpfrlrnrfrycfsk",
+            ),
+            (
+                "9-8",
+                "ur:bytes/9-8/lpasaycsfzcyvaiowkkkfdskztvlbkjscsbsengtcentas",
+            ),
+            (
+                "10-8",
+                "ur:bytes/10-8/lpbkaycsfzcyvaiowkkkfdmhrlueahmetpzmswdeecuyeh",
+            ),
+            (
+                "11-8",
+                "ur:bytes/11-8/lpbdaycsfzcyvaiowkkkfdaeatbabzcecndrehsrksrhck",
+            ),
+            (
+                "12-8",
+                "ur:bytes/12-8/lpbnaycsfzcyvaiowkkkfdskwmryjlvtnblafzosahrpwt",
+            ),
+            (
+                "13-8",
+                "ur:bytes/13-8/lpbtaycsfzcyvaiowkkkfdgohhiaimjskslblnahmwgwhe",
+            ),
+            (
+                "14-8",
+                "ur:bytes/14-8/lpbaaycsfzcyvaiowkkkfdetfhfggtghhpidinhdcecpze",
+            ),
+            (
+                "15-8",
+                "ur:bytes/15-8/lpbsaycsfzcyvaiowkkkfdskztlslejzbwdrehcpsrrkot",
+            ),
+            (
+                "16-8",
+                "ur:bytes/16-8/lpbeaycsfzcyvaiowkkkfdpdpdropdtpvsyavstyhgetam",
+            ),
+            (
+                "17-8",
+                "ur:bytes/17-8/lpbyaycsfzcyvaiowkkkfdetbsenutsspyoeinehytbeem",
+            ),
+            (
+                "18-8",
+                "ur:bytes/18-8/lpbgaycsfzcyvaiowkkkfdgohpjnlbjnhpgorlmwmwdwpe",
+            ),
         ];
         let mut dec = UrMultipartDecoder::new();
         // 系统帧: 1,2,4,5,7,8（丢 3、6）
-        for (_, uri) in all.iter().take(8).filter(|(s, _)| !(*s == "3-8" || *s == "6-8")) {
+        for (_, uri) in all
+            .iter()
+            .take(8)
+            .filter(|(s, _)| !(*s == "3-8" || *s == "6-8"))
+        {
             dec.receive_frame(uri).unwrap();
         }
         assert!(!dec.complete());
@@ -388,8 +453,8 @@ mod tests {
     #[test]
     fn end_to_end_out_of_order_lossy() {
         let payload: Vec<u8> = (0..2048).map(|i| (i * 13 % 251) as u8).collect();
-        let mut enc = UrMultipartEncoder::new("xmr-txunsigned", &payload, DEFAULT_FRAGMENT_LEN)
-            .unwrap();
+        let mut enc =
+            UrMultipartEncoder::new("xmr-txunsigned", &payload, DEFAULT_FRAGMENT_LEN).unwrap();
         let mut frames = Vec::new();
         for _ in 0..enc.fragment_count() {
             frames.push(enc.next_frame().unwrap());
@@ -400,12 +465,12 @@ mod tests {
         let mut dec = UrMultipartDecoder::new();
         let mut feed: Vec<&str> = frames.iter().map(|s| s.as_str()).collect();
         feed.reverse(); // 乱序
-        // 丢掉一帧(尾部), 后面用 cyclic 冗余补
+                        // 丢掉一帧(尾部), 后面用 cyclic 冗余补
         let dropped = feed.pop().unwrap();
 
         // 乱序喂帧（丢 1 帧）——fountain 冗余可能中途凑齐，不假设必然未完成
-        let mut cyclic = UrMultipartEncoder::new("xmr-txunsigned", &payload, DEFAULT_FRAGMENT_LEN)
-            .unwrap();
+        let mut cyclic =
+            UrMultipartEncoder::new("xmr-txunsigned", &payload, DEFAULT_FRAGMENT_LEN).unwrap();
         for f in &feed {
             let _ = dec.receive_frame(f).unwrap();
         }
@@ -437,12 +502,41 @@ mod tests {
         assert!(dec.receive_frame(&f2).is_err());
     }
 
-    /// seq/count 域校验: 0 / seq>count / 超限 count
+    /// seq/count 域校验: 0 / 超限 count / seq>count 合法(P0-B 语义)
+    ///
+    /// 假阳性测试重写(审计 #4 工程项 4):原测试用 `ur:bytes/3-2/aaaa` 断言
+    /// seq>count 被拒——但 `aaaa` 是无效 bytewords(4 字符 < 5 字节下限),
+    /// Err 实际来自 body 解码,并未证明 sequence 策略,且断言方向与
+    /// P0-B 已修语义(seq>count = fountain 冗余帧,合法)相反。
+    /// 现用有效 bytewords body 分别锁定:seq>count → Ok,真非法域 → Err。
     #[test]
     fn invalid_seq_domain_rejected() {
-        assert!(parse_frame("ur:bytes/0-2/aaaa").is_err());
+        use alloc::format;
+        // 有效 body:Part CBOR [seq, count, msg_len, checksum, data]
+        // (bytewords-minimal 编码,形状对齐 part_from_cbor 期望)
+        use crate::encoding::bytewords;
+        let part_cbor = crate::encoding::cbor::encode_array(&[
+            crate::encoding::cbor::encode_uint(1),
+            crate::encoding::cbor::encode_uint(2),
+            crate::encoding::cbor::encode_uint(4),
+            crate::encoding::cbor::encode_uint(0xdeadbeef),
+            crate::encoding::cbor::encode_bytes(b"abcd"),
+        ]);
+        let body = bytewords::encode_minimal(&part_cbor);
+
+        // seq > count:标准 fountain 冗余帧 → Ok(P0-B 语义;修复前假阳性测试断言相反)
+        let uri_redundant = format!("ur:bytes/3-2/{}", body);
+        let frame = parse_frame(&uri_redundant)
+            .expect("seq>count with valid body must parse (fountain redundant frame)");
+        assert_eq!(frame.sequence, 3);
+        assert_eq!(frame.sequence_count, 2);
+
+        // seq=0 → Err(真非法域)
+        assert!(parse_frame(&format!("ur:bytes/0-2/{}", body)).is_err());
+        // count 超限(> MAX_SEQUENCE_COUNT=256)→ Err
+        assert!(parse_frame(&format!("ur:bytes/1-999/{}", body)).is_err());
+        // 无效 bytewords body(原测试的真实失败原因)→ Err,但这是 body 错而非 seq 错
         assert!(parse_frame("ur:bytes/3-2/aaaa").is_err());
-        assert!(parse_frame("ur:bytes/1-999/aaaa").is_err());
         // 单帧形状(无 seq 段)→ Err(单帧应走 ur_decode::decode)
         assert!(parse_frame("ur:bytes/aaaa").is_err());
         assert!(parse_frame("not-a-ur").is_err());
