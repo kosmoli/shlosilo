@@ -15,6 +15,7 @@
 #include "cmsis_os.h"
 #include "lvgl.h"
 #include "hal_lcd.h"
+#define SHLOSILO_SMOKE_OK 0 /* ShlosiloErrorCode::Ok */
 
 LV_FONT_DECLARE(openSansEnTitle);
 LV_FONT_DECLARE(openSansEnText);
@@ -145,16 +146,16 @@ static int run_checks(void)
     {
         static uint8_t mp_payload[1024];
         for (int i = 0; i < 1024; i++) mp_payload[i] = (uint8_t)(i % 251);
-        shlosilo_ur_encoder_t *enc = shlosilo_ur_encode_begin(
+        UrMultipartEncoder *enc = shlosilo_ur_encode_begin(
             "xmr-txunsigned", mp_payload, sizeof(mp_payload), 200);
-        shlosilo_ur_decoder_t *dec = shlosilo_ur_decode_new();
-        static uint8_t frame[SHLOSILO_MULTIPART_FRAME_BUF_MAX_LEN];
+        UrMultipartDecoder *dec = shlosilo_ur_decode_new();
+        static uint8_t frame[1024]; /* FRAME_BUF_MAX_LEN 对齐 poc4 c_abi */
         unsigned int flen = 0;
         int mp_fail = 0;
         int guard = 0;
         while (!shlosilo_ur_decode_complete(dec)) {
-            if (shlosilo_ur_encode_next(enc, frame, sizeof(frame), &flen) != OK ||
-                shlosilo_ur_decode_feed(dec, (const char *)frame, NULL) != OK) {
+            if (shlosilo_ur_encode_next(enc, frame, sizeof(frame), &flen) != SHLOSILO_SMOKE_OK ||
+                shlosilo_ur_decode_feed(dec, (const char *)frame, NULL) != SHLOSILO_SMOKE_OK) {
                 mp_fail = 1;
                 break;
             }
@@ -163,7 +164,7 @@ static int run_checks(void)
         static uint8_t mp_out[1024];
         unsigned int mp_len = 0;
         if (!mp_fail &&
-            shlosilo_ur_decode_payload(dec, mp_out, sizeof(mp_out), &mp_len) == OK &&
+            shlosilo_ur_decode_payload(dec, mp_out, sizeof(mp_out), &mp_len) == SHLOSILO_SMOKE_OK &&
             mp_len == sizeof(mp_payload) &&
             memcmp(mp_out, mp_payload, mp_len) == 0) {
             log_line("r3 multipart: PASS (%d frames)", guard);
@@ -171,8 +172,8 @@ static int run_checks(void)
             fail++;
             log_line("r3 multipart: FAIL");
         }
-        /* cyclic frame smoke: OK return only */
-        if (shlosilo_ur_encode_next_cyclic(enc, frame, sizeof(frame), &flen) != OK) {
+        /* cyclic frame smoke: SHLOSILO_SMOKE_OK return only */
+        if (shlosilo_ur_encode_next_cyclic(enc, frame, sizeof(frame), &flen) != SHLOSILO_SMOKE_OK) {
             fail++;
             log_line("r3 cyclic: FAIL");
         }
@@ -226,7 +227,7 @@ void shlosilo_panic_hook(const uint8_t *msg, size_t len)
     }
 }
 
-void ShlosiloSmokeTask(void const *argument)
+void ShlosiloSmokeTask(void *argument)
 {
     (void)argument;
     osDelay(500); /* 等 LVGL/helloworld task 初始化 */
