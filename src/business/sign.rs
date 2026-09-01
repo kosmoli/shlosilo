@@ -179,14 +179,18 @@ fn sign_xmr(
     let mut key_images_outer: alloc::vec::Vec<[u8; 32]> = alloc::vec::Vec::new();
     let mut tx_key_images: alloc::vec::Vec<TxKeyImageEntry> = alloc::vec::Vec::new();
 
-    for tx_data in &unsigned_tx.txes {
+    // P1-03: into_iter 拿所有权——construction_data move 进 PendingTx（原本是
+    // 深拷贝秘密的 tx_data.clone()，TxSourceEntry 不可 Clone 后 move 是唯一路径，
+    // 也是审计要求的"秘密副本不扩散"）
+    for tx_data in unsigned_tx.txes {
         // per-tx context digest
         let mut ctx_src = alloc::vec::Vec::new();
         ctx_src.extend_from_slice(&tx_data.unlock_time.to_le_bytes());
         ctx_src.extend_from_slice(&tx_data.extra);
         for s in &tx_data.sources {
             ctx_src.extend_from_slice(&s.real_out_tx_key);
-            ctx_src.extend_from_slice(&s.mask);
+            // P1-03: mask 明文访问收敛到 expose()（context digest 只读哈希）
+            ctx_src.extend_from_slice(s.mask.expose());
         }
         for d in &tx_data.splitted_dsts {
             ctx_src.extend_from_slice(&d.spend_public_key);
@@ -208,7 +212,7 @@ fn sign_xmr(
         // CLSAG：per-input 子域（sign_tx_from_construction 内部按 source 顺序消费）
 
         let tx_bytes = crate::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs(
-            tx_data,
+            &tx_data,
             &spend_sec,
             &view_sec,
             &r,
@@ -303,7 +307,8 @@ fn sign_xmr(
             key_images_str: ki_str,
             additional_tx_keys: alloc::vec::Vec::new(),
             dests: tx_data.dests.clone(),
-            construction_data: tx_data.clone(),
+            // P1-03: move 而非 clone——秘密（mask/kLRki）不再产生新副本
+            construction_data: tx_data,
         });
     }
 

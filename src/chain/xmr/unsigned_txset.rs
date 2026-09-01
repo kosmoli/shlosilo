@@ -147,6 +147,14 @@ impl Drop for MultisigKLRki {
     }
 }
 
+/// P1-03（2026-09-01 审计 #4）：real output 的真 blinding factor——敏感标量。
+///
+/// 拆型决策：wire DTO（`TxSourceEntry`）与 signing-secret 分离。mask 用
+/// `SecretBytes<32>`（不可 Clone、ZeroizeOnDrop）——修复前裸 `[u8; 32]`
+/// 无 Drop，随 `TxSourceEntry` 的 Clone/复制在内存中扩散且永不擦除。
+/// 访问明文必须走 `.expose()`（grep 审计点）。
+pub type SourceMask = crate::types::SecretBytes<32>;
+
 /// R1: k/r 是多签随机掩码（敏感）— Debug redacted
 impl core::fmt::Debug for MultisigKLRki {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -159,7 +167,6 @@ impl core::fmt::Debug for MultisigKLRki {
     }
 }
 
-#[derive(Clone)]
 #[allow(non_snake_case)] // multisig_kLRki 字段名对齐 Monero 官方 wire 命名
 pub struct TxSourceEntry {
     pub outputs: Vec<OutputEntry>,
@@ -169,7 +176,8 @@ pub struct TxSourceEntry {
     pub real_output_in_tx_index: u64,
     pub amount: u64,
     pub rct: bool,
-    pub mask: [u8; 32],
+    /// P1-03：真 blinding factor（SecretBytes，不 Clone 不 Debug、ZeroizeOnDrop）
+    pub mask: SourceMask,
     #[allow(non_snake_case)] // 字段名对齐 Monero 官方 MultisigKLRki 结构
     pub multisig_kLRki: MultisigKLRki,
 }
@@ -208,7 +216,9 @@ pub struct RctConfig {
     pub bp_version: u64,
 }
 
-#[derive(Clone, Debug)]
+/// P1-03：TxSourceEntry 含不可 Clone 秘密（mask）→ 本结构不再 derive Clone。
+/// wire 序列化走引用（write_construction_data），sign 路径 move。
+#[derive(Debug)]
 pub struct TxConstructionData {
     pub sources: Vec<TxSourceEntry>,
     pub change_dts: TxDestinationEntry,
@@ -223,7 +233,8 @@ pub struct TxConstructionData {
     pub subaddr_indices: Vec<u32>,
 }
 
-#[derive(Clone, Debug)]
+/// P1-03：含 TxConstructionData（不可 Clone）→ 本结构不再 derive Clone
+#[derive(Debug)]
 pub struct UnsignedTx {
     pub txes: Vec<TxConstructionData>,
 }
@@ -387,7 +398,9 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
     let real_output_in_tx_index = read_u64(data, off)?;
     let amount = read_u64(data, off)?; // FIELD(uint64) = 8B LE
     let rct = read_bool(data, off)?;
-    let mask = read_u8_32(data, off)?;
+    // P1-03: mask 走 SecretBytes take 接管（读入缓冲副本立即清零）
+    let mut mask_buf = read_u8_32(data, off)?;
+    let mask = crate::types::SecretBytes::take(&mut mask_buf);
     let k = read_u8_32(data, off)?;
     let l = read_u8_32(data, off)?;
     let r = read_u8_32(data, off)?;
@@ -536,5 +549,31 @@ mod tests {
     fn decrypt_too_short_rejected() {
         let view = [0u8; 32];
         assert!(decrypt_unsigned_txset(b"Monero unsigned tx set\x05short", &view).is_err());
+    }
+
+    // ── P1-03（审计 #4）：secret owner 编译期纪律 ──
+
+    /// mask（真 blinding factor）必须有 Drop——ZeroizeOnDrop 擦除证明的锚点
+    #[test]
+    fn p103_source_mask_needs_drop() {
+        assert!(core::mem::needs_drop::<SourceMask>());
+        // 且不可 Clone——秘密副本不扩散
+        static_assertions::assert_not_impl_any!(SourceMask: Clone, Copy);
+    }
+
+    /// TxSourceEntry 整体不再 Clone（含 mask/kLRki 秘密）
+    #[test]
+    fn p103_tx_source_entry_not_clone() {
+        static_assertions::assert_not_impl_any!(TxSourceEntry: Clone, Copy);
+        // 宿主结构同样不 Clone——秘密无法随结构树扩散
+        static_assertions::assert_not_impl_any!(TxConstructionData: Clone);
+        static_assertions::assert_not_impl_any!(UnsignedTx: Clone);
+    }
+
+    /// MultisigKLRki 有 Drop（k/l/r 擦除）但仍可 Clone（wire 重序列化需求，
+    /// 上轮 P1-C 决策保留——Drop 保证每个副本消失时都擦除）
+    #[test]
+    fn p103_multisig_klrki_needs_drop() {
+        assert!(core::mem::needs_drop::<MultisigKLRki>());
     }
 }

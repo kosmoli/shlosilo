@@ -359,7 +359,11 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             &tx_data.subaddr_indices,
         )?;
         tx_inputs.push(TxInput::new(offs.clone(), key_image));
-        input_real_masks.push(src.mask); // TxSourceEntry.mask = real output 的真 blinding factor
+        // P1-03: mask 是 SecretBytes——复制到本地工作数组用 write_into（明文只在
+        // 派生流内短暂存在，本地副本随 input_real_masks drop 擦除）
+        let mut mask_copy = [0u8; 32];
+        src.mask.write_into(&mut mask_copy);
+        input_real_masks.push(mask_copy); // TxSourceEntry.mask = real output 的真 blinding factor
         // （OutputEntry.mask 是链上 C 点；real_entry.mask 被当作 blinding 重算是错的）
         input_key_offsets.push(key_offset);
         // ring members：(dest 一次性地址, 链上 commitment C 点字节)。

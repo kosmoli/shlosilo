@@ -71,7 +71,8 @@ fn write_source_entry(out: &mut Vec<u8>, s: &crate::chain::xmr::unsigned_txset::
     out.extend_from_slice(&s.real_output_in_tx_index.to_le_bytes());
     out.extend_from_slice(&s.amount.to_le_bytes());
     out.push(s.rct as u8);
-    out.extend_from_slice(&s.mask);
+    // P1-03: mask 明文访问收敛到 expose()——wire 序列化是唯一的合法出口之一
+    out.extend_from_slice(s.mask.expose());
     out.extend_from_slice(&s.multisig_kLRki.k);
     out.extend_from_slice(&s.multisig_kLRki.l);
     out.extend_from_slice(&s.multisig_kLRki.r);

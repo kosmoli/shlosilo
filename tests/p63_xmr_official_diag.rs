@@ -15,7 +15,7 @@ fn diag_ring_full() {
     let cd = deserialize_unsigned_tx(PLAIN).unwrap();
     let src = &cd.txes[0].sources[0];
     {
-        let m: String = src.mask.iter().map(|b| format!("{:02x}", b)).collect();
+        let m: String = src.mask.expose().iter().map(|b| format!("{:02x}", b)).collect();
         println!("source.mask (blinding?) = {}", m);
         let rm: String = src.outputs[src.real_output as usize]
             .mask

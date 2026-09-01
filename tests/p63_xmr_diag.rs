@@ -89,7 +89,10 @@ fn hex(b: &[u8]) -> String {
     // 但此处无 outputs；先直接用 real_mask + 1 来测 CLSAG 本身是否可签
     // 真 blinding factor = TxSourceEntry.mask（wallet2 sources[i].mask），
     // 而 OutputEntry.mask 是链上 C 点。ClsagContext 断言 C == Commitment(blinding, amount)。
-    let real_mask = src.mask;
+    // P1-03: mask 现为 SecretBytes——诊断打印场景，本地副本用完即弃
+    let mut real_mask_buf = [0u8; 32];
+    src.mask.write_into(&mut real_mask_buf);
+    let real_mask = real_mask_buf;
     let rm_d = curve25519_dalek::Scalar::from_bytes_mod_order(
         monerod_scalar_to_bytes(&bytes_to_monerod_scalar(&real_mask)),
     );
