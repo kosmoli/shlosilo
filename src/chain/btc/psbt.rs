@@ -168,7 +168,19 @@ fn encode_compact_size(out: &mut Vec<u8>, n: u64) {
     }
 }
 
-/// Compact size varint 解码
+/// P0-01（2026-09-01 审计 #4）：PSBT parser 资源预算。
+///
+/// wire 层的 CompactSize / 元素计数全部受此上限约束——恶意 QR 喂
+/// `0xff ‖ u64::MAX` 不得触发加法溢出 panic（真机 panic=abort = DoS）
+/// 或 `with_capacity(usize::MAX)` capacity-overflow abort。
+/// 上限对齐 TxTemplate PAYLOAD_MAX（16 KiB，真实 PSBT 实测 12 KB）×4 裕量。
+pub(crate) const PSBT_WIRE_MAX_LEN: u64 = 64 * 1024;
+
+/// Compact size varint 解码（P0-01 加固版）
+///
+/// - 长度/计数域 > `PSBT_WIRE_MAX_LEN` → 错误（防溢出 + 防 OOM 预分配）
+/// - 非规范编码拒绝（BIP-174/Bitcoin 共识惯例：0xfd/0xfe/0xff 前缀后跟的值
+///   必须达到该前缀的最小表示域，防止同值多编码造成解析歧义）
 fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
     if *pos >= bytes.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -184,6 +196,10 @@ fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
                 ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
             })?);
             *pos += 8;
+            // 非规范：8 字节编码最小值 0x1_0000_0000
+            if n < 0x1_0000_0000 || n > PSBT_WIRE_MAX_LEN {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+            }
             Ok(n)
         }
         0xfe => {
@@ -194,6 +210,10 @@ fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
                 ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
             })?) as u64;
             *pos += 4;
+            // 非规范：4 字节编码最小值 0x1_0000
+            if n < 0x1_0000 || n > PSBT_WIRE_MAX_LEN {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+            }
             Ok(n)
         }
         0xfd => {
@@ -204,11 +224,30 @@ fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
                 ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
             })?) as u64;
             *pos += 2;
+            // 非规范：2 字节编码最小值 0xfd
+            if !(0xfd..=PSBT_WIRE_MAX_LEN).contains(&n) {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+            }
             Ok(n)
         }
         n if n < 0xfd => Ok(n as u64),
         _ => Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
     }
+}
+
+/// P0-01：从 `bytes[*pos..]` 安全取 `len` 字节——checked_add + 单次越界检查，
+/// 替代所有裸 `pos + len as usize > bytes.len()`（恶意 len = usize::MAX 溢出 panic）。
+/// 成功时推进 `pos`。
+fn take_bytes<'a>(bytes: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8]> {
+    let end = pos
+        .checked_add(len)
+        .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    if end > bytes.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    let s = &bytes[*pos..end];
+    *pos = end;
+    Ok(s)
 }
 
 /// 序列化 unsigned tx (与 P2WPKH.legacy 一致, 不含 marker/flag)
@@ -234,6 +273,9 @@ fn serialize_unsigned_tx(tx: &Transaction) -> Vec<u8> {
 }
 
 /// 反序列化 unsigned tx (按 PSBT 格式, 不含 marker/flag/witness)
+///
+/// P0-01 加固：全部长度/计数域经 `decode_compact_size` 预算校验，
+/// 字节域经 `take_bytes` checked_add 取用；`with_capacity` 前计数钳制。
 fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     let mut pos = 0;
 
@@ -246,43 +288,35 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     })?);
     pos += 4;
 
-    // inputs count
+    // inputs count（P0-01：计数域已受 PSBT_WIRE_MAX_LEN 预算约束，
+    // with_capacity 不会 capacity-overflow；每个 input wire 最少 41B，
+    // 实际可解析上限还受 bytes.len() 硬约束）
     let n_inputs = decode_compact_size(bytes, &mut pos)?;
+    if n_inputs > PSBT_WIRE_MAX_LEN {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
     let mut inputs = Vec::with_capacity(n_inputs as usize);
     for _ in 0..n_inputs {
         // txid (32 bytes)
-        if pos + 32 > bytes.len() {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
+        let txid_bytes = take_bytes(bytes, &mut pos, 32)?;
         let mut txid = [0u8; 32];
-        txid.copy_from_slice(&bytes[pos..pos + 32]);
-        pos += 32;
+        txid.copy_from_slice(txid_bytes);
 
         // vout (4 bytes)
-        if pos + 4 > bytes.len() {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
-        let vout = u32::from_le_bytes(bytes[pos..pos + 4].try_into().map_err(|_| {
+        let vout_bytes = take_bytes(bytes, &mut pos, 4)?;
+        let vout = u32::from_le_bytes(vout_bytes.try_into().map_err(|_| {
             ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
         })?);
-        pos += 4;
 
         // scriptSig len + bytes
-        let script_sig_len = decode_compact_size(bytes, &mut pos)?;
-        if pos + script_sig_len as usize > bytes.len() {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
-        let script_sig = bytes[pos..pos + script_sig_len as usize].to_vec();
-        pos += script_sig_len as usize;
+        let script_sig_len = decode_compact_size(bytes, &mut pos)? as usize;
+        let script_sig = take_bytes(bytes, &mut pos, script_sig_len)?.to_vec();
 
         // sequence (4 bytes)
-        if pos + 4 > bytes.len() {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
-        let sequence = u32::from_le_bytes(bytes[pos..pos + 4].try_into().map_err(|_| {
+        let seq_bytes = take_bytes(bytes, &mut pos, 4)?;
+        let sequence = u32::from_le_bytes(seq_bytes.try_into().map_err(|_| {
             ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
         })?);
-        pos += 4;
 
         inputs.push(TxIn {
             prev_out: OutPoint { txid, vout },
@@ -294,33 +328,27 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
 
     // outputs count
     let n_outputs = decode_compact_size(bytes, &mut pos)?;
+    if n_outputs > PSBT_WIRE_MAX_LEN {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
     let mut outputs = Vec::with_capacity(n_outputs as usize);
     for _ in 0..n_outputs {
         // value (8 bytes)
-        if pos + 8 > bytes.len() {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
-        let value = u64::from_le_bytes(bytes[pos..pos + 8].try_into().map_err(|_| {
+        let value_bytes = take_bytes(bytes, &mut pos, 8)?;
+        let value = u64::from_le_bytes(value_bytes.try_into().map_err(|_| {
             ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
         })?);
-        pos += 8;
 
         // scriptPubKey len + bytes
-        let script_pubkey_len = decode_compact_size(bytes, &mut pos)?;
-        if pos + script_pubkey_len as usize > bytes.len() {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
-        let script_pubkey = bytes[pos..pos + script_pubkey_len as usize].to_vec();
-        pos += script_pubkey_len as usize;
+        let script_pubkey_len = decode_compact_size(bytes, &mut pos)? as usize;
+        let script_pubkey = take_bytes(bytes, &mut pos, script_pubkey_len)?.to_vec();
 
         outputs.push(TxOut { value, script_pubkey });
     }
 
     // lock_time (4 bytes)
-    if pos + 4 > bytes.len() {
-        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-    }
-    let lock_time = u32::from_le_bytes(bytes[pos..pos + 4].try_into().map_err(|_| {
+    let lock_bytes = take_bytes(bytes, &mut pos, 4)?;
+    let lock_time = u32::from_le_bytes(lock_bytes.try_into().map_err(|_| {
         ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
     })?);
 
@@ -333,6 +361,9 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
 }
 
 /// 解析 encoded map (直到 separator 0x00)
+///
+/// P0-01 加固：key/value 长度经 `take_bytes` checked_add 取用，
+/// map 条目数受 bytes.len() 隐式约束（每条至少 2B）。
 fn decode_map(bytes: &[u8], pos: &mut usize) -> Result<EncodedMap> {
     let mut map = EncodedMap::new();
     loop {
@@ -340,24 +371,16 @@ fn decode_map(bytes: &[u8], pos: &mut usize) -> Result<EncodedMap> {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
         // keylen
-        let key_len = decode_compact_size(bytes, pos)?;
+        let key_len = decode_compact_size(bytes, pos)? as usize;
         if key_len == 0 {
             // separator (0x00 key)
             return Ok(map);
         }
-        if *pos + key_len as usize > bytes.len() {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
-        let key = bytes[*pos..*pos + key_len as usize].to_vec();
-        *pos += key_len as usize;
+        let key = take_bytes(bytes, pos, key_len)?.to_vec();
 
         // valuelen
-        let value_len = decode_compact_size(bytes, pos)?;
-        if *pos + value_len as usize > bytes.len() {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
-        let value = bytes[*pos..*pos + value_len as usize].to_vec();
-        *pos += value_len as usize;
+        let value_len = decode_compact_size(bytes, pos)? as usize;
+        let value = take_bytes(bytes, pos, value_len)?.to_vec();
 
         map.entries.push(KeyValue { key, value });
     }
@@ -711,6 +734,10 @@ pub fn decode_p2tr_script_pubkey(script_pubkey: &[u8]) -> Result<[u8; 32]> {
 ///
 /// **注意**: v9.9 曾误实现为 `amount || spk` 直接拼接（漏掉 varint 长度前缀），
 /// keystone 真实 PSBT 抓出了这个 bug。
+///
+/// P0-01 加固（2026-09-01 审计 #4）：`spk_len` 经 decode_compact_size 预算
+/// 校验 + take_bytes checked_add——原 `pos + spk_len` 裸加法在
+/// `amount ‖ 0xff ‖ u64::MAX` 输入下溢出 panic（真机 = 恶意 QR DoS）。
 pub fn decode_witness_utxo(value: &[u8]) -> Result<(u64, Vec<u8>)> {
     if value.len() < 8 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -720,10 +747,8 @@ pub fn decode_witness_utxo(value: &[u8]) -> Result<(u64, Vec<u8>)> {
     })?);
     let mut pos = 8;
     let spk_len = decode_compact_size(value, &mut pos)? as usize;
-    if pos + spk_len > value.len() {
-        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-    }
-    Ok((amount, value[pos..pos + spk_len].to_vec()))
+    let spk = take_bytes(value, &mut pos, spk_len)?;
+    Ok((amount, spk.to_vec()))
 }
 
 /// Get the spent output (value, spk) from an input map's WITNESS_UTXO field
