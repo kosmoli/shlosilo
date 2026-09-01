@@ -144,10 +144,13 @@ pub fn summarize_psbt(psbt: &Psbt, own_spks: &[&[u8]]) -> Result<PsbtSummary> {
     let n = psbt.unsigned_tx.inputs.len();
     let mut values = Vec::with_capacity(n);
     for i in 0..n {
-        let v = psbt
-            .inputs
-            .get(i)
-            .and_then(|m| get_utxo_any(m).map(|(amt, _)| amt));
+        // 审计 #5 开-01:utxo 获取带 prev_out 绑定(NON_WITNESS_UTXO txid 校验)
+        let v = psbt.inputs.get(i).and_then(|m| {
+            psbt.unsigned_tx
+                .inputs
+                .get(i)
+                .and_then(|txin| get_utxo_any(m, &txin.prev_out).map(|(amt, _)| amt))
+        });
         values.push(v);
     }
     summarize_tx(&psbt.unsigned_tx, &values, own_spks)

@@ -44,6 +44,7 @@ use alloc::vec::Vec;
 use crate::chain::btc::p2pkh::sign_p2pkh;
 use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
 use crate::chain::btc::p2wpkh::{sign_p2wpkh, OutPoint, Transaction, TxIn, TxOut};
+use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::SecretBytes;
 
@@ -706,7 +707,9 @@ pub fn sign_psbt_p2tr_keypath(psbt: &mut Psbt, sign_input: &PsbtP2TRSignInput) -
 
     // Verify scriptPubKey of the matching UTXO is a P2TR (OP_1 <0x20> <32-byte-x>).
     // WITNESS_UTXO value = CTxOut: amount(8 LE) || varint(spk_len) || scriptPubKey
-    let (_amount, spk) = get_utxo_any(&psbt.inputs[input_idx])
+    // 审计 #5 开-01:utxo 获取带 prev_out 绑定(NON_WITNESS_UTXO 路径 txid 校验)
+    let prev_out = psbt.unsigned_tx.inputs[input_idx].prev_out.clone();
+    let (_amount, spk) = get_utxo_any(&psbt.inputs[input_idx], &prev_out)
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     if decode_p2tr_script_pubkey(&spk).is_err() {
         // 0x51 = OP_1 (witness v1), 0x20 = push 32 bytes
@@ -736,7 +739,9 @@ pub fn sign_psbt_p2tr_scriptpath(
     }
 
     // Verify scriptPubKey is P2TR. WITNESS_UTXO value = CTxOut format.
-    let (_amount, spk) = get_utxo_any(&psbt.inputs[input_idx])
+    // 审计 #5 开-01:utxo 获取带 prev_out 绑定(NON_WITNESS_UTXO 路径 txid 校验)
+    let prev_out = psbt.unsigned_tx.inputs[input_idx].prev_out.clone();
+    let (_amount, spk) = get_utxo_any(&psbt.inputs[input_idx], &prev_out)
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     if decode_p2tr_script_pubkey(&spk).is_err() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -795,6 +800,46 @@ pub fn decode_witness_utxo(value: &[u8]) -> Result<(u64, Vec<u8>)> {
     Ok((amount, spk.to_vec()))
 }
 
+/// 审计 #5 开-01:解析 NON_WITNESS_UTXO 的完整交易,按 BIP-174 语义:
+/// ①反序列化 full tx(legacy 格式,不含 witness——PSBT 规范存储的是
+///   非见证序列化)②计算 txid = dsha256(serialized)③与 OutPoint.txid 比对
+/// ④按 vout 索引取 CTxOut。任何一步失败 → None(拒绝签名该 input)。
+fn get_non_witness_utxo_bound(
+    input_map: &[KeyValue],
+    prev_out: &OutPoint,
+) -> Option<(u64, Vec<u8>)> {
+    let kv = input_map
+        .iter()
+        .find(|kv| kv.key == vec![input_type::NON_WITNESS_UTXO])?;
+    let full_tx = deserialize_unsigned_tx(&kv.value).ok()?;
+
+    // txid 绑定:序列化回去(用同一 legacy 序列化)→ dsha256
+    let mut ser = Vec::new();
+    ser.extend_from_slice(&full_tx.version.to_le_bytes());
+    encode_compact_size(&mut ser, full_tx.inputs.len() as u64);
+    for txin in &full_tx.inputs {
+        ser.extend_from_slice(&txin.prev_out.txid);
+        ser.extend_from_slice(&txin.prev_out.vout.to_le_bytes());
+        encode_compact_size(&mut ser, txin.script_sig.len() as u64);
+        ser.extend_from_slice(&txin.script_sig);
+        ser.extend_from_slice(&txin.sequence.to_le_bytes());
+    }
+    encode_compact_size(&mut ser, full_tx.outputs.len() as u64);
+    for txout in &full_tx.outputs {
+        ser.extend_from_slice(&txout.value.to_le_bytes());
+        encode_compact_size(&mut ser, txout.script_pubkey.len() as u64);
+        ser.extend_from_slice(&txout.script_pubkey);
+    }
+    ser.extend_from_slice(&full_tx.lock_time.to_le_bytes());
+    let txid: [u8; 32] = sha256::hash_twice(&ser).ok()?;
+
+    if txid != prev_out.txid {
+        return None; // 恶意 full-tx 声称不属于自己的 UTXO——拒绝
+    }
+    let txout = full_tx.outputs.get(prev_out.vout as usize)?;
+    Some((txout.value, txout.script_pubkey.clone()))
+}
+
 /// Get the spent output (value, spk) from an input map's WITNESS_UTXO field
 pub fn get_witness_utxo(input_map: &[KeyValue]) -> Option<(u64, Vec<u8>)> {
     let kv = input_map
@@ -803,19 +848,19 @@ pub fn get_witness_utxo(input_map: &[KeyValue]) -> Option<(u64, Vec<u8>)> {
     decode_witness_utxo(&kv.value).ok()
 }
 
-/// Get spent output from either WITNESS_UTXO (0x02) or NON_WITNESS_UTXO (0x01) field.
+/// Get spent output from WITNESS_UTXO (0x02,首选)或 NON_WITNESS_UTXO(0x01)。
 ///
-/// keystone 的 `test_taproot_sign` fixture 把 CTxOut 放在 0x01 字段（非标准但实际存在），
-/// 标准 BIP-174 用 0x02。两个 value 均为 CTxOut 格式，decode 逻辑相同。
-pub fn get_utxo_any(input_map: &[KeyValue]) -> Option<(u64, Vec<u8>)> {
-    for t in [input_type::WITNESS_UTXO, input_type::NON_WITNESS_UTXO] {
-        if let Some(kv) = input_map.iter().find(|kv| kv.key == vec![t]) {
-            if let Ok(utxo) = decode_witness_utxo(&kv.value) {
-                return Some(utxo);
-            }
-        }
+/// 审计 #5 开-01:NON_WITNESS_UTXO 路径按 BIP-174 语义处理——full tx
+/// 解析 + txid 绑定 + vout 索引,不再把裸 CTxOut 当 fallback 直接信任。
+/// (keystone fixture 的非标 CTxOut-in-0x01 形式不再支持;受影响测试改用
+///   WITNESS_UTXO 标准形式。)
+pub fn get_utxo_any(input_map: &[KeyValue], prev_out: &OutPoint) -> Option<(u64, Vec<u8>)> {
+    // 首选:WITNESS_UTXO(标准路径,CTxOut 直存)
+    if let Some(utxo) = get_witness_utxo(input_map) {
+        return Some(utxo);
     }
-    None
+    // NON_WITNESS_UTXO:full-tx + txid 绑定 + vout 索引
+    get_non_witness_utxo_bound(input_map, prev_out)
 }
 
 /// Get TAP_INTERNAL_KEY from input map (BIP-371 0x17)

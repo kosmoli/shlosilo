@@ -282,3 +282,90 @@ fn p001_valid_minimal_psbt_still_parses() {
     assert_eq!(p.unsigned_tx.inputs.len(), 1);
     assert_eq!(p.unsigned_tx.outputs.len(), 0);
 }
+
+// ── 7. 审计 #5 开-01:NON_WITNESS_UTXO full-tx/txid/vout 绑定 ──
+
+/// 构造最小 legacy full tx(version+1in+1out+locktime)
+fn make_full_tx(vout_value: u64, spk_byte: u8) -> Vec<u8> {
+    let mut tx = Vec::new();
+    tx.extend_from_slice(&2i32.to_le_bytes()); // version
+    tx.push(1); // n_inputs = 1
+    tx.extend_from_slice(&[0xaau8; 32]); // parent txid(占位)
+    tx.extend_from_slice(&0u32.to_le_bytes()); // vout
+    tx.push(0); // script_sig len
+    tx.extend_from_slice(&0xffffffffu32.to_le_bytes()); // sequence
+    tx.push(1); // n_outputs = 1
+    tx.extend_from_slice(&vout_value.to_le_bytes()); // value
+    tx.push(3); // spk len
+    tx.extend_from_slice(&[spk_byte, 0x14, 0x99]); // spk
+    tx.extend_from_slice(&0u32.to_le_bytes()); // locktime
+    tx
+}
+
+#[test]
+fn kai01_nonwitness_full_tx_bound_happy_path() {
+    use shlosilo::chain::btc::p2wpkh::OutPoint;
+    use shlosilo::chain::btc::psbt::{get_utxo_any, KeyValue};
+    use shlosilo::encoding::sha256;
+    let full_tx = make_full_tx(651_157, 0x00);
+    // txid = dsha256(serialized)
+    let txid: [u8; 32] = sha256::hash_twice(&full_tx).unwrap();
+
+    // PSBT input map:NON_WITNESS_UTXO = full tx
+    let input_map: std::vec::Vec<KeyValue> = vec![KeyValue {
+        key: vec![0x00], // NON_WITNESS_UTXO
+        value: full_tx.clone(),
+    }];
+    // prev_out 匹配
+    let prev_out = OutPoint { txid, vout: 0 };
+    let r = get_utxo_any(&input_map, &prev_out);
+    assert!(r.is_some(), "bound NON_WITNESS_UTXO must resolve");
+    let (amt, _spk) = r.unwrap();
+    assert_eq!(amt, 651_157);
+}
+
+#[test]
+fn kai01_nonwitness_txid_mismatch_rejected() {
+    use shlosilo::chain::btc::p2wpkh::OutPoint;
+    use shlosilo::chain::btc::psbt::{get_utxo_any, KeyValue};
+    use shlosilo::encoding::sha256;
+    let full_tx = make_full_tx(651_157, 0x00);
+    let input_map: std::vec::Vec<KeyValue> = vec![KeyValue {
+        key: vec![0x00],
+        value: full_tx.clone(),
+    }];
+
+    // 攻击者给的 prev_out.txid ≠ full-tx 实际 txid → 拒绝
+    let fake_txid = {
+        let mut t = sha256::hash_twice(&full_tx).unwrap();
+        t[0] ^= 0xff;
+        t
+    };
+    let prev_out = OutPoint {
+        txid: fake_txid,
+        vout: 0,
+    };
+    assert!(
+        get_utxo_any(&input_map, &prev_out).is_none(),
+        "txid mismatch must be rejected (fake UTXO attack)"
+    );
+}
+
+#[test]
+fn kai01_nonwitness_vout_oob_rejected() {
+    use shlosilo::chain::btc::p2wpkh::OutPoint;
+    use shlosilo::chain::btc::psbt::{get_utxo_any, KeyValue};
+    use shlosilo::encoding::sha256;
+    let full_tx = make_full_tx(651_157, 0x00);
+    let input_map: std::vec::Vec<KeyValue> = vec![KeyValue {
+        key: vec![0x00],
+        value: full_tx,
+    }];
+    let txid = sha256::hash_twice(&make_full_tx(651_157, 0x00)).unwrap();
+    // full tx 只有 1 个 output,vout=1 越界
+    let prev_out = OutPoint { txid, vout: 1 };
+    assert!(
+        get_utxo_any(&input_map, &prev_out).is_none(),
+        "vout out-of-range must be rejected"
+    );
+}
