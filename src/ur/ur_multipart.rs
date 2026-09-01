@@ -132,8 +132,9 @@ pub(crate) fn parse_frame(uri: &str) -> Result<Frame<'_>> {
             //（BC-UR 语义：sequence_count=原始分片数，seq 从 count+1 起为冗余），
             // 不再拒绝——否则 decoder 拒收自家 encoder 的冗余帧。
             // seq 上限仅为资源预算（长扫无限增长防护），非协议语义。
-            if seq == 0 || count == 0 || count > MAX_SEQUENCE_COUNT || seq > MAX_SEQUENCE_COUNT * 4
-            {
+            // 审计 #5 P1-01: 两层预算统一——seq ≤ MAX_SEQUENCE_COUNT
+            // (fountain 冗余帧 seq ≤ count ≤ 256;旧 1024 与 4096 不一致)
+            if seq == 0 || count == 0 || count > MAX_SEQUENCE_COUNT || seq > MAX_SEQUENCE_COUNT {
                 return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
             }
             let part_cbor = bytewords::decode_minimal(body)?;
@@ -195,7 +196,7 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
     if sequence == 0
         || sequence_count == 0
         || sequence_count > MAX_SEQUENCE_COUNT
-        || sequence > MAX_SEQUENCE_COUNT * 4
+        || sequence > MAX_SEQUENCE_COUNT
     {
         return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor));
     }
@@ -231,9 +232,16 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
 
 /// 有状态多分片解码器。逐帧 `receive_frame()`，`progress()` 驱动 UI，
 /// `complete()` 后 `payload()` 取结果（只读借用——caller 需要所有权时 clone/copy 走 budget）。
+/// 审计 #5 P1-01: 会话累计保留内存预算——decoded/buffer/queue 中 Part.data
+/// 总字节超过此值 = 异常会话,reset 清空(攻击者不能长期占用内存)。
+/// payload 本身 ≤ 16KiB;2 倍裕量覆盖 fountain 消元中间态。
+pub const MULTIPART_SESSION_RETAINED_MAX: usize = MULTIPART_PAYLOAD_MAX_LEN * 2;
+
 pub struct UrMultipartDecoder {
     inner: FountainDecoder,
     type_name: Option<alloc::string::String>,
+    /// 审计 #5: 累计保留字节数(每帧 data 长度累加)
+    retained_bytes: usize,
 }
 
 impl UrMultipartDecoder {
@@ -241,7 +249,16 @@ impl UrMultipartDecoder {
         Self {
             inner: FountainDecoder::new(),
             type_name: None,
+            retained_bytes: 0,
         }
+    }
+
+    /// 审计 #5 P1-01: 超预算 reset——清空全部会话状态(类型记忆一并丢弃),
+    /// 攻击会话不能长期占用内存。调用方需重新从头扫码。
+    fn reset(&mut self) {
+        self.inner = FountainDecoder::new();
+        self.type_name = None;
+        self.retained_bytes = 0;
     }
 
     /// 收一帧 URI。Ok(true)=有新信息, Ok(false)=重复/无新信息。
@@ -261,6 +278,12 @@ impl UrMultipartDecoder {
         // seq 元数据一致性（fountain 内部也校验，这里提前挡，错误语义更准）
         if part.sequence_count != frame.sequence_count || part.sequence != frame.sequence {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        // 审计 #5 P1-01: 累计保留内存,超预算 reset 会话
+        self.retained_bytes += part.data.len();
+        if self.retained_bytes > MULTIPART_SESSION_RETAINED_MAX {
+            self.reset();
+            return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
         }
         self.inner
             .receive(part)

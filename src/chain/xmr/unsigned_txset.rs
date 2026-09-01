@@ -120,7 +120,8 @@ pub struct OutputEntry {
     pub mask: [u8; 32],
 }
 
-#[derive(Clone)]
+/// 审计 #5 P1-02:去 Clone——k/l/r 是敏感标量,序列化只用 `&TxSourceEntry`,
+/// Clone 无必要(上轮"wire DTO 重序列化需求"的理由不成立)
 pub struct MultisigKLRki {
     pub k: [u8; 32],
     pub l: [u8; 32],
@@ -569,10 +570,11 @@ mod tests {
         static_assertions::assert_not_impl_any!(UnsignedTx: Clone);
     }
 
-    /// MultisigKLRki 有 Drop（k/l/r 擦除）但仍可 Clone（wire 重序列化需求，
-    /// 上轮 P1-C 决策保留——Drop 保证每个副本消失时都擦除）
+    /// MultisigKLRki 有 Drop（k/l/r 擦除）且不可 Clone（审计 #5 P1-02：
+    /// 序列化只需引用，Clone 理由不成立——敏感标量副本不扩散）
     #[test]
     fn p103_multisig_klrki_needs_drop() {
         assert!(core::mem::needs_drop::<MultisigKLRki>());
+        static_assertions::assert_not_impl_any!(MultisigKLRki: Clone, Copy);
     }
 }

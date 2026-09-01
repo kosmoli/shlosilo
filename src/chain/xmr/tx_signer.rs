@@ -17,6 +17,7 @@ use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::scalar::Scalar;
 use monero_ed25519::CompressedPoint;
 use rand_core::{CryptoRng, RngCore};
+use zeroize::Zeroize;
 
 use crate::chain::xmr::clsag::{self as clsag_mod};
 use crate::chain::xmr::subaddress::hash_to_scalar;
@@ -361,7 +362,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         )?;
         tx_inputs.push(TxInput::new(offs.clone(), key_image));
         // P1-03: mask 是 SecretBytes——复制到本地工作数组用 write_into（明文只在
-        // 派生流内短暂存在，本地副本随 input_real_masks drop 擦除）
+        // 派生流内暂存，CLSAG 循环结束后显式 zeroize（审计 #5 P1-02））
         let mut mask_copy = [0u8; 32];
         src.mask.write_into(&mut mask_copy);
         input_real_masks.push(mask_copy); // TxSourceEntry.mask = real output 的真 blinding factor
@@ -475,6 +476,12 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         debug_assert_eq!(clsag_proof.to_bytes().len(), 32 + rings[i].len() * 32 + 64);
         clsag_wire.push(body);
         pseudo_outs_arr.push(pseudo_out_bytes);
+    }
+
+    // 审计 #5 P1-02 #4:CLSAG 签名完成后立即擦除 real mask 工作副本
+    // (普通 Vec<[u8;32]> 无 ZeroizeOnDrop,显式清零点 = 唯一可靠擦除)
+    for m in input_real_masks.iter_mut() {
+        m.zeroize();
     }
 
     // ---- 10. 官方 monerod wire 序列化 ----
