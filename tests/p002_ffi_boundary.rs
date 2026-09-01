@@ -301,6 +301,123 @@ fn p002_valid_path_still_works() {
     assert!(uri.starts_with("ur:crypto-hdkey/"));
 }
 
+// ── 6. 审计 #5 P0-03：UINT_MAX 全域 boundary（host 64-bit 无法触发 isize 溢出，
+//    但业务预算上限在 unsafe 构造前拒绝——32-bit Thumb 上 isize 检查是同一防线的兜底）──
+
+#[test]
+fn p003_uintmax_lengths_rejected() {
+    use shlosilo::error::ShlosiloErrorCode;
+    let idx = valid_indices();
+    let mut out = [0u8; 64];
+    let mut actual: u32 = 0;
+    let elems: [u32; 1] = [44 | 0x8000_0000];
+    let umax = u32::MAX;
+
+    // passphrase len = UINT_MAX → helper 层拒绝（超 PASSPHRASE_MAX_LEN）
+    let rc = shlosilo_export_readonly_ffi(
+        idx.as_ptr(),
+        12,
+        core::ptr::null(),
+        umax,
+        0,
+        elems.as_ptr(),
+        elems.len() as u32,
+        0,
+        out.as_mut_ptr(),
+        out.len() as u32,
+        &mut actual,
+    );
+    assert_eq!(rc, INVALID_ARG, "UINT_MAX passphrase must be rejected");
+    assert_eq!(actual, 0);
+
+    // path_elem_count = UINT_MAX → helper 层拒绝（超 MAX_DEPTH）
+    let rc = shlosilo_export_readonly_ffi(
+        idx.as_ptr(),
+        12,
+        core::ptr::null(),
+        0,
+        0,
+        elems.as_ptr(),
+        umax,
+        0,
+        out.as_mut_ptr(),
+        out.len() as u32,
+        &mut actual,
+    );
+    assert_eq!(
+        rc,
+        ShlosiloErrorCode::InvalidDerivationPath as i32,
+        "UINT_MAX path elems must be rejected"
+    );
+    assert_eq!(actual, 0);
+
+    // output_buf_len = UINT_MAX（谎报容量）→ checked_slice_mut 拒绝，防越界写
+    let rc = shlosilo_export_readonly_ffi(
+        idx.as_ptr(),
+        12,
+        core::ptr::null(),
+        0,
+        0,
+        elems.as_ptr(),
+        elems.len() as u32,
+        0,
+        out.as_mut_ptr(),
+        umax,
+        &mut actual,
+    );
+    assert_eq!(
+        rc,
+        ShlosiloErrorCode::BufferTooSmall as i32,
+        "UINT_MAX output capacity must be rejected (prevents OOB write)"
+    );
+    assert_eq!(actual, 0);
+
+    // rolls_count = UINT_MAX → 拒绝
+    let mut mbuf = [0u8; 24];
+    let rc = shlosilo_create_account_ffi(
+        12,
+        6,
+        idx.as_ptr() as *const u8,
+        umax,
+        core::ptr::null(),
+        0,
+        mbuf.as_mut_ptr(),
+        mbuf.len() as u32,
+    );
+    assert_eq!(
+        rc,
+        ShlosiloErrorCode::InvalidDiceRolls as i32,
+        "UINT_MAX rolls must be rejected"
+    );
+}
+
+#[test]
+fn p003_null_zero_len_semantics() {
+    // (NULL,0) optional = 允许；required = 拒绝——语义固定
+    let idx = valid_indices();
+    let elems: [u32; 1] = [44 | 0x8000_0000];
+    let mut buf = [0u8; 1024];
+    let mut actual: u32 = 0;
+    let rc = shlosilo_export_readonly_ffi(
+        idx.as_ptr(),
+        12,
+        core::ptr::null(),
+        0,
+        0,
+        elems.as_ptr(),
+        elems.len() as u32,
+        0,
+        buf.as_mut_ptr(),
+        buf.len() as u32,
+        &mut actual,
+    );
+    assert_eq!(
+        rc,
+        shlosilo::ffi::error_code::OK,
+        "(NULL,0) passphrase = no passphrase"
+    );
+}
+
 fn alloc_cstring(s: &str) -> std::ffi::CString {
     std::ffi::CString::new(s).unwrap()
 }
