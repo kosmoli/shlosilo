@@ -79,9 +79,8 @@ fn hex_decode_32(s: &str) -> [u8; 32] {
 
 #[test]
 fn keystone_btc_p2wpkh_sighash_matches() {
-    use shlosilo::chain::btc::p2wpkh::{
-        segwit_sighash_p2wpkh, OutPoint, Transaction, TxIn, TxOut, SIGHASH_ALL,
-    };
+    use shlosilo::chain::btc::p2wpkh::{segwit_sighash_p2wpkh, OutPoint, Transaction, TxIn, TxOut};
+    const SIGHASH_ALL: u32 = 1; // BIP-143 sighash ALL(p2wpkh::SIGHASH_ALL 转 pub(crate) 后本地定义)
     let input0 = TxIn {
         prev_out: OutPoint {
             txid: hex_decode_32("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f"),

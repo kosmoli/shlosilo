@@ -7,14 +7,14 @@
 //! - outputs: 1000 sat P2WPKH + 650087 sat 找零 P2WPKH
 //! - SIGHASH_ALL
 
-use shlosilo::chain::btc::psbt::{get_witness_utxo, input_type, parse_psbt};
+use shlosilo::chain::btc::psbt::{get_witness_utxo, parse_psbt};
 
 const PSBT_BYTES: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 
 fn der_path(input_map: &[shlosilo::chain::btc::psbt::KeyValue]) -> Option<(Vec<u8>, Vec<u32>)> {
     let kv = input_map
         .iter()
-        .find(|kv| kv.key.first() == Some(&input_type::BIP32_DERIVATION))?;
+        .find(|kv| kv.key.first() == Some(&0x06u8))?; // BIP-174 PSBT_IN_BIP32_DERIVATION
     let pk = kv.key[1..].to_vec();
     // BIP-174: value = master_fingerprint(4B) + path elements (u32LE each), no explicit depth
     if kv.value.len() < 8 || (kv.value.len() - 4) % 4 != 0 {

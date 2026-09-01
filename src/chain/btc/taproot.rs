@@ -155,11 +155,14 @@ pub fn p2tr_address_from_x_only(
 }
 
 /// SIGHASH 类型常量 (BIP-341)
-pub const SIGHASH_DEFAULT: u8 = 0x00;
-pub const SIGHASH_ALL: u8 = 0x01;
-pub const SIGHASH_NONE: u8 = 0x02;
-pub const SIGHASH_SINGLE: u8 = 0x03;
-pub const SIGHASH_ANYONECANPAY: u8 = 0x80;
+#[allow(dead_code)] // BIP-341 常量集 = 完整契约文档
+pub(crate) const SIGHASH_DEFAULT: u8 = 0x00;
+#[allow(dead_code)]
+pub(crate) const SIGHASH_ALL: u8 = 0x01;
+pub(crate) const SIGHASH_NONE: u8 = 0x02;
+pub(crate) const SIGHASH_SINGLE: u8 = 0x03;
+#[allow(dead_code)]
+pub(crate) const SIGHASH_ANYONECANPAY: u8 = 0x80;
 
 /// 一个 spent output（BIP-341 sighash 需要所有 spent outputs 的 value + scriptPubKey）
 #[derive(Clone, Debug)]

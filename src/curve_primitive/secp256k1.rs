@@ -16,10 +16,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 /// secp256k1 标量长度（32 bytes）
-pub const SCALAR_LEN: usize = 32;
+pub(crate) const SCALAR_LEN: usize = 32;
 
 /// secp256k1 压缩公钥长度（33 bytes）
-pub const COMPRESSED_POINT_LEN: usize = 33;
+pub(crate) const COMPRESSED_POINT_LEN: usize = 33;
 
 /// secp256k1 未压缩公钥长度（65 bytes，0x04 || X(32) || Y(32)）
 pub const UNCOMPRESSED_POINT_LEN: usize = 65;

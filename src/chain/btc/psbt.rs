@@ -55,49 +55,51 @@ pub mod global_type {
     pub const UNSIGNED_TX: u8 = 0x00;
 }
 
-pub mod input_type {
+#[allow(dead_code)] // BIP-174 常量集 = 完整契约文档,非全部使用
+pub(crate) mod input_type {
     //! BIP-174 标准输入类型编号。
     //! P6.3 审计后修正（2026-08-26）：原常量整体偏移 +1（NON_WITNESS_UTXO=0x01 等），
     //! 与 Sparrow/bitcoind 等外部实现互操作时全部错位——真实 fixture test.psbt 暴露。
 
-    pub const NON_WITNESS_UTXO: u8 = 0x00;
-    pub const WITNESS_UTXO: u8 = 0x01;
-    pub const PARTIAL_SIG: u8 = 0x02;
-    pub const SIGHASH_TYPE: u8 = 0x03;
-    pub const REDEEM_SCRIPT: u8 = 0x04;
-    pub const WITNESS_SCRIPT: u8 = 0x05;
-    pub const BIP32_DERIVATION: u8 = 0x06;
+    pub(crate) const NON_WITNESS_UTXO: u8 = 0x00;
+    pub(crate) const WITNESS_UTXO: u8 = 0x01;
+    pub(crate) const PARTIAL_SIG: u8 = 0x02;
+    pub(crate) const SIGHASH_TYPE: u8 = 0x03;
+    pub(crate) const REDEEM_SCRIPT: u8 = 0x04;
+    pub(crate) const WITNESS_SCRIPT: u8 = 0x05;
+    pub(crate) const BIP32_DERIVATION: u8 = 0x06;
     /// Final scriptSig (for legacy P2PKH + P2SH inputs)
-    pub const FINAL_SCRIPT_SIG: u8 = 0x07;
+    pub(crate) const FINAL_SCRIPT_SIG: u8 = 0x07;
     /// Final script Witness (for segwit P2WPKH/P2WSH inputs)
-    pub const FINAL_SCRIPTWITNESS: u8 = 0x08;
+    pub(crate) const FINAL_SCRIPTWITNESS: u8 = 0x08;
 
     // === BIP-371 Taproot PSBT fields ===
     /// 0x13: Taproot key-path signature (key = [0x13], value = 64-byte Schnorr sig)
-    pub const TAP_KEY_SIG: u8 = 0x13;
+    pub(crate) const TAP_KEY_SIG: u8 = 0x13;
     /// 0x14: Taproot script-path signature (key = [0x14 || 32-byte leaf_hash], value = 64-byte Schnorr sig || 1-byte sighash)
-    pub const TAP_SCRIPT_SIG: u8 = 0x14;
+    pub(crate) const TAP_SCRIPT_SIG: u8 = 0x14;
     /// 0x15: Taproot leaf scripts (key = [0x15 || 32-byte leaf_hash], value = [script || 1-byte leaf_version])
-    pub const TAP_LEAF_SCRIPTS: u8 = 0x15;
+    pub(crate) const TAP_LEAF_SCRIPTS: u8 = 0x15;
     /// 0x16: Taproot BIP-32 derivation (key = [0x16 || 32-byte x-only pubkey], value = bip32 path + fingerprint)
-    pub const TAP_BIP32_DERIVATION: u8 = 0x16;
+    pub(crate) const TAP_BIP32_DERIVATION: u8 = 0x16;
     /// 0x17: Taproot internal key (key = [], value = 32-byte x-only internal pubkey)
-    pub const TAP_INTERNAL_KEY: u8 = 0x17;
+    pub(crate) const TAP_INTERNAL_KEY: u8 = 0x17;
     /// 0x18: Taproot merkle root (key = [], value = 32-byte merkle root; empty = keypath-only)
-    pub const TAP_MERKLE_ROOT: u8 = 0x18;
+    pub(crate) const TAP_MERKLE_ROOT: u8 = 0x18;
 }
 
 /// Output map types (BIP-174 + BIP-371)
-pub mod output_type {
-    pub const REDEEM_SCRIPT: u8 = 0x00;
-    pub const WITNESS_SCRIPT: u8 = 0x01;
-    pub const BIP32_DERIVATION: u8 = 0x02;
+#[allow(dead_code)]
+pub(crate) mod output_type {
+    pub(crate) const REDEEM_SCRIPT: u8 = 0x00;
+    pub(crate) const WITNESS_SCRIPT: u8 = 0x01;
+    pub(crate) const BIP32_DERIVATION: u8 = 0x02;
 
     // === BIP-371 Taproot PSBT output fields ===
     /// 0x65: Taproot internal key (key = [], value = 32-byte x-only internal pubkey)
-    pub const TAP_INTERNAL_KEY: u8 = 0x65;
+    pub(crate) const TAP_INTERNAL_KEY: u8 = 0x65;
     /// 0x66: Taproot tree (key = [], value = taproot tree encoding)
-    pub const TAP_TREE: u8 = 0x66;
+    pub(crate) const TAP_TREE: u8 = 0x66;
 }
 
 /// Key-value pair in PSBT map

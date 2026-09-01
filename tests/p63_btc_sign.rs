@@ -8,7 +8,7 @@
 //!   （与 test.psbt BIP32_DERIVATION key 完全一致）
 
 use shlosilo::business::sign::{sign, SignInput};
-use shlosilo::chain::btc::psbt::{input_type, parse_psbt};
+use shlosilo::chain::btc::psbt::parse_psbt;
 use shlosilo::encoding::cbor;
 use shlosilo::entropy::mnemonic::Mnemonic;
 
@@ -52,7 +52,7 @@ fn p63_sign_sparrow_psbt_end_to_end() {
     let signed = parse_psbt(&out_buf[..n]).expect("signed output must be a valid PSBT");
     let partial = signed.inputs[0]
         .iter()
-        .find(|kv| kv.key.first() == Some(&input_type::PARTIAL_SIG));
+        .find(|kv| kv.key.first() == Some(&0x02u8)); // BIP-174 PSBT_IN_PARTIAL_SIG
     let partial = partial.expect("PARTIAL_SIG must be injected");
     // key = 0x02 || compressed pubkey —— pubkey 必须是 fixture 里那把
     assert_eq!(partial.key.len(), 34);

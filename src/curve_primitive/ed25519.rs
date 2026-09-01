@@ -20,10 +20,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 /// ed25519 标量长度（32 bytes）
-pub const SCALAR_LEN: usize = SECRET_KEY_LENGTH;
+pub(crate) const SCALAR_LEN: usize = SECRET_KEY_LENGTH;
 
 /// ed25519 压缩点长度（32 bytes）
-pub const COMPRESSED_POINT_LEN: usize = PUBLIC_KEY_LENGTH;
+pub(crate) const COMPRESSED_POINT_LEN: usize = PUBLIC_KEY_LENGTH;
 
 /// ed25519 标量（私钥分量的内部表示）
 ///

@@ -186,7 +186,7 @@ fn dsha256(data: &[u8]) -> Result<[u8; 32]> {
 // ─── BIP-143 sighash 算法 ───────────────────────────────────────────
 
 /// SIGHASH 类型
-pub const SIGHASH_ALL: u32 = 1;
+pub(crate) const SIGHASH_ALL: u32 = 1;
 
 /// BIP-143 segwit sighash for P2WPKH input
 ///
