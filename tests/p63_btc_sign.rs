@@ -12,7 +12,7 @@ use shlosilo::chain::btc::psbt::{input_type, parse_psbt};
 use shlosilo::encoding::cbor;
 use shlosilo::entropy::mnemonic::Mnemonic;
 
-const PSBT_BYTES: &[u8] = include_bytes!("/home/komo/testTX/test.psbt");
+const PSBT_BYTES: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 
 /// entropy → Mnemonic（与助记词 "verb chief swamp ... collect" 双向验证过）
 fn test_mnemonic() -> Mnemonic {

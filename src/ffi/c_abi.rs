@@ -1100,7 +1100,7 @@ mod r3_tests {
     #[test]
     fn p0c_typed_sign_vertical_slice() {
         use alloc::ffi::CString;
-        const PSBT: &[u8] = include_bytes!("/home/komo/testTX/test.psbt");
+        const PSBT: &[u8] = include_bytes!("../../tests/fixtures/sparrow_signet_12k.psbt");
         let ur_payload = crate::encoding::cbor::encode_bytes(PSBT);
         assert!(ur_payload.len() > 4096, "fixture must exceed single-frame legacy budget");
 

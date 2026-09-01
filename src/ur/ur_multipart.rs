@@ -19,6 +19,15 @@ fn err(kind: ShlosiloErrorKind) -> ShlosiloError {
     ShlosiloError::new(kind)
 }
 
+/// P1-02（审计 #4）：wire u64 → usize fallible 转换——usize::MAX 之上直接拒绝，
+/// 禁止 `as usize` 静默截断（32-bit Thumb 目标上 u64→usize 截断语义危险）
+fn wire_len(n: u64) -> Result<usize> {
+    usize::try_from(n)
+        .ok()
+        .filter(|&v| v <= MULTIPART_FRAME_MAX_LEN * 4)
+        .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadTooLarge))
+}
+
 /// 多分片 payload 上限——对齐 TxTemplate 16 KiB（v2-安全 §4 体积护栏同源）
 pub const MULTIPART_PAYLOAD_MAX_LEN: usize = 16384;
 /// 单帧字符串上限：bytewords ≈ 2×data；data ≤ fragment(≤payload) → 2×16 KiB 裕量
@@ -161,10 +170,13 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
     if arr.len() != 5 {
         return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor));
     }
-    let sequence = arr[0].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))? as usize;
-    let sequence_count = arr[1].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))? as usize;
-    let message_length = arr[2].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))? as usize;
-    let checksum = arr[3].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))? as u32;
+    // P1-02（审计 #4）：wire u64 → usize/u32 全部 fallible，禁止静默窄化
+    //（32-bit Thumb 上 u64 截断语义危险）；message_length 受 payload 预算约束
+    let sequence = wire_len(arr[0].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?)?;
+    let sequence_count = wire_len(arr[1].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?)?;
+    let message_length = wire_len(arr[2].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?)?;
+    let checksum = u32::try_from(arr[3].as_uint().map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?)
+        .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
     let data = arr[4]
         .as_bytes()
         .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
@@ -174,6 +186,25 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
         || sequence_count > MAX_SEQUENCE_COUNT
         || sequence > MAX_SEQUENCE_COUNT * 4
     {
+        return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor));
+    }
+    // P1-02: message_length 预算——decoder 侧强制（修复前只有 encoder 侧检查）
+    if message_length == 0 || message_length > MULTIPART_PAYLOAD_MAX_LEN {
+        return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
+    }
+    // P1-02: fragment/count/message 三者互相验证——
+    // fragment data 不得超 budget；seq≥1 时 message ≥ (count-1)*data + 1（末片可短），
+    // 且 message ≤ count*data（padding 允许，但过小说明 wire 谎报）
+    let dlen = data.len();
+    if dlen == 0 || dlen > MULTIPART_PAYLOAD_MAX_LEN {
+        return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
+    }
+    // 单片即完整：data.len() 必须 ≥ message_length（末片短于 fragment 时成立）
+    // 多片：message_length ≤ count * dlen（count 片 × 每片 dlen 覆盖全部）
+    if sequence_count > 1 && message_length > sequence_count * dlen {
+        return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor));
+    }
+    if sequence_count == 1 && dlen < message_length {
         return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor));
     }
     Ok(Part {

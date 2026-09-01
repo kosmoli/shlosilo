@@ -9,7 +9,7 @@
 
 use shlosilo::chain::btc::psbt::{parse_psbt, input_type, get_witness_utxo};
 
-const PSBT_BYTES: &[u8] = include_bytes!("/home/komo/testTX/test.psbt");
+const PSBT_BYTES: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 
 fn der_path(input_map: &[shlosilo::chain::btc::psbt::KeyValue]) -> Option<(Vec<u8>, Vec<u32>)> {
     let kv = input_map.iter().find(|kv| kv.key.first() == Some(&input_type::BIP32_DERIVATION))?;

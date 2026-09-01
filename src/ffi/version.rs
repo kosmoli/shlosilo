@@ -19,14 +19,18 @@ pub const SHLOSILO_VERSION_STRING: &str = "v0.5.0-poc4\0";
 /// 0.x 阶段，minor 即破坏性位（与 0.x semver 约定一致）。进入 1.x 后应放宽为
 /// major-only 检查。
 pub const SHLOSILO_CABI_VERSION_MAJOR: u16 = 0;
-pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 2;
+pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 3;
 pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
 
 /// C ABI 版本字符串（带 \0 结尾）
 ///
 /// **R2 整改（2026-08-31）**：0.1.0 → 0.2.0——错误码布局从正数 kind 直映射
 /// 改为 ShlosiloErrorCode 稳定负码（ABI 行为变更），capability 查询补 null guard。
-pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.2.0\0";
+///
+/// **审计 #4 整改（2026-09-01）**：0.2.0 → 0.3.0——R3 新增导出
+/// shlosilo_sign_typed_ffi / shlosilo_ur_decode_type（导出函数集合变更）；
+/// P0-02 入口序言纪律变更（(NULL,len>0) 从静默空切片改为稳定拒绝 = 语义变更）。
+pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.3.0\0";
 
 /// extern "C" 返回版本字符串（C 端 strdup 后用）
 #[no_mangle]
@@ -74,8 +78,9 @@ mod tests {
 
     #[test]
     fn cabi_version_constants() {
+        // 审计 #4（2026-09-01）：0.2.0 → 0.3.0（R3 新增导出 + P0-02 语义变更）
         assert_eq!(SHLOSILO_CABI_VERSION_MAJOR, 0);
-        assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 2);
+        assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 3);
         assert_eq!(SHLOSILO_CABI_VERSION_PATCH, 0);
     }
 
