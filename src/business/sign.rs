@@ -145,12 +145,20 @@ fn sign_xmr(
     // 1. seed → Monero 密钥对（v2 §2.7：MoneroPath 非 BIP-32；account 0 = 主钱包）
     let path = crate::derivation::monero_reduce_scalar::MoneroPath::mainnet(0);
     let kp = crate::derivation::monero_reduce_scalar::derive(seed, &path)?;
-    let spend_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.spend_priv());
-    let view_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv());
+    // 审计 #6 P1-01:主密钥字节走 Zeroizing(所有返回路径 drop 时清零)
+    let spend_sec = zeroize::Zeroizing::new(crate::curve_primitive::ed25519::scalar_to_bytes(
+        kp.spend_priv(),
+    ));
+    let view_sec = zeroize::Zeroizing::new(crate::curve_primitive::ed25519::scalar_to_bytes(
+        kp.view_priv(),
+    ));
 
     // 2. 解密（内部验签，view key 不匹配 → Err）
-    let plain =
-        crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset(encrypted_unsigned, &view_sec)?;
+    // 审计 #6 P1-01:解密明文 txset 走 Zeroizing(解析后不再需要明文残留)
+    let plain = zeroize::Zeroizing::new(crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset(
+        encrypted_unsigned,
+        &view_sec,
+    )?);
     let unsigned_tx = deserialize_unsigned_tx(&plain)?;
 
     // 3. 逐 tx 签名（§B.5 purpose 子域：tx-key r / BP+ / CLSAG(i) 独立派生）

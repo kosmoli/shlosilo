@@ -19,6 +19,32 @@ use monero_ed25519::CompressedPoint;
 use rand_core::{CryptoRng, RngCore};
 use zeroize::Zeroize;
 
+/// 审计 #6 P1-01:real mask 工作集合的 Drop guard——所有 `?` 错误返回路径
+/// 自动擦除,不依赖函数尾部手工循环(第五次复审 P1-01 #3:错误路径会跳过)。
+/// 正常路径下 CLSAG 完成后 `into_inner()` 取出数据继续使用,guard 释放时
+/// Vec 已被取走,不再二次清零。
+struct ZeroizingMaskGuard {
+    masks: Vec<[u8; 32]>,
+}
+impl ZeroizingMaskGuard {
+    fn new() -> Self {
+        Self { masks: Vec::new() }
+    }
+    fn push(&mut self, mask: [u8; 32]) {
+        self.masks.push(mask);
+    }
+    fn into_inner(mut self) -> Vec<[u8; 32]> {
+        core::mem::take(&mut self.masks)
+    }
+}
+impl Drop for ZeroizingMaskGuard {
+    fn drop(&mut self) {
+        for m in self.masks.iter_mut() {
+            m.zeroize();
+        }
+    }
+}
+
 use crate::chain::xmr::clsag::{self as clsag_mod};
 use crate::chain::xmr::subaddress::hash_to_scalar;
 use crate::chain::xmr::transaction::{
@@ -342,7 +368,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
 
     // ---- 5. inputs: key_offsets(relative) + key images ----
     let mut tx_inputs = Vec::with_capacity(tx_data.sources.len());
-    let mut input_real_masks: Vec<[u8; 32]> = Vec::with_capacity(tx_data.sources.len());
+    let mut input_real_masks = ZeroizingMaskGuard::new();
     let mut rings: Vec<Vec<(CompressedPoint, CompressedPoint)>> =
         Vec::with_capacity(tx_data.sources.len());
     let mut input_key_offsets: Vec<[u8; 32]> = Vec::with_capacity(tx_data.sources.len());
@@ -441,6 +467,11 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     full_msg_in.extend_from_slice(&bp_sig_hash);
     let msg_hash = crate::encoding::keccak256::hash(&full_msg_in)?;
 
+    // P1-01: BP+/msg_hash 计算完成(此前的 ? 均被 guard 覆盖),
+    // 取出 masks 供 CLSAG 使用——guard 在此 drop,已取走的数据由
+    // 签名后显式 zeroize 收尾
+    let mut masks_owned = input_real_masks.into_inner();
+
     // ---- 9. CLSAG per input：pseudo_mask = Σout_masks（monero-clsag sum_outputs 语义）----
     let mut clsag_wire: Vec<Vec<u8>> = Vec::with_capacity(tx_data.sources.len());
     let mut pseudo_outs_arr: Vec<[u8; 32]> = Vec::with_capacity(tx_data.sources.len());
@@ -454,7 +485,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         // 最后一个 input 的 pseudo_mask 由库计算为 sum_outputs − Σprev ⇒ 单输入时 = Σout_masks。
         // （官方 genRctSimple: a[last] = Σout_masks − Σprev_pseudo；balance 自然成立）
         let pseudo_mask_bytes: [u8; 32] = sum_out_masks.to_bytes();
-        let real_mask_bytes = input_real_masks[i];
+        let real_mask_bytes = masks_owned[i];
 
         // CLSAG 签名私钥 = one-time input sk（spend + key_offset），非裸 spend key
         let input_sk = crate::chain::xmr::subaddress::derive_input_spend_key(
@@ -478,11 +509,14 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         pseudo_outs_arr.push(pseudo_out_bytes);
     }
 
-    // 审计 #5 P1-02 #4:CLSAG 签名完成后立即擦除 real mask 工作副本
-    // (普通 Vec<[u8;32]> 无 ZeroizeOnDrop,显式清零点 = 唯一可靠擦除)
-    for m in input_real_masks.iter_mut() {
+    // 审计 #6 P1-01:CLSAG 完成,立即擦除 mask 工作集合(正常路径收尾;
+    // 此前任何 ? 返回由 ZeroizingMaskGuard Drop 覆盖)
+    for m in masks_owned.iter_mut() {
         m.zeroize();
     }
+
+    // 审计 #5 P1-02 #4 + #6 P1-01:CLSAG 完成,从 guard 取出数据继续序列化。
+    // (错误路径由 guard Drop 自动擦除——修复"错误 ? 返回跳过清零循环"的缺口)
 
     // ---- 10. 官方 monerod wire 序列化 ----
     let bp_buf = {
