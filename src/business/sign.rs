@@ -845,7 +845,8 @@ mod tests {
             (cbor::encode_uint(4), cbor::encode_uint(chain_id)),
         ];
         if let Some(p) = path {
-            // crypto-keypath: tag(305, {1: [idx, hardened, ...], 2: depth})
+            // crypto-keypath: tag(304, {1: [idx, hardened, ...], 2: depth})
+            // P1-01（审计 #4）：registry tag 是 304——旧注释/编码误写 305 已纠正
             let mut comps = alloc::vec::Vec::new();
             for idx in p.as_slice() {
                 comps.push(cbor::encode_uint(idx.value() as u64));
@@ -855,7 +856,7 @@ mod tests {
                 (cbor::encode_uint(1), cbor::encode_array(&comps)),
                 (cbor::encode_uint(2), cbor::encode_uint(p.len() as u64)),
             ]);
-            pairs.push((cbor::encode_uint(5), cbor::encode_tag(305, &inner)));
+            pairs.push((cbor::encode_uint(5), cbor::encode_tag(304, &inner)));
         }
         cbor::encode_map(&pairs)
     }
