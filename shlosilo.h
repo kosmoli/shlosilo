@@ -57,71 +57,7 @@
  */
 #define XRP_ADDRESS_MAX_LEN 64
 
-/**
- * SIGHASH 类型
- */
-#define SIGHASH_ALL 1
-
 #define UNSIGNED_TX 0
-
-#define NON_WITNESS_UTXO 0
-
-#define WITNESS_UTXO 1
-
-#define PARTIAL_SIG 2
-
-#define SIGHASH_TYPE 3
-
-#define REDEEM_SCRIPT 4
-
-#define WITNESS_SCRIPT 5
-
-#define BIP32_DERIVATION 6
-
-/**
- * Final scriptSig (for legacy P2PKH + P2SH inputs)
- */
-#define FINAL_SCRIPT_SIG 7
-
-/**
- * Final script Witness (for segwit P2WPKH/P2WSH inputs)
- */
-#define FINAL_SCRIPTWITNESS 8
-
-/**
- * 0x13: Taproot key-path signature (key = [0x13], value = 64-byte Schnorr sig)
- */
-#define TAP_KEY_SIG 19
-
-/**
- * 0x14: Taproot script-path signature (key = [0x14 || 32-byte leaf_hash], value = 64-byte Schnorr sig || 1-byte sighash)
- */
-#define TAP_SCRIPT_SIG 20
-
-/**
- * 0x15: Taproot leaf scripts (key = [0x15 || 32-byte leaf_hash], value = [script || 1-byte leaf_version])
- */
-#define TAP_LEAF_SCRIPTS 21
-
-/**
- * 0x16: Taproot BIP-32 derivation (key = [0x16 || 32-byte x-only pubkey], value = bip32 path + fingerprint)
- */
-#define TAP_BIP32_DERIVATION 22
-
-/**
- * 0x17: Taproot internal key (key = [], value = 32-byte x-only internal pubkey)
- */
-#define TAP_INTERNAL_KEY 23
-
-/**
- * 0x18: Taproot merkle root (key = [], value = 32-byte merkle root; empty = keypath-only)
- */
-#define TAP_MERKLE_ROOT 24
-
-/**
- * 0x66: Taproot tree (key = [], value = taproot tree encoding)
- */
-#define TAP_TREE 102
 
 /**
  * BIP-125: nSequence < 0xfffffffe 表示可替换
@@ -157,17 +93,6 @@
  * Witness program version (always 1 for P2TR per BIP-86)
  */
 #define P2TR_WITNESS_VERSION 1
-
-/**
- * SIGHASH 类型常量 (BIP-341)
- */
-#define SIGHASH_DEFAULT 0
-
-#define SIGHASH_NONE 2
-
-#define SIGHASH_SINGLE 3
-
-#define SIGHASH_ANYONECANPAY 128
 
 /**
  * CLSAG ring 最大长度（XMR 协议默认 11 = 1 real + 10 decoys）
@@ -237,16 +162,6 @@
 #define TX_OUT_TO_TAGGED_KEY 3
 
 /**
- * ed25519 标量长度（32 bytes）
- */
-#define SCALAR_LEN SECRET_KEY_LENGTH
-
-/**
- * ed25519 压缩点长度（32 bytes）
- */
-#define COMPRESSED_POINT_LEN PUBLIC_KEY_LENGTH
-
-/**
  * RSA-4096 签名最大长度（512 bytes for 4096-bit key + PSS overhead）
  */
 #define RSA_SIGNATURE_MAX_LEN 512
@@ -310,6 +225,14 @@
  * 都以 received 集合为闸，超过此上限的会话视为异常/攻击，稳定报错。
  */
 #define MAX_TOTAL_FRAMES 4096
+
+/**
+ * 审计 #5 P1-01(开-02):消元工作量预算——XOR 字节累计上限。
+ * 正常重组工作量 O(count × fragment) ≈ 256 × 200B = 51KB;
+ * 16MiB 上限 = 正常工作的 ~300 倍,恶意 XOR 放大攻击(大量 mixed
+ * equations 反复消元)在耗尽 CPU 前先撞此墙。
+ */
+#define MAX_XOR_WORK_BYTES ((16 * 1024) * 1024)
 
 /**
  * Keccak-256 输出长度
@@ -434,7 +357,12 @@
 /**
  * 有状态多分片解码器。逐帧 `receive_frame()`，`progress()` 驱动 UI，
  * `complete()` 后 `payload()` 取结果（只读借用——caller 需要所有权时 clone/copy 走 budget）。
+ * 审计 #5 P1-01: 会话累计保留内存预算——decoded/buffer/queue 中 Part.data
+ * 总字节超过此值 = 异常会话,reset 清空(攻击者不能长期占用内存)。
+ * payload 本身 ≤ 16KiB;2 倍裕量覆盖 fountain 消元中间态。
  */
+#define MULTIPART_SESSION_RETAINED_MAX (MULTIPART_PAYLOAD_MAX_LEN * 2)
+
 typedef struct UrMultipartDecoder UrMultipartDecoder;
 
 /**
