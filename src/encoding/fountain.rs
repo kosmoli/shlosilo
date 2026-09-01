@@ -340,6 +340,8 @@ pub struct FountainDecoder {
     checksum: u32,
     fragment_length: usize,
     processed_parts_count: usize,
+    /// 审计 #5 开-02:累计 XOR 工作量(字节)
+    work_used: usize,
 }
 
 /// decoder 侧 budget（X1 纪律同源）：上限=分片数上限。
@@ -350,6 +352,12 @@ pub const MAX_SEQUENCE_COUNT: usize = 256;
 /// BC-UR 允许无限冗余帧，但 decoder 资源必须有限：received(buffer/queue 同源)
 /// 都以 received 集合为闸，超过此上限的会话视为异常/攻击，稳定报错。
 pub const MAX_TOTAL_FRAMES: usize = 4096;
+
+/// 审计 #5 P1-01(开-02):消元工作量预算——XOR 字节累计上限。
+/// 正常重组工作量 O(count × fragment) ≈ 256 × 200B = 51KB;
+/// 16MiB 上限 = 正常工作的 ~300 倍,恶意 XOR 放大攻击(大量 mixed
+/// equations 反复消元)在耗尽 CPU 前先撞此墙。
+pub const MAX_XOR_WORK_BYTES: usize = 16 * 1024 * 1024;
 
 impl FountainDecoder {
     pub fn new() -> Self {
@@ -445,6 +453,10 @@ impl FountainDecoder {
                     .position(|&x| x == index)
                     .ok_or(FountainError::ExpectedItem)?;
                 new_indexes.remove(to_remove);
+                self.work_used += part.data.len();
+                if self.work_used > MAX_XOR_WORK_BYTES {
+                    return Err(FountainError::BudgetExceeded);
+                }
                 xor_into(&mut part.data, &simple.data);
                 if new_indexes.len() == 1 {
                     let only = *new_indexes.first().ok_or(FountainError::ExpectedItem)?;
@@ -478,6 +490,10 @@ impl FountainDecoder {
                 .decoded
                 .get(&remove)
                 .ok_or(FountainError::ExpectedItem)?;
+            self.work_used += part.data.len();
+            if self.work_used > MAX_XOR_WORK_BYTES {
+                return Err(FountainError::BudgetExceeded);
+            }
             xor_into(&mut part.data, &decoded_part.data);
         }
         if indexes.len() == 1 {
