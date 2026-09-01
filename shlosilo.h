@@ -124,22 +124,6 @@
 #define TAP_TREE 102
 
 /**
- * Witness program version (always 1 for P2TR per BIP-86)
- */
-#define P2TR_WITNESS_VERSION 1
-
-/**
- * SIGHASH 类型常量 (BIP-341)
- */
-#define SIGHASH_DEFAULT 0
-
-#define SIGHASH_NONE 2
-
-#define SIGHASH_SINGLE 3
-
-#define SIGHASH_ANYONECANPAY 128
-
-/**
  * BIP-125: nSequence < 0xfffffffe 表示可替换
  */
 #define RBF_THRESHOLD 4294967294
@@ -170,6 +154,22 @@
 #define DUST_SATS 546
 
 /**
+ * Witness program version (always 1 for P2TR per BIP-86)
+ */
+#define P2TR_WITNESS_VERSION 1
+
+/**
+ * SIGHASH 类型常量 (BIP-341)
+ */
+#define SIGHASH_DEFAULT 0
+
+#define SIGHASH_NONE 2
+
+#define SIGHASH_SINGLE 3
+
+#define SIGHASH_ANYONECANPAY 128
+
+/**
  * CLSAG ring 最大长度（XMR 协议默认 11 = 1 real + 10 decoys）
  */
 #define DEFAULT_RING_LEN 11
@@ -184,6 +184,12 @@
  * Key image 长度（32 bytes compressed）
  */
 #define KEY_IMAGE_LEN 32
+
+/**
+ * key image 伴随签名的 wire：连续 `[32B image][64B signature]` 记录流，
+ * 对齐 keystone `KeyImages::to_bytes` / `From<&Vec<u8>>`（96B 步长）。
+ */
+#define KEY_IMAGE_RECORD_LEN 96
 
 /**
  * Type 0: full borromean (pre-fork, deprecated)
@@ -293,6 +299,19 @@
 #define BECH32_MAX_LEN 128
 
 /**
+ * decoder 侧 budget（X1 纪律同源）：上限=分片数上限。
+ * TxTemplate 16 KiB / 最小帧 200B → 最多 ~82 分片；256 给足裕量。
+ */
+#define MAX_SEQUENCE_COUNT 256
+
+/**
+ * Gate4 #4（2026-09-01 再复审）：单 session 总接收帧数预算。
+ * BC-UR 允许无限冗余帧，但 decoder 资源必须有限：received(buffer/queue 同源)
+ * 都以 received 集合为闸，超过此上限的会话视为异常/攻击，稳定报错。
+ */
+#define MAX_TOTAL_FRAMES 4096
+
+/**
  * Keccak-256 输出长度
  */
 #define KECCAK256_OUTPUT_LEN 32
@@ -313,37 +332,21 @@
 #define SHA512_OUTPUT_LEN 64
 
 /**
- * 错误码体系（2026-08-31 全量对齐 Rust `ShlosiloErrorCode` 稳定负码——单一真值源）
- *
- * 历史：0.1.x 时代只有 -1..-4 四个 define，与 R2 整改后 `to_ffi_code` 的映射码
- * 冲突（如 buffer-too-small 一度既是 -3 又是 -20）。C 宿主接入前统一收口。
- * **破坏性变更：ERR_BUFFER_TOO_SMALL 由 -3 改为 -20**（0.1.x 无宿主使用，安全）。
+ * BIP-39 seed 长度（64 bytes）
  */
-#define ERR_UNKNOWN                -1
-#define ERR_INVALID_ARGUMENT       -2
-#define ERR_FFI_PANIC              -4
-#define ERR_UNSUPPORTED_CHAIN      -10
-#define ERR_UNSUPPORTED_EXPORT     -11
-#define ERR_UNSUPPORTED_NETWORK    -12
-#define ERR_MULTISIG_NOT_SUPPORTED -13
-#define ERR_FEATURE_NOT_IMPL       -14
-#define ERR_PSBT_OWNERSHIP         -15
-#define ERR_BUFFER_TOO_SMALL       -20
-#define ERR_ENCODING               -21
-#define ERR_INVALID_UR_PAYLOAD     -30
-#define ERR_INVALID_MNEMONIC       -31
-#define ERR_INVALID_DERIVATION     -32
-#define ERR_INVALID_DICE_ROLLS     -33
-#define ERR_CRYPTO                 -40
-#define ERR_INVARIANT              -99
+#define BIP39_SEED_LEN 64
 
-/* 向后兼容别名（0.2.x 过渡，勿在新代码使用） */
-#define ERR_NULL_POINTER ERR_INVALID_ARGUMENT
+#define MAX_MNEMONIC_WORDS 24
 
-/**
- * 成功
- */
-#define OK 0
+
+
+
+
+
+
+
+
+
 
 /**
  * shlosilo 完整版本（cabi + runtime）
@@ -357,22 +360,20 @@
 /**
  * C ABI 版本（**跟 runtime 版本独立**——L3 必须校验 ABI 版本匹配）
  *
- * ABI 版本不兼容规则：
- * - major 版本不同 → ABI 不兼容
- * - minor / patch 改变 → ABI 兼容
+ * ABI 版本不兼容规则（`shlosilo_cabi_check` 实现为**严格等值**）：
+ * - major 不同 → -1（ABI 不兼容，签名/错误码布局变更）
+ * - minor 不同 → -2（导出函数集合或语义变更，L3 必须对照新版 shlosilo.h 重编译）
+ * - patch 不同 → -3（行为微调，L3 应重新 smoke；检查同样拒绝以保证 determinism）
+ *
+ * 注意：这与传统 semver「minor 增 = 向后兼容」**不同**——本项目 C ABI 处于
+ * 0.x 阶段，minor 即破坏性位（与 0.x semver 约定一致）。进入 1.x 后应放宽为
+ * major-only 检查。
  */
 #define SHLOSILO_CABI_VERSION_MAJOR 0
 
-#define SHLOSILO_CABI_VERSION_MINOR 2
+#define SHLOSILO_CABI_VERSION_MINOR 3
 
 #define SHLOSILO_CABI_VERSION_PATCH 0
-
-/**
- * BIP-39 seed 长度（64 bytes）
- */
-#define BIP39_SEED_LEN 64
-
-#define MAX_MNEMONIC_WORDS 24
 
 /**
  * CLSAG 环签名（可变长度，取决于环大小）
@@ -414,6 +415,33 @@
  * 完整 URI 上限：prefix + bytewords(payload+crc32) ≈ 2×payload + 头
  */
 #define UR_URI_MAX_LEN 8192
+
+/**
+ * 多分片 payload 上限——对齐 TxTemplate 16 KiB（v2-安全 §4 体积护栏同源）
+ */
+#define MULTIPART_PAYLOAD_MAX_LEN 16384
+
+/**
+ * 单帧字符串上限：bytewords ≈ 2×data；data ≤ fragment(≤payload) → 2×16 KiB 裕量
+ */
+#define MULTIPART_FRAME_MAX_LEN 40960
+
+/**
+ * 单帧 payload 上限（单帧大 QR 通道走 ur_encode::encode，此处仅分片）
+ */
+#define DEFAULT_FRAGMENT_LEN 200
+
+/**
+ * 有状态多分片解码器。逐帧 `receive_frame()`，`progress()` 驱动 UI，
+ * `complete()` 后 `payload()` 取结果（只读借用——caller 需要所有权时 clone/copy 走 budget）。
+ */
+typedef struct UrMultipartDecoder UrMultipartDecoder;
+
+/**
+ * 有状态多分片编码器。`next_frame()` 产出 URI 帧字符串；
+ * XMR 补扫场景用 `next_cyclic_frame()`。
+ */
+typedef struct UrMultipartEncoder UrMultipartEncoder;
 
 /**
  * L3 提供：FreeRTOS pvPortMalloc 包装
@@ -471,31 +499,6 @@ int shlosilo_sign_ur_ffi(const char *uri,
                          unsigned int *actual_len);
 
 /**
- * P0-C（2026-09-01 再复审）：typed sign —— multipart 重组后的 (type, payload) 垂直贯通签名。
- *
- * type_name 为 NUL 结尾 ASCII（如 "crypto-psbt" / "xmr-txunsigned"），必须映射到
- * 已知可签名 UrTypeTag（Unknown / 未注册名 = ERR_UNKNOWN）。
- * payload = UR payload 本体（CBOR 语义与单帧 UR 一致，如 crypto-psbt = CBOR bytes item），
- * 上限 SHLOSILO_MULTIPART_PAYLOAD_MAX_LEN（16 KiB）。
- * 网络校验 / type-payload 校验与 shlosilo_sign_ur_ffi 完全一致。
- *
- * @return 0 = Ok，负数 = 错误码（签名 bytes 写 output_buf）
- */
-int shlosilo_sign_typed_ffi(const char *type_name,
-                            const uint8_t *payload,
-                            unsigned int payload_len,
-                            const uint16_t *mnemonic_indices,
-                            int mnemonic_count,
-                            const uint8_t *passphrase,
-                            unsigned int passphrase_len,
-                            unsigned int network,
-                            const uint8_t *entropy_ptr,
-                            unsigned int entropy_len,
-                            uint8_t *output_buf,
-                            unsigned int output_buf_len,
-                            unsigned int *actual_len);
-
-/**
  * shlosilo_export_readonly_ffi — mnemonic + path → 只读凭证 UR
  *
  * **P1-04（2026-08-29）**：seed 不再跨 FFI。入口收 mnemonic indices + passphrase，
@@ -547,6 +550,103 @@ int shlosilo_supported_protocols_ffi(uint8_t *output_buf,
                                      unsigned int *actual_len);
 
 /**
+ * R3: 创建多分片编码器。成功返回句柄（非 null），失败返回 null。
+ * type_name: ASCII 字母数字 + '-'（如 "xmr-txunsigned"）
+ * L3 完成后必须调用 shlosilo_ur_encode_free。
+ */
+struct UrMultipartEncoder *shlosilo_ur_encode_begin(const char *type_name,
+                                                    const uint8_t *payload,
+                                                    unsigned int payload_len,
+                                                    unsigned int max_fragment_len);
+
+/**
+ * R3: 取下一帧 URI 字符串（写 frame_buf，NUL 结尾）。
+ * 返回 0 = Ok；负数 = 错误码。重复调用产出 fountain 冗余帧流。
+ */
+int shlosilo_ur_encode_next(struct UrMultipartEncoder *handle,
+                            uint8_t *frame_buf,
+                            unsigned int frame_buf_len,
+                            unsigned int *actual_len);
+
+/**
+ * R3: XMR cyclic 补扫帧（seq 到顶回 1，无限循环供软件钱包补扫）
+ */
+int shlosilo_ur_encode_next_cyclic(struct UrMultipartEncoder *handle,
+                                   uint8_t *frame_buf,
+                                   unsigned int frame_buf_len,
+                                   unsigned int *actual_len);
+
+/**
+ * R3: 释放编码器句柄。null 安全（幂等）。
+ */
+void shlosilo_ur_encode_free(struct UrMultipartEncoder *handle);
+
+/**
+ * R3: 创建多分片解码器。成功返回句柄，失败返回 null。
+ */
+struct UrMultipartDecoder *shlosilo_ur_decode_new(void);
+
+/**
+ * R3: 喂一帧 URI（NUL 结尾 C string）。
+ * 返回 0 = Ok（accepted 状态写 *accepted_out：1=有新信息，0=重复帧）
+ */
+int shlosilo_ur_decode_feed(struct UrMultipartDecoder *handle,
+                            const char *frame,
+                            unsigned int *accepted_out);
+
+/**
+ * R3: 解码进度 0..=99（100 用 complete 表达）
+ */
+int shlosilo_ur_decode_progress(struct UrMultipartDecoder *handle);
+
+/**
+ * R3: 是否完成
+ */
+int shlosilo_ur_decode_complete(struct UrMultipartDecoder *handle);
+
+/**
+ * R3: 取完整 payload（写 payload_buf；实际长度写 actual_len）。
+ * 完成前调用 → ERR_UNKNOWN；payload 超过 buf → ERR_BUFFER_TOO_SMALL（actual_len 写需求值）。
+ */
+int shlosilo_ur_decode_payload(struct UrMultipartDecoder *handle,
+                               uint8_t *payload_buf,
+                               unsigned int payload_buf_len,
+                               unsigned int *actual_len);
+
+/**
+ * R3/P0-C（2026-09-01）：取解码后的 UR type（写 type_buf 为 NUL 结尾 ASCII）。
+ * 完成前或无帧 → EncodingInvalidFormat；缓冲不足 → BufferTooSmall（actual_len 写需求值，含 NUL）。
+ */
+int shlosilo_ur_decode_type(struct UrMultipartDecoder *handle,
+                            uint8_t *type_buf,
+                            unsigned int type_buf_len,
+                            unsigned int *actual_len);
+
+/**
+ * R3/P0-C（2026-09-01）：typed sign——multipart 重组后的 (type, payload) 垂直贯通签名。
+ * type_name 必须是已知可签名的 UrTypeTag（拒绝 Unknown/任意字符串）；
+ * payload 预算 = MULTIPART_PAYLOAD_MAX_LEN（16 KiB，对齐 multipart 重组上限）。
+ */
+int shlosilo_sign_typed_ffi(const char *type_name,
+                            const uint8_t *payload,
+                            unsigned int payload_len,
+                            const uint16_t *mnemonic_indices,
+                            int mnemonic_count,
+                            const uint8_t *passphrase,
+                            unsigned int passphrase_len,
+                            unsigned int network,
+                            const uint8_t *entropy_ptr,
+                            unsigned int entropy_len,
+                            uint8_t *output_buf,
+                            unsigned int output_buf_len,
+                            unsigned int *actual_len);
+
+/**
+ * R3: 释放解码器句柄。null 安全（幂等）。
+ */
+void shlosilo_ur_decode_free(struct UrMultipartDecoder *handle);
+
+/**
  * extern "C" 返回版本字符串（C 端 strdup 后用）
  */
 const uint8_t *shlosilo_version(void);
@@ -564,121 +664,3 @@ const uint8_t *shlosilo_cabi_version(void);
 int32_t shlosilo_cabi_check(uint16_t l3_expected_major,
                             uint16_t l3_expected_minor,
                             uint16_t l3_expected_patch);
-
-/* ============================================================================
- * R3 typed 多分片 UR FFI（2026-08-31 定稿）
- *
- * 双通道架构（对齐 keystone gui_model.c）：
- *   单帧大 QR   = shlosilo_sign_ur_ffi / shlosilo_version 系既有入口
- *                 （payload <= UR_PAYLOAD_MAX_LEN = 2048）
- *   多分片动画  = 本组函数（payload <= 16384，fountain 冗余帧流，
- *                 帧格式 `ur:<type>/<seq>-<count>/<bytewords>`，XMR cyclic 补扫）
- *
- * 句柄契约：
- *   - encode_begin / decode_new 成功返回非 null 句柄（库内 Box 裸指针）
- *   - 句柄不可重复 free；encode_free / decode_free null 安全（幂等）
- *   - 其余函数对 null 句柄返回 ERR_INVALID_ARGUMENT
- *   - L3 缓冲区契约：frame_buf 必须 >= SHLOSILO_MULTIPART_FRAME_BUF_MAX_LEN
- * ============================================================================
- */
-
-/** 单帧 URI 字符串缓冲下限（200B 分片 -> 帧 ~420 字符，1024 充足） */
-#define SHLOSILO_MULTIPART_FRAME_BUF_MAX_LEN 1024
-
-/** 多分片 payload 上限（对齐 TxTemplate 16 KiB） */
-#define SHLOSILO_MULTIPART_PAYLOAD_MAX_LEN 16384
-
-/** 编码器句柄（不透明；L3 不得解引用） */
-typedef void shlosilo_ur_encoder_t;
-
-/** 解码器句柄（不透明；L3 不得解引用） */
-
-typedef void shlosilo_ur_decoder_t;
-
-/**
- * 创建多分片编码器。
- *
- * @param type_name        UR type（ASCII 字母数字 + '-'，如 "xmr-txunsigned"，NUL 结尾，<=64）
- * @param payload          原始 payload bytes（codec 产出的 CBOR）
- * @param payload_len      <= SHLOSILO_MULTIPART_PAYLOAD_MAX_LEN
- * @param max_fragment_len 每帧 payload 分片字节数（keystone 默认 200）
- * @return 非 null = 句柄；null = 失败（参数非法 / payload 超限）。用完必须 encode_free。
- */
-shlosilo_ur_encoder_t *shlosilo_ur_encode_begin(
-    const char *type_name,
-    const uint8_t *payload,
-    unsigned int payload_len,
-    unsigned int max_fragment_len);
-
-/**
- * 取下一帧（fountain 冗余帧流，可无限调用产出新组合）。
- *
- * @return 0 = Ok（帧写入 frame_buf，NUL 结尾，长度写 *actual_len）；
- *         ERR_INVALID_ARGUMENT = null 句柄/buf；ERR_BUFFER_TOO_SMALL = buf < 下限。
- */
-int shlosilo_ur_encode_next(
-    shlosilo_ur_encoder_t *handle,
-    uint8_t *frame_buf,
-    unsigned int frame_buf_len,
-    unsigned int *actual_len);
-
-/**
- * XMR cyclic 补扫帧：seq 到顶回 1，无限循环（软件钱包补扫用）。
- * 参数与返回同 shlosilo_ur_encode_next。
- */
-int shlosilo_ur_encode_next_cyclic(
-    shlosilo_ur_encoder_t *handle,
-    uint8_t *frame_buf,
-    unsigned int frame_buf_len,
-    unsigned int *actual_len);
-
-/** 释放编码器（null 安全幂等；调用后句柄失效） */
-void shlosilo_ur_encode_free(shlosilo_ur_encoder_t *handle);
-
-/** 创建多分片解码器。非 null = 句柄；null = 失败。用完必须 decode_free。 */
-shlosilo_ur_decoder_t *shlosilo_ur_decode_new(void);
-
-/**
- * 喂一帧 URI（NUL 结尾 C string）。
- *
- * @param accepted_out 可为 null；非 null 时写 1 = 有新信息 / 0 = 重复帧
- * @return 0 = Ok；负数 = 错误码（畸形帧 = ERR_ENCODING）
- */
-int shlosilo_ur_decode_feed(
-    shlosilo_ur_decoder_t *handle,
-    const char *frame,
-    unsigned int *accepted_out);
-
-/** 解码进度 0..=99（100 用 complete 表达）；null 句柄 = ERR_INVALID_ARGUMENT */
-int shlosilo_ur_decode_progress(shlosilo_ur_decoder_t *handle);
-
-/** 是否完成：1 = 完成，0 = 未完成 */
-int shlosilo_ur_decode_complete(shlosilo_ur_decoder_t *handle);
-
-/**
- * 取完整 payload。
- *
- * @return 0 = Ok；ERR_INVALID_ARGUMENT = null；ERR_UNKNOWN = 尚未完成；
- *         ERR_BUFFER_TOO_SMALL = buf 不足（*actual_len 写需求值）。
- */
-int shlosilo_ur_decode_payload(
-    shlosilo_ur_decoder_t *handle,
-    uint8_t *payload_buf,
-    unsigned int payload_buf_len,
-    unsigned int *actual_len);
-
-/**
- * P0-C（2026-09-01 再复审）：取解码帧序列的 UR type（NUL 结尾 ASCII）。
- * 与 decode_payload 配对使用，供 L3 路由 typed sign。
- *
- * @return 0 = Ok；ERR_UNKNOWN = 尚未收到任何帧；
- *         ERR_BUFFER_TOO_SMALL = buf 不足（*actual_len 写需求值，含 NUL）。
- */
-int shlosilo_ur_decode_type(
-    shlosilo_ur_decoder_t *handle,
-    char *type_buf,
-    unsigned int type_buf_len,
-    unsigned int *actual_len);
-
-/** 释放解码器（null 安全幂等） */
-void shlosilo_ur_decode_free(shlosilo_ur_decoder_t *handle);
