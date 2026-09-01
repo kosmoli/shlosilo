@@ -54,7 +54,9 @@ pub fn decode(uri: &str) -> Result<UrDecoded> {
     }
     let payload = bytewords::decode_minimal(body)?;
     if payload.len() > UR_PAYLOAD_MAX_LEN {
-        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow));
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::EncodingBufferOverflow,
+        ));
     }
     let mut bytes = heapless::Vec::new();
     bytes

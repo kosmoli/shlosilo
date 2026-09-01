@@ -1,6 +1,6 @@
+use alloc::vec::Vec;
 use core::cmp::PartialEq;
 use core::mem::swap;
-use alloc::vec::Vec;
 
 use cnaes::{AES_BLOCK_SIZE, CN_AES_KEY_SIZE};
 use digest::Digest as _;
@@ -233,17 +233,12 @@ fn variant_2_2(long_state: &mut [u128; MEMORY_BLOCKS], j: usize, d: &mut u128, v
 /// The compiler would inline this code even without the `#[inline]` attribute, but we'd like
 /// to avoid coping `r` and `code` between stack addresses.
 #[inline]
-fn variant4_math_init(
-    _height: u64,
-    _state: &CnSlowHashState,
-    _variant: Variant,
-) -> NoV4State {
+fn variant4_math_init(_height: u64, _state: &CnSlowHashState, _variant: Variant) -> NoV4State {
     NoV4State
 }
 
 /// Placeholder for the R-variant scratch state (V0/V1/V2 never use it).
 struct NoV4State;
-
 
 fn extra_hashes(input: &[u8; KECCAK1600_BYTE_SIZE]) -> [u8; 32] {
     match input[0] & 0x3 {
@@ -433,5 +428,4 @@ mod tests {
             assert_eq!(hex::encode(output), *expected, "hash {i}");
         }
     }
-
 }

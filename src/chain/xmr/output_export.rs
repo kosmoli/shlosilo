@@ -234,7 +234,11 @@ mod tests {
         b.extend_from_slice(&encode_varint_leb(idx)); // internal_output_index
         b.extend_from_slice(&encode_varint_leb(idx + 1000)); // global_output_index
         b.extend_from_slice(&[0x22u8; 32]); // tx_pubkey
-        let flags: u8 = if with_key_image_request { 0b0001_0100 } else { 0b0000_0100 };
+        let flags: u8 = if with_key_image_request {
+            0b0001_0100
+        } else {
+            0b0000_0100
+        };
         b.push(flags);
         b.extend_from_slice(&encode_varint_leb(123_456_789)); // amount piconero
         b.extend_from_slice(&encode_varint_leb(1)); // 1 additional key

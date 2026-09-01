@@ -24,7 +24,7 @@ pub enum Network {
     // ─── Ethereum 系 ───
     EthereumMainnet = 10,
     EthereumSepolia = 11,
-    EthereumGoerli = 12,    // deprecated 但仍可见
+    EthereumGoerli = 12, // deprecated 但仍可见
 
     // ─── Tron 系 ───
     TronMainnet = 20,
@@ -87,9 +87,9 @@ pub enum Network {
     // Moonbeam 已迁出（v1.1.1 删除），Astar 编号复用 136/137
     AstarMainnet = 136,
     AstarShibuyaTestnet = 137,
-    BittensorMainnet = 138,    // TAO（独立 Substrate 链）
+    BittensorMainnet = 138, // TAO（独立 Substrate 链）
     BittensorTestnet = 139,
-    SeraiMainnet = 140,         // 主网未上线，预先占位
+    SeraiMainnet = 140, // 主网未上线，预先占位
     SeraiTestnet = 141,
 }
 
@@ -155,35 +155,35 @@ impl Network {
         }
     }
 
-/// Network u8 → Network enum（API 别名）
-pub fn try_from_u8(n: u8) -> Option<Self> {
-    Self::try_from(n).ok()
-}
+    /// Network u8 → Network enum（API 别名）
+    pub fn try_from_u8(n: u8) -> Option<Self> {
+        Self::try_from(n).ok()
+    }
 
-pub fn chain_kind(self) -> ChainKind {
+    pub fn chain_kind(self) -> ChainKind {
         match self {
-            Network::BitcoinMainnet
-            | Network::BitcoinTestnet
-            | Network::BitcoinRegtest => ChainKind::Btc,
-            Network::EthereumMainnet
-            | Network::EthereumSepolia
-            | Network::EthereumGoerli => ChainKind::Eth,
-            Network::TronMainnet
-            | Network::TronShastaTestnet
-            | Network::TronNileTestnet => ChainKind::Tron,
-            Network::SolanaMainnet
-            | Network::SolanaDevnet
-            | Network::SolanaTestnet => ChainKind::Sol,
+            Network::BitcoinMainnet | Network::BitcoinTestnet | Network::BitcoinRegtest => {
+                ChainKind::Btc
+            }
+            Network::EthereumMainnet | Network::EthereumSepolia | Network::EthereumGoerli => {
+                ChainKind::Eth
+            }
+            Network::TronMainnet | Network::TronShastaTestnet | Network::TronNileTestnet => {
+                ChainKind::Tron
+            }
+            Network::SolanaMainnet | Network::SolanaDevnet | Network::SolanaTestnet => {
+                ChainKind::Sol
+            }
             Network::XrpMainnet | Network::XrpTestnet => ChainKind::Xrp,
             Network::AptosMainnet | Network::AptosTestnet => ChainKind::Apt,
             Network::SuiMainnet | Network::SuiTestnet => ChainKind::Sui,
             Network::NearMainnet | Network::NearTestnet => ChainKind::Near,
-            Network::CardanoMainnet
-            | Network::CardanoPreprod
-            | Network::CardanoPreview => ChainKind::Ada,
-            Network::MoneroMainnet
-            | Network::MoneroStagenet
-            | Network::MoneroTestnet => ChainKind::Xmr,
+            Network::CardanoMainnet | Network::CardanoPreprod | Network::CardanoPreview => {
+                ChainKind::Ada
+            }
+            Network::MoneroMainnet | Network::MoneroStagenet | Network::MoneroTestnet => {
+                ChainKind::Xmr
+            }
             Network::ArweaveMainnet => ChainKind::Ar,
 
             // Cosmos 系
@@ -231,43 +231,50 @@ pub fn chain_kind(self) -> ChainKind {
 
     /// 是否主网（v2.3 §13.4 修订：Moonbeam 已删除）
     pub fn is_mainnet(self) -> bool {
-        matches!(self,
+        matches!(
+            self,
             Network::BitcoinMainnet
-            | Network::EthereumMainnet
-            | Network::TronMainnet
-            | Network::SolanaMainnet
-            | Network::XrpMainnet
-            | Network::AptosMainnet
-            | Network::SuiMainnet
-            | Network::NearMainnet
-            | Network::CardanoMainnet
-            | Network::MoneroMainnet
-            | Network::ArweaveMainnet
-            | Network::CosmosHubMainnet
-            | Network::OsmosisMainnet
-            | Network::ThorchainMainnet
-            | Network::CelestiaMainnet
-            | Network::KujiraMainnet
-            | Network::InjectiveMainnet
-            | Network::PolkadotMainnet
-            | Network::KusamaMainnet
-            | Network::AcalaMainnet
-            | Network::AstarMainnet
-            | Network::BittensorMainnet
-            | Network::SeraiMainnet
+                | Network::EthereumMainnet
+                | Network::TronMainnet
+                | Network::SolanaMainnet
+                | Network::XrpMainnet
+                | Network::AptosMainnet
+                | Network::SuiMainnet
+                | Network::NearMainnet
+                | Network::CardanoMainnet
+                | Network::MoneroMainnet
+                | Network::ArweaveMainnet
+                | Network::CosmosHubMainnet
+                | Network::OsmosisMainnet
+                | Network::ThorchainMainnet
+                | Network::CelestiaMainnet
+                | Network::KujiraMainnet
+                | Network::InjectiveMainnet
+                | Network::PolkadotMainnet
+                | Network::KusamaMainnet
+                | Network::AcalaMainnet
+                | Network::AstarMainnet
+                | Network::BittensorMainnet
+                | Network::SeraiMainnet
         )
     }
 
     /// Phase 4 真实实现的网络（v2.3 优先级：BTC/ETH/XMR 各 3 种）
     pub fn is_phase4_real(self) -> bool {
-        matches!(self,
-            Network::BitcoinMainnet | Network::BitcoinTestnet | Network::BitcoinRegtest
-            | Network::EthereumMainnet | Network::EthereumSepolia | Network::EthereumGoerli
-            | Network::MoneroMainnet | Network::MoneroStagenet | Network::MoneroTestnet
+        matches!(
+            self,
+            Network::BitcoinMainnet
+                | Network::BitcoinTestnet
+                | Network::BitcoinRegtest
+                | Network::EthereumMainnet
+                | Network::EthereumSepolia
+                | Network::EthereumGoerli
+                | Network::MoneroMainnet
+                | Network::MoneroStagenet
+                | Network::MoneroTestnet
         )
     }
 }
-
 
 impl TryFrom<u8> for Network {
     type Error = ();
@@ -281,7 +288,7 @@ impl TryFrom<u8> for Network {
 
 #[cfg(test)]
 mod tests {
-    
+
     use super::*;
 
     #[test]

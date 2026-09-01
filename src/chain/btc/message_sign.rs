@@ -60,12 +60,7 @@ pub fn bip137_message_hash(msg: &[u8]) -> Result<[u8; 32]> {
     sha256::hash_twice(&buf)
 }
 
-fn y_parity(
-    sk: &Secp256k1Scalar,
-    sighash: &[u8; 32],
-    r: &[u8; 32],
-    s: &[u8; 32],
-) -> Result<u8> {
+fn y_parity(sk: &Secp256k1Scalar, sighash: &[u8; 32], r: &[u8; 32], s: &[u8; 32]) -> Result<u8> {
     use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 
     let mut sig_64 = [0u8; 64];
@@ -547,7 +542,11 @@ mod tests {
             b"PURVOQ544B6HUATVBJZN5EZJUU",
             official.as_slice()
         ));
-        assert!(verify_p2tr_witness(&key, b"PURVOQ544B6HUATVBJZN5EZJUU", &wit));
+        assert!(verify_p2tr_witness(
+            &key,
+            b"PURVOQ544B6HUATVBJZN5EZJUU",
+            &wit
+        ));
         assert_eq!(wit.len(), 66);
     }
 }

@@ -13,7 +13,9 @@ pub fn derive_view_tag(eight_ra: &[u8; 32], output_index: u64) -> u8 {
     buf.extend_from_slice(b"view_tag");
     buf.extend_from_slice(eight_ra);
     crate::chain::xmr::transaction::encode_varint(&mut buf, output_index);
-    crate::encoding::keccak256::hash(&buf).map(|h| h[0]).unwrap_or(0)
+    crate::encoding::keccak256::hash(&buf)
+        .map(|h| h[0])
+        .unwrap_or(0)
 }
 
 /// 8 * (r * A_view)，压缩点
@@ -108,10 +110,7 @@ impl PartialEq for PaymentProof {
 
 impl Eq for PaymentProof {}
 
-pub fn export_payment_proof(
-    tx_secret: &[u8; 32],
-    tx_pub: &[u8; 32],
-) -> PaymentProof {
+pub fn export_payment_proof(tx_secret: &[u8; 32], tx_pub: &[u8; 32]) -> PaymentProof {
     PaymentProof {
         tx_secret: *tx_secret,
         tx_pub: *tx_pub,
@@ -134,8 +133,8 @@ pub fn verify_payment(
 mod tests {
     use super::*;
     use crate::chain::xmr::tx_builder::TxKeyPair;
-    use crate::types::SecretBytes;
     use crate::encoding::keccak256;
+    use crate::types::SecretBytes;
 
     #[test]
     fn view_tag_is_first_keccak_byte() {
@@ -204,8 +203,8 @@ mod tests {
 
 #[cfg(test)]
 mod p1c_inventory {
-    use static_assertions::assert_not_impl_any;
     use super::PaymentProof;
+    use static_assertions::assert_not_impl_any;
     // P1-C: 秘密载体禁止值复制
     assert_not_impl_any!(PaymentProof: Copy, Clone);
 }

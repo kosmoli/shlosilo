@@ -7,7 +7,7 @@
 //!
 //! 参考: <https://eips.ethereum.org/EIPS/eip-191>
 
-    extern crate alloc;
+extern crate alloc;
 
 use alloc::format;
 use alloc::vec::Vec;
@@ -77,10 +77,7 @@ pub fn personal_sign(input: &PersonalSignInput) -> Result<PersonalSignature> {
 /// 输出: 64 字节未压缩公钥 (x || y)
 ///
 /// 用于 wallet 端验证签名者身份 (替代 personal_sign 在 wallet 端的镜像功能).
-pub fn personal_ec_recover(
-    msg: &[u8],
-    sig: &[u8; 65],
-) -> Result<[u8; 64]> {
+pub fn personal_ec_recover(msg: &[u8], sig: &[u8; 65]) -> Result<[u8; 64]> {
     let sighash = personal_signing_hash(msg)?;
     sign::ecdsa_recover(&sighash, sig)
 }
@@ -267,10 +264,7 @@ mod tests {
         // pk_compressed[1..33] 是 x coordinate (33 bytes = 1 prefix + 32 x)
         let pk_x = &pk_compressed[1..33];
         let recovered_x = &recovered_pk[..32];
-        assert_eq!(
-            pk_x, recovered_x,
-            "recovered x must match pk x coordinate"
-        );
+        assert_eq!(pk_x, recovered_x, "recovered x must match pk x coordinate");
         // y parity: 验证 recovered y 坐标 parity 与原始 pk 一致
         // recovered_pk[63] 的 LSB 表示 y parity (0 = even, 1 = odd)
         let recovered_y_parity = (recovered_pk[63] & 1) as u8;

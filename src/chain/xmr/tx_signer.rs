@@ -21,7 +21,8 @@ use rand_core::{CryptoRng, RngCore};
 use crate::chain::xmr::clsag::{self as clsag_mod};
 use crate::chain::xmr::subaddress::hash_to_scalar;
 use crate::chain::xmr::transaction::{
-    bytes_to_monerod_scalar, monero_encode_varint, monerod_scalar_to_bytes, TransactionPrefix, TxExtra, TxInput, TxOutput,
+    bytes_to_monerod_scalar, monero_encode_varint, monerod_scalar_to_bytes, TransactionPrefix,
+    TxExtra, TxInput, TxOutput,
 };
 use crate::chain::xmr::unsigned_txset::{TxConstructionData, TxDestinationEntry};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -134,11 +135,10 @@ fn derive_output(
     // 子地址时 additional key = r·B_sub（keystone should_use_additional_keys=false 路径：
     // tx_pub 本身 = r·B_sub。这里采用 shlosilo tx_builder 惯例：additional key 记录 r·B_sub）
     let additional_tx_key = if dest.is_subaddress {
-        let b_sub: curve25519_dalek::EdwardsPoint =
-            CompressedPoint::from(dest.spend_public_key)
-                .decompress()
-                .ok_or_else(err)?
-                .into();
+        let b_sub: curve25519_dalek::EdwardsPoint = CompressedPoint::from(dest.spend_public_key)
+            .decompress()
+            .ok_or_else(err)?
+            .into();
         Some((b_sub * *r).compress().to_bytes())
     } else {
         None
@@ -268,8 +268,9 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
                     .decompress()
                     .ok_or_else(err)?
                     .into();
-            let stealth_address =
-                (b_dest + ED25519_BASEPOINT_TABLE * &hs_scalar).compress().to_bytes();
+            let stealth_address = (b_dest + ED25519_BASEPOINT_TABLE * &hs_scalar)
+                .compress()
+                .to_bytes();
             // view tag
             let mut vt = Vec::with_capacity(42);
             vt.extend_from_slice(b"view_tag");
@@ -364,7 +365,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         let mut mask_copy = [0u8; 32];
         src.mask.write_into(&mut mask_copy);
         input_real_masks.push(mask_copy); // TxSourceEntry.mask = real output 的真 blinding factor
-        // （OutputEntry.mask 是链上 C 点；real_entry.mask 被当作 blinding 重算是错的）
+                                          // （OutputEntry.mask 是链上 C 点；real_entry.mask 被当作 blinding 重算是错的）
         input_key_offsets.push(key_offset);
         // ring members：(dest 一次性地址, 链上 commitment C 点字节)。
         // OutputEntry.mask = 链上 outPk commitment（不是 blinding factor），直接当点用，
@@ -428,9 +429,8 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     };
     let rct_base_hash = crate::encoding::keccak256::hash(&rct_base_bytes)?;
     let mut bp_sig_bytes = Vec::new();
-    bp.signature_write(&mut bp_sig_bytes).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    bp.signature_write(&mut bp_sig_bytes)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     // get_pre_mlsag_hash hashes the flattened BP+ fields first, then hashes
     // exactly three 32-byte keys: prefix hash, base hash, and BP+ fields hash.
     let bp_sig_hash = crate::encoding::keccak256::hash(&bp_sig_bytes)?;
@@ -456,8 +456,10 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         let real_mask_bytes = input_real_masks[i];
 
         // CLSAG 签名私钥 = one-time input sk（spend + key_offset），非裸 spend key
-        let input_sk =
-            crate::chain::xmr::subaddress::derive_input_spend_key(spend_sec, &input_key_offsets[i])?;
+        let input_sk = crate::chain::xmr::subaddress::derive_input_spend_key(
+            spend_sec,
+            &input_key_offsets[i],
+        )?;
         let (clsag_proof, _ki, pseudo_out_bytes) = clsag_mod::sign(
             &input_sk,
             ring,

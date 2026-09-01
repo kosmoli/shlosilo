@@ -87,7 +87,13 @@ pub struct PsbtSummary {
 }
 
 pub fn classify_spk(spk: &[u8]) -> SpkKind {
-    if spk.len() == 25 && spk[0] == 0x76 && spk[1] == 0xa9 && spk[2] == 0x14 && spk[23] == 0x88 && spk[24] == 0xac {
+    if spk.len() == 25
+        && spk[0] == 0x76
+        && spk[1] == 0xa9
+        && spk[2] == 0x14
+        && spk[23] == 0x88
+        && spk[24] == 0xac
+    {
         return SpkKind::P2pkh;
     }
     if spk.len() == 23 && spk[0] == 0xa9 && spk[1] == 0x14 && spk[22] == 0x87 {
@@ -138,7 +144,10 @@ pub fn summarize_psbt(psbt: &Psbt, own_spks: &[&[u8]]) -> Result<PsbtSummary> {
     let n = psbt.unsigned_tx.inputs.len();
     let mut values = Vec::with_capacity(n);
     for i in 0..n {
-        let v = psbt.inputs.get(i).and_then(|m| get_utxo_any(m).map(|(amt, _)| amt));
+        let v = psbt
+            .inputs
+            .get(i)
+            .and_then(|m| get_utxo_any(m).map(|(amt, _)| amt));
         values.push(v);
     }
     summarize_tx(&psbt.unsigned_tx, &values, own_spks)
@@ -264,7 +273,13 @@ mod tests {
         .serialize()
     }
 
-    fn sample_psbt(in_value: u64, out_value: u64, sequence: u32, lock_time: u32, out_spk: Vec<u8>) -> Psbt {
+    fn sample_psbt(
+        in_value: u64,
+        out_value: u64,
+        sequence: u32,
+        lock_time: u32,
+        out_spk: Vec<u8>,
+    ) -> Psbt {
         let txin = TxIn {
             prev_out: OutPoint {
                 txid: [0x11u8; 32],

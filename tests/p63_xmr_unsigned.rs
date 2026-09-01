@@ -21,7 +21,9 @@ const PLAIN: &[u8] = include_bytes!("fixtures/txset_plain.bin");
 fn decrypt_with_external_view_key() {
     let view_hex = std::env::var("SHLOSILO_TEST_XMR_VIEW_SK");
     let Ok(view_hex) = view_hex else {
-        eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set (XMR fixture view key is external credential)");
+        eprintln!(
+            "SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set (XMR fixture view key is external credential)"
+        );
         return;
     };
     let view_sk: [u8; 32] = {
@@ -63,16 +65,28 @@ fn deserialize_p63_plain() {
     assert_eq!(src.multisig_kLRki.k, [0u8; 32], "non-multisig kLRki zero");
     // outputs：splitted_dsts = [change(1869360000, main), dest(100000000, subaddress)]
     assert_eq!(tx.splitted_dsts.len(), 2, "change + dest (P6.3)");
-    assert_eq!(tx.splitted_dsts[0].amount, 1_869_360_000, "splitted[0]=change");
+    assert_eq!(
+        tx.splitted_dsts[0].amount, 1_869_360_000,
+        "splitted[0]=change"
+    );
     assert!(!tx.splitted_dsts[0].is_subaddress);
     assert_eq!(tx.splitted_dsts[1].amount, 100_000_000);
     assert!(tx.splitted_dsts[1].is_subaddress);
-    assert_eq!(tx.change_dts.amount, 1_869_360_000, "change 1869360000 (P6.3)");
-    assert_eq!(tx.change_dts.spend_public_key, tx.splitted_dsts[0].spend_public_key);
+    assert_eq!(
+        tx.change_dts.amount, 1_869_360_000,
+        "change 1869360000 (P6.3)"
+    );
+    assert_eq!(
+        tx.change_dts.spend_public_key,
+        tx.splitted_dsts[0].spend_public_key
+    );
     // RCTConfig（fixture 真实值，与 keystone 逐行解析一致）：
     // version=0, range_proof_type=3(Bulletproof), bp_version=4(RCTTypeBulletproof2)
     // ——Feather wallet-rpc 生成时即此值（非 BP+，主网默认随版本演进）
-    assert_eq!(tx.rct_config.range_proof_type, 3, "RangeProofType::Bulletproof");
+    assert_eq!(
+        tx.rct_config.range_proof_type, 3,
+        "RangeProofType::Bulletproof"
+    );
     assert_eq!(tx.rct_config.bp_version, 4, "RCTTypeBulletproof2 (fixture)");
     assert_eq!(tx.subaddr_indices, vec![1], "subaddress index 1 (P6.3)");
     // fee 校验：input − change(change_dts) − dest(splitted[1]) = fee

@@ -29,7 +29,9 @@ impl core::fmt::Debug for EddsaSignature {
 /// `ed25519-dalek` crate 的 `SigningKey::sign(msg)`
 pub fn sign(_sk: &Ed25519Scalar, _msg: &[u8]) -> Result<EddsaSignature> {
     // P2-01：原 unimplemented!() panic → 稳定错误码（Phase 4 接入 ed25519-dalek）
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 /// RFC 8032 EdDSA 验签（未实现，恒 false——不 panic）
@@ -67,11 +69,17 @@ mod tests {
         // 用零化字节构造测试值（避免 MaybeUninit UB）
         let sig: EddsaSignature = {
             let mut bytes = [0u8; EDDSA_SIGNATURE_LEN];
-            let mut s: EddsaSignature = EddsaSignature { bytes: [0u8; EDDSA_SIGNATURE_LEN] };
+            let mut s: EddsaSignature = EddsaSignature {
+                bytes: [0u8; EDDSA_SIGNATURE_LEN],
+            };
             s.bytes = bytes;
             let _ = &mut bytes;
             s
         };
-        assert!(!verify(&crate::curve_primitive::ed25519::generator(), b"msg", &sig));
+        assert!(!verify(
+            &crate::curve_primitive::ed25519::generator(),
+            b"msg",
+            &sig
+        ));
     }
 }

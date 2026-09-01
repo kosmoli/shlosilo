@@ -204,8 +204,6 @@ fn ge_limbs(a: &[u32; 12], b: &[u32; 12]) -> bool {
     true // 全等
 }
 
-
-
 #[test]
 fn p0a_accumulator_overflow_rejected() {
     // P0-A 回归（2026-09-01 再复审）: 6^k 超 384-bit 容量必须显式 Err 而非 panic/截断。
@@ -230,14 +228,14 @@ mod tests {
 
     #[test]
     fn bits_per_digit_table() {
-        assert_eq!(bits_per_digit(2), 1);    // 硬币
+        assert_eq!(bits_per_digit(2), 1); // 硬币
         assert_eq!(bits_per_digit(4), 2);
-        assert_eq!(bits_per_digit(6), 2);    // DND d6
+        assert_eq!(bits_per_digit(6), 2); // DND d6
         assert_eq!(bits_per_digit(8), 3);
         assert_eq!(bits_per_digit(16), 4);
-        assert_eq!(bits_per_digit(20), 4);   // DND d20
+        assert_eq!(bits_per_digit(20), 4); // DND d20
         assert_eq!(bits_per_digit(64), 6);
-        assert_eq!(bits_per_digit(100), 6);  // 百分骰
+        assert_eq!(bits_per_digit(100), 6); // 百分骰
         assert_eq!(bits_per_digit(255), 7);
     }
 
@@ -257,10 +255,10 @@ mod tests {
     fn d6_rolls_produce_entropy() {
         // 6 面骰 × 44 rolls（6^44 ≈ 2^113.8 > 2^96）→ 12 byte entropy
         // v1 的 12 rolls = 6^12 ≈ 2^31 < 2^96 本来就熵不足（v2 显式拒绝）
-        let rolls = [3u8, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4,
-                     3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4,
-                     3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4,
-                     3, 5, 1, 6, 2, 4, 3, 5];
+        let rolls = [
+            3u8, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6,
+            2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5,
+        ];
         let entropy = dice_rolls_to_entropy(6, &rolls, 12).unwrap();
         assert_eq!(entropy.len(), 12);
     }
@@ -301,14 +299,13 @@ mod tests {
     /// （d6 × 44 rolls, 12 bytes; python: X=Σ digit·6^i, ent=(X mod 2^96).to_le(12)）
     #[test]
     fn golden_vector_python_oracle() {
-        let rolls = [3u8, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4,
-                     3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4,
-                     3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4,
-                     3, 5, 1, 6, 2, 4, 3, 5];
-        let e = dice_rolls_to_entropy(6, &rolls, 12).unwrap();
-        let expected: alloc::vec::Vec<u8> = alloc::vec![
-            0xa4, 0x9b, 0x0d, 0xb0, 0x95, 0xc0, 0xf3, 0x23, 0x44, 0x02, 0x89, 0x79,
+        let rolls = [
+            3u8, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6,
+            2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5,
         ];
+        let e = dice_rolls_to_entropy(6, &rolls, 12).unwrap();
+        let expected: alloc::vec::Vec<u8> =
+            alloc::vec![0xa4, 0x9b, 0x0d, 0xb0, 0x95, 0xc0, 0xf3, 0x23, 0x44, 0x02, 0x89, 0x79,];
         assert_eq!(e.as_slice(), &expected[..]);
     }
 
@@ -332,24 +329,32 @@ mod tests {
         // 可行的统计: 硬币 32 rolls → 4 bytes: N=2^32=T → q=1, L=N, 全接受,双射均匀。
         // 用 d6 13 rolls → 5 bytes: N=6^13=13060694016, T=2^40≈1.1e12 → N<T 不行。
         // d6 20 rolls → 8 bytes: N=6^20≈3.65e15, T=2^64≈1.8e19 → 不行。
-        // d6 26 rolls → 8 bytes: N=6^26≈2.8e20 > T ✓ q=0? N<T bits: 6^26≈2^67.2 < 2^64? 
+        // d6 26 rolls → 8 bytes: N=6^26≈2.8e20 > T ✓ q=0? N<T bits: 6^26≈2^67.2 < 2^64?
         // 6^26 = 2.84e20, 2^64=1.84e19 → N>T ✓. q = N>>64 = 15 (approx), rejection 区 ~ N mod 2^64
         // 统计: 枚举 6^26 不可行。改为验证接受样本的最低字节覆盖广度(1000 随机骰序)
         // ——完整统计均匀性由数学证明保证,这里只测无 crash + 错误域正确。
         let mut accepted = 0u32;
         for seed in 0..100u8 {
-            let rolls: alloc::vec::Vec<u8> = (0..26).map(|i| 1 + ((seed as u32 * 7 + i as u32 * 3) % 6) as u8).collect();
+            let rolls: alloc::vec::Vec<u8> = (0..26)
+                .map(|i| 1 + ((seed as u32 * 7 + i as u32 * 3) % 6) as u8)
+                .collect();
             if dice_rolls_to_entropy(6, &rolls, 8).is_ok() {
                 accepted += 1;
             }
         }
-        assert!(accepted > 90, "most samples should be accepted, got {accepted}/100");
+        assert!(
+            accepted > 90,
+            "most samples should be accepted, got {accepted}/100"
+        );
     }
 
     #[test]
     fn sides_below_2_rejected() {
         let result = dice_rolls_to_entropy(1, &[1], 32);
-        assert_eq!(result.err().unwrap().kind, ShlosiloErrorKind::InvalidDiceConfig);
+        assert_eq!(
+            result.err().unwrap().kind,
+            ShlosiloErrorKind::InvalidDiceConfig
+        );
     }
 
     #[test]

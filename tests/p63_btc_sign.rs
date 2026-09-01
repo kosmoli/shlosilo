@@ -17,8 +17,8 @@ const PSBT_BYTES: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 /// entropy → Mnemonic（与助记词 "verb chief swamp ... collect" 双向验证过）
 fn test_mnemonic() -> Mnemonic {
     const ENTROPY: [u8; 16] = [
-        0xf2, 0x84, 0xfb, 0x6c, 0xa9, 0xf4, 0xd5, 0x83, 0x54, 0x55, 0xbe, 0x65, 0xe4, 0xb2,
-        0x29, 0x16,
+        0xf2, 0x84, 0xfb, 0x6c, 0xa9, 0xf4, 0xd5, 0x83, 0x54, 0x55, 0xbe, 0x65, 0xe4, 0xb2, 0x29,
+        0x16,
     ];
     Mnemonic::from_entropy(&ENTROPY).expect("valid 16B entropy")
 }
@@ -43,7 +43,10 @@ fn p63_sign_sparrow_psbt_end_to_end() {
 
     let n = sign(input, UrTypeTag::CryptoPsbt, &payload, &mut out_buf)
         .expect("sign must succeed on real fixture");
-    assert!(n > PSBT_BYTES.len(), "signed psbt must be larger than unsigned");
+    assert!(
+        n > PSBT_BYTES.len(),
+        "signed psbt must be larger than unsigned"
+    );
 
     // 输出可被 parse_psbt 解析，且 input 0 出现 PARTIAL_SIG
     let signed = parse_psbt(&out_buf[..n]).expect("signed output must be a valid PSBT");
@@ -61,12 +64,12 @@ fn p63_sign_sparrow_psbt_end_to_end() {
     // value = DER sig + sighash byte (ALL=0x01)
     let v = &partial.value;
     assert_eq!(*v.last().unwrap(), 0x01, "sighash ALL suffix");
-    assert!(v.len() >= 70 && v.len() <= 73, "DER length sane, got {}", v.len());
+    assert!(
+        v.len() >= 70 && v.len() <= 73,
+        "DER length sane, got {}",
+        v.len()
+    );
 }
-
-
-
-
 
 /// R4: ownership binding negative test - tampered BIP32_DERIVATION pubkey must
 /// be rejected. A malicious PSBT claiming someone else's pubkey must not yield

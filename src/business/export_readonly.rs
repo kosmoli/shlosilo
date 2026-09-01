@@ -40,19 +40,15 @@ pub fn export_readonly(
     output_buf: &mut [u8],
 ) -> Result<usize> {
     match protocol {
-        ExportProtocol::ZcashAccounts => {
-            Err(ShlosiloError::new(
-                ShlosiloErrorKind::ExportProtocolUnimplemented,
-            ))
-        }
+        ExportProtocol::ZcashAccounts => Err(ShlosiloError::new(
+            ShlosiloErrorKind::ExportProtocolUnimplemented,
+        )),
         ExportProtocol::CryptoHdKey => {
             // P2-05：crypto-hdkey UR 的 xpub 字段固定 mainnet version（0x0488B21E）。
             // testnet 需要 tpub（0x043587CF）——v1 先简单：仅支持 mainnet，
             // 其他 network 显式拒绝（避免导出标记错误的 version bytes）。
             if _network != Network::BitcoinMainnet {
-                return Err(ShlosiloError::new(
-                    ShlosiloErrorKind::NetworkUnrecognized,
-                ));
+                return Err(ShlosiloError::new(ShlosiloErrorKind::NetworkUnrecognized));
             }
             let path = paths.first().ok_or_else(|| {
                 ShlosiloError::new(ShlosiloErrorKind::DerivationPathInvalidSyntax)
@@ -85,7 +81,8 @@ mod tests {
 
     fn test_paths() -> heapless::Vec<DerivationPath, 8> {
         let mut v = heapless::Vec::new();
-        v.push(DerivationPath::parse("m/44'/0'/0'/0/0").unwrap()).ok();
+        v.push(DerivationPath::parse("m/44'/0'/0'/0/0").unwrap())
+            .ok();
         v
     }
 
@@ -168,7 +165,7 @@ mod tests {
     fn export_buffer_too_small() {
         let seed = [0u8; 64];
         let paths = test_paths();
-        let mut output_buf = [0u8; 32];  // 太小
+        let mut output_buf = [0u8; 32]; // 太小
         let result = export_readonly(
             ExportProtocol::CryptoHdKey,
             &seed,

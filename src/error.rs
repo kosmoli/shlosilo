@@ -135,11 +135,17 @@ pub struct ShlosiloError {
 
 impl ShlosiloError {
     pub const fn ok() -> Self {
-        Self { kind: ShlosiloErrorKind::Ok, context: ErrorContext::None }
+        Self {
+            kind: ShlosiloErrorKind::Ok,
+            context: ErrorContext::None,
+        }
     }
 
     pub const fn new(kind: ShlosiloErrorKind) -> Self {
-        Self { kind, context: ErrorContext::None }
+        Self {
+            kind,
+            context: ErrorContext::None,
+        }
     }
 
     pub const fn with_context(kind: ShlosiloErrorKind, context: ErrorContext) -> Self {
@@ -173,25 +179,25 @@ pub type Result<T> = core::result::Result<T, ShlosiloError>;
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShlosiloErrorCode {
-    Ok                       = 0,
-    UnknownError             = -1,
-    InvalidArgument          = -2,
+    Ok = 0,
+    UnknownError = -1,
+    InvalidArgument = -2,
     /// FFI 边界 catch_unwind 兜底（FFI 特有，L2b 映射不产出）
-    FfiPanic                 = -4,
-    UnsupportedChainKind     = -10,
+    FfiPanic = -4,
+    UnsupportedChainKind = -10,
     UnsupportedExportProtocol = -11,
-    UnsupportedNetwork       = -12,
-    MultisigNotSupported     = -13,
-    FeatureNotImplemented    = -14,
-    PsbtOwnershipRejected    = -15,
-    BufferTooSmall           = -20,
-    EncodingError            = -21,
-    InvalidUrPayload         = -30,
-    InvalidMnemonic          = -31,
-    InvalidDerivationPath    = -32,
-    InvalidDiceRolls         = -33,
-    CryptoError              = -40,
-    InvariantViolation       = -99,
+    UnsupportedNetwork = -12,
+    MultisigNotSupported = -13,
+    FeatureNotImplemented = -14,
+    PsbtOwnershipRejected = -15,
+    BufferTooSmall = -20,
+    EncodingError = -21,
+    InvalidUrPayload = -30,
+    InvalidMnemonic = -31,
+    InvalidDerivationPath = -32,
+    InvalidDiceRolls = -33,
+    CryptoError = -40,
+    InvariantViolation = -99,
 }
 
 impl ShlosiloErrorCode {
@@ -210,8 +216,9 @@ impl ShlosiloErrorCode {
             | ShlosiloErrorKind::EncodingInvalidChecksum => Self::EncodingError,
             ShlosiloErrorKind::BufferKindMismatch => Self::InvalidArgument,
             ShlosiloErrorKind::PsbtOwnershipMismatch => Self::PsbtOwnershipRejected,
-            ShlosiloErrorKind::UrPayloadInvalidCbor
-            | ShlosiloErrorKind::UrPayloadUnknownType => Self::InvalidUrPayload,
+            ShlosiloErrorKind::UrPayloadInvalidCbor | ShlosiloErrorKind::UrPayloadUnknownType => {
+                Self::InvalidUrPayload
+            }
             ShlosiloErrorKind::UrPayloadTooLarge => Self::BufferTooSmall,
             ShlosiloErrorKind::MnemonicInvalidWord
             | ShlosiloErrorKind::MnemonicInvalidChecksum

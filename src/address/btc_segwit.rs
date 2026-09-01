@@ -109,7 +109,8 @@ pub fn encode(
             data.push(0x00)
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
             for &b in bits_5.iter() {
-                data.push(b).map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+                data.push(b)
+                    .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
             }
 
             // bech32 encode (V0 uses bech32, NOT bech32m)
@@ -124,7 +125,9 @@ pub fn encode(
             // P2TR: 需要 BIP-341 tweaked x-only pubkey
             // Phase 5 v5 暂未实现（需要 BIP-341 tagged_hash + tweak_x_only）
             // P2TR 留给 Phase 6+（taproot 部署率低）
-            Err(ShlosiloError::new(ShlosiloErrorKind::ExportProtocolUnimplemented))
+            Err(ShlosiloError::new(
+                ShlosiloErrorKind::ExportProtocolUnimplemented,
+            ))
         }
     }
 }

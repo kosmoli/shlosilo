@@ -111,7 +111,12 @@ fn bech32_create_checksum(hrp: &str, data: &[u8], spec: u32) -> [u8; 6] {
 /// 通用 power-of-2 base conversion（参考 sipa convertbits）
 ///
 /// 用于 bech32/bech32m 编码：8-bit bytes → 5-bit groups
-pub fn convertbits(data: &[u8], frombits: u32, tobits: u32, pad: bool) -> Result<heapless::Vec<u8, 256>> {
+pub fn convertbits(
+    data: &[u8],
+    frombits: u32,
+    tobits: u32,
+    pad: bool,
+) -> Result<heapless::Vec<u8, 256>> {
     let mut acc: u32 = 0;
     let mut bits: u32 = 0;
     let mut ret: heapless::Vec<u8, 256> = heapless::Vec::new();
@@ -196,9 +201,9 @@ pub fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8, 128>)>
     if s.is_empty() || s.len() > 90 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    let pos = s.rfind('1').ok_or_else(|| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let pos = s
+        .rfind('1')
+        .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     if pos < 1 || pos + 7 > s.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -222,9 +227,9 @@ pub fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8, 128>)>
     }
 
     let s_lower = s.to_ascii_lowercase();
-    let pos2 = s_lower.rfind('1').ok_or_else(|| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let pos2 = s_lower
+        .rfind('1')
+        .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     if pos2 < 1 || pos2 + 7 > s_lower.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -310,12 +315,15 @@ mod tests {
     fn encode_btc_p2wpkh_known() {
         let hrp = "bc";
         let witprog = [
-            0x75u8, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94, 0x1c, 0x45,
-            0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6,
+            0x75u8, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94, 0x1c, 0x45, 0xd1, 0xb3,
+            0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6,
         ];
         let data = build_data(0, &witprog);
         let result = encode(hrp, &data).unwrap();
-        assert_eq!(result.as_ref(), "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+        assert_eq!(
+            result.as_ref(),
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        );
     }
 
     /// BIP-173 testnet P2WSH 测试向量
@@ -347,7 +355,7 @@ mod tests {
         ] {
             let result = decode(s);
             match &result {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => panic!("Failed to decode {}: err={:?}", s, e),
             }
         }
@@ -358,8 +366,8 @@ mod tests {
     fn encode_decode_round_trip() {
         let hrp = "bc";
         let witprog = [
-            0x75u8, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94, 0x1c, 0x45,
-            0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6,
+            0x75u8, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94, 0x1c, 0x45, 0xd1, 0xb3,
+            0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6,
         ];
         let data = build_data(0, &witprog);
         let encoded = encode(hrp, &data).unwrap();

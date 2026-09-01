@@ -13,10 +13,7 @@ use crate::entropy::mnemonic::Mnemonic;
 #[derive(Clone, Debug)]
 pub enum EntropySource<'a> {
     /// 骰子 roll 输入：用户选 `{sides, rolls}`，业务模块转换成熵
-    DiceRolls {
-        sides: u8,
-        rolls: &'a [u8],
-    },
+    DiceRolls { sides: u8, rolls: &'a [u8] },
     /// 硬件 RNG 直接输出（已熵化的 bytes）
     HwRng(&'a [u8]),
     /// 已有助记词，恢复时直接用

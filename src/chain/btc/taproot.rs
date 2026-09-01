@@ -28,8 +28,8 @@
 
 extern crate alloc;
 
-use sha2::Sha256 as Sha256Std;
 use sha2::Digest as _;
+use sha2::Sha256 as Sha256Std;
 
 use crate::curve_primitive::secp256k1::{
     point_add, point_from_compressed, point_to_compressed, scalar_from_bytes, scalar_mul,
@@ -111,10 +111,12 @@ pub fn compute_output_key(internal_key_x: &[u8; 32]) -> Result<Secp256k1Point> {
     let lifted = lift_x_pubkey(internal_key_x)?;
     // tweak scalar
     let tweak_bytes = compute_taproot_tweak(internal_key_x);
-    let tweak_scalar = scalar_from_bytes(&tweak_bytes).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
-    let tweak_point = scalar_mul(&tweak_scalar, &crate::curve_primitive::secp256k1::generator());
+    let tweak_scalar = scalar_from_bytes(&tweak_bytes)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let tweak_point = scalar_mul(
+        &tweak_scalar,
+        &crate::curve_primitive::secp256k1::generator(),
+    );
     let output_key = point_add(&lifted, &tweak_point);
 
     // BIP-86 requires even y. We allow odd y for testing BIP-341 invariant in general;
@@ -223,7 +225,8 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
     }
     let is_anyonecanpay = input.hash_type & 0x80 != 0;
     let output_type = input.hash_type & 0x03; // 0=default/all, 2=none, 3=single
-    let is_none_or_single = output_type == SIGHASH_NONE & 0x03 || output_type == SIGHASH_SINGLE & 0x03;
+    let is_none_or_single =
+        output_type == SIGHASH_NONE & 0x03 || output_type == SIGHASH_SINGLE & 0x03;
     let is_single = output_type == SIGHASH_SINGLE & 0x03;
     if is_single && input.input_index >= input.tx_outputs.len() {
         // SIGHASH_SINGLE 需要有对应 index 的 output
@@ -275,7 +278,11 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
         msg.extend_from_slice(&sha256::hash(&buf)?);
     }
     // Data about this input
-    let ext_flag = if input.tapleaf_hash.is_some() { 1u8 } else { 0u8 };
+    let ext_flag = if input.tapleaf_hash.is_some() {
+        1u8
+    } else {
+        0u8
+    };
     let spend_type = (ext_flag << 1) | (input.annex_present as u8);
     msg.push(spend_type);
     if is_anyonecanpay {
@@ -408,10 +415,7 @@ pub fn sign_p2tr_keypath(
 /// - internal_pub_x: 32-byte x-only internal public key
 ///
 /// **输出**: Tweaked 32-byte private key (sum mod curve order)
-pub fn tweak_private_key(
-    internal_sk: &[u8; 32],
-    internal_pub_x: &[u8; 32],
-) -> Result<[u8; 32]> {
+pub fn tweak_private_key(internal_sk: &[u8; 32], internal_pub_x: &[u8; 32]) -> Result<[u8; 32]> {
     use crate::curve_primitive::secp256k1::{scalar_add, scalar_from_bytes, scalar_negate};
     let internal_scalar = scalar_from_bytes(internal_sk)?;
 
@@ -430,8 +434,6 @@ pub fn tweak_private_key(
     let tweaked_scalar = scalar_add(&base_scalar, &tweak_scalar);
     Ok(scalar_to_bytes(&tweaked_scalar))
 }
-
-
 
 // === v9.8 Taproot Scriptpath + Tapscript (BIP-341) ===
 
@@ -518,10 +520,12 @@ pub fn compute_output_key_scriptpath(
 ) -> Result<Secp256k1Point> {
     let lifted = lift_x_pubkey(internal_key_x)?;
     let tweak_bytes = taproot_script_tweak(internal_key_x, merkle_root);
-    let tweak_scalar = scalar_from_bytes(&tweak_bytes).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
-    let tweak_point = scalar_mul(&tweak_scalar, &crate::curve_primitive::secp256k1::generator());
+    let tweak_scalar = scalar_from_bytes(&tweak_bytes)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let tweak_point = scalar_mul(
+        &tweak_scalar,
+        &crate::curve_primitive::secp256k1::generator(),
+    );
     let output_key = point_add(&lifted, &tweak_point);
     Ok(output_key)
 }
@@ -595,11 +599,9 @@ pub fn parse_control_block(cb: &[u8]) -> Option<ParsedControlBlock> {
 mod tests {
     extern crate std;
     use super::*;
+    use crate::curve_primitive::secp256k1::{base_mul, point_add, scalar_from_bytes};
     use alloc::string::String;
     use alloc::vec;
-    use crate::curve_primitive::secp256k1::{
-        base_mul, point_add, scalar_from_bytes,
-    };
     use std::eprintln;
 
     fn hex_encode(b: &[u8]) -> String {
@@ -632,10 +634,10 @@ mod tests {
     #[test]
     fn output_key_derivation() {
         let internal_key_x: [u8; 32] = [
-        0x99, 0x4d, 0xe9, 0x09, 0x8f, 0x9d, 0x8f, 0x46, 0x6e, 0x09, 0x0a, 0x86, 0x05, 0x0e, 0xe4,
-        0x9c, 0x3d, 0xeb, 0x49, 0xfe, 0xc1, 0xc7, 0x47, 0x2e, 0x33, 0x84, 0xce, 0xaa, 0xac, 0xf4,
-        0xca, 0xda,
-    ]; // arbitrary valid x (from sha256("test x"))
+            0x99, 0x4d, 0xe9, 0x09, 0x8f, 0x9d, 0x8f, 0x46, 0x6e, 0x09, 0x0a, 0x86, 0x05, 0x0e,
+            0xe4, 0x9c, 0x3d, 0xeb, 0x49, 0xfe, 0xc1, 0xc7, 0x47, 0x2e, 0x33, 0x84, 0xce, 0xaa,
+            0xac, 0xf4, 0xca, 0xda,
+        ]; // arbitrary valid x (from sha256("test x"))
         let output_key = compute_output_key(&internal_key_x).unwrap();
         let compressed = point_to_compressed(&output_key);
         eprintln!(
@@ -650,9 +652,9 @@ mod tests {
     #[test]
     fn lift_x_pubkey_test() {
         let internal_key_x: [u8; 32] = [
-            0x99, 0x4d, 0xe9, 0x09, 0x8f, 0x9d, 0x8f, 0x46, 0x6e, 0x09, 0x0a, 0x86, 0x05, 0x0e, 0xe4,
-            0x9c, 0x3d, 0xeb, 0x49, 0xfe, 0xc1, 0xc7, 0x47, 0x2e, 0x33, 0x84, 0xce, 0xaa, 0xac, 0xf4,
-            0xca, 0xda,
+            0x99, 0x4d, 0xe9, 0x09, 0x8f, 0x9d, 0x8f, 0x46, 0x6e, 0x09, 0x0a, 0x86, 0x05, 0x0e,
+            0xe4, 0x9c, 0x3d, 0xeb, 0x49, 0xfe, 0xc1, 0xc7, 0x47, 0x2e, 0x33, 0x84, 0xce, 0xaa,
+            0xac, 0xf4, 0xca, 0xda,
         ];
         let point = lift_x_pubkey(&internal_key_x).unwrap();
         let compressed = point_to_compressed(&point);
@@ -664,9 +666,9 @@ mod tests {
     #[test]
     fn p2tr_address_construction() {
         let internal_key_x: [u8; 32] = [
-            0x99, 0x4d, 0xe9, 0x09, 0x8f, 0x9d, 0x8f, 0x46, 0x6e, 0x09, 0x0a, 0x86, 0x05, 0x0e, 0xe4,
-            0x9c, 0x3d, 0xeb, 0x49, 0xfe, 0xc1, 0xc7, 0x47, 0x2e, 0x33, 0x84, 0xce, 0xaa, 0xac, 0xf4,
-            0xca, 0xda,
+            0x99, 0x4d, 0xe9, 0x09, 0x8f, 0x9d, 0x8f, 0x46, 0x6e, 0x09, 0x0a, 0x86, 0x05, 0x0e,
+            0xe4, 0x9c, 0x3d, 0xeb, 0x49, 0xfe, 0xc1, 0xc7, 0x47, 0x2e, 0x33, 0x84, 0xce, 0xaa,
+            0xac, 0xf4, 0xca, 0xda,
         ];
         let addr = p2tr_address_from_x_only(&internal_key_x, MAINNET_HRP).unwrap();
         eprintln!("P2TR address (mainnet): {}", addr);
@@ -683,9 +685,11 @@ mod tests {
     fn tweaked_private_key_test() {
         let internal_sk_bytes = [0x11u8; 32];
         let internal_pub_x: [u8; 32] = [0x99u8; 32]; // arbitrary (may not be on curve)
-        // Skip if internal_pub_x not on curve
+                                                     // Skip if internal_pub_x not on curve
         let pub_x_valid = lift_x_pubkey(&internal_pub_x).is_ok();
-        if !pub_x_valid { return; } // skip
+        if !pub_x_valid {
+            return;
+        } // skip
         let tweaked_sk = tweak_private_key(&internal_sk_bytes, &internal_pub_x).unwrap();
         // tweaked_sk = internal_sk + tweak (mod L)
         // Verify: tweaked_sk * G == tweak * G + internal_sk * G
@@ -714,12 +718,10 @@ mod tests {
         // keystone test_taproot_sign fixture (同 tests/taproot_keystone_cross_validation.rs)
         let prev_txid =
             hex_decode_32("3aee4d6b51da574900e56d173041115bd1e1d01d4697a845784cf716a10c9806");
-        let spent_spk = hex_decode_vec(
-            "512022f3956cc27a6a9b0e0003a0afc113b04f31b95d5cad222a65476e8440371bd1",
-        );
-        let out_spk = hex_decode_vec(
-            "51202258f2d4637b2ca3fd27614868b33dee1a242b42582d5474f51730005fa99ce8",
-        );
+        let spent_spk =
+            hex_decode_vec("512022f3956cc27a6a9b0e0003a0afc113b04f31b95d5cad222a65476e8440371bd1");
+        let out_spk =
+            hex_decode_vec("51202258f2d4637b2ca3fd27614868b33dee1a242b42582d5474f51730005fa99ce8");
         let spent_outputs = vec![SpentOutput {
             value: 0x19bc,
             script_pubkey: spent_spk,
@@ -742,7 +744,8 @@ mod tests {
         };
         let sighash = bip341_keypath_sighash(&input).unwrap();
         // Python 独立实现 + keystone 签名验签通过的那个 sighash
-        let expected = hex_decode_32("90ecc5ee16cde022e26535908bbfdada42bd19b2f7dd1d6db8699946523d4ec3");
+        let expected =
+            hex_decode_32("90ecc5ee16cde022e26535908bbfdada42bd19b2f7dd1d6db8699946523d4ec3");
         assert_eq!(
             sighash, expected,
             "lib BIP-341 keypath sighash must match the cross-validated oracle value"
@@ -758,12 +761,10 @@ mod tests {
         };
         let prev_txid =
             hex_decode_32("3aee4d6b51da574900e56d173041115bd1e1d01d4697a845784cf716a10c9806");
-        let spent_spk = hex_decode_vec(
-            "512022f3956cc27a6a9b0e0003a0afc113b04f31b95d5cad222a65476e8440371bd1",
-        );
-        let out_spk = hex_decode_vec(
-            "51202258f2d4637b2ca3fd27614868b33dee1a242b42582d5474f51730005fa99ce8",
-        );
+        let spent_spk =
+            hex_decode_vec("512022f3956cc27a6a9b0e0003a0afc113b04f31b95d5cad222a65476e8440371bd1");
+        let out_spk =
+            hex_decode_vec("51202258f2d4637b2ca3fd27614868b33dee1a242b42582d5474f51730005fa99ce8");
         let spent_outputs = vec![SpentOutput {
             value: 0x19bc,
             script_pubkey: spent_spk,
@@ -776,10 +777,13 @@ mod tests {
             hex_decode_32("f87f124e735a592a8ff390a68f6f05469ba8422e246dc78b0b57cd1576ffa98c");
 
         // 交叉验证: leaf hash 应能从 script 20<b68d...>ac 重算出来
-        let script = hex_decode_vec(
-            "20b68df382cad577d8304d5a8e640c3cb42d77c10016ab754caa4d6e68b6cb296dac",
+        let script =
+            hex_decode_vec("20b68df382cad577d8304d5a8e640c3cb42d77c10016ab754caa4d6e68b6cb296dac");
+        assert_eq!(
+            tap_leaf_hash(&script, 0xc0),
+            leaf_hash,
+            "tap_leaf_hash round-trip"
         );
-        assert_eq!(tap_leaf_hash(&script, 0xc0), leaf_hash, "tap_leaf_hash round-trip");
 
         let input = TaprootSighashInput {
             tx_version: 2,
@@ -794,14 +798,18 @@ mod tests {
             tapleaf_hash: Some(leaf_hash),
         };
         let sighash = bip341_keypath_sighash(&input).unwrap();
-        let expected = hex_decode_32("dad1bfa8b39db40db50c92d68f6edfd329d44805c89626fa197875d3e47bf8c1");
+        let expected =
+            hex_decode_32("dad1bfa8b39db40db50c92d68f6edfd329d44805c89626fa197875d3e47bf8c1");
         assert_eq!(
             sighash, expected,
             "scriptpath sighash must match independent Python reference"
         );
 
         // scriptpath sighash 必须不同于 keypath sighash（spend_type + leaf hash 都变了）
-        assert_ne!(sighash, hex_decode_32("90ecc5ee16cde022e26535908bbfdada42bd19b2f7dd1d6db8699946523d4ec3"));
+        assert_ne!(
+            sighash,
+            hex_decode_32("90ecc5ee16cde022e26535908bbfdada42bd19b2f7dd1d6db8699946523d4ec3")
+        );
     }
 
     /// sign_p2tr_keypath 端到端: internal_sk → tweaked_sk → Schnorr
@@ -809,18 +817,14 @@ mod tests {
     #[test]
     fn sign_p2tr_keypath_end_to_end() {
         use crate::chain::btc::taproot::{
-            compute_output_key_scriptpath, sign_p2tr_keypath, P2TRKeypathSignInput,
-            SIGHASH_DEFAULT,
+            compute_output_key_scriptpath, sign_p2tr_keypath, P2TRKeypathSignInput, SIGHASH_DEFAULT,
         };
-        use crate::curve_primitive::secp256k1::{
-            base_mul, point_to_compressed, scalar_from_bytes,
-        };
+        use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
         use crate::signature::schnorr_secp256k1;
 
         // keystone fixture 的 internal key（m/86'/1'/0'/0/2 派生）
-        let internal_sk_bytes = hex_decode_32(
-            "1fb777f1a6fb9b76724551f8bc8ad91b77f33b8c456d65d746035391d724922a",
-        );
+        let internal_sk_bytes =
+            hex_decode_32("1fb777f1a6fb9b76724551f8bc8ad91b77f33b8c456d65d746035391d724922a");
         let merkle_root =
             hex_decode_32("c913dc9a8009a074e7bbc493b9d8b7e741ba137f725f99d44fbce99300b2bb0a");
 
@@ -834,9 +838,13 @@ mod tests {
             hex_decode_32("90ecc5ee16cde022e26535908bbfdada42bd19b2f7dd1d6db8699946523d4ec3");
         let aux_rand = [0u8; 32];
 
-        let witness_sig = sign_p2tr_keypath(&sign_input, &sighash, &aux_rand, SIGHASH_DEFAULT)
-            .unwrap();
-        assert_eq!(witness_sig.len(), 64, "SIGHASH_DEFAULT → 64-byte witness item");
+        let witness_sig =
+            sign_p2tr_keypath(&sign_input, &sighash, &aux_rand, SIGHASH_DEFAULT).unwrap();
+        assert_eq!(
+            witness_sig.len(),
+            64,
+            "SIGHASH_DEFAULT → 64-byte witness item"
+        );
 
         // 验证 1: tweaked_sk·G == output key（witness program 22f395...）
         let output_key = compute_output_key_scriptpath(
@@ -853,7 +861,11 @@ mod tests {
         let out_comp = point_to_compressed(&output_key);
         let expected_program =
             hex_decode_32("22f3956cc27a6a9b0e0003a0afc113b04f31b95d5cad222a65476e8440371bd1");
-        assert_eq!(&out_comp[1..], &expected_program[..], "tweaked output key mismatch");
+        assert_eq!(
+            &out_comp[1..],
+            &expected_program[..],
+            "tweaked output key mismatch"
+        );
 
         // 验证 2: 签名对 output key + sighash 可验证（用 shlosilo 自己的 verify）
         let mut sig_bytes = [0u8; 64];
@@ -1001,8 +1013,7 @@ mod tests {
         let tweaked_sk_pub = base_mul(&tweaked_sk);
         let tweaked_sk_pub_compressed = point_to_compressed(&tweaked_sk_pub);
 
-        let output_key =
-            compute_output_key_scriptpath(&internal_pub_x, &merkle_root).unwrap();
+        let output_key = compute_output_key_scriptpath(&internal_pub_x, &merkle_root).unwrap();
         let output_key_compressed = point_to_compressed(&output_key);
 
         assert_eq!(
@@ -1087,7 +1098,8 @@ mod tests {
     /// internal_key → output_key (TapTweak tagged hash 验证)
     #[test]
     fn bip86_test_vector_1_output_key() {
-        let internal_key_x = hex_decode_32("cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115");
+        let internal_key_x =
+            hex_decode_32("cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115");
         let output_key = compute_output_key(&internal_key_x).unwrap();
         let output_key_x = {
             let compressed = point_to_compressed(&output_key);
@@ -1095,18 +1107,22 @@ mod tests {
             x.copy_from_slice(&compressed[1..]);
             x
         };
-        let expected = hex_decode_32("a60869f0dbcf1dc659c9cecbaf8050135ea9e8cdc487053f1dc6880949dc684c");
-        assert_eq!(output_key_x, expected, "BIP-86 vector 1 output key must match (tagged hash tweak)");
+        let expected =
+            hex_decode_32("a60869f0dbcf1dc659c9cecbaf8050135ea9e8cdc487053f1dc6880949dc684c");
+        assert_eq!(
+            output_key_x, expected,
+            "BIP-86 vector 1 output key must match (tagged hash tweak)"
+        );
     }
 
     /// BIP-86 Test Vector 1: P2TR address
     #[test]
     fn bip86_test_vector_1_address() {
-        let internal_key_x = hex_decode_32("cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115");
+        let internal_key_x =
+            hex_decode_32("cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115");
         let addr = p2tr_address_from_x_only(&internal_key_x, MAINNET_HRP).unwrap();
         assert_eq!(
-            addr,
-            "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr",
+            addr, "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr",
             "BIP-86 vector 1 address must match"
         );
     }
@@ -1114,7 +1130,8 @@ mod tests {
     /// BIP-86 Test Vector 2: m/86'/0'/0'/0/1
     #[test]
     fn bip86_test_vector_2_output_key() {
-        let internal_key_x = hex_decode_32("83dfe85a3151d2517290da461fe2815591ef69f2b18a2ce63f01697a8b313145");
+        let internal_key_x =
+            hex_decode_32("83dfe85a3151d2517290da461fe2815591ef69f2b18a2ce63f01697a8b313145");
         let output_key = compute_output_key(&internal_key_x).unwrap();
         let output_key_x = {
             let compressed = point_to_compressed(&output_key);
@@ -1122,20 +1139,23 @@ mod tests {
             x.copy_from_slice(&compressed[1..]);
             x
         };
-        let expected = hex_decode_32("a82f29944d65b86ae6b5e5cc75e294ead6c59391a1edc5e016e3498c67fc7bbb");
-        assert_eq!(output_key_x, expected, "BIP-86 vector 2 output key must match");
+        let expected =
+            hex_decode_32("a82f29944d65b86ae6b5e5cc75e294ead6c59391a1edc5e016e3498c67fc7bbb");
+        assert_eq!(
+            output_key_x, expected,
+            "BIP-86 vector 2 output key must match"
+        );
     }
 
     /// BIP-86 Test Vector 2: P2TR address
     #[test]
     fn bip86_test_vector_2_address() {
-        let internal_key_x = hex_decode_32("83dfe85a3151d2517290da461fe2815591ef69f2b18a2ce63f01697a8b313145");
+        let internal_key_x =
+            hex_decode_32("83dfe85a3151d2517290da461fe2815591ef69f2b18a2ce63f01697a8b313145");
         let addr = p2tr_address_from_x_only(&internal_key_x, MAINNET_HRP).unwrap();
         assert_eq!(
-            addr,
-            "bc1p4qhjn9zdvkux4e44uhx8tc55attvtyu358kutcqkudyccelu0was9fqzwh",
+            addr, "bc1p4qhjn9zdvkux4e44uhx8tc55attvtyu358kutcqkudyccelu0was9fqzwh",
             "BIP-86 vector 2 address must match"
         );
     }
-
 }

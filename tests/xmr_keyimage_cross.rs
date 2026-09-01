@@ -67,13 +67,15 @@ fn generate_shlosilo_keyimage_fixture_for_keystone() {
     let enc_req = shlosilo_encrypt_export_for_test(&plain, &spend_pub, &view_pub, &mut rng);
 
     // shlosilo 端到端 → KEY_IMAGE_EXPORT 加密产物
-    let enc_resp =
-        generate_key_image_export(&VIEW_SK, &SPEND_SK, &enc_req, &mut rng).unwrap();
+    let enc_resp = generate_key_image_export(&VIEW_SK, &SPEND_SK, &enc_req, &mut rng).unwrap();
 
     // 自检：shlosilo 自己解密回环
-    let (_, _, resp_plain) =
-        decrypt_export_payload(&enc_resp, shlosilo::chain::xmr::key_image_export::KEY_IMAGE_EXPORT_MAGIC, &VIEW_SK)
-            .unwrap();
+    let (_, _, resp_plain) = decrypt_export_payload(
+        &enc_resp,
+        shlosilo::chain::xmr::key_image_export::KEY_IMAGE_EXPORT_MAGIC,
+        &VIEW_SK,
+    )
+    .unwrap();
     assert!(!resp_plain.is_empty());
 
     // 写 fixture 给 keystone 侧消费
@@ -81,7 +83,9 @@ fn generate_shlosilo_keyimage_fixture_for_keystone() {
     std::fs::write("/tmp/xmr_shlosilo_ki_viewkey.hex", hex(&VIEW_SK)).unwrap();
 }
 
-fn shlosilo_encrypt_export_for_test<R: rand_chacha::rand_core::RngCore + rand_chacha::rand_core::CryptoRng>(
+fn shlosilo_encrypt_export_for_test<
+    R: rand_chacha::rand_core::RngCore + rand_chacha::rand_core::CryptoRng,
+>(
     plain: &[u8],
     spend_pub: &[u8; 32],
     view_pub: &[u8; 32],
@@ -108,10 +112,9 @@ fn shlosilo_encrypt_export_for_test<R: rand_chacha::rand_core::RngCore + rand_ch
     signed.extend_from_slice(&buffer);
     let hash = shlosilo::encoding::keccak256::hash(&signed).unwrap();
     let v_scalar = Scalar::from_bytes_mod_order(VIEW_SK);
-    let sig = shlosilo::chain::xmr::key_image_export::generate_monero_signature(
-        &hash, &v_scalar, rng,
-    )
-    .unwrap();
+    let sig =
+        shlosilo::chain::xmr::key_image_export::generate_monero_signature(&hash, &v_scalar, rng)
+            .unwrap();
 
     let mut out = Vec::new();
     out.extend_from_slice(OUTPUT_EXPORT_MAGIC);

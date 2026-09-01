@@ -100,7 +100,11 @@ impl Mnemonic {
             24 => WordCount::Words18,
             28 => WordCount::Words21,
             32 => WordCount::Words24,
-            _ => return Err(ShlosiloError::new(ShlosiloErrorKind::MnemonicInvalidEntropyLength)),
+            _ => {
+                return Err(ShlosiloError::new(
+                    ShlosiloErrorKind::MnemonicInvalidEntropyLength,
+                ))
+            }
         };
 
         // BIP-39 checksum：SHA-256(entropy) 高 checksum_bits 位接到熵后面
@@ -140,7 +144,9 @@ impl Mnemonic {
     /// 从 u16 索引构造（Phase 4 真实解析时使用，Phase 2.0 stub 可用）
     pub fn from_indices(indices: &[u16], expected_count: WordCount) -> Result<Self> {
         if indices.len() != expected_count.as_usize() {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::MnemonicInvalidWordCount));
+            return Err(ShlosiloError::new(
+                ShlosiloErrorKind::MnemonicInvalidWordCount,
+            ));
         }
         for &i in indices {
             if i >= 2048 {
@@ -463,37 +469,52 @@ mod tests {
     // **重要**：Phase 2.0 stub 的 Mnemonic::from_entropy 用 0 字节代替 checksum
     // （不是真实 SHA-256）——所以**标准 BIP-39 测试向量不能直接通过**
     // 但**流程**应该对：调用 from_entropy、构造 mnemonic、获取 word_count / indices
-    
+
     /// BIP-39 12 词标准 entropy "0000...0000" → 12 词 stub output
     #[test]
     fn bip39_stub_12_words_from_zero_entropy() {
-        let entropy = [0u8; 16];  // 128-bit entropy
+        let entropy = [0u8; 16]; // 128-bit entropy
         let m = Mnemonic::from_entropy(&entropy).unwrap();
         assert_eq!(m.word_count(), WordCount::Words12);
         assert_eq!(m.indices().len(), 12);
         // stub：checksum byte = 0，所以前 11 个索引都是 0，最后 1 个索引是 entropy byte[0] 高 3 位（=0）
         for (i, &idx) in m.indices().iter().enumerate() {
-            assert!(idx < 2048, "BIP-39 index must be < 2048, got {} at {}", idx, i);
+            assert!(
+                idx < 2048,
+                "BIP-39 index must be < 2048, got {} at {}",
+                idx,
+                i
+            );
         }
     }
 
     /// BIP-39 24 词标准 entropy "0000...0000" (256-bit) → 24 词 stub output
     #[test]
     fn bip39_stub_24_words_from_zero_entropy() {
-        let entropy = [0u8; 32];  // 256-bit entropy
+        let entropy = [0u8; 32]; // 256-bit entropy
         let m = Mnemonic::from_entropy(&entropy).unwrap();
         assert_eq!(m.word_count(), WordCount::Words24);
         assert_eq!(m.indices().len(), 24);
         for (i, &idx) in m.indices().iter().enumerate() {
-            assert!(idx < 2048, "BIP-39 index must be < 2048, got {} at {}", idx, i);
+            assert!(
+                idx < 2048,
+                "BIP-39 index must be < 2048, got {} at {}",
+                idx,
+                i
+            );
         }
     }
 
     /// BIP-39 任意非零 entropy → 合法 mnemonic（5 个 WordCount 都验证）
     #[test]
     fn bip39_stub_non_zero_entropy_valid() {
-        for &wc in &[WordCount::Words12, WordCount::Words15, WordCount::Words18,
-                     WordCount::Words21, WordCount::Words24] {
+        for &wc in &[
+            WordCount::Words12,
+            WordCount::Words15,
+            WordCount::Words18,
+            WordCount::Words21,
+            WordCount::Words24,
+        ] {
             let entropy = vec![0xffu8; wc.entropy_bytes()];
             let m = Mnemonic::from_entropy(&entropy).unwrap();
             assert_eq!(m.word_count(), wc);
@@ -552,23 +573,29 @@ mod tests {
     /// 5 种词数全验证：from_entropy 产物 validate 都通过
     #[test]
     fn validate_passes_all_word_counts() {
-        for &wc in &[WordCount::Words12, WordCount::Words15, WordCount::Words18,
-                     WordCount::Words21, WordCount::Words24] {
+        for &wc in &[
+            WordCount::Words12,
+            WordCount::Words15,
+            WordCount::Words18,
+            WordCount::Words21,
+            WordCount::Words24,
+        ] {
             let entropy = vec![0xabu8; wc.entropy_bytes()];
             let m = Mnemonic::from_entropy(&entropy).unwrap();
-            assert!(
-                m.validate().is_ok(),
-                "validate failed for {:?}",
-                wc
-            );
+            assert!(m.validate().is_ok(), "validate failed for {:?}", wc);
         }
     }
 
     /// from_entropy → from_indices round-trip 保持 checksum 合法
     #[test]
     fn validate_round_trip_from_entropy() {
-        for &wc in &[WordCount::Words12, WordCount::Words15, WordCount::Words18,
-                     WordCount::Words21, WordCount::Words24] {
+        for &wc in &[
+            WordCount::Words12,
+            WordCount::Words15,
+            WordCount::Words18,
+            WordCount::Words21,
+            WordCount::Words24,
+        ] {
             let entropy = vec![0x7fu8; wc.entropy_bytes()];
             let m = Mnemonic::from_entropy(&entropy).unwrap();
             let idx: Vec<u16> = m.indices().to_vec();
@@ -582,7 +609,10 @@ mod tests {
         let mut idx = [0u16; 24];
         idx[23] = 102; // art
         let m = Mnemonic::from_indices(&idx, WordCount::Words24).unwrap();
-        assert!(m.validate().is_ok(), "Trezor official 24-word all-zero must pass");
+        assert!(
+            m.validate().is_ok(),
+            "Trezor official 24-word all-zero must pass"
+        );
         // 与 from_entropy 产物一致
         let m2 = Mnemonic::from_entropy(&[0u8; 32]).unwrap();
         assert_eq!(m, m2);
@@ -596,5 +626,4 @@ mod tests {
         let m = Mnemonic::from_indices(&idx, WordCount::Words12).unwrap();
         assert!(m.validate().is_ok());
     }
-
 }

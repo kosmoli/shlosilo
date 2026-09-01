@@ -205,10 +205,7 @@ struct Decoder<'a> {
 impl<'a> Decoder<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         // X1（2026-08-31 复审整改）：checked_add 防 pos+n 溢出（n 来自 wire 可控 u64）
-        let end = self
-            .pos
-            .checked_add(n)
-            .ok_or_else(err)?;
+        let end = self.pos.checked_add(n).ok_or_else(err)?;
         if end > self.bytes.len() {
             return Err(err());
         }
@@ -299,7 +296,12 @@ impl<'a> Decoder<'a> {
 
 /// 解码单个 CBOR item。要求 bytes 恰好包含一个完整 item（尾部垃圾报错）。
 pub fn decode(bytes: &[u8]) -> Result<Cbor<'_>> {
-    let mut d = Decoder { bytes, pos: 0, depth: 0, nodes: 0 };
+    let mut d = Decoder {
+        bytes,
+        pos: 0,
+        depth: 0,
+        nodes: 0,
+    };
     let item = d.read_item()?;
     if d.pos != bytes.len() {
         return Err(err());
@@ -310,7 +312,6 @@ pub fn decode(bytes: &[u8]) -> Result<Cbor<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len())
@@ -328,12 +329,19 @@ mod tests {
         assert_eq!(encode_uint(100), hex("1864"));
         assert_eq!(encode_uint(1000), hex("1903e8"));
         assert_eq!(encode_uint(1_000_000), hex("1a000f4240"));
-        assert_eq!(
-            encode_uint(1_000_000_000_000),
-            hex("1b000000e8d4a51000")
-        );
+        assert_eq!(encode_uint(1_000_000_000_000), hex("1b000000e8d4a51000"));
         // round trip
-        for n in [0u64, 23, 24, 255, 256, 65535, 65536, 4294967295, u32::MAX as u64 + 1] {
+        for n in [
+            0u64,
+            23,
+            24,
+            255,
+            256,
+            65535,
+            65536,
+            4294967295,
+            u32::MAX as u64 + 1,
+        ] {
             let enc = encode_uint(n);
             match decode(&enc).unwrap() {
                 Cbor::Uint(got) => assert_eq!(got, n),
@@ -399,7 +407,10 @@ mod tests {
         ]);
         let dec = decode(&m).unwrap();
         assert_eq!(dec.map_get_uint(1).unwrap().unwrap().as_uint().unwrap(), 2);
-        assert_eq!(dec.map_get_uint(3).unwrap().unwrap().as_bytes().unwrap(), b"x");
+        assert_eq!(
+            dec.map_get_uint(3).unwrap().unwrap().as_bytes().unwrap(),
+            b"x"
+        );
         assert!(dec.map_get_uint(9).unwrap().is_none());
     }
 

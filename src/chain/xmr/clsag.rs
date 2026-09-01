@@ -192,8 +192,7 @@ pub fn sign<R: RngCore + CryptoRng>(
     let key_image_gen_bytes: [u8; 32] = compressed_pk.to_bytes();
     let key_image_gen_point: curve25519_dalek::EdwardsPoint =
         Point::biased_hash(key_image_gen_bytes).into();
-    let key_image_point: curve25519_dalek::EdwardsPoint =
-        key_image_gen_point * spend_scalar_dalek;
+    let key_image_point: curve25519_dalek::EdwardsPoint = key_image_gen_point * spend_scalar_dalek;
     let key_image_bytes = key_image_point.compress().to_bytes();
 
     // 8. 序列化 Clsag（pseudo_out bytes + Clsag 内部 bytes）
@@ -241,8 +240,7 @@ pub fn derive_key_image(spend_key: &[u8; 32]) -> Result<[u8; KEY_IMAGE_LEN]> {
         Point::biased_hash(key_image_gen_bytes).into();
 
     // 4. key image I = x * Hp(P)
-    let key_image_point: curve25519_dalek::EdwardsPoint =
-        key_image_gen_point * spend_scalar_dalek;
+    let key_image_point: curve25519_dalek::EdwardsPoint = key_image_gen_point * spend_scalar_dalek;
 
     Ok(key_image_point.compress().to_bytes())
 }
@@ -266,10 +264,8 @@ pub fn verify(
     }
 
     // 1. 构造 ring in [CompressedPoint; 2]
-    let ring_compressed: Vec<[CompressedPoint; 2]> = ring
-        .iter()
-        .map(|(pubk, commit)| [*pubk, *commit])
-        .collect();
+    let ring_compressed: Vec<[CompressedPoint; 2]> =
+        ring.iter().map(|(pubk, commit)| [*pubk, *commit]).collect();
 
     // 2. 反序列化 Clsag
     let mut clsag_reader = clsag_bytes;
@@ -297,14 +293,15 @@ pub fn verify(
 /// 32 bytes reduced scalar → monero_ed25519::Scalar
 fn scalar_from_reduced_bytes(bytes: &[u8; 32]) -> Result<Scalar> {
     // Scalar([u8; 32]) 字段私有，必须通过 from() 构造
-    let dalek_scalar: DScalar =
-        crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(bytes);
+    let dalek_scalar: DScalar = crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(bytes);
     Ok(Scalar::from(dalek_scalar))
 }
 
 /// 32 bytes scalar → curve25519_dalek::Scalar (for key image computation)
 fn scalar_to_dalek(bytes: &[u8; 32]) -> Result<DScalar> {
-    Ok(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(bytes))
+    Ok(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(
+        bytes,
+    ))
 }
 
 // IsIdentity 是 verifier 需要用到的
@@ -342,24 +339,33 @@ mod tests {
 
         let real_sk_dalek = crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&real_sk);
         let decoy_sk_dalek = crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&decoy_sk);
-        let real_pub_point: curve25519_dalek::EdwardsPoint = ED25519_BASEPOINT_TABLE * &real_sk_dalek;
-        let decoy_pub_point: curve25519_dalek::EdwardsPoint = ED25519_BASEPOINT_TABLE * &decoy_sk_dalek;
+        let real_pub_point: curve25519_dalek::EdwardsPoint =
+            ED25519_BASEPOINT_TABLE * &real_sk_dalek;
+        let decoy_pub_point: curve25519_dalek::EdwardsPoint =
+            ED25519_BASEPOINT_TABLE * &decoy_sk_dalek;
 
         let real_pub = CompressedPoint::from(real_pub_point.compress().to_bytes());
         let decoy_pub = CompressedPoint::from(decoy_pub_point.compress().to_bytes());
 
         let real_commit = MoneroCommitment::new(
-            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&real_mask)),
+            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(
+                &real_mask,
+            )),
             amount,
         );
         let decoy_commit = MoneroCommitment::new(
-            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&decoy_mask)),
+            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(
+                &decoy_mask,
+            )),
             decoy_amount,
         );
 
         let ring = vec![
             (real_pub, real_commit.commit().compress().to_bytes().into()),
-            (decoy_pub, decoy_commit.commit().compress().to_bytes().into()),
+            (
+                decoy_pub,
+                decoy_commit.commit().compress().to_bytes().into(),
+            ),
         ];
 
         // 2. sign with real index = 0
@@ -395,16 +401,26 @@ mod tests {
         if let Ok((clsag_proof, key_image, pseudo_out_bytes)) = result {
             // 3. verify 用 [CompressedPoint; 2]
             let real_commit_pt = MoneroCommitment::new(
-                Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&real_mask)),
+                Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(
+                    &real_mask,
+                )),
                 amount,
             );
             let decoy_commit_pt = MoneroCommitment::new(
-                Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&decoy_mask)),
+                Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(
+                    &decoy_mask,
+                )),
                 decoy_amount,
             );
             let ring_verify: Vec<(CompressedPoint, CompressedPoint)> = vec![
-                (real_pub, real_commit_pt.commit().compress().to_bytes().into()),
-                (decoy_pub, decoy_commit_pt.commit().compress().to_bytes().into()),
+                (
+                    real_pub,
+                    real_commit_pt.commit().compress().to_bytes().into(),
+                ),
+                (
+                    decoy_pub,
+                    decoy_commit_pt.commit().compress().to_bytes().into(),
+                ),
             ];
             // pseudo_out_bytes 已经是 sign 返回的——它 = Commitment(pseudo_mask, amount).commit()
             let verify_result = verify(
@@ -443,16 +459,30 @@ mod tests {
         let sk2_dalek = crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&sk2);
         let pk2 = ED25519_BASEPOINT_TABLE * &sk2_dalek;
         let commit2 = MoneroCommitment::new(
-            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&mask)),
+            Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(
+                &mask,
+            )),
             0,
         );
-        let ring = vec![(CompressedPoint::from(pk2.compress().to_bytes()), commit2.commit().compress().to_bytes().into())];
+        let ring = vec![(
+            CompressedPoint::from(pk2.compress().to_bytes()),
+            commit2.commit().compress().to_bytes().into(),
+        )];
 
         let mut pseudo_mask_test = rand_scalar(&mut rng);
         while pseudo_mask_test == mask {
             pseudo_mask_test = rand_scalar(&mut rng);
         }
-        let result = sign(&sk, &ring, 5, &mask, 0, &pseudo_mask_test, &msg_hash, &mut rng); // index 5 越界
+        let result = sign(
+            &sk,
+            &ring,
+            5,
+            &mask,
+            0,
+            &pseudo_mask_test,
+            &msg_hash,
+            &mut rng,
+        ); // index 5 越界
         let _ = result.is_err();
     }
 }

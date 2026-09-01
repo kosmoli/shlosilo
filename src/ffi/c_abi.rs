@@ -30,17 +30,15 @@ macro_rules! ffi_catch_unwind {
     }};
 }
 
-use core::ffi::{c_char, c_int, c_uint};
-use core::slice;
 use crate::business;
 use crate::derivation::path::DerivationPath;
 use crate::entropy::mnemonic::{Mnemonic, WordCount};
-use crate::error::{ShlosiloError, ShlosiloErrorKind, ShlosiloErrorCode};
-use crate::ffi::error_code::{
-    to_ffi_code, ERR_BUFFER_TOO_SMALL, ERR_NULL_POINTER, ERR_PANIC, OK,
-};
+use crate::error::{ShlosiloError, ShlosiloErrorCode, ShlosiloErrorKind};
+use crate::ffi::error_code::{to_ffi_code, ERR_BUFFER_TOO_SMALL, ERR_NULL_POINTER, ERR_PANIC, OK};
 use crate::network::Network;
 use crate::types::SecretBytes;
+use core::ffi::{c_char, c_int, c_uint};
+use core::slice;
 
 fn err(kind: ShlosiloErrorKind) -> ShlosiloError {
     ShlosiloError::new(kind)
@@ -127,28 +125,21 @@ pub extern "C" fn shlosilo_sign_ffi(
         return ERR_NULL_POINTER;
     }
     // P0-02 #1: count 域校验**先于**任何 unsafe 构造——负数/非法词数直接拒绝
-    let word_count = match mnemonic_count_usize(mnemonic_count)
-        .and_then(WordCount::try_from_count)
+    let word_count = match mnemonic_count_usize(mnemonic_count).and_then(WordCount::try_from_count)
     {
         Some(wc) => wc,
         None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
     };
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
         // SAFETY: mnemonic_count 已过白名单（12..=24），指针 null 已排除
-        let mnem_slice = unsafe {
-            slice::from_raw_parts(mnemonic_indices, word_count as usize)
-        };
+        let mnem_slice = unsafe { slice::from_raw_parts(mnemonic_indices, word_count as usize) };
         if ur_payload_len as usize > LEGACY_PAYLOAD_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
         // SAFETY: ur_payload 非 null（序言排除），len ≤ LEGACY_PAYLOAD_MAX_LEN
-        let payload_slice = unsafe {
-            slice::from_raw_parts(ur_payload, ur_payload_len as usize)
-        };
+        let payload_slice = unsafe { slice::from_raw_parts(ur_payload, ur_payload_len as usize) };
         // SAFETY: output_buf 非 null（序言排除）；len 是 C 契约的真实缓冲长度
-        let out_slice = unsafe {
-            slice::from_raw_parts_mut(output_buf, output_buf_len as usize)
-        };
+        let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
         // P0-02 #2: (NULL, len>0) 拒绝——错误 passphrase 指针不得静默变空 passphrase
         let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize)
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
@@ -160,10 +151,9 @@ pub extern "C" fn shlosilo_sign_ffi(
             .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
 
         // P0-02 #3: network as u8 窄化回绕（256→0）改为 u8::try_from 全值校验
-        let n8 = u8::try_from(network)
-            .map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
-        let _network = Network::try_from_u8(n8)
-            .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+        let n8 = u8::try_from(network).map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+        let _network =
+            Network::try_from_u8(n8).ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
 
         let input = business::sign::SignInput::Mnemonic {
             mnemonic,
@@ -221,8 +211,7 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
         return ERR_NULL_POINTER;
     }
     // P0-02 #1: count 域校验先于任何 unsafe 构造
-    let word_count = match mnemonic_count_usize(mnemonic_count)
-        .and_then(WordCount::try_from_count)
+    let word_count = match mnemonic_count_usize(mnemonic_count).and_then(WordCount::try_from_count)
     {
         Some(wc) => wc,
         None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
@@ -251,13 +240,9 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
 
         // SAFETY: mnemonic_count 已过白名单，指针 null 已排除
-        let mnem_slice = unsafe {
-            slice::from_raw_parts(mnemonic_indices, word_count as usize)
-        };
+        let mnem_slice = unsafe { slice::from_raw_parts(mnemonic_indices, word_count as usize) };
         // SAFETY: output_buf 非 null（序言排除）
-        let out_slice = unsafe {
-            slice::from_raw_parts_mut(output_buf, output_buf_len as usize)
-        };
+        let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
         // P0-02 #2: (NULL, len>0) 拒绝
         let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize)
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
@@ -269,10 +254,9 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
             .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
 
         // P0-02 #3: network 窄化回绕改为 u8::try_from 全值校验
-        let n8 = u8::try_from(network)
-            .map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
-        let network_parsed = Network::try_from_u8(n8)
-            .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+        let n8 = u8::try_from(network).map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+        let network_parsed =
+            Network::try_from_u8(n8).ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
 
         let input = business::sign::SignInput::Mnemonic {
             mnemonic,
@@ -336,28 +320,21 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
     }
     // P0-02 #1（本条 P0 主指控）：count 域校验先于任何 unsafe 构造——
     // 负 mnemonic_count 曾直接 `as usize` 零扩展成 usize::MAX 进 from_raw_parts = UB
-    let word_count = match mnemonic_count_usize(mnemonic_count)
-        .and_then(WordCount::try_from_count)
+    let word_count = match mnemonic_count_usize(mnemonic_count).and_then(WordCount::try_from_count)
     {
         Some(wc) => wc,
         None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
     };
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
         // SAFETY: mnemonic_count 已过白名单，指针 null 已排除
-        let mnem_slice = unsafe {
-            slice::from_raw_parts(mnemonic_indices, word_count as usize)
-        };
+        let mnem_slice = unsafe { slice::from_raw_parts(mnemonic_indices, word_count as usize) };
         // SAFETY: path_elems 非 null（序言排除）；u32 元素数按 C 契约如实
-        let elem_slice = unsafe {
-            slice::from_raw_parts(path_elems, path_elem_count as usize)
-        };
+        let elem_slice = unsafe { slice::from_raw_parts(path_elems, path_elem_count as usize) };
         let path = DerivationPath::from_flat(elem_slice.iter().copied())
             .map_err(|_| err(ShlosiloErrorKind::DerivationPathInvalidSyntax))?;
 
         // SAFETY: output_buf 非 null（序言排除）
-        let out_slice = unsafe {
-            slice::from_raw_parts_mut(output_buf, output_buf_len as usize)
-        };
+        let out_slice = unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
         // P0-02 #2: (NULL, len>0) 拒绝
         let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize)
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
@@ -366,10 +343,9 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
         }
 
         // P0-02 #3: network 窄化回绕改为 u8::try_from 全值校验
-        let n8 = u8::try_from(network)
-            .map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
-        let network = Network::try_from_u8(n8)
-            .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+        let n8 = u8::try_from(network).map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+        let network =
+            Network::try_from_u8(n8).ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
 
         let protocol = match protocol {
             0 => business::export_readonly::ExportProtocol::CryptoHdKey,
@@ -389,7 +365,13 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
         business::restore_seed::restore_seed(&mnemonic, pass_slice, &mut seed_buf)?;
         let seed = SecretBytes::take(&mut seed_buf);
 
-        business::export_readonly::export_readonly(protocol, seed.expose(), network, &[path], out_slice)
+        business::export_readonly::export_readonly(
+            protocol,
+            seed.expose(),
+            network,
+            &[path],
+            out_slice,
+        )
     });
 
     match result {
@@ -430,7 +412,6 @@ pub extern "C" fn shlosilo_create_account_ffi(
         return ERR_NULL_POINTER;
     }
     let result = ffi_catch_unwind!(|| -> Result<(), ShlosiloError> {
-
         if rolls_count as usize > ROLLS_MAX_COUNT {
             return Err(err(ShlosiloErrorKind::DiceRollsInvalidCount));
         }
@@ -450,8 +431,7 @@ pub extern "C" fn shlosilo_create_account_ffi(
             .ok_or_else(|| err(ShlosiloErrorKind::MnemonicInvalidWordCount))?;
 
         // P0-02 #3: sides as u8 窄化回绕（262→6）改为 u8::try_from 全值校验
-        let sides8 = u8::try_from(sides)
-            .map_err(|_| err(ShlosiloErrorKind::InvalidDiceConfig))?;
+        let sides8 = u8::try_from(sides).map_err(|_| err(ShlosiloErrorKind::InvalidDiceConfig))?;
 
         business::create_account::create_account(
             wc,
@@ -555,661 +535,698 @@ const _: c_int = ERR_BUFFER_TOO_SMALL;
 // ─── R3 typed 多分片 FFI（2026-08-31）─────────────────────────────
 pub mod r3 {
     use super::*;
-    use crate::ur::ur_multipart::{UrMultipartDecoder, UrMultipartEncoder, MULTIPART_FRAME_MAX_LEN};
+    use crate::ur::ur_multipart::{
+        UrMultipartDecoder, UrMultipartEncoder, MULTIPART_FRAME_MAX_LEN,
+    };
     use alloc::boxed::Box;
 
+    // ─── R3: typed 多分片 FFI（2026-08-31 定稿——替代 legacy 首字节猜 type）───
+    //
+    // 双通道架构（对齐 keystone gui_model.c 模式）：
+    //   单帧大 QR  = 已有 shlosilo_sign_ur_ffi / ur_encode::encode（payload ≤ UR_PAYLOAD_MAX_LEN）
+    //   多分片动画 = 本组三个函数（payload ≤ 16 KiB，帧流 `ur:<type>/<seq>-<count>/<bw>`）
+    //
+    // 句柄契约：
+    //   - encode_begin / decode_new 返回句柄（Box::into_raw 裸指针，非 null = 成功）
+    //   - 同一句柄重复使用/重复 free 是 L3 bug——debug_assert + 返回错误码兜底
+    //   - encode_free / decode_free 释放；其余函数对 null 句柄返回 ERR_NULL_POINTER
 
-// ─── R3: typed 多分片 FFI（2026-08-31 定稿——替代 legacy 首字节猜 type）───
-//
-// 双通道架构（对齐 keystone gui_model.c 模式）：
-//   单帧大 QR  = 已有 shlosilo_sign_ur_ffi / ur_encode::encode（payload ≤ UR_PAYLOAD_MAX_LEN）
-//   多分片动画 = 本组三个函数（payload ≤ 16 KiB，帧流 `ur:<type>/<seq>-<count>/<bw>`）
-//
-// 句柄契约：
-//   - encode_begin / decode_new 返回句柄（Box::into_raw 裸指针，非 null = 成功）
-//   - 同一句柄重复使用/重复 free 是 L3 bug——debug_assert + 返回错误码兜底
-//   - encode_free / decode_free 释放；其余函数对 null 句柄返回 ERR_NULL_POINTER
+    /// 单帧字符串写出上限（L3 缓冲区；200B 分片 → 帧 ≈ 420 字符，1024 足够）
+    const FRAME_BUF_MAX_LEN: usize = 1024;
 
-/// 单帧字符串写出上限（L3 缓冲区；200B 分片 → 帧 ≈ 420 字符，1024 足够）
-const FRAME_BUF_MAX_LEN: usize = 1024;
-
-/// R3: 创建多分片编码器。成功返回句柄（非 null），失败返回 null。
-/// type_name: ASCII 字母数字 + '-'（如 "xmr-txunsigned"）
-/// L3 完成后必须调用 shlosilo_ur_encode_free。
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: mod r3 转 pub 后 clippy 可见；契约同主入口（先 null-check）
-pub extern "C" fn shlosilo_ur_encode_begin(
-    type_name: *const c_char,
-    payload: *const u8,
-    payload_len: c_uint,
-    max_fragment_len: c_uint,
-) -> *mut UrMultipartEncoder {
-    let result = ffi_catch_unwind!(|| -> Option<*mut UrMultipartEncoder> {
-        if type_name.is_null() || payload.is_null() {
-            return None;
-        }
-        // type_name: C string → &str（扫到 \0，上限 64）
-        let mut tlen = 0usize;
-        unsafe {
-            while *type_name.add(tlen) != 0 {
-                tlen += 1;
-                if tlen > 64 {
-                    return None;
+    /// R3: 创建多分片编码器。成功返回句柄（非 null），失败返回 null。
+    /// type_name: ASCII 字母数字 + '-'（如 "xmr-txunsigned"）
+    /// L3 完成后必须调用 shlosilo_ur_encode_free。
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: mod r3 转 pub 后 clippy 可见；契约同主入口（先 null-check）
+    pub extern "C" fn shlosilo_ur_encode_begin(
+        type_name: *const c_char,
+        payload: *const u8,
+        payload_len: c_uint,
+        max_fragment_len: c_uint,
+    ) -> *mut UrMultipartEncoder {
+        let result = ffi_catch_unwind!(|| -> Option<*mut UrMultipartEncoder> {
+            if type_name.is_null() || payload.is_null() {
+                return None;
+            }
+            // type_name: C string → &str（扫到 \0，上限 64）
+            let mut tlen = 0usize;
+            unsafe {
+                while *type_name.add(tlen) != 0 {
+                    tlen += 1;
+                    if tlen > 64 {
+                        return None;
+                    }
                 }
             }
+            let tslice = unsafe { slice::from_raw_parts(type_name as *const u8, tlen) };
+            let tname = core::str::from_utf8(tslice).ok()?;
+            // P0-02 #2: payload 必填——null 一律拒绝（(NULL,0) 也不允许，空 payload 编码无意义）
+            let pslice = required_bytes_in(payload, payload_len as usize)?;
+            let enc = UrMultipartEncoder::new(tname, pslice, max_fragment_len as usize).ok()?;
+            Some(Box::into_raw(Box::new(enc)))
+        });
+        match result {
+            Ok(Some(h)) => h,
+            _ => core::ptr::null_mut(),
         }
-        let tslice = unsafe { slice::from_raw_parts(type_name as *const u8, tlen) };
-        let tname = core::str::from_utf8(tslice).ok()?;
-        // P0-02 #2: payload 必填——null 一律拒绝（(NULL,0) 也不允许，空 payload 编码无意义）
-        let pslice = required_bytes_in(payload, payload_len as usize)?;
-        let enc = UrMultipartEncoder::new(tname, pslice, max_fragment_len as usize).ok()?;
-        Some(Box::into_raw(Box::new(enc)))
-    });
-    match result {
-        Ok(Some(h)) => h,
-        _ => core::ptr::null_mut(),
     }
-}
 
-/// R3: 取下一帧 URI 字符串（写 frame_buf，NUL 结尾）。
-/// 返回 0 = Ok；负数 = 错误码。重复调用产出 fountain 冗余帧流。
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn shlosilo_ur_encode_next(
-    handle: *mut UrMultipartEncoder,
-    frame_buf: *mut u8,
-    frame_buf_len: c_uint,
-    actual_len: *mut c_uint,
-) -> c_int {
-    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
+    /// R3: 取下一帧 URI 字符串（写 frame_buf，NUL 结尾）。
+    /// 返回 0 = Ok；负数 = 错误码。重复调用产出 fountain 冗余帧流。
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub extern "C" fn shlosilo_ur_encode_next(
+        handle: *mut UrMultipartEncoder,
+        frame_buf: *mut u8,
+        frame_buf_len: c_uint,
+        actual_len: *mut c_uint,
+    ) -> c_int {
+        write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
 
-    if handle.is_null() || frame_buf.is_null() {
-        return ERR_NULL_POINTER;
-    }
-    if frame_buf_len < FRAME_BUF_MAX_LEN as c_uint {
-        // L3 必须给足缓冲
-        write_actual_len(actual_len, 0);
-        return ERR_BUFFER_TOO_SMALL;
-    }
-    let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-        let enc = unsafe { &mut *handle };
-        let frame = enc.next_frame()?;
-        let bytes = frame.as_bytes();
-        if bytes.len() + 1 > frame_buf_len as usize {
-            return Err(err(ShlosiloErrorKind::EncodingBufferOverflow));
+        if handle.is_null() || frame_buf.is_null() {
+            return ERR_NULL_POINTER;
         }
-        unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), frame_buf, bytes.len());
-            *frame_buf.add(bytes.len()) = 0;
-        }
-        Ok(bytes.len())
-    });
-    match result {
-        Ok(Ok(n)) => {
-            write_actual_len(actual_len, n);
-            OK
-        }
-        Ok(Err(e)) => {
+        if frame_buf_len < FRAME_BUF_MAX_LEN as c_uint {
+            // L3 必须给足缓冲
             write_actual_len(actual_len, 0);
-            to_ffi_code(&e)
+            return ERR_BUFFER_TOO_SMALL;
         }
-        Err(_) => {
+        let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            let enc = unsafe { &mut *handle };
+            let frame = enc.next_frame()?;
+            let bytes = frame.as_bytes();
+            if bytes.len() + 1 > frame_buf_len as usize {
+                return Err(err(ShlosiloErrorKind::EncodingBufferOverflow));
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), frame_buf, bytes.len());
+                *frame_buf.add(bytes.len()) = 0;
+            }
+            Ok(bytes.len())
+        });
+        match result {
+            Ok(Ok(n)) => {
+                write_actual_len(actual_len, n);
+                OK
+            }
+            Ok(Err(e)) => {
+                write_actual_len(actual_len, 0);
+                to_ffi_code(&e)
+            }
+            Err(_) => {
+                write_actual_len(actual_len, 0);
+                ERR_PANIC
+            }
+        }
+    }
+
+    /// R3: XMR cyclic 补扫帧（seq 到顶回 1，无限循环供软件钱包补扫）
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub extern "C" fn shlosilo_ur_encode_next_cyclic(
+        handle: *mut UrMultipartEncoder,
+        frame_buf: *mut u8,
+        frame_buf_len: c_uint,
+        actual_len: *mut c_uint,
+    ) -> c_int {
+        write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
+
+        if handle.is_null() || frame_buf.is_null() {
+            return ERR_NULL_POINTER;
+        }
+        if frame_buf_len < FRAME_BUF_MAX_LEN as c_uint {
             write_actual_len(actual_len, 0);
-            ERR_PANIC
+            return ERR_BUFFER_TOO_SMALL;
+        }
+        let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            let enc = unsafe { &mut *handle };
+            let frame = enc.next_cyclic_frame()?;
+            let bytes = frame.as_bytes();
+            if bytes.len() + 1 > frame_buf_len as usize {
+                return Err(err(ShlosiloErrorKind::EncodingBufferOverflow));
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), frame_buf, bytes.len());
+                *frame_buf.add(bytes.len()) = 0;
+            }
+            Ok(bytes.len())
+        });
+        match result {
+            Ok(Ok(n)) => {
+                write_actual_len(actual_len, n);
+                OK
+            }
+            Ok(Err(e)) => {
+                write_actual_len(actual_len, 0);
+                to_ffi_code(&e)
+            }
+            Err(_) => {
+                write_actual_len(actual_len, 0);
+                ERR_PANIC
+            }
         }
     }
-}
 
-/// R3: XMR cyclic 补扫帧（seq 到顶回 1，无限循环供软件钱包补扫）
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn shlosilo_ur_encode_next_cyclic(
-    handle: *mut UrMultipartEncoder,
-    frame_buf: *mut u8,
-    frame_buf_len: c_uint,
-    actual_len: *mut c_uint,
-) -> c_int {
-    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
+    /// R3: 释放编码器句柄。null 安全（幂等）。
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: mod r3 转 pub 后 clippy 可见；free 契约：single-owner
+    pub extern "C" fn shlosilo_ur_encode_free(handle: *mut UrMultipartEncoder) {
+        if !handle.is_null() {
+            unsafe { drop(Box::from_raw(handle)) };
+        }
+    }
 
-    if handle.is_null() || frame_buf.is_null() {
-        return ERR_NULL_POINTER;
-    }
-    if frame_buf_len < FRAME_BUF_MAX_LEN as c_uint {
-        write_actual_len(actual_len, 0);
-        return ERR_BUFFER_TOO_SMALL;
-    }
-    let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-        let enc = unsafe { &mut *handle };
-        let frame = enc.next_cyclic_frame()?;
-        let bytes = frame.as_bytes();
-        if bytes.len() + 1 > frame_buf_len as usize {
-            return Err(err(ShlosiloErrorKind::EncodingBufferOverflow));
-        }
-        unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), frame_buf, bytes.len());
-            *frame_buf.add(bytes.len()) = 0;
-        }
-        Ok(bytes.len())
-    });
-    match result {
-        Ok(Ok(n)) => {
-            write_actual_len(actual_len, n);
-            OK
-        }
-        Ok(Err(e)) => {
-            write_actual_len(actual_len, 0);
-            to_ffi_code(&e)
-        }
-        Err(_) => {
-            write_actual_len(actual_len, 0);
-            ERR_PANIC
+    /// R3: 创建多分片解码器。成功返回句柄，失败返回 null。
+    #[no_mangle]
+    pub extern "C" fn shlosilo_ur_decode_new() -> *mut UrMultipartDecoder {
+        let result = ffi_catch_unwind!(|| -> *mut UrMultipartDecoder {
+            Box::into_raw(Box::new(UrMultipartDecoder::new()))
+        });
+        match result {
+            Ok(h) => h,
+            Err(_) => core::ptr::null_mut(),
         }
     }
-}
 
-/// R3: 释放编码器句柄。null 安全（幂等）。
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: mod r3 转 pub 后 clippy 可见；free 契约：single-owner
-pub extern "C" fn shlosilo_ur_encode_free(handle: *mut UrMultipartEncoder) {
-    if !handle.is_null() {
-        unsafe { drop(Box::from_raw(handle)) };
-    }
-}
-
-/// R3: 创建多分片解码器。成功返回句柄，失败返回 null。
-#[no_mangle]
-pub extern "C" fn shlosilo_ur_decode_new() -> *mut UrMultipartDecoder {
-    let result = ffi_catch_unwind!(|| -> *mut UrMultipartDecoder {
-        Box::into_raw(Box::new(UrMultipartDecoder::new()))
-    });
-    match result {
-        Ok(h) => h,
-        Err(_) => core::ptr::null_mut(),
-    }
-}
-
-/// R3: 喂一帧 URI（NUL 结尾 C string）。
-/// 返回 0 = Ok（accepted 状态写 *accepted_out：1=有新信息，0=重复帧）
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn shlosilo_ur_decode_feed(
-    handle: *mut UrMultipartDecoder,
-    frame: *const c_char,
-    accepted_out: *mut c_uint,
-) -> c_int {
-    if handle.is_null() || frame.is_null() {
-        return ERR_NULL_POINTER;
-    }
-    // Gate4 #2：out-param 前置清零——任何后续失败路径下 C 侧都读到确定值 0
-    if !accepted_out.is_null() {
-        unsafe { *accepted_out = 0 };
-    }
-    let result = ffi_catch_unwind!(|| -> Result<bool, ShlosiloError> {
-        let mut flen = 0usize;
-        unsafe {
-            while *frame.add(flen) != 0 {
-                flen += 1;
-                if flen > MULTIPART_FRAME_MAX_LEN {
-                    return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+    /// R3: 喂一帧 URI（NUL 结尾 C string）。
+    /// 返回 0 = Ok（accepted 状态写 *accepted_out：1=有新信息，0=重复帧）
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub extern "C" fn shlosilo_ur_decode_feed(
+        handle: *mut UrMultipartDecoder,
+        frame: *const c_char,
+        accepted_out: *mut c_uint,
+    ) -> c_int {
+        if handle.is_null() || frame.is_null() {
+            return ERR_NULL_POINTER;
+        }
+        // Gate4 #2：out-param 前置清零——任何后续失败路径下 C 侧都读到确定值 0
+        if !accepted_out.is_null() {
+            unsafe { *accepted_out = 0 };
+        }
+        let result = ffi_catch_unwind!(|| -> Result<bool, ShlosiloError> {
+            let mut flen = 0usize;
+            unsafe {
+                while *frame.add(flen) != 0 {
+                    flen += 1;
+                    if flen > MULTIPART_FRAME_MAX_LEN {
+                        return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+                    }
                 }
             }
-        }
-        let fslice = unsafe { slice::from_raw_parts(frame as *const u8, flen) };
-        let fstr = core::str::from_utf8(fslice)
-            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-        let dec = unsafe { &mut *handle };
-        dec.receive_frame(fstr)
-    });
-    match result {
-        Ok(Ok(accepted)) => {
-            if !accepted_out.is_null() {
-                unsafe { *accepted_out = accepted as c_uint };
+            let fslice = unsafe { slice::from_raw_parts(frame as *const u8, flen) };
+            let fstr = core::str::from_utf8(fslice)
+                .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            let dec = unsafe { &mut *handle };
+            dec.receive_frame(fstr)
+        });
+        match result {
+            Ok(Ok(accepted)) => {
+                if !accepted_out.is_null() {
+                    unsafe { *accepted_out = accepted as c_uint };
+                }
+                OK
             }
-            OK
+            Ok(Err(e)) => to_ffi_code(&e),
+            Err(_) => ERR_PANIC,
         }
-        Ok(Err(e)) => to_ffi_code(&e),
-        Err(_) => ERR_PANIC,
     }
-}
 
-/// R3: 解码进度 0..=99（100 用 complete 表达）
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn shlosilo_ur_decode_progress(handle: *mut UrMultipartDecoder) -> c_int {
-    if handle.is_null() {
-        return ERR_NULL_POINTER;
+    /// R3: 解码进度 0..=99（100 用 complete 表达）
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub extern "C" fn shlosilo_ur_decode_progress(handle: *mut UrMultipartDecoder) -> c_int {
+        if handle.is_null() {
+            return ERR_NULL_POINTER;
+        }
+        let result = ffi_catch_unwind!(|| -> u8 { unsafe { &*handle }.progress() });
+        match result {
+            Ok(p) => p as c_int,
+            Err(_) => ERR_PANIC,
+        }
     }
-    let result = ffi_catch_unwind!(|| -> u8 { unsafe { &*handle }.progress() });
-    match result {
-        Ok(p) => p as c_int,
-        Err(_) => ERR_PANIC,
-    }
-}
 
-/// R3: 是否完成
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn shlosilo_ur_decode_complete(handle: *mut UrMultipartDecoder) -> c_int {
-    if handle.is_null() {
-        return ERR_NULL_POINTER;
-    }
-    let result = ffi_catch_unwind!(|| -> bool { unsafe { &*handle }.complete() });
-    match result {
-        Ok(c) => c as c_int,
-        Err(_) => ERR_PANIC,
-    }
-}
-
-/// R3: 取完整 payload（写 payload_buf；实际长度写 actual_len）。
-/// 完成前调用 → ERR_UNKNOWN；payload 超过 buf → ERR_BUFFER_TOO_SMALL（actual_len 写需求值）。
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn shlosilo_ur_decode_payload(
-    handle: *mut UrMultipartDecoder,
-    payload_buf: *mut u8,
-    payload_buf_len: c_uint,
-    actual_len: *mut c_uint,
-) -> c_int {
-    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
-
-    if handle.is_null() || payload_buf.is_null() {
-        return ERR_NULL_POINTER;
-    }
-    let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-        let dec = unsafe { &*handle };
-        let payload = dec
-            .payload()?
-            .ok_or_else(err_unknown)?;
-        if payload.len() > payload_buf_len as usize {
-            return Err(err(ShlosiloErrorKind::BufferTooSmall));
+    /// R3: 是否完成
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub extern "C" fn shlosilo_ur_decode_complete(handle: *mut UrMultipartDecoder) -> c_int {
+        if handle.is_null() {
+            return ERR_NULL_POINTER;
         }
-        unsafe {
-            core::ptr::copy_nonoverlapping(payload.as_ptr(), payload_buf, payload.len());
-        }
-        Ok(payload.len())
-    });
-    // BufferTooSmall 特例：actual_len 写**需求值**（L3 据此重试分配），
-    // 其余失败路径保持 R2 清零纪律。
-    let required: usize = match &result {
-        Ok(Err(e)) if e.kind == ShlosiloErrorKind::BufferTooSmall => {
-            ffi_catch_unwind!(|| -> Option<usize> {
-                unsafe { &*handle }.payload().ok()?.map(|p| p.len())
-            })
-            .ok()
-            .flatten()
-            .unwrap_or(0)
-        }
-        _ => 0,
-    };
-    match result {
-        Ok(Ok(n)) => {
-            write_actual_len(actual_len, n);
-            OK
-        }
-        Ok(Err(e)) => {
-            write_actual_len(actual_len, required);
-            to_ffi_code(&e)
-        }
-        Err(_) => {
-            write_actual_len(actual_len, 0);
-            ERR_PANIC
+        let result = ffi_catch_unwind!(|| -> bool { unsafe { &*handle }.complete() });
+        match result {
+            Ok(c) => c as c_int,
+            Err(_) => ERR_PANIC,
         }
     }
-}
 
-fn err_unknown() -> ShlosiloError {
-    ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-}
+    /// R3: 取完整 payload（写 payload_buf；实际长度写 actual_len）。
+    /// 完成前调用 → ERR_UNKNOWN；payload 超过 buf → ERR_BUFFER_TOO_SMALL（actual_len 写需求值）。
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub extern "C" fn shlosilo_ur_decode_payload(
+        handle: *mut UrMultipartDecoder,
+        payload_buf: *mut u8,
+        payload_buf_len: c_uint,
+        actual_len: *mut c_uint,
+    ) -> c_int {
+        write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
 
-/// R3/P0-C（2026-09-01）：取解码后的 UR type（写 type_buf 为 NUL 结尾 ASCII）。
-/// 完成前或无帧 → EncodingInvalidFormat；缓冲不足 → BufferTooSmall（actual_len 写需求值，含 NUL）。
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn shlosilo_ur_decode_type(
-    handle: *mut UrMultipartDecoder,
-    type_buf: *mut u8,
-    type_buf_len: c_uint,
-    actual_len: *mut c_uint,
-) -> c_int {
-    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
-
-    if handle.is_null() || type_buf.is_null() {
-        return ERR_NULL_POINTER;
-    }
-    let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-        let dec = unsafe { &*handle };
-        let t = dec.ur_type().ok_or_else(err_unknown)?;
-        // +1 for NUL
-        if t.len() + 1 > type_buf_len as usize {
-            return Err(err(ShlosiloErrorKind::BufferTooSmall));
+        if handle.is_null() || payload_buf.is_null() {
+            return ERR_NULL_POINTER;
         }
-        unsafe {
-            core::ptr::copy_nonoverlapping(t.as_ptr(), type_buf, t.len());
-            *type_buf.add(t.len()) = 0;
-        }
-        Ok(t.len() + 1)
-    });
-    // BufferTooSmall 特例：actual_len 写需求值（含 NUL），其余失败清零
-    let required: usize = match &result {
-        Ok(Err(e)) if e.kind == ShlosiloErrorKind::BufferTooSmall => {
-            ffi_catch_unwind!(|| -> Option<usize> {
-                Some(unsafe { &*handle }.ur_type()?.len() + 1)
-            })
-            .ok()
-            .flatten()
-            .unwrap_or(0)
-        }
-        _ => 0,
-    };
-    match result {
-        Ok(Ok(n)) => {
-            write_actual_len(actual_len, n);
-            OK
-        }
-        Ok(Err(e)) => {
-            write_actual_len(actual_len, required);
-            to_ffi_code(&e)
-        }
-        Err(_) => {
-            write_actual_len(actual_len, 0);
-            ERR_PANIC
+        let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            let dec = unsafe { &*handle };
+            let payload = dec.payload()?.ok_or_else(err_unknown)?;
+            if payload.len() > payload_buf_len as usize {
+                return Err(err(ShlosiloErrorKind::BufferTooSmall));
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(payload.as_ptr(), payload_buf, payload.len());
+            }
+            Ok(payload.len())
+        });
+        // BufferTooSmall 特例：actual_len 写**需求值**（L3 据此重试分配），
+        // 其余失败路径保持 R2 清零纪律。
+        let required: usize = match &result {
+            Ok(Err(e)) if e.kind == ShlosiloErrorKind::BufferTooSmall => {
+                ffi_catch_unwind!(|| -> Option<usize> {
+                    unsafe { &*handle }.payload().ok()?.map(|p| p.len())
+                })
+                .ok()
+                .flatten()
+                .unwrap_or(0)
+            }
+            _ => 0,
+        };
+        match result {
+            Ok(Ok(n)) => {
+                write_actual_len(actual_len, n);
+                OK
+            }
+            Ok(Err(e)) => {
+                write_actual_len(actual_len, required);
+                to_ffi_code(&e)
+            }
+            Err(_) => {
+                write_actual_len(actual_len, 0);
+                ERR_PANIC
+            }
         }
     }
-}
 
-/// R3/P0-C（2026-09-01）：typed sign——multipart 重组后的 (type, payload) 垂直贯通签名。
-/// type_name 必须是已知可签名的 UrTypeTag（拒绝 Unknown/任意字符串）；
-/// payload 预算 = MULTIPART_PAYLOAD_MAX_LEN（16 KiB，对齐 multipart 重组上限）。
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn shlosilo_sign_typed_ffi(
-    type_name: *const c_char,
-    payload: *const u8,
-    payload_len: c_uint,
-    mnemonic_indices: *const u16,
-    mnemonic_count: c_int,
-    passphrase: *const u8,
-    passphrase_len: c_uint,
-    network: c_uint,
-    entropy_ptr: *const u8,
-    entropy_len: c_uint,
-    output_buf: *mut u8,
-    output_buf_len: c_uint,
-    actual_len: *mut c_uint,
-) -> c_int {
-    write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
-
-    if type_name.is_null() || payload.is_null() || mnemonic_indices.is_null() || output_buf.is_null() {
-        return ERR_NULL_POINTER;
+    fn err_unknown() -> ShlosiloError {
+        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
     }
-    // P0-02 #1: count 域校验先于任何 unsafe 构造（与主 sign 系同一序言纪律）
-    let word_count = match mnemonic_count_usize(mnemonic_count)
-        .and_then(WordCount::try_from_count)
-    {
-        Some(wc) => wc,
-        None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
-    };
-    let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-        // C string → &str（type 名 ≤ 64 字符足够）
-        let mut tlen = 0usize;
-        unsafe {
-            while *type_name.add(tlen) != 0 {
-                tlen += 1;
-                if tlen > 64 {
-                    return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+
+    /// R3/P0-C（2026-09-01）：取解码后的 UR type（写 type_buf 为 NUL 结尾 ASCII）。
+    /// 完成前或无帧 → EncodingInvalidFormat；缓冲不足 → BufferTooSmall（actual_len 写需求值，含 NUL）。
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub extern "C" fn shlosilo_ur_decode_type(
+        handle: *mut UrMultipartDecoder,
+        type_buf: *mut u8,
+        type_buf_len: c_uint,
+        actual_len: *mut c_uint,
+    ) -> c_int {
+        write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
+
+        if handle.is_null() || type_buf.is_null() {
+            return ERR_NULL_POINTER;
+        }
+        let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            let dec = unsafe { &*handle };
+            let t = dec.ur_type().ok_or_else(err_unknown)?;
+            // +1 for NUL
+            if t.len() + 1 > type_buf_len as usize {
+                return Err(err(ShlosiloErrorKind::BufferTooSmall));
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(t.as_ptr(), type_buf, t.len());
+                *type_buf.add(t.len()) = 0;
+            }
+            Ok(t.len() + 1)
+        });
+        // BufferTooSmall 特例：actual_len 写需求值（含 NUL），其余失败清零
+        let required: usize = match &result {
+            Ok(Err(e)) if e.kind == ShlosiloErrorKind::BufferTooSmall => {
+                ffi_catch_unwind!(|| -> Option<usize> {
+                    Some(unsafe { &*handle }.ur_type()?.len() + 1)
+                })
+                .ok()
+                .flatten()
+                .unwrap_or(0)
+            }
+            _ => 0,
+        };
+        match result {
+            Ok(Ok(n)) => {
+                write_actual_len(actual_len, n);
+                OK
+            }
+            Ok(Err(e)) => {
+                write_actual_len(actual_len, required);
+                to_ffi_code(&e)
+            }
+            Err(_) => {
+                write_actual_len(actual_len, 0);
+                ERR_PANIC
+            }
+        }
+    }
+
+    /// R3/P0-C（2026-09-01）：typed sign——multipart 重组后的 (type, payload) 垂直贯通签名。
+    /// type_name 必须是已知可签名的 UrTypeTag（拒绝 Unknown/任意字符串）；
+    /// payload 预算 = MULTIPART_PAYLOAD_MAX_LEN（16 KiB，对齐 multipart 重组上限）。
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub extern "C" fn shlosilo_sign_typed_ffi(
+        type_name: *const c_char,
+        payload: *const u8,
+        payload_len: c_uint,
+        mnemonic_indices: *const u16,
+        mnemonic_count: c_int,
+        passphrase: *const u8,
+        passphrase_len: c_uint,
+        network: c_uint,
+        entropy_ptr: *const u8,
+        entropy_len: c_uint,
+        output_buf: *mut u8,
+        output_buf_len: c_uint,
+        actual_len: *mut c_uint,
+    ) -> c_int {
+        write_actual_len(actual_len, 0); // Gate4 #2: out-param 前置清零
+
+        if type_name.is_null()
+            || payload.is_null()
+            || mnemonic_indices.is_null()
+            || output_buf.is_null()
+        {
+            return ERR_NULL_POINTER;
+        }
+        // P0-02 #1: count 域校验先于任何 unsafe 构造（与主 sign 系同一序言纪律）
+        let word_count =
+            match mnemonic_count_usize(mnemonic_count).and_then(WordCount::try_from_count) {
+                Some(wc) => wc,
+                None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
+            };
+        let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            // C string → &str（type 名 ≤ 64 字符足够）
+            let mut tlen = 0usize;
+            unsafe {
+                while *type_name.add(tlen) != 0 {
+                    tlen += 1;
+                    if tlen > 64 {
+                        return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+                    }
                 }
             }
-        }
-        let t_slice = unsafe { slice::from_raw_parts(type_name as *const u8, tlen) };
-        let t_str = core::str::from_utf8(t_slice)
-            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-        let tag = crate::ur::ur_encode::UrTypeTag::from_name(t_str);
-        if matches!(tag, crate::ur::ur_encode::UrTypeTag::Unknown) {
-            return Err(err(ShlosiloErrorKind::UrPayloadUnknownType));
-        }
-        if payload_len as usize > crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN {
-            return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
-        }
-        let payload_slice = unsafe { slice::from_raw_parts(payload, payload_len as usize) };
-        // P0-02 #2: (NULL, len>0) 拒绝
-        let entropy_slice = optional_bytes_in(entropy_ptr, entropy_len as usize)
-            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
-        // SAFETY: mnemonic_count 已过白名单，指针 null 已排除
-        let mnem_slice = unsafe {
-            slice::from_raw_parts(mnemonic_indices, word_count as usize)
-        };
-        // SAFETY: output_buf 非 null（序言排除）
-        let out_slice = unsafe {
-            slice::from_raw_parts_mut(output_buf, output_buf_len as usize)
-        };
-        // P0-02 #2: (NULL, len>0) 拒绝
-        let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize)
-            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
-        if pass_slice.len() > PASSPHRASE_MAX_LEN {
-            return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
-        let mnemonic = Mnemonic::from_indices(mnem_slice, word_count)
-            .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
-        // P0-02 #3: network 窄化回绕改为 u8::try_from 全值校验
-        let n8 = u8::try_from(network)
-            .map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
-        let network_parsed = Network::try_from_u8(n8)
-            .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
-        let input = business::sign::SignInput::Mnemonic {
-            mnemonic,
-            passphrase: pass_slice,
-        };
-        business::sign::check_network(tag, payload_slice, network_parsed)?;
-        business::sign::sign_with_entropy(input, tag, payload_slice, entropy_slice, out_slice)
-    });
-    match result {
-        Ok(Ok(length)) => {
-            write_actual_len(actual_len, length);
-            OK
-        }
-        Ok(Err(e)) => {
-            write_actual_len(actual_len, 0);
-            to_ffi_code(&e)
-        }
-        Err(_) => {
-            write_actual_len(actual_len, 0);
-            ERR_PANIC
-        }
-    }
-}
-
-/// R3: 释放解码器句柄。null 安全（幂等）。
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: mod r3 转 pub 后 clippy 可见；free 契约：single-owner
-pub extern "C" fn shlosilo_ur_decode_free(handle: *mut UrMultipartDecoder) {
-    if !handle.is_null() {
-        unsafe { drop(Box::from_raw(handle)) };
-    }
-}
-
-#[cfg(test)]
-mod r3_tests {
-    use alloc::vec::Vec;
-    use super::*;
-    use alloc::string::String;
-
-    /// R3 FFI 端到端：encode_begin → next ×N → decode_new → feed → payload 一致
-    #[test]
-    fn ffi_multipart_roundtrip() {
-        let payload: alloc::vec::Vec<u8> = (0..1024).map(|i| (i % 251) as u8).collect();
-        let tname = c"xmr-txunsigned".as_ptr();
-
-        let enc = shlosilo_ur_encode_begin(
-            tname,
-            payload.as_ptr(),
-            payload.len() as c_uint,
-            200,
-        );
-        assert!(!enc.is_null());
-
-        let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
-        let mut actual: c_uint = 0;
-        let mut frames: Vec<String> = Vec::new();
-        loop {
-            let rc = shlosilo_ur_encode_next(enc, frame_buf.as_mut_ptr(), frame_buf.len() as c_uint, &mut actual);
-            assert_eq!(rc, OK, "rc={rc}");
-            let f = core::str::from_utf8(&frame_buf[..actual as usize]).unwrap();
-            let done = f.contains("/11-"); // 1024/200 → 6 fragments; guard below
-            frames.push(String::from(f));
-            if frames.len() >= 6 {
-                break;
+            let t_slice = unsafe { slice::from_raw_parts(type_name as *const u8, tlen) };
+            let t_str = core::str::from_utf8(t_slice)
+                .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            let tag = crate::ur::ur_encode::UrTypeTag::from_name(t_str);
+            if matches!(tag, crate::ur::ur_encode::UrTypeTag::Unknown) {
+                return Err(err(ShlosiloErrorKind::UrPayloadUnknownType));
             }
-            let _ = done;
+            if payload_len as usize > crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN {
+                return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
+            }
+            let payload_slice = unsafe { slice::from_raw_parts(payload, payload_len as usize) };
+            // P0-02 #2: (NULL, len>0) 拒绝
+            let entropy_slice = optional_bytes_in(entropy_ptr, entropy_len as usize)
+                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+            // SAFETY: mnemonic_count 已过白名单，指针 null 已排除
+            let mnem_slice =
+                unsafe { slice::from_raw_parts(mnemonic_indices, word_count as usize) };
+            // SAFETY: output_buf 非 null（序言排除）
+            let out_slice =
+                unsafe { slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
+            // P0-02 #2: (NULL, len>0) 拒绝
+            let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize)
+                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+            if pass_slice.len() > PASSPHRASE_MAX_LEN {
+                return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+            }
+            let mnemonic = Mnemonic::from_indices(mnem_slice, word_count)
+                .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
+            // P0-02 #3: network 窄化回绕改为 u8::try_from 全值校验
+            let n8 =
+                u8::try_from(network).map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+            let network_parsed = Network::try_from_u8(n8)
+                .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+            let input = business::sign::SignInput::Mnemonic {
+                mnemonic,
+                passphrase: pass_slice,
+            };
+            business::sign::check_network(tag, payload_slice, network_parsed)?;
+            business::sign::sign_with_entropy(input, tag, payload_slice, entropy_slice, out_slice)
+        });
+        match result {
+            Ok(Ok(length)) => {
+                write_actual_len(actual_len, length);
+                OK
+            }
+            Ok(Err(e)) => {
+                write_actual_len(actual_len, 0);
+                to_ffi_code(&e)
+            }
+            Err(_) => {
+                write_actual_len(actual_len, 0);
+                ERR_PANIC
+            }
         }
-        // 分片数 = div_ceil(1024,200)=6, fragment_len=171 (fragment_length 公式)
-        assert_eq!(frames.len(), 6);
-        assert!(frames[0].starts_with("ur:xmr-txunsigned/1-6/"));
+    }
 
-        let dec = shlosilo_ur_decode_new();
-        assert!(!dec.is_null());
-        for f in &frames {
-            let cf = alloc::ffi::CString::new(f.as_str()).unwrap();
-            let mut accepted: c_uint = 0;
-            let rc = shlosilo_ur_decode_feed(dec, cf.as_ptr(), &mut accepted);
+    /// R3: 释放解码器句柄。null 安全（幂等）。
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: mod r3 转 pub 后 clippy 可见；free 契约：single-owner
+    pub extern "C" fn shlosilo_ur_decode_free(handle: *mut UrMultipartDecoder) {
+        if !handle.is_null() {
+            unsafe { drop(Box::from_raw(handle)) };
+        }
+    }
+
+    #[cfg(test)]
+    mod r3_tests {
+        use super::*;
+        use alloc::string::String;
+        use alloc::vec::Vec;
+
+        /// R3 FFI 端到端：encode_begin → next ×N → decode_new → feed → payload 一致
+        #[test]
+        fn ffi_multipart_roundtrip() {
+            let payload: alloc::vec::Vec<u8> = (0..1024).map(|i| (i % 251) as u8).collect();
+            let tname = c"xmr-txunsigned".as_ptr();
+
+            let enc =
+                shlosilo_ur_encode_begin(tname, payload.as_ptr(), payload.len() as c_uint, 200);
+            assert!(!enc.is_null());
+
+            let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
+            let mut actual: c_uint = 0;
+            let mut frames: Vec<String> = Vec::new();
+            loop {
+                let rc = shlosilo_ur_encode_next(
+                    enc,
+                    frame_buf.as_mut_ptr(),
+                    frame_buf.len() as c_uint,
+                    &mut actual,
+                );
+                assert_eq!(rc, OK, "rc={rc}");
+                let f = core::str::from_utf8(&frame_buf[..actual as usize]).unwrap();
+                let done = f.contains("/11-"); // 1024/200 → 6 fragments; guard below
+                frames.push(String::from(f));
+                if frames.len() >= 6 {
+                    break;
+                }
+                let _ = done;
+            }
+            // 分片数 = div_ceil(1024,200)=6, fragment_len=171 (fragment_length 公式)
+            assert_eq!(frames.len(), 6);
+            assert!(frames[0].starts_with("ur:xmr-txunsigned/1-6/"));
+
+            let dec = shlosilo_ur_decode_new();
+            assert!(!dec.is_null());
+            for f in &frames {
+                let cf = alloc::ffi::CString::new(f.as_str()).unwrap();
+                let mut accepted: c_uint = 0;
+                let rc = shlosilo_ur_decode_feed(dec, cf.as_ptr(), &mut accepted);
+                assert_eq!(rc, OK);
+            }
+            assert_eq!(shlosilo_ur_decode_complete(dec), 1);
+
+            let mut out = [0u8; 2048];
+            let rc =
+                shlosilo_ur_decode_payload(dec, out.as_mut_ptr(), out.len() as c_uint, &mut actual);
             assert_eq!(rc, OK);
+            assert_eq!(actual as usize, payload.len());
+            assert_eq!(&out[..payload.len()], &payload[..]);
+
+            // cyclic 帧：seq 回 1
+            let rc = shlosilo_ur_encode_next_cyclic(
+                enc,
+                frame_buf.as_mut_ptr(),
+                frame_buf.len() as c_uint,
+                &mut actual,
+            );
+            assert_eq!(rc, OK);
+            let f = core::str::from_utf8(&frame_buf[..actual as usize]).unwrap();
+            assert!(f.starts_with("ur:xmr-txunsigned/1-6/"), "cyclic={f}");
+
+            shlosilo_ur_encode_free(enc);
+            shlosilo_ur_decode_free(dec);
+            // free 后 double free 防护由 L3 契约保证（C 侧置空）；Rust 侧 null 安全
+            shlosilo_ur_encode_free(core::ptr::null_mut());
+            shlosilo_ur_decode_free(core::ptr::null_mut());
         }
-        assert_eq!(shlosilo_ur_decode_complete(dec), 1);
 
-        let mut out = [0u8; 2048];
-        let rc = shlosilo_ur_decode_payload(dec, out.as_mut_ptr(), out.len() as c_uint, &mut actual);
-        assert_eq!(rc, OK);
-        assert_eq!(actual as usize, payload.len());
-        assert_eq!(&out[..payload.len()], &payload[..]);
+        /// P0-C E2E（2026-09-01）: multipart(真实 Sparrow signet PSBT ~12KB) → decode_type
+        /// → shlosilo_sign_typed_ffi 全链路。payload = CBOR bytes item（与单帧 UR 语义一致）。
+        #[test]
+        fn p0c_typed_sign_vertical_slice() {
+            use alloc::ffi::CString;
+            const PSBT: &[u8] = include_bytes!("../../tests/fixtures/sparrow_signet_12k.psbt");
+            let ur_payload = crate::encoding::cbor::encode_bytes(PSBT);
+            assert!(
+                ur_payload.len() > 4096,
+                "fixture must exceed single-frame legacy budget"
+            );
 
-        // cyclic 帧：seq 回 1
-        let rc = shlosilo_ur_encode_next_cyclic(enc, frame_buf.as_mut_ptr(), frame_buf.len() as c_uint, &mut actual);
-        assert_eq!(rc, OK);
-        let f = core::str::from_utf8(&frame_buf[..actual as usize]).unwrap();
-        assert!(f.starts_with("ur:xmr-txunsigned/1-6/"), "cyclic={f}");
+            // mnemonic indices（p63 同源: entropy f284fb... → 12 词）
+            let ent: [u8; 16] = [
+                0xf2, 0x84, 0xfb, 0x6c, 0xa9, 0xf4, 0xd5, 0x83, 0x54, 0x55, 0xbe, 0x65, 0xe4, 0xb2,
+                0x29, 0x16,
+            ];
+            let mnem = crate::entropy::mnemonic::Mnemonic::from_entropy(&ent).unwrap();
+            let idx: Vec<u16> = mnem.indices().to_vec();
 
-        shlosilo_ur_encode_free(enc);
-        shlosilo_ur_decode_free(dec);
-        // free 后 double free 防护由 L3 契约保证（C 侧置空）；Rust 侧 null 安全
-        shlosilo_ur_encode_free(core::ptr::null_mut());
-        shlosilo_ur_decode_free(core::ptr::null_mut());
-    }
+            // multipart encode
+            let tname = c"crypto-psbt".as_ptr();
+            let enc = shlosilo_ur_encode_begin(
+                tname,
+                ur_payload.as_ptr(),
+                ur_payload.len() as c_uint,
+                200,
+            );
+            assert!(!enc.is_null());
+            let frag_count = ur_payload.len().div_ceil(200);
+            let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
+            let mut flen: c_uint = 0;
+            let dec = shlosilo_ur_decode_new();
+            for _ in 0..frag_count {
+                let rc = shlosilo_ur_encode_next(
+                    enc,
+                    frame_buf.as_mut_ptr(),
+                    frame_buf.len() as c_uint,
+                    &mut flen,
+                );
+                assert_eq!(rc, OK);
+                let cf = CString::new(&frame_buf[..flen as usize]).unwrap();
+                let mut accepted: c_uint = 0;
+                let rc = shlosilo_ur_decode_feed(dec, cf.as_ptr(), &mut accepted);
+                assert_eq!(rc, OK, "feed rc={rc}");
+            }
+            assert_eq!(shlosilo_ur_decode_complete(dec), 1);
 
+            // type 提取
+            let mut tbuf = [0u8; 64];
+            let mut tlen: c_uint = 0;
+            let rc =
+                shlosilo_ur_decode_type(dec, tbuf.as_mut_ptr(), tbuf.len() as c_uint, &mut tlen);
+            assert_eq!(rc, OK);
+            assert_eq!(&tbuf[..tlen as usize - 1], b"crypto-psbt");
 
-    /// P0-C E2E（2026-09-01）: multipart(真实 Sparrow signet PSBT ~12KB) → decode_type
-    /// → shlosilo_sign_typed_ffi 全链路。payload = CBOR bytes item（与单帧 UR 语义一致）。
-    #[test]
-    fn p0c_typed_sign_vertical_slice() {
-        use alloc::ffi::CString;
-        const PSBT: &[u8] = include_bytes!("../../tests/fixtures/sparrow_signet_12k.psbt");
-        let ur_payload = crate::encoding::cbor::encode_bytes(PSBT);
-        assert!(ur_payload.len() > 4096, "fixture must exceed single-frame legacy budget");
+            // payload 提取
+            let mut pbuf = [0u8; 16384];
+            let mut plen: c_uint = 0;
+            let rc =
+                shlosilo_ur_decode_payload(dec, pbuf.as_mut_ptr(), pbuf.len() as c_uint, &mut plen);
+            assert_eq!(rc, OK);
+            assert_eq!(plen as usize, ur_payload.len());
+            assert_eq!(&pbuf[..plen as usize], &ur_payload[..]);
 
-        // mnemonic indices（p63 同源: entropy f284fb... → 12 词）
-        let ent: [u8; 16] = [
-            0xf2, 0x84, 0xfb, 0x6c, 0xa9, 0xf4, 0xd5, 0x83, 0x54, 0x55, 0xbe, 0x65, 0xe4, 0xb2,
-            0x29, 0x16,
-        ];
-        let mnem = crate::entropy::mnemonic::Mnemonic::from_entropy(&ent).unwrap();
-        let idx: Vec<u16> = mnem.indices().to_vec();
+            // typed sign: check_network requires BitcoinMainnet(u8=0) for crypto-psbt
+            let tname_c = CString::new("crypto-psbt").unwrap();
+            let mut out = [0u8; 16384 + 512];
+            let mut olen: c_uint = 0;
+            let rc = shlosilo_sign_typed_ffi(
+                tname_c.as_ptr(),
+                pbuf.as_ptr(),
+                plen,
+                idx.as_ptr(),
+                idx.len() as c_int,
+                core::ptr::null(), // passphrase
+                0,
+                0, // network: mainnet(PSBT fixture 是 signet——check_network 对 crypto-psbt 要求 mainnet?)
+                core::ptr::null(),
+                0, // entropy
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                &mut olen,
+            );
+            assert_eq!(rc, OK, "typed sign rc={rc}");
+            assert!(
+                olen as usize > PSBT.len(),
+                "signed output larger than unsigned"
+            );
+            shlosilo_ur_encode_free(enc);
+            shlosilo_ur_decode_free(dec);
+        }
 
-        // multipart encode
-        let tname = c"crypto-psbt".as_ptr();
-        let enc = shlosilo_ur_encode_begin(
-            tname,
-            ur_payload.as_ptr(),
-            ur_payload.len() as c_uint,
-            200,
-        );
-        assert!(!enc.is_null());
-        let frag_count = ur_payload.len().div_ceil(200);
-        let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
-        let mut flen: c_uint = 0;
-        let dec = shlosilo_ur_decode_new();
-        for _ in 0..frag_count {
-            let rc = shlosilo_ur_encode_next(enc, frame_buf.as_mut_ptr(), frame_buf.len() as c_uint, &mut flen);
+        /// P0-C: type 缓冲不足 → BufferTooSmall 写需求值
+        #[test]
+        fn p0c_type_buffer_too_small() {
+            use alloc::ffi::CString;
+            let payload = [7u8; 8];
+            let enc = shlosilo_ur_encode_begin(c"crypto-psbt".as_ptr(), payload.as_ptr(), 8, 8);
+            let dec = shlosilo_ur_decode_new();
+            let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
+            let mut flen: c_uint = 0;
+            let rc = shlosilo_ur_encode_next(
+                enc,
+                frame_buf.as_mut_ptr(),
+                frame_buf.len() as c_uint,
+                &mut flen,
+            );
             assert_eq!(rc, OK);
             let cf = CString::new(&frame_buf[..flen as usize]).unwrap();
-            let mut accepted: c_uint = 0;
-            let rc = shlosilo_ur_decode_feed(dec, cf.as_ptr(), &mut accepted);
-            assert_eq!(rc, OK, "feed rc={rc}");
+            let rc = shlosilo_ur_decode_feed(dec, cf.as_ptr(), core::ptr::null_mut());
+            assert_eq!(rc, OK);
+
+            let mut tbuf = [0u8; 4];
+            let mut tlen: c_uint = 0;
+            let rc =
+                shlosilo_ur_decode_type(dec, tbuf.as_mut_ptr(), tbuf.len() as c_uint, &mut tlen);
+            assert_eq!(rc, to_ffi_code(&err(ShlosiloErrorKind::BufferTooSmall)));
+            assert!(tlen as usize > "crypto-psbt".len());
+            shlosilo_ur_encode_free(enc);
+            shlosilo_ur_decode_free(dec);
         }
-        assert_eq!(shlosilo_ur_decode_complete(dec), 1);
-
-        // type 提取
-        let mut tbuf = [0u8; 64];
-        let mut tlen: c_uint = 0;
-        let rc = shlosilo_ur_decode_type(dec, tbuf.as_mut_ptr(), tbuf.len() as c_uint, &mut tlen);
-        assert_eq!(rc, OK);
-        assert_eq!(&tbuf[..tlen as usize - 1], b"crypto-psbt");
-
-        // payload 提取
-        let mut pbuf = [0u8; 16384];
-        let mut plen: c_uint = 0;
-        let rc = shlosilo_ur_decode_payload(dec, pbuf.as_mut_ptr(), pbuf.len() as c_uint, &mut plen);
-        assert_eq!(rc, OK);
-        assert_eq!(plen as usize, ur_payload.len());
-        assert_eq!(&pbuf[..plen as usize], &ur_payload[..]);
-
-        // typed sign: check_network requires BitcoinMainnet(u8=0) for crypto-psbt
-        let tname_c = CString::new("crypto-psbt").unwrap();
-        let mut out = [0u8; 16384 + 512];
-        let mut olen: c_uint = 0;
-        let rc = shlosilo_sign_typed_ffi(
-            tname_c.as_ptr(),
-            pbuf.as_ptr(),
-            plen,
-            idx.as_ptr(),
-            idx.len() as c_int,
-            core::ptr::null(), // passphrase
-            0,
-            0, // network: mainnet(PSBT fixture 是 signet——check_network 对 crypto-psbt 要求 mainnet?)
-            core::ptr::null(),
-            0, // entropy
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            &mut olen,
-        );
-        assert_eq!(rc, OK, "typed sign rc={rc}");
-        assert!(olen as usize > PSBT.len(), "signed output larger than unsigned");
-        shlosilo_ur_encode_free(enc);
-        shlosilo_ur_decode_free(dec);
+        /// null 句柄/指针防护
+        #[test]
+        fn ffi_multipart_null_guards() {
+            assert!(
+                shlosilo_ur_encode_begin(core::ptr::null(), core::ptr::null(), 0, 200).is_null()
+            );
+            assert!(!shlosilo_ur_decode_new().is_null());
+            let dec = shlosilo_ur_decode_new();
+            assert_eq!(
+                shlosilo_ur_decode_feed(
+                    core::ptr::null_mut(),
+                    c"x".as_ptr(),
+                    core::ptr::null_mut()
+                ),
+                ERR_NULL_POINTER
+            );
+            assert_eq!(
+                shlosilo_ur_decode_progress(core::ptr::null_mut()),
+                ERR_NULL_POINTER
+            );
+            assert_eq!(shlosilo_ur_decode_complete(dec), 0);
+            shlosilo_ur_decode_free(dec);
+        }
     }
-
-    /// P0-C: type 缓冲不足 → BufferTooSmall 写需求值
-    #[test]
-    fn p0c_type_buffer_too_small() {
-        use alloc::ffi::CString;
-        let payload = [7u8; 8];
-        let enc = shlosilo_ur_encode_begin(c"crypto-psbt".as_ptr(), payload.as_ptr(), 8, 8);
-        let dec = shlosilo_ur_decode_new();
-        let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
-        let mut flen: c_uint = 0;
-        let rc = shlosilo_ur_encode_next(enc, frame_buf.as_mut_ptr(), frame_buf.len() as c_uint, &mut flen);
-        assert_eq!(rc, OK);
-        let cf = CString::new(&frame_buf[..flen as usize]).unwrap();
-        let rc = shlosilo_ur_decode_feed(dec, cf.as_ptr(), core::ptr::null_mut());
-        assert_eq!(rc, OK);
-
-        let mut tbuf = [0u8; 4];
-        let mut tlen: c_uint = 0;
-        let rc = shlosilo_ur_decode_type(dec, tbuf.as_mut_ptr(), tbuf.len() as c_uint, &mut tlen);
-        assert_eq!(rc, to_ffi_code(&err(ShlosiloErrorKind::BufferTooSmall)));
-        assert!(tlen as usize > "crypto-psbt".len());
-        shlosilo_ur_encode_free(enc);
-        shlosilo_ur_decode_free(dec);
-    }
-    /// null 句柄/指针防护
-    #[test]
-    fn ffi_multipart_null_guards() {
-        assert!(shlosilo_ur_encode_begin(core::ptr::null(), core::ptr::null(), 0, 200).is_null());
-        assert!(!shlosilo_ur_decode_new().is_null());
-        let dec = shlosilo_ur_decode_new();
-        assert_eq!(shlosilo_ur_decode_feed(core::ptr::null_mut(), c"x".as_ptr(), core::ptr::null_mut()), ERR_NULL_POINTER);
-        assert_eq!(shlosilo_ur_decode_progress(core::ptr::null_mut()), ERR_NULL_POINTER);
-        assert_eq!(shlosilo_ur_decode_complete(dec), 0);
-        shlosilo_ur_decode_free(dec);
-    }
-}
 }
 
 #[cfg(test)]
@@ -1300,13 +1317,7 @@ mod tests {
         // P1-04：入口收 mnemonic（官方向量 abandon×11 + about），seed 库内现场恢复
         let idx: [u16; 12] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3];
         // m/44'/0'/0'/0/0 flat: hardened bit 0x80000000
-        let elems: [u32; 5] = [
-            44 | 0x8000_0000,
-            0x8000_0000,
-            0x8000_0000,
-            0,
-            0,
-        ];
+        let elems: [u32; 5] = [44 | 0x8000_0000, 0x8000_0000, 0x8000_0000, 0, 0];
         let mut buf = [0u8; 1024];
         let mut actual: c_uint = 0;
         let rc = shlosilo_export_readonly_ffi(
@@ -1314,7 +1325,7 @@ mod tests {
             idx.len() as c_int,
             null(), // passphrase
             0,
-            0,      // BitcoinMainnet
+            0, // BitcoinMainnet
             elems.as_ptr(),
             elems.len() as c_uint,
             0, // CryptoHdKey
@@ -1332,11 +1343,8 @@ mod tests {
     fn ffi_supported_lists() {
         let mut net_buf = [0u8; 200];
         let mut n: c_uint = 0;
-        let rc = shlosilo_supported_networks_ffi(
-            net_buf.as_mut_ptr(),
-            net_buf.len() as c_uint,
-            &mut n,
-        );
+        let rc =
+            shlosilo_supported_networks_ffi(net_buf.as_mut_ptr(), net_buf.len() as c_uint, &mut n);
         assert_eq!(rc, OK);
         // Gate4 #1: 真实矩阵 = BTC mainnet / ETH mainnet+sepolia+goerli / XMR mainnet
         assert_eq!(n, 5);
@@ -1402,7 +1410,11 @@ mod tests {
             &mut actual,
         );
         // 全 0 词组 checksum 不合法 → MnemonicInvalidChecksum（P1-05 行为，非 passphrase 上限错误）
-        assert_eq!(rc, crate::error::ShlosiloErrorCode::InvalidMnemonic as i32, "256B passphrase passes the limit check, rc={rc}");
+        assert_eq!(
+            rc,
+            crate::error::ShlosiloErrorCode::InvalidMnemonic as i32,
+            "256B passphrase passes the limit check, rc={rc}"
+        );
     }
 
     /// dice rolls 超上限（>1024）→ DiceRollsInvalidCount
@@ -1508,16 +1520,23 @@ mod tests {
         // P1-01：payload = 真实 eth-sign-request CBOR map（ur-registry 形状）
         // {2: sign_data, 3: data_type=1, 4: chain_id=1}
         let pairs = alloc::vec![
-            (crate::encoding::cbor::encode_uint(2), crate::encoding::cbor::encode_bytes(&raw)),
-            (crate::encoding::cbor::encode_uint(3), crate::encoding::cbor::encode_uint(1)),
-            (crate::encoding::cbor::encode_uint(4), crate::encoding::cbor::encode_uint(1)),
+            (
+                crate::encoding::cbor::encode_uint(2),
+                crate::encoding::cbor::encode_bytes(&raw)
+            ),
+            (
+                crate::encoding::cbor::encode_uint(3),
+                crate::encoding::cbor::encode_uint(1)
+            ),
+            (
+                crate::encoding::cbor::encode_uint(4),
+                crate::encoding::cbor::encode_uint(1)
+            ),
         ];
         let payload = crate::encoding::cbor::encode_map(&pairs);
-        let enc = crate::ur::ur_encode::encode(
-            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
-            &payload,
-        )
-        .unwrap();
+        let enc =
+            crate::ur::ur_encode::encode(crate::ur::ur_encode::UrTypeTag::EthSignRequest, &payload)
+                .unwrap();
         let uri = enc.as_str();
 
         // 直签对照：mnemonic → seed 用 L1 直调（P1-04：restore_seed_ffi 已删，seed 不跨 FFI）
@@ -1531,7 +1550,9 @@ mod tests {
             crate::derivation::bip32_secp256k1::derive_from_seed(ff_seed.as_ref(), &path).unwrap();
         let expected = eip1559::sign_eip1559(&eip1559::Eip1559SignInput {
             tx,
-            private_key: crate::types::SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk)),
+            private_key: crate::types::SecretBytes::new(
+                crate::curve_primitive::secp256k1::scalar_to_bytes(&sk),
+            ),
         })
         .unwrap();
 
@@ -1544,7 +1565,7 @@ mod tests {
             12,
             null(),
             0,
-            10, // network = EthereumMainnet（P1-02：ETH chain_id=1 匹配）
+            10,     // network = EthereumMainnet（P1-02：ETH chain_id=1 匹配）
             null(), // entropy (§B.5)
             0,
             out.as_mut_ptr(),

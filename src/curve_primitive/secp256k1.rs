@@ -89,7 +89,9 @@ pub fn scalar_zero() -> Secp256k1Scalar {
 
 /// Scalar 加法（mod curve order）: result = a + b
 pub fn scalar_add(a: &Secp256k1Scalar, b: &Secp256k1Scalar) -> Secp256k1Scalar {
-    Secp256k1Scalar { inner: a.inner + b.inner }
+    Secp256k1Scalar {
+        inner: a.inner + b.inner,
+    }
 }
 
 /// 标量乘法点: result = -p (point negation, 翻转 y)
@@ -105,7 +107,9 @@ pub fn scalar_negate(a: &Secp256k1Scalar) -> Secp256k1Scalar {
 /// Scalar multiplication mod curve order: result = a * b mod n
 /// (k256::Scalar impl Add, Sub, Mul — Mul already does modular reduction)
 pub fn scalar_mul_n(a: &Secp256k1Scalar, b: &Secp256k1Scalar) -> Secp256k1Scalar {
-    Secp256k1Scalar { inner: a.inner * b.inner }
+    Secp256k1Scalar {
+        inner: a.inner * b.inner,
+    }
 }
 
 /// 从 32 字节构造 secp256k1 标量
@@ -123,9 +127,7 @@ pub fn scalar_from_bytes(bytes: &[u8]) -> Result<Secp256k1Scalar> {
     let field_bytes = FieldBytes::from(arr);
     let ct = <Scalar as PrimeField>::from_repr(field_bytes);
     if bool::from(ct.is_some()) {
-        Ok(Secp256k1Scalar {
-            inner: ct.unwrap(),
-        })
+        Ok(Secp256k1Scalar { inner: ct.unwrap() })
     } else {
         Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
     }
@@ -165,9 +167,8 @@ pub fn point_from_compressed(bytes: &[u8]) -> Result<Secp256k1Point> {
     if bytes.len() != COMPRESSED_POINT_LEN {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    let encoded = k256::Sec1Point::from_bytes(bytes).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let encoded = k256::Sec1Point::from_bytes(bytes)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let affine = Option::from(AffinePoint::from_sec1_point(&encoded))
         .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     Ok(Secp256k1Point { inner: affine })
@@ -243,14 +244,8 @@ mod tests {
         let two_g = base_mul(&two);
         let two_g_compressed = point_to_compressed(&two_g);
         // Print values via assertion failure if not equal
-        assert_eq!(
-            hex_encode_pub(&g_plus_g),
-            hex_encode_pub(&two_g)
-        );
-        assert_eq!(
-            g_plus_g_compressed,
-            two_g_compressed
-        );
+        assert_eq!(hex_encode_pub(&g_plus_g), hex_encode_pub(&two_g));
+        assert_eq!(g_plus_g_compressed, two_g_compressed);
     }
 
     fn hex_encode_pub(p: &Secp256k1Point) -> alloc::string::String {
@@ -283,9 +278,9 @@ mod tests {
         let g_compressed = point_to_compressed(&g);
         // G.x = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
         let g_x: [u8; 32] = [
-            0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95, 0xCE, 0x87, 0x0B,
-            0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59, 0xF2, 0x81, 0x5B, 0x16, 0xF8,
-            0x17, 0x98,
+            0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95, 0xCE, 0x87,
+            0x0B, 0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59, 0xF2, 0x81, 0x5B,
+            0x16, 0xF8, 0x17, 0x98,
         ];
         assert_eq!(&g_compressed[1..33], &g_x);
         assert_eq!(g_compressed[0], 0x02); // y 是偶数

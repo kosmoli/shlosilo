@@ -35,9 +35,7 @@
 //! - `derive_from_seed` 接受 `&[u8]` seed（BIP-39 输出 64 bytes）
 //! - 返回的 `Secp256k1Scalar` 直接受 Zeroize 保护
 
-use crate::curve_primitive::secp256k1::{
-    self as secp, Secp256k1Scalar,
-};
+use crate::curve_primitive::secp256k1::{self as secp, Secp256k1Scalar};
 use crate::derivation::path::DerivationPath;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use hmac::{Hmac, Mac};
@@ -77,7 +75,7 @@ impl core::fmt::Debug for ExtendedPrivKey {
 
 /// 内部扩展私钥（派生过程中的工作形态；drop 时零化）
 struct ExtSk {
-    key: [u8; SCALAR_LEN],      // 私钥 scalar（大端）
+    key: [u8; SCALAR_LEN], // 私钥 scalar（大端）
     chain_code: [u8; 32],
     depth: u8,
     parent_fingerprint: [u8; 4],
@@ -165,8 +163,8 @@ fn master_extsk(seed: &[u8]) -> Result<ExtSk> {
 
 /// CKDpriv 一步
 fn ckd_priv(parent: &ExtSk, index: DerivationIndex) -> Result<ExtSk> {
-    let mut mac = <HmacSha512 as Mac>::new_from_slice(&parent.chain_code)
-        .map_err(|_| err_invalid())?;
+    let mut mac =
+        <HmacSha512 as Mac>::new_from_slice(&parent.chain_code).map_err(|_| err_invalid())?;
 
     let data = MacData::new(parent, index)?;
     Mac::update(&mut mac, &data.buf);
@@ -368,10 +366,7 @@ mod tests {
         let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
         let s1 = derive_from_seed(&SEED16, &path).unwrap();
         let s2 = derive_from_seed(&SEED16, &path).unwrap();
-        assert_eq!(
-            secp::scalar_to_bytes(&s1),
-            secp::scalar_to_bytes(&s2)
-        );
+        assert_eq!(secp::scalar_to_bytes(&s1), secp::scalar_to_bytes(&s2));
     }
 
     /// BIP-32 派生：不同 path 产生不同 scalar
@@ -381,10 +376,7 @@ mod tests {
         let path_b = DerivationPath::parse("m/44'/0'/0'/0/1").unwrap();
         let s_a = derive_from_seed(&SEED16, &path_a).unwrap();
         let s_b = derive_from_seed(&SEED16, &path_b).unwrap();
-        assert_ne!(
-            secp::scalar_to_bytes(&s_a),
-            secp::scalar_to_bytes(&s_b)
-        );
+        assert_ne!(secp::scalar_to_bytes(&s_a), secp::scalar_to_bytes(&s_b));
     }
 
     /// BIP-32 Test Vector 1: master xprv 序列化（BIP-32 官方向量）
@@ -519,7 +511,7 @@ mod tests {
         let xpub = xpub_from_seed(&SEED16, &path).unwrap();
         assert_eq!(&xpub[..4], &[0x04, 0x88, 0xB2, 0x1E]);
         assert_eq!(xpub[4], 1); // depth = 1
-        // 公钥前缀：02 或 03（压缩 SEC1）
+                                // 公钥前缀：02 或 03（压缩 SEC1）
         assert!(xpub[45] == 0x02 || xpub[45] == 0x03);
         // xpub[45..78] 必须等于 base_mul(sk)
         let sk = derive_from_seed(&SEED16, &path).unwrap();

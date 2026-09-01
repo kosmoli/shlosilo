@@ -54,13 +54,13 @@ pub extern "C" fn shlosilo_cabi_check(
     l3_expected_patch: u16,
 ) -> i32 {
     if l3_expected_major != SHLOSILO_CABI_VERSION_MAJOR {
-        return -1;  // major 不匹配 → ABI 不兼容
+        return -1; // major 不匹配 → ABI 不兼容
     }
     if l3_expected_minor != SHLOSILO_CABI_VERSION_MINOR {
-        return -2;  // minor 不匹配 → ABI 不兼容（cabi 改了导出函数签名）
+        return -2; // minor 不匹配 → ABI 不兼容（cabi 改了导出函数签名）
     }
     if l3_expected_patch != SHLOSILO_CABI_VERSION_PATCH {
-        return -3;  // patch 不匹配 → 可能行为有微调
+        return -3; // patch 不匹配 → 可能行为有微调
     }
     0
 }

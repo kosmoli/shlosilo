@@ -64,9 +64,7 @@ fn read_varint(data: &[u8], off: &mut usize) -> Result<u64> {
     let mut value: u64 = 0;
     let mut shift = 0;
     loop {
-        let b = *data
-            .get(*off)
-            .ok_or_else(err)?;
+        let b = *data.get(*off).ok_or_else(err)?;
         *off += 1;
         value |= ((b & 0x7f) as u64) << shift;
         if b & 0x80 == 0 {
@@ -91,25 +89,19 @@ fn read_bool(data: &[u8], off: &mut usize) -> Result<bool> {
 }
 
 fn read_u32(data: &[u8], off: &mut usize) -> Result<u32> {
-    let s = data
-        .get(*off..*off + 4)
-        .ok_or_else(err)?;
+    let s = data.get(*off..*off + 4).ok_or_else(err)?;
     *off += 4;
     Ok(u32::from_le_bytes(s.try_into().unwrap()))
 }
 
 fn read_u64(data: &[u8], off: &mut usize) -> Result<u64> {
-    let s = data
-        .get(*off..*off + 8)
-        .ok_or_else(err)?;
+    let s = data.get(*off..*off + 8).ok_or_else(err)?;
     *off += 8;
     Ok(u64::from_le_bytes(s.try_into().unwrap()))
 }
 
 fn read_bytes(data: &[u8], off: &mut usize, len: usize) -> Result<Vec<u8>> {
-    let s = data
-        .get(*off..*off + len)
-        .ok_or_else(err)?;
+    let s = data.get(*off..*off + len).ok_or_else(err)?;
     *off += len;
     Ok(s.to_vec())
 }
@@ -189,7 +181,10 @@ impl core::fmt::Debug for TxSourceEntry {
             .field("outputs", &self.outputs.len())
             .field("real_output", &self.real_output)
             .field("real_out_tx_key", &"[REDACTED]")
-            .field("real_out_additional_tx_keys", &self.real_out_additional_tx_keys.len())
+            .field(
+                "real_out_additional_tx_keys",
+                &self.real_out_additional_tx_keys.len(),
+            )
             .field("real_output_in_tx_index", &self.real_output_in_tx_index)
             .field("amount", &self.amount)
             .field("rct", &self.rct)
@@ -251,7 +246,11 @@ pub struct UnsignedTx {
 /// ```
 ///
 /// **注意**：这不是标准 Ed25519！Monero 自定义的 crypto_ops::check_signature。
-pub(crate) fn check_monero_signature(hash: &[u8; 32], pubkey: &[u8; 32], sig: &[u8]) -> Result<bool> {
+pub(crate) fn check_monero_signature(
+    hash: &[u8; 32],
+    pubkey: &[u8; 32],
+    sig: &[u8],
+) -> Result<bool> {
     if sig.len() != 64 {
         return Err(err());
     }

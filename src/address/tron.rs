@@ -14,7 +14,9 @@ pub type TronAddress = super::eth::EthAddress;
 /// - 0x41 是 TRON 主网地址前缀（testnet 0xa0）
 pub fn encode(_pubkey: &Secp256k1Point, _network: Network) -> Result<TronAddress> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 #[cfg(test)]
@@ -28,8 +30,14 @@ mod tests {
         // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
         for line in include_str!("tron.rs").lines() {
             let t = line.trim_start();
-            if t.starts_with("//") { continue; }
-            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+            if t.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !t.contains(concat!("unimplemented", "!(")),
+                "panic macro regressed: {}",
+                line
+            );
         }
     }
 }

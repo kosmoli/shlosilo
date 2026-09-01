@@ -99,14 +99,11 @@ pub fn commit(mask: &[u8; SCALAR_LEN], amount: u64) -> Result<CommitmentPoint> {
     //    通过 32 bytes compressed 转换
     let compressed = dalek_point.compress();
     let compressed_bytes = compressed.to_bytes();
-    let verifying_key = VerifyingKey::from_bytes(&compressed_bytes).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let verifying_key = VerifyingKey::from_bytes(&compressed_bytes)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
     // 7. 包装 CommitmentPoint
-    let _ = Commitment {
-        inner: commitment,
-    };
+    let _ = Commitment { inner: commitment };
     Ok(CommitmentPoint {
         inner: verifying_key,
     })
@@ -115,11 +112,7 @@ pub fn commit(mask: &[u8; SCALAR_LEN], amount: u64) -> Result<CommitmentPoint> {
 /// 从 mask + amount 反验证 commitment
 ///
 /// 给定 commitment_point + (mask, amount)，验证 point == mask * H + amount * G
-pub fn verify(
-    commitment_point: &CommitmentPoint,
-    mask: &[u8; SCALAR_LEN],
-    amount: u64,
-) -> bool {
+pub fn verify(commitment_point: &CommitmentPoint, mask: &[u8; SCALAR_LEN], amount: u64) -> bool {
     let mask_scalar = Scalar::from_bytes_mod_order(*mask);
     let mono_mask = monero_ed25519::Scalar::from(mask_scalar);
     let recomputed = MoneroCommitment::new(mono_mask, amount);

@@ -17,16 +17,15 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use chacha20::cipher::{KeyIvInit as _, StreamCipher as _};
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::scalar::Scalar;
 use monero_ed25519::Point;
-use chacha20::cipher::{KeyIvInit as _, StreamCipher as _};
 use rand_core::{CryptoRng, RngCore};
 use zeroize::Zeroizing;
 
 use crate::chain::xmr::output_export::{
-    serialize_key_images, ExportedTransferDetail, ExportedTransferDetails,
-    KEY_IMAGE_RECORD_LEN,
+    serialize_key_images, ExportedTransferDetail, ExportedTransferDetails, KEY_IMAGE_RECORD_LEN,
 };
 use crate::chain::xmr::unsigned_txset::check_monero_signature;
 use crate::encoding::keccak256;
@@ -79,7 +78,11 @@ pub fn decrypt_export_payload(
     cipher.apply_keystream(&mut plain);
 
     // 3. key-image magic 有前置 u32 LE 0；两种 export magic 均带 pk1||pk2
-    let start = if magic == KEY_IMAGE_EXPORT_MAGIC { 4 } else { 0 };
+    let start = if magic == KEY_IMAGE_EXPORT_MAGIC {
+        4
+    } else {
+        0
+    };
     if plain.len() < start + PUBKEY_LEN * 2 {
         return Err(err());
     }
@@ -102,7 +105,8 @@ fn encrypt_export_payload<R: RngCore + CryptoRng>(
 ) -> Result<Vec<u8>> {
     let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
     let nonce_num = rng.next_u64().to_be_bytes();
-    let mut cipher = chacha20::ChaCha20Legacy::new_from_slices(&key, &nonce_num).map_err(|_| err())?;
+    let mut cipher =
+        chacha20::ChaCha20Legacy::new_from_slices(&key, &nonce_num).map_err(|_| err())?;
 
     // 明文段：key-image magic 前置 u32 LE 0；export magic 带 pk1||pk2
     let mut buffer = Vec::with_capacity(4 + 64 + data.len());
@@ -220,11 +224,12 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     rng: &mut R,
 ) -> Result<Vec<u8>> {
     // 1. 解密 OUTPUT_EXPORT payload，校验 pk1/pk2 归属
-    let (pk1, pk2, plain) =
-        decrypt_export_payload(request_payload, OUTPUT_EXPORT_MAGIC, view_sk)?;
+    let (pk1, pk2, plain) = decrypt_export_payload(request_payload, OUTPUT_EXPORT_MAGIC, view_sk)?;
 
     let spend_sk_scalar = Scalar::from_bytes_mod_order(*spend_sk);
-    let spend_pub = (ED25519_BASEPOINT_TABLE * &spend_sk_scalar).compress().to_bytes();
+    let spend_pub = (ED25519_BASEPOINT_TABLE * &spend_sk_scalar)
+        .compress()
+        .to_bytes();
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
     let view_pub = (ED25519_BASEPOINT_TABLE * &v_scalar).compress().to_bytes();
 
@@ -247,7 +252,14 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
 
     // 4. KEY_IMAGE_EXPORT_MAGIC 加密
     let wire = serialize_key_images(&records);
-    encrypt_export_payload(KEY_IMAGE_EXPORT_MAGIC, view_sk, &spend_pub, &view_pub, &wire, rng)
+    encrypt_export_payload(
+        KEY_IMAGE_EXPORT_MAGIC,
+        view_sk,
+        &spend_pub,
+        &view_pub,
+        &wire,
+        rng,
+    )
 }
 
 /// 单 output key image + 签名（对齐 keystone `generate_key_image`）。
@@ -263,10 +275,7 @@ fn compute_key_image_with_signature<R: RngCore + CryptoRng>(
             1 => detail.additional_tx_keys[0],
             n if n > 1 => {
                 let idx = detail.internal_output_index as usize;
-                *detail
-                    .additional_tx_keys
-                    .get(idx)
-                    .ok_or_else(err)?
+                *detail.additional_tx_keys.get(idx).ok_or_else(err)?
             }
             _ => detail.tx_pubkey,
         }
@@ -325,7 +334,12 @@ mod tests {
         let data = b"hello wire";
 
         let enc = encrypt_export_payload(
-            OUTPUT_EXPORT_MAGIC, &view_sk, &spend_pub, &view_pub, data, &mut rng,
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &spend_pub,
+            &view_pub,
+            data,
+            &mut rng,
         )
         .unwrap();
         let (pk1, pk2, plain) =
@@ -340,7 +354,12 @@ mod tests {
         let mut rng = rng_from(2);
         let (_, spend_pub, view_sk, view_pub) = make_keypair(2);
         let enc = encrypt_export_payload(
-            OUTPUT_EXPORT_MAGIC, &view_sk, &spend_pub, &view_pub, b"x", &mut rng,
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &spend_pub,
+            &view_pub,
+            b"x",
+            &mut rng,
         )
         .unwrap();
         assert!(decrypt_export_payload(&enc, KEY_IMAGE_EXPORT_MAGIC, &view_sk).is_err());
@@ -351,7 +370,12 @@ mod tests {
         let mut rng = rng_from(3);
         let (_, spend_pub, view_sk, view_pub) = make_keypair(3);
         let mut enc = encrypt_export_payload(
-            OUTPUT_EXPORT_MAGIC, &view_sk, &spend_pub, &view_pub, b"payload", &mut rng,
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &spend_pub,
+            &view_pub,
+            b"payload",
+            &mut rng,
         )
         .unwrap();
         let last = enc.len() - 1;
@@ -364,7 +388,12 @@ mod tests {
         let mut rng = rng_from(4);
         let (_, spend_pub, view_sk, view_pub) = make_keypair(4);
         let enc = encrypt_export_payload(
-            OUTPUT_EXPORT_MAGIC, &view_sk, &spend_pub, &view_pub, b"payload", &mut rng,
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &spend_pub,
+            &view_pub,
+            b"payload",
+            &mut rng,
         )
         .unwrap();
         let (_, _, other_view, _) = make_keypair(99);
@@ -383,15 +412,14 @@ mod tests {
         plain.extend_from_slice(&[0x00]); // offset
         plain.extend_from_slice(&[0x01]); // transfer_count
         plain.extend_from_slice(&[0x00]); // blob size
-        // detail: version, pubkey, idx, gidx, tx_pubkey, flags, amount, keys, major, minor
+                                          // detail: version, pubkey, idx, gidx, tx_pubkey, flags, amount, keys, major, minor
         plain.extend_from_slice(&[0x01]); // version
-        // output pubkey = input_sk·G，input_sk = spend + offset(0)
-        let offset = crate::chain::xmr::subaddress::calc_output_key_offset(
-            &view_sk, &[0x22u8; 32], 0, 0, 0,
-        )
-        .unwrap();
-        let input_sk = Scalar::from_bytes_mod_order(spend_sk)
-            + Scalar::from_bytes_mod_order(offset);
+                                          // output pubkey = input_sk·G，input_sk = spend + offset(0)
+        let offset =
+            crate::chain::xmr::subaddress::calc_output_key_offset(&view_sk, &[0x22u8; 32], 0, 0, 0)
+                .unwrap();
+        let input_sk =
+            Scalar::from_bytes_mod_order(spend_sk) + Scalar::from_bytes_mod_order(offset);
         let out_pub = (ED25519_BASEPOINT_TABLE * &input_sk).compress().to_bytes();
         plain.extend_from_slice(&out_pub);
         plain.extend_from_slice(&[0x00]); // idx=0
@@ -403,15 +431,17 @@ mod tests {
         plain.extend_from_slice(&[0x00, 0x00]); // major=0 minor=0
 
         let enc_req = encrypt_export_payload(
-            OUTPUT_EXPORT_MAGIC, &view_sk, &spend_pub, &view_pub, &plain, &mut rng,
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &spend_pub,
+            &view_pub,
+            &plain,
+            &mut rng,
         )
         .unwrap();
 
         // 设备侧全流程
-        let enc_resp = generate_key_image_export(
-            &view_sk, &spend_sk, &enc_req, &mut rng,
-        )
-        .unwrap();
+        let enc_resp = generate_key_image_export(&view_sk, &spend_sk, &enc_req, &mut rng).unwrap();
 
         // 热端解密（用 monero 解密路径验证）
         let (_, _, resp_plain) =
@@ -422,19 +452,16 @@ mod tests {
         // key image 独立重算交叉验证
         let (image, sig) = &records[0];
         let expected: [u8; 32] = {
-            let hp: curve25519_dalek::EdwardsPoint =
-                Point::biased_hash(out_pub).into();
+            let hp: curve25519_dalek::EdwardsPoint = Point::biased_hash(out_pub).into();
             (hp * input_sk).compress().to_bytes()
         };
         assert_eq!(*image, expected);
 
         // 伴随签名验证（单环重算 Hs）
-        let i_point: curve25519_dalek::EdwardsPoint =
-            Point::biased_hash(out_pub).into();
+        let i_point: curve25519_dalek::EdwardsPoint = Point::biased_hash(out_pub).into();
         let c = Scalar::from_canonical_bytes(sig[..32].try_into().unwrap()).unwrap();
         let r = Scalar::from_canonical_bytes(sig[32..].try_into().unwrap()).unwrap();
-        let lhs = (ED25519_BASEPOINT_TABLE * &r)
-            + (ED25519_BASEPOINT_TABLE * &c);
+        let lhs = (ED25519_BASEPOINT_TABLE * &r) + (ED25519_BASEPOINT_TABLE * &c);
         let rhs = (r * i_point) + (c * i_point);
         // 期望：Hs(prefix || r·B + c·P || r·I + c·I) == c，其中 P = input_sk·G = out_pub
         // P 点：input_sk·G
@@ -470,12 +497,12 @@ mod tests {
         let data = hex_bytes(DATA_HEX);
         let _ = &data;
 
-        let (pk1, pk2, plain) =
-            crate::chain::xmr::key_image_export::decrypt_export_payload(
-                &data,
-                crate::chain::xmr::key_image_export::OUTPUT_EXPORT_MAGIC,
-                &view_sk,
-            ).expect("shlosilo must decrypt keystone fixture");
+        let (pk1, pk2, plain) = crate::chain::xmr::key_image_export::decrypt_export_payload(
+            &data,
+            crate::chain::xmr::key_image_export::OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+        )
+        .expect("shlosilo must decrypt keystone fixture");
         let _ = pk1;
 
         use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
@@ -496,11 +523,13 @@ mod tests {
     fn hex_to_32(h: &str) -> [u8; 32] {
         let mut out = [0u8; 32];
         for i in 0..32 {
-            out[i] = u8::from_str_radix(&h[i*2..i*2+2], 16).unwrap();
+            out[i] = u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).unwrap();
         }
         out
     }
     fn hex_bytes(h: &str) -> Vec<u8> {
-        (0..h.len()/2).map(|i| u8::from_str_radix(&h[i*2..i*2+2], 16).unwrap()).collect()
+        (0..h.len() / 2)
+            .map(|i| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).unwrap())
+            .collect()
     }
 }

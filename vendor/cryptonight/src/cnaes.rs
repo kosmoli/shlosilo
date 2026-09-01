@@ -278,9 +278,9 @@ pub(crate) fn aesb_single_round(block: &mut u128, round_key: u128) {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::String;
     use super::*;
     use crate::util::hex_to_array;
+    use alloc::string::String;
 
     #[test]
     fn test_substitute_word() {

@@ -1,4 +1,3 @@
-
 //! 真 fixture 端到端验证（ignored，需真钱包产物）:
 //!   cargo test --test real_fixture -- --ignored --nocapture
 //!
@@ -10,8 +9,7 @@
 //!       KEY_IMAGE_EXPORT 加密 → 回读解密互验 → 与 CLI 自算 key image 逐字节比对。
 
 use shlosilo::chain::xmr::key_image_export::{
-    decrypt_export_payload, generate_key_image_export,
-    OUTPUT_EXPORT_MAGIC, KEY_IMAGE_EXPORT_MAGIC,
+    decrypt_export_payload, generate_key_image_export, KEY_IMAGE_EXPORT_MAGIC, OUTPUT_EXPORT_MAGIC,
 };
 use shlosilo::chain::xmr::output_export::{ExportedTransferDetails, KEY_IMAGE_RECORD_LEN};
 
@@ -39,8 +37,10 @@ fn real_wallet_output_export_e2e() {
     assert_eq!(details.details.len(), 1, "expected exactly 1 output");
     let d0 = &details.details[0];
     // CLI 全功能钱包已自算 key image，request 位为 0 —— 记录事实，不作为断言
-    println!("output: amount={} flags={:#b} major={} minor={}",
-             d0.amount, d0.flags, d0.major, d0.minor);
+    println!(
+        "output: amount={} flags={:#b} major={} minor={}",
+        d0.amount, d0.flags, d0.major, d0.minor
+    );
 
     // ② 全流程（内部含 pk1 归属校验 + input_sk·G == output_pubkey）
     use rand_chacha::rand_core::SeedableRng as _;
@@ -50,18 +50,26 @@ fn real_wallet_output_export_e2e() {
     std::fs::write("/tmp/test0830_keyimages", &encrypted).unwrap();
 
     // ③ 回读互验（热端视角解密）
-    let (_rpk1, _rpk2, wire) =
-        decrypt_export_payload(&encrypted, KEY_IMAGE_EXPORT_MAGIC, &view_sk)
-            .expect("roundtrip decrypt failed");
-    assert_eq!(wire.len(), KEY_IMAGE_RECORD_LEN, "1 output = one 96B record");
+    let (_rpk1, _rpk2, wire) = decrypt_export_payload(&encrypted, KEY_IMAGE_EXPORT_MAGIC, &view_sk)
+        .expect("roundtrip decrypt failed");
+    assert_eq!(
+        wire.len(),
+        KEY_IMAGE_RECORD_LEN,
+        "1 output = one 96B record"
+    );
 
     // ④ 黄金参考: 与 CLI 自算的 key image 逐字节比对
     let cli_ki = std::fs::read("/tmp/test0830_cli_ki_all").expect("cli key image fixture");
-    let (_cpk1, _cpk2, cwire) =
-        decrypt_export_payload(&cli_ki, KEY_IMAGE_EXPORT_MAGIC, &view_sk)
-            .expect("cli key image decrypt failed");
+    let (_cpk1, _cpk2, cwire) = decrypt_export_payload(&cli_ki, KEY_IMAGE_EXPORT_MAGIC, &view_sk)
+        .expect("cli key image decrypt failed");
     assert_eq!(cwire.len(), KEY_IMAGE_RECORD_LEN);
     // 记录 = [32B image][64B sig]；image 必须一致（签名含随机数，仅验不比）
     assert_eq!(&wire[..32], &cwire[..32], "key image mismatch vs CLI");
-    println!("key image: {}", wire[..32].iter().map(|b| format!("{:02x}", b)).collect::<String>());
+    println!(
+        "key image: {}",
+        wire[..32]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    );
 }

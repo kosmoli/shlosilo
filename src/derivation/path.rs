@@ -78,7 +78,9 @@ impl DerivationPath {
         let mut len: u8 = 0;
         for n in iter.into_iter() {
             if (len as usize) >= MAX_DEPTH {
-                return Err(ShlosiloError::new(ShlosiloErrorKind::DerivationPathInvalidSyntax));
+                return Err(ShlosiloError::new(
+                    ShlosiloErrorKind::DerivationPathInvalidSyntax,
+                ));
             }
             indices[len as usize] = DerivationIndex(n);
             len += 1;
@@ -86,9 +88,11 @@ impl DerivationPath {
         Ok(Self { indices, len })
     }
 
-pub fn from_indices(indices: &[DerivationIndex]) -> Result<Self> {
+    pub fn from_indices(indices: &[DerivationIndex]) -> Result<Self> {
         if indices.len() > MAX_DEPTH {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::DerivationPathInvalidSyntax));
+            return Err(ShlosiloError::new(
+                ShlosiloErrorKind::DerivationPathInvalidSyntax,
+            ));
         }
         let mut path = Self::empty();
         let mut i = 0;
@@ -113,7 +117,9 @@ pub fn from_indices(indices: &[DerivationIndex]) -> Result<Self> {
         } else if s == "m" || s == "M" {
             return Ok(Self::empty());
         } else {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::DerivationPathInvalidSyntax));
+            return Err(ShlosiloError::new(
+                ShlosiloErrorKind::DerivationPathInvalidSyntax,
+            ));
         };
 
         if rest.is_empty() {
@@ -125,7 +131,9 @@ pub fn from_indices(indices: &[DerivationIndex]) -> Result<Self> {
 
         for component in rest.split('/') {
             if len >= MAX_DEPTH {
-                return Err(ShlosiloError::new(ShlosiloErrorKind::DerivationPathInvalidSyntax));
+                return Err(ShlosiloError::new(
+                    ShlosiloErrorKind::DerivationPathInvalidSyntax,
+                ));
             }
 
             let (num_str, hardened) = if let Some(stripped) = component.strip_suffix('\'') {
@@ -142,7 +150,9 @@ pub fn from_indices(indices: &[DerivationIndex]) -> Result<Self> {
                 ShlosiloError::new(ShlosiloErrorKind::DerivationPathInvalidSyntax)
             })?;
             if value > MAX_SOFT_INDEX {
-                return Err(ShlosiloError::new(ShlosiloErrorKind::DerivationPathIndexOutOfRange));
+                return Err(ShlosiloError::new(
+                    ShlosiloErrorKind::DerivationPathIndexOutOfRange,
+                ));
             }
 
             indices[len] = if hardened {
@@ -296,106 +306,106 @@ mod tests {
     // ============================================================
 
     proptest! {
-    /// 任意 dummy 参数（proptest! 要求所有 fn 都有 in 模式）
-    #[test]
-    fn parse_empty_path_is_valid(_dummy in 0u8..1) {
-        let path = DerivationPath::parse("m").unwrap();
-        prop_assert_eq!(path.len(), 0);
-    }
-
-    /// hardened index "i'" → 高位 0x80000000
-    #[test]
-    fn parse_hardened_sets_high_bit(idx in 0u32..16) {
-        let path_str = format!("m/{}'", idx);
-        let path = DerivationPath::parse(&path_str).unwrap();
-        prop_assert_eq!(path.len(), 1);
-        let first = &path.as_slice()[0];
-        prop_assert_eq!(first.0 & 0x80000000, 0x80000000);
-        prop_assert_eq!(first.0 & 0x7FFFFFFF, idx);
-    }
-
-    /// 正常 index "i" → 高位 0
-    #[test]
-    fn parse_normal_no_high_bit(idx in 0u32..16) {
-        let path_str = format!("m/{}", idx);
-        let path = DerivationPath::parse(&path_str).unwrap();
-        prop_assert_eq!(path.len(), 1);
-        prop_assert_eq!(path.as_slice()[0].0 & 0x80000000, 0);
-        prop_assert_eq!(path.as_slice()[0].0, idx);
-    }
-
-    /// parse → render → 字符串一致（Phase 3 v2 补全）
-    #[test]
-    fn parse_display_round_trip(components in proptest::collection::vec(0u32..32u32, 1..8)) {
-        let path_str = format!(
-            "m/{}",
-            components
-                .iter()
-                .map(|&i| {
-                    if i & 0x80000000 != 0 {
-                        format!("{}'", i & 0x7FFFFFFF)
-                    } else {
-                        i.to_string()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("/")
-        );
-
-        let path = DerivationPath::parse(&path_str).unwrap();
-        prop_assert_eq!(path.len() as usize, components.len());
-
-        let mut rendered = heapless::String::<128>::new();
-        use core::fmt::Write;
-        write!(rendered, "{:?}", path).unwrap();
-        prop_assert_eq!(rendered.as_str(), path_str);
-    }
-    fn from_flat_round_trip(components in proptest::collection::vec(0u32..32u32, 1..8)) {
-        let path = DerivationPath::from_flat(components.iter().copied()).unwrap();
-        prop_assert_eq!(path.len(), components.len());
-        for (i, &c) in components.iter().enumerate() {
-            prop_assert_eq!(path.as_slice()[i].0, c);
-        }
-    }
-
-    /// 全 0 索引路径 → 渲染成 "m/0/0/.../0" 一致（v3 边界）
-    #[test]
-    fn all_zero_indices_round_trip(_dummy in 0u8..1) {
-        let path_str = format!("m/{}", (0..5).map(|_| "0").collect::<Vec<_>>().join("/"));
-
-        let path = DerivationPath::parse(&path_str).unwrap();
-        prop_assert_eq!(path.len(), 5);
-        for i in 0..5 {
-            prop_assert_eq!(path.as_slice()[i].0, 0);
-            prop_assert_eq!(path.as_slice()[i].is_hardened(), false);
+        /// 任意 dummy 参数（proptest! 要求所有 fn 都有 in 模式）
+        #[test]
+        fn parse_empty_path_is_valid(_dummy in 0u8..1) {
+            let path = DerivationPath::parse("m").unwrap();
+            prop_assert_eq!(path.len(), 0);
         }
 
-        let mut rendered = heapless::String::<128>::new();
-        use core::fmt::Write;
-        write!(rendered, "{:?}", path).unwrap();
-        prop_assert_eq!(rendered.as_str(), path_str);
+        /// hardened index "i'" → 高位 0x80000000
+        #[test]
+        fn parse_hardened_sets_high_bit(idx in 0u32..16) {
+            let path_str = format!("m/{}'", idx);
+            let path = DerivationPath::parse(&path_str).unwrap();
+            prop_assert_eq!(path.len(), 1);
+            let first = &path.as_slice()[0];
+            prop_assert_eq!(first.0 & 0x80000000, 0x80000000);
+            prop_assert_eq!(first.0 & 0x7FFFFFFF, idx);
+        }
+
+        /// 正常 index "i" → 高位 0
+        #[test]
+        fn parse_normal_no_high_bit(idx in 0u32..16) {
+            let path_str = format!("m/{}", idx);
+            let path = DerivationPath::parse(&path_str).unwrap();
+            prop_assert_eq!(path.len(), 1);
+            prop_assert_eq!(path.as_slice()[0].0 & 0x80000000, 0);
+            prop_assert_eq!(path.as_slice()[0].0, idx);
+        }
+
+        /// parse → render → 字符串一致（Phase 3 v2 补全）
+        #[test]
+        fn parse_display_round_trip(components in proptest::collection::vec(0u32..32u32, 1..8)) {
+            let path_str = format!(
+                "m/{}",
+                components
+                    .iter()
+                    .map(|&i| {
+                        if i & 0x80000000 != 0 {
+                            format!("{}'", i & 0x7FFFFFFF)
+                        } else {
+                            i.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("/")
+            );
+
+            let path = DerivationPath::parse(&path_str).unwrap();
+            prop_assert_eq!(path.len() as usize, components.len());
+
+            let mut rendered = heapless::String::<128>::new();
+            use core::fmt::Write;
+            write!(rendered, "{:?}", path).unwrap();
+            prop_assert_eq!(rendered.as_str(), path_str);
+        }
+        fn from_flat_round_trip(components in proptest::collection::vec(0u32..32u32, 1..8)) {
+            let path = DerivationPath::from_flat(components.iter().copied()).unwrap();
+            prop_assert_eq!(path.len(), components.len());
+            for (i, &c) in components.iter().enumerate() {
+                prop_assert_eq!(path.as_slice()[i].0, c);
+            }
+        }
+
+        /// 全 0 索引路径 → 渲染成 "m/0/0/.../0" 一致（v3 边界）
+        #[test]
+        fn all_zero_indices_round_trip(_dummy in 0u8..1) {
+            let path_str = format!("m/{}", (0..5).map(|_| "0").collect::<Vec<_>>().join("/"));
+
+            let path = DerivationPath::parse(&path_str).unwrap();
+            prop_assert_eq!(path.len(), 5);
+            for i in 0..5 {
+                prop_assert_eq!(path.as_slice()[i].0, 0);
+                prop_assert_eq!(path.as_slice()[i].is_hardened(), false);
+            }
+
+            let mut rendered = heapless::String::<128>::new();
+            use core::fmt::Write;
+            write!(rendered, "{:?}", path).unwrap();
+            prop_assert_eq!(rendered.as_str(), path_str);
+        }
+
+        /// MAX_DEPTH=16 路径 → 恰好能 parse + render（v3 边界）
+        #[test]
+        fn max_depth_path_round_trip(_dummy in 0u8..1) {
+            let path_str = format!("m/{}", (0..16).map(|_| "0").collect::<Vec<_>>().join("/"));
+
+            let path = DerivationPath::parse(&path_str).unwrap();
+            prop_assert_eq!(path.len(), 16);
+
+            let mut rendered = heapless::String::<256>::new();
+            use core::fmt::Write;
+            write!(rendered, "{:?}", path).unwrap();
+            prop_assert_eq!(rendered.as_str(), path_str);
+        }
+
+        /// MAX_DEPTH+1=17 路径 → 应该 parse 失败（v3 边界）
+        #[test]
+        fn over_max_depth_path_rejected(_dummy in 0u8..1) {
+            let path_str = format!("m/{}", (0..17).map(|_| "0").collect::<Vec<_>>().join("/"));
+            let result = DerivationPath::parse(&path_str);
+            prop_assert!(result.is_err());
+        }
     }
-
-    /// MAX_DEPTH=16 路径 → 恰好能 parse + render（v3 边界）
-    #[test]
-    fn max_depth_path_round_trip(_dummy in 0u8..1) {
-        let path_str = format!("m/{}", (0..16).map(|_| "0").collect::<Vec<_>>().join("/"));
-
-        let path = DerivationPath::parse(&path_str).unwrap();
-        prop_assert_eq!(path.len(), 16);
-
-        let mut rendered = heapless::String::<256>::new();
-        use core::fmt::Write;
-        write!(rendered, "{:?}", path).unwrap();
-        prop_assert_eq!(rendered.as_str(), path_str);
-    }
-
-    /// MAX_DEPTH+1=17 路径 → 应该 parse 失败（v3 边界）
-    #[test]
-    fn over_max_depth_path_rejected(_dummy in 0u8..1) {
-        let path_str = format!("m/{}", (0..17).map(|_| "0").collect::<Vec<_>>().join("/"));
-        let result = DerivationPath::parse(&path_str);
-        prop_assert!(result.is_err());
-    }
-}
 }

@@ -7,12 +7,14 @@
 //! - outputs: 1000 sat P2WPKH + 650087 sat 找零 P2WPKH
 //! - SIGHASH_ALL
 
-use shlosilo::chain::btc::psbt::{parse_psbt, input_type, get_witness_utxo};
+use shlosilo::chain::btc::psbt::{get_witness_utxo, input_type, parse_psbt};
 
 const PSBT_BYTES: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 
 fn der_path(input_map: &[shlosilo::chain::btc::psbt::KeyValue]) -> Option<(Vec<u8>, Vec<u32>)> {
-    let kv = input_map.iter().find(|kv| kv.key.first() == Some(&input_type::BIP32_DERIVATION))?;
+    let kv = input_map
+        .iter()
+        .find(|kv| kv.key.first() == Some(&input_type::BIP32_DERIVATION))?;
     let pk = kv.key[1..].to_vec();
     // BIP-174: value = master_fingerprint(4B) + path elements (u32LE each), no explicit depth
     if kv.value.len() < 8 || (kv.value.len() - 4) % 4 != 0 {
@@ -23,7 +25,10 @@ fn der_path(input_map: &[shlosilo::chain::btc::psbt::KeyValue]) -> Option<(Vec<u
     for j in 0..depth {
         let o = 4 + 4 * j;
         path.push(u32::from_le_bytes([
-            kv.value[o], kv.value[o+1], kv.value[o+2], kv.value[o+3],
+            kv.value[o],
+            kv.value[o + 1],
+            kv.value[o + 2],
+            kv.value[o + 3],
         ]));
     }
     Some((pk, path))
@@ -48,7 +53,11 @@ fn p63_read_real_derivation_path() {
     assert_eq!(path.len(), 5);
     assert_eq!(path[0], 84 | H);
     // coin type 1' = signet —— 若这里断言 0' 则说明读的是硬编码值而非 fixture
-    assert_eq!(path[1], 1 | H, "coin type must come from PSBT (1'=signet), not hardcoded 0'");
+    assert_eq!(
+        path[1],
+        1 | H,
+        "coin type must come from PSBT (1'=signet), not hardcoded 0'"
+    );
     assert_eq!(path[2], H);
     assert_eq!(path[3], 0);
     assert_eq!(path[4], 2, "address index 2 from fixture");

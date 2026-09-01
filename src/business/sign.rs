@@ -10,8 +10,8 @@ use crate::derivation::path::DerivationPath;
 use crate::entropy::mnemonic::Mnemonic;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::network::Network;
-use crate::types::SecretBytes;
 use crate::tx::tx_normalize;
+use crate::types::SecretBytes;
 
 extern crate alloc;
 
@@ -78,13 +78,7 @@ pub fn sign(
     ur_payload: &[u8],
     output_buf: &mut [u8],
 ) -> Result<usize> {
-    sign_with_entropy(
-        sign_input,
-        type_tag,
-        ur_payload,
-        &[],
-        output_buf,
-    )
+    sign_with_entropy(sign_input, type_tag, ur_payload, &[], output_buf)
 }
 
 /// 签名业务入口（§B.5 RNG 注入扩展）：entropy 参数供 XMR 路径派生签名随机流。
@@ -155,10 +149,8 @@ fn sign_xmr(
     let view_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv());
 
     // 2. 解密（内部验签，view key 不匹配 → Err）
-    let plain = crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset(
-        encrypted_unsigned,
-        &view_sec,
-    )?;
+    let plain =
+        crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset(encrypted_unsigned, &view_sec)?;
     let unsigned_tx = deserialize_unsigned_tx(&plain)?;
 
     // 3. 逐 tx 签名（§B.5 purpose 子域：tx-key r / BP+ / CLSAG(i) 独立派生）
@@ -228,14 +220,13 @@ fn sign_xmr(
         // key images：签名 wire 内已有；此处重建字符串 + 外层列表
         let mut ki_str = String::new();
         for src in &tx_data.sources {
-            let (ki, _off) =
-                crate::chain::xmr::subaddress::derive_input_from_source(
-                    &view_sec,
-                    &spend_sec,
-                    src,
-                    tx_data.subaddr_account,
-                    &tx_data.subaddr_indices,
-                )?;
+            let (ki, _off) = crate::chain::xmr::subaddress::derive_input_from_source(
+                &view_sec,
+                &spend_sec,
+                src,
+                tx_data.subaddr_account,
+                &tx_data.subaddr_indices,
+            )?;
             ki_str.push('<');
             for b in ki {
                 ki_str.push_str(&alloc::format!("{:02x}", b));
@@ -334,7 +325,6 @@ fn sign_xmr(
     Ok(encrypted.len())
 }
 
-
 /// 从 BIP32_DERIVATION value 解析 master fingerprint + 派生路径
 /// value 格式（BIP-174）：master_key_fingerprint(4B) || derivation_index(u32LE) × depth
 /// P1-02：fingerprint 与路径一起返回（调用方比对本机 master fingerprint，防错链签名）
@@ -349,12 +339,7 @@ fn parse_derivation_value(value: &[u8]) -> Option<([u8; 4], DerivationPath)> {
     let mut flat = alloc::vec::Vec::with_capacity(depth);
     for j in 0..depth {
         let o = 4 + 4 * j;
-        let raw = u32::from_le_bytes([
-            value[o],
-            value[o + 1],
-            value[o + 2],
-            value[o + 3],
-        ]);
+        let raw = u32::from_le_bytes([value[o], value[o + 1], value[o + 2], value[o + 3]]);
         flat.push(raw);
     }
     DerivationPath::from_flat(flat).ok().map(|p| (fp, p))
@@ -389,8 +374,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     // P1-02：本机 master fingerprint（BIP-32 序列化字段 5..9），PSBT 提示的
     // fingerprint 不一致 = 该 PSBT 不是本机钱包的（错 seed/错钱包），拒绝签名
     use alloc::vec::Vec;
-    let local_fp =
-        crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(seed)?;
+    let local_fp = crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(seed)?;
 
     for idx in 0..psbt.unsigned_tx.inputs.len() {
         // P1-02：BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth)，
@@ -398,15 +382,16 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         // 无该字段时才 fallback 默认路径（过渡行为，P6.4 收紧）。
         // P1-B：无 BIP32_DERIVATION 的输入不再 fallback 默认路径（收紧），
         // 所有输入必须显式携带 ownership records（P6.4 过渡行为提前落地）。
-        let (_fp0, path_used) = read_bip32_derivation(psbt.inputs.get(idx).ok_or_else(
-            || err(ShlosiloErrorKind::EncodingInvalidFormat),
-        )?)
+        let (_fp0, path_used) = read_bip32_derivation(
+            psbt.inputs
+                .get(idx)
+                .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?,
+        )
         .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
         if _fp0 != local_fp {
             return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
         }
-        let sk =
-            crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path_used)?;
+        let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path_used)?;
         let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
 
         // R4 所有权绑定：派生公钥必须与 PSBT BIP32_DERIVATION 携带的 pubkey 一致。
@@ -473,9 +458,8 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
                 }
             }
         }
-        let pubkey_hash = pubkey_hash.ok_or_else(|| {
-            err(ShlosiloErrorKind::EncodingInvalidFormat)
-        })?;
+        let pubkey_hash =
+            pubkey_hash.ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
         // P1-B：witness utxo 绑定——金额与 scriptPubKey 必须是本输入自己的，
         // 且 scriptPubKey 必须是 P2WPKH(OP_0 PUSH20) 且 HASH160 == 我们的 pubkey_hash
@@ -520,7 +504,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
 /// 派生路径 = m/44'/60'/0'/0/0。
 fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<usize> {
     use crate::chain::eth::{eip1559, from_rlp};
-    use crate::ur::codec::eth_sign_request::{EthSignDataType, parse_eth_sign_request};
+    use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
 
     let req = parse_eth_sign_request(cbor_payload)?;
     match req.data_type {
@@ -589,9 +573,7 @@ pub(crate) fn check_network(
     network: Network,
 ) -> Result<()> {
     match type_tag {
-        crate::ur::ur_encode::UrTypeTag::CryptoPsbt
-            if network != Network::BitcoinMainnet =>
-        {
+        crate::ur::ur_encode::UrTypeTag::CryptoPsbt if network != Network::BitcoinMainnet => {
             return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
         }
         crate::ur::ur_encode::UrTypeTag::EthSignRequest
@@ -705,7 +687,9 @@ mod tests {
         let direct = crate::chain::eth::eip1559::sign_eip1559(
             &crate::chain::eth::eip1559::Eip1559SignInput {
                 tx: tx.clone(),
-                private_key: SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk)),
+                private_key: SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(
+                    &sk,
+                )),
             },
         )
         .unwrap();
@@ -771,7 +755,10 @@ mod tests {
             &ur_payload,
             &mut output_buf,
         );
-        assert_eq!(result.unwrap_err().kind, ShlosiloErrorKind::NetworkUnrecognized);
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::NetworkUnrecognized
+        );
     }
 
     /// P1-01：ETH 端到端拒绝 personal-message（当前不支持）
@@ -799,7 +786,10 @@ mod tests {
             &ur_payload,
             &mut output_buf,
         );
-        assert_eq!(result.unwrap_err().kind, ShlosiloErrorKind::ChainKindUnsupported);
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::ChainKindUnsupported
+        );
     }
 
     /// 测试辅助：把未签名 EIP-1559 tx 编成 raw bytes（供 from_rlp 解析）
@@ -928,7 +918,9 @@ mod tests {
                 },
                 // BIP-174 规范形状：master_fingerprint(4B) || child(u32LE) × depth
                 value: {
-                    let local_fp = crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed).unwrap();
+                    let local_fp =
+                        crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed)
+                            .unwrap();
                     let mut vv = alloc::vec::Vec::new();
                     vv.extend_from_slice(&local_fp);
                     for c in path.as_slice() {
@@ -981,9 +973,7 @@ mod tests {
         .expect("sighash");
         let pk = crate::curve_primitive::secp256k1::point_from_compressed(&compressed_pk).unwrap();
         assert!(crate::signature::ecdsa_secp256k1::verify(
-            &pk,
-            &sighash,
-            &ecdsa_sig
+            &pk, &sighash, &ecdsa_sig
         ));
     }
 
@@ -1010,12 +1000,18 @@ mod tests {
             unsigned_tx: Transaction {
                 version: 2,
                 inputs: alloc::vec![TxIn {
-                    prev_out: OutPoint { txid: [0xABu8; 32], vout: 0 },
+                    prev_out: OutPoint {
+                        txid: [0xABu8; 32],
+                        vout: 0
+                    },
                     script_sig: Vec::new(),
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
-                outputs: alloc::vec![TxOut { value: 90_000, script_pubkey: spk.clone() }],
+                outputs: alloc::vec![TxOut {
+                    value: 90_000,
+                    script_pubkey: spk.clone()
+                }],
                 lock_time: 0,
             },
             inputs: alloc::vec![],
@@ -1025,7 +1021,8 @@ mod tests {
         wu_value.extend_from_slice(&100_000u64.to_le_bytes());
         wu_value.push(22);
         wu_value.extend_from_slice(&spk);
-        let local_fp = crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed).unwrap();
+        let local_fp =
+            crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed).unwrap();
         psbt.inputs.push(alloc::vec![
             psbt::KeyValue {
                 key: alloc::vec![input_type::WITNESS_UTXO],
@@ -1060,7 +1057,10 @@ mod tests {
             &mut output_buf,
         );
         // 路径贯通证明：若 fallback 默认路径，派生 key ≠ fixture key → 签名失败
-        assert!(result.is_ok(), "non-default-path PSBT must sign via BIP32_DERIVATION path");
+        assert!(
+            result.is_ok(),
+            "non-default-path PSBT must sign via BIP32_DERIVATION path"
+        );
     }
 
     /// P1-02：BIP32_DERIVATION fingerprint 与本机不一致 → 拒绝（防错钱包签名）
@@ -1086,12 +1086,18 @@ mod tests {
             unsigned_tx: Transaction {
                 version: 2,
                 inputs: alloc::vec![TxIn {
-                    prev_out: OutPoint { txid: [0xABu8; 32], vout: 0 },
+                    prev_out: OutPoint {
+                        txid: [0xABu8; 32],
+                        vout: 0
+                    },
                     script_sig: Vec::new(),
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
-                outputs: alloc::vec![TxOut { value: 90_000, script_pubkey: spk.clone() }],
+                outputs: alloc::vec![TxOut {
+                    value: 90_000,
+                    script_pubkey: spk.clone()
+                }],
                 lock_time: 0,
             },
             inputs: alloc::vec![],
@@ -1166,12 +1172,18 @@ mod tests {
             unsigned_tx: Transaction {
                 version: 2,
                 inputs: alloc::vec![TxIn {
-                    prev_out: OutPoint { txid: [0xABu8; 32], vout: 0 },
+                    prev_out: OutPoint {
+                        txid: [0xABu8; 32],
+                        vout: 0
+                    },
                     script_sig: Vec::new(),
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
-                outputs: alloc::vec![TxOut { value: 90_000, script_pubkey: spk.clone() }],
+                outputs: alloc::vec![TxOut {
+                    value: 90_000,
+                    script_pubkey: spk.clone()
+                }],
                 lock_time: 0,
             },
             inputs: alloc::vec![alloc::vec![
@@ -1192,7 +1204,9 @@ mod tests {
                         k
                     },
                     value: {
-                        let fp = crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed).unwrap();
+                        let fp =
+                            crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed)
+                                .unwrap();
                         let mut vv = alloc::vec::Vec::new();
                         vv.extend_from_slice(&fp);
                         for c in path.as_slice() {
@@ -1236,12 +1250,18 @@ mod tests {
             unsigned_tx: Transaction {
                 version: 2,
                 inputs: alloc::vec![TxIn {
-                    prev_out: OutPoint { txid: [0xABu8; 32], vout: 0 },
+                    prev_out: OutPoint {
+                        txid: [0xABu8; 32],
+                        vout: 0
+                    },
                     script_sig: Vec::new(),
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
-                outputs: alloc::vec![TxOut { value: 90_000, script_pubkey: spk.clone() }],
+                outputs: alloc::vec![TxOut {
+                    value: 90_000,
+                    script_pubkey: spk.clone()
+                }],
                 lock_time: 0,
             },
             inputs: alloc::vec![alloc::vec![psbt::KeyValue {
@@ -1292,7 +1312,8 @@ mod tests {
         let test_seed = [7u8; 64];
         // 非默认路径：account 1
         let path = DerivationPath::parse("m/44'/60'/1'/0/0").unwrap();
-        let derived = crate::derivation::bip32_secp256k1::derive_from_seed(&test_seed, &path).unwrap();
+        let derived =
+            crate::derivation::bip32_secp256k1::derive_from_seed(&test_seed, &path).unwrap();
         let derived_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&derived);
         let expected = crate::chain::eth::eip1559::sign_eip1559(
             &crate::chain::eth::eip1559::Eip1559SignInput {
@@ -1303,8 +1324,7 @@ mod tests {
         .unwrap();
 
         let raw = encode_unsigned_tx_for_test(&tx);
-        let ur_payload =
-            encode_eth_sign_request_with_path_for_test(&raw, 1, 1, Some(&path));
+        let ur_payload = encode_eth_sign_request_with_path_for_test(&raw, 1, 1, Some(&path));
 
         let mut output_buf = [0u8; 512];
         let input = SignInput::Seed { seed: &test_seed };
@@ -1403,4 +1423,3 @@ mod tests {
         assert!(result.is_ok());
     }
 }
-

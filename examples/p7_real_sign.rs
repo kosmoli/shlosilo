@@ -4,7 +4,10 @@ use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction;
 use shlosilo::chain::xmr::unsigned_txset::{decrypt_unsigned_txset, deserialize_unsigned_tx};
 
 fn hex32(s: &str) -> [u8; 32] {
-    let v: Vec<u8> = (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect();
+    let v: Vec<u8> = (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect();
     v.try_into().unwrap()
 }
 
@@ -20,7 +23,11 @@ fn main() {
     let utx = deserialize_unsigned_tx(&plain).expect("deserialize");
     assert_eq!(utx.txes.len(), 1);
     let tx_data = &utx.txes[0];
-    println!("signing: {} source(s), ring={}", tx_data.sources.len(), tx_data.sources[0].outputs.len());
+    println!(
+        "signing: {} source(s), ring={}",
+        tx_data.sources.len(),
+        tx_data.sources[0].outputs.len()
+    );
 
     let mut rng = rand_core::OsRng;
     let bytes = sign_tx_from_construction(tx_data, &spend, &view, &mut rng).expect("sign");

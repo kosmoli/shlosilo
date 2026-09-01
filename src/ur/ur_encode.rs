@@ -224,9 +224,18 @@ mod xmr_tag_tests {
     /// 兼容别名 crypto-monero-tx 仍 dispatch 到 XMR（三个 tag → 同一 ChainKind）
     #[test]
     fn legacy_alias_still_dispatches_xmr() {
-        for tag in [UrTypeTag::CryptoMoneroTx, UrTypeTag::XmrTxUnsigned, UrTypeTag::XmrTxSigned] {
+        for tag in [
+            UrTypeTag::CryptoMoneroTx,
+            UrTypeTag::XmrTxUnsigned,
+            UrTypeTag::XmrTxSigned,
+        ] {
             let t = crate::tx::tx_normalize::to_template(tag, b"x").unwrap();
-            assert_eq!(t.chain_kind, crate::types::chain_kind::ChainKind::Xmr, "tag {:?}", tag);
+            assert_eq!(
+                t.chain_kind,
+                crate::types::chain_kind::ChainKind::Xmr,
+                "tag {:?}",
+                tag
+            );
         }
     }
 }

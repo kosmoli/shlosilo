@@ -11,8 +11,8 @@
 //! shlosilo 独立实现必须逐字节一致。
 
 use shlosilo::chain::btc::taproot::{
-    bip341_keypath_sighash, compute_merkle_root, tap_branch_hash, tap_leaf_hash,
-    SpentOutput, TaprootSighashInput,
+    bip341_keypath_sighash, compute_merkle_root, tap_branch_hash, tap_leaf_hash, SpentOutput,
+    TaprootSighashInput,
 };
 
 fn hex_32(s: &str) -> [u8; 32] {
@@ -107,15 +107,56 @@ impl OfficialTx {
     /// spent outputs (spk, amount_sats) per input
     fn spent_outputs() -> [SpentOutput; 9] {
         [
-            SpentOutput { value: 420000000, script_pubkey: hex_bytes("512053a1f6e454df1aa2776a2814a721372d6258050de330b3c6d10ee8f4e0dda343") },
-            SpentOutput { value: 462000000, script_pubkey: hex_bytes("5120147c9c57132f6e7ecddba9800bb0c4449251c92a1e60371ee77557b6620f3ea3") },
-            SpentOutput { value: 294000000, script_pubkey: hex_bytes("76a914751e76e8199196d454941c45d1b3a323f1433bd688ac") },
-            SpentOutput { value: 504000000, script_pubkey: hex_bytes("5120e4d810fd50586274face62b8a807eb9719cef49c04177cc6b76a9a4251d5450e") },
-            SpentOutput { value: 630000000, script_pubkey: hex_bytes("512091b64d5324723a985170e4dc5a0f84c041804f2cd12660fa5dec09fc21783605") },
-            SpentOutput { value: 378000000, script_pubkey: hex_bytes("00147dd65592d0ab2fe0d0257d571abf032cd9db93dc") },
-            SpentOutput { value: 672000000, script_pubkey: hex_bytes("512075169f4001aa68f15bbed28b218df1d0a62cbbcf1188c6665110c293c907b831") },
-            SpentOutput { value: 546000000, script_pubkey: hex_bytes("5120712447206d7a5238acc7ff53fbe94a3b64539ad291c7cdbc490b7577e4b17df5") },
-            SpentOutput { value: 588000000, script_pubkey: hex_bytes("512077e30a5522dd9f894c3f8b8bd4c4b2cf82ca7da8a3ea6a239655c39c050ab220") },
+            SpentOutput {
+                value: 420000000,
+                script_pubkey: hex_bytes(
+                    "512053a1f6e454df1aa2776a2814a721372d6258050de330b3c6d10ee8f4e0dda343",
+                ),
+            },
+            SpentOutput {
+                value: 462000000,
+                script_pubkey: hex_bytes(
+                    "5120147c9c57132f6e7ecddba9800bb0c4449251c92a1e60371ee77557b6620f3ea3",
+                ),
+            },
+            SpentOutput {
+                value: 294000000,
+                script_pubkey: hex_bytes("76a914751e76e8199196d454941c45d1b3a323f1433bd688ac"),
+            },
+            SpentOutput {
+                value: 504000000,
+                script_pubkey: hex_bytes(
+                    "5120e4d810fd50586274face62b8a807eb9719cef49c04177cc6b76a9a4251d5450e",
+                ),
+            },
+            SpentOutput {
+                value: 630000000,
+                script_pubkey: hex_bytes(
+                    "512091b64d5324723a985170e4dc5a0f84c041804f2cd12660fa5dec09fc21783605",
+                ),
+            },
+            SpentOutput {
+                value: 378000000,
+                script_pubkey: hex_bytes("00147dd65592d0ab2fe0d0257d571abf032cd9db93dc"),
+            },
+            SpentOutput {
+                value: 672000000,
+                script_pubkey: hex_bytes(
+                    "512075169f4001aa68f15bbed28b218df1d0a62cbbcf1188c6665110c293c907b831",
+                ),
+            },
+            SpentOutput {
+                value: 546000000,
+                script_pubkey: hex_bytes(
+                    "5120712447206d7a5238acc7ff53fbe94a3b64539ad291c7cdbc490b7577e4b17df5",
+                ),
+            },
+            SpentOutput {
+                value: 588000000,
+                script_pubkey: hex_bytes(
+                    "512077e30a5522dd9f894c3f8b8bd4c4b2cf82ca7da8a3ea6a239655c39c050ab220",
+                ),
+            },
         ]
     }
     /// tx outputs (value, spk): P2PKH 0.1 BTC + P2TR (witness v1, program 直接跟在 0x0020 后)
@@ -283,11 +324,7 @@ fn bip341_official_script_two_leaves() {
     // control blocks: leaf0 → sibling l1; leaf1 → sibling l0
     // cb0 = c0 || internal || l1 （官方 scriptPathControlBlocks[0]）
     let internal = hex_32("ee4fe085983462a184015d1f782d6a5f8b9c2b60130aff050ce221ecf3786592");
-    let cb0_expected = format!(
-        "c0{}{}",
-        hex_encode(&internal),
-        hex_encode(&l1)
-    );
+    let cb0_expected = format!("c0{}{}", hex_encode(&internal), hex_encode(&l1));
     let _ = cb0_expected; // control block 组装在 build_control_block 测试中覆盖
 
     // compute_merkle_root via co-path: root == branch(l0, l1)
@@ -320,7 +357,7 @@ fn bip341_official_script_three_levels() {
     );
 
     // co-paths:
-    // leaf0 → sibling n12；leaf1 → sibling lh0 then n12 的另一半... 
+    // leaf0 → sibling n12；leaf1 → sibling lh0 then n12 的另一半...
     // 官方 cb for leaf1: c0||internal||lh0||n12 的兄弟侧
     // compute_merkle_root(leaf1, [lh0, ???]) — leaf1 在右子树的左位置:
     //   level1: n12 = branch(lh1, lh2)，leaf1 的 sibling 是 lh2

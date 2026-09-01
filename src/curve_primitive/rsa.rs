@@ -30,7 +30,9 @@ pub struct RsaPubKey(/* private fields */);
 /// Phase 4 真实实现：`rsa::pkcs8::DecodePrivateKey::from_pkcs8_der(bytes)`
 pub fn privkey_from_pkcs8_der(_bytes: &[u8]) -> Result<RsaPrivKey> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 /// 解析 SubjectPublicKeyInfo 格式的 RSA 公钥
@@ -38,7 +40,9 @@ pub fn privkey_from_pkcs8_der(_bytes: &[u8]) -> Result<RsaPrivKey> {
 /// Phase 4 真实实现：`rsa::pkcs8::DecodePublicKey::from_public_key_der(bytes)`
 pub fn pubkey_from_spki_der(_bytes: &[u8]) -> Result<RsaPubKey> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 /// RSA-PSS 签名
@@ -52,7 +56,9 @@ pub fn sign_pss(
     _salt_len: usize,
 ) -> Result<heapless::Vec<u8, RSA_SIGNATURE_MAX_LEN>> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 /// RSA-PSS 验签
@@ -86,9 +92,14 @@ mod tests {
     fn stub_returns_feature_not_implemented() {
         // P2-01：stub 不再 panic——返回稳定错误码
         let e = privkey_from_pkcs8_der(&[]).err().expect("should err");
-        assert_eq!(e.kind, crate::error::ShlosiloErrorKind::FeatureNotImplemented);
+        assert_eq!(
+            e.kind,
+            crate::error::ShlosiloErrorKind::FeatureNotImplemented
+        );
         let e = pubkey_from_spki_der(&[]).err().expect("should err");
-        assert_eq!(e.kind, crate::error::ShlosiloErrorKind::FeatureNotImplemented);
+        assert_eq!(
+            e.kind,
+            crate::error::ShlosiloErrorKind::FeatureNotImplemented
+        );
     }
-
 }

@@ -12,20 +12,20 @@
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChainKind {
-    Btc      = 0,
-    Eth      = 1,
-    Tron     = 2,
-    Xrp      = 3,
-    Sol      = 4,
-    Apt      = 5,
-    Sui      = 6,
-    Near     = 7,
-    Ada      = 8,
-    Xmr      = 9,
-    Ar       = 10,
-    Cosmos   = 11,    // v1.1 新增：Cosmos 生态统称
-    Polkadot = 12,    // v1.1 新增：Polkadot/Substrate 签名栈统称
-    Unknown  = 255,
+    Btc = 0,
+    Eth = 1,
+    Tron = 2,
+    Xrp = 3,
+    Sol = 4,
+    Apt = 5,
+    Sui = 6,
+    Near = 7,
+    Ada = 8,
+    Xmr = 9,
+    Ar = 10,
+    Cosmos = 11,   // v1.1 新增：Cosmos 生态统称
+    Polkadot = 12, // v1.1 新增：Polkadot/Substrate 签名栈统称
+    Unknown = 255,
 }
 
 impl ChainKind {
@@ -65,15 +65,24 @@ mod tests {
     extern crate alloc;
     use alloc::format;
     use alloc::vec;
-    
+
     use proptest::prelude::*;
 
     #[test]
     fn ur_type_inference() {
         assert_eq!(ChainKind::from_ur_type_tag("crypto-psbt"), ChainKind::Btc);
-        assert_eq!(ChainKind::from_ur_type_tag("eth-sign-request"), ChainKind::Eth);
-        assert_eq!(ChainKind::from_ur_type_tag("crypto-monero-tx"), ChainKind::Xmr);
-        assert_eq!(ChainKind::from_ur_type_tag("unknown-tx"), ChainKind::Unknown);
+        assert_eq!(
+            ChainKind::from_ur_type_tag("eth-sign-request"),
+            ChainKind::Eth
+        );
+        assert_eq!(
+            ChainKind::from_ur_type_tag("crypto-monero-tx"),
+            ChainKind::Xmr
+        );
+        assert_eq!(
+            ChainKind::from_ur_type_tag("unknown-tx"),
+            ChainKind::Unknown
+        );
     }
 
     #[test]

@@ -70,7 +70,11 @@ pub struct RctSigBase {
 
 impl RctSigBase {
     pub fn new(rct_type: u8, fee: u64, pseudo_outs: Vec<[u8; 32]>) -> Self {
-        Self { rct_type, fee, pseudo_outs }
+        Self {
+            rct_type,
+            fee,
+            pseudo_outs,
+        }
     }
 
     /// Serialize base (BIP-compatible with XMR wire format)
@@ -109,7 +113,12 @@ impl RctSigPrunable {
         bulletproofs: Vec<Bulletproof>,
         clsag_sigs: Vec<ClsagProof>,
     ) -> Self {
-        Self { commitments, encrypted_amounts, bulletproofs, clsag_sigs }
+        Self {
+            commitments,
+            encrypted_amounts,
+            bulletproofs,
+            clsag_sigs,
+        }
     }
 
     /// 序列化 prunable (BIP-compatible with XMR wire format)
@@ -244,10 +253,10 @@ pub fn pseudo_out_commitment(pseudo_mask: &Scalar) -> [u8; 32] {
 mod tests {
     extern crate std;
     use super::*;
-    use alloc::vec;
     use crate::chain::xmr::clsag as clsag_mod;
     use crate::chain::xmr::reduce_scalar::reduce_scalar;
     use alloc::string::String;
+    use alloc::vec;
     use rand_core::OsRng;
     use std::eprintln;
 
@@ -270,11 +279,7 @@ mod tests {
         let bytes = base.serialize();
         // type=3, varint(fee), varint(2 pseudo_outs), 2x32 bytes
         assert_eq!(bytes[0], rct_type::BULLETPROOFS_PLUS);
-        eprintln!(
-            "RctSigBase ({} bytes): {}",
-            bytes.len(),
-            hex_encode(&bytes)
-        );
+        eprintln!("RctSigBase ({} bytes): {}", bytes.len(), hex_encode(&bytes));
     }
 
     /// Pedersen commitment 构造
@@ -282,16 +287,20 @@ mod tests {
     fn commitment_construction() {
         let scalar_bytes = reduce_scalar(&[0x55u8; 32]).unwrap();
         let mask = {
-    let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-    let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-    Scalar::read(&mut cursor).expect("reduced scalar")
-};
+            let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
+            let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
+            Scalar::read(&mut cursor).expect("reduced scalar")
+        };
         let amount: u64 = 1000;
         let c = make_commitment(&mask, amount);
         let point = c.commit();
         let compressed = point.compress();
         assert_eq!(compressed.to_bytes().len(), 32);
-        eprintln!("Commitment({} piconero): {}", amount, hex_encode(&compressed.to_bytes()));
+        eprintln!(
+            "Commitment({} piconero): {}",
+            amount,
+            hex_encode(&compressed.to_bytes())
+        );
     }
 
     /// Pseudo output commitment
@@ -299,10 +308,10 @@ mod tests {
     fn pseudo_out() {
         let scalar_bytes = reduce_scalar(&[0x77u8; 32]).unwrap();
         let pseudo_mask = {
-    let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-    let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-    Scalar::read(&mut cursor).expect("reduced scalar")
-};
+            let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
+            let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
+            Scalar::read(&mut cursor).expect("reduced scalar")
+        };
         let bytes = pseudo_out_commitment(&pseudo_mask);
         assert_eq!(bytes.len(), 32);
         eprintln!("Pseudo out: {}", hex_encode(&bytes));
@@ -314,20 +323,26 @@ mod tests {
         let mut rng = OsRng;
         let scalar_bytes = reduce_scalar(&[0x33u8; 32]).unwrap();
         let mask = {
-    let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-    let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-    Scalar::read(&mut cursor).expect("reduced scalar")
-};
+            let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
+            let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
+            Scalar::read(&mut cursor).expect("reduced scalar")
+        };
         let commitments = vec![MoneroCommitment::new(mask, 100_000_000)];
         let bp = prove_bulletproofs_plus(&mut rng, commitments).unwrap();
 
         // Verify with commitments
         let verify_mask_bytes = reduce_scalar(&[0x33u8; 32]).unwrap();
-        let verify_mask = crate::chain::xmr::transaction::bytes_to_monerod_scalar(&crate::curve_primitive::ed25519::scalar_to_bytes(&verify_mask_bytes));
+        let verify_mask = crate::chain::xmr::transaction::bytes_to_monerod_scalar(
+            &crate::curve_primitive::ed25519::scalar_to_bytes(&verify_mask_bytes),
+        );
         let verify_commitment = MoneroCommitment::new(verify_mask, 100_000_000);
         let compressed = verify_commitment.commit().compress();
         let commitments_for_verify = vec![CompressedPoint::from(compressed.to_bytes())];
-        assert!(verify_bulletproofs_plus(&mut rng, &bp, &commitments_for_verify));
+        assert!(verify_bulletproofs_plus(
+            &mut rng,
+            &bp,
+            &commitments_for_verify
+        ));
 
         // BP serialize
         let mut bp_bytes = Vec::new();
@@ -343,10 +358,10 @@ mod tests {
         for i in 0u64..4 {
             let scalar_bytes = reduce_scalar(&[i as u8 + 1; 32]).unwrap();
             let mask = {
-    let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-    let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-    Scalar::read(&mut cursor).expect("reduced scalar")
-};
+                let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
+                let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
+                Scalar::read(&mut cursor).expect("reduced scalar")
+            };
             commitments.push(MoneroCommitment::new(mask, (i + 1) * 1000));
         }
 
@@ -380,10 +395,10 @@ mod tests {
             // MAX_COMMITMENTS+1 = 17, 应失败
             let scalar_bytes = reduce_scalar(&[i as u8; 32]).unwrap();
             let mask = {
-    let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-    let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-    Scalar::read(&mut cursor).expect("reduced scalar")
-};
+                let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
+                let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
+                Scalar::read(&mut cursor).expect("reduced scalar")
+            };
             commitments.push(MoneroCommitment::new(mask, i));
         }
         let result = prove_bulletproofs_plus(&mut rng, commitments);
@@ -416,15 +431,19 @@ mod tests {
         let mut rng = OsRng;
 
         // 1. 构造 ring (real + 1 decoy)
-        let real_sk_arr = crate::curve_primitive::ed25519::scalar_to_bytes(&reduce_scalar(&[0x11u8; 32]).unwrap());
-        
+        let real_sk_arr = crate::curve_primitive::ed25519::scalar_to_bytes(
+            &reduce_scalar(&[0x11u8; 32]).unwrap(),
+        );
+
         let real_sk_dalek = DScalar::from_bytes_mod_order(real_sk_arr);
         let real_pub_point: curve25519_dalek::EdwardsPoint =
             ED25519_BASEPOINT_TABLE * &real_sk_dalek;
         let real_pub_bytes = real_pub_point.compress().to_bytes();
         let real_pub = CompressedPoint::from(real_pub_bytes);
 
-        let decoy_sk_arr = crate::curve_primitive::ed25519::scalar_to_bytes(&reduce_scalar(&[0x22u8; 32]).unwrap());
+        let decoy_sk_arr = crate::curve_primitive::ed25519::scalar_to_bytes(
+            &reduce_scalar(&[0x22u8; 32]).unwrap(),
+        );
         let decoy_sk_dalek = DScalar::from_bytes_mod_order(decoy_sk_arr);
         let decoy_pub_point: curve25519_dalek::EdwardsPoint =
             ED25519_BASEPOINT_TABLE * &decoy_sk_dalek;
@@ -432,16 +451,23 @@ mod tests {
         let decoy_pub = CompressedPoint::from(decoy_pub_bytes);
 
         let real_mask_bytes = reduce_scalar(&[0x33u8; 32]).unwrap();
-        let real_mask = crate::chain::xmr::transaction::bytes_to_monerod_scalar(&crate::curve_primitive::ed25519::scalar_to_bytes(&real_mask_bytes));
+        let real_mask = crate::chain::xmr::transaction::bytes_to_monerod_scalar(
+            &crate::curve_primitive::ed25519::scalar_to_bytes(&real_mask_bytes),
+        );
         let real_commit = MoneroCommitment::new(real_mask, 1000);
 
         let decoy_mask_bytes = reduce_scalar(&[0x44u8; 32]).unwrap();
-        let decoy_mask = crate::chain::xmr::transaction::bytes_to_monerod_scalar(&crate::curve_primitive::ed25519::scalar_to_bytes(&decoy_mask_bytes));
+        let decoy_mask = crate::chain::xmr::transaction::bytes_to_monerod_scalar(
+            &crate::curve_primitive::ed25519::scalar_to_bytes(&decoy_mask_bytes),
+        );
         let decoy_commit = MoneroCommitment::new(decoy_mask, 1000);
 
         let ring = vec![
             (real_pub, real_commit.commit().compress().to_bytes().into()),
-            (decoy_pub, decoy_commit.commit().compress().to_bytes().into()),
+            (
+                decoy_pub,
+                decoy_commit.commit().compress().to_bytes().into(),
+            ),
         ];
 
         // 2. 构造 pseudo_mask (different from real_mask)
@@ -492,12 +518,7 @@ mod tests {
     #[test]
     fn rct_sig_serialize_minimal() {
         let base = RctSigBase::new(rct_type::BULLETPROOFS_PLUS, 100, vec![[0x11; 32]]);
-        let prunable = RctSigPrunable::new(
-            vec![[0x22; 32]],
-            vec![[0x33; 8]],
-            vec![],
-            vec![],
-        );
+        let prunable = RctSigPrunable::new(vec![[0x22; 32]], vec![[0x33; 8]], vec![], vec![]);
         let sig = RctSig::new(base, prunable);
         let bytes = sig.serialize().unwrap();
         eprintln!("RctSig ({} bytes): {}", bytes.len(), hex_encode(&bytes));

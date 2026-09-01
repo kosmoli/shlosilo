@@ -64,7 +64,10 @@ pub struct TxInput {
 impl TxInput {
     /// Construct a RingCT `txin_to_key` input.
     pub fn new(key_offsets: Vec<u64>, key_image: [u8; 32]) -> Self {
-        Self { key_offsets, key_image }
+        Self {
+            key_offsets,
+            key_image,
+        }
     }
 
     /// Serialize a `txin_to_key` input as it appears in a transaction prefix.
@@ -105,7 +108,10 @@ impl TxInput {
         let mut key_image = [0u8; 32];
         key_image.copy_from_slice(&bytes[*pos..*pos + 32]);
         *pos += 32;
-        Ok(Self { key_offsets, key_image })
+        Ok(Self {
+            key_offsets,
+            key_image,
+        })
     }
 }
 
@@ -273,9 +279,7 @@ impl TxExtra {
             // 其余字段为 varint 长度前缀
             if tag == 0x01 {
                 if *pos + 32 > bytes.len() {
-                    return Err(ShlosiloError::new(
-                        ShlosiloErrorKind::EncodingInvalidFormat,
-                    ));
+                    return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
                 }
                 let mut pk = [0u8; 32];
                 pk.copy_from_slice(&bytes[*pos..*pos + 32]);
@@ -434,7 +438,10 @@ impl Transaction {
 
     /// Construct transaction with pre-serialized RCT signatures bytes
     pub fn new_with_rct(prefix: TransactionPrefix, rct_signatures: Vec<u8>) -> Self {
-        Self { prefix, rct_signatures }
+        Self {
+            prefix,
+            rct_signatures,
+        }
     }
 
     /// Serialize complete tx
@@ -778,12 +785,7 @@ mod tests {
     /// Encoded prefix byte structure sanity check
     #[test]
     fn prefix_byte_structure() {
-        let prefix = TransactionPrefix::new(
-            0,
-            vec![],
-            vec![],
-            TxExtra::new(),
-        );
+        let prefix = TransactionPrefix::new(0, vec![], vec![], TxExtra::new());
         let bytes = prefix.serialize();
         // byte 0: version = 2
         assert_eq!(bytes[0], TX_VERSION);

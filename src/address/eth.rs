@@ -46,7 +46,8 @@ impl fmt::Debug for EthAddress {
         if s.len() >= 10 {
             write!(f, "EthAddress({}...{})", &s[..6], &s[s.len() - 4..])
         } else {
-            write!(f, "EthAddress(<redacted>)")        }
+            write!(f, "EthAddress(<redacted>)")
+        }
     }
 }
 
@@ -87,9 +88,9 @@ pub fn encode(pubkey: &Secp256k1Point, _network: Network) -> Result<EthAddress> 
     let hash_check = keccak256::hash(&hex_addr_lowercase)?;
     // 6. 按 nibble 大小写转换
     let mut checksummed = heapless::String::<ETH_ADDRESS_LEN>::new();
-    checksummed.push_str("0x").map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    checksummed
+        .push_str("0x")
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     for i in 0..40 {
         let c = hex_addr_lowercase[i] as char;
         let hash_nibble = match i % 2 {
@@ -103,9 +104,9 @@ pub fn encode(pubkey: &Secp256k1Point, _network: Network) -> Result<EthAddress> 
         } else {
             c
         };
-        checksummed.push(out_char).map_err(|_| {
-            ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-        })?;
+        checksummed
+            .push(out_char)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     }
     Ok(EthAddress { bytes: checksummed })
 }
@@ -113,7 +114,7 @@ pub fn encode(pubkey: &Secp256k1Point, _network: Network) -> Result<EthAddress> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::curve_primitive::secp256k1::{scalar_from_bytes, base_mul};
+    use crate::curve_primitive::secp256k1::{base_mul, scalar_from_bytes};
 
     #[test]
     fn address_length() {

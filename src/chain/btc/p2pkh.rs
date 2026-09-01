@@ -30,13 +30,11 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::types::SecretBytes;
-use crate::chain::btc::p2wpkh::{
-    encode_varint, segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL,
-};
+use crate::chain::btc::p2wpkh::{encode_varint, segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL};
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
+use crate::types::SecretBytes;
 
 /// P2PKH scriptCode: `OP_DUP OP_HASH160 <pubkeyhash> OP_EQUALVERIFY OP_CHECKSIG`
 pub fn p2pkh_script_code(pubkey_hash: &[u8; 20]) -> [u8; 25] {
@@ -149,9 +147,9 @@ pub fn sign_p2pkh(tx: &mut Transaction, input: &P2PKHSignInput<'_>) -> Result<P2
 mod tests {
     extern crate std;
     use super::*;
+    use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut};
     use alloc::string::String;
     use alloc::vec;
-    use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut};
     use std::eprintln;
 
     fn hex_decode(s: &str) -> Vec<u8> {
@@ -272,9 +270,16 @@ mod tests {
 
         // 5. pubkey 必须是 33-byte compressed (0x02/0x03 前缀)
         let pk_prefix = script_sig[total - 33];
-        assert!(pk_prefix == 0x02 || pk_prefix == 0x03, "invalid pubkey prefix");
+        assert!(
+            pk_prefix == 0x02 || pk_prefix == 0x03,
+            "invalid pubkey prefix"
+        );
 
-        eprintln!("P2PKH signed tx ({} bytes): {}", signed.tx_bytes.len(), hex_encode(&signed.tx_bytes));
+        eprintln!(
+            "P2PKH signed tx ({} bytes): {}",
+            signed.tx_bytes.len(),
+            hex_encode(&signed.tx_bytes)
+        );
     }
 
     /// 不同 input → 不同 sighash
@@ -283,7 +288,10 @@ mod tests {
         let tx_a = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                prev_out: OutPoint { txid: [1u8; 32], vout: 0 },
+                prev_out: OutPoint {
+                    txid: [1u8; 32],
+                    vout: 0,
+                },
                 script_sig: vec![],
                 sequence: 0xffffffff,
                 witness: vec![],
@@ -298,7 +306,10 @@ mod tests {
         let tx_b = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                prev_out: OutPoint { txid: [2u8; 32], vout: 0 },
+                prev_out: OutPoint {
+                    txid: [2u8; 32],
+                    vout: 0,
+                },
                 script_sig: vec![],
                 sequence: 0xffffffff,
                 witness: vec![],
@@ -351,7 +362,11 @@ mod tests {
         let total = script_sig.len();
         // compressed pubkey 是最后 33 bytes (varint 0x21 + 33 bytes)
         let sighash_byte_pos = total - 33 - 1;
-        assert_eq!(script_sig[sighash_byte_pos - 1], 0x01, "sighash byte should be 0x01 (SIGHASH_ALL)");
+        assert_eq!(
+            script_sig[sighash_byte_pos - 1],
+            0x01,
+            "sighash byte should be 0x01 (SIGHASH_ALL)"
+        );
     }
 
     /// Input index 越界
@@ -399,22 +414,10 @@ mod tests {
         };
 
         // 两次签名 → 同一 sighash (因 RFC6979 确定性)
-        let sighash1 = segwit_sighash_p2wpkh(
-            &tx,
-            0,
-            &p2pkh_script_code(&[0x42; 20]),
-            0,
-            SIGHASH_ALL,
-        )
-        .unwrap();
-        let sighash2 = segwit_sighash_p2wpkh(
-            &tx,
-            0,
-            &p2pkh_script_code(&[0x42; 20]),
-            0,
-            SIGHASH_ALL,
-        )
-        .unwrap();
+        let sighash1 =
+            segwit_sighash_p2wpkh(&tx, 0, &p2pkh_script_code(&[0x42; 20]), 0, SIGHASH_ALL).unwrap();
+        let sighash2 =
+            segwit_sighash_p2wpkh(&tx, 0, &p2pkh_script_code(&[0x42; 20]), 0, SIGHASH_ALL).unwrap();
         assert_eq!(sighash1, sighash2, "sighash must be deterministic");
 
         let _ = sign_p2pkh(&mut tx, &input).unwrap();

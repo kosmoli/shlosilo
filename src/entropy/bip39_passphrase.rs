@@ -6,9 +6,9 @@ extern crate alloc;
 
 use alloc::string::String;
 
-use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::entropy::bip39_words;
 use crate::entropy::mnemonic::Mnemonic;
+use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha512;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -44,9 +44,8 @@ impl core::fmt::Debug for Bip39Seed {
 pub fn mnemonic_to_seed(mnemonic: &Mnemonic, passphrase: &[u8]) -> Result<Bip39Seed> {
     let mut sentence = String::new();
     for (i, &idx) in mnemonic.indices().iter().enumerate() {
-        let w = bip39_words::get_word_by_index(idx).ok_or_else(|| {
-            ShlosiloError::new(ShlosiloErrorKind::MnemonicInvalidWord)
-        })?;
+        let w = bip39_words::get_word_by_index(idx)
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::MnemonicInvalidWord))?;
         if i > 0 {
             sentence.push(' ');
         }

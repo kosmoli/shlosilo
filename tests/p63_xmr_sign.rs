@@ -46,12 +46,19 @@ fn sign_real_fixture_end_to_end() {
     use rand_core::OsRng;
     let mut rng = OsRng;
 
-    eprintln!("DBG sources={} real_out={} src_outputs={}",
+    eprintln!(
+        "DBG sources={} real_out={} src_outputs={}",
         tx_data.sources.len(),
         tx_data.sources[0].real_output,
-        tx_data.sources[0].outputs.len());
+        tx_data.sources[0].outputs.len()
+    );
     for (idx, oo) in tx_data.sources[0].outputs.iter().enumerate() {
-        eprintln!("  out[{}] idx={} dest[:6]={:?}", idx, oo.index, &oo.dest[..6]);
+        eprintln!(
+            "  out[{}] idx={} dest[:6]={:?}",
+            idx,
+            oo.index,
+            &oo.dest[..6]
+        );
     }
     // ---- 签名（返回官方 monerod wire bytes）----
     let bytes = sign_tx_from_construction(tx_data, &spend_sk, &view_sk, &mut rng)
@@ -65,7 +72,14 @@ fn sign_real_fixture_end_to_end() {
     // rct 签名段在 prefix 之后——简单可靠的做法：重新走一遍签名内部逻辑不可行，
     // 改为检查 tx 前缀后第一字节。用 TxOutput 数量 = 2 + version2 => 需要 decode。
     // 这里以 serialize 尾部包含 BP 元素 + CLSAG 计数断言为主。
-    eprintln!("DBG len={} first-16={}", bytes.len(), bytes[..16].iter().map(|b| format!("{:02x}", b)).collect::<String>());
+    eprintln!(
+        "DBG len={} first-16={}",
+        bytes.len(),
+        bytes[..16]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    );
 
     // ---- 验证 3: 结构计数（1 输入的 CLSAG / pseudo_out）----
     // 从构造数据推断：sources=1

@@ -15,8 +15,7 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 pub const BASE58_MAX_LEN: usize = 128;
 
 /// base58 字符表（不含 0/I/O/l）
-const BASE58_ALPHABET: &[u8; 58] =
-    b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const BASE58_ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 /// 反查表（255 = invalid）
 fn base58_inverse() -> [u8; 256] {
@@ -204,7 +203,6 @@ pub fn decode(s: &str) -> Result<heapless::Vec<u8, 192>> {
     Ok(result)
 }
 
-
 /// base58check 解码（验证 checksum）
 pub fn decode_check(s: &str) -> Result<heapless::Vec<u8, 128>> {
     let decoded = decode(s)?;
@@ -312,7 +310,7 @@ mod tests {
         assert_eq!(decoded.as_slice(), original);
     }
 
-/// 错误字符 → 返回错误
+    /// 错误字符 → 返回错误
     #[test]
     fn decode_invalid_char_rejected() {
         // '0' 不在 base58 字符集

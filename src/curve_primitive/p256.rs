@@ -16,27 +16,37 @@ pub struct P256Point(/* private fields */);
 
 pub fn generator() -> Result<P256Point> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 pub fn scalar_mul(_s: &P256Scalar, _p: &P256Point) -> Result<P256Point> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 pub fn base_mul(_s: &P256Scalar) -> Result<P256Point> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 pub fn point_add(_a: &P256Point, _b: &P256Point) -> Result<P256Point> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 pub fn scalar_zero() -> Result<P256Scalar> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 #[cfg(test)]
@@ -64,8 +74,14 @@ mod tests {
         // P2-01：stub 不再 panic——返回稳定错误码
         // （P256Scalar 无 Debug，用 map_err 避开 unwrap_err 的 Debug 约束）
         let e0 = scalar_zero().err().expect("scalar_zero should err");
-        assert_eq!(e0.kind, crate::error::ShlosiloErrorKind::FeatureNotImplemented);
+        assert_eq!(
+            e0.kind,
+            crate::error::ShlosiloErrorKind::FeatureNotImplemented
+        );
         let e1 = generator().err().expect("generator should err");
-        assert_eq!(e1.kind, crate::error::ShlosiloErrorKind::FeatureNotImplemented);
+        assert_eq!(
+            e1.kind,
+            crate::error::ShlosiloErrorKind::FeatureNotImplemented
+        );
     }
 }

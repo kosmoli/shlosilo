@@ -27,7 +27,9 @@ impl core::fmt::Debug for FcmpProof {
 /// FCMP++ 证明生成（Phase 7 占位）
 pub fn sign(_spend_skey: &Ed25519Scalar, _msg: &[u8]) -> Result<FcmpProof> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 /// FCMP++ 验证
@@ -54,8 +56,14 @@ mod tests {
         // （检查代码行，排除注释行）
         for line in "fcmp_ed25519.rs".lines() {
             let t = line.trim_start();
-            if t.starts_with("//") { continue; }
-            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+            if t.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !t.contains(concat!("unimplemented", "!(")),
+                "panic macro regressed: {}",
+                line
+            );
         }
     }
 }

@@ -32,12 +32,14 @@ pub fn encode(xpub: &Bip32XPub, path: Option<&DerivationPath>) -> Result<UrEncod
     let chain = &xpub[13..45];
     let parent_fp = u32::from_be_bytes(xpub[5..9].try_into().unwrap());
 
-    let mut pairs: alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> =
-        alloc::vec![
-            (cbor::encode_uint(KEY_DATA), cbor::encode_bytes(key)),
-            (cbor::encode_uint(CHAIN_CODE), cbor::encode_bytes(chain)),
-            (cbor::encode_uint(PARENT_FINGERPRINT), cbor::encode_uint(parent_fp as u64)),
-        ];
+    let mut pairs: alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> = alloc::vec![
+        (cbor::encode_uint(KEY_DATA), cbor::encode_bytes(key)),
+        (cbor::encode_uint(CHAIN_CODE), cbor::encode_bytes(chain)),
+        (
+            cbor::encode_uint(PARENT_FINGERPRINT),
+            cbor::encode_uint(parent_fp as u64)
+        ),
+    ];
 
     if let Some(path) = path {
         pairs.push((
@@ -57,7 +59,10 @@ fn encode_keypath(path: &DerivationPath) -> alloc::vec::Vec<u8> {
         comps.push(cbor::encode_bool(idx.is_hardened()));
     }
     cbor::encode_map(&[
-        (cbor::encode_uint(KEYPATH_COMPONENTS), cbor::encode_array(&comps)),
+        (
+            cbor::encode_uint(KEYPATH_COMPONENTS),
+            cbor::encode_array(&comps),
+        ),
         (
             cbor::encode_uint(KEYPATH_DEPTH),
             cbor::encode_uint(path.len() as u64),
@@ -72,14 +77,8 @@ pub fn decode_key_material(uri: &str) -> Result<([u8; 33], [u8; 32], u32)> {
         return Err(err());
     }
     let item = cbor::decode(d.as_ref())?;
-    let key = item
-        .map_get_uint(KEY_DATA)?
-        .ok_or_else(err)?
-        .as_bytes()?;
-    let chain = item
-        .map_get_uint(CHAIN_CODE)?
-        .ok_or_else(err)?
-        .as_bytes()?;
+    let key = item.map_get_uint(KEY_DATA)?.ok_or_else(err)?.as_bytes()?;
+    let chain = item.map_get_uint(CHAIN_CODE)?.ok_or_else(err)?.as_bytes()?;
     let fp = item
         .map_get_uint(PARENT_FINGERPRINT)?
         .ok_or_else(err)?

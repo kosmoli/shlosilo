@@ -65,8 +65,7 @@ mod fixture {
         "512022f3956cc27a6a9b0e0003a0afc113b04f31b95d5cad222a65476e8440371bd1";
     pub const SPENT_VALUE: u64 = 0x19bc; // 6588
     /// prevout txid + vout
-    pub const PREV_TXID: &str =
-        "3aee4d6b51da574900e56d173041115bd1e1d01d4697a845784cf716a10c9806";
+    pub const PREV_TXID: &str = "3aee4d6b51da574900e56d173041115bd1e1d01d4697a845784cf716a10c9806";
     /// unsigned tx output: value 6400, spk 51202258...
     pub const OUT_VALUE: u64 = 6400;
     pub const OUT_SPK: &str =
@@ -91,7 +90,11 @@ fn keystone_taproot_output_key_matches_witness_program() {
 
     // output key 必须 = spent output 的 witness program
     let spk = hex_decode(fixture::SPENT_SPK);
-    assert_eq!(&compressed[1..], &spk[2..], "output key x must equal witness program");
+    assert_eq!(
+        &compressed[1..],
+        &spk[2..],
+        "output key x must equal witness program"
+    );
     assert_eq!(spk[0], 0x51);
     assert_eq!(spk[1], 0x20);
 }
@@ -158,7 +161,14 @@ fn keystone_taproot_keypath_sighash_verifies_keystone_sig() {
     sigmsg.extend_from_slice(&input_index.to_le_bytes());
 
     let _ = seed; // seed 用于注释文档；签名本身来自 keystone fixture
-    let sighash = tagged_hash(b"TapSighash", &[0x00].iter().chain(sigmsg.iter()).copied().collect::<Vec<u8>>()[..]);
+    let sighash = tagged_hash(
+        b"TapSighash",
+        &[0x00]
+            .iter()
+            .chain(sigmsg.iter())
+            .copied()
+            .collect::<Vec<u8>>()[..],
+    );
     let _ = hash_type;
 
     // --- BIP-340 verify keystone signature against OUR sighash ---
@@ -173,9 +183,6 @@ fn keystone_taproot_keypath_sighash_verifies_keystone_sig() {
 /// 生产路径用 shlosilo::signature::schnorr_secp256k1::verify，
 /// 但那需要构造 Secp256k1Point；这里直接做点运算以独立对照。
 fn bip340_verify(pk_x: &[u8; 32], msg: &[u8; 32], sig: &[u8]) -> bool {
-    
-    
-
     let vk = match k256::schnorr::VerifyingKey::from_bytes(pk_x.into()) {
         Ok(v) => v,
         Err(_) => return false,

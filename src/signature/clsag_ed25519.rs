@@ -51,12 +51,14 @@ impl core::fmt::Debug for ClsagAux {
 pub fn sign(
     _spend_skey: &Ed25519Scalar,
     _msg: &[u8],
-    _ring_members: &[Ed25519Point],  // 环成员（含真实公钥 + 诱饵）
+    _ring_members: &[Ed25519Point], // 环成员（含真实公钥 + 诱饵）
     _pseudo_output: &Ed25519Point,
     _aux_data: &ClsagAux,
 ) -> Result<ClsagProof> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 /// CLSAG 验签
@@ -75,7 +77,8 @@ mod tests {
     use super::*;
 
     // 签名/验证函数形状编译期锁定（复杂签名用别名压平）
-    type SignFn = fn(&Ed25519Scalar, &[u8], &[Ed25519Point], &Ed25519Point, &ClsagAux) -> Result<ClsagProof>;
+    type SignFn =
+        fn(&Ed25519Scalar, &[u8], &[Ed25519Point], &Ed25519Point, &ClsagAux) -> Result<ClsagProof>;
     type VerifyFn = fn(&[Ed25519Point], &Ed25519Point, &[u8], &ClsagProof) -> bool;
     const _: SignFn = sign;
     const _: VerifyFn = verify;
@@ -96,8 +99,14 @@ mod tests {
         // （检查代码行，排除注释行）
         for line in "clsag_ed25519.rs".lines() {
             let t = line.trim_start();
-            if t.starts_with("//") { continue; }
-            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+            if t.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !t.contains(concat!("unimplemented", "!(")),
+                "panic macro regressed: {}",
+                line
+            );
         }
     }
 }

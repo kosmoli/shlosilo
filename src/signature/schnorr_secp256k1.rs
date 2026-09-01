@@ -30,21 +30,16 @@ impl core::fmt::Debug for SchnorrSignature {
 /// BIP-340 Schnorr 签名
 ///
 /// `aux_rand` 提供 nonce 随机性（BIP-340 推荐传入额外随机数避免侧信道）
-pub fn sign(
-    sk: &Secp256k1Scalar,
-    msg: &[u8; 32],
-    aux_rand: &[u8; 32],
-) -> Result<SchnorrSignature> {
+pub fn sign(sk: &Secp256k1Scalar, msg: &[u8; 32], aux_rand: &[u8; 32]) -> Result<SchnorrSignature> {
     // 转换 sk → k256::schnorr::SigningKey
     let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(sk);
     let sk_fb = k256::FieldBytes::from(sk_bytes);
-    let signing_key = SigningKey::from_bytes(&sk_fb).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let signing_key = SigningKey::from_bytes(&sk_fb)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     // BIP-340 raw 签名（k256 0.14 API：sign_raw(msg, aux_rand)）
-    let sig: Signature = signing_key.sign_raw(msg, aux_rand).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let sig: Signature = signing_key
+        .sign_raw(msg, aux_rand)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let sig_bytes: [u8; SCHNORR_SIGNATURE_LEN] = sig.to_bytes();
     Ok(SchnorrSignature { bytes: sig_bytes })
 }

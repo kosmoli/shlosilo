@@ -102,10 +102,7 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
                 _ => return Err(err()),
             };
             // components（key 1）：扁平 [idx0, hardened0, idx1, hardened1, ...]
-            let comps = inner
-                .map_get_uint(1)?
-                .ok_or_else(err)?
-                .as_array()?;
+            let comps = inner.map_get_uint(1)?.ok_or_else(err)?.as_array()?;
             // X2: components 必须是偶数长度 (idx, hardened) 对——奇数视为格式错误
             if comps.len() % 2 != 0 {
                 return Err(err());
@@ -205,11 +202,9 @@ mod tests {
         let payload = hex(
             "a601d825509b1deb4d3b7d4bad9bdd2b0d7b3dcb6d02584bf849808609184e72a00082271094000000000000000000000000000000000000000080a47f74657374320000000000000000000000000000000000000000000000000000006000578080800301040105d90130a2018a182cf501f501f500f401f4021a1234567807686d6574616d61736b",
         );
-        let enc = crate::ur::ur_encode::encode(
-            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
-            &payload,
-        )
-        .unwrap();
+        let enc =
+            crate::ur::ur_encode::encode(crate::ur::ur_encode::UrTypeTag::EthSignRequest, &payload)
+                .unwrap();
         let d = crate::ur::ur_decode::decode(enc.as_str()).unwrap();
         // P1-01 关键：type tag 由 UR decode 携带
         assert_eq!(
@@ -233,7 +228,10 @@ mod tests {
         let payload: alloc::vec::Vec<u8> = alloc::vec![
             0xA1, 0x05, 0xD9, 0x01, 0x30, 0xA2, 0x01, 0x83, 0x00, 0xF4, 0x01, 0x02, 0x02,
         ];
-        assert!(parse_eth_sign_request(&payload).is_err(), "odd keypath must be rejected");
+        assert!(
+            parse_eth_sign_request(&payload).is_err(),
+            "odd keypath must be rejected"
+        );
     }
 
     /// Gate4 #5 负例: hardened=true 且 idx 已带 0x80000000 高位（非规范双表达）→ 拒
@@ -256,10 +254,13 @@ mod tests {
     fn keypath_oversized_index_rejected() {
         // tag 304, map{1: [0x1_0000_0000, false], 2: 1} — 2^32 超 u32
         let payload: alloc::vec::Vec<u8> = alloc::vec![
-            0xA1, 0x05, 0xD9, 0x01, 0x30, 0xA2, 0x01, 0x82, 0x1B, 0x00, 0x00, 0x00, 0x01,
-            0x00, 0x00, 0x00, 0x00, 0xF4, 0x02, 0x01,
+            0xA1, 0x05, 0xD9, 0x01, 0x30, 0xA2, 0x01, 0x82, 0x1B, 0x00, 0x00, 0x00, 0x01, 0x00,
+            0x00, 0x00, 0x00, 0xF4, 0x02, 0x01,
         ];
-        assert!(parse_eth_sign_request(&payload).is_err(), "index > u32::MAX must be rejected");
+        assert!(
+            parse_eth_sign_request(&payload).is_err(),
+            "index > u32::MAX must be rejected"
+        );
     }
 
     // ── P1-01（审计 #4）新增负例：完整有效请求只改一个字段，锁定目标分支 ──
@@ -269,9 +270,7 @@ mod tests {
     fn valid_request_with_keypath(comps_cbor: &[u8]) -> alloc::vec::Vec<u8> {
         use crate::encoding::cbor;
         // components 数组的 CBOR 编码由调用方注入（bytes item 内联原始字节）
-        let inner_map = cbor::encode_map(&[
-            (cbor::encode_uint(2), cbor::encode_uint(1)),
-        ]);
+        let inner_map = cbor::encode_map(&[(cbor::encode_uint(2), cbor::encode_uint(1))]);
         // 手工构造 {1: comps, 2: 1}
         let k1 = cbor::encode_uint(1);
         let mut inner = alloc::vec::Vec::new();
@@ -287,7 +286,10 @@ mod tests {
             (cbor::encode_uint(2), cbor::encode_bytes(&[0x02u8; 16])),
             (cbor::encode_uint(3), cbor::encode_uint(1)), // data_type = Transaction
             (cbor::encode_uint(4), cbor::encode_uint(1)), // chain_id = 1
-            (cbor::encode_uint(5), cbor::encode_tag(TAG_CRYPTO_KEYPATH, &inner)),
+            (
+                cbor::encode_uint(5),
+                cbor::encode_tag(TAG_CRYPTO_KEYPATH, &inner)
+            ),
         ];
         cbor::encode_map(&pairs)
     }
@@ -298,10 +300,10 @@ mod tests {
     fn keypath_wrong_tag_rejected() {
         use crate::encoding::cbor;
         let inner = cbor::encode_map(&[
-            (cbor::encode_uint(1), cbor::encode_array(&[
-                cbor::encode_uint(44),
-                cbor::encode_bool(true),
-            ])),
+            (
+                cbor::encode_uint(1),
+                cbor::encode_array(&[cbor::encode_uint(44), cbor::encode_bool(true)]),
+            ),
             (cbor::encode_uint(2), cbor::encode_uint(1)),
         ]);
         let pairs = alloc::vec![
@@ -347,8 +349,7 @@ mod tests {
             cbor::encode_bool(false),
         ]);
         let payload = valid_request_with_keypath(&comps);
-        let req = parse_eth_sign_request(&payload)
-            .expect("valid full request must parse");
+        let req = parse_eth_sign_request(&payload).expect("valid full request must parse");
         let path = req.derivation_path.expect("keypath present");
         // m/44'/60'/1 —— value() 是去掉 hardened bit 的纯索引，
         // hardened 位单独断言
@@ -357,9 +358,6 @@ mod tests {
             .iter()
             .map(|i| (i.value(), i.is_hardened()))
             .collect();
-        assert_eq!(
-            flat,
-            alloc::vec![(44, true), (60, true), (1, false)]
-        );
+        assert_eq!(flat, alloc::vec![(44, true), (60, true), (1, false)]);
     }
 }

@@ -39,11 +39,11 @@
 //! BIP-143 Native P2WPKH 官方 test vector（已验证 sighash + signature + 完整 signed tx）
 
 extern crate alloc;
-use crate::types::SecretBytes;
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
+use crate::types::SecretBytes;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -299,15 +299,15 @@ pub fn sign_p2wpkh(
     sign_input: &P2WPKHSignInput<'_>,
 ) -> Result<P2WPKHSignedTx> {
     // 1. scriptCode = `76a914{20-byte-pubkey-hash}88ac` (raw P2PKH，**不含** length prefix)
-        let mut script_code = Vec::with_capacity(25);
-        script_code.push(0x76); // OP_DUP
-        script_code.push(0xa9); // OP_HASH160
-        script_code.push(0x14); // push 20 bytes
-        script_code.extend_from_slice(&sign_input.pubkey_hash);
-        script_code.push(0x88); // OP_EQUALVERIFY
-        script_code.push(0xac); // OP_CHECKSIG
-        // script_code 是 25 bytes raw P2PKH（无 length prefix）
-        // segwit_sighash_p2wpkh 内部会用 varint(25) = 0x19 + 25 bytes = 26 bytes preimage 段
+    let mut script_code = Vec::with_capacity(25);
+    script_code.push(0x76); // OP_DUP
+    script_code.push(0xa9); // OP_HASH160
+    script_code.push(0x14); // push 20 bytes
+    script_code.extend_from_slice(&sign_input.pubkey_hash);
+    script_code.push(0x88); // OP_EQUALVERIFY
+    script_code.push(0xac); // OP_CHECKSIG
+                            // script_code 是 25 bytes raw P2PKH（无 length prefix）
+                            // segwit_sighash_p2wpkh 内部会用 varint(25) = 0x19 + 25 bytes = 26 bytes preimage 段
 
     // 2. BIP-143 sighash
     let sighash = segwit_sighash_p2wpkh(
@@ -325,7 +325,8 @@ pub fn sign_p2wpkh(
     // 4. DER + sighash byte
     let mut sig_with_sighash = ecdsa::to_der(&sig)?;
     // DER 最长 72B + sighash 1B = 73B > 72 容量上界只在极端 l 值出现；溢出必须显式报错而非忽略
-    sig_with_sighash.push(SIGHASH_ALL as u8)
+    sig_with_sighash
+        .push(SIGHASH_ALL as u8)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
 
     // 5. compressed pubkey
@@ -399,8 +400,10 @@ mod tests {
 
         // Input 0: P2PK (普通), 6.25 BTC
         // Input 1: P2WPKH (要签名), 6 BTC
-        let _input0_txid = hex_decode("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f").unwrap();
-        let _input1_txid = hex_decode("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a").unwrap();
+        let _input0_txid =
+            hex_decode("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f").unwrap();
+        let _input1_txid =
+            hex_decode("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a").unwrap();
 
         // 构造 Transaction
         // Input 0
@@ -408,7 +411,12 @@ mod tests {
             prev_out: OutPoint {
                 txid: {
                     let mut t = [0u8; 32];
-                    t.copy_from_slice(&hex_decode("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f").unwrap());
+                    t.copy_from_slice(
+                        &hex_decode(
+                            "fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f",
+                        )
+                        .unwrap(),
+                    );
                     t
                 },
                 vout: 0,
@@ -423,7 +431,12 @@ mod tests {
             prev_out: OutPoint {
                 txid: {
                     let mut t = [0u8; 32];
-                    t.copy_from_slice(&hex_decode("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a").unwrap());
+                    t.copy_from_slice(
+                        &hex_decode(
+                            "ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a",
+                        )
+                        .unwrap(),
+                    );
                     t
                 },
                 vout: 1,
@@ -436,11 +449,13 @@ mod tests {
         // Outputs
         let output0 = TxOut {
             value: 0x0000000006b22c20, // = 0x06b22c20 = 112400416 sat
-            script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac").unwrap(),
+            script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac")
+                .unwrap(),
         };
         let output1 = TxOut {
             value: 0x000000000d519390, // = 0x0d519390 = 223580816 sat
-            script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac").unwrap(),
+            script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac")
+                .unwrap(),
         };
 
         let tx = Transaction {
@@ -475,14 +490,21 @@ mod tests {
         .unwrap();
 
         // 预期 sighash
-        let expected_sighash = hex_decode("c37af31116d1b27caf68aae9e3ac82f1477929014d5b917657d0eb49478cb670")
-            .unwrap();
-        assert_eq!(&sighash[..], &expected_sighash[..], "BIP-143 Native P2WPKH sighash mismatch");
+        let expected_sighash =
+            hex_decode("c37af31116d1b27caf68aae9e3ac82f1477929014d5b917657d0eb49478cb670").unwrap();
+        assert_eq!(
+            &sighash[..],
+            &expected_sighash[..],
+            "BIP-143 Native P2WPKH sighash mismatch"
+        );
 
         // 签名
         let mut key_buf = {
             let mut k = [0u8; 32];
-            k.copy_from_slice(&hex_decode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9").unwrap());
+            k.copy_from_slice(
+                &hex_decode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9")
+                    .unwrap(),
+            );
             k
         };
         let private_key = SecretBytes::take(&mut key_buf);
@@ -499,7 +521,9 @@ mod tests {
 
         // pubkey 验证
         let pk = base_mul(&sk);
-        let expected_pubkey = hex_decode("025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee6357").unwrap();
+        let expected_pubkey =
+            hex_decode("025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee6357")
+                .unwrap();
         let pk_bytes = point_to_compressed(&pk);
         assert_eq!(&pk_bytes[..], &expected_pubkey[..], "pubkey mismatch");
     }
@@ -512,7 +536,12 @@ mod tests {
             prev_out: OutPoint {
                 txid: {
                     let mut t = [0u8; 32];
-                    t.copy_from_slice(&hex_decode("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a").unwrap());
+                    t.copy_from_slice(
+                        &hex_decode(
+                            "ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a",
+                        )
+                        .unwrap(),
+                    );
                     t
                 },
                 vout: 1,
@@ -527,7 +556,12 @@ mod tests {
             prev_out: OutPoint {
                 txid: {
                     let mut t = [0u8; 32];
-                    t.copy_from_slice(&hex_decode("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f").unwrap());
+                    t.copy_from_slice(
+                        &hex_decode(
+                            "fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f",
+                        )
+                        .unwrap(),
+                    );
                     t
                 },
                 vout: 0,
@@ -539,11 +573,13 @@ mod tests {
 
         let output0 = TxOut {
             value: 0x0000000006b22c20,
-            script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac").unwrap(),
+            script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac")
+                .unwrap(),
         };
         let output1 = TxOut {
             value: 0x000000000d519390,
-            script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac").unwrap(),
+            script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac")
+                .unwrap(),
         };
 
         let mut tx = Transaction {
@@ -555,7 +591,10 @@ mod tests {
 
         let mut key_buf = {
             let mut k = [0u8; 32];
-            k.copy_from_slice(&hex_decode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9").unwrap());
+            k.copy_from_slice(
+                &hex_decode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9")
+                    .unwrap(),
+            );
             k
         };
         let private_key = SecretBytes::take(&mut key_buf);
@@ -581,11 +620,17 @@ mod tests {
 
         // 验证 signature 以 sighash byte 0x01 结尾
         let sig_witness = &tx.inputs[1].witness[0];
-        assert_eq!(sig_witness[sig_witness.len() - 1], 0x01, "sighash byte should be 0x01");
+        assert_eq!(
+            sig_witness[sig_witness.len() - 1],
+            0x01,
+            "sighash byte should be 0x01"
+        );
 
         // 验证 pubkey
         let pk_witness = &tx.inputs[1].witness[1];
-        let expected_pubkey = hex_decode("025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee6357").unwrap();
+        let expected_pubkey =
+            hex_decode("025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee6357")
+                .unwrap();
         assert_eq!(&pk_witness[..], &expected_pubkey[..]);
 
         // 验证序列化包含 marker (0x00) + flag (0x01)
@@ -598,12 +643,19 @@ mod tests {
     fn hash_prevouts_bip143() {
         // input 0 outpoint + input 1 outpoint
         let mut buf = Vec::new();
-        buf.extend_from_slice(&hex_decode("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f").unwrap());
+        buf.extend_from_slice(
+            &hex_decode("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f")
+                .unwrap(),
+        );
         buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&hex_decode("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a").unwrap());
+        buf.extend_from_slice(
+            &hex_decode("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a")
+                .unwrap(),
+        );
         buf.extend_from_slice(&1u32.to_le_bytes());
         let h = dsha256(&buf).unwrap();
-        let expected = hex_decode("96b827c8483d4e9b96712b6713a7b68d6e8003a781feba36c31143470b4efd37").unwrap();
+        let expected =
+            hex_decode("96b827c8483d4e9b96712b6713a7b68d6e8003a781feba36c31143470b4efd37").unwrap();
         assert_eq!(&h[..], &expected[..], "hash_prevouts mismatch");
     }
 
@@ -614,7 +666,8 @@ mod tests {
         buf.extend_from_slice(&0xffffffeeu32.to_le_bytes());
         buf.extend_from_slice(&0xffffffffu32.to_le_bytes());
         let h = dsha256(&buf).unwrap();
-        let expected = hex_decode("52b0a642eea2fb7ae638c36f6252b6750293dbe574a806984b8e4d8548339a3b").unwrap();
+        let expected =
+            hex_decode("52b0a642eea2fb7ae638c36f6252b6750293dbe574a806984b8e4d8548339a3b").unwrap();
         assert_eq!(&h[..], &expected[..], "hash_sequence mismatch");
     }
 
@@ -626,14 +679,19 @@ mod tests {
         buf.extend_from_slice(&0x0000000006b22c20u64.to_le_bytes());
         // varstr scriptPubKey: length prefix (0x19 = 25) + 25 bytes raw
         buf.push(0x19);
-        buf.extend_from_slice(&hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac").unwrap());
+        buf.extend_from_slice(
+            &hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac").unwrap(),
+        );
         // output 1
         buf.extend_from_slice(&0x000000000d519390u64.to_le_bytes());
         buf.push(0x19);
-        buf.extend_from_slice(&hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac").unwrap());
+        buf.extend_from_slice(
+            &hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac").unwrap(),
+        );
 
         let h = dsha256(&buf).unwrap();
-        let expected = hex_decode("863ef3e1a92afbfdb97f31ad0fc7683ee943e9abcf2501590ff8f6551f47e5e5").unwrap();
+        let expected =
+            hex_decode("863ef3e1a92afbfdb97f31ad0fc7683ee943e9abcf2501590ff8f6551f47e5e5").unwrap();
         assert_eq!(&h[..], &expected[..], "hash_outputs mismatch");
     }
 
@@ -644,7 +702,12 @@ mod tests {
             prev_out: OutPoint {
                 txid: {
                     let mut t = [0u8; 32];
-                    t.copy_from_slice(&hex_decode("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a").unwrap());
+                    t.copy_from_slice(
+                        &hex_decode(
+                            "ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a",
+                        )
+                        .unwrap(),
+                    );
                     t
                 },
                 vout: 1,
@@ -657,7 +720,12 @@ mod tests {
             prev_out: OutPoint {
                 txid: {
                     let mut t = [0u8; 32];
-                    t.copy_from_slice(&hex_decode("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f").unwrap());
+                    t.copy_from_slice(
+                        &hex_decode(
+                            "fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f",
+                        )
+                        .unwrap(),
+                    );
                     t
                 },
                 vout: 0,
@@ -669,11 +737,13 @@ mod tests {
         };
         let output0 = TxOut {
             value: 0x0000000006b22c20,
-            script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac").unwrap(),
+            script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac")
+                .unwrap(),
         };
         let output1 = TxOut {
             value: 0x000000000d519390,
-            script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac").unwrap(),
+            script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac")
+                .unwrap(),
         };
 
         let mut tx = Transaction {
@@ -685,7 +755,10 @@ mod tests {
 
         let mut key_buf = {
             let mut k = [0u8; 32];
-            k.copy_from_slice(&hex_decode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9").unwrap());
+            k.copy_from_slice(
+                &hex_decode("619c335025c7f4012e556c2a58b2506e30b8511b53ade95ea316fd8c3286feb9")
+                    .unwrap(),
+            );
             k
         };
         let private_key = SecretBytes::take(&mut key_buf);

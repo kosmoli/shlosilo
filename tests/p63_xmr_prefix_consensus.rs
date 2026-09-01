@@ -1,8 +1,6 @@
 //! Regression tests for the exact transaction-prefix bytes committed to by CLSAG.
 
-use shlosilo::chain::xmr::transaction::{
-    TransactionPrefix, TxExtra, TxInput, TxOutput,
-};
+use shlosilo::chain::xmr::transaction::{TransactionPrefix, TxExtra, TxInput, TxOutput};
 
 #[test]
 fn txin_to_key_consensus_encoding_is_in_prefix_hash_bytes() {

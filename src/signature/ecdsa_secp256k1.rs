@@ -55,16 +55,17 @@ pub fn sign(sk: &Secp256k1Scalar, msg_hash: &[u8; 32]) -> Result<EcdsaSignature>
     let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(sk);
     let mut sk_arr = [0u8; 32];
     sk_arr.copy_from_slice(&sk_bytes);
-    let signing_key = SigningKey::from_bytes(&sk_arr.into()).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let signing_key = SigningKey::from_bytes(&sk_arr.into())
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
     // 使用 sign_prehashed（k256 内部直接接受 prehashed 输入）
     let z = FieldBytes::from(*msg_hash);
-    let sig: Signature = signing_key.sign_prehash(&z).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
-    Ok(EcdsaSignature { bytes: sig_to_bytes(&sig) })
+    let sig: Signature = signing_key
+        .sign_prehash(&z)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    Ok(EcdsaSignature {
+        bytes: sig_to_bytes(&sig),
+    })
 }
 
 /// ECDSA 验签
@@ -95,10 +96,11 @@ pub fn from_bytes(bytes: &[u8]) -> Result<EcdsaSignature> {
 
 /// 从 DER 编码解析签名（用于从外部导入）
 pub fn from_der(der: &[u8]) -> Result<EcdsaSignature> {
-    let sig = Signature::from_der(der).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
-    Ok(EcdsaSignature { bytes: sig_to_bytes(&sig) })
+    let sig = Signature::from_der(der)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    Ok(EcdsaSignature {
+        bytes: sig_to_bytes(&sig),
+    })
 }
 
 /// 序列化为 DER 编码（用于 BTC sighash 拼接到交易 witness）
@@ -109,15 +111,13 @@ pub fn to_der(sig: &EcdsaSignature) -> Result<heapless::Vec<u8, 72>> {
     // 把内部 64 bytes (r || s) 重新组装为 k256::Signature
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(sig.bytes.as_ref());
-    let k256_sig = Signature::from_bytes(&sig_arr.into()).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let k256_sig = Signature::from_bytes(&sig_arr.into())
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let der = k256_sig.to_der();
     let der_bytes = der.as_bytes();
     let mut out: heapless::Vec<u8, 72> = heapless::Vec::new();
-    out.extend_from_slice(der_bytes).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow)
-    })?;
+    out.extend_from_slice(der_bytes)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
     Ok(out)
 }
 

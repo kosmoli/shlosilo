@@ -26,11 +26,11 @@
 //!   - arrayN[k] of T: keccak256(encodeData(t1) || ... || encodeData(tk))
 //! ```text
 
-    extern crate alloc;
+extern crate alloc;
 use crate::chain::eth::sign;
 use crate::encoding::keccak256;
-use crate::types::SecretBytes;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::types::SecretBytes;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -94,7 +94,7 @@ pub fn encode_type(primary_type: &str, types: &Types) -> Result<String> {
     let fields = types.get(primary_type).ok_or_else(|| {
         ShlosiloError::with_context(
             ShlosiloErrorKind::EncodingInvalidFormat,
-            crate::error::ErrorContext::None /* was format */,
+            crate::error::ErrorContext::None, /* was format */
         )
     })?;
 
@@ -128,12 +128,11 @@ fn add_subtypes(
     let fields = types.get(type_name).ok_or_else(|| {
         ShlosiloError::with_context(
             ShlosiloErrorKind::EncodingInvalidFormat,
-            crate::error::ErrorContext::None /* was format */,
+            crate::error::ErrorContext::None, /* was format */
         )
     })?;
     // 收集未访问的 sub-struct type names
-    let mut sub_types: alloc::collections::BTreeSet<String> =
-        alloc::collections::BTreeSet::new();
+    let mut sub_types: alloc::collections::BTreeSet<String> = alloc::collections::BTreeSet::new();
     for (_, ty) in fields {
         // 解析 atom 类型 (e.g. "Person" from "Person", "Mail[2]" from "Mail[]")
         let atom = atom_type(ty);
@@ -150,7 +149,7 @@ fn add_subtypes(
         let sub_fields = types.get(sub).ok_or_else(|| {
             ShlosiloError::with_context(
                 ShlosiloErrorKind::EncodingInvalidFormat,
-                crate::error::ErrorContext::None /* was format */,
+                crate::error::ErrorContext::None, /* was format */
             )
         })?;
         out.push_str(sub);
@@ -181,10 +180,8 @@ fn atom_type(ty: &str) -> &str {
 
 /// 是否 atom 类型 (EIP-712 预定义: bytesN, string, bytes, intN, uintN, bool, address)
 fn is_atom(ty: &str) -> bool {
-    matches!(
-        ty,
-        "string" | "bytes" | "address" | "bool"
-    ) || ty.starts_with("int")
+    matches!(ty, "string" | "bytes" | "address" | "bool")
+        || ty.starts_with("int")
         || ty.starts_with("uint")
         || (ty.starts_with("bytes") && ty.len() > 5 && is_numeric_suffix(&ty[5..]))
 }
@@ -202,11 +199,7 @@ pub fn type_hash(primary_type: &str, types: &Types) -> Result<[u8; 32]> {
 // ─── encode_data ──────────────────────────────────────────────────
 
 /// 算 hashStruct: `keccak256(typeHash || encodeData(s))`
-pub fn hash_struct(
-    primary_type: &str,
-    value: &Eip712Value,
-    types: &Types,
-) -> Result<[u8; 32]> {
+pub fn hash_struct(primary_type: &str, value: &Eip712Value, types: &Types) -> Result<[u8; 32]> {
     let type_hash_bytes = type_hash(primary_type, types)?;
     let encoded = encode_data(primary_type, value, types)?;
     let mut concat = Vec::with_capacity(32 + encoded.len());
@@ -216,15 +209,11 @@ pub fn hash_struct(
 }
 
 /// 编码结构体 (不含 typeHash prefix)
-fn encode_data(
-    primary_type: &str,
-    value: &Eip712Value,
-    types: &Types,
-) -> Result<Vec<u8>> {
+fn encode_data(primary_type: &str, value: &Eip712Value, types: &Types) -> Result<Vec<u8>> {
     let fields = types.get(primary_type).ok_or_else(|| {
         ShlosiloError::with_context(
             ShlosiloErrorKind::EncodingInvalidFormat,
-            crate::error::ErrorContext::None /* was format */,
+            crate::error::ErrorContext::None, /* was format */
         )
     })?;
     // 必须 Struct 类型, fields 长度匹配
@@ -233,14 +222,14 @@ fn encode_data(
         _ => {
             return Err(ShlosiloError::with_context(
                 ShlosiloErrorKind::EncodingInvalidFormat,
-                crate::error::ErrorContext::None /* was format */,
+                crate::error::ErrorContext::None, /* was format */
             ));
         }
     };
     if field_values.len() != fields.len() {
         return Err(ShlosiloError::with_context(
             ShlosiloErrorKind::EncodingInvalidFormat,
-            crate::error::ErrorContext::None /* was format */,
+            crate::error::ErrorContext::None, /* was format */
         ));
     }
     let mut out = Vec::with_capacity(32 * fields.len());
@@ -260,7 +249,7 @@ fn encode_value(ty: &str, value: &Eip712Value, types: &Types) -> Result<Vec<u8>>
             _ => {
                 return Err(ShlosiloError::with_context(
                     ShlosiloErrorKind::EncodingInvalidFormat,
-                    crate::error::ErrorContext::None /* was format */,
+                    crate::error::ErrorContext::None, /* was format */
                 ));
             }
         };
@@ -292,13 +281,14 @@ fn encode_value(ty: &str, value: &Eip712Value, types: &Types) -> Result<Vec<u8>>
         Eip712Value::Bytes(b) => Ok(keccak256::hash(b)?.to_vec()),
         Eip712Value::Struct(name, vs) => {
             // 递归
-            hash_struct(name, &Eip712Value::Struct(name.clone(), vs.clone()), types).map(|h| h.to_vec())
+            hash_struct(name, &Eip712Value::Struct(name.clone(), vs.clone()), types)
+                .map(|h| h.to_vec())
         }
         Eip712Value::Array(_) => {
             // 已经上面处理
             Err(ShlosiloError::with_context(
                 ShlosiloErrorKind::EncodingInvalidFormat,
-                crate::error::ErrorContext::None /* was format */,
+                crate::error::ErrorContext::None, /* was format */
             ))
         }
     }
@@ -339,8 +329,12 @@ impl Eip712Domain {
         let mut values = Vec::with_capacity(fields.len());
         for (name, ty) in fields {
             let v = match (name.as_str(), ty.as_str()) {
-                ("name", "string") => Eip712Value::String(self.name.clone().unwrap_or_default().into_bytes()),
-                ("version", "string") => Eip712Value::String(self.version.clone().unwrap_or_default().into_bytes()),
+                ("name", "string") => {
+                    Eip712Value::String(self.name.clone().unwrap_or_default().into_bytes())
+                }
+                ("version", "string") => {
+                    Eip712Value::String(self.version.clone().unwrap_or_default().into_bytes())
+                }
                 ("chainId", "uint256") => match self.chain_id {
                     Some(c) => Eip712Value::Uint256(c),
                     None => Eip712Value::Uint256([0u8; 32]),
@@ -356,7 +350,7 @@ impl Eip712Domain {
                 _ => {
                     return Err(ShlosiloError::with_context(
                         ShlosiloErrorKind::EncodingInvalidFormat,
-                        crate::error::ErrorContext::None /* was format */,
+                        crate::error::ErrorContext::None, /* was format */
                     ));
                 }
             };
@@ -410,7 +404,12 @@ pub struct Eip712SignedTx {
 /// 签名 EIP-712 typed data
 pub fn sign_eip712(input: &Eip712SignInput) -> Result<Eip712SignedTx> {
     let sk = sign::sk_from_pk(input.private_key.expose())?;
-    let sighash = signing_hash(&input.domain, &input.primary_type, &input.message, &input.types)?;
+    let sighash = signing_hash(
+        &input.domain,
+        &input.primary_type,
+        &input.message,
+        &input.types,
+    )?;
 
     let mut r_bytes = [0u8; 32];
     let mut s_bytes = [0u8; 32];
@@ -529,12 +528,7 @@ impl Eip712Domain {
 
 /// 递归生成 value 摘要
 #[allow(clippy::only_used_in_recursion)] // 数组元素递归时沿用外层 type_name
-fn summary_value(
-    type_name: &str,
-    value: &Eip712Value,
-    types: &Types,
-    depth: usize,
-) -> String {
+fn summary_value(type_name: &str, value: &Eip712Value, types: &Types, depth: usize) -> String {
     let indent = "  ".repeat(depth);
     match value {
         Eip712Value::Bytes32(b) => format!("0x{}", hex_encode_short(b)),
@@ -559,14 +553,8 @@ fn summary_value(
             let empty = Vec::new();
             let field_defs = types.get(name).unwrap_or(&empty);
             for (i, v) in fields.iter().enumerate() {
-                let field_name = field_defs
-                    .get(i)
-                    .map(|(n, _)| n.as_str())
-                    .unwrap_or("?");
-                let field_type = field_defs
-                    .get(i)
-                    .map(|(_, t)| t.as_str())
-                    .unwrap_or("?");
+                let field_name = field_defs.get(i).map(|(n, _)| n.as_str()).unwrap_or("?");
+                let field_type = field_defs.get(i).map(|(_, t)| t.as_str()).unwrap_or("?");
                 s.push('\n');
                 s.push_str(&format!(
                     "{}  {}: {}",
@@ -741,9 +729,10 @@ impl<'a> Parser<'a> {
                         'f' => out.push('\u{0c}'),
                         'u' => {
                             // \uXXXX → 4 hex digits
-                            let hex_str = self.input.get(self.pos..self.pos + 4).ok_or(
-                                JsonError::InvalidUnicodeEscape,
-                            )?;
+                            let hex_str = self
+                                .input
+                                .get(self.pos..self.pos + 4)
+                                .ok_or(JsonError::InvalidUnicodeEscape)?;
                             self.pos += 4;
                             let code = u32::from_str_radix(hex_str, 16)
                                 .map_err(|_| JsonError::InvalidUnicodeEscape)?;
@@ -1024,7 +1013,10 @@ fn json_to_eip712_value(
                 Err(JsonError::UnexpectedChar('?', 0))
             }
         }
-        t if t.starts_with("bytes") && t.len() > 5 && t[5..].chars().all(|c| c.is_ascii_digit()) => {
+        t if t.starts_with("bytes")
+            && t.len() > 5
+            && t[5..].chars().all(|c| c.is_ascii_digit()) =>
+        {
             // bytesN (固定大小)
             if let JsonValue::String_(s) = json {
                 if let Some(bytes) = parse_dynamic_bytes_hex(s) {
@@ -1196,7 +1188,10 @@ fn parse_int256_string(s: &str) -> Option<[u8; 32]> {
 /// 例: `Mail(Person from,Person to,string contents)Person(string name,address wallet)`
 /// + 配套 message (空白分隔的 key/value 对)
 pub fn parse_typed_data_human_readable(types_str: &str) -> core::result::Result<Types, JsonError> {
-    let mut p = HumanReadableParser { input: types_str, pos: 0 };
+    let mut p = HumanReadableParser {
+        input: types_str,
+        pos: 0,
+    };
     p.skip_ws();
     let types = p.parse_types()?;
     p.skip_ws();
@@ -1298,7 +1293,6 @@ impl<'a> HumanReadableParser<'a> {
 mod tests {
     use super::*;
     use alloc::vec;
-    
 
     fn hex_decode(s: &str) -> Vec<u8> {
         let bytes = s.as_bytes();
@@ -1368,20 +1362,18 @@ mod tests {
             }),
             verifying_contract: Some({
                 // EIP-712 官方测试向量: EtherMail verifying contract (全 CC 地址)
-                
+
                 [0xCCu8; 20]
             }),
             salt: None,
         };
 
-        let alice_addr: [u8; 20] =
-            hex_decode("CD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826")
-                .try_into()
-                .unwrap();
-        let bob_addr: [u8; 20] =
-            hex_decode("bBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB")
-                .try_into()
-                .unwrap();
+        let alice_addr: [u8; 20] = hex_decode("CD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826")
+            .try_into()
+            .unwrap();
+        let bob_addr: [u8; 20] = hex_decode("bBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB")
+            .try_into()
+            .unwrap();
 
         let alice = Eip712Value::Struct(
             "Person".to_string(),
@@ -1401,11 +1393,7 @@ mod tests {
 
         let mail = Eip712Value::Struct(
             "Mail".to_string(),
-            vec![
-                alice,
-                bob,
-                Eip712Value::String(b"Hello, Bob!".to_vec()),
-            ],
+            vec![alice, bob, Eip712Value::String(b"Hello, Bob!".to_vec())],
         );
 
         let signing_hash_bytes = signing_hash(&domain, "Mail", &mail, &types).unwrap();
@@ -1423,7 +1411,8 @@ mod tests {
     fn type_hash_spec() {
         let types = mail_types();
         let h = type_hash("EIP712Domain", &types).unwrap();
-        let expected = hex_decode("8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f");
+        let expected =
+            hex_decode("8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f");
         assert_eq!(&h[..], &expected[..], "domain typeHash mismatch");
     }
 
@@ -1432,7 +1421,8 @@ mod tests {
     fn mail_type_hash_spec() {
         let types = mail_types();
         let h = type_hash("Mail", &types).unwrap();
-        let expected = hex_decode("a0cedeb2dc280ba39b857546d74f5549c3a1d7bdc2dd96bf881f76108e23dac2");
+        let expected =
+            hex_decode("a0cedeb2dc280ba39b857546d74f5549c3a1d7bdc2dd96bf881f76108e23dac2");
         assert_eq!(&h[..], &expected[..], "Mail typeHash mismatch");
     }
 
@@ -1450,7 +1440,7 @@ mod tests {
             }),
             verifying_contract: Some({
                 // EIP-712 官方测试向量: EtherMail verifying contract (全 CC 地址)
-                
+
                 [0xCCu8; 20]
             }),
             salt: None,
@@ -1489,19 +1479,17 @@ mod tests {
             }),
             verifying_contract: Some({
                 // EIP-712 官方测试向量: EtherMail verifying contract (全 CC 地址)
-                
+
                 [0xCCu8; 20]
             }),
             salt: None,
         };
-        let alice_addr: [u8; 20] =
-            hex_decode("CD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826")
-                .try_into()
-                .unwrap();
-        let bob_addr: [u8; 20] =
-            hex_decode("bBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB")
-                .try_into()
-                .unwrap();
+        let alice_addr: [u8; 20] = hex_decode("CD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826")
+            .try_into()
+            .unwrap();
+        let bob_addr: [u8; 20] = hex_decode("bBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB")
+            .try_into()
+            .unwrap();
 
         let alice = Eip712Value::Struct(
             "Person".to_string(),
@@ -1532,8 +1520,7 @@ mod tests {
         let signed = sign_eip712(&input).unwrap();
 
         // Verify signing hash matches spec (this is the security-critical value)
-        let expected_hash =
-            "be609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2";
+        let expected_hash = "be609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2";
         let expected_hash_bytes = hex_decode(expected_hash);
         assert_eq!(
             &signed.signing_hash[..],
@@ -1615,8 +1602,20 @@ mod tests {
         let msg = Eip712Value::Struct(
             "Mail".to_string(),
             vec![
-                Eip712Value::Struct("Person".to_string(), vec![Eip712Value::String(b"x".to_vec()), Eip712Value::Address([1u8; 20])]),
-                Eip712Value::Struct("Person".to_string(), vec![Eip712Value::String(b"y".to_vec()), Eip712Value::Address([2u8; 20])]),
+                Eip712Value::Struct(
+                    "Person".to_string(),
+                    vec![
+                        Eip712Value::String(b"x".to_vec()),
+                        Eip712Value::Address([1u8; 20]),
+                    ],
+                ),
+                Eip712Value::Struct(
+                    "Person".to_string(),
+                    vec![
+                        Eip712Value::String(b"y".to_vec()),
+                        Eip712Value::Address([2u8; 20]),
+                    ],
+                ),
                 Eip712Value::String(b"z".to_vec()),
             ],
         );
@@ -1657,7 +1656,8 @@ mod tests {
     /// JSON parser 基本测试: object / string / number / bool / null / array
     #[test]
     fn json_parser_basic() {
-        let v = parse_json(r#"{"name": "Alice", "age": 30, "active": true, "tags": ["a", "b"]}"#).unwrap();
+        let v = parse_json(r#"{"name": "Alice", "age": 30, "active": true, "tags": ["a", "b"]}"#)
+            .unwrap();
         match v {
             JsonValue::Object(obj) => {
                 assert_eq!(obj.len(), 4);
@@ -1732,11 +1732,14 @@ mod tests {
         assert_eq!(td.domain.chain_id.unwrap()[31], 1);
 
         // 验证 signing hash 与 v9.1 spec 一致
-        let expected_hash =
-            "be609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2";
+        let expected_hash = "be609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2";
         let h = td.signing_hash().unwrap();
         let expected = hex_decode(expected_hash);
-        assert_eq!(&h[..], &expected[..], "JSON v4 parse → signing_hash mismatch");
+        assert_eq!(
+            &h[..],
+            &expected[..],
+            "JSON v4 parse → signing_hash mismatch"
+        );
     }
 
     /// parse_typed_data_v4 with uint256 as string (大数, 避免精度损失)
@@ -1780,7 +1783,8 @@ mod tests {
     /// Human-readable parser: Mail(Person from,Person to,string contents)Person(string name,address wallet)
     #[test]
     fn human_readable_parser_basic() {
-        let types_str = "Mail(Person from,Person to,string contents)Person(string name,address wallet)";
+        let types_str =
+            "Mail(Person from,Person to,string contents)Person(string name,address wallet)";
         let types = parse_typed_data_human_readable(types_str).unwrap();
         assert!(types.contains_key("Mail"));
         assert!(types.contains_key("Person"));
@@ -1835,8 +1839,7 @@ mod tests {
         let signed = td.sign(private_key).unwrap();
 
         // spec 验证: signing hash 匹配
-        let expected_hash =
-            "be609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2";
+        let expected_hash = "be609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2";
         assert_eq!(
             &signed.signing_hash[..],
             &hex_decode(expected_hash)[..],

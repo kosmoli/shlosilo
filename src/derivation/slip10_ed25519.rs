@@ -22,7 +22,11 @@ impl AsRef<[u8]> for Slip10ExtendedKey {
 
 impl core::fmt::Debug for Slip10ExtendedKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Slip10ExtendedKey(<{} bytes redacted>)", self.bytes.len())
+        write!(
+            f,
+            "Slip10ExtendedKey(<{} bytes redacted>)",
+            self.bytes.len()
+        )
     }
 }
 
@@ -32,7 +36,9 @@ impl core::fmt::Debug for Slip10ExtendedKey {
 /// `slip10::derive_ed25519_master(seed)`（slip10 14.x crate）
 pub fn master_from_seed(_seed: &[u8]) -> Result<Slip10ExtendedKey> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 /// SLIP-0010 路径派生（Phase 4 真实实现）
@@ -40,7 +46,9 @@ pub fn master_from_seed(_seed: &[u8]) -> Result<Slip10ExtendedKey> {
 /// 重要：SLIP-0010 for ed25519 要求 **每个 segment 都是 hardened**（包括 account / change / address_index）
 pub fn derive(_master: &Slip10ExtendedKey, _path: &DerivationPath) -> Result<Ed25519Scalar> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 #[cfg(test)]
@@ -66,8 +74,14 @@ mod tests {
         // （检查代码行，排除注释行）
         for line in "slip10_ed25519.rs".lines() {
             let t = line.trim_start();
-            if t.starts_with("//") { continue; }
-            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+            if t.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !t.contains(concat!("unimplemented", "!(")),
+                "panic macro regressed: {}",
+                line
+            );
         }
     }
 }

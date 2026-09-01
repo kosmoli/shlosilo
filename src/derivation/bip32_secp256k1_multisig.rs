@@ -30,10 +30,7 @@ pub fn aggregate_pubkey(_pubkeys: &[Secp256k1Point]) -> Result<Secp256k1Point> {
 }
 
 /// 构造 m-of-n P2SH redeem script（Phase 8+ 真实实现）
-pub fn redeem_script(
-    _m: u8,
-    _sorted_pubkeys: &[Secp256k1Point],
-) -> Result<MultisigScript> {
+pub fn redeem_script(_m: u8, _sorted_pubkeys: &[Secp256k1Point]) -> Result<MultisigScript> {
     Err(ShlosiloError::new(ShlosiloErrorKind::MultisigNotSupported))
 }
 

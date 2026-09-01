@@ -20,8 +20,8 @@ fn hex(b: &[u8]) -> String {
 
 #[test]
 /// 排障期一次性诊断: 需 SHLOSILO_TEST_XMR_* env（真 spend/view key），默认 ignore。
-    #[ignore]
-    fn diag_step_by_step() {
+#[ignore]
+fn diag_step_by_step() {
     let view_sk = env_hex("SHLOSILO_TEST_XMR_VIEW_SK").expect("VIEW_SK");
     let spend_sk = env_hex("SHLOSILO_TEST_XMR_SPEND_SK").expect("SPEND_SK");
 
@@ -48,13 +48,11 @@ fn hex(b: &[u8]) -> String {
 
 #[test]
 /// 同上，env 驱动诊断。
-    #[ignore]
-    fn diag_clsag_with_fixture_ring() {
+#[ignore]
+fn diag_clsag_with_fixture_ring() {
     use rand_core::OsRng;
     use shlosilo::chain::xmr::clsag;
-    use shlosilo::chain::xmr::transaction::{
-        bytes_to_monerod_scalar, monerod_scalar_to_bytes,
-    };
+    use shlosilo::chain::xmr::transaction::{bytes_to_monerod_scalar, monerod_scalar_to_bytes};
     use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
 
     let view_sk = env_hex("SHLOSILO_TEST_XMR_VIEW_SK").expect("VIEW_SK");
@@ -66,14 +64,21 @@ fn hex(b: &[u8]) -> String {
 
     // one-time input sk（spend + key_offset）
     let (_, key_offset) = shlosilo::chain::xmr::subaddress::derive_input_from_source(
-        &view_sk, &spend_sk, src,
-        tx_data.subaddr_account, &tx_data.subaddr_indices,
-    ).expect("keyimage");
+        &view_sk,
+        &spend_sk,
+        src,
+        tx_data.subaddr_account,
+        &tx_data.subaddr_indices,
+    )
+    .expect("keyimage");
     let input_sk = shlosilo::chain::xmr::subaddress::derive_input_spend_key(&spend_sk, &key_offset)
         .expect("input_sk");
 
     // ring 与签名路径一致：(dest, 链上 C 点) — OutputEntry.mask 是链上 commitment 点
-    let ring: Vec<(monero_ed25519::CompressedPoint, monero_ed25519::CompressedPoint)> = src
+    let ring: Vec<(
+        monero_ed25519::CompressedPoint,
+        monero_ed25519::CompressedPoint,
+    )> = src
         .outputs
         .iter()
         .map(|o| {
@@ -93,9 +98,9 @@ fn hex(b: &[u8]) -> String {
     let mut real_mask_buf = [0u8; 32];
     src.mask.write_into(&mut real_mask_buf);
     let real_mask = real_mask_buf;
-    let rm_d = curve25519_dalek::Scalar::from_bytes_mod_order(
-        monerod_scalar_to_bytes(&bytes_to_monerod_scalar(&real_mask)),
-    );
+    let rm_d = curve25519_dalek::Scalar::from_bytes_mod_order(monerod_scalar_to_bytes(
+        &bytes_to_monerod_scalar(&real_mask),
+    ));
     let pseudo_mask: [u8; 32] = (rm_d + curve25519_dalek::Scalar::ONE).to_bytes();
 
     let mut rng = OsRng;
@@ -117,7 +122,6 @@ fn hex(b: &[u8]) -> String {
         }
     }
 }
-
 
 #[test]
 fn diag_bp_size_and_verify() {

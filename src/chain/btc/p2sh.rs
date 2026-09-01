@@ -30,14 +30,12 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::types::SecretBytes;
 use crate::chain::btc::p2pkh::p2pkh_script_code;
-use crate::chain::btc::p2wpkh::{
-    segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL,
-};
+use crate::chain::btc::p2wpkh::{segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL};
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
+use crate::types::SecretBytes;
 
 /// P2SH scriptPubKey: `OP_HASH160 <20-byte-hash> OP_EQUAL`
 ///
@@ -164,9 +162,9 @@ pub fn sign_p2sh_p2wpkh(
 mod tests {
     extern crate std;
     use super::*;
+    use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut};
     use alloc::string::String;
     use alloc::vec;
-    use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut};
     use std::eprintln;
 
     fn hex_decode(s: &str) -> Vec<u8> {
@@ -298,7 +296,11 @@ mod tests {
         assert_eq!(signed.tx_bytes[4], 0x00);
         assert_eq!(signed.tx_bytes[5], 0x01);
 
-        eprintln!("P2SH-P2WPKH signed tx ({} bytes): {}", signed.tx_bytes.len(), hex_encode(&signed.tx_bytes));
+        eprintln!(
+            "P2SH-P2WPKH signed tx ({} bytes): {}",
+            signed.tx_bytes.len(),
+            hex_encode(&signed.tx_bytes)
+        );
     }
 
     /// Input index 越界
@@ -351,6 +353,9 @@ mod tests {
         // 两者的 sighash 算法完全相同 (BIP-143), 不同的是 scriptSig/witness 序列化
         let h_p2sh = segwit_sighash_p2wpkh(&tx, 0, &script_code, 300_000, SIGHASH_ALL).unwrap();
         let h_p2w = segwit_sighash_p2wpkh(&tx, 0, &script_code, 300_000, SIGHASH_ALL).unwrap();
-        assert_eq!(h_p2sh, h_p2w, "sighash should be identical (same algorithm)");
+        assert_eq!(
+            h_p2sh, h_p2w,
+            "sighash should be identical (same algorithm)"
+        );
     }
 }

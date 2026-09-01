@@ -43,9 +43,7 @@ fn classify_call(destination: Option<[u8; 20]>, data: &[u8]) -> Result<(EthCallK
     }
     match decode_calldata(data)? {
         DecodedCalldata::Empty => Ok((EthCallKind::NativeTransfer, false)),
-        DecodedCalldata::Unknown { selector } => {
-            Ok((EthCallKind::UnknownCall { selector }, false))
-        }
+        DecodedCalldata::Unknown { selector } => Ok((EthCallKind::UnknownCall { selector }, false)),
         DecodedCalldata::Approve { amount, spender } => {
             let unlimited = amount.iter().all(|&b| b == 0xff);
             Ok((
@@ -182,10 +180,7 @@ mod tests {
         let s = summarize_eip1559(&tx).unwrap();
         match s.call {
             EthCallKind::Token(DecodedCalldata::Transfer { to, amount }) => {
-                assert_eq!(
-                    hex::encode(&to),
-                    "5df9b87991262f6ba471f09758cde1c0fc1de734"
-                );
+                assert_eq!(hex::encode(&to), "5df9b87991262f6ba471f09758cde1c0fc1de734");
                 assert_eq!(amount[31], 1);
             }
             other => panic!("{other:?}"),

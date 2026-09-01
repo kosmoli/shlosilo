@@ -42,7 +42,9 @@ impl fmt::Debug for XrpAddress {
 /// - base58(0x00 || ripemd160(sha256(pubkey)))
 pub fn encode_classic(_pubkey: &Secp256k1Point, _network: Network) -> Result<XrpAddress> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 /// XRP X-address（带 destination tag，`X...` 前缀）
@@ -52,7 +54,9 @@ pub fn encode_x_address(
     _tag: u32,
 ) -> Result<XrpAddress> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 #[cfg(test)]
@@ -67,8 +71,14 @@ mod tests {
         // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
         for line in include_str!("xrp.rs").lines() {
             let t = line.trim_start();
-            if t.starts_with("//") { continue; }
-            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+            if t.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !t.contains(concat!("unimplemented", "!(")),
+                "panic macro regressed: {}",
+                line
+            );
         }
     }
 }

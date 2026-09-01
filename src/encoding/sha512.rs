@@ -69,8 +69,6 @@ mod tests {
         }
         s
     }
-    
-
 
     const _: fn(&[u8]) -> Result<[u8; SHA512_OUTPUT_LEN]> = hash;
 
@@ -96,7 +94,6 @@ mod tests {
                         2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
         assert_eq!(hex_encode(&h), expected);
     }
-
 
     /// HMAC-SHA512 简单测试（v0.4.0 Phase 4 baseline）
     #[test]

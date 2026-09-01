@@ -42,10 +42,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::chain::btc::p2pkh::sign_p2pkh;
-use crate::types::SecretBytes;
 use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
 use crate::chain::btc::p2wpkh::{sign_p2wpkh, OutPoint, Transaction, TxIn, TxOut};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::types::SecretBytes;
 
 /// PSBT magic bytes: "psbt" + 0xff
 pub const PSBT_MAGIC: [u8; 5] = [0x70, 0x73, 0x62, 0x74, 0xff];
@@ -126,7 +126,9 @@ struct EncodedMap {
 
 impl EncodedMap {
     fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     fn add(&mut self, key: Vec<u8>, value: Vec<u8>) {
@@ -136,7 +138,10 @@ impl EncodedMap {
     }
 
     fn get(&self, key: &[u8]) -> Option<&Vec<u8>> {
-        self.entries.iter().find(|kv| kv.key == key).map(|kv| &kv.value)
+        self.entries
+            .iter()
+            .find(|kv| kv.key == key)
+            .map(|kv| &kv.value)
     }
 
     /// 序列化为字节 (keylen || key || valuelen || value)*
@@ -192,9 +197,11 @@ fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
             if *pos + 8 > bytes.len() {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
             }
-            let n = u64::from_le_bytes(bytes[*pos..*pos + 8].try_into().map_err(|_| {
-                ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-            })?);
+            let n = u64::from_le_bytes(
+                bytes[*pos..*pos + 8]
+                    .try_into()
+                    .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
+            );
             *pos += 8;
             // 非规范：8 字节编码最小值 0x1_0000_0000
             if n < 0x1_0000_0000 || n > PSBT_WIRE_MAX_LEN {
@@ -206,9 +213,11 @@ fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
             if *pos + 4 > bytes.len() {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
             }
-            let n = u32::from_le_bytes(bytes[*pos..*pos + 4].try_into().map_err(|_| {
-                ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-            })?) as u64;
+            let n = u32::from_le_bytes(
+                bytes[*pos..*pos + 4]
+                    .try_into()
+                    .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
+            ) as u64;
             *pos += 4;
             // 非规范：4 字节编码最小值 0x1_0000
             if n < 0x1_0000 || n > PSBT_WIRE_MAX_LEN {
@@ -220,9 +229,11 @@ fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
             if *pos + 2 > bytes.len() {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
             }
-            let n = u16::from_le_bytes(bytes[*pos..*pos + 2].try_into().map_err(|_| {
-                ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-            })?) as u64;
+            let n = u16::from_le_bytes(
+                bytes[*pos..*pos + 2]
+                    .try_into()
+                    .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
+            ) as u64;
             *pos += 2;
             // 非规范：2 字节编码最小值 0xfd
             if !(0xfd..=PSBT_WIRE_MAX_LEN).contains(&n) {
@@ -283,9 +294,11 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     if pos + 4 > bytes.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    let version = i32::from_le_bytes(bytes[pos..pos + 4].try_into().map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?);
+    let version = i32::from_le_bytes(
+        bytes[pos..pos + 4]
+            .try_into()
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
+    );
     pos += 4;
 
     // inputs count（P0-01：计数域已受 PSBT_WIRE_MAX_LEN 预算约束，
@@ -304,9 +317,11 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
 
         // vout (4 bytes)
         let vout_bytes = take_bytes(bytes, &mut pos, 4)?;
-        let vout = u32::from_le_bytes(vout_bytes.try_into().map_err(|_| {
-            ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-        })?);
+        let vout = u32::from_le_bytes(
+            vout_bytes
+                .try_into()
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
+        );
 
         // scriptSig len + bytes
         let script_sig_len = decode_compact_size(bytes, &mut pos)? as usize;
@@ -314,9 +329,11 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
 
         // sequence (4 bytes)
         let seq_bytes = take_bytes(bytes, &mut pos, 4)?;
-        let sequence = u32::from_le_bytes(seq_bytes.try_into().map_err(|_| {
-            ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-        })?);
+        let sequence = u32::from_le_bytes(
+            seq_bytes
+                .try_into()
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
+        );
 
         inputs.push(TxIn {
             prev_out: OutPoint { txid, vout },
@@ -335,22 +352,29 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     for _ in 0..n_outputs {
         // value (8 bytes)
         let value_bytes = take_bytes(bytes, &mut pos, 8)?;
-        let value = u64::from_le_bytes(value_bytes.try_into().map_err(|_| {
-            ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-        })?);
+        let value = u64::from_le_bytes(
+            value_bytes
+                .try_into()
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
+        );
 
         // scriptPubKey len + bytes
         let script_pubkey_len = decode_compact_size(bytes, &mut pos)? as usize;
         let script_pubkey = take_bytes(bytes, &mut pos, script_pubkey_len)?.to_vec();
 
-        outputs.push(TxOut { value, script_pubkey });
+        outputs.push(TxOut {
+            value,
+            script_pubkey,
+        });
     }
 
     // lock_time (4 bytes)
     let lock_bytes = take_bytes(bytes, &mut pos, 4)?;
-    let lock_time = u32::from_le_bytes(lock_bytes.try_into().map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?);
+    let lock_time = u32::from_le_bytes(
+        lock_bytes
+            .try_into()
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
+    );
 
     Ok(Transaction {
         version,
@@ -408,9 +432,9 @@ pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt> {
 
     // global map
     let global_map = decode_map(bytes, &mut pos)?;
-    let tx_bytes = global_map.get(&[global_type::UNSIGNED_TX]).ok_or({
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let tx_bytes = global_map
+        .get(&[global_type::UNSIGNED_TX])
+        .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let unsigned_tx = deserialize_unsigned_tx(tx_bytes)?;
 
     let n_inputs = unsigned_tx.inputs.len();
@@ -581,10 +605,7 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt, sign_input: &PsbtP2PKHSignInput) -> Resu
 ///
 /// 注: FINAL_SCRIPTWITNESS 是 BIP-174 特殊格式, value 是已经序列化好的 witness bytes.
 /// shlosilo 复用 v9.3 sign_p2sh_p2wpkh 的 witness 输出 (vec![sig, pk]).
-pub fn sign_psbt_p2sh_p2wpkh(
-    psbt: &mut Psbt,
-    sign_input: &PsbtP2SHP2WPKHSignInput,
-) -> Result<()> {
+pub fn sign_psbt_p2sh_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtP2SHP2WPKHSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -634,7 +655,6 @@ pub fn sign_psbt_p2sh_p2wpkh(
     Ok(())
 }
 
-
 // === v9.9 P2TR PSBT helpers (BIP-371) ===
 
 /// P2TR sign input (keypath-only)
@@ -658,10 +678,7 @@ pub struct PsbtP2TRScriptPathSignInput {
 /// Sign PSBT P2TR input (BIP-371 keypath-only).
 /// Caller provides pre-computed tweaked Schnorr signature.
 /// Injects PSBT_IN_TAP_KEY_SIG (0x13) into input map.
-pub fn sign_psbt_p2tr_keypath(
-    psbt: &mut Psbt,
-    sign_input: &PsbtP2TRSignInput,
-) -> Result<()> {
+pub fn sign_psbt_p2tr_keypath(psbt: &mut Psbt, sign_input: &PsbtP2TRSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -742,9 +759,11 @@ pub fn decode_witness_utxo(value: &[u8]) -> Result<(u64, Vec<u8>)> {
     if value.len() < 8 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    let amount = u64::from_le_bytes(value[..8].try_into().map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?);
+    let amount = u64::from_le_bytes(
+        value[..8]
+            .try_into()
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
+    );
     let mut pos = 8;
     let spk_len = decode_compact_size(value, &mut pos)? as usize;
     let spk = take_bytes(value, &mut pos, spk_len)?;
@@ -776,7 +795,9 @@ pub fn get_utxo_any(input_map: &[KeyValue]) -> Option<(u64, Vec<u8>)> {
 
 /// Get TAP_INTERNAL_KEY from input map (BIP-371 0x17)
 pub fn get_tap_internal_key(input_map: &[KeyValue]) -> Option<[u8; 32]> {
-    let kv = input_map.iter().find(|kv| kv.key == vec![input_type::TAP_INTERNAL_KEY])?;
+    let kv = input_map
+        .iter()
+        .find(|kv| kv.key == vec![input_type::TAP_INTERNAL_KEY])?;
     if kv.value.len() != 32 {
         return None;
     }
@@ -786,7 +807,10 @@ pub fn get_tap_internal_key(input_map: &[KeyValue]) -> Option<[u8; 32]> {
 }
 
 /// Set TAP_INTERNAL_KEY in input map
-pub fn set_tap_internal_key(input_map: &mut Vec<KeyValue>, internal_key_x: &[u8; 32]) -> Result<()> {
+pub fn set_tap_internal_key(
+    input_map: &mut Vec<KeyValue>,
+    internal_key_x: &[u8; 32],
+) -> Result<()> {
     let key = vec![input_type::TAP_INTERNAL_KEY];
     input_map.retain(|kv| kv.key != key);
     input_map.push(KeyValue {
@@ -798,7 +822,9 @@ pub fn set_tap_internal_key(input_map: &mut Vec<KeyValue>, internal_key_x: &[u8;
 
 /// Get TAP_MERKLE_ROOT from input map (BIP-371 0x18)
 pub fn get_tap_merkle_root(input_map: &[KeyValue]) -> Option<[u8; 32]> {
-    let kv = input_map.iter().find(|kv| kv.key == vec![input_type::TAP_MERKLE_ROOT])?;
+    let kv = input_map
+        .iter()
+        .find(|kv| kv.key == vec![input_type::TAP_MERKLE_ROOT])?;
     if kv.value.len() != 32 {
         return None;
     }
@@ -1162,11 +1188,14 @@ mod tests {
         let final_scriptsig = psbt.inputs[0]
             .iter()
             .find(|kv| kv.key == vec![input_type::FINAL_SCRIPT_SIG]);
-        assert!(final_scriptsig.is_some(), "FINAL_SCRIPT_SIG must be injected");
+        assert!(
+            final_scriptsig.is_some(),
+            "FINAL_SCRIPT_SIG must be injected"
+        );
         let final_scriptsig = final_scriptsig.unwrap();
         // value 是 scriptSig: <push sig><push pk>
         assert!(final_scriptsig.value.len() > 33); // sig + compressed pk
-        // scriptSig 末尾应是 compressed pubkey (33 bytes)
+                                                   // scriptSig 末尾应是 compressed pubkey (33 bytes)
         let pk_bytes = &final_scriptsig.value[final_scriptsig.value.len() - 33..];
         assert!(pk_bytes[0] == 0x02 || pk_bytes[0] == 0x03);
 
@@ -1256,7 +1285,10 @@ mod tests {
         let final_scriptsig = psbt.inputs[0]
             .iter()
             .find(|kv| kv.key == vec![input_type::FINAL_SCRIPT_SIG]);
-        assert!(final_scriptsig.is_some(), "FINAL_SCRIPT_SIG must be injected");
+        assert!(
+            final_scriptsig.is_some(),
+            "FINAL_SCRIPT_SIG must be injected"
+        );
         let final_scriptsig = final_scriptsig.unwrap();
         // scriptSig = push 22 (0x16) + 0x00 + 0x14 + pubkey_hash
         assert_eq!(final_scriptsig.value.len(), 23);
@@ -1266,12 +1298,15 @@ mod tests {
         let final_witness = psbt.inputs[0]
             .iter()
             .find(|kv| kv.key == vec![input_type::FINAL_SCRIPTWITNESS]);
-        assert!(final_witness.is_some(), "FINAL_SCRIPTWITNESS must be injected");
+        assert!(
+            final_witness.is_some(),
+            "FINAL_SCRIPTWITNESS must be injected"
+        );
         let final_witness = final_witness.unwrap();
         // witness 序列化: <item_count><item_len><item_data>*
         // 2 items: signature + pubkey
         assert_eq!(final_witness.value[0], 2); // 2 witness items
-        // 接下来是 varint(sig_len) + sig
+                                               // 接下来是 varint(sig_len) + sig
         eprintln!(
             "FINAL_SCRIPTWITNESS ({} bytes): {}",
             final_witness.value.len(),
@@ -1527,8 +1562,8 @@ mod tests {
     #[test]
     fn psbt_taproot_end_to_end_keystone_fixture() {
         use crate::chain::btc::taproot::{
-            bip341_keypath_sighash, sign_p2tr_keypath, P2TRKeypathSignInput,
-            SpentOutput, TaprootSighashInput, SIGHASH_DEFAULT,
+            bip341_keypath_sighash, sign_p2tr_keypath, P2TRKeypathSignInput, SpentOutput,
+            TaprootSighashInput, SIGHASH_DEFAULT,
         };
 
         // keystone wrapped_psbt.rs test_taproot_sign fixture (完整 PSBT hex)
@@ -1551,13 +1586,18 @@ mod tests {
         );
         // input_type 常量修正（BIP-174 对齐）后：fixture 的 UTXO 在 0x01 = WITNESS_UTXO（标准），
         // is_p2tr_input 能正确识别该 P2TR 输入
-        assert!(is_p2tr_input(&psbt.inputs[0]), "standard WITNESS_UTXO(0x01) with P2TR spk must be detected as taproot input");
+        assert!(
+            is_p2tr_input(&psbt.inputs[0]),
+            "standard WITNESS_UTXO(0x01) with P2TR spk must be detected as taproot input"
+        );
 
         // 2. spent output (value + spk): fixture 把 TxOut 放在 0x01 字段（CTxOut 格式），
         //    标准 WITNESS_UTXO(0x02) 同样是 CTxOut 格式，decode_witness_utxo 通用
         let utxo_kv = psbt.inputs[0]
             .iter()
-            .find(|kv| kv.key[0] == input_type::NON_WITNESS_UTXO || kv.key[0] == input_type::WITNESS_UTXO)
+            .find(|kv| {
+                kv.key[0] == input_type::NON_WITNESS_UTXO || kv.key[0] == input_type::WITNESS_UTXO
+            })
             .unwrap();
         let (value, spent_spk) = decode_witness_utxo(&utxo_kv.value).unwrap();
         assert_eq!(value, 0x19bc);
@@ -1656,5 +1696,4 @@ mod tests {
         out.copy_from_slice(&v);
         out
     }
-
 }

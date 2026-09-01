@@ -161,12 +161,8 @@ fn eth_eip712_keystone_array_type_hash() {
         vec![
             eip712::Eip712Value::String(b"Cow".to_vec()),
             eip712::Eip712Value::Array(vec![
-                eip712::Eip712Value::Address(hex_to_20(
-                    "CD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826",
-                )),
-                eip712::Eip712Value::Address(hex_to_20(
-                    "DD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826",
-                )),
+                eip712::Eip712Value::Address(hex_to_20("CD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826")),
+                eip712::Eip712Value::Address(hex_to_20("DD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826")),
             ]),
         ],
     );
@@ -181,7 +177,11 @@ fn eth_eip712_keystone_array_type_hash() {
     )]);
     let mail = eip712::Eip712Value::Struct(
         "Mail".to_string(),
-        vec![from, to, eip712::Eip712Value::String(b"Hello, Bob!".to_vec())],
+        vec![
+            from,
+            to,
+            eip712::Eip712Value::String(b"Hello, Bob!".to_vec()),
+        ],
     );
 
     let sighash = eip712::signing_hash(&domain, "Mail", &mail, &types).unwrap();

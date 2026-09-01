@@ -26,13 +26,7 @@ fn p0_01_accept_minimum_boundary() {
     // 64 rolls ∈ [1,6]：用确定性序列
     let rolls: heapless::Vec<u8, 128> = (0..n).map(|i| (i % 6) as u8 + 1).collect();
     let mut mbuf = [0u8; 24];
-    let result = create_account(
-        WordCount::Words12,
-        6,
-        &rolls,
-        b"",
-        &mut mbuf,
-    );
+    let result = create_account(WordCount::Words12, 6, &rolls, b"", &mut mbuf);
     assert!(result.is_ok(), "exactly minimum_rolls must succeed");
 }
 

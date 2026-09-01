@@ -10,11 +10,11 @@
 //! 覆盖入口：sign / sign_ur / export_readonly / create_account / sign_typed（9 入口族）
 
 use shlosilo::error::ShlosiloErrorCode;
-use shlosilo::ffi::c_abi::{
-    shlosilo_create_account_ffi, shlosilo_export_readonly_ffi, shlosilo_sign_ur_ffi,
-    shlosilo_sign_ffi,
-};
 use shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi;
+use shlosilo::ffi::c_abi::{
+    shlosilo_create_account_ffi, shlosilo_export_readonly_ffi, shlosilo_sign_ffi,
+    shlosilo_sign_ur_ffi,
+};
 
 const INVALID_MNEMONIC: i32 = ShlosiloErrorCode::InvalidMnemonic as i32;
 const INVALID_ARG: i32 = ShlosiloErrorCode::InvalidArgument as i32;
@@ -54,11 +54,9 @@ fn p002_negative_count_rejected_sign_ur() {
     let idx = valid_indices();
     let mut out = [0u8; 64];
     let mut actual: u32 = 0;
-    let uri = shlosilo::ur::ur_encode::encode(
-        shlosilo::ur::ur_encode::UrTypeTag::CryptoPsbt,
-        &[0u8; 8],
-    )
-    .unwrap();
+    let uri =
+        shlosilo::ur::ur_encode::encode(shlosilo::ur::ur_encode::UrTypeTag::CryptoPsbt, &[0u8; 8])
+            .unwrap();
     let uri_c = alloc_cstring(uri.as_str());
     for bad in [-1i32, i32::MIN, 13, 0] {
         let rc = shlosilo_sign_ur_ffi(
@@ -203,7 +201,11 @@ fn p002_network_wraparound_rejected() {
             out.len() as u32,
             &mut actual,
         );
-        assert_ne!(rc, shlosilo::ffi::error_code::OK, "network={bad_net} 不得回绕成合法值");
+        assert_ne!(
+            rc,
+            shlosilo::ffi::error_code::OK,
+            "network={bad_net} 不得回绕成合法值"
+        );
     }
 }
 
@@ -248,7 +250,10 @@ fn p002_outparam_zeroed_on_null_early_return() {
         &mut actual,
     );
     assert_eq!(rc, INVALID_ARG);
-    assert_eq!(actual, 0, "null early-return 前必须清零 out-param（修复前残留 0xDEADBEEF）");
+    assert_eq!(
+        actual, 0,
+        "null early-return 前必须清零 out-param（修复前残留 0xDEADBEEF）"
+    );
 
     // export 同路径
     let mut actual2: u32 = 0xDEAD_BEEF;

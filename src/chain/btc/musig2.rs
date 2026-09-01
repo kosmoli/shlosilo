@@ -24,9 +24,9 @@ use alloc::vec::Vec;
 use sha2::{Digest, Sha256};
 
 use crate::curve_primitive::secp256k1::{
-    base_mul, point_add, point_from_compressed, point_negate, point_to_compressed,
-    scalar_add, scalar_from_bytes, scalar_mul, scalar_mul_n, scalar_negate, scalar_to_bytes,
-    Secp256k1Point, Secp256k1Scalar,
+    base_mul, point_add, point_from_compressed, point_negate, point_to_compressed, scalar_add,
+    scalar_from_bytes, scalar_mul, scalar_mul_n, scalar_negate, scalar_to_bytes, Secp256k1Point,
+    Secp256k1Scalar,
 };
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
@@ -226,7 +226,9 @@ fn key_agg_coeff_internal(pubkeys: &[Vec<u8>], pk_prime: &[u8], pk2: &[u8]) -> S
                 let mut i = 31;
                 while bytes[i] == 0 {
                     bytes[i] = 0xff;
-                    if i == 0 { break; }
+                    if i == 0 {
+                        break;
+                    }
                     i -= 1;
                 }
                 if i > 0 || bytes[0] > 0 {
@@ -234,7 +236,9 @@ fn key_agg_coeff_internal(pubkeys: &[Vec<u8>], pk_prime: &[u8], pk2: &[u8]) -> S
                 } else {
                     // Underflow → wraps to all 0xff, which is also >= n
                     // Just give up and use 0...0 (statistically impossible case)
-                    for b in bytes.iter_mut() { *b = 0; }
+                    for b in bytes.iter_mut() {
+                        *b = 0;
+                    }
                     break;
                 }
             }
@@ -256,10 +260,15 @@ pub fn key_agg(pubkeys: &[Vec<u8>]) -> Result<KeyAggContext> {
     {
         extern crate std;
         use std::eprintln;
-        let pk2_hex: alloc::string::String = pk2.iter().map(|b| alloc::format!("{:02x}", b)).collect();
+        let pk2_hex: alloc::string::String =
+            pk2.iter().map(|b| alloc::format!("{:02x}", b)).collect();
         eprintln!("[DEBUG key_agg] pk2 = {}", pk2_hex);
         let l = hash_keys(pubkeys);
-        eprintln!("[DEBUG key_agg] L_hash = {}", alloc::format!("{:02x?}", l.chunks(32).next().unwrap()).trim_matches(|c: char| !c.is_ascii_hexdigit()));
+        eprintln!(
+            "[DEBUG key_agg] L_hash = {}",
+            alloc::format!("{:02x?}", l.chunks(32).next().unwrap())
+                .trim_matches(|c: char| !c.is_ascii_hexdigit())
+        );
     }
 
     let mut q: Option<Secp256k1Point> = None;
@@ -280,7 +289,9 @@ pub fn key_agg(pubkeys: &[Vec<u8>]) -> Result<KeyAggContext> {
                 &pk[..4],
                 hex_encode(&scalar_to_bytes(&a)),
                 hex_encode(&xbytes(&ap)),
-                q.as_ref().map(|p| hex_encode(&xbytes(p))).unwrap_or_default(),
+                q.as_ref()
+                    .map(|p| hex_encode(&xbytes(p)))
+                    .unwrap_or_default(),
             );
         }
     }
@@ -338,7 +349,6 @@ pub fn apply_tweak(
         tacc: tacc_new,
     })
 }
-
 
 // === NonceGen ===
 
@@ -461,7 +471,8 @@ pub fn nonce_agg(pubnonces: &[Vec<u8>]) -> Result<[u8; 66]> {
                 Some(prev) => point_add(&prev, &r_ij),
             });
         }
-        let r_sum = r.ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        let r_sum =
+            r.ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         let c = cbytes_ext(&r_sum);
         aggnonce[j * 33..(j + 1) * 33].copy_from_slice(&c);
     }
@@ -530,18 +541,29 @@ pub fn get_session_values(session: &SessionContext) -> Result<SessionValues> {
     let e = scalar_from_bytes(&e_h)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-    Ok(SessionValues { q, gacc, tacc, b, r: r_final, e })
+    Ok(SessionValues {
+        q,
+        gacc,
+        tacc,
+        b,
+        r: r_final,
+        e,
+    })
 }
 
 // === Sign ===
 
 pub fn sign(secnonce: &[u8; 97], sk: &[u8; 32], session: &SessionContext) -> Result<[u8; 32]> {
     let values = get_session_values(session)?;
-    let SessionValues { q, gacc, b, r, e, .. } = values;
+    let SessionValues {
+        q, gacc, b, r, e, ..
+    } = values;
 
-    let k1_prime_bytes: [u8; 32] = secnonce[0..32].try_into()
+    let k1_prime_bytes: [u8; 32] = secnonce[0..32]
+        .try_into()
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-    let k2_prime_bytes: [u8; 32] = secnonce[32..64].try_into()
+    let k2_prime_bytes: [u8; 32] = secnonce[32..64]
+        .try_into()
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let k1_prime = scalar_from_bytes(&k1_prime_bytes)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -552,10 +574,7 @@ pub fn sign(secnonce: &[u8; 97], sk: &[u8; 32], session: &SessionContext) -> Res
     let (k1, k2): (Secp256k1Scalar, Secp256k1Scalar) = if has_even_y(&r) {
         (k1_prime, k2_prime)
     } else {
-        (
-            scalar_negate(&k1_prime),
-            scalar_negate(&k2_prime),
-        )
+        (scalar_negate(&k1_prime), scalar_negate(&k2_prime))
     };
 
     let d_prime = scalar_from_bytes(sk)
@@ -595,7 +614,11 @@ pub fn get_session_keyagg_coeff(
     p: &Secp256k1Point,
 ) -> Result<Secp256k1Scalar> {
     let pk_self = cbytes(p);
-    if !session.pubkeys.iter().any(|pk| pk.as_slice() == pk_self.as_slice()) {
+    if !session
+        .pubkeys
+        .iter()
+        .any(|pk| pk.as_slice() == pk_self.as_slice())
+    {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let pk2 = get_second_key(&session.pubkeys);
@@ -611,9 +634,12 @@ pub fn partial_sig_verify(
     session: &SessionContext,
 ) -> Result<bool> {
     let values = get_session_values(session)?;
-    let SessionValues { q, gacc, b, r, e, .. } = values;
+    let SessionValues {
+        q, gacc, b, r, e, ..
+    } = values;
 
-    let s_bytes: [u8; 32] = psig[..].try_into()
+    let s_bytes: [u8; 32] = psig[..]
+        .try_into()
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let s = scalar_from_bytes(&s_bytes)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -626,7 +652,11 @@ pub fn partial_sig_verify(
 
     let br2 = scalar_mul(&b, &r2);
     let re_prime = point_add(&r1, &br2);
-    let re = if has_even_y(&r) { re_prime } else { point_negate(&re_prime) };
+    let re = if has_even_y(&r) {
+        re_prime
+    } else {
+        point_negate(&re_prime)
+    };
 
     if pk.len() != 33 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -722,7 +752,10 @@ mod tests {
     ];
 
     fn key_agg_pubkeys() -> Vec<Vec<u8>> {
-        KEY_AGG_PUBKEYS_HEX.iter().map(|s| hex_decode_pubkey(s)).collect()
+        KEY_AGG_PUBKEYS_HEX
+            .iter()
+            .map(|s| hex_decode_pubkey(s))
+            .collect()
     }
 
     /// BIP-327 test vector 0: 3 pubkeys (no tweaks)
@@ -745,7 +778,8 @@ mod tests {
     /// Sanity: scalar_mul * 1 = same point (test scalar_to_bytes round trip)
     #[test]
     fn scalar_to_bytes_round_trip() {
-        let bytes = hex_decode_pubkey("ad0537c883813849e3b95ce5db1d45eb25cc5fae197c4e8759719065932aa183");
+        let bytes =
+            hex_decode_pubkey("ad0537c883813849e3b95ce5db1d45eb25cc5fae197c4e8759719065932aa183");
         let scalar = scalar_from_bytes(&bytes).unwrap();
         let recovered = scalar_to_bytes(&scalar);
         assert_eq!(&recovered[..], &bytes[..]);
@@ -834,8 +868,10 @@ mod tests {
     /// Sanity: pk1 + pk2 where pk1 and pk2 are different
     #[test]
     fn point_add_two_distinct() {
-        let pk1 = hex_decode_pubkey("02F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9");
-        let pk2 = hex_decode_pubkey("03DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659");
+        let pk1 =
+            hex_decode_pubkey("02F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9");
+        let pk2 =
+            hex_decode_pubkey("03DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659");
         let p1 = point_from_compressed(&pk1).unwrap();
         let p2 = point_from_compressed(&pk2).unwrap();
         let sum = point_add(&p1, &p2);
@@ -892,7 +928,8 @@ mod tests {
     /// NonceGen basic test
     #[test]
     fn nonce_gen_basic() {
-        let pk = hex_decode_pubkey("03935F972DA013F80AE011890FA89B67A27B7BE6CCB24D3274D18B2D4067F261A9");
+        let pk =
+            hex_decode_pubkey("03935F972DA013F80AE011890FA89B67A27B7BE6CCB24D3274D18B2D4067F261A9");
         let rand = [1u8; 32];
         let input = NonceGenInput {
             rand,
@@ -910,7 +947,8 @@ mod tests {
     /// NonceGen rejects all-zero rand
     #[test]
     fn nonce_gen_rejects_zero_rand() {
-        let pk = hex_decode_pubkey("03935F972DA013F80AE011890FA89B67A27B7BE6CCB24D3274D18B2D4067F261A9");
+        let pk =
+            hex_decode_pubkey("03935F972DA013F80AE011890FA89B67A27B7BE6CCB24D3274D18B2D4067F261A9");
         let rand = [0u8; 32];
         let input = NonceGenInput {
             rand,
@@ -1006,4 +1044,3 @@ mod tests {
         assert!(key_agg(&empty).is_err());
     }
 }
-

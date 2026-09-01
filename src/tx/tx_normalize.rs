@@ -39,22 +39,27 @@ pub fn to_template(type_tag: UrTypeTag, payload: &[u8]) -> Result<TxTemplate> {
     let chain_kind = match type_tag {
         UrTypeTag::CryptoPsbt => ChainKind::Btc,
         UrTypeTag::EthSignRequest => ChainKind::Eth,
-        UrTypeTag::CryptoMoneroTx
-        | UrTypeTag::XmrTxUnsigned
-        | UrTypeTag::XmrTxSigned => ChainKind::Xmr,
+        UrTypeTag::CryptoMoneroTx | UrTypeTag::XmrTxUnsigned | UrTypeTag::XmrTxSigned => {
+            ChainKind::Xmr
+        }
         UrTypeTag::SolanaSignRequest => ChainKind::Sol,
         UrTypeTag::CardanoSignRequest => ChainKind::Ada,
         UrTypeTag::CosmosSignRequest => ChainKind::Cosmos,
-        UrTypeTag::Bytes | UrTypeTag::CryptoHdKey | UrTypeTag::CryptoAccount | UrTypeTag::Unknown => {
+        UrTypeTag::Bytes
+        | UrTypeTag::CryptoHdKey
+        | UrTypeTag::CryptoAccount
+        | UrTypeTag::Unknown => {
             return Err(crate::error::ShlosiloError::new(
                 crate::error::ShlosiloErrorKind::UrPayloadUnknownType,
             ));
         }
     };
     let derivation_path = crate::derivation::path::DerivationPath::parse("m/44'/0'/0'/0/0")
-        .map_err(|_| crate::error::ShlosiloError::new(
-            crate::error::ShlosiloErrorKind::DerivationPathInvalidSyntax,
-        ))?;
+        .map_err(|_| {
+            crate::error::ShlosiloError::new(
+                crate::error::ShlosiloErrorKind::DerivationPathInvalidSyntax,
+            )
+        })?;
     if payload.len() > PAYLOAD_MAX {
         return Err(crate::error::ShlosiloError::new(
             crate::error::ShlosiloErrorKind::UrPayloadTooLarge,

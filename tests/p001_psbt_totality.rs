@@ -87,7 +87,10 @@ fn p001_script_sig_len_overflow_rejected() {
         w
     });
     let r = parse_psbt(&wrap_psbt(&tx));
-    assert!(r.is_err(), "恶意 script_sig_len 必须稳定报错(修复前 panic psbt.rs:272)");
+    assert!(
+        r.is_err(),
+        "恶意 script_sig_len 必须稳定报错(修复前 panic psbt.rs:272)"
+    );
 }
 
 #[test]
@@ -119,7 +122,10 @@ fn p001_map_value_len_overflow_rejected() {
     b.push(0xff);
     b.extend_from_slice(&u64::MAX.to_le_bytes());
     let r = parse_psbt(&b);
-    assert!(r.is_err(), "恶意 value_len 必须稳定报错(修复前 panic psbt.rs:356)");
+    assert!(
+        r.is_err(),
+        "恶意 value_len 必须稳定报错(修复前 panic psbt.rs:356)"
+    );
 }
 
 #[test]
@@ -140,7 +146,10 @@ fn p001_huge_input_count_no_oom() {
     tx.push(0xff); // n_inputs prefix
     tx.extend_from_slice(&u64::MAX.to_le_bytes());
     let r = parse_psbt(&wrap_psbt(&tx));
-    assert!(r.is_err(), "恶意 input count 必须报错(修复前 capacity overflow abort)");
+    assert!(
+        r.is_err(),
+        "恶意 input count 必须报错(修复前 capacity overflow abort)"
+    );
 }
 
 #[test]
@@ -172,7 +181,10 @@ fn p001_noncanonical_compact_size_rejected() {
     t.push(0);
     t.extend_from_slice(&0u32.to_le_bytes());
     let r = parse_psbt(&wrap_psbt(&t));
-    assert!(r.is_err(), "非规范 CompactSize(0xfd 前缀编码 <0xfd 的值)必须拒绝");
+    assert!(
+        r.is_err(),
+        "非规范 CompactSize(0xfd 前缀编码 <0xfd 的值)必须拒绝"
+    );
 }
 
 #[test]

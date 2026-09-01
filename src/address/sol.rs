@@ -45,7 +45,9 @@ impl fmt::Debug for SolAddress {
 /// - base58(pubkey_32_bytes) — Solana 直接用 ed25519 32-byte pubkey 作为地址
 pub fn encode(_pubkey: &Ed25519Point, _network: Network) -> Result<SolAddress> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 #[cfg(test)]
@@ -59,8 +61,14 @@ mod tests {
         // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
         for line in include_str!("sol.rs").lines() {
             let t = line.trim_start();
-            if t.starts_with("//") { continue; }
-            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+            if t.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !t.contains(concat!("unimplemented", "!(")),
+                "panic macro regressed: {}",
+                line
+            );
         }
     }
 }

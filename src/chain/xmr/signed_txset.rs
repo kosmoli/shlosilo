@@ -268,8 +268,8 @@ pub fn encrypt_signed_txset(
     view_sk: &[u8; 32],
     rng: &mut impl rand_core::RngCore,
 ) -> Result<Vec<u8>> {
-    use chacha20::ChaCha20Legacy;
     use chacha20::cipher::{KeyIvInit, StreamCipher};
+    use chacha20::ChaCha20Legacy;
 
     // 1. key = CryptoNight v0(view_sk)，nonce = 8B 大端
     let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
@@ -303,8 +303,8 @@ pub fn encrypt_signed_txset(
 ///
 /// magic 校验 → nonce → Schnorr 验签（view_pub，keccak256(nonce‖密文)）→ 解密。
 pub fn decrypt_signed_txset(data: &[u8], view_sk: &[u8; 32]) -> Result<Vec<u8>> {
-    use chacha20::ChaCha20Legacy;
     use chacha20::cipher::{KeyIvInit, StreamCipher};
+    use chacha20::ChaCha20Legacy;
 
     if data.len() < SIGNED_TX_PREFIX.len() + NONCE_LEN + SIG_LEN {
         return Err(err());
@@ -362,19 +362,23 @@ mod tests {
 
         let x = Scalar::from_bytes_mod_order(sk);
         let pub_key = (ED25519_BASEPOINT_TABLE * &x).compress().to_bytes();
-        assert!(super::super::unsigned_txset::verify_monero_signature_pubkey(
-            &[0xAAu8; 32],
-            &pub_key,
-            &sig_bytes
-        )
-        .unwrap());
+        assert!(
+            super::super::unsigned_txset::verify_monero_signature_pubkey(
+                &[0xAAu8; 32],
+                &pub_key,
+                &sig_bytes
+            )
+            .unwrap()
+        );
         // 篡改 hash → 验签失败
-        assert!(!super::super::unsigned_txset::verify_monero_signature_pubkey(
-            &[0xBBu8; 32],
-            &pub_key,
-            &sig_bytes
-        )
-        .unwrap());
+        assert!(
+            !super::super::unsigned_txset::verify_monero_signature_pubkey(
+                &[0xBBu8; 32],
+                &pub_key,
+                &sig_bytes
+            )
+            .unwrap()
+        );
     }
 
     /// 加密/解密 round-trip + 篡改拒绝
@@ -497,7 +501,7 @@ mod tests {
         assert_eq!(bytes[off], 1);
         off += 1;
         off += 1 + 8 + 8 + 32 + 32 + 2; // dest entry
-        // construction_data: sources=0 → change_dts → splitted=1 → …
+                                        // construction_data: sources=0 → change_dts → splitted=1 → …
         assert_eq!(bytes[off], 0); // sources count
         off += 1;
         off += 1 + 8 + 8 + 32 + 32 + 2; // change_dts

@@ -240,7 +240,7 @@ mod tests {
         // 非法组合（不存在于 minimal 表）
         assert!(decode_minimal("zzzzzzzzzz").is_err());
         assert!(decode_minimal("aetdaowsl").is_err()); // 9 chars
-        // 太短（< 1 payload + 4 checksum）
+                                                       // 太短（< 1 payload + 4 checksum）
         assert!(decode_minimal("aeaeae").is_err()); // 3 bytes < 5
     }
 }

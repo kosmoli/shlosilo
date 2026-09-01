@@ -15,18 +15,35 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecodedCalldata {
     Empty,
-    Transfer { to: [u8; 20], amount: [u8; 32] },
-    Approve { spender: [u8; 20], amount: [u8; 32] },
-    IncreaseAllowance { spender: [u8; 20], added: [u8; 32] },
+    Transfer {
+        to: [u8; 20],
+        amount: [u8; 32],
+    },
+    Approve {
+        spender: [u8; 20],
+        amount: [u8; 32],
+    },
+    IncreaseAllowance {
+        spender: [u8; 20],
+        added: [u8; 32],
+    },
     TransferFrom {
         from: [u8; 20],
         to: [u8; 20],
         amount: [u8; 32],
     },
-    SetApprovalForAll { operator: [u8; 20], approved: bool },
+    SetApprovalForAll {
+        operator: [u8; 20],
+        approved: bool,
+    },
     /// 721/1155 等：认出 selector，不拆动态参数
-    KnownSelector { name: &'static str, selector: [u8; 4] },
-    Unknown { selector: [u8; 4] },
+    KnownSelector {
+        name: &'static str,
+        selector: [u8; 4],
+    },
+    Unknown {
+        selector: [u8; 4],
+    },
 }
 
 const SEL_TRANSFER: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
@@ -164,8 +181,8 @@ pub fn format_token_amount(amount: &[u8; 32], decimals: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
     use crate::encoding::keccak256;
+    use alloc::vec::Vec;
 
     fn hex_decode(s: &str) -> Vec<u8> {
         (0..s.len())
@@ -183,8 +200,14 @@ mod tests {
 
     #[test]
     fn selectors_match_canonical() {
-        assert_eq!(selector("transfer(address,uint256)"), hex_decode("a9059cbb")[..]);
-        assert_eq!(selector("approve(address,uint256)"), hex_decode("095ea7b3")[..]);
+        assert_eq!(
+            selector("transfer(address,uint256)"),
+            hex_decode("a9059cbb")[..]
+        );
+        assert_eq!(
+            selector("approve(address,uint256)"),
+            hex_decode("095ea7b3")[..]
+        );
         assert_eq!(
             selector("increaseAllowance(address,uint256)"),
             hex_decode("39509351")[..]
@@ -222,7 +245,10 @@ mod tests {
                     crate::encoding::hex::encode(&to),
                     "5df9b87991262f6ba471f09758cde1c0fc1de734"
                 );
-                assert_eq!(format_token_amount(&amount, 18).unwrap(), "0.0000000000000001");
+                assert_eq!(
+                    format_token_amount(&amount, 18).unwrap(),
+                    "0.0000000000000001"
+                );
             }
             other => panic!("expected Transfer, got {other:?}"),
         }
@@ -361,7 +387,8 @@ mod tests {
 
     #[test]
     fn decode_unknown_selector() {
-        let input = hex_decode("deadbeef0000000000000000000000000000000000000000000000000000000000000000");
+        let input =
+            hex_decode("deadbeef0000000000000000000000000000000000000000000000000000000000000000");
         match decode_calldata(&input).unwrap() {
             DecodedCalldata::Unknown { selector } => {
                 assert_eq!(selector, hex_decode("deadbeef")[..]);
@@ -381,7 +408,8 @@ mod tests {
 
     #[test]
     fn transfer_too_short_rejected() {
-        let input = hex_decode("a9059cbb0000000000000000000000005df9b87991262f6ba471f09758cde1c0fc1de734");
+        let input =
+            hex_decode("a9059cbb0000000000000000000000005df9b87991262f6ba471f09758cde1c0fc1de734");
         assert!(decode_calldata(&input).is_err());
     }
 }

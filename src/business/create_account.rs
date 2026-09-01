@@ -79,13 +79,7 @@ mod tests {
     fn create_account_rejects_insufficient_rolls_12_d6() {
         let rolls = [3u8, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4];
         let mut mnemonic_buf = [0u8; 64];
-        let result = create_account(
-            WordCount::Words12,
-            6,
-            &rolls,
-            b"",
-            &mut mnemonic_buf,
-        );
+        let result = create_account(WordCount::Words12, 6, &rolls, b"", &mut mnemonic_buf);
         let err = result.expect_err("12 d6 = ~31 bit < 128 bit required");
         assert!(matches!(err.kind, ShlosiloErrorKind::DiceRollsInvalidCount));
     }
@@ -96,7 +90,7 @@ mod tests {
         let mut mnemonic_buf = [0u8; 64];
         let result = create_account(
             WordCount::Words12,
-            1,  // sides < 2
+            1, // sides < 2
             &rolls,
             b"",
             &mut mnemonic_buf,
@@ -107,9 +101,9 @@ mod tests {
     #[test]
     fn create_account_buffer_too_small() {
         let rolls = [3u8, 5, 1, 6];
-        let mut mnemonic_buf = [0u8; 8];  // 太小
+        let mut mnemonic_buf = [0u8; 8]; // 太小
         let result = create_account(
-            WordCount::Words24,  // 需要 32 bytes entropy
+            WordCount::Words24, // 需要 32 bytes entropy
             6,
             &rolls,
             b"",

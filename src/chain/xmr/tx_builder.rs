@@ -42,8 +42,8 @@ use sha2::{Digest, Sha256};
 
 use crate::chain::xmr::clsag::{self as clsag_mod};
 use crate::chain::xmr::rct_sig::{
-    prove_bulletproofs_plus, pseudo_out_commitment, RctSig, RctSigBase, RctSigPrunable,
-    verify_bulletproofs_plus,
+    prove_bulletproofs_plus, pseudo_out_commitment, verify_bulletproofs_plus, RctSig, RctSigBase,
+    RctSigPrunable,
 };
 use crate::chain::xmr::reduce_scalar::reduce_scalar;
 use crate::chain::xmr::transaction::{
@@ -170,11 +170,7 @@ pub struct TxOutputSpec {
     pub is_subaddress: bool,
 }
 
-fn resolve_tx_output(
-    tx_secret: &[u8; 32],
-    index: u64,
-    spec: &TxOutputSpec,
-) -> Result<BuiltOutput> {
+fn resolve_tx_output(tx_secret: &[u8; 32], index: u64, spec: &TxOutputSpec) -> Result<BuiltOutput> {
     match (spec.dest_view_pub, spec.dest_spend_pub) {
         (Some(view), Some(spend)) => {
             let eight = eight_ra(tx_secret, &view)?;
@@ -185,13 +181,12 @@ fn resolve_tx_output(
                 .map(|pid| encrypt_payment_id(&pid, &payment_id_xor(&eight)));
             // 子地址：additional key = r_i · B_sub（单 output 复用主 tx secret r）
             let add_key = if spec.is_subaddress {
-                
                 use monero_ed25519::CompressedPoint;
                 let r = DScalar::from_bytes_mod_order(*tx_secret);
-                let b_point: curve25519_dalek::EdwardsPoint =
-                    CompressedPoint::from(spend).decompress().ok_or_else(
-                        || ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat),
-                    )?.into();
+                let b_point: curve25519_dalek::EdwardsPoint = CompressedPoint::from(spend)
+                    .decompress()
+                    .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?
+                    .into();
                 Some((b_point * r).compress().to_bytes())
             } else {
                 None
@@ -419,13 +414,19 @@ pub fn verify_signed_tx<R: RngCore + CryptoRng>(
             .collect();
 
         let key_image = &signed.transaction.prefix.inputs[i].key_image;
-        let pseudo_out = signed.rct_sig.base.pseudo_outs.get(i).ok_or_else(|| {
-            ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-        })?;
+        let pseudo_out = signed
+            .rct_sig
+            .base
+            .pseudo_outs
+            .get(i)
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-        let clsag_bytes = signed.rct_sig.prunable.clsag_sigs.get(i).ok_or_else(|| {
-            ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-        })?;
+        let clsag_bytes = signed
+            .rct_sig
+            .prunable
+            .clsag_sigs
+            .get(i)
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
         clsag_mod::verify(
             &ring,
@@ -521,12 +522,20 @@ mod tests {
         let spend_key = scalar_to_bytes(&rs(&[0x11u8; 32]).unwrap());
         let real_mask = scalar_to_bytes(&rs(&[0x22u8; 32]).unwrap());
         let spend_dalek = DScalar::from_bytes_mod_order(spend_key);
-        let real_pub = CompressedPoint::from((ED25519_BASEPOINT_TABLE * &spend_dalek).compress().to_bytes());
+        let real_pub = CompressedPoint::from(
+            (ED25519_BASEPOINT_TABLE * &spend_dalek)
+                .compress()
+                .to_bytes(),
+        );
         let real_commit =
             MoneroCommitment::new(bytes_to_monerod_scalar(&real_mask), 100_000_000_000);
-        let decoy_dalek = DScalar::from_bytes_mod_order(scalar_to_bytes(&rs(&[0x99u8; 32]).unwrap()));
-        let decoy_pub =
-            CompressedPoint::from((ED25519_BASEPOINT_TABLE * &decoy_dalek).compress().to_bytes());
+        let decoy_dalek =
+            DScalar::from_bytes_mod_order(scalar_to_bytes(&rs(&[0x99u8; 32]).unwrap()));
+        let decoy_pub = CompressedPoint::from(
+            (ED25519_BASEPOINT_TABLE * &decoy_dalek)
+                .compress()
+                .to_bytes(),
+        );
         let decoy_commit = MoneroCommitment::new(
             bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap())),
             100_000_000_000,
@@ -610,7 +619,8 @@ mod tests {
         let decoy_dalek = DScalar::from_bytes_mod_order(decoy_spend);
         let decoy_pub_point = ED25519_BASEPOINT_TABLE * &decoy_dalek;
         let decoy_pub = CompressedPoint::from(decoy_pub_point.compress().to_bytes());
-        let decoy_mask_scalar = bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap()));
+        let decoy_mask_scalar =
+            bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap()));
         let decoy_commit = MoneroCommitment::new(decoy_mask_scalar, amount_in);
 
         // 5. Output
@@ -640,7 +650,8 @@ mod tests {
         };
 
         // 8. Sign
-        let signed = build_and_sign_tx(&[mk_input_spec()], &[mk_output_spec()], fee, &mut rng).unwrap();
+        let signed =
+            build_and_sign_tx(&[mk_input_spec()], &[mk_output_spec()], fee, &mut rng).unwrap();
 
         eprintln!(
             "Tx: {} bytes, tx_pub_key: {}",
@@ -685,7 +696,8 @@ mod tests {
         let decoy_dalek = DScalar::from_bytes_mod_order(decoy_spend);
         let decoy_pub_point = ED25519_BASEPOINT_TABLE * &decoy_dalek;
         let decoy_pub = CompressedPoint::from(decoy_pub_point.compress().to_bytes());
-        let decoy_mask_scalar = bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap()));
+        let decoy_mask_scalar =
+            bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap()));
         let decoy_commit = MoneroCommitment::new(decoy_mask_scalar, 1000);
 
         let input_spec = TxInputSpec {
@@ -745,7 +757,8 @@ mod tests {
         let decoy_dalek = DScalar::from_bytes_mod_order(decoy_spend);
         let decoy_pub_point = ED25519_BASEPOINT_TABLE * &decoy_dalek;
         let decoy_pub = CompressedPoint::from(decoy_pub_point.compress().to_bytes());
-        let decoy_mask_scalar = bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap()));
+        let decoy_mask_scalar =
+            bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap()));
         let decoy_commit = MoneroCommitment::new(decoy_mask_scalar, 2000);
 
         let input_spec = TxInputSpec {
@@ -800,11 +813,19 @@ mod tests {
         let real_mask = scalar_to_bytes(&rs(&[0x22u8; 32]).unwrap());
         let pseudo_mask = scalar_to_bytes(&rs(&[0x33u8; 32]).unwrap());
         let spend_dalek = DScalar::from_bytes_mod_order(spend_key);
-        let real_pub = CompressedPoint::from((ED25519_BASEPOINT_TABLE * &spend_dalek).compress().to_bytes());
+        let real_pub = CompressedPoint::from(
+            (ED25519_BASEPOINT_TABLE * &spend_dalek)
+                .compress()
+                .to_bytes(),
+        );
         let real_commit = MoneroCommitment::new(bytes_to_monerod_scalar(&real_mask), 1000);
         let decoy_spend = scalar_to_bytes(&rs(&[0x99u8; 32]).unwrap());
         let decoy_dalek = DScalar::from_bytes_mod_order(decoy_spend);
-        let decoy_pub = CompressedPoint::from((ED25519_BASEPOINT_TABLE * &decoy_dalek).compress().to_bytes());
+        let decoy_pub = CompressedPoint::from(
+            (ED25519_BASEPOINT_TABLE * &decoy_dalek)
+                .compress()
+                .to_bytes(),
+        );
         let decoy_commit = MoneroCommitment::new(
             bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap())),
             1000,
@@ -870,13 +891,17 @@ mod tests {
         let pseudo_mask = scalar_to_bytes(&rs(&[0x33u8; 32]).unwrap());
         let spend_dalek = DScalar::from_bytes_mod_order(spend_key);
         let real_pub = CompressedPoint::from(
-            (ED25519_BASEPOINT_TABLE * &spend_dalek).compress().to_bytes(),
+            (ED25519_BASEPOINT_TABLE * &spend_dalek)
+                .compress()
+                .to_bytes(),
         );
         let real_commit = MoneroCommitment::new(bytes_to_monerod_scalar(&real_mask), 1000);
         let decoy_spend = scalar_to_bytes(&rs(&[0x99u8; 32]).unwrap());
         let decoy_dalek = DScalar::from_bytes_mod_order(decoy_spend);
         let decoy_pub = CompressedPoint::from(
-            (ED25519_BASEPOINT_TABLE * &decoy_dalek).compress().to_bytes(),
+            (ED25519_BASEPOINT_TABLE * &decoy_dalek)
+                .compress()
+                .to_bytes(),
         );
         let decoy_commit = MoneroCommitment::new(
             bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap())),
@@ -898,7 +923,11 @@ mod tests {
                 mask: SecretBytes::new(scalar_to_bytes(&rs(&[0x44u8; 32]).unwrap())),
                 stealth_address: [0u8; 32],
                 dest_view_pub: Some(dest_view.public),
-                dest_spend_pub: Some(TxKeyPair::from_secret(SecretBytes::new([11u8; 32])).unwrap().public),
+                dest_spend_pub: Some(
+                    TxKeyPair::from_secret(SecretBytes::new([11u8; 32]))
+                        .unwrap()
+                        .public,
+                ),
                 payment_id: None,
                 is_subaddress: false,
             }],
@@ -927,13 +956,17 @@ mod tests {
         let pseudo_mask = scalar_to_bytes(&rs(&[0x33u8; 32]).unwrap());
         let spend_dalek = DScalar::from_bytes_mod_order(spend_key);
         let real_pub = CompressedPoint::from(
-            (ED25519_BASEPOINT_TABLE * &spend_dalek).compress().to_bytes(),
+            (ED25519_BASEPOINT_TABLE * &spend_dalek)
+                .compress()
+                .to_bytes(),
         );
         let real_commit = MoneroCommitment::new(bytes_to_monerod_scalar(&real_mask), 1000);
         let decoy_spend = scalar_to_bytes(&rs(&[0x99u8; 32]).unwrap());
         let decoy_dalek = DScalar::from_bytes_mod_order(decoy_spend);
         let decoy_pub = CompressedPoint::from(
-            (ED25519_BASEPOINT_TABLE * &decoy_dalek).compress().to_bytes(),
+            (ED25519_BASEPOINT_TABLE * &decoy_dalek)
+                .compress()
+                .to_bytes(),
         );
         let decoy_commit = MoneroCommitment::new(
             bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap())),
@@ -983,20 +1016,23 @@ mod tests {
     /// v9.20c: 打子地址 → extra 带 additional_pub_keys（tag 0x03），每 output r_i·B_i
     #[test]
     fn subaddress_dest_emits_additional_pub_keys() {
-
         let mut rng = OsRng;
         let spend_key = scalar_to_bytes(&rs(&[0x11u8; 32]).unwrap());
         let real_mask = scalar_to_bytes(&rs(&[0x22u8; 32]).unwrap());
         let pseudo_mask = scalar_to_bytes(&rs(&[0x33u8; 32]).unwrap());
         let spend_dalek = DScalar::from_bytes_mod_order(spend_key);
         let real_pub = CompressedPoint::from(
-            (ED25519_BASEPOINT_TABLE * &spend_dalek).compress().to_bytes(),
+            (ED25519_BASEPOINT_TABLE * &spend_dalek)
+                .compress()
+                .to_bytes(),
         );
         let real_commit = MoneroCommitment::new(bytes_to_monerod_scalar(&real_mask), 1000);
         let decoy_spend = scalar_to_bytes(&rs(&[0x99u8; 32]).unwrap());
         let decoy_dalek = DScalar::from_bytes_mod_order(decoy_spend);
         let decoy_pub = CompressedPoint::from(
-            (ED25519_BASEPOINT_TABLE * &decoy_dalek).compress().to_bytes(),
+            (ED25519_BASEPOINT_TABLE * &decoy_dalek)
+                .compress()
+                .to_bytes(),
         );
         let decoy_commit = MoneroCommitment::new(
             bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap())),

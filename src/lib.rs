@@ -33,9 +33,9 @@ pub mod chain;
 pub mod curve_primitive;
 pub mod derivation;
 pub mod encoding;
-pub mod ffi;
 pub mod entropy;
 pub mod error;
+pub mod ffi;
 pub mod network;
 pub mod signature;
 pub mod tx;
@@ -109,18 +109,18 @@ pub use crate::encoding::{
     base58::{Base58String, BASE58_MAX_LEN},
     base64::{Base64String, BASE64_MAX_LEN},
     bech32::{Bech32String, BECH32_MAX_LEN},
-    keccak256::{KECCAK256_OUTPUT_LEN},
-    sha256::{SHA256_OUTPUT_LEN},
-    sha512::{SHA512_OUTPUT_LEN},
+    keccak256::KECCAK256_OUTPUT_LEN,
+    sha256::SHA256_OUTPUT_LEN,
+    sha512::SHA512_OUTPUT_LEN,
 };
 
 // 公开 entropy 增量类型（Phase 2.4 stub — Phase 4 真实 BIP39）
 pub use crate::entropy::{
     bip39_passphrase::{Bip39Seed, BIP39_SEED_LEN},
-    bip39_words::{BIP39_WORDLIST, get_word_by_index, get_index_by_word, is_valid_word_index},
+    bip39_words::{get_index_by_word, get_word_by_index, is_valid_word_index, BIP39_WORDLIST},
     dice_rolls::{bits_per_digit, minimum_rolls},
     source::EntropySource,
 };
 
 // 公开 tx 类型（Phase 2.4 stub — Phase 4 真实链特定序列化）
-pub use crate::tx::tx_normalize::{TxTemplate, to_template};
+pub use crate::tx::tx_normalize::{to_template, TxTemplate};

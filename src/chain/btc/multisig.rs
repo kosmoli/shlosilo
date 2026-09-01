@@ -33,10 +33,7 @@ impl MultisigConfig {
         }
         // BIP-67: sort pubkeys lexicographically
         pubkeys.sort();
-        Ok(Self {
-            threshold,
-            pubkeys,
-        })
+        Ok(Self { threshold, pubkeys })
     }
 
     pub fn n(&self) -> usize {
@@ -49,10 +46,7 @@ impl MultisigConfig {
         if threshold == 0 || pubkeys.is_empty() || (threshold as usize) > pubkeys.len() {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        Ok(Self {
-            threshold,
-            pubkeys,
-        })
+        Ok(Self { threshold, pubkeys })
     }
 }
 
@@ -181,10 +175,7 @@ pub struct P2SHMultisigSignInput {
 
 /// Sign P2SH multi-sig (legacy sighash):
 /// Injects scriptSig = `OP_0 <sigs...> <push redeemScript>`
-pub fn sign_p2sh_multisig(
-    tx: &mut Transaction,
-    sign_input: &P2SHMultisigSignInput,
-) -> Result<()> {
+pub fn sign_p2sh_multisig(tx: &mut Transaction, sign_input: &P2SHMultisigSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -196,10 +187,7 @@ pub fn sign_p2sh_multisig(
 
 /// Sign P2WSH multi-sig (BIP-143 sighash):
 /// Injects witness = [sigs..., redeemScript]
-pub fn sign_p2wsh_multisig(
-    tx: &mut Transaction,
-    sign_input: &P2SHMultisigSignInput,
-) -> Result<()> {
+pub fn sign_p2wsh_multisig(tx: &mut Transaction, sign_input: &P2SHMultisigSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -232,20 +220,13 @@ pub fn sign_p2sh_p2wsh_multisig(
 }
 
 /// Verify multisig redeemScript matches scriptPubKey expectation
-pub fn verify_p2sh_multisig_matches(
-    config: &MultisigConfig,
-    script_pubkey: &[u8],
-) -> bool {
+pub fn verify_p2sh_multisig_matches(config: &MultisigConfig, script_pubkey: &[u8]) -> bool {
     script_pubkey == p2sh_multisig_script_pubkey(config)
 }
 
-pub fn verify_p2wsh_multisig_matches(
-    config: &MultisigConfig,
-    script_pubkey: &[u8],
-) -> bool {
+pub fn verify_p2wsh_multisig_matches(config: &MultisigConfig, script_pubkey: &[u8]) -> bool {
     script_pubkey == p2wsh_multisig_script_pubkey(config)
 }
-
 
 // === Multi-sig Address Generation ===
 
@@ -359,14 +340,13 @@ pub fn p2sh_p2wsh_multisig_address(
     Ok(alloc::format!("{}", encoded))
 }
 
-
 // === Tests ===
 
 #[cfg(test)]
 mod tests {
     extern crate std;
     use super::*;
-    
+
     use crate::chain::btc::p2wpkh::{OutPoint, TxIn};
     use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
     use std::eprintln;
@@ -605,10 +585,13 @@ mod tests {
         let witness = &tx.inputs[0].witness;
         // witness items: [sig1, sig2, redeemScript]
         assert_eq!(witness.len(), 3);
-        assert_eq!(witness[2], multisig_redeem_script(&MultisigConfig::new(
-            2,
-            alloc::vec![make_test_pubkey(1), make_test_pubkey(2)],
-        ).unwrap()));
+        assert_eq!(
+            witness[2],
+            multisig_redeem_script(
+                &MultisigConfig::new(2, alloc::vec![make_test_pubkey(1), make_test_pubkey(2)],)
+                    .unwrap()
+            )
+        );
         eprintln!("P2WSH multisig witness ({} bytes)", witness.len());
     }
 
@@ -690,9 +673,12 @@ mod tests {
     /// 3 pubkeys, 2-of-3 P2SH Dogecoin → A2nev5Fc7tFZ11oy1Ybz1kJRbebTWff8K6
     #[test]
     fn keystone_test_dogecoin_p2sh_2of3() {
-        let pk1 = hex_decode_pubkey("03a0c95fd48f1a251c744629e19ad154dfe1d7fb992d6955d62c417ae4ac333340");
-        let pk2 = hex_decode_pubkey("0361769c55b3035962fd3267da5cc4efa03cb400fe1971f5ec1c686d6b301ccd60");
-        let pk3 = hex_decode_pubkey("021d24a7eda6ccbff4616d9965c9bb2a7871ce048b0161b71e91be83671be514d5");
+        let pk1 =
+            hex_decode_pubkey("03a0c95fd48f1a251c744629e19ad154dfe1d7fb992d6955d62c417ae4ac333340");
+        let pk2 =
+            hex_decode_pubkey("0361769c55b3035962fd3267da5cc4efa03cb400fe1971f5ec1c686d6b301ccd60");
+        let pk3 =
+            hex_decode_pubkey("021d24a7eda6ccbff4616d9965c9bb2a7871ce048b0161b71e91be83671be514d5");
 
         let mut pks = alloc::vec![[0u8; 33], [0u8; 33], [0u8; 33]];
         pks[0].copy_from_slice(&pk1);
@@ -714,9 +700,12 @@ mod tests {
     /// - Unsorted with sort_keys=true → same address
     #[test]
     fn keystone_test_p2wsh_sorted_matches_unsorted() {
-        let pk1 = hex_decode_pubkey("0361769c55b3035962fd3267da5cc4efa03cb400fe1971f5ec1c686d6b301ccd60");
-        let pk2 = hex_decode_pubkey("021d24a7eda6ccbff4616d9965c9bb2a7871ce048b0161b71e91be83671be514d5");
-        let pk3 = hex_decode_pubkey("03a0c95fd48f1a251c744629e19ad154dfe1d7fb992d6955d62c417ae4ac333340");
+        let pk1 =
+            hex_decode_pubkey("0361769c55b3035962fd3267da5cc4efa03cb400fe1971f5ec1c686d6b301ccd60");
+        let pk2 =
+            hex_decode_pubkey("021d24a7eda6ccbff4616d9965c9bb2a7871ce048b0161b71e91be83671be514d5");
+        let pk3 =
+            hex_decode_pubkey("03a0c95fd48f1a251c744629e19ad154dfe1d7fb992d6955d62c417ae4ac333340");
 
         let mut pks_sorted = alloc::vec![[0u8; 33], [0u8; 33], [0u8; 33]];
         pks_sorted[0].copy_from_slice(&pk1);
@@ -746,9 +735,12 @@ mod tests {
     /// 3 pubkeys, P2SH testnet should start with '2' (testnet P2SH prefix)
     #[test]
     fn keystone_test_p2sh_testnet_prefix() {
-        let pk1 = hex_decode_pubkey("03a0c95fd48f1a251c744629e19ad154dfe1d7fb992d6955d62c417ae4ac333340");
-        let pk2 = hex_decode_pubkey("0361769c55b3035962fd3267da5cc4efa03cb400fe1971f5ec1c686d6b301ccd60");
-        let pk3 = hex_decode_pubkey("021d24a7eda6ccbff4616d9965c9bb2a7871ce048b0161b71e91be83671be514d5");
+        let pk1 =
+            hex_decode_pubkey("03a0c95fd48f1a251c744629e19ad154dfe1d7fb992d6955d62c417ae4ac333340");
+        let pk2 =
+            hex_decode_pubkey("0361769c55b3035962fd3267da5cc4efa03cb400fe1971f5ec1c686d6b301ccd60");
+        let pk3 =
+            hex_decode_pubkey("021d24a7eda6ccbff4616d9965c9bb2a7871ce048b0161b71e91be83671be514d5");
 
         let mut pks = alloc::vec![[0u8; 33], [0u8; 33], [0u8; 33]];
         pks[0].copy_from_slice(&pk1);
@@ -766,8 +758,10 @@ mod tests {
     /// Verify multi-sig address generation is deterministic
     #[test]
     fn multisig_address_deterministic() {
-        let pk1 = hex_decode_pubkey("03a0c95fd48f1a251c744629e19ad154dfe1d7fb992d6955d62c417ae4ac333340");
-        let pk2 = hex_decode_pubkey("0361769c55b3035962fd3267da5cc4efa03cb400fe1971f5ec1c686d6b301ccd60");
+        let pk1 =
+            hex_decode_pubkey("03a0c95fd48f1a251c744629e19ad154dfe1d7fb992d6955d62c417ae4ac333340");
+        let pk2 =
+            hex_decode_pubkey("0361769c55b3035962fd3267da5cc4efa03cb400fe1971f5ec1c686d6b301ccd60");
         let mut pks = alloc::vec![[0u8; 33], [0u8; 33]];
         pks[0].copy_from_slice(&pk1);
         pks[1].copy_from_slice(&pk2);
@@ -781,9 +775,12 @@ mod tests {
     /// P2SH-P2WSH address (nested) keystone test
     #[test]
     fn keystone_test_p2sh_p2wsh_nested() {
-        let pk1 = hex_decode_pubkey("03a0c95fd48f1a251c744629e19ad154dfe1d7fb992d6955d62c417ae4ac333340");
-        let pk2 = hex_decode_pubkey("0361769c55b3035962fd3267da5cc4efa03cb400fe1971f5ec1c686d6b301ccd60");
-        let pk3 = hex_decode_pubkey("021d24a7eda6ccbff4616d9965c9bb2a7871ce048b0161b71e91be83671be514d5");
+        let pk1 =
+            hex_decode_pubkey("03a0c95fd48f1a251c744629e19ad154dfe1d7fb992d6955d62c417ae4ac333340");
+        let pk2 =
+            hex_decode_pubkey("0361769c55b3035962fd3267da5cc4efa03cb400fe1971f5ec1c686d6b301ccd60");
+        let pk3 =
+            hex_decode_pubkey("021d24a7eda6ccbff4616d9965c9bb2a7871ce048b0161b71e91be83671be514d5");
         let mut pks = alloc::vec![[0u8; 33], [0u8; 33], [0u8; 33]];
         pks[0].copy_from_slice(&pk1);
         pks[1].copy_from_slice(&pk2);
@@ -811,5 +808,4 @@ mod tests {
             "P2SH-P2WSH testnet should start with '2', got: {nested_testnet}"
         );
     }
-
 }

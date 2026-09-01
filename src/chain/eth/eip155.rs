@@ -249,8 +249,7 @@ mod tests {
         let signed = sign_eip155(&input).unwrap();
 
         // 验证 signing hash
-        let expected_hash =
-            "daf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53";
+        let expected_hash = "daf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53";
         let expected_hash_bytes = hex_decode(expected_hash);
         assert_eq!(&signed.signing_hash[..], &expected_hash_bytes[..]);
 
@@ -263,7 +262,11 @@ mod tests {
         // v = 0x25 (37), r = 0x28ef..., s = 0x67cb...
         let expected_tx = "f86c098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a76400008025a028ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276a067cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83";
         let expected_tx_bytes = hex_decode(expected_tx);
-        assert_eq!(&signed.tx_bytes[..], &expected_tx_bytes[..], "signed tx mismatch");
+        assert_eq!(
+            &signed.tx_bytes[..],
+            &expected_tx_bytes[..],
+            "signed tx mismatch"
+        );
     }
 
     /// 确定性：相同输入 → 相同输出
@@ -285,7 +288,10 @@ mod tests {
             data: Vec::new(),
         };
 
-        let input = Eip155SignInput { tx: tx.clone(), private_key };
+        let input = Eip155SignInput {
+            tx: tx.clone(),
+            private_key,
+        };
         let signed1 = sign_eip155(&input).unwrap();
         let signed2 = sign_eip155(&input).unwrap();
         assert_eq!(signed1.tx_bytes, signed2.tx_bytes, "must be deterministic");

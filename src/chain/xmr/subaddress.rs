@@ -76,11 +76,7 @@ pub fn hash_to_scalar(data: &[u8]) -> Result<[u8; 32]> {
 /// - minor: minor index (u32)
 ///
 /// **输出**: 32-byte derivation scalar m (reduced)
-pub fn calc_subaddress_m(
-    view_sec: &[u8; 32],
-    account: u32,
-    minor: u32,
-) -> Result<[u8; 32]> {
+pub fn calc_subaddress_m(view_sec: &[u8; 32], account: u32, minor: u32) -> Result<[u8; 32]> {
     // data = "SubAddr" || 0x00 || view_sec || major_LE || minor_LE
     let mut data = Vec::with_capacity(7 + 1 + 32 + 4 + 4);
     data.extend_from_slice(b"SubAddr");
@@ -147,9 +143,9 @@ pub fn derive_subaddress(
     // 3. subaddr_spend_pub = main_spend_pub + m * G  (= subaddr_spend_sec * G)
     let m_g: curve25519_dalek::EdwardsPoint = ED25519_BASEPOINT_TABLE * &m_dalek;
     let main_spend_pub_comp = CompressedPoint::from(*main_spend_pub);
-    let main_spend_pub_point = main_spend_pub_comp.decompress().ok_or_else(|| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let main_spend_pub_point = main_spend_pub_comp
+        .decompress()
+        .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let main_spend_pub_edwards: curve25519_dalek::EdwardsPoint = main_spend_pub_point.into();
     let subaddr_spend_pub_point = main_spend_pub_edwards + m_g;
     let subaddr_spend_pub = subaddr_spend_pub_point.compress().to_bytes();
@@ -188,9 +184,9 @@ pub fn derive_subaddress_spend_pub(
     let m_dalek = reduce_scalar_to_dalek(&m);
     let m_g: curve25519_dalek::EdwardsPoint = ED25519_BASEPOINT_TABLE * &m_dalek;
     let main_spend_pub_comp = CompressedPoint::from(*main_spend_pub);
-    let main_spend_pub_point = main_spend_pub_comp.decompress().ok_or_else(|| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let main_spend_pub_point = main_spend_pub_comp
+        .decompress()
+        .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let main_spend_pub_edwards: curve25519_dalek::EdwardsPoint = main_spend_pub_point.into();
     let subaddr_spend_pub_point = main_spend_pub_edwards + m_g;
     Ok(subaddr_spend_pub_point.compress().to_bytes())
@@ -260,10 +256,7 @@ mod tests {
         let pub_point = ED25519_BASEPOINT_TABLE * &sec_dalek;
         assert_eq!(pub_point.compress().to_bytes(), sub0_0.spend_pub);
 
-        eprintln!(
-            "Sub(0,0) spend_pub: {}",
-            hex_encode(&sub0_0.spend_pub)
-        );
+        eprintln!("Sub(0,0) spend_pub: {}", hex_encode(&sub0_0.spend_pub));
     }
 
     /// Subaddress 简化派生 (公开 spend_pub only) 应与完整派生一致
@@ -275,15 +268,11 @@ mod tests {
         let full = derive_subaddress(&spend_sec, &view_sec, &spend_pub, &view_pub, 2, 5).unwrap();
 
         // 简化派生 (仅 spend_pub)
-        let simple_pub =
-            derive_subaddress_spend_pub(&spend_pub, &view_sec, 2, 5).unwrap();
+        let simple_pub = derive_subaddress_spend_pub(&spend_pub, &view_sec, 2, 5).unwrap();
 
         assert_eq!(full.spend_pub, simple_pub);
 
-        eprintln!(
-            "Sub(2,5) spend_pub: {}",
-            hex_encode(&simple_pub)
-        );
+        eprintln!("Sub(2,5) spend_pub: {}", hex_encode(&simple_pub));
     }
 
     /// 派生确定性: 同样输入 → 同样输出
@@ -321,8 +310,15 @@ mod tests {
         let mut seen = Vec::new();
         for account in 0..10 {
             for minor in 0..10 {
-                let sub = derive_subaddress(&spend_sec, &view_sec, &spend_pub, &view_pub, account, minor).unwrap();
-                assert!(!seen.contains(&sub.spend_pub), "collision at ({}, {})", account, minor);
+                let sub =
+                    derive_subaddress(&spend_sec, &view_sec, &spend_pub, &view_pub, account, minor)
+                        .unwrap();
+                assert!(
+                    !seen.contains(&sub.spend_pub),
+                    "collision at ({}, {})",
+                    account,
+                    minor
+                );
                 seen.push(sub.spend_pub);
             }
         }
@@ -398,10 +394,7 @@ pub fn calc_output_key_offset(
 /// 计算 input 的真实 spend 私钥：spend_sec + key_offset
 ///
 /// 对齐 keystone `generate_key_image_from_offset`。
-pub fn derive_input_spend_key(
-    spend_sec: &[u8; 32],
-    key_offset: &[u8; 32],
-) -> Result<[u8; 32]> {
+pub fn derive_input_spend_key(spend_sec: &[u8; 32], key_offset: &[u8; 32]) -> Result<[u8; 32]> {
     let s = reduce_scalar_to_dalek(spend_sec);
     let o = reduce_scalar_to_dalek(key_offset);
     Ok((s + o).to_bytes())

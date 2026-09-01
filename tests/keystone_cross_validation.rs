@@ -84,9 +84,7 @@ fn keystone_btc_p2wpkh_sighash_matches() {
     };
     let input0 = TxIn {
         prev_out: OutPoint {
-            txid: hex_decode_32(
-                "fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f",
-            ),
+            txid: hex_decode_32("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f"),
             vout: 0,
         },
         script_sig: vec![],
@@ -97,9 +95,7 @@ fn keystone_btc_p2wpkh_sighash_matches() {
     };
     let input1 = TxIn {
         prev_out: OutPoint {
-            txid: hex_decode_32(
-                "ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a",
-            ),
+            txid: hex_decode_32("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a"),
             vout: 1,
         },
         script_sig: vec![],
@@ -153,15 +149,16 @@ fn keystone_btc_p2wpkh_sighash_matches() {
 
 #[test]
 fn keystone_btc_priv1_matches_g() {
-    use shlosilo::curve_primitive::secp256k1::{
-        base_mul, point_to_compressed, scalar_from_bytes,
-    };
+    use shlosilo::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
     let mut sk_bytes = [0u8; 32];
     sk_bytes[31] = 1;
     let sk = scalar_from_bytes(&sk_bytes).unwrap();
     let pk = base_mul(&sk);
     let pk_compressed = point_to_compressed(&pk);
-    assert_eq!(pk_compressed[0], 0x02, "G.y should be even (compressed prefix 0x02)");
+    assert_eq!(
+        pk_compressed[0], 0x02,
+        "G.y should be even (compressed prefix 0x02)"
+    );
     let expected_x = hex_decode("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798");
     assert_eq!(
         &pk_compressed[1..33],
@@ -172,16 +169,13 @@ fn keystone_btc_priv1_matches_g() {
 
 #[test]
 fn keystone_btc_priv2_matches_2g() {
-    use shlosilo::curve_primitive::secp256k1::{
-        base_mul, point_to_compressed, scalar_from_bytes,
-    };
+    use shlosilo::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
     let mut sk_bytes = [0u8; 32];
     sk_bytes[31] = 2;
     let sk = scalar_from_bytes(&sk_bytes).unwrap();
     let pk = base_mul(&sk);
     let pk_compressed = point_to_compressed(&pk);
-    let expected_x =
-        hex_decode("c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5");
+    let expected_x = hex_decode("c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5");
     assert_eq!(
         &pk_compressed[1..33],
         &expected_x[..],
@@ -191,16 +185,13 @@ fn keystone_btc_priv2_matches_2g() {
 
 #[test]
 fn keystone_btc_priv3_matches_3g() {
-    use shlosilo::curve_primitive::secp256k1::{
-        base_mul, point_to_compressed, scalar_from_bytes,
-    };
+    use shlosilo::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
     let mut sk_bytes = [0u8; 32];
     sk_bytes[31] = 3;
     let sk = scalar_from_bytes(&sk_bytes).unwrap();
     let pk = base_mul(&sk);
     let pk_compressed = point_to_compressed(&pk);
-    let expected_x =
-        hex_decode("f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9");
+    let expected_x = hex_decode("f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9");
     assert_eq!(
         &pk_compressed[1..33],
         &expected_x[..],
@@ -214,7 +205,6 @@ fn keystone_btc_priv3_matches_3g() {
 
 #[test]
 fn keystone_eth_eip1559_chain_id_parsing() {
-    
     // keystone test_parsed_eip1559_transaction parses canonical EIP-1559 RLP
     // and asserts chain_id=1, nonce=1, etc.
     // shlosilo v9.4 has Eip1559Transaction::sign_eip1559 but no from_rlp parser yet.

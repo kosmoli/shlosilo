@@ -44,10 +44,7 @@ impl Xoshiro256 {
     #[inline]
     fn next_u64(&mut self) -> u64 {
         // result = s1.wrapping_mul(5).rotate_left(7).wrapping_mul(9)
-        let result = self.s[1]
-            .wrapping_mul(5)
-            .rotate_left(7)
-            .wrapping_mul(9);
+        let result = self.s[1].wrapping_mul(5).rotate_left(7).wrapping_mul(9);
         // xoshiro256 core step
         let t = self.s[1] << 17;
         self.s[2] ^= self.s[0];
@@ -210,7 +207,11 @@ fn xor_into(dst: &mut [u8], src: &[u8]) {
 
 /// keystone-ur choose_fragments：seq ≤ count 时输出单段原片；
 /// 否则 seed = [seq BE u32][checksum BE u32] → SHA256 → xoshiro 采样。
-pub(crate) fn choose_fragments(sequence: usize, fragment_count: usize, checksum: u32) -> Vec<usize> {
+pub(crate) fn choose_fragments(
+    sequence: usize,
+    fragment_count: usize,
+    checksum: u32,
+) -> Vec<usize> {
     if sequence <= fragment_count {
         return alloc::vec![sequence - 1];
     }
@@ -363,8 +364,7 @@ impl FountainDecoder {
         if self.processed_parts_count == 0 {
             return 0;
         }
-        let percent =
-            self.processed_parts_count as f32 / (self.sequence_count as f32 * 1.75);
+        let percent = self.processed_parts_count as f32 / (self.sequence_count as f32 * 1.75);
         let pct = (percent * 100.0) as usize;
         pct.min(99) as u8
     }
@@ -435,7 +435,10 @@ impl FountainDecoder {
                 .cloned()
                 .collect();
             for indexes in to_process {
-                let mut part = self.buffer.remove(&indexes).ok_or(FountainError::ExpectedItem)?;
+                let mut part = self
+                    .buffer
+                    .remove(&indexes)
+                    .ok_or(FountainError::ExpectedItem)?;
                 let mut new_indexes = indexes.clone();
                 let to_remove = indexes
                     .iter()
@@ -471,7 +474,10 @@ impl FountainDecoder {
                 .position(|&x| x == remove)
                 .ok_or(FountainError::ExpectedItem)?;
             indexes.remove(pos);
-            let decoded_part = self.decoded.get(&remove).ok_or(FountainError::ExpectedItem)?;
+            let decoded_part = self
+                .decoded
+                .get(&remove)
+                .ok_or(FountainError::ExpectedItem)?;
             xor_into(&mut part.data, &decoded_part.data);
         }
         if indexes.len() == 1 {
@@ -568,12 +574,7 @@ mod tests {
             3, 3, 3, 3, 3, 3, 3, 0, 2, 3, 3, 3, 3, 1, 2, 2, 1, 3, 3, 2, 3, 3, 1, 1, 2, 1, 1, 3, 1,
         ];
         for (i, &e) in expected.iter().enumerate() {
-            assert_eq!(
-                sampler.next(&mut xoshiro),
-                e,
-                "sample #{} mismatch",
-                i
-            );
+            assert_eq!(sampler.next(&mut xoshiro), e, "sample #{} mismatch", i);
         }
     }
 

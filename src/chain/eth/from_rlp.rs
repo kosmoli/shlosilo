@@ -13,11 +13,11 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-#[cfg(test)]
-use crate::types::SecretBytes;
 use crate::chain::eth::eip155::Eip155Transaction;
 use crate::chain::eth::eip1559::Eip1559Transaction;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+#[cfg(test)]
+use crate::types::SecretBytes;
 
 fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
@@ -58,10 +58,7 @@ impl<'a> Rlp<'a> {
                 if bytes.len() < 1 + lol + len {
                     return Err(err());
                 }
-                (
-                    &bytes[1 + lol..1 + lol + len],
-                    &bytes[1 + lol + len..],
-                )
+                (&bytes[1 + lol..1 + lol + len], &bytes[1 + lol + len..])
             }
             0xc0..=0xf7 => {
                 let len = (b0 - 0xc0) as usize;
@@ -82,10 +79,7 @@ impl<'a> Rlp<'a> {
                 if bytes.len() < 1 + lol + len {
                     return Err(err());
                 }
-                (
-                    &bytes[1 + lol..1 + lol + len],
-                    &bytes[1 + lol + len..],
-                )
+                (&bytes[1 + lol..1 + lol + len], &bytes[1 + lol + len..])
             }
         };
         let item = match b0 {
@@ -118,7 +112,7 @@ impl<'a> Rlp<'a> {
     }
 }
 
-    /// big-endian bytes → u128（拒绝超长）
+/// big-endian bytes → u128（拒绝超长）
 fn be_to_u128(bytes: &[u8]) -> Result<u128> {
     if bytes.len() > 16 || bytes.first() == Some(&0) && bytes.len() > 1 {
         return Err(err());
@@ -275,7 +269,11 @@ mod tests {
             amount: 1_000_000_000_000_000_000,
             data: Vec::new(),
         };
-        let signed = sign_eip155(&Eip155SignInput { tx, private_key: SecretBytes::new([0x46u8; 32]) }).unwrap();
+        let signed = sign_eip155(&Eip155SignInput {
+            tx,
+            private_key: SecretBytes::new([0x46u8; 32]),
+        })
+        .unwrap();
         let parsed = parse_eip155_raw(&signed.tx_bytes).unwrap();
         assert_eq!(parsed.chain_id, 1);
         assert_eq!(parsed.nonce, 9);

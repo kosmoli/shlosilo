@@ -33,14 +33,14 @@
 //!
 //! **y_parity**: 0 或 1（不是 legacy 的 27/28）
 
-    extern crate alloc;
+extern crate alloc;
 extern crate digest;
 use crate::chain::eth::rlp;
-use crate::types::SecretBytes;
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
+use crate::types::SecretBytes;
 use alloc::vec::Vec;
 
 // ─── 数据结构 ──────────────────────────────────────────────────────
@@ -160,15 +160,13 @@ fn compute_y_parity(
     s_bytes: &[u8; 32],
 ) -> Result<u8> {
     use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
-    
 
     // 构造 signature (r || s, 64 bytes)
     let mut sig_64 = [0u8; 64];
     sig_64[..32].copy_from_slice(r_bytes);
     sig_64[32..].copy_from_slice(s_bytes);
-    let sig = Signature::from_slice(&sig_64).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let sig = Signature::from_slice(&sig_64)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
     // pubkey (compressed 33 bytes) from sk
     let pk_point = base_mul(sk);
@@ -214,12 +212,12 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     let y_parity_original = compute_y_parity(&sk, &sighash, &r_bytes, &s_bytes)?;
 
     let half_n_high: [u8; 16] = [
-        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff,
     ];
     let half_n_low: [u8; 16] = [
-        0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d,
-        0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b, 0x20, 0xa0,
+        0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b, 0x20,
+        0xa0,
     ];
     let s_high = &s_bytes[..16];
     let s_low = &s_bytes[16..];
@@ -232,10 +230,9 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     };
     let y_parity = if is_high_s {
         let n_bytes: [u8; 32] = [
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
-            0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b,
-            0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c,
+            0xd0, 0x36, 0x41, 0x41,
         ];
         let mut new_s = [0u8; 32];
         let mut borrow: u8 = 0;
@@ -369,7 +366,8 @@ mod tests {
     /// 完整 sign_eip1559 + 比对 signed tx
     #[test]
     fn sign_eip1559_full_pipeline() {
-        let private_key_bytes = hex_decode("4646464646464646464646464646464646464646464646464646464646464646").unwrap();
+        let private_key_bytes =
+            hex_decode("4646464646464646464646464646464646464646464646464646464646464646").unwrap();
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
         let private_key = SecretBytes::take(&mut private_key);
@@ -410,13 +408,18 @@ mod tests {
         // 验证完整 signed tx
         let expected_tx = "02f8730180843b9aca008504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080c001a0b3d7e5d4775918a0ec38e4f9da6263f69c2072c0e177ff9aa274575bfba17d04a062182875ae92e4de08aaf8ea1a43d3ea0d836745788801cdc79ccc473a76dfd9";
         let expected_tx_bytes = hex_decode(expected_tx).unwrap();
-        assert_eq!(&signed.tx_bytes[..], &expected_tx_bytes[..], "signed tx mismatch");
+        assert_eq!(
+            &signed.tx_bytes[..],
+            &expected_tx_bytes[..],
+            "signed tx mismatch"
+        );
     }
 
     /// 确定性：相同输入 → 相同输出
     #[test]
     fn deterministic_signing() {
-        let private_key_bytes = hex_decode("4646464646464646464646464646464646464646464646464646464646464646").unwrap();
+        let private_key_bytes =
+            hex_decode("4646464646464646464646464646464646464646464646464646464646464646").unwrap();
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
         let private_key = SecretBytes::take(&mut private_key);
@@ -461,7 +464,10 @@ mod tests {
         tx_transfer.destination = None;
         let hash_create = signing_hash(&tx_transfer).unwrap();
 
-        assert_ne!(hash_transfer, hash_create, "contract creation should produce different hash");
+        assert_ne!(
+            hash_transfer, hash_create,
+            "contract creation should produce different hash"
+        );
     }
 
     /// 不同 chain_id → 不同 signing hash

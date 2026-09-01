@@ -133,9 +133,8 @@ pub fn point_from_compressed(bytes: &[u8]) -> Result<Ed25519Point> {
     }
     let mut arr = [0u8; COMPRESSED_POINT_LEN];
     arr.copy_from_slice(bytes);
-    let vk = VerifyingKey::from_bytes(&arr).map_err(|_| {
-        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-    })?;
+    let vk = VerifyingKey::from_bytes(&arr)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     Ok(Ed25519Point { inner: vk })
 }
 

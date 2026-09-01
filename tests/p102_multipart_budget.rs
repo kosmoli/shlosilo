@@ -15,7 +15,8 @@ use shlosilo::ur::ur_multipart::{UrMultipartDecoder, MULTIPART_PAYLOAD_MAX_LEN};
 #[test]
 fn p102_valid_multipart_roundtrip() {
     let payload: std::vec::Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
-    let mut enc = shlosilo::ur::ur_multipart::UrMultipartEncoder::new("bytes", &payload, 200).unwrap();
+    let mut enc =
+        shlosilo::ur::ur_multipart::UrMultipartEncoder::new("bytes", &payload, 200).unwrap();
     let mut dec = UrMultipartDecoder::new();
     let n = enc.fragment_count();
     for _ in 0..n {

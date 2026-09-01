@@ -11,7 +11,8 @@ use shlosilo::network::Network;
 
 fn path() -> heapless::Vec<DerivationPath, 8> {
     let mut v = heapless::Vec::new();
-    v.push(DerivationPath::parse("m/44'/0'/0'/0/0").unwrap()).ok();
+    v.push(DerivationPath::parse("m/44'/0'/0'/0/0").unwrap())
+        .ok();
     v
 }
 

@@ -6,7 +6,9 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 ///
 /// v1 不实现 Zcash（v2 §2.8 Zcash 暂缓说明），返回 `ExportProtocolUnimplemented`
 pub fn encode(_account_data: &[u8]) -> Result<heapless::Vec<u8, 2048>> {
-    Err(ShlosiloError::new(ShlosiloErrorKind::ExportProtocolUnimplemented))
+    Err(ShlosiloError::new(
+        ShlosiloErrorKind::ExportProtocolUnimplemented,
+    ))
 }
 
 #[cfg(test)]

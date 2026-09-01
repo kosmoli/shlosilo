@@ -42,8 +42,8 @@ pub fn encode_bytes(b: &[u8]) -> Vec<u8> {
         out
     } else {
         // 0xb7 + len_of_len || len_be || bytes
-        let n_bytes = (b.len() as u32).to_be_bytes();  // 4 bytes
-        // find first non-zero byte (MSB)
+        let n_bytes = (b.len() as u32).to_be_bytes(); // 4 bytes
+                                                      // find first non-zero byte (MSB)
         let mut leading_zeros = 0;
         while leading_zeros < 4 && n_bytes[leading_zeros] == 0 {
             leading_zeros += 1;
@@ -161,7 +161,10 @@ mod tests {
         let dog = encode_bytes(b"dog");
         let list = encode_list(&[cat, dog]);
         // expected: 0xc8 0x83 'c' 'a' 't' 0x83 'd' 'o' 'g'
-        assert_eq!(list, alloc::vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g']);
+        assert_eq!(
+            list,
+            alloc::vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g']
+        );
     }
 
     /// RLP 官方测试向量：空列表 → 0xc0

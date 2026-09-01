@@ -30,16 +30,29 @@ pub struct CardanoExtSk {
 }
 
 impl CardanoExtSk {
-    pub fn spend(&self) -> &Ed25519Scalar { &self.spend }
-    pub fn stake(&self) -> Option<&Ed25519Scalar> { self.stake.as_ref() }
-    pub fn drep(&self) -> Option<&Ed25519Scalar> { self.drep.as_ref() }
-    pub fn ccl(&self) -> Option<&Ed25519Scalar> { self.ccl.as_ref() }
+    pub fn spend(&self) -> &Ed25519Scalar {
+        &self.spend
+    }
+    pub fn stake(&self) -> Option<&Ed25519Scalar> {
+        self.stake.as_ref()
+    }
+    pub fn drep(&self) -> Option<&Ed25519Scalar> {
+        self.drep.as_ref()
+    }
+    pub fn ccl(&self) -> Option<&Ed25519Scalar> {
+        self.ccl.as_ref()
+    }
 }
 
 impl core::fmt::Debug for CardanoExtSk {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "CardanoExtSk(<redacted> stake={} drep={} ccl={})",
-            self.stake.is_some(), self.drep.is_some(), self.ccl.is_some())
+        write!(
+            f,
+            "CardanoExtSk(<redacted> stake={} drep={} ccl={})",
+            self.stake.is_some(),
+            self.drep.is_some(),
+            self.ccl.is_some()
+        )
     }
 }
 
@@ -49,7 +62,9 @@ impl core::fmt::Debug for CardanoExtSk {
 /// `cardano_serialization_lib::crypto::derive`
 pub fn master_from_seed(_seed: &[u8]) -> Result<CardanoExtSk> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 /// Icarus 路径派生——返回完整 CardanoExtSk（聚合结构）
@@ -58,7 +73,9 @@ pub fn master_from_seed(_seed: &[u8]) -> Result<CardanoExtSk> {
 /// `let spend = &cardano_ext_sk.spend;` 然后传给 `eddsa_ed25519::sign(spend, msg)`
 pub fn derive(_master: &CardanoExtSk, _path: &DerivationPath) -> Result<CardanoExtSk> {
     // P2-01: unimplemented!() panic → 稳定错误码
-    Err(crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::FeatureNotImplemented))
+    Err(crate::error::ShlosiloError::new(
+        crate::error::ShlosiloErrorKind::FeatureNotImplemented,
+    ))
 }
 
 #[cfg(test)]
@@ -79,8 +96,14 @@ mod tests {
         // （检查代码行，排除注释行）
         for line in "icarus_ed25519.rs".lines() {
             let t = line.trim_start();
-            if t.starts_with("//") { continue; }
-            assert!(!t.contains(concat!("unimplemented", "!(")), "panic macro regressed: {}", line);
+            if t.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !t.contains(concat!("unimplemented", "!(")),
+                "panic macro regressed: {}",
+                line
+            );
         }
     }
 }
