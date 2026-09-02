@@ -6,5 +6,6 @@
 
 pub mod chain_kind;
 pub mod secret_bytes;
+pub mod secret_scalar;
 
 pub use secret_bytes::SecretBytes;

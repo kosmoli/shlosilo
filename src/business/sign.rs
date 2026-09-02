@@ -184,7 +184,9 @@ fn sign_xmr(
     // 也是审计要求的"秘密副本不扩散"）
     for tx_data in unsigned_tx.txes {
         // per-tx context digest
-        let mut ctx_src = alloc::vec::Vec::new();
+        // 审计 #9 P1-04:ctx_src 拼入 source mask 明文——Zeroizing owner
+        // (hash 完成或中途 ? 均在 Drop 时擦除)
+        let mut ctx_src = zeroize::Zeroizing::new(alloc::vec::Vec::new());
         ctx_src.extend_from_slice(&tx_data.unlock_time.to_le_bytes());
         ctx_src.extend_from_slice(&tx_data.extra);
         for s in &tx_data.sources {
@@ -254,24 +256,30 @@ fn sign_xmr(
             {
                 continue;
             }
-            // 审计 #8 P1-02:r_bytes owner 按需转 Scalar(作用域局部,不长期存活)
-            let r = curve25519_dalek::Scalar::from_bytes_mod_order(*r_bytes);
-            let shared = {
-                let a = monero_ed25519::CompressedPoint::from(dest.view_public_key)
-                    .decompress()
-                    .ok_or_else(|| {
-                        crate::error::ShlosiloError::new(
-                            crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
-                        )
-                    })?;
-                let a_ed: curve25519_dalek::EdwardsPoint = a.into();
-                (a_ed * r).mul_by_cofactor().compress().to_bytes()
-            };
-            let mut od = alloc::vec::Vec::with_capacity(33);
-            od.extend_from_slice(&shared);
+            // 审计 #9 P1-04:key-image 重算段秘密全部 owner 化:
+            // r → SecretScalar(错误路径 Drop 清零;dalek Scalar 本体 Copy 无 Drop)
+            let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*r_bytes);
+            // shared(8Ra 点压缩字节)= ECDH 中间值(可重算 shared_key)→ Zeroizing
+            // 解构在闭包外做(闭包返回 Result 无法用 ?)
+            let a = monero_ed25519::CompressedPoint::from(dest.view_public_key)
+                .decompress()
+                .ok_or_else(|| {
+                    crate::error::ShlosiloError::new(
+                        crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
+                    )
+                })?;
+            let a_ed: curve25519_dalek::EdwardsPoint = a.into();
+            let shared = r.with_scalar(|r_sc| {
+                zeroize::Zeroizing::new((a_ed * r_sc).mul_by_cofactor().compress().to_bytes())
+            });
+            let mut od = zeroize::Zeroizing::new(alloc::vec::Vec::with_capacity(33));
+            od.extend_from_slice(shared.as_ref());
             crate::chain::xmr::transaction::monero_encode_varint(&mut od, i as u64);
-            let shared_key = crate::chain::xmr::subaddress::hash_to_scalar(&od)?;
-            let hs = curve25519_dalek::Scalar::from_bytes_mod_order(shared_key);
+            let shared_key =
+                zeroize::Zeroizing::new(crate::chain::xmr::subaddress::hash_to_scalar(&od)?);
+            // hs(SecretScalar):key-image = Hp(stealth) · hs——owner 持有,
+            // 作用域结束 Drop 清零
+            let hs = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*shared_key);
             // key image = Hs(shared_key) · Hp(stealth)——stealth 即该 output 的
             // 一次性地址 = B_dest + hs·G
             let b_dest: curve25519_dalek::EdwardsPoint =
@@ -283,12 +291,17 @@ fn sign_xmr(
                         )
                     })?
                     .into();
-            let stealth = (b_dest + curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &hs)
-                .compress()
-                .to_bytes();
-            let hp: curve25519_dalek::EdwardsPoint =
-                monero_ed25519::Point::biased_hash(stealth).into();
-            let image = (hp * hs).compress().to_bytes();
+            // stealth 与 image 都消费 hs——within_scalar 闭包内完成全部点乘
+            let (stealth, image) = hs.with_scalar(|hs_sc| {
+                let stealth = (b_dest
+                    + curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * hs_sc)
+                    .compress()
+                    .to_bytes();
+                let hp: curve25519_dalek::EdwardsPoint =
+                    monero_ed25519::Point::biased_hash(stealth).into();
+                let image = (hp * hs_sc).compress().to_bytes();
+                (stealth, image)
+            });
             tx_key_images.push(TxKeyImageEntry {
                 output_pubkey: stealth,
                 key_image: image,
