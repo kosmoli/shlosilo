@@ -145,24 +145,19 @@ struct OutputDerivation {
 ///   additional-key 模式 = 主 r 复用，见 tx_builder resolve_tx_output 注释）
 /// - change（回自己）：ecdh = view_sec · TxPub（接收方视角推导，Keystone is_change_dest 分支）
 fn derive_output(
-    r: &Scalar,
+    r: &crate::types::secret_scalar::SecretScalar,
     _view_sec: &[u8; 32],
     dest: &TxDestinationEntry,
     _tx_pub: &[u8; 32],
     index: usize,
 ) -> Result<OutputDerivation> {
-    // ecdh 点
-    let a_v_point: curve25519_dalek::EdwardsPoint = CompressedPoint::from(dest.view_public_key)
+    // ecdh = r · A_v(两分支当前同式;additional-key 派生排期后续)
+    // 审计 #10 P1-03:白名单点乘——r 不暴露 &Scalar,内部完成解压/点乘
+    let ecdh_bytes = r.mul_point(&dest.view_public_key);
+    let ecdh_point: curve25519_dalek::EdwardsPoint = CompressedPoint::from(ecdh_bytes)
         .decompress()
         .ok_or_else(err)?
         .into();
-
-    let ecdh_point = if dest.is_subaddress {
-        // keystone: additional_keys.get(i).unwrap_or(tx_key)；单 input 无 add keys 时用 r
-        a_v_point * *r
-    } else {
-        a_v_point * *r
-    };
 
     // 8Ra = ecdh · cofactor(8)，压缩后 || varint(index)
     let eight_ra_pt = ecdh_point.mul_by_cofactor();
@@ -219,11 +214,8 @@ fn derive_output(
     // 子地址时 additional key = r·B_sub（keystone should_use_additional_keys=false 路径：
     // tx_pub 本身 = r·B_sub。这里采用 shlosilo tx_builder 惯例：additional key 记录 r·B_sub）
     let additional_tx_key = if dest.is_subaddress {
-        let b_sub: curve25519_dalek::EdwardsPoint = CompressedPoint::from(dest.spend_public_key)
-            .decompress()
-            .ok_or_else(err)?
-            .into();
-        Some((b_sub * *r).compress().to_bytes())
+        // r·B_sub——dest.spend_public_key 即 B_sub 压缩字节
+        Some(r.mul_point(&dest.spend_public_key))
     } else {
         None
     };
@@ -306,21 +298,24 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             .find(|d| d.is_subaddress)
             .map(|d| d.spend_public_key)
             .unwrap();
-        let b_sub: curve25519_dalek::EdwardsPoint = CompressedPoint::from(b_sub_bytes)
-            .decompress()
-            .ok_or_else(err)?
-            .into();
-        r.with_scalar(|v| b_sub * v)
+        // 白名单点乘直接收压缩字节——无需解压
+        r.mul_point(&b_sub_bytes)
     } else {
-        r.with_scalar(|v| ED25519_BASEPOINT_TABLE * v)
+        r.mul_basepoint()
     };
-    let tx_pub = tx_pub_point.compress().to_bytes();
+    let tx_pub = tx_pub_point; // mul_point/mul_basepoint 已返回压缩字节
 
     // ---- 2. per-output 派生（keystone commitments_and_encrypted_amounts）----
     // change_dts 是"回自己"——ecdh = view_sec · TxPub（is_change_dest 分支）
+    // 审计 #9 P1-02 + #10 P1-04:v_scalar 是长期 view secret 派生——白名单点乘
     let change_ecdh_pt = {
-        let v_scalar = bytes_to_scalar(view_sec);
-        tx_pub_point * v_scalar
+        let v_scalar = crate::types::secret_scalar::SecretScalar::from_slice(view_sec);
+        let pt_bytes = v_scalar.mul_point(&tx_pub_point);
+        let decompressed: curve25519_dalek::EdwardsPoint = CompressedPoint::from(pt_bytes)
+            .decompress()
+            .ok_or_else(err)?
+            .into();
+        decompressed
     };
     let change_eight_ra = change_ecdh_pt.mul_by_cofactor().compress().to_bytes();
 
@@ -382,7 +377,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
                 eight_ra_for_pid: Some(change_eight_ra),
             });
         } else {
-            let deriv = r.with_scalar(|rv| derive_output(rv, view_sec, dest, &tx_pub, i))?;
+            let deriv = derive_output(&r, view_sec, dest, &tx_pub, i)?;
             outs.push(OutInfo {
                 deriv,
                 is_change: false,
@@ -515,7 +510,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         let mut m = curve25519_dalek::Scalar::from_bytes_mod_order(monerod_scalar_to_bytes(
             &bytes_to_monerod_scalar(o.deriv.commitment_mask.expose()),
         ));
-        sum_out_masks.with_scalar_mut(|sum| *sum += m);
+        sum_out_masks.add_assign(&m);
         m.zeroize();
     }
 
@@ -565,8 +560,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         // （官方 genRctSimple: a[last] = Σout_masks − Σprev_pseudo；balance 自然成立）
         // 审计 #7 Gate1 #5:pseudo_mask 是 blinding scalar——Zeroizing 覆盖
         // clsag sign 失败路径(此前普通栈数组失败时无清零)
-        let pseudo_mask_bytes =
-            zeroize::Zeroizing::new(sum_out_masks.with_scalar(|v| v.to_bytes()));
+        let pseudo_mask_bytes = zeroize::Zeroizing::new(sum_out_masks.to_bytes());
         // Gate1 #2:只读借用,不产生普通栈副本
         let real_mask_bytes: &[u8; 32] = input_real_masks.get(i).ok_or_else(err)?;
 
@@ -596,7 +590,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // 审计 #7 Gate1 #5 + #9 P1-02:sum_out_masks 是输出 blinding 之和——
     // CLSAG 循环后即无消费,显式清零;错误路径由 SecretScalar Drop 覆盖
     // (dalek Scalar 本体 Copy 无 Drop——上一轮注释是错误安全声明)
-    sum_out_masks.with_scalar_mut(|v| v.zeroize());
+    sum_out_masks.zeroize_now();
 
     // ---- 10. 官方 monerod wire 序列化 ----
     let bp_buf = {
@@ -827,7 +821,7 @@ mod guard_tests {
 #[test]
 fn output_derivation_kat() {
     // 固定输入:r = 0x11.., dest view/spend = 0x22/0x33.., amount = 12345
-    let r = Scalar::from_bytes_mod_order([0x11u8; 32]);
+    let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order([0x11u8; 32]);
     let dest = TxDestinationEntry {
         original: Vec::new(),
         amount: 12_345,
@@ -838,12 +832,13 @@ fn output_derivation_kat() {
     };
     let d = derive_output(&r, &[0u8; 32], &dest, &[0u8; 32], 0).unwrap();
 
-    // 8Ra 点 = 8·(r·A_v);独立重算
+    // 8Ra 点 = 8·(r·A_v);独立重算(KAT 是验证方——直接用 dalek 数学)
     let a_v: curve25519_dalek::EdwardsPoint = CompressedPoint::from([0x22u8; 32])
         .decompress()
         .unwrap()
         .into();
-    let eight_ra = (a_v * r).mul_by_cofactor().compress().to_bytes();
+    let r_scalar = Scalar::from_bytes_mod_order([0x11u8; 32]);
+    let eight_ra = (a_v * r_scalar).mul_by_cofactor().compress().to_bytes();
     // shared_key = Hs(8Ra || varint(0)) — varint(0) = [0]
     let mut expect_od = alloc::vec::Vec::new();
     expect_od.extend_from_slice(&eight_ra);

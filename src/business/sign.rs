@@ -269,9 +269,8 @@ fn sign_xmr(
                     )
                 })?;
             let a_ed: curve25519_dalek::EdwardsPoint = a.into();
-            let shared = r.with_scalar(|r_sc| {
-                zeroize::Zeroizing::new((a_ed * r_sc).mul_by_cofactor().compress().to_bytes())
-            });
+            let a_bytes = a_ed.compress().to_bytes();
+            let shared = zeroize::Zeroizing::new(r.mul_point_cofactor(&a_bytes));
             let mut od = zeroize::Zeroizing::new(alloc::vec::Vec::with_capacity(33));
             od.extend_from_slice(shared.as_ref());
             crate::chain::xmr::transaction::monero_encode_varint(&mut od, i as u64);
@@ -292,16 +291,11 @@ fn sign_xmr(
                     })?
                     .into();
             // stealth 与 image 都消费 hs——within_scalar 闭包内完成全部点乘
-            let (stealth, image) = hs.with_scalar(|hs_sc| {
-                let stealth = (b_dest
-                    + curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * hs_sc)
-                    .compress()
-                    .to_bytes();
-                let hp: curve25519_dalek::EdwardsPoint =
-                    monero_ed25519::Point::biased_hash(stealth).into();
-                let image = (hp * hs_sc).compress().to_bytes();
-                (stealth, image)
-            });
+            let stealth = hs.mul_basepoint_add_point(&b_dest);
+            let hp: curve25519_dalek::EdwardsPoint =
+                monero_ed25519::Point::biased_hash(stealth).into();
+            let hp_bytes = hp.compress().to_bytes();
+            let image = hs.mul_point(&hp_bytes);
             tx_key_images.push(TxKeyImageEntry {
                 output_pubkey: stealth,
                 key_image: image,

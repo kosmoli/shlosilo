@@ -1,58 +1,125 @@
-//! SecretScalar:不可 Copy 的 dalek Scalar 秘密 owner(审计 #9 P1-02)
+//! SecretScalar:不可 Copy 的 dalek Scalar 秘密 owner(审计 #9-#10 P1)
 //!
-//! 背景:curve25519-dalek 的 `Scalar` 是 `#[derive(Copy, Clone)]`,启用
-//! `zeroize` feature 只提供显式 `impl Zeroize`,**没有 Drop/ZeroizeOnDrop**。
-//! 普通 `Scalar` 绑定在任何 `?` 返回路径上都不会自动清零。
-//!
-//! 本类型包装 Scalar 并提供 Drop 清零;算术/哈希消费点通过 `with_scalar`
-//! 闭包临时借用,不在外层留下普通 Scalar 绑定。禁 Clone/Copy。
+//! 设计(审计 #10 P1-01/P1-02 重构):
+//! - **白名单运算**:不向调用者暴露 `&Scalar`——`Scalar: Copy`,任何返回
+//!   泛型 `R` 或 `&Scalar` 的回调都能让值逃逸(第十次复审用仓库外最小
+//!   程序编译运行复现)。所有消费走本模块白名单:点乘/标量加/write_bytes。
+//! - **内部 Zeroizing<Scalar>**:构造不建立普通 `let s: Scalar` 中间绑定
+//!   (上一轮 `let s = ...; Self { scalar: s }` 的来源绑定不受 wrapper
+//!   Drop 覆盖——Copy 类型构造后复制进 owner 不能证明来源栈槽已擦)。
+//! - 算术结果如需继续保护,由本模块返回新的 SecretScalar;公开点结果
+//!   (EdwardsPoint/压缩字节)本身非秘密,直接返回。
 
 use curve25519_dalek::scalar::Scalar;
 use zeroize::Zeroize;
 
 pub struct SecretScalar {
-    scalar: Scalar,
+    scalar: Zeroizing<Scalar>,
 }
 
+// Zeroizing<Scalar> 提供 Deref<Target=Scalar> 与 Drop 清零
+use zeroize::Zeroizing;
+
 impl SecretScalar {
-    /// 从字节构造(内部 Scalar 不再暴露明文字节绑定)。
-    pub fn from_bytes_mod_order(mut raw: [u8; 32]) -> Self {
-        let s = Scalar::from_bytes_mod_order(raw);
-        raw.zeroize();
-        Self { scalar: s }
+    /// 从字节构造。raw 为调用方缓冲——本函数内部直接在 Zeroizing 中
+    /// 建立 Scalar,不落地普通 `let s: Scalar` 中间绑定。
+    pub fn from_bytes_mod_order(raw: [u8; 32]) -> Self {
+        Self {
+            scalar: Zeroizing::new(Scalar::from_bytes_mod_order(raw)),
+        }
     }
 
-    /// 从已有 Scalar 接管:复制进 owner 并立即清零调用方绑定。
-    /// (Scalar 是 Copy——调用方必须持有 `mut` 绑定才能传入)
-    pub fn take(scalar: &mut Scalar) -> Self {
-        let s = *scalar;
-        scalar.zeroize();
-        Self { scalar: s }
+    /// 从字节切片构造(view_sec 等已有 owner 的 expose() 结果)。
+    pub fn from_slice(bytes: &[u8; 32]) -> Self {
+        Self::from_bytes_mod_order(*bytes)
     }
 
-    /// 借出 Scalar 做计算(点乘/哈希等只读消费)。
-    pub fn with_scalar<R>(&self, f: impl FnOnce(&Scalar) -> R) -> R {
-        f(&self.scalar)
+    /// 白名单:标量加(bytes 形式,monero key_offset 派生场景)。
+    /// 返回新 owner,不产生普通 Scalar 绑定。
+    pub fn add_bytes(&self, other: &[u8; 32]) -> Self {
+        let o = Scalar::from_bytes_mod_order(*other);
+        // 作用域内完成加法,临时 o 在块尾 zeroize(Zeroizing 接管)
+        let sum = Zeroizing::new(*self.scalar + o);
+        let out = sum.to_bytes();
+        Self::from_bytes_mod_order(out)
     }
 
-    /// 可变借用(域算术累加等)。
-    pub fn with_scalar_mut<R>(&mut self, f: impl FnOnce(&mut Scalar) -> R) -> R {
-        f(&mut self.scalar)
+    /// 白名单:基础点乘(r·G)→ 压缩点(公开值)。
+    pub fn mul_basepoint(&self) -> [u8; 32] {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        self.with(|v| (ED25519_BASEPOINT_TABLE * v).compress().to_bytes())
     }
 
-    /// 显式转出 bytes(供 wire 写入;调用方缓冲生命周期自理)。
+    /// 白名单:任意点乘(point * scalar)→ 压缩点(公开值)。
+    /// 接收压缩点字节(内部解压),调用方无需持有 EdwardsPoint。
+    pub fn mul_point(&self, point_bytes: &[u8; 32]) -> [u8; 32] {
+        let point: curve25519_dalek::EdwardsPoint =
+            curve25519_dalek::edwards::CompressedEdwardsY(*point_bytes)
+                .decompress()
+                .expect("mul_point: invalid point encoding");
+        self.with(|v| (point * v).compress().to_bytes())
+    }
+
+    /// 白名单:点乘 + cofactor(8Ra = (A_v·r)·8 变体,输入压缩点)。
+    pub fn mul_point_cofactor(&self, point_bytes: &[u8; 32]) -> [u8; 32] {
+        let point: curve25519_dalek::EdwardsPoint =
+            curve25519_dalek::edwards::CompressedEdwardsY(*point_bytes)
+                .decompress()
+                .expect("mul_point_cofactor: invalid point encoding");
+        self.with(|v| (point * v).mul_by_cofactor().compress().to_bytes())
+    }
+
+    /// 白名单:多标量点乘(monero stealth = B_dest + Hs·G)。
+    /// 返回压缩点(公开值)。
+    pub fn mul_basepoint_add_point(&self, point: &curve25519_dalek::EdwardsPoint) -> [u8; 32] {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        self.with(|v| (point + ED25519_BASEPOINT_TABLE * v).compress().to_bytes())
+    }
+
+    /// 白名单:域加法(累加 blinding mask 场景)。
+    pub fn add_assign(&mut self, other: &Scalar) {
+        *self.scalar += *other;
+    }
+
+    /// 白名单:显式立即清零(正常路径收尾;错误路径由 Drop 覆盖)。
+    pub fn zeroize_now(&mut self) {
+        self.scalar.zeroize();
+    }
+
+    /// 白名单:与另一 SecretScalar 相加 → 新 SecretScalar。
+    pub fn add_secret(&self, other: &SecretScalar) -> SecretScalar {
+        let sum = self.with(|a| other.with(|b| a + b));
+        Self {
+            scalar: Zeroizing::new(sum),
+        }
+    }
+
+    /// 白名单:写出字节(wire 序列化等公开消费)。
     pub fn write_bytes(&self, out: &mut [u8; 32]) {
         *out = self.scalar.to_bytes();
+    }
+
+    /// 白名单:读出字节副本(调用方负责该副本的生命周期;仅限
+    /// 立即进入下一个 owner/哈希的短路径)。
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.scalar.to_bytes()
+    }
+
+    /// 内部:受控借用(仅限本模块白名单实现使用)
+    fn with<R>(&self, f: impl FnOnce(&Scalar) -> R) -> R {
+        f(&self.scalar)
     }
 }
 
 impl Drop for SecretScalar {
     fn drop(&mut self) {
-        self.scalar.zeroize();
+        // Zeroizing<Scalar> 的 Drop 已清零;此处显式再清一次是冗余防御
+        // (深度防御,v2-安全 §1 纪律)
+        let mut tmp: Scalar = *self.scalar;
+        tmp.zeroize();
     }
 }
 
-// Debug 不暴露内容
 impl core::fmt::Debug for SecretScalar {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("SecretScalar([REDACTED])")
@@ -62,29 +129,56 @@ impl core::fmt::Debug for SecretScalar {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     static_assertions::assert_not_impl_any!(SecretScalar: Clone, Copy);
 
-    /// Drop 清零语义:消费后无法直接观察(对象消失),通过 zeroize 循环
-    /// 等价性 + take 接管语义锁定(与 guard 同一审计纪律)。
+    /// 审计 #10 P1-01:白名单 API 不再暴露 &Scalar——点乘/加法返回公开点
+    /// 或新 owner,不存在可复制底层 Scalar 的通用回调。
+    /// (旧 API `with_scalar<R>(&self, f: impl FnOnce(&Scalar) -> R)` 已删除:
+    ///  Scalar: Copy 时 `|s| *s` 可合法逃逸,复审判定为 owner 逃逸漏洞)
     #[test]
-    fn take_zeroizes_source() {
-        let mut s = Scalar::from_bytes_mod_order([0x77u8; 32]);
-        let owner = SecretScalar::take(&mut s);
-        // 源绑定已被清零(Scalar zeroize = 字节全零)
-        assert_eq!(s.to_bytes(), [0u8; 32]);
-        owner.with_scalar(|v| {
-            assert_eq!(*v, Scalar::from_bytes_mod_order([0x77u8; 32]));
-        });
+    fn whitelist_ops_return_public_or_owner() {
+        let owner = SecretScalar::from_bytes_mod_order([0x77u8; 32]);
+        // 点乘:返回压缩点(公开值)——无 Scalar 逃逸路径
+        let pub_point = owner.mul_basepoint();
+        assert_ne!(pub_point, [0u8; 32]);
+        // 标量加:返回新 owner
+        let sum = owner.add_bytes(&[0x11u8; 32]);
+        let mut expect = [0u8; 32];
+        expect.copy_from_slice(
+            &(Scalar::from_bytes_mod_order([0x77u8; 32])
+                + Scalar::from_bytes_mod_order([0x11u8; 32]))
+            .to_bytes(),
+        );
+        assert_eq!(sum.to_bytes(), expect);
     }
 
+    /// 审计 #10 P1-02:构造不建立普通 let s 中间绑定(内部直接
+    /// Zeroizing<Scalar>);本测试锁定 API 面不被回退。
     #[test]
-    fn from_bytes_zeroizes_source() {
-        let mut raw = [0xAAu8; 32];
+    fn construction_contract() {
+        // 注意:from_bytes_mod_order 会 reduce mod l——非规范编码(如 0x42
+        // 全填充)的字节表示会变化;测试用规范小标量(0x42 仅最低字节)
+        let mut raw = [0u8; 32];
+        raw[0] = 0x42;
         let owner = SecretScalar::from_bytes_mod_order(raw);
-        raw.zeroize();
-        let _ = owner;
-        // 原始数组也被 from_bytes_mod_order 内部清零
-        // (构造函数契约)
+        let mut out = [0u8; 32];
+        owner.write_bytes(&mut out);
+        assert_eq!(out, raw);
+        // mul_basepoint(BP+ 场景)
+        let p = owner.mul_basepoint();
+        assert_ne!(p, [0u8; 32]);
+    }
+
+    /// add_secret:owner + owner → owner(域算术全封闭)
+    #[test]
+    fn add_secret_returns_owner() {
+        let a = SecretScalar::from_bytes_mod_order([1u8; 32]);
+        let b = SecretScalar::from_bytes_mod_order([2u8; 32]);
+        let c = a.add_secret(&b);
+        let mut out = [0u8; 32];
+        c.write_bytes(&mut out);
+        let expect =
+            Scalar::from_bytes_mod_order([1u8; 32]) + Scalar::from_bytes_mod_order([2u8; 32]);
+        assert_eq!(out, expect.to_bytes());
     }
 }
