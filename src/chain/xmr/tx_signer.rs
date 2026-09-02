@@ -13,8 +13,6 @@ extern crate alloc;
 
 use crate::chain::xmr::rct_sig::prove_bulletproofs_plus;
 use alloc::vec::Vec;
-use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
-use curve25519_dalek::scalar::Scalar;
 use monero_ed25519::CompressedPoint;
 use rand_core::{CryptoRng, RngCore};
 use zeroize::Zeroize;
@@ -112,8 +110,9 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-fn bytes_to_scalar(bytes: &[u8; 32]) -> Scalar {
-    Scalar::from_bytes_mod_order(*bytes)
+#[cfg(test)]
+fn bytes_to_scalar(bytes: &[u8; 32]) -> curve25519_dalek::scalar::Scalar {
+    curve25519_dalek::scalar::Scalar::from_bytes_mod_order(*bytes)
 }
 
 /// per-output 派生（shared key + mask + encrypted amount）——keystone commitments_and_encrypted_amounts
@@ -153,7 +152,7 @@ fn derive_output(
 ) -> Result<OutputDerivation> {
     // ecdh = r · A_v(两分支当前同式;additional-key 派生排期后续)
     // 审计 #10 P1-03:白名单点乘——r 不暴露 &Scalar,内部完成解压/点乘
-    let ecdh_bytes = r.mul_point(&dest.view_public_key);
+    let ecdh_bytes = r.mul_point(&dest.view_public_key)?;
     let ecdh_point: curve25519_dalek::EdwardsPoint = CompressedPoint::from(ecdh_bytes)
         .decompress()
         .ok_or_else(err)?
@@ -188,20 +187,16 @@ fn derive_output(
     let encrypted_amount = (dest.amount ^ xor_val).to_le_bytes();
 
     // stealth = B_dest + Hs(8Ra||varint(idx))·G(monero one-time address)
-    // 审计 #8 P0-01:Hs(8Ra||o) = shared_key(同一哈希),直接复用——
-    // 此前在 od_data 被清零后重算 Hs(empty) 生成错误地址
-    // 审计 #9 P1-03:hs_scalar 用后即擦(SecretBytes 语义隐藏底层 Scalar)
-    let stealth_address = {
-        let hs_scalar = bytes_to_scalar(shared_key.expose());
-        let b_dest: curve25519_dalek::EdwardsPoint = CompressedPoint::from(dest.spend_public_key)
-            .decompress()
-            .ok_or_else(err)?
-            .into();
-        let stealth_pt = b_dest + ED25519_BASEPOINT_TABLE * &hs_scalar;
-        let mut hs_z = hs_scalar;
-        hs_z.zeroize();
-        stealth_pt.compress().to_bytes()
-    };
+    // 审计 #8 P0-01:Hs(8Ra||o) = shared_key(同一哈希),直接复用
+    // 审计 #11 P1-02:Hs(shared_key) 进 SecretScalar owner(上一版
+    // hs_z = hs_scalar 只清 Copy 副本,且解压 ? 在清零前——两个缺口);
+    // spend key 解压前移到任何秘密派生之前,全部 ? 由 owner Drop 覆盖
+    let b_dest: curve25519_dalek::EdwardsPoint = CompressedPoint::from(dest.spend_public_key)
+        .decompress()
+        .ok_or_else(err)?
+        .into();
+    let hs = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*shared_key.expose());
+    let stealth_address = hs.mul_basepoint_add_point(&b_dest);
 
     // view tag = keccak("view_tag" || 8Ra || varint(o))[0]
     let mut vt_data = zeroize::Zeroizing::new(Vec::with_capacity(9 + 33));
@@ -215,7 +210,7 @@ fn derive_output(
     // tx_pub 本身 = r·B_sub。这里采用 shlosilo tx_builder 惯例：additional key 记录 r·B_sub）
     let additional_tx_key = if dest.is_subaddress {
         // r·B_sub——dest.spend_public_key 即 B_sub 压缩字节
-        Some(r.mul_point(&dest.spend_public_key))
+        Some(r.mul_point(&dest.spend_public_key)?)
     } else {
         None
     };
@@ -299,7 +294,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             .map(|d| d.spend_public_key)
             .unwrap();
         // 白名单点乘直接收压缩字节——无需解压
-        r.mul_point(&b_sub_bytes)
+        r.mul_point(&b_sub_bytes)?
     } else {
         r.mul_basepoint()
     };
@@ -310,7 +305,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // 审计 #9 P1-02 + #10 P1-04:v_scalar 是长期 view secret 派生——白名单点乘
     let change_ecdh_pt = {
         let v_scalar = crate::types::secret_scalar::SecretScalar::from_slice(view_sec);
-        let pt_bytes = v_scalar.mul_point(&tx_pub_point);
+        let pt_bytes = v_scalar.mul_point(&tx_pub_point)?;
         let decompressed: curve25519_dalek::EdwardsPoint = CompressedPoint::from(pt_bytes)
             .decompress()
             .ok_or_else(err)?
@@ -327,36 +322,38 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         if is_change {
             // change 走 view_sec·TxPub 路径：手工派生（derive_output 的 r·A_v 不适用）
             // 审计 #8 P1-02:change 分支临时缓冲与主分支同纪律(Zeroizing owner)
+            // 审计 #11 P1-03:哈希产生处直接进 owner(不再落地普通数组)
             let shared_key = {
                 let mut od = zeroize::Zeroizing::new(Vec::with_capacity(33));
                 od.extend_from_slice(&change_eight_ra);
                 monero_encode_varint(&mut od, i as u64);
-                hash_to_scalar(&od)?
+                crate::types::SecretBytes::new(hash_to_scalar(&od)?)
             };
             let commitment_mask = {
                 let mut md = zeroize::Zeroizing::new(Vec::with_capacity(48));
                 md.extend_from_slice(b"commitment_mask");
-                md.extend_from_slice(&shared_key);
-                hash_to_scalar(&md)?
+                md.extend_from_slice(shared_key.expose());
+                crate::types::SecretBytes::new(hash_to_scalar(&md)?)
             };
             let encrypted_amount = {
                 let mut ad = zeroize::Zeroizing::new(Vec::with_capacity(38));
                 ad.extend_from_slice(b"amount");
-                ad.extend_from_slice(&shared_key);
+                ad.extend_from_slice(shared_key.expose());
                 let h = crate::encoding::keccak256::hash(&ad)?;
                 let m8 = u64::from_le_bytes(h[..8].try_into().unwrap());
                 (dest.amount ^ m8).to_le_bytes()
             };
-            // stealth（change 也输出 onetime address）
-            let hs_scalar = bytes_to_scalar(&shared_key);
+            // stealth(change 也输出 onetime address)——审计 #11 P1-03:
+            // hs 进 SecretScalar owner;解压前移,全部 ? 由 owner Drop 覆盖
             let b_dest: curve25519_dalek::EdwardsPoint =
                 CompressedPoint::from(dest.spend_public_key)
                     .decompress()
                     .ok_or_else(err)?
                     .into();
-            let stealth_address = (b_dest + ED25519_BASEPOINT_TABLE * &hs_scalar)
-                .compress()
-                .to_bytes();
+            let hs = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(
+                *shared_key.expose(),
+            );
+            let stealth_address = hs.mul_basepoint_add_point(&b_dest);
             // view tag
             let mut vt = zeroize::Zeroizing::new(Vec::with_capacity(42));
             vt.extend_from_slice(b"view_tag");
@@ -365,8 +362,8 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             let vt_full = crate::encoding::keccak256::hash(&vt)?;
             outs.push(OutInfo {
                 deriv: OutputDerivation {
-                    shared_key: crate::types::SecretBytes::new(shared_key),
-                    commitment_mask: crate::types::SecretBytes::new(commitment_mask),
+                    shared_key,
+                    commitment_mask,
                     encrypted_amount,
                     stealth_address,
                     additional_tx_key: None,
@@ -813,6 +810,83 @@ mod guard_tests {
             "multi-input must be rejected at the shape check"
         );
     }
+
+    /// 审计 #11 P0-01(第二层):敌对 destination view key([0x02;32]
+    /// 不可解压)通过公开 signer——必须返回 Err,不 panic(复审 PoC
+    /// 以 catch_unwind 观察到 panic;panic=abort 真机上是整机 DoS)。
+    #[test]
+    fn hostile_destination_point_returns_err_not_panic() {
+        use crate::chain::xmr::unsigned_txset::{
+            OutputEntry, RctConfig, TxDestinationEntry, TxSourceEntry,
+        };
+        use crate::types::SecretBytes;
+
+        let test_seed = [0x42u8; 64];
+        let path = crate::derivation::monero_reduce_scalar::MoneroPath::mainnet(0);
+        let kp = crate::derivation::monero_reduce_scalar::derive(&test_seed, &path).unwrap();
+        let spend_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.spend_priv());
+        let view_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv());
+
+        let source = TxSourceEntry {
+            outputs: alloc::vec![OutputEntry {
+                index: 0,
+                dest: [0x33u8; 32],
+                mask: [0x33u8; 32],
+            }],
+            real_output: 0,
+            real_out_tx_key: [0; 32],
+            real_out_additional_tx_keys: alloc::vec![],
+            real_output_in_tx_index: 0,
+            amount: 1000,
+            rct: true,
+            mask: SecretBytes::new([0x66u8; 32]),
+            multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki {
+                k: [0; 32],
+                l: [0; 32],
+                r: [0; 32],
+                ki: [0; 32],
+            },
+        };
+        // 敌对 destination:view_public_key = [0x02;32](复审 PoC 编码)
+        let dest = TxDestinationEntry {
+            original: Vec::new(),
+            amount: 900,
+            spend_public_key: [0x02u8; 32],
+            view_public_key: [0x02u8; 32],
+            is_subaddress: false,
+            is_integrated: false,
+        };
+        let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
+            sources: alloc::vec![source],
+            change_dts: dest.clone(),
+            splitted_dsts: alloc::vec![dest],
+            selected_transfers: alloc::vec![0],
+            extra: alloc::vec![],
+            unlock_time: 0,
+            use_rct: 1,
+            rct_config: RctConfig::default(),
+            dests: alloc::vec![],
+            subaddr_account: 0,
+            subaddr_indices: alloc::vec![],
+        };
+
+        use rand_chacha::rand_core::SeedableRng;
+        let rng = rand_chacha::ChaCha20Rng::from_seed([0x77u8; 32]);
+        let mut bp_rng = rng.clone();
+        let mut clsag_rng = rng.clone();
+        let r_bytes = zeroize::Zeroizing::new([0x77u8; 32]);
+        let result = sign_tx_from_construction_with_rngs(
+            &tx_data,
+            &spend_sec,
+            &view_sec,
+            &r_bytes,
+            &mut bp_rng,
+            &mut clsag_rng,
+        );
+        // 敌对输入 → Err(不 panic——本测试存活即证明)
+        let e = result.unwrap_err();
+        assert_eq!(e.kind, ShlosiloErrorKind::EncodingInvalidFormat);
+    }
 }
 /// 审计 #8 Gate0 #2:output derivation KAT——不依赖外部密钥的逐字节
 /// 公式锁定,进普通测试(此前 XMR 输出正确性无普通门禁,P0-01 回归
@@ -837,7 +911,7 @@ fn output_derivation_kat() {
         .decompress()
         .unwrap()
         .into();
-    let r_scalar = Scalar::from_bytes_mod_order([0x11u8; 32]);
+    let r_scalar = curve25519_dalek::scalar::Scalar::from_bytes_mod_order([0x11u8; 32]);
     let eight_ra = (a_v * r_scalar).mul_by_cofactor().compress().to_bytes();
     // shared_key = Hs(8Ra || varint(0)) — varint(0) = [0]
     let mut expect_od = alloc::vec::Vec::new();
@@ -852,7 +926,8 @@ fn output_derivation_kat() {
         .decompress()
         .unwrap()
         .into();
-    let expect_stealth = (b_dest + ED25519_BASEPOINT_TABLE * &hs_scalar)
+    let expect_stealth = (b_dest
+        + curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &hs_scalar)
         .compress()
         .to_bytes();
     assert_eq!(d.stealth_address, expect_stealth);
@@ -984,8 +1059,12 @@ fn signer_clsag_failure_populates_then_drops_owner() {
         &mut bp_rng,
         &mut clsag_rng,
     );
-    // 失败必须发生(越界 real_output);关键证据在下方影子断言
-    assert!(result.is_err(), "invalid real_output must fail");
+    // 失败必须发生(fault point = decoy commitment 解压,real_output=0
+    // 对两元素 ring 合法);关键证据在下方影子断言
+    assert!(
+        result.is_err(),
+        "invalid decoy commitment must fail at clsag decompression"
+    );
 
     // 影子被填充 = guard Drop 在错误路径上真实执行(owner 建立后才失败)
     // 审计 #9 P2-01/P2-02:kind 精确归因——本测试注入的是 real_mask guard

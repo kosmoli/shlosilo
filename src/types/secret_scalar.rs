@@ -35,13 +35,13 @@ impl SecretScalar {
     }
 
     /// 白名单:标量加(bytes 形式,monero key_offset 派生场景)。
-    /// 返回新 owner,不产生普通 Scalar 绑定。
+    /// 返回新 owner。审计 #11 P1-01:表达式直接进 owner——上一版
+    /// `let o = ...; let sum = ...; let out = ...;` 三个普通绑定
+    /// (注释声称"临时 o 被 Zeroizing 接管"与代码不符)全部消除
     pub fn add_bytes(&self, other: &[u8; 32]) -> Self {
-        let o = Scalar::from_bytes_mod_order(*other);
-        // 作用域内完成加法,临时 o 在块尾 zeroize(Zeroizing 接管)
-        let sum = Zeroizing::new(*self.scalar + o);
-        let out = sum.to_bytes();
-        Self::from_bytes_mod_order(out)
+        Self {
+            scalar: Zeroizing::new(*self.scalar + Scalar::from_bytes_mod_order(*other)),
+        }
     }
 
     /// 白名单:基础点乘(r·G)→ 压缩点(公开值)。
@@ -51,22 +51,38 @@ impl SecretScalar {
     }
 
     /// 白名单:任意点乘(point * scalar)→ 压缩点(公开值)。
-    /// 接收压缩点字节(内部解压),调用方无需持有 EdwardsPoint。
-    pub fn mul_point(&self, point_bytes: &[u8; 32]) -> [u8; 32] {
+    /// 接收压缩点字节(内部解压)。审计 #11 P0-01:解压失败返回 Err
+    /// (不可信点编码可从敌对签名请求到达——expect panic 在真机
+    /// panic=abort 下是整机 DoS;恢复改造前的 totality)
+    pub fn mul_point(
+        &self,
+        point_bytes: &[u8; 32],
+    ) -> Result<[u8; 32], crate::error::ShlosiloError> {
         let point: curve25519_dalek::EdwardsPoint =
             curve25519_dalek::edwards::CompressedEdwardsY(*point_bytes)
                 .decompress()
-                .expect("mul_point: invalid point encoding");
-        self.with(|v| (point * v).compress().to_bytes())
+                .ok_or_else(|| {
+                    crate::error::ShlosiloError::new(
+                        crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
+                    )
+                })?;
+        Ok(self.with(|v| (point * v).compress().to_bytes()))
     }
 
     /// 白名单:点乘 + cofactor(8Ra = (A_v·r)·8 变体,输入压缩点)。
-    pub fn mul_point_cofactor(&self, point_bytes: &[u8; 32]) -> [u8; 32] {
+    pub fn mul_point_cofactor(
+        &self,
+        point_bytes: &[u8; 32],
+    ) -> Result<[u8; 32], crate::error::ShlosiloError> {
         let point: curve25519_dalek::EdwardsPoint =
             curve25519_dalek::edwards::CompressedEdwardsY(*point_bytes)
                 .decompress()
-                .expect("mul_point_cofactor: invalid point encoding");
-        self.with(|v| (point * v).mul_by_cofactor().compress().to_bytes())
+                .ok_or_else(|| {
+                    crate::error::ShlosiloError::new(
+                        crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
+                    )
+                })?;
+        Ok(self.with(|v| (point * v).mul_by_cofactor().compress().to_bytes()))
     }
 
     /// 白名单:多标量点乘(monero stealth = B_dest + Hs·G)。
@@ -87,10 +103,10 @@ impl SecretScalar {
     }
 
     /// 白名单:与另一 SecretScalar 相加 → 新 SecretScalar。
+    /// 审计 #11 P1-01:表达式直接进 owner(上版先建普通 sum 再复制)
     pub fn add_secret(&self, other: &SecretScalar) -> SecretScalar {
-        let sum = self.with(|a| other.with(|b| a + b));
         Self {
-            scalar: Zeroizing::new(sum),
+            scalar: Zeroizing::new(self.with(|a| other.with(|b| a + b))),
         }
     }
 
@@ -108,15 +124,6 @@ impl SecretScalar {
     /// 内部:受控借用(仅限本模块白名单实现使用)
     fn with<R>(&self, f: impl FnOnce(&Scalar) -> R) -> R {
         f(&self.scalar)
-    }
-}
-
-impl Drop for SecretScalar {
-    fn drop(&mut self) {
-        // Zeroizing<Scalar> 的 Drop 已清零;此处显式再清一次是冗余防御
-        // (深度防御,v2-安全 §1 纪律)
-        let mut tmp: Scalar = *self.scalar;
-        tmp.zeroize();
     }
 }
 
@@ -167,6 +174,23 @@ mod tests {
         // mul_basepoint(BP+ 场景)
         let p = owner.mul_basepoint();
         assert_ne!(p, [0u8; 32]);
+    }
+
+    /// 审计 #11 P0-01:不可信压缩点解压失败 → Err(不 panic)。
+    /// 复审以仓库外 PoC 复现 [0x02;32] 触发 expect panic(真机=abort/DoS)。
+    /// totality 是本类型 API 的硬门禁——回归即失败。
+    #[test]
+    fn invalid_point_encoding_returns_err_not_panic() {
+        let owner = SecretScalar::from_bytes_mod_order([0x42u8; 32]);
+        // [0x02;32] 不是合法压缩点(复审 PoC 用的编码)
+        assert!(owner.mul_point(&[0x02u8; 32]).is_err());
+        assert!(owner.mul_point_cofactor(&[0x02u8; 32]).is_err());
+        // 合法点仍正常工作(不误伤)
+        let pt = curve25519_dalek::constants::ED25519_BASEPOINT_TABLE
+            * &curve25519_dalek::Scalar::from(1u8);
+        let pt_bytes = pt.compress().to_bytes();
+        assert!(owner.mul_point(&pt_bytes).is_ok());
+        assert!(owner.mul_point_cofactor(&pt_bytes).is_ok());
     }
 
     /// add_secret:owner + owner → owner(域算术全封闭)

@@ -270,7 +270,11 @@ fn sign_xmr(
                 })?;
             let a_ed: curve25519_dalek::EdwardsPoint = a.into();
             let a_bytes = a_ed.compress().to_bytes();
-            let shared = zeroize::Zeroizing::new(r.mul_point_cofactor(&a_bytes));
+            let shared = zeroize::Zeroizing::new(r.mul_point_cofactor(&a_bytes).map_err(|_| {
+                crate::error::ShlosiloError::new(
+                    crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
+                )
+            })?);
             let mut od = zeroize::Zeroizing::new(alloc::vec::Vec::with_capacity(33));
             od.extend_from_slice(shared.as_ref());
             crate::chain::xmr::transaction::monero_encode_varint(&mut od, i as u64);
@@ -295,7 +299,11 @@ fn sign_xmr(
             let hp: curve25519_dalek::EdwardsPoint =
                 monero_ed25519::Point::biased_hash(stealth).into();
             let hp_bytes = hp.compress().to_bytes();
-            let image = hs.mul_point(&hp_bytes);
+            let image = hs.mul_point(&hp_bytes).map_err(|_| {
+                crate::error::ShlosiloError::new(
+                    crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
+                )
+            })?;
             tx_key_images.push(TxKeyImageEntry {
                 output_pubkey: stealth,
                 key_image: image,
