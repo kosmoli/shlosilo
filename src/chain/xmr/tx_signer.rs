@@ -6,7 +6,7 @@
 //!    mask = Hs("commitment_mask" || shared_key)；amount 加密 = Hs("amount"||shared_key)[..8] XOR
 //! 3. extra = txpub (+ r·B_sub 若 subaddress 且无 additional keys) + payment_id XOR(change)
 //! 4. BP+ over output commitments（bp_version=4 → RCTTypeBulletproofPlus, wire type=6）
-//! 5. pseudo_out_i：pseudo_mask = sum_out_masks − real_mask_i，CLSAG 签名
+//! 5. pseudo_out_i：genRctSimple 链 `a[i]=rng (i<last), a[last]=Σout_masks−Σprev`；单输入 = Σout_masks
 //! 6. 组 prefix → msg_hash = keccak(prefix) → CLSAG → 完整 tx
 
 extern crate alloc;
@@ -62,6 +62,37 @@ mod shadow {
         pub masks: alloc::vec::Vec<[u8; 32]>,
     }
     pub static SHADOW_POST_DROP: Mutex<Option<ShadowRecord>> = Mutex::new(None);
+}
+
+/// 官方 genRctSimple 伪输出掩码链:
+/// `a[i] = random` (i < last), `a[last] = Σout_masks − Σ_{j<last} a[j]`。
+/// 单输入 ⇒ last=0 ⇒ a[0] = Σout_masks,与既有 `sum_outputs` 语义逐字节一致,
+/// 不额外消费 rng(锁单输入确定性)。
+fn derive_pseudo_masks<R: RngCore>(
+    n_in: usize,
+    sum_out_masks: &crate::types::secret_scalar::SecretScalar,
+    rng: &mut R,
+) -> Result<ZeroizingMaskGuard> {
+    if n_in == 0 {
+        return Err(err());
+    }
+    let mut dest = ZeroizingMaskGuard::new("pseudo_mask");
+    let mut sum_prev = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order([0u8; 32]);
+    for i in 0..n_in {
+        let mask = if i + 1 == n_in {
+            sum_out_masks.sub_secret(&sum_prev)
+        } else {
+            let mut raw = zeroize::Zeroizing::new([0u8; 32]);
+            rng.fill_bytes(raw.as_mut());
+            let m = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*raw);
+            sum_prev = sum_prev.add_secret(&m);
+            m
+        };
+        let mut bytes = mask.to_bytes();
+        dest.push_take(&mut bytes);
+    }
+    sum_prev.zeroize_now();
+    Ok(dest)
 }
 
 impl Drop for ZeroizingMaskGuard {
@@ -424,12 +455,8 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
 
     // ---- 5. inputs: key_offsets(relative) + key images ----
     let mut tx_inputs = Vec::with_capacity(tx_data.sources.len());
-    // P1-06 范围:单输入(fixture 即单输入);多输入排期后续。
-    // 审计 #6 复审 Gate1 #4:提前到任何秘密工作副本建立之前,
-    // 缩短秘密生命周期(原检查在 CLSAG 段,位于 mask 复制之后)
-    if tx_data.sources.len() != 1 {
-        return Err(err());
-    }
+    // 审计 #6 复审 Gate1 #4:空 sources 已在函数入口拒绝;n>=1 即进入秘密
+    // owner 建立。多输入走 genRctSimple 链,不再在此硬拒绝。
     let mut input_real_masks = ZeroizingMaskGuard::new("real_mask");
     let mut rings: Vec<Vec<(CompressedPoint, CompressedPoint)>> =
         Vec::with_capacity(tx_data.sources.len());
@@ -547,17 +574,18 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // CLSAG 段的所有 ? (derive_input_spend_key / clsag sign)失败时
     // Drop 仍会擦除全部 mask(复审证据:into_inner 后 3 类提前返回跳过清零)
 
-    // ---- 9. CLSAG per input：pseudo_mask = Σout_masks（monero-clsag sum_outputs 语义）----
+    // ---- 9. CLSAG per input：pseudo_mask 走 genRctSimple 链 ----
+    // 官方: a[i]=skGen (i<last); a[last]=Σout_masks−Σprev_pseudo。
+    // 单输入 ⇒ 不消费 rng,a[0]=Σout_masks,与既有 monero-clsag sum_outputs 语义一致。
+    // 每输入再调 clsag::sign(sum_outputs=该 input 的 a[i])——单元素列表下
+    // 库把 sum_outputs 当 last mask,等价于直接使用我们算好的 a[i]。
+    let pseudo_masks = derive_pseudo_masks(tx_data.sources.len(), &sum_out_masks, clsag_rng)?;
     let mut clsag_wire: Vec<Vec<u8>> = Vec::with_capacity(tx_data.sources.len());
     let mut pseudo_outs_arr: Vec<[u8; 32]> = Vec::with_capacity(tx_data.sources.len());
 
     for (i, (src, ring)) in tx_data.sources.iter().zip(rings.iter()).enumerate() {
-        // 单输入：monero-clsag sign(sum_outputs) 语义 = Σ output masks；
-        // 最后一个 input 的 pseudo_mask 由库计算为 sum_outputs − Σprev ⇒ 单输入时 = Σout_masks。
-        // （官方 genRctSimple: a[last] = Σout_masks − Σprev_pseudo；balance 自然成立）
-        // 审计 #7 Gate1 #5:pseudo_mask 是 blinding scalar——Zeroizing 覆盖
-        // clsag sign 失败路径(此前普通栈数组失败时无清零)
-        let pseudo_mask_bytes = zeroize::Zeroizing::new(sum_out_masks.to_bytes());
+        // 审计 #7 Gate1 #5:pseudo_mask 是 blinding scalar——owner 持有到底
+        let pseudo_mask_bytes: &[u8; 32] = pseudo_masks.get(i).ok_or_else(err)?;
         // Gate1 #2:只读借用,不产生普通栈副本
         let real_mask_bytes: &[u8; 32] = input_real_masks.get(i).ok_or_else(err)?;
 
@@ -570,7 +598,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             src.real_output as u8,
             real_mask_bytes,
             src.amount,
-            &pseudo_mask_bytes,
+            pseudo_mask_bytes,
             &msg_hash,
             clsag_rng,
         )?;
@@ -722,93 +750,72 @@ mod guard_tests {
         assert_eq!(g.masks[0][0], 0x42);
     }
 
-    /// 审计 #9 P2-03:多输入拒绝——真实 signer 调用(此前只调 err(),检查位置
-    /// 回退时仍会通过)。构造 2 source 的 TxConstructionData,断言 signer
-    /// 返回 Err(形状检查),即在任何秘密 owner 建立前拒绝。
+    /// genRctSimple:单输入 a[0] = Σout,且不消费 rng(锁既有确定性)。
     #[test]
-    fn multi_input_rejected_before_guard_populated() {
-        use crate::chain::xmr::unsigned_txset::{
-            OutputEntry, RctConfig, TxDestinationEntry, TxSourceEntry,
-        };
-        use crate::types::SecretBytes;
+    fn pseudo_mask_chain_single_equals_sum_and_consumes_no_rng() {
+        use rand_chacha::rand_core::{RngCore, SeedableRng};
+        let mut sum_bytes = [0u8; 32];
+        sum_bytes[0] = 7;
+        let sum = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(sum_bytes);
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([0x11u8; 32]);
+        let mut rng_clone = rng.clone();
+        let g = derive_pseudo_masks(1, &sum, &mut rng).expect("n=1");
+        assert_eq!(g.get(0).expect("mask 0"), &sum.to_bytes());
+        assert_eq!(g.masks.len(), 1);
+        // 不消费 rng:再 fill 一次应与从未被 derive 碰过的 clone 一致
+        let mut a = [0u8; 8];
+        let mut b = [0u8; 8];
+        rng.fill_bytes(&mut a);
+        rng_clone.fill_bytes(&mut b);
+        assert_eq!(a, b, "n=1 must not consume clsag rng");
+    }
 
-        let test_seed = [0x42u8; 64];
-        let path = crate::derivation::monero_reduce_scalar::MoneroPath::mainnet(0);
-        let kp = crate::derivation::monero_reduce_scalar::derive(&test_seed, &path).unwrap();
-        let spend_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.spend_priv());
-        let view_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv());
+    /// genRctSimple:n=2 时 a[0] 来自 rng,a[1] = Σout − a[0],Σa = Σout。
+    #[test]
+    fn pseudo_mask_chain_two_last_equals_sum_minus_first() {
+        use curve25519_dalek::Scalar;
+        use rand_chacha::rand_core::{RngCore, SeedableRng};
+        let mut sum_bytes = [0u8; 32];
+        sum_bytes[0] = 9;
+        let sum = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(sum_bytes);
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([0x22u8; 32]);
+        let mut rng_expect = rng.clone();
+        let g = derive_pseudo_masks(2, &sum, &mut rng).expect("n=2");
+        let mut raw = [0u8; 32];
+        rng_expect.fill_bytes(&mut raw);
+        let first = Scalar::from_bytes_mod_order(raw);
+        let last = Scalar::from_bytes_mod_order(sum.to_bytes()) - first;
+        assert_eq!(g.get(0).expect("mask 0"), &first.to_bytes());
+        assert_eq!(g.get(1).expect("mask 1"), &last.to_bytes());
+        let total = first + last;
+        assert_eq!(total.to_bytes(), sum.to_bytes());
+    }
 
-        let pt = curve25519_dalek::constants::ED25519_BASEPOINT_TABLE
-            * &curve25519_dalek::Scalar::from(1u8);
-        let pt_bytes = pt.compress().to_bytes();
-        let mk_source = || TxSourceEntry {
-            outputs: alloc::vec![
-                OutputEntry {
-                    index: 0,
-                    dest: pt_bytes,
-                    mask: pt_bytes
-                },
-                OutputEntry {
-                    index: 100,
-                    dest: pt_bytes,
-                    mask: pt_bytes
-                },
-            ],
-            real_output: 0,
-            real_out_tx_key: [0; 32],
-            real_out_additional_tx_keys: alloc::vec![],
-            real_output_in_tx_index: 0,
-            amount: 1000,
-            rct: true,
-            mask: SecretBytes::new([0x66u8; 32]),
-            multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki {
-                k: [0; 32],
-                l: [0; 32],
-                r: [0; 32],
-                ki: [0; 32],
-            },
-        };
-        let dest = TxDestinationEntry {
-            original: Vec::new(),
-            amount: 900,
-            spend_public_key: pt_bytes,
-            view_public_key: pt_bytes,
-            is_subaddress: false,
-            is_integrated: false,
-        };
-        let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
-            sources: alloc::vec![mk_source(), mk_source()], // 2 输入:形状拒绝
-            change_dts: dest.clone(),
-            splitted_dsts: alloc::vec![dest],
-            selected_transfers: alloc::vec![0],
-            extra: alloc::vec![],
-            unlock_time: 0,
-            use_rct: 1,
-            rct_config: RctConfig::default(),
-            dests: alloc::vec![],
-            subaddr_account: 0,
-            subaddr_indices: alloc::vec![],
-        };
-
+    /// genRctSimple:任意 n,Σa[i] = Σout_masks(balance 的标量形式)。
+    #[test]
+    fn pseudo_mask_chain_n3_sums_to_sum_out() {
+        use curve25519_dalek::Scalar;
         use rand_chacha::rand_core::SeedableRng;
-        let rng = rand_chacha::ChaCha20Rng::from_seed([0x77u8; 32]);
-        let mut bp_rng = rng.clone();
-        let mut clsag_rng = rng.clone();
-        let r_bytes = zeroize::Zeroizing::new([0x77u8; 32]);
-        let result = sign_tx_from_construction_with_rngs(
-            &tx_data,
-            &spend_sec,
-            &view_sec,
-            &r_bytes,
-            &mut bp_rng,
-            &mut clsag_rng,
-        );
-        let e = result.unwrap_err();
-        assert_eq!(
-            e.kind,
-            ShlosiloErrorKind::EncodingInvalidFormat,
-            "multi-input must be rejected at the shape check"
-        );
+        let mut sum_bytes = [0u8; 32];
+        sum_bytes[0] = 11;
+        let sum = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(sum_bytes);
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([0x33u8; 32]);
+        let g = derive_pseudo_masks(3, &sum, &mut rng).expect("n=3");
+        assert_eq!(g.masks.len(), 3);
+        let mut acc = Scalar::ZERO;
+        for i in 0..3 {
+            acc += Scalar::from_bytes_mod_order(*g.get(i).expect("mask"));
+        }
+        assert_eq!(acc.to_bytes(), sum.to_bytes());
+    }
+
+    /// n=0 拒绝(形状,任何秘密 owner 建立前)。
+    #[test]
+    fn pseudo_mask_chain_zero_inputs_rejected() {
+        use rand_chacha::rand_core::SeedableRng;
+        let sum = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order([1u8; 32]);
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([0x44u8; 32]);
+        assert!(derive_pseudo_masks(0, &sum, &mut rng).is_err());
     }
 
     /// 审计 #11 P0-01(第二层):敌对 destination view key([0x02;32]
@@ -888,6 +895,187 @@ mod guard_tests {
         assert_eq!(e.kind, ShlosiloErrorKind::EncodingInvalidFormat);
     }
 }
+
+#[cfg(test)]
+fn test_wallet_keys() -> ([u8; 32], [u8; 32]) {
+    let test_seed = [0x42u8; 64];
+    let path = crate::derivation::monero_reduce_scalar::MoneroPath::mainnet(0);
+    let kp = crate::derivation::monero_reduce_scalar::derive(&test_seed, &path).unwrap();
+    (
+        crate::curve_primitive::ed25519::scalar_to_bytes(kp.spend_priv()),
+        crate::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv()),
+    )
+}
+
+#[cfg(test)]
+fn point_of(n: u64) -> [u8; 32] {
+    (curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &curve25519_dalek::Scalar::from(n))
+        .compress()
+        .to_bytes()
+}
+
+#[cfg(test)]
+fn mask_of(b: u8) -> [u8; 32] {
+    [b; 32]
+}
+
+#[cfg(test)]
+fn test_dest(amount: u64, pt: [u8; 32], is_subaddress: bool) -> TxDestinationEntry {
+    TxDestinationEntry {
+        original: Vec::new(),
+        amount,
+        spend_public_key: pt,
+        view_public_key: pt,
+        is_subaddress,
+        is_integrated: false,
+    }
+}
+
+/// 构造归属当前钱包的 source:real dest = (spend+offset)·G,real C = Commit(mask, amount)。
+#[cfg(test)]
+fn owned_source(
+    spend_sec: &[u8; 32],
+    view_sec: &[u8; 32],
+    amount: u64,
+    real_mask: [u8; 32],
+    tx_pub: [u8; 32],
+    decoy_k: u64,
+) -> crate::chain::xmr::unsigned_txset::TxSourceEntry {
+    use crate::chain::xmr::unsigned_txset::{OutputEntry, TxSourceEntry};
+    use crate::types::SecretBytes;
+    let key_offset =
+        crate::chain::xmr::subaddress::calc_output_key_offset(view_sec, &tx_pub, 0, 0, 0).unwrap();
+    let spend_scalar = curve25519_dalek::Scalar::from_bytes_mod_order(*spend_sec);
+    let offset_scalar = curve25519_dalek::Scalar::from_bytes_mod_order(key_offset);
+    let wallet_dest = (curve25519_dalek::constants::ED25519_BASEPOINT_TABLE
+        * &(spend_scalar + offset_scalar))
+        .compress()
+        .to_bytes();
+    let c_real = MonCommitment::new(bytes_to_monerod_scalar(&real_mask), amount)
+        .commit()
+        .compress()
+        .to_bytes();
+    TxSourceEntry {
+        outputs: alloc::vec![
+            OutputEntry {
+                index: 0,
+                dest: wallet_dest,
+                mask: c_real,
+            },
+            OutputEntry {
+                index: 100,
+                dest: point_of(decoy_k),
+                mask: point_of(decoy_k + 10),
+            },
+        ],
+        real_output: 0,
+        real_out_tx_key: tx_pub,
+        real_out_additional_tx_keys: alloc::vec![],
+        real_output_in_tx_index: 0,
+        amount,
+        rct: true,
+        mask: SecretBytes::new(real_mask),
+        multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki {
+            k: [0; 32],
+            l: [0; 32],
+            r: [0; 32],
+            ki: [0; 32],
+        },
+    }
+}
+
+/// 官方 verRctSemanticsSimple:ΣpseudoOuts = ΣoutPk + fee·H。
+#[cfg(test)]
+fn assert_rct_simple_balance(wire: &[u8], expect_fee: u64) {
+    use crate::chain::xmr::transaction::monero_decode_varint;
+    use curve25519_dalek::traits::Identity;
+    let mut pos = 0;
+    let prefix = TransactionPrefix::deserialize(wire, &mut pos).expect("prefix");
+    let n_in = prefix.inputs.len();
+    let n_out = prefix.outputs.len();
+    assert!(n_in >= 1);
+    assert!(n_out >= 1);
+    pos += 1; // rct type
+    let fee = monero_decode_varint(wire, &mut pos).expect("fee");
+    assert_eq!(fee, expect_fee);
+    pos += n_out * 8; // ecdhInfo
+    let mut sum_out = curve25519_dalek::EdwardsPoint::identity();
+    for _ in 0..n_out {
+        let mut pk = [0u8; 32];
+        pk.copy_from_slice(&wire[pos..pos + 32]);
+        pos += 32;
+        sum_out += curve25519_dalek::edwards::CompressedEdwardsY(pk)
+            .decompress()
+            .expect("outPk");
+    }
+    let fee_bytes = MonCommitment::new(bytes_to_monerod_scalar(&[0u8; 32]), fee)
+        .commit()
+        .compress()
+        .to_bytes();
+    sum_out += curve25519_dalek::edwards::CompressedEdwardsY(fee_bytes)
+        .decompress()
+        .expect("fee·H");
+    let pseudo_start = wire.len() - n_in * 32;
+    let mut sum_pseudo = curve25519_dalek::EdwardsPoint::identity();
+    for i in 0..n_in {
+        let off = pseudo_start + i * 32;
+        let mut po = [0u8; 32];
+        po.copy_from_slice(&wire[off..off + 32]);
+        sum_pseudo += curve25519_dalek::edwards::CompressedEdwardsY(po)
+            .decompress()
+            .expect("pseudoOut");
+    }
+    assert_eq!(
+        sum_pseudo.compress().to_bytes(),
+        sum_out.compress().to_bytes(),
+        "ΣpseudoOuts must equal ΣoutPk + fee·H"
+    );
+}
+
+/// 审计 #9 P2-03 原「多输入拒绝」反转:真实 2-input signer 必须成功,
+/// 且 ΣpseudoOuts = ΣoutPk + fee·H(官方 verRctSemanticsSimple)。
+/// 手工构造 TxConstructionData,不依赖 env。不放 guard_tests:含 BP+ 证明,
+/// Miri `guard_` 子集跑不完。
+#[test]
+fn multi_input_signer_succeeds_and_balances() {
+    let (spend_sec, view_sec) = test_wallet_keys();
+    let dest_pt = point_of(1);
+    let dest = test_dest(2500, dest_pt, false);
+    let change = test_dest(400, dest_pt, false);
+    let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
+        sources: alloc::vec![
+            owned_source(&spend_sec, &view_sec, 1000, mask_of(0x66), point_of(5), 2),
+            owned_source(&spend_sec, &view_sec, 2000, mask_of(0x77), point_of(6), 3),
+        ],
+        change_dts: change.clone(),
+        splitted_dsts: alloc::vec![change, dest],
+        selected_transfers: alloc::vec![0, 1],
+        extra: alloc::vec![],
+        unlock_time: 0,
+        use_rct: 1,
+        rct_config: crate::chain::xmr::unsigned_txset::RctConfig::default(),
+        dests: alloc::vec![],
+        subaddr_account: 0,
+        subaddr_indices: alloc::vec![],
+    };
+
+    use rand_chacha::rand_core::SeedableRng;
+    let rng = rand_chacha::ChaCha20Rng::from_seed([0x77u8; 32]);
+    let mut bp_rng = rng.clone();
+    let mut clsag_rng = rng.clone();
+    let r_bytes = zeroize::Zeroizing::new([0x77u8; 32]);
+    let wire = sign_tx_from_construction_with_rngs(
+        &tx_data,
+        &spend_sec,
+        &view_sec,
+        &r_bytes,
+        &mut bp_rng,
+        &mut clsag_rng,
+    )
+    .expect("2-input signer must succeed");
+    assert_rct_simple_balance(&wire, 100);
+}
+
 /// 审计 #8 Gate0 #2:output derivation KAT——不依赖外部密钥的逐字节
 /// 公式锁定,进普通测试(此前 XMR 输出正确性无普通门禁,P0-01 回归
 /// 未被发现)。向量 = 实现按协议公式推导的快照;真实 oracle 交叉验证
@@ -1089,4 +1277,200 @@ fn signer_clsag_failure_populates_then_drops_owner() {
         inner.masks[0].iter().all(|&b| b == 0),
         "error-path guard Drop must zeroize the real mask"
     );
+}
+
+/// 多输入失败路径:第二输入 decoy C 不可解压 → Err,且 real_mask owner 已持有 2 个并被 Drop 清零。
+#[test]
+fn multi_input_clsag_failure_drops_all_owners() {
+    use crate::chain::xmr::unsigned_txset::{OutputEntry, RctConfig, TxSourceEntry};
+    use crate::types::SecretBytes;
+
+    let (spend_sec, view_sec) = test_wallet_keys();
+    let dest_pt = point_of(1);
+    let dest = test_dest(900, dest_pt, false);
+    let good = owned_source(&spend_sec, &view_sec, 1000, mask_of(0x66), point_of(5), 2);
+
+    let tx_pub = point_of(6);
+    let key_offset =
+        crate::chain::xmr::subaddress::calc_output_key_offset(&view_sec, &tx_pub, 0, 0, 0).unwrap();
+    let spend_scalar = curve25519_dalek::Scalar::from_bytes_mod_order(spend_sec);
+    let offset_scalar = curve25519_dalek::Scalar::from_bytes_mod_order(key_offset);
+    let wallet_dest = (curve25519_dalek::constants::ED25519_BASEPOINT_TABLE
+        * &(spend_scalar + offset_scalar))
+        .compress()
+        .to_bytes();
+    let c_real = MonCommitment::new(bytes_to_monerod_scalar(&mask_of(0x77)), 2000)
+        .commit()
+        .compress()
+        .to_bytes();
+    let bad = TxSourceEntry {
+        outputs: alloc::vec![
+            OutputEntry {
+                index: 0,
+                dest: wallet_dest,
+                mask: c_real,
+            },
+            OutputEntry {
+                index: 100,
+                dest: point_of(3),
+                mask: [0x99u8; 32], // 不可解压 → clsag 失败
+            },
+        ],
+        real_output: 0,
+        real_out_tx_key: tx_pub,
+        real_out_additional_tx_keys: alloc::vec![],
+        real_output_in_tx_index: 0,
+        amount: 2000,
+        rct: true,
+        mask: SecretBytes::new(mask_of(0x77)),
+        multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki {
+            k: [0; 32],
+            l: [0; 32],
+            r: [0; 32],
+            ki: [0; 32],
+        },
+    };
+    let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
+        sources: alloc::vec![good, bad],
+        change_dts: dest.clone(),
+        splitted_dsts: alloc::vec![dest],
+        selected_transfers: alloc::vec![0, 1],
+        extra: alloc::vec![],
+        unlock_time: 0,
+        use_rct: 1,
+        rct_config: RctConfig::default(),
+        dests: alloc::vec![],
+        subaddr_account: 0,
+        subaddr_indices: alloc::vec![],
+    };
+    use rand_chacha::rand_core::SeedableRng;
+    let rng = rand_chacha::ChaCha20Rng::from_seed([0x77u8; 32]);
+    let mut bp_rng = rng.clone();
+    let mut clsag_rng = rng.clone();
+    let r_bytes = zeroize::Zeroizing::new([0x77u8; 32]);
+    let result = sign_tx_from_construction_with_rngs(
+        &tx_data,
+        &spend_sec,
+        &view_sec,
+        &r_bytes,
+        &mut bp_rng,
+        &mut clsag_rng,
+    );
+    assert!(result.is_err(), "invalid decoy on input 1 must fail");
+    let shadow = shadow::SHADOW_POST_DROP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let inner = shadow
+        .as_ref()
+        .expect("guard Drop must have populated shadow");
+    assert_eq!(inner.kind, "real_mask");
+    assert_eq!(
+        inner.masks.len(),
+        2,
+        "both real masks must be in the owner when clsag fails"
+    );
+    assert!(
+        inner.masks.iter().all(|m| m.iter().all(|&b| b == 0)),
+        "error-path Drop must zeroize all real masks"
+    );
+}
+
+/// change 分支 KAT:ecdh = view_sec · TxPub,stealth = B + Hs(8Ra||varint(i))·G。
+#[test]
+fn change_output_derivation_kat() {
+    let (spend_sec, view_sec) = test_wallet_keys();
+    let dest_pt = point_of(1);
+    let change_pt = point_of(4);
+    let dest = test_dest(900, dest_pt, false);
+    let change = test_dest(100, change_pt, false);
+    let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
+        sources: alloc::vec![owned_source(
+            &spend_sec,
+            &view_sec,
+            1100,
+            mask_of(0x66),
+            point_of(5),
+            2
+        )],
+        change_dts: change.clone(),
+        splitted_dsts: alloc::vec![change.clone(), dest],
+        selected_transfers: alloc::vec![0],
+        extra: alloc::vec![],
+        unlock_time: 0,
+        use_rct: 1,
+        rct_config: crate::chain::xmr::unsigned_txset::RctConfig::default(),
+        dests: alloc::vec![],
+        subaddr_account: 0,
+        subaddr_indices: alloc::vec![],
+    };
+    use rand_chacha::rand_core::SeedableRng;
+    let rng = rand_chacha::ChaCha20Rng::from_seed([0x55u8; 32]);
+    let mut bp_rng = rng.clone();
+    let mut clsag_rng = rng.clone();
+    let r_bytes = zeroize::Zeroizing::new([0x11u8; 32]);
+    let wire = sign_tx_from_construction_with_rngs(
+        &tx_data,
+        &spend_sec,
+        &view_sec,
+        &r_bytes,
+        &mut bp_rng,
+        &mut clsag_rng,
+    )
+    .expect("1-input change path must succeed");
+    let mut pos = 0;
+    let prefix = TransactionPrefix::deserialize(&wire, &mut pos).expect("prefix");
+    assert_eq!(prefix.outputs.len(), 2);
+
+    // 独立重算 change(index=0):8Ra = 8·(view·tx_pub);tx_pub = r·G
+    let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*r_bytes);
+    let tx_pub = r.mul_basepoint();
+    let v = crate::types::secret_scalar::SecretScalar::from_slice(&view_sec);
+    let ecdh = v.mul_point(&tx_pub).unwrap();
+    let ecdh_pt: curve25519_dalek::EdwardsPoint =
+        CompressedPoint::from(ecdh).decompress().unwrap().into();
+    let eight_ra = ecdh_pt.mul_by_cofactor().compress().to_bytes();
+    let mut od = alloc::vec::Vec::new();
+    od.extend_from_slice(&eight_ra);
+    od.push(0); // varint(0)
+    let shared = hash_to_scalar(&od).unwrap();
+    let hs = bytes_to_scalar(&shared);
+    let b_change: curve25519_dalek::EdwardsPoint = CompressedPoint::from(change_pt)
+        .decompress()
+        .unwrap()
+        .into();
+    let expect_stealth = (b_change + curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &hs)
+        .compress()
+        .to_bytes();
+    assert_eq!(
+        prefix.outputs[0].stealth_address, expect_stealth,
+        "change stealth must use view_sec·TxPub, not r·A_v"
+    );
+}
+
+/// subaddress 输出 KAT:additional_tx_key = r·B_sub。
+#[test]
+fn subaddress_output_derivation_kat() {
+    let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order([0x11u8; 32]);
+    let dest = TxDestinationEntry {
+        original: Vec::new(),
+        amount: 12_345,
+        spend_public_key: [0x33u8; 32],
+        view_public_key: [0x22u8; 32],
+        is_subaddress: true,
+        is_integrated: false,
+    };
+    let d = derive_output(&r, &[0u8; 32], &dest, &[0u8; 32], 0).unwrap();
+    let expect_add = r.mul_point(&dest.spend_public_key).unwrap();
+    assert_eq!(
+        d.additional_tx_key
+            .expect("subaddress must emit additional key"),
+        expect_add
+    );
+    // 非子地址路径不发 additional key(对照,防止恒真)
+    let dest_main = TxDestinationEntry {
+        is_subaddress: false,
+        ..dest
+    };
+    let d_main = derive_output(&r, &[0u8; 32], &dest_main, &[0u8; 32], 0).unwrap();
+    assert!(d_main.additional_tx_key.is_none());
 }

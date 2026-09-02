@@ -110,6 +110,14 @@ impl SecretScalar {
         }
     }
 
+    /// 白名单:与另一 SecretScalar 相减 → 新 SecretScalar。
+    /// genRctSimple 最后输入 `a[last] = Σout_masks − Σprev_pseudo`。
+    pub fn sub_secret(&self, other: &SecretScalar) -> SecretScalar {
+        Self {
+            scalar: Zeroizing::new(self.with(|a| other.with(|b| a - b))),
+        }
+    }
+
     /// 白名单:写出字节(wire 序列化等公开消费)。
     pub fn write_bytes(&self, out: &mut [u8; 32]) {
         *out = self.scalar.to_bytes();
@@ -203,6 +211,19 @@ mod tests {
         c.write_bytes(&mut out);
         let expect =
             Scalar::from_bytes_mod_order([1u8; 32]) + Scalar::from_bytes_mod_order([2u8; 32]);
+        assert_eq!(out, expect.to_bytes());
+    }
+
+    /// sub_secret:owner − owner → owner(genRctSimple last-mask 用)
+    #[test]
+    fn sub_secret_returns_owner() {
+        let a = SecretScalar::from_bytes_mod_order([7u8; 32]);
+        let b = SecretScalar::from_bytes_mod_order([3u8; 32]);
+        let c = a.sub_secret(&b);
+        let mut out = [0u8; 32];
+        c.write_bytes(&mut out);
+        let expect =
+            Scalar::from_bytes_mod_order([7u8; 32]) - Scalar::from_bytes_mod_order([3u8; 32]);
         assert_eq!(out, expect.to_bytes());
     }
 }
