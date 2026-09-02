@@ -181,25 +181,6 @@ fn p001_count_exceeding_physical_bytes_rejected_before_alloc() {
     assert!(r.is_err(), "physically infeasible count must be rejected");
 }
 
-// ---- count_physically_feasible 直接单测(复审 P2-01/P2-02 证据锚点) ----
-
-#[test]
-fn p001_helper_rejects_count_exceeding_physical_capacity() {
-    use shlosilo::chain::btc::psbt::count_physically_feasible;
-    // 60000 inputs 需要 60000*41 = 2,460,000B wire;剩余只有 1000B,拒绝
-    assert!(!count_physically_feasible(60_000, 1000, 41));
-    // locktime 裕量边界:41*1+4=45 才容 1 个;44 不够(复审 P2-01 曾用 44 通过?)
-    assert!(!count_physically_feasible(1, 44, 41));
-    assert!(count_physically_feasible(1, 45, 41));
-    // 9B/output 同样预留 locktime(复审 P2-02:此前 outputs 漏留)
-    assert!(!count_physically_feasible(1, 12, 9));
-    assert!(count_physically_feasible(1, 13, 9));
-    // remaining < 4 时 saturate 到 0,任何 count>0 拒绝
-    assert!(!count_physically_feasible(1, 3, 41));
-    // 合法交易量级不误伤
-    assert!(count_physically_feasible(100, 100 * 41 + 100, 41));
-}
-
 #[test]
 fn p001_duplicate_map_key_rejected() {
     // 审计 #5 P0-02:重复 key 拒绝——BIP-174 "key must be unique in a map",

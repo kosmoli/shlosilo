@@ -40,10 +40,23 @@ impl ZeroizingMaskGuard {
         self.masks.get(idx)
     }
 }
+/// 审计 #7 Gate2 #1:测试影子缓冲——Drop 清零后的真实 backing 拷贝落点。
+/// 仅测试编译存在;静态生命周期让"guard 消费后观察 Drop 效果"无 UB。
+#[cfg(test)]
+static mut SHADOW_POST_DROP: Option<alloc::vec::Vec<[u8; 32]>> = None;
+
 impl Drop for ZeroizingMaskGuard {
     fn drop(&mut self) {
         for m in self.masks.iter_mut() {
             m.zeroize();
+        }
+        // 审计 #7 Gate2 #1:测试可见性——清零后的真实 backing 拷入静态影子,
+        // 测试在 guard 消费后读影子 = 观察真实 Drop 效果,无 UB
+        #[cfg(test)]
+        unsafe {
+            // 测试进程单线程访问(测试 runner 串行执行同 #[test]);静态影子
+            // 生命周期独立于 guard,消费后观察无 UB
+            SHADOW_POST_DROP = Some(self.masks.clone());
         }
     }
 }
@@ -79,6 +92,10 @@ fn bytes_to_scalar(bytes: &[u8; 32]) -> Scalar {
 }
 
 /// per-output 派生（shared key + mask + encrypted amount）——keystone commitments_and_encrypted_amounts
+///
+/// 审计 #7 Gate1 #1:shared_key/commitment_mask/additional_tx_key 是 ECDH 派生
+/// 秘密——手写 Drop 全量擦除(encrypted_amount/stealth_address/view_tag 是链上
+/// 可见数据,非秘密,无需擦除)。
 struct OutputDerivation {
     /// 8Ra = r·A_v·8（或 change: view_sec·tx_pub·8）
     #[allow(dead_code)] // 预留给 P2 后续输出验证
@@ -88,6 +105,15 @@ struct OutputDerivation {
     stealth_address: [u8; 32],
     additional_tx_key: Option<[u8; 32]>,
     view_tag: u8,
+}
+impl Drop for OutputDerivation {
+    fn drop(&mut self) {
+        self.shared_key.zeroize();
+        self.commitment_mask.zeroize();
+        if let Some(k) = self.additional_tx_key.as_mut() {
+            k.zeroize();
+        }
+    }
 }
 
 /// 推导单个 output 的 ECDH 与 shared_key 等派生值
@@ -126,22 +152,29 @@ fn derive_output(
     monero_encode_varint(&mut od_data, index as u64);
 
     let shared_key = hash_to_scalar(&od_data)?;
+    // 审计 #7 Gate1 #2:od_data 含 8Ra(可重算 shared_key 的中间值),即擦
+    od_data.zeroize();
 
     // mask = Hs("commitment_mask" || shared_key)
     let mut mask_data = Vec::with_capacity(16 + 32);
     mask_data.extend_from_slice(b"commitment_mask");
     mask_data.extend_from_slice(&shared_key);
     let commitment_mask = hash_to_scalar(&mask_data)?;
+    mask_data.zeroize();
 
     // enc amount = amount XOR Hs("amount"||shared_key)[..8] (LE)
     let mut amt_data = Vec::with_capacity(6 + 32);
     amt_data.extend_from_slice(b"amount");
     amt_data.extend_from_slice(&shared_key);
     let amt_mask = crate::encoding::keccak256::hash(&amt_data)?;
+    amt_data.zeroize();
     let mut mask8 = [0u8; 8];
     mask8.copy_from_slice(&amt_mask[..8]);
     let xor_val = u64::from_le_bytes(mask8);
     let encrypted_amount = (dest.amount ^ xor_val).to_le_bytes();
+    let mut amt_mask_z = amt_mask;
+    amt_mask_z.zeroize();
+    mask8.zeroize();
 
     // stealth = B_dest + Hs(8Ra||varint(idx))·G（monero one-time address，仅非 change 需要）
     // 对 subaddress 的 B 已是 B_sub；change 也一样走标准公式
@@ -211,9 +244,10 @@ pub fn sign_tx_from_construction<R: RngCore + CryptoRng + Clone>(
 ) -> Result<Vec<u8>> {
     // 便捷包装：r 现场随机生成（§B.5 目的子域由调用方决定时用 _with_rngs 版本）。
     // 单一 rng 时按顺序消费：先 32B 给 r，剩余流供 BP+/CLSAG（兼容旧行为）。
-    let mut r_bytes = [0u8; 32];
-    rng.fill_bytes(&mut r_bytes);
-    let r = Scalar::from_bytes_mod_order(r_bytes);
+    // 审计 #7 Gate1 #3:r 是 Monero transaction secret key——Zeroizing 全路径
+    let mut r_bytes = zeroize::Zeroizing::new([0u8; 32]);
+    rng.fill_bytes(r_bytes.as_mut());
+    let r = Scalar::from_bytes_mod_order(*r_bytes);
     let mut rng2 = rng.clone();
     sign_tx_from_construction_with_rngs(tx_data, spend_sec, view_sec, &r, rng, &mut rng2)
 }
@@ -380,7 +414,9 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     let mut input_real_masks = ZeroizingMaskGuard::new();
     let mut rings: Vec<Vec<(CompressedPoint, CompressedPoint)>> =
         Vec::with_capacity(tx_data.sources.len());
-    let mut input_key_offsets: Vec<[u8; 32]> = Vec::with_capacity(tx_data.sources.len());
+    // 审计 #7 Gate1 #4:key_offset 是构造 one-time spend key 的秘密——
+    // 不落地 Vec,循环内立即派生 input_sk 进 ZeroizingGuard(owner 持有到底)
+    let mut input_sks = ZeroizingMaskGuard::new();
     for src in &tx_data.sources {
         // key offsets：绝对→相对（monero absolute_output_offsets_to_relative，升序差分）
         let mut offs: Vec<u64> = src.outputs.iter().map(|o| o.index).collect();
@@ -396,16 +432,21 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             &tx_data.subaddr_indices,
         )?;
         tx_inputs.push(TxInput::new(offs.clone(), key_image));
+        // key_offset 即用即派生(不经过中间 Vec;derive_input_spend_key 结果入 owner)
+        let input_sk_bytes =
+            crate::chain::xmr::subaddress::derive_input_spend_key(spend_sec, &key_offset)?;
+        input_sks.push(input_sk_bytes);
+        let mut key_offset_z = key_offset;
+        key_offset_z.zeroize();
         // P1-03: mask 是 SecretBytes——复制到本地工作数组用 write_into（明文只在
         // 派生流内暂存，CLSAG 循环结束后显式 zeroize（审计 #5 P1-02））
         let mut mask_copy = [0u8; 32];
         src.mask.write_into(&mut mask_copy);
         input_real_masks.push(mask_copy); // TxSourceEntry.mask = real output 的真 blinding factor
                                           // （OutputEntry.mask 是链上 C 点；real_entry.mask 被当作 blinding 重算是错的）
-        input_key_offsets.push(key_offset);
-        // ring members：(dest 一次性地址, 链上 commitment C 点字节)。
-        // OutputEntry.mask = 链上 outPk commitment（不是 blinding factor），直接当点用，
-        // monerod verify 时也从链上取同样的 C——两侧输入必须逐字节一致。
+                                          // ring members：(dest 一次性地址, 链上 commitment C 点字节)。
+                                          // OutputEntry.mask = 链上 outPk commitment（不是 blinding factor），直接当点用，
+                                          // monerod verify 时也从链上取同样的 C——两侧输入必须逐字节一致。
         let ring: Vec<(CompressedPoint, CompressedPoint)> = src
             .outputs
             .iter()
@@ -432,7 +473,9 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             )
         })
         .collect();
-    let bp = prove_bulletproofs_plus(bp_rng, commitments.clone())?;
+    // 审计 #7 Gate1 #5:commitment 是链上公开数据(Pedersen 承诺随 tx 广播,不含
+    // mask 明文),clone 非秘密复制问题——但本体此后无消费,直接 move 消除复制
+    let bp = prove_bulletproofs_plus(bp_rng, commitments)?;
     // Σ out masks：curve25519_dalek 标量域算术，再转回 monero 字节
     let mut sum_out_masks = curve25519_dalek::Scalar::from_bytes_mod_order(
         monerod_scalar_to_bytes(&bytes_to_monerod_scalar(&outs[0].deriv.commitment_mask)),
@@ -488,19 +531,17 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         // 单输入：monero-clsag sign(sum_outputs) 语义 = Σ output masks；
         // 最后一个 input 的 pseudo_mask 由库计算为 sum_outputs − Σprev ⇒ 单输入时 = Σout_masks。
         // （官方 genRctSimple: a[last] = Σout_masks − Σprev_pseudo；balance 自然成立）
-        let pseudo_mask_bytes: [u8; 32] = sum_out_masks.to_bytes();
+        // 审计 #7 Gate1 #5:pseudo_mask 是 blinding scalar——Zeroizing 覆盖
+        // clsag sign 失败路径(此前普通栈数组失败时无清零)
+        let pseudo_mask_bytes = zeroize::Zeroizing::new(sum_out_masks.to_bytes());
         // Gate1 #2:只读借用,不产生普通栈副本
         let real_mask_bytes: &[u8; 32] = input_real_masks.get(i).ok_or_else(err)?;
 
-        // CLSAG 签名私钥 = one-time input sk（spend + key_offset），非裸 spend key
-        // Gate1 #2:一次性输入私钥走 Zeroizing(成功/失败路径 Drop 清零)
-        let input_sk =
-            zeroize::Zeroizing::new(crate::chain::xmr::subaddress::derive_input_spend_key(
-                spend_sec,
-                &input_key_offsets[i],
-            )?);
+        // CLSAG 签名私钥 = one-time input sk(spend + key_offset)——已在收集
+        // 循环派生入 ZeroizingMaskGuard,此处只读借用(审计 #7 Gate1 #4)
+        let input_sk_bytes: &[u8; 32] = input_sks.get(i).ok_or_else(err)?;
         let (clsag_proof, _ki, pseudo_out_bytes) = clsag_mod::sign(
-            &input_sk,
+            input_sk_bytes,
             ring,
             src.real_output as u8,
             real_mask_bytes,
@@ -519,8 +560,10 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // 审计 #6 复审:mask 清零唯一责任方 = ZeroizingMaskGuard::drop,
     // 函数离开(正常返回或任何 ? 路径)时自动执行,无手工收尾点。
 
-    // 审计 #5 P1-02 #4 + #6 P1-01:CLSAG 完成,从 guard 取出数据继续序列化。
-    // (错误路径由 guard Drop 自动擦除——修复"错误 ? 返回跳过清零循环"的缺口)
+    // 审计 #7 Gate1 #5:sum_out_masks 是输出 blinding 之和——CLSAG 循环后
+    // 即无消费,显式清零(dalek Scalar 带 zeroize feature);错误路径上
+    // Scalar 自身 Drop 亦会清零
+    sum_out_masks.zeroize();
 
     // ---- 10. 官方 monerod wire 序列化 ----
     let bp_buf = {
@@ -593,22 +636,53 @@ mod guard_tests {
     /// Drop 清零可观察性:同模块直接读 guard.masks——drop 后全零。
     /// (GPT 复审 Gate1 #5:错误注入锚点必须测 owner 的 Drop 路径,
     /// 而非只验证最终错误码)
+    /// 审计 #7 Gate2 #1:真实 Drop 观察——guard Drop 清零自身 backing 后,
+    /// 拷贝落入静态影子缓冲 SHADOW_POST_DROP;guard 被 Box::into_raw +
+    /// drop_in_place 真实消费,测试读静态影子断言全零(无 UB:影子生命周期
+    /// 独立于 guard)。此前版本的缺陷(复审 P1-01):只对手工 Vec 跑 zeroize
+    /// 循环,从未触发真实 Drop。
     #[test]
-    fn guard_drop_zeroizes_all_masks() {
-        // Drop 执行了 zeroize:用 alloc 计数不可行(no_std),改为行为等价验证——
-        // Drop 的实现就是 masks.zeroize 循环;这里验证 (a) Drop 被触发
-        // (b) 该循环对非零输入产生全零。
-        // (a) Drop 触发:guard 放入 Option, take() 后旧值 drop——通过
-        //     zeroize 后再读取(get)已不可能(所有权移走),改用引用计数包装不可行(no Rc in core)。
-        //     直接验证 (b) + 编译期锚点(Drop impl 存在):
-        let mut masks: Vec<[u8; 32]> = alloc::vec![[0xAAu8; 32], [0x55u8; 32]];
-        for m in masks.iter_mut() {
-            m.zeroize();
+    fn guard_drop_zeroizes_real_backing() {
+        let g = {
+            let mut g = ZeroizingMaskGuard::new();
+            g.push([0xAAu8; 32]);
+            g.push([0x55u8; 32]);
+            g
+        };
+        let raw = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(g));
+        unsafe {
+            // 真实 Drop:zeroize masks + drop glue 释放 Vec 堆 + 静态影子拷贝。
+            // drop_in_place 已跑完整 drop glue(Vec 堆已释放),结构体内存本身
+            // 不再 from_raw(会 double-free Vec);测试进程泄漏一个 struct 大小,
+            // 换取无 UB 的 Drop 效果观察。
+            core::ptr::drop_in_place(raw);
         }
-        assert!(
-            masks.iter().all(|m| m.iter().all(|&b| b == 0)),
-            "zeroize loop must clear masks (same loop as Drop impl)"
+        // guard 已消费——静态影子仍持有 Drop 时 backing 的拷贝
+        let shadow: &alloc::vec::Vec<[u8; 32]> = unsafe {
+            #[allow(static_mut_refs)]
+            SHADOW_POST_DROP
+                .as_ref()
+                .expect("shadow must be populated by guard Drop")
+        };
+        assert_eq!(
+            shadow.len(),
+            2,
+            "shadow must capture the dropped guard's masks"
         );
+        assert!(
+            shadow.iter().all(|m| m.iter().all(|&b| b == 0)),
+            "real guard Drop must zeroize its own backing"
+        );
+    }
+
+    /// 审计 #7 Gate1 #4:owner 类型断言——不可 Clone/不可 Copy,needs_drop 为真
+    #[test]
+    fn guard_owner_type_invariants() {
+        assert!(core::mem::needs_drop::<ZeroizingMaskGuard>());
+        static_assertions::assert_not_impl_any!(ZeroizingMaskGuard: Clone, Copy);
+        // OutputDerivation 同样是秘密 owner(含 shared_key/commitment_mask)
+        assert!(core::mem::needs_drop::<OutputDerivation>());
+        static_assertions::assert_not_impl_any!(OutputDerivation: Clone, Copy);
     }
 
     /// get() 只读借用:返回数据引用但不转移所有权(guard 仍持有、仍负责清零)

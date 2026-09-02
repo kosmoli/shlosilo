@@ -190,10 +190,22 @@ pub(crate) const PSBT_WIRE_MAX_LEN: u64 = 64 * 1024;
 /// - 非规范编码拒绝（BIP-174/Bitcoin 共识惯例：0xfd/0xfe/0xff 前缀后跟的值
 ///   必须达到该前缀的最小表示域，防止同值多编码造成解析歧义）
 ///
-/// 审计 #6 复审 P2-01:物理可行性判断提成纯 helper(pub)——测试可直接断言
+/// 审计 #6 复审 P2-01:物理可行性判断提成纯 helper——测试可直接断言
 /// "capacity 构造之前返回 Err",不依赖时序观察。
 /// 每元素最小 wire 尺寸 + 4B locktime 裕量(inputs/outputs 在同一 unsigned tx 尾部)。
-pub fn count_physically_feasible(count: usize, remaining: usize, min_elem_bytes: usize) -> bool {
+///
+/// 审计 #7 P2-01:`pub(crate)` 收窄——`min_elem_bytes == 0` 会除零 panic,
+/// 不应作为公开 Rust API 暴露非 total 边界(parser 调用点固定传 41/9)。
+/// 零值语义:任何 count>0 视为物理不可行(saturating_sub 后除以 0 在
+/// usize 语义下 panic,此处显式防御)。
+pub(crate) fn count_physically_feasible(
+    count: usize,
+    remaining: usize,
+    min_elem_bytes: usize,
+) -> bool {
+    if min_elem_bytes == 0 {
+        return count == 0; // 零元素下界 = 语义未定义,非零 count 一律不可行
+    }
     let wire_available = remaining.saturating_sub(4); // locktime 4B 预留
     count <= wire_available / min_elem_bytes
 }
@@ -1782,5 +1794,25 @@ mod tests {
         let mut out = [0u8; 32];
         out.copy_from_slice(&v);
         out
+    }
+    /// 审计 #7 P2-01:helper 直接单测(从集成测试移入——pub(crate) 后集成侧不可见)
+    /// 边界:44/45(41B)、12/13(9B)、零元素下界防御、saturate、合法量级
+    #[test]
+    fn helper_count_physically_feasible_boundaries() {
+        // 60000 inputs 需 2,460,000B wire;剩余 1000B 拒绝
+        assert!(!count_physically_feasible(60_000, 1000, 41));
+        // locktime 裕量边界:41*1+4=45 才容 1 个;44 不够
+        assert!(!count_physically_feasible(1, 44, 41));
+        assert!(count_physically_feasible(1, 45, 41));
+        // 9B/output 同样预留 locktime(复审 P2-02:此前 outputs 漏留)
+        assert!(!count_physically_feasible(1, 12, 9));
+        assert!(count_physically_feasible(1, 13, 9));
+        // remaining < 4 时 saturate 到 0,任何 count>0 拒绝
+        assert!(!count_physically_feasible(1, 3, 41));
+        // 合法交易量级不误伤
+        assert!(count_physically_feasible(100, 100 * 41 + 100, 41));
+        // 审计 #7 P2-01:零元素下界不再 panic(公开 API totality 教训)
+        assert!(!count_physically_feasible(1, 100, 0));
+        assert!(count_physically_feasible(0, 100, 0));
     }
 }
