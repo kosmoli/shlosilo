@@ -201,10 +201,11 @@ fn sign_xmr(
         // tx_key r：独立 TxKey 子域流（§B.5）
         let mut tx_key_rng = purpose_rng(entropy, RngPurpose::TxKey, &context)
             .map_err(crate::error::ShlosiloError::from)?;
-        let mut r_bytes = [0u8; 32];
+        // 审计 #8 P1-02:生产入口的 tx secret key 从产生即入 Zeroizing owner,
+        // 以字节形态传给 signer(signer 内部按需转 Scalar,不落地 Copy 绑定)
+        let mut r_bytes = zeroize::Zeroizing::new([0u8; 32]);
         use rand_chacha::rand_core::RngCore as _;
-        tx_key_rng.fill_bytes(&mut r_bytes);
-        let r = curve25519_dalek::Scalar::from_bytes_mod_order(r_bytes);
+        tx_key_rng.fill_bytes(r_bytes.as_mut());
 
         // BP+ 随机性：独立子域
         let mut bp_rng = purpose_rng(entropy, RngPurpose::BulletproofPlus, &context)
@@ -215,7 +216,7 @@ fn sign_xmr(
             &tx_data,
             &spend_sec,
             &view_sec,
-            &r,
+            &r_bytes,
             &mut bp_rng,
             &mut rng,
         )?;
@@ -253,6 +254,8 @@ fn sign_xmr(
             {
                 continue;
             }
+            // 审计 #8 P1-02:r_bytes owner 按需转 Scalar(作用域局部,不长期存活)
+            let r = curve25519_dalek::Scalar::from_bytes_mod_order(*r_bytes);
             let shared = {
                 let a = monero_ed25519::CompressedPoint::from(dest.view_public_key)
                     .decompress()

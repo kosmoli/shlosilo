@@ -31,8 +31,11 @@ impl ZeroizingMaskGuard {
     fn new() -> Self {
         Self { masks: Vec::new() }
     }
-    fn push(&mut self, mask: [u8; 32]) {
-        self.masks.push(mask);
+    /// 接管语义:复制进 owner 后**立即清零调用方缓冲**——审计 #8 P1-01,
+    /// 消除"[u8;32] Copy 导致的第二存活副本"
+    fn push_take(&mut self, mask: &mut [u8; 32]) {
+        self.masks.push(*mask);
+        mask.zeroize();
     }
     /// 只读借用——不取走数据,秘密的清零完全由 Drop 负责
     /// (审计 #6 复审 P1-01:into_inner 会在最后一段错误路径前解除保护)
@@ -43,7 +46,12 @@ impl ZeroizingMaskGuard {
 /// 审计 #7 Gate2 #1:测试影子缓冲——Drop 清零后的真实 backing 拷贝落点。
 /// 仅测试编译存在;静态生命周期让"guard 消费后观察 Drop 效果"无 UB。
 #[cfg(test)]
-static mut SHADOW_POST_DROP: Option<alloc::vec::Vec<[u8; 32]>> = None;
+mod shadow {
+    // 测试环境 = host(std feature),no_std crate 内按既有惯例局部引入 std
+    extern crate std;
+    use std::sync::Mutex;
+    pub static SHADOW_POST_DROP: Mutex<Option<alloc::vec::Vec<[u8; 32]>>> = Mutex::new(None);
+}
 
 impl Drop for ZeroizingMaskGuard {
     fn drop(&mut self) {
@@ -53,10 +61,11 @@ impl Drop for ZeroizingMaskGuard {
         // 审计 #7 Gate2 #1:测试可见性——清零后的真实 backing 拷入静态影子,
         // 测试在 guard 消费后读影子 = 观察真实 Drop 效果,无 UB
         #[cfg(test)]
-        unsafe {
-            // 测试进程单线程访问(测试 runner 串行执行同 #[test]);静态影子
-            // 生命周期独立于 guard,消费后观察无 UB
-            SHADOW_POST_DROP = Some(self.masks.clone());
+        {
+            // 同步 Mutex(并行测试安全——Miri --test-threads=2 复核)
+            *shadow::SHADOW_POST_DROP
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(self.masks.clone());
         }
     }
 }
@@ -147,39 +156,34 @@ fn derive_output(
     let eight_ra_pt = ecdh_point.mul_by_cofactor();
     let eight_ra = eight_ra_pt.compress().to_bytes();
 
-    let mut od_data = Vec::with_capacity(33);
+    // 审计 #8 P0-01:临时缓冲从创建即进 Zeroizing(避免人工收尾顺序
+    // 影响协议语义——此前 od_data 在消费者之前被清零,stealth 用了
+    // Hs(empty),输出地址错误;zeroize 对 Vec = clear + 擦 capacity)
+    let mut od_data = zeroize::Zeroizing::new(Vec::with_capacity(33));
     od_data.extend_from_slice(&eight_ra);
     monero_encode_varint(&mut od_data, index as u64);
 
     let shared_key = hash_to_scalar(&od_data)?;
-    // 审计 #7 Gate1 #2:od_data 含 8Ra(可重算 shared_key 的中间值),即擦
-    od_data.zeroize();
 
     // mask = Hs("commitment_mask" || shared_key)
-    let mut mask_data = Vec::with_capacity(16 + 32);
+    let mut mask_data = zeroize::Zeroizing::new(Vec::with_capacity(16 + 32));
     mask_data.extend_from_slice(b"commitment_mask");
     mask_data.extend_from_slice(&shared_key);
     let commitment_mask = hash_to_scalar(&mask_data)?;
-    mask_data.zeroize();
 
     // enc amount = amount XOR Hs("amount"||shared_key)[..8] (LE)
-    let mut amt_data = Vec::with_capacity(6 + 32);
+    let mut amt_data = zeroize::Zeroizing::new(Vec::with_capacity(6 + 32));
     amt_data.extend_from_slice(b"amount");
     amt_data.extend_from_slice(&shared_key);
-    let amt_mask = crate::encoding::keccak256::hash(&amt_data)?;
-    amt_data.zeroize();
-    let mut mask8 = [0u8; 8];
-    mask8.copy_from_slice(&amt_mask[..8]);
-    let xor_val = u64::from_le_bytes(mask8);
+    let amt_mask = zeroize::Zeroizing::new(crate::encoding::keccak256::hash(&amt_data)?);
+    let mask8 = zeroize::Zeroizing::new(<[u8; 8]>::try_from(&amt_mask[..8]).unwrap());
+    let xor_val = u64::from_le_bytes(*mask8);
     let encrypted_amount = (dest.amount ^ xor_val).to_le_bytes();
-    let mut amt_mask_z = amt_mask;
-    amt_mask_z.zeroize();
-    mask8.zeroize();
 
-    // stealth = B_dest + Hs(8Ra||varint(idx))·G（monero one-time address，仅非 change 需要）
-    // 对 subaddress 的 B 已是 B_sub；change 也一样走标准公式
-    let hs_out = hash_to_scalar(&od_data)?; // 同 shared_key（Hs(8Ra||o) 即 derivation split）
-    let hs_scalar = bytes_to_scalar(&hs_out);
+    // stealth = B_dest + Hs(8Ra||varint(idx))·G(monero one-time address)
+    // 审计 #8 P0-01:Hs(8Ra||o) = shared_key(同一哈希),直接复用——
+    // 此前在 od_data 被清零后重算 Hs(empty) 生成错误地址
+    let hs_scalar = bytes_to_scalar(&shared_key);
     let b_dest: curve25519_dalek::EdwardsPoint = CompressedPoint::from(dest.spend_public_key)
         .decompress()
         .ok_or_else(err)?
@@ -188,11 +192,11 @@ fn derive_output(
     let stealth_address = stealth_pt.compress().to_bytes();
 
     // view tag = keccak("view_tag" || 8Ra || varint(o))[0]
-    let mut vt_data = Vec::with_capacity(9 + 33);
+    let mut vt_data = zeroize::Zeroizing::new(Vec::with_capacity(9 + 33));
     vt_data.extend_from_slice(b"view_tag");
     vt_data.extend_from_slice(&eight_ra);
     monero_encode_varint(&mut vt_data, index as u64);
-    let vtag_full = crate::encoding::keccak256::hash(&vt_data)?;
+    let vtag_full = zeroize::Zeroizing::new(crate::encoding::keccak256::hash(&vt_data)?);
     let view_tag = vtag_full[0];
 
     // 子地址时 additional key = r·B_sub（keystone should_use_additional_keys=false 路径：
@@ -247,9 +251,10 @@ pub fn sign_tx_from_construction<R: RngCore + CryptoRng + Clone>(
     // 审计 #7 Gate1 #3:r 是 Monero transaction secret key——Zeroizing 全路径
     let mut r_bytes = zeroize::Zeroizing::new([0u8; 32]);
     rng.fill_bytes(r_bytes.as_mut());
-    let r = Scalar::from_bytes_mod_order(*r_bytes);
+    // 审计 #8 P1-02:r 不再物化为普通 Copy Scalar——_with_rngs 改收
+    // Zeroizing 字节 owner,内部使用点按需转 Scalar(临时,不落地)
     let mut rng2 = rng.clone();
-    sign_tx_from_construction_with_rngs(tx_data, spend_sec, view_sec, &r, rng, &mut rng2)
+    sign_tx_from_construction_with_rngs(tx_data, spend_sec, view_sec, &r_bytes, rng, &mut rng2)
 }
 
 /// 核心签名（§B.5 定案）：tx_key r 由调用方注入（purpose 子域派生），
@@ -259,10 +264,12 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     tx_data: &TxConstructionData,
     spend_sec: &[u8; 32],
     view_sec: &[u8; 32],
-    r: &Scalar,
+    r_bytes: &zeroize::Zeroizing<[u8; 32]>,
     bp_rng: &mut B,
     clsag_rng: &mut C,
 ) -> Result<Vec<u8>> {
+    // 审计 #8 P1-02:内部使用点按需转 Scalar,不落地普通 Copy 绑定
+    let r = Scalar::from_bytes_mod_order(**r_bytes);
     if tx_data.splitted_dsts.is_empty() || tx_data.sources.is_empty() {
         return Err(err());
     }
@@ -286,7 +293,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             .into();
         b_sub * r
     } else {
-        ED25519_BASEPOINT_TABLE * r
+        ED25519_BASEPOINT_TABLE * &r
     };
     let tx_pub = tx_pub_point.compress().to_bytes();
 
@@ -305,20 +312,21 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             && dest.spend_public_key == tx_data.change_dts.spend_public_key;
         if is_change {
             // change 走 view_sec·TxPub 路径：手工派生（derive_output 的 r·A_v 不适用）
+            // 审计 #8 P1-02:change 分支临时缓冲与主分支同纪律(Zeroizing owner)
             let shared_key = {
-                let mut od = Vec::with_capacity(33);
+                let mut od = zeroize::Zeroizing::new(Vec::with_capacity(33));
                 od.extend_from_slice(&change_eight_ra);
                 monero_encode_varint(&mut od, i as u64);
                 hash_to_scalar(&od)?
             };
             let commitment_mask = {
-                let mut md = Vec::with_capacity(48);
+                let mut md = zeroize::Zeroizing::new(Vec::with_capacity(48));
                 md.extend_from_slice(b"commitment_mask");
                 md.extend_from_slice(&shared_key);
                 hash_to_scalar(&md)?
             };
             let encrypted_amount = {
-                let mut ad = Vec::with_capacity(38);
+                let mut ad = zeroize::Zeroizing::new(Vec::with_capacity(38));
                 ad.extend_from_slice(b"amount");
                 ad.extend_from_slice(&shared_key);
                 let h = crate::encoding::keccak256::hash(&ad)?;
@@ -336,7 +344,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
                 .compress()
                 .to_bytes();
             // view tag
-            let mut vt = Vec::with_capacity(42);
+            let mut vt = zeroize::Zeroizing::new(Vec::with_capacity(42));
             vt.extend_from_slice(b"view_tag");
             vt.extend_from_slice(&change_eight_ra);
             monero_encode_varint(&mut vt, i as u64);
@@ -355,7 +363,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
                 eight_ra_for_pid: Some(change_eight_ra),
             });
         } else {
-            let deriv = derive_output(r, view_sec, dest, &tx_pub, i)?;
+            let deriv = derive_output(&r, view_sec, dest, &tx_pub, i)?;
             outs.push(OutInfo {
                 deriv,
                 is_change: false,
@@ -432,21 +440,23 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             &tx_data.subaddr_indices,
         )?;
         tx_inputs.push(TxInput::new(offs.clone(), key_image));
-        // key_offset 即用即派生(不经过中间 Vec;derive_input_spend_key 结果入 owner)
-        let input_sk_bytes =
+        // key_offset 即用即派生(不经过中间 Vec);审计 #8 P1-01:key_offset
+        // 声明为 mut 原地擦除——`let mut z = key_offset; z.zeroize()` 只清
+        // Copy 副本,原值仍在栈上
+        let mut key_offset = key_offset;
+        let mut input_sk =
             crate::chain::xmr::subaddress::derive_input_spend_key(spend_sec, &key_offset)?;
-        input_sks.push(input_sk_bytes);
-        let mut key_offset_z = key_offset;
-        key_offset_z.zeroize();
-        // P1-03: mask 是 SecretBytes——复制到本地工作数组用 write_into（明文只在
-        // 派生流内暂存，CLSAG 循环结束后显式 zeroize（审计 #5 P1-02））
+        input_sks.push_take(&mut input_sk); // input_sk 原地接管进 owner
+        key_offset.zeroize();
+        // P1-03 + 审计 #8 P1-01:mask 写入本地缓冲后 push_take 原地接管
+        // (push 后调用方缓冲立即清零,不存在存活的第二副本)
         let mut mask_copy = [0u8; 32];
         src.mask.write_into(&mut mask_copy);
-        input_real_masks.push(mask_copy); // TxSourceEntry.mask = real output 的真 blinding factor
-                                          // （OutputEntry.mask 是链上 C 点；real_entry.mask 被当作 blinding 重算是错的）
-                                          // ring members：(dest 一次性地址, 链上 commitment C 点字节)。
-                                          // OutputEntry.mask = 链上 outPk commitment（不是 blinding factor），直接当点用，
-                                          // monerod verify 时也从链上取同样的 C——两侧输入必须逐字节一致。
+        input_real_masks.push_take(&mut mask_copy); // TxSourceEntry.mask = real output 的真 blinding factor
+                                                    // （OutputEntry.mask 是链上 C 点；real_entry.mask 被当作 blinding 重算是错的）
+                                                    // ring members：(dest 一次性地址, 链上 commitment C 点字节)。
+                                                    // OutputEntry.mask = 链上 outPk commitment（不是 blinding factor），直接当点用，
+                                                    // monerod verify 时也从链上取同样的 C——两侧输入必须逐字节一致。
         let ring: Vec<(CompressedPoint, CompressedPoint)> = src
             .outputs
             .iter()
@@ -643,27 +653,25 @@ mod guard_tests {
     /// 循环,从未触发真实 Drop。
     #[test]
     fn guard_drop_zeroizes_real_backing() {
+        // 审计 #8 P1-03 修订:普通 Box drop(g) 消费 guard——Drop 内 zeroize +
+        // 拷贝进同步 Mutex 影子;之后读影子即观察真实 Drop 效果,无 UB、
+        // 无泄漏、并行安全(Miri --test-threads=2 通过)。原始指针/故意泄漏
+        // 结构体的旧写法已删(Miri 泄漏检查失败)。
         let g = {
             let mut g = ZeroizingMaskGuard::new();
-            g.push([0xAAu8; 32]);
-            g.push([0x55u8; 32]);
+            let mut a = [0xAAu8; 32];
+            g.push_take(&mut a);
+            let mut b = [0x55u8; 32];
+            g.push_take(&mut b);
             g
         };
-        let raw = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(g));
-        unsafe {
-            // 真实 Drop:zeroize masks + drop glue 释放 Vec 堆 + 静态影子拷贝。
-            // drop_in_place 已跑完整 drop glue(Vec 堆已释放),结构体内存本身
-            // 不再 from_raw(会 double-free Vec);测试进程泄漏一个 struct 大小,
-            // 换取无 UB 的 Drop 效果观察。
-            core::ptr::drop_in_place(raw);
-        }
-        // guard 已消费——静态影子仍持有 Drop 时 backing 的拷贝
-        let shadow: &alloc::vec::Vec<[u8; 32]> = unsafe {
-            #[allow(static_mut_refs)]
-            SHADOW_POST_DROP
-                .as_ref()
-                .expect("shadow must be populated by guard Drop")
-        };
+        drop(g); // 真实 Drop:zeroize + Mutex 影子拷贝
+        let shadow = shadow::SHADOW_POST_DROP
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let shadow = shadow
+            .as_ref()
+            .expect("shadow must be populated by guard Drop");
         assert_eq!(
             shadow.len(),
             2,
@@ -689,7 +697,8 @@ mod guard_tests {
     #[test]
     fn guard_get_is_borrow_not_take() {
         let mut g = ZeroizingMaskGuard::new();
-        g.push([0x42u8; 32]);
+        let mut c = [0x42u8; 32];
+        g.push_take(&mut c);
         {
             let borrowed = g.get(0).expect("idx 0 must exist");
             assert_eq!(borrowed[0], 0x42);
@@ -711,4 +720,193 @@ mod guard_tests {
         let e = err();
         assert_eq!(e.kind, ShlosiloErrorKind::EncodingInvalidFormat);
     }
+}
+/// 审计 #8 Gate0 #2:output derivation KAT——不依赖外部密钥的逐字节
+/// 公式锁定,进普通测试(此前 XMR 输出正确性无普通门禁,P0-01 回归
+/// 未被发现)。向量 = 实现按协议公式推导的快照;真实 oracle 交叉验证
+/// 在 p63(ignored,需 env)。
+#[test]
+fn output_derivation_kat() {
+    // 固定输入:r = 0x11.., dest view/spend = 0x22/0x33.., amount = 12345
+    let r = Scalar::from_bytes_mod_order([0x11u8; 32]);
+    let dest = TxDestinationEntry {
+        original: Vec::new(),
+        amount: 12_345,
+        spend_public_key: [0x33u8; 32],
+        view_public_key: [0x22u8; 32],
+        is_subaddress: false,
+        is_integrated: false,
+    };
+    let d = derive_output(&r, &[0u8; 32], &dest, &[0u8; 32], 0).unwrap();
+
+    // 8Ra 点 = 8·(r·A_v);独立重算
+    let a_v: curve25519_dalek::EdwardsPoint = CompressedPoint::from([0x22u8; 32])
+        .decompress()
+        .unwrap()
+        .into();
+    let eight_ra = (a_v * r).mul_by_cofactor().compress().to_bytes();
+    // shared_key = Hs(8Ra || varint(0)) — varint(0) = [0]
+    let mut expect_od = alloc::vec::Vec::new();
+    expect_od.extend_from_slice(&eight_ra);
+    expect_od.push(0);
+    let expect_shared = hash_to_scalar(&expect_od).unwrap();
+    assert_eq!(d.shared_key, expect_shared);
+
+    // stealth = B_dest + Hs(8Ra||0)·G —— 与 shared_key 同一哈希(P0-01 锚点)
+    let hs_scalar = bytes_to_scalar(&expect_shared);
+    let b_dest: curve25519_dalek::EdwardsPoint = CompressedPoint::from([0x33u8; 32])
+        .decompress()
+        .unwrap()
+        .into();
+    let expect_stealth = (b_dest + ED25519_BASEPOINT_TABLE * &hs_scalar)
+        .compress()
+        .to_bytes();
+    assert_eq!(d.stealth_address, expect_stealth);
+
+    // enc amount = amount XOR Hs("amount"||shared_key)[..8]
+    let mut amt = alloc::vec::Vec::new();
+    amt.extend_from_slice(b"amount");
+    amt.extend_from_slice(&expect_shared);
+    let h = crate::encoding::keccak256::hash(&amt).unwrap();
+    let m8 = u64::from_le_bytes(h[..8].try_into().unwrap());
+    assert_eq!(d.encrypted_amount, (12_345u64 ^ m8).to_le_bytes());
+
+    // view_tag = keccak("view_tag"||8Ra||0)[0]
+    let mut vt = alloc::vec::Vec::new();
+    vt.extend_from_slice(b"view_tag");
+    vt.extend_from_slice(&eight_ra);
+    vt.push(0);
+    assert_eq!(
+        d.view_tag,
+        crate::encoding::keccak256::hash(&vt).unwrap()[0]
+    );
+}
+
+/// 审计 #8 Gate2 P1-04:signer 级失败注入——复用 GPT 方案 2:
+/// 构造天然可达的无效 real_output(越界),让真实 clsag_mod::sign 在
+/// owner(real mask/input sk/rings)全部建立后稳定失败;通过静态影子
+/// 证明错误路径上 guard Drop 真实执行了清零(影子含 Drop 时的 masks)。
+/// 该测试不依赖外部 env,进普通门禁。
+#[test]
+fn signer_clsag_failure_populates_then_drops_owner() {
+    use crate::chain::xmr::unsigned_txset::{
+        OutputEntry, RctConfig, TxDestinationEntry, TxSourceEntry,
+    };
+    use crate::types::SecretBytes;
+
+    // 测试自己的钱包 → derive_input_from_source 可成功
+    let test_seed = [0x42u8; 64];
+    let path = crate::derivation::monero_reduce_scalar::MoneroPath::mainnet(0);
+    let kp = crate::derivation::monero_reduce_scalar::derive(&test_seed, &path).unwrap();
+    let spend_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.spend_priv());
+    let view_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv());
+
+    // 有效曲线点(可解压):1·G
+    let pt =
+        curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &curve25519_dalek::Scalar::from(1u8);
+    let pt_bytes = pt.compress().to_bytes();
+    // decoy C 点:全 0x99 不可解压——Edwards 解压必失败
+    // → clsag sign 在 decoy 解压处 Err——此时 owner 已全部建立
+    let bad_c: [u8; 32] = [0x99u8; 32];
+    // real output dest 必须通过归属校验:dest = (spend + offset)·G,
+    // offset = calc_output_key_offset(view_sec, tx_pub, 0, 0, 0)
+    let tx_pub_bytes: [u8; 32] = pt_bytes; // real_out_tx_key(点,可解压即可)
+    let key_offset =
+        crate::chain::xmr::subaddress::calc_output_key_offset(&view_sec, &tx_pub_bytes, 0, 0, 0)
+            .unwrap();
+    let spend_scalar = curve25519_dalek::Scalar::from_bytes_mod_order(spend_sec);
+    let offset_scalar = curve25519_dalek::Scalar::from_bytes_mod_order(key_offset);
+    let wallet_dest = (curve25519_dalek::constants::ED25519_BASEPOINT_TABLE
+        * &(spend_scalar + offset_scalar))
+        .compress()
+        .to_bytes();
+    let mk_output = move |i: u64, c: [u8; 32], d: [u8; 32]| OutputEntry {
+        index: i * 100,
+        dest: d,
+        mask: c, // 链上 C 点
+    };
+
+    let source = TxSourceEntry {
+        outputs: alloc::vec![
+            mk_output(0, pt_bytes, wallet_dest), // real:归属校验通过
+            mk_output(1, bad_c, pt_bytes),       // decoy:C 点无效 → clsag 失败
+        ],
+        real_output: 0, // real 合法(derive_input_from_source 通过)
+        real_out_tx_key: tx_pub_bytes,
+        real_out_additional_tx_keys: alloc::vec![],
+        real_output_in_tx_index: 0,
+        amount: 1000,
+        rct: true,
+        mask: SecretBytes::new([0x66u8; 32]), // 真实 mask(会被 guard 建立)
+        multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki {
+            k: [0; 32],
+            l: [0; 32],
+            r: [0; 32],
+            ki: [0; 32],
+        },
+    };
+    let dest = TxDestinationEntry {
+        original: Vec::new(),
+        amount: 900,
+        spend_public_key: pt_bytes,
+        view_public_key: pt_bytes,
+        is_subaddress: false,
+        is_integrated: false,
+    };
+    // change 用不同 amount/keys——is_change 判定不误伤,输出走非 change
+    // 分支(与 inputs/guard 同在 CLSAG 前的正确路径上)
+    let change_dest = TxDestinationEntry {
+        original: Vec::new(),
+        amount: 1,
+        spend_public_key: [0x77u8; 32],
+        view_public_key: [0x77u8; 32],
+        is_subaddress: false,
+        is_integrated: false,
+    };
+    let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
+        sources: alloc::vec![source],
+        change_dts: change_dest,
+        splitted_dsts: alloc::vec![dest],
+        selected_transfers: alloc::vec![0],
+        extra: alloc::vec![],
+        unlock_time: 0,
+        use_rct: 1,
+        rct_config: RctConfig::default(),
+        dests: alloc::vec![],
+        subaddr_account: 0,
+        subaddr_indices: alloc::vec![],
+    };
+
+    use rand_chacha::rand_core::SeedableRng;
+    let rng = rand_chacha::ChaCha20Rng::from_seed([0x77u8; 32]);
+    let mut bp_rng = rng.clone();
+    let mut clsag_rng = rng.clone();
+    let r_bytes = zeroize::Zeroizing::new([0x77u8; 32]);
+    let result = sign_tx_from_construction_with_rngs(
+        &tx_data,
+        &spend_sec,
+        &view_sec,
+        &r_bytes,
+        &mut bp_rng,
+        &mut clsag_rng,
+    );
+    // 失败必须发生(越界 real_output);关键证据在下方影子断言
+    assert!(result.is_err(), "invalid real_output must fail");
+
+    // 影子被填充 = guard Drop 在错误路径上真实执行(owner 建立后才失败)
+    let shadow = shadow::SHADOW_POST_DROP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let inner = shadow
+        .as_ref()
+        .expect("guard Drop must have populated shadow");
+    assert_eq!(
+        inner.len(),
+        1,
+        "guard must have held 1 real mask when clsag sign failed"
+    );
+    assert!(
+        inner[0].iter().all(|&b| b == 0),
+        "error-path guard Drop must zeroize the real mask"
+    );
 }
