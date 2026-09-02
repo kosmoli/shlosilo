@@ -214,27 +214,6 @@
 #define BECH32_MAX_LEN 128
 
 /**
- * decoder 侧 budget（X1 纪律同源）：上限=分片数上限。
- * TxTemplate 16 KiB / 最小帧 200B → 最多 ~82 分片；256 给足裕量。
- */
-#define MAX_SEQUENCE_COUNT 256
-
-/**
- * Gate4 #4（2026-09-01 再复审）：单 session 总接收帧数预算。
- * BC-UR 允许无限冗余帧，但 decoder 资源必须有限：received(buffer/queue 同源)
- * 都以 received 集合为闸，超过此上限的会话视为异常/攻击，稳定报错。
- */
-#define MAX_TOTAL_FRAMES 4096
-
-/**
- * 审计 #5 P1-01(开-02):消元工作量预算——XOR 字节累计上限。
- * 正常重组工作量 O(count × fragment) ≈ 256 × 200B = 51KB;
- * 16MiB 上限 = 正常工作的 ~300 倍,恶意 XOR 放大攻击(大量 mixed
- * equations 反复消元)在耗尽 CPU 前先撞此墙。
- */
-#define MAX_XOR_WORK_BYTES ((16 * 1024) * 1024)
-
-/**
  * Keccak-256 输出长度
  */
 #define KECCAK256_OUTPUT_LEN 32
