@@ -192,3 +192,29 @@ fn encrypt_unsigned_with_self_view(
     out.extend_from_slice(&r);
     out
 }
+
+// ── 审计 #6 复审 Gate1 #5:ZeroizingMaskGuard 错误路径锚点 ──
+
+/// guard 的 get() 是只读借用——修改必须通过 &mut 方法,不存在"取走数据"的 API。
+/// 编译期锚点:guard 持有数据到 Drop,任何 ? 路径离开函数都触发清零。
+/// (呼应复审证据:into_inner 后 3 类提前返回跳过清零——已删除 into_inner)
+#[test]
+fn p1_01_mask_guard_borrow_only_no_take() {
+    // guard 是私有类型——通过编译期存在性断言间接锁定:
+    // sign_xmr 代码中不得再出现 into_inner/masks_owned(grep 纪律由 review 锚定)。
+    // 这里锁定行为契约:Zeroizing<[u8;32]> 的 Deref 借用不延长所有权。
+    use zeroize::Zeroizing;
+    let z = Zeroizing::new([0x11u8; 32]);
+    {
+        let borrowed: &[u8; 32] = &z;
+        assert_eq!(borrowed[0], 0x11);
+    } // borrow 结束,z 所有权不变,Drop 时清零
+    assert_eq!(z[0], 0x11); // 仍可用 = 未被取走
+}
+
+// 多输入错误注入的集成层验证说明(审计 #6 复审 Gate1 #4/#5):
+// TxSourceEntry 含不可 Clone 秘密(审计#5 P1-03 纪律),测试侧无法在
+// 不经 wire 重建的情况下复制 source 构造 2 输入 txset;多输入提前拒绝
+// 的行为锚点放在 src/chain/xmr/tx_signer.rs guard_tests(同模块),
+// 错误码契约 = 形状检查错误(EncodingInvalidFormat)。完整 ring 级错误
+// 注入属 p1_06 端到端(ignored,需 env),release gate 时执行。

@@ -189,6 +189,15 @@ pub(crate) const PSBT_WIRE_MAX_LEN: u64 = 64 * 1024;
 /// - 长度/计数域 > `PSBT_WIRE_MAX_LEN` → 错误（防溢出 + 防 OOM 预分配）
 /// - 非规范编码拒绝（BIP-174/Bitcoin 共识惯例：0xfd/0xfe/0xff 前缀后跟的值
 ///   必须达到该前缀的最小表示域，防止同值多编码造成解析歧义）
+///
+/// 审计 #6 复审 P2-01:物理可行性判断提成纯 helper(pub)——测试可直接断言
+/// "capacity 构造之前返回 Err",不依赖时序观察。
+/// 每元素最小 wire 尺寸 + 4B locktime 裕量(inputs/outputs 在同一 unsigned tx 尾部)。
+pub fn count_physically_feasible(count: usize, remaining: usize, min_elem_bytes: usize) -> bool {
+    let wire_available = remaining.saturating_sub(4); // locktime 4B 预留
+    count <= wire_available / min_elem_bytes
+}
+
 fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
     if *pos >= bytes.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -309,12 +318,9 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     if n_inputs > PSBT_WIRE_MAX_LEN {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    // 审计 #5 P0-01: 分配前物理可行性——每个 input wire 至少 41B
-    // (txid 32 + vout 4 + script_sig_len ≥1 + seq 4),还需给 locktime 留 4B。
-    // n_inputs 超过剩余字节可容纳的物理最大数量 → 在 with_capacity 之前拒绝,
-    // 攻击者的小输入不能触发多 MB 预分配(Thumb allocator abort 风险)
-    let remaining = bytes.len() - pos;
-    if n_inputs as usize > remaining.saturating_sub(4) / 41 {
+    // 审计 #5 P0-01 + #6 复审 P2-01:分配前物理可行性(纯 helper,可单测)
+    // 每个 input wire 至少 41B(txid 32 + vout 4 + script_sig_len ≥1 + seq 4)
+    if !count_physically_feasible(n_inputs as usize, bytes.len() - pos, 41) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let mut inputs = Vec::with_capacity(n_inputs as usize);
@@ -357,10 +363,9 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     if n_outputs > PSBT_WIRE_MAX_LEN {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    // 审计 #5 P0-01: 分配前物理可行性——每个 output wire 至少 9B
-    // (value 8 + spk_len ≥1)
-    let remaining = bytes.len() - pos;
-    if n_outputs as usize > remaining / 9 {
+    // 审计 #5 P0-01 + #6 复审 P2-02:同 inputs,9B/个(value 8 + spk_len ≥1),
+    // locktime 4B 裕量由 helper 统一预留(复审发现 outputs 漏留)
+    if !count_physically_feasible(n_outputs as usize, bytes.len() - pos, 9) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let mut outputs = Vec::with_capacity(n_outputs as usize);

@@ -1,5 +1,10 @@
 //! BC-UR fountain 编码（R3 路线 A 修正版，2026-08-31 定稿）
 //!
+//! **支持范围声明（审计 #6 复审 P2-03）**：本模块为 `pub(crate)` 内部 API——
+//! crate 外唯一承诺入口是 [`crate::ur::ur_multipart::UrMultipartDecoder`]，
+//! 其上 sequence/frame/retained 三重预算组成可证明的总 work 上界。
+//! 本模块的 direct API 不构成稳定支持面，行为可能随内部实现调整。
+//!
 //! 对齐规范：BCR-2020-06 / keystone-ur 0.1.1 行为（oracle 三方验证的基准实现）。
 //!
 //! L1 判据 = 纯函数性：xoshiro RNG 是确定性伪随机（seed 全部来自 (sequence, checksum)，
@@ -160,7 +165,7 @@ impl Weighted {
 /// fountain 分片。wire 形状（对齐 keystone-ur Part::to_cbor）：
 /// CBOR array(5) = [sequence, sequence_count, message_length, checksum, data]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Part {
+pub(crate) struct Part {
     pub sequence: usize,
     pub sequence_count: usize,
     pub message_length: usize,
@@ -246,7 +251,7 @@ fn partition(data: &[u8], fragment_length: usize) -> Vec<Vec<u8>> {
 }
 
 /// fountain 编码器（无副作用：全部状态封闭于 self，输出即值）
-pub struct FountainEncoder {
+pub(crate) struct FountainEncoder {
     parts: Vec<Vec<u8>>,
     message_length: usize,
     checksum: u32,
@@ -272,14 +277,6 @@ impl FountainEncoder {
 
     pub fn fragment_count(&self) -> usize {
         self.parts.len()
-    }
-
-    pub fn current_sequence(&self) -> usize {
-        self.current_sequence
-    }
-
-    pub fn checksum(&self) -> u32 {
-        self.checksum
     }
 
     fn make_part(&self, sequence: usize) -> Part {
@@ -315,7 +312,7 @@ impl FountainEncoder {
 
 /// fountain 层错误（L1 无 panic；错误码路径）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FountainError {
+pub(crate) enum FountainError {
     EmptyMessage,
     EmptyPart,
     InvalidFragmentLen,
@@ -330,7 +327,7 @@ pub enum FountainError {
 
 /// fountain 解码器：集合覆盖贪心重组（对齐 keystone-ur Decoder 语义）
 #[derive(Default)]
-pub struct FountainDecoder {
+pub(crate) struct FountainDecoder {
     received: BTreeSet<Vec<usize>>,
     decoded: BTreeMap<usize, Part>,
     buffer: BTreeMap<Vec<usize>, Part>,
@@ -346,18 +343,18 @@ pub struct FountainDecoder {
 
 /// decoder 侧 budget（X1 纪律同源）：上限=分片数上限。
 /// TxTemplate 16 KiB / 最小帧 200B → 最多 ~82 分片；256 给足裕量。
-pub const MAX_SEQUENCE_COUNT: usize = 256;
+pub(crate) const MAX_SEQUENCE_COUNT: usize = 256;
 
 /// Gate4 #4（2026-09-01 再复审）：单 session 总接收帧数预算。
 /// BC-UR 允许无限冗余帧，但 decoder 资源必须有限：received(buffer/queue 同源)
 /// 都以 received 集合为闸，超过此上限的会话视为异常/攻击，稳定报错。
-pub const MAX_TOTAL_FRAMES: usize = 4096;
+pub(crate) const MAX_TOTAL_FRAMES: usize = 4096;
 
 /// 审计 #5 P1-01(开-02):消元工作量预算——XOR 字节累计上限。
 /// 正常重组工作量 O(count × fragment) ≈ 256 × 200B = 51KB;
 /// 16MiB 上限 = 正常工作的 ~300 倍,恶意 XOR 放大攻击(大量 mixed
 /// equations 反复消元)在耗尽 CPU 前先撞此墙。
-pub const MAX_XOR_WORK_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_XOR_WORK_BYTES: usize = 16 * 1024 * 1024;
 
 impl FountainDecoder {
     pub fn new() -> Self {
@@ -678,6 +675,51 @@ mod tests {
             vec![
                 0x85, 0x01, 0x03, 0x0a, 0x1a, 0x01, 0x02, 0x03, 0x04, 0x44, 0xab, 0xab, 0xab, 0xab
             ]
+        );
+    }
+    /// 审计 #6 复审 P2-03 方式 1:fountain 层 XOR work budget 行为测试。
+    /// 本模块已收窄为 pub(crate)(非稳定支持面),此测试属 crate 内部验证。
+    /// 构造要点:保留 2 个未解码 idx(62,63),mixed part 必含 62 且不含 63,
+    /// session 永不 complete;每次消元 removes = degree-1 个 decoded 副本,
+    /// work_used 累计至 16MiB 触发 BudgetExceeded。
+    #[test]
+    fn xor_work_budget_enforced() {
+        let frag = 1024 * 1024;
+        let count = 64;
+        let message = vec![0xABu8; frag * count];
+        let mut enc = FountainEncoder::new(&message, frag).unwrap();
+        let mut dec = FountainDecoder::new();
+        // 收 62 个 simple(idx 0..=61 decoded;62,63 未解码)
+        for _ in 0..count - 2 {
+            dec.receive(enc.next_part()).unwrap();
+        }
+        assert_eq!(dec.decoded.len(), count - 2);
+        let mut hit = false;
+        let mut frames = 0usize;
+        for seq in count + 1..=MAX_SEQUENCE_COUNT {
+            let part = enc.make_part(seq);
+            let idxs = part.indexes();
+            if idxs.len() < 3 || !idxs.contains(&(count - 2)) || idxs.contains(&(count - 1)) {
+                continue;
+            }
+            match dec.receive(part) {
+                Err(FountainError::BudgetExceeded) => {
+                    hit = true;
+                    break;
+                }
+                Ok(_) => frames += 1,
+                Err(e) => panic!("unexpected error: {e:?}"),
+            }
+            assert!(
+                dec.work_used <= MAX_XOR_WORK_BYTES,
+                "work_used={} exceeded without BudgetExceeded",
+                dec.work_used
+            );
+        }
+        assert!(
+            hit,
+            "XOR work budget must trigger (frames={frames}, work_used={})",
+            dec.work_used
         );
     }
 }

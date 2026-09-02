@@ -165,45 +165,39 @@ fn p001_huge_input_count_no_oom() {
 
 #[test]
 fn p001_count_exceeding_physical_bytes_rejected_before_alloc() {
-    // 审计 #5 P0-02 + 第五次复审 P0-01:分配前校验必须"可观察"。
-    // 每个 input wire 至少 41B(txid32+vout4+siglen1+seq4),n_inputs=60000
-    // 需要至少 2.4MB 输入;实际只有十余字节。若 with_capacity(60000)
-    // 先于物理检查执行,会预分配 ~5MB(60000×sizeof(TxIn))——Thumb
-    // allocator abort 风险。
+    // 审计 #5 P0-02 + 第六次复审 P2-01:物理可行性判断已提成纯 helper
+    // count_physically_feasible(见 psbt.rs),本测试断言 helper 行为,
+    // 不再依赖时序观察(复审判定:100ms 阈值不可靠,with_capacity 不 memset,
+    // host allocator 完全可能更快;旧漏洞回归时时序测试仍会通过)。
     //
-    // 可观察断言:恶意用例的耗时必须与平凡用例同数量级(5MB memset
-    // ≈ 0.5ms 起步,放大到分配器行为仍有可测差异);配合 psbt.rs 中
-    // 物理检查位于 with_capacity 之前的实现顺序(代码审阅锚点)。
-    let mut tx_big = Vec::new();
-    tx_big.extend_from_slice(&2i32.to_le_bytes());
-    tx_big.push(0xfd); // n_inputs 2-byte prefix
-    tx_big.extend_from_slice(&60_000u16.to_le_bytes());
-    let start = std::time::Instant::now();
-    let r_big = parse_psbt(&wrap_psbt_full(&tx_big, 0, 0));
-    let big_elapsed = start.elapsed();
-    assert!(r_big.is_err());
+    // 行为链:恶意 n_inputs=60000 + 小 wire → helper false → parser 在
+    // Vec::with_capacity 之前返回 Err(helper 调用位置在实现中位于
+    // with_capacity 之前,由代码顺序锁定)。
+    let mut tx = Vec::new();
+    tx.extend_from_slice(&2i32.to_le_bytes());
+    tx.push(0xfd); // n_inputs 2-byte prefix
+    tx.extend_from_slice(&60_000u16.to_le_bytes());
+    let r = parse_psbt(&wrap_psbt_full(&tx, 0, 0));
+    assert!(r.is_err(), "physically infeasible count must be rejected");
+}
 
-    // 平凡对照:2 字节 input 后立即截断(同样物理不可行,但 count=1)
-    let mut tx_small = Vec::new();
-    tx_small.extend_from_slice(&2i32.to_le_bytes());
-    tx_small.push(1);
-    tx_small.extend_from_slice(&[0u8; 32]);
-    tx_small.extend_from_slice(&0u32.to_le_bytes());
-    tx_small.push(0);
-    tx_small.extend_from_slice(&0xffffffffu32.to_le_bytes());
-    // 少 4B locktime → 物理不可行
-    let start = std::time::Instant::now();
-    let r_small = parse_psbt(&wrap_psbt_full(&tx_small, 0, 0));
-    let small_elapsed = start.elapsed();
-    assert!(r_small.is_err());
+// ---- count_physically_feasible 直接单测(复审 P2-01/P2-02 证据锚点) ----
 
-    // 恶意 count 不得产生 5MB 预分配级延迟(100ms 上限,CI 抖动安全;
-    // 真实预分配 + poison 在 Thumb 上是 fatal,这里锁 host 行为回归)
-    assert!(
-        big_elapsed < std::time::Duration::from_millis(100),
-        "n_inputs=60000 must be rejected before pre-alloc (took {big_elapsed:?})"
-    );
-    let _ = small_elapsed;
+#[test]
+fn p001_helper_rejects_count_exceeding_physical_capacity() {
+    use shlosilo::chain::btc::psbt::count_physically_feasible;
+    // 60000 inputs 需要 60000*41 = 2,460,000B wire;剩余只有 1000B,拒绝
+    assert!(!count_physically_feasible(60_000, 1000, 41));
+    // locktime 裕量边界:41*1+4=45 才容 1 个;44 不够(复审 P2-01 曾用 44 通过?)
+    assert!(!count_physically_feasible(1, 44, 41));
+    assert!(count_physically_feasible(1, 45, 41));
+    // 9B/output 同样预留 locktime(复审 P2-02:此前 outputs 漏留)
+    assert!(!count_physically_feasible(1, 12, 9));
+    assert!(count_physically_feasible(1, 13, 9));
+    // remaining < 4 时 saturate 到 0,任何 count>0 拒绝
+    assert!(!count_physically_feasible(1, 3, 41));
+    // 合法交易量级不误伤
+    assert!(count_physically_feasible(100, 100 * 41 + 100, 41));
 }
 
 #[test]

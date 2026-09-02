@@ -20,10 +20,16 @@
 
 - **WITNESS_UTXO(0x02)**:首选。CTxOut 格式解析(P0-01 加固后对恶意
   CompactSize 稳定拒绝)。
-- **NON_WITNESS_UTXO(0x01)**:当前 `get_utxo_any` 会作为 WITNESS_UTXO
-  的 fallback 解析其 CTxOut(keystone taproot fixture 的实际行为)。
-  **未做 full tx 哈希校验**——审计建议的 complete-transaction 验证是
-  后续加固项,当前依赖上层(L3)确认。
+- **NON_WITNESS_UTXO(0x01)**:`get_non_witness_utxo_bound()`(审计 #5 开-01)
+  解析 full tx → 校验 `txid = dsha256(serialized)` 与 OutPoint 绑定 → 按 vout
+  索引取 CTxOut,任一步失败即拒绝。
+  **序列化格式边界(审计 #6 复审 工程7)**:full tx 必须为 **legacy 序列化
+  (无 marker/flag/witness segment)**。这是 BIP-174 的规范要求——即使
+  previous transaction 本身是 segwit 交易,NON_WITNESS_UTXO 字段也应存储
+  不含 witness data 的序列化形式("without any witness data",BIP-174 原文)。
+  含 witness segment 的输入会在 `deserialize_unsigned_tx` 的 exact-consumption
+  检查处以 `EncodingInvalidFormat` 拒绝。Sparrow/keystone 等主流协调器均按
+  此规范生成该字段。
 - 两者皆缺 → 签名入口返回 `EncodingInvalidFormat`,稳定拒绝。
 
 ### 所有权绑定(P1-B,已关闭)
