@@ -7,3 +7,8 @@ proptest-regressions
 simulator-l3/sim_l3
 vendor/cryptonight/target
 vendor/*/target
+
+# local audit artifacts (reports are not committed per project convention)
+/功能核心整改*复审报告*.md
+/HANDOFF-*.md
+/XMR-BENCH-RUNBOOK-*.md
