@@ -587,7 +587,9 @@ pub fn parse_control_block(cb: &[u8]) -> Option<ParsedControlBlock> {
     let mut internal_key_x = [0u8; 32];
     internal_key_x.copy_from_slice(&cb[1..33]);
     let merkle_path: alloc::vec::Vec<[u8; 32]> = cb[33..]
-        .chunks_exact(32)
+        .as_chunks::<32>()
+        .0
+        .iter()
         .map(|c| {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(c);

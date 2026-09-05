@@ -150,7 +150,7 @@ pub fn decode_minimal(encoded: &str) -> Result<Vec<u8>> {
         return Err(err());
     }
     let mut data = Vec::with_capacity(encoded.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         let c0 = (pair[0] as char).to_ascii_lowercase() as u8;
         let c1 = (pair[1] as char).to_ascii_lowercase() as u8;
         if !c0.is_ascii_lowercase() || !c1.is_ascii_lowercase() {

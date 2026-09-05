@@ -199,10 +199,8 @@ fn parse_u32_decimal(s: &str) -> Option<u32> {
         }
         let digit = c as u32 - '0' as u32;
         // 检查溢出
-        match result.checked_mul(10).and_then(|v| v.checked_add(digit)) {
-            Some(v) => result = v,
-            None => return None,
-        }
+        let v = result.checked_mul(10).and_then(|v| v.checked_add(digit))?;
+        result = v;
     }
     Some(result)
 }
