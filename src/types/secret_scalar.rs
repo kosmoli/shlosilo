@@ -92,9 +92,12 @@ impl SecretScalar {
         self.with(|v| (point + ED25519_BASEPOINT_TABLE * v).compress().to_bytes())
     }
 
-    /// 白名单:域加法(累加 blinding mask 场景)。
-    pub fn add_assign(&mut self, other: &Scalar) {
-        *self.scalar += *other;
+    /// 白名单:域加法,原地累加(累加 blinding mask 场景)。
+    /// 审计 #12 P1-01:收 owner 输入——旧签名 add_assign(&Scalar) 让
+    /// 调用方持有的普通 Scalar(不受 owner 管理的秘密)成为合法输入;
+    /// 现只接受另一 SecretScalar。
+    pub fn add_assign(&mut self, other: &SecretScalar) {
+        *self.scalar += *other.scalar;
     }
 
     /// 白名单:显式立即清零(正常路径收尾;错误路径由 Drop 覆盖)。
@@ -123,9 +126,10 @@ impl SecretScalar {
         *out = self.scalar.to_bytes();
     }
 
-    /// 白名单:读出字节副本(调用方负责该副本的生命周期;仅限
-    /// 立即进入下一个 owner/哈希的短路径)。
-    pub fn to_bytes(&self) -> [u8; 32] {
+    /// 读出字节副本(审计 #12 P1-01:收窄 crate-private——公开 API 不允许
+    /// 秘密 Copy 逃逸,消费方只能靠约定"立即进下一个 owner/哈希",类型系统
+    /// 约束不了;crate 内合法场景:push_take 前的 wire 序列化、测试断言)。
+    pub(crate) fn to_bytes(&self) -> [u8; 32] {
         self.scalar.to_bytes()
     }
 
@@ -224,6 +228,23 @@ mod tests {
         c.write_bytes(&mut out);
         let expect =
             Scalar::from_bytes_mod_order([7u8; 32]) - Scalar::from_bytes_mod_order([3u8; 32]);
+        assert_eq!(out, expect.to_bytes());
+    }
+
+    /// 审计 #12 P1-01 API 门禁:白名单输入/输出不产生普通 Scalar 通道——
+    /// add_assign 只收 owner;to_bytes 退出公开面(pub(crate),集成测试
+    /// 编译期即被拒);公开输出仅压缩点(公开值)与 write_bytes(写调用方缓冲)。
+    #[test]
+    fn add_assign_owner_only_api_gate() {
+        assert!(core::mem::needs_drop::<SecretScalar>());
+        static_assertions::assert_not_impl_any!(SecretScalar: Clone, Copy);
+        let mut acc = SecretScalar::from_bytes_mod_order([1u8; 32]);
+        let b = SecretScalar::from_bytes_mod_order([2u8; 32]);
+        acc.add_assign(&b);
+        let mut out = [0u8; 32];
+        acc.write_bytes(&mut out);
+        let expect =
+            Scalar::from_bytes_mod_order([1u8; 32]) + Scalar::from_bytes_mod_order([2u8; 32]);
         assert_eq!(out, expect.to_bytes());
     }
 }

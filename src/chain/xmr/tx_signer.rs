@@ -531,11 +531,13 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             &bytes_to_monerod_scalar(outs[0].deriv.commitment_mask.expose()),
         ));
     for o in &outs[1..] {
-        let mut m = curve25519_dalek::Scalar::from_bytes_mod_order(monerod_scalar_to_bytes(
-            &bytes_to_monerod_scalar(o.deriv.commitment_mask.expose()),
-        ));
+        // 审计 #12 P1-01:累加项从产生即 owner(旧写法 m 为普通 Scalar 绑定,
+        // 经 add_assign(&Scalar) 参与且仅靠手工 zeroize 收尾——? 提前返回
+        // 或未来重构都会漏擦;SecretScalar Drop 全路径覆盖)
+        let m = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(
+            monerod_scalar_to_bytes(&bytes_to_monerod_scalar(o.deriv.commitment_mask.expose())),
+        );
         sum_out_masks.add_assign(&m);
-        m.zeroize();
     }
 
     // ---- 8. full_message = H(prefix_hash ‖ H(rct_base) ‖ H(BP+ fields)) ----
