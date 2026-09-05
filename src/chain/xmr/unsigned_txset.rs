@@ -863,6 +863,20 @@ mod tests {
         assert!(deserialize_unsigned_tx(&ok).is_ok());
     }
 
+    /// 入口总预算下界正例(审计 #14 §四.1):恰好 MAX=16384B 可接受。
+    /// 尾部 transfers 段为显示层容忍设计,version=2 + txes_len=0 + 填充即可构造。
+    /// 至此总预算维度四侧闭合: 空 txset 收 / MAX 收 / MAX+1 拒 / varint 巨值拒。
+    #[test]
+    fn entry_total_budget_max_exact_accepted() {
+        let mut w = alloc::vec![2u8, 0]; // version=2 + txes_len=0
+        w.resize(UNSIGNED_TXSET_MAX_PLAIN_LEN, 0x41);
+        assert_eq!(w.len(), UNSIGNED_TXSET_MAX_PLAIN_LEN);
+        assert!(
+            deserialize_unsigned_tx(&w).is_ok(),
+            "MAX exact must be accepted"
+        );
+    }
+
     /// 恶意 corpus:合法 version=2 + 巨大 txes 计数 → 物理可行性在
     /// with_capacity 前拒绝(敌对但结构合法的 wire,发布阻断验收)。
     #[test]
