@@ -311,12 +311,28 @@ pub fn verify_monero_signature_pubkey(
     check_monero_signature(hash, pubkey, sig)
 }
 
+/// ChaCha20 密钥 = CryptoNight-V0(view_sk)。2MB scratchpad，真机上是 XMR 签名的大头；
+/// 同一 view_sk 在 decrypt unsigned + encrypt signed 各调一次会翻倍，调用方应复用。
+pub fn chacha_key_from_view_sk(view_sk: &[u8; 32]) -> [u8; 32] {
+    cuprate_cryptonight::cryptonight_hash_v0(view_sk)
+}
+
 /// 解密 unsigned_txset（对齐 keystone decrypt_data_with_pvk）
 ///
 /// 流程：magic 校验 → nonce=8B → Ed25519 验签（view_pub 对
 /// keccak256(nonce||密文)，尾部 64B）→ ChaCha20-Legacy keystream。
 /// 验签失败 = 数据被篡改或 view key 不匹配 → 拒绝。
 pub fn decrypt_unsigned_txset(data: &[u8], view_sk: &[u8; 32]) -> Result<Vec<u8>> {
+    let key = chacha_key_from_view_sk(view_sk);
+    decrypt_unsigned_txset_with_chacha_key(data, view_sk, &key)
+}
+
+/// 与 `decrypt_unsigned_txset` 相同，ChaCha 密钥由调用方注入（避免重复 CN）。
+pub fn decrypt_unsigned_txset_with_chacha_key(
+    data: &[u8],
+    view_sk: &[u8; 32],
+    chacha_key: &[u8; 32],
+) -> Result<Vec<u8>> {
     if data.len() < MAGIC_LEN + NONCE_LEN + SIG_LEN {
         return Err(err());
     }
@@ -346,8 +362,7 @@ pub fn decrypt_unsigned_txset(data: &[u8], view_sk: &[u8; 32]) -> Result<Vec<u8>
     }
 
     // 2. ChaCha20-Legacy 解密
-    let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
-    let mut cipher = ChaCha20Legacy::new_from_slices(&key, nonce).map_err(|_| err())?;
+    let mut cipher = ChaCha20Legacy::new_from_slices(chacha_key, nonce).map_err(|_| err())?;
     let mut plain = raw_data[NONCE_LEN..].to_vec();
     cipher.apply_keystream(&mut plain);
     Ok(plain)
@@ -472,6 +487,88 @@ fn read_tx_construction_data(data: &[u8], off: &mut usize) -> Result<TxConstruct
     })
 }
 
+fn put_varint(out: &mut Vec<u8>, n: u64) {
+    crate::chain::xmr::transaction::monero_encode_varint(out, n);
+}
+
+fn write_unsigned_destination(out: &mut Vec<u8>, e: &TxDestinationEntry) {
+    // unsigned 侧 amount 是 varint（read_destination_entry）；signed 侧是 u64 LE。
+    put_varint(out, e.original.len() as u64);
+    out.extend_from_slice(&e.original);
+    put_varint(out, e.amount);
+    out.extend_from_slice(&e.spend_public_key);
+    out.extend_from_slice(&e.view_public_key);
+    out.push(e.is_subaddress as u8);
+    out.push(e.is_integrated as u8);
+}
+
+fn write_unsigned_source(out: &mut Vec<u8>, s: &TxSourceEntry) {
+    put_varint(out, s.outputs.len() as u64);
+    for o in &s.outputs {
+        out.push(2); // std::pair 字段数前缀，与 read_output_entry 的 varint 2 同构
+        put_varint(out, o.index);
+        out.extend_from_slice(&o.dest);
+        out.extend_from_slice(&o.mask);
+    }
+    out.extend_from_slice(&s.real_output.to_le_bytes());
+    out.extend_from_slice(&s.real_out_tx_key);
+    put_varint(out, s.real_out_additional_tx_keys.len() as u64);
+    for k in &s.real_out_additional_tx_keys {
+        out.extend_from_slice(k);
+    }
+    out.extend_from_slice(&s.real_output_in_tx_index.to_le_bytes());
+    out.extend_from_slice(&s.amount.to_le_bytes());
+    out.push(s.rct as u8);
+    out.extend_from_slice(s.mask.expose());
+    out.extend_from_slice(&s.multisig_kLRki.k);
+    out.extend_from_slice(&s.multisig_kLRki.l);
+    out.extend_from_slice(&s.multisig_kLRki.r);
+    out.extend_from_slice(&s.multisig_kLRki.ki);
+}
+
+fn write_unsigned_construction(out: &mut Vec<u8>, d: &TxConstructionData) {
+    put_varint(out, d.sources.len() as u64);
+    for s in &d.sources {
+        write_unsigned_source(out, s);
+    }
+    write_unsigned_destination(out, &d.change_dts);
+    put_varint(out, d.splitted_dsts.len() as u64);
+    for dst in &d.splitted_dsts {
+        write_unsigned_destination(out, dst);
+    }
+    put_varint(out, d.selected_transfers.len() as u64);
+    for t in &d.selected_transfers {
+        put_varint(out, *t as u64);
+    }
+    put_varint(out, d.extra.len() as u64);
+    out.extend_from_slice(&d.extra);
+    out.extend_from_slice(&d.unlock_time.to_le_bytes());
+    out.push(d.use_rct);
+    put_varint(out, d.rct_config.version);
+    put_varint(out, d.rct_config.range_proof_type);
+    put_varint(out, d.rct_config.bp_version);
+    put_varint(out, d.dests.len() as u64);
+    for dest in &d.dests {
+        write_unsigned_destination(out, dest);
+    }
+    out.extend_from_slice(&d.subaddr_account.to_le_bytes());
+    put_varint(out, d.subaddr_indices.len() as u64);
+    for i in &d.subaddr_indices {
+        put_varint(out, *i as u64);
+    }
+}
+
+/// epee serialize（与 `deserialize_unsigned_tx` 对偶；不含 transfers 尾段）
+pub fn serialize_unsigned_tx(tx: &UnsignedTx) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_varint(&mut out, 2);
+    put_varint(&mut out, tx.txes.len() as u64);
+    for d in &tx.txes {
+        write_unsigned_construction(&mut out, d);
+    }
+    out
+}
+
 /// epee deserialize（对齐 keystone UnsignedTx::deserialize）
 pub fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<UnsignedTx> {
     let mut off = 0usize;
@@ -576,5 +673,93 @@ mod tests {
     fn p103_multisig_klrki_needs_drop() {
         assert!(core::mem::needs_drop::<MultisigKLRki>());
         static_assertions::assert_not_impl_any!(MultisigKLRki: Clone, Copy);
+    }
+
+    /// serialize ↔ deserialize 对偶：1 source / 2 dest，amount 走 varint。
+    #[test]
+    fn serialize_deserialize_roundtrip_minimal() {
+        let src = TxSourceEntry {
+            outputs: alloc::vec![OutputEntry {
+                index: 7,
+                dest: [0x11u8; 32],
+                mask: [0x22u8; 32],
+            }],
+            real_output: 0,
+            real_out_tx_key: [0x33u8; 32],
+            real_out_additional_tx_keys: alloc::vec![],
+            real_output_in_tx_index: 0,
+            amount: 1000,
+            rct: true,
+            mask: crate::types::SecretBytes::new([0x66u8; 32]),
+            multisig_kLRki: MultisigKLRki {
+                k: [0; 32],
+                l: [0; 32],
+                r: [0; 32],
+                ki: [0; 32],
+            },
+        };
+        let dest = TxDestinationEntry {
+            original: alloc::vec![],
+            amount: 900,
+            spend_public_key: [0x44u8; 32],
+            view_public_key: [0x55u8; 32],
+            is_subaddress: false,
+            is_integrated: false,
+        };
+        let change = TxDestinationEntry {
+            original: alloc::vec![],
+            amount: 50,
+            spend_public_key: [0x44u8; 32],
+            view_public_key: [0x55u8; 32],
+            is_subaddress: false,
+            is_integrated: false,
+        };
+        let tx = UnsignedTx {
+            txes: alloc::vec![TxConstructionData {
+                sources: alloc::vec![src],
+                change_dts: change.clone(),
+                splitted_dsts: alloc::vec![change.clone(), dest.clone()],
+                selected_transfers: alloc::vec![0],
+                extra: alloc::vec![],
+                unlock_time: 0,
+                use_rct: 1,
+                rct_config: RctConfig {
+                    version: 0,
+                    range_proof_type: 0,
+                    bp_version: 4,
+                },
+                dests: alloc::vec![],
+                subaddr_account: 0,
+                subaddr_indices: alloc::vec![],
+            }],
+        };
+        let bytes = serialize_unsigned_tx(&tx);
+        let back = deserialize_unsigned_tx(&bytes).expect("deserialize");
+        assert_eq!(back.txes.len(), 1);
+        let d = &back.txes[0];
+        assert_eq!(d.sources.len(), 1);
+        assert_eq!(d.sources[0].amount, 1000);
+        assert_eq!(d.sources[0].outputs[0].index, 7);
+        assert_eq!(d.change_dts.amount, 50);
+        assert_eq!(d.splitted_dsts[1].amount, 900);
+        assert_eq!(d.rct_config.bp_version, 4);
+        let bytes2 = serialize_unsigned_tx(&back);
+        assert_eq!(bytes, bytes2);
+    }
+
+    /// encrypt_unsigned ↔ decrypt_unsigned 对偶。
+    #[test]
+    fn encrypt_decrypt_unsigned_roundtrip() {
+        use rand_chacha::rand_core::SeedableRng;
+        let plain = serialize_unsigned_tx(&UnsignedTx {
+            txes: alloc::vec![],
+        });
+        let view = [0xABu8; 32];
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([0x11u8; 32]);
+        let enc =
+            crate::chain::xmr::signed_txset::encrypt_unsigned_txset(plain.clone(), &view, &mut rng)
+                .expect("encrypt");
+        let dec = decrypt_unsigned_txset(&enc, &view).expect("decrypt");
+        assert_eq!(dec, plain);
     }
 }

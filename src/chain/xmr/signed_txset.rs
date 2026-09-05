@@ -268,18 +268,26 @@ pub fn encrypt_signed_txset(
     view_sk: &[u8; 32],
     rng: &mut impl rand_core::RngCore,
 ) -> Result<Vec<u8>> {
+    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk);
+    encrypt_signed_txset_with_chacha_key(plain, view_sk, &key, rng)
+}
+
+/// 与 `encrypt_signed_txset` 相同，ChaCha 密钥由调用方注入（避免重复 CN）。
+pub fn encrypt_signed_txset_with_chacha_key(
+    plain: Vec<u8>,
+    view_sk: &[u8; 32],
+    chacha_key: &[u8; 32],
+    rng: &mut impl rand_core::RngCore,
+) -> Result<Vec<u8>> {
     use chacha20::cipher::{KeyIvInit, StreamCipher};
     use chacha20::ChaCha20Legacy;
 
-    // 1. key = CryptoNight v0(view_sk)，nonce = 8B 大端
-    let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
     let nonce_num = rng.next_u64();
     let nonce_num_bytes = nonce_num.to_be_bytes();
 
-    // 2. 密文（原位加密）
     let mut buffer = plain;
     let nonce: chacha20::LegacyNonce = nonce_num_bytes.into();
-    let mut cipher = ChaCha20Legacy::new_from_slices(&key, &nonce).map_err(|_| err())?;
+    let mut cipher = ChaCha20Legacy::new_from_slices(chacha_key, &nonce).map_err(|_| err())?;
     cipher.apply_keystream(&mut buffer);
 
     // 3. 签名 = Monero Schnorr over keccak256(nonce ‖ 密文)，公钥 = view_pub
@@ -292,6 +300,39 @@ pub fn encrypt_signed_txset(
     // 4. magic ‖ nonce ‖ 密文 ‖ sig
     let mut out = Vec::with_capacity(SIGNED_TX_PREFIX.len() + NONCE_LEN + buffer.len() + SIG_LEN);
     out.extend_from_slice(SIGNED_TX_PREFIX);
+    out.extend_from_slice(&nonce_num_bytes);
+    out.extend_from_slice(&buffer);
+    out.extend_from_slice(&c);
+    out.extend_from_slice(&r);
+    Ok(out)
+}
+
+/// 加密 unsigned txset（与 `encrypt_signed_txset` 同构，magic 换 `UNSIGNED_TX_PREFIX`）。
+/// 供把自造 TxConstructionData 送进 `business::sign` / `sign_ur_ffi`。
+pub fn encrypt_unsigned_txset(
+    plain: Vec<u8>,
+    view_sk: &[u8; 32],
+    rng: &mut impl rand_core::RngCore,
+) -> Result<Vec<u8>> {
+    use crate::chain::xmr::unsigned_txset::UNSIGNED_TX_PREFIX;
+    use chacha20::cipher::{KeyIvInit, StreamCipher};
+    use chacha20::ChaCha20Legacy;
+
+    let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
+    let nonce_num_bytes = rng.next_u64().to_be_bytes();
+    let mut buffer = plain;
+    let nonce: chacha20::LegacyNonce = nonce_num_bytes.into();
+    let mut cipher = ChaCha20Legacy::new_from_slices(&key, &nonce).map_err(|_| err())?;
+    cipher.apply_keystream(&mut buffer);
+
+    let mut unsigned = Vec::with_capacity(NONCE_LEN + buffer.len());
+    unsigned.extend_from_slice(&nonce_num_bytes);
+    unsigned.extend_from_slice(&buffer);
+    let msg_hash = crate::encoding::keccak256::hash(&unsigned)?;
+    let [c, r] = monero_sign(&msg_hash, view_sk, rng)?;
+
+    let mut out = Vec::with_capacity(UNSIGNED_TX_PREFIX.len() + NONCE_LEN + buffer.len() + SIG_LEN);
+    out.extend_from_slice(UNSIGNED_TX_PREFIX);
     out.extend_from_slice(&nonce_num_bytes);
     out.extend_from_slice(&buffer);
     out.extend_from_slice(&c);

@@ -137,7 +137,7 @@ fn sign_xmr(
     output_buf: &mut [u8],
 ) -> Result<usize> {
     use crate::chain::xmr::signed_txset::{
-        encrypt_signed_txset, PendingTx, SignedTxSet, TxKeyImageEntry,
+        encrypt_signed_txset_with_chacha_key, PendingTx, SignedTxSet, TxKeyImageEntry,
     };
     use crate::chain::xmr::signing_rng::{purpose_rng, RngPurpose};
     use crate::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
@@ -152,13 +152,20 @@ fn sign_xmr(
     let view_sec = zeroize::Zeroizing::new(crate::curve_primitive::ed25519::scalar_to_bytes(
         kp.view_priv(),
     ));
+    // 同一 view_sk 的 CN 只算一次（decrypt + encrypt 共用；真机 2MB scratchpad 是大头）
+    let cn_key = zeroize::Zeroizing::new(
+        crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&view_sec),
+    );
 
     // 2. 解密（内部验签，view key 不匹配 → Err）
     // 审计 #6 P1-01:解密明文 txset 走 Zeroizing(解析后不再需要明文残留)
-    let plain = zeroize::Zeroizing::new(crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset(
-        encrypted_unsigned,
-        &view_sec,
-    )?);
+    let plain = zeroize::Zeroizing::new(
+        crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset_with_chacha_key(
+            encrypted_unsigned,
+            &view_sec,
+            &cn_key,
+        )?,
+    );
     let unsigned_tx = deserialize_unsigned_tx(&plain)?;
 
     // 3. 逐 tx 签名（§B.5 purpose 子域：tx-key r / BP+ / CLSAG(i) 独立派生）
@@ -339,7 +346,8 @@ fn sign_xmr(
     // 4. 加密输出（nonce + Schnorr k 也在 entropy 派生流上）
     let mut enc_rng = purpose_rng(entropy, RngPurpose::BulletproofPlus, &[1u8; 32])
         .map_err(crate::error::ShlosiloError::from)?;
-    let encrypted = encrypt_signed_txset(plain_signed, &view_sec, &mut enc_rng)?;
+    let encrypted =
+        encrypt_signed_txset_with_chacha_key(plain_signed, &view_sec, &cn_key, &mut enc_rng)?;
 
     if output_buf.len() < encrypted.len() {
         return Err(ShlosiloError::with_context(
