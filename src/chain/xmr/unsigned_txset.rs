@@ -465,9 +465,15 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
     })
 }
 
+/// TxConstructionData 在 wire 上的最小字节数（协议常量，审计#13 §四要求集中定义）。
+/// 零 sources/dests 时逐字段最小编码合计 90B，核算明细见 deserialize_unsigned_tx 内注释。
+/// 任何低于此值的剩余字节不可能容纳 1 笔合法交易（count 上界 = remaining / 90）。
+const MIN_TX_CONSTRUCTION_DATA_WIRE: usize = 90;
+
 fn read_tx_construction_data(data: &[u8], off: &mut usize) -> Result<TxConstructionData> {
     // TxSourceEntry wire 最小 = outputs_len(1) + outputs(66) + 8+32+1(keys len+key+…)
     // 保守取 100；其实任何恶意值都会被后续字段读取拒绝
+    // （sources_len=0 合法：count=0 恒通过 0 > remaining/100 判定，无误伤）
     let sources_len = read_count(data, off, 100)?;
     let mut sources = Vec::with_capacity(sources_len);
     for _ in 0..sources_len {
@@ -619,9 +625,13 @@ pub fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<UnsignedTx> {
     if version != 2 {
         return Err(err());
     }
-    // TxConstructionData wire 最小量级 100B(1 source + change + 逐字段);
-    // 恶意大计数在 with_capacity 前被拒。
-    let txes_len = read_count(bytes, &mut off, 100)?;
+    // TxConstructionData wire 最小 = 审计#13 P1-01 逐字段核算 90B（零 sources/dests）:
+    //   sources_len 1 + change_dts 68 + splitted_dsts_len 1 + selected_len 1
+    //   + extra_len 1 + unlock_time 8 + use_rct 1 + version 1 + range_proof_type 1
+    //   + bp_version 1 + dests_len 1 + subaddr_account 4 + subaddr_indices_len 1
+    // 旧值 100（bd7cf3b）会拒绝合法零输入交易（92B 顶层 wire），属整改引入回归。
+    // 恶意大计数仍在 with_capacity 前被拒。
+    let txes_len = read_count(bytes, &mut off, MIN_TX_CONSTRUCTION_DATA_WIRE)?;
     let mut txes = Vec::with_capacity(txes_len);
     for _ in 0..txes_len {
         txes.push(read_tx_construction_data(bytes, &mut off)?);
@@ -866,5 +876,79 @@ mod tests {
         // LEB128 of 60000 = 0xF0 0xD4 0x03
         wire2.extend_from_slice(&[0xf0, 0xd4, 0x03]);
         assert!(deserialize_unsigned_tx(&wire2).is_err());
+    }
+
+    // ── P1-01(审计 #13):合法最小 wire 边界(bd7cf3b 回归修复验收) ──
+
+    /// 零 sources/dests 的最小合法 TxConstructionData wire(90B,逐字段核算
+    /// 见 MIN_TX_CONSTRUCTION_DATA_WIRE 注释)。
+    fn min_tx_construction_data_wire() -> alloc::vec::Vec<u8> {
+        let mut d = alloc::vec::Vec::new();
+        d.push(0); // sources_len = 0
+                   // change_dts destination 最小 68B
+        d.push(0); // original_len = 0
+        d.push(0); // amount varint 0
+        d.extend_from_slice(&[0u8; 32]); // spend_public_key
+        d.extend_from_slice(&[0u8; 32]); // view_public_key
+        d.push(0); // is_subaddress
+        d.push(0); // is_integrated
+        d.push(0); // splitted_dsts_len = 0
+        d.push(0); // selected_len = 0
+        d.push(0); // extra_len = 0
+        d.extend_from_slice(&[0u8; 8]); // unlock_time u64
+        d.push(0); // use_rct u8
+        d.push(1); // version varint 1
+        d.push(0); // range_proof_type varint 0
+        d.push(0); // bp_version varint 0
+        d.push(0); // dests_len = 0
+        d.extend_from_slice(&[0, 0, 0, 0]); // subaddr_account u32
+        d.push(0); // subaddr_indices_len = 0
+        d
+    }
+
+    /// 顶层 wire 拼装:version=2 + txes_len + body。
+    fn top_wire(txes_len: u8, body: &[u8]) -> alloc::vec::Vec<u8> {
+        let mut w = alloc::vec![2u8, txes_len];
+        w.extend_from_slice(body);
+        w
+    }
+
+    /// 合法最小值必须被接受(审计#13 P1-01:bd7cf3b 的 100B 下界误伤此形态)。
+    #[test]
+    fn a13_min_legal_wire_accepted() {
+        let wire = top_wire(1, &min_tx_construction_data_wire()); // 92B
+        assert_eq!(wire.len(), 92);
+        let tx = deserialize_unsigned_tx(&wire).expect("legal minimal wire must parse");
+        assert_eq!(tx.txes.len(), 1);
+        assert!(tx.txes[0].sources.is_empty());
+        assert!(tx.txes[0].dests.is_empty());
+    }
+
+    /// 剩余 89B(< 90 下界)count=1 必须拒绝——下界仍有效。
+    #[test]
+    fn a13_below_min_rejected() {
+        let body = min_tx_construction_data_wire();
+        let truncated = &body[..body.len() - 1]; // 89B
+        let wire = top_wire(1, truncated);
+        assert!(deserialize_unsigned_tx(&wire).is_err());
+    }
+
+    /// count=2 但剩余 92B < 2×90=180 → 物理可行性拒绝(count 上界仍生效)。
+    #[test]
+    fn a13_count2_infeasible_rejected() {
+        let body = min_tx_construction_data_wire();
+        let wire = top_wire(2, &body); // 剩余 90B,2 > 90/90=1 → 拒
+        assert!(deserialize_unsigned_tx(&wire).is_err());
+    }
+
+    /// 两笔最小合法交易(顶层剩余 180B)必须被接受——多 tx 边界。
+    #[test]
+    fn a13_two_min_txes_accepted() {
+        let body = min_tx_construction_data_wire();
+        let mut both = body.clone();
+        both.extend_from_slice(&body);
+        let wire = top_wire(2, &both); // 剩余 180B,2 ≤ 180/90=2 → 行
+        let tx = deserialize_unsigned_tx(&wire).expect("two minimal txes must parse");
+        assert_eq!(tx.txes.len(), 2);
     }
 }
