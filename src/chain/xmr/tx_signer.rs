@@ -56,12 +56,40 @@ impl ZeroizingMaskGuard {
 mod shadow {
     // 测试环境 = host(std feature),no_std crate 内按既有惯例局部引入 std
     extern crate std;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, MutexGuard};
     pub struct ShadowRecord {
         pub kind: &'static str,
         pub masks: alloc::vec::Vec<[u8; 32]>,
     }
-    pub static SHADOW_POST_DROP: Mutex<Option<ShadowRecord>> = Mutex::new(None);
+    pub static SHADOW_RECORDS: Mutex<alloc::vec::Vec<ShadowRecord>> =
+        Mutex::new(alloc::vec::Vec::new());
+    static SHADOW_TX_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 审计 #12 P2-01 事务隔离:begin = 调用前清空 + 持事务锁;返回的
+    /// Invocation 在 Drop 前一直持有锁(并行测试串行进入各自事务);
+    /// take_last = 调用后消费标记(记录被取走,不可重复消费)。
+    pub struct Invocation {
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Invocation {
+        /// 取走本事务内最后一条匹配 kind 的记录(消费式)。
+        pub fn take_last(self, kind: &str) -> Option<ShadowRecord> {
+            let mut v = SHADOW_RECORDS.lock().unwrap_or_else(|e| e.into_inner());
+            let idx = v.iter().rposition(|r| r.kind == kind)?;
+            Some(v.remove(idx))
+            // self drop 时释放事务锁
+        }
+    }
+
+    pub fn begin_invocation() -> Invocation {
+        let lock = SHADOW_TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        SHADOW_RECORDS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        Invocation { _lock: lock }
+    }
 }
 
 /// 官方 genRctSimple 伪输出掩码链:
@@ -101,16 +129,17 @@ impl Drop for ZeroizingMaskGuard {
             m.zeroize();
         }
         // 审计 #7 Gate2 #1:测试可见性——清零后的真实 backing 拷入静态影子,
-        // 测试在 guard 消费后读影子 = 观察真实 Drop 效果,无 UB
+        // 测试在事务内(begin_invocation 持锁 + 调用前清空)按 kind 消费式
+        // 取记录 = 观察真实 Drop 效果,无 UB、无并行覆盖(审计 #12 P2-01)
         #[cfg(test)]
         {
-            // 同步 Mutex(并行测试安全——Miri --test-threads=2 复核)
-            *shadow::SHADOW_POST_DROP
+            shadow::SHADOW_RECORDS
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(shadow::ShadowRecord {
-                kind: self.kind,
-                masks: self.masks.clone(),
-            });
+                .unwrap_or_else(|e| e.into_inner())
+                .push(shadow::ShadowRecord {
+                    kind: self.kind,
+                    masks: self.masks.clone(),
+                });
         }
     }
 }
@@ -701,6 +730,7 @@ mod guard_tests {
         // 拷贝进同步 Mutex 影子;之后读影子即观察真实 Drop 效果,无 UB、
         // 无泄漏、并行安全(Miri --test-threads=2 通过)。原始指针/故意泄漏
         // 结构体的旧写法已删(Miri 泄漏检查失败)。
+        let invocation = shadow::begin_invocation();
         let g = {
             let mut g = ZeroizingMaskGuard::new("test");
             let mut a = [0xAAu8; 32];
@@ -710,12 +740,9 @@ mod guard_tests {
             g
         };
         drop(g); // 真实 Drop:zeroize + Mutex 影子拷贝
-        let shadow = shadow::SHADOW_POST_DROP
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let shadow = shadow
-            .as_ref()
-            .expect("shadow must be populated by guard Drop");
+        let shadow = invocation
+            .take_last("test")
+            .expect("shadow must be populated by guard Drop in this invocation");
         assert_eq!(
             shadow.masks.len(),
             2,
@@ -1142,10 +1169,13 @@ fn output_derivation_kat() {
 }
 
 /// 审计 #8 Gate2 P1-04:signer 级失败注入——复用 GPT 方案 2:
-/// 构造天然可达的无效 real_output(越界),让真实 clsag_mod::sign 在
-/// owner(real mask/input sk/rings)全部建立后稳定失败;通过静态影子
-/// 证明错误路径上 guard Drop 真实执行了清零(影子含 Drop 时的 masks)。
-/// 该测试不依赖外部 env,进普通门禁。
+/// 构造天然可达的 clsag 失败点(decoy C 点 [0x99;32] 不可解压;real_output=0
+/// 对两元素 ring 合法),让真实 clsag_mod::sign 在 owner(real mask/input
+/// sk/rings)全部建立后稳定失败;通过静态影子证明错误路径上 guard Drop
+/// 真实执行了清零(影子含 Drop 时的 masks)。
+/// 审计 #12 P2-01:影子加 invocation token——测试先 begin_invocation()
+/// 领 token,guard Drop 盖当前 token,测试按 token 消费式取记录。
+/// 并行测试不再经由单槽互相覆盖(事务隔离,不止于消除数据竞争)。
 #[test]
 fn signer_clsag_failure_populates_then_drops_owner() {
     use crate::chain::xmr::unsigned_txset::{
@@ -1237,6 +1267,7 @@ fn signer_clsag_failure_populates_then_drops_owner() {
     };
 
     use rand_chacha::rand_core::SeedableRng;
+    let invocation = shadow::begin_invocation();
     let rng = rand_chacha::ChaCha20Rng::from_seed([0x77u8; 32]);
     let mut bp_rng = rng.clone();
     let mut clsag_rng = rng.clone();
@@ -1256,16 +1287,12 @@ fn signer_clsag_failure_populates_then_drops_owner() {
         "invalid decoy commitment must fail at clsag decompression"
     );
 
-    // 影子被填充 = guard Drop 在错误路径上真实执行(owner 建立后才失败)
-    // 审计 #9 P2-01/P2-02:kind 精确归因——本测试注入的是 real_mask guard
-    // (decoy C 点不可解压 → clsag sign 解压失败);注释原"越界 real_output"
-    // 与实际构造不符,已修正
-    let shadow = shadow::SHADOW_POST_DROP
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let inner = shadow
-        .as_ref()
-        .expect("guard Drop must have populated shadow");
+    // 按事务消费式取记录 = 本测试自己的 guard Drop(审计 #12 P2-01 事务
+    // 隔离);kind 精确归因——距失败点最近的 owner 是 real_mask guard
+    // (decoy C 点不可解压 → clsag sign 解压失败)
+    let inner = invocation
+        .take_last("real_mask")
+        .expect("guard Drop must have populated shadow in this invocation");
     assert_eq!(
         inner.kind, "real_mask",
         "shadow must attribute to the real-mask owner (P2-01)"
@@ -1291,6 +1318,9 @@ fn multi_input_clsag_failure_drops_all_owners() {
     let dest_pt = point_of(1);
     let dest = test_dest(900, dest_pt, false);
     let good = owned_source(&spend_sec, &view_sec, 1000, mask_of(0x66), point_of(5), 2);
+
+    // 本测试的事务在任何 guard Drop 前开启(调用前清空 + 持锁)
+    let invocation = shadow::begin_invocation();
 
     let tx_pub = point_of(6);
     let key_offset =
@@ -1359,12 +1389,9 @@ fn multi_input_clsag_failure_drops_all_owners() {
         &mut clsag_rng,
     );
     assert!(result.is_err(), "invalid decoy on input 1 must fail");
-    let shadow = shadow::SHADOW_POST_DROP
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let inner = shadow
-        .as_ref()
-        .expect("guard Drop must have populated shadow");
+    let inner = invocation
+        .take_last("real_mask")
+        .expect("guard Drop must have populated shadow in this invocation");
     assert_eq!(inner.kind, "real_mask");
     assert_eq!(
         inner.masks.len(),
