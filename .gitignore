@@ -6,3 +6,4 @@ proptest-regressions
 *.o
 simulator-l3/sim_l3
 vendor/cryptonight/target
+vendor/*/target

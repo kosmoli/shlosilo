@@ -48,7 +48,7 @@ ed25519-dalek = { version = "2.1", default-features = false, features = ["fast",
 monero-ed25519 = { version = "0.1", default-features = false }  # Ed25519 + Pedersen commitment (XMR)
 curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize", "precomputed-tables", "rand_core"] }  # Ed25519底层（curve25519-dalek 4 已是 SemVer 抽象层）
 monero-clsag = { version = "0.1", default-features = false }  # CLSAG ring signature (XMR)
-monero-bulletproofs = { version = "0.1", default-features = false }  # Bulletproofs+ range proof (XMR RingCTType 2/3)
+monero-bulletproofs = { path = "vendor/monero-bulletproofs", default-features = false, features = ["compile-time-generators"] }  # Bulletproofs+；vendor patch：生成元循环 decompress，避免 vec![decompress();2048] 爆栈
 monero-bulletproofs-generators = { version = "0.1", default-features = false }  # Pedersen commitment generators for Bulletproofs+
 std-shims = { version = "0.1", default-features = false }  # XMR io compat (Cursor/Read for Scalar::read)
 base58-monero = { version = "2", default-features = false }  # XMR base58 (编码类，已审计, 不带 check feature 因为 encode_check 有 bug 我们手写)
@@ -98,7 +98,10 @@ ed25519-dalek = { version = "2.1", features = ["std"] }
 critical-section = { version = "1", features = ["restore-state-bool"] }
 
 [profile.release]
-opt-level = "s"
+# 2026-09-03：XMR 真机 74.9s vs keystone 同板数秒。sign_xmr 两次
+# cryptonight_hash_v0（2MB scratchpad + 2^20 次软件 AES），-Os 把 AES 内环编得很慢。
+# keystone workspace 无 [profile.release] → cargo 默认 opt-level=3。体积余量足够（bin ~0.56MB / 上限 4.5MB）。
+opt-level = 3
 lto = true
 codegen-units = 1
 debug = false
