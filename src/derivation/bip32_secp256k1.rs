@@ -163,10 +163,18 @@ fn master_extsk(seed: &[u8]) -> Result<ExtSk> {
 
 /// CKDpriv, one step
 fn ckd_priv(parent: &ExtSk, index: DerivationIndex) -> Result<ExtSk> {
+    // Parent compressed pubkey, computed once and shared by both consumers below:
+    // normal-CKD HMAC data (BIP-32: ser_P(point(k_par))) and the parent fingerprint.
+    // Hardened steps only need it for the fingerprint; normal steps previously
+    // computed it twice (once in MacData, once here).
+    let parent_scalar = secp::scalar_from_bytes(&parent.key).map_err(|_| err_invalid())?;
+    let parent_pk = secp::base_mul(&parent_scalar);
+    let parent_compressed = secp::point_to_compressed(&parent_pk);
+
     let mut mac =
         <HmacSha512 as Mac>::new_from_slice(&parent.chain_code).map_err(|_| err_invalid())?;
 
-    let data = MacData::new(parent, index)?;
+    let data = MacData::new(parent, index, &parent_compressed)?;
     Mac::update(&mut mac, &data.buf);
 
     let out = mac.finalize().into_bytes();
@@ -187,14 +195,14 @@ fn ckd_priv(parent: &ExtSk, index: DerivationIndex) -> Result<ExtSk> {
     }
 
     // parent fingerprint = RIPEMD160(SHA256(parent compressed pubkey))[..4]
-    let parent_pk = secp::base_mul(&parent_scalar);
-    let parent_compressed = secp::point_to_compressed(&parent_pk);
+    // (parent_compressed computed once at the top of this function)
+    let parent_fingerprint = fingerprint(&parent_compressed);
 
     Ok(ExtSk {
         key: child_key,
         chain_code,
         depth: parent.depth.checked_add(1).ok_or_else(err_invalid)?,
-        parent_fingerprint: fingerprint(&parent_compressed),
+        parent_fingerprint,
         child_number: index.0,
     })
 }
@@ -205,16 +213,15 @@ struct MacData {
 }
 
 impl MacData {
-    fn new(parent: &ExtSk, index: DerivationIndex) -> Result<Self> {
+    fn new(parent: &ExtSk, index: DerivationIndex, parent_compressed: &[u8; 33]) -> Result<Self> {
         let mut buf = [0u8; 37];
         if index.is_hardened() {
             buf[0] = 0x00;
             buf[1..33].copy_from_slice(&parent.key);
         } else {
             // normal: needs the parent public key in compressed form
-            let parent_scalar = secp::scalar_from_bytes(&parent.key).map_err(|_| err_invalid())?;
-            let pk = secp::base_mul(&parent_scalar);
-            buf[..33].copy_from_slice(&secp::point_to_compressed(&pk));
+            // (passed in precomputed by ckd_priv — no extra scalar mult here)
+            buf[..33].copy_from_slice(parent_compressed);
         }
         // ser32(i): when hardened, i carries the 2^31 bit (BIP-32 spec), i.e. the raw u32
         buf[33..37].copy_from_slice(&index.0.to_be_bytes());
