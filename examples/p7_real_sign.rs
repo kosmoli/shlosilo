@@ -1,5 +1,5 @@
-//! 真实 unsigned_txset → shlosilo 签名 → monerod 广播用 hex
-//! 用法: cargo run --release --example p7_real_sign -- /tmp/test0830_unsigned_txset /tmp/test0830_keys.hex
+//! Real unsigned_txset → shlosilo signing → monerod-ready broadcast hex
+//! Usage: cargo run --release --example p7_real_sign -- /tmp/test0830_unsigned_txset /tmp/test0830_keys.hex
 use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction;
 use shlosilo::chain::xmr::unsigned_txset::{decrypt_unsigned_txset, deserialize_unsigned_tx};
 

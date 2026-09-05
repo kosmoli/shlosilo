@@ -1,13 +1,13 @@
-//! XMR view tag / 加密 payment ID / payment proof（Phase 5 v9.19）
+//! XMR view tag / encrypted payment ID / payment proof (Phase 5 v9.19)
 //!
-//! L1 纯函数。对标 keystone `derive_view_tag` + monero-oxide `SharedKeyDerivations`。
+//! L1 pure functions. Benchmarked against keystone `derive_view_tag` + monero-oxide `SharedKeyDerivations`.
 
 extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// Hs("view_tag" || 8Ra || varint(o)) 的首字节
+/// First byte of Hs("view_tag" || 8Ra || varint(o))
 pub fn derive_view_tag(eight_ra: &[u8; 32], output_index: u64) -> u8 {
     let mut buf = Vec::with_capacity(8 + 32 + 9);
     buf.extend_from_slice(b"view_tag");
@@ -18,7 +18,7 @@ pub fn derive_view_tag(eight_ra: &[u8; 32], output_index: u64) -> u8 {
         .unwrap_or(0)
 }
 
-/// 8 * (r * A_view)，压缩点
+/// 8 * (r * A_view), compressed point
 pub fn eight_ra(tx_secret: &[u8; 32], dest_view_pub: &[u8; 32]) -> Result<[u8; 32]> {
     use curve25519_dalek::Scalar as DScalar;
     use monero_ed25519::CompressedPoint;
@@ -51,7 +51,7 @@ pub fn encrypt_payment_id(pid: &[u8; 8], xor_key: &[u8; 8]) -> [u8; 8] {
     out
 }
 
-/// 标准主地址 stealth：P = Hs(8Ra || varint(i))·G + B
+/// Standard main-address stealth: P = Hs(8Ra || varint(i))·G + B
 pub fn stealth_address(
     eight_ra: &[u8; 32],
     output_index: u64,
@@ -74,16 +74,16 @@ pub fn stealth_address(
     Ok((b_ed + hs_g).compress().to_bytes())
 }
 
-/// 导出 r（业务 2：证明付给了地址 A）
-/// R1 (2026-08-31 复审整改): tx_secret 是交易密钥 — 去 derive(Clone, Debug),
-/// 手写 Debug redacted; secret 字段保持借用消费 (v2-安全 §3 函数只收借用)。
+/// Export r (business 2: prove payment to address A)
+/// R1 (2026-08-31 re-review remediation): tx_secret is a transaction key — removed derive(Clone, Debug),
+/// hand-written Debug redacted; secret fields remain borrow-only consumption (v2-security §3 functions take borrows only).
 pub struct PaymentProof {
     pub tx_secret: [u8; 32],
     pub tx_pub: [u8; 32],
 }
 
-/// P1-C（2026-09-01 再复审）：tx_secret 是交易密钥——Drop 时清零。
-/// 不实现 Clone/Copy（编译期断言见文件尾 inventory）。
+/// P1-C (2026-09-01 re-review): tx_secret is a transaction key — zeroized on Drop.
+/// No Clone/Copy (compile-time assertions in the inventory at end of file).
 impl Drop for PaymentProof {
     fn drop(&mut self) {
         use zeroize::Zeroize;
@@ -102,7 +102,7 @@ impl core::fmt::Debug for PaymentProof {
 
 impl PartialEq for PaymentProof {
     fn eq(&self, other: &Self) -> bool {
-        // 常时比较 tx_secret 防时序侧信道
+        // constant-time comparison of tx_secret to prevent timing side channels
         use subtle::ConstantTimeEq;
         bool::from(self.tx_secret.ct_eq(&other.tx_secret)) && self.tx_pub == other.tx_pub
     }
@@ -168,7 +168,7 @@ mod tests {
         let view = TxKeyPair::from_secret(SecretBytes::new([3u8; 32])).unwrap();
         let d = eight_ra(keys.secret.expose(), &view.public).unwrap();
         assert_ne!(d, [0u8; 32]);
-        // 不同 view → 不同 derivation
+        // different view → different derivation
         let view2 = TxKeyPair::from_secret(SecretBytes::new([5u8; 32])).unwrap();
         assert_ne!(d, eight_ra(keys.secret.expose(), &view2.public).unwrap());
     }
@@ -205,6 +205,6 @@ mod tests {
 mod p1c_inventory {
     use super::PaymentProof;
     use static_assertions::assert_not_impl_any;
-    // P1-C: 秘密载体禁止值复制
+    // P1-C: secret carriers forbid value copies
     assert_not_impl_any!(PaymentProof: Copy, Clone);
 }

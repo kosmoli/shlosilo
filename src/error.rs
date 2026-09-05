@@ -1,18 +1,18 @@
-//! Shlosilo 错误码体系
+//! Shlosilo error code system
 
 //!
-//! **设计原则**（v2.3 接口笔记 §1）：
-//! 1. 错误类型唯一——所有 L1 业务函数返回 `Result<T, ShlosiloError>`
-//! 2. 错误码可分类——按 5 大数值区间组织（密码学 / 解析 / 业务 / marshaling / invariant）
-//! 3. 错误信息可丢失——Display + Debug 足够；不附 Backtrace（省 binary size）
+//! **Design principles** (v2.3 interface notes §1):
+//! 1. Single error type — all L1 business functions return `Result<T, ShlosiloError>`
+//! 2. Error codes are classifiable — organized into 5 numeric ranges (cryptography / parsing / business / marshaling / invariant)
+//! 3. Error messages may be lost — Display + Debug suffice; no Backtrace attached (saves binary size)
 //!
-//! **数值布局**：
+//! **Numeric layout**:
 //!   0x0000_0000           = Ok
-//!   0x0100_0000 - 0x01FF_FFFF  = L1 密码学（按曲线/签名方案分）
-//!   0x0200_0000 - 0x02FF_FFFF  = L1 解析（UR / Mnemonic / DerivationPath / DiceRolls）
-//!   0x0300_0000 - 0x03FF_FFFF  = 业务级（ChainKind / ExportProtocol / Network / Multisig）
-//!   0x0400_0000 - 0x04FF_FFFF  = L2a marshaling（buffer 长度 / kind）
-//!   0x0500_0000 - 0x05FF_FFFF  = invariant 违反
+//!   0x0100_0000 - 0x01FF_FFFF  = L1 cryptography (grouped by curve/signature scheme)
+//!   0x0200_0000 - 0x02FF_FFFF  = L1 parsing (UR / Mnemonic / DerivationPath / DiceRolls)
+//!   0x0300_0000 - 0x03FF_FFFF  = business level (ChainKind / ExportProtocol / Network / Multisig)
+//!   0x0400_0000 - 0x04FF_FFFF  = L2a marshaling (buffer length / kind)
+//!   0x0500_0000 - 0x05FF_FFFF  = invariant violations
 
 #[cfg(feature = "std")]
 extern crate std;
@@ -24,91 +24,91 @@ use core::fmt;
 pub enum ShlosiloErrorKind {
     Ok = 0,
 
-    // ─── L1 密码学（0x01xx_xxxx） ───
-    /// secp256k1 scalar 越界
+    // ─── L1 cryptography (0x01xx_xxxx) ───
+    /// secp256k1 scalar out of range
     CryptoSecp256k1InvalidScalar = 0x0101_0001,
-    /// secp256k1 point 不在曲线上
+    /// secp256k1 point not on the curve
     CryptoSecp256k1InvalidPoint = 0x0101_0002,
-    /// ECDSA / Schnorr 签名失败
+    /// ECDSA / Schnorr signing failure
     CryptoSecp256k1SignFailed = 0x0101_0003,
-    /// ed25519 scalar 越界
+    /// ed25519 scalar out of range
     CryptoEd25519InvalidScalar = 0x0102_0001,
-    /// ed25519 point 不在曲线上
+    /// ed25519 point not on the curve
     CryptoEd25519InvalidPoint = 0x0102_0002,
-    /// EdDSA / CLSAG 签名失败
+    /// EdDSA / CLSAG signing failure
     CryptoEd25519SignFailed = 0x0102_0003,
-    /// RSA 密钥格式无效
+    /// RSA key format invalid
     CryptoRsaKeyInvalid = 0x0103_0001,
-    /// RSA-PSS 签名失败
+    /// RSA-PSS signing failure
     CryptoRsaSignFailed = 0x0103_0002,
-    /// sr25519 签名失败（Phase 8+ 真实实现）
+    /// sr25519 signing failure (real implementation at Phase 8+)
     CryptoSr25519SignFailed = 0x0104_0001,
 
-    // ─── L1 解析（0x02xx_xxxx） ───
-    /// UR payload CBOR 解码失败
+    // ─── L1 parsing (0x02xx_xxxx) ───
+    /// UR payload CBOR decoding failure
     UrPayloadInvalidCbor = 0x0201_0001,
-    /// UR type tag 不在已知集合
+    /// UR type tag not in the known set
     UrPayloadUnknownType = 0x0201_0002,
-    /// UR payload 超过 TxTemplate 容量（真实 PSBT 常超 2KB；禁止静默截断）
+    /// UR payload exceeds TxTemplate capacity (real PSBTs often exceed 2KB; silent truncation forbidden)
     UrPayloadTooLarge = 0x0201_0003,
-    /// Mnemonic 单词不在 BIP-39 词表
+    /// Mnemonic word not in the BIP-39 wordlist
     MnemonicInvalidWord = 0x0202_0001,
-    /// Mnemonic checksum 不匹配
+    /// Mnemonic checksum mismatch
     MnemonicInvalidChecksum = 0x0202_0002,
-    /// Mnemonic 词数不是 12/15/18/21/24
+    /// Mnemonic word count is not 12/15/18/21/24
     MnemonicInvalidWordCount = 0x0202_0003,
-    /// entropy 字节数与 word_count 不匹配
+    /// entropy byte count does not match word_count
     MnemonicInvalidEntropyLength = 0x0202_0004,
-    /// 派生路径语法错误
+    /// Derivation path syntax error
     DerivationPathInvalidSyntax = 0x0203_0001,
-    /// 派生路径 index 越界
+    /// Derivation path index out of range
     DerivationPathIndexOutOfRange = 0x0203_0002,
-    /// 骰子面值不在 1..=sides 范围
+    /// Dice face value outside 1..=sides
     DiceRollsInvalidValue = 0x0204_0001,
-    /// 骰子数与要求长度不匹配
+    /// Dice roll count does not match the required length
     DiceRollsInvalidCount = 0x0204_0002,
-    /// 骰子面数 < 2
+    /// Dice sides < 2
     InvalidDiceConfig = 0x0204_0003,
-    /// rolls 切片为空（用户没投过）
+    /// rolls slice empty (the user has not rolled)
     InsufficientRolls = 0x0204_0004,
-    /// RNG 注入 entropy 不足（< ENTROPY_MIN_LEN，misuse guard）
+    /// RNG injection entropy insufficient (< ENTROPY_MIN_LEN, misuse guard)
     EntropyInjectionInvalid = 0x0204_0005,
-    /// X5 rejection sampling：骰序落入余数区。安全语义=整组作废完整重掷（禁止仅追加补掷——非均匀）；概率 ~2^-75 实际不可遇
+    /// X5 rejection sampling: the roll sequence lands in the remainder zone. Security semantics = discard the whole group and reroll completely (appending-only top-ups forbidden — non-uniform); probability ~2^-75, practically unreachable
     DiceRejectionRolls = 0x0204_0006,
 
-    // ─── 业务级（0x03xx_xxxx） ───
-    /// ChainKind::Unknown（UR type tag 无法识别）
+    // ─── Business level (0x03xx_xxxx) ───
+    /// ChainKind::Unknown (unrecognized UR type tag)
     ChainKindUnsupported = 0x0301_0001,
-    /// ExportProtocol 变体未实现（如 ZcashAccounts 占位）
+    /// ExportProtocol variant not implemented (e.g. ZcashAccounts placeholder)
     ExportProtocolUnimplemented = 0x0302_0001,
-    /// Network 变体识别失败
+    /// Network variant recognition failure
     NetworkUnrecognized = 0x0303_0001,
-    /// v1 不支持多签
+    /// v1 does not support multisig
     MultisigNotSupported = 0x0304_0001,
-    /// Phase 2 stub：算法/编码未接入（原 unimplemented!() panic，P2-01 改稳定错误码）
+    /// Phase 2 stub: algorithms/encodings not wired in (originally an unimplemented!() panic; P2-01 switched to stable error codes)
     FeatureNotImplemented = 0x0305_0001,
 
-    // ─── L2a marshaling（0x04xx_xxxx） ───
-    /// output_buf 容量不足
+    // ─── L2a marshaling(0x04xx_xxxx) ───
+    /// output_buf capacity insufficient
     BufferTooSmall = 0x0401_0001,
-    /// Encoding 输出 buffer 溢出（heapless::Vec/String 满）
+    /// Encoding output buffer overflow (heapless::Vec/String full)
     EncodingBufferOverflow = 0x0402_0001,
-    /// Encoding 字符串格式无效（base58 / bech32 / base64）
+    /// Encoding string format invalid (base58 / bech32 / base64)
     EncodingInvalidFormat = 0x0402_0002,
-    /// Encoding checksum 验证失败
+    /// Encoding checksum verification failure
     EncodingInvalidChecksum = 0x0402_0003,
-    /// sign_input_kind / export_kind 越界
+    /// sign_input_kind / export_kind out of range
     BufferKindMismatch = 0x0401_0002,
-    /// R4: PSBT 所有权绑定失败——BIP32_DERIVATION pubkey ≠ 派生公钥
+    /// R4: PSBT ownership binding failure — BIP32_DERIVATION pubkey ≠ derived public key
     PsbtOwnershipMismatch = 0x0403_0001,
 
-    // ─── Invariant 违反（0x05xx_xxxx） ───
-    /// 内部不可能状态（unreachable 触发）
+    // ─── Invariant violations (0x05xx_xxxx) ───
+    /// Internal impossible state (unreachable triggered)
     InvariantViolation = 0x0500_0001,
 }
 
 impl ShlosiloErrorKind {
-    /// 该错误对应的高 8 位区间（用于 L2b i32 映射分类）
+    /// The error's high 8-bit range (used for L2b i32 mapping classification)
     pub const fn category(self) -> u8 {
         ((self as u32) >> 24) as u8
     }
@@ -117,13 +117,13 @@ impl ShlosiloErrorKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorContext {
     None,
-    /// 解析失败时附带的出错字节值
+    /// The offending byte value attached on parse failure
     InvalidByte(u8),
-    /// 派生路径 index 越界时附带的 index 值
+    /// The index value attached when a derivation path index is out of range
     IndexOutOfRange(u32),
-    /// buffer 需要的长度
+    /// The length the buffer requires
     RequiredLength(usize),
-    /// buffer 实际的长度
+    /// The buffer's actual length
     ActualLength(usize),
 }
 
@@ -173,7 +173,7 @@ impl std::error::Error for ShlosiloError {}
 pub type Result<T> = core::result::Result<T, ShlosiloError>;
 
 // ============================================================================
-// L2b C-ABI 错误码映射（稳定 i32）
+// L2b C-ABI error code mapping (stable i32)
 // ============================================================================
 
 #[repr(i32)]
@@ -182,7 +182,7 @@ pub enum ShlosiloErrorCode {
     Ok = 0,
     UnknownError = -1,
     InvalidArgument = -2,
-    /// FFI 边界 catch_unwind 兜底（FFI 特有，L2b 映射不产出）
+    /// FFI boundary catch_unwind fallback (FFI-specific; never produced by the L2b mapping)
     FfiPanic = -4,
     UnsupportedChainKind = -10,
     UnsupportedExportProtocol = -11,
@@ -201,7 +201,7 @@ pub enum ShlosiloErrorCode {
 }
 
 impl ShlosiloErrorCode {
-    /// L2b::error::to_code 的实现
+    /// Implementation of L2b::error::to_code
     pub fn from_shlosilo_error(e: ShlosiloError) -> i32 {
         let code = match e.kind {
             ShlosiloErrorKind::Ok => Self::Ok,

@@ -1,11 +1,11 @@
-//! XRP 地址编码（classic + X-address，base58 + ripple alphabet）
+//! XRP address encoding (classic + X-address, base58 + ripple alphabet)
 
 use crate::curve_primitive::secp256k1::Secp256k1Point;
 use crate::error::Result;
 use crate::network::Network;
 use core::fmt;
 
-/// XRP 地址（classic base58 编码，最长 ~35 字符）
+/// XRP address (classic base58 encoding, up to ~35 chars)
 pub const XRP_ADDRESS_MAX_LEN: usize = 64;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -36,24 +36,24 @@ impl fmt::Debug for XrpAddress {
     }
 }
 
-/// XRP classic 地址（`r...` 前缀）
+/// XRP classic address (`r...` prefix)
 ///
-/// # Phase 4 实现
+/// # Phase 4 implementation
 /// - base58(0x00 || ripemd160(sha256(pubkey)))
 pub fn encode_classic(_pubkey: &Secp256k1Point, _network: Network) -> Result<XrpAddress> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
-/// XRP X-address（带 destination tag，`X...` 前缀）
+/// XRP X-address (with destination tag, `X...` prefix)
 pub fn encode_x_address(
     _pubkey: &Secp256k1Point,
     _network: Network,
     _tag: u32,
 ) -> Result<XrpAddress> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        // P2-01: stubs have been changed to stable error codes; panic macros must not regress (skip comment lines)
         for line in include_str!("xrp.rs").lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

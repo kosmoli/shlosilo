@@ -1,11 +1,11 @@
-//! Cardano Shelley 地址编码（bech32 + Shelley multi-credential）
+//! Cardano Shelley address encoding (bech32 + Shelley multi-credential)
 
 use crate::curve_primitive::ed25519::Ed25519Point;
 use crate::error::Result;
 use crate::network::Network;
 use core::fmt;
 
-/// Cardano 地址长度（bech32，最长 ~100 字符）
+/// Cardano address length (bech32, up to ~100 chars)
 pub const CARDANO_ADDRESS_MAX_LEN: usize = 120;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -36,9 +36,9 @@ impl fmt::Debug for CardanoAddress {
     }
 }
 
-/// Cardano Shelley 地址编码
+/// Cardano Shelley address encoding
 ///
-/// # Phase 4 实现
+/// # Phase 4 implementation
 /// - bech32(addr_header || network_id || payment_cred || stake_cred || ...)
 /// - cardano_serialization_lib::Address
 pub fn encode(
@@ -46,7 +46,7 @@ pub fn encode(
     _stake_pubkey: Option<&Ed25519Point>,
     _network: Network,
 ) -> Result<CardanoAddress> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        // P2-01: the stub was changed to a stable error code; no panic-macro regression allowed (comment lines skipped)
         for line in include_str!("cardano.rs").lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

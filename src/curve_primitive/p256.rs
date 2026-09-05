@@ -1,9 +1,9 @@
-//! NIST P-256 曲线原语（Layer A / 预留，未在 v1 使用）
+//! NIST P-256 curve primitive (Layer A / reserved, unused in v1)
 //!
-//! Phase 2.1 stub：`unimplemented!()` + 类型定义
-//! Phase 4+ 真实实现：`p256` crate
+//! Phase 2.1 stub: `unimplemented!()` + type definitions
+//! Phase 4+ real implementation: the `p256` crate
 //!
-//! **状态**：v1 不使用，Phase 8+ 才会真实实现。
+//! **Status**: unused in v1; a real implementation comes at Phase 8+.
 
 use crate::error::Result;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -15,35 +15,35 @@ pub struct P256Scalar(/* private fields */);
 pub struct P256Point(/* private fields */);
 
 pub fn generator() -> Result<P256Point> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
 pub fn scalar_mul(_s: &P256Scalar, _p: &P256Point) -> Result<P256Point> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
 pub fn base_mul(_s: &P256Scalar) -> Result<P256Point> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
 pub fn point_add(_a: &P256Point, _b: &P256Point) -> Result<P256Point> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
 pub fn scalar_zero() -> Result<P256Scalar> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
@@ -71,8 +71,8 @@ mod tests {
 
     #[test]
     fn stub_returns_feature_not_implemented() {
-        // P2-01：stub 不再 panic——返回稳定错误码
-        // （P256Scalar 无 Debug，用 map_err 避开 unwrap_err 的 Debug 约束）
+        // P2-01: the stub no longer panics — returns a stable error code
+        // (P256Scalar has no Debug; use map_err to avoid unwrap_err\'s Debug bound)
         let e0 = scalar_zero().err().expect("scalar_zero should err");
         assert_eq!(
             e0.kind,

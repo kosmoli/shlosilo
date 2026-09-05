@@ -1,19 +1,19 @@
-//! DerivationPath 类型（v2.3 接口笔记 §2）
+//! DerivationPath type (v2.3 interface notes §2)
 //!
-//! BIP-32 派生路径内部表示：
-//! - 每个 component 是 32-bit unsigned integer，高位 0x80000000 表示 hardened
-//! - 不可变，构造后只读；修改通过创建新 `DerivationPath`
-//! - 栈分配，固定 [DerivationIndex; MAX_DEPTH]
-//! - parse API：从 `&str`（"m/44'/0'/0'/0/0"）解析
+//! Internal representation of BIP-32 derivation paths:
+//! - each component is a 32-bit unsigned integer; the high bit 0x80000000 marks hardened
+//! - immutable, read-only after construction; modification creates a new `DerivationPath`
+//! - stack-allocated, fixed [DerivationIndex; MAX_DEPTH]
+//! - parse API: parse from `&str` ("m/44'/0'/0'/0/0")
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-pub const MAX_DEPTH: usize = 16; // BIP-44 通常 ≤ 5；预留到 16（兼容 Cardano Shelley 等多段路径）
+pub const MAX_DEPTH: usize = 16; // BIP-44 usually ≤ 5; reserved up to 16 (compatible with multi-segment paths like Cardano Shelley)
 
-/// BIP-32 hardened bit（最高位）
+/// BIP-32 hardened bit (highest bit)
 pub const HARDENED_BIT: u32 = 0x8000_0000;
 
-/// Soft index 上限（无符号 31-bit）
+/// Soft index upper bound (unsigned 31-bit)
 pub const MAX_SOFT_INDEX: u32 = 0x7FFF_FFFF;
 
 #[repr(transparent)]
@@ -68,8 +68,8 @@ impl DerivationPath {
         }
     }
 
-    /// 从 `&[DerivationIndex]` 切片构造
-    /// 从 `&[u32]` flat 数组构造（hardened bit 由最高位 0x80000000 表示）
+    /// Construct from a `&[DerivationIndex]` slice
+    /// Construct from a flat `&[u32]` array (hardened bit represented by the high bit 0x80000000)
     pub fn from_flat<I>(iter: I) -> Result<Self>
     where
         I: IntoIterator<Item = u32>,
@@ -104,10 +104,10 @@ impl DerivationPath {
         Ok(path)
     }
 
-    /// 从字符串解析（支持 m/M 前缀 + / 分隔 + ' 或 h/H hardened 后缀）
+    /// Parse from a string (supports m/M prefix + / separator + ' or h/H hardened suffix)
     ///
-    /// 接受格式：
-    /// - `"m"` / `"M"`（空路径）
+    /// Accepted formats:
+    /// - `"m"` / `"M"` (empty path)
     /// - `"m/44'/0'/0'/0/0"` / `"M/44H/0H/0H/0/0"`
     /// - `"m/44h/0h/0h/0/0"`
     pub fn parse(s: &str) -> Result<Self> {
@@ -181,13 +181,13 @@ impl DerivationPath {
         self.len == 0
     }
 
-    /// 用于 ChainKind 推断（链类型 → coin_type）
+    /// Used for ChainKind inference (chain type → coin_type)
     pub fn coin_type(&self) -> Option<u32> {
         self.as_slice().get(1).map(|i| i.value()) // m/<coin_type>/...
     }
 }
 
-/// 解析十进制 u32（不接受负号、十六进制、八进制）
+/// Parse a decimal u32 (no negative signs, hex, or octal)
 fn parse_u32_decimal(s: &str) -> Option<u32> {
     if s.is_empty() {
         return None;
@@ -198,7 +198,7 @@ fn parse_u32_decimal(s: &str) -> Option<u32> {
             return None;
         }
         let digit = c as u32 - '0' as u32;
-        // 检查溢出
+        // check overflow
         let v = result.checked_mul(10).and_then(|v| v.checked_add(digit))?;
         result = v;
     }
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn parse_overflow_error() {
-        // 2^31 越界（soft index 上限是 2^31-1）
+        // 2^31 out of bounds (soft index upper bound is 2^31-1)
         let path = DerivationPath::parse("m/2147483648");
         assert_eq!(
             path.unwrap_err().kind,
@@ -283,8 +283,8 @@ mod tests {
 
     #[test]
     fn depth_limit() {
-        // MAX_DEPTH = 16，超过 16 层应报错
-        let s = "m/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0"; // 17 个 component
+        // MAX_DEPTH = 16; more than 16 levels should error
+        let s = "m/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0/0"; // 17 components
         let path = DerivationPath::parse(s);
         assert!(path.is_err());
     }
@@ -300,18 +300,18 @@ mod tests {
     }
 
     // ============================================================
-    // Phase 3 property-based 测试
+    // Phase 3 property-based tests
     // ============================================================
 
     proptest! {
-        /// 任意 dummy 参数（proptest! 要求所有 fn 都有 in 模式）
+        /// Arbitrary dummy parameters (proptest! requires every fn to have `in` patterns)
         #[test]
         fn parse_empty_path_is_valid(_dummy in 0u8..1) {
             let path = DerivationPath::parse("m").unwrap();
             prop_assert_eq!(path.len(), 0);
         }
 
-        /// hardened index "i'" → 高位 0x80000000
+        /// hardened index "i'" → high bit 0x80000000
         #[test]
         fn parse_hardened_sets_high_bit(idx in 0u32..16) {
             let path_str = format!("m/{}'", idx);
@@ -322,7 +322,7 @@ mod tests {
             prop_assert_eq!(first.0 & 0x7FFFFFFF, idx);
         }
 
-        /// 正常 index "i" → 高位 0
+        /// normal index "i" → high bit 0
         #[test]
         fn parse_normal_no_high_bit(idx in 0u32..16) {
             let path_str = format!("m/{}", idx);
@@ -332,7 +332,7 @@ mod tests {
             prop_assert_eq!(path.as_slice()[0].0, idx);
         }
 
-        /// parse → render → 字符串一致（Phase 3 v2 补全）
+        /// parse → render → string identity (Phase 3 v2 completion)
         #[test]
         fn parse_display_round_trip(components in proptest::collection::vec(0u32..32u32, 1..8)) {
             let path_str = format!(
@@ -366,7 +366,7 @@ mod tests {
             }
         }
 
-        /// 全 0 索引路径 → 渲染成 "m/0/0/.../0" 一致（v3 边界）
+        /// all-zero index path → renders as "m/0/0/.../0" consistently (v3 boundary)
         #[test]
         fn all_zero_indices_round_trip(_dummy in 0u8..1) {
             let path_str = format!("m/{}", (0..5).map(|_| "0").collect::<Vec<_>>().join("/"));
@@ -384,7 +384,7 @@ mod tests {
             prop_assert_eq!(rendered.as_str(), path_str);
         }
 
-        /// MAX_DEPTH=16 路径 → 恰好能 parse + render（v3 边界）
+        /// MAX_DEPTH=16 path → parses + renders exactly (v3 boundary)
         #[test]
         fn max_depth_path_round_trip(_dummy in 0u8..1) {
             let path_str = format!("m/{}", (0..16).map(|_| "0").collect::<Vec<_>>().join("/"));
@@ -398,7 +398,7 @@ mod tests {
             prop_assert_eq!(rendered.as_str(), path_str);
         }
 
-        /// MAX_DEPTH+1=17 路径 → 应该 parse 失败（v3 边界）
+        /// MAX_DEPTH+1=17 path → should fail to parse (v3 boundary)
         #[test]
         fn over_max_depth_path_rejected(_dummy in 0u8..1) {
             let path_str = format!("m/{}", (0..17).map(|_| "0").collect::<Vec<_>>().join("/"));

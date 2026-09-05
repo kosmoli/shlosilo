@@ -1,5 +1,5 @@
-//! 解密并解析真实 unsigned_txset（来自 test0830 watch-only 钱包 wallet-rpc transfer）
-//! 用法: cargo run --example p7_real_unsigned -- /tmp/test0830_unsigned_txset /tmp/test0830_keys.hex
+//! Decrypt and parse a real unsigned_txset (from a test0830 watch-only wallet wallet-rpc transfer)
+//! Usage: cargo run --example p7_real_unsigned -- /tmp/test0830_unsigned_txset /tmp/test0830_keys.hex
 use shlosilo::chain::xmr::unsigned_txset::{decrypt_unsigned_txset, deserialize_unsigned_tx};
 
 fn hex32(s: &str) -> [u8; 32] {

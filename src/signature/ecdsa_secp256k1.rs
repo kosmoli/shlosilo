@@ -1,6 +1,6 @@
-//! ECDSA 签名 over secp256k1（BTC Legacy + segwit v0 + ETH + Cosmos）
+//! ECDSA signatures over secp256k1 (BTC Legacy + segwit v0 + ETH + Cosmos)
 //!
-//! Phase 5 v2 真实实现：`k256::ecdsa` (RFC 6979 确定性 nonce)
+//! Phase 5 v2 real implementation: `k256::ecdsa` (RFC 6979 deterministic nonce)
 
 use crate::curve_primitive::secp256k1::{Secp256k1Point, Secp256k1Scalar};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -11,12 +11,12 @@ use k256::ecdsa::{
 use k256::FieldBytes;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// ECDSA 签名（r, s 压缩序列化）
+/// ECDSA signature (r, s compact serialization)
 ///
-/// 字节长度固定：32 (r) + 32 (s) = 64 bytes
+/// Fixed byte length: 32 (r) + 32 (s) = 64 bytes
 pub const ECDSA_SIGNATURE_LEN: usize = 64;
 
-/// ECDSA 签名包装
+/// ECDSA signature wrapper
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct EcdsaSignature {
     bytes: [u8; ECDSA_SIGNATURE_LEN],
@@ -30,35 +30,35 @@ impl AsRef<[u8]> for EcdsaSignature {
 
 impl core::fmt::Debug for EcdsaSignature {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // 不暴露签名字节内容（防 signature 泄露给 debug 日志）
+        // do not expose signature byte contents (prevents signature leakage into debug logs)
         write!(f, "EcdsaSignature(<{} bytes redacted>)", self.bytes.len())
     }
 }
 
-/// 从 k256 Signature 提取 bytes
+/// Extract bytes from a k256 Signature
 fn sig_to_bytes(sig: &Signature) -> [u8; ECDSA_SIGNATURE_LEN] {
     sig.to_bytes().into()
 }
 
-/// ECDSA 签名
+/// ECDSA signing
 ///
-/// 使用 RFC 6979 确定性 nonce（k256::SigningKey 内置）
+/// Uses an RFC 6979 deterministic nonce (built into k256::SigningKey)
 ///
-/// # 实现
-/// - 将 shlosilo `Secp256k1Scalar` (32 bytes big-endian) → k256 `SigningKey`
-/// - 调用 `signing_key.sign(msg_hash)` —— 内部使用 RFC 6979 + SHA-256
-/// - 但 k256 `sign()` 会**重新**对 msg 做 SHA-256 digest——这跟我们的 prehashed 输入**双重 hash**！
+/// # Implementation
+/// - Convert the shlosilo `Secp256k1Scalar` (32 bytes big-endian) → k256 `SigningKey`
+/// - Call `signing_key.sign(msg_hash)` — internally RFC 6979 + SHA-256
+/// - But k256 `sign()` **re-hashes** the msg with SHA-256 — that would **double-hash** our prehashed input!
 ///
-/// 修正：使用 `sign_prehashed` 直接接受 32-byte hash
+/// Fix: use `sign_prehashed`, which directly accepts a 32-byte hash
 pub fn sign(sk: &Secp256k1Scalar, msg_hash: &[u8; 32]) -> Result<EcdsaSignature> {
-    // 转换 sk 到 k256::SigningKey
+    // convert sk to k256::SigningKey
     let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(sk);
     let mut sk_arr = [0u8; 32];
     sk_arr.copy_from_slice(&sk_bytes);
     let signing_key = SigningKey::from_bytes(&sk_arr.into())
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-    // 使用 sign_prehashed（k256 内部直接接受 prehashed 输入）
+    // use sign_prehashed (k256 internally accepts prehashed input directly)
     let z = FieldBytes::from(*msg_hash);
     let sig: Signature = signing_key
         .sign_prehash(&z)
@@ -68,9 +68,9 @@ pub fn sign(sk: &Secp256k1Scalar, msg_hash: &[u8; 32]) -> Result<EcdsaSignature>
     })
 }
 
-/// ECDSA 验签
+/// ECDSA verification
 pub fn verify(pk: &Secp256k1Point, msg_hash: &[u8; 32], sig: &EcdsaSignature) -> bool {
-    // 转换 pk 到 k256::VerifyingKey（使用压缩公钥 SEC1 33 bytes）
+    // convert pk to k256::VerifyingKey (using the compressed public key, SEC1 33 bytes)
     let pk_compressed = crate::curve_primitive::secp256k1::point_to_compressed(pk);
     let verifying_key = match VerifyingKey::from_sec1_bytes(&pk_compressed) {
         Ok(k) => k,
@@ -84,7 +84,7 @@ pub fn verify(pk: &Secp256k1Point, msg_hash: &[u8; 32], sig: &EcdsaSignature) ->
     verifying_key.verify_prehash(&z, &sig_obj).is_ok()
 }
 
-/// 从 64-byte (r || s) bytes 解析签名
+/// Parse a signature from 64-byte (r || s) bytes
 pub fn from_bytes(bytes: &[u8]) -> Result<EcdsaSignature> {
     if bytes.len() != ECDSA_SIGNATURE_LEN {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -94,7 +94,7 @@ pub fn from_bytes(bytes: &[u8]) -> Result<EcdsaSignature> {
     Ok(EcdsaSignature { bytes: arr })
 }
 
-/// 从 DER 编码解析签名（用于从外部导入）
+/// Parse a signature from DER encoding (for importing from external sources)
 pub fn from_der(der: &[u8]) -> Result<EcdsaSignature> {
     let sig = Signature::from_der(der)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -103,12 +103,12 @@ pub fn from_der(der: &[u8]) -> Result<EcdsaSignature> {
     })
 }
 
-/// 序列化为 DER 编码（用于 BTC sighash 拼接到交易 witness）
+/// Serialize to DER encoding (for appending to the transaction witness in BTC sighash)
 ///
-/// DER 编码格式：0x30 || total_len || 0x02 || r_len || r || 0x02 || s_len || s
-/// 长度 70-72 bytes（r/s 可变）
+/// DER encoding format: 0x30 || total_len || 0x02 || r_len || r || 0x02 || s_len || s
+/// Length 70-72 bytes (r/s variable)
 pub fn to_der(sig: &EcdsaSignature) -> Result<heapless::Vec<u8, 72>> {
-    // 把内部 64 bytes (r || s) 重新组装为 k256::Signature
+    // reassemble the internal 64 bytes (r || s) into a k256::Signature
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(sig.bytes.as_ref());
     let k256_sig = Signature::from_bytes(&sig_arr.into())
@@ -139,10 +139,10 @@ mod tests {
         assert!(core::mem::needs_drop::<EcdsaSignature>());
     }
 
-    /// Phase 5 v2 真实实现：ECDSA sign + verify round-trip
+    /// Phase 5 v2 real implementation: ECDSA sign + verify round-trip
     #[test]
     fn sign_verify_roundtrip() {
-        // big-endian 编码 0xdeadbeef... (32 bytes)
+        // big-endian encoding of 0xdeadbeef... (32 bytes)
         let mut sk_bytes = [0u8; 32];
         for (i, b) in sk_bytes.iter_mut().enumerate() {
             *b = (i as u8).wrapping_mul(7).wrapping_add(0x13);
@@ -154,11 +154,11 @@ mod tests {
         let sig = sign(&sk, &msg_hash).unwrap();
         assert_eq!(sig.bytes.len(), ECDSA_SIGNATURE_LEN);
 
-        // 验证签名
+        // verify the signature
         assert!(verify(&pk, &msg_hash, &sig));
     }
 
-    /// ECDSA 验签拒绝错消息
+    /// ECDSA verification rejects a wrong message
     #[test]
     fn verify_rejects_wrong_message() {
         let mut sk_bytes = [0u8; 32];
@@ -172,7 +172,7 @@ mod tests {
         assert!(!verify(&pk, &wrong_msg, &sig));
     }
 
-    /// RFC 6979 确定性签名：相同 sk + msg 每次产生相同签名
+    /// RFC 6979 deterministic signing: same sk + msg produce the same signature every time
     #[test]
     fn signature_is_deterministic() {
         let mut sk_bytes = [0u8; 32];

@@ -1,14 +1,14 @@
-//! BTC 消息签名：BIP-137（legacy compact）+ BIP-322（simple P2WPKH）
+//! BTC message signing: BIP-137 (legacy compact) + BIP-322 (simple P2WPKH)
 //!
 //! Phase 5 v9.16
 //!
-//! BIP-137：`SHA256d("\x18Bitcoin Signed Message:\n" || compact_size(len) || msg)`
-//! 然后 recoverable ECDSA，65 字节 `[header || r || s]`。
+//! BIP-137: `SHA256d("\x18Bitcoin Signed Message:\n" || compact_size(len) || msg)`
+//! then recoverable ECDSA, 65 bytes `[header || r || s]`.
 //! header = 27 + rec_id + {0 uncompressed | 4 compressed | 8 P2SH-P2WPKH | 12 P2WPKH}
 //!
-//! BIP-322 simple P2WPKH / P2TR：tagged hash `BIP0322-signed-message`，虚拟 to_spend/to_sign。
-//! P2WPKH 走 BIP-143；P2TR keypath 走 BIP-341 + BIP-86 tweak。
-//! 返回 consensus-encoded witness stack（`smp` 前缀由调用方加）。
+//! BIP-322 simple P2WPKH / P2TR: tagged hash `BIP0322-signed-message`, virtual to_spend/to_sign.
+//! P2WPKH uses BIP-143; P2TR keypath uses BIP-341 + BIP-86 tweak.
+//! Returns the consensus-encoded witness stack (the caller adds the `smp` prefix).
 
 extern crate alloc;
 
@@ -26,7 +26,7 @@ use crate::signature::ecdsa_secp256k1::{self as ecdsa};
 const BIP137_MAGIC: &[u8] = b"Bitcoin Signed Message:\n";
 const BIP322_TAG: &[u8] = b"BIP0322-signed-message";
 
-/// BIP-137 地址类型 → header 常数（加 rec_id 0..=3）
+/// BIP-137 address type → header constant (plus rec_id 0..=3)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bip137AddrKind {
     P2pkhUncompressed, // 27
@@ -50,7 +50,7 @@ fn compact_size_push(buf: &mut Vec<u8>, n: u64) {
     encode_varint(buf, n);
 }
 
-/// BIP-137 消息 hash
+/// BIP-137 message hash
 pub fn bip137_message_hash(msg: &[u8]) -> Result<[u8; 32]> {
     let mut buf = Vec::with_capacity(1 + BIP137_MAGIC.len() + 9 + msg.len());
     compact_size_push(&mut buf, BIP137_MAGIC.len() as u64);
@@ -82,7 +82,7 @@ fn y_parity(sk: &Secp256k1Scalar, sighash: &[u8; 32], r: &[u8; 32], s: &[u8; 32]
     Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
 }
 
-/// BIP-137 签名：65 bytes header||r||s。sk 已派生。
+/// BIP-137 signature: 65 bytes header||r||s. The sk is already derived.
 pub fn sign_bip137(sk: &Secp256k1Scalar, msg: &[u8], kind: Bip137AddrKind) -> Result<[u8; 65]> {
     let hash = bip137_message_hash(msg)?;
     let sig = ecdsa::sign(sk, &hash)?;
@@ -108,7 +108,7 @@ fn tagged_hash(tag: &[u8], msg: &[u8]) -> [u8; 32] {
     sha256::hash(&buf).unwrap_or([0u8; 32])
 }
 
-/// BIP-322 tagged hash：tag = BIP0322-signed-message
+/// BIP-322 tagged hash: tag = BIP0322-signed-message
 pub fn bip322_message_hash(msg: &[u8]) -> [u8; 32] {
     tagged_hash(BIP322_TAG, msg)
 }
@@ -147,7 +147,7 @@ fn encode_witness_stack(items: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-/// BIP-322 simple P2WPKH：consensus-encoded witness stack（不含 smp 前缀）
+/// BIP-322 simple P2WPKH: consensus-encoded witness stack (smp prefix not included)
 pub fn sign_bip322_simple_p2wpkh(sk: &Secp256k1Scalar, msg: &[u8]) -> Result<Vec<u8>> {
     let pk = point_to_compressed(&base_mul(sk));
     let pkh = hash160(&pk)?;
@@ -217,9 +217,9 @@ pub fn sign_bip322_simple_p2wpkh(sk: &Secp256k1Scalar, msg: &[u8]) -> Result<Vec
     Ok(encode_witness_stack(&[sig_with_ht, pk.to_vec()]))
 }
 
-/// BIP-322 simple P2TR keypath：consensus-encoded witness stack（不含 smp 前缀）
+/// BIP-322 simple P2TR keypath: consensus-encoded witness stack (smp prefix not included)
 ///
-/// `internal_sk` 是未 tweak 的私钥；按 BIP-86（merkle_root = None）tweak 后 Schnorr。
+/// `internal_sk` is the untweaked private key; Schnorr after tweaking per BIP-86 (merkle_root = None).
 fn bip322_p2tr_sighash(internal_sk: &[u8; 32], msg: &[u8]) -> Result<[u8; 32]> {
     use crate::chain::btc::taproot::{
         bip341_keypath_sighash, compute_output_key, SpentOutput, TaprootSighashInput,
@@ -292,9 +292,9 @@ fn bip322_p2tr_sighash(internal_sk: &[u8; 32], msg: &[u8]) -> Result<[u8; 32]> {
     })
 }
 
-/// BIP-322 simple P2TR keypath：consensus-encoded witness stack（不含 smp 前缀）
+/// BIP-322 simple P2TR keypath: consensus-encoded witness stack (smp prefix not included)
 ///
-/// `internal_sk` 是未 tweak 的私钥；按 BIP-86（merkle_root = None）tweak 后 Schnorr。
+/// `internal_sk` is the untweaked private key; Schnorr after tweaking per BIP-86 (merkle_root = None).
 pub fn sign_bip322_simple_p2tr(internal_sk: &[u8; 32], msg: &[u8]) -> Result<Vec<u8>> {
     use crate::chain::btc::taproot::{sign_p2tr_keypath, P2TRKeypathSignInput, SIGHASH_DEFAULT};
 
@@ -511,7 +511,7 @@ mod tests {
             "AUCJYOwOjxYAvatTAGYaVlNXBVyFuc4MwNQkOuK2tl8xhfKDONd0NjfYyNSYcRqeCp8hsAnCEPHAVEkO9h6vbQ/R",
         )
         .unwrap();
-        // Schnorr aux 不同 → 字节不同；官方向量必须能在同一 BIP-341 sighash 上验过
+        // Different Schnorr aux → different bytes; official vectors must still verify against the same BIP-341 sighash
         assert!(
             verify_p2tr_witness(&key, b"No prefix fallback", official.as_slice()),
             "official p2tr sig must verify"
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn bip322_simple_p2tr_generated_vector() {
-        // generated-test-vectors.json simple p2tr（smp 前缀已剥）
+        // generated-test-vectors.json simple p2tr (smp prefix already stripped)
         let mut key = [0u8; 32];
         key.copy_from_slice(&hex_decode(
             "f805d22c9379f60b87770c8358c8fc2310b3e65d1c4555a51f58c912862b385b",

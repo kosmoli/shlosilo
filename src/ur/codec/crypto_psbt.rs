@@ -1,6 +1,6 @@
 //! crypto-psbt UR codec（BCR-2020-006）
 //!
-//! CBOR 形状：裸 `bytes` item（不是 map）。oracle = ur-registry 1.0.5 测试向量。
+//! CBOR shape: a bare `bytes` item (not a map). oracle = the ur-registry 1.0.5 test vector.
 
 extern crate alloc;
 
@@ -13,13 +13,13 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-/// 把 PSBT 原始字节编成 `ur:crypto-psbt/...`
+/// Encode raw PSBT bytes into `ur:crypto-psbt/...`
 pub fn encode(psbt: &[u8]) -> Result<UrEncoded> {
     let cbor = cbor::encode_bytes(psbt);
     ur_encode::encode(UrTypeTag::CryptoPsbt, &cbor)
 }
 
-/// 从 `ur:crypto-psbt/...` 解出 PSBT 原始字节
+/// Parse PSBT raw bytes out of `ur:crypto-psbt/...`
 pub fn decode(uri: &str) -> Result<alloc::vec::Vec<u8>> {
     let d = ur_decode::decode(uri)?;
     if d.type_tag() != UrTypeTag::CryptoPsbt {

@@ -1,11 +1,11 @@
 //! ETH personal_sign / personal_ecRecover (EIP-191 v0x45)
 //!
-//! 算法: `keccak256("\x19Ethereum Signed Message:\n" + len(msg) + msg)`
+//! Algorithm: `keccak256("\x19Ethereum Signed Message:\n" + len(msg) + msg)`
 //!
-//! MetaMask, WalletConnect 等 wallet 的"Sign Message"功能都用这个格式.
-//! 不是 ETH transaction, 是任意 UTF-8 字符串盲签.
+//! Wallets like MetaMask and WalletConnect all use this format for their "Sign Message" feature.
+//! Not an ETH transaction; a blind signature over an arbitrary UTF-8 string.
 //!
-//! 参考: <https://eips.ethereum.org/EIPS/eip-191>
+//! Reference: <https://eips.ethereum.org/EIPS/eip-191>
 
 extern crate alloc;
 
@@ -17,29 +17,29 @@ use crate::encoding::keccak256;
 use crate::error::Result;
 use crate::types::SecretBytes;
 
-/// personal_sign 输入
-/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+/// personal_sign input
+/// P1-03: private keys go through `SecretBytes<32>` — no Clone, no Debug, ZeroizeOnDrop, constant-time comparison.
 pub struct PersonalSignInput {
-    /// 待签名任意 UTF-8 字符串
+    /// Arbitrary UTF-8 string to sign
     pub message: Vec<u8>,
-    /// 32 字节私钥
+    /// 32-byte private key
     pub private_key: SecretBytes<32>,
 }
 
-/// personal_sign 输出: 65 字节签名 (r || s || v)
+/// personal_sign output: 65-byte signature (r || s || v)
 #[derive(Clone, Debug)]
 pub struct PersonalSignature {
-    /// signing hash (用户确认屏幕显示的内容摘要)
+    /// signing hash (the digest shown on the user confirmation screen)
     pub signing_hash: [u8; 32],
     /// ECDSA r
     pub r: [u8; 32],
     /// ECDSA s (low-s enforced per EIP-2 / BIP-146)
     pub s: [u8; 32],
-    /// recovery id (v): 27 或 28
+    /// recovery id (v): 27 or 28
     pub v: u8,
 }
 
-/// 计算 personal_sign signing hash
+/// Compute the personal_sign signing hash
 ///
 /// EIP-191 v0x45: `keccak256("\x19Ethereum Signed Message:\n" + len(msg) + msg)`
 pub fn personal_signing_hash(msg: &[u8]) -> Result<[u8; 32]> {
@@ -50,9 +50,9 @@ pub fn personal_signing_hash(msg: &[u8]) -> Result<[u8; 32]> {
     keccak256::hash(&full)
 }
 
-/// 签名 personal message
+/// Sign a personal message
 ///
-/// 输出 65 字节签名 (r || s || v), v = 27 + y_parity (即 v=27 if y_parity=0, v=28 if y_parity=1).
+/// Outputs a 65-byte signature (r || s || v), v = 27 + y_parity (i.e. v=27 if y_parity=0, v=28 if y_parity=1).
 pub fn personal_sign(input: &PersonalSignInput) -> Result<PersonalSignature> {
     let sighash = personal_signing_hash(&input.message)?;
 
@@ -71,18 +71,18 @@ pub fn personal_sign(input: &PersonalSignInput) -> Result<PersonalSignature> {
     })
 }
 
-/// personal_ecRecover: 从签名恢复公钥 (L1 pure verify)
+/// personal_ecRecover: recover the public key from the signature (L1 pure verify)
 ///
-/// 输入: 原始 message + 65 字节签名 (r || s || v)
-/// 输出: 64 字节未压缩公钥 (x || y)
+/// Input: the raw message + 65-byte signature (r || s || v)
+/// Output: 64-byte uncompressed public key (x || y)
 ///
-/// 用于 wallet 端验证签名者身份 (替代 personal_sign 在 wallet 端的镜像功能).
+/// Used for wallet-side signer identity verification (the wallet-side mirror of personal_sign).
 pub fn personal_ec_recover(msg: &[u8], sig: &[u8; 65]) -> Result<[u8; 64]> {
     let sighash = personal_signing_hash(msg)?;
     sign::ecdsa_recover(&sighash, sig)
 }
 
-/// 单元测试
+/// Unit tests
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -114,9 +114,9 @@ mod tests {
         }
     }
 
-    /// MetaMask 官方示例: "Hello, world!"
+    /// Official MetaMask example: "Hello, world!"
     ///
-    /// 不同实现可能产生不同的签名 (RFC6979 + low-s), 但 signing hash 必一致.
+    /// Different implementations may produce different signatures (RFC6979 + low-s), but the signing hash must match.
     #[test]
     fn personal_sign_hello_world() {
         let msg = b"Hello, world!";
@@ -129,7 +129,7 @@ mod tests {
         );
     }
 
-    /// 签名前缀正确性测试: `\x19Ethereum Signed Message:\n` + len + msg
+    /// Signing prefix correctness test: `\x19Ethereum Signed Message:\n` + len + msg
     #[test]
     fn personal_sign_prefix_format() {
         let msg = b"test";
@@ -142,7 +142,7 @@ mod tests {
         );
     }
 
-    /// 空消息 edge case
+    /// Empty message edge case
     #[test]
     fn personal_sign_empty_message() {
         let msg = b"";
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(h, expected);
     }
 
-    /// UTF-8 中文消息
+    /// UTF-8 Chinese message
     #[test]
     fn personal_sign_utf8_chinese() {
         let msg = "你好,世界".as_bytes();
@@ -166,7 +166,7 @@ mod tests {
         );
     }
 
-    /// 长字符串 (>1KB) 不 panic
+    /// Long strings (>1KB) do not panic
     #[test]
     fn personal_sign_long_message() {
         let msg = vec![0xab; 1024];
@@ -178,7 +178,7 @@ mod tests {
         assert_ne!(h, [0u8; 32]);
     }
 
-    /// 端到端: 签名 + v ∈ {27, 28} + r/s 不为零
+    /// End-to-end: signature + v ∈ {27, 28} + nonzero r/s
     #[test]
     fn personal_sign_end_to_end() {
         let pk_hex = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -200,7 +200,7 @@ mod tests {
         assert_ne!(sig.s, [0u8; 32]);
     }
 
-    /// 验证 personal_sign 确定性: 同一输入 → 同一输出
+    /// Verify personal_sign determinism: same input → same output
     #[test]
     fn personal_sign_deterministic() {
         let msg = b"deterministic test";
@@ -224,12 +224,12 @@ mod tests {
         assert_eq!(sig1.signing_hash, sig2.signing_hash);
     }
 
-    /// round-trip: sign + recover (验证签名者公钥一致)
+    /// round-trip: sign + recover (verifies the signer public key matches)
     #[test]
     fn personal_sign_recover_round_trip() {
         use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed};
 
-        // 测试私钥
+        // test private key
         let pk_hex = "4646464646464646464646464646464646464646464646464646464646464646";
         let mut pk_bytes = [0u8; 32];
         pk_bytes.copy_from_slice(&hex_decode(pk_hex));
@@ -239,34 +239,34 @@ mod tests {
             private_key: SecretBytes::new(pk_bytes),
         };
 
-        // 1. 签名
+        // 1. Sign
         let sig = personal_sign(&input).unwrap();
 
-        // 2. 构造 65-byte 签名
+        // 2. Build the 65-byte signature
         let mut sig_65 = [0u8; 65];
         sig_65[..32].copy_from_slice(sig.r.as_slice());
         sig_65[32..64].copy_from_slice(sig.s.as_slice());
         sig_65[64] = sig.v;
 
-        // 3. 从签名恢复公钥
+        // 3. Recover the public key from the signature
         let recovered_pk = personal_ec_recover(&input.message, &sig_65).unwrap();
 
-        // 4. 直接从私钥算公钥
+        // 4. Compute the public key directly from the private key
         let sk = sign::sk_from_pk(&pk_bytes).unwrap();
         let pk_point = base_mul(&sk);
         let pk_compressed = point_to_compressed(&pk_point);
 
-        // 5. 比对: recovered_pk 末 64 bytes (x||y) vs 已知公钥
-        // k256 VerifyingKey.to_encoded_point(false) 输出 65 bytes: 0x04 || x (32) || y (32)
-        // recovered_pk 是 64 bytes (x || y), 跳过 0x04 前缀
-        // pk_compressed 是 33 bytes, 不直接比较
-        // 简化: 通过对 pk_compressed 的 x bytes 比对验证
-        // pk_compressed[1..33] 是 x coordinate (33 bytes = 1 prefix + 32 x)
+        // 5. Compare: last 64 bytes of recovered_pk (x||y) vs the known public key
+        // k256 VerifyingKey.to_encoded_point(false) outputs 65 bytes: 0x04 || x (32) || y (32)
+        // recovered_pk is 64 bytes (x || y), skipping the 0x04 prefix
+        // pk_compressed is 33 bytes; do not compare directly
+        // simplified: verify by comparing the x bytes of pk_compressed
+        // pk_compressed[1..33] is the x coordinate (33 bytes = 1 prefix + 32 x)
         let pk_x = &pk_compressed[1..33];
         let recovered_x = &recovered_pk[..32];
         assert_eq!(pk_x, recovered_x, "recovered x must match pk x coordinate");
-        // y parity: 验证 recovered y 坐标 parity 与原始 pk 一致
-        // recovered_pk[63] 的 LSB 表示 y parity (0 = even, 1 = odd)
+        // y parity: verify the recovered y coordinate parity matches the original pk
+        // the LSB of recovered_pk[63] is the y parity (0 = even, 1 = odd)
         let recovered_y_parity = (recovered_pk[63] & 1) as u8;
         // pk_compressed prefix: 0x02 = even y, 0x03 = odd y
         let pk_y_parity = pk_compressed[0] - 0x02;
@@ -275,8 +275,8 @@ mod tests {
             "recovered y parity ({}) must match pk y parity ({})",
             recovered_y_parity, pk_y_parity
         );
-        // 注: sig.v 可能因 low-s flip 而与 pk_y_parity 不同 (这是 EIP-2/BIP-146 正确行为)
-        // recover_from_prehash 必须用正确的 y_parity 才能恢复出正确的 pk
+        // note: sig.v may differ from pk_y_parity due to a low-s flip (correct EIP-2/BIP-146 behavior)
+        // recover_from_prehash needs the correct y_parity to recover the right pk
         let sig_y_parity = sig.v - 27;
         assert!(
             sig_y_parity == pk_y_parity || sig_y_parity == 1 - pk_y_parity,

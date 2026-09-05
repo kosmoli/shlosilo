@@ -1,13 +1,13 @@
-//! ETH EIP-155 Legacy transaction 签名（Phase 5 v8）
+//! ETH EIP-155 Legacy transaction signing (Phase 5 v8)
 //!
-//! 实现：
-//! - EIP-155 transaction 数据结构
+//! Implements:
+//! - EIP-155 transaction data structure
 //! - EIP-155 signing hash（`keccak256(rlp([nonce, gas_price, gas_limit, destination, amount, data, chain_id, 0, 0]))`）
-//! - sign_eip155 业务函数（sighash → ECDSA → r/s + y_parity → v = chain_id*2 + 35 + y_parity → 拼装 signed tx）
+//! - sign_eip155 business function (sighash → ECDSA → r/s + y_parity → v = chain_id*2 + 35 + y_parity → assemble the signed tx)
 //!
-//! ## 算法摘要
+//! ## Algorithm summary
 //!
-//! **EIP-155 signing hash**（注意没有 type prefix，跟 EIP-1559 不同）：
+//! **EIP-155 signing hash** (note: no type prefix, unlike EIP-1559):
 //! ```text
 //! keccak256(rlp([
 //!   nonce,
@@ -17,12 +17,12 @@
 //!   amount,
 //!   data,
 //!   chain_id,
-//!   0,                     // EIP-155 标记
-//!   0,                     // EIP-155 标记
+//!   0,                     // EIP-155 marker
+//!   0,                     // EIP-155 marker
 //! ]))
 //! ```text
 //!
-//! **EIP-155 signed transaction format**（无 type prefix）：
+//! **EIP-155 signed transaction format** (no type prefix):
 //! ```text
 //! rlp([
 //!   nonce, gas_price, gas_limit, destination, amount, data,
@@ -30,9 +30,9 @@
 //! ])
 //! ```text
 //!
-//! **v** = `chain_id * 2 + 35 + y_parity`（y_parity = 0 或 1）
-//! - mainnet chain_id = 1 → v = 37 或 38
-//! - 旧未签名 v 是 27/28（pre-EIP-155）
+//! **v** = `chain_id * 2 + 35 + y_parity` (y_parity = 0 or 1)
+//! - mainnet chain_id = 1 → v = 37 or 38
+//! - The old unsigned v is 27/28 (pre-EIP-155)
 
 extern crate alloc;
 use crate::chain::eth::rlp;
@@ -42,7 +42,7 @@ use crate::error::Result;
 use crate::types::SecretBytes;
 use alloc::vec::Vec;
 
-/// EIP-155 Legacy transaction（未签名）
+/// EIP-155 Legacy transaction (unsigned)
 #[derive(Clone, Debug)]
 pub struct Eip155Transaction {
     pub chain_id: u64,
@@ -55,18 +55,18 @@ pub struct Eip155Transaction {
     pub data: Vec<u8>,
 }
 
-/// 签名输入
+/// Signing input
 ///
-/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+/// P1-03: the private key uses `SecretBytes<32>` — no Clone or Debug, ZeroizeOnDrop, constant-time comparison.
 pub struct Eip155SignInput {
     pub tx: Eip155Transaction,
     pub private_key: SecretBytes<32>,
 }
 
-/// 签名输出
+/// Signing output
 #[derive(Clone, Debug)]
 pub struct Eip155SignedTx {
-    /// 完整签名交易 bytes (rlp([..., v, r, s])) — 无 type prefix
+    /// Full signed transaction bytes (rlp([..., v, r, s])) — no type prefix
     pub tx_bytes: Vec<u8>,
     /// signing hash
     pub signing_hash: [u8; 32],
@@ -80,7 +80,7 @@ pub struct Eip155SignedTx {
 
 // ─── EIP-155 signing hash ────────────────────────────────────────
 
-/// 计算 EIP-155 signing hash
+/// Compute the EIP-155 signing hash
 ///
 /// `keccak256(rlp([nonce, gas_price, gas_limit, destination, amount, data, chain_id, 0, 0]))`
 pub fn signing_hash(tx: &Eip155Transaction) -> Result<[u8; 32]> {
@@ -88,7 +88,7 @@ pub fn signing_hash(tx: &Eip155Transaction) -> Result<[u8; 32]> {
     keccak256::hash(&preimage)
 }
 
-/// 计算 signing preimage bytes
+/// Compute the signing preimage bytes
 pub fn signing_preimage(tx: &Eip155Transaction) -> Vec<u8> {
     let nonce_rlp = rlp::encode_uint(tx.nonce as u128);
     let gas_price_rlp = rlp::encode_uint(tx.gas_price);
@@ -118,9 +118,9 @@ pub fn signing_preimage(tx: &Eip155Transaction) -> Vec<u8> {
     ])
 }
 
-// ─── sign_eip155 业务函数 ──────────────────────────────────────────
+// ─── sign_eip155 business function ──────────────────────────────────────────
 
-/// 签名 EIP-155 legacy transaction
+/// Sign an EIP-155 legacy transaction
 pub fn sign_eip155(input: &Eip155SignInput) -> Result<Eip155SignedTx> {
     let sk = sign::sk_from_pk(input.private_key.expose())?;
 
@@ -172,7 +172,7 @@ pub fn sign_eip155(input: &Eip155SignInput) -> Result<Eip155SignedTx> {
     })
 }
 
-// ─── 测试 ──────────────────────────────────────────────────────────
+// ─── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -201,7 +201,7 @@ mod tests {
         out
     }
 
-    /// EIP-155 test vector（Python + pycryptodome + ecdsa lib 算的对照值）
+    /// EIP-155 test vector (reference values computed with Python + pycryptodome + the ecdsa lib)
     /// private_key: 0x4646464646464646464646464646464646464646464646464646464646464646
     /// chain_id: 1, nonce: 9, gas_price: 20 gwei, gas_limit: 21000
     /// destination: 0x3535353535353535353535353535353535353535
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(&hash[..], &expected_bytes[..], "signing hash mismatch");
     }
 
-    /// 完整 sign_eip155 + 比对 signed tx
+    /// Full sign_eip155 + compare the signed tx
     #[test]
     fn sign_eip155_full_pipeline() {
         let private_key_bytes =
@@ -248,17 +248,17 @@ mod tests {
         let input = Eip155SignInput { tx, private_key };
         let signed = sign_eip155(&input).unwrap();
 
-        // 验证 signing hash
+        // Verify the signing hash
         let expected_hash = "daf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53";
         let expected_hash_bytes = hex_decode(expected_hash);
         assert_eq!(&signed.signing_hash[..], &expected_hash_bytes[..]);
 
-        // 验证 v = chain_id * 2 + 35 + y_parity
-        // Python ecdsa lib + k256 0.14 都输出 low-s + y_parity=0 (s < n/2)
+        // Verify v = chain_id * 2 + 35 + y_parity
+        // Python ecdsa lib + k256 0.14 both output low-s + y_parity=0 (s < n/2)
         // → v = 1*2 + 35 + 0 = 37
         assert_eq!(signed.v, 37);
 
-        // 验证完整 signed tx
+        // Verify the full signed tx
         // v = 0x25 (37), r = 0x28ef..., s = 0x67cb...
         let expected_tx = "f86c098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a76400008025a028ef61340bd939bc2195fe537567866003e1a15d3c71ff63e1590620aa636276a067cbe9d8997f761aecb703304b3800ccf555c9f3dc64214b297fb1966a3b6d83";
         let expected_tx_bytes = hex_decode(expected_tx);
@@ -269,7 +269,7 @@ mod tests {
         );
     }
 
-    /// 确定性：相同输入 → 相同输出
+    /// Determinism: same input → same output
     #[test]
     fn deterministic_signing() {
         let private_key_bytes =
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(signed1.tx_bytes, signed2.tx_bytes, "must be deterministic");
     }
 
-    /// 不同 chain_id → 不同 signing hash
+    /// Different chain_id → different signing hash
     #[test]
     fn different_chain_id_different_hash() {
         let tx_mainnet = Eip155Transaction {

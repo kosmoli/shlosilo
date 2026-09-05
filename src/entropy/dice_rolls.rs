@@ -1,18 +1,18 @@
-//! dice-rolls 骰子输入 → 熵 bytes 转换（v1.1 修订）
+//! dice-rolls dice input → entropy bytes conversion (v1.1 revision)
 //!
-//! **设计原则**：
-//! - 用户选 `{sides, total_entropy_bits}` → 程序算 `rolls_needed`
-//! - 每掷一次的 bits 数：`bits_per_digit(sides) = floor(log2(sides))`
-//! - `minimum_rolls(sides, required_entropy_bits)` 是 L1 纯函数（用户明确）
-//! - **d6 base-6 累乘 → base-N 累乘通用算法**（u32 数组模拟 256-bit bigint）
+//! **Design principles**:
+//! - The user picks `{sides, total_entropy_bits}` → the program computes `rolls_needed`
+//! - Bits per roll: `bits_per_digit(sides) = floor(log2(sides))`
+//! - `minimum_rolls(sides, required_entropy_bits)` is an L1 pure function (user-specified)
+//! - **d6 base-6 cumulative multiply → generalized base-N algorithm** (u32 array emulating a 256-bit bigint)
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// 每掷一次获得的最大 entropy bit 数（floor(log2(sides))）
+/// Max entropy bits gained per roll (floor(log2(sides)))
 ///
-/// 整数实现：避免 no_std 下浮点依赖。多掷 1-2 次补足上界，永远安全。
+/// Integer implementation: avoids floating-point dependencies under no_std. Rolling 1-2 extra times covers the upper bound, always safe.
 pub fn bits_per_digit(sides: u8) -> u16 {
-    debug_assert!(sides >= 2, "sides 必须 >= 2");
+    debug_assert!(sides >= 2, "sides must be >= 2");
     if sides <= 3 {
         1
     } else if sides <= 7 {
@@ -30,9 +30,9 @@ pub fn bits_per_digit(sides: u8) -> u16 {
     }
 }
 
-/// 最少需要掷几次
+/// Minimum number of rolls required
 ///
-/// 上取整 = (required_entropy_bits + bits_per_digit - 1) / bits_per_digit
+/// Ceiling = (required_entropy_bits + bits_per_digit - 1) / bits_per_digit
 pub fn minimum_rolls(sides: u8, required_entropy_bits: u16) -> u16 {
     let bpd = bits_per_digit(sides);
     if bpd == 0 {
@@ -42,37 +42,37 @@ pub fn minimum_rolls(sides: u8, required_entropy_bits: u16) -> u16 {
     }
 }
 
-/// dice-rolls → entropy bytes（base-N 大整数 + rejection sampling，严格无偏）
+/// dice-rolls → entropy bytes (base-N bigint + rejection sampling, strictly unbiased)
 ///
-/// **X5 v2 方案（2026-08-31，采纳 GPT 复审建议——rejection sampling）**：
+/// **X5 v2 scheme (2026-08-31, adopting GPT review advice — rejection sampling)**:
 ///
-/// 1. 骰序解释为 base-sides 大整数：digit = roll − 1 ∈ [0, sides−1]，
-///    X = Σ digitᵢ·sides^(k−1−i)，则 X 在 [0, N) 均匀分布，N = sides^k。
-/// 2. 目标空间 T = 2^(8·required_len)。若 N < T → 熵不足，拒绝整个输入。
-/// 3. q = ⌊N / T⌋；若 X ≥ q·T → rejection（该样本落入余数区），返回
-///    `DiceRejectionRolls` 错误。**安全语义：整组作废、完整重掷**——
-///    在已落入余数区的样本上追加骰子并把旧序列当前缀重算，得到的不再是
-///    [0, sides^(k+1)) 上的均匀样本（P0-A 附带整改，原「补掷」文案错误）。
-/// 4. 输出 = X mod T。
+/// 1. Interpret the roll sequence as a base-sides bigint: digit = roll − 1 ∈ [0, sides−1],
+///    X = Σ digitᵢ·sides^(k−1−i); then X is uniform on [0, N) where N = sides^k.
+/// 2. Target space T = 2^(8·required_len). If N < T → insufficient entropy, reject the whole input.
+/// 3. q = ⌊N / T⌋; if X ≥ q·T → rejection (the sample falls in the remainder zone), return
+///    the `DiceRejectionRolls` error. **Security semantics: void the entire set and re-roll from scratch** —
+///    appending dice to a sample already in the remainder zone and recomputing with the old sequence as prefix no longer yields
+///    a uniform sample on [0, sides^(k+1)) (incidental P0-A remediation; the original "top-up roll" wording was wrong).
+/// 4. Output = X mod T.
 ///
-/// **均匀性证明**：接受集 [0, q·T) 中每个 y ∈ [0, T) 恰有 q 个原像
-/// （对每个高段 h < q 与 Xl ∈ [0,T)），故 P(Y=y) = q / (q·T) = 1/T ——严格均匀，
-/// 均匀性完全来自骰子数学性质，**不依赖任何哈希函数的随机性假设**。
+/// **Uniformity proof**: every y ∈ [0, T) within the acceptance set [0, q·T) has exactly q preimages
+/// (for each high segment h < q and Xl ∈ [0,T)), so P(Y=y) = q / (q·T) = 1/T — strictly uniform;
+/// uniformity comes entirely from the mathematics of dice, **not from any randomness assumption about a hash function**.
 ///
-/// **拒绝概率** = (N mod T) / N。128×d6 → 2^(−75)（约 3×10⁻²³，实际不可遇）；
-/// 最小配置（如 100×d6 → N=6¹⁰⁰≈2²⁵⁸.₅）拒绝率 < 2⁻²⁵⁴·… 仍可忽略；
+/// **Rejection probability** = (N mod T) / N. 128×d6 → 2^(−75) (about 3×10⁻²³, practically never encountered);
+/// even the minimal configuration (e.g. 100×d6 → N=6¹⁰⁰≈2²⁵⁸.₅) has a rejection rate < 2⁻²⁵⁴·…, still negligible;
 /// d20+64 rolls（N=20⁶⁴≈2²⁷⁷）→ 5.7×10⁻⁷。
 ///
-/// **实现要点**：
-/// - 384-bit 累加器（u32×12）：支持 sides^k 最高 ~380 bit（255 面 × 47 rolls 等）
-/// - X ≥ q·T 判据无需 384-bit 除法：X ≥ q·2⁲⁵⁶ ⟺ (X >> 256) ≥ q，
-///   其中 q = N >> 256 —— 全部用移位实现
-/// - **X 必须先比较后取模**——先 mod 再比较会引入偏差（正是本函数修复的 bug）
-/// - digit = roll − 1（[0, sides−1]）：X 从 0 起步覆盖全空间。
-///   （v1 实现的 acc=1 起步 + digit∈[1,sides] 会把熵压缩到 256-bit 空间的一个
-///   ~3% 高位子区间——实际熵量远低于名义值，这是比 modulo bias 更严重的缺陷）
+/// **Implementation notes**:
+/// - 384-bit accumulator (u32×12): supports sides^k up to ~380 bit (e.g. 255 sides × 47 rolls)
+/// - The X ≥ q·T test needs no 384-bit division: X ≥ q·2⁲⁵⁶ ⟺ (X >> 256) ≥ q,
+///   where q = N >> 256 — implemented entirely with shifts
+/// - **X must be compared before taking the modulo** — modding first then comparing introduces bias (exactly the bug this function fixed)
+/// - digit = roll − 1 ([0, sides−1]): X starts from 0, covering the full space.
+///   (The v1 implementation's acc=1 start plus digit∈[1,sides] compressed entropy into a ~3% high sub-range of the
+///   256-bit space — actual entropy far below the nominal value, a flaw worse than modulo bias)
 ///
-/// **v2.4 安全**：不返回 owned `Scalar`——返回 owned bytes，业务模块不持有私钥副本。
+/// **v2.4 security**: does not return an owned `Scalar` — returns owned bytes, so business modules hold no private-key copy.
 pub fn dice_rolls_to_entropy(
     sides: u8,
     rolls: &[u8],
@@ -87,31 +87,31 @@ pub fn dice_rolls_to_entropy(
         return Err(ShlosiloError::new(ShlosiloErrorKind::InsufficientRolls));
     }
     if required_len == 0 || required_len > 32 {
-        // 骰子熵用于助记词种子：上限 32 bytes（256 bit）
+        // Dice entropy feeds the mnemonic seed: cap 32 bytes (256 bit)
         return Err(ShlosiloError::new(ShlosiloErrorKind::InvalidDiceConfig));
     }
-    // 校验每个 roll ∈ [1, sides]（先于任何计算，错误语义最准）
+    // Validate each roll ∈ [1, sides] (before any computation, for the most precise error semantics)
     for &r in rolls.iter() {
         if r < 1 || r > sides {
-            // 复用 MnemonicInvalidWord 作为 generic "out of range" 错误
+            // Reuse MnemonicInvalidWord as a generic "out of range" error
             return Err(ShlosiloError::new(ShlosiloErrorKind::MnemonicInvalidWord));
         }
     }
 
     let target_bits = required_len * 8;
 
-    // 熵量预算检查：N = sides^k 必须 ≥ T = 2^target_bits。
-    // 用精确累乘的 bit 长度判断（不用浮点 log）：
-    //   log2(N) = Σ log2(sides) —— 改用精确判定：逐步乘并跟踪最高位。
-    // 简化实现：先累乘（384-bit 足够：sides ≤ 255, rolls ≤ 47 → 47×8=376 bit 上限；
-    //   rolls 更长时提前拒绝以防累加器溢出——见下方 rolls 上限注释）。
-    // 容量检查（P0-A 整改 2026-09-01）：不再用 Σ floor(log2(sides)) 估算——
-    // 该判据不精确（d6 按 2bit/掷允许 192 掷，但 6^k 在 k≥149 已超 384 bit）。
-    // 改为依赖下方 N/X 累乘的显式 carry 检查：任何一步 carry≠0 即 sides^k 超出
-    // 384-bit 容量 → 立即返回错误。这是精确判据（bit_length(sides^k) > 384 ⟺
-    // 累乘过程中最高位产生进位），release 与 debug 行为一致。
+    // Entropy budget check: N = sides^k must be ≥ T = 2^target_bits.
+    // Judge by the exact bit length of the cumulative product (no floating-point log):
+    //   log2(N) = Σ log2(sides) — replaced with an exact test: multiply step by step and track the highest bit.
+    // Simplified implementation: accumulate first (384-bit suffices: sides ≤ 255, rolls ≤ 47 → 47×8=376 bit cap;
+    //   longer rolls are rejected early to prevent accumulator overflow — see the rolls cap comment below).
+    // Capacity check (P0-A remediation 2026-09-01): no longer estimate with Σ floor(log2(sides)) —
+    // that test is imprecise (d6 at 2bit/roll would allow 192 rolls, but 6^k exceeds 384 bit at k≥149).
+    // Instead rely on the explicit carry check in the N/X accumulation below: any carry≠0 means sides^k exceeds
+    // the 384-bit capacity → return an error immediately. This is an exact test (bit_length(sides^k) > 384 ⟺
+    // the cumulative product produces a carry into the top limb), with identical release/debug behavior.
 
-    // 大数累乘：X = Σ digitᵢ·sides^(k−1−i)，digit = roll − 1，X 从 0 起步
+    // Bigint accumulation: X = Σ digitᵢ·sides^(k−1−i), digit = roll − 1, X starts from 0
     let mut acc = [0u32; ACC_LIMBS];
     for &r in rolls {
         let digit = (r - 1) as u64;
@@ -122,16 +122,16 @@ pub fn dice_rolls_to_entropy(
             carry = product >> 32;
         }
         if carry != 0 {
-            // P0-A：显式错误分支（原 debug_assert 在 release 被移除 → 静默截断破坏无偏性）
+            // P0-A: explicit error branch (the original debug_assert was compiled out in release → silent truncation broke unbiasedness)
             return Err(ShlosiloError::new(ShlosiloErrorKind::InvalidDiceConfig));
         }
     }
 
-    // q = N >> target_bits … 但我们只有 X 没有 N。
-    // 改用等价判据：X < q·T ⟺ (X >> target_bits) < ⌊N / T⌋。
-    // N = sides^k 精确值未知，但 q 的作用只是划定接受区间 [0, q·T)。
-    // 直接计算 rejection 条件：X mod T 之前的整段 X 属于 [0, N)。
-    // 需要 N 才能算 q。改为在累乘过程中同步计算 N = sides^k（同宽度大数）：
+    // q = N >> target_bits … but we only have X, not N.
+    // Use the equivalent test: X < q·T ⟺ (X >> target_bits) < ⌊N / T⌋.
+    // The exact value of N = sides^k is unknown, but q's only role is to bound the acceptance interval [0, q·T).
+    // Compute the rejection condition directly: the whole X before X mod T lies in [0, N).
+    // q needs N. Instead, compute N = sides^k in lockstep during accumulation (same-width bigint):
     let mut n_acc = [0u32; ACC_LIMBS];
     n_acc[0] = 1;
     for _ in rolls.iter() {
@@ -142,12 +142,12 @@ pub fn dice_rolls_to_entropy(
             carry = product >> 32;
         }
         if carry != 0 {
-            // P0-A：N = sides^k 超 384-bit 容量——显式拒绝（release/debug 一致）
+            // P0-A: N = sides^k exceeds the 384-bit capacity — explicit rejection (release/debug consistent)
             return Err(ShlosiloError::new(ShlosiloErrorKind::InvalidDiceConfig));
         }
     }
 
-    // q = N >> target_bits（target_bits ≤ 256 < 384，移位量按 limb 组合）
+    // q = N >> target_bits (target_bits ≤ 256 < 384; shift amount composed from limbs)
     let q = shr_limbs(&n_acc, target_bits);
     // Xh = X >> target_bits
     let xh = shr_limbs(&acc, target_bits);
@@ -157,7 +157,7 @@ pub fn dice_rolls_to_entropy(
         return Err(ShlosiloError::new(ShlosiloErrorKind::DiceRejectionRolls));
     }
 
-    // 输出 = X mod T = X 的低 target_bits 位（LE bytes）
+    // Output = X mod T = the low target_bits of X (LE bytes)
     let mut result: heapless::Vec<u8, 64> = heapless::Vec::new();
     'outer: for &limb in acc.iter() {
         for b in limb.to_le_bytes() {
@@ -173,7 +173,7 @@ pub fn dice_rolls_to_entropy(
     Ok(result)
 }
 
-/// 大数右移 bit 位（limb 数组，LE 序）
+/// Bigint right shift by bit positions (limb array, LE order)
 fn shr_limbs(v: &[u32; 12], bits: usize) -> [u32; 12] {
     let mut out = [0u32; 12];
     let limb_shift = bits / 32;
@@ -192,7 +192,7 @@ fn shr_limbs(v: &[u32; 12], bits: usize) -> [u32; 12] {
     out
 }
 
-/// 大数比较 a >= b（limb 数组，LE 序，从高位往低位比）
+/// Bigint comparison a >= b (limb array, LE order, compared from high limb to low)
 fn ge_limbs(a: &[u32; 12], b: &[u32; 12]) -> bool {
     for i in (0..12).rev() {
         match a[i].cmp(&b[i]) {
@@ -201,24 +201,24 @@ fn ge_limbs(a: &[u32; 12], b: &[u32; 12]) -> bool {
             core::cmp::Ordering::Equal => continue,
         }
     }
-    true // 全等
+    true // all equal
 }
 
 #[test]
 fn p0a_accumulator_overflow_rejected() {
-    // P0-A 回归（2026-09-01 再复审）: 6^k 超 384-bit 容量必须显式 Err 而非 panic/截断。
-    // 旧预算判据 rolls*floor(log2(sides)) 允许 192x d6, 但 6^149 已超 384 bit。
+    // P0-A regression (re-reviewed 2026-09-01): 6^k exceeding the 384-bit capacity must be an explicit Err, not panic/truncation.
+    // The old budget test rolls*floor(log2(sides)) allowed 192x d6, but 6^149 already exceeds 384 bit.
     let rolls = [6u8; 149];
     assert!(dice_rolls_to_entropy(6, &rolls, 32).is_err());
     let rolls = [6u8; 192];
     assert!(dice_rolls_to_entropy(6, &rolls, 32).is_err());
-    // 容量边界内仍可用: 6^148 = 383.4 bit <= 384 (X=0 全 1 序列)
+    // Just within capacity: 6^148 = 383.4 bit <= 384 (all-1 sequence, X=0)
     let rolls = [1u8; 148];
     assert!(dice_rolls_to_entropy(6, &rolls, 32).is_ok());
-    // d20 边界: 20^96 > 2^384 (floor(log2)=4bit/掷 曾允许 96 掷) -> Err
+    // d20 boundary: 20^96 > 2^384 (floor(log2)=4bit/roll once allowed 96 rolls) -> Err
     let rolls = [20u8; 96];
     assert!(dice_rolls_to_entropy(20, &rolls, 32).is_err());
-    // d20 合法容量: 20^91 = 393.9 bit? no: 20^80 = 346 bit fits
+    // d20 legal capacity: 20^91 = 393.9 bit? no: 20^80 = 346 bit fits
     let rolls = [1u8; 80];
     assert!(dice_rolls_to_entropy(20, &rolls, 32).is_ok());
 }
@@ -228,24 +228,24 @@ mod tests {
 
     #[test]
     fn bits_per_digit_table() {
-        assert_eq!(bits_per_digit(2), 1); // 硬币
+        assert_eq!(bits_per_digit(2), 1); // coin
         assert_eq!(bits_per_digit(4), 2);
         assert_eq!(bits_per_digit(6), 2); // DND d6
         assert_eq!(bits_per_digit(8), 3);
         assert_eq!(bits_per_digit(16), 4);
         assert_eq!(bits_per_digit(20), 4); // DND d20
         assert_eq!(bits_per_digit(64), 6);
-        assert_eq!(bits_per_digit(100), 6); // 百分骰
+        assert_eq!(bits_per_digit(100), 6); // percentile die
         assert_eq!(bits_per_digit(255), 7);
     }
 
     #[test]
     fn minimum_rolls_examples() {
-        // 256 bit + 6 面骰（floor(log2(6))=2，ceil(256/2)=128）
+        // 256 bit + d6 (floor(log2(6))=2, ceil(256/2)=128)
         assert_eq!(minimum_rolls(6, 256), 128);
         // 256 bit + d20（floor(log2(20))=4，ceil(256/4)=64）
         assert_eq!(minimum_rolls(20, 256), 64);
-        // 128 bit + 硬币（floor(log2(2))=1，ceil(128/1)=128）
+        // 128 bit + coin (floor(log2(2))=1, ceil(128/1)=128)
         assert_eq!(minimum_rolls(2, 128), 128);
         // 256 bit + d100（floor(log2(100))=6，ceil(256/6)=43）
         assert_eq!(minimum_rolls(100, 256), 43);
@@ -253,8 +253,8 @@ mod tests {
 
     #[test]
     fn d6_rolls_produce_entropy() {
-        // 6 面骰 × 44 rolls（6^44 ≈ 2^113.8 > 2^96）→ 12 byte entropy
-        // v1 的 12 rolls = 6^12 ≈ 2^31 < 2^96 本来就熵不足（v2 显式拒绝）
+        // d6 × 44 rolls (6^44 ≈ 2^113.8 > 2^96) → 12 byte entropy
+        // v1's 12 rolls = 6^12 ≈ 2^31 < 2^96 was already entropy-deficient (v2 rejects explicitly)
         let rolls = [
             3u8, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6,
             2, 4, 3, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4, 3, 5,
@@ -263,39 +263,39 @@ mod tests {
         assert_eq!(entropy.len(), 12);
     }
 
-    /// X5 v2: rejection sampling 语义——熵不足（N < T）拒绝
+    /// X5 v2: rejection sampling semantics — insufficient entropy (N < T) rejected
     #[test]
     fn insufficient_entropy_rejected() {
-        // d6 × 12 rolls = 6^12 ≈ 2^31 < 2^256 → N < T 必拒（因为 X 不足 32 字节）
-        // 但注意 required_len=16 时 T=2^128 > 6^12 → Xh=0, q=0 → Xh>=q → 拒绝 ✓
+        // d6 × 12 rolls = 6^12 ≈ 2^31 < 2^256 → N < T, always rejected (X cannot fill 32 bytes)
+        // note with required_len=16, T=2^128 > 6^12 → Xh=0, q=0 → Xh>=q → rejected ✓
         let rolls = [3u8; 12];
         let r = dice_rolls_to_entropy(6, &rolls, 16);
         assert!(r.is_err(), "N < T must be rejected");
     }
 
-    /// X5 v2: rejection sampling——构造落入余数区的样本
+    /// X5 v2: rejection sampling — construct a sample falling in the remainder zone
     #[test]
     fn rejection_sample_detected() {
         // d6 × 100 rolls: N = 6^100 ≈ 2^258.5, T = 2^256, q = ⌊N/T⌋ ≈ 5.9
-        // 全 6（digit=5）→ X = 6^100 − 1（最大编码）→ Xh = (N−1)>>256 = q → 拒绝区
+        // all 6s (digit=5) → X = 6^100 − 1 (max encoding) → Xh = (N−1)>>256 = q → rejection zone
         let rolls = [6u8; 100];
         let r = dice_rolls_to_entropy(6, &rolls, 32);
         assert_eq!(r.err().unwrap().kind, ShlosiloErrorKind::DiceRejectionRolls);
-        // 全 1（digit=0）→ X = 0 → 接受
+        // all 1s (digit=0) → X = 0 → accepted
         let rolls_lo = [1u8; 100];
         assert!(dice_rolls_to_entropy(6, &rolls_lo, 32).is_ok());
     }
 
-    /// X5 v2: 128×d6 现在合法且通过（v1 上界方案拒绝了这个组合）
+    /// X5 v2: 128×d6 is now legal and passes (the v1 upper-bound scheme rejected this combination)
     #[test]
     fn d6_128_rolls_accepted() {
-        let rolls = [3u8; 128]; // digit=2 序列, X < 6^128, X >> 256 < q
+        let rolls = [3u8; 128]; // digit=2 sequence, X < 6^128, X >> 256 < q
         let r = dice_rolls_to_entropy(6, &rolls, 32);
         assert!(r.is_ok(), "128xd6 should pass (reject prob 2^-75)");
         assert_eq!(r.unwrap().len(), 32);
     }
 
-    /// X5 v2 golden 向量：与 Python 大数 oracle 逐字节一致
+    /// X5 v2 golden vector: byte-for-byte identical to the Python bigint oracle
     /// （d6 × 44 rolls, 12 bytes; python: X=Σ digit·6^i, ent=(X mod 2^96).to_le(12)）
     #[test]
     fn golden_vector_python_oracle() {
@@ -309,30 +309,30 @@ mod tests {
         assert_eq!(e.as_slice(), &expected[..]);
     }
 
-    /// X5 v2: 全 0 digit 序列 → X=0 → 接受且输出全零
+    /// X5 v2: all-zero digit sequence → X=0 → accepted with all-zero output
     #[test]
     fn all_ones_d6_gives_zero_entropy() {
-        // roll=1 → digit=0 → X=0 → 接受, entropy 全零
+        // roll=1 → digit=0 → X=0 → accepted, entropy all zero
         let rolls = [1u8; 128];
         let e = dice_rolls_to_entropy(6, &rolls, 32).unwrap();
         assert!(e.iter().all(|&b| b == 0));
     }
 
-    /// X5 v2: 均匀性统计——128×d6 遍历部分骰序,输出分布桶近似均匀(冒烟)
+    /// X5 v2: uniformity statistics — sweep part of the 128×d6 roll space, output buckets roughly uniform (smoke)
     #[test]
     fn uniformity_smoke() {
-        // 小空间统计: 2 面 × 9 rolls → 8 bytes (T=2^64), N=2^9 < T → 不适用。
-        // 改用精确统计: 3 面 × 5 rolls → 3 bytes? T=2^24, N=243 < T。不行。
-        // d6 × 10 rolls → 4 bytes: N=6^10≈2^25.85, T=2^32 → N<T。也不行。
-        // d6 × 13 rolls → 5 bytes: N=6^13≈2^33.6 > T=2^40? 否。
-        // 直接: d6 × 24 rolls → 10 bytes: N=6^24≈2^62, T=2^80 → 不行。
-        // 可行的统计: 硬币 32 rolls → 4 bytes: N=2^32=T → q=1, L=N, 全接受,双射均匀。
-        // 用 d6 13 rolls → 5 bytes: N=6^13=13060694016, T=2^40≈1.1e12 → N<T 不行。
-        // d6 20 rolls → 8 bytes: N=6^20≈3.65e15, T=2^64≈1.8e19 → 不行。
+        // Small-space statistics: 2 sides × 9 rolls → 8 bytes (T=2^64), N=2^9 < T → not applicable.
+        // Exact statistics instead: 3 sides × 5 rolls → 3 bytes? T=2^24, N=243 < T. No.
+        // d6 × 10 rolls → 4 bytes: N=6^10≈2^25.85, T=2^32 → N<T. Also no.
+        // d6 × 13 rolls → 5 bytes: N=6^13≈2^33.6 > T=2^40? No.
+        // Directly: d6 × 24 rolls → 10 bytes: N=6^24≈2^62, T=2^80 → no.
+        // Workable statistics: coin 32 rolls → 4 bytes: N=2^32=T → q=1, L=N, all accepted, bijective uniformity.
+        // Try d6 13 rolls → 5 bytes: N=6^13=13060694016, T=2^40≈1.1e12 → N<T, no.
+        // d6 20 rolls → 8 bytes: N=6^20≈3.65e15, T=2^64≈1.8e19 → no.
         // d6 26 rolls → 8 bytes: N=6^26≈2.8e20 > T ✓ q=0? N<T bits: 6^26≈2^67.2 < 2^64?
-        // 6^26 = 2.84e20, 2^64=1.84e19 → N>T ✓. q = N>>64 = 15 (approx), rejection 区 ~ N mod 2^64
-        // 统计: 枚举 6^26 不可行。改为验证接受样本的最低字节覆盖广度(1000 随机骰序)
-        // ——完整统计均匀性由数学证明保证,这里只测无 crash + 错误域正确。
+        // 6^26 = 2.84e20, 2^64=1.84e19 → N>T ✓. q = N>>64 = 15 (approx), rejection zone ~ N mod 2^64
+        // Statistics: enumerating 6^26 is infeasible. Instead verify the low-byte coverage breadth of accepted samples (1000 random roll sequences)
+        // — full statistical uniformity is guaranteed by the mathematical proof; here we only test no crash + correct error domain.
         let mut accepted = 0u32;
         for seed in 0..100u8 {
             let rolls: alloc::vec::Vec<u8> = (0..26)
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn out_of_range_roll_rejected() {
-        // d6 但 rolls 包含 7（超出 [1, 6]）
+        // d6 but rolls include 7 (outside [1, 6])
         let result = dice_rolls_to_entropy(6, &[1, 2, 3, 7], 32);
         assert!(result.is_err());
     }

@@ -1,8 +1,8 @@
-//! UR 解码（BC-UR 单分片）— Phase 6 P6.0b 真实实现
+//! UR decoding (BC-UR single fragment) — Phase 6 P6.0b real implementation
 //!
-//! 输入 `ur:<type>/<body>`；body = bytewords-minimal(payload)。
-//! payload 原样返回（codec 再解析 CBOR）。multi-part 形状在 fountain
-//! 落地（P6.2）前显式拒绝。
+//! Input `ur:<type>/<body>`; body = bytewords-minimal(payload).
+//! payload returned as-is (the codec parses the CBOR next). multi-part shapes are
+//! explicitly rejected until the fountain lands (P6.2).
 
 use crate::encoding::bytewords;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -12,7 +12,7 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-/// UR 解码结果（原始 payload，让 codec / 业务模块进一步解析）
+/// UR decode result (raw payload for the codec / business modules to parse further)
 #[derive(Clone, PartialEq, Eq)]
 pub struct UrDecoded {
     bytes: heapless::Vec<u8, UR_PAYLOAD_MAX_LEN>,
@@ -37,7 +37,7 @@ impl core::fmt::Debug for UrDecoded {
     }
 }
 
-/// UR 解码（单分片）
+/// UR decoding (single fragment)
 pub fn decode(uri: &str) -> Result<UrDecoded> {
     let rest = uri.strip_prefix("ur:").ok_or_else(err)?;
     let (type_name, body) = rest.split_once('/').ok_or_else(err)?;
@@ -48,7 +48,7 @@ pub fn decode(uri: &str) -> Result<UrDecoded> {
     {
         return Err(err());
     }
-    // multi-part 形状（"1-2/"）暂不支持 → P6.2 fountain
+    // multi-part shape ("1-2/") not yet supported → P6.2 fountain
     if body.contains('/') {
         return Err(err());
     }

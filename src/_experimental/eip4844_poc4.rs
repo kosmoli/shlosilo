@@ -1,19 +1,19 @@
-//! ETH EIP-4844 Blob transaction 签名（Phase 5 v8.1 PoC4 保留）
+//! ETH EIP-4844 blob transaction signing (Phase 5 v8.1, kept in PoC4)
 //!
 //! ⚠️ **DEPRECATED (v9.0, 2026-08-22)**:
-//! - 用户决定正式项目移除 EIP-4844 (L2 rollup 内部使用, 用户签名器不会收到)
-//! - 此文件保留在 `src/_experimental/` 作为协议层参考
-//! - 不参与 `chain::eth` 编译路径
+//! - The user decided to drop EIP-4844 from the formal project (used internally by L2 rollups; a user signer will never receive one)
+//! - This file is kept in `src/_experimental/` as a protocol-layer reference
+//! - Not part of the `chain::eth` compile path
 //!
-//! 实现：EIP-4844 signing hash + sign_eip4844 业务函数
+//! Implements: the EIP-4844 signing hash + the sign_eip4844 business function
 //!
-//! ## KZG 边界（shlosilo 是签名器，只负责签名这一步）
+//! ## KZG boundary (shlosilo is a signer and is only responsible for the signing step)
 //!
-//! shlosilo **不实现** KZG commitment / proof 生成（不引入 c-kzg/eth-kzg 库，
-//! 避免 + 1.5MB~2MB binary + 50MB trusted setup）。调用方需自行提供：
+//! shlosilo does **not** implement KZG commitment / proof generation (no c-kzg/eth-kzg dependency,
+//! avoiding +1.5MB~2MB binary + 50MB trusted setup). Callers must provide:
 //! - `blob_versioned_hashes: Vec<[u8; 32]>` — 32-byte SHA256 truncated commitment
 //!
-//! ## 算法摘要
+//! ## Algorithm summary
 //!
 //! **EIP-4844 signing hash**:
  //! ```
@@ -43,11 +43,11 @@
 //! ```
 //!
 //! **blob_versioned_hashes RLP encoding**:
-//! - 数组: `rlp([hash1, hash2, ...])` — 每个 hash 32 bytes
+//! - Arrays: `rlp([hash1, hash2, ...])` — each hash is 32 bytes
 //! - 0 hashes: `rlp([])` = `0xc0`
 //! - 1 hash: `rlp([hash])` = `0xc1 0xa0 hash[0..32]`
 //!
-//! **不签名 elements** (per EIP-4844):
+//! **Not signed** (per EIP-4844):
 //! - `blobs` themselves (128KB each, stored on consensus layer)
 //! - `commitments` (KZG polynomial commitments)
 //! - `proofs` (KZG proofs)
@@ -65,7 +65,7 @@ pub type Address = [u8; 20];
 /// Versioned hash (EIP-4844 32 bytes, version byte = 0x01 prefix)
 pub type VersionedHash = [u8; 32];
 
-// ─── access_list RLP encoding (与 EIP-2930 复用) ──────────────────
+// --- access_list RLP encoding (shared with EIP-2930) ---------------
 
 /// EIP-2930 access list item
 #[derive(Clone, Debug)]
@@ -108,9 +108,9 @@ fn encode_blob_versioned_hashes(hashes: &[VersionedHash]) -> Vec<u8> {
     rlp::encode_list(&encoded)
 }
 
-// ─── EIP-4844 数据结构 ─────────────────────────────────────────────
+// --- EIP-4844 data structures --------------------------------------
 
-/// EIP-4844 Blob transaction（未签名）
+/// EIP-4844 blob transaction (unsigned)
 #[derive(Clone, Debug)]
 pub struct Eip4844Transaction {
     pub chain_id: u64,
@@ -118,7 +118,7 @@ pub struct Eip4844Transaction {
     pub max_priority_fee_per_gas: u128,
     pub max_fee_per_gas: u128,
     pub gas_limit: u64,
-    /// 20-byte destination address (EIP-4844 必带 to，不能为 None)
+    /// 20-byte destination address (EIP-4844 requires `to`; it cannot be None)
     pub destination: Address,
     pub amount: u128,
     pub data: Vec<u8>,
@@ -126,21 +126,21 @@ pub struct Eip4844Transaction {
     /// Wei per blob gas
     pub max_fee_per_blob_gas: u128,
     /// blob_versioned_hashes (32 bytes each)
-    /// 调用方需自行提供 (KZG commitment → SHA256[0..31] || 0x01)
+    /// Must be supplied by the caller (KZG commitment → SHA256[0..31] || 0x01)
     pub blob_versioned_hashes: Vec<VersionedHash>,
 }
 
-/// 签名输入
+/// Signing input
 #[derive(Clone, Debug)]
 pub struct Eip4844SignInput {
     pub tx: Eip4844Transaction,
     pub private_key: [u8; 32],
 }
 
-/// 签名输出
+/// Signing output
 #[derive(Clone, Debug)]
 pub struct Eip4844SignedTx {
-    /// 完整签名交易 bytes (0x03 || rlp([..., y_parity, r, s]))
+    /// Full signed transaction bytes (0x03 || rlp([..., y_parity, r, s]))
     pub tx_bytes: Vec<u8>,
     /// signing hash
     pub signing_hash: [u8; 32],
@@ -148,13 +148,13 @@ pub struct Eip4844SignedTx {
     pub r: [u8; 32],
     /// signature s
     pub s: [u8; 32],
-    /// y_parity: 0 或 1
+    /// y_parity: 0 or 1
     pub y_parity: u8,
 }
 
 // ─── EIP-4844 signing hash ────────────────────────────────────────
 
-/// 计算 EIP-4844 signing hash
+/// Compute the EIP-4844 signing hash
 ///
 /// `keccak256(0x03 || rlp([chain_id, nonce, max_prio, max_fee, gas_limit, dest, amount, data, access_list, max_fee_per_blob_gas, blob_versioned_hashes]))`
 pub fn signing_hash(tx: &Eip4844Transaction) -> Result<[u8; 32]> {
@@ -162,7 +162,7 @@ pub fn signing_hash(tx: &Eip4844Transaction) -> Result<[u8; 32]> {
     keccak256::hash(&preimage)
 }
 
-/// 计算 signing preimage bytes
+/// Compute the signing preimage bytes
 pub fn signing_preimage(tx: &Eip4844Transaction) -> Vec<u8> {
     let chain_id_rlp = rlp::encode_uint(tx.chain_id as u128);
     let nonce_rlp = rlp::encode_uint(tx.nonce as u128);
@@ -196,12 +196,12 @@ pub fn signing_preimage(tx: &Eip4844Transaction) -> Vec<u8> {
     preimage
 }
 
-// ─── sign_eip4844 业务函数 ─────────────────────────────────────────
+// --- sign_eip4844 business function --------------------------------
 
-/// 签名 EIP-4844 blob transaction
+/// Sign an EIP-4844 blob transaction
 ///
-/// **Note**: KZG commitment/proof 生成由调用方负责, shlosilo 不实现 c-kzg/eth-kzg
-/// (避免 + 1.5MB binary + 50MB trusted setup)。调用方需提供 blob_versioned_hashes。
+/// **Note**: KZG commitment/proof generation is the caller's responsibility; shlosilo does not implement c-kzg/eth-kzg
+/// (avoiding +1.5MB binary + 50MB trusted setup). The caller must provide blob_versioned_hashes.
 pub fn sign_eip4844(input: &Eip4844SignInput) -> Result<Eip4844SignedTx> {
     let sk = sign::sk_from_pk(&input.private_key)?;
 
@@ -259,24 +259,24 @@ pub fn sign_eip4844(input: &Eip4844SignInput) -> Result<Eip4844SignedTx> {
     })
 }
 
-// ─── KZG stub (留给上层实现) ───────────────────────────────────────
+// --- KZG stubs (left for the upper layer) --------------------------
 
-/// 生成 blob commitment (KZG) — **stub**, 上层需自行实现
+/// Generate a blob commitment (KZG) — **stub**, the upper layer must implement it
 ///
-/// shlosilo 不实现 KZG (避免 + 1.5MB binary + 50MB trusted setup).
-/// 调用方需引入 c-kzg-ethereum 或 rust-kzg 实现此函数。
+/// shlosilo does not implement KZG (avoiding +1.5MB binary + 50MB trusted setup).
+/// The caller must pull in c-kzg-ethereum or rust-kzg to implement this function.
 #[deprecated(note = "KZG not implemented in shlosilo; caller must provide")]
 pub fn kzg_commitment_stub(_blob: &[u8]) -> [u8; 48] {
     unimplemented!("KZG commitment not implemented in shlosilo; caller must provide")
 }
 
-/// 生成 blob KZG proof — **stub**, 上层需自行实现
+/// Generate a blob KZG proof — **stub**, the upper layer must implement it
 #[deprecated(note = "KZG not implemented in shlosilo; caller must provide")]
 pub fn kzg_proof_stub(_blob: &[u8], _commitment: &[u8; 48]) -> [u8; 48] {
     unimplemented!("KZG proof not implemented in shlosilo; caller must provide")
 }
 
-// ─── 测试 ──────────────────────────────────────────────────────────
+// --- Tests ---------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(&hash[..], &expected_bytes[..], "signing hash mismatch");
     }
 
-    /// 完整 sign_eip4844 + 比对 signed tx
+    /// Full sign_eip4844 + signed tx comparison
     #[test]
     fn sign_eip4844_full_pipeline() {
         let private_key_bytes =
@@ -371,21 +371,21 @@ mod tests {
         let input = Eip4844SignInput { tx, private_key };
         let signed = sign_eip4844(&input).unwrap();
 
-        // 验证 signing hash
+        // Verify the signing hash
         let expected_hash =
             "67c17f93bd8dc979e38a701df2b37002795a7aa8870fd080205e7b3141f6d1ba";
         let expected_hash_bytes = hex_decode(expected_hash);
         assert_eq!(&signed.signing_hash[..], &expected_hash_bytes[..]);
 
-        // 验证 r
+        // Verify r
         let expected_r = "9c74ed2f882f74d48611408cfd3b00abe2492044200ad37afafd56e09731dbc3";
         let expected_r_bytes = hex_decode(expected_r);
         assert_eq!(&signed.r[..], &expected_r_bytes[..], "r mismatch");
 
-        // 验证 y_parity
+        // Verify y_parity
         assert_eq!(signed.y_parity, 0);
 
-        // 验证完整 signed tx
+        // Verify the full signed tx
         let expected_tx = "03f88e0180843b9aca008504a817c8008252089435353535353535353535353535353535353535358080c001e1a0010000000000000000000000000000000000000000000000000000000000000080a09c74ed2f882f74d48611408cfd3b00abe2492044200ad37afafd56e09731dbc3a014c5178194790a8d75f27eda8dc191d93f164511ff0e5df8307204f127d1dd75";
         let expected_tx_bytes = hex_decode(expected_tx);
         assert_eq!(
@@ -395,14 +395,14 @@ mod tests {
         );
     }
 
-    /// 多 blob 测试
+    /// Multi-blob test
     #[test]
     fn multiple_blobs() {
         let mut blob_versioned_hashes = Vec::new();
         for i in 1..=3 {
             let mut h = [0u8; 32];
             h[0] = 0x01;
-            h[31] = i; // 区分 hash
+            h[31] = i; // distinguish the hashes
             blob_versioned_hashes.push(h);
         }
 
@@ -419,18 +419,18 @@ mod tests {
             max_fee_per_blob_gas: 1,
             blob_versioned_hashes,
         };
-        // 验证 signing hash 不 panic
+        // Verify the signing hash doesn't panic
         let private_key_bytes =
             hex_decode("4646464646464646464646464646464646464646464646464646464646464646");
         let mut private_key = [0u8; 32];
         private_key.copy_from_slice(&private_key_bytes);
         let input = Eip4844SignInput { tx, private_key };
         let signed = sign_eip4844(&input).unwrap();
-        // y_parity 取决于 R.y parity, 0 或 1 都 normal
+        // y_parity depends on R.y's parity; 0 or 1 are both normal
         assert!(signed.y_parity == 0 || signed.y_parity == 1);
     }
 
-    /// 确定性
+    /// Determinism
     #[test]
     fn deterministic_signing() {
         let private_key_bytes =
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(signed1.tx_bytes, signed2.tx_bytes);
     }
 
-    /// 不同 max_fee_per_blob_gas → 不同 signing hash
+    /// Different max_fee_per_blob_gas → different signing hash
     #[test]
     fn different_blob_fee_different_hash() {
         let mut blob_versioned_hashes = Vec::new();
@@ -493,7 +493,7 @@ mod tests {
         assert_ne!(hash1, hash2);
     }
 
-    /// 空 blob_versioned_hashes (0 blob)
+    /// Empty blob_versioned_hashes (0 blobs)
     #[test]
     fn zero_blob() {
         let tx = Eip4844Transaction {
@@ -509,8 +509,8 @@ mod tests {
             max_fee_per_blob_gas: 1,
             blob_versioned_hashes: Vec::new(),
         };
-        // 0 blob 仍可签名 (struct 允许), 但 EIP-4844 实际协议要求 ≥ 1 blob
-        // 这里只验证 signing hash 不 panic
+        // 0 blobs can still be signed (the struct allows it), but the actual EIP-4844 protocol requires ≥ 1 blob
+        // Here we only verify the signing hash doesn't panic
         let _hash = signing_hash(&tx).unwrap();
     }
 }

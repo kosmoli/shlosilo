@@ -1,14 +1,14 @@
-//! SLIP-0010 派生 over ed25519（SOL + SUI + NEAR + TON）
+//! SLIP-0010 derivation over ed25519 (SOL + SUI + NEAR + TON)
 
 use crate::curve_primitive::ed25519::Ed25519Scalar;
 use crate::derivation::path::DerivationPath;
 use crate::error::Result;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// SLIP-0010 扩展私钥（ed25519 比特字段不同，长度 32 bytes）
+/// SLIP-0010 extended private key (ed25519 uses a different bit field, 32 bytes long)
 pub const SLIP10_EXTENDED_KEY_LEN: usize = 32;
 
-// P1-03：禁 Clone（v2-安全 §2）
+// P1-03: Clone forbidden (v2-security §2)
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct Slip10ExtendedKey {
     bytes: [u8; SLIP10_EXTENDED_KEY_LEN],
@@ -30,22 +30,22 @@ impl core::fmt::Debug for Slip10ExtendedKey {
     }
 }
 
-/// SLIP-0010 master 派生（ed25519 用 hardened-only 派生）
+/// SLIP-0010 master derivation (ed25519 uses hardened-only derivation)
 ///
-/// # Phase 4 实现
+/// # Phase 4 implementation
 /// `slip10::derive_ed25519_master(seed)`（slip10 14.x crate）
 pub fn master_from_seed(_seed: &[u8]) -> Result<Slip10ExtendedKey> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
-/// SLIP-0010 路径派生（Phase 4 真实实现）
+/// SLIP-0010 path derivation (Phase 4 real implementation)
 ///
-/// 重要：SLIP-0010 for ed25519 要求 **每个 segment 都是 hardened**（包括 account / change / address_index）
+/// Important: SLIP-0010 for ed25519 requires **every segment to be hardened** (including account / change / address_index)
 pub fn derive(_master: &Slip10ExtendedKey, _path: &DerivationPath) -> Result<Ed25519Scalar> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
@@ -70,8 +70,8 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码/返回值，不允许 panic 宏回归
-        // （检查代码行，排除注释行）
+        // P2-01: stubs have been changed to stable error codes/return values; panic macros must not regress
+        // (check code lines, excluding comment lines)
         for line in "slip10_ed25519.rs".lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

@@ -1,12 +1,12 @@
-//! 生成 C 模拟器用的 eth-sign-request UR fixture（P6.1d）
+//! Generates the eth-sign-request UR fixture for the C simulator (P6.1d)
 //!
-//! 运行：cargo test --offline --test gen_fixture -- --ignored --nocapture
-//! 输出：simulator-l3/fixture_eth_sign_request.txt（一行 UR）
+//! Run: cargo test --offline --test gen_fixture -- --ignored --nocapture
+//! Output: simulator-l3/fixture_eth_sign_request.txt (one UR line)
 //!
-//! **P1-01/P1-02 之后（2026-08-29 修复）**：UR payload 必须是 CBOR map
-//! {2: sign_data, 3: data_type, 4: chain_id}——旧版直接塞 RLP（wire 形状错误，
-//! 曾被 sign() 的 fallback 逻辑掩盖；P1-02 network 校验后暴露）。
-//! payload 首字节 [1] type-tag 前缀由 ur_encode::encode 处理，不再手工拼。
+//! **After P1-01/P1-02 (fixed 2026-08-29)**: the UR payload must be a CBOR map
+//! {2: sign_data, 3: data_type, 4: chain_id} — the old version stuffed the RLP in directly (wrong wire shape,
+//! previously masked by sign()'s fallback logic; exposed after the P1-02 network validation).
+//! The payload's leading [1] type-tag prefix is handled by ur_encode::encode, no longer assembled by hand.
 
 use shlosilo::chain::eth::{eip1559, rlp};
 use shlosilo::encoding::cbor;
@@ -43,7 +43,7 @@ fn gen_fixture() {
     let mut raw = vec![0x02u8];
     raw.extend_from_slice(&list);
 
-    // CBOR map（与 business::sign 测试编码一致）：2=sign_data, 3=data_type, 4=chain_id
+    // CBOR map (consistent with the business::sign test encoding): 2=sign_data, 3=data_type, 4=chain_id
     let pairs = vec![
         (cbor::encode_uint(2), cbor::encode_bytes(&raw)),
         (cbor::encode_uint(3), cbor::encode_uint(1)), // type 1 = TypedTransaction

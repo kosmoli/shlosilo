@@ -1,30 +1,30 @@
-//! 业务 3：账户创建（v2 §1.3 + v2.1.1 接口笔记 §5）
+//! Business 3: account creation (v2 §1.3 + v2.1.1 interface notes §5)
 //!
-//! **Phase 2.4 假实现**：调用 entropy 子模块（dice_rolls::dice_rolls_to_entropy + bip39 stub）
-//! 生成 stub mnemonic + stub seed 写入 output buffer
+//! **Phase 2.4 fake implementation**: calls the entropy submodule (dice_rolls::dice_rolls_to_entropy + bip39 stub)
+//! to generate a stub mnemonic + stub seed written into the output buffer
 
 use crate::entropy::dice_rolls;
 use crate::entropy::mnemonic::WordCount;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// 账户创建业务入口
+/// Account creation business entry point
 ///
-/// **Phase 2.4 假实现流程**：
+/// **Phase 2.4 fake implementation flow**:
 /// 1. `dice_rolls_to_entropy(sides, rolls, required_bytes)` → entropy bytes
-/// 2. stub: 生成 stub mnemonic（u16 索引都是 0）
-/// 3. stub: bip39_passphrase::mnemonic_to_seed 不实际调用（避免 panic）
-/// 4. 写 stub entropy 到 mnemonic_buf + stub seed 到 seed_out
+/// 2. stub: generate a stub mnemonic (all u16 indices are 0)
+/// 3. stub: bip39_passphrase::mnemonic_to_seed is not actually called (avoids panic)
+/// 4. Write stub entropy to mnemonic_buf + stub seed to seed_out
 ///
-/// **v2.4 安全**：`passphrase: &[u8]` borrow。
+/// **v2.4 security**: `passphrase: &[u8]` borrow.
 pub fn create_account(
     word_count: WordCount,
     entropy_source_sides: u8,
     entropy_source_rolls: &[u8],
-    _passphrase: &[u8], // P1-04：仅保留契约位（上限校验在 FFI 层）；seed 不再产出故此处不消费
+    _passphrase: &[u8], // P1-04: contract slot only (upper-bound validation at the FFI layer); no seed is produced so it is not consumed here
     mnemonic_buf: &mut [u8],
 ) -> Result<()> {
     let required_entropy_bytes = word_count.entropy_bytes();
-    // P0-01 审计整改：入口强制最少骰子次数（12 次 d6 只有 ~31 bit，不可穷举下限 128 bit）
+    // P0-01 audit remediation: enforce a minimum dice-roll count at entry (12× d6 is only ~31 bits; the non-exhaustible floor is 128 bits)
     if entropy_source_sides < 2 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::InvalidDiceConfig));
     }
@@ -36,8 +36,8 @@ pub fn create_account(
             crate::error::ErrorContext::RequiredLength(min_rolls),
         ));
     }
-    // X5 v2（rejection sampling）：不再有均匀性上界——超过 minimum 的熵越多，
-    // rejection 概率越低，均匀性严格保持。N < T（熵不足）由 dice_rolls_to_entropy 判定。
+    // X5 v2 (rejection sampling): no uniformity upper bound anymore — the more entropy above the minimum,
+    // the lower the rejection probability and uniformity is strictly preserved. N < T (insufficient entropy) is decided by dice_rolls_to_entropy.
 
     // Step 1: dice rolls → entropy
     let entropy = dice_rolls::dice_rolls_to_entropy(
@@ -64,8 +64,8 @@ pub fn create_account(
         *slot = 0;
     }
 
-    // P1-04：seed 不再产出（不跨 FFI）。passphrase 保留为钱包元数据；
-    // 签名/导出路径由调用方传 mnemonic，库内现场恢复。
+    // P1-04: no seed output anymore (nothing crosses the FFI). The passphrase is kept as wallet metadata;
+    // signing/export paths receive the mnemonic from the caller and restore it in the library on the spot.
 
     Ok(())
 }
@@ -74,7 +74,7 @@ pub fn create_account(
 mod tests {
     use super::*;
 
-    /// P0-01 审计整改：12 次 d6（~31 bit）必须被拒绝——原测试断言成功，方向反了
+    /// P0-01 audit remediation: 12× d6 (~31 bits) must be rejected — the original test asserted success, direction inverted
     #[test]
     fn create_account_rejects_insufficient_rolls_12_d6() {
         let rolls = [3u8, 5, 1, 6, 2, 4, 3, 5, 1, 6, 2, 4];
@@ -101,9 +101,9 @@ mod tests {
     #[test]
     fn create_account_buffer_too_small() {
         let rolls = [3u8, 5, 1, 6];
-        let mut mnemonic_buf = [0u8; 8]; // 太小
+        let mut mnemonic_buf = [0u8; 8]; // too small
         let result = create_account(
-            WordCount::Words24, // 需要 32 bytes entropy
+            WordCount::Words24, // needs 32 bytes of entropy
             6,
             &rolls,
             b"",

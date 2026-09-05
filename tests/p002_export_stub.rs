@@ -1,8 +1,8 @@
-//! P0-02 审计整改（2026-08-25）：未实现的导出协议必须返回错误，不得假成功
+//! P0-02 audit remediation (2026-08-25): unimplemented export protocols must return errors, not fake success
 //!
-//! 审计发现：CryptoAccount / CryptoMultiAccounts / JsonMoneroViewkey /
-//! ArweaveCryptoAccount 返回 stub_len 但不写 output_buf——调用者缓冲区旧内容
-//! 会被当"导出结果"输出（信息泄露）。
+//! Audit finding: CryptoAccount / CryptoMultiAccounts / JsonMoneroViewkey /
+//! ArweaveCryptoAccount returned stub_len without writing output_buf — the caller's buffer's old contents
+//! would be output as the "export result" (information leak).
 
 use shlosilo::business::export_readonly::{export_readonly, ExportProtocol};
 use shlosilo::derivation::path::DerivationPath;
@@ -16,7 +16,7 @@ fn path() -> heapless::Vec<DerivationPath, 8> {
     v
 }
 
-/// 四个 stub 协议必须全部返回 ExportProtocolUnimplemented（审计 P0-02）
+/// The four stub protocols must all return ExportProtocolUnimplemented (audit P0-02)
 #[test]
 fn p0_02_stub_protocols_rejected() {
     let seed = [7u8; 64];
@@ -28,7 +28,7 @@ fn p0_02_stub_protocols_rejected() {
         ExportProtocol::ArweaveCryptoAccount,
     ];
     for proto in cases {
-        // 预填充非零缓冲区——验证失败路径不写任何字节
+        // prefill the buffer with nonzero bytes — verify the failure path writes nothing
         let mut buf = [0xA5u8; 1024];
         let result = export_readonly(proto, &seed, Network::BitcoinMainnet, &paths, &mut buf);
         let err = result.expect_err("stub protocol must not fake success");
@@ -44,7 +44,7 @@ fn p0_02_stub_protocols_rejected() {
     }
 }
 
-/// 唯一真实实现的 CryptoHdKey 必须继续工作且写满 [0..n]
+/// The only real implementation, CryptoHdKey, must keep working and fill [0..n]
 #[test]
 fn p0_02_crypto_hdkey_still_works_and_fills_buffer() {
     let seed = [7u8; 64];

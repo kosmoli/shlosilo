@@ -1,4 +1,4 @@
-//! EdDSA 签名 over ed25519（RFC 8032 / SOL + APT + SUI + NEAR + TON）
+//! EdDSA signatures over ed25519 (RFC 8032 / SOL + APT + SUI + NEAR + TON)
 
 use crate::curve_primitive::ed25519::{Ed25519Point, Ed25519Scalar};
 use crate::error::Result;
@@ -23,20 +23,20 @@ impl core::fmt::Debug for EddsaSignature {
     }
 }
 
-/// RFC 8032 EdDSA 签名
+/// RFC 8032 EdDSA signature
 ///
-/// # Phase 4 实现
-/// `ed25519-dalek` crate 的 `SigningKey::sign(msg)`
+/// # Phase 4 implementation
+/// `ed25519-dalek` crate's `SigningKey::sign(msg)`
 pub fn sign(_sk: &Ed25519Scalar, _msg: &[u8]) -> Result<EddsaSignature> {
-    // P2-01：原 unimplemented!() panic → 稳定错误码（Phase 4 接入 ed25519-dalek）
+    // P2-01: original unimplemented!() panic → stable error code (Phase 4 integrates ed25519-dalek)
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
-/// RFC 8032 EdDSA 验签（未实现，恒 false——不 panic）
+/// RFC 8032 EdDSA verification (unimplemented, always false — no panic)
 pub fn verify(_pk: &Ed25519Point, _msg: &[u8], _sig: &EddsaSignature) -> bool {
-    // P2-01：原 unimplemented!() panic → 稳定 false（bool 签名无 Err 通道）
+    // P2-01: original unimplemented!() panic → stable false (bool signatures have no Err channel)
     false
 }
 
@@ -59,14 +59,14 @@ mod tests {
 
     #[test]
     fn stub_returns_feature_not_implemented() {
-        // P2-01：stub 不再 panic——sign 返回稳定错误码、verify 恒 false
+        // P2-01: stubs no longer panic — sign returns a stable error code, verify is always false
         let sk = crate::curve_primitive::ed25519::scalar_zero();
         assert_eq!(
             sign(&sk, b"msg").unwrap_err().kind,
             crate::error::ShlosiloErrorKind::FeatureNotImplemented
         );
-        // verify 未实现恒 false（无 panic 即通过）——EddsaSignature 无 pub 构造，
-        // 用零化字节构造测试值（避免 MaybeUninit UB）
+        // verify unimplemented, always false (passes if no panic) — EddsaSignature has no pub constructor,
+        // build test values from zeroized bytes (avoids MaybeUninit UB)
         let sig: EddsaSignature = {
             let mut bytes = [0u8; EDDSA_SIGNATURE_LEN];
             let mut s: EddsaSignature = EddsaSignature {

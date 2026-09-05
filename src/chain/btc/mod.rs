@@ -1,11 +1,11 @@
-//! BTC 链业务模块
+//! BTC chain business module
 //!
-//! Phase 5 v6 真实实现：P2WPKH 完整交易签名（BIP-143 segwit sighash + BIP-144 serialization）
-//! Phase 5 v9.3 (2026-08-22): + P2PKH + P2SH-P2WPKH script type 签名
-//! `p2pkh`: 旧式 P2PKH (BIP-16 之前, legacy sighash)；
-//! `p2sh`: P2SH-P2WPKH (BIP-141 wrapped segwit, BIP-143 sighash + redeemScript)。
-//! Phase 5 v9.4 (2026-08-22): + PSBT (BIP-174 Partially Signed Bitcoin Transaction) 解析/签名/序列化
-//! Phase 5 v9.18 (2026-08-23): + summary（fee / RBF / locktime / CSV / 未知脚本）
+//! Phase 5 v6 real implementation: full P2WPKH transaction signing (BIP-143 segwit sighash + BIP-144 serialization)
+//! Phase 5 v9.3 (2026-08-22): + P2PKH + P2SH-P2WPKH script type signing
+//! `p2pkh`: old-style P2PKH (pre-BIP-16, legacy sighash);
+//! `p2sh`: P2SH-P2WPKH (BIP-141 wrapped segwit, BIP-143 sighash + redeemScript).
+//! Phase 5 v9.4 (2026-08-22): + PSBT (BIP-174 Partially Signed Bitcoin Transaction) parse/sign/serialize
+//! Phase 5 v9.18 (2026-08-23): + summary (fee / RBF / locktime / CSV / unknown scripts)
 
 pub mod change_detect;
 pub mod message_sign;

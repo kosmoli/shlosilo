@@ -1,7 +1,7 @@
-//! TxNormalize：UR payload → TxTemplate
+//! TxNormalize: UR payload → TxTemplate
 //!
-//! **Phase 2.4 假实现**：根据 UR type tag 推断 ChainKind，生成最小 TxTemplate
-//! Phase 4 真实实现：完整 UR payload 解析 + ChainKind 推断 + tx 字段提取
+//! **Phase 2.4 fake implementation**: infers ChainKind from the UR type tag and generates a minimal TxTemplate
+//! Phase 4 real implementation: full UR payload parsing + ChainKind inference + tx field extraction
 
 use crate::error::Result;
 use crate::types::chain_kind::ChainKind;
@@ -9,32 +9,32 @@ use crate::ur::ur_encode::UrTypeTag;
 
 extern crate alloc;
 
-/// 交易模板（chain-agnostic）
+/// Transaction template (chain-agnostic)
 ///
-/// 业务模块拿到 TxTemplate 后按 ChainKind dispatch 到对应 chain 处理
+/// After the business module gets a TxTemplate, it dispatches by ChainKind to the matching chain handler
 #[derive(Clone, Debug)]
 pub struct TxTemplate {
     pub chain_kind: ChainKind,
-    /// raw payload（业务模块 chain-specific 解析）
+    /// raw payload (chain-specific parsing by the business modules)
     ///
-    /// **堆分配**（PSRAM heap_4）：真实 PSBT 常 2-12KB（Sparrow 多输入 fixture 实测 12KB），
-    /// 不能放栈上——P6.3 真机回归发现 heapless 内联 16384 容量把 smoke task 32KB 栈
-    /// 压爆（HardFault→WDT 复位→sign 卡死重启循环）。栈上只留 Vec 头（24B）。
-    /// P6.3 修正（2026-08-26）：原 2048 且 extend 失败被 `let _ =` 吞掉 → 静默截断，
-    /// 真实 PSBT 签名必错。现改堆分配 + 显式容量上限（禁止静默截断）。
+    /// **Heap allocation** (PSRAM heap_4): real PSBTs are often 2-12KB (Sparrow multi-input fixture measured 12KB),
+    /// cannot live on the stack — the P6.3 on-device regression found that a heapless inline capacity of 16384 blew the smoke task's 32KB stack
+    /// blew it (HardFault → WDT reset → sign hang-and-reboot loop). Only the Vec header (24B) stays on the stack.
+    /// P6.3 fix (2026-08-26): previously 2048, and an extend failure was swallowed by `let _ =` → silent truncation,
+    /// real PSBT signing would always fail. Now switched to heap allocation + an explicit capacity cap (silent truncation forbidden).
     pub payload: alloc::vec::Vec<u8>,
-    /// 派生路径（业务模块 dispatch 用，区分主网/测试网 + 账户）
+    /// Derivation path (used by business modules to dispatch; distinguishes mainnet/testnet + account)
     pub derivation_path: crate::derivation::path::DerivationPath,
 }
 
-/// payload 显式上限：真实 PSBT 12KB + 余量。超过报 UrPayloadTooLarge（禁止静默截断）。
+/// explicit payload cap: real PSBT 12KB + headroom. Above it raises UrPayloadTooLarge (silent truncation forbidden).
 const PAYLOAD_MAX: usize = 16384;
 
 /// UR payload → TxTemplate
 ///
-/// **P1-01（2026-08-26）**：不再从 payload 首字节推断 ChainKind——type tag
-/// 由 UR decode 层携带（`ur:<type>/`），业务层按 type 调对应 codec。
-/// 遗留 `UrTypeTag::from_bytes` 首字节私有 tag 协议已废弃。
+/// **P1-01 (2026-08-26)**: ChainKind is no longer inferred from the payload's first byte — the type tag
+/// Carried by the UR decode layer (`ur:<type>/`); the business layer calls the matching codec by type.
+/// The legacy `UrTypeTag::from_bytes` first-byte private tag protocol is deprecated.
 pub fn to_template(type_tag: UrTypeTag, payload: &[u8]) -> Result<TxTemplate> {
     let chain_kind = match type_tag {
         UrTypeTag::CryptoPsbt => ChainKind::Btc,
@@ -98,17 +98,17 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// P1-01：type 由 tag 决定，payload 首字节不再有特殊含义
+    /// P1-01: the type is decided by the tag; the payload's first byte no longer has special meaning
     #[test]
     fn to_template_type_tag_not_first_byte() {
-        // 同一 payload，不同 tag → 不同链
+        // same payload, different tag → different chain
         let btc = to_template(UrTypeTag::CryptoPsbt, &[0x01, 0x02]).unwrap();
         let eth = to_template(UrTypeTag::EthSignRequest, &[0x01, 0x02]).unwrap();
         assert_eq!(btc.chain_kind, ChainKind::Btc);
         assert_eq!(eth.chain_kind, ChainKind::Eth);
     }
 
-    /// P1-01：payload 完整保留（含 CBOR 包装），不剥首字节
+    /// P1-01: the payload is fully preserved (including the CBOR wrapper); no first-byte stripping
     #[test]
     fn to_template_payload_preserved() {
         let payload = [0xa2u8, 0x01, 0x02, 0x03];

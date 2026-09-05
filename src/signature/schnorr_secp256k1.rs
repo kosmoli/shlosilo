@@ -1,6 +1,6 @@
-//! BIP-340 Schnorr 签名 over secp256k1（BTC Taproot / Lightning）
+//! BIP-340 Schnorr signing over secp256k1 (BTC Taproot / Lightning)
 //!
-//! Phase 5 v2 真实实现：`k256::schnorr` 0.14 (BIP-340)
+//! Phase 5 v2 real implementation: `k256::schnorr` 0.14 (BIP-340)
 
 use crate::curve_primitive::secp256k1::{Secp256k1Point, Secp256k1Scalar};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -9,7 +9,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub const SCHNORR_SIGNATURE_LEN: usize = 64;
 
-/// BIP-340 Schnorr 签名 (R || s, 32 + 32 bytes)
+/// BIP-340 Schnorr signature (R || s, 32 + 32 bytes)
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct SchnorrSignature {
     bytes: [u8; SCHNORR_SIGNATURE_LEN],
@@ -27,16 +27,16 @@ impl core::fmt::Debug for SchnorrSignature {
     }
 }
 
-/// BIP-340 Schnorr 签名
+/// BIP-340 Schnorr signature
 ///
-/// `aux_rand` 提供 nonce 随机性（BIP-340 推荐传入额外随机数避免侧信道）
+/// `aux_rand` provides nonce randomness (BIP-340 recommends passing extra randomness to avoid side channels)
 pub fn sign(sk: &Secp256k1Scalar, msg: &[u8; 32], aux_rand: &[u8; 32]) -> Result<SchnorrSignature> {
-    // 转换 sk → k256::schnorr::SigningKey
+    // Convert sk → k256::schnorr::SigningKey
     let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(sk);
     let sk_fb = k256::FieldBytes::from(sk_bytes);
     let signing_key = SigningKey::from_bytes(&sk_fb)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-    // BIP-340 raw 签名（k256 0.14 API：sign_raw(msg, aux_rand)）
+    // BIP-340 raw signature (k256 0.14 API: sign_raw(msg, aux_rand))
     let sig: Signature = signing_key
         .sign_raw(msg, aux_rand)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -44,15 +44,15 @@ pub fn sign(sk: &Secp256k1Scalar, msg: &[u8; 32], aux_rand: &[u8; 32]) -> Result
     Ok(SchnorrSignature { bytes: sig_bytes })
 }
 
-/// BIP-340 Schnorr 验签
+/// BIP-340 Schnorr verification
 ///
-/// `pk` 必须是 x-only 32 字节（compressed pubkey 取 x 坐标）
+/// `pk` must be a 32-byte x-only key (take the x coordinate of a compressed pubkey)
 pub fn verify(pk: &Secp256k1Point, msg: &[u8; 32], sig: &SchnorrSignature) -> bool {
-    // 转换 pk → x-only 32 bytes
+    // Convert pk → x-only 32 bytes
     let pk_compressed = crate::curve_primitive::secp256k1::point_to_compressed(pk);
     let mut x_only = [0u8; 32];
     x_only.copy_from_slice(&pk_compressed[1..33]);
-    // BIP-340 要求 y 是偶数（pk[0] = 0x02）。否则 verify 失败
+    // BIP-340 requires y to be even (pk[0] = 0x02). Otherwise verification fails
     if pk_compressed[0] != 0x02 {
         return false;
     }
@@ -68,7 +68,7 @@ pub fn verify(pk: &Secp256k1Point, msg: &[u8; 32], sig: &SchnorrSignature) -> bo
     verifying_key.verify_raw(msg, &sig_obj).is_ok()
 }
 
-/// 从 64 字节 (R || s) 解析签名
+/// Parse a signature from 64 bytes (R || s)
 pub fn from_bytes(bytes: &[u8]) -> Result<SchnorrSignature> {
     if bytes.len() != SCHNORR_SIGNATURE_LEN {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -95,7 +95,7 @@ mod tests {
         assert!(core::mem::needs_drop::<SchnorrSignature>());
     }
 
-    /// BIP-340 测试向量 — Test Vector 0
+    /// BIP-340 test vector — Test Vector 0
     #[test]
     fn schnorr_sign_verify_roundtrip() {
         let mut sk_bytes = [0u8; 32];
@@ -110,7 +110,7 @@ mod tests {
         assert!(verify(&pk, &msg, &sig));
     }
 
-    /// 错消息拒绝
+    /// Wrong message rejected
     #[test]
     fn schnorr_verify_rejects_wrong_msg() {
         let mut sk_bytes = [0u8; 32];
@@ -125,7 +125,7 @@ mod tests {
         assert!(!verify(&pk, &wrong_msg, &sig));
     }
 
-    /// BIP-340 测试向量 — index 0 (公开测试向量)
+    /// BIP-340 test vector — index 0 (public test vector)
     /// sk = 000...003 (big-endian)
     /// aux_rand = 000...000
     /// msg = 000...000

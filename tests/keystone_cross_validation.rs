@@ -1,18 +1,18 @@
 //! Keystone 3 Cross-Validation Test Module (2026-08-22)
 //!
-//! ## 目的
+//! ## Purpose
 //! Validate shlosilo against keystone3-firmware as oracle (per user directive 2026-08-22).
 //!
-//! ## 范围
+//! ## Scope
 //! - BTC: P2PKH, P2WPKH (BIP-143), P2SH-P2WPKH, P2TR, multi-sig, address generation
 //! - ETH: EIP-1559 transaction, EIP-712 typed data, ERC20 transfer
 //! - XMR: address generation, subaddress derivation, key image derivation
 //!
-//! ## 来源
+//! ## Sources
 //! Test fixtures extracted from `/home/komo/works/keystone3-firmware/rust/apps/`
 //! (bitcoin/, ethereum/, monero/ subdirs).
 //!
-//! ## 已知 Critical Bug (2026-08-22)
+//! ## Known Critical Bugs (2026-08-22)
 //! shlosilo `base_mul(2)` returns wrong point (compare to BIP-340 test vector).
 //! Cross-validation tests for 2G/3G will FAIL until curve primitive bug is fixed.
 //!
@@ -80,7 +80,7 @@ fn hex_decode_32(s: &str) -> [u8; 32] {
 #[test]
 fn keystone_btc_p2wpkh_sighash_matches() {
     use shlosilo::chain::btc::p2wpkh::{segwit_sighash_p2wpkh, OutPoint, Transaction, TxIn, TxOut};
-    const SIGHASH_ALL: u32 = 1; // BIP-143 sighash ALL(p2wpkh::SIGHASH_ALL 转 pub(crate) 后本地定义)
+    const SIGHASH_ALL: u32 = 1; // BIP-143 sighash ALL (defined locally after p2wpkh::SIGHASH_ALL became pub(crate))
     let input0 = TxIn {
         prev_out: OutPoint {
             txid: hex_decode_32("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f"),

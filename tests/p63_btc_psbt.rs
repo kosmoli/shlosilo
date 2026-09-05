@@ -1,10 +1,10 @@
-//! P6.3 BTC 真实 fixture 互验（Sparrow signet test.psbt）
+//! P6.3 BTC real fixture cross-validation (Sparrow signet test.psbt)
 //!
-//! Oracle（由 /tmp/psbt_dump.py 独立解析确认）：
+//! Oracle (independently confirmed by /tmp/psbt_dump.py parsing):
 //! - 1 input: txid c39ad4eb..:197, P2SH-P2WPKH (spk=160014cfd9...), 651157 sat
 //! - BIP32_DERIVATION: fingerprint f3b9960b, path m/84'/1'/0'/0/2
-//!   （coin type 1' = signet/testnet，address index 2 —— 非默认路径，P1-02 验收场景）
-//! - outputs: 1000 sat P2WPKH + 650087 sat 找零 P2WPKH
+//!   (coin type 1\' = signet/testnet, address index 2 — a non-default path, the P1-02 acceptance scenario)
+//! - outputs: 1000 sat P2WPKH + 650087 sat change P2WPKH
 //! - SIGHASH_ALL
 
 use shlosilo::chain::btc::psbt::{get_witness_utxo, parse_psbt};
@@ -34,7 +34,7 @@ fn der_path(input_map: &[shlosilo::chain::btc::psbt::KeyValue]) -> Option<(Vec<u
     Some((pk, path))
 }
 
-/// P6.3-1：真实 Sparrow PSBT 必须能被 parse_psbt 解析
+/// P6.3-1: the real Sparrow PSBT must be parseable by parse_psbt
 #[test]
 fn p63_parse_sparrow_psbt() {
     let psbt = parse_psbt(PSBT_BYTES).expect("sparrow psbt must parse");
@@ -42,8 +42,8 @@ fn p63_parse_sparrow_psbt() {
     assert_eq!(psbt.unsigned_tx.outputs.len(), 2);
 }
 
-/// P6.3-2（P1-02 验收）：BIP32_DERIVATION 读出真实路径 m/84'/1'/0'/0/2，
-/// 不再是硬编码 m/84'/0'/0'/0/0
+/// P6.3-2 (P1-02 acceptance): BIP32_DERIVATION reads the real path m/84\'/1\'/0\'/0/2,
+/// no longer the hardcoded m/84\'/0\'/0\'/0/0
 #[test]
 fn p63_read_real_derivation_path() {
     let psbt = parse_psbt(PSBT_BYTES).unwrap();
@@ -52,7 +52,7 @@ fn p63_read_real_derivation_path() {
     const H: u32 = 0x8000_0000;
     assert_eq!(path.len(), 5);
     assert_eq!(path[0], 84 | H);
-    // coin type 1' = signet —— 若这里断言 0' 则说明读的是硬编码值而非 fixture
+    // coin type 1\' = signet — asserting 0\' here would mean a hardcoded value was read instead of the fixture
     assert_eq!(
         path[1],
         1 | H,
@@ -64,8 +64,8 @@ fn p63_read_real_derivation_path() {
     assert_eq!(pk.len(), 33, "compressed pubkey");
 }
 
-/// P6.3-3：UTXO 脚本类型——native P2WPKH（0014 开头），业务层走 sign_psbt_p2wpkh。
-/// （初判 P2SH 嵌套是 oracle 脚本 compact_size 混淆；decode_witness_utxo 已正确剥长度前缀。）
+/// P6.3-3: UTXO script type — native P2WPKH (0014 prefix); the business layer goes through sign_psbt_p2wpkh.
+/// (The initial P2SH-nested verdict was oracle-script compact_size confusion; decode_witness_utxo already strips the length prefix correctly.)
 #[test]
 fn p63_utxo_is_native_p2wpkh() {
     let psbt = parse_psbt(PSBT_BYTES).unwrap();

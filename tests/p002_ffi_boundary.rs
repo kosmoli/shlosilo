@@ -1,13 +1,13 @@
-//! P0-02 整改落地测试（2026-09-01 第三次复审 #4）——C ABI boundary contract tests
+//! P0-02 remediation landing tests (2026-09-01 third review #4) — C ABI boundary contract tests
 //!
-//! 审计要求：
-//! 1. 负 mnemonic_count 在任何 unsafe 构造前被拒绝（原 `as usize` 零扩展 = UB）
-//! 2. `(NULL, len>0)` 组合稳定拒绝（原 bytes_in 静默当空 slice——错误 passphrase
-//!    指针会派生完全不同的钱包）
-//! 3. `network as u8` / `sides as u8` 窄化回绕改为全值校验
-//! 4. 所有 out-param 在任何校验前先清零（null early-return 也覆盖）
+//! Audit requirements:
+//! 1. A negative mnemonic_count is rejected before any unsafe construction (the old `as usize` zero-extension = UB)
+//! 2. The `(NULL, len>0)` combination is stably rejected (previously bytes_in silently became an empty slice — a wrong passphrase
+//!    pointer would derive a completely different wallet)
+//! 3. `network as u8` / `sides as u8` narrowing wraparound replaced by full-value validation
+//! 4. All out-params are zeroed before any validation (also covering the null early-return)
 //!
-//! 覆盖入口：sign / sign_ur / export_readonly / create_account / sign_typed（9 入口族）
+//! Covered entries: sign / sign_ur / export_readonly / create_account / sign_typed (9-entry family)
 
 use shlosilo::error::ShlosiloErrorCode;
 use shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi;
@@ -20,11 +20,11 @@ const INVALID_MNEMONIC: i32 = ShlosiloErrorCode::InvalidMnemonic as i32;
 const INVALID_ARG: i32 = ShlosiloErrorCode::InvalidArgument as i32;
 
 fn valid_indices() -> [u16; 12] {
-    // abandon×11 + about（官方向量，checksum 合法）
+    // abandon×11 + about (official vector, valid checksum)
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]
 }
 
-// ── 1. 负 count 全入口拒绝（修复前 = from_raw_parts UB，debug 下 UB-check abort）──
+//-- 1. Negative count rejected on every entry (pre-fix = from_raw_parts UB; aborts under debug UB-check) --
 
 #[test]
 fn p002_negative_count_rejected_sign() {
@@ -45,7 +45,7 @@ fn p002_negative_count_rejected_sign() {
             &mut actual,
         );
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
-        assert_eq!(actual, 0, "失败路径 actual_len 必须清零 (count={bad})");
+        assert_eq!(actual, 0, "failure path must zero actual_len (count={bad})");
     }
 }
 
@@ -129,7 +129,7 @@ fn p002_negative_count_rejected_sign_typed() {
     }
 }
 
-// ── 2. (NULL, len>0) 组合拒绝——错误 passphrase 指针不得静默变空 ──
+//-- 2. (NULL, len>0) combination rejected — a wrong passphrase pointer must not silently become empty --
 
 #[test]
 fn p002_null_with_nonzero_len_rejected() {
@@ -138,12 +138,12 @@ fn p002_null_with_nonzero_len_rejected() {
     let mut buf = [0u8; 64];
     let mut actual: u32 = 0;
 
-    // export: passphrase = (NULL, 1) → 拒绝（修复前 = 静默空 passphrase → 派生错钱包）
+    // export: passphrase = (NULL, 1) → rejected (pre-fix = silent empty passphrase → wrong wallet derived)
     let rc = shlosilo_export_readonly_ffi(
         idx.as_ptr(),
         12,
         core::ptr::null(),
-        1, // len>0 + NULL = 非法组合
+        1, // len>0 + NULL = illegal combination
         0,
         elems.as_ptr(),
         elems.len() as u32,
@@ -152,10 +152,13 @@ fn p002_null_with_nonzero_len_rejected() {
         buf.len() as u32,
         &mut actual,
     );
-    assert_eq!(rc, INVALID_ARG, "(NULL, len=1) passphrase 必须稳定拒绝");
+    assert_eq!(
+        rc, INVALID_ARG,
+        "(NULL, len=1) passphrase must be stably rejected"
+    );
     assert_eq!(actual, 0);
 
-    // (NULL, 0) 仍允许（语义：无 passphrase）——用足够大的 buffer 走完整导出
+    // (NULL, 0) still allowed (semantics: no passphrase) — run a full export with a large-enough buffer
     let mut big = [0u8; 1024];
     let mut actual_big: u32 = 0;
     let rc = shlosilo_export_readonly_ffi(
@@ -171,23 +174,27 @@ fn p002_null_with_nonzero_len_rejected() {
         big.len() as u32,
         &mut actual_big,
     );
-    assert_eq!(rc, shlosilo::ffi::error_code::OK, "(NULL, 0) 是合法组合");
+    assert_eq!(
+        rc,
+        shlosilo::ffi::error_code::OK,
+        "(NULL, 0) is a legal combination"
+    );
     assert!(core::str::from_utf8(&big[..actual_big as usize])
         .unwrap()
         .starts_with("ur:crypto-hdkey/"));
 }
 
-// ── 3. 窄化回绕拒绝 ──
+//-- 3. Narrowing wraparound rejected --
 
 #[test]
 fn p002_network_wraparound_rejected() {
     let idx = valid_indices();
     let mut out = [0u8; 64];
     let mut actual: u32 = 0;
-    // network = 256 → `as u8` 回绕成 0（BitcoinMainnet）；修复后必须拒绝
+    // network = 256 → `as u8` wraps to 0 (BitcoinMainnet); must be rejected after the fix
     let big_nets = [256u64, 512, u64::from(u32::MAX), 0x1_0000_0000];
     for &bad_net_u64 in &big_nets {
-        // FFI 参数是 c_uint(32bit)；窄化回绕在 32bit 值域内已可复现（256 → 0）
+        // The FFI parameter is c_uint (32-bit); narrowing wraparound is reproducible within the 32-bit range (256 → 0)
         let bad_net = bad_net_u64 as u32;
         let rc = shlosilo_sign_ffi(
             idx.as_ptr(),
@@ -204,14 +211,14 @@ fn p002_network_wraparound_rejected() {
         assert_ne!(
             rc,
             shlosilo::ffi::error_code::OK,
-            "network={bad_net} 不得回绕成合法值"
+            "network={bad_net} must not wrap into a legal value"
         );
     }
 }
 
 #[test]
 fn p002_sides_wraparound_rejected() {
-    // sides = 262 → `as u8` 回绕成 6；修复后必须拒绝（InvalidDiceConfig 域）
+    // sides = 262 → `as u8` wraps to 6; must be rejected after the fix (InvalidDiceConfig domain)
     let rolls = [1u8; 128];
     let mut mnemonic_buf = [0u8; 24];
     let rc = shlosilo_create_account_ffi(
@@ -224,19 +231,23 @@ fn p002_sides_wraparound_rejected() {
         mnemonic_buf.as_mut_ptr(),
         mnemonic_buf.len() as u32,
     );
-    assert_ne!(rc, shlosilo::ffi::error_code::OK, "sides=262 不得回绕成 6");
+    assert_ne!(
+        rc,
+        shlosilo::ffi::error_code::OK,
+        "sides=262 must not wrap to 6"
+    );
 }
 
-// ── 4. out-param 序言清零（null early-return 路径）──
+//-- 4. out-param prologue zeroing (null early-return path) --
 
 #[test]
 fn p002_outparam_zeroed_on_null_early_return() {
-    let _idx = valid_indices(); // 语义占位：合法 idx 也不该救 null 指针
+    let _idx = valid_indices(); // semantic placeholder: even valid idx must not rescue a null pointer
     let mut out = [0u8; 64];
-    // 预填垃圾值，模拟 C 侧栈残留
+    // Pre-fill with garbage to simulate stale C-side stack data
     let mut actual: u32 = 0xDEAD_BEEF;
 
-    // mnemonic_indices = NULL → ERR_NULL_POINTER，但 actual_len 必须已被清零
+    // mnemonic_indices = NULL → ERR_NULL_POINTER, but actual_len must already be zeroed
     let rc = shlosilo_sign_ffi(
         core::ptr::null(),
         12,
@@ -252,10 +263,10 @@ fn p002_outparam_zeroed_on_null_early_return() {
     assert_eq!(rc, INVALID_ARG);
     assert_eq!(
         actual, 0,
-        "null early-return 前必须清零 out-param（修复前残留 0xDEADBEEF）"
+        "out-param must be zeroed before the null early-return (pre-fix it kept 0xDEADBEEF)"
     );
 
-    // export 同路径
+    // export, same path
     let mut actual2: u32 = 0xDEAD_BEEF;
     let elems: [u32; 1] = [44 | 0x8000_0000];
     let rc = shlosilo_export_readonly_ffi(
@@ -275,7 +286,7 @@ fn p002_outparam_zeroed_on_null_early_return() {
     assert_eq!(actual2, 0);
 }
 
-// ── 5. 冒烟：合法路径不受影响 ──
+//-- 5. Smoke: legal paths unaffected --
 
 #[test]
 fn p002_valid_path_still_works() {
@@ -301,8 +312,8 @@ fn p002_valid_path_still_works() {
     assert!(uri.starts_with("ur:crypto-hdkey/"));
 }
 
-// ── 6. 审计 #5 P0-03：UINT_MAX 全域 boundary（host 64-bit 无法触发 isize 溢出，
-//    但业务预算上限在 unsafe 构造前拒绝——32-bit Thumb 上 isize 检查是同一防线的兜底）──
+//-- 6. Audit #5 P0-03: UINT_MAX full-range boundary (a 64-bit host cannot trigger isize overflow,
+//    but business budget caps reject before unsafe construction — on 32-bit Thumb the isize check is the backstop of the same line) --
 
 #[test]
 fn p003_uintmax_lengths_rejected() {
@@ -313,7 +324,7 @@ fn p003_uintmax_lengths_rejected() {
     let elems: [u32; 1] = [44 | 0x8000_0000];
     let umax = u32::MAX;
 
-    // passphrase len = UINT_MAX → helper 层拒绝（超 PASSPHRASE_MAX_LEN）
+    // passphrase len = UINT_MAX → rejected at the helper layer (over PASSPHRASE_MAX_LEN)
     let rc = shlosilo_export_readonly_ffi(
         idx.as_ptr(),
         12,
@@ -330,7 +341,7 @@ fn p003_uintmax_lengths_rejected() {
     assert_eq!(rc, INVALID_ARG, "UINT_MAX passphrase must be rejected");
     assert_eq!(actual, 0);
 
-    // path_elem_count = UINT_MAX → helper 层拒绝（超 MAX_DEPTH）
+    // path_elem_count = UINT_MAX → rejected at the helper layer (over MAX_DEPTH)
     let rc = shlosilo_export_readonly_ffi(
         idx.as_ptr(),
         12,
@@ -351,7 +362,7 @@ fn p003_uintmax_lengths_rejected() {
     );
     assert_eq!(actual, 0);
 
-    // output_buf_len = UINT_MAX（谎报容量）→ checked_slice_mut 拒绝，防越界写
+    // output_buf_len = UINT_MAX (over-declared capacity) → checked_slice_mut rejects, preventing an out-of-bounds write
     let rc = shlosilo_export_readonly_ffi(
         idx.as_ptr(),
         12,
@@ -372,7 +383,7 @@ fn p003_uintmax_lengths_rejected() {
     );
     assert_eq!(actual, 0);
 
-    // rolls_count = UINT_MAX → 拒绝
+    // rolls_count = UINT_MAX → rejected
     let mut mbuf = [0u8; 24];
     let rc = shlosilo_create_account_ffi(
         12,
@@ -393,7 +404,7 @@ fn p003_uintmax_lengths_rejected() {
 
 #[test]
 fn p003_null_zero_len_semantics() {
-    // (NULL,0) optional = 允许；required = 拒绝——语义固定
+    // (NULL,0) optional = allowed; required = rejected — fixed semantics
     let idx = valid_indices();
     let elems: [u32; 1] = [44 | 0x8000_0000];
     let mut buf = [0u8; 1024];

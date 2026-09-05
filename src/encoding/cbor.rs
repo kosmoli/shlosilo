@@ -1,12 +1,12 @@
-//! CBOR 编解码（RFC 8949）— Phase 6 P6.0a
+//! CBOR codec (RFC 8949) — Phase 6 P6.0a
 //!
-//! v2 §2.3 决策：编码类自实现（bug = 解析错，不泄密钥）。
-//! 参考 keystone 方案用 minicbor，但 shlosilo 只需 UR registry 用到的子集：
-//! uint / bytes / text / array / map / tag(可选) / simple(false/true/null)。
+//! v2 §2.3 decision: self-implemented encode/decode (a bug = a parse error, not a key leak).
+//! Keystone\'s approach uses minicbor, but shlosilo only needs the subset used by the UR registry:
+//! uint / bytes / text / array / map / tag (optional) / simple (false/true/null).
 //!
-//! ## RFC 8949 摘要
+//! ## RFC 8949 summary
 //!
-//! 首字节 = major(3 bit) << 5 | additional info(5 bit)：
+//! First byte = major(3 bit) << 5 | additional info(5 bit):
 //! - major 0: unsigned int；1: negative int (-1-n)；2: byte string；3: text string
 //! - 4: array (count)；5: map (pair count)；6: tag；7: float/simple
 //! - additional info 24: 1-byte len；25: 2-byte；26: 4-byte；27: 8-byte
@@ -21,7 +21,7 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-// ─── 编码 ──────────────────────────────────────────────────────────
+// ─── Encoding ──────────────────────────────────────────────────────────
 
 fn push_head(out: &mut Vec<u8>, major: u8, arg: u64) {
     let m = major << 5;
@@ -46,14 +46,14 @@ fn push_head(out: &mut Vec<u8>, major: u8, arg: u64) {
     }
 }
 
-/// 编码 unsigned int
+/// Encode an unsigned int
 pub fn encode_uint(n: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(9);
     push_head(&mut out, 0, n);
     out
 }
 
-/// 编码 byte string
+/// Encode a byte string
 pub fn encode_bytes(b: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(9 + b.len());
     push_head(&mut out, 2, b.len() as u64);
@@ -61,7 +61,7 @@ pub fn encode_bytes(b: &[u8]) -> Vec<u8> {
     out
 }
 
-/// 编码 text string
+/// Encode a text string
 pub fn encode_text(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(9 + s.len());
     push_head(&mut out, 3, s.len() as u64);
@@ -69,7 +69,7 @@ pub fn encode_text(s: &str) -> Vec<u8> {
     out
 }
 
-/// 编码 array（items 为已编码的 item）
+/// Encode an array (items are already-encoded items)
 pub fn encode_array(items: &[Vec<u8>]) -> Vec<u8> {
     let mut out = Vec::new();
     push_head(&mut out, 4, items.len() as u64);
@@ -79,7 +79,7 @@ pub fn encode_array(items: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-/// 编码 key-value 有序 map（keys 为已编码 item）
+/// Encode an ordered key-value map (keys are already-encoded items)
 pub fn encode_map(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
     push_head(&mut out, 5, pairs.len() as u64);
@@ -90,19 +90,19 @@ pub fn encode_map(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
-/// 编码 negative int（-1 - n）
+/// Encode a negative int (-1 - n)
 pub fn encode_neg(n: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(9);
     push_head(&mut out, 1, n);
     out
 }
 
-/// 编码 bool
+/// Encode a bool
 pub fn encode_bool(b: bool) -> Vec<u8> {
     alloc::vec![if b { 0xf5 } else { 0xf4 }]
 }
 
-/// 编码 tag(n) + inner item（inner 已编码）
+/// Encode tag(n) + inner item (inner already encoded)
 pub fn encode_tag(tag: u64, inner: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(9 + inner.len());
     push_head(&mut out, 6, tag);
@@ -110,9 +110,9 @@ pub fn encode_tag(tag: u64, inner: &[u8]) -> Vec<u8> {
     out
 }
 
-// ─── 解码 ──────────────────────────────────────────────────────────
+// ─── Decoding ──────────────────────────────────────────────────────────
 
-/// 解码出的 CBOR item
+/// A decoded CBOR item
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cbor<'a> {
     Uint(u64),
@@ -120,9 +120,9 @@ pub enum Cbor<'a> {
     Bytes(&'a [u8]),
     Text(&'a str),
     Array(Vec<Cbor<'a>>),
-    /// map 保持原始 pair 顺序（UR registry 的 key 都是 uint，按序查找即可）
+    /// Map keeps the original pair order (UR registry keys are all uint; sequential lookup suffices)
     Map(Vec<(Cbor<'a>, Cbor<'a>)>),
-    /// tag + inner（UR registry 用 303/304 等）
+    /// tag + inner (the UR registry uses 303/304 etc.)
     Tag(u64, alloc::boxed::Box<Cbor<'a>>),
     Bool(bool),
     Null,
@@ -136,7 +136,7 @@ impl<'a> Cbor<'a> {
         }
     }
 
-    /// 有符号 int：Uint / NegInt（neg = -1 - n）
+    /// Signed int: Uint / NegInt (neg = -1 - n)
     pub fn as_int(&self) -> Result<i128> {
         match self {
             Cbor::Uint(n) => Ok(*n as i128),
@@ -159,7 +159,7 @@ impl<'a> Cbor<'a> {
         }
     }
 
-    /// 按 integer key 查 map 值（UR registry map key 都是 uint）
+    /// Look up a map value by integer key (UR registry map keys are all uint)
     pub fn map_get_uint(&self, key: u64) -> Result<Option<&Cbor<'a>>> {
         match self {
             Cbor::Map(pairs) => Ok(pairs
@@ -177,7 +177,7 @@ impl<'a> Cbor<'a> {
         }
     }
 
-    /// 剥一层 tag；无 tag 则原样返回
+    /// Strip one layer of tag; return as-is when there is no tag
     pub fn unwrap_tag(&self) -> &Cbor<'a> {
         match self {
             Cbor::Tag(_, inner) => inner,
@@ -186,13 +186,13 @@ impl<'a> Cbor<'a> {
     }
 }
 
-/// X1: 递归深度上限——深嵌套恶意输入在 panic=abort 下会栈溢出。
-/// UR registry 实际形状最深 ~4 层（tag→map→array→bytes），64 裕量充足。
+/// X1: recursion depth limit — deeply nested malicious input would blow the stack under panic=abort.
+/// The actual UR registry shape is at most ~4 levels deep (tag→map→array→bytes); 64 gives ample margin.
 const MAX_DEPTH: usize = 64;
 
-/// Gate4 #4（2026-09-01 再复审）：总节点数预算。
-/// 节点数天然受输入长度约束（每节点至少 1 字节），此上限是显式防线：
-/// 防深度×宽度组合构造（如 64 层 × 每层大数组）导致栈/堆放大超出调用层预期。
+/// Gate4 #4 (2026-09-01 re-review): total node count budget.
+/// The node count is naturally bounded by input length (at least 1 byte per node); this limit is an explicit defense line:
+/// it prevents depth × width combined constructions (e.g. 64 levels × large arrays per level) from amplifying stack/heap beyond caller expectations.
 const MAX_NODES: usize = 16384;
 
 struct Decoder<'a> {
@@ -204,7 +204,7 @@ struct Decoder<'a> {
 
 impl<'a> Decoder<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        // X1（2026-08-31 复审整改）：checked_add 防 pos+n 溢出（n 来自 wire 可控 u64）
+        // X1 (2026-08-31 re-review remediation): checked_add prevents pos+n overflow (n is a wire-controlled u64)
         let end = self.pos.checked_add(n).ok_or_else(err)?;
         if end > self.bytes.len() {
             return Err(err());
@@ -221,19 +221,19 @@ impl<'a> Decoder<'a> {
             25 => u16::from_be_bytes(self.take(2)?.try_into().unwrap()) as u64,
             26 => u32::from_be_bytes(self.take(4)?.try_into().unwrap()) as u64,
             27 => u64::from_be_bytes(self.take(8)?.try_into().unwrap()),
-            // indefinite length（info 31）不支持——UR registry 全部 definite
+            // indefinite length (info 31) not supported — the UR registry is entirely definite
             _ => return Err(err()),
         })
     }
 
     fn read_item(&mut self) -> Result<Cbor<'a>> {
-        // X1: depth budget——超限拒绝（错误码路径，非 panic）
+        // X1: depth budget — over limit rejected (error code path, not a panic)
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             self.depth -= 1;
             return Err(err());
         }
-        // Gate4 #4: node budget——每读一个 item 计一个节点
+        // Gate4 #4: node budget — each item read counts as one node
         self.nodes += 1;
         if self.nodes > MAX_NODES {
             self.depth -= 1;
@@ -287,14 +287,14 @@ impl<'a> Decoder<'a> {
                 20 => Ok(Cbor::Bool(false)),
                 21 => Ok(Cbor::Bool(true)),
                 22 => Ok(Cbor::Null),
-                _ => Err(err()), // float 不支持
+                _ => Err(err()), // float not supported
             },
             _ => unreachable!(),
         }
     }
 }
 
-/// 解码单个 CBOR item。要求 bytes 恰好包含一个完整 item（尾部垃圾报错）。
+/// Decode a single CBOR item. Requires bytes to contain exactly one complete item (trailing garbage errors).
 pub fn decode(bytes: &[u8]) -> Result<Cbor<'_>> {
     let mut d = Decoder {
         bytes,
@@ -320,7 +320,7 @@ mod tests {
             .collect()
     }
 
-    /// RFC 8949 Appendix A 官方向量（uint）
+    /// RFC 8949 Appendix A official vectors (uint)
     #[test]
     fn rfc8949_uint_vectors() {
         assert_eq!(encode_uint(0), hex("00"));
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(encode_text("IETF"), hex("6449455446"));
         // %x44 01 02 03 04 (bytes 01020304)
         assert_eq!(encode_bytes(&[1, 2, 3, 4]), hex("4401020304"));
-        // >23-byte string 用 info 25（2-byte len）
+        // >23-byte string uses info 25 (2-byte len)
         let long = [0xab_u8; 300];
         let enc = encode_bytes(&long);
         assert_eq!(enc[0], 0x59);
@@ -398,7 +398,7 @@ mod tests {
         }
     }
 
-    /// map: {1: 2, "c": bytes} — UR registry 形状（uint key）
+    /// map: {1: 2, "c": bytes} — UR registry shape (uint key)
     #[test]
     fn map_with_uint_keys_round_trip() {
         let m = encode_map(&[
@@ -414,7 +414,7 @@ mod tests {
         assert!(dec.map_get_uint(9).unwrap().is_none());
     }
 
-    /// simple values: true/false/null；尾部垃圾拒绝；截断拒绝
+    /// simple values: true/false/null; trailing garbage rejected; truncation rejected
     #[test]
     fn simple_and_rejects() {
         assert_eq!(decode(&hex("f4")).unwrap(), Cbor::Bool(false));
@@ -425,31 +425,31 @@ mod tests {
         assert!(decode(&hex("1903")).is_err());
         // trailing garbage
         assert!(decode(&hex("0000")).is_err());
-        // indefinite length 拒绝（info 31）
+        // indefinite length rejected (info 31)
         assert!(decode(&hex("9fff")).is_err());
-        // float 拒绝
+        // float rejected
         assert!(decode(&hex("fb3ff199999999999a")).is_err());
     }
 
-    /// X1: 超深度嵌套拒绝（错误路径，不爆栈）
+    /// X1: over-deep nesting rejected (error path, no stack blowup)
     #[test]
     fn deep_nesting_rejected() {
-        // 200 层嵌套 array > MAX_DEPTH(64)
+        // 200 levels of nested array > MAX_DEPTH(64)
         let mut deep = alloc::vec![0x81u8; 200]; // 200 x array(1)
         deep.push(0x00); // uint 0
         assert!(decode(&deep).is_err());
-        // 63 层(≤64)正常通过
+        // 63 levels (≤64) pass normally
         let mut ok = alloc::vec![0x81u8; 63];
         ok.push(0x00);
         assert!(decode(&ok).is_ok());
     }
 
-    /// X1: take() 长度溢出拒绝（u64 len as usize + pos 溢出）
+    /// X1: take() length overflow rejected (u64 len as usize + pos overflow)
     #[test]
     fn overflow_len_rejected() {
-        // bytes(8) 声明 8 字节长度但只给 1 字节
+        // bytes(8) declares an 8-byte length but only 1 byte is given
         assert!(decode(&hex("4b01")).is_err());
-        // u64::MAX 长度声明（8-byte len = 0xffffffffffffffff）
+        // u64::MAX length declaration (8-byte len = 0xffffffffffffffff)
         let huge = hex("5bffffffffffffffff");
         assert!(decode(&huge).is_err());
     }

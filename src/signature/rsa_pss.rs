@@ -1,10 +1,10 @@
-//! RSA-PSS 签名（Arweave）
+//! RSA-PSS signature (Arweave)
 
 use crate::curve_primitive::rsa::{RsaPrivKey, RsaPubKey};
 use crate::error::Result;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// RSA-PSS 签名固定长度（512 bytes for RSA-4096）
+/// RSA-PSS signature fixed length (512 bytes for RSA-4096)
 pub const RSA_PSS_SIGNATURE_LEN: usize = 512;
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -24,23 +24,23 @@ impl core::fmt::Debug for RsaPssSignature {
     }
 }
 
-/// RSA-PSS 签名
+/// RSA-PSS signature
 ///
-/// # Phase 4 实现
+/// # Phase 4 implementation
 /// `rsa::pss::SigningKey::<Sha512>::sign(rng, hashed_msg)`
 ///
-/// 重要：RSA-PSS **需要 RNG**（与 ECDSA 的 deterministic nonce 不同）。
-/// 在 `no_std` 环境下 RNG 来源由 L3 imperative shell 提供——这里只接受 pre-salted msg。
+/// Important: RSA-PSS **needs an RNG** (unlike ECDSA's deterministic nonce).
+/// Under `no_std` the RNG source is provided by the L3 imperative shell — here only pre-salted msgs are accepted.
 pub fn sign(_sk: &RsaPrivKey, _msg_hash: &[u8]) -> Result<RsaPssSignature> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
-/// RSA-PSS 验签
+/// RSA-PSS verification
 pub fn verify(_pk: &RsaPubKey, _msg_hash: &[u8], _sig: &RsaPssSignature) -> bool {
-    // P2-01: unimplemented!() panic → 稳定 false（bool 签名无 Err 通道）
+    // P2-01: unimplemented!() panic → stable false (bool signatures have no Err channel)
     false
 }
 
@@ -63,8 +63,8 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码/返回值，不允许 panic 宏回归
-        // （检查代码行，排除注释行）
+        // P2-01: stubs now return stable error codes/values; panic macros must not regress
+        // (check code lines, skip comment lines)
         for line in "rsa_pss.rs".lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

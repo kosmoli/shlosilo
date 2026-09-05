@@ -1,23 +1,23 @@
-//! BC-UR fountain 编码（R3 路线 A 修正版，2026-08-31 定稿）
+//! BC-UR fountain encoding (R3 route A revised, finalized 2026-08-31)
 //!
-//! **支持范围声明（审计 #6 复审 P2-03）**：本模块为 `pub(crate)` 内部 API——
-//! crate 外唯一承诺入口是 [`crate::ur::ur_multipart::UrMultipartDecoder`]，
-//! 其上 sequence/frame/retained 三重预算组成可证明的总 work 上界。
-//! 本模块的 direct API 不构成稳定支持面，行为可能随内部实现调整。
+//! **Support-scope statement (Audit #6 re-review P2-03)**: this module is a `pub(crate)` internal API —
+//! the only committed entry point outside the crate is [`crate::ur::ur_multipart::UrMultipartDecoder`],
+//! whose sequence/frame/retained triple budget forms a provable total work bound.
+//! This module's direct API is not a stable support surface; behavior may change with internal implementation.
 //!
-//! 对齐规范：BCR-2020-06 / keystone-ur 0.1.1 行为（oracle 三方验证的基准实现）。
+//! Spec alignment: BCR-2020-06 / keystone-ur 0.1.1 behavior (the baseline implementation for three-way oracle verification).
 //!
-//! L1 判据 = 纯函数性：xoshiro RNG 是确定性伪随机（seed 全部来自 (sequence, checksum)，
-//! 无外部熵源），编码/解码无 I/O、无全局状态、无副作用——归 functional core。
+//! L1 criterion = purity: the xoshiro RNG is deterministic pseudorandomness (the seed comes entirely from (sequence, checksum),
+//! no external entropy source); encoding/decoding has no I/O, no global state, no side effects — functional core.
 //!
-//! 组件（全部对齐 keystone-ur 语义）：
-//! - [`Xoshiro256**`]：seed = SHA256(seed_bytes)，算法与 rand_xoshiro 0.6 逐位一致
-//! - `Weighted`：Vose 别名法 degree 采样（权重 1/i）
-//! - [`Part`]：fountain 分片，wire 形状 = CBOR array(5) [seq, seqCount, msgLen, crc32, data]
-//! - [`FountainEncoder`]：分片 + next_part / next_cyclic_part
-//! - [`FountainDecoder`]：received/decoded/buffer 集合覆盖重组（Gaussian elimination 贪心）
+//! Components (all aligned with keystone-ur semantics):
+//! - [`Xoshiro256**`]: seed = SHA256(seed_bytes), bit-identical to rand_xoshiro 0.6
+//! - `Weighted`: degree sampling via Vose's alias method (weight 1/i)
+//! - [`Part`]: fountain fragment; wire shape = CBOR array(5) [seq, seqCount, msgLen, crc32, data]
+//! - [`FountainEncoder`]: fragmentation + next_part / next_cyclic_part
+//! - [`FountainDecoder`]: set-cover reassembly over received/decoded/buffer (greedy Gaussian elimination)
 //!
-//! budget 纪律（X1 同源）：decoder 侧 received/buffer 条目数受 `sequence_count` 上限约束。
+//! Budget discipline (same origin as X1): decoder-side received/buffer entry counts are bounded by the `sequence_count` cap.
 
 extern crate alloc;
 
@@ -27,15 +27,15 @@ use alloc::vec::Vec;
 
 // ─── Xoshiro256** ───────────────────────────────────────────────────
 
-/// 与 rand_xoshiro 0.6 `Xoshiro256StarStar` 逐位一致的实现。
+/// Implementation bit-identical to rand_xoshiro 0.6 `Xoshiro256StarStar`.
 #[derive(Clone)]
 pub(crate) struct Xoshiro256 {
     s: [u64; 4],
 }
 
 impl Xoshiro256 {
-    /// keystone-ur 语义：seed 先过 SHA256 再按 BE 读入 4×u64。
-    /// （keystone-ur 用 bitcoin_hashes::sha256；shlosilo 用自家 L1 sha256，同算法）
+    /// keystone-ur semantics: the seed is first hashed with SHA256, then read as 4×u64 in BE.
+    /// (keystone-ur uses bitcoin_hashes::sha256; shlosilo uses its own L1 sha256 — same algorithm)
     pub(crate) fn from_seed_bytes(seed: &[u8]) -> Self {
         let h = sha256::hash(seed).expect("sha256 of fixed input cannot fail");
         let mut s = [0u64; 4];
@@ -61,7 +61,7 @@ impl Xoshiro256 {
         result
     }
 
-    /// keystone-ur 用 f64 路径（next_double），此处保持一致以保证逐位 oracle 对齐。
+    /// keystone-ur uses the f64 path (next_double); kept identical here for bit-exact oracle alignment.
     fn next_double(&mut self) -> f64 {
         self.next_u64() as f64 / (u64::MAX as f64 + 1.0)
     }
@@ -80,7 +80,7 @@ impl Xoshiro256 {
         out
     }
 
-    /// degree 采样：权重 1/i（i = 1..=count），Vose 别名法，返回 1..=count
+    /// Degree sampling: weight 1/i (i = 1..=count), Vose's alias method, returns 1..=count
     fn choose_degree(&mut self, count: usize) -> usize {
         let weights: Vec<f64> = (1..=count).map(|x| 1.0 / x as f64).collect();
         let mut sampler = Weighted::new(&weights);
@@ -90,7 +90,7 @@ impl Xoshiro256 {
 
 // ─── Weighted alias sampler ────────────────────────────────────────
 
-/// Vose 别名法（对齐 keystone-ur sampler.rs，含 f64 路径）。
+/// Vose's alias method (aligned with keystone-ur sampler.rs, including the f64 path).
 struct Weighted {
     aliases: Vec<usize>,
     probs: Vec<f64>,
@@ -110,8 +110,8 @@ impl Weighted {
         // partition: small/large
         let mut small: Vec<usize> = Vec::new();
         let mut large: Vec<usize> = Vec::new();
-        // keystone-ur 顺序：j 从 1..=count，count-j；partition 谓词 w[j] < 1.0 → small
-        // 等价实现：for j in (0..count).rev() — 保持与上游一致的填充顺序
+        // keystone-ur order: j from 1..=count, count-j; partition predicate w[j] < 1.0 → small
+        // Equivalent implementation: for j in (0..count).rev() — keeps the same fill order as upstream
         for j in (0..count).rev() {
             if w[j] < 1.0 {
                 small.push(j);
@@ -119,8 +119,8 @@ impl Weighted {
                 large.push(j);
             }
         }
-        // 上游: (1..=count).map(|j| count - j) = [count-1, count-2, .., 0] 逆序，
-        // partition 后 s/l 各自保持该逆序。上面 for j in (0..count).rev() 产生相同顺序。
+        // Upstream: (1..=count).map(|j| count - j) = [count-1, count-2, .., 0] reversed;
+        // after partition s/l keep that reversed order. The for j in (0..count).rev() above produces the same order.
 
         let mut probs = alloc::vec![0.0; count];
         let mut aliases = alloc::vec![0usize; count];
@@ -162,7 +162,7 @@ impl Weighted {
 
 // ─── Part ──────────────────────────────────────────────────────────
 
-/// fountain 分片。wire 形状（对齐 keystone-ur Part::to_cbor）：
+/// Fountain fragment. Wire shape (aligned with keystone-ur Part::to_cbor):
 /// CBOR array(5) = [sequence, sequence_count, message_length, checksum, data]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Part {
@@ -174,8 +174,8 @@ pub(crate) struct Part {
 }
 
 impl Part {
-    /// CBOR 编码（用 shlosilo 自家 cbor.rs，形状与 minicbor 逐字节一致：
-    /// 82: array(5)；四个 uint 按 u32 范围选取最短 arg 编码；data 为 byte string）
+    /// CBOR encoding (uses shlosilo's own cbor.rs; shape byte-identical to minicbor:
+    /// 82: array(5); the four uints use the shortest arg encoding for their u32 range; data is a byte string)
     pub fn to_cbor(&self) -> Vec<u8> {
         use crate::encoding::cbor as c;
         let mut out = Vec::new();
@@ -188,7 +188,7 @@ impl Part {
         out
     }
 
-    /// 分片覆盖索引（keystone-ur Part::indexes 语义）
+    /// Fragment covered indexes (keystone-ur Part::indexes semantics)
     pub fn indexes(&self) -> Vec<usize> {
         choose_fragments(self.sequence, self.sequence_count, self.checksum)
     }
@@ -197,7 +197,7 @@ impl Part {
         self.indexes().len() == 1
     }
 
-    /// "seq-count" 字符串（URI 段）
+    /// "seq-count" string (URI segment)
     pub fn sequence_id(&self) -> alloc::string::String {
         alloc::format!("{}-{}", self.sequence, self.sequence_count)
     }
@@ -210,8 +210,8 @@ fn xor_into(dst: &mut [u8], src: &[u8]) {
     }
 }
 
-/// keystone-ur choose_fragments：seq ≤ count 时输出单段原片；
-/// 否则 seed = [seq BE u32][checksum BE u32] → SHA256 → xoshiro 采样。
+/// keystone-ur choose_fragments: when seq ≤ count, output the single original part;
+/// otherwise seed = [seq BE u32][checksum BE u32] → SHA256 → xoshiro sampling.
 pub(crate) fn choose_fragments(
     sequence: usize,
     fragment_count: usize,
@@ -250,7 +250,7 @@ fn partition(data: &[u8], fragment_length: usize) -> Vec<Vec<u8>> {
     padded.chunks(fragment_length).map(<[u8]>::to_vec).collect()
 }
 
-/// fountain 编码器（无副作用：全部状态封闭于 self，输出即值）
+/// Fountain encoder (no side effects: all state is closed over self, output is a value)
 pub(crate) struct FountainEncoder {
     parts: Vec<Vec<u8>>,
     message_length: usize,
@@ -299,7 +299,7 @@ impl FountainEncoder {
         self.make_part(self.current_sequence)
     }
 
-    /// XMR cyclic 模式（对齐 keystone：seq 走到 count 后回 1 循环，供软件钱包补扫）
+    /// XMR cyclic mode (aligned with keystone: after seq reaches count it loops back to 1, so software wallets can catch up)
     pub fn next_cyclic_part(&mut self) -> Part {
         if self.current_sequence == self.parts.len() {
             self.current_sequence = 1;
@@ -310,7 +310,7 @@ impl FountainEncoder {
     }
 }
 
-/// fountain 层错误（L1 无 panic；错误码路径）
+/// Fountain-layer errors (L1 panics never; error-code path)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FountainError {
     EmptyMessage,
@@ -319,13 +319,13 @@ pub(crate) enum FountainError {
     InconsistentPart,
     InvalidPadding,
     ExpectedItem,
-    /// budget 超限（R3 整改新增——keystone-ur 无此上限，属 shlosilo 纪律加严）
+    /// Budget exceeded (added in R3 remediation — keystone-ur has no such cap; a shlosilo discipline tightening)
     BudgetExceeded,
 }
 
 // ─── Decoder ───────────────────────────────────────────────────────
 
-/// fountain 解码器：集合覆盖贪心重组（对齐 keystone-ur Decoder 语义）
+/// Fountain decoder: set-cover greedy reassembly (aligned with keystone-ur Decoder semantics)
 #[derive(Default)]
 pub(crate) struct FountainDecoder {
     received: BTreeSet<Vec<usize>>,
@@ -337,23 +337,23 @@ pub(crate) struct FountainDecoder {
     checksum: u32,
     fragment_length: usize,
     processed_parts_count: usize,
-    /// 审计 #5 开-02:累计 XOR 工作量(字节)
+    /// Audit #5 open-02: cumulative XOR work (bytes)
     work_used: usize,
 }
 
-/// decoder 侧 budget（X1 纪律同源）：上限=分片数上限。
-/// TxTemplate 16 KiB / 最小帧 200B → 最多 ~82 分片；256 给足裕量。
+/// Decoder-side budget (same discipline origin as X1): cap = fragment count cap.
+/// TxTemplate 16 KiB / minimum frame 200B → at most ~82 fragments; 256 leaves ample margin.
 pub(crate) const MAX_SEQUENCE_COUNT: usize = 256;
 
-/// Gate4 #4（2026-09-01 再复审）：单 session 总接收帧数预算。
-/// BC-UR 允许无限冗余帧，但 decoder 资源必须有限：received(buffer/queue 同源)
-/// 都以 received 集合为闸，超过此上限的会话视为异常/攻击，稳定报错。
+/// Gate4 #4 (re-reviewed 2026-09-01): total received-frame budget per session.
+/// BC-UR allows unlimited redundant frames, but decoder resources must be finite: received (buffer/queue share the same origin)
+/// are all gated on the received set; sessions beyond this cap are treated as abnormal/attacks and fail with a stable error.
 pub(crate) const MAX_TOTAL_FRAMES: usize = 4096;
 
-/// 审计 #5 P1-01(开-02):消元工作量预算——XOR 字节累计上限。
-/// 正常重组工作量 O(count × fragment) ≈ 256 × 200B = 51KB;
-/// 16MiB 上限 = 正常工作的 ~300 倍,恶意 XOR 放大攻击(大量 mixed
-/// equations 反复消元)在耗尽 CPU 前先撞此墙。
+/// Audit #5 P1-01 (open-02): elimination work budget — cumulative XOR byte cap.
+/// Normal reassembly work is O(count × fragment) ≈ 256 × 200B = 51KB;
+/// the 16MiB cap ≈ 300× normal work; a malicious XOR amplification attack (mass mixed
+/// equations, repeated elimination) hits this wall before exhausting CPU.
 pub(crate) const MAX_XOR_WORK_BYTES: usize = 16 * 1024 * 1024;
 
 impl FountainDecoder {
@@ -374,7 +374,7 @@ impl FountainDecoder {
         pct.min(99) as u8
     }
 
-    /// 收片。Ok(true) = 接受了新信息，Ok(false) = 重复/无新信息。
+    /// Receive a fragment. Ok(true) = accepted new information; Ok(false) = duplicate/no new information.
     pub fn receive(&mut self, part: Part) -> Result<bool, FountainError> {
         if self.complete() {
             return Ok(false);
@@ -382,7 +382,7 @@ impl FountainDecoder {
         if part.sequence_count == 0 || part.data.is_empty() || part.message_length == 0 {
             return Err(FountainError::EmptyPart);
         }
-        // X1 同源 budget：sequence_count 上限（防 wire 可控超限造成资源失控）
+        // X1 same-origin budget: sequence_count cap (prevents wire-controlled overrun from exhausting resources)
         if part.sequence_count > MAX_SEQUENCE_COUNT {
             return Err(FountainError::BudgetExceeded);
         }
@@ -400,7 +400,7 @@ impl FountainDecoder {
         if self.received.contains(&indexes) {
             return Ok(false);
         }
-        // Gate4 #4: session frame budget——重复帧不计（幂等），新帧计入
+        // Gate4 #4: session frame budget — duplicates don't count (idempotent), new frames do
         if self.received.len() >= MAX_TOTAL_FRAMES {
             return Err(FountainError::BudgetExceeded);
         }
@@ -503,7 +503,7 @@ impl FountainDecoder {
         Ok(())
     }
 
-    /// 完成时返回重组消息（校验 padding 零字节 + message_length 截断）
+    /// Returns the reassembled message on completion (validates padding zero bytes + message_length truncation)
     pub fn message(&self) -> Result<Option<Vec<u8>>, FountainError> {
         if !self.complete() {
             return Ok(None);
@@ -528,19 +528,19 @@ impl FountainDecoder {
     }
 }
 
-// sequence_id 在 Part 上的实现（alloc::format——lib 内已接受 alloc，与 cbor/unsigned_txset 一致）
+// sequence_id impl on Part (alloc::format — the lib already accepts alloc, consistent with cbor/unsigned_txset)
 
-// ─── oracle 测试：keystone-ur 官方向量 + roundtrip ─────────────────
+// --- oracle tests: keystone-ur official vectors + roundtrip ----------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::vec;
 
-    /// keystone-ur fountain.rs doctest 向量 1：
+    /// keystone-ur fountain.rs doctest vector 1:
     /// "Ten chars!" / max_len=4 → p1="Ten " p2="char" p3="s!\0\0"
-    /// 首两帧是原片；丢 p3；第 4 帧仍是 p3（RNG 选中单段）；
-    /// 第 5 帧 = p1^p2^p3（RNG 选 3 段）
+    /// The first two frames are original parts; drop p3; frame 4 is still p3 (RNG picks a single segment);
+    /// frame 5 = p1^p2^p3 (RNG picks 3 segments)
     #[test]
     fn keystone_doctest_ten_chars() {
         let data = b"Ten chars!";
@@ -549,12 +549,12 @@ mod tests {
         assert_eq!(p1.data, b"Ten ");
         let p2 = enc.next_part();
         assert_eq!(p2.data, b"char");
-        // 丢掉 p3
+        // Drop p3
         let _p3 = enc.next_part();
-        // RNG 接管后第一帧仍是 p3
+        // The first frame after the RNG takes over is still p3
         let p3_again = enc.next_part();
         assert_eq!(p3_again.data, b"s!\0\0");
-        // 下一帧 = p1 ^ p2 ^ p3
+        // The next frame = p1 ^ p2 ^ p3
         let mixed = enc.next_part();
         let xor3 = {
             let mut x = p1.data.clone();
@@ -564,19 +564,19 @@ mod tests {
         };
         assert_eq!(mixed.data, xor3);
 
-        // decoder: 收 p1, p2, 丢 p3, 收 p3_again → 已完整（mixed 是冗余帧）
+        // decoder: receive p1, p2, drop p3, receive p3_again → already complete (mixed is a redundant frame)
         let mut dec = FountainDecoder::new();
         assert!(dec.receive(p1).unwrap());
         assert!(dec.receive(p2).unwrap());
         assert!(dec.receive(p3_again).unwrap());
         assert!(dec.complete());
         assert_eq!(dec.message().unwrap().as_deref(), Some(&data[..]));
-        // 完成后收到 mixed 帧 → Ok(false)（不崩不重复处理）
+        // Receiving a mixed frame after completion → Ok(false) (no crash, no duplicate processing)
         assert!(!dec.receive(mixed).unwrap());
     }
 
-    /// keystone-ur sampler doctest 向量：weights [1,2,4,8], seed "Wolf"
-    /// 期望序列前 31 个采样值
+    /// keystone-ur sampler doctest vector: weights [1,2,4,8], seed "Wolf"
+    /// The first 31 sampled values of the expected sequence
     #[test]
     fn keystone_sampler_wolf_vector() {
         let weights = vec![1.0, 2.0, 4.0, 8.0];
@@ -591,16 +591,16 @@ mod tests {
         }
     }
 
-    /// keystone-ur fragment_length doctest 向量
+    /// keystone-ur fragment_length doctest vector
     #[test]
     fn keystone_fragment_length_vector() {
         assert_eq!(fragment_length(12345, 1955), 1764);
         assert_eq!(fragment_length(12345, 30000), 12345);
     }
 
-    /// keystone-ur bytewords 统计 doctest：
-    /// "Fifty chars"×5 = 55 字节, max_len=5 → 11 分片；100 帧中原片占比 ≈ 39/100，
-    /// 平均每帧 index 数 ≈ 3.33
+    /// keystone-ur bytewords statistics doctest:
+    /// "Fifty chars"×5 = 55 bytes, max_len=5 → 11 fragments; over 100 frames the original-part ratio ≈ 39/100,
+    /// average index count per frame ≈ 3.33
     #[test]
     fn keystone_fifty_chars_statistics() {
         let data = b"Fifty chars".repeat(5);
@@ -619,20 +619,20 @@ mod tests {
         assert_eq!(idx_sum, 333, "average degree drift");
     }
 
-    /// roundtrip: 真实 XMR unsigned payload 形状 (2 KiB) + 分片 200B → 完整重组
+    /// roundtrip: a real XMR unsigned payload shape (2 KiB) + 200B fragments → full reassembly
     #[test]
     fn roundtrip_2k_payload_200b_fragments() {
         let payload: Vec<u8> = (0..2048).map(|i| (i * 7 % 251) as u8).collect();
         let mut enc = FountainEncoder::new(&payload, 200).unwrap();
         let mut dec = FountainDecoder::new();
-        // 只收 60% 的帧（模拟丢帧）——fountain 冗余应仍能重组
+        // Receive only 60% of the frames (simulating loss) — fountain redundancy should still reassemble
         let mut dropped = 0;
         for i in 0.. {
             if dec.complete() {
                 break;
             }
             let p = enc.next_part();
-            let keep = i % 5 != 0; // 丢 20% 帧
+            let keep = i % 5 != 0; // drop 20% of frames
             if keep {
                 dec.receive(p).unwrap();
             } else {
@@ -644,7 +644,7 @@ mod tests {
         assert_eq!(dec.message().unwrap().as_deref(), Some(&payload[..]));
     }
 
-    /// budget: sequence_count 超限拒绝
+    /// budget: sequence_count over cap is rejected
     #[test]
     fn oversized_sequence_count_rejected() {
         let mut dec = FountainDecoder::new();
@@ -658,7 +658,7 @@ mod tests {
         assert_eq!(dec.receive(part), Err(FountainError::BudgetExceeded));
     }
 
-    /// Part CBOR 形状 vs keystone-ur minicbor：array(5) + 4 uint + bytes
+    /// Part CBOR shape vs keystone-ur minicbor: array(5) + 4 uint + bytes
     #[test]
     fn part_cbor_shape() {
         let part = Part {
@@ -677,11 +677,11 @@ mod tests {
             ]
         );
     }
-    /// 审计 #6 复审 P2-03 方式 1:fountain 层 XOR work budget 行为测试。
-    /// 本模块已收窄为 pub(crate)(非稳定支持面),此测试属 crate 内部验证。
-    /// 构造要点:保留 2 个未解码 idx(62,63),mixed part 必含 62 且不含 63,
-    /// session 永不 complete;每次消元 removes = degree-1 个 decoded 副本,
-    /// work_used 累计至 16MiB 触发 BudgetExceeded。
+    /// Audit #6 re-review P2-03 method 1: behavioral test of the fountain-layer XOR work budget.
+    /// This module has been narrowed to pub(crate) (not a stable support surface); this test is crate-internal verification.
+    /// Construction keys: keep 2 undecoded idx (62,63); the mixed part must contain 62 and not 63,
+    /// the session never completes; each elimination removes = degree-1 decoded copies,
+    /// and work_used accumulates until 16MiB triggers BudgetExceeded.
     #[test]
     fn xor_work_budget_enforced() {
         let frag = 1024 * 1024;
@@ -689,7 +689,7 @@ mod tests {
         let message = vec![0xABu8; frag * count];
         let mut enc = FountainEncoder::new(&message, frag).unwrap();
         let mut dec = FountainDecoder::new();
-        // 收 62 个 simple(idx 0..=61 decoded;62,63 未解码)
+        // receive 62 simple parts (idx 0..=61 decoded; 62,63 undecoded)
         for _ in 0..count - 2 {
             dec.receive(enc.next_part()).unwrap();
         }

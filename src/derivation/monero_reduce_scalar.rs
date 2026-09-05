@@ -1,12 +1,12 @@
-//! Monero reduce_scalar 派生（XMR 核心派生）
+//! Monero reduce_scalar derivation (XMR core derivation)
 
 use crate::curve_primitive::ed25519::Ed25519Scalar;
 use crate::error::Result;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// Monero 派生路径（v2 §2.7 关键：MoneroPath 不是 DerivationPath）
+/// Monero derivation path (v2 §2.7 key point: MoneroPath is not DerivationPath)
 ///
-/// Monero 路径用 account / subaddress index 结构，不用 BIP-32 字符串
+/// Monero paths use the account / subaddress index structure, not BIP-32 strings
 #[derive(Clone, Debug)]
 pub struct MoneroPath {
     pub account: u32,
@@ -24,18 +24,18 @@ impl MoneroPath {
     }
 }
 
-/// Monero 密钥对（v2 §2.7 关键聚合结构）
+/// Monero key pair (the key aggregation structure of v2 §2.7)
 ///
-/// **不 derive Clone**：每 clone 一次，内存里多一份 spend/view 副本，
-/// 物理攻击面放大一倍（cold boot / DMA / 0day / 寄存器残留）。
-/// `ZeroizeOnDrop` 只清零当前 scope 的副本，对 dump / DMA / Spectre 无效。
+/// **Does not derive Clone**: each clone adds one more in-memory spend/view copy,
+/// doubling the physical attack surface (cold boot / DMA / 0day / register residue).
+/// `ZeroizeOnDrop` only zeroes the copy in the current scope; it is useless against dump / DMA / Spectre.
 ///
-/// **业务模块正确用法**：
+/// **Correct usage in business modules**:
 /// ```ignore
 /// let kp = monero_reduce_scalar::derive(seed, &path)?;
 /// let spend = kp.spend_priv();  // &Ed25519Scalar (borrow)
 /// let sig = clsag_ed25519::sign(spend, msg, ring, pseudo_out, aux)?;
-/// // kp 出 scope 自动 ZeroizeOnDrop，签名完成
+/// // kp auto ZeroizeOnDrop when leaving scope, signing done
 /// ```
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct MoneroKeyPair {
@@ -44,11 +44,11 @@ pub struct MoneroKeyPair {
 }
 
 impl MoneroKeyPair {
-    /// 借出 spend 私钥（borrow，不 clone）
+    /// Lend the spend private key (borrow, not clone)
     pub fn spend_priv(&self) -> &Ed25519Scalar {
         &self.spend_priv
     }
-    /// 借出 view 私钥（borrow，不 clone）
+    /// Lend the view private key (borrow, not clone)
     pub fn view_priv(&self) -> &Ed25519Scalar {
         &self.view_priv
     }
@@ -60,16 +60,16 @@ impl core::fmt::Debug for MoneroKeyPair {
     }
 }
 
-/// Monero reduce_scalar 派生（v2 §2.7 关键公式）
+/// Monero reduce_scalar derivation (the key formula of v2 §2.7)
 ///
-/// # P1-06（2026-08-26）真实实现（对齐 keystone apps/monero/src/key.rs）
+/// # P1-06 (2026-08-26) real implementation (aligned with keystone apps/monero/src/key.rs)
 ///
-/// 1. BIP-32 secp256k1 派生 `m/44'/128'/{account}'/0/0` → 32B raw private key
+/// 1. BIP-32 secp256k1 derive `m/44\'/128\'/{account}\'/0/0` → 32B raw private key
 /// 2. spend = Hs(raw) = reduce_scalar(keccak256(raw))     （monero hash_to_scalar）
 /// 3. view  = Hs(spend_bytes)                              （monero generate_keys）
 ///
-/// 这是 keystone 从 BIP-39 seed 生成 Monero keypair 的标准路径（P6.3 已用
-/// base58-monero 地址编码互验：DEST1 与 meta.json MATCH）。
+/// This is keystone\'s standard path for generating a Monero keypair from a BIP-39 seed (P6.3 already
+/// cross-verified with base58-monero address encoding: DEST1 matches meta.json).
 pub fn derive(seed: &[u8], path: &MoneroPath) -> Result<MoneroKeyPair> {
     extern crate alloc;
     use alloc::format;
@@ -95,9 +95,9 @@ pub fn derive(seed: &[u8], path: &MoneroPath) -> Result<MoneroKeyPair> {
     })
 }
 
-/// View key 派生（用于导出 view-only 凭证）
+/// View key derivation (for exporting view-only credentials)
 ///
-/// view = Hs(spend_private)（monero generate_keys 第二步）
+/// view = Hs(spend_private) (the second step of monero generate_keys)
 pub fn derive_view_key(spend_private: &Ed25519Scalar) -> Result<Ed25519Scalar> {
     let spend_bytes = crate::curve_primitive::ed25519::scalar_to_bytes(spend_private);
     let view_hash = crate::encoding::keccak256::hash(&spend_bytes)?;
@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(path.subaddress_minor, 0);
     }
 
-    /// P1-06：派生确定性——同 seed 同路径 → 同 spend/view
+    /// P1-06: derivation determinism — same seed same path → same spend/view
     #[test]
     fn derive_deterministic() {
         let seed = [0x42u8; 64];
@@ -141,7 +141,7 @@ mod tests {
         );
     }
 
-    /// P1-06：derive_view_key 与 derive 的 view 一致（Hs(spend)）
+    /// P1-06: derive_view_key matches derive\'s view (Hs(spend))
     #[test]
     fn derive_view_key_matches_derive() {
         let seed = [0x24u8; 64];
@@ -154,7 +154,7 @@ mod tests {
         );
     }
 
-    /// P1-06：account 不同 → key 不同（路径参与派生）
+    /// P1-06: different account → different keys (the path participates in derivation)
     #[test]
     fn derive_differs_by_account() {
         let seed = [0x11u8; 64];

@@ -1,22 +1,22 @@
-//! EntropySource enum（v2.3 接口笔记 §14）
+//! EntropySource enum (v2.3 interface notes §14)
 //!
-//! **三种熵源**：
-//! - `DiceRolls`：用户选 `{sides, rolls}`，程序转换成熵 bytes
-//! - `HwRng`：硬件 RNG 输出（如 STM32 RNG 外设 / ATECC608 TRNG）
-//! - `MnemonicRestore`：已有助记词，恢复时直接从 mnemonics 转 seed
+//! **Three entropy sources**:
+//! - `DiceRolls`: the user picks `{sides, rolls}`; the program converts them into entropy bytes
+//! - `HwRng`: hardware RNG output (e.g. the STM32 RNG peripheral / ATECC608 TRNG)
+//! - `MnemonicRestore`: an existing mnemonic; at restore time convert directly from mnemonics to seed
 
 use crate::entropy::mnemonic::Mnemonic;
 
-/// Entropy 源
+/// Entropy source
 ///
-/// **v2.4 安全**：所有变体都是 borrow，不持有 owned 副本。
+/// **v2.4 security**: all variants are borrows; no owned copies are held.
 #[derive(Clone, Debug)]
 pub enum EntropySource<'a> {
-    /// 骰子 roll 输入：用户选 `{sides, rolls}`，业务模块转换成熵
+    /// Dice roll input: the user picks `{sides, rolls}`; business modules convert it into entropy
     DiceRolls { sides: u8, rolls: &'a [u8] },
-    /// 硬件 RNG 直接输出（已熵化的 bytes）
+    /// Hardware RNG direct output (already-entropized bytes)
     HwRng(&'a [u8]),
-    /// 已有助记词，恢复时直接用
+    /// An existing mnemonic, used directly at restore time
     MnemonicRestore(&'a Mnemonic),
 }
 #[cfg(test)]
@@ -25,8 +25,8 @@ mod tests {
 
     #[test]
     fn entropy_source_variants_distinct() {
-        // 类型层验证：枚举有 3 个变体
-        // （编译期保证，不需要 runtime 测试）
+        // Type-level check: the enum has 3 variants
+        // (guaranteed at compile time; no runtime test needed)
         fn _check_exhaustiveness(source: &EntropySource<'_>) {
             match source {
                 EntropySource::DiceRolls { sides, rolls } => {
@@ -37,7 +37,7 @@ mod tests {
                     assert!(!bytes.is_empty());
                 }
                 EntropySource::MnemonicRestore(_) => {
-                    // Mnemonic 类型已经在业务测试中验证
+                    // The Mnemonic type is already verified in the business tests
                 }
             }
         }

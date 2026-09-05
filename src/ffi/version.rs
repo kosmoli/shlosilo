@@ -1,52 +1,52 @@
-//! 版本字符串 + 版本号（Phase 5 L3 启动时校验）
+//! Version strings + version numbers (validated at Phase 5 L3 startup)
 
-/// shlosilo 完整版本（cabi + runtime）
+/// Full shlosilo version (cabi + runtime)
 pub const SHLOSILO_VERSION_MAJOR: u16 = 0;
 pub const SHLOSILO_VERSION_MINOR: u16 = 5;
 pub const SHLOSILO_VERSION_PATCH: u16 = 0;
 
-/// 版本字符串（"v0.5.0-poc4"；带 \0 结尾——C 端可安全 printf/strlen）
+/// Version string ("v0.5.0-poc4"; NUL-terminated — safe for C-side printf/strlen)
 pub const SHLOSILO_VERSION_STRING: &str = "v0.5.0-poc4\0";
 
-/// C ABI 版本（**跟 runtime 版本独立**——L3 必须校验 ABI 版本匹配）
+/// C ABI version (**independent of the runtime version** — L3 must validate the ABI version matches)
 ///
-/// ABI 版本不兼容规则（`shlosilo_cabi_check` 实现为**严格等值**）：
-/// - major 不同 → -1（ABI 不兼容，签名/错误码布局变更）
-/// - minor 不同 → -2（导出函数集合或语义变更，L3 必须对照新版 shlosilo.h 重编译）
-/// - patch 不同 → -3（行为微调，L3 应重新 smoke；检查同样拒绝以保证 determinism）
+/// ABI version incompatibility rules (`shlosilo_cabi_check` implements **strict equality**):
+/// - major differs → -1 (ABI incompatible; signature/error-code layout changed)
+/// - minor differs → -2 (exported function set or semantics changed; L3 must recompile against the new shlosilo.h)
+/// - patch differs → -3 (minor behavior tweaks; L3 should re-smoke; the check rejects it too, for determinism)
 ///
-/// 注意：这与传统 semver「minor 增 = 向后兼容」**不同**——本项目 C ABI 处于
-/// 0.x 阶段，minor 即破坏性位（与 0.x semver 约定一致）。进入 1.x 后应放宽为
-/// major-only 检查。
+/// Note: unlike traditional semver where "minor bump = backward compatible", this project's C ABI is in
+/// its 0.x stage, where minor is the breaking component (consistent with 0.x semver convention). After entering 1.x it should relax to
+/// a major-only check.
 pub const SHLOSILO_CABI_VERSION_MAJOR: u16 = 0;
 pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 3;
 pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
 
-/// C ABI 版本字符串（带 \0 结尾）
+/// C ABI version string (NUL-terminated)
 ///
-/// **R2 整改（2026-08-31）**：0.1.0 → 0.2.0——错误码布局从正数 kind 直映射
-/// 改为 ShlosiloErrorCode 稳定负码（ABI 行为变更），capability 查询补 null guard。
+/// **R2 remediation (2026-08-31)**: 0.1.0 → 0.2.0 — the error-code layout changed from a direct mapping of positive kinds
+/// to stable negative ShlosiloErrorCode codes (an ABI behavior change), and the capability query gained a null guard.
 ///
-/// **审计 #4 整改（2026-09-01）**：0.2.0 → 0.3.0——R3 新增导出
-/// shlosilo_sign_typed_ffi / shlosilo_ur_decode_type（导出函数集合变更）；
-/// P0-02 入口序言纪律变更（(NULL,len>0) 从静默空切片改为稳定拒绝 = 语义变更）。
+/// **Audit #4 remediation (2026-09-01)**: 0.2.0 → 0.3.0 — R3 added exports
+/// shlosilo_sign_typed_ffi / shlosilo_ur_decode_type (exported function set changed);
+/// the P0-02 entry prologue discipline changed ((NULL,len>0) went from a silent empty slice to stable rejection = a semantics change).
 pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.3.0\0";
 
-/// extern "C" 返回版本字符串（C 端 strdup 后用）
+/// extern "C" returning the version string (C side strdups it before use)
 #[no_mangle]
 pub extern "C" fn shlosilo_version() -> *const u8 {
     SHLOSILO_VERSION_STRING.as_ptr()
 }
 
-/// extern "C" 返回 C ABI 版本字符串
+/// extern "C" returning the C ABI version string
 #[no_mangle]
 pub extern "C" fn shlosilo_cabi_version() -> *const u8 {
     SHLOSILO_CABI_VERSION_STRING.as_ptr()
 }
 
-/// L3 启动时校验 ABI 兼容性（major 必须匹配）
+/// Validate ABI compatibility at L3 startup (major must match)
 ///
-/// 返回 0 = ABI 兼容，非 0 = 不兼容
+/// Returns 0 = ABI compatible, non-zero = incompatible
 #[no_mangle]
 pub extern "C" fn shlosilo_cabi_check(
     l3_expected_major: u16,
@@ -54,13 +54,13 @@ pub extern "C" fn shlosilo_cabi_check(
     l3_expected_patch: u16,
 ) -> i32 {
     if l3_expected_major != SHLOSILO_CABI_VERSION_MAJOR {
-        return -1; // major 不匹配 → ABI 不兼容
+        return -1; // major mismatch → ABI incompatible
     }
     if l3_expected_minor != SHLOSILO_CABI_VERSION_MINOR {
-        return -2; // minor 不匹配 → ABI 不兼容（cabi 改了导出函数签名）
+        return -2; // minor mismatch → ABI incompatible (cabi changed exported function signatures)
     }
     if l3_expected_patch != SHLOSILO_CABI_VERSION_PATCH {
-        return -3; // patch 不匹配 → 可能行为有微调
+        return -3; // patch mismatch → minor behavior tweaks possible
     }
     0
 }
@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn cabi_version_constants() {
-        // 审计 #4（2026-09-01）：0.2.0 → 0.3.0（R3 新增导出 + P0-02 语义变更）
+        // Audit #4 (2026-09-01): 0.2.0 → 0.3.0 (R3 new exports + P0-02 semantics change)
         assert_eq!(SHLOSILO_CABI_VERSION_MAJOR, 0);
         assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 3);
         assert_eq!(SHLOSILO_CABI_VERSION_PATCH, 0);

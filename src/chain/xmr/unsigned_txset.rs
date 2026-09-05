@@ -1,14 +1,14 @@
-//! XMR unsigned_txset 解析（P1-06，2026-08-26）
+//! XMR unsigned_txset parsing (P1-06, 2026-08-26)
 //!
-//! 格式（P6.3 实测 + keystone apps/monero/src/transfer.rs 对齐）：
+//! Format (measured in P6.3 + aligned with keystone apps/monero/src/transfer.rs):
 //! ```text
 //! magic "Monero unsigned tx set\x05" (23B)
 //! nonce 8B
-//! 密文（ChaCha20-Legacy, key = cryptonight_hash_v0(view_sk)）
-//! 尾部 64B = Ed25519 签名（view_pub 对 keccak256(nonce||密文)）
+//! ciphertext (ChaCha20-Legacy, key = cryptonight_hash_v0(view_sk))
+//! trailing 64B = Ed25519 signature (view_pub over keccak256(nonce||ciphertext))
 //! ```
 //!
-//! 解密后明文 = epee binary_archive：
+//! Decrypted plaintext = epee binary_archive:
 //! ```text
 //! version varint (0x02)
 //! txes_len varint
@@ -24,7 +24,7 @@
 //!         amount u64LE (FIELD)
 //!         rct bool 1B
 //!         mask 32B
-//!         multisig_kLRki 128B (k,L,R,ki 各 32B)
+//!         multisig_kLRki 128B (k, L, R, ki 32B each)
 //!     change_dts: tx_destination_entry (original varint+bytes, amount VARINT,
 //!                                        spend 32B, view 32B, is_sub 1B, is_int 1B)
 //!     splitted_dsts_len varint + entries
@@ -36,7 +36,7 @@
 //!     dests_len varint + entries
 //!     subaddr_account u32LE
 //!     subaddr_indices_len varint + varint each
-//! 剩余 = transfers 段（显示层不需解析，跳过）
+//! remainder = transfers segment (the display layer skips parsing it)
 //! ```
 
 extern crate alloc;
@@ -52,24 +52,24 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-/// unsigned_txset magic（P6.3 实测）
+/// unsigned_txset magic (measured in P6.3)
 pub const UNSIGNED_TX_PREFIX: &[u8] = b"Monero unsigned tx set\x05";
 const MAGIC_LEN: usize = 23;
 const SIG_LEN: usize = 64;
 const NONCE_LEN: usize = 8;
 
-// ============ 读取器（epee binary_archive 小工具） ============
+// ============ Readers (epee binary_archive helpers) ============
 
-/// 审计 #12 P1-03:入口总预算。对齐 multipart payload 上限(加密 blob 只会
-/// 更小;解密明文不可能超过 wire 输入总量)。恶意但签名有效的请求在入口
-/// 即拒,不进入任何分配路径。
+/// Audit #12 P1-03: entry total budget. Aligned with the multipart payload cap (an encrypted blob can only be
+/// smaller; decrypted plaintext can never exceed the total wire input). Malicious but signature-valid requests hit the entry
+/// it rejects and never enters any allocation path.
 const UNSIGNED_TXSET_MAX_PLAIN_LEN: usize = crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN;
 
-/// 预算化计数读取(审计 #12 P1-03,X1 单一 helper 纪律——同族检查点共用):
-/// varint → usize fallible 转换(拒绝 32 位窄化回绕)→ 物理可行性校验
-/// (count × min_elem_bytes > 剩余字节 = 物理上解析不完,分配前拒绝)。
-/// min_elem_bytes 是该元素在 wire 上的最小字节数(保守下界);0 值防御性
-/// 按 1 处理(防除零,审计 #7 P2-01 教训)。
+/// Budgeted count read (audit #12 P1-03, X1 single-helper discipline — shared by the whole checkpoint family):
+/// varint → usize fallible conversion (rejects 32-bit narrowing wraps) → physical feasibility check
+/// (count × min_elem_bytes > remaining bytes = physically unparseable; reject before allocating).
+/// min_elem_bytes is the element's minimum wire size (conservative lower bound); a value of 0 is defensive
+/// treated as 1 (divide-by-zero guard; lesson from audit #7 P2-01).
 fn read_count(data: &[u8], off: &mut usize, min_elem_bytes: usize) -> Result<usize> {
     let v = read_varint(data, off)?;
     let count = usize::try_from(v).map_err(|_| err())?;
@@ -121,8 +121,8 @@ fn read_u64(data: &[u8], off: &mut usize) -> Result<u64> {
 }
 
 fn read_bytes(data: &[u8], off: &mut usize, len: usize) -> Result<Vec<u8>> {
-    // 审计 #12 P1-03:offset+len 走 checked_add(32 位平台截断/64 位溢出都
-    // 是真问题),取值用 get(单次越界判定),失败不产生任何分配。
+    // Audit #12 P1-03: offset+len via checked_add (both 32-bit truncation and 64-bit overflow
+    // a real issue), values fetched with get (single out-of-bounds check); failure performs no allocation.
     let end = off.checked_add(len).ok_or_else(err)?;
     let s = data.get(*off..end).ok_or_else(err)?;
     *off = end;
@@ -134,7 +134,7 @@ fn read_u8_32(data: &[u8], off: &mut usize) -> Result<[u8; 32]> {
     Ok(v.try_into().unwrap())
 }
 
-// ============ 数据结构（对齐 keystone transfer.rs） ============
+// ============ Data structures (aligned with keystone transfer.rs) ============
 
 #[derive(Clone, Debug)]
 pub struct OutputEntry {
@@ -143,8 +143,8 @@ pub struct OutputEntry {
     pub mask: [u8; 32],
 }
 
-/// 审计 #5 P1-02:去 Clone——k/l/r 是敏感标量,序列化只用 `&TxSourceEntry`,
-/// Clone 无必要(上轮"wire DTO 重序列化需求"的理由不成立)
+/// Audit #5 P1-02: de-Clone — k/l/r are sensitive scalars; serialization only uses `&TxSourceEntry`,
+/// Clone is unnecessary (the earlier "wire DTO re-serialization need" rationale does not hold)
 pub struct MultisigKLRki {
     pub k: [u8; 32],
     pub l: [u8; 32],
@@ -152,8 +152,8 @@ pub struct MultisigKLRki {
     pub ki: [u8; 32],
 }
 
-/// P1-C（2026-09-01 再复审）：k/l/r 是多签随机掩码（敏感标量）——Drop 时清零。
-/// ki 是公开 key image，无需擦除。Clone 保留：wire DTO 重序列化的功能需求。
+/// P1-C (2026-09-01 re-review): k/l/r are multisig random masks (sensitive scalars) — zeroed on Drop.
+/// ki is a public key image and needs no erasure. Clone is kept: a functional need for wire DTO re-serialization.
 impl Drop for MultisigKLRki {
     fn drop(&mut self) {
         use zeroize::Zeroize;
@@ -163,15 +163,15 @@ impl Drop for MultisigKLRki {
     }
 }
 
-/// P1-03（2026-09-01 审计 #4）：real output 的真 blinding factor——敏感标量。
+/// P1-03 (2026-09-01 audit #4): the real output's true blinding factor — a sensitive scalar.
 ///
-/// 拆型决策：wire DTO（`TxSourceEntry`）与 signing-secret 分离。mask 用
-/// `SecretBytes<32>`（不可 Clone、ZeroizeOnDrop）——修复前裸 `[u8; 32]`
-/// 无 Drop，随 `TxSourceEntry` 的 Clone/复制在内存中扩散且永不擦除。
-/// 访问明文必须走 `.expose()`（grep 审计点）。
+/// Type-split decision: the wire DTO (`TxSourceEntry`) is separated from signing secrets. mask uses
+/// `SecretBytes<32>` (not Clone, ZeroizeOnDrop) — previously a bare `[u8; 32]`
+/// no Drop, so it would spread through memory via `TxSourceEntry` Clone/copies and never be erased.
+/// Plaintext access must go through `.expose()` (grep audit point).
 pub type SourceMask = crate::types::SecretBytes<32>;
 
-/// R1: k/r 是多签随机掩码（敏感）— Debug redacted
+/// R1: k/r are multisig random masks (sensitive) — redacted in Debug
 impl core::fmt::Debug for MultisigKLRki {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MultisigKLRki")
@@ -183,7 +183,7 @@ impl core::fmt::Debug for MultisigKLRki {
     }
 }
 
-#[allow(non_snake_case)] // multisig_kLRki 字段名对齐 Monero 官方 wire 命名
+#[allow(non_snake_case)] // multisig_kLRki field name aligned with official Monero wire naming
 pub struct TxSourceEntry {
     pub outputs: Vec<OutputEntry>,
     pub real_output: u64,
@@ -192,13 +192,13 @@ pub struct TxSourceEntry {
     pub real_output_in_tx_index: u64,
     pub amount: u64,
     pub rct: bool,
-    /// P1-03：真 blinding factor（SecretBytes，不 Clone 不 Debug、ZeroizeOnDrop）
+    /// P1-03: true blinding factor (SecretBytes; no Clone, no Debug, ZeroizeOnDrop)
     pub mask: SourceMask,
-    #[allow(non_snake_case)] // 字段名对齐 Monero 官方 MultisigKLRki 结构
+    #[allow(non_snake_case)] // field names aligned with the official Monero MultisigKLRki struct
     pub multisig_kLRki: MultisigKLRki,
 }
 
-/// R1: real_out_tx_key / mask / multisig_kLRki 均为敏感标量 — Debug redacted
+/// R1: real_out_tx_key / mask / multisig_kLRki are all sensitive scalars — redacted in Debug
 impl core::fmt::Debug for TxSourceEntry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TxSourceEntry")
@@ -235,8 +235,8 @@ pub struct RctConfig {
     pub bp_version: u64,
 }
 
-/// P1-03：TxSourceEntry 含不可 Clone 秘密（mask）→ 本结构不再 derive Clone。
-/// wire 序列化走引用（write_construction_data），sign 路径 move。
+/// P1-03: TxSourceEntry holds a non-Clone secret (mask) → this struct no longer derives Clone.
+/// wire serialization goes by reference (write_construction_data); the sign path moves.
 #[derive(Debug)]
 pub struct TxConstructionData {
     pub sources: Vec<TxSourceEntry>,
@@ -252,24 +252,24 @@ pub struct TxConstructionData {
     pub subaddr_indices: Vec<u32>,
 }
 
-/// P1-03：含 TxConstructionData（不可 Clone）→ 本结构不再 derive Clone
+/// P1-03: contains TxConstructionData (not Clone) → this struct no longer derives Clone
 #[derive(Debug)]
 pub struct UnsignedTx {
     pub txes: Vec<TxConstructionData>,
 }
 
-// ============ 解密 ============
+// ============ Decryption ============
 
-/// Monero 式 Schnorr 验签（对齐 keystone utils/sign.rs::check_signature）
+/// Monero-style Schnorr verification (aligned with keystone utils/sign.rs::check_signature)
 ///
-/// 签名格式 (c 32B, r 32B)，验证：
+/// Signature format (c 32B, r 32B); verification:
 /// ```text
-/// R = s·B - c·P            （s = r, P = 公钥点）
+/// R = s·B - c·P            (s = r, P = the public key point)
 /// c' = Hs(hash || P || R)
-/// 有效 ⇔ c' == c
+/// valid ⇔ c' == c
 /// ```
 ///
-/// **注意**：这不是标准 Ed25519！Monero 自定义的 crypto_ops::check_signature。
+/// **NOTE**: this is not standard Ed25519! It is Monero's custom crypto_ops::check_signature.
 pub(crate) fn check_monero_signature(
     hash: &[u8; 32],
     pubkey: &[u8; 32],
@@ -300,9 +300,9 @@ pub(crate) fn check_monero_signature(
         .ok_or_else(err)?
         .into();
 
-    // R = c·P + r·B —— 对齐 monero crypto.cpp::check_signature 的
-    // ge_double_scalarmult_base_vartime(tmp2, c, P, r)，生成侧 r = k − c·sec，
-    // 故合法签名满足 c·P + r·B == k·B。
+    // R = c·P + r·B — matches monero crypto.cpp::check_signature's
+    // ge_double_scalarmult_base_vartime(tmp2, c, P, r); on the generation side r = k − c·sec,
+    // hence a valid signature satisfies c·P + r·B == k·B.
     let r_point = curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &r_scalar;
     let c_times_p = p_point * c_scalar;
     let result_point = r_point + c_times_p;
@@ -325,7 +325,7 @@ pub(crate) fn check_monero_signature(
     Ok(bool::from((c2_scalar - c_scalar).ct_eq(&Scalar::ZERO)))
 }
 
-/// pub 包装：Monero Schnorr 验签（供 signed_txset 加密往返互验复用）
+/// pub wrapper: Monero Schnorr verification (reused for the signed_txset encrypted round-trip cross-check)
 pub fn verify_monero_signature_pubkey(
     hash: &[u8; 32],
     pubkey: &[u8; 32],
@@ -334,19 +334,19 @@ pub fn verify_monero_signature_pubkey(
     check_monero_signature(hash, pubkey, sig)
 }
 
-/// ChaCha20 密钥 = CryptoNight-V0(view_sk)。2MB scratchpad，真机上是 XMR 签名的大头；
-/// 同一 view_sk 在 decrypt unsigned + encrypt signed 各调一次会翻倍，调用方应复用。
-/// 审计 #12 P1-02:返回 Zeroizing owner,不落地普通 [u8;32] 绑定;crate 内部
-/// helper(旧 pub 让调用方"外层再包 Zeroizing"——构造后包 owner 不擦来源绑定)。
+/// ChaCha20 key = CryptoNight-V0(view_sk). 2MB scratchpad — the dominant cost of XMR signing on device;
+/// Computing CN once per call for the same view_sk in decrypt-unsigned + encrypt-signed doubles the cost; callers should reuse it.
+/// Audit #12 P1-02: returns a Zeroizing owner, never landing in a plain [u8;32] binding; internal to the crate
+/// helper (the old pub let callers "wrap Zeroizing on the outside" — wrapping an owner after construction does not erase the source binding).
 pub(crate) fn chacha_key_from_view_sk(view_sk: &[u8; 32]) -> zeroize::Zeroizing<[u8; 32]> {
     zeroize::Zeroizing::new(cuprate_cryptonight::cryptonight_hash_v0(view_sk))
 }
 
-/// 解密 unsigned_txset（对齐 keystone decrypt_data_with_pvk）
+/// Decrypt an unsigned_txset (aligned with keystone decrypt_data_with_pvk)
 ///
-/// 流程：magic 校验 → nonce=8B → Ed25519 验签（view_pub 对
-/// keccak256(nonce||密文)，尾部 64B）→ ChaCha20-Legacy keystream。
-/// 验签失败 = 数据被篡改或 view key 不匹配 → 拒绝。
+/// Flow: magic check → nonce=8B → Ed25519 verification (view_pub over
+/// keccak256(nonce||ciphertext), trailing 64B) → ChaCha20-Legacy keystream.
+/// Verification failure = data tampered or view key mismatch → reject.
 pub fn decrypt_unsigned_txset(
     data: &[u8],
     view_sk: &[u8; 32],
@@ -355,9 +355,9 @@ pub fn decrypt_unsigned_txset(
     decrypt_unsigned_txset_with_chacha_key(data, view_sk, &key)
 }
 
-/// 与 `decrypt_unsigned_txset` 相同，ChaCha 密钥由调用方注入（避免重复 CN）。
-/// 审计 #12 P1-02:明文 owner 化——返回 Zeroizing<Vec<u8>>,错误/提前返回
-/// 路径由 Drop 覆盖,不再返回普通 Vec。
+/// same as `decrypt_unsigned_txset`; the ChaCha key is injected by the caller (avoids recomputing CN).
+/// Audit #12 P1-02: plaintext is owner-wrapped — returns Zeroizing<Vec<u8>>; error/early-return
+/// paths covered by Drop; no longer returns a plain Vec.
 pub(crate) fn decrypt_unsigned_txset_with_chacha_key(
     data: &[u8],
     view_sk: &[u8; 32],
@@ -370,18 +370,18 @@ pub(crate) fn decrypt_unsigned_txset_with_chacha_key(
         return Err(err());
     }
 
-    // raw_data = nonce || 密文（签名覆盖的范围）
+    // raw_data = nonce || ciphertext (the range covered by the signature)
     let raw_data = &data[MAGIC_LEN..data.len() - SIG_LEN];
     let nonce = &raw_data[..NONCE_LEN];
     let sig_bytes = &data[data.len() - SIG_LEN..];
 
-    // 1. Monero 式 Schnorr 验签（对齐 keystone check_signature）
-    //    签名格式 = (c 32B, r 32B)，验证：
+    // 1. Monero-style Schnorr verification (aligned with keystone check_signature)
+    //    signature format = (c 32B, r 32B); verification:
     //      R = sB - cP
     //      Hs(hash || P || R) == c
-    //    **不是标准 Ed25519**（Monero 自定义 crypto_ops::check_signature）
-    // monero secret_key_to_public_key = s·G，**无 Ed25519 clamp**
-    // （不能用 curve_primitive::scalar_from_bytes —— SigningKey 会 clamp！）
+    //    **not standard Ed25519** (Monero's custom crypto_ops::check_signature)
+    // monero secret_key_to_public_key = s·G, **no Ed25519 clamp**
+    // (cannot use curve_primitive::scalar_from_bytes — SigningKey clamps!)
     use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
     use curve25519_dalek::scalar::Scalar;
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
@@ -391,7 +391,7 @@ pub(crate) fn decrypt_unsigned_txset_with_chacha_key(
         return Err(err());
     }
 
-    // 2. ChaCha20-Legacy 解密
+    // 2. ChaCha20-Legacy decryption
     let mut cipher = ChaCha20Legacy::new_from_slices(&**chacha_key, nonce).map_err(|_| err())?;
     let mut plain = zeroize::Zeroizing::new(raw_data[NONCE_LEN..].to_vec());
     cipher.apply_keystream(&mut plain);
@@ -419,7 +419,7 @@ fn read_destination_entry(data: &[u8], off: &mut usize) -> Result<TxDestinationE
 }
 
 fn read_output_entry(data: &[u8], off: &mut usize) -> Result<OutputEntry> {
-    // std::pair 在 binary_archive 里是 class，前有字段数前缀 0x02
+    // std::pair is a class in binary_archive, prefixed with a field-count 0x02
     let _pair_tag = read_varint(data, off)?;
     let index = read_varint(data, off)?;
     let dest = read_u8_32(data, off)?;
@@ -428,7 +428,7 @@ fn read_output_entry(data: &[u8], off: &mut usize) -> Result<OutputEntry> {
 }
 
 fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
-    // OutputEntry wire 最小 = varint pair_tag(1) + varint index(1) + 64B = 66
+    // OutputEntry wire minimum = varint pair_tag(1) + varint index(1) + 64B = 66
     let outputs_len = read_count(data, off, 66)?;
     let mut outputs = Vec::with_capacity(outputs_len);
     for _ in 0..outputs_len {
@@ -436,7 +436,7 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
     }
     let real_output = read_u64(data, off)?;
     let real_out_tx_key = read_u8_32(data, off)?;
-    // additional tx key wire 最小 = 32B
+    // additional tx key wire minimum = 32B
     let additional_len = read_count(data, off, 32)?;
     let mut real_out_additional_tx_keys = Vec::with_capacity(additional_len);
     for _ in 0..additional_len {
@@ -445,7 +445,7 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
     let real_output_in_tx_index = read_u64(data, off)?;
     let amount = read_u64(data, off)?; // FIELD(uint64) = 8B LE
     let rct = read_bool(data, off)?;
-    // P1-03: mask 走 SecretBytes take 接管（读入缓冲副本立即清零）
+    // P1-03: mask goes through SecretBytes take (the read-in buffer copy is zeroed immediately)
     let mut mask_buf = read_u8_32(data, off)?;
     let mask = crate::types::SecretBytes::take(&mut mask_buf);
     let k = read_u8_32(data, off)?;
@@ -465,22 +465,22 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
     })
 }
 
-/// TxConstructionData 在 wire 上的最小字节数（协议常量，审计#13 §四要求集中定义）。
-/// 零 sources/dests 时逐字段最小编码合计 90B，核算明细见 deserialize_unsigned_tx 内注释。
-/// 任何低于此值的剩余字节不可能容纳 1 笔合法交易（count 上界 = remaining / 90）。
+/// Minimum wire size in bytes of TxConstructionData (protocol constant; audit #13 §4 requires it defined in one place).
+/// With zero sources/dests the per-field minimal encoding totals 90B; see the notes inside deserialize_unsigned_tx for the breakdown.
+/// Any remaining bytes below this value cannot hold 1 legal transaction (count upper bound = remaining / 90).
 const MIN_TX_CONSTRUCTION_DATA_WIRE: usize = 90;
 
 fn read_tx_construction_data(data: &[u8], off: &mut usize) -> Result<TxConstructionData> {
-    // TxSourceEntry wire 最小 = outputs_len(1) + outputs(66) + 8+32+1(keys len+key+…)
-    // 保守取 100；其实任何恶意值都会被后续字段读取拒绝
-    // （sources_len=0 合法：count=0 恒通过 0 > remaining/100 判定，无误伤）
+    // TxSourceEntry wire minimum = outputs_len(1) + outputs(66) + 8+32+1 (keys len + key + ...)
+    // conservatively 100; in practice any malicious value is rejected by subsequent field reads
+    // (sources_len=0 is legal: count=0 always passes the 0 > remaining/100 check, no false rejection)
     let sources_len = read_count(data, off, 100)?;
     let mut sources = Vec::with_capacity(sources_len);
     for _ in 0..sources_len {
         sources.push(read_source_entry(data, off)?);
     }
     let change_dts = read_destination_entry(data, off)?;
-    // TxDestinationEntry wire 最小 = original_len(1) + varint amount(1) + 64 + 2 ≈ 68
+    // TxDestinationEntry wire minimum = original_len(1) + varint amount(1) + 64 + 2 ≈ 68
     let splitted_dsts_len = read_count(data, off, 68)?;
     let mut splitted_dsts = Vec::with_capacity(splitted_dsts_len);
     for _ in 0..splitted_dsts_len {
@@ -489,7 +489,7 @@ fn read_tx_construction_data(data: &[u8], off: &mut usize) -> Result<TxConstruct
     let selected_len = read_count(data, off, 1)?;
     let mut selected_transfers = Vec::with_capacity(selected_len);
     for _ in 0..selected_len {
-        // u64 → usize fallible(32 位窄化回绕拒绝)
+        // u64 → usize fallible (rejects narrowing wraps on 32-bit)
         selected_transfers.push(usize::try_from(read_varint(data, off)?).map_err(|_| err())?);
     }
     let extra_len = usize::try_from(read_varint(data, off)?).map_err(|_| err())?;
@@ -508,7 +508,7 @@ fn read_tx_construction_data(data: &[u8], off: &mut usize) -> Result<TxConstruct
     let subaddr_indices_len = read_count(data, off, 1)?;
     let mut subaddr_indices = Vec::with_capacity(subaddr_indices_len);
     for _ in 0..subaddr_indices_len {
-        // u64 → u32 fallible(高位截断 256→0 类回绕拒绝)
+        // u64 → u32 fallible (rejects high-bit truncation wraps like 256→0)
         subaddr_indices.push(u32::try_from(read_varint(data, off)?).map_err(|_| err())?);
     }
     Ok(TxConstructionData {
@@ -535,7 +535,7 @@ fn put_varint(out: &mut Vec<u8>, n: u64) {
 }
 
 fn write_unsigned_destination(out: &mut Vec<u8>, e: &TxDestinationEntry) {
-    // unsigned 侧 amount 是 varint（read_destination_entry）；signed 侧是 u64 LE。
+    // on the unsigned side, amount is varint (read_destination_entry); on the signed side it is u64 LE.
     put_varint(out, e.original.len() as u64);
     out.extend_from_slice(&e.original);
     put_varint(out, e.amount);
@@ -548,7 +548,7 @@ fn write_unsigned_destination(out: &mut Vec<u8>, e: &TxDestinationEntry) {
 fn write_unsigned_source(out: &mut Vec<u8>, s: &TxSourceEntry) {
     put_varint(out, s.outputs.len() as u64);
     for o in &s.outputs {
-        out.push(2); // std::pair 字段数前缀，与 read_output_entry 的 varint 2 同构
+        out.push(2); // std::pair field-count prefix, isomorphic to read_output_entry's varint 2
         put_varint(out, o.index);
         out.extend_from_slice(&o.dest);
         out.extend_from_slice(&o.mask);
@@ -601,8 +601,8 @@ fn write_unsigned_construction(out: &mut Vec<u8>, d: &TxConstructionData) {
     }
 }
 
-/// epee serialize（与 `deserialize_unsigned_tx` 对偶；不含 transfers 尾段）。
-/// 审计 #12 P1-02:输出含 mask/kLRki 秘密字段,返回 Zeroizing owner。
+/// epee serialize (dual of `deserialize_unsigned_tx`; excludes the trailing transfers segment).
+/// Audit #12 P1-02: the output contains the mask/kLRki secret fields; returns a Zeroizing owner.
 pub fn serialize_unsigned_tx(tx: &UnsignedTx) -> zeroize::Zeroizing<Vec<u8>> {
     let mut out = Vec::new();
     put_varint(&mut out, 2);
@@ -613,9 +613,9 @@ pub fn serialize_unsigned_tx(tx: &UnsignedTx) -> zeroize::Zeroizing<Vec<u8>> {
     zeroize::Zeroizing::new(out)
 }
 
-/// epee deserialize（对齐 keystone UnsignedTx::deserialize）。
-/// 审计 #12 P1-03:入口资源预算三层——总长度预算(分配前)→ txes 计数
-/// 物理可行性 → 逐字段 checked 读取;恶意但签名有效的请求稳定返回 Err。
+/// epee deserialize (aligned with keystone UnsignedTx::deserialize).
+/// Audit #12 P1-03: three layers of entry resource budgeting — total length budget (before allocation) → txes count
+/// physical feasibility → field-by-field checked reads; malicious but signature-valid requests reliably return Err.
 pub fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<UnsignedTx> {
     if bytes.len() > UNSIGNED_TXSET_MAX_PLAIN_LEN {
         return Err(err());
@@ -625,18 +625,18 @@ pub fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<UnsignedTx> {
     if version != 2 {
         return Err(err());
     }
-    // TxConstructionData wire 最小 = 审计#13 P1-01 逐字段核算 90B（零 sources/dests）:
+    // TxConstructionData wire minimum = 90B accounted field by field (audit #13 P1-01, zero sources/dests):
     //   sources_len 1 + change_dts 68 + splitted_dsts_len 1 + selected_len 1
     //   + extra_len 1 + unlock_time 8 + use_rct 1 + version 1 + range_proof_type 1
     //   + bp_version 1 + dests_len 1 + subaddr_account 4 + subaddr_indices_len 1
-    // 旧值 100（bd7cf3b）会拒绝合法零输入交易（92B 顶层 wire），属整改引入回归。
-    // 恶意大计数仍在 with_capacity 前被拒。
+    // the old value of 100 (bd7cf3b) rejected legitimate zero-input txs (92B top-level wire); a regression introduced by remediation.
+    // maliciously large counts are still rejected before with_capacity.
     let txes_len = read_count(bytes, &mut off, MIN_TX_CONSTRUCTION_DATA_WIRE)?;
     let mut txes = Vec::with_capacity(txes_len);
     for _ in 0..txes_len {
         txes.push(read_tx_construction_data(bytes, &mut off)?);
     }
-    // 剩余 = transfers 段（显示层不需要）
+    // remainder = transfers segment (not needed by the display layer)
     Ok(UnsignedTx { txes })
 }
 
@@ -644,17 +644,17 @@ pub fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<UnsignedTx> {
 mod tests {
     use super::*;
 
-    /// P6.3 真实 fixture 明文（/tmp/txset_plain.bin 1952B）——从文件 include
-    /// 验证 deserialize 与 python 解析一致（1 输入 ring16、找零+dest、fee）
+    /// P6.3 real fixture plaintext (/tmp/txset_plain.bin, 1952B) — included from file
+    /// Verify deserialize matches the python parsing (1 input ring16, change+dest, fee)
     #[test]
     fn deserialize_p63_fixture_plain() {
-        // fixture 明文太大不内嵌——用已知的 P6.3 关键值构造最小验证：
-        // 通过 read_destination_entry 单测 + 已知偏移验证（见下面测试）
-        // 完整 fixture 解析在集成测试 tests/p63_xmr_unsigned.rs（include_bytes）
+        // fixture plaintext is too large to embed — build a minimal verification from known P6.3 key values:
+        // verified via the read_destination_entry unit test + known offsets (see the test below)
+        // full fixture parsing lives in the integration test tests/p63_xmr_unsigned.rs (include_bytes)
         let _ = UNSIGNED_TX_PREFIX;
     }
 
-    /// 读取器：varint 标准 LEB128
+    /// Reader: varint, standard LEB128
     #[test]
     fn read_varint_basic() {
         let data = [0x80u8, 0xd7, 0xb0, 0xfb, 0x06]; // 1869360000
@@ -663,7 +663,7 @@ mod tests {
         assert_eq!(off, 5);
     }
 
-    /// 读取器：短 varint
+    /// Reader: short varint
     #[test]
     fn read_varint_short() {
         let data = [0x02u8];
@@ -672,7 +672,7 @@ mod tests {
         assert_eq!(off, 1);
     }
 
-    /// 读取器：越界 → Err
+    /// Reader: out of bounds → Err
     #[test]
     fn read_overflow_rejected() {
         let data = [0x01u8];
@@ -680,7 +680,7 @@ mod tests {
         assert!(read_u32(&data, &mut off).is_err());
     }
 
-    /// 读取器：u64 LE
+    /// Reader: u64 LE
     #[test]
     fn read_u64_le() {
         let data = [0x0du8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -688,7 +688,7 @@ mod tests {
         assert_eq!(read_u64(&data, &mut off).unwrap(), 13);
     }
 
-    /// decrypt：magic 错误 → Err
+    /// decrypt: bad magic → Err
     #[test]
     fn decrypt_bad_magic_rejected() {
         let data = b"not the magic at all...........";
@@ -696,41 +696,41 @@ mod tests {
         assert!(decrypt_unsigned_txset(data, &view).is_err());
     }
 
-    /// decrypt：太短 → Err
+    /// decrypt: too short → Err
     #[test]
     fn decrypt_too_short_rejected() {
         let view = [0u8; 32];
         assert!(decrypt_unsigned_txset(b"Monero unsigned tx set\x05short", &view).is_err());
     }
 
-    // ── P1-03（审计 #4）：secret owner 编译期纪律 ──
+    // ── P1-03 (audit #4): compile-time secret owner discipline ──
 
-    /// mask（真 blinding factor）必须有 Drop——ZeroizeOnDrop 擦除证明的锚点
+    /// mask (the true blinding factor) must have Drop — the anchor for the ZeroizeOnDrop erasure proof
     #[test]
     fn p103_source_mask_needs_drop() {
         assert!(core::mem::needs_drop::<SourceMask>());
-        // 且不可 Clone——秘密副本不扩散
+        // and not Clone — secret copies must not proliferate
         static_assertions::assert_not_impl_any!(SourceMask: Clone, Copy);
     }
 
-    /// TxSourceEntry 整体不再 Clone（含 mask/kLRki 秘密）
+    /// TxSourceEntry is no longer Clone as a whole (contains the mask/kLRki secrets)
     #[test]
     fn p103_tx_source_entry_not_clone() {
         static_assertions::assert_not_impl_any!(TxSourceEntry: Clone, Copy);
-        // 宿主结构同样不 Clone——秘密无法随结构树扩散
+        // host-side structs likewise not Clone — secrets cannot spread through the struct tree
         static_assertions::assert_not_impl_any!(TxConstructionData: Clone);
         static_assertions::assert_not_impl_any!(UnsignedTx: Clone);
     }
 
-    /// MultisigKLRki 有 Drop（k/l/r 擦除）且不可 Clone（审计 #5 P1-02：
-    /// 序列化只需引用，Clone 理由不成立——敏感标量副本不扩散）
+    /// MultisigKLRki has Drop (erases k/l/r) and is not Clone (audit #5 P1-02:
+    /// serialization only needs a reference, so the Clone rationale does not hold — sensitive scalar copies must not proliferate)
     #[test]
     fn p103_multisig_klrki_needs_drop() {
         assert!(core::mem::needs_drop::<MultisigKLRki>());
         static_assertions::assert_not_impl_any!(MultisigKLRki: Clone, Copy);
     }
 
-    /// serialize ↔ deserialize 对偶：1 source / 2 dest，amount 走 varint。
+    /// serialize ↔ deserialize duality: 1 source / 2 dests, amount as varint.
     #[test]
     fn serialize_deserialize_roundtrip_minimal() {
         let src = TxSourceEntry {
@@ -802,7 +802,7 @@ mod tests {
         assert_eq!(bytes, bytes2);
     }
 
-    /// encrypt_unsigned ↔ decrypt_unsigned 对偶。
+    /// encrypt_unsigned ↔ decrypt_unsigned duality.
     #[test]
     fn encrypt_decrypt_unsigned_roundtrip() {
         use rand_chacha::rand_core::SeedableRng;
@@ -818,33 +818,33 @@ mod tests {
         assert_eq!(*dec, *plain);
     }
 
-    /// 审计 #12 P1-02 API 门禁:明文/密文/CN key 的 owner 类型必须带
-    /// Drop 清零语义(Zeroizing);错误路径与提前返回由 Drop 覆盖。
+    /// Audit #12 P1-02 API gate: the owner types for plaintext/ciphertext/CN key must carry
+    /// Drop zeroes (Zeroizing); error paths and early returns are covered by Drop.
     #[test]
     fn plaintext_owner_types_have_drop() {
         assert!(core::mem::needs_drop::<zeroize::Zeroizing<Vec<u8>>>());
         assert!(core::mem::needs_drop::<zeroize::Zeroizing<[u8; 32]>>());
     }
 
-    // ============ 审计 #12 P1-03:parser 资源预算边界 ============
+    // ============ Audit #12 P1-03: parser resource budget bounds ============
 
-    /// read_count 物理可行性边界(纯 helper 直测,#6 复审 P2-01 终态——
-    /// 不依赖时序/分配观察):count > remaining/min_elem 即拒。
+    /// read_count physical feasibility bound (pure helper tested directly; final state of #6 re-review P2-01 —
+    /// no reliance on timing/allocation observation): reject whenever count > remaining/min_elem.
     #[test]
     fn read_count_physical_feasibility_boundaries() {
-        // count=1, varint 后剩 19, min_elem=10 → 1 ≤ 19/10=1 可行
+        // count=1, 19 bytes remain after varint, min_elem=10 → 1 ≤ 19/10=1, feasible
         let data = [1u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let mut off = 0usize;
         assert_eq!(read_count(&data, &mut off, 10).unwrap(), 1);
-        // count=2, varint 后剩 9, min_elem=5 → 2 > 9/5=1 → 拒
+        // count=2, 9 bytes remain after varint, min_elem=5 → 2 > 9/5=1 → reject
         let data2 = [2u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let mut off2 = 0usize;
         assert!(read_count(&data2, &mut off2, 5).is_err());
-        // min_elem=0 防御(不 panic,#7 P2-01 教训):count=9, 剩 9, 按 1 处理 → 9 ≤ 9
+        // min_elem=0 defense (no panic; lesson from #7 P2-01): count=9, 9 remain, treated as 1 → 9 ≤ 9
         let data3 = [9u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let mut off3 = 0usize;
         assert_eq!(read_count(&data3, &mut off3, 0).unwrap(), 9);
-        // u64::MAX 计数 → usize::try_from 在 32 位拒绝/64 位被物理可行性拒
+        // u64::MAX count → usize::try_from rejects on 32-bit / physically-infeasible check rejects on 64-bit
         let huge = {
             // LEB128 of u64::MAX
             [0xffu8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]
@@ -853,19 +853,19 @@ mod tests {
         assert!(read_count(&huge, &mut off4, 1).is_err());
     }
 
-    /// 入口总预算:明文 > UNSIGNED_TXSET_MAX_PLAIN_LEN(16384)在分配前拒绝。
+    /// Entry total budget: plaintext > UNSIGNED_TXSET_MAX_PLAIN_LEN (16384) rejected before allocation.
     #[test]
     fn entry_total_budget_rejects_oversize() {
         let big = alloc::vec![0u8; UNSIGNED_TXSET_MAX_PLAIN_LEN + 1];
         assert!(deserialize_unsigned_tx(&big).is_err());
-        // 边界内(空 txset 合法形态)不被误伤
+        // in-bounds shapes (empty txset is legal) must not be wrongly rejected
         let ok = alloc::vec![2u8, 0];
         assert!(deserialize_unsigned_tx(&ok).is_ok());
     }
 
-    /// 入口总预算下界正例(审计 #14 §四.1):恰好 MAX=16384B 可接受。
-    /// 尾部 transfers 段为显示层容忍设计,version=2 + txes_len=0 + 填充即可构造。
-    /// 至此总预算维度四侧闭合: 空 txset 收 / MAX 收 / MAX+1 拒 / varint 巨值拒。
+    /// Entry total budget lower-bound positive case (audit #14 §4.1): exactly MAX=16384B is acceptable.
+    /// The trailing transfers segment is tolerated for the display layer; it can be built with version=2 + txes_len=0 + padding.
+    /// The total-budget dimension is now closed on all four sides: empty txset accepted / MAX accepted / MAX+1 rejected / huge varint rejected.
     #[test]
     fn entry_total_budget_max_exact_accepted() {
         let mut w = alloc::vec![2u8, 0]; // version=2 + txes_len=0
@@ -877,29 +877,29 @@ mod tests {
         );
     }
 
-    /// 恶意 corpus:合法 version=2 + 巨大 txes 计数 → 物理可行性在
-    /// with_capacity 前拒绝(敌对但结构合法的 wire,发布阻断验收)。
+    /// Malicious corpus: legal version=2 + huge txes count → physical feasibility
+    /// rejected before with_capacity (hostile but structurally valid wire; release-blocking acceptance).
     #[test]
     fn malicious_huge_txes_count_rejected_pre_alloc() {
         // version=2(1B) + txes_len = u64::MAX LEB128(10B)
         let mut wire = alloc::vec![2u8];
         wire.extend_from_slice(&[0xffu8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]);
         assert!(deserialize_unsigned_tx(&wire).is_err());
-        // 次极端:预算内但物理不可行(60000 × 100B >> 16KiB 预算)
+        // secondary extreme: within budget but physically infeasible (60000 × 100B >> 16KiB budget)
         let mut wire2 = alloc::vec![2u8];
         // LEB128 of 60000 = 0xF0 0xD4 0x03
         wire2.extend_from_slice(&[0xf0, 0xd4, 0x03]);
         assert!(deserialize_unsigned_tx(&wire2).is_err());
     }
 
-    // ── P1-01(审计 #13):合法最小 wire 边界(bd7cf3b 回归修复验收) ──
+    // ── P1-01 (audit #13): legal minimum wire bounds (bd7cf3b regression-fix acceptance) ──
 
-    /// 零 sources/dests 的最小合法 TxConstructionData wire(90B,逐字段核算
-    /// 见 MIN_TX_CONSTRUCTION_DATA_WIRE 注释)。
+    /// Minimal legal TxConstructionData wire with zero sources/dests (90B, accounted field by field
+    /// see the MIN_TX_CONSTRUCTION_DATA_WIRE comment).
     fn min_tx_construction_data_wire() -> alloc::vec::Vec<u8> {
         let mut d = alloc::vec::Vec::new();
         d.push(0); // sources_len = 0
-                   // change_dts destination 最小 68B
+                   // change_dts destination minimum 68B
         d.push(0); // original_len = 0
         d.push(0); // amount varint 0
         d.extend_from_slice(&[0u8; 32]); // spend_public_key
@@ -920,14 +920,14 @@ mod tests {
         d
     }
 
-    /// 顶层 wire 拼装:version=2 + txes_len + body。
+    /// Top-level wire assembly: version=2 + txes_len + body.
     fn top_wire(txes_len: u8, body: &[u8]) -> alloc::vec::Vec<u8> {
         let mut w = alloc::vec![2u8, txes_len];
         w.extend_from_slice(body);
         w
     }
 
-    /// 合法最小值必须被接受(审计#13 P1-01:bd7cf3b 的 100B 下界误伤此形态)。
+    /// The legal minimum must be accepted (audit #13 P1-01: bd7cf3b's 100B lower bound wrongly rejected this shape).
     #[test]
     fn a13_min_legal_wire_accepted() {
         let wire = top_wire(1, &min_tx_construction_data_wire()); // 92B
@@ -938,7 +938,7 @@ mod tests {
         assert!(tx.txes[0].dests.is_empty());
     }
 
-    /// 剩余 89B(< 90 下界)count=1 必须拒绝——下界仍有效。
+    /// 89B remaining (< the 90 lower bound) with count=1 must be rejected — the lower bound still applies.
     #[test]
     fn a13_below_min_rejected() {
         let body = min_tx_construction_data_wire();
@@ -947,21 +947,21 @@ mod tests {
         assert!(deserialize_unsigned_tx(&wire).is_err());
     }
 
-    /// count=2 但剩余 92B < 2×90=180 → 物理可行性拒绝(count 上界仍生效)。
+    /// count=2 but only 92B remain < 2×90=180 → physically infeasible, rejected (the count upper bound still applies).
     #[test]
     fn a13_count2_infeasible_rejected() {
         let body = min_tx_construction_data_wire();
-        let wire = top_wire(2, &body); // 剩余 90B,2 > 90/90=1 → 拒
+        let wire = top_wire(2, &body); // 90B remain, 2 > 90/90=1 → reject
         assert!(deserialize_unsigned_tx(&wire).is_err());
     }
 
-    /// 两笔最小合法交易(顶层剩余 180B)必须被接受——多 tx 边界。
+    /// Two minimal legal transactions (180B remaining at top level) must be accepted — the multi-tx boundary.
     #[test]
     fn a13_two_min_txes_accepted() {
         let body = min_tx_construction_data_wire();
         let mut both = body.clone();
         both.extend_from_slice(&body);
-        let wire = top_wire(2, &both); // 剩余 180B,2 ≤ 180/90=2 → 行
+        let wire = top_wire(2, &both); // 180B remain, 2 ≤ 180/90=2 → OK
         let tx = deserialize_unsigned_tx(&wire).expect("two minimal txes must parse");
         assert_eq!(tx.txes.len(), 2);
     }

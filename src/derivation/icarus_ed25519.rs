@@ -1,25 +1,25 @@
-//! Icarus 派生 over ed25519（Cardano Shelley）
+//! Icarus derivation over ed25519 (Cardano Shelley)
 
 use crate::curve_primitive::ed25519::Ed25519Scalar;
 use crate::derivation::path::DerivationPath;
 use crate::error::Result;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// Cardano 扩展私钥——比普通 ed25519 多 stake / drep / ccl 等多组字段
+/// Cardano extended private key — carries more field groups than a plain ed25519 key: stake / drep / ccl etc.
 ///
-/// v2 §2.7 关键约束：聚合结构，**字段全 ZeroizeOnDrop**
+/// v2 §2.7 key constraint: aggregated structure, **all fields ZeroizeOnDrop**
 ///
-/// **不 derive Clone**：每 clone 一次内存里多 1 份 spend+stake+drep+ccl 副本，
-/// 物理攻击面放大一倍（cold boot / DMA / 0day / 寄存器残留）。
-/// `ZeroizeOnDrop` 只清零当前 scope 的副本，对 dump / DMA / Spectre 无效。
+/// **Does not derive Clone**: each clone adds one more in-memory spend+stake+drep+ccl copy,
+/// doubling the physical attack surface (cold boot / DMA / 0day / register residue).
+/// `ZeroizeOnDrop` only zeroes the copy in the current scope; it is useless against dump / DMA / Spectre.
 ///
-/// **业务模块正确用法**：
+/// **Correct usage in business modules**:
 /// ```ignore
 /// let master = icarus_ed25519::master_from_seed(seed)?;
 /// let child = icarus_ed25519::derive(&master, &path)?;
 /// let spend = child.spend();  // &Ed25519Scalar (borrow)
 /// let sig = eddsa_ed25519::sign(spend, msg)?;
-/// // master / child 出 scope 自动 ZeroizeOnDrop
+/// // master / child auto ZeroizeOnDrop when leaving scope
 /// ```
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct CardanoExtSk {
@@ -56,23 +56,23 @@ impl core::fmt::Debug for CardanoExtSk {
     }
 }
 
-/// Icarus master 派生（Cardano Byron 钱包风格的 Ed25519 派生）
+/// Icarus master derivation (the Ed25519 derivation in Cardano Byron wallet style)
 ///
-/// # Phase 4 实现
+/// # Phase 4 implementation
 /// `cardano_serialization_lib::crypto::derive`
 pub fn master_from_seed(_seed: &[u8]) -> Result<CardanoExtSk> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
-/// Icarus 路径派生——返回完整 CardanoExtSk（聚合结构）
+/// Icarus path derivation — returns the full CardanoExtSk (aggregated structure)
 ///
-/// 业务模块拿到 CardanoExtSk 后，**自己解构**：
-/// `let spend = &cardano_ext_sk.spend;` 然后传给 `eddsa_ed25519::sign(spend, msg)`
+/// After a business module obtains the CardanoExtSk, it **destructures it itself**:
+/// `let spend = &cardano_ext_sk.spend;` then pass it to `eddsa_ed25519::sign(spend, msg)`
 pub fn derive(_master: &CardanoExtSk, _path: &DerivationPath) -> Result<CardanoExtSk> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
@@ -92,8 +92,8 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码/返回值，不允许 panic 宏回归
-        // （检查代码行，排除注释行）
+        // P2-01: stubs have been changed to stable error codes/return values; panic macros must not regress
+        // (check code lines, excluding comment lines)
         for line in "icarus_ed25519.rs".lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

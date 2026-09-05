@@ -1,14 +1,14 @@
-//! BTC Taproot BIP-341 官方向量跨验证 (v9.15)
+//! BTC Taproot BIP-341 official vector cross-validation (v9.15)
 //!
-//! Oracle: bitcoin/bips `bip-0341/wallet-test-vectors.json`（官方测试向量）
+//! Oracle: bitcoin/bips `bip-0341/wallet-test-vectors.json` (official test vectors)
 //!
-//! 覆盖:
-//! 1. keypath sighash 全部 7 种 hash_type（DEFAULT/ALL/NONE/SINGLE × ±ANYONECANPAY）
-//!    — 9-input 官方交易，7 个 inputSpending 向量逐一对照
-//! 2. script tree: leaf hash / merkle root / control block（单叶/双叶/三层树）
+//! Covers:
+//! 1. Keypath sighash for all 7 hash_types (DEFAULT/ALL/NONE/SINGLE × ±ANYONECANPAY)
+//!    — a 9-input official transaction, checked one by one against the 7 inputSpending vectors
+//! 2. Script tree: leaf hash / merkle root / control block (single-leaf/two-leaf/three-level trees)
 //!
-//! 这些向量的 sigHash 是 Bitcoin Core 维护者生成的外部锚点，
-//! shlosilo 独立实现必须逐字节一致。
+//! The sigHashes in these vectors are external anchors produced by Bitcoin Core maintainers;
+//! shlosilo's independent implementation must match byte for byte.
 
 use shlosilo::chain::btc::taproot::{
     bip341_keypath_sighash, compute_merkle_root, tap_branch_hash, tap_leaf_hash, SpentOutput,
@@ -41,7 +41,7 @@ fn hex_encode(b: &[u8]) -> String {
 
 // ─── BIP-341 wallet-test-vectors keyPathSpending[0] ──────────────────
 
-/// 官方 rawUnsignedTx 的解析结果（9 inputs / 2 outputs）
+/// Parse result of the official rawUnsignedTx (9 inputs / 2 outputs)
 struct OfficialTx;
 impl OfficialTx {
     fn version() -> u32 {
@@ -50,7 +50,7 @@ impl OfficialTx {
     fn locktime() -> u32 {
         0x1dcd_6500 // LE bytes "00 65 cd 1d" = 500000000
     }
-    /// (txid, vout, sequence) per input — 从 rawUnsignedTx 解析
+    /// (txid, vout, sequence) per input — parsed from rawUnsignedTx
     fn prevouts() -> [([u8; 32], u32); 9] {
         [
             (
@@ -159,7 +159,7 @@ impl OfficialTx {
             },
         ]
     }
-    /// tx outputs (value, spk): P2PKH 0.1 BTC + P2TR (witness v1, program 直接跟在 0x0020 后)
+    /// tx outputs (value, spk): P2PKH 0.1 BTC + P2TR (witness v1, the program directly follows 0x0020)
     fn tx_outputs() -> [SpentOutput; 2] {
         [
             SpentOutput {
@@ -167,8 +167,8 @@ impl OfficialTx {
                 script_pubkey: hex_bytes("76a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac"),
             },
             SpentOutput {
-                // 官方 raw tx 输出1: value 0xcb407880, script len 0x20=32, spk = ac9a...
-                // (witness v1 program 的 32 字节，无版本前缀——这是官方向量的原始字节)
+                // Official raw tx output 1: value 0xcb407880, script len 0x20=32, spk = ac9a...
+                // (the 32 bytes of the witness v1 program, no version prefix — the official vector's raw bytes)
                 value: 0xcb40_7880,
                 script_pubkey: hex_bytes(
                     "ac9a87f5594be208f8532db38cff670c450ed2fea8fcdefcc9a663f78bab962b",
@@ -178,7 +178,7 @@ impl OfficialTx {
     }
 }
 
-/// 用官方向量构造 sighash 输入
+/// Build sighash inputs from the official vector
 fn official_input(idx: usize, hash_type: u8) -> TaprootSighashInput<'static> {
     use std::sync::OnceLock;
 
@@ -285,7 +285,7 @@ fn bip341_official_in8_all_anyonecanpay() {
 
 // ─── scriptPubKey vectors: leaf hash / merkle root / control block ───
 
-/// vector[1]: 单叶树 — leafHash == merkleRoot == 5b75adec...
+/// vector[1]: single-leaf tree — leafHash == merkleRoot == 5b75adec...
 #[test]
 fn bip341_official_script_single_leaf() {
     let script = hex_bytes("20d85a959b0290bf19bb89ed43c916be835475d013da4b362117393e25a48229b8ac");
@@ -299,7 +299,7 @@ fn bip341_official_script_single_leaf() {
     assert_eq!(root, leaf);
 }
 
-/// vector[3]: 双叶树，不同 leaf version (0xc0 与 0xfa)
+/// vector[3]: two-leaf tree with different leaf versions (0xc0 vs 0xfa)
 #[test]
 fn bip341_official_script_two_leaves() {
     let s0 = hex_bytes("20387671353e273264c495656e27e39ba899ea8fee3bb69fb2a680e22093447d48ac");
@@ -322,10 +322,10 @@ fn bip341_official_script_two_leaves() {
         "6c2dc106ab816b73f9d07e3cd1ef2c8c1256f519748e0813e4edd2405d277bef"
     );
     // control blocks: leaf0 → sibling l1; leaf1 → sibling l0
-    // cb0 = c0 || internal || l1 （官方 scriptPathControlBlocks[0]）
+    // cb0 = c0 || internal || l1 (the official scriptPathControlBlocks[0])
     let internal = hex_32("ee4fe085983462a184015d1f782d6a5f8b9c2b60130aff050ce221ecf3786592");
     let cb0_expected = format!("c0{}{}", hex_encode(&internal), hex_encode(&l1));
-    let _ = cb0_expected; // control block 组装在 build_control_block 测试中覆盖
+    let _ = cb0_expected; // control block assembly is covered in the build_control_block test
 
     // compute_merkle_root via co-path: root == branch(l0, l1)
     let root_via_path = compute_merkle_root(&l0, &[l1]);
@@ -334,7 +334,7 @@ fn bip341_official_script_two_leaves() {
     assert_eq!(root_via_path2, root);
 }
 
-/// vector[5]: 三层树 (leaf0 | (leaf1 | leaf2))
+/// vector[5]: three-level tree (leaf0 | (leaf1 | leaf2))
 #[test]
 fn bip341_official_script_three_levels() {
     let lh = [
@@ -343,7 +343,7 @@ fn bip341_official_script_three_levels() {
         hex_32("9e31407bffa15fefbf5090b149d53959ecdf3f62b1246780238c24501d5ceaf6"),
     ];
 
-    // 内部节点 n12 = TapBranch(lh1, lh2)
+    // Internal node n12 = TapBranch(lh1, lh2)
     let n12 = tap_branch_hash(&lh[1], &lh[2]);
     assert_eq!(
         hex_encode(&n12),
@@ -357,11 +357,11 @@ fn bip341_official_script_three_levels() {
     );
 
     // co-paths:
-    // leaf0 → sibling n12；leaf1 → sibling lh0 then n12 的另一半...
-    // 官方 cb for leaf1: c0||internal||lh0||n12 的兄弟侧
-    // compute_merkle_root(leaf1, [lh0, ???]) — leaf1 在右子树的左位置:
-    //   level1: n12 = branch(lh1, lh2)，leaf1 的 sibling 是 lh2
-    //   level2: root = branch(lh0, n12)，n12 的 sibling 是 lh0
+    // leaf0 → sibling n12; leaf1 → sibling lh0 then the other half of n12...
+    // Official cb for leaf1: c0||internal||lh0||n12's sibling side
+    // compute_merkle_root(leaf1, [lh0, ???]) — leaf1 sits in the left position of the right subtree:
+    //   level1: n12 = branch(lh1, lh2); leaf1's sibling is lh2
+    //   level2: root = branch(lh0, n12); n12's sibling is lh0
     let root_leaf1 = compute_merkle_root(&lh[1], &[lh[2], lh[0]]);
     assert_eq!(root_leaf1, root);
     let root_leaf2 = compute_merkle_root(&lh[2], &[lh[1], lh[0]]);

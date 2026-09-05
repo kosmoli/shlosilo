@@ -1,16 +1,16 @@
-//! Signed txset 序列化 + 加密（P1-06 收尾，§B.5 定案实施第 3 步）。
+//! Signed txset serialization + encryption (P1-06 wrap-up, step 3 of the §B.5 finalized plan).
 //!
-//! 对齐 keystone：
-//! - `signed_transaction.rs:87-138` `SignedTxSet::serialize`（wire 布局逐字节一致）
-//! - `utils/mod.rs::encrypt_data_with_pvk`（magic + nonce 8B 大端 + ChaCha20-Legacy
-//!   + 尾部 64B Monero Schnorr 签名）
-//! - `utils/sign.rs::generate_signature` / `generate_ring_signature`（tx_key_images 签名）
+//! Aligned with keystone:
+//! - `signed_transaction.rs:87-138` `SignedTxSet::serialize` (wire layout matches byte for byte)
+//! - `utils/mod.rs::encrypt_data_with_pvk` (magic + 8B big-endian nonce + ChaCha20-Legacy
+//!   + trailing 64B Monero Schnorr signature)
+//! - `utils/sign.rs::generate_signature` / `generate_ring_signature` (tx_key_images signatures)
 //!
-//! wire 要点（与解密侧 read_* 对偶，均经 P6.3 真实 fixture 互验）：
-//! - varint = LEB128；u64 字段 = 8B LE
-//! - tx_key 位置写 Scalar::ONE（keystone 归零处理——r 不回传 host）
-//! - key_images_str = `<hex> ` 逐项拼接（含尾随空格）
-//! - tx_key_images 项 = 0x02 ‖ output 一次性地址 ‖ key image（Hs(shared_key)·Hp）
+//! wire essentials (dual to the decryption side's read_*; both cross-verified against real P6.3 fixtures):
+//! - varint = LEB128; u64 fields = 8B LE
+//! - tx_key position written as Scalar::ONE (keystone zeroes it out — r is not returned to the host)
+//! - key_images_str = `<hex> ` concatenated item by item (including the trailing space)
+//! - tx_key_images item = 0x02 ‖ output one-time address ‖ key image (Hs(shared_key)·Hp)
 
 extern crate alloc;
 
@@ -23,7 +23,7 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 use alloc::{string::String, vec::Vec};
 
-/// 与解密侧对称的 magic
+/// magic symmetric with the decryption side
 pub const SIGNED_TX_PREFIX: &[u8] = b"Monero signed tx set\x05";
 
 const NONCE_LEN: usize = 8;
@@ -37,7 +37,7 @@ fn put_varint(out: &mut Vec<u8>, n: u64) {
     crate::chain::xmr::transaction::monero_encode_varint(out, n);
 }
 
-// ============ 子结构序列化（对齐 keystone utils/io.rs） ============
+// ============ Sub-struct serialization (aligned with keystone utils/io.rs) ============
 
 pub(crate) fn write_destination_entry(out: &mut Vec<u8>, e: &TxDestinationEntry) {
     put_varint(out, e.original.len() as u64);
@@ -50,7 +50,7 @@ pub(crate) fn write_destination_entry(out: &mut Vec<u8>, e: &TxDestinationEntry)
 }
 
 fn write_output_entry(out: &mut Vec<u8>, index: u64, dest: &[u8; 32], mask: &[u8; 32]) {
-    // std::pair 在 binary_archive 里是 class，前有字段数前缀 0x02
+    // std::pair is a class in binary_archive, prefixed with a field-count 0x02
     out.push(2);
     put_varint(out, index);
     out.extend_from_slice(dest);
@@ -71,7 +71,7 @@ fn write_source_entry(out: &mut Vec<u8>, s: &crate::chain::xmr::unsigned_txset::
     out.extend_from_slice(&s.real_output_in_tx_index.to_le_bytes());
     out.extend_from_slice(&s.amount.to_le_bytes());
     out.push(s.rct as u8);
-    // P1-03: mask 明文访问收敛到 expose()——wire 序列化是唯一的合法出口之一
+    // P1-03: mask plaintext access is funneled through expose() — wire serialization is one of the few legitimate exits
     out.extend_from_slice(s.mask.expose());
     out.extend_from_slice(&s.multisig_kLRki.k);
     out.extend_from_slice(&s.multisig_kLRki.l);
@@ -90,7 +90,7 @@ pub(crate) fn write_construction_data(out: &mut Vec<u8>, d: &TxConstructionData)
         write_destination_entry(out, dst);
     }
     put_varint(out, d.selected_transfers.len() as u64);
-    // construction_data 里 selected_transfers 是 varint（与 ptx 顶层的逐 u8 不同！）
+    // in construction_data, selected_transfers is varint (unlike the byte-per-u8 at the ptx top level!)
     for t in &d.selected_transfers {
         put_varint(out, *t as u64);
     }
@@ -114,27 +114,27 @@ pub(crate) fn write_construction_data(out: &mut Vec<u8>, d: &TxConstructionData)
 
 // ============ PendingTx / SignedTxSet ============
 
-/// 一笔已签交易及其元数据（对齐 keystone PendingTx）
+/// A signed transaction and its metadata (aligned with keystone PendingTx)
 pub struct PendingTx {
-    /// 完整 tx wire bytes（含 rct signatures）
+    /// Full tx wire bytes (including rct signatures)
     pub tx_bytes: Vec<u8>,
     pub dust: u64,
     pub fee: u64,
     pub dust_added_to_fee: bool,
     pub change_dts: TxDestinationEntry,
-    /// ptx 顶层：逐 u8（非 varint）
+    /// ptx top level: byte per u8 (not varint)
     pub selected_transfers: Vec<u8>,
-    /// `<hex> ` 拼接的 key image 列表
+    /// Key image list joined as `<hex> `
     pub key_images_str: String,
-    /// tx_key（写入 wire 前强制置 ONE——r 不回传 host，见模块文档）
+    /// tx_key (forced to ONE before writing to the wire — r is not returned to the host; see module docs)
     pub additional_tx_keys: Vec<[u8; 32]>,
     pub dests: Vec<TxDestinationEntry>,
     pub construction_data: TxConstructionData,
 }
 
-/// 输出一次性地址 → key image（对齐 keystone tx_key_images）
+/// Output one-time address → key image (aligned with keystone tx_key_images)
 pub struct TxKeyImageEntry {
-    /// 输出的一次性地址（stealth address）
+    /// The output's one-time address (stealth address)
     pub output_pubkey: [u8; 32],
     /// Hs(shared_key)·Hp(output_pubkey)
     pub key_image: [u8; 32],
@@ -142,15 +142,15 @@ pub struct TxKeyImageEntry {
 
 pub struct SignedTxSet {
     pub ptx: Vec<PendingTx>,
-    /// 每个 transfer 一个 key image（外层，逐 32B）
+    /// One key image per transfer (outer layer, 32B each)
     pub key_images: Vec<[u8; 32]>,
     pub tx_key_images: Vec<TxKeyImageEntry>,
 }
 
 impl SignedTxSet {
-    /// 对齐 keystone `SignedTxSet::serialize`（逐字节一致）。
-    /// 审计 #12 P1-02:输出含 construction_data(mask/kLRki)秘密字段,
-    /// 返回 Zeroizing owner。
+    /// Aligned with keystone `SignedTxSet::serialize` (byte-for-byte identical).
+    /// Audit #12 P1-02: the output contains construction_data (mask/kLRki) secret fields,
+    /// Returns a Zeroizing owner.
     pub fn serialize(&self) -> zeroize::Zeroizing<Vec<u8>> {
         let mut res = Vec::new();
         // signed_tx_set version 00
@@ -165,7 +165,7 @@ impl SignedTxSet {
             res.push(ptx.dust_added_to_fee as u8);
             write_destination_entry(&mut res, &ptx.change_dts);
             put_varint(&mut res, ptx.selected_transfers.len() as u64);
-            // ptx 顶层 selected_transfers：逐 u8（非 varint）
+            // ptx top-level selected_transfers: byte per u8 (not varint)
             for t in &ptx.selected_transfers {
                 res.push(*t);
             }
@@ -174,7 +174,7 @@ impl SignedTxSet {
             if !ki.is_empty() {
                 res.extend_from_slice(ki);
             }
-            // tx_key ZERO：keystone 用 Scalar::ONE 占位（r 不回传）
+            // tx_key ZERO: keystone uses Scalar::ONE as a placeholder (r is not returned)
             res.extend_from_slice(&Scalar::ONE.to_bytes());
             put_varint(&mut res, ptx.additional_tx_keys.len() as u64);
             for k in &ptx.additional_tx_keys {
@@ -185,9 +185,9 @@ impl SignedTxSet {
                 write_destination_entry(&mut res, dest);
             }
             write_construction_data(&mut res, &ptx.construction_data);
-            // multisig_sigs：v1 恒空
+            // multisig_sigs: always empty in v1
             res.push(0u8);
-            // multisig_tx_key_entropy：keystone PrivateKey::default() = 全零
+            // multisig_tx_key_entropy: keystone PrivateKey::default() = all zeros
             res.extend_from_slice(&[0u8; 32]);
         }
         put_varint(&mut res, self.key_images.len() as u64);
@@ -204,31 +204,31 @@ impl SignedTxSet {
     }
 }
 
-// ============ key image 环签名（tx_key_images 用） ============
+// ============ key image ring signature (used by tx_key_images) ============
 
-// Monero 环签名（对齐 keystone `generate_ring_signature`）：
-// 输出 [π0, π1] 数组；真成员位置由 sec_idx 决定。
+// Monero ring signature (aligned with keystone `generate_ring_signature`):
+// outputs the [π0, π1] array; the true member's position is determined by sec_idx.
 //
-// 返回扁平 (s0, s1) 对（keystone SignatureTrait 的 [Scalar; 2]），
-// 这里只用于 tx_key_images 的 key image 生成，与 wire 无关（wire 只存 image）。
-// shlosilo 中 image 已由 sign 路径计算；此函数仅供 host 侧一致性验证，
-// 故未导出为 pub——避免无人调用的死代码进 staticlib。
+// returns the flat (s0, s1) pair (keystone SignatureTrait's [Scalar; 2]),
+// used only for key image generation in tx_key_images; unrelated to the wire (the wire stores only the image).
+// in shlosilo the image is already computed by the sign path; this function is only for host-side consistency checking,
+// hence not exported as pub — keeps uncalled dead code out of the staticlib.
 
-// ============ Monero Schnorr 签名（加密 blob 尾部 64B） ============
+// ============ Monero Schnorr signature (trailing 64B of the encrypted blob) ============
 
-/// Monero 自定义 Schnorr 签名（对齐 keystone `generate_signature`）：
-/// k 随机 → R' = kG → c = Hs(hash ‖ P ‖ R') → r = k − c·x
-/// 输出 (c 32B, r 32B)。
+/// Monero custom Schnorr signature (aligned with keystone `generate_signature`):
+/// k random → R' = kG → c = Hs(hash ‖ P ‖ R') → r = k − c·x
+/// Output (c 32B, r 32B).
 ///
-/// 与解密侧 `check_monero_signature` 完全对偶（同一签名方案两侧实现互验）。
+/// exact dual of the decryption side's `check_monero_signature` (both sides of the same scheme cross-verify each other).
 pub fn monero_sign(
     hash: &[u8; 32],
     view_sk: &[u8; 32],
     rng: &mut impl rand_core::RngCore,
 ) -> Result<[[u8; 32]; 2]> {
-    // 审计 #12 P1-02:秘密标量全程 Zeroizing owner——x(view secret)/k(nonce)/
-    // r(k−c·x) 不落地普通 Scalar 绑定;输出 c/r 是签名分量(公开值)。
-    // Zeroizing<Scalar> Deref 到 Scalar,域算术写法不变。
+    // Audit #12 P1-02: secret scalars are Zeroizing owners throughout — x (view secret) / k (nonce) /
+    // r(k−c·x) never lands in a plain Scalar binding; the output c/r are signature components (public values).
+    // Zeroizing<Scalar> Derefs to Scalar, so field-arithmetic syntax is unchanged.
     use zeroize::Zeroizing;
     let x = Zeroizing::new(Scalar::from_bytes_mod_order(*view_sk));
     let p_bytes = (ED25519_BASEPOINT_TABLE * &*x).compress().to_bytes();
@@ -258,17 +258,17 @@ pub fn monero_sign(
     Ok([c.to_bytes(), r.to_bytes()])
 }
 
-// ============ 加密输出 ============
+// ============ Encrypted output ============
 
-/// 加密 signed txset（对齐 keystone `encrypt_data_with_pvk`，SIGNED_TX_PREFIX 路径）：
+/// Encrypt a signed txset (aligned with keystone `encrypt_data_with_pvk`, SIGNED_TX_PREFIX path):
 ///
 /// ```text
 /// output = magic(23B) ‖ nonce(8B BE) ‖ ChaCha20Legacy(H(cn_v0(view_sk)), nonce)(plain) ‖ sig(64B)
-/// plain  = txset bytes（SIGNED_TX_PREFIX 路径无 spend/view pubkey 前缀）
-/// sig    = Monero Schnorr(keccak256(nonce ‖ 密文), view_pub, view_sk)
+/// plain  = txset bytes (the SIGNED_TX_PREFIX path has no spend/view pubkey prefix)
+/// sig    = Monero Schnorr(keccak256(nonce ‖ ciphertext), view_pub, view_sk)
 /// ```
 ///
-/// rng 用途：nonce（next_u64）+ 签名 k——由 §B.5 purpose RNG 提供。
+/// rng usage: nonce (next_u64) + signing k — provided by the §B.5 purpose RNG.
 pub fn encrypt_signed_txset(
     plain: Vec<u8>,
     view_sk: &[u8; 32],
@@ -278,9 +278,9 @@ pub fn encrypt_signed_txset(
     encrypt_signed_txset_with_chacha_key(zeroize::Zeroizing::new(plain), view_sk, &key, rng)
 }
 
-/// 与 `encrypt_signed_txset` 相同，ChaCha 密钥由调用方注入（避免重复 CN）。
-/// 审计 #12 P1-02:接收 owner 密钥,返回 Zeroizing(输出整体=密文,加密失败
-/// 路径的 nonce/明文中间量由 owner Drop 覆盖)。
+/// same as `encrypt_signed_txset`; the ChaCha key is injected by the caller (avoids recomputing CN).
+/// Audit #12 P1-02: accepts an owner key, returns Zeroizing (the output as a whole = ciphertext; on encryption failure
+/// path's nonce/plaintext intermediates are covered by the owner's Drop).
 pub fn encrypt_signed_txset_with_chacha_key(
     plain: zeroize::Zeroizing<Vec<u8>>,
     view_sk: &[u8; 32],
@@ -298,14 +298,14 @@ pub fn encrypt_signed_txset_with_chacha_key(
     let mut cipher = ChaCha20Legacy::new_from_slices(&**chacha_key, &nonce).map_err(|_| err())?;
     cipher.apply_keystream(&mut buffer);
 
-    // 3. 签名 = Monero Schnorr over keccak256(nonce ‖ 密文)，公钥 = view_pub
+    // 3. Signature = Monero Schnorr over keccak256(nonce ‖ ciphertext), public key = view_pub
     let mut unsigned = Vec::with_capacity(NONCE_LEN + buffer.len());
     unsigned.extend_from_slice(&nonce_num_bytes);
     unsigned.extend_from_slice(&buffer);
     let msg_hash = crate::encoding::keccak256::hash(&unsigned)?;
     let [c, r] = monero_sign(&msg_hash, view_sk, rng)?;
 
-    // 4. magic ‖ nonce ‖ 密文 ‖ sig
+    // 4. magic ‖ nonce ‖ ciphertext ‖ sig
     let mut out = Vec::with_capacity(SIGNED_TX_PREFIX.len() + NONCE_LEN + buffer.len() + SIG_LEN);
     out.extend_from_slice(SIGNED_TX_PREFIX);
     out.extend_from_slice(&nonce_num_bytes);
@@ -315,8 +315,8 @@ pub fn encrypt_signed_txset_with_chacha_key(
     Ok(zeroize::Zeroizing::new(out))
 }
 
-/// 加密 unsigned txset（与 `encrypt_signed_txset` 同构，magic 换 `UNSIGNED_TX_PREFIX`）。
-/// 供把自造 TxConstructionData 送进 `business::sign` / `sign_ur_ffi`。
+/// Encrypt an unsigned txset (isomorphic to `encrypt_signed_txset`, with the magic swapped to `UNSIGNED_TX_PREFIX`).
+/// For feeding self-made TxConstructionData into `business::sign` / `sign_ur_ffi`.
 pub fn encrypt_unsigned_txset(
     plain: zeroize::Zeroizing<Vec<u8>>,
     view_sk: &[u8; 32],
@@ -326,7 +326,7 @@ pub fn encrypt_unsigned_txset(
     use chacha20::cipher::{KeyIvInit, StreamCipher};
     use chacha20::ChaCha20Legacy;
 
-    // 审计 #12 P1-02:CN key 从产生即 owner(不再本地裸 CN 后包)。
+    // Audit #12 P1-02: the CN key is an owner from creation (no longer wrapping a bare local CN afterwards).
     let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk);
     let nonce_num_bytes = rng.next_u64().to_be_bytes();
     let mut buffer = plain;
@@ -349,9 +349,9 @@ pub fn encrypt_unsigned_txset(
     Ok(zeroize::Zeroizing::new(out))
 }
 
-/// 解密 signed txset（自验 round-trip 用；对齐 keystone `decrypt_data_with_pvk`）。
+/// Decrypt a signed txset (for self-verification round-trips; aligned with keystone `decrypt_data_with_pvk`).
 ///
-/// magic 校验 → nonce → Schnorr 验签（view_pub，keccak256(nonce‖密文)）→ 解密。
+/// magic check → nonce → Schnorr verification (view_pub over keccak256(nonce‖ciphertext)) → decrypt.
 pub fn decrypt_signed_txset(
     data: &[u8],
     view_sk: &[u8; 32],
@@ -369,9 +369,9 @@ pub fn decrypt_signed_txset(
     let nonce_bytes = &raw[..NONCE_LEN];
     let sig = &data[data.len() - SIG_LEN..];
 
-    // 验签（复用 unsigned_txset.rs 的实现——同一方案两侧对称）
+    // verify (reuses the unsigned_txset.rs implementation — both sides of the same scheme stay symmetric)
     use curve25519_dalek::scalar::Scalar;
-    // 审计 #12 P1-02:v_scalar(view secret)从产生即 owner。
+    // Audit #12 P1-02: v_scalar (view secret) is an owner from creation.
     let v_scalar = zeroize::Zeroizing::new(Scalar::from_bytes_mod_order(*view_sk));
     let view_pub = (ED25519_BASEPOINT_TABLE * &*v_scalar).compress().to_bytes();
     let msg_hash = crate::encoding::keccak256::hash(raw)?;
@@ -379,8 +379,8 @@ pub fn decrypt_signed_txset(
         return Err(err());
     }
 
-    // 审计 #12 P1-02:CN key 从产生即 owner;明文 Zeroizing(错误/提前返回
-    // 路径由 Drop 覆盖)。
+    // Audit #12 P1-02: the CN key is an owner from creation; plaintext in Zeroizing (error/early-return
+    // paths are covered by Drop).
     let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk);
     let mut plain = zeroize::Zeroizing::new(raw[NONCE_LEN..].to_vec());
     let mut nb = [0u8; 8];
@@ -406,7 +406,7 @@ mod tests {
         sk
     }
 
-    /// Monero Schnorr 生成/验证 round-trip（同方案两侧对称）
+    /// Monero Schnorr sign/verify round-trip (both sides of the same scheme stay symmetric)
     #[test]
     fn monero_sign_verify_round_trip() {
         let sk = test_view_sk();
@@ -426,7 +426,7 @@ mod tests {
             )
             .unwrap()
         );
-        // 篡改 hash → 验签失败
+        // tamper the hash → verification fails
         assert!(
             !super::super::unsigned_txset::verify_monero_signature_pubkey(
                 &[0xBBu8; 32],
@@ -437,7 +437,7 @@ mod tests {
         );
     }
 
-    /// 加密/解密 round-trip + 篡改拒绝
+    /// Encrypt/decrypt round-trip + tamper rejection
     #[test]
     fn encrypt_decrypt_round_trip() {
         let sk = test_view_sk();
@@ -449,16 +449,16 @@ mod tests {
         let dec = decrypt_signed_txset(&enc, &sk).unwrap();
         assert_eq!(*dec, plain);
 
-        // 篡改密文中间字节 → 验签拒绝
+        // tamper a middle ciphertext byte → verification rejects
         let mut tampered = enc.clone();
         tampered[SIGNED_TX_PREFIX.len() + 20] ^= 0x01;
         assert!(decrypt_signed_txset(&tampered, &sk).is_err());
 
-        // 错误 view key → 验签拒绝
+        // wrong view key → verification rejects
         assert!(decrypt_signed_txset(&enc, &[0xEEu8; 32]).is_err());
     }
 
-    /// 确定性：同 (plain, view_sk, seed) → 同输出（§B.5 测试模型）
+    /// Determinism: same (plain, view_sk, seed) → same output (§B.5 test model)
     #[test]
     fn encrypt_deterministic() {
         let sk = test_view_sk();
@@ -469,7 +469,7 @@ mod tests {
         assert_eq!(e1, e2);
     }
 
-    /// serialize 布局关键锚点：version/ptx count/tx_key=ONE/multisig 占位
+    /// key serialization layout anchors: version/ptx count/tx_key=ONE/multisig placeholders
     #[test]
     fn serialize_layout_anchors() {
         use crate::chain::xmr::unsigned_txset::RctConfig;
@@ -537,7 +537,7 @@ mod tests {
         // change_dts: varint(8) + "4Ae44ncK" + amount(8) + pk(32)×2 + 2 flags
         assert_eq!(bytes[off], 8);
         off += 1 + 8 + 8 + 32 + 32 + 2;
-        // selected_transfers count=1, 逐 u8
+        // selected_transfers count=1, byte per u8
         assert_eq!(bytes[off], 1);
         off += 1;
         assert_eq!(bytes[off], 0);
@@ -553,7 +553,7 @@ mod tests {
         // additional_tx_keys count = 0
         assert_eq!(bytes[off], 0);
         off += 1;
-        // dests count = 1（ptx 顶层）
+        // dests count = 1 (ptx top level)
         assert_eq!(bytes[off], 1);
         off += 1;
         off += 1 + 8 + 8 + 32 + 32 + 2; // dest entry
@@ -581,12 +581,12 @@ mod tests {
         off += 1;
         assert_eq!(bytes[off], 1); // varint(1)
         off += 1;
-        // multisig_sigs = 0 + entropy 32B 零
+        // multisig_sigs = 0 + 32B of zero entropy
         assert_eq!(bytes[off], 0);
         off += 1;
         assert_eq!(&bytes[off..off + 32], &[0u8; 32]);
         off += 32;
-        // 外层 key_images count=1 + 32B
+        // outer key_images count=1 + 32B
         assert_eq!(bytes[off], 1);
         off += 1;
         assert_eq!(&bytes[off..off + 32], &[3u8; 32]);

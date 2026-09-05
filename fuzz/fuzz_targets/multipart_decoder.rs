@@ -1,15 +1,15 @@
 #![no_main]
-// 审计 #5 开-04:multipart decoder fuzz——任意帧序列不得 panic/挂起/超预算
+// Audit #5 open-04: multipart decoder fuzz — any frame sequence must not panic/hang/exceed budget
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     let mut dec = shlosilo::ur::ur_multipart::UrMultipartDecoder::new();
-    // 按 \n 分割成伪帧序列,逐帧喂
+    // Split on \n into a pseudo frame sequence, feed frame by frame
     for chunk in data.split(|&b| b == b'\n') {
         if chunk.is_empty() {
             continue;
         }
-        // 尽力转成合法 frame 字符串形态——非法输入也要稳定拒绝
+        // Best-effort conversion into a valid frame string shape — invalid input must still be stably rejected
         let s = String::from_utf8_lossy(chunk);
         let _ = dec.receive_frame(&s);
         if dec.complete() {

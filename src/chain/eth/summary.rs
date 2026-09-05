@@ -1,7 +1,7 @@
-//! ETH 交易摘要 / 风险标记（Phase 5 v9.18）
+//! ETH transaction summary / risk flags (Phase 5 v9.18)
 //!
-//! L1 纯函数：把 EIP-155 / EIP-1559 结构 + v9.17 calldata 解码
-//! 变成确认屏数据。不做 DEX/swap 识别。
+//! L1 pure functions: turn EIP-155 / EIP-1559 structures + v9.17 calldata decoding
+//! into confirmation-screen data. No DEX/swap recognition.
 
 extern crate alloc;
 use alloc::string::String;
@@ -26,10 +26,10 @@ pub struct EthTxSummary {
     pub to: Option<[u8; 20]>,
     pub value: u128,
     pub gas_limit: u64,
-    /// max fee = max_fee_per_gas * gas_limit（1559）；legacy 用 gas_price * gas_limit
+    /// max fee = max_fee_per_gas * gas_limit (1559); legacy uses gas_price * gas_limit
     pub max_fee_wei: u128,
     pub call: EthCallKind,
-    /// 无限授权（approve / increaseAllowance 金额全 1）
+    /// unlimited approval (approve / increaseAllowance with amount all 1s)
     pub unlimited_approval: bool,
     pub is_contract_creation: bool,
 }
@@ -92,7 +92,7 @@ pub fn summarize_eip155(tx: &Eip155Transaction) -> Result<EthTxSummary> {
     })
 }
 
-/// 把 32-byte token 金额格式化成 18-decimal 字符串（给测试和确认屏）
+/// Format a 32-byte token amount into an 18-decimal string (for tests and the confirmation screen)
 pub fn format_eth_wei(wei: u128) -> Result<String> {
     let mut buf = [0u8; 32];
     let bytes = wei.to_be_bytes();

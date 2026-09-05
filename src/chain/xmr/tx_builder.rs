@@ -1,14 +1,14 @@
-//! Monero tx 端到端构造+签名+序列化 (Phase 5 v9.5 Phase C)
+//! Monero tx end-to-end construction + signing + serialization (Phase 5 v9.5 Phase C)
 //!
-//! 实现:
-//! - tx_secret_key / tx_pub_key 派生 (per-tx 一次性密钥对)
+//! Implements:
+//! - tx_secret_key / tx_pub_key derivation (per-tx one-time key pair)
 //! - encrypted_amounts (XOR with shared_key, ECDH-style)
-//! - 完整流程: 构造 inputs/outputs → 加密 → BP+ prove → CLSAG sign → serialize
-//! - 验证: deserialize → CLSAG verify → BP+ verify
+//! - Full flow: build inputs/outputs → encrypt → BP+ prove → CLSAG sign → serialize
+//! - Verification: deserialize → CLSAG verify → BP+ verify
 //!
-//! ## 算法
+//! ## Algorithm
 //!
-//! **Per-tx 一次性密钥对 (RFC)**:
+//! **Per-tx one-time key pair (RFC)**:
 //! ```text
 //! tx_secret_key = random 32-byte scalar
 //! tx_pub_key = tx_secret_key * G  (Ed25519 point, 32 bytes compressed)
@@ -20,15 +20,15 @@
 //! encrypted_amount (8 bytes) = amount XOR shared_key[0..8]
 //! ```
 //!
-//! **简化版 (Phase C)**: 我们省略 view_key,使用 `Hs(tx_pub_key || output_index)` 作为 shared_key.
-//! 完整 Monero 协议需要 view_key,但 keystone hardware wallet 在 owner-side sign 阶段不需要 view_key 解密.
+//! **Simplified version (Phase C)**: we omit view_key and use `Hs(tx_pub_key || output_index)` as the shared_key.
+//! The full Monero protocol needs view_key, but a keystone hardware wallet does not need view_key decryption in the owner-side sign phase.
 //!
-//! **未实现 (后续阶段)**:
-//! - view_tag 解密 (需要 receiver view_key)
-//! - decoy 选择 (当前用 fixed decoys)
-//! - output_receiver_key derivation (per-output stealth address 派生)
+//! **Not implemented (later phases)**:
+//! - view_tag decryption (needs the receiver view_key)
+//! - decoy selection (fixed decoys are used for now)
+//! - output_receiver_key derivation (per-output stealth address derivation)
 //!
-//! **参考**: <https://github.com/monero-project/monero/blob/master/src/device/device.cpp>
+//! **Reference**: <https://github.com/monero-project/monero/blob/master/src/device/device.cpp>
 
 extern crate alloc;
 use alloc::vec;
@@ -57,19 +57,19 @@ use crate::curve_primitive::ed25519::scalar_to_bytes;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::SecretBytes;
 
-/// 一次性密钥对 (per-tx, EphemeralKeyPair in keystone 命名)
+/// One-time key pair (per-tx, EphemeralKeyPair in keystone naming)
 ///
-/// P1-03：`secret` 走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
-/// 整个结构体不再 derive Clone/Debug（secret 字段主导纪律）。
+/// P1-03: `secret` uses `SecretBytes<32>` — no Clone or Debug, ZeroizeOnDrop, constant-time comparison.
+/// The whole struct no longer derives Clone/Debug (the secret field dominates the discipline).
 pub struct TxKeyPair {
     /// tx_secret_key (32 bytes reduced scalar)
     pub secret: SecretBytes<32>,
-    /// tx_pub_key (32 bytes compressed Ed25519 point)——公开材料
+    /// tx_pub_key (32-byte compressed Ed25519 point) — public material
     pub public: [u8; 32],
 }
 
 impl TxKeyPair {
-    /// 生成 random tx 密钥对
+    /// Generate a random tx key pair
     pub fn generate<R: RngCore + CryptoRng>(rng: &mut R) -> Result<Self> {
         let mut secret_bytes = [0u8; 32];
         rng.fill_bytes(&mut secret_bytes);
@@ -79,7 +79,7 @@ impl TxKeyPair {
         Self::from_secret(SecretBytes::take(&mut reduced_bytes))
     }
 
-    /// 从已 reduced secret 构造（取得所有权，零副本）
+    /// Construct from an already-reduced secret (takes ownership, zero copies)
     pub fn from_secret(secret: SecretBytes<32>) -> Result<Self> {
         let dalek = DScalar::from_bytes_mod_order(*secret.expose());
         let point = ED25519_BASEPOINT_TABLE * &dalek;
@@ -91,10 +91,10 @@ impl TxKeyPair {
     }
 }
 
-/// 简化的 ECDH shared_key: Hs(tx_pub_key || output_index)
+/// Simplified ECDH shared_key: Hs(tx_pub_key || output_index)
 ///
-/// 注意: 这不是完整 Monero 协议的 shared_key (需要 view_key),仅用于 Phase C 端到端测试.
-/// 完整协议: shared_key = Hs(8 * D || P_view || i), 其中 D = view * tx_pub, P_view = view * G
+/// Note: this is not the shared_key of the full Monero protocol (needs view_key); only for Phase C end-to-end testing.
+/// Full protocol: shared_key = Hs(8 * D || P_view || i), where D = view * tx_pub and P_view = view * G
 pub fn derive_simplified_shared_key(tx_pub_key: &[u8; 32], output_index: u64) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(tx_pub_key);
@@ -105,7 +105,7 @@ pub fn derive_simplified_shared_key(tx_pub_key: &[u8; 32], output_index: u64) ->
     bytes
 }
 
-/// 加密 amount (8 bytes) using simplified shared_key
+/// Encrypt the amount (8 bytes) using the simplified shared_key
 ///
 /// encrypted_amount[0..8] = amount (LE 8 bytes) XOR shared_key[0..8]
 pub fn encrypt_amount(amount: u64, shared_key: &[u8; 32]) -> [u8; 8] {
@@ -118,8 +118,8 @@ pub fn encrypt_amount(amount: u64, shared_key: &[u8; 32]) -> [u8; 8] {
     encrypted
 }
 
-/// 解密 amount (8 bytes) using simplified shared_key
-/// 构造输出：TxOutput + 可选 encrypted payment id (8B) + 可选 view tag 派生辅助
+/// Decrypt the amount (8 bytes) using the simplified shared_key
+/// Build output: TxOutput + optional encrypted payment id (8B) + optional view tag derivation helper
 type BuiltOutput = (TxOutput, Option<[u8; 8]>, Option<[u8; 32]>);
 
 pub fn decrypt_amount(encrypted: &[u8; 8], shared_key: &[u8; 32]) -> u64 {
@@ -132,7 +132,7 @@ pub fn decrypt_amount(encrypted: &[u8; 8], shared_key: &[u8; 32]) -> u64 {
 
 /// Tx input specification (for tx builder)
 ///
-/// P1-03：spend_key / real_mask / pseudo_mask 走 `SecretBytes<32>`——不 Clone 不 Debug。
+/// P1-03: spend_key / real_mask / pseudo_mask use `SecretBytes<32>` — no Clone or Debug.
 pub struct TxInputSpec {
     /// key offsets (ring members' relative offsets)
     pub key_offsets: Vec<u64>,
@@ -152,21 +152,21 @@ pub struct TxInputSpec {
 
 /// Tx output specification (for tx builder)
 ///
-/// P1-03：mask 走 `SecretBytes<32>`——不 Clone 不 Debug。
+/// P1-03: mask uses `SecretBytes<32>` — no Clone or Debug.
 pub struct TxOutputSpec {
     /// output amount
     pub amount: u64,
     /// output mask (32 bytes reduced scalar)
     pub mask: SecretBytes<32>,
-    /// 调用方预计算的 stealth；有 dest 公钥时会被重算覆盖
+    /// Pre-computed stealth from the caller; overwritten by recomputation when the dest public key is present
     pub stealth_address: [u8; 32],
-    /// 收款地址 view 公钥 A（有 A+B 时写 type 0x03 + view tag）
+    /// Destination address view public key A (when A+B present, writes type 0x03 + view tag)
     pub dest_view_pub: Option<[u8; 32]>,
-    /// 收款地址 spend 公钥 B
+    /// Destination address spend public key B
     pub dest_spend_pub: Option<[u8; 32]>,
-    /// 明文 8 字节 payment ID（有 dest view 时加密进 extra）
+    /// Plaintext 8-byte payment ID (encrypted into extra when the dest view key is present)
     pub payment_id: Option<[u8; 8]>,
-    /// 打到子地址（触发 additional tx keys，协议要求每 output 独立 r_i）
+    /// Pays to a subaddress (triggers additional tx keys; the protocol requires an independent r_i per output)
     pub is_subaddress: bool,
 }
 
@@ -179,7 +179,7 @@ fn resolve_tx_output(tx_secret: &[u8; 32], index: u64, spec: &TxOutputSpec) -> R
             let enc_pid = spec
                 .payment_id
                 .map(|pid| encrypt_payment_id(&pid, &payment_id_xor(&eight)));
-            // 子地址：additional key = r_i · B_sub（单 output 复用主 tx secret r）
+            // Subaddress: additional key = r_i · B_sub (single output reuses the main tx secret r)
             let add_key = if spec.is_subaddress {
                 use monero_ed25519::CompressedPoint;
                 let r = DScalar::from_bytes_mod_order(*tx_secret);
@@ -204,11 +204,11 @@ fn resolve_tx_output(tx_secret: &[u8; 32], index: u64, spec: &TxOutputSpec) -> R
 
 /// End-to-end tx builder result
 ///
-/// P1-03：`tx_secret`（payment proof 的 r）走 `SecretBytes<32>`——不 Clone 不 Debug。
+/// P1-03: `tx_secret` (the r of a payment proof) uses `SecretBytes<32>` — no Clone or Debug.
 pub struct SignedTx {
     pub transaction: Transaction,
     pub tx_pub_key: [u8; 32],
-    /// per-tx secret r（payment proof 导出）
+    /// Per-tx secret r (payment proof export)
     pub tx_secret: SecretBytes<32>,
     pub rct_sig: RctSig,
     /// outputs' encrypted amounts (separate from RctSig for hash)
@@ -217,7 +217,7 @@ pub struct SignedTx {
 
 /// Construct + sign a complete Monero tx (single input, multiple outputs)
 ///
-/// **算法**:
+/// **Algorithm**:
 /// 1. Generate per-tx ephemeral key pair (tx_secret, tx_pub)
 /// 2. For each output, compute encrypted_amount (XOR with shared_key)
 /// 3. Construct commitments (Pedersen(mask_i, amount_i)) per output
@@ -303,8 +303,8 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
 
     for input in inputs {
         // Build ring [(pubkey, commitment); N]
-        // sign 接口语义：ring 第1元 = 链上 C 点字节；这里 Commitment 有真 opening，
-        // commit() 出的点即"链上 C"的等价物
+        // Sign interface semantics: ring element 1 = the on-chain C point bytes; here Commitment has a real opening,
+        // so the point produced by commit() is the equivalent of "the on-chain C"
         let ring: Vec<(CompressedPoint, CompressedPoint)> = input
             .ring_pubkeys
             .iter()
@@ -363,7 +363,7 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
     })
 }
 
-/// 当前 RingCT type — 仅支持 Type 3 (Bulletproofs+ aggregated)
+/// Current RingCT type — only Type 3 (Bulletproofs+ aggregated) is supported
 fn rct_sig_type() -> u8 {
     // Type 3 = Bulletproofs+ aggregated (post-fork 1788000+)
     // Type 2 = Bulletproofs per-output (pre-aggregated, deprecated)
@@ -372,14 +372,14 @@ fn rct_sig_type() -> u8 {
 
 /// Verify a complete Monero tx
 ///
-/// **输入**:
-/// - signed: 已签名 tx
-/// - inputs: 验证用 ring 信息 (与 sign 时相同 ring pubkeys + commitments)
-/// - outputs: 验证用 output info (amount + mask + stealth_address)
+/// **Inputs**:
+/// - signed: the signed tx
+/// - inputs: ring info for verification (same ring pubkeys + commitments as at sign time)
+/// - outputs: output info for verification (amount + mask + stealth_address)
 /// - fee: tx fee
-/// - msg_hashes: 每个 input 的 msg_hash (与 sign 时相同)
+/// - msg_hashes: the msg_hash of each input (same as at sign time)
 ///
-/// **输出**: Ok(()) if all CLSAG + BP+ valid
+/// **Output**: Ok(()) if all CLSAG + BP+ are valid
 pub fn verify_signed_tx<R: RngCore + CryptoRng>(
     signed: &SignedTx,
     inputs: &[TxInputSpec],
@@ -387,7 +387,7 @@ pub fn verify_signed_tx<R: RngCore + CryptoRng>(
     fee: u64,
     msg_hashes: &[[u8; 32]],
 ) -> Result<()> {
-    // 1. 验证 BP+ over commitments
+    // 1. Verify BP+ over commitments
     let mut rng = OsRngFallback::new();
 
     let mut commitments_points = Vec::new();
@@ -403,7 +403,7 @@ pub fn verify_signed_tx<R: RngCore + CryptoRng>(
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 2. 验证 CLSAG per input
+    // 2. Verify CLSAG per input
     for (i, input) in inputs.iter().enumerate() {
         // Ring with public info (pubkey + commitment_point = mask*G + amount*H)
         let ring: Vec<(CompressedPoint, CompressedPoint)> = input
@@ -437,13 +437,13 @@ pub fn verify_signed_tx<R: RngCore + CryptoRng>(
         )?;
     }
 
-    // 3. 验证 fee + amounts balance
+    // 3. Verify fee + amounts balance
     let total_out: u64 = outputs.iter().map(|o| o.amount).sum();
     if total_out + fee > u64::MAX / 2 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 4. 验证 tx_pub_key
+    // 4. Verify tx_pub_key
     if signed.transaction.prefix.extra.tx_pub_key != Some(signed.tx_pub_key) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -452,9 +452,9 @@ pub fn verify_signed_tx<R: RngCore + CryptoRng>(
 }
 
 /// Random number generator fallback
-/// - std（host）：OS 熵
-/// - no_std（embedded）：零填充——仅用于 BP+/CLSAG **verify** 的临时挑战，
-///   不参与任何秘密生成；签名路径的 RNG 由 L3 注入（v2 §7.2）
+/// - std (host): OS entropy
+/// - no_std (embedded): zero-filled — only for temporary challenges in BP+/CLSAG **verify**,
+///   never part of any secret generation; the signing path\'s RNG is injected by L3 (v2 §7.2)
 struct OsRngFallback;
 impl OsRngFallback {
     fn new() -> Self {
@@ -498,7 +498,7 @@ impl RngCore for OsRngFallback {
 }
 impl CryptoRng for OsRngFallback {}
 
-/// 单元测试
+/// Unit tests
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -516,8 +516,8 @@ mod tests {
         s
     }
 
-    /// TxKeyPair 派生 + verify
-    // P1-03：TxInputSpec/TxOutputSpec 含 SecretBytes（不可 Clone）——helper 重建替代 clone
+    /// TxKeyPair derivation + verify
+    // P1-03: TxInputSpec/TxOutputSpec contain SecretBytes (not Clone) — helpers rebuild instead of clone
     fn mk_input_spec() -> TxInputSpec {
         let spend_key = scalar_to_bytes(&rs(&[0x11u8; 32]).unwrap());
         let real_mask = scalar_to_bytes(&rs(&[0x22u8; 32]).unwrap());
@@ -571,7 +571,7 @@ mod tests {
         eprintln!("tx_pub_key: {}", hex_encode(&kp1.public));
     }
 
-    /// Simplified shared_key 派生
+    /// Simplified shared_key derivation
     #[test]
     fn simplified_shared_key() {
         let tx_pub = [0xab; 32];
@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(amount, decrypted);
     }
 
-    /// 端到端: 单 input, 单 output, 单 BP+, 单 CLSAG
+    /// End-to-end: single input, single output, single BP+, single CLSAG
     #[test]
     fn end_to_end_single_input_single_output() {
         let mut rng = OsRng;
@@ -662,14 +662,14 @@ mod tests {
         // 9. Verify
         let _msg_hash = {
             let h = [0u8; 32];
-            // 重新生成相同 msg hash (因 sign 内部用 rng, msg hash 不可重现)
-            // 这里 verify 用 zeroed msg hash 仅作结构验证 — CLSAG verify 需要实际 msg hash
-            // 简化为直接通过 (skip msg hash 验证)
+            // Regenerate the same msg hash (sign uses rng internally, so the msg hash is not reproducible)
+            // Here verify uses the zeroed msg hash purely as structural verification — CLSAG verify needs the actual msg hash
+            // Simplified to pass directly (skips msg hash verification)
             h
         };
 
-        // 因为 sign 内 msg_hash 由 rng 生成, 验证时拿不到 — 端到端 verify 跳过 msg_hash
-        // 这里只验证结构正确
+        // Because the msg_hash at sign time is generated by rng and unavailable at verify time — end-to-end verify skips msg_hash
+        // Here only structural correctness is verified
         assert_eq!(signed.rct_sig.base.rct_type, 3); // BP+
         assert_eq!(signed.rct_sig.base.fee, fee);
         assert_eq!(signed.rct_sig.base.pseudo_outs.len(), 1);
@@ -728,7 +728,7 @@ mod tests {
         assert_eq!(pos, tx_bytes.len());
     }
 
-    /// 加密 amount 对称性
+    /// Amount encryption symmetry
     #[test]
     fn encrypt_symmetric() {
         let shared_key = derive_simplified_shared_key(&[0xab; 32], 5);
@@ -738,7 +738,7 @@ mod tests {
         assert_eq!(amount, decrypted);
     }
 
-    /// 多 output (2 outputs)
+    /// Multiple outputs (2 outputs)
     #[test]
     fn multi_output_bulletproof_plus() {
         let mut rng = OsRng;
@@ -880,7 +880,7 @@ mod tests {
         );
     }
 
-    /// v9.20b: CLSAG msg_hash = keccak256(prefix serialize)，verify 用同一 hash 闭环
+    /// v9.20b: CLSAG msg_hash = keccak256(prefix serialize); verify closes the loop with the same hash
     #[test]
     fn clsag_msg_hash_is_prefix_hash_and_verify_closes() {
         use crate::encoding::keccak256::hash;
@@ -936,16 +936,16 @@ mod tests {
         )
         .unwrap();
 
-        // prefix hash 可由序列化结果独立重算
+        // The prefix hash can be recomputed independently from the serialization result
         let expected = hash(&signed.transaction.prefix.serialize()).unwrap();
         assert_ne!(expected, [0u8; 32]);
 
-        // verify_signed_tx 用该 hash 验 CLSAG — 签的是同一消息才通过
-        // （inputs 传空 → BP+ 验证后无 CLSAG 可验，只走结构检查；这里断言 Ok 即结构闭环）
+        // verify_signed_tx uses that hash to verify the CLSAG — it only passes if the same message was signed
+        // (inputs passed empty → after BP+ verification there is no CLSAG to verify, only structural checks; asserting Ok here means structural closure)
         verify_signed_tx::<OsRngFallback>(&signed, &[], &[], 100, &[expected]).unwrap();
     }
 
-    /// v9.20a: 官方 shared secret = Hs(8·rA || varint(i))，amount 加密用它
+    /// v9.20a: the official shared secret = Hs(8·rA || varint(i)), and amount encryption uses it
     #[test]
     fn official_shared_secret_used_for_amount_encryption() {
         use crate::chain::xmr::subaddress::hash_to_scalar;
@@ -998,7 +998,7 @@ mod tests {
         )
         .unwrap();
 
-        // 官方 shared_key = Hs(8·rA || varint(i))
+        // Official shared_key = Hs(8·rA || varint(i))
         let eight = eight_ra(signed.tx_secret.expose(), &dest_view.public).unwrap();
         let mut buf = Vec::new();
         buf.extend_from_slice(&eight);
@@ -1008,12 +1008,12 @@ mod tests {
         let enc_amount = signed.rct_sig.prunable.encrypted_amounts[0];
         assert_eq!(decrypt_amount(&enc_amount, &expected_shared), 900);
 
-        // PID xor 也用同一把（keccak(8Ra||0x8d)），与 view_tag 模块一致
+        // The PID xor uses the same key (keccak(8Ra||0x8d)), consistent with the view_tag module
         let _pid = [7u8; 8];
         assert_ne!(&payment_id_xor(&eight), &[0u8; 8]);
     }
 
-    /// v9.20c: 打子地址 → extra 带 additional_pub_keys（tag 0x03），每 output r_i·B_i
+    /// v9.20c: paying a subaddress → extra carries additional_pub_keys (tag 0x03), r_i·B_i per output
     #[test]
     fn subaddress_dest_emits_additional_pub_keys() {
         let mut rng = OsRng;
@@ -1038,7 +1038,7 @@ mod tests {
             bytes_to_monerod_scalar(&scalar_to_bytes(&rs(&[0xaau8; 32]).unwrap())),
             1000,
         );
-        // 子地址 = 主地址 + m·G；这里用独立 keypair 模拟子地址 (A_s, B_s)
+        // Subaddress = main address + m·G; an independent key pair simulates the subaddress (A_s, B_s) here
         let dest_view = TxKeyPair::from_secret(SecretBytes::new([21u8; 32])).unwrap();
         let dest_spend = TxKeyPair::from_secret(SecretBytes::new([23u8; 32])).unwrap();
         let signed = build_and_sign_tx(
@@ -1067,14 +1067,14 @@ mod tests {
 
         let add_keys = &signed.transaction.prefix.extra.additional_pub_keys;
         assert_eq!(add_keys.len(), 1);
-        // additional key = r_i · B_sub（r_i 为该 output 的 per-output secret；
-        // 单 output 简化实现复用主 tx secret，与 keystone should_use_additional_keys 分支一致）
+        // Additional key = r_i · B_sub (r_i is that output\'s per-output secret;
+        // the single-output simplified implementation reuses the main tx secret, consistent with keystone\'s should_use_additional_keys branch)
         let r = DScalar::from_bytes_mod_order(*signed.tx_secret.expose());
         let b = DScalar::from_bytes_mod_order(*dest_spend.secret.expose());
         let expected = (ED25519_BASEPOINT_TABLE * &(r * b)).compress().to_bytes();
         assert_eq!(add_keys[0], expected);
 
-        // 非 subaddress 输出不带 additional keys
+        // Non-subaddress outputs carry no additional keys
         let plain = signed.rct_sig.base.pseudo_outs.len(); // sanity
         assert_eq!(plain, 1);
     }

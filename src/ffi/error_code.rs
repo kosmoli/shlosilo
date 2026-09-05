@@ -1,44 +1,44 @@
-//! ShlosiloError → i32 C-ABI 错误码转换（v2 §3.5）
+//! ShlosiloError → i32 C-ABI error code conversion (v2 §3.5)
 //!
-//! C-ABI 函数返回 `i32`：0 = Ok，负数 = 错误码
+//! C-ABI functions return `i32`: 0 = Ok, negative = error code
 //!
-//! 与 ShlosiloErrorKind 的数值布局**完全相同**——L3 拿到 i32 直接 dispatch 到错误处理
+//! numeric layout **identical** to ShlosiloErrorKind — L3 gets an i32 and dispatches straight to error handling
 //!
-//! **Phase 2.5 stub**：直接 1:1 转换 ShlosiloErrorKind
-//! Phase 5 真实实现：增加 C-ABI 特有的 wrapping 错误码（-1 = Unknown）
+//! **Phase 2.5 stub**: converts ShlosiloErrorKind 1:1
+//! Phase 5 real implementation: adds the C-ABI-specific wrapping error code (-1 = Unknown)
 
 use crate::error::{ShlosiloError, ShlosiloErrorCode};
 
-/// ShlosiloError → i32 C-ABI 错误码（稳定负数布局，见 `ShlosiloErrorCode`）
+/// ShlosiloError → i32 C-ABI error code (stable negative layout, see `ShlosiloErrorCode`)
 ///
-/// **R2 整改（2026-08-31）**：原实现直接 `err.kind as i32` 返回正数（如 0x0201_0003），
-/// 与「0 = Ok，负数 = 错误」的 C-ABI 契约矛盾。改走 `ShlosiloErrorCode::from_shlosilo_error`
-/// 的稳定负码映射（error.rs L2b 分类）。kind 原始值仍可经 Debug 日志获取。
+/// **R2 remediation (2026-08-31)**: the original implementation returned a positive number directly via `err.kind as i32` (e.g. 0x0201_0003),
+/// contradicting the C-ABI contract of "0 = Ok, negative = error". Now goes through `ShlosiloErrorCode::from_shlosilo_error`
+/// stable negative-code mapping (error.rs L2b classification). The raw kind value is still available via Debug logs.
 pub fn to_ffi_code(err: &ShlosiloError) -> i32 {
     ShlosiloErrorCode::from_shlosilo_error(*err)
 }
 
-/// 通用错误（兜底）：调用方拿到这个 i32 应该 fall back 到 generic error UI
+/// Generic error (catch-all): a caller receiving this i32 should fall back to the generic error UI
 ///
-/// **错误码对齐（2026-08-31，C 宿主接入前置）**：R2 整改后 `to_ffi_code` 走
-/// `ShlosiloErrorCode` 稳定负码，但这四个 FFI 早期返回常量仍是独立旧值
-/// （ERR_BUFFER_TOO_SMALL=-3 与映射码 BufferTooSmall=-20 冲突）。现全部并入
-/// `ShlosiloErrorCode` 枚举单一真值源：
+/// **Error code alignment (2026-08-31, prerequisite for C host integration)**: after the R2 remediation, `to_ffi_code` goes through
+/// `ShlosiloErrorCode` stable negative codes, but these four FFI early-return constants are still independent legacy values
+/// (ERR_BUFFER_TOO_SMALL=-3 conflicted with the mapped code BufferTooSmall=-20). Now all folded into
+/// `ShlosiloErrorCode` enum as the single source of truth:
 /// - ERR_UNKNOWN = UnknownError = -1
-/// - ERR_NULL_POINTER = InvalidArgument = -2（null 参数即非法参数）
-/// - ERR_BUFFER_TOO_SMALL = BufferTooSmall = **-20**（原 -3 作废，shlosilo.h 同步）
-/// - ERR_PANIC = FfiPanic = -4（FFI 特有，枚举新增）
+/// - ERR_NULL_POINTER = InvalidArgument = -2 (a null argument is an invalid argument)
+/// - ERR_BUFFER_TOO_SMALL = BufferTooSmall = **-20** (the old -3 is retired; shlosilo.h updated accordingly)
+/// - ERR_PANIC = FfiPanic = -4 (FFI-specific; newly added to the enum)
 pub const ERR_UNKNOWN: i32 = ShlosiloErrorCode::UnknownError as i32;
 pub const ERR_NULL_POINTER: i32 = ShlosiloErrorCode::InvalidArgument as i32;
 pub const ERR_BUFFER_TOO_SMALL: i32 = ShlosiloErrorCode::BufferTooSmall as i32;
 pub const ERR_PANIC: i32 = ShlosiloErrorCode::FfiPanic as i32;
 
-/// 成功
+/// Success
 pub const OK: i32 = ShlosiloErrorCode::Ok as i32;
 
-/// i32 → &'static str（错误描述，给 L3 UI 显示）
+/// i32 → &'static str (error description for the L3 UI to display)
 ///
-/// 调试用——L3 production UI 应该用整数 dispatch，不用字符串
+/// For debugging — the L3 production UI should dispatch on integers, not strings
 pub fn describe(code: i32) -> &'static str {
     match code {
         OK => "OK",
@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn ffi_code_is_negative_stable() {
-        // R2：FFI 错误码必须是负数（0=Ok 契约），走 ShlosiloErrorCode 稳定映射
+        // R2: FFI error codes must be negative (0=Ok contract); go through the stable ShlosiloErrorCode mapping
         let err = ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall);
         assert_eq!(to_ffi_code(&err), -20);
         assert!(to_ffi_code(&err) < 0);

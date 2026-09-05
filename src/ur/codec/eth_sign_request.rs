@@ -1,9 +1,9 @@
-//! eth-sign-request UR codec（ur-registry 1.0.5 同构）
+//! eth-sign-request UR codec (isomorphic to ur-registry 1.0.5)
 //!
-//! CBOR map（UR 类型 `eth-sign-request`）：
+//! CBOR map (UR type `eth-sign-request`):
 //! ```text
 //! 1: request_id      — tag(37 UUID) + 16B
-//! 2: sign_data       — bytes（原始 tx / typed-data / message，按 data_type 解释）
+//! 2: sign_data       — bytes (raw tx / typed-data / message, interpreted per data_type)
 //! 3: data_type       — uint 1=Transaction 2=TypedData 3=PersonalMessage 4=TypedTransaction
 //! 4: chain_id        — int
 //! 5: derivation_path — tag(304 crypto-keypath)
@@ -11,13 +11,13 @@
 //! 7: origin          — string
 //! ```
 //!
-//! P1-01（2026-08-26）：真实 MetaMask/Keystone UR 的 payload 是 CBOR map，
-//! 不是遗留的「首字节 tag + raw」私有封装。sign 路径按 data_type 解释 sign_data。
+//! P1-01 (2026-08-26): the payload of real MetaMask/Keystone URs is a CBOR map,
+//! not the legacy "first-byte tag + raw" private wrapping. The sign path interprets sign_data per data_type.
 
 use crate::encoding::cbor::Cbor;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// UR registry crypto-keypath tag（BCR-2020-006；与 crypto_hd_key.rs 编码侧同源）
+/// UR registry crypto-keypath tag (BCR-2020-006; same source as the encode side of crypto_hd_key.rs)
 const TAG_CRYPTO_KEYPATH: u64 = 304;
 
 extern crate alloc;
@@ -26,7 +26,7 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-/// sign_data 的解释类型（ur-registry DataType 枚举）
+/// Interpretation type of sign_data (ur-registry DataType enum)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EthSignDataType {
     Transaction = 1,
@@ -47,19 +47,19 @@ impl EthSignDataType {
     }
 }
 
-/// eth-sign-request 解析结果（只取签名需要的字段）
+/// eth-sign-request parse result (only the fields needed for signing)
 #[derive(Debug)]
 pub struct EthSignRequest {
-    /// 原始 sign_data（对 Transaction / TypedTransaction = raw tx bytes）
+    /// Raw sign_data (for Transaction / TypedTransaction = raw tx bytes)
     pub sign_data: alloc::vec::Vec<u8>,
     pub data_type: EthSignDataType,
     pub chain_id: Option<i128>,
-    /// derivation_path（key 5，tag 304 crypto-keypath，可选）
-    /// P1-02：给定则签名用该路径派生；缺省 fallback m/44'/60'/0'/0/0
+    /// derivation_path (key 5, tag 304 crypto-keypath, optional)
+    /// P1-02: when given, signing derives with that path; the default fallback is m/44\'/60\'/0\'/0/0
     pub derivation_path: Option<crate::derivation::path::DerivationPath>,
 }
 
-/// 解析 eth-sign-request CBOR payload → EthSignRequest
+/// Parse an eth-sign-request CBOR payload → EthSignRequest
 pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
     let cbor = crate::encoding::cbor::decode(payload)?;
     let map = match cbor {
@@ -67,43 +67,43 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
         _ => return Err(err()),
     };
 
-    // sign_data（key 2，必填）
+    // sign_data (key 2, required)
     let sign_data = match map.map_get_uint(2)? {
         Some(v) => v.as_bytes()?.to_vec(),
         None => return Err(err()),
     };
 
-    // data_type（key 3，必填）
+    // data_type (key 3, required)
     let data_type = match map.map_get_uint(3)? {
         Some(v) => EthSignDataType::from_u64(v.as_uint()?)?,
         None => return Err(err()),
     };
 
-    // chain_id（key 4，可选）
+    // chain_id (key 4, optional)
     let chain_id = match map.map_get_uint(4)? {
         Some(v) => Some(v.as_int()?),
         None => None,
     };
 
-    // derivation_path（key 5，可选）— tag 304 crypto-keypath 内 map {1: components[(idx u64, hardened bool)...], 2: depth}
+    // derivation_path (key 5, optional) — tag 304 crypto-keypath inner map {1: components[(idx u64, hardened bool)...], 2: depth}
     //
-    // P1-01 加固（2026-09-01 审计 #4）：
-    // 1. tag 白名单——只接受 registry tag 304（crypto-keypath，BCR-2020-006）。
-    //    修复前匹配 `Cbor::Tag(_, _)` 任意 tag（tag 999 也被接受）。
-    //    注释曾误写 305，正确值见 crypto_hd_key.rs TAG_CRYPTO_KEYPATH=304。
-    // 2. idx 高位域收紧——无论 hardened bool 为何，idx ≤ 0x7fff_ffff。
-    //    修复前 `(idx=0x8000_0001, hardened=false)` 被接受，wire 表示
-    //    "非 hardened 高位 idx" 传入 DerivationPath 后被解释成 hardened 1
-    //    ——wire/语义不一致。hardened bit 只由 bool 唯一编码。
+    // P1-01 hardening (2026-09-01 audit #4):
+    // 1. Tag whitelist — only registry tag 304 (crypto-keypath, BCR-2020-006) is accepted.
+    //    Before the fix, any `Cbor::Tag(_, _)` tag matched (tag 999 was also accepted).
+    //    A comment previously miswrote 305; the correct value is crypto_hd_key.rs TAG_CRYPTO_KEYPATH=304.
+    // 2. idx high-bit domain tightened — regardless of the hardened bool, idx ≤ 0x7fff_ffff.
+    //    Before the fix `(idx=0x8000_0001, hardened=false)` was accepted; in the wire representation
+    //    "a non-hardened high-bit idx" passed into DerivationPath was interpreted as hardened 1
+    //    — wire/semantics inconsistency. The hardened bit is encoded solely by the bool.
     let derivation_path = match map.map_get_uint(5)? {
         Some(v) => {
             let inner = match v {
                 Cbor::Tag(TAG_CRYPTO_KEYPATH, boxed) => boxed.as_ref(),
                 _ => return Err(err()),
             };
-            // components（key 1）：扁平 [idx0, hardened0, idx1, hardened1, ...]
+            // components (key 1): flattened [idx0, hardened0, idx1, hardened1, ...]
             let comps = inner.map_get_uint(1)?.ok_or_else(err)?.as_array()?;
-            // X2: components 必须是偶数长度 (idx, hardened) 对——奇数视为格式错误
+            // X2: components must be an even-length (idx, hardened) pair list — odd length is a format error
             if comps.len() % 2 != 0 {
                 return Err(err());
             }
@@ -111,7 +111,7 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
             let mut i = 0;
             while i + 1 < comps.len() {
                 let idx = comps[i].as_uint()?;
-                // X2: BIP-32 index 域是 u32——超域拒绝,不静默截断
+                // X2: the BIP-32 index domain is u32 — over-domain rejected, no silent truncation
                 if idx > u32::MAX as u64 {
                     return Err(err());
                 }
@@ -120,9 +120,9 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
                     Cbor::Bool(b) => b,
                     _ => return Err(err()),
                 };
-                // P1-01: idx 高位域收紧（≤ 0x7fff_ffff）——无论 hardened bool。
-                // 修复前仅 hardened=true 时拒绝高位，(0x8000_0001, false) 被静默
-                // 当作 hardened 1 解释。
+                // P1-01: idx high-bit domain tightened (≤ 0x7fff_ffff) — regardless of the hardened bool.
+                // Before the fix the high bit was only rejected when hardened=true, so (0x8000_0001, false) was silently
+                // interpreted as hardened 1.
                 if idx >= 0x8000_0000 {
                     return Err(err());
                 }
@@ -130,9 +130,9 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
                 flat.push(raw);
                 i += 2;
             }
-            // Gate4 #5 备注：key 2 (depth) 不校验——ur-registry 官方测试向量
-            // （test_encode）的 depth 是占位值 0x12345678，registry 规范与上游
-            // 实现（keystone/ur-registry）均未赋予 depth 约束语义，depth 是信息性字段。
+            // Gate4 #5 note: key 2 (depth) is not validated — in the official ur-registry test vector
+            // (test_encode) the depth is a placeholder value 0x12345678; neither the registry spec nor upstream
+            // implementations (keystone/ur-registry) give depth constraining semantics; depth is informational.
             Some(crate::derivation::path::DerivationPath::from_flat(flat)?)
         }
         None => None,
@@ -157,7 +157,7 @@ mod tests {
             .collect()
     }
 
-    /// ur-registry 1.0.5 test_encode 官方向量（test 里那段 hex）
+    /// ur-registry 1.0.5 test_encode official vector (the hex in that test)
     /// a6 01 d8 25 50 <request_id> 02 58 4b <sign_data> 03 01 04 01 05 d9 0130 ...
     #[test]
     fn parse_official_ur_registry_vector() {
@@ -171,22 +171,22 @@ mod tests {
         assert_eq!(req.sign_data[0], 0xf8); // legacy tx RLP list
     }
 
-    /// 非 map → 拒绝
+    /// Non-map → reject
     #[test]
     fn reject_non_map() {
-        let payload = [0x01u8, 0x02, 0x03]; // 不是 map
+        let payload = [0x01u8, 0x02, 0x03]; // not a map
         assert!(parse_eth_sign_request(&payload).is_err());
     }
 
-    /// 缺 sign_data → 拒绝
+    /// Missing sign_data → reject
     #[test]
     fn reject_missing_sign_data() {
-        // a1 03 01 = {3: 1} 无 sign_data
+        // a1 03 01 = {3: 1} with no sign_data
         let payload = [0xa1u8, 0x03, 0x01];
         assert!(parse_eth_sign_request(&payload).is_err());
     }
 
-    /// 未知 data_type → 拒绝
+    /// Unknown data_type → reject
     #[test]
     fn reject_unknown_data_type() {
         // a2 02 41 61 03 09  = {2: bytes"a", 3: 9}
@@ -194,11 +194,11 @@ mod tests {
         assert!(parse_eth_sign_request(&payload).is_err());
     }
 
-    /// P1-01：完整 UR decode → eth-sign-request 解析（byte-exact 互通验证）
-    /// payload = ur-registry 1.0.5 test_encode 官方向量（MetaMask 形状）
+    /// P1-01: full UR decode → eth-sign-request parsing (byte-exact interop verification)
+    /// payload = ur-registry 1.0.5 test_encode official vector (MetaMask shape)
     #[test]
     fn decode_real_ur_registry_vector() {
-        // 用库自身 encode 生成 UR，再 decode 回 payload，确保 round-trip 一致
+        // Generate the UR with the library\'s own encode, then decode back the payload to ensure round-trip consistency
         let payload = hex(
             "a601d825509b1deb4d3b7d4bad9bdd2b0d7b3dcb6d02584bf849808609184e72a00082271094000000000000000000000000000000000000000080a47f74657374320000000000000000000000000000000000000000000000000000006000578080800301040105d90130a2018a182cf501f501f500f401f4021a1234567807686d6574616d61736b",
         );
@@ -206,25 +206,25 @@ mod tests {
             crate::ur::ur_encode::encode(crate::ur::ur_encode::UrTypeTag::EthSignRequest, &payload)
                 .unwrap();
         let d = crate::ur::ur_decode::decode(enc.as_str()).unwrap();
-        // P1-01 关键：type tag 由 UR decode 携带
+        // P1-01 key point: the type tag is carried by the UR decode
         assert_eq!(
             d.type_tag(),
             crate::ur::ur_encode::UrTypeTag::EthSignRequest
         );
         assert_eq!(d.as_ref(), payload.as_slice());
-        // 解析出 sign_data（真实 tx）
+        // Parse out the sign_data (real tx)
         let req = parse_eth_sign_request(d.as_ref()).unwrap();
         assert_eq!(req.data_type, EthSignDataType::Transaction);
         assert_eq!(req.chain_id, Some(1));
         assert!(req.sign_data.len() > 40);
     }
 
-    /// X2 负例: 奇数长度 components 静默忽略 → 显式拒绝
+    /// X2 negative case: odd-length components silently ignored → explicitly rejected
     #[test]
     fn keypath_odd_components_rejected() {
-        // tag 304, map{1: [0, false, 1], 2: 2}  — 3 个 comps(奇数)
-        // （P1-01: 原用 tag 305——修复前任意 tag 均被接受，负例并未证明目标分支；
-        //   现统一 tag 304，错误确定来自 components 校验）
+        // tag 304, map{1: [0, false, 1], 2: 2}  — 3 comps (odd)
+        // (P1-01: originally used tag 305 — before the fix any tag was accepted, so the negative case never proved the target branch;
+        //   now tag 304 uniformly, so the error definitively comes from components validation)
         let payload: alloc::vec::Vec<u8> = alloc::vec![
             0xA1, 0x05, 0xD9, 0x01, 0x30, 0xA2, 0x01, 0x83, 0x00, 0xF4, 0x01, 0x02, 0x02,
         ];
@@ -234,7 +234,7 @@ mod tests {
         );
     }
 
-    /// Gate4 #5 负例: hardened=true 且 idx 已带 0x80000000 高位（非规范双表达）→ 拒
+    /// Gate4 #5 negative case: hardened=true with idx already carrying the 0x80000000 high bit (non-canonical dual expression) → reject
     #[test]
     fn keypath_hardened_high_bit_rejected() {
         // tag 304, map{1: [0x80000001, true]}
@@ -249,10 +249,10 @@ mod tests {
         );
     }
 
-    /// X2 负例: index 超出 u32 域拒绝(不截断)
+    /// X2 negative case: index beyond the u32 domain rejected (no truncation)
     #[test]
     fn keypath_oversized_index_rejected() {
-        // tag 304, map{1: [0x1_0000_0000, false], 2: 1} — 2^32 超 u32
+        // tag 304, map{1: [0x1_0000_0000, false], 2: 1} — 2^32 exceeds u32
         let payload: alloc::vec::Vec<u8> = alloc::vec![
             0xA1, 0x05, 0xD9, 0x01, 0x30, 0xA2, 0x01, 0x82, 0x1B, 0x00, 0x00, 0x00, 0x01, 0x00,
             0x00, 0x00, 0x00, 0xF4, 0x02, 0x01,
@@ -263,21 +263,21 @@ mod tests {
         );
     }
 
-    // ── P1-01（审计 #4）新增负例：完整有效请求只改一个字段，锁定目标分支 ──
+    // ── P1-01 (audit #4) new negative cases: a fully valid request with one field changed, pinning the target branch ──
 
-    /// 完整有效请求：{1: request_id, 2: sign_data, 3: data_type, 4: chain_id,
-    ///                5: keypath(tag 304)}——作为以下负例的基线
+    /// Fully valid request: {1: request_id, 2: sign_data, 3: data_type, 4: chain_id,
+    ///                5: keypath(tag 304)} — the baseline for the negative cases below
     fn valid_request_with_keypath(comps_cbor: &[u8]) -> alloc::vec::Vec<u8> {
         use crate::encoding::cbor;
-        // components 数组的 CBOR 编码由调用方注入（bytes item 内联原始字节）
+        // The CBOR encoding of the components array is injected by the caller (bytes item with inline raw bytes)
         let inner_map = cbor::encode_map(&[(cbor::encode_uint(2), cbor::encode_uint(1))]);
-        // 手工构造 {1: comps, 2: 1}
+        // Hand-build {1: comps, 2: 1}
         let k1 = cbor::encode_uint(1);
         let mut inner = alloc::vec::Vec::new();
         inner.push(0xa2); // map(2)
         inner.extend_from_slice(&k1);
         inner.extend_from_slice(comps_cbor);
-        // 追加 key2:1（inner_map = 0xa1 || k2 || v2,摘除 header 取 body）
+        // Append key2:1 (inner_map = 0xa1 || k2 || v2; strip the header to take the body)
         inner.extend_from_slice(&inner_map[1..]);
 
         let request_id = [0x9bu8; 16];
@@ -294,8 +294,8 @@ mod tests {
         cbor::encode_map(&pairs)
     }
 
-    /// P1-01 负例 1：tag 999（非 registry crypto-keypath）→ 拒绝
-    /// （修复前任意 tag 都被当作 keypath 接受）
+    /// P1-01 negative case 1: tag 999 (not the registry crypto-keypath) → reject
+    /// (before the fix any tag was accepted as a keypath)
     #[test]
     fn keypath_wrong_tag_rejected() {
         use crate::encoding::cbor;
@@ -311,7 +311,7 @@ mod tests {
             (cbor::encode_uint(2), cbor::encode_bytes(&[0x02u8; 16])),
             (cbor::encode_uint(3), cbor::encode_uint(1)),
             (cbor::encode_uint(4), cbor::encode_uint(1)),
-            (cbor::encode_uint(5), cbor::encode_tag(999, &inner)), // 唯一改动：tag
+            (cbor::encode_uint(5), cbor::encode_tag(999, &inner)), // the only change: the tag
         ];
         let payload = cbor::encode_map(&pairs);
         assert!(
@@ -320,14 +320,14 @@ mod tests {
         );
     }
 
-    /// P1-01 负例 2：(idx=0x8000_0001, hardened=false) → 拒绝
-    /// （修复前被接受，wire 表示与业务解释不一致：idx 高位被静默当 hardened bit）
+    /// P1-01 negative case 2: (idx=0x8000_0001, hardened=false) → reject
+    /// (before the fix it was accepted; wire representation diverged from business interpretation: the idx high bit was silently treated as the hardened bit)
     #[test]
     fn keypath_high_bit_idx_non_hardened_rejected() {
         use crate::encoding::cbor;
         let comps = cbor::encode_array(&[
-            cbor::encode_uint(0x8000_0001), // 高位 idx
-            cbor::encode_bool(false),       // 声称非 hardened——歧义组合
+            cbor::encode_uint(0x8000_0001), // high-bit idx
+            cbor::encode_bool(false),       // claims non-hardened — ambiguous combination
         ]);
         let payload = valid_request_with_keypath(&comps);
         assert!(
@@ -336,7 +336,7 @@ mod tests {
         );
     }
 
-    /// P1-01 正例：合法 keypath（tag 304, 普通索引）完整请求 → 接受且路径正确
+    /// P1-01 positive case: a legal keypath (tag 304, ordinary index) full request → accepted with the correct path
     #[test]
     fn keypath_valid_full_request_accepted() {
         use crate::encoding::cbor;
@@ -351,8 +351,8 @@ mod tests {
         let payload = valid_request_with_keypath(&comps);
         let req = parse_eth_sign_request(&payload).expect("valid full request must parse");
         let path = req.derivation_path.expect("keypath present");
-        // m/44'/60'/1 —— value() 是去掉 hardened bit 的纯索引，
-        // hardened 位单独断言
+        // m/44\'/60\'/1 — value() is the pure index with the hardened bit stripped,
+        // the hardened bit asserted separately
         let flat: alloc::vec::Vec<(u32, bool)> = path
             .as_slice()
             .iter()

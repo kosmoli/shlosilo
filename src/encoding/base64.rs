@@ -1,8 +1,8 @@
-//! base64 + base64url 编码（Arweave address + UR payload）
+//! base64 + base64url encoding (Arweave address + UR payload)
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// base64 字符串最大长度
+/// base64 string maximum length
 pub const BASE64_MAX_LEN: usize = 256;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -33,15 +33,15 @@ impl core::fmt::Debug for Base64String {
     }
 }
 
-/// base64 标准编码（含 `+` / `/` / `=` padding）
+/// base64 standard encoding (with `+` / `/` / `=` padding)
 ///
-/// **Phase 4 真实实现**：手工实现（避免 base64 crate 引入 std）
+/// **Phase 4 real implementation**: hand-written (avoids the base64 crate pulling in std)
 ///
-/// 字符表：A-Z a-z 0-9 + /
+/// Character table: A-Z a-z 0-9 + /
 const BASE64_STD_TABLE: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// base64url 字符表（A-Z a-z 0-9 - _）
+/// base64url character table (A-Z a-z 0-9 - _)
 const BASE64_URL_TABLE: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
@@ -79,7 +79,7 @@ fn encode_table(data: &[u8], table: &[u8; 64]) -> heapless::String<BASE64_MAX_LE
 
 fn decode_table(s: &str, table: &[u8; 64]) -> Result<heapless::Vec<u8, 192>> {
     let mut out = heapless::Vec::<u8, 192>::new();
-    // 反查表
+    // reverse lookup table
     let mut inv = [0xffu8; 256];
     for (i, &c) in table.iter().enumerate() {
         inv[c as usize] = i as u8;
@@ -122,19 +122,19 @@ fn decode_table(s: &str, table: &[u8; 64]) -> Result<heapless::Vec<u8, 192>> {
     Ok(out)
 }
 
-/// base64 标准编码（含 padding）
+/// base64 standard encoding (with padding)
 pub fn encode_std(data: &[u8]) -> Result<Base64String> {
     let s = encode_table(data, BASE64_STD_TABLE);
     Ok(Base64String { bytes: s })
 }
 
-/// base64url 编码（无 padding，用 `-` `_` 替代 `+` `/`）
+/// base64url encoding (no padding, `-` `_` replacing `+` `/`)
 pub fn encode_url_safe(data: &[u8]) -> Result<Base64String> {
     let s = encode_table(data, BASE64_URL_TABLE);
     Ok(Base64String { bytes: s })
 }
 
-/// base64 解码
+/// base64 decoding
 pub fn decode_std(s: &str) -> Result<heapless::Vec<u8, 192>> {
     decode_table(s, BASE64_STD_TABLE)
 }
@@ -178,10 +178,10 @@ mod tests {
         assert_eq!(s.as_ref(), "Zm9vYmFy");
     }
 
-    /// base64url 字符表不含 `+` `/`（用 `-` `_` 替代）
+    /// the base64url character table has no `+` `/` (uses `-` `_` instead)
     #[test]
     fn encode_url_safe_no_special_chars() {
-        // 4 bytes 数据会触发 padding '='
+        // 4 bytes of data triggers padding '='
         let s = encode_url_safe(b"\xff\xfe\xfd\xfc").unwrap();
         assert!(!s.as_ref().contains('+'));
         assert!(!s.as_ref().contains('/'));

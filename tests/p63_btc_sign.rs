@@ -1,11 +1,11 @@
-//! P6.3 BTC 端到端签名互验：真实 Sparrow signet PSBT + 真实助记词 → shlosilo sign()
+//! P6.3 BTC end-to-end signing cross-check: a real Sparrow signet PSBT + a real mnemonic → shlosilo sign()
 //!
-//! Oracle（独立 python SLIP-10 派生验证）：
-//! - entropy f284fb6ca9f4d5835455be65e4b22916 → 12 词（空 passphrase）
+//! Oracle (independent Python SLIP-10 derivation verification):
+//! - entropy f284fb6ca9f4d5835455be65e4b22916 → 12 words (empty passphrase)
 //! - BIP39 seed = PBKDF2-HMAC-SHA512(mnemonic, "mnemonic"+passphrase, 2048)
 //! - m/84'/1'/0'/0/2 privkey 51f15ae12f89aebd635796b16d96ca8aa81e96687c918de96b2175c75604be1d
 //!   pubkey 027b54f8c6f01ce468c291a2959532a925868762bf8330e67624b45292499be40f
-//!   （与 test.psbt BIP32_DERIVATION key 完全一致）
+//!   (exactly matching the test.psbt BIP32_DERIVATION key)
 
 use shlosilo::business::sign::{sign, SignInput};
 use shlosilo::chain::btc::psbt::parse_psbt;
@@ -14,7 +14,7 @@ use shlosilo::entropy::mnemonic::Mnemonic;
 
 const PSBT_BYTES: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 
-/// entropy → Mnemonic（与助记词 "verb chief swamp ... collect" 双向验证过）
+/// entropy → Mnemonic (bidirectionally verified against the mnemonic "verb chief swamp ... collect")
 fn test_mnemonic() -> Mnemonic {
     const ENTROPY: [u8; 16] = [
         0xf2, 0x84, 0xfb, 0x6c, 0xa9, 0xf4, 0xd5, 0x83, 0x54, 0x55, 0xbe, 0x65, 0xe4, 0xb2, 0x29,
@@ -23,12 +23,12 @@ fn test_mnemonic() -> Mnemonic {
     Mnemonic::from_entropy(&ENTROPY).expect("valid 16B entropy")
 }
 
-/// UR payload：crypto-psbt 的 CBOR bytes item（P1-01：无首字节 tag，type 显式传）
+/// UR payload: the crypto-psbt CBOR bytes item (P1-01: no leading tag byte; the type is passed explicitly)
 fn ur_payload() -> Vec<u8> {
     cbor::encode_bytes(PSBT_BYTES)
 }
 
-/// P6.3-e1：完整签名流程——12KB 真实 PSBT 必须无截断通过并产出 PARTIAL_SIG
+/// P6.3-e1: the full signing flow — a 12KB real PSBT must pass without truncation and produce PARTIAL_SIG
 #[test]
 fn p63_sign_sparrow_psbt_end_to_end() {
     use shlosilo::ur::ur_encode::UrTypeTag;
@@ -38,7 +38,7 @@ fn p63_sign_sparrow_psbt_end_to_end() {
         passphrase: b"",
     };
     let payload = ur_payload();
-    // signed PSBT ≈ 原 PSBT + PARTIAL_SIG(~72+34B)，给足余量
+    // signed PSBT ≈ original PSBT + PARTIAL_SIG (~72+34B); leave ample margin
     let mut out_buf = vec![0u8; PSBT_BYTES.len() + 512];
 
     let n = sign(input, UrTypeTag::CryptoPsbt, &payload, &mut out_buf)
@@ -48,13 +48,13 @@ fn p63_sign_sparrow_psbt_end_to_end() {
         "signed psbt must be larger than unsigned"
     );
 
-    // 输出可被 parse_psbt 解析，且 input 0 出现 PARTIAL_SIG
+    // The output must parse with parse_psbt, and input 0 must show PARTIAL_SIG
     let signed = parse_psbt(&out_buf[..n]).expect("signed output must be a valid PSBT");
     let partial = signed.inputs[0]
         .iter()
         .find(|kv| kv.key.first() == Some(&0x02u8)); // BIP-174 PSBT_IN_PARTIAL_SIG
     let partial = partial.expect("PARTIAL_SIG must be injected");
-    // key = 0x02 || compressed pubkey —— pubkey 必须是 fixture 里那把
+    // key = 0x02 || compressed pubkey — the pubkey must be the fixture's own
     assert_eq!(partial.key.len(), 34);
     assert_eq!(
         &partial.key[1..7],

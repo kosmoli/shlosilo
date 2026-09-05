@@ -1,11 +1,11 @@
-//! Monero CLSAG 环签名（XMR 核心签名）
+//! Monero CLSAG ring signature (XMR core signature)
 
 use crate::curve_primitive::ed25519::{Ed25519Point, Ed25519Scalar};
 use crate::error::Result;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// CLSAG 环签名（可变长度，取决于环大小）
-pub const CLSAG_PROOF_MAX_LEN: usize = 32 * 16; // 假设 MAX_RING = 16，proof 长度 32 * ring_size
+/// CLSAG ring signature (variable length, depends on ring size)
+pub const CLSAG_PROOF_MAX_LEN: usize = 32 * 16; // assumes MAX_RING = 16, proof length 32 * ring_size
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ClsagProof {
@@ -24,9 +24,9 @@ impl core::fmt::Debug for ClsagProof {
     }
 }
 
-/// CLSAG 签名 auxiliary data
+/// CLSAG signature auxiliary data
 ///
-/// 包含 key image 生成所需的 pseudo_out + alpha / scc Params 等
+/// Contains pseudo_out + alpha / scc Params needed for key image generation, etc.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ClsagAux {
     bytes: heapless::Vec<u8, 256>,
@@ -44,31 +44,31 @@ impl core::fmt::Debug for ClsagAux {
     }
 }
 
-/// CLSAG 环签名
+/// CLSAG ring signature
 ///
-/// # Phase 4 实现
-/// `monero-oxide` crate 的 `clsag::sign(spend, ring, pseudo_out, aux)`
+/// # Phase 4 implementation
+/// `monero-oxide` crate's `clsag::sign(spend, ring, pseudo_out, aux)`
 pub fn sign(
     _spend_skey: &Ed25519Scalar,
     _msg: &[u8],
-    _ring_members: &[Ed25519Point], // 环成员（含真实公钥 + 诱饵）
+    _ring_members: &[Ed25519Point], // ring members (real public key + decoys)
     _pseudo_output: &Ed25519Point,
     _aux_data: &ClsagAux,
 ) -> Result<ClsagProof> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
-/// CLSAG 验签
+/// CLSAG verification
 pub fn verify(
     _ring_members: &[Ed25519Point],
     _pseudo_output: &Ed25519Point,
     _msg: &[u8],
     _proof: &ClsagProof,
 ) -> bool {
-    // P2-01: unimplemented!() panic → 稳定 false（bool 签名无 Err 通道）
+    // P2-01: unimplemented!() panic → stable false (bool signatures have no Err channel)
     false
 }
 
@@ -76,7 +76,7 @@ pub fn verify(
 mod tests {
     use super::*;
 
-    // 签名/验证函数形状编译期锁定（复杂签名用别名压平）
+    // signature/verification function shapes locked at compile time (complex signatures flattened via aliases)
     type SignFn =
         fn(&Ed25519Scalar, &[u8], &[Ed25519Point], &Ed25519Point, &ClsagAux) -> Result<ClsagProof>;
     type VerifyFn = fn(&[Ed25519Point], &Ed25519Point, &[u8], &ClsagProof) -> bool;
@@ -95,8 +95,8 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码/返回值，不允许 panic 宏回归
-        // （检查代码行，排除注释行）
+        // P2-01: stubs now return stable error codes/values; panic macros must not regress
+        // (check code lines, skip comment lines)
         for line in "clsag_ed25519.rs".lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

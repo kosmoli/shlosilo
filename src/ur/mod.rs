@@ -1,17 +1,17 @@
-//! shlosilo L1 Layer E：UR 编码（UR-type-specific, 接受 chain-agnostic 数据）
+//! shlosilo L1 Layer E: UR encoding (UR-type-specific, accepts chain-agnostic data)
 //!
-//! **设计原则（v2 §2.5）**：
-//! - BC-UR 标准（CBOR + Fountain Codes multi-part）
-//! - 各 codec 接受 chain-agnostic 输入（Bip32XPub / TxTemplate / AddressString 等）
-//! - 不接触私钥——xpub 输出只带公钥
+//! **Design principles (v2 §2.5)**:
+//! - BC-UR standard (CBOR + Fountain Codes multi-part)
+//! - Each codec accepts chain-agnostic inputs (Bip32XPub / TxTemplate / AddressString etc.)
+//! - Never touches private keys — xpub output carries only public keys
 //!
-//! **Phase 2.3 stub 范围**：
-//- 2 个 UR 通用函数（ur_encode / ur_decode）
-//- 7 个 codec（6 BC-UR + 1 JSON-monero-viewkey）
-//- 函数体 `unimplemented!()`，zcash_accounts 返回 `UnsupportedExportProtocol`
+//! **Phase 2.3 stub scope**:
+//- 2 generic UR functions (ur_encode / ur_decode)
+//- 7 codecs (6 BC-UR + 1 JSON-monero-viewkey)
+//- Function bodies `unimplemented!()`; zcash_accounts returns `UnsupportedExportProtocol`
 //!
-//! **v2.4 安全修正**：所有 codec 接受 borrow 输入（`&Bip32XPub` / `&DerivationPath` / `&Ed25519Scalar`），
-//! 不 clone 副本。
+//! **v2.4 security fix**: all codecs take borrow inputs (`&Bip32XPub` / `&DerivationPath` / `&Ed25519Scalar`),
+//! with no cloned copies.
 
 pub mod codec;
 pub mod ur_decode;

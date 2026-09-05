@@ -1,20 +1,20 @@
-//! shlosilo L1 Layer D：地址编码（chain-specific, encoding primitives 共享）
+//! shlosilo L1 Layer D: address encoding (chain-specific, shared encoding primitives)
 //!
-//! **设计原则（v2 §2.4）**：
-//! - 接受公开材料（`&Secp256k1Point` / `&Ed25519Point` / `&RsaPubKey`），不接触私钥
-//! - 返回 owned `AddressString`（`heapless::String<N>`），业务模块按需拿
-//! - Phase 4 接入 `bech32` / `base58` / `keccak256` / `ripemd160` / `sha256` 等编码原语
+//! **Design principles (v2 §2.4)**:
+//! - accepts public material (`&Secp256k1Point` / `&Ed25519Point` / `&RsaPubKey`), never touches private keys
+//! - returns an owned `AddressString` (`heapless::String<N>`); business modules take it as needed
+//! - Phase 4 wires in encoding primitives like `bech32` / `base58` / `keccak256` / `ripemd160` / `sha256`
 //!
-//! **Phase 2.3 stub 范围**：
-//! - 10 个地址编码模块
-//! - 每个模块：地址字符串结构 + `encode` 函数 + 函数体 `unimplemented!()`
-//! - Phase 4 真实实现：替换 unimplemented!() 为真实算法调用
+//! **Phase 2.3 stub scope**:
+//! - 10 address encoding modules
+//! - each module: address string struct + `encode` function + `unimplemented!()` body
+//! - Phase 4 real implementation: replaces unimplemented!() with real algorithm calls
 //!
-//! **v2.4 安全修正**：所有 `encode` 函数的 pubkey 参数都是 borrow，不 clone 副本。
-//! 业务模块通过 `&Point` 借出——Layer D 拿到的只是 borrow，不持有 owned 公钥副本。
+//! **v2.4 security fix**: every `encode` function takes the pubkey parameter by borrow, never cloning a copy.
+//! Business modules lend via `&Point` — Layer D only gets a borrow and never holds an owned pubkey copy.
 //!
-//! **Debug 隐私保护**：地址结构 Debug 不泄露完整地址（只显示前 6 后 4 字符），
-//! 防止 debug 日志意外暴露用户地址。
+//! **Debug privacy**: the address struct's Debug output never leaks the full address (shows only the first 6 and last 4 characters),
+//! Prevents debug logs from accidentally exposing user addresses.
 
 pub mod aptos_sui;
 pub mod arweave;

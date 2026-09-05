@@ -1,5 +1,5 @@
-//! P6.6：用 smoke 已有 idx12 助记词构造可签名的 1-input XMR UR。
-//! 真机测 BP+ 峰值堆，不依赖 env 凭证。
+//! P6.6: build a signable 1-input XMR UR from the smoke test's existing idx12 mnemonic.
+//! Measures BP+ peak heap on device; does not depend on env credentials.
 
 use rand_chacha::rand_core::SeedableRng;
 use shlosilo::business::sign::{sign_with_entropy, SignInput};
@@ -14,7 +14,7 @@ use shlosilo::entropy::mnemonic::{Mnemonic, WordCount};
 use shlosilo::types::SecretBytes;
 use shlosilo::ur::ur_encode::{encode, UrTypeTag, UR_PAYLOAD_MAX_LEN};
 
-/// 与 forgebox-helloworld smoke `idx12` 同步（entropy 0x11×16 合法 12 词）。
+/// kept in sync with the forgebox-helloworld smoke `idx12` (entropy 0x11×16, a valid 12-word mnemonic).
 const SMOKE_IDX12: [u16; 12] = [
     136, 1092, 546, 273, 136, 1092, 546, 273, 136, 1092, 546, 283,
 ];

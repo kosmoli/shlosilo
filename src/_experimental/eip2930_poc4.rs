@@ -1,16 +1,16 @@
-//! ETH EIP-2930 Access List transaction 签名（Phase 5 v8 PoC4 保留）
+//! ETH EIP-2930 Access List transaction signing (Phase 5 v8 PoC4 retained)
 //!
 //! ⚠️ **DEPRECATED (v9.0, 2026-08-22)**:
-//! - 用户决定正式项目移除 EIP-2930 (过渡 type, 钱包实际使用率 < 1%)
-//! - 此文件保留在 `src/_experimental/` 作为协议层参考
-//! - 不参与 `chain::eth` 编译路径
+//! - The user decided to remove EIP-2930 from the production project (a transitional type; actual wallet usage < 1%)
+//! - This file is kept in `src/_experimental/` as a protocol-layer reference
+//! - Not part of the `chain::eth` compilation path
 //!
-//! 实现：
-//! - EIP-2930 transaction 数据结构（含 access_list）
+//! Implements:
+//! - EIP-2930 transaction data structure (with access_list)
 //! - EIP-2930 signing hash（`keccak256(0x01 || rlp([chain_id, nonce, gas_price, gas_limit, destination, amount, data, access_list]))`）
-//! - sign_eip2930 业务函数（sighash → ECDSA → r/s + y_parity → 拼装 signed tx）
+//! - sign_eip2930 business function (sighash → ECDSA → r/s + y_parity → assemble the signed tx)
 //!
-//! ## 算法摘要
+//! ## Algorithm summary
 //!
 //! **EIP-2930 signing hash**（type 0x01 prefix）：
 //! ```
@@ -22,7 +22,7 @@
 //!   destination,
 //!   amount,
 //!   data,
-//!   access_list,           // EIP-2930 新增字段
+//!   access_list,           // EIP-2930 new field
 //! ]))
 //! ```
 //!
@@ -34,7 +34,7 @@
 //! ])
 //! ```
 //!
-//! **y_parity**: 0 或 1（不是 EIP-155 的 v = 27/28，也不是 EIP-155 的 v = chain_id*2+35+recid）
+//! **y_parity**: 0 or 1 (not EIP-155\'s v = 27/28, nor EIP-155\'s v = chain_id*2+35+recid)
 
 extern crate alloc;
 use crate::chain::eth::rlp;
@@ -46,14 +46,14 @@ use alloc::vec::Vec;
 /// 20-byte Ethereum address
 pub type Address = [u8; 20];
 
-/// EIP-2930 Access List 单项: (address, storage_keys[])
+/// EIP-2930 Access List entry: (address, storage_keys[])
 #[derive(Clone, Debug)]
 pub struct AccessListItem {
     pub address: Address,
     pub storage_keys: Vec<[u8; 32]>,
 }
 
-/// EIP-2930 Access List transaction（未签名）
+/// EIP-2930 Access List transaction (unsigned)
 #[derive(Clone, Debug)]
 pub struct Eip2930Transaction {
     pub chain_id: u64,
@@ -67,17 +67,17 @@ pub struct Eip2930Transaction {
     pub access_list: Vec<AccessListItem>,
 }
 
-/// 签名输入
+/// Signing input
 #[derive(Clone, Debug)]
 pub struct Eip2930SignInput {
     pub tx: Eip2930Transaction,
     pub private_key: [u8; 32],
 }
 
-/// 签名输出
+/// Signing output
 #[derive(Clone, Debug)]
 pub struct Eip2930SignedTx {
-    /// 完整签名交易 bytes (0x01 || rlp([..., y_parity, r, s]))
+    /// Full signed transaction bytes (0x01 || rlp([..., y_parity, r, s]))
     pub tx_bytes: Vec<u8>,
     /// signing hash
     pub signing_hash: [u8; 32],
@@ -85,7 +85,7 @@ pub struct Eip2930SignedTx {
     pub r: [u8; 32],
     /// signature s
     pub s: [u8; 32],
-    /// y_parity: 0 或 1
+    /// y_parity: 0 or 1
     pub y_parity: u8,
 }
 
@@ -119,7 +119,7 @@ pub fn encode_access_list(items: &[AccessListItem]) -> Vec<u8> {
 
 // ─── EIP-2930 signing hash ────────────────────────────────────────
 
-/// 计算 EIP-2930 signing hash
+/// Compute the EIP-2930 signing hash
 ///
 /// `keccak256(0x01 || rlp([chain_id, nonce, gas_price, gas_limit, destination, amount, data, access_list]))`
 pub fn signing_hash(tx: &Eip2930Transaction) -> Result<[u8; 32]> {
@@ -127,7 +127,7 @@ pub fn signing_hash(tx: &Eip2930Transaction) -> Result<[u8; 32]> {
     keccak256::hash(&preimage)
 }
 
-/// 计算 signing preimage bytes
+/// Compute the signing preimage bytes
 pub fn signing_preimage(tx: &Eip2930Transaction) -> Vec<u8> {
     let chain_id_rlp = rlp::encode_uint(tx.chain_id as u128);
     let nonce_rlp = rlp::encode_uint(tx.nonce as u128);
@@ -158,9 +158,9 @@ pub fn signing_preimage(tx: &Eip2930Transaction) -> Vec<u8> {
     preimage
 }
 
-// ─── sign_eip2930 业务函数 ─────────────────────────────────────────
+// ─── sign_eip2930 business function ─────────────────────────────────────────
 
-/// 签名 EIP-2930 transaction
+/// Sign an EIP-2930 transaction
 pub fn sign_eip2930(input: &Eip2930SignInput) -> Result<Eip2930SignedTx> {
     let sk = sign::sk_from_pk(&input.private_key)?;
 
@@ -215,7 +215,7 @@ pub fn sign_eip2930(input: &Eip2930SignInput) -> Result<Eip2930SignedTx> {
     })
 }
 
-// ─── 测试 ──────────────────────────────────────────────────────────
+// ─── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(&hash[..], &expected_bytes[..], "signing hash mismatch");
     }
 
-    /// 完整 sign_eip2930 + 比对 signed tx
+    /// Full sign_eip2930 + compare the signed tx
     #[test]
     fn sign_eip2930_full_pipeline() {
         let private_key_bytes =
@@ -293,14 +293,14 @@ mod tests {
         let input = Eip2930SignInput { tx, private_key };
         let signed = sign_eip2930(&input).unwrap();
 
-        // 验证 signing hash
+        // Verify the signing hash
         let expected_hash =
             "f9825220fb999f9c52f1edb0849af4a1c260f9574449070ce421ec3e90a2cc44";
         let expected_hash_bytes = hex_decode(expected_hash);
         assert_eq!(&signed.signing_hash[..], &expected_hash_bytes[..]);
     }
 
-    /// access_list 非空测试 (storage key 列表)
+    /// Non-empty access_list test (storage key list)
     #[test]
     fn access_list_with_storage_keys() {
         let tx = Eip2930Transaction {
@@ -316,11 +316,11 @@ mod tests {
                 storage_keys: vec![[0x01; 32], [0x02; 32]],
             }],
         };
-        // 验证 signing hash 不 panic
+        // Verify the signing hash does not panic
         let _hash = signing_hash(&tx).unwrap();
     }
 
-    /// 确定性
+    /// Determinism
     #[test]
     fn deterministic_signing() {
         let private_key_bytes =

@@ -1,37 +1,37 @@
-//! 业务 2：导出只读凭证（v2 §1.2 + §4.3 + v2.3 §13）
+//! Business 2: export read-only credentials (v2 §1.2 + §4.3 + v2.3 §13)
 //!
-//! **Phase 2.4 假实现**：按 ExportProtocol dispatch 到对应 codec，调用链合法但不实际编码。
+//! **Phase 2.4 stub implementation**: dispatches by ExportProtocol to the corresponding codec; the call chain is legal but no actual encoding happens.
 
 use crate::derivation::path::DerivationPath;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::network::Network;
 use crate::ur::codec;
 
-/// 导出协议（v2.3 §13）
+/// Export protocols (v2.3 §13)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportProtocol {
     /// BTC segwit single-key xpub
     CryptoHdKey,
-    /// BTC BIP44 账户导出
+    /// BTC BIP44 account export
     CryptoAccount,
-    /// BTC + ETH 多路径
+    /// BTC + ETH multi-path
     CryptoMultiAccounts,
-    /// XMR view key JSON（Feather Wallet 兼容）
+    /// XMR view key JSON (Feather Wallet compatible)
     JsonMoneroViewkey,
-    /// Arweave 公钥 + 派生路径
+    /// Arweave public key + derivation path
     ArweaveCryptoAccount,
-    /// 占位，v1 不实现
+    /// Placeholder; not implemented in v1
     ZcashAccounts,
 }
 
-/// 导出只读凭证业务入口
+/// Business entry for exporting read-only credentials
 ///
-/// **Phase 2.4 假实现**：
+/// **Phase 2.4 stub implementation**:
 /// 1. `seed -> xpub`（Layer C bip32_secp256k1 stub）
-/// 2. match ExportProtocol → 对应 codec encode（Layer E codec stub）
-/// 3. 返回 stub_length（实际 UR payload 长度）
+/// 2. match ExportProtocol → the corresponding codec encode (Layer E codec stub)
+/// 3. Returns stub_length (the actual UR payload length)
 ///
-/// **v2.4 安全**：`seed: &[u8]` borrow，paths: &[DerivationPath] borrow。
+/// **v2.4 security**: `seed: &[u8]` borrow; paths: &[DerivationPath] borrow.
 pub fn export_readonly(
     protocol: ExportProtocol,
     seed: &[u8],
@@ -44,9 +44,9 @@ pub fn export_readonly(
             ShlosiloErrorKind::ExportProtocolUnimplemented,
         )),
         ExportProtocol::CryptoHdKey => {
-            // P2-05：crypto-hdkey UR 的 xpub 字段固定 mainnet version（0x0488B21E）。
-            // testnet 需要 tpub（0x043587CF）——v1 先简单：仅支持 mainnet，
-            // 其他 network 显式拒绝（避免导出标记错误的 version bytes）。
+            // P2-05: the crypto-hdkey UR's xpub field is fixed to the mainnet version (0x0488B21E).
+            // testnet needs tpub (0x043587CF) — v1 keeps it simple: mainnet only,
+            // other networks rejected explicitly (avoids exporting with wrong version bytes).
             if _network != Network::BitcoinMainnet {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::NetworkUnrecognized));
             }
@@ -66,8 +66,8 @@ pub fn export_readonly(
             Ok(bytes.len())
         }
         _ => {
-            // P0-02 审计整改：未真实实现的协议必须显式拒绝——
-            // 不得返回 stub_len（调用者缓冲区旧内容会被当导出结果泄露）
+            // P0-02 audit remediation: protocols not really implemented must be rejected explicitly —
+            // never return stub_len (stale caller buffer contents would leak as an export result)
             Err(ShlosiloError::new(
                 ShlosiloErrorKind::ExportProtocolUnimplemented,
             ))
@@ -103,8 +103,8 @@ mod tests {
         assert!(uri.starts_with("ur:crypto-hdkey/"));
     }
 
-    /// P2-05：CryptoHdKey 仅支持 mainnet——testnet 显式拒绝
-    /// （xpub version 固定 mainnet bytes，testnet 需要 tpub，v1 不做）
+    /// P2-05: CryptoHdKey supports mainnet only — testnet rejected explicitly
+    /// (the xpub version is fixed to mainnet bytes; testnet needs tpub — not done in v1)
     #[test]
     fn export_crypto_hdkey_rejects_testnet() {
         let seed = [0u8; 64];
@@ -119,11 +119,11 @@ mod tests {
         );
         let err = result.expect_err("testnet must be rejected for CryptoHdKey");
         assert_eq!(err.kind, ShlosiloErrorKind::NetworkUnrecognized);
-        // 失败路径不得写缓冲区
+        // Failure paths must not write the buffer
         assert!(output_buf.iter().all(|&b| b == 0xA5));
     }
 
-    /// P2-05：ETH mainnet 同样拒绝（CryptoHdKey 是 BTC 专用导出协议）
+    /// P2-05: ETH mainnet is likewise rejected (CryptoHdKey is a BTC-only export protocol)
     #[test]
     fn export_crypto_hdkey_rejects_non_btc_network() {
         let seed = [0u8; 64];
@@ -165,7 +165,7 @@ mod tests {
     fn export_buffer_too_small() {
         let seed = [0u8; 64];
         let paths = test_paths();
-        let mut output_buf = [0u8; 32]; // 太小
+        let mut output_buf = [0u8; 32]; // too small
         let result = export_readonly(
             ExportProtocol::CryptoHdKey,
             &seed,

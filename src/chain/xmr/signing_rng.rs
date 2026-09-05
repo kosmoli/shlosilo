@@ -1,21 +1,21 @@
-//! §B.5 RNG 注入定案（2026-08-28）：entropy-injection + 成熟 CSPRNG。
+//! §B.5 RNG injection decision (2026-08-28): entropy injection + a mature CSPRNG.
 //!
-//! 分层契约：
-//! - L3 负责 entropy 获取（TRNG / getrandom() / 掷骰子 / 拍照），承诺来源与最低
-//!   min-entropy（建议 ≥128 bit）。本模块不验证熵质量，长度检查仅为 misuse guard。
-//! - L2 用 HKDF-SHA256 按 [`RngPurpose`] 子域派生独立 RNG seed。
-//! - L1 链层只消费 `RngCore + CryptoRng`，不感知 entropy 来源。
+//! Layered contract:
+//! - L3 is responsible for entropy acquisition (TRNG / getrandom() / dice / camera) and commits to a source and a minimum
+//!   min-entropy (≥128 bit recommended). This module does not verify entropy quality; the length check is only a misuse guard.
+//! - L2 uses HKDF-SHA256 to derive an independent RNG seed per [`RngPurpose`] sub-domain.
+//! - The L1 chain layer only consumes `RngCore + CryptoRng` and is unaware of the entropy source.
 //!
-//! 安全角色（§B.5 加粗定案）：
-//! - **entropy 提供不可预测性**（安全性的根）；
-//! - **tx digest = context/domain separation，不计入 entropy bits**——攻击者知道
-//!   construction data，低熵 entropy 仍可被枚举，hash 混入不增熵。
+//! Security roles (§B.5 bolded decision):
+//! - **entropy provides unpredictability** (the root of security);
+//! - **the tx digest is context/domain separation and does not count toward entropy bits** — the attacker knows
+//!   the construction data, so low-entropy entropy remains enumerable; mixing in a hash adds no entropy.
 //!
-//! construction 全部用成熟审计 crate，零自制 DRBG：
+//! All construction uses mature, audited crates — zero homemade DRBGs:
 //! `HKDF-SHA256(ikm=entropy, info=label‖context) → 32B seed → ChaCha20Rng`。
 //!
-//! 同 entropy + 同 construction → 同签名流：**feature**（deterministic retry
-//! property），r 只服务本交易 outputs，无跨交易碰撞。
+//! Same entropy + same construction → same signature stream: a **feature** (deterministic retry
+//! property); r only serves this transaction's outputs, with no cross-transaction collision.
 
 use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -24,37 +24,37 @@ use zeroize::Zeroize;
 
 use hkdf::Hkdf;
 
-/// entropy 长度下限（misuse guard，非熵质量验证——见模块文档）。
+/// Entropy length lower bound (a misuse guard, not an entropy-quality check — see the module docs).
 pub const ENTROPY_MIN_LEN: usize = 16;
 
-/// 随机数用途子域。各 purpose 独立 KDF 派生，互不共享字节流——
-/// 重构 sign 内部随机数消费顺序不再碎 deterministic vector。
+/// RNG purpose sub-domains. Each purpose gets an independent KDF derivation; they share no byte stream —
+/// refactoring the internal RNG consumption order in sign no longer breaks deterministic vectors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RngPurpose {
-    /// 交易临时密钥 r（tx public key R = rG，标准记号；subaddress 特例另注）
+    /// Transaction ephemeral key r (tx public key R = rG, standard notation; the subaddress special case is noted separately)
     TxKey,
     /// Bulletproof+ blinding
     BulletproofPlus,
-    /// CLSAG 签名，按输入索引隔离
+    /// CLSAG signatures, isolated per input index
     Clsag(usize),
 }
 
 impl RngPurpose {
-    /// info 域标签（label ‖ 32B context 拼接前半段）
+    /// info domain label (first half of the label ‖ 32B context concatenation)
     fn label(&self) -> &'static str {
         match self {
             RngPurpose::TxKey => "shlosilo/xmr/tx-key",
             RngPurpose::BulletproofPlus => "shlosilo/xmr/bulletproof+",
-            // clsag 索引编码进 info 后半段，见 purpose_rng
+            // the clsag index is encoded into the second half of info; see purpose_rng
             RngPurpose::Clsag(_) => "shlosilo/xmr/clsag",
         }
     }
 }
 
-/// entropy 注入错误。
+/// Entropy injection error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RngSeedError {
-    /// entropy 为空或短于 [`ENTROPY_MIN_LEN`]（API misuse guard）
+    /// entropy empty or shorter than [`ENTROPY_MIN_LEN`] (API misuse guard)
     EntropyTooShort(usize),
 }
 
@@ -69,14 +69,14 @@ impl From<RngSeedError> for crate::error::ShlosiloError {
     }
 }
 
-/// 派生指定 purpose 的确定性 RNG。
+/// Derive the deterministic RNG for the given purpose.
 ///
-/// `context` = tx construction data 的摘要（domain separation，不计熵）。
-/// 同一 (entropy, purpose, context) 三元组永远产生相同随机流——测试模型
-/// `F(keys, tx, entropy) → signed_tx` 的纯函数性由本函数保证。
+/// `context` = digest of the tx construction data (domain separation; not counted as entropy).
+/// The same (entropy, purpose, context) triple always produces the same random stream — the purity of the test model
+/// `F(keys, tx, entropy) → signed_tx` is guaranteed by this function.
 ///
-/// info = label ‖ context ‖ purpose_index（u32 LE，clsag 的输入索引也在此段），
-/// 各 purpose 语义互不重叠。
+/// info = label ‖ context ‖ purpose_index (u32 LE; the clsag input index also lives in this segment),
+/// with non-overlapping semantics per purpose.
 pub fn purpose_rng(
     entropy: &[u8],
     purpose: RngPurpose,
@@ -85,7 +85,7 @@ pub fn purpose_rng(
     if entropy.len() < ENTROPY_MIN_LEN {
         return Err(RngSeedError::EntropyTooShort(entropy.len()));
     }
-    // purpose_index：TxKey=0, BulletproofPlus=1, Clsag(i)=2（i 编码进后续 4B）
+    // purpose_index: TxKey=0, BulletproofPlus=1, Clsag(i)=2 (i encoded into the following 4B)
     let (purpose_index, sub_index): (u32, u32) = match purpose {
         RngPurpose::TxKey => (0, 0),
         RngPurpose::BulletproofPlus => (1, 0),
@@ -106,10 +106,10 @@ pub fn purpose_rng(
 
     let hk = Hkdf::<Sha256>::new(None, entropy);
     let mut seed = [0u8; 32];
-    // 32B OKM 对 HKDF-SHA256 恒成功；unwrap 安全
+    // 32B OKM always succeeds for HKDF-SHA256; unwrap is safe
     hk.expand(&info[..off], &mut seed).unwrap();
-    let rng = ChaCha20Rng::from_seed(seed); // from_seed 拷贝进内部状态
-    seed.zeroize(); // 中间 seed 用后即清
+    let rng = ChaCha20Rng::from_seed(seed); // from_seed copies into the internal state
+    seed.zeroize(); // intermediate seed zeroed right after use
     Ok(rng)
 }
 
@@ -135,7 +135,7 @@ mod tests {
         out
     }
 
-    /// 固定 (entropy, purpose, context) → 确定性输出（deterministic retry property）
+    /// Fixed (entropy, purpose, context) → deterministic output (deterministic retry property)
     #[test]
     fn deterministic_same_inputs_same_stream() {
         let e = entropy();
@@ -144,7 +144,7 @@ mod tests {
         assert_eq!(x, y);
     }
 
-    /// 不同 context（= 不同 tx construction data）→ 不同流（domain separation）
+    /// Different context (= different tx construction data) → different stream (domain separation)
     #[test]
     fn different_context_different_stream() {
         let e = entropy();
@@ -153,7 +153,7 @@ mod tests {
         assert_ne!(x, y);
     }
 
-    /// 不同 entropy → 不同流（不可预测性的根）
+    /// Different entropy → different stream (the root of unpredictability)
     #[test]
     fn different_entropy_different_stream() {
         let mut e = entropy();
@@ -163,7 +163,7 @@ mod tests {
         assert_ne!(x, y);
     }
 
-    /// purpose 子域相互独立（tx-key ≠ bp+ ≠ clsag(i)，含 clsag 索引区分）
+    /// Purpose sub-domains are mutually independent (tx-key ≠ bp+ ≠ clsag(i), including clsag index distinction)
     #[test]
     fn purposes_are_domain_separated() {
         let e = entropy();
@@ -181,7 +181,7 @@ mod tests {
         let _ = &mut streams; // silence unused assign in release
     }
 
-    /// misuse guard：<16B entropy 拒绝；16B 恰好通过
+    /// Misuse guard: <16B entropy rejected; 16B passes exactly
     #[test]
     fn short_entropy_rejected() {
         let e = [0u8; 15];
@@ -193,7 +193,7 @@ mod tests {
         assert!(purpose_rng(&e16, RngPurpose::TxKey, &CTX_A).is_ok());
     }
 
-    /// RFC 5869 官方 Test Case 1 交叉验证 HKDF-SHA256 正确性
+    /// Cross-validate HKDF-SHA256 correctness against RFC 5869 official Test Case 1
     /// （IKM=0x0b×22, salt=0x000102..., info=0xf0f1..., L=42）
     #[test]
     fn hkdf_rfc5869_test_case_1() {

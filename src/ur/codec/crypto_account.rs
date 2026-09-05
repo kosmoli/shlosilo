@@ -1,4 +1,4 @@
-//! crypto-account UR codec（UR standard for single-account export）
+//! crypto-account UR codec(UR standard for single-account export)
 
 use super::crypto_hd_key::Bip32XPub;
 use crate::derivation::path::DerivationPath;
@@ -6,14 +6,14 @@ use crate::error::Result;
 
 /// crypto-account UR codec encode
 ///
-/// # Phase 4 实现
+/// # Phase 4 Implementation
 /// - CBOR map { "xfp": fingerprint, "key": xpub, "path": path }
 pub fn encode(
     _master_fingerprint: &[u8; 4],
     _xpub: &Bip32XPub,
     _path: &DerivationPath,
 ) -> Result<crate::ur::ur_encode::UrEncoded> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
@@ -28,7 +28,7 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        // P2-01: stubs have been switched to stable error codes; panic macros must not regress (skip comment lines)
         for line in include_str!("crypto_account.rs").lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

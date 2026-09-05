@@ -1,12 +1,12 @@
-//! UR 编码（BC-UR 单分片）— Phase 6 P6.0b 真实实现
+//! UR encoding (BC-UR single fragment) — Phase 6 P6.0b real implementation
 //!
-//! 格式：`ur:<type>/<bytewords-minimal(payload)>`
+//! Format: `ur:<type>/<bytewords-minimal(payload)>`
 //!
-//! UR 传输层 **不** 再包一层 CBOR。codec（crypto-psbt / crypto-hd-key）产出的
-//! CBOR 字节作为 payload 原样进入 bytewords。BCR-2020-05 / keystone-ur 官方向量
-//! `ur:bytes/iehsjyhspmwfwfia` 的 body 解出就是原始 `b"data"`，不是 CBOR item。
+//! The UR transport layer does **not** wrap another CBOR layer. The CBOR bytes produced by codecs
+//! (crypto-psbt / crypto-hd-key) enter bytewords verbatim as the payload. The body of the BCR-2020-05 /
+//! keystone-ur official vector `ur:bytes/iehsjyhspmwfwfia` decodes to the raw `b"data"`, not a CBOR item.
 //!
-//! fountain 多分片在 Phase 6 P6.2 补（真机大 PSBT 时）。
+//! Multi-fragment fountain arrives in Phase 6 P6.2 (for large on-device PSBTs).
 
 use crate::encoding::bytewords;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -15,9 +15,9 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-/// 原始 payload 上限（codec 产出的 CBOR）
+/// Raw payload upper bound (CBOR produced by codecs)
 pub const UR_PAYLOAD_MAX_LEN: usize = 2048;
-/// 完整 URI 上限：prefix + bytewords(payload+crc32) ≈ 2×payload + 头
+/// Full URI upper bound: prefix + bytewords(payload+crc32) ≈ 2×payload + header
 pub const UR_URI_MAX_LEN: usize = 8192;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -50,20 +50,20 @@ impl core::fmt::Debug for UrEncoded {
     }
 }
 
-/// UR type tag（BC-UR 顶层 type 字段）
+/// UR type tag (BC-UR top-level type field)
 ///
-/// 用于 v2 §7 ChainKind 推断——业务模块 dispatch 用
+/// Used for v2 §7 ChainKind inference — business module dispatch
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UrTypeTag {
     CryptoPsbt,         // BTC
     EthSignRequest,     // ETH
-    CryptoMoneroTx,     // XMR（兼容别名，deprecated——官方为 xmr-txunsigned/signed）
-    XmrTxUnsigned,      // XMR 官方 registry 8303（payload = 完整加密 unsigned txset blob）
-    XmrTxSigned,        // XMR 官方 registry 8304（payload = 完整加密 signed txset blob）
+    CryptoMoneroTx,     // XMR (compatibility alias, deprecated — official is xmr-txunsigned/signed)
+    XmrTxUnsigned,      // XMR official registry 8303 (payload = full encrypted unsigned txset blob)
+    XmrTxSigned,        // XMR official registry 8304 (payload = full encrypted signed txset blob)
     SolanaSignRequest,  // SOL
     CardanoSignRequest, // ADA
-    CosmosSignRequest,  // Cosmos 系
-    Bytes,              // opaque bytes（测试 / 透传）
+    CosmosSignRequest,  // Cosmos family
+    Bytes,              // opaque bytes (tests / passthrough)
     CryptoHdKey,        // crypto-hdkey
     CryptoAccount,      // crypto-account
     Unknown,
@@ -104,7 +104,7 @@ impl UrTypeTag {
         }
     }
 
-    /// 兼容旧接口：从首字节推断（Phase 4 遗留调用方）
+    /// Legacy interface compatibility: infer from the first byte (Phase 4 leftover callers)
     pub fn from_bytes(bytes: &[u8]) -> Self {
         match bytes.first().copied() {
             Some(0) => Self::CryptoPsbt,
@@ -118,7 +118,7 @@ impl UrTypeTag {
     }
 }
 
-/// 单分片编码：payload → bytewords-minimal → `ur:<type>/<body>`
+/// Single-fragment encoding: payload → bytewords-minimal → `ur:<type>/<body>`
 pub fn encode(type_tag: UrTypeTag, payload: &[u8]) -> Result<UrEncoded> {
     if payload.len() > UR_PAYLOAD_MAX_LEN {
         return Err(err());
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(enc.as_str(), "ur:bytes/iehsjyhspmwfwfia");
     }
 
-    /// Python 独立实现：raw `[0x01, 0x02]` → `ur:bytes/adaorpsffwmo`
+    /// Independent Python implementation: raw `[0x01, 0x02]` → `ur:bytes/adaorpsffwmo`
     #[test]
     fn independent_oracle_bytes_vector() {
         let enc = encode(UrTypeTag::Bytes, &[0x01, 0x02]).unwrap();
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(d.as_ref(), &[0x01, 0x02]);
     }
 
-    /// crypto-psbt round trip：payload 透传（CBOR map 由 codec 层做）
+    /// crypto-psbt round trip: payload passthrough (the CBOR map is built by the codec layer)
     #[test]
     fn crypto_psbt_round_trip() {
         let payload: alloc::vec::Vec<u8> = b"psbt\xff".iter().copied().chain(0..40u8).collect();
@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(d.as_ref(), &payload[..]);
     }
 
-    /// multi-part 形状显式拒绝（fountain 属 P6.2）；坏 scheme 拒绝
+    /// multi-part shape explicitly rejected (fountain belongs to P6.2); bad scheme rejected
     #[test]
     fn multipart_and_garbage_rejected() {
         assert!(crate::ur::ur_decode::decode(
@@ -192,13 +192,13 @@ mod tests {
     }
 }
 // ============================================================================
-// §B.5 定案 1 测试（2026-08-28）：官方 XMR UR tag
+// §B.5 decision 1 tests (2026-08-28): official XMR UR tag
 // ============================================================================
 #[cfg(test)]
 mod xmr_tag_tests {
     use super::*;
 
-    /// 官方 registry 名称 ↔ tag 双向映射
+    /// Official registry name ↔ tag bidirectional mapping
     #[test]
     fn xmr_official_tags_round_trip() {
         assert_eq!(
@@ -210,7 +210,7 @@ mod xmr_tag_tests {
         assert_eq!(UrTypeTag::XmrTxSigned.type_name(), "xmr-txsigned");
     }
 
-    /// encode/decode round-trip 用官方 tag
+    /// encode/decode round-trip with the official tag
     #[test]
     fn xmr_official_tag_encode_decode() {
         let payload = b"Monero unsigned tx set\x05fake";
@@ -221,7 +221,7 @@ mod xmr_tag_tests {
         assert_eq!(dec.as_ref(), payload);
     }
 
-    /// 兼容别名 crypto-monero-tx 仍 dispatch 到 XMR（三个 tag → 同一 ChainKind）
+    /// The compatibility alias crypto-monero-tx still dispatches to XMR (three tags → same ChainKind)
     #[test]
     fn legacy_alias_still_dispatches_xmr() {
         for tag in [

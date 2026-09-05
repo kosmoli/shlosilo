@@ -1,35 +1,35 @@
-//! Monero RingCT 签名 (Phase 5 v9.5 Phase B)
+//! Monero RingCT signing (Phase 5 v9.5 Phase B)
 //!
-//! 实现 RctSig (Ring Confidential Transactions) — 隐藏 amount 的签名方案.
-//! shlosilo 集成:
+//! Implements RctSig (Ring Confidential Transactions) — the amount-hiding signature scheme.
+//! shlosilo integration:
 //! - RctSigBase (type=2/3, fee, pseudo_outs)
 //! - RctSigPrunable (commitments + encrypted_amounts + bulletproofs + clsag_sigs)
-//! - Bulletproofs+ 范围证明 (monero-bulletproofs crate)
-//! - CLSAG 环签名 (monero-clsag crate, 复用 v8)
+//! - Bulletproofs+ range proofs (monero-bulletproofs crate)
+//! - CLSAG ring signatures (monero-clsag crate, reused from v8)
 //!
-//! ## 算法 (RingCTType 2/3 = Bulletproofs+)
+//! ## Algorithm (RingCTType 2/3 = Bulletproofs+)
 //!
 //! ```text
 //! RctSig {
 //!   Base {
 //!     type: RingCTType (2 = BP per-output, 3 = BP aggregated, post-fork 1788000),
 //!     fee: u64,
-//!     pseudo_outs: Vec<[u8; 32]>,  // 每 input 一个 pseudo output commitment
+//!     pseudo_outs: Vec<[u8; 32]>,  // one pseudo output commitment per input
 //!   },
 //!   Prunable {
-//!     commitments: Vec<[u8; 32]>,  // 每 output 一个 commitment (C_i = mask_i * G + amount_i * H)
+//!     commitments: Vec<[u8; 32]>,  // one commitment per output (C_i = mask_i * G + amount_i * H)
 //!     encrypted_amounts: Vec<[u8; 8]>,  // 8 bytes ecdh encrypted amount per output
-//!     bulletproofs: Vec<Bulletproof>,  // 范围证明 (BP+ aggregated for type=3)
-//!     clsag_sigs: Vec<ClsagProof>,     // 每 input 一个 CLSAG
+//!     bulletproofs: Vec<Bulletproof>,  // range proofs (BP+ aggregated for type=3)
+//!     clsag_sigs: Vec<ClsagProof>,     // one CLSAG per input
 //!   },
 //! }
 //! ```
 //!
-//! **未实现 (Phase C 后续)**:
-//! - 完整 extra 字段生成 (tx_pub_key 派生)
-//! - 端到端"输入 → 输出 → sign → serialize → verify"
+//! **Not implemented (Phase C follow-up)**:
+//! - Full extra field generation (tx_pub_key derivation)
+//! - End-to-end "inputs → outputs → sign → serialize → verify"
 //!
-//! **参考**:
+//! **References**:
 //! - <https://github.com/monero-project/monero/blob/master/src/ringct/rctSigs.cpp>
 //! - <https://github.com/monero-project/monero/blob/master/src/ringct/rctTypes.h>
 
@@ -55,16 +55,16 @@ pub mod rct_type {
     pub const BULLETPROOFS_PLUS: u8 = 3;
 }
 
-/// RctSigBase — 固定部分 (不依赖 ring members, 可提前序列化)
+/// RctSigBase — the fixed part (independent of ring members; serializable early)
 #[derive(Clone, Debug)]
 pub struct RctSigBase {
     /// RingCT type (only 2 or 3 supported in shlosilo)
     pub rct_type: u8,
-    /// tx fee (公开)
+    /// tx fee (public)
     pub fee: u64,
-    /// pseudo output commitments (每 input 一个, 32 bytes)
+    /// pseudo output commitments (one per input, 32 bytes)
     /// pseudo_outs[i] = Commitment(pseudo_mask_i, 0).commit()
-    /// (Bull 0 范围 + 0 amount — 让 sum_input_commitments = sum_output_commitments + fee*G)
+    /// (Bull 0 range + 0 amount — makes sum_input_commitments = sum_output_commitments + fee*G)
     pub pseudo_outs: Vec<[u8; 32]>,
 }
 
@@ -92,15 +92,15 @@ impl RctSigBase {
     }
 }
 
-/// RctSigPrunable — prunable 部分 (依赖 ring members, 大, 可剪裁)
+/// RctSigPrunable — the prunable part (depends on ring members, large, trimmable)
 #[derive(Clone, Debug)]
 pub struct RctSigPrunable {
-    /// output commitments (每 output 一个, 32 bytes Ed25519 point)
+    /// output commitments (one per output, 32-byte Ed25519 point)
     /// commitments[i] = Commitment(mask_i, amount_i).commit()
     pub commitments: Vec<[u8; 32]>,
     /// encrypted amounts per output (8 bytes ecdh-encrypted amount)
     pub encrypted_amounts: Vec<[u8; 8]>,
-    /// Bulletproofs (type=2: 每 output 一个 BP; type=3: 一个 aggregated BP)
+    /// Bulletproofs (type=2: one BP per output; type=3: one aggregated BP)
     pub bulletproofs: Vec<Bulletproof>,
     /// CLSAG signatures per input
     pub clsag_sigs: Vec<ClsagProof>,
@@ -121,9 +121,9 @@ impl RctSigPrunable {
         }
     }
 
-    /// 序列化 prunable (BIP-compatible with XMR wire format)
-    /// 格式: varint commitments_count + commitments + varint encrypted_amounts_count + encrypted + varint clsag_sigs_count + clsag
-    /// bulletproofs 在最后 (per-output BP for type=2, 或单个 aggregated BP for type=3)
+    /// Serialize the prunable part (BIP-compatible with the XMR wire format)
+    /// Format: varint commitments_count + commitments + varint encrypted_amounts_count + encrypted + varint clsag_sigs_count + clsag
+    /// bulletproofs go last (per-output BP for type=2, or a single aggregated BP for type=3)
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         // commitments
@@ -172,7 +172,7 @@ impl RctSig {
         Self { base, prunable }
     }
 
-    /// 序列化完整 RctSig
+    /// Serialize the complete RctSig
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut out = self.base.serialize();
         let prunable_bytes = self.prunable.serialize()?;
@@ -181,12 +181,12 @@ impl RctSig {
     }
 }
 
-/// 构造一个 Pedersen commitment (mask, amount)
+/// Construct a Pedersen commitment (mask, amount)
 pub fn make_commitment(mask: &Scalar, amount: u64) -> MoneroCommitment {
     MoneroCommitment::new(*mask, amount)
 }
 
-/// 构造 commitment points (VarInt count + 32 bytes each) — XMR wire format
+/// Construct commitment points (VarInt count + 32 bytes each) — XMR wire format
 pub fn serialize_commitments(commitments: &[MoneroCommitment]) -> Vec<u8> {
     let mut out = Vec::new();
     crate::chain::xmr::transaction::encode_varint(&mut out, commitments.len() as u64);
@@ -201,13 +201,13 @@ pub fn serialize_commitments(commitments: &[MoneroCommitment]) -> Vec<u8> {
 
 /// Generate Bulletproofs+ for a list of commitments (RingCTType 2/3 aggregated)
 ///
-/// **输入**:
-/// - `rng`: 密码学安全 RNG
-/// - `commitments`: Pedersen commitment 列表 (每 output 一个)
+/// **Inputs**:
+/// - `rng`: cryptographically secure RNG
+/// - `commitments`: list of Pedersen commitments (one per output)
 ///
-/// **输出**: Bulletproof (Plus 类型, 聚合多个 commitments)
+/// **Output**: Bulletproof (Plus type, aggregating multiple commitments)
 ///
-/// **限制**: commitments.len() <= MAX_COMMITMENTS (16)
+/// **Constraint**: commitments.len() <= MAX_COMMITMENTS (16)
 pub fn prove_bulletproofs_plus<R: RngCore + CryptoRng>(
     rng: &mut R,
     commitments: Vec<MoneroCommitment>,
@@ -224,12 +224,12 @@ pub fn prove_bulletproofs_plus<R: RngCore + CryptoRng>(
 
 /// Verify Bulletproofs+ for given commitment points (32 bytes each)
 ///
-/// **输入**:
-/// - `rng`: 密码学安全 RNG
-/// - `bp`: Bulletproof (Plus 类型)
+/// **Inputs**:
+/// - `rng`: cryptographically secure RNG
+/// - `bp`: Bulletproof (Plus type)
 /// - `commitments`: compressed points (32 bytes each) for verification
 ///
-/// **输出**: true if valid
+/// **Output**: true if valid
 pub fn verify_bulletproofs_plus<R: RngCore + CryptoRng>(
     rng: &mut R,
     bp: &Bulletproof,
@@ -240,15 +240,15 @@ pub fn verify_bulletproofs_plus<R: RngCore + CryptoRng>(
 
 /// Generate pseudo output commitment: C' = Commitment(pseudo_mask, 0)
 ///
-/// pseudo_outs[i] 用于让 sum_input_commitments = sum_output_commitments + fee*G.
-/// C' amount = 0 (范围在 BP+ 范围内), 但 mask 是 pseudo_mask.
+/// pseudo_outs[i] exists to make sum_input_commitments = sum_output_commitments + fee*G.
+/// C' amount = 0 (within the BP+ range), but the mask is the pseudo_mask.
 pub fn pseudo_out_commitment(pseudo_mask: &Scalar) -> [u8; 32] {
     let c = MoneroCommitment::new(*pseudo_mask, 0);
     let point = c.commit();
     point.compress().to_bytes()
 }
 
-/// 单元测试
+/// Unit tests
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -268,7 +268,7 @@ mod tests {
         s
     }
 
-    /// RctSigBase 序列化
+    /// RctSigBase serialization
     #[test]
     fn rct_sig_base_serialize() {
         let base = RctSigBase::new(
@@ -282,7 +282,7 @@ mod tests {
         eprintln!("RctSigBase ({} bytes): {}", bytes.len(), hex_encode(&bytes));
     }
 
-    /// Pedersen commitment 构造
+    /// Pedersen commitment construction
     #[test]
     fn commitment_construction() {
         let scalar_bytes = reduce_scalar(&[0x55u8; 32]).unwrap();
@@ -317,7 +317,7 @@ mod tests {
         eprintln!("Pseudo out: {}", hex_encode(&bytes));
     }
 
-    /// Bulletproofs+ 范围证明 (1 commitment)
+    /// Bulletproofs+ range proof (1 commitment)
     #[test]
     fn bulletproof_plus_single() {
         let mut rng = OsRng;
@@ -350,7 +350,7 @@ mod tests {
         eprintln!("BP+ single ({} bytes)", bp_bytes.len());
     }
 
-    /// Bulletproofs+ 多个 commitment (aggregated)
+    /// Bulletproofs+ multiple commitments (aggregated)
     #[test]
     fn bulletproof_plus_aggregated() {
         let mut rng = OsRng;
@@ -392,7 +392,7 @@ mod tests {
         let mut rng = OsRng;
         let mut commitments = Vec::new();
         for i in 0u64..=MAX_COMMITMENTS as u64 {
-            // MAX_COMMITMENTS+1 = 17, 应失败
+            // MAX_COMMITMENTS+1 = 17, should fail
             let scalar_bytes = reduce_scalar(&[i as u8; 32]).unwrap();
             let mask = {
                 let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
@@ -405,13 +405,13 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// RctSigBase 完整 round-trip
+    /// RctSigBase full round-trip
     #[test]
     fn rct_sig_base_round_trip() {
         let base = RctSigBase::new(rct_type::BULLETPROOFS_PLUS, 100, vec![[0x42; 32]]);
         let bytes = base.serialize();
         assert_eq!(bytes[0], rct_type::BULLETPROOFS_PLUS);
-        // 然后 decode — 简化: 验证 byte structure
+        // then decode — simplified: verify the byte structure
         let mut pos = 1;
         let fee = crate::chain::xmr::transaction::monero_decode_varint(&bytes, &mut pos).unwrap();
         assert_eq!(fee, 100);
@@ -422,15 +422,15 @@ mod tests {
         assert_eq!(pos + 32, bytes.len());
     }
 
-    /// CLSAG round-trip (单 input, BP+ 0 outputs, no RCT)
-    /// — 最小化 demo: 仅验证 clsag.sign + 输出的 ClsagProof 可 serialize
+    /// CLSAG round-trip (single input, BP+ 0 outputs, no RCT)
+    /// — minimal demo: only verify clsag.sign and that the resulting ClsagProof can serialize
     #[test]
     fn clsag_minimal_demo() {
         use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
         use curve25519_dalek::Scalar as DScalar;
         let mut rng = OsRng;
 
-        // 1. 构造 ring (real + 1 decoy)
+        // 1. Build the ring (real + 1 decoy)
         let real_sk_arr = crate::curve_primitive::ed25519::scalar_to_bytes(
             &reduce_scalar(&[0x11u8; 32]).unwrap(),
         );
@@ -470,7 +470,7 @@ mod tests {
             ),
         ];
 
-        // 2. 构造 pseudo_mask (different from real_mask)
+        // 2. Build the pseudo_mask (different from real_mask)
         let pseudo_mask_bytes = reduce_scalar(&[0x55u8; 32]).unwrap();
         let pseudo_mask = crate::curve_primitive::ed25519::scalar_to_bytes(&pseudo_mask_bytes);
         let msg_hash: [u8; 32] = [0x99u8; 32];
@@ -494,13 +494,13 @@ mod tests {
         let clsag_bytes = clsag_proof.to_bytes().to_vec();
         assert!(clsag_bytes.len() >= 32 + 64);
 
-        // 5. RctSigPrunable 包装 (无 BP+, 单 input CLSAG)
+        // 5. RctSigPrunable wrapper (no BP+, single-input CLSAG)
         let commitments_prunable: Vec<[u8; 32]> = vec![real_commit.commit().compress().to_bytes()];
         let encrypted_amounts_prunable: Vec<[u8; 8]> = vec![[0u8; 8]];
         let prunable = RctSigPrunable::new(
             commitments_prunable,
             encrypted_amounts_prunable,
-            vec![], // 无 BP+ — 仅 CLSAG demo
+            vec![], // no BP+ — CLSAG demo only
             vec![clsag_proof],
         );
         let prunable_bytes = prunable.serialize().unwrap();
@@ -514,7 +514,7 @@ mod tests {
         );
     }
 
-    /// RctSig 完整序列化 (Base + Prunable) — minimal
+    /// RctSig full serialization (Base + Prunable) — minimal
     #[test]
     fn rct_sig_serialize_minimal() {
         let base = RctSigBase::new(rct_type::BULLETPROOFS_PLUS, 100, vec![[0x11; 32]]);

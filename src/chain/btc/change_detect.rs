@@ -1,11 +1,11 @@
-//! BTC 找零识别（Phase 5 v9.21）
+//! BTC change detection (Phase 5 v9.21)
 //!
-//! 对标 keystone `ParseContext`（mfp + xpub 标 change）的最小 L1 等价物：
-//! 从 PSBT output map 的 BIP32_DERIVATION（0x02）读出 master fingerprint，
-//! 与本机 master fingerprint 比对 → 标记找零。
+//! A minimal L1 equivalent of keystone's `ParseContext` (mfp + xpub marking change):
+//! read the master fingerprint from the BIP32_DERIVATION (0x02) of the PSBT output map,
+//! compare it with this device's master fingerprint → mark change.
 //!
-//! L1 纯函数：不做地址重派生（那需要 seed / xpub，属业务层）；fingerprint 匹配
-//! 与 keystone `check_my_input` 的归属判定同源。
+//! L1 pure function: no address re-derivation (that needs seed / xpub and belongs to the business layer); fingerprint matching
+//! shares the same origin as keystone `check_my_input`'s ownership decision.
 
 extern crate alloc;
 use alloc::vec;
@@ -14,16 +14,16 @@ use alloc::vec::Vec;
 use crate::chain::btc::psbt::{output_type, Psbt};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// 单个 output 的归属信息
+/// Ownership info for a single output
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeInfo {
-    /// BIP32_DERIVATION 存在且其 fingerprint 与本机 mfp 一致
+    /// BIP32_DERIVATION exists and its fingerprint matches this device's mfp
     pub is_own: bool,
-    /// BIP32_DERIVATION 中的 master fingerprint（无该字段时为 None）
+    /// The master fingerprint inside BIP32_DERIVATION (None when the field is absent)
     pub origin_fingerprint: Option<[u8; 4]>,
 }
 
-/// 解析 BIP32_DERIVATION value 前缀：fingerprint(4) || depth(1) || ...
+/// Parse the BIP32_DERIVATION value prefix: fingerprint(4) || depth(1) || ...
 fn parse_origin_fingerprint(value: &[u8]) -> Option<[u8; 4]> {
     if value.len() < 4 {
         return None;
@@ -33,11 +33,11 @@ fn parse_origin_fingerprint(value: &[u8]) -> Option<[u8; 4]> {
     Some(fp)
 }
 
-/// 标记每个 output 是否为本钱包找零。
+/// Mark whether each output is change for this wallet.
 ///
-/// 规则（与 keystone 归属信号一致）：
-/// - output map 有 BIP32_DERIVATION 且其 master fingerprint == 本机 mfp → 找零
-/// - 无该字段或 fingerprint 不同 → 非找零
+/// Rules (consistent with keystone's ownership signals):
+/// - The output map has BIP32_DERIVATION and its master fingerprint == this device's mfp → change
+/// - Field absent or fingerprint differs → not change
 pub fn detect_change_outputs(psbt: &Psbt, master_fingerprint: &[u8; 4]) -> Result<Vec<ChangeInfo>> {
     if psbt.outputs.len() != psbt.unsigned_tx.outputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));

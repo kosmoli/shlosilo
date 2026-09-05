@@ -1,13 +1,13 @@
-//! P1-06：unsigned_txset → 签名交易 端到端
+//! P1-06: unsigned_txset → signed transaction end-to-end
 //!
-//! 用真实钱包密钥（环境变量注入）对 P6.3 fixture 完成完整签名路径，
-//! 并做自洽验证：
-//! 1. tx 序列化成功且非空
-//! 2. rct type = 6（BulletproofPlus，bp_version=4 → BP+ 的 monero 官方语义）
-//! 3. CLSAG 验签通过（shlosilo verify_signed_tx 路径）
-//! 4. 输出承诺金额与输入一致（balance）
+//! Uses real wallet keys (injected via environment variables) to run the full signing path on the P6.3 fixture,
+//! plus self-consistency checks:
+//! 1. tx serializes successfully and is non-empty
+//! 2. rct type = 6 (BulletproofPlus; bp_version=4 → the monero official semantics for BP+)
+//! 3. CLSAG signature verification passes (the shlosilo verify_signed_tx path)
+//! 4. Output commitment amounts match the inputs (balance)
 //!
-//! oracle 终判 = wallet-rpc submit_transfer / monerod tx pool 接受。
+//! The oracle's final verdict = wallet-rpc submit_transfer / monerod tx pool acceptance.
 
 use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction;
 use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
@@ -26,7 +26,7 @@ fn env_hex(name: &str) -> Option<[u8; 32]> {
 }
 
 #[test]
-#[ignore = "X7: 需外部凭据/env（SHLOSILO_TEST_XMR_*）——缺 env 不再静默计入 passed；跑法: cargo test -- --ignored 并注入 env"]
+#[ignore = "X7: requires external credentials/env (SHLOSILO_TEST_XMR_*) — missing env is no longer silently counted as passed; run: cargo test -- --ignored with env injected"]
 fn sign_real_fixture_end_to_end() {
     let Some(view_sk) = env_hex("SHLOSILO_TEST_XMR_VIEW_SK") else {
         eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set");
@@ -37,12 +37,12 @@ fn sign_real_fixture_end_to_end() {
         return;
     };
 
-    // 解析 fixture → 单 tx 构造数据
+    // Parse the fixture → single-tx construction data
     let utx = deserialize_unsigned_tx(PLAIN).expect("deserialize");
     assert_eq!(utx.txes.len(), 1);
     let tx_data = &utx.txes[0];
 
-    // RNG：host 用 OsRng；真机换 TRNG（L3 注入点）
+    // RNG: OsRng on host; TRNG on real hardware (L3 injection point)
     use rand_core::OsRng;
     let mut rng = OsRng;
 
@@ -60,18 +60,18 @@ fn sign_real_fixture_end_to_end() {
             &oo.dest[..6]
         );
     }
-    // ---- 签名（返回官方 monerod wire bytes）----
+    // ---- Sign (returns official monerod wire bytes) ----
     let bytes = sign_tx_from_construction(tx_data, &spend_sk, &view_sk, &mut rng)
         .expect("sign tx from construction");
     eprintln!("signed tx bytes = {}", bytes.len());
     // version byte = 2 (ringct tx)
     assert_eq!(bytes[0], 2, "tx version 2");
 
-    // ---- 验证 2: rct wire type（signed 是 Transaction；直接从序列化字节取 rct type）----
+    // ---- Check 2: rct wire type (signed is a Transaction; take the rct type directly from the serialized bytes) ----
     // fixture bp_version=4 ⇒ RCTTypeBulletproofPlus(6)。
-    // rct 签名段在 prefix 之后——简单可靠的做法：重新走一遍签名内部逻辑不可行，
-    // 改为检查 tx 前缀后第一字节。用 TxOutput 数量 = 2 + version2 => 需要 decode。
-    // 这里以 serialize 尾部包含 BP 元素 + CLSAG 计数断言为主。
+    // The rct signature section comes after the prefix — a simple reliable approach: re-running the internal signing logic is infeasible,
+    // so instead check the first byte after the tx prefix. With TxOutput count = 2 + version2 we'd need a decode,
+    // so here we mainly assert on the serialize tail containing BP elements + the CLSAG count.
     eprintln!(
         "DBG len={} first-16={}",
         bytes.len(),
@@ -81,17 +81,17 @@ fn sign_real_fixture_end_to_end() {
             .collect::<String>()
     );
 
-    // ---- 验证 3: 结构计数（1 输入的 CLSAG / pseudo_out）----
-    // 从构造数据推断：sources=1
+    // ---- Check 3: structural counts (CLSAG / pseudo_out for 1 input) ----
+    // Inferred from construction data: sources=1
     assert_eq!(tx_data.sources.len(), 1);
     assert_eq!(tx_data.splitted_dsts.len(), 2);
 
-    // ---- 验证 4: fee 与构造数据一致 ----
+    // ---- Check 4: fee matches the construction data ----
     let input_sum: u64 = tx_data.sources.iter().map(|s| s.amount).sum();
     let out_sum: u64 = tx_data.splitted_dsts.iter().map(|d| d.amount).sum();
     assert_eq!(input_sum - out_sum, 30_640_000, "fee matches P6.3");
 
-    // 导出 signed tx hex 供 oracle（monerod send_raw_transaction）验证
+    // Export the signed tx hex for oracle verification (monerod send_raw_transaction)
     let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
     if let Ok(path) = std::env::var("SHLOSILO_SIGNED_TX_OUT") {
         std::fs::write(&path, &hex).expect("write signed tx");

@@ -1,16 +1,16 @@
-//! SHA-512 hash（PBKDF2-HMAC-SHA512 用，BIP-39 seed）
+//! SHA-512 hash (for PBKDF2-HMAC-SHA512, BIP-39 seed)
 
 use crate::error::Result;
 use sha2::{Digest, Sha512};
 
-/// SHA-512 输出长度
+/// SHA-512 output length
 pub const SHA512_OUTPUT_LEN: usize = 64;
 
 /// SHA-512 hash
 ///
-/// Phase 4 真实实现：`sha2::Sha512::digest(data)`
+/// Phase 4 real implementation: `sha2::Sha512::digest(data)`
 ///
-/// **v2.4 安全**：输入 borrow，输出 owned（hash 不携带 secret 信息）
+/// **v2.4 security**: input borrowed, output owned (the hash carries no secret information)
 pub fn hash(data: &[u8]) -> Result<[u8; SHA512_OUTPUT_LEN]> {
     let result = Sha512::digest(data);
     let bytes: [u8; SHA512_OUTPUT_LEN] = result.into();
@@ -19,13 +19,13 @@ pub fn hash(data: &[u8]) -> Result<[u8; SHA512_OUTPUT_LEN]> {
 
 /// HMAC-SHA512 (PBKDF2 building block)
 ///
-/// 标准 HMAC: HMAC(K, m) = SHA512((K' xor opad) || SHA512((K' xor ipad) || m))
+/// Standard HMAC: HMAC(K, m) = SHA512((K' xor opad) || SHA512((K' xor ipad) || m))
 ///
-/// **Phase 4 真实实现**
+/// **Phase 4 real implementation**
 pub fn hmac(key: &[u8], message: &[u8]) -> Result<[u8; SHA512_OUTPUT_LEN]> {
     const BLOCK_SIZE: usize = 128;
 
-    // K' = K 若 K ≤ 128 bytes，否则 SHA512(K) 然后补 0 到 128 bytes
+    // K' = K if K ≤ 128 bytes, otherwise SHA512(K) then zero-pad to 128 bytes
     let mut k_block = [0u8; BLOCK_SIZE];
     if key.len() > BLOCK_SIZE {
         let hashed = hash(key)?;
@@ -59,7 +59,7 @@ pub fn hmac(key: &[u8], message: &[u8]) -> Result<[u8; SHA512_OUTPUT_LEN]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// inline hex 编码（避免跨模块 cfg(test) 复杂性）
+    /// Inline hex encoding (avoids cross-module cfg(test) complexity)
     fn hex_encode(bytes: &[u8]) -> alloc::string::String {
         const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
         let mut s = alloc::string::String::with_capacity(bytes.len() * 2);
@@ -77,7 +77,7 @@ mod tests {
         assert_eq!(SHA512_OUTPUT_LEN, 64);
     }
 
-    /// SHA-512("") 标准测试向量
+    /// SHA-512("") standard test vector
     #[test]
     fn hash_empty() {
         let h = hash(&[]).unwrap();
@@ -86,7 +86,7 @@ mod tests {
         assert_eq!(hex_encode(&h), expected);
     }
 
-    /// SHA-512("abc") 标准测试向量
+    /// SHA-512("abc") standard test vector
     #[test]
     fn hash_abc() {
         let h = hash(b"abc").unwrap();
@@ -95,7 +95,7 @@ mod tests {
         assert_eq!(hex_encode(&h), expected);
     }
 
-    /// HMAC-SHA512 简单测试（v0.4.0 Phase 4 baseline）
+    /// HMAC-SHA512 simple test (v0.4.0 Phase 4 baseline)
     #[test]
     fn hmac_basic() {
         let key = b"key";

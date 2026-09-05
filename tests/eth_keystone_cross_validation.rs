@@ -1,12 +1,12 @@
-//! ETH 跨验证 (v9.14)
+//! ETH cross-validation (v9.14)
 //!
-//! 用 keystone `rust/apps/ethereum` 的测试 fixture 作为 oracle：
+//! Uses the keystone `rust/apps/ethereum` test fixtures as the oracle:
 //! 1. EIP-712 typed data hash — `eip712.rs::test_hash_typed_message_with_data`
-//!    及同文件的 metamask/minimal/array 向量
+//!    plus the metamask/minimal/array vectors in the same file
 //! 2. EIP-155 legacy tx RLP — `legacy_transaction.rs::test_transfer_erc20_legacy_transaction`
 //!
-//! 方法论：keystone 测试里的期望 hash/RLP 字节是外部锚点，
-//! shlosilo 独立实现必须产出相同字节。
+//! Methodology: the expected hash/RLP bytes in keystone's tests are external anchors,
+//! shlosilo's independent implementation must produce identical bytes.
 
 use shlosilo::chain::eth::eip712;
 use shlosilo::chain::eth::rlp;
@@ -46,7 +46,7 @@ fn alloc_format(x: &u8) -> String {
 
 use std::string::String;
 
-/// 构造 keystone `test_hash_typed_message_with_data` 同款 typed data:
+/// Build typed data matching keystone `test_hash_typed_message_with_data`:
 /// EIP712Domain(name,version,chainId,verifyingContract) + Message(data:string)
 fn keystone_typed_data() -> (
     eip712::Eip712Domain,
@@ -91,9 +91,9 @@ fn keystone_typed_data() -> (
     (domain, "Message".to_string(), message, types)
 }
 
-// ─── EIP-712 跨验证 ──────────────────────────────────────────────────
+// ─── EIP-712 cross-validation ──────────────────────────────────────────────────
 
-/// keystone `test_hash_typed_message_with_data`: 期望 signing hash
+/// keystone `test_hash_typed_message_with_data`: expected signing hash
 /// `232cd3ec058eb935a709f093e3536ce26cc9e8e193584b0881992525f6236eef`
 #[test]
 fn eth_eip712_keystone_typed_message_hash() {
@@ -106,10 +106,10 @@ fn eth_eip712_keystone_typed_message_hash() {
     );
 }
 
-/// keystone `test_minimal_message` 向量**不可用作 oracle**：
-/// keystone 的 `encode_eip712`（eip712.rs:454）在 `primaryType == "EIP712Domain"` 时
-/// 故意跳过 struct_hash（MetaMask eth-sig-util 兼容 quirk），与标准 EIP-712 定义不同。
-/// shlosilo 按标准实现（0x1901 || sep || structHash），两者在此边界场景必然分叉。
+/// the keystone `test_minimal_message` vector **cannot be used as an oracle**:
+/// keystone's `encode_eip712` (eip712.rs:454) skips struct_hash when `primaryType == "EIP712Domain"`
+/// deliberately skips struct_hash (a MetaMask eth-sig-util compatibility quirk), differing from the standard EIP-712 definition.
+/// shlosilo implements the standard (0x1901 || sep || structHash); the two inevitably diverge in this edge case.
 #[test]
 fn eth_eip712_minimal_edge_case_documented() {
     use std::string::ToString;
@@ -120,7 +120,7 @@ fn eth_eip712_minimal_edge_case_documented() {
     let domain = eip712::Eip712Domain::default();
     let msg = eip712::Eip712Value::Struct("EIP712Domain".to_string(), vec![]);
 
-    // 标准 EIP-712 行为：shlosilo 产出 ≠ keystone 的 quirk 值，这是**预期差异**
+    // standard EIP-712 behavior: shlosilo's output ≠ keystone's quirk value; this is an **expected difference**
     let sighash = eip712::signing_hash(&domain, "EIP712Domain", &msg, &types).unwrap();
     assert_ne!(
         hex_encode(&sighash),
@@ -129,7 +129,7 @@ fn eth_eip712_minimal_edge_case_documented() {
     );
 }
 
-/// keystone `test_encode_custom_array_type`: Person/address[] 嵌套数组
+/// keystone `test_encode_custom_array_type`: Person/address[] nested arrays
 /// `80a3aeb51161cfc47884ddf8eac0d2343d6ae640efe78b6a69be65e3045c1321`
 #[test]
 fn eth_eip712_keystone_array_type_hash() {
@@ -153,7 +153,7 @@ fn eth_eip712_keystone_array_type_hash() {
         ],
     );
 
-    // 空 domain（keystone json 里 "domain":{}）
+    // empty domain ("domain":{} in the keystone json)
     let domain = eip712::Eip712Domain::default();
 
     let from = eip712::Eip712Value::Struct(
@@ -192,22 +192,22 @@ fn eth_eip712_keystone_array_type_hash() {
     );
 }
 
-// ─── EIP-155 legacy tx RLP 跨验证 ─────────────────────────────────────
+// ─── EIP-155 legacy tx RLP cross-validation ─────────────────────────────────────
 
 /// keystone `test_transfer_erc20_legacy_transaction`:
-/// unsigned RLP preimage 必须与 keystone `LegacyTransaction::encode_raw()` 一致。
-/// 注意 keystone 的 unsigned 编码含 (nonce, gasPrice, gasLimit, to, value, data, chainId, 0, 0)
-/// 尾部三字段是 EIP-155 replay protection；这里对照其完整 unsigned_hex。
+/// the unsigned RLP preimage must match keystone `LegacyTransaction::encode_raw()`.
+/// Note that keystone's unsigned encoding contains (nonce, gasPrice, gasLimit, to, value, data, chainId, 0, 0)
+/// The trailing three fields are EIP-155 replay protection; compared here against its full unsigned_hex.
 #[test]
 fn eth_legacy_rlp_keystone_erc20_unsigned() {
-    // keystone fixture 字段
+    // keystone fixture fields
     let nonce: u128 = 33;
     let gas_price: u128 = 15_198_060_006;
     let gas_limit: u128 = 46_000;
     let to = hex_to_20("fe2c232adDF66539BFd5d1Bd4B2cc91D358022a2");
     let value: u128 = 200_000_000_000_000;
     let data = hex_bytes("a9059cbb00000000000000000000000049ab56b91fc982fd6ec1ec7bb87d74efa6da30ab00000000000000000000000000000000000000000000000001480ff69d129e2d");
-    let chain_id: u128 = 1; // keystone 测试隐含 v=38 → EIP-155 (v = chain_id*2 + 35)
+    let chain_id: u128 = 1; // the keystone test implies v=38 → EIP-155 (v = chain_id*2 + 35)
 
     // EIP-155 unsigned: rlp([nonce, gasPrice, gasLimit, to, value, data, chainId, 0, 0])
     let fields = vec![
@@ -228,7 +228,7 @@ fn eth_legacy_rlp_keystone_erc20_unsigned() {
         "unsigned EIP-155 RLP must match keystone encode_raw output"
     );
 
-    // signed raw tx: keystone 给了固定 r/s/v，拼回后必须逐字节一致 + tx hash 一致
+    // signed raw tx: keystone gave fixed r/s/v; after reassembly it must match byte for byte + same tx hash
     let r_bytes = hex_to_32("35df2b615912b8be79a13c9b0a1540ade55434ab68778a49943442a9e6d3141a");
     let s_bytes = hex_to_32("0a6e33134ba47c1f1cda59ec3ef62a59d4da6a9d111eb4e447828574c1c94f66");
     let v: u128 = 38;
@@ -260,11 +260,11 @@ fn eth_legacy_rlp_keystone_erc20_unsigned() {
     );
 }
 
-// ─── EIP-1559 签名链路（自洽 + 结构验证）────────────────────────────────
+// ─── EIP-1559 signing pipeline (self-consistency + structural checks) ─────────────────────────
 
-/// EIP-1559 signing preimage 结构：0x02 || rlp([...])。
-/// keystone 没有现成 EIP-1559 sighash fixture（只有 parse 层测试），
-/// 这里用以太坊规范已知结构做 sanity + 与 legacy 复用同一 RLP 编码器的一致性检查。
+/// EIP-1559 signing preimage structure: 0x02 || rlp([...]).
+/// keystone has no ready-made EIP-1559 sighash fixture (only parse-layer tests),
+/// Here a known Ethereum-spec structure provides sanity + a consistency check that legacy and this share the same RLP encoder.
 #[test]
 fn eth_eip1559_signing_preimage_structure() {
     use shlosilo::chain::eth::eip1559::{signing_preimage, Eip1559Transaction};
@@ -282,10 +282,10 @@ fn eth_eip1559_signing_preimage_structure() {
     };
     let preimage = signing_preimage(&tx).unwrap();
 
-    // 类型字节必须是 0x02
+    // the type byte must be 0x02
     assert_eq!(preimage[0], 0x02);
 
-    // preimage 其余部分应为合法 RLP list —— 正确解析长度前缀（含 0xf8 长形式）
+    // the rest of the preimage should be a valid RLP list — parse the length prefix correctly (including the 0xf8 long form)
     let (payload, len) = match preimage[1] {
         n if n < 0xc0 => panic!("expected list prefix >= 0xc0"),
         0xf8 => (&preimage[3..], preimage[2] as usize),
@@ -301,7 +301,7 @@ fn eth_eip1559_signing_preimage_structure() {
         "RLP length prefix must match payload size"
     );
 
-    // sighash 是 keccak256(preimage)，确定性
+    // sighash is keccak256(preimage), deterministic
     let h1 = shlosilo::chain::eth::eip1559::signing_hash(&tx).unwrap();
     let h2 = shlosilo::chain::eth::eip1559::signing_hash(&tx).unwrap();
     assert_eq!(h1, h2);

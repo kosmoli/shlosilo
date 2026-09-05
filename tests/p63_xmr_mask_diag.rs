@@ -1,4 +1,4 @@
-//! P63-XMR mask 诊断：对比 fixture ring mask 与链上 outPk commitment
+//! P63-XMR mask diagnostics: compare the fixture ring mask with the on-chain outPk commitment
 
 use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
 

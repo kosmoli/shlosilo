@@ -1,23 +1,23 @@
-//! XMR CLSAG (Concise Linkable Spontaneous Anonymous Group) 签名
+//! XMR CLSAG (Concise Linkable Spontaneous Anonymous Group) signatures
 //!
-//! Phase 5 v4 真实实现：wrap `monero-clsag 0.1`
+//! Phase 5 v4 real implementation: wrap `monero-clsag 0.1`
 //!
-//! ## 算法（XMR CLSAG）
+//! ## Algorithm (XMR CLSAG)
 //!
-//! - Linkable ring signature，允许签名者证明"ring 中某一个"对应的私钥拥有者
-//! - ring of `n` public keys（其中 1 个是真实 signer），输出 1 signature
-//! - **防双花**：key image I = x * Hp(P) 唯一标识本次花费（x = private key）
+//! - Linkable ring signature: the signer proves ownership of the private key of "one of" the ring members
+//! - ring of `n` public keys (1 of which is the real signer), outputting 1 signature
+//! - **Double-spend prevention**: the key image I = x * Hp(P) uniquely identifies this spend (x = private key)
 //!
-//! ## API 设计
+//! ## API design
 //!
 //! shlosilo wrap monero-clsag →
-//! - `sign` 输入/输出：`Vec` (monero-clsag) → `Vec`/`Box` → shlosilo 直接调用（业务层允许 alloc）
-//! - shlosilo 公开 API 用 `Vec` 参数（XMR 业务模块是 L2b FFI 层允许 alloc）
+//! - `sign` inputs/outputs: `Vec` (monero-clsag) → `Vec`/`Box` → shlosilo calls directly (the business layer may allocate)
+//! - shlosilo public APIs use `Vec` parameters (XMR business modules are L2b FFI layer, allocation allowed)
 //!
-//! ## 安全约束（v2 §2.1）
+//! ## Security constraints (v2 §2.1)
 //!
-//! - `ClsagProof` 公开材料（signature）→ 允许 Copy
-//! - `KeyImage` 公开材料 → 允许 Copy
+//! - `ClsagProof` public material (signature) → Copy allowed
+//! - `KeyImage` public material → Copy allowed
 
 extern crate alloc;
 
@@ -33,26 +33,26 @@ use zeroize::Zeroizing;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// CLSAG ring 最大长度（XMR 协议默认 11 = 1 real + 10 decoys）
+/// CLSAG ring maximum length (XMR protocol default 11 = 1 real + 10 decoys)
 pub const DEFAULT_RING_LEN: usize = 11;
 
-/// CLSAG signature 序列化长度（64 bytes）
-/// 实际 monero-clsag Clsag 结构体 serialize 后长度 ≈ 64 bytes
+/// CLSAG signature serialized length (64 bytes)
+/// The actual monero-clsag Clsag struct serializes to ≈ 64 bytes
 pub const CLSAG_PROOF_LEN: usize = 64;
 
-/// Key image 长度（32 bytes compressed）
+/// Key image length (32 bytes compressed)
 pub const KEY_IMAGE_LEN: usize = 32;
 
-/// XMR CLSAG proof 包装
+/// XMR CLSAG proof wrapper
 ///
-/// monero-clsag `Clsag` 包含 c1 scalar + s[] vector，长度 = 32 + ring_len * 32
-/// 这里用 `Vec<u8>` 简化存储（serialized form）
+/// The monero-clsag `Clsag` contains a c1 scalar + s[] vector, length = 32 + ring_len * 32
+/// Stored here as a simplified `Vec<u8>` (serialized form)
 #[derive(Clone, Debug)]
 pub struct ClsagProof {
     bytes: Vec<u8>,
 }
 
-/// XMR key image（公开材料，防双花）
+/// XMR key image (public material, double-spend prevention)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyImage {
     bytes: [u8; KEY_IMAGE_LEN],
@@ -73,45 +73,45 @@ impl AsRef<[u8]> for KeyImage {
 impl ClsagProof {
     /// ClsagProof → serialized bytes
     ///
-    /// 布局 = `pseudo_out(32) ‖ s[mixin+1]‖c1‖D`（sign() 内部拼接）。
+    /// Layout = `pseudo_out(32) ‖ s[mixin+1]‖c1‖D` (concatenated inside sign()).
     pub fn to_bytes(&self) -> &[u8] {
         &self.bytes
     }
 
-    /// 官方 monerod CLSAG 段：`s[mixin+1] ‖ c1 ‖ D`（不含前缀 pseudo_out）
+    /// Official monerod CLSAG section: `s[mixin+1] ‖ c1 ‖ D` (without the leading pseudo_out)
     pub fn wire_body(&self) -> &[u8] {
         &self.bytes[32..]
     }
 }
 
-/// CLSAG sign：单个 input 签名（vec![(sk, ctx)]）
+/// CLSAG sign: sign a single input (vec![(sk, ctx)])
 ///
-/// **输入**：
-/// - `input_skey`: **one-time input 私钥** = spend_key + key_offset（P_outpoint 的离散对数；
-///   serai 校验 `sk·G == ring[real][0]`，ring 存 one-time address，不能用裸 wallet spend key）
-/// - `ring`: ring of (spend_pubkey, commitment_point) pairs，长度 = ring_len
-///   - commitment_point 是 **real commitment**（real_mask * H + amount * G）
-/// - `real_index`: 真实 signer 在 ring 中的位置 (0..ring_len)
-/// - `real_mask`: real commitment 的 mask scalar（32 bytes）—— ring[real_index][1] 对应
+/// **Input**:
+/// - `input_skey`: **one-time input private key** = spend_key + key_offset (discrete log of P_outpoint;
+///   serai checks `sk·G == ring[real][0]`, the ring holds one-time addresses, so the bare wallet spend key cannot be used)
+/// - `ring`: ring of (spend_pubkey, commitment_point) pairs, length = ring_len
+///   - commitment_point is the **real commitment** (real_mask * H + amount * G)
+/// - `real_index`: position of the real signer in the ring (0..ring_len)
+/// - `real_mask`: mask scalar of the real commitment (32 bytes) — corresponds to ring[real_index][1]
 /// - `amount`: real amount（u64）
-/// - `pseudo_mask`: pseudo_output 的 mask scalar（32 bytes）—— 必须 ≠ real_mask（否则 D=0，sig 无法验证）
+/// - `pseudo_mask`: mask scalar of the pseudo_output (32 bytes) — must be ≠ real_mask (otherwise D=0 and the signature cannot verify)
 /// - `msg_hash`: 32-byte message hash
-/// - `rng`: 加密安全 RNG
+/// - `rng`: cryptographically secure RNG
 ///
-/// **返回**：(ClsagProof, KeyImage, pseudo_out_commitment)
+/// **Returns**: (ClsagProof, KeyImage, pseudo_out_commitment)
 ///
-/// ## Monero 协议约束
+/// ## Monero protocol constraints
 ///
-/// Monero CLSAG 要求 `mask_delta = real_mask - pseudo_mask ≠ 0`（否则 `D = Hp(P) * 0 = identity`，
-/// `verify` 立即返回 `Err(InvalidD)`）。这是 anti-malleability 设计：让 sig 唯一化。
+/// Monero CLSAG requires `mask_delta = real_mask - pseudo_mask ≠ 0` (otherwise `D = Hp(P) * 0 = identity` and
+/// `verify` immediately returns `Err(InvalidD)`). This is an anti-malleability design: it makes the signature unique.
 ///
-/// 同时 `sum_pseudo_outs = pseudo_mask`（单 input，amount 自平衡）。
-#[allow(clippy::too_many_arguments)] // 签名参数形状对齐 keystone generate_ring_signature
+/// Also `sum_pseudo_outs = pseudo_mask` (single input, amount self-balances).
+#[allow(clippy::too_many_arguments)] // parameter shape aligned with keystone generate_ring_signature
 pub fn sign<R: RngCore + CryptoRng>(
     input_skey: &[u8; 32],
-    ring: &[(CompressedPoint, CompressedPoint)], // (dest, **链上 C 点**，非 blinding)
+    ring: &[(CompressedPoint, CompressedPoint)], // (dest, **on-chain C point**, not a blinding)
     real_index: u8,
-    real_mask: &[u8; 32], // real output 的真 blinding factor（wallet2 sources[i].mask）
+    real_mask: &[u8; 32], // real output's true blinding factor (wallet2 sources[i].mask)
     amount: u64,
     pseudo_mask: &[u8; 32],
     msg_hash: &[u8; 32],
@@ -124,16 +124,16 @@ pub fn sign<R: RngCore + CryptoRng>(
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     if real_mask == pseudo_mask {
-        // D=0 → verify 失败（anti-malleability）
+        // D=0 → verify fails (anti-malleability)
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 1. 构造 one-time input 私钥 (monero_ed25519::Scalar)
+    // 1. Construct the one-time input private key (monero_ed25519::Scalar)
     let spend_scalar = scalar_from_reduced_bytes(input_skey)?;
 
-    // 2. 构造 Decoys
-    //    ring: Vec<[Point; 2]>  where  [0] = spend_pub, [1] = 链上 commitment 点（C）
-    //    ring 第1元已是压缩 C 点字节，直接解压，**不再经 Commitment 重算**
+    // 2. Construct Decoys
+    //    ring: Vec<[Point; 2]>  where  [0] = spend_pub, [1] = on-chain commitment point (C)
+    //    The ring's 2nd element is already compressed C point bytes, decompress directly, **no Commitment recomputation**
     let ring_points: Vec<[Point; 2]> = ring
         .iter()
         .map(|(pubk, commit_c)| {
@@ -155,22 +155,22 @@ pub fn sign<R: RngCore + CryptoRng>(
     let decoys = Decoys::new(offsets, real_index, ring_points)
         .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-    // 3. 构造 Commitment for ClsagContext（real commitment: real_mask + amount）
+    // 3. Construct the Commitment for ClsagContext (real commitment: real_mask + amount)
     let real_mask_scalar = scalar_from_reduced_bytes(real_mask)?;
     let commitment = MoneroCommitment::new(real_mask_scalar, amount);
 
-    // 4. 构造 ClsagContext
-    //    内部 assert: decoys.signer_ring_members()[1] == commitment.commit()
+    // 4. Construct ClsagContext
+    //    internal assert: decoys.signer_ring_members()[1] == commitment.commit()
     //    = ring[real_index].1.commit() = Commitment(real_mask, amount).commit() ✓
     let ctx = ClsagContext::new(decoys, commitment)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-    // 5. 计算 sum_outputs = pseudo_mask（单 input，amount 自平衡）
-    //    mask_delta = real_mask - pseudo_mask ≠ 0（real_mask ≠ pseudo_mask 上文已校验）
+    // 5. Compute sum_outputs = pseudo_mask (single input, amount self-balances)
+    //    mask_delta = real_mask - pseudo_mask ≠ 0 (real_mask ≠ pseudo_mask already validated above)
     let pseudo_mask_scalar = scalar_from_reduced_bytes(pseudo_mask)?;
     let sum_outputs = pseudo_mask_scalar;
 
-    // 6. 签名
+    // 6. Sign
     let signed = Clsag::sign(
         rng,
         vec![(Zeroizing::new(spend_scalar), ctx)],
@@ -184,7 +184,7 @@ pub fn sign<R: RngCore + CryptoRng>(
         .next()
         .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-    // 7. 计算 key image: I = x * Hp(P) where P = one-time output pubkey
+    // 7. Compute the key image: I = x * Hp(P) where P = one-time output pubkey
     let spend_scalar_dalek = scalar_to_dalek(input_skey)?;
     let spend_pub_point: curve25519_dalek::EdwardsPoint =
         ED25519_BASEPOINT_TABLE * &spend_scalar_dalek;
@@ -195,11 +195,11 @@ pub fn sign<R: RngCore + CryptoRng>(
     let key_image_point: curve25519_dalek::EdwardsPoint = key_image_gen_point * spend_scalar_dalek;
     let key_image_bytes = key_image_point.compress().to_bytes();
 
-    // 8. 序列化 Clsag（pseudo_out bytes + Clsag 内部 bytes）
+    // 8. Serialize the Clsag (pseudo_out bytes + Clsag internal bytes)
     let pseudo_out_bytes = pseudo_out.compress().to_bytes();
     let mut bytes = Vec::with_capacity(32 + 64);
     bytes.extend_from_slice(&pseudo_out_bytes);
-    // Clsag 结构没有 public Serialize, 我们用 write_to 写到一个 buffer
+    // The Clsag struct has no public Serialize; we use write_to into a buffer
     let mut clsag_buf = Vec::new();
     clsag
         .write(&mut clsag_buf)
@@ -215,16 +215,16 @@ pub fn sign<R: RngCore + CryptoRng>(
     ))
 }
 
-/// 独立 key image 构造函数 (Phase 5 v9.5 Phase A)
-/// 用于 tx 结构提前计算 key image (在 sign 之前).
+/// Standalone key image constructor (Phase 5 v9.5 Phase A)
+/// Lets the tx structure precompute the key image (before signing).
 ///
-/// **算法**: I = x * Hp(P) where:
+/// **Algorithm**: I = x * Hp(P) where:
 /// - x = spend private key (32 bytes)
 /// - P = x * G = spend public key (compressed Ed25519 point)
-/// - Hp(P) = hash_to_point(P) (Monero 协议, biased hash)
+/// - Hp(P) = hash_to_point(P) (Monero protocol, biased hash)
 ///
-/// **输入**: spend_key (32 bytes, 已是 reduced scalar)
-/// **输出**: 32-byte compressed Edwards point (key image)
+/// **Input**: spend_key (32 bytes, already a reduced scalar)
+/// **Output**: 32-byte compressed Edwards point (key image)
 pub fn derive_key_image(spend_key: &[u8; 32]) -> Result<[u8; KEY_IMAGE_LEN]> {
     // 1. spend private key (32 bytes, reduced scalar)
     let spend_scalar_dalek = scalar_to_dalek(spend_key)?;
@@ -247,7 +247,7 @@ pub fn derive_key_image(spend_key: &[u8; 32]) -> Result<[u8; KEY_IMAGE_LEN]> {
 
 /// CLSAG verify
 ///
-/// **输入**：
+/// **Input**:
 /// - `ring`: ring of (spend_pubkey, commitment) pairs
 /// - `key_image`: 32 bytes
 /// - `pseudo_out`: 32 bytes
@@ -263,19 +263,19 @@ pub fn verify(
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 1. 构造 ring in [CompressedPoint; 2]
+    // 1. Construct the ring in [CompressedPoint; 2]
     let ring_compressed: Vec<[CompressedPoint; 2]> =
         ring.iter().map(|(pubk, commit)| [*pubk, *commit]).collect();
 
-    // 2. 反序列化 Clsag
+    // 2. Deserialize the Clsag
     let mut clsag_reader = clsag_bytes;
     let clsag = Clsag::read(ring.len(), &mut clsag_reader)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-    // 3. key_image 字节 → CompressedPoint
+    // 3. key_image bytes → CompressedPoint
     let image = CompressedPoint::from(*key_image);
 
-    // 4. pseudo_out 字节 → CompressedPoint
+    // 4. pseudo_out bytes → CompressedPoint
     let pseudo = CompressedPoint::from(*pseudo_out);
 
     // 5. verify
@@ -292,7 +292,7 @@ pub fn verify(
 
 /// 32 bytes reduced scalar → monero_ed25519::Scalar
 fn scalar_from_reduced_bytes(bytes: &[u8; 32]) -> Result<Scalar> {
-    // Scalar([u8; 32]) 字段私有，必须通过 from() 构造
+    // Scalar([u8; 32]) fields are private; must be constructed via from()
     let dalek_scalar: DScalar = crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(bytes);
     Ok(Scalar::from(dalek_scalar))
 }
@@ -304,7 +304,7 @@ fn scalar_to_dalek(bytes: &[u8; 32]) -> Result<DScalar> {
     ))
 }
 
-// IsIdentity 是 verifier 需要用到的
+// IsIdentity is needed by the verifier
 #[allow(dead_code)]
 fn _check_is_identity() {
     let torsion = curve25519_dalek::edwards::CompressedEdwardsY([0; 32])
@@ -324,12 +324,12 @@ mod tests {
         b
     }
 
-    /// CLSAG 端到端 sign + verify roundtrip（最小 ring = 2）
+    /// CLSAG end-to-end sign + verify roundtrip (minimal ring = 2)
     #[test]
     fn clsag_sign_verify_roundtrip() {
         let mut rng = OsRng;
 
-        // 1. 构造 ring of 2 (real + 1 decoy)
+        // 1. Construct a ring of 2 (real + 1 decoy)
         let real_sk = rand_scalar(&mut rng);
         let decoy_sk = rand_scalar(&mut rng);
         let amount = 100u64;
@@ -370,9 +370,9 @@ mod tests {
 
         // 2. sign with real index = 0
         let msg_hash = rand_scalar(&mut rng);
-        // 用一个 *不同* 的 mask 作为 pseudo_mask（D = Hp(P) * (real - pseudo) 必须非零）
+        // Use a *different* mask as pseudo_mask (D = Hp(P) * (real - pseudo) must be nonzero)
         let mut pseudo_mask = rand_scalar(&mut rng);
-        // 概率上 real_mask != pseudo_mask 几乎必然 (2^-256 冲突)，但万一相等则再 roll 一次
+        // Probabilistically real_mask != pseudo_mask almost surely (2^-256 collision), but roll again if equal
         while pseudo_mask == real_mask {
             pseudo_mask = rand_scalar(&mut rng);
         }
@@ -386,7 +386,7 @@ mod tests {
             &msg_hash,
             &mut rng,
         );
-        let _ = result; // 调用可以成功或失败（取决于 API 兼容性）
+        let _ = result; // the call may succeed or fail (depends on API compatibility)
 
         let result = sign(
             &real_sk,
@@ -399,7 +399,7 @@ mod tests {
             &mut rng,
         );
         if let Ok((clsag_proof, key_image, pseudo_out_bytes)) = result {
-            // 3. verify 用 [CompressedPoint; 2]
+            // 3. verify uses [CompressedPoint; 2]
             let real_commit_pt = MoneroCommitment::new(
                 Scalar::from(crate::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(
                     &real_mask,
@@ -422,7 +422,7 @@ mod tests {
                     decoy_commit_pt.commit().compress().to_bytes().into(),
                 ),
             ];
-            // pseudo_out_bytes 已经是 sign 返回的——它 = Commitment(pseudo_mask, amount).commit()
+            // pseudo_out_bytes already comes from sign — it = Commitment(pseudo_mask, amount).commit()
             let verify_result = verify(
                 &ring_verify,
                 &key_image.to_bytes(),
@@ -432,10 +432,10 @@ mod tests {
             );
             let _ = verify_result;
         }
-        // 如果 sign 失败（API 不兼容），跳过 assert 避免 panic
+        // If sign fails (API incompatible), skip the assert to avoid a panic
     }
 
-    /// 空 ring 拒绝
+    /// Empty ring rejected
     #[test]
     fn empty_ring_rejected() {
         let mut rng = OsRng;
@@ -447,7 +447,7 @@ mod tests {
         let _ = result.is_err();
     }
 
-    /// real_index 越界拒绝
+    /// real_index out of bounds rejected
     #[test]
     fn invalid_real_index_rejected() {
         let mut rng = OsRng;
@@ -482,7 +482,7 @@ mod tests {
             &pseudo_mask_test,
             &msg_hash,
             &mut rng,
-        ); // index 5 越界
+        ); // index 5 out of bounds
         let _ = result.is_err();
     }
 }

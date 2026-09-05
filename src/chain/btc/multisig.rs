@@ -1,13 +1,13 @@
 //! BTC Multi-sig (P2SH/P2WSH) — Phase 5 v9.10
 //!
-//! ## 范围
-//! - **P2SH multi-sig** (BIP-16): M-of-N 公钥, redeemScript = `OP_M <pk1>...<pkN> OP_N OP_CHECKMULTISIG`
-//! - **P2WSH multi-sig** (BIP-141): 同 redeemScript,scriptPubKey = `OP_0 SHA256(redeemScript)`
-//! - **P2SH-P2WSH** (nested): P2SH 包裹 P2WSH
-//! - **Sighash**: BIP-143 (segwit) + 传统 (legacy, 双 SHA256)
+//! ## Scope
+//! - **P2SH multi-sig** (BIP-16): M-of-N public keys, redeemScript = `OP_M <pk1>...<pkN> OP_N OP_CHECKMULTISIG`
+//! - **P2WSH multi-sig** (BIP-141): same redeemScript, scriptPubKey = `OP_0 SHA256(redeemScript)`
+//! - **P2SH-P2WSH** (nested): P2SH wrapping P2WSH
+//! - **Sighash**: BIP-143 (segwit) + traditional (legacy, double SHA256)
 //!
-//! ## L1 纯函数
-//! 全模块无 IO/全局状态。
+//! ## L1 pure functions
+//! The whole module has no IO/global state.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -798,7 +798,7 @@ mod tests {
         // Nested P2SH-P2WSH testnet — should start with '2'
         let nested_testnet = p2sh_p2wsh_multisig_address(Network::BitcoinTestnet, &cfg).unwrap();
 
-        // X6: 不支持 P2WSH 的网络走错误码,不 panic(公开 API 非 total)
+        // X6: networks that do not support P2WSH return an error code, no panic (public API non-total)
         let doge_err = p2wsh_multisig_address(Network::Dogecoin, &cfg).unwrap_err();
         assert_eq!(doge_err.kind, ShlosiloErrorKind::ChainKindUnsupported);
         let doge_err2 = p2sh_p2wsh_multisig_address(Network::Dogecoin, &cfg).unwrap_err();

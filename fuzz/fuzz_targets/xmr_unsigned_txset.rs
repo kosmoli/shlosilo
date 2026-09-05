@@ -1,10 +1,10 @@
 #![no_main]
-// 审计 #12 P2-03:XMR unsigned-txset parser fuzz——任意字节序列不得
-// panic/OOM。入口总预算 + read_count 物理可行性 + checked 读取的
-// 最终验证(与 PSBT fuzz 同一验收口径)。
+// Audit #12 P2-03: XMR unsigned-txset parser fuzz — arbitrary byte sequences must never
+// panic/OOM. Entry total budget + read_count physical feasibility + checked reads'
+// final verification (same acceptance criteria as the PSBT fuzz).
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    // 不关心结果,只关心不 panic/不 abort/不超预算分配
+// result doesn't matter; only that there is no panic/abort and no over-budget allocation
     let _ = shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx(data);
 });

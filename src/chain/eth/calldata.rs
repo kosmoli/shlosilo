@@ -1,9 +1,9 @@
-//! ETH calldata ABI 解码（硬编码 selector，不是通用 ABI JSON）
+//! ETH calldata ABI decoding (hardcoded selectors, not a generic ABI JSON)
 //!
 //! Phase 5 v9.17
 //!
 //! ERC-20：`transfer` / `approve` / `increaseAllowance` / `transferFrom`
-//! ERC-721/1155：`setApprovalForAll` 完整解码；`safeTransferFrom*` 只识别 selector。
+//! ERC-721/1155: `setApprovalForAll` fully decoded; `safeTransferFrom*` recognized by selector only.
 
 extern crate alloc;
 
@@ -11,7 +11,7 @@ use alloc::string::String;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// 解码后的 calldata（给确认屏，不是签名输入）
+/// Decoded calldata (for the confirmation screen, not a signing input)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecodedCalldata {
     Empty,
@@ -36,7 +36,7 @@ pub enum DecodedCalldata {
         operator: [u8; 20],
         approved: bool,
     },
-    /// 721/1155 等：认出 selector，不拆动态参数
+    /// 721/1155 etc.: recognize the selector, do not split dynamic args
     KnownSelector {
         name: &'static str,
         selector: [u8; 4],
@@ -136,7 +136,7 @@ pub fn decode_calldata(input: &[u8]) -> Result<DecodedCalldata> {
     }
 }
 
-/// 按 token decimals 格式化 32-byte big-endian 金额（keystone `parse_amount` 行为）
+/// Format a 32-byte big-endian amount per token decimals (keystone `parse_amount` behavior)
 pub fn format_token_amount(amount: &[u8; 32], decimals: u32) -> Result<String> {
     if decimals > 77 {
         return Err(err());

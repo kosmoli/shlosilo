@@ -1,6 +1,6 @@
 //! BTC MuSig2 (BIP-327) — Phase 5 v9.11
 //!
-//! ## 范围
+//! ## Scope
 //! - **KeyAgg**: aggregate public keys (MuSig2* optimization, 2nd distinct key gets coeff 1)
 //! - **KeySort**: lexicographic sort pubkeys
 //! - **ApplyTweak**: plain + x-only tweaks (BIP-32 / BIP-341 support)
@@ -11,7 +11,7 @@
 //! - **PartialSigVerify**: verify partial signature (identifiable abort)
 //! - **PartialSigAgg**: aggregate partial signatures → final BIP-340 signature
 //!
-//! ## L1 纯函数
+//! ## L1 Pure Functions
 //! All algorithms are pure functions over Secp256k1Point/Secp256k1Scalar.
 //!
 //! ## Cross-validation

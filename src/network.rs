@@ -1,69 +1,69 @@
-//! Network 枚举（v2.3 接口笔记 §13.4）
+//! Network enum (v2.3 interface notes §13.4)
 //!
-//! **v1.1.1 修订（2026-08-17）**：
-//! - 删除 MoonbeamMainnet + MoonriverTestnet（已迁出 Polkadot 至 Base 网络，2026-07-31）
-//! - 编号复用：Astar 从 138 改为 136，Serai 从 142 改为 140
-//! - Serai 2026-04 仍在安全审计，主网未上线，占位等上线
-//! - KujiraMainnet/Testnet 状态待 v1.1.2 二次确认
+//! **v1.1.1 revision (2026-08-17)**:
+//! - Removed MoonbeamMainnet + MoonriverTestnet (migrated off Polkadot to the Base network, 2026-07-31)
+//! - Number reuse: Astar changed from 138 to 136, Serai from 142 to 140
+//! - Serai was still under security audit as of 2026-04; mainnet not launched, placeholder until launch
+//! - KujiraMainnet/Testnet status pending re-confirmation in v1.1.2
 //!
-//! **Phase 4 真实实现**（v2.3 优先级）：
-//! BTC 三种（Mainnet / Testnet / Regtest）、ETH 三种（Mainnet / Sepolia / Goerli）、
-//! XMR 三种（Mainnet / Stagenet / Testnet）。
-//! 其他 13+ 个变体 Phase 8+ 才动。
+//! **Phase 4 real implementation** (v2.3 priority):
+//! Three BTC (Mainnet / Testnet / Regtest), three ETH (Mainnet / Sepolia / Goerli),
+//! three XMR (Mainnet / Stagenet / Testnet).
+//! The other 13+ variants come in Phase 8+.
 
 use crate::types::chain_kind::ChainKind;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Network {
-    // ─── Bitcoin 系 ───
+    // --- Bitcoin family ---
     BitcoinMainnet = 0,
     BitcoinTestnet = 1,
     BitcoinRegtest = 2,
 
-    // ─── Ethereum 系 ───
+    // --- Ethereum family ---
     EthereumMainnet = 10,
     EthereumSepolia = 11,
-    EthereumGoerli = 12, // deprecated 但仍可见
+    EthereumGoerli = 12, // deprecated but still visible
 
-    // ─── Tron 系 ───
+    // --- Tron family ---
     TronMainnet = 20,
     TronShastaTestnet = 21,
     TronNileTestnet = 22,
 
-    // ─── Solana 系 ───
+    // --- Solana family ---
     SolanaMainnet = 30,
     SolanaDevnet = 31,
     SolanaTestnet = 32,
 
-    // ─── XRP 系 ───
+    // --- XRP family ---
     XrpMainnet = 40,
     XrpTestnet = 41,
 
-    // ─── Aptos / Sui 系 ───
+    // --- Aptos / Sui family ---
     AptosMainnet = 50,
     AptosTestnet = 51,
     SuiMainnet = 60,
     SuiTestnet = 61,
 
-    // ─── Near 系 ───
+    // --- Near family ---
     NearMainnet = 70,
     NearTestnet = 71,
 
-    // ─── Cardano 系 ───
+    // --- Cardano family ---
     CardanoMainnet = 80,
     CardanoPreprod = 81,
     CardanoPreview = 82,
 
-    // ─── Monero 系 ───
+    // --- Monero family ---
     MoneroMainnet = 90,
     MoneroStagenet = 91,
     MoneroTestnet = 92,
 
-    // ─── Arweave 系 ───
+    // --- Arweave family ---
     ArweaveMainnet = 100,
 
-    // ─── Cosmos 系（v1.1 新增） ───
+    // --- Cosmos family (added in v1.1) ---
     CosmosHubMainnet = 110,
     CosmosHubTestnet = 111,
     OsmosisMainnet = 112,
@@ -77,27 +77,27 @@ pub enum Network {
     InjectiveMainnet = 120,
     InjectiveTestnet = 121,
 
-    // ─── Polkadot/Substrate 系（v1.1 新增） ───
+    // --- Polkadot/Substrate family (added in v1.1) ---
     PolkadotMainnet = 130,
     PolkadotWestendTestnet = 131,
     KusamaMainnet = 132,
     KusamaRococoTestnet = 133,
     AcalaMainnet = 134,
     AcalaMandalaTestnet = 135,
-    // Moonbeam 已迁出（v1.1.1 删除），Astar 编号复用 136/137
+    // Moonbeam migrated away (removed in v1.1.1); Astar reuses numbers 136/137
     AstarMainnet = 136,
     AstarShibuyaTestnet = 137,
-    BittensorMainnet = 138, // TAO（独立 Substrate 链）
+    BittensorMainnet = 138, // TAO (independent Substrate chain)
     BittensorTestnet = 139,
-    SeraiMainnet = 140, // 主网未上线，预先占位
+    SeraiMainnet = 140, // mainnet not launched yet; pre-assigned placeholder
     SeraiTestnet = 141,
 }
 
 impl Network {
-    /// Network → ChainKind（v2.3 §13.4 修订版）
-    /// Network u8 → Network enum（用于 FFI dispatch）
+    /// Network → ChainKind (v2.3 §13.4 revised)
+    /// Network u8 → Network enum (for FFI dispatch)
     ///
-    /// **重要**：直接 match 不调 try_from——try_from 内部就是 from_u8，否则无限递归 stack overflow
+    /// **Important**: match directly, don't call try_from — try_from itself calls from_u8, otherwise infinite recursion / stack overflow
     pub fn from_u8(n: u8) -> Option<Self> {
         match n {
             0 => Some(Network::BitcoinMainnet),
@@ -155,7 +155,7 @@ impl Network {
         }
     }
 
-    /// Network u8 → Network enum（API 别名）
+    /// Network u8 → Network enum (API alias)
     pub fn try_from_u8(n: u8) -> Option<Self> {
         Self::try_from(n).ok()
     }
@@ -186,7 +186,7 @@ impl Network {
             }
             Network::ArweaveMainnet => ChainKind::Ar,
 
-            // Cosmos 系
+            // Cosmos family
             Network::CosmosHubMainnet
             | Network::CosmosHubTestnet
             | Network::OsmosisMainnet
@@ -200,7 +200,7 @@ impl Network {
             | Network::InjectiveMainnet
             | Network::InjectiveTestnet => ChainKind::Cosmos,
 
-            // Polkadot/Substrate 系（v1.1.1 修订：Moonbeam 删除）
+            // Polkadot/Substrate family (v1.1.1 revision: Moonbeam removed)
             Network::PolkadotMainnet
             | Network::PolkadotWestendTestnet
             | Network::KusamaMainnet
@@ -216,7 +216,7 @@ impl Network {
         }
     }
 
-    /// Cosmos 系 HRP（bech32 prefix），Phase 8+ 才真实接入
+    /// Cosmos-family HRP (bech32 prefix); real integration comes in Phase 8+
     pub fn cosmos_hrp(self) -> Option<&'static str> {
         match self {
             Network::CosmosHubMainnet | Network::CosmosHubTestnet => Some("cosmos"),
@@ -229,7 +229,7 @@ impl Network {
         }
     }
 
-    /// 是否主网（v2.3 §13.4 修订：Moonbeam 已删除）
+    /// Whether mainnet (v2.3 §13.4 revision: Moonbeam removed)
     pub fn is_mainnet(self) -> bool {
         matches!(
             self,
@@ -259,7 +259,7 @@ impl Network {
         )
     }
 
-    /// Phase 4 真实实现的网络（v2.3 优先级：BTC/ETH/XMR 各 3 种）
+    /// Networks with a Phase 4 real implementation (v2.3 priority: 3 each of BTC/ETH/XMR)
     pub fn is_phase4_real(self) -> bool {
         matches!(
             self,
@@ -280,7 +280,7 @@ impl TryFrom<u8> for Network {
     type Error = ();
     /// Network u8 → Network enum
     ///
-    /// **重要**：直接调 from_u8（from_u8 自身不递归）
+    /// **Important**: call from_u8 directly (from_u8 itself does not recurse)
     fn try_from(n: u8) -> Result<Self, Self::Error> {
         Self::from_u8(n).ok_or(())
     }
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn moonbeam_not_in_enum() {
-        // v1.1.1 编译期保证：MoonbeamMainnet/MoonriverTestnet 已删除
+        // v1.1.1 compile-time guarantee: MoonbeamMainnet/MoonriverTestnet removed
     }
 
     #[test]
@@ -324,25 +324,25 @@ mod tests {
     }
 
     // ============================================================
-    // Phase 3 v2 property-based 测试
+    // Phase 3 v2 property-based tests
     //
-    // **v2 策略**：只用代表性 5 链（Btc/Eth/Xmr/Sol/Polkadot）× 8 cases
-    // 不遍历 44 个变体（v1 卡死根因）
+    // **v2 strategy**: only 5 representative chains (Btc/Eth/Xmr/Sol/Polkadot) × 8 cases
+    // No sweep over all 44 variants (the root cause of v1 hanging)
     // ============================================================
 
     // ============================================================
-    // Phase 3 v3 独立测试 fn（不用 proptest! 块）
+    // Phase 3 v3 standalone test fns (no proptest! blocks)
     //
-    // **v3 策略**：
-    // - 每个 #[test] fn 用自己的 ProptestConfig + disable_shrink
-    // - 不用 proptest! 块 macro 避免 cargo test 内部 thread pool 调度死锁
-    // - 单模块独立 fn ≤ 3 个 + cases ≤ 5
+    // **v3 strategy**:
+    // - Each #[test] fn uses its own ProptestConfig + disable_shrink
+    // - Avoid the proptest! block macro to dodge cargo test's internal thread-pool scheduling deadlock
+    // - Per module: ≤ 3 standalone fns + cases ≤ 5
     // ============================================================
 
-    /// 5 个代表性变体 → chain_kind() 映射一致
+    /// 5 representative variants → chain_kind() mapping consistency
     #[test]
     fn network_chain_kind_consistent_for_representative_set_v3() {
-        // 手动 5 case（避免 proptest 累积）
+        // Manual 5 cases (avoids proptest accumulation)
         let cases: [(Network, ChainKind); 5] = [
             (Network::BitcoinMainnet, ChainKind::Btc),
             (Network::EthereumMainnet, ChainKind::Eth),
@@ -355,7 +355,7 @@ mod tests {
         }
     }
 
-    /// 5 个代表性变体 → is_phase4_real() 一致
+    /// 5 representative variants → is_phase4_real() consistency
     #[test]
     fn network_is_phase4_real_consistent_for_representative_set_v3() {
         let cases: [(Network, bool); 5] = [
@@ -370,7 +370,7 @@ mod tests {
         }
     }
 
-    /// 5 个代表性变体 → as u8 → from_u8 round-trip（v3 新加）
+    /// 5 representative variants → as u8 → from_u8 round-trip (added in v3)
     #[test]
     fn network_from_u8_round_trip_for_representative_set_v3() {
         let nets = [
@@ -387,7 +387,7 @@ mod tests {
         }
     }
 
-    /// 5 个代表性变体 → as u8 → try_from round-trip（v3 新加）
+    /// 5 representative variants → as u8 → try_from round-trip (added in v3)
     #[test]
     fn network_try_from_round_trip_for_representative_set_v3() {
         let nets = [

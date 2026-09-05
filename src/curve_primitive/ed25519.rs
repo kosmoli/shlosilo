@@ -1,53 +1,53 @@
-//! ed25519 曲线原语（Layer A / XMR + SOL + Cardano + SUI + Near + Aptos）
+//! ed25519 curve primitive (Layer A / XMR + SOL + Cardano + SUI + Near + Aptos)
 //!
-//! Phase 5 v4 真实实现：`ed25519-dalek` crate 2.2
+//! Phase 5 v4 real implementation: `ed25519-dalek` crate 2.2
 //!
-//! ## 设计要点
+//! ## Design Notes
 //!
-//! - 直接 wrap `ed25519_dalek::SigningKey` + `VerifyingKey`（ed25519-dalek 2 友好 API）
-//! - 不直接 wrap `curve25519_dalek` 类型（避免暴露底层 details）
-//! - XMR 业务模块可单独 import `monero-ed25519` 用于 Pedersen commitment + reduce_scalar
+//! - wrap `ed25519_dalek::SigningKey` + `VerifyingKey` directly (ed25519-dalek 2 friendly API)
+//! - do not wrap `curve25519_dalek` types directly (avoids exposing low-level details)
+//! - the XMR business module may import `monero-ed25519` on its own for Pedersen commitments + reduce_scalar
 //!
-//! ## 安全约束（v2 §2.1）
+//! ## Security Constraints (v2 §2.1)
 //!
-//! - `Ed25519Scalar` 禁用 `Copy`，实现 `Zeroize + ZeroizeOnDrop`
-//! - `Ed25519Point` 允许 `Copy + Eq`（公钥是公开材料）
-//! - 字段私有，外部不能凭空构造
+//! - `Ed25519Scalar` forbids `Copy` and implements `Zeroize + ZeroizeOnDrop`
+//! - `Ed25519Point` allows `Copy + Eq` (public keys are public material)
+//! - fields are private; outsiders cannot construct them from thin air
 
 use ed25519_dalek::{SigningKey, VerifyingKey, PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// ed25519 标量长度（32 bytes）
+/// ed25519 scalar length (32 bytes)
 pub(crate) const SCALAR_LEN: usize = SECRET_KEY_LENGTH;
 
-/// ed25519 压缩点长度（32 bytes）
+/// ed25519 compressed point length (32 bytes)
 pub(crate) const COMPRESSED_POINT_LEN: usize = PUBLIC_KEY_LENGTH;
 
-/// ed25519 标量（私钥分量的内部表示）
+/// ed25519 scalar (internal representation of a private key component)
 ///
-/// 内部存储 `ed25519_dalek::SigningKey`。
-/// **禁用 Copy**：v2 §2.1 v2.x 安全约束。
+/// Internally stores an `ed25519_dalek::SigningKey`.
+/// **Copy forbidden**: v2 §2.1 v2.x security constraint.
 pub struct Ed25519Scalar {
     inner: SigningKey,
 }
 
-// 手动 impl Zeroize + ZeroizeOnDrop（SigningKey 本身已经 Zeroize，但 inner 仍需 Drop）
+// manual impl Zeroize + ZeroizeOnDrop (SigningKey itself already zeroizes, but inner still needs Drop)
 impl Drop for Ed25519Scalar {
     fn drop(&mut self) {
-        // SigningKey 自动 zeroize 在 drop 时（它 impl Zeroize）
-        // 这里只需要 ZeroizeOnDrop 标记（用 derive 的 helper macro）
+        // SigningKey zeroizes automatically on drop (it impls Zeroize)
+        // only the ZeroizeOnDrop marker is needed here (via the derive helper macro)
     }
 }
 
-// 提供手动 Zeroize impl（SigningKey 已经 Zeroize）
+// provides a manual Zeroize impl (SigningKey already zeroizes)
 impl Zeroize for Ed25519Scalar {
     fn zeroize(&mut self) {
-        // 调用 SigningKey 的 Zeroize（如果 it exists）；否则 drop + 重写
+        // call SigningKey's Zeroize (if it exists); otherwise drop + rewrite
         let mut sk_bytes = self.inner.to_bytes();
         sk_bytes.zeroize();
-        // 重新构造 SigningKey 以覆盖 inner 内存
+        // rebuild the SigningKey to overwrite inner's memory
         if let Ok(new_sk) = SigningKey::from_keypair_bytes(&{
             let mut kp = [0u8; 64];
             kp[..32].copy_from_slice(&sk_bytes);
@@ -60,9 +60,9 @@ impl Zeroize for Ed25519Scalar {
 
 impl ZeroizeOnDrop for Ed25519Scalar {}
 
-/// ed25519 点（公钥的内部表示）
+/// ed25519 point (internal representation of a public key)
 ///
-/// **公开材料**——允许 `Copy + Eq`。
+/// **Public material** — `Copy + Eq` allowed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Ed25519Point {
     inner: VerifyingKey,
@@ -72,7 +72,7 @@ pub struct Ed25519Point {
 // Free functions
 // ============================================================================
 
-/// ed25519 曲线基点
+/// ed25519 curve basepoint
 pub fn generator() -> Ed25519Point {
     let g_bytes: [u8; PUBLIC_KEY_LENGTH] = {
         let mut b = [0u8; PUBLIC_KEY_LENGTH];
@@ -83,50 +83,50 @@ pub fn generator() -> Ed25519Point {
     Ed25519Point { inner: g }
 }
 
-/// 基点乘法：result = s * G（用 `verifying_key()` 拿公开 pk）
+/// Basepoint multiplication: result = s * G (use `verifying_key()` to get the public pk)
 pub fn base_mul(s: &Ed25519Scalar) -> Ed25519Point {
     let vk = s.inner.verifying_key();
     Ed25519Point { inner: vk }
 }
 
-/// 零标量（用于累加器初始化）
+/// Zero scalar (for accumulator initialization)
 pub fn scalar_zero() -> Ed25519Scalar {
     let zero_bytes = [0u8; SECRET_KEY_LENGTH];
-    // 用 from_keypair_bytes 接受 64 bytes (sk || pk)
+    // uses from_keypair_bytes accepting 64 bytes (sk || pk)
     let mut kp_bytes = [0u8; 64];
     kp_bytes[..32].copy_from_slice(&zero_bytes);
     // pk = base_mul(zero_scalar) = identity
-    // 使用 from_keypair_bytes + 错误 fallback 到 unsafe from_bytes
+    // uses from_keypair_bytes + an error fallback to unsafe from_bytes
     let sk = SigningKey::from_bytes(&zero_bytes);
     Ed25519Scalar { inner: sk }
 }
 
-/// 从 32 字节构造 ed25519 标量
+/// Build an ed25519 scalar from 32 bytes
 ///
 /// # Errors
-/// - `EncodingInvalidFormat`：bytes 长度不是 32
+/// - `EncodingInvalidFormat`: the byte length is not 32
 pub fn scalar_from_bytes(bytes: &[u8]) -> Result<Ed25519Scalar> {
     if bytes.len() != SCALAR_LEN {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let mut arr = [0u8; SCALAR_LEN];
     arr.copy_from_slice(bytes);
-    // SigningKey::from_bytes 是 infallible（accepts any 32 bytes）
+    // SigningKey::from_bytes is infallible (accepts any 32 bytes)
     let sk = SigningKey::from_bytes(&arr);
     Ok(Ed25519Scalar { inner: sk })
 }
 
-/// ed25519 标量 → 32 字节
+/// ed25519 scalar → 32 bytes
 pub fn scalar_to_bytes(s: &Ed25519Scalar) -> [u8; SCALAR_LEN] {
     s.inner.to_bytes()
 }
 
-/// ed25519 点 → 32 字节压缩
+/// ed25519 point → 32-byte compression
 pub fn point_to_compressed(p: &Ed25519Point) -> [u8; COMPRESSED_POINT_LEN] {
     p.inner.to_bytes()
 }
 
-/// 从 32 字节压缩构造 ed25519 点
+/// Build an ed25519 point from 32 compressed bytes
 pub fn point_from_compressed(bytes: &[u8]) -> Result<Ed25519Point> {
     if bytes.len() != COMPRESSED_POINT_LEN {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -142,7 +142,7 @@ pub fn point_from_compressed(bytes: &[u8]) -> Result<Ed25519Point> {
 mod tests {
     use super::*;
 
-    // 类型签名形状验证
+    // type-signature shape verification
     const _: fn() -> Ed25519Point = generator;
     const _: fn(&Ed25519Scalar) -> Ed25519Point = base_mul;
     const _: fn() -> Ed25519Scalar = scalar_zero;
@@ -184,7 +184,7 @@ mod tests {
         assert_eq!(point_to_compressed(&p), pk_bytes);
     }
 
-    /// 压缩公钥 round-trip
+    /// Compressed pubkey round-trip
     #[test]
     fn point_compressed_roundtrip() {
         let mut sk_bytes = [0u8; 32];
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(point_to_compressed(&pk), point_to_compressed(&pk2));
     }
 
-    /// ed25519 basepoint (G) 已知 compressed bytes
+    /// Known compressed bytes of the ed25519 basepoint (G)
     #[test]
     fn ed25519_basepoint_test_vector() {
         let g = generator();
@@ -208,7 +208,7 @@ mod tests {
         }
     }
 
-    /// scalar_from_bytes 拒绝错误长度
+    /// scalar_from_bytes rejects a wrong length
     #[test]
     fn scalar_from_bytes_rejects_wrong_length() {
         let bytes = [0u8; 16];
@@ -216,10 +216,10 @@ mod tests {
         assert!(r.is_err());
     }
 
-    /// scalar_from_bytes 任意 bytes 接受（ed25519-dalek 2 from_bytes 是 infallible）
+    /// scalar_from_bytes accepts any bytes (ed25519-dalek 2's from_bytes is infallible)
     #[test]
     fn scalar_from_bytes_accepts_any() {
-        // 即使所有 ff，ed25519-dalek 也接受
+        // ed25519-dalek accepts even all-ff values
         let bytes = [0xFFu8; 32];
         let r = scalar_from_bytes(&bytes);
         assert!(r.is_ok());

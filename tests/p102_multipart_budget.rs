@@ -1,17 +1,17 @@
-//! P1-02 整改落地测试（2026-09-01 审计 #4）——multipart decoder 资源预算
+//! P1-02 remediation landing tests (2026-09-01 Audit #4) — multipart decoder resource budgets
 //!
-//! 审计指控：
-//! - wire message_length 直接 as usize，decoder 侧无 MULTIPART_PAYLOAD_MAX_LEN 检查
-//! - u64 → usize/u32 静默窄化（32-bit Thumb 危险）
-//! - fragment/count/message 缺一致性验证
+//! Audit findings:
+//! - wire message_length cast directly as usize; the decoder side had no MULTIPART_PAYLOAD_MAX_LEN check
+//! - silent u64 → usize/u32 narrowing (dangerous on 32-bit Thumb)
+//! - missing fragment/count/message consistency validation
 //!
-//! 覆盖：decoder 侧预算常量锁定 + 合法路径冒烟 + FFI 出口预算。
-//! part_from_cbor 的逐项校验（wire_len fallible / message_length 预算 /
-//! fragment-count-message 一致性）在 ur_multipart::tests 单元层覆盖。
+//! Covers: decoder-side budget constant locking + a legal-path smoke test + the FFI exit budget.
+//! part_from_cbor's item-by-item validation (wire_len fallible / message_length budget /
+//! fragment-count-message consistency) is covered at the ur_multipart::tests unit level.
 
 use shlosilo::ur::ur_multipart::{UrMultipartDecoder, MULTIPART_PAYLOAD_MAX_LEN};
 
-/// 合法多分片 roundtrip 冒烟（预算收紧不破坏合法路径）
+/// Legal multipart roundtrip smoke (budget tightening must not break legal paths)
 #[test]
 fn p102_valid_multipart_roundtrip() {
     let payload: std::vec::Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
@@ -28,14 +28,14 @@ fn p102_valid_multipart_roundtrip() {
     assert_eq!(out, payload);
 }
 
-/// budget 常量声明不变（锁定审计对齐：16 KiB payload / 40 KiB frame）
+/// Budget constant declarations unchanged (locked audit alignment: 16 KiB payload / 40 KiB frame)
 #[test]
 fn p102_budget_constants() {
     assert_eq!(MULTIPART_PAYLOAD_MAX_LEN, 16384);
     assert_eq!(shlosilo::ur::ur_multipart::MULTIPART_FRAME_MAX_LEN, 40960);
 }
 
-/// encoder 拒绝超预算 payload（既有行为的回归锁定）
+/// The encoder rejects over-budget payload (regression lock on existing behavior)
 #[test]
 fn p102_encoder_over_budget_rejected() {
     let big = std::vec![0u8; MULTIPART_PAYLOAD_MAX_LEN + 1];
@@ -43,7 +43,7 @@ fn p102_encoder_over_budget_rejected() {
     assert!(r.is_err(), "encoder payload > 16 KiB must be rejected");
 }
 
-/// FFI typed sign payload 预算（decoder 侧同一预算的 FFI 出口）
+/// FFI typed sign payload budget (the FFI exit of the same decoder-side budget)
 #[test]
 fn p102_typed_sign_over_budget_rejected() {
     use shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi;
@@ -70,9 +70,9 @@ fn p102_typed_sign_over_budget_rejected() {
     assert_ne!(rc, 0, "typed sign payload > budget must be rejected");
 }
 
-// ── 审计 #6 P1-02:重复帧不消耗预算 + work 超限 reset ──
+//-- Audit #6 P1-02: duplicate frames consume no budget + reset when work is exceeded --
 
-/// 重复帧不消耗 retained budget——大量重复扫码不得触发 reset(可用性 DoS 修复)
+/// Duplicate frames consume no retained budget — mass repeated scanning must not trigger a reset (usability DoS fix)
 #[test]
 fn p102_duplicate_frames_do_not_consume_budget() {
     let payload: std::vec::Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
@@ -80,7 +80,7 @@ fn p102_duplicate_frames_do_not_consume_budget() {
         shlosilo::ur::ur_multipart::UrMultipartEncoder::new("bytes", &payload, 200).unwrap();
     let mut dec = UrMultipartDecoder::new();
     let n = enc.fragment_count();
-    // 首轮:全部帧
+    // First pass: all frames
     let mut frames = Vec::new();
     for _ in 0..n {
         frames.push(enc.next_frame().unwrap());
@@ -88,7 +88,7 @@ fn p102_duplicate_frames_do_not_consume_budget() {
     for f in &frames {
         assert!(dec.receive_frame(f.as_str()).unwrap());
     }
-    // 重复扫同帧 10000 次:每次 Ok(false),不得 reset 会话(会话仍 complete)
+    // Re-scan the same frame 10000 times: each Ok(false); must not reset the session (the session stays complete)
     for _ in 0..10_000 {
         let accepted = dec.receive_frame(frames[0].as_str()).unwrap();
         assert!(!accepted, "duplicate frame must not be accepted");
@@ -96,7 +96,7 @@ fn p102_duplicate_frames_do_not_consume_budget() {
     }
 }
 
-/// retained 预算接近上限时不误伤合法会话(16KB payload = 预算的一半)
+/// Legal sessions are not collateral damage when the retained budget nears its cap (16KB payload = half the budget)
 #[test]
 fn p102_max_payload_session_within_budget() {
     let payload: std::vec::Vec<u8> = vec![0u8; MULTIPART_PAYLOAD_MAX_LEN];

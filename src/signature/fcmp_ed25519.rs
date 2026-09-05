@@ -1,10 +1,10 @@
-//! Monero FCMP++ 证明（XMR 升级，Phase 7 占位）
+//! Monero FCMP++ proofs (an XMR upgrade; Phase 7 placeholder)
 
 use crate::curve_primitive::ed25519::{Ed25519Point, Ed25519Scalar};
 use crate::error::Result;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// FCMP++ 证明长度（待 Phase 7 实际确定）
+/// FCMP++ proof length (to be determined in Phase 7)
 pub const FCMP_PROOF_MAX_LEN: usize = 1024;
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -24,17 +24,17 @@ impl core::fmt::Debug for FcmpProof {
     }
 }
 
-/// FCMP++ 证明生成（Phase 7 占位）
+/// FCMP++ proof generation (Phase 7 placeholder)
 pub fn sign(_spend_skey: &Ed25519Scalar, _msg: &[u8]) -> Result<FcmpProof> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
-/// FCMP++ 验证
+/// FCMP++ verification
 pub fn verify(_ring_output: &Ed25519Point, _msg: &[u8], _proof: &FcmpProof) -> bool {
-    // P2-01: unimplemented!() panic → 稳定 false（bool 签名无 Err 通道）
+    // P2-01: unimplemented!() panic → stable false (bool signatures have no Err channel)
     false
 }
 
@@ -52,8 +52,8 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码/返回值，不允许 panic 宏回归
-        // （检查代码行，排除注释行）
+        // P2-01: the stub was changed to stable error codes/return values; no panic-macro regression allowed
+        // (checks code lines, excluding comment lines)
         for line in "fcmp_ed25519.rs".lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

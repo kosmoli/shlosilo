@@ -1,25 +1,25 @@
-//! BTC PSBT (Partially Signed Bitcoin Transaction, BIP-174) 解析、签名、序列化
+//! BTC PSBT (Partially Signed Bitcoin Transaction, BIP-174) parsing, signing, serialization
 //!
-//! **格式概要**:
+//! **Format overview**:
 //! ```text
 //! magic: 0x70 0x73 0x62 0x74 0xff  ("psbt" + 0xff)
 //! <global-map>     0x00   separator
-//! <input-map>*     0x00   separator (每个 input 一对)
-//! <output-map>*    0x00   separator (每个 output 一对)
+//! <input-map>*     0x00   separator (one pair per input)
+//! <output-map>*    0x00   separator (one pair per output)
 //! ```
 //!
-//! **key-value 编码**: `<keylen><key><valuelen><value>` (compact size varint)
-//! - key = `<type-byte><data>` (type-byte 0x00 = separator, 永远 value-length = 0)
+//! **key-value encoding**: `<keylen><key><valuelen><value>` (compact size varint)
+//! - key = `<type-byte><data>` (type-byte 0x00 = separator, value-length is always 0)
 //! - value = `<data>`
 //!
-//! **BIP-174 关键字段** (本实现覆盖 P2WPKH 1-input 1-output 最简场景):
+//! **Key BIP-174 fields** (this implementation covers the minimal P2WPKH 1-input 1-output case):
 //!
 //! | Type | Field | Scope |
 //! |---|---|---|
 //! | 0x00 | PSBT_GLOBAL_UNSIGNED_TX | Global |
 //! | 0x01 | PSBT_IN_NON_WITNESS_UTXO | Input (legacy) |
 //! | 0x02 | PSBT_IN_WITNESS_UTXO | Input (segwit) |
-//! | 0x03 | PSBT_IN_PARTIAL_SIG | Input (signer 贡献的签名) |
+//! | 0x03 | PSBT_IN_PARTIAL_SIG | Input (signature contributed by the signer) |
 //! | 0x04 | PSBT_IN_SIGHASH_TYPE | Input (sighash flag) |
 //! | 0x05 | PSBT_IN_REDEEM_SCRIPT | Input (P2SH redeemScript) |
 //! | 0x06 | PSBT_IN_WITNESS_SCRIPT | Input (P2WSH witnessScript) |
@@ -28,14 +28,14 @@
 //! | 0x09 | PSBT_IN_SCRIPTWITNESS | Input (final witness) |
 //! | 0x00 | PSBT_GLOBAL_UNSIGNED_TX | Global |
 //!
-//! **算法**:
-//! 1. 解析 magic + global-map + 各 input/output map
-//! 2. 找到要签名的 input (按 witness_utxo 或 non_witness_utxo)
-//! 3. 调用 v9.3 sign 函数 (P2WPKH / P2PKH / P2SH-P2WPKH)
-//! 4. 将签名注入 input map: `0x03 || {pubkey} → {DER-sig + sighash-byte}`
-//! 5. 序列化最终 PSBT
+//! **Algorithm**:
+//! 1. Parse magic + global-map + each input/output map
+//! 2. Locate the input to sign (by witness_utxo or non_witness_utxo)
+//! 3. Call the v9.3 sign function (P2WPKH / P2PKH / P2SH-P2WPKH)
+//! 4. Inject the signature into the input map: `0x03 || {pubkey} → {DER-sig + sighash-byte}`
+//! 5. Serialize the final PSBT
 //!
-//! **参考**: <https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki>
+//! **Reference**: <https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki>
 
 extern crate alloc;
 use alloc::vec;
@@ -56,11 +56,11 @@ pub mod global_type {
     pub const UNSIGNED_TX: u8 = 0x00;
 }
 
-#[allow(dead_code)] // BIP-174 常量集 = 完整契约文档,非全部使用
+#[allow(dead_code)] // BIP-174 constant set = full contract documentation, not all used
 pub(crate) mod input_type {
-    //! BIP-174 标准输入类型编号。
-    //! P6.3 审计后修正（2026-08-26）：原常量整体偏移 +1（NON_WITNESS_UTXO=0x01 等），
-    //! 与 Sparrow/bitcoind 等外部实现互操作时全部错位——真实 fixture test.psbt 暴露。
+    //! BIP-174 standard input type numbers.
+    //! P6.3 audit fix (2026-08-26): the original constants were all shifted by +1 (NON_WITNESS_UTXO=0x01 etc.),
+    //! so they were totally misaligned when interoperating with external implementations like Sparrow/bitcoind — exposed by the real fixture test.psbt.
 
     pub(crate) const NON_WITNESS_UTXO: u8 = 0x00;
     pub(crate) const WITNESS_UTXO: u8 = 0x01;
@@ -110,10 +110,10 @@ pub struct KeyValue {
     pub value: Vec<u8>,
 }
 
-/// PSBT 解析后的中间表示
+/// Intermediate representation after PSBT parsing
 #[derive(Clone, Debug)]
 pub struct Psbt {
-    /// unsigned tx (与 input/output map 的 index 一致)
+    /// unsigned tx (index matches the input/output maps)
     pub unsigned_tx: Transaction,
     /// input maps (length == tx.inputs.len())
     pub inputs: Vec<Vec<KeyValue>>,
@@ -121,7 +121,7 @@ pub struct Psbt {
     pub outputs: Vec<Vec<KeyValue>>,
 }
 
-/// Encoded map (序列化后)
+/// Encoded map (after serialization)
 #[derive(Clone, Debug)]
 struct EncodedMap {
     entries: Vec<KeyValue>,
@@ -135,7 +135,7 @@ impl EncodedMap {
     }
 
     fn add(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        // 移除已存在的同 key (PSBT 规范: 同 key 必须只有一个 value)
+        // Remove any existing entry with the same key (PSBT spec: a key must have exactly one value)
         self.entries.retain(|kv| kv.key != key);
         self.entries.push(KeyValue { key, value });
     }
@@ -147,7 +147,7 @@ impl EncodedMap {
             .map(|kv| &kv.value)
     }
 
-    /// 序列化为字节 (keylen || key || valuelen || value)*
+    /// Serialize to bytes (keylen || key || valuelen || value)*
     fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for kv in &self.entries {
@@ -160,7 +160,7 @@ impl EncodedMap {
     }
 }
 
-/// Compact size varint 编码 (Bitcoin 协议标准)
+/// Compact size varint encoding (Bitcoin protocol standard)
 fn encode_compact_size(out: &mut Vec<u8>, n: u64) {
     if n < 0xfd {
         out.push(n as u8);
@@ -176,37 +176,37 @@ fn encode_compact_size(out: &mut Vec<u8>, n: u64) {
     }
 }
 
-/// P0-01（2026-09-01 审计 #4）：PSBT parser 资源预算。
+/// P0-01 (2026-09-01 audit #4): PSBT parser resource budget.
 ///
-/// wire 层的 CompactSize / 元素计数全部受此上限约束——恶意 QR 喂
-/// `0xff ‖ u64::MAX` 不得触发加法溢出 panic（真机 panic=abort = DoS）
-/// 或 `with_capacity(usize::MAX)` capacity-overflow abort。
-/// 上限对齐 TxTemplate PAYLOAD_MAX（16 KiB，真实 PSBT 实测 12 KB）×4 裕量。
+/// The wire layer\'s CompactSize / element counts are all bounded by this limit — a malicious QR feeding
+/// `0xff ‖ u64::MAX` must not trigger an addition-overflow panic (panic=abort on device = DoS)
+/// or a `with_capacity(usize::MAX)` capacity-overflow abort.
+/// The limit aligns with TxTemplate PAYLOAD_MAX (16 KiB; measured real PSBT is 12 KB) × 4 margin.
 pub(crate) const PSBT_WIRE_MAX_LEN: u64 = 64 * 1024;
 
-/// Compact size varint 解码（P0-01 加固版）
+/// Compact size varint decoding (P0-01 hardened version)
 ///
-/// - 长度/计数域 > `PSBT_WIRE_MAX_LEN` → 错误（防溢出 + 防 OOM 预分配）
-/// - 非规范编码拒绝（BIP-174/Bitcoin 共识惯例：0xfd/0xfe/0xff 前缀后跟的值
-///   必须达到该前缀的最小表示域，防止同值多编码造成解析歧义）
+/// - Length/count fields > `PSBT_WIRE_MAX_LEN` → error (overflow prevention + OOM preallocation prevention)
+/// - Non-canonical encodings rejected (BIP-174/Bitcoin consensus convention: the value following a 0xfd/0xfe/0xff prefix
+///   must be the minimal representation for that prefix, preventing parse ambiguity from multiple encodings of the same value)
 ///
-/// 审计 #6 复审 P2-01:物理可行性判断提成纯 helper——测试可直接断言
-/// "capacity 构造之前返回 Err",不依赖时序观察。
-/// 每元素最小 wire 尺寸 + 4B locktime 裕量(inputs/outputs 在同一 unsigned tx 尾部)。
+/// Audit #6 re-review P2-01: the physical-feasibility check is extracted into a pure helper — tests can directly assert
+/// "Err is returned before capacity is constructed", without relying on timing observation.
+/// Minimum wire size per element + 4B locktime margin (inputs/outputs live at the tail of the same unsigned tx).
 ///
-/// 审计 #7 P2-01:`pub(crate)` 收窄——`min_elem_bytes == 0` 会除零 panic,
-/// 不应作为公开 Rust API 暴露非 total 边界(parser 调用点固定传 41/9)。
-/// 零值语义:任何 count>0 视为物理不可行(saturating_sub 后除以 0 在
-/// usize 语义下 panic,此处显式防御)。
+/// Audit #7 P2-01: narrowed to `pub(crate)` — `min_elem_bytes == 0` would panic with division by zero,
+/// and a non-total boundary should not be exposed as a public Rust API (parser call sites always pass 41/9).
+/// Zero-value semantics: any count > 0 is considered physically infeasible (saturating_sub followed by division by 0
+/// panics under usize semantics; defended explicitly here).
 pub(crate) fn count_physically_feasible(
     count: usize,
     remaining: usize,
     min_elem_bytes: usize,
 ) -> bool {
     if min_elem_bytes == 0 {
-        return count == 0; // 零元素下界 = 语义未定义,非零 count 一律不可行
+        return count == 0; // zero-element lower bound = undefined semantics, any non-zero count is infeasible
     }
-    let wire_available = remaining.saturating_sub(4); // locktime 4B 预留
+    let wire_available = remaining.saturating_sub(4); // 4B reserved for locktime
     count <= wire_available / min_elem_bytes
 }
 
@@ -227,7 +227,7 @@ fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
                     .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
             );
             *pos += 8;
-            // 非规范：8 字节编码最小值 0x1_0000_0000
+            // Non-canonical: 8-byte encoding of the minimum value 0x1_0000_0000
             if n < 0x1_0000_0000 || n > PSBT_WIRE_MAX_LEN {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
             }
@@ -243,7 +243,7 @@ fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
                     .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
             ) as u64;
             *pos += 4;
-            // 非规范：4 字节编码最小值 0x1_0000
+            // Non-canonical: 4-byte encoding of the minimum value 0x1_0000
             if n < 0x1_0000 || n > PSBT_WIRE_MAX_LEN {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
             }
@@ -259,7 +259,7 @@ fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
                     .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
             ) as u64;
             *pos += 2;
-            // 非规范：2 字节编码最小值 0xfd
+            // Non-canonical: 2-byte encoding of the minimum value 0xfd
             if !(0xfd..=PSBT_WIRE_MAX_LEN).contains(&n) {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
             }
@@ -270,9 +270,9 @@ fn decode_compact_size(bytes: &[u8], pos: &mut usize) -> Result<u64> {
     }
 }
 
-/// P0-01：从 `bytes[*pos..]` 安全取 `len` 字节——checked_add + 单次越界检查，
-/// 替代所有裸 `pos + len as usize > bytes.len()`（恶意 len = usize::MAX 溢出 panic）。
-/// 成功时推进 `pos`。
+/// P0-01: safely take `len` bytes from `bytes[*pos..]` — checked_add + a single bounds check,
+/// replacing all bare `pos + len as usize > bytes.len()` checks (a malicious len = usize::MAX overflows and panics).
+/// Advances `pos` on success.
 fn take_bytes<'a>(bytes: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8]> {
     let end = pos
         .checked_add(len)
@@ -285,7 +285,7 @@ fn take_bytes<'a>(bytes: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u
     Ok(s)
 }
 
-/// 序列化 unsigned tx (与 P2WPKH.legacy 一致, 不含 marker/flag)
+/// Serialize unsigned tx (same as P2WPKH.legacy, without marker/flag)
 fn serialize_unsigned_tx(tx: &Transaction) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&tx.version.to_le_bytes());
@@ -307,10 +307,10 @@ fn serialize_unsigned_tx(tx: &Transaction) -> Vec<u8> {
     out
 }
 
-/// 反序列化 unsigned tx (按 PSBT 格式, 不含 marker/flag/witness)
+/// Deserialize unsigned tx (per PSBT format, without marker/flag/witness)
 ///
-/// P0-01 加固：全部长度/计数域经 `decode_compact_size` 预算校验，
-/// 字节域经 `take_bytes` checked_add 取用；`with_capacity` 前计数钳制。
+/// P0-01 hardening: all length/count fields are validated against the `decode_compact_size` budget,
+/// byte fields are taken via `take_bytes` checked_add; counts are clamped before `with_capacity`.
 fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     let mut pos = 0;
 
@@ -325,13 +325,13 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     );
     pos += 4;
 
-    // inputs count（P0-01：计数域受 PSBT_WIRE_MAX_LEN 预算约束）
+    // inputs count (P0-01: count fields bounded by the PSBT_WIRE_MAX_LEN budget)
     let n_inputs = decode_compact_size(bytes, &mut pos)?;
     if n_inputs > PSBT_WIRE_MAX_LEN {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    // 审计 #5 P0-01 + #6 复审 P2-01:分配前物理可行性(纯 helper,可单测)
-    // 每个 input wire 至少 41B(txid 32 + vout 4 + script_sig_len ≥1 + seq 4)
+    // Audit #5 P0-01 + #6 re-review P2-01: physical feasibility before allocation (pure helper, unit-testable)
+    // Each input wire is at least 41B (txid 32 + vout 4 + script_sig_len >= 1 + seq 4)
     if !count_physically_feasible(n_inputs as usize, bytes.len() - pos, 41) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -375,8 +375,8 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     if n_outputs > PSBT_WIRE_MAX_LEN {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    // 审计 #5 P0-01 + #6 复审 P2-02:同 inputs,9B/个(value 8 + spk_len ≥1),
-    // locktime 4B 裕量由 helper 统一预留(复审发现 outputs 漏留)
+    // Audit #5 P0-01 + #6 re-review P2-02: same inputs, 9B each (value 8 + spk_len >= 1),
+    // the 4B locktime margin is reserved uniformly by the helper (re-review found outputs missing it)
     if !count_physically_feasible(n_outputs as usize, bytes.len() - pos, 9) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -408,8 +408,8 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
     );
 
-    // 审计 #5 P0-02: exact-consumption——unsigned tx 必须恰好消费完,
-    // 内嵌尾随数据 = 隐藏语义(sighash preimage 与 wire 可能不一致)
+    // Audit #5 P0-02: exact-consumption — the unsigned tx must be consumed exactly,
+    // embedded trailing data = hidden semantics (sighash preimage may diverge from the wire)
     if pos != bytes.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -422,12 +422,12 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
     })
 }
 
-/// 解析 encoded map (直到 separator 0x00)
+/// Parse encoded map (until separator 0x00)
 ///
-/// P0-01 加固：key/value 长度经 `take_bytes` checked_add 取用，
-/// map 条目数受 bytes.len() 隐式约束（每条至少 2B）。
-/// 审计 #5 P0-02：**重复 key 拒绝**——BIP-174 同 key 单值，重复 = parser
-/// differential 向量（first-wins/last-wins 不一致）。
+/// P0-01 hardening: key/value lengths are taken via `take_bytes` checked_add,
+/// map entry count is implicitly bounded by bytes.len() (at least 2B per entry).
+/// Audit #5 P0-02: **duplicate key rejection** — BIP-174 is one value per key; duplicates are a parser
+/// differential vector (first-wins/last-wins inconsistency).
 fn decode_map(bytes: &[u8], pos: &mut usize) -> Result<EncodedMap> {
     let mut map = EncodedMap::new();
     loop {
@@ -446,7 +446,7 @@ fn decode_map(bytes: &[u8], pos: &mut usize) -> Result<EncodedMap> {
         let value_len = decode_compact_size(bytes, pos)? as usize;
         let value = take_bytes(bytes, pos, value_len)?.to_vec();
 
-        // 审计 #5：重复 key 稳定拒绝（BIP-174: "The key must be unique in a map"）
+        // Audit #5: stably reject duplicate keys (BIP-174: "The key must be unique in a map")
         if map.entries.iter().any(|kv| kv.key == key) {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
@@ -454,7 +454,7 @@ fn decode_map(bytes: &[u8], pos: &mut usize) -> Result<EncodedMap> {
     }
 }
 
-/// 编码 global map: 包含 unsigned tx
+/// Encode the global map: contains the unsigned tx
 fn encode_global_map(tx: &Transaction) -> EncodedMap {
     let mut map = EncodedMap::new();
     let key = vec![global_type::UNSIGNED_TX];
@@ -496,8 +496,8 @@ pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt> {
         outputs.push(decode_map(bytes, &mut pos)?.entries);
     }
 
-    // 审计 #5 P0-02: exact-consumption——PSBT 整体必须恰好消费完,
-    // 尾随数据 = 非法输入(可能携带未解析的隐藏语义)
+    // Audit #5 P0-02: exact-consumption — the whole PSBT must be consumed exactly,
+    // trailing data = invalid input (may carry unparsed hidden semantics)
     if pos != bytes.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -540,23 +540,23 @@ pub fn serialize_psbt(psbt: &Psbt) -> Vec<u8> {
     out
 }
 
-/// PSBT 签名输入 (per-input 信息)
+/// PSBT signing input (per-input info)
 ///
-/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+/// P1-03: the private key uses `SecretBytes<32>` — no Clone or Debug, ZeroizeOnDrop, constant-time comparison.
 pub struct PsbtSignInput {
     /// input index
     pub input_index: usize,
-    /// 这个 input 的私钥 (32 bytes)
+    /// The private key for this input (32 bytes)
     pub private_key: SecretBytes<32>,
     /// pubkey hash (20 bytes) — P2WPKH witness program
     pub pubkey_hash: [u8; 20],
-    /// 这个 input 的 value (satoshis) — 用于 BIP-143 sighash
+    /// The value of this input (satoshis) — used for the BIP-143 sighash
     pub amount: u64,
 }
 
-/// 签名 PSBT P2WPKH input
+/// Sign a PSBT P2WPKH input
 ///
-/// 在 input map 注入:
+/// Inject into the input map:
 /// - 0x03 PARTIAL_SIG: key = `<type-byte 0x03><33-byte compressed pubkey>`, value = `<DER-sig + 0x01 sighash-byte>`
 pub fn sign_psbt_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
@@ -564,10 +564,10 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtSignInput) -> Result<(
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 1. 复制 unsigned tx 用于 sighash 计算 (不能改 psbt.unsigned_tx 本身)
+    // 1. Clone the unsigned tx for sighash computation (must not modify psbt.unsigned_tx itself)
     let mut tx = psbt.unsigned_tx.clone();
 
-    // 2. 调用 v9.3 sign_p2wpkh 写入 witness
+    // 2. Call the v9.3 sign_p2wpkh to write the witness
     let p2wpkh_input = crate::chain::btc::p2wpkh::P2WPKHSignInput {
         input_index: sign_input.input_index,
         private_key: &sign_input.private_key,
@@ -576,7 +576,7 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtSignInput) -> Result<(
     };
     let _signed = sign_p2wpkh(&mut tx, &p2wpkh_input)?;
 
-    // 3. 提取 witness 中的 sig (第 0 项) → 注入 PARTIAL_SIG
+    // 3. Extract the sig from the witness (item 0) → inject PARTIAL_SIG
     let witness = &tx.inputs[input_idx].witness;
     let sig_with_sighash = &witness[0];
     let compressed_pk = &witness[1];
@@ -595,18 +595,18 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtSignInput) -> Result<(
     Ok(())
 }
 
-/// PSBT 签名输入 (P2PKH 专用, 不需要 amount)
+/// PSBT signing input (P2PKH-specific, no amount needed)
 ///
-/// P1-03：私钥走 `SecretBytes<32>`。
+/// P1-03: the private key uses `SecretBytes<32>`.
 pub struct PsbtP2PKHSignInput {
     pub input_index: usize,
     pub private_key: SecretBytes<32>,
     pub pubkey_hash: [u8; 20],
 }
 
-/// PSBT 签名输入 (P2SH-P2WPKH 专用, 需要 amount)
+/// PSBT signing input (P2SH-P2WPKH-specific, needs amount)
 ///
-/// P1-03：私钥走 `SecretBytes<32>`。
+/// P1-03: the private key uses `SecretBytes<32>`.
 pub struct PsbtP2SHP2WPKHSignInput {
     pub input_index: usize,
     pub private_key: SecretBytes<32>,
@@ -614,20 +614,20 @@ pub struct PsbtP2SHP2WPKHSignInput {
     pub amount: u64,
 }
 
-/// 签名 PSBT P2PKH input
+/// Sign a PSBT P2PKH input
 ///
-/// 与 P2WPKH 不同: 注入 FINAL_SCRIPT_SIG (type 0x08) 而不是 PARTIAL_SIG.
-/// Finalizer 提取 FINAL_SCRIPT_SIG 到 tx.inputs[].scriptSig (final tx).
+/// Unlike P2WPKH: injects FINAL_SCRIPT_SIG (type 0x08) instead of PARTIAL_SIG.
+/// The Finalizer extracts FINAL_SCRIPT_SIG into tx.inputs[].scriptSig (final tx).
 pub fn sign_psbt_p2pkh(psbt: &mut Psbt, sign_input: &PsbtP2PKHSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 1. 复制 unsigned tx 用于 sighash + scriptSig 注入
+    // 1. Clone the unsigned tx for sighash computation + scriptSig injection
     let mut tx = psbt.unsigned_tx.clone();
 
-    // 2. 调用 v9.3 sign_p2pkh
+    // 2. Call the v9.3 sign_p2pkh
     let p2pkh_input = crate::chain::btc::p2pkh::P2PKHSignInput {
         input_index: sign_input.input_index,
         private_key: &sign_input.private_key,
@@ -635,7 +635,7 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt, sign_input: &PsbtP2PKHSignInput) -> Resu
     };
     let _signed = sign_p2pkh(&mut tx, &p2pkh_input)?;
 
-    // 3. 提取 scriptSig → 注入 FINAL_SCRIPT_SIG (0x08)
+    // 3. Extract scriptSig → inject FINAL_SCRIPT_SIG (0x08)
     let script_sig = tx.inputs[input_idx].script_sig.clone();
 
     let key = vec![input_type::FINAL_SCRIPT_SIG];
@@ -647,24 +647,24 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt, sign_input: &PsbtP2PKHSignInput) -> Resu
     Ok(())
 }
 
-/// 签名 PSBT P2SH-P2WPKH input
+/// Sign a PSBT P2SH-P2WPKH input
 ///
-/// 注入:
+/// Inject:
 /// - FINAL_SCRIPT_SIG (0x08) = push 22-byte redeemScript
 /// - FINAL_SCRIPTWITNESS (0x09) = serialized witness (item count + items)
 ///
-/// 注: FINAL_SCRIPTWITNESS 是 BIP-174 特殊格式, value 是已经序列化好的 witness bytes.
-/// shlosilo 复用 v9.3 sign_p2sh_p2wpkh 的 witness 输出 (vec![sig, pk]).
+/// Note: FINAL_SCRIPTWITNESS uses the special BIP-174 format; the value is already-serialized witness bytes.
+/// shlosilo reuses the witness output (vec![sig, pk]) of the v9.3 sign_p2sh_p2wpkh.
 pub fn sign_psbt_p2sh_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtP2SHP2WPKHSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 1. 复制 unsigned tx
+    // 1. Clone the unsigned tx
     let mut tx = psbt.unsigned_tx.clone();
 
-    // 2. 调用 v9.3 sign_p2sh_p2wpkh
+    // 2. Call the v9.3 sign_p2sh_p2wpkh
     let p2sh_input = crate::chain::btc::p2sh::P2SHP2WPKHSignInput {
         input_index: sign_input.input_index,
         private_key: &sign_input.private_key,
@@ -673,12 +673,12 @@ pub fn sign_psbt_p2sh_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtP2SHP2WPKHSignInp
     };
     let _signed = sign_p2sh_p2wpkh(&mut tx, &p2sh_input)?;
 
-    // 3. 提取 scriptSig → FINAL_SCRIPT_SIG
+    // 3. Extract scriptSig → FINAL_SCRIPT_SIG
     let script_sig = tx.inputs[input_idx].script_sig.clone();
     let key_script_sig = vec![input_type::FINAL_SCRIPT_SIG];
     let value_script_sig = script_sig;
 
-    // 4. 提取 witness → FINAL_SCRIPTWITNESS (serialize witness as bytes)
+    // 4. Extract witness → FINAL_SCRIPTWITNESS (serialize witness as bytes)
     let witness = &tx.inputs[input_idx].witness;
     let mut witness_bytes = Vec::new();
     encode_compact_size(&mut witness_bytes, witness.len() as u64);
@@ -690,7 +690,7 @@ pub fn sign_psbt_p2sh_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtP2SHP2WPKHSignInp
     let key_witness = vec![input_type::FINAL_SCRIPTWITNESS];
     let value_witness = witness_bytes;
 
-    // 5. 注入 PSBT input map
+    // 5. Inject into the PSBT input map
     psbt.inputs[input_idx].retain(|kv| kv.key != key_script_sig);
     psbt.inputs[input_idx].push(KeyValue {
         key: key_script_sig,
@@ -736,7 +736,7 @@ pub fn sign_psbt_p2tr_keypath(psbt: &mut Psbt, sign_input: &PsbtP2TRSignInput) -
 
     // Verify scriptPubKey of the matching UTXO is a P2TR (OP_1 <0x20> <32-byte-x>).
     // WITNESS_UTXO value = CTxOut: amount(8 LE) || varint(spk_len) || scriptPubKey
-    // 审计 #5 开-01:utxo 获取带 prev_out 绑定(NON_WITNESS_UTXO 路径 txid 校验)
+    // Audit #5 open-01: utxo retrieval with prev_out binding (txid verification on the NON_WITNESS_UTXO path)
     let prev_out = psbt.unsigned_tx.inputs[input_idx].prev_out.clone();
     let (_amount, spk) = get_utxo_any(&psbt.inputs[input_idx], &prev_out)
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -768,7 +768,7 @@ pub fn sign_psbt_p2tr_scriptpath(
     }
 
     // Verify scriptPubKey is P2TR. WITNESS_UTXO value = CTxOut format.
-    // 审计 #5 开-01:utxo 获取带 prev_out 绑定(NON_WITNESS_UTXO 路径 txid 校验)
+    // Audit #5 open-01: utxo retrieval with prev_out binding (txid verification on the NON_WITNESS_UTXO path)
     let prev_out = psbt.unsigned_tx.inputs[input_idx].prev_out.clone();
     let (_amount, spk) = get_utxo_any(&psbt.inputs[input_idx], &prev_out)
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -803,12 +803,13 @@ pub fn decode_p2tr_script_pubkey(script_pubkey: &[u8]) -> Result<[u8; 32]> {
 /// Parse a BIP-174 WITNESS_UTXO value: CTxOut format
 /// `<amount (8B LE)> <compact_size spk_len> <scriptPubKey>`
 ///
-/// **注意**: v9.9 曾误实现为 `amount || spk` 直接拼接（漏掉 varint 长度前缀），
-/// keystone 真实 PSBT 抓出了这个 bug。
+/// **Note**: v9.9 once implemented this wrongly as direct concatenation of `amount || spk` (missing the varint length prefix);
+/// a real keystone PSBT caught this bug.
 ///
-/// P0-01 加固（2026-09-01 审计 #4）：`spk_len` 经 decode_compact_size 预算
-/// 校验 + take_bytes checked_add——原 `pos + spk_len` 裸加法在
-/// `amount ‖ 0xff ‖ u64::MAX` 输入下溢出 panic（真机 = 恶意 QR DoS）。
+/// P0-01 hardening (2026-09-01 audit #4): `spk_len` is validated against the budget via
+/// decode_compact_size + taken via take_bytes checked_add — the original bare
+/// `pos + spk_len` addition overflows and panics on `amount || 0xff || u64::MAX`
+/// input (on device = malicious QR DoS).
 pub fn decode_witness_utxo(value: &[u8]) -> Result<(u64, Vec<u8>)> {
     if value.len() < 8 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -821,18 +822,18 @@ pub fn decode_witness_utxo(value: &[u8]) -> Result<(u64, Vec<u8>)> {
     let mut pos = 8;
     let spk_len = decode_compact_size(value, &mut pos)? as usize;
     let spk = take_bytes(value, &mut pos, spk_len)?;
-    // 审计 #5 P0-02: exact-consumption——CTxOut 值必须恰好消费完,
-    // 尾随字节 = 非规范编码(此前测试错误地定义为"应接受")
+    // Audit #5 P0-02: exact-consumption — the CTxOut value must be consumed exactly,
+    // trailing bytes = non-canonical encoding (tests previously wrongly defined it as "should be accepted")
     if pos != value.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     Ok((amount, spk.to_vec()))
 }
 
-/// 审计 #5 开-01:解析 NON_WITNESS_UTXO 的完整交易,按 BIP-174 语义:
-/// ①反序列化 full tx(legacy 格式,不含 witness——PSBT 规范存储的是
-///   非见证序列化)②计算 txid = dsha256(serialized)③与 OutPoint.txid 比对
-/// ④按 vout 索引取 CTxOut。任何一步失败 → None(拒绝签名该 input)。
+/// Audit #5 open-01: parse the full transaction of NON_WITNESS_UTXO per BIP-174 semantics:
+/// (1) deserialize the full tx (legacy format, no witness — PSBT stores the non-witness serialization)
+/// (2) compute txid = dsha256(serialized) (3) compare with OutPoint.txid
+/// (4) take CTxOut indexed by vout. Any step failing → None (refuse to sign that input).
 fn get_non_witness_utxo_bound(
     input_map: &[KeyValue],
     prev_out: &OutPoint,
@@ -842,7 +843,7 @@ fn get_non_witness_utxo_bound(
         .find(|kv| kv.key == vec![input_type::NON_WITNESS_UTXO])?;
     let full_tx = deserialize_unsigned_tx(&kv.value).ok()?;
 
-    // txid 绑定:序列化回去(用同一 legacy 序列化)→ dsha256
+    // txid binding: serialize back (using the same legacy serialization) → dsha256
     let mut ser = Vec::new();
     ser.extend_from_slice(&full_tx.version.to_le_bytes());
     encode_compact_size(&mut ser, full_tx.inputs.len() as u64);
@@ -863,7 +864,7 @@ fn get_non_witness_utxo_bound(
     let txid: [u8; 32] = sha256::hash_twice(&ser).ok()?;
 
     if txid != prev_out.txid {
-        return None; // 恶意 full-tx 声称不属于自己的 UTXO——拒绝
+        return None; // a malicious full-tx claiming a UTXO that is not its own — reject
     }
     let txout = full_tx.outputs.get(prev_out.vout as usize)?;
     Some((txout.value, txout.script_pubkey.clone()))
@@ -877,18 +878,18 @@ pub fn get_witness_utxo(input_map: &[KeyValue]) -> Option<(u64, Vec<u8>)> {
     decode_witness_utxo(&kv.value).ok()
 }
 
-/// Get spent output from WITNESS_UTXO (0x02,首选)或 NON_WITNESS_UTXO(0x01)。
+/// Get the spent output from WITNESS_UTXO (0x02, preferred) or NON_WITNESS_UTXO (0x01).
 ///
-/// 审计 #5 开-01:NON_WITNESS_UTXO 路径按 BIP-174 语义处理——full tx
-/// 解析 + txid 绑定 + vout 索引,不再把裸 CTxOut 当 fallback 直接信任。
-/// (keystone fixture 的非标 CTxOut-in-0x01 形式不再支持;受影响测试改用
-///   WITNESS_UTXO 标准形式。)
+/// Audit #5 open-01: the NON_WITNESS_UTXO path follows BIP-174 semantics — full tx
+/// parsing + txid binding + vout indexing, no longer blindly trusting a bare CTxOut as fallback.
+/// (The non-standard CTxOut-in-0x01 form from the keystone fixture is no longer supported; affected tests
+///   now use the standard WITNESS_UTXO form.)
 pub fn get_utxo_any(input_map: &[KeyValue], prev_out: &OutPoint) -> Option<(u64, Vec<u8>)> {
-    // 首选:WITNESS_UTXO(标准路径,CTxOut 直存)
+    // Preferred: WITNESS_UTXO (standard path, CTxOut stored directly)
     if let Some(utxo) = get_witness_utxo(input_map) {
         return Some(utxo);
     }
-    // NON_WITNESS_UTXO:full-tx + txid 绑定 + vout 索引
+    // NON_WITNESS_UTXO: full-tx + txid binding + vout indexing
     get_non_witness_utxo_bound(input_map, prev_out)
 }
 
@@ -981,7 +982,7 @@ mod tests {
         s
     }
 
-    /// magic bytes 正确
+    /// magic bytes correct
     #[test]
     fn magic_bytes() {
         assert_eq!(PSBT_MAGIC, [0x70, 0x73, 0x62, 0x74, 0xff]);
@@ -1007,10 +1008,10 @@ mod tests {
         assert_eq!(&out[..5], &[0xfe, 0x00, 0x00, 0x01, 0x00]);
     }
 
-    /// 完整 PSBT 构造 (P2WPKH 1-input 1-output) round-trip
+    /// Full PSBT construction (P2WPKH 1-input 1-output) round-trip
     #[test]
     fn psbt_construction_round_trip() {
-        // 简化 P2WPKH 测试:
+        // Simplified P2WPKH test:
         // - 1 input, txid = 0xab...cd, vout = 0
         // - 1 output, value = 100_000, scriptPubKey = P2WPKH program
         let mut txid = [0u8; 32];
@@ -1052,10 +1053,10 @@ mod tests {
 
         let bytes = serialize_psbt(&psbt);
 
-        // 验证 magic
+        // Verify magic
         assert_eq!(&bytes[..5], &PSBT_MAGIC);
 
-        // 解析回去
+        // Parse back
         let parsed = parse_psbt(&bytes).unwrap();
         assert_eq!(parsed.unsigned_tx.version, unsigned_tx.version);
         assert_eq!(parsed.unsigned_tx.inputs.len(), 1);
@@ -1064,14 +1065,14 @@ mod tests {
         assert_eq!(parsed.unsigned_tx.outputs[0].value, 100_000);
     }
 
-    /// 解析错误 magic
+    /// Parse error: magic
     #[test]
     fn psbt_invalid_magic() {
         let bytes = vec![0x00, 0x01, 0x02, 0x03, 0x04];
         assert!(parse_psbt(&bytes).is_err());
     }
 
-    /// parse + serialize 完整流程 (含 input/output map entries)
+    /// Full parse + serialize flow (including input/output map entries)
     #[test]
     fn psbt_full_round_trip() {
         let mut txid = [0u8; 32];
@@ -1101,7 +1102,7 @@ mod tests {
             lock_time: 12345,
         };
 
-        // 添加 witness_utxo 到 input map
+        // Add witness_utxo to the input map
         let witness_utxo = TxOut {
             value: 200_000,
             script_pubkey: {
@@ -1132,14 +1133,14 @@ mod tests {
         let bytes = serialize_psbt(&psbt);
         let parsed = parse_psbt(&bytes).unwrap();
 
-        // 验证 input map 保留
+        // Verify the input map is preserved
         assert_eq!(parsed.inputs.len(), 1);
         assert!(parsed.inputs[0]
             .iter()
             .any(|kv| kv.key == vec![input_type::WITNESS_UTXO]));
     }
 
-    /// 签名 P2WPKH PSBT input
+    /// Sign a P2WPKH PSBT input
     #[test]
     fn psbt_sign_p2wpkh() {
         let mut txid = [0u8; 32];
@@ -1187,7 +1188,7 @@ mod tests {
 
         sign_psbt_p2wpkh(&mut psbt, &sign_input).unwrap();
 
-        // 验证 input map 注入 PARTIAL_SIG
+        // Verify PARTIAL_SIG is injected into the input map
         assert_eq!(psbt.inputs.len(), 1);
         let partial_sig = psbt.inputs[0]
             .iter()
@@ -1197,7 +1198,7 @@ mod tests {
         // key = 0x03 || compressed_pubkey
         assert_eq!(partial_sig.key[0], input_type::PARTIAL_SIG);
         assert_eq!(partial_sig.key.len(), 1 + 33);
-        // value 末尾必须是 sighash byte 0x01
+        // The value must end with sighash byte 0x01
         assert_eq!(partial_sig.value[partial_sig.value.len() - 1], 0x01);
 
         eprintln!(
@@ -1207,7 +1208,7 @@ mod tests {
         );
     }
 
-    /// 越界 input index
+    /// Out-of-bounds input index
     #[test]
     fn psbt_sign_out_of_bounds() {
         let psbt = Psbt {
@@ -1230,10 +1231,10 @@ mod tests {
         assert!(sign_psbt_p2wpkh(&mut psbt, &sign_input).is_err());
     }
 
-    /// 签名 PSBT P2PKH input → FINAL_SCRIPT_SIG
+    /// Sign a PSBT P2PKH input → FINAL_SCRIPT_SIG
     #[test]
     fn psbt_sign_p2pkh() {
-        // 简化 P2PKH 测试
+        // Simplified P2PKH test
         let mut txid = [0u8; 32];
         txid[0] = 0xab;
         let txin = TxIn {
@@ -1283,7 +1284,7 @@ mod tests {
 
         sign_psbt_p2pkh(&mut psbt, &sign_input).unwrap();
 
-        // 验证 FINAL_SCRIPT_SIG 注入
+        // Verify FINAL_SCRIPT_SIG injection
         let final_scriptsig = psbt.inputs[0]
             .iter()
             .find(|kv| kv.key == vec![input_type::FINAL_SCRIPT_SIG]);
@@ -1292,9 +1293,9 @@ mod tests {
             "FINAL_SCRIPT_SIG must be injected"
         );
         let final_scriptsig = final_scriptsig.unwrap();
-        // value 是 scriptSig: <push sig><push pk>
+        // The value is the scriptSig: <push sig><push pk>
         assert!(final_scriptsig.value.len() > 33); // sig + compressed pk
-                                                   // scriptSig 末尾应是 compressed pubkey (33 bytes)
+                                                   // the scriptSig should end with the compressed pubkey (33 bytes)
         let pk_bytes = &final_scriptsig.value[final_scriptsig.value.len() - 33..];
         assert!(pk_bytes[0] == 0x02 || pk_bytes[0] == 0x03);
 
@@ -1305,7 +1306,7 @@ mod tests {
         );
     }
 
-    /// P2PKH PSBT 越界
+    /// P2PKH PSBT out-of-bounds
     #[test]
     fn psbt_sign_p2pkh_out_of_bounds() {
         let psbt = Psbt {
@@ -1327,7 +1328,7 @@ mod tests {
         assert!(sign_psbt_p2pkh(&mut psbt, &sign_input).is_err());
     }
 
-    /// 签名 PSBT P2SH-P2WPKH input → FINAL_SCRIPT_SIG + FINAL_SCRIPTWITNESS
+    /// Sign a PSBT P2SH-P2WPKH input → FINAL_SCRIPT_SIG + FINAL_SCRIPTWITNESS
     #[test]
     fn psbt_sign_p2sh_p2wpkh() {
         let mut txid = [0u8; 32];
@@ -1369,7 +1370,7 @@ mod tests {
         private_key.copy_from_slice(&private_key_bytes);
         let private_key = SecretBytes::take(&mut private_key);
 
-        let pk_hash = [0x42; 20]; // 与 sign_p2sh_p2wpkh 一致
+        let pk_hash = [0x42; 20]; // consistent with sign_p2sh_p2wpkh
 
         let sign_input = PsbtP2SHP2WPKHSignInput {
             input_index: 0,
@@ -1380,7 +1381,7 @@ mod tests {
 
         sign_psbt_p2sh_p2wpkh(&mut psbt, &sign_input).unwrap();
 
-        // 验证 FINAL_SCRIPT_SIG 注入
+        // Verify FINAL_SCRIPT_SIG injection
         let final_scriptsig = psbt.inputs[0]
             .iter()
             .find(|kv| kv.key == vec![input_type::FINAL_SCRIPT_SIG]);
@@ -1393,7 +1394,7 @@ mod tests {
         assert_eq!(final_scriptsig.value.len(), 23);
         assert_eq!(final_scriptsig.value[0], 0x16);
 
-        // 验证 FINAL_SCRIPTWITNESS 注入
+        // Verify FINAL_SCRIPTWITNESS injection
         let final_witness = psbt.inputs[0]
             .iter()
             .find(|kv| kv.key == vec![input_type::FINAL_SCRIPTWITNESS]);
@@ -1402,10 +1403,10 @@ mod tests {
             "FINAL_SCRIPTWITNESS must be injected"
         );
         let final_witness = final_witness.unwrap();
-        // witness 序列化: <item_count><item_len><item_data>*
+        // Witness serialization: <item_count><item_len><item_data>*
         // 2 items: signature + pubkey
         assert_eq!(final_witness.value[0], 2); // 2 witness items
-                                               // 接下来是 varint(sig_len) + sig
+                                               // next comes varint(sig_len) + sig
         eprintln!(
             "FINAL_SCRIPTWITNESS ({} bytes): {}",
             final_witness.value.len(),
@@ -1413,7 +1414,7 @@ mod tests {
         );
     }
 
-    /// P2SH-P2WPKH PSBT 越界
+    /// P2SH-P2WPKH PSBT out-of-bounds
     #[test]
     fn psbt_sign_p2sh_p2wpkh_out_of_bounds() {
         let psbt = Psbt {
@@ -1650,14 +1651,14 @@ mod tests {
         assert!(get_tap_merkle_root(&input).is_none());
     }
 
-    /// v9.13d 端到端: keystone PSBT → parse → shlosilo sighash+签名 → 注入 TAP_KEY_SIG → serialize
+    /// v9.13d end-to-end: keystone PSBT → parse → shlosilo sighash+sign → inject TAP_KEY_SIG → serialize
     ///
-    /// 完整闭环:
-    /// 1. 解析 keystone test_taproot_sign 的真实 PSBT
-    /// 2. 从 unsigned_tx + WITNESS_UTXO 构造 BIP-341 sighash 输入 → sighash 必须等于 oracle 值
-    /// 3. sign_p2tr_keypath(internal_sk) → Schnorr 签名
-    /// 4. sign_psbt_p2tr_keypath 注入 PSBT_IN_TAP_KEY_SIG (0x13)
-    /// 5. 序列化回 PSBT → 再解析 → 验证字段存在且签名可验证
+    /// Full closed loop:
+    /// 1. Parse the real PSBT from the keystone test_taproot_sign
+    /// 2. Build the BIP-341 sighash input from unsigned_tx + WITNESS_UTXO → the sighash must equal the oracle value
+    /// 3. sign_p2tr_keypath(internal_sk) → Schnorr signature
+    /// 4. sign_psbt_p2tr_keypath injects PSBT_IN_TAP_KEY_SIG (0x13)
+    /// 5. Serialize back to PSBT → parse again → verify fields exist and the signature verifies
     #[test]
     fn psbt_taproot_end_to_end_keystone_fixture() {
         use crate::chain::btc::taproot::{
@@ -1665,14 +1666,14 @@ mod tests {
             TaprootSighashInput, SIGHASH_DEFAULT,
         };
 
-        // keystone wrapped_psbt.rs test_taproot_sign fixture (完整 PSBT hex)
+        // keystone wrapped_psbt.rs test_taproot_sign fixture (full PSBT hex)
         let psbt_hex = "70736274ff01005e02000000013aee4d6b51da574900e56d173041115bd1e1d01d4697a845784cf716a10c98060000000000ffffffff0100190000000000002251202258f2d4637b2ca3fd27614868b33dee1a242b42582d5474f51730005fa99ce8000000000001012bbc1900000000000022512022f3956cc27a6a9b0e0003a0afc113b04f31b95d5cad222a65476e8440371bd10103040000000001134092864dc9e56b6260ecbd54ec16b94bb597a2e6be7cca0de89d75e17921e0e1528cba32dd04217175c237e1835b5db1c8b384401718514f9443dce933c6ba9c872116b68df382cad577d8304d5a8e640c3cb42d77c10016ab754caa4d6e68b6cb296d190073c5da0a5600008001000080000000800000000002000000011720b68df382cad577d8304d5a8e640c3cb42d77c10016ab754caa4d6e68b6cb296d011820c913dc9a8009a074e7bbc493b9d8b7e741ba137f725f99d44fbce99300b2bb0a0000";
         let psbt_bytes = hex_decode(psbt_hex);
         let mut psbt = parse_psbt(&psbt_bytes).expect("parse keystone PSBT");
         assert_eq!(psbt.unsigned_tx.inputs.len(), 1);
         assert_eq!(psbt.unsigned_tx.inputs[0].sequence, 0xffffffff);
 
-        // 1. 从 input map 提取 Taproot 元数据
+        // 1. Extract Taproot metadata from the input map
         let internal_key_x = get_tap_internal_key(&psbt.inputs[0]).unwrap();
         let merkle_root = get_tap_merkle_root(&psbt.inputs[0]);
         assert_eq!(
@@ -1683,15 +1684,15 @@ mod tests {
             merkle_root.map(|r| hex_encode(&r)).as_deref(),
             Some("c913dc9a8009a074e7bbc493b9d8b7e741ba137f725f99d44fbce99300b2bb0a")
         );
-        // input_type 常量修正（BIP-174 对齐）后：fixture 的 UTXO 在 0x01 = WITNESS_UTXO（标准），
-        // is_p2tr_input 能正确识别该 P2TR 输入
+        // After the input_type constant fix (BIP-174 alignment): the fixture\'s UTXO in 0x01 = WITNESS_UTXO (standard),
+        // and is_p2tr_input correctly recognizes this P2TR input
         assert!(
             is_p2tr_input(&psbt.inputs[0]),
             "standard WITNESS_UTXO(0x01) with P2TR spk must be detected as taproot input"
         );
 
-        // 2. spent output (value + spk): fixture 把 TxOut 放在 0x01 字段（CTxOut 格式），
-        //    标准 WITNESS_UTXO(0x02) 同样是 CTxOut 格式，decode_witness_utxo 通用
+        // 2. Spent output (value + spk): the fixture places the TxOut in field 0x01 (CTxOut format);
+        //    the standard WITNESS_UTXO (0x02) is also CTxOut format, so decode_witness_utxo handles both
         let utxo_kv = psbt.inputs[0]
             .iter()
             .find(|kv| {
@@ -1702,7 +1703,7 @@ mod tests {
         assert_eq!(value, 0x19bc);
         assert_eq!(&spent_spk[..2], &[0x51, 0x20]);
 
-        // 3. 构造 sighash 输入并计算 — 必须等于 oracle 值
+        // 3. Build the sighash input and compute — must equal the oracle value
         let prevouts = [(
             psbt.unsigned_tx.inputs[0].prev_out.txid,
             psbt.unsigned_tx.inputs[0].prev_out.vout,
@@ -1740,7 +1741,7 @@ mod tests {
             "sighash from parsed PSBT must equal oracle"
         );
 
-        // 4. 签名（internal sk 来自 m/86'/1'/0'/0/2，与 fixture 同 seed）
+        // 4. Sign (internal sk from m/86\'/1\'/0\'/0/2, same seed as the fixture)
         let internal_sk =
             hex_decode_32arr("1fb777f1a6fb9b76724551f8bc8ad91b77f33b8c456d65d746035391d724922a");
         let aux_rand = [0u8; 32];
@@ -1757,7 +1758,7 @@ mod tests {
         let mut sig64 = [0u8; 64];
         sig64.copy_from_slice(&witness_sig);
 
-        // 5. 注入 PSBT_IN_TAP_KEY_SIG 并序列化
+        // 5. Inject PSBT_IN_TAP_KEY_SIG and serialize
         sign_psbt_p2tr_keypath(
             &mut psbt,
             &PsbtP2TRSignInput {
@@ -1770,7 +1771,7 @@ mod tests {
         let serialized = serialize_psbt(&psbt);
         assert_eq!(&serialized[..5], &PSBT_MAGIC);
 
-        // 6. 再解析 → 字段存在、签名可验证
+        // 6. Parse again → fields exist, signature verifiable
         let reparsed = parse_psbt(&serialized).unwrap();
         let injected = reparsed.inputs[0]
             .iter()
@@ -1778,7 +1779,7 @@ mod tests {
             .expect("TAP_KEY_SIG must be present after injection");
         assert_eq!(injected.value.len(), 64);
 
-        // 签名对 output key + sighash 可验证（k256 schnorr）
+        // The signature verifies against the output key + sighash (k256 schnorr)
         let output_key_x = decode_p2tr_script_pubkey(&spent_spk).unwrap();
         let vk = k256::schnorr::VerifyingKey::from_bytes((&output_key_x).into()).unwrap();
         let k_sig = k256::schnorr::Signature::try_from(injected.value.as_slice()).unwrap();
@@ -1795,23 +1796,23 @@ mod tests {
         out.copy_from_slice(&v);
         out
     }
-    /// 审计 #7 P2-01:helper 直接单测(从集成测试移入——pub(crate) 后集成侧不可见)
-    /// 边界:44/45(41B)、12/13(9B)、零元素下界防御、saturate、合法量级
+    /// Audit #7 P2-01: unit-test the helper directly (moved in from integration tests — invisible to the integration side once pub(crate))
+    /// Boundaries: 44/45 (41B), 12/13 (9B), zero-element lower-bound defense, saturation, legitimate magnitudes
     #[test]
     fn helper_count_physically_feasible_boundaries() {
-        // 60000 inputs 需 2,460,000B wire;剩余 1000B 拒绝
+        // 60000 inputs need 2,460,000B wire; the remaining 1000B is rejected
         assert!(!count_physically_feasible(60_000, 1000, 41));
-        // locktime 裕量边界:41*1+4=45 才容 1 个;44 不够
+        // locktime margin boundary: 41*1+4=45 fits 1; 44 does not
         assert!(!count_physically_feasible(1, 44, 41));
         assert!(count_physically_feasible(1, 45, 41));
-        // 9B/output 同样预留 locktime(复审 P2-02:此前 outputs 漏留)
+        // 9B/output also reserves locktime (re-review P2-02: outputs previously missed it)
         assert!(!count_physically_feasible(1, 12, 9));
         assert!(count_physically_feasible(1, 13, 9));
-        // remaining < 4 时 saturate 到 0,任何 count>0 拒绝
+        // when remaining < 4, saturate to 0; any count > 0 is rejected
         assert!(!count_physically_feasible(1, 3, 41));
-        // 合法交易量级不误伤
+        // legitimate transaction magnitudes are not falsely rejected
         assert!(count_physically_feasible(100, 100 * 41 + 100, 41));
-        // 审计 #7 P2-01:零元素下界不再 panic(公开 API totality 教训)
+        // Audit #7 P2-01: the zero-element lower bound no longer panics (public API totality lesson)
         assert!(!count_physically_feasible(1, 100, 0));
         assert!(count_physically_feasible(0, 100, 0));
     }

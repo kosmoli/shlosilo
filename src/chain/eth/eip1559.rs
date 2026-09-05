@@ -1,11 +1,11 @@
-//! ETH EIP-1559 完整交易签名（Phase 5 v7 真实实现）
+//! ETH EIP-1559 full transaction signing (Phase 5 v7 real implementation)
 //!
-//! 实现：
-//! - EIP-1559 transaction 数据结构
+//! Implements:
+//! - EIP-1559 transaction data structures
 //! - EIP-1559 signing hash（`keccak256(0x02 || rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit, destination, amount, data, access_list]))`）
-//! - sign_eip1559 业务函数（sighash → ECDSA → r/s + y_parity → 拼装 signed tx）
+//! - sign_eip1559 business function (sighash → ECDSA → r/s + y_parity → assemble the signed tx)
 //!
-//! ## 算法摘要
+//! ## Algorithm summary
 //!
 //! **EIP-1559 signing hash**:
 //! ```text
@@ -31,7 +31,7 @@
 //! ])
 //! ```text
 //!
-//! **y_parity**: 0 或 1（不是 legacy 的 27/28）
+//! **y_parity**: 0 or 1 (not the legacy 27/28)
 
 extern crate alloc;
 extern crate digest;
@@ -43,9 +43,9 @@ use crate::signature::ecdsa_secp256k1::{self as ecdsa};
 use crate::types::SecretBytes;
 use alloc::vec::Vec;
 
-// ─── 数据结构 ──────────────────────────────────────────────────────
+// --- Data structures ------------------------------------------------
 
-/// EIP-1559 transaction（未签名）
+/// EIP-1559 transaction (unsigned)
 #[derive(Clone, Debug)]
 pub struct Eip1559Transaction {
     pub chain_id: u64,
@@ -57,25 +57,25 @@ pub struct Eip1559Transaction {
     pub destination: Option<[u8; 20]>,
     pub amount: u128,
     pub data: Vec<u8>,
-    /// access_list（EIP-2930）— Phase 5 v7 不支持，空 vec
+    /// access_list (EIP-2930) — unsupported in Phase 5 v7; empty vec
     pub access_list: Vec<(Address, Vec<[u8; 32]>)>,
 }
 
 /// 20-byte Ethereum address
 pub type Address = [u8; 20];
 
-/// 签名输入
+/// Signing input
 ///
-/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+/// P1-03: private keys use `SecretBytes<32>` — no Clone, no Debug, ZeroizeOnDrop, constant-time comparison.
 pub struct Eip1559SignInput {
     pub tx: Eip1559Transaction,
     pub private_key: SecretBytes<32>,
 }
 
-/// 签名输出
+/// Signing output
 #[derive(Clone, Debug)]
 pub struct Eip1559SignedTx {
-    /// 完整签名交易 bytes (0x02 || rlp([..., y_parity, r, s]))
+    /// Full signed transaction bytes (0x02 || rlp([..., y_parity, r, s]))
     pub tx_bytes: Vec<u8>,
     /// signing hash (Keccak256 of preimage)
     pub signing_hash: [u8; 32],
@@ -83,13 +83,13 @@ pub struct Eip1559SignedTx {
     pub r: [u8; 32],
     /// signature s
     pub s: [u8; 32],
-    /// y_parity: 0 或 1
+    /// y_parity: 0 or 1
     pub y_parity: u8,
 }
 
 // ─── EIP-1559 signing hash ────────────────────────────────────────
 
-/// 计算 EIP-1559 signing hash
+/// Compute the EIP-1559 signing hash
 ///
 /// `keccak256(0x02 || rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit, destination, amount, data, access_list]))`
 pub fn signing_hash(tx: &Eip1559Transaction) -> Result<[u8; 32]> {
@@ -97,7 +97,7 @@ pub fn signing_hash(tx: &Eip1559Transaction) -> Result<[u8; 32]> {
     keccak256::hash(&preimage)
 }
 
-/// Debug helper: 返回 signing preimage bytes
+/// Debug helper: returns the signing preimage bytes
 pub fn signing_preimage(tx: &Eip1559Transaction) -> Result<Vec<u8>> {
     // RLP encode each field
     let chain_id_rlp = rlp::encode_uint(tx.chain_id as u128);
@@ -115,7 +115,7 @@ pub fn signing_preimage(tx: &Eip1559Transaction) -> Result<Vec<u8>> {
     let amount_rlp = rlp::encode_uint(tx.amount);
     let data_rlp = rlp::encode_bytes(&tx.data);
 
-    // access_list: 空 list
+    // access_list: empty list
     let access_list_rlp = rlp::encode_list(&[]);
 
     // RLP list of all fields
@@ -139,20 +139,20 @@ pub fn signing_preimage(tx: &Eip1559Transaction) -> Result<Vec<u8>> {
     Ok(preimage)
 }
 
-// ─── sign_eip1559 业务函数 ────────────────────────────────────────
+// --- sign_eip1559 business function -------------------------------
 
-/// 计算 y_parity (recovery_id) — 从 (r, s, z, pk) 推 R.y parity
+/// Compute y_parity (recovery_id) — derive R.y's parity from (r, s, z, pk)
 ///
-/// 算法: R = r⁻¹ · (s · pk − z · G)  ;  y_parity = R.y mod 2
+/// Algorithm: R = r⁻¹ · (s · pk − z · G)  ;  y_parity = R.y mod 2
 ///
-/// 用 k256 0.14 ProjectivePoint + Scalar arithmetic
-/// 计算 y_parity (recovery_id) — 用 k256::ecdsa::VerifyingKey::recover_from_prehash
+/// Using k256 0.14 ProjectivePoint + Scalar arithmetic
+/// Compute y_parity (recovery_id) — via k256::ecdsa::VerifyingKey::recover_from_prehash
 ///
-/// ECDSA 已知 (z, r, s) + y_parity ∈ {0, 1} → 恢复出 pubkey。
-/// 通过比对恢复出的 pubkey 和实际 pubkey 找出正确的 y_parity。
+/// In ECDSA, given (z, r, s) + y_parity ∈ {0, 1}, the pubkey can be recovered.
+/// Compare the recovered pubkey with the actual pubkey to find the correct y_parity.
 ///
-/// k256 0.14 提供了 `VerifyingKey::recover_from_prehash(prehash, &sig, recid)`，
-/// 接受 32-byte prehash（**不需要** Digest trait）— 完美匹配我们的 use case。
+/// k256 0.14 provides `VerifyingKey::recover_from_prehash(prehash, &sig, recid)`,
+/// which accepts a 32-byte prehash (**no** Digest trait needed) — a perfect match for our use case.
 fn compute_y_parity(
     sk: &crate::curve_primitive::secp256k1::Secp256k1Scalar,
     signing_hash_bytes: &[u8; 32],
@@ -161,7 +161,7 @@ fn compute_y_parity(
 ) -> Result<u8> {
     use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 
-    // 构造 signature (r || s, 64 bytes)
+    // Build the signature (r || s, 64 bytes)
     let mut sig_64 = [0u8; 64];
     sig_64[..32].copy_from_slice(r_bytes);
     sig_64[32..].copy_from_slice(s_bytes);
@@ -172,7 +172,7 @@ fn compute_y_parity(
     let pk_point = base_mul(sk);
     let pk_compressed = point_to_compressed(&pk_point);
 
-    // 尝试 y_parity = 0 和 1
+    // Try y_parity = 0 and 1
     for y_parity in 0u8..=1u8 {
         // RecoveryId::new(is_y_odd: bool, is_x_reduced: bool)
         let recid = RecoveryId::new(y_parity == 1, false);
@@ -190,14 +190,14 @@ fn compute_y_parity(
     Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
 }
 
-/// 签名 EIP-1559 transaction
+/// Sign an EIP-1559 transaction
 pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     let sk = scalar_from_bytes(input.private_key.expose())?;
 
     // 1. signing hash
     let sighash = signing_hash(&input.tx)?;
 
-    // 2. ECDSA sign_prehash (返回 r||s = 64 bytes)
+    // 2. ECDSA sign_prehash (returns r||s = 64 bytes)
     let sig = ecdsa::sign(&sk, &sighash)?;
     let sig_bytes = sig.as_ref();
     let mut r_bytes = [0u8; 32];
@@ -207,8 +207,8 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     // DEBUG: print original sig
 
     // 2.5 BIP-146 / EIP-2 low-s enforcement:
-    //     先用原始 s 算出 y_parity，再用 (n - s) 翻转 s（如果 s > n/2）
-    //     flip s 等价于 R → -R (R.y parity 翻转)
+    //     compute y_parity with the original s first, then flip s to (n - s) if s > n/2
+    //     flipping s is equivalent to R → -R (R.y parity flips)
     let y_parity_original = compute_y_parity(&sk, &sighash, &r_bytes, &s_bytes)?;
 
     let half_n_high: [u8; 16] = [
@@ -245,7 +245,7 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
             borrow = (b1 || b2) as u8;
         }
         s_bytes.copy_from_slice(&new_s);
-        // flip y_parity (R → -R, parity 翻转)
+        // flip y_parity (R → -R, parity flips)
         y_parity_original ^ 1
     } else {
         y_parity_original
@@ -268,7 +268,7 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     let access_list_rlp = rlp::encode_list(&[]);
 
     let y_parity_rlp = rlp::encode_uint(y_parity as u128);
-    // r, s 是 32-byte big-endian uint256, strip leading zeros
+    // r, s are 32-byte big-endian uint256; strip leading zeros
     let r_rlp = rlp::encode_uint256(&r_bytes);
     let s_rlp = rlp::encode_uint256(&s_bytes);
 
@@ -300,7 +300,7 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     })
 }
 
-// ─── 辅助：hex decode ──────────────────────────────────────────────
+// --- Helpers: hex decode -------------------------------------------
 
 #[cfg(test)]
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
@@ -329,13 +329,13 @@ fn hex_nibble(c: u8) -> Result<u8> {
     }
 }
 
-// ─── 单元测试 ──────────────────────────────────────────────────────
+// --- Unit tests ----------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// EIP-1559 test vector（自己用 Python 算的对照值）
+    /// EIP-1559 test vector (reference values computed ourselves with Python)
     /// private_key: 0x4646464646464646464646464646464646464646464646464646464646464646
     /// chain_id: 1, nonce: 0, max_priority_fee: 1 gwei, max_fee: 20 gwei, gas_limit: 21000
     /// destination: 0x3535353535353535353535353535353535353535
@@ -363,7 +363,7 @@ mod tests {
         assert_eq!(&hash[..], &expected_bytes[..], "signing hash mismatch");
     }
 
-    /// 完整 sign_eip1559 + 比对 signed tx
+    /// Full sign_eip1559 + signed tx comparison
     #[test]
     fn sign_eip1559_full_pipeline() {
         let private_key_bytes =
@@ -387,25 +387,25 @@ mod tests {
         let input = Eip1559SignInput { tx, private_key };
         let signed = sign_eip1559(&input).unwrap();
 
-        // 验证 signing hash
+        // Verify the signing hash
         let expected_hash = "f63a609bfdfcc60853764d633f8de24fc6bf6f85e19ee6c0f2d089f7ee8d5d86";
         let expected_hash_bytes = hex_decode(expected_hash).unwrap();
         assert_eq!(&signed.signing_hash[..], &expected_hash_bytes[..]);
 
-        // 验证 r
+        // Verify r
         let expected_r = "b3d7e5d4775918a0ec38e4f9da6263f69c2072c0e177ff9aa274575bfba17d04";
         let expected_r_bytes = hex_decode(expected_r).unwrap();
         assert_eq!(&signed.r[..], &expected_r_bytes[..]);
 
-        // 验证 s
+        // Verify s
         let expected_s = "62182875ae92e4de08aaf8ea1a43d3ea0d836745788801cdc79ccc473a76dfd9";
         let expected_s_bytes = hex_decode(expected_s).unwrap();
         assert_eq!(&signed.s[..], &expected_s_bytes[..]);
 
-        // 验证 y_parity (k256 0.14 默认 low-s enforcement, y_parity=1)
+        // Verify y_parity (k256 0.14 defaults to low-s enforcement, y_parity=1)
         assert_eq!(signed.y_parity, 1);
 
-        // 验证完整 signed tx
+        // Verify the full signed tx
         let expected_tx = "02f8730180843b9aca008504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080c001a0b3d7e5d4775918a0ec38e4f9da6263f69c2072c0e177ff9aa274575bfba17d04a062182875ae92e4de08aaf8ea1a43d3ea0d836745788801cdc79ccc473a76dfd9";
         let expected_tx_bytes = hex_decode(expected_tx).unwrap();
         assert_eq!(
@@ -415,7 +415,7 @@ mod tests {
         );
     }
 
-    /// 确定性：相同输入 → 相同输出
+    /// Determinism: same input → same output
     #[test]
     fn deterministic_signing() {
         let private_key_bytes =
@@ -444,7 +444,7 @@ mod tests {
         assert_eq!(signed1.tx_bytes, signed2.tx_bytes);
     }
 
-    /// contract creation（destination = None）→ signing hash 不同
+    /// Contract creation (destination = None) → different signing hash
     #[test]
     fn contract_creation_differs_from_transfer() {
         let mut tx_transfer = Eip1559Transaction {
@@ -470,7 +470,7 @@ mod tests {
         );
     }
 
-    /// 不同 chain_id → 不同 signing hash
+    /// Different chain_id → different signing hash
     #[test]
     fn chain_id_changes_signing_hash() {
         let mk_tx = |chain_id: u64| Eip1559Transaction {

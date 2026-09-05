@@ -1,5 +1,5 @@
-//! 打印 fixture ring 全部 16 个 outputs 的 index/dest/mask 与 real_output，
-//! 判定 sign 时 ring[real] 是否真的是 real idx。
+//! Print the index/dest/mask of all 16 fixture ring outputs and the real_output,
+//! and determine whether ring[real] at signing time really is the real idx.
 
 use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
 

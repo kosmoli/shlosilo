@@ -1,26 +1,26 @@
-//! BTC P2SH-P2WPKH 完整交易签名 (segwit wrapped, BIP-141 + BIP-143)
+//! BTC P2SH-P2WPKH full transaction signing (segwit wrapped, BIP-141 + BIP-143)
 //!
-//! 实现:
-//! - P2SH-P2WPKH sighash 算法 (与 P2WPKH 同, 但 scriptCode = redeemScript = P2PKH-style 25 bytes)
-//! - sign_p2sh_p2wpkh 业务函数 (sighash → ECDSA → DER + sighash byte → scriptSig + witness 拼装)
-//! - P2SH + BIP-144 segwit 序列化 (marker + flag + scriptSig 含 redeemScript push + witness)
+//! Implements:
+//! - P2SH-P2WPKH sighash algorithm (same as P2WPKH, but scriptCode = redeemScript = a P2PKH-style 25 bytes)
+//! - sign_p2sh_p2wpkh business function (sighash → ECDSA → DER + sighash byte → scriptSig + witness assembly)
+//! - P2SH + BIP-144 segwit serialization (marker + flag + scriptSig containing the redeemScript push + witness)
 //!
-//! ## 算法摘要
+//! ## Algorithm summary
 //!
-//! **P2SH-P2WPKH sighash** 与 P2WPKH 完全相同 (BIP-143), 但:
+//! **P2SH-P2WPKH sighash** is identical to P2WPKH (BIP-143), but:
 //! - scriptCode = redeemScript = `0x1976a914{20-byte-pubkey-hash}88ac` (25 bytes)
 //! - scriptSig = `varint_push_len_0x23 {0x16 0x0014} redeemScript` (22-byte push)
-//! - witness = `[signature, compressed-pubkey]` (2 items, 与 P2WPKH 相同)
+//! - witness = `[signature, compressed-pubkey]` (2 items, same as P2WPKH)
 //!
-//! ## 关键约束
+//! ## Key constraints
 //!
-//! P2SH 的 scriptPubKey 是 `OP_HASH160 <redeemScriptHash> OP_EQUAL`:
+//! The P2SH scriptPubKey is `OP_HASH160 <redeemScriptHash> OP_EQUAL`:
 //! - `0xa914{20-byte-redeemScriptHash}87` (23 bytes)
 //!
-//! 但签名只需要 redeemScript (实际执行脚本), 不是 redeemScript hash.
-//! Caller 必须提供 redeemScript, 而不是其 hash.
+//! but signing only needs the redeemScript (the actually executed script), not the redeemScript hash.
+//! The caller must provide the redeemScript, not its hash.
 //!
-//! ## 参考
+//! ## Reference
 //!
 //! - BIP-141 (Segwit): <https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki>
 //! - BIP-143 (Segwit sighash): <https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki>
@@ -51,14 +51,14 @@ pub fn p2sh_script_pubkey(redeem_script_hash: &[u8; 20]) -> Vec<u8> {
 
 /// P2SH-P2WPKH scriptSig: `varint_22 0x16 0x0014 {redeemScript}`
 ///
-/// 实际 push: `push 22 bytes, 其中前 2 bytes 是 0x160014 (P2PKH-style prefix), 后 20 bytes 是 pubkey_hash`
+/// Actual push: `push 22 bytes, where the first 2 bytes are 0x160014 (P2PKH-style prefix) and the last 20 bytes are the pubkey_hash`
 ///
-/// redeemScript 完整 22 bytes: `0x16 0x00 0x14 {20-byte-pubkey-hash}`
-/// 注: 0x16 = OP_PUSH_22, 0x00 = OP_PUSHDATA1... wait, 实际是:
+/// redeemScript full 22 bytes: `0x16 0x00 0x14 {20-byte-pubkey-hash}`
+/// Note: 0x16 = OP_PUSH_22, 0x00 = OP_PUSHDATA1... wait, actually it is:
 ///
-/// **实际 redeemScript = P2WPKH witness program = `0x0014{20-byte-pubkey-hash}` (22 bytes)**
+/// **The actual redeemScript = P2WPKH witness program = `0x0014{20-byte-pubkey-hash}` (22 bytes)**
 ///
-/// 整个 scriptSig:
+/// The whole scriptSig:
 ///
 /// ```text
 /// <0x16> = push 22 bytes (redeemScript length)
@@ -84,34 +84,34 @@ pub fn p2sh_p2wpkh_redeem_script(pubkey_hash: &[u8; 20]) -> [u8; 22] {
     out
 }
 
-/// P2SH-P2WPKH 签名输入 (per-input 信息)
+/// P2SH-P2WPKH signing input (per-input info)
 ///
-/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+/// P1-03: the private key uses `SecretBytes<32>` — no Clone or Debug, ZeroizeOnDrop, constant-time comparison.
 pub struct P2SHP2WPKHSignInput<'k> {
-    /// 正在签名的 input index
+    /// The input index being signed
     pub input_index: usize,
-    /// 这个 input 的私钥 (32 bytes)——借用，零副本转发
+    /// The private key for this input (32 bytes) — borrowed, zero-copy forwarding
     pub private_key: &'k SecretBytes<32>,
-    /// pubkey hash (20 bytes) — P2WPKH witness program 内的 pubkey hash
+    /// pubkey hash (20 bytes) — the pubkey hash inside the P2WPKH witness program
     pub pubkey_hash: [u8; 20],
-    /// 这个 input 的 value (satoshis) — 用于 BIP-143 sighash
+    /// The value of this input (satoshis) — used for the BIP-143 sighash
     pub amount: u64,
 }
 
-/// P2SH-P2WPKH 签名输出
+/// P2SH-P2WPKH signing output
 #[derive(Clone, Debug)]
 pub struct P2SHP2WPKHSignedTx {
-    /// 完整 BIP-144 segwit 序列化交易 (marker + flag + witness)
+    /// Full BIP-144 segwit serialized transaction (marker + flag + witness)
     pub tx_bytes: Vec<u8>,
-    /// 这个 input 的 sighash
+    /// The sighash of this input
     pub sighash: [u8; 32],
 }
 
-/// 签名 P2SH-P2WPKH input
+/// Sign a P2SH-P2WPKH input
 ///
-/// **副作用**:
-/// - 修改 `tx.inputs[input_index].script_sig` (注入 redeemScript push)
-/// - 修改 `tx.inputs[input_index].witness` (注入 signature + pubkey)
+/// **Side effects**:
+/// - Modifies `tx.inputs[input_index].script_sig` (injects the redeemScript push)
+/// - Modifies `tx.inputs[input_index].witness` (injects signature + pubkey)
 pub fn sign_p2sh_p2wpkh(
     tx: &mut Transaction,
     input: &P2SHP2WPKHSignInput<'_>,
@@ -120,7 +120,7 @@ pub fn sign_p2sh_p2wpkh(
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 1. sighash: P2SH-P2WPKH 用 P2PKH-style scriptCode (redeemScript)
+    // 1. sighash: P2SH-P2WPKH uses a P2PKH-style scriptCode (redeemScript)
     let redeem_script = p2pkh_script_code(&input.pubkey_hash);
     let sighash = segwit_sighash_p2wpkh(
         tx,
@@ -130,7 +130,7 @@ pub fn sign_p2sh_p2wpkh(
         SIGHASH_ALL,
     )?;
 
-    // 2. ECDSA 签名
+    // 2. ECDSA signature
     let sig_scalar = scalar_from_bytes(input.private_key.expose())?;
     let pk_point = base_mul(&sig_scalar);
     let pk_compressed = point_to_compressed(&pk_point);
@@ -147,17 +147,17 @@ pub fn sign_p2sh_p2wpkh(
     // 4. witness = [signature, compressed-pubkey]
     let witness = vec![sig_with_sighash, pk_compressed.to_vec()];
 
-    // 5. 注入
+    // 5. Injection
     tx.inputs[input.input_index].script_sig = script_sig;
     tx.inputs[input.input_index].witness = witness;
 
-    // 6. BIP-144 segwit 序列化 (用 p2wpkh::Transaction::serialize_segwit)
+    // 6. BIP-144 segwit serialization (via p2wpkh::Transaction::serialize_segwit)
     let tx_bytes = tx.serialize_segwit();
 
     Ok(P2SHP2WPKHSignedTx { tx_bytes, sighash })
 }
 
-/// 单元测试
+/// Unit tests
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -198,7 +198,7 @@ mod tests {
         s
     }
 
-    /// P2SH scriptPubKey 构造
+    /// P2SH scriptPubKey construction
     #[test]
     fn p2sh_script_pubkey_format() {
         let hash = [0xab; 20];
@@ -210,7 +210,7 @@ mod tests {
         assert_eq!(pk[22], 0x87); // OP_EQUAL
     }
 
-    /// P2SH-P2WPKH redeemScript 构造
+    /// P2SH-P2WPKH redeemScript construction
     #[test]
     fn p2sh_p2wpkh_redeem_script_format() {
         let pk_hash = [0x42; 20];
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(&rs[2..], &pk_hash);
     }
 
-    /// P2SH-P2WPKH scriptSig 是 push(22) {0x00 0x14 hash}
+    /// The P2SH-P2WPKH scriptSig is push(22) {0x00 0x14 hash}
     #[test]
     fn p2sh_p2wpkh_script_sig_format() {
         let pk_hash = [0x42; 20];
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(&sig[3..], &pk_hash);
     }
 
-    /// 端到端: P2SH-P2WPKH 签名
+    /// End-to-end: P2SH-P2WPKH signing
     #[test]
     fn p2sh_p2wpkh_end_to_end() {
         let mut txid = [0u8; 32];
@@ -246,7 +246,7 @@ mod tests {
         };
         let txout = TxOut {
             value: 200_000,
-            script_pubkey: p2sh_script_pubkey(&[0x33; 20]), // 模拟 P2SH output
+            script_pubkey: p2sh_script_pubkey(&[0x33; 20]), // simulates a P2SH output
         };
         let mut tx = Transaction {
             version: 1,
@@ -270,29 +270,29 @@ mod tests {
 
         let signed = sign_p2sh_p2wpkh(&mut tx, &input).unwrap();
 
-        // 1. sighash 不为零
+        // 1. sighash is non-zero
         assert_ne!(signed.sighash, [0u8; 32]);
 
-        // 2. scriptSig 注入 (23 bytes: 0x16 + 0x00 + 0x14 + 20-byte hash)
+        // 2. scriptSig injected (23 bytes: 0x16 + 0x00 + 0x14 + 20-byte hash)
         let script_sig = &tx.inputs[0].script_sig;
         assert_eq!(script_sig.len(), 23);
         assert_eq!(script_sig[0], 0x16);
 
-        // 3. witness 注入 (2 items)
+        // 3. witness injected (2 items)
         let witness = &tx.inputs[0].witness;
         assert_eq!(witness.len(), 2);
 
-        // 4. 第一项 = signature + sighash byte (最后 byte = 0x01)
+        // 4. Item 1 = signature + sighash byte (last byte = 0x01)
         let sig_witness = &witness[0];
         assert!(sig_witness.len() >= 9);
         assert_eq!(sig_witness[sig_witness.len() - 1], 0x01);
 
-        // 5. 第二项 = compressed pubkey (33 bytes)
+        // 5. Item 2 = compressed pubkey (33 bytes)
         let pk_witness = &witness[1];
         assert_eq!(pk_witness.len(), 33);
         assert!(pk_witness[0] == 0x02 || pk_witness[0] == 0x03);
 
-        // 6. tx_bytes 是 BIP-144 segwit 格式 (marker 0x00, flag 0x01)
+        // 6. tx_bytes is BIP-144 segwit format (marker 0x00, flag 0x01)
         assert_eq!(signed.tx_bytes[4], 0x00);
         assert_eq!(signed.tx_bytes[5], 0x01);
 
@@ -303,7 +303,7 @@ mod tests {
         );
     }
 
-    /// Input index 越界
+    /// Input index out of bounds
     #[test]
     fn p2sh_p2wpkh_out_of_bounds() {
         let tx = Transaction {
@@ -323,7 +323,7 @@ mod tests {
         assert!(sign_p2sh_p2wpkh(&mut tx, &input).is_err());
     }
 
-    /// sighash 一致性: P2SH-P2WPKH 与 P2WPKH 应共享 sighash 路径 (因为都是 BIP-143)
+    /// Sighash consistency: P2SH-P2WPKH should share the sighash path with P2WPKH (both are BIP-143)
     #[test]
     fn p2sh_p2wpkh_sighash_matches_p2wpkh() {
         let mut txid = [0u8; 32];
@@ -337,7 +337,7 @@ mod tests {
         };
         let txout = TxOut {
             value: 100_000,
-            script_pubkey: vec![0x00, 0x14, 0x42], // 任意
+            script_pubkey: vec![0x00, 0x14, 0x42], // arbitrary
         };
         let tx = Transaction {
             version: 1,
@@ -347,10 +347,10 @@ mod tests {
         };
 
         let pk_hash = [0x42; 20];
-        // P2WPKH 和 P2SH-P2WPKH 用同一 P2PKH-style scriptCode (25 bytes)
+        // P2WPKH and P2SH-P2WPKH use the same P2PKH-style scriptCode (25 bytes)
         let script_code = p2pkh_script_code(&pk_hash);
 
-        // 两者的 sighash 算法完全相同 (BIP-143), 不同的是 scriptSig/witness 序列化
+        // The two sighash algorithms are identical (BIP-143); what differs is the scriptSig/witness serialization
         let h_p2sh = segwit_sighash_p2wpkh(&tx, 0, &script_code, 300_000, SIGHASH_ALL).unwrap();
         let h_p2w = segwit_sighash_p2wpkh(&tx, 0, &script_code, 300_000, SIGHASH_ALL).unwrap();
         assert_eq!(

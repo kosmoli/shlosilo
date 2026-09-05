@@ -1,24 +1,24 @@
-//! RIPEMD-160 hash（BTC P2WPKH witness program 派生）
+//! RIPEMD-160 hash (for BTC P2WPKH witness program derivation)
 //!
 //! witness_program = RIPEMD-160(SHA-256(compressed_pubkey)) (20 bytes)
 //!
-//! 用于：
-//! - BTC P2WPKH 地址：bech32_encode("bc"/"tb", [0x00] + witness_program)
-//! - BTC P2PKH 地址：base58check_encode([0x00] + witness_program + checksum)
+//! Used for:
+//! - BTC P2WPKH address: bech32_encode("bc"/"tb", [0x00] + witness_program)
+//! - BTC P2PKH address: base58check_encode([0x00] + witness_program + checksum)
 //!
-//! ## v2 §2.3 算法决策
+//! ## v2 §2.3 algorithm decision
 //!
-//! ✅ **wrap `bitcoin_hashes 0.14`**（rust-bitcoin 维护；密码学哈希）
+//! ✅ **wrap `bitcoin_hashes 0.14`** (maintained by rust-bitcoin; a cryptographic hash)
 
 use crate::error::Result;
 use bitcoin_hashes::{ripemd160, Hash as _};
 
-/// RIPEMD-160 输出长度
+/// RIPEMD-160 output length
 pub const RIPEMD160_OUTPUT_LEN: usize = 20;
 
 /// RIPEMD-160 hash
 ///
-/// # Phase 5 v5 真实实现
+/// # Phase 5 v5 real implementation
 ///
 /// wrap `bitcoin_hashes::ripemd160::Hash::hash()`。
 pub fn hash(data: &[u8]) -> Result<[u8; RIPEMD160_OUTPUT_LEN]> {
@@ -35,7 +35,7 @@ mod tests {
 
     const _: fn(&[u8]) -> Result<[u8; RIPEMD160_OUTPUT_LEN]> = hash;
 
-    /// 空输入 RIPEMD-160 输出已知
+    /// The RIPEMD-160 output for empty input is known
     /// (RFC 2286 test vector)
     #[test]
     fn ripemd160_empty() {
@@ -61,7 +61,7 @@ mod tests {
         assert_eq!(h, expected);
     }
 
-    /// 输出长度
+    /// Output length
     #[test]
     fn output_length() {
         let h = hash(b"any input").unwrap();

@@ -1,4 +1,4 @@
-//! bytes UR codec（opaque payload，不额外包 CBOR）
+//! bytes UR codec (opaque payload, no extra CBOR wrapping)
 
 use crate::error::Result;
 use crate::ur::ur_encode::{self, UrEncoded, UrTypeTag};

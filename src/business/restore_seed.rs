@@ -1,4 +1,4 @@
-//! 业务 4：恢复 seed（v2 §1.1）
+//! Business 4: restore seed (v2 §1.1)
 //!
 //! mnemonic + passphrase → BIP-39 64-byte seed（PBKDF2-HMAC-SHA512, 2048）
 
@@ -8,8 +8,8 @@ use crate::error::Result;
 
 /// mnemonic + passphrase → 64-byte seed
 ///
-/// P1-05（2026-08-26）：先验 checksum——恢复路径拒绝 checksum 错误的助记词
-/// （审计：validate() 曾恒 Ok，扫入拼写/校验和错误不会被拒绝）。
+/// P1-05 (2026-08-26): checksum checked first — the restore path rejects mnemonics with a bad checksum
+/// (Audit: validate() used to always return Ok, so scanned spelling/checksum errors were never rejected).
 pub fn restore_seed(mnemonic: &Mnemonic, passphrase: &[u8], seed_out: &mut [u8; 64]) -> Result<()> {
     mnemonic.validate()?;
     let seed = bip39_passphrase::mnemonic_to_seed(mnemonic, passphrase)?;
@@ -29,7 +29,7 @@ mod tests {
         restore_seed(&mnemonic, b"", &mut seed_out).unwrap();
         assert_ne!(seed_out, [0u8; 64]);
         assert_ne!(seed_out, [0xFFu8; 64]);
-        // 与 bip39_passphrase 官方向量同一 seed
+        // The same seed as the bip39_passphrase official vector
         let mut again = [0u8; 64];
         restore_seed(&mnemonic, b"", &mut again).unwrap();
         assert_eq!(seed_out, again);
@@ -42,7 +42,7 @@ mod tests {
 
     #[test]
     fn restore_seed_from_indices_abandon_about() {
-        // 12 词官方：11×abandon + about
+        // Official 12 words: 11×abandon + about
         let mut idx = [0u16; 12];
         idx[11] = 3;
         let mnemonic = Mnemonic::from_indices(&idx, WordCount::Words12).unwrap();
@@ -54,22 +54,22 @@ mod tests {
         assert_eq!(seed_out, expected);
     }
 
-    /// P1-05：restore 路径拒绝 checksum 错误的助记词（审计核心要求）
+    /// P1-05: the restore path rejects mnemonics with a bad checksum (a core audit requirement)
     #[test]
     fn restore_seed_rejects_bad_checksum() {
         use crate::error::ShlosiloErrorKind;
-        // 合法 12 词（abandon×11+about）→ 最后一个词改 about(3)→accident(4) 破坏 checksum
+        // Legal 12 words (abandon×11+about) → change the last word about(3)→accident(4) to break the checksum
         let mut idx = [0u16; 12];
         idx[11] = 4;
         let mnemonic = Mnemonic::from_indices(&idx, WordCount::Words12).unwrap();
         let mut seed_out = [0u8; 64];
         let err = restore_seed(&mnemonic, b"", &mut seed_out).unwrap_err();
         assert_eq!(err.kind, ShlosiloErrorKind::MnemonicInvalidChecksum);
-        // seed_out 不得被触碰
+        // seed_out must not be touched
         assert_eq!(seed_out, [0u8; 64]);
     }
 
-    /// P1-05：restore 路径通过合法 checksum
+    /// P1-05: the restore path passes with a legal checksum
     #[test]
     fn restore_seed_accepts_valid_checksum() {
         let mnemonic = Mnemonic::from_entropy(&[0x5cu8; 16]).unwrap();

@@ -1,75 +1,75 @@
-//! P1-03: 敏感字节材料 newtype（审计 2026-08-25 整改）。
+//! P1-03: newtype for sensitive byte material (audit 2026-08-25 remediation).
 //!
-//! v2-安全 §2 纪律的类型化落地：
-//! - 禁 `Copy`、禁 `Clone`——每 clone 一次 RAM 里多一份活跃密钥
-//! - 禁 `Debug` 输出内容——只输出 `[REDACTED]`
-//! - `ZeroizeOnDrop`——scope 结束清内存（对 dump/DMA 无效是已知残余风险，v2-安全 §1）
-//! - `PartialEq` 走 `subtle` 常时比较——防时序侧信道
+//! Typed enforcement of v2-security §2 discipline:
+//! - forbid `Copy`, forbid `Clone` — every clone means one more live key in RAM
+//! - forbid `Debug` printing contents — output is only `[REDACTED]`
+//! - `ZeroizeOnDrop` — memory cleared at scope end (ineffective against dump/DMA is a known residual risk, v2-security §1)
+//! - `PartialEq` via `subtle` constant-time comparison — prevents timing side channels
 //!
-//! 使用约定：
-//! - 构造用 [`SecretBytes::new`]（复制后 zeroize 调用方栈上的原副本）
-//! - 读取用 [`SecretBytes::expose`] / [`expose_mut`](SecretBytes::expose_mut)——
-//!   命名即审计点，`grep -r "expose()"` 可枚举全部明文访问
-//! - FFI 出参写 [`SecretBytes::write_into`]；禁止 `*expose()` 后再复制出第二份长期副本
+//! Usage conventions:
+//! - construct with [`SecretBytes::new`] (copies, then zeroizes the caller's original on-stack copy)
+//! - read with [`SecretBytes::expose`] / [`expose_mut`](SecretBytes::expose_mut) —
+//!   the name is the audit point; `grep -r "expose()"` enumerates all plaintext accesses
+//! - FFI out-params use [`SecretBytes::write_into`]; `*expose()` followed by copying out a second long-lived copy is forbidden
 
 use core::fmt;
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// 定长敏感字节（私钥 / seed / mask / tx secret）。
+/// Fixed-length sensitive bytes (private key / seed / mask / tx secret).
 ///
-/// 不实现：`Clone`、`Copy`、`Debug`（内容）、`Display`、`AsRef<[u8]>`（防意外泄露）、
-/// `From<[u8; N]>`（构造必须显式走 `new`，grep 可查）。
+/// Not implemented: `Clone`, `Copy`, `Debug` (contents), `Display`, `AsRef<[u8]>` (prevents accidental leakage),
+/// `From<[u8; N]>` (construction must explicitly go through `new`, grep-able).
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SecretBytes<const N: usize> {
     bytes: [u8; N],
 }
 
 impl<const N: usize> SecretBytes<N> {
-    /// 从原始字节构造。仅清零**参数副本**——调用方自己的绑定仍持有明文，
-    /// 只适用于调用方副本即弃的临时场景；持有多份明文时改用 [`SecretBytes::take`]。
+    /// Construct from raw bytes. Only zeroes the **parameter copy** — the caller's own binding still holds
+    /// the plaintext; suitable only for temporary scenarios where the caller discards its copy. Use [`SecretBytes::take`] when holding multiple plaintext copies.
     pub fn new(mut raw: [u8; N]) -> Self {
         let this = Self { bytes: raw };
         raw.zeroize();
         this
     }
 
-    /// 从调用方缓冲区**接管**：复制后立即清零调用方的真实内存。
-    /// 这是消灭多余明文副本的正原语（审计 P1-03 的核心诉求）。
+    /// **Takes over** from the caller's buffer: copies, then immediately zeroes the caller's real memory.
+    /// This is the right primitive for eliminating surplus plaintext copies (the core demand of audit P1-03).
     pub fn take(buf: &mut [u8; N]) -> Self {
         let this = Self { bytes: *buf };
         buf.zeroize();
         this
     }
 
-    /// 全零值（占位构造用；密码学上零标量是非法密钥，消费端校验负责拒绝）。
+    /// All-zero value (for placeholder construction; a zero scalar is cryptographically an invalid key — consumer-side validation rejects it).
     pub fn zeroed() -> Self {
         Self { bytes: [0u8; N] }
     }
 
-    /// 显式明文访问。命名即审计点——所有接触明文的代码必须经过这里。
+    /// Explicit plaintext access. The name is the audit point — all code touching plaintext must go through here.
     pub fn expose(&self) -> &[u8; N] {
         &self.bytes
     }
 
-    /// 显式可变明文访问（FFI 出参写穿、就地变换用）。
+    /// Explicit mutable plaintext access (for FFI out-param write-through and in-place transforms).
     pub fn expose_mut(&mut self) -> &mut [u8; N] {
         &mut self.bytes
     }
 
-    /// 复制到调用方提供的缓冲区（FFI 出参契约）。
-    /// 注意：写出的目标缓冲区由调用方负责生命周期；本结构自身的副本照常 ZeroizeOnDrop。
+    /// Copy into a caller-provided buffer (FFI out-param contract).
+    /// Note: the target buffer's lifetime is the caller's responsibility; this struct's own copy is still ZeroizeOnDrop as usual.
     pub fn write_into(&self, out: &mut [u8]) {
         out[..N].copy_from_slice(&self.bytes);
     }
 
-    /// 就地清零（drop 之外需要提前擦除时用）。
+    /// In-place zeroization (for early erasure outside drop).
     pub fn zeroize_in_place(&mut self) {
         self.bytes.zeroize();
     }
 }
 
-/// 常时时间比较——`==` 不泄露前缀匹配长度。
+/// Constant-time comparison — `==` leaks no prefix-match length.
 impl<const N: usize> PartialEq for SecretBytes<N> {
     fn eq(&self, other: &Self) -> bool {
         self.bytes.ct_eq(&other.bytes).into()
@@ -78,7 +78,7 @@ impl<const N: usize> PartialEq for SecretBytes<N> {
 
 impl<const N: usize> Eq for SecretBytes<N> {}
 
-/// Debug 只暴露类型与长度，绝不出内容（对齐 Mnemonic 的手写 Debug 策略）。
+/// Debug exposes only the type and length, never contents (matching Mnemonic's hand-written Debug policy).
 impl<const N: usize> fmt::Debug for SecretBytes<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "SecretBytes<{}>([REDACTED])", N)
@@ -91,13 +91,13 @@ mod tests {
     extern crate alloc;
     use alloc::format;
 
-    // ---- 类型纪律（P1-03 compile-fail 等价物：误加 impl 会让测试编译失败）----
+    // ---- Type discipline (P1-03 compile-fail equivalents: adding the wrong impl breaks the test build) ----
 
-    // SecretBytes 本体：禁 Clone / Copy / Debug 内容泄露
+    // SecretBytes itself: forbid Clone / Copy / Debug content leakage
     static_assertions::assert_not_impl_any!(SecretBytes<32>: Clone, Copy);
     static_assertions::assert_not_impl_any!(SecretBytes<64>: Clone, Copy);
 
-    // P1-03 迁移类型：禁 Clone / Copy（v2-安全 §2 + 审计 2026-08-25 P1-03）
+    // P1-03 migration types: forbid Clone / Copy (v2-security §2 + audit 2026-08-25 P1-03)
     use crate::chain::btc::p2pkh::P2PKHSignInput;
     use crate::chain::btc::p2sh::P2SHP2WPKHSignInput;
     use crate::chain::btc::p2wpkh::P2WPKHSignInput;
@@ -135,18 +135,18 @@ mod tests {
     fn take_zeroizes_caller_memory() {
         let mut raw = [0x42u8; 32];
         let secret = SecretBytes::take(&mut raw);
-        // 调用方的真实内存已被清零——不是参数副本
+        // the caller's real memory has been zeroed — not just the parameter copy
         assert!(raw.iter().all(|&b| b == 0));
-        // 本体保留内容
+        // the original keeps its contents
         assert_eq!(secret.expose(), &[0x42u8; 32]);
     }
 
     #[test]
     fn new_leaves_caller_binding_holding_plaintext_by_design() {
-        // new 的契约：只清参数副本。此测试锁定该语义，防止未来有人误改。
+        // new's contract: only zeroes the parameter copy. This test locks that semantics against future changes.
         let mut raw = [0x42u8; 32];
         let secret = SecretBytes::new(raw);
-        let _ = &mut raw; // raw 仍是 [0x42; 32]——调用方责任
+        let _ = &mut raw; // raw is still [0x42; 32] — the caller's responsibility
         assert_eq!(secret.expose(), &[0x42u8; 32]);
     }
 
@@ -177,9 +177,9 @@ mod tests {
 
     #[test]
     fn zeroize_on_drop_impl() {
-        // R1（2026-08-31）：文档承诺「scope 结束清内存」——类型系统必须兑现
+        // R1 (2026-08-31): the docs promise "memory cleared at scope end" — the type system must deliver
         assert!(core::mem::needs_drop::<SecretBytes<32>>());
-        // ZeroizeOnDrop 是零 Sized 自动 trait，用 trait bound 静态断言
+        // ZeroizeOnDrop is an auto trait with no Sized bound; assert statically via a trait bound
         fn assert_zod<T: zeroize::ZeroizeOnDrop>() {}
         assert_zod::<SecretBytes<32>>();
         assert_zod::<SecretBytes<64>>();

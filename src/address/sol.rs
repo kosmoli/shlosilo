@@ -1,14 +1,14 @@
-//! SOL 地址编码（base58 + ed25519 pubkey）
+//! SOL address encoding (base58 + ed25519 pubkey)
 //!
 //! Phase 2.3 stub
-//! Phase 4 真实实现：`solana-program` 或 `ed25519-dalek` pubkey + base58
+//! Phase 4 real implementation: `solana-program` or `ed25519-dalek` pubkey + base58
 
 use crate::curve_primitive::ed25519::Ed25519Point;
 use crate::error::Result;
 use crate::network::Network;
 use core::fmt;
 
-/// SOL 地址长度（base58 编码 32-byte pubkey，约 32-44 字符）
+/// SOL address length (base58-encoded 32-byte pubkey, roughly 32-44 characters)
 pub const SOL_ADDRESS_MAX_LEN: usize = 64;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -39,12 +39,12 @@ impl fmt::Debug for SolAddress {
     }
 }
 
-/// SOL 地址编码
+/// SOL address encoding
 ///
-/// # Phase 4 实现
-/// - base58(pubkey_32_bytes) — Solana 直接用 ed25519 32-byte pubkey 作为地址
+/// # Phase 4 Implementation
+/// - base58(pubkey_32_bytes) — Solana uses the ed25519 32-byte pubkey directly as the address
 pub fn encode(_pubkey: &Ed25519Point, _network: Network) -> Result<SolAddress> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic -> stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        // P2-01: stubs have been switched to stable error codes; panic macros must not regress (skip comment lines)
         for line in include_str!("sol.rs").lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

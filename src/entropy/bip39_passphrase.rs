@@ -13,10 +13,10 @@ use pbkdf2::pbkdf2_hmac;
 use sha2::Sha512;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// BIP-39 seed 长度（64 bytes）
+/// BIP-39 seed length (64 bytes)
 pub const BIP39_SEED_LEN: usize = 64;
 
-// P1-03：禁 Clone——每 clone 一次 RAM 多一份活跃 seed（v2-安全 §2）
+// P1-03: Clone forbidden — each clone adds one more active seed in RAM (v2-security §2)
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct Bip39Seed {
     bytes: [u8; BIP39_SEED_LEN],
@@ -52,10 +52,10 @@ pub fn mnemonic_to_seed(mnemonic: &Mnemonic, passphrase: &[u8]) -> Result<Bip39S
         sentence.push_str(w);
     }
     let mut salt = String::from("mnemonic");
-    // BIP-39 passphrase 是 UTF-8 字符串，且标准要求 NFKD 规范化。
-    // 固件（no_std）不实现 NFKD——P1-05 审计整改（2026-08-26）：
-    // 明确只支持 ASCII passphrase，非 UTF-8 / 非 ASCII 一律拒绝，
-    // 绝不静默当空（静默当空 = 与标准钱包导出不同 seed = 看似丢币）。
+    // The BIP-39 passphrase is a UTF-8 string and the standard requires NFKD normalization.
+    // Firmware (no_std) does not implement NFKD — P1-05 audit remediation (2026-08-26):
+    // explicitly support ASCII passphrases only; non-UTF-8 / non-ASCII is always rejected,
+    // never silently treated as empty (silently treating as empty = a different seed from standard wallets = seemingly lost funds).
     let p = core::str::from_utf8(passphrase)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     if !p.is_ascii() {
@@ -91,7 +91,7 @@ mod tests {
         let _m = Mnemonic::from_indices(&[0u16; 12], WordCount::Words12);
     }
 
-    /// BIP-39 官方向量：entropy=16×0 → abandon×11 + about；空 passphrase seed
+    /// BIP-39 official vector: entropy=16×0 → abandon×11 + about; seed with an empty passphrase
     #[test]
     fn bip39_official_abandon_about() {
         let m = Mnemonic::from_entropy(&[0u8; 16]).unwrap();
@@ -113,30 +113,30 @@ mod tests {
             .collect()
     }
 
-    /// P1-05：非 UTF-8 passphrase 明确报错（不再静默当空）
+    /// P1-05: non-UTF-8 passphrase errors explicitly (no longer silently treated as empty)
     #[test]
     fn non_utf8_passphrase_rejected() {
         let m = Mnemonic::from_entropy(&[0u8; 16]).unwrap();
-        let bad = [0xffu8, 0xfe, 0xfd]; // 非法 UTF-8
+        let bad = [0xffu8, 0xfe, 0xfd]; // invalid UTF-8
         let err = mnemonic_to_seed(&m, &bad).unwrap_err();
         assert_eq!(err.kind, ShlosiloErrorKind::EncodingInvalidFormat);
     }
 
-    /// P1-05：非 ASCII（含非 ASCII UTF-8）passphrase 明确拒绝——固件只支持 ASCII
+    /// P1-05: non-ASCII (including non-ASCII UTF-8) passphrase explicitly rejected — firmware supports ASCII only
     #[test]
     fn non_ascii_passphrase_rejected() {
         let m = Mnemonic::from_entropy(&[0u8; 16]).unwrap();
-        let bad = "测试".as_bytes(); // 合法 UTF-8 但非 ASCII
+        let bad = "测试".as_bytes(); // valid UTF-8 but non-ASCII (test data)
         let err = mnemonic_to_seed(&m, bad).unwrap_err();
         assert_eq!(err.kind, ShlosiloErrorKind::EncodingInvalidFormat);
     }
 
-    /// P1-05：ASCII passphrase 正常工作（Trezor 官方向量：128-bit 全零 entropy + "TREZOR"）
+    /// P1-05: ASCII passphrase works (Trezor official vector: 128-bit all-zero entropy + "TREZOR")
     #[test]
     fn ascii_passphrase_accepted() {
         let m = Mnemonic::from_entropy(&[0u8; 16]).unwrap();
         let seed = mnemonic_to_seed(&m, b"TREZOR").unwrap();
-        // Trezor BIP-39 test vectors（python-mnemonic vectors.json 同源独立计算验证）
+        // Trezor BIP-39 test vectors (independently computed cross-check with python-mnemonic vectors.json)
         let expected = hex(
             "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04",
         );

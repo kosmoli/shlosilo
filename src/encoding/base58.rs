@@ -1,23 +1,23 @@
-//! base58 + base58check 编码（BTC legacy + XRP + SOL）
+//! base58 + base58check encoding (BTC legacy + XRP + SOL)
 //!
-//! **Phase 4 真实实现**（v2 §3.5 原则——L1 编码自己实现，不引入 alloc crate 依赖）：
-//! - base58 算法核心 = 把 byte slice 当作大整数，连续除 58 取余
+//! **Phase 4 real implementation** (v2 §3.5 principle — L1 encodings implemented in-house, no alloc-crate dependency):
+//! - the base58 algorithm core = treat the byte slice as a big integer, repeatedly divide by 58 and take remainders
 //! - base58check = base58(data || sha256(sha256(data))[:4])
 //!
-//! **为什么自己实现**：base58 是字符集转换 + 校验和算法，**不涉及密钥输入**，
-//! 风险 = 字符串显示错（不会泄露密钥）。密码学原语（sha256/sha512/k256/ed25519-dalek）
-//! 保留 crate 依赖；编码模块自己实现以严格遵守 v2 §3.5 零堆分配。
+//! **Why implement it in-house**: base58 is a character-set conversion + checksum algorithm, **involving no key inputs**;
+//! the risk = a wrongly displayed string (no key leakage). Cryptographic primitives (sha256/sha512/k256/ed25519-dalek)
+//! keep crate dependencies; encoding modules are implemented in-house to strictly honor v2 §3.5 zero heap allocation.
 
 use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// base58check 字符串最大长度
+/// base58check string maximum length
 pub const BASE58_MAX_LEN: usize = 128;
 
-/// base58 字符表（不含 0/I/O/l）
+/// base58 character table (no 0/I/O/l)
 const BASE58_ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-/// 反查表（255 = invalid）
+/// Reverse lookup table (255 = invalid)
 fn base58_inverse() -> [u8; 256] {
     let mut inv = [255u8; 256];
     for (i, &c) in BASE58_ALPHABET.iter().enumerate() {
@@ -54,16 +54,16 @@ impl core::fmt::Debug for Base58String {
     }
 }
 
-/// base58 编码（无 checksum）
+/// base58 encode (no checksum)
 ///
-/// 算法：
-/// 1. 统计前导 0x00 byte 数量
-/// 2. 把 input bytes 看作大整数，连续除以 58 → 反向输出字符
-/// 3. 前导 0x00 byte → 前导 '1' 字符
+/// Algorithm:
+/// 1. Count the number of leading 0x00 bytes
+/// 2. Treat the input bytes as a big integer, repeatedly divide by 58 → output characters in reverse
+/// 3. Leading 0x00 bytes → leading '1' characters
 ///
-/// **v0.4.0 实现**：参考 bitcoinjs-lib / bitcoin core 算法
+/// **v0.4.0 implementation**: modeled on bitcoinjs-lib / bitcoin core
 pub fn encode(data: &[u8]) -> Result<Base58String> {
-    // 1. 统计前导 0x00 byte 数量
+    // 1. Count the number of leading 0x00 bytes
     let mut leading_zeros = 0;
     for &b in data.iter() {
         if b == 0 {
@@ -73,7 +73,7 @@ pub fn encode(data: &[u8]) -> Result<Base58String> {
         }
     }
 
-    // 2. 大整数除 58（用 heapless::Vec<u8, 256> 作工作空间）
+    // 2. Big integer division by 58 (heapless::Vec<u8, 256> as workspace)
     let mut working = heapless::Vec::<u8, 256>::new();
     working
         .extend_from_slice(data)
@@ -81,10 +81,10 @@ pub fn encode(data: &[u8]) -> Result<Base58String> {
 
     let mut result_bytes: heapless::Vec<u8, BASE58_MAX_LEN> = heapless::Vec::new();
 
-    // 计算需要输出的字符数 = leading_zeros + log58(data) ≈ leading_zeros + log58(max_value)
-    // 简单做法：while working 不全 0 时除 58
+    // Compute the number of characters to output = leading_zeros + log58(data) ≈ leading_zeros + log58(max_value)
+    // Simple approach: divide by 58 while working is not all zero
     loop {
-        // 检查是否全 0
+        // check whether all zero
         let mut all_zero = true;
         for &b in working.iter() {
             if b != 0 {
@@ -93,7 +93,7 @@ pub fn encode(data: &[u8]) -> Result<Base58String> {
             }
         }
         if all_zero {
-            // 输出 leading_zeros 个 '1'（BASE58_ALPHABET[0]）
+            // output leading_zeros '1's (BASE58_ALPHABET[0])
             for _ in 0..leading_zeros {
                 result_bytes
                     .push(BASE58_ALPHABET[0])
@@ -102,7 +102,7 @@ pub fn encode(data: &[u8]) -> Result<Base58String> {
             break;
         }
 
-        // 大整数除 58
+        // big integer division by 58
         let mut remainder: usize = 0;
         let mut new_working = heapless::Vec::<u8, 256>::new();
         for &b in working.iter() {
@@ -114,7 +114,7 @@ pub fn encode(data: &[u8]) -> Result<Base58String> {
                     .push(q as u8)
                     .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
             }
-            // carry 不变（acc 已经分散到 q 和 remainder）
+            // carry unchanged (acc already spread into q and remainder)
             let _ = remainder;
         }
         result_bytes
@@ -123,7 +123,7 @@ pub fn encode(data: &[u8]) -> Result<Base58String> {
         working = new_working;
     }
 
-    // 3. 反向 result_bytes → 输出
+    // 3. Reverse result_bytes → output
     let mut out = heapless::String::<BASE58_MAX_LEN>::new();
     for &b in result_bytes.iter().rev() {
         out.push(b as char)
@@ -133,7 +133,7 @@ pub fn encode(data: &[u8]) -> Result<Base58String> {
     Ok(Base58String { bytes: out })
 }
 
-/// base58check 编码（带 sha256d 校验和）
+/// base58check encode (with sha256d checksum)
 ///
 /// `base58(data || sha256(sha256(data))[:4])`
 pub fn encode_check(data: &[u8]) -> Result<Base58String> {
@@ -151,9 +151,9 @@ pub fn encode_check(data: &[u8]) -> Result<Base58String> {
     encode(&with_checksum)
 }
 
-/// base58 解码
+/// base58 decode
 ///
-/// 算法：把字符串视为 base58 数字，working（low byte 在前）= working * 58 + n
+/// Algorithm: treat the string as a base58 number, working (low byte first) = working * 58 + n
 pub fn decode(s: &str) -> Result<heapless::Vec<u8, 192>> {
     let inv = base58_inverse();
 
@@ -172,7 +172,7 @@ pub fn decode(s: &str) -> Result<heapless::Vec<u8, 192>> {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
 
-        // working = working * 58 + n (单遍算法)
+        // working = working * 58 + n (single-pass algorithm)
         let mut carry: usize = n as usize;
         for i in 0..working.len() {
             let acc = carry + (working[i] as usize) * 58;
@@ -187,7 +187,7 @@ pub fn decode(s: &str) -> Result<heapless::Vec<u8, 192>> {
         }
     }
 
-    // 输出：leading_ones 个 0x00 byte + working 反向（小端→大端 = 原字节序）
+    // Output: leading_ones 0x00 bytes + working reversed (little-endian → big-endian = original byte order)
     let mut result = heapless::Vec::<u8, 192>::new();
     for _ in 0..leading_ones {
         result
@@ -203,7 +203,7 @@ pub fn decode(s: &str) -> Result<heapless::Vec<u8, 192>> {
     Ok(result)
 }
 
-/// base58check 解码（验证 checksum）
+/// base58check decode (verifies the checksum)
 pub fn decode_check(s: &str) -> Result<heapless::Vec<u8, 128>> {
     let decoded = decode(s)?;
     if decoded.len() < 4 {
@@ -231,7 +231,7 @@ pub fn decode_check(s: &str) -> Result<heapless::Vec<u8, 128>> {
 mod tests {
     use super::*;
 
-    /// BTC P2PKH 地址 base58check 标准测试向量
+    /// BTC P2PKH address base58check standard test vector
     /// Pubkey hash: 010966776006953D5567439E5E39F86A0D273BEE
     /// Version: 0x00 (mainnet P2PKH)
     /// Expected: 16UwLL9Risc3QfPqBUvKofHmBQ7wMtjvM
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(decoded.as_slice(), &original[..]);
     }
 
-    /// checksum 错误 → 返回错误
+    /// checksum error → returns error
     #[test]
     fn decode_check_wrong_checksum_rejected() {
         let data = [
@@ -280,21 +280,21 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// base58 编码空输入 → 空字符串
+    /// base58 encoding empty input → empty string
     #[test]
     fn encode_empty() {
         let result = encode(&[]).unwrap();
         assert_eq!(result.as_ref(), "");
     }
 
-    /// base58 编码单个 0x00 byte → "1"
+    /// base58 encoding a single 0x00 byte → "1"
     #[test]
     fn encode_single_zero() {
         let result = encode(&[0x00]).unwrap();
         assert_eq!(result.as_ref(), "1");
     }
 
-    /// base58 编码多个前导 0x00 → 多个 '1'
+    /// base58 encoding multiple leading 0x00s → multiple '1's
     #[test]
     fn encode_multiple_leading_zeros() {
         let result = encode(&[0x00, 0x00, 0x00]).unwrap();
@@ -310,10 +310,10 @@ mod tests {
         assert_eq!(decoded.as_slice(), original);
     }
 
-    /// 错误字符 → 返回错误
+    /// invalid character → returns error
     #[test]
     fn decode_invalid_char_rejected() {
-        // '0' 不在 base58 字符集
+        // '0' is not in the base58 character set
         let r = decode("0ab");
         assert!(r.is_err());
     }

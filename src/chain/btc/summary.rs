@@ -1,11 +1,11 @@
-//! PSBT 解析摘要 / 风险标记（Phase 5 v9.18）
+//! PSBT parsing summary / risk flags (Phase 5 v9.18)
 //!
-//! L1 纯函数：从已解析的 `Psbt` 抽出确认屏需要的数字与警告。
-//! 不做找零身份识别（那要 xpub/fingerprint，属钱包上下文）。
-//! 调用方可选传入 `own_spks` 标记「自己的」output。
+//! L1 pure functions: extract the numbers and warnings the confirmation screen needs from a parsed `Psbt`.
+//! No change-address identity detection (that needs xpub/fingerprint, which is wallet context).
+//! The caller may optionally pass `own_spks` to flag "own" outputs.
 //!
-//! 对标 keystone `parse_psbt` 的 overview 字段子集：
-//! fee、fee > amount、missing UTXO、未知脚本、巨大 output、RBF、locktime、CSV。
+//! Mirrors the overview field subset of keystone `parse_psbt`:
+//! fee, fee > amount, missing UTXO, unknown scripts, huge output, RBF, locktime, CSV.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -14,15 +14,15 @@ use crate::chain::btc::p2wpkh::Transaction;
 use crate::chain::btc::psbt::{get_utxo_any, Psbt};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// BIP-125: nSequence < 0xfffffffe 表示可替换
+/// BIP-125: nSequence < 0xfffffffe means replaceable
 pub const RBF_THRESHOLD: u32 = 0xfffffffe;
-/// nLockTime 高度/时间分界（BIP-65 / Bitcoin Core）
+/// nLockTime height/time boundary (BIP-65 / Bitcoin Core)
 pub const LOCKTIME_THRESHOLD: u32 = 500_000_000;
 /// BIP-68 disable flag
 pub const SEQUENCE_LOCKTIME_DISABLE_FLAG: u32 = 1 << 31;
-/// BIP-68 type flag（set = 时间，clear = 高度）
+/// BIP-68 type flag (set = time, clear = height)
 pub const SEQUENCE_LOCKTIME_TYPE_FLAG: u32 = 1 << 22;
-/// 超过此值视为「巨大」（21M BTC，单位 sat）
+/// Above this value counts as "huge" (21M BTC, in sats)
 pub const MAX_MONEY_SATS: u64 = 21_000_000 * 100_000_000;
 /// P2PKH dust
 pub const DUST_SATS: u64 = 546;
@@ -144,7 +144,7 @@ pub fn summarize_psbt(psbt: &Psbt, own_spks: &[&[u8]]) -> Result<PsbtSummary> {
     let n = psbt.unsigned_tx.inputs.len();
     let mut values = Vec::with_capacity(n);
     for i in 0..n {
-        // 审计 #5 开-01:utxo 获取带 prev_out 绑定(NON_WITNESS_UTXO txid 校验)
+        // Audit #5 OP-01: utxo retrieval carries prev_out binding (NON_WITNESS_UTXO txid check)
         let v = psbt.inputs.get(i).and_then(|m| {
             psbt.unsigned_tx
                 .inputs
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn fee_and_rbf_from_psbt_full_round_trip_shape() {
-        // 与 psbt_full_round_trip 同形状：200_000 in, 50_000 out, seq 0xffffffee, lock 12345
+        // same shape as psbt_full_round_trip: 200_000 in, 50_000 out, seq 0xffffffee, lock 12345
         let psbt = sample_psbt(200_000, 50_000, 0xffffffee, 12345, p2wpkh_spk(0xab));
         let s = summarize_psbt(&psbt, &[]).unwrap();
         assert_eq!(s.total_in, Some(200_000));
@@ -354,7 +354,7 @@ mod tests {
         let psbt = sample_psbt(100_000, 90_000, 0xffffffff, 0, spk.clone());
         let s = summarize_psbt(&psbt, &[spk.as_slice()]).unwrap();
         assert!(s.outputs[0].is_own);
-        assert!(!s.fee_larger_than_amount); // 外部金额 0，fee 对外部金额不算「大于」
+        assert!(!s.fee_larger_than_amount); // external amount is 0, so fee does not count as "larger" for the external amount
         assert_eq!(s.fee, Some(10_000));
         assert_eq!(s.locktime, LocktimeKind::None);
         assert!(!s.rbf);

@@ -1,16 +1,16 @@
-//! XMR 地址编码（base58 + Keccak256 checksum + network byte + spend_pub + view_pub）
+//! XMR address encoding (base58 + Keccak256 checksum + network byte + spend_pub + view_pub)
 //!
-//! Phase 5 v4 真实实现：wrap `base58-monero 2.0` + `monero-ed25519`
+//! Phase 5 v4 real implementation: wraps `base58-monero 2.0` + `monero-ed25519`
 //!
-//! ## 算法（XMR 标准地址）
+//! ## Algorithm (XMR standard address)
 //!
 //! 1. payload = 1 byte network + 32 bytes spend_pub + 32 bytes view_pub (65 bytes)
 //! 2. checksum = Keccak256(payload)[:4]
 //! 3. bytes_to_encode = payload || checksum (69 bytes)
 //! 4. address = base58_monero_encode(bytes_to_encode) (~95 chars)
 //!
-//! **注意**：
-//! - Keccak-256 **不是** SHA3-256（nonce 不同），但 tiny-keccak 默认就是 Keccak-256 ✓
+//! **Note**:
+//! - Keccak-256 is **not** SHA3-256 (different nonce), but tiny-keccak defaults to Keccak-256 ✓
 //! - XMR base58 ≠ Bitcoin base58（8-byte blocks）
 //!
 //! ## Network bytes
@@ -21,14 +21,14 @@
 //! | Stagenet | 0x18 |
 //! | Testnet | 0x35 |
 //!
-//! ## v2.4 安全修正
+//! ## v2.4 security fixes
 //!
-//! - 两个 `&Ed25519Point` 都是 borrow，不 clone 副本
-//! - 输出 XmrAddress 是 `heapless::String<128>`（栈分配）
+//! - Both `&Ed25519Point` are borrows, no clone copies
+//! - The output XmrAddress is a `heapless::String<128>` (stack allocated)
 //!
-//! ## v2 §2.3 算法决策
+//! ## v2 §2.3 algorithm decisions
 //!
-//! ✅ **wrap base58-monero**（monero-rs 官方，多次审计；编码类）
+//! ✅ **wrap base58-monero** (official monero-rs, audited multiple times; encode/decode class)
 
 use crate::curve_primitive::ed25519::{point_to_compressed, Ed25519Point};
 use crate::encoding::keccak256;
@@ -37,15 +37,15 @@ use crate::network::Network;
 use base58_monero::encode as base58_monero_encode;
 use core::fmt;
 
-/// XMR 地址最大长度（base58 编码 69 bytes = 8-byte × 8 + 5-byte tail → 11×8 + 7 = 95 chars，< 128 安全余量）
+/// Maximum XMR address length (base58-encoding 69 bytes = 8-byte × 8 + 5-byte tail → 11×8 + 7 = 95 chars, safe margin below 128)
 pub const XMR_ADDRESS_MAX_LEN: usize = 128;
 
-/// XMR 地址 payload 长度
+/// XMR address payload length
 const XMR_PAYLOAD_LEN: usize = 65; // 1 byte network + 32 spend_pub + 32 view_pub
-/// XMR Keccak-256 checksum 长度
+/// XMR Keccak-256 checksum length
 const XMR_CHECKSUM_LEN: usize = 4;
 
-/// XMR 网络字节
+/// XMR network byte
 fn xmr_network_byte(network: Network) -> Result<u8> {
     match network {
         Network::MoneroMainnet => Ok(0x12),
@@ -83,27 +83,27 @@ impl fmt::Debug for XmrAddress {
     }
 }
 
-/// XMR 地址编码
+/// Encode an XMR address
 ///
-/// # 算法
+/// # Algorithm
 ///
 /// 1. payload = network_byte || spend_pub || view_pub (65 bytes)
 /// 2. checksum = Keccak256(payload)[:4]
 /// 3. bytes = payload || checksum (69 bytes)
-/// 4. address = base58_monero_encode(bytes) → 95 字符
+/// 4. address = base58_monero_encode(bytes) → 95 chars
 ///
-/// # v2.4 安全
+/// # v2.4 security
 ///
-/// 两个 `&Ed25519Point` 都是 borrow，**不 clone**——避免热路径泄漏私钥关联的 spend_pk 副本。
+/// Both `&Ed25519Point` are borrows, **no clone** — avoiding leaking spend_pk copies tied to the private key on the hot path.
 ///
-/// # base58-monero encode_check 已知 bug
+/// # base58-monero encode_check known bug
 ///
-/// `base58_monero::encode_check` 简单把 checksum 接在 payload 后调 `encode`，导致 Monero 地址
-/// 实际编码为 101 字符（不是规范的 95 字符）。我们用 `encode` + 手写 checksum 拼接逻辑：
+/// `base58_monero::encode_check` simply appends the checksum to the payload and calls `encode`, which makes a Monero address
+/// actually encode to 101 chars (not the canonical 95 chars). We use `encode` + hand-written checksum concatenation:
 ///
 /// - 65 bytes payload → 8 full blocks (64 bytes) + 1 byte tail
 /// - 1 byte tail + 4 checksum = 5 bytes ≤ 8 → 5-byte final block → 7 chars
-/// - Total: 8 × 11 + 7 = **95 chars** ✓ (Monero 官方长度)
+/// - Total: 8 × 11 + 7 = **95 chars** ✓ (the official Monero length)
 pub fn encode(
     spend_pub: &Ed25519Point,
     view_pub: &Ed25519Point,
@@ -132,7 +132,7 @@ pub fn encode(
     let checksum_full = keccak256::hash(&payload)?;
     let checksum = &checksum_full[..XMR_CHECKSUM_LEN];
 
-    // 5. 正确编码：8 full blocks + 1 byte tail
+    // 5. Correct encoding: 8 full blocks + 1 byte tail
     //    full blocks (64 bytes) → 88 chars
     let full_blocks = &payload[..XMR_PAYLOAD_LEN - 1]; // 64 bytes
     let encoded_full = base58_monero_encode(full_blocks)
@@ -149,7 +149,7 @@ pub fn encode(
     let encoded_tail = base58_monero_encode(&tail_block)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-    // 7. 拼接 → 95 chars
+    // 7. Concatenate → 95 chars
     let mut address: heapless::String<XMR_ADDRESS_MAX_LEN> = heapless::String::new();
     address
         .push_str(&encoded_full)
@@ -166,7 +166,7 @@ mod tests {
     use super::*;
     use crate::curve_primitive::ed25519::{base_mul, scalar_from_bytes};
 
-    /// XMR Mainnet 地址长度 = 95 字符
+    /// XMR Mainnet address length = 95 chars
     #[test]
     fn address_length_mainnet() {
         let sk1 = scalar_from_bytes(&[1u8; 32]).unwrap();
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(addr.as_ref().len(), 95);
     }
 
-    /// XMR Stagenet / Testnet 不同 prefix
+    /// XMR Stagenet / Testnet have different prefixes
     #[test]
     fn network_prefix_different() {
         let sk1 = scalar_from_bytes(&[1u8; 32]).unwrap();
@@ -189,16 +189,16 @@ mod tests {
         let stagenet = encode(&pk1, &pk2, Network::MoneroStagenet).unwrap();
         let testnet = encode(&pk1, &pk2, Network::MoneroTestnet).unwrap();
 
-        // XMR Mainnet 地址开头通常是 '4' (0x12 = 18, 18 = 0x12 → "4" 是 base58-monero 第 19 字符)
-        // Stagenet 通常 '7' (0x18 = 24)
-        // Testnet 通常 '9' 或 'B' (0x35 = 53)
-        // 实际字符依算法不同而异，但**前两个字符应该不同**
+        // An XMR Mainnet address usually starts with \'4\' (0x12 = 18; 18 = 0x12 → "4" is the 19th base58-monero char)
+        // Stagenet usually \'7\' (0x18 = 24)
+        // Testnet usually \'9\' or \'B\' (0x35 = 53)
+        // Actual chars depend on the algorithm, but **the first two chars should differ**
         assert_ne!(&mainnet.as_ref()[..2], &stagenet.as_ref()[..2]);
         assert_ne!(&mainnet.as_ref()[..2], &testnet.as_ref()[..2]);
         assert_ne!(&stagenet.as_ref()[..2], &testnet.as_ref()[..2]);
     }
 
-    /// 确定性：相同 sk + 网络 → 相同地址
+    /// Determinism: same sk + network → same address
     #[test]
     fn deterministic_encoding() {
         let sk1 = scalar_from_bytes(&[3u8; 32]).unwrap();
@@ -210,7 +210,7 @@ mod tests {
         assert_eq!(addr1.as_ref(), addr2.as_ref());
     }
 
-    /// 不同 sk → 不同地址；同 sk 重新 base_mul → 同地址
+    /// Different sk → different addresses; same sk re-run base_mul → same address
     #[test]
     fn different_spend_pub_different_address() {
         let sk1 = scalar_from_bytes(&[5u8; 32]).unwrap();
@@ -218,26 +218,26 @@ mod tests {
         let pk1 = base_mul(&sk1);
         let pk2 = base_mul(&sk2);
 
-        // pk1 vs pk2 不同
+        // pk1 vs pk2 differ
         assert_ne!(point_to_compressed(&pk1), point_to_compressed(&pk2));
 
-        // spend_pub 不同 → 地址不同
+        // spend_pub differs → addresses differ
         let addr1 = encode(&pk1, &pk2, Network::MoneroMainnet).unwrap();
         let addr_swap = encode(&pk2, &pk1, Network::MoneroMainnet).unwrap();
         assert_ne!(addr1.as_ref(), addr_swap.as_ref());
 
-        // 同 pk1 + pk2 重新调用 → 同样地址 (deterministic)
+        // Calling again with the same pk1 + pk2 → the same address (deterministic)
         let pk1_again = base_mul(&sk1);
         let pk2_again = base_mul(&sk2);
         let addr1_again = encode(&pk1_again, &pk2_again, Network::MoneroMainnet).unwrap();
         assert_eq!(addr1.as_ref(), addr1_again.as_ref());
 
-        // 不同网络 →不同地址
+        // Different network → different address
         let addr_testnet = encode(&pk1, &pk2, Network::MoneroTestnet).unwrap();
         assert_ne!(addr1.as_ref(), addr_testnet.as_ref());
     }
 
-    /// 非 XMR 网络报错
+    /// Non-XMR network errors
     #[test]
     fn non_xmr_network_rejected() {
         let sk1 = scalar_from_bytes(&[7u8; 32]).unwrap();
@@ -248,8 +248,8 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// XMR 地址 prefix 验证（精确 prefix 取决于 base58-monero 8-byte block 编码，
-    /// 实际我们只需验证三个网络编码出不同地址且长度都是 95 chars）：
+    /// XMR address prefix verification (the exact prefix depends on base58-monero 8-byte block encoding;
+    /// we only need to verify that the three networks encode different addresses and the length is 95 chars):
     #[test]
     fn xmr_address_differs_by_network() {
         let sk = scalar_from_bytes(&[9u8; 32]).unwrap();
@@ -259,12 +259,12 @@ mod tests {
         let stagenet = encode(&pk, &pk, Network::MoneroStagenet).unwrap();
         let testnet = encode(&pk, &pk, Network::MoneroTestnet).unwrap();
 
-        // 三个网络的 XMR 地址应该完全不同
+        // The XMR addresses of the three networks should be completely different
         assert_ne!(mainnet.as_ref(), stagenet.as_ref());
         assert_ne!(mainnet.as_ref(), testnet.as_ref());
         assert_ne!(stagenet.as_ref(), testnet.as_ref());
 
-        // 长度都是 95 chars (Monero 标准)
+        // Lengths are all 95 chars (Monero standard)
         assert_eq!(mainnet.as_ref().len(), 95);
         assert_eq!(stagenet.as_ref().len(), 95);
         assert_eq!(testnet.as_ref().len(), 95);

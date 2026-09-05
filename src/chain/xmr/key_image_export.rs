@@ -1,16 +1,16 @@
-//! XMR key image 导出端到端流程（对齐 keystone `generate_export_ur_data`）。
+//! XMR key image export end-to-end flow (aligned with keystone `generate_export_ur_data`).
 //!
-//! 三步 wire 协议中的第 ①→② 步：
-//! 1. 钱包（热端）`export_outputs` → `OUTPUT_EXPORT_MAGIC` 加密 payload → XmrOutput UR
-//! 2. 设备解密 → 校验 pk1/pk2 归属 → 逐 output 算 key image + 伴随签名
-//!    → `KEY_IMAGE_EXPORT_MAGIC` 加密 → XmrKeyImage UR
+//! Steps ①→② of the three-step wire protocol:
+//! 1. Wallet (hot side) `export_outputs` → `OUTPUT_EXPORT_MAGIC` encrypted payload → XmrOutput UR
+//! 2. Device decrypts → validates pk1/pk2 ownership → computes key image + accompanying signature per output
+//!    → `KEY_IMAGE_EXPORT_MAGIC` encryption → XmrKeyImage UR
 //!
-//! 加密包装层（对齐 keystone `utils/mod.rs`）：
+//! Encryption wrapper layer (aligned with keystone `utils/mod.rs`):
 //! ```text
 //! encrypt: [magic][8B nonce BE][ChaCha20Legacy(cryptonight_hash_v0(view_sk), nonce)(
-//!           [u32 LE 0 if key-image magic][pk1][pk2](仅 export magic)][data][64B sig])]
+//!           [u32 LE 0 if key-image magic][pk1][pk2](export magic only)][data][64B sig])]
 //! sig    : Monero Schnorr (c, r) over keccak256(nonce || ciphertext-before-sig),
-//!          pubkey = view_pub — 见 unsigned_txset::check_monero_signature 对偶实现
+//!          pubkey = view_pub — see the dual implementation in unsigned_txset::check_monero_signature
 //! ```
 
 extern crate alloc;
@@ -41,10 +41,10 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-/// 解密 export 类 payload（OUTPUT/KEY_IMAGE magic 共用结构）。
+/// Decrypt an export-class payload (OUTPUT/KEY_IMAGE magic share a structure).
 ///
-/// 返回 `(pk1, pk2, plaintext)`；pk1/pk2 仅 OUTPUT/KEY_IMAGE magic 存在
-/// （unsigned/signed txset 无此段）。签名先验（防篡改），后解密。
+/// Returns `(pk1, pk2, plaintext)`; pk1/pk2 exist only for OUTPUT/KEY_IMAGE magic
+/// (unsigned/signed txset have no such section). Signature verified first (anti-tamper), then decrypted.
 pub fn decrypt_export_payload(
     data: &[u8],
     magic: &[u8],
@@ -57,13 +57,13 @@ pub fn decrypt_export_payload(
         return Err(err());
     }
 
-    // raw = nonce || ciphertext（签名覆盖 nonce||cipher，对齐 keystone raw_data）
+    // raw = nonce || ciphertext (the signature covers nonce||cipher, aligned with keystone raw_data)
     let raw = &data[magic.len()..];
     let nonce = &raw[..NONCE_LEN];
     let sig = &data[data.len() - SIG_LEN..];
     let raw_data = &data[magic.len()..data.len() - SIG_LEN];
 
-    // 1. Monero Schnorr 验签（view_pub 对 keccak256(nonce||cipher)）
+    // 1. Monero Schnorr verification (view_pub over keccak256(nonce||cipher))
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
     let view_pub = (ED25519_BASEPOINT_TABLE * &v_scalar).compress().to_bytes();
     let msg_hash = keccak256::hash(raw_data)?;
@@ -71,13 +71,13 @@ pub fn decrypt_export_payload(
         return Err(err());
     }
 
-    // 2. ChaCha20-Legacy 解密
+    // 2. ChaCha20-Legacy decryption
     let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
     let mut cipher = chacha20::ChaCha20Legacy::new_from_slices(&key, nonce).map_err(|_| err())?;
     let mut plain = raw_data[NONCE_LEN..].to_vec();
     cipher.apply_keystream(&mut plain);
 
-    // 3. key-image magic 有前置 u32 LE 0；两种 export magic 均带 pk1||pk2
+    // 3. key-image magic has a leading u32 LE 0; both export magics carry pk1||pk2
     let start = if magic == KEY_IMAGE_EXPORT_MAGIC {
         4
     } else {
@@ -94,7 +94,7 @@ pub fn decrypt_export_payload(
     Ok((pk1, pk2, payload))
 }
 
-/// 加密 export 类 payload（对齐 keystone `encrypt_data_with_pvk`）。
+/// Encrypt an export-class payload (aligned with keystone `encrypt_data_with_pvk`).
 fn encrypt_export_payload<R: RngCore + CryptoRng>(
     magic: &[u8],
     view_sk: &[u8; 32],
@@ -108,7 +108,7 @@ fn encrypt_export_payload<R: RngCore + CryptoRng>(
     let mut cipher =
         chacha20::ChaCha20Legacy::new_from_slices(&key, &nonce_num).map_err(|_| err())?;
 
-    // 明文段：key-image magic 前置 u32 LE 0；export magic 带 pk1||pk2
+    // Plaintext sections: key-image magic has a leading u32 LE 0; export magic carries pk1||pk2
     let mut buffer = Vec::with_capacity(4 + 64 + data.len());
     if magic == KEY_IMAGE_EXPORT_MAGIC {
         buffer.extend_from_slice(&0u32.to_le_bytes());
@@ -118,7 +118,7 @@ fn encrypt_export_payload<R: RngCore + CryptoRng>(
     buffer.extend_from_slice(data);
     cipher.apply_keystream(&mut buffer);
 
-    // 签名：Monero Schnorr over keccak256(nonce || ciphertext)，key = view_sk
+    // Signature: Monero Schnorr over keccak256(nonce || ciphertext), key = view_sk
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
     let v_point = ED25519_BASEPOINT_TABLE * &v_scalar;
     debug_assert_eq!(v_point.compress().to_bytes(), *view_pub);
@@ -128,7 +128,7 @@ fn encrypt_export_payload<R: RngCore + CryptoRng>(
     signed.extend_from_slice(&buffer);
     let msg_hash = keccak256::hash(&signed)?;
     let sig = generate_monero_signature(&msg_hash, &v_scalar, rng)?;
-    let _ = v_point; // view_pub 已由调用方保证一致
+    let _ = v_point; // view_pub consistency is guaranteed by the caller
 
     let mut out = Vec::with_capacity(magic.len() + signed.len() + SIG_LEN);
     out.extend_from_slice(magic);
@@ -137,16 +137,16 @@ fn encrypt_export_payload<R: RngCore + CryptoRng>(
     Ok(out)
 }
 
-/// Monero Schnorr 生成侧（对齐 keystone `generate_signature`）：
-/// k 随机 → K = k·B → c = Hs(hash || P || K) → r = k − c·x。
-/// 验证侧 `check_monero_signature`：c·P + r·B == K。
+/// Monero Schnorr generation side (aligned with keystone `generate_signature`):
+/// k random → K = k·B → c = Hs(hash || P || K) → r = k − c·x.
+/// Verification side `check_monero_signature`: c·P + r·B == K.
 pub fn generate_monero_signature<R: RngCore + CryptoRng>(
     hash: &[u8; 32],
     sec: &Scalar,
     rng: &mut R,
 ) -> Result<[u8; 64]> {
     loop {
-        // 64B 随机 → mod_order_wide（对齐 keystone generate_random_scalar）
+        // 64B random → mod_order_wide (aligned with keystone generate_random_scalar)
         let mut wide = [0u8; 64];
         rng.fill_bytes(&mut wide);
         let k = Scalar::from_bytes_mod_order_wide(&wide);
@@ -173,11 +173,11 @@ pub fn generate_monero_signature<R: RngCore + CryptoRng>(
     }
 }
 
-/// key image 伴随签名（对齐 keystone `generate_ring_signature`，ring=1）。
+/// Key image accompanying signature (aligned with keystone `generate_ring_signature`, ring=1).
 ///
-/// 单元素环签名（MLSAG 特例）：h = Hs(prefix || k·B || k·Hp(P))，
-/// c = h，r = k − c·x。验证侧重算 Hs(prefix || r·B + c·P || r·Hp(P) + c·I)。
-/// `prefix_hash` = key image 本身（keystone 传 image.compress().0）。
+/// Single-element ring signature (MLSAG special case): h = Hs(prefix || k·B || k·Hp(P)),
+/// c = h, r = k − c·x. The verifier recomputes Hs(prefix || r·B + c·P || r·Hp(P) + c·I).
+/// `prefix_hash` = the key image itself (keystone passes image.compress().0).
 fn generate_key_image_signature<R: RngCore + CryptoRng>(
     prefix_hash: &[u8; 32],
     input_sk: &Scalar,
@@ -212,18 +212,18 @@ fn generate_key_image_signature<R: RngCore + CryptoRng>(
     Ok(sig)
 }
 
-/// 端到端：XmrOutput payload → XmrKeyImage payload（keystone generate_export_ur_data 同构）。
+/// End-to-end: XmrOutput payload → XmrKeyImage payload (isomorphic to keystone generate_export_ur_data).
 ///
-/// `view_sk`/`spend_sk` 由调用方以 Zeroizing 持有；本函数只收借用（v2-安全 §2），
-/// 不产生额外副本。只对 `is_key_image_request()` 的 output 计算（keystone 全算，
-/// 但 flags bit5 语义即"需要 key image"——保持全量对齐，参数开关留将来）。
+/// `view_sk`/`spend_sk` are held by the caller in Zeroizing; this function takes only borrows (v2-security §2)
+/// and creates no extra copies. Computes only outputs with `is_key_image_request()` (keystone computes all,
+/// but the flags bit5 semantics are exactly "needs key image" — keeping full alignment; a parameter switch is left for the future).
 pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     view_sk: &[u8; 32],
     spend_sk: &[u8; 32],
     request_payload: &[u8],
     rng: &mut R,
 ) -> Result<Vec<u8>> {
-    // 1. 解密 OUTPUT_EXPORT payload，校验 pk1/pk2 归属
+    // 1. Decrypt the OUTPUT_EXPORT payload, validate pk1/pk2 ownership
     let (pk1, pk2, plain) = decrypt_export_payload(request_payload, OUTPUT_EXPORT_MAGIC, view_sk)?;
 
     let spend_sk_scalar = Scalar::from_bytes_mod_order(*spend_sk);
@@ -233,24 +233,24 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
     let view_pub = (ED25519_BASEPOINT_TABLE * &v_scalar).compress().to_bytes();
 
-    // 归属校验（keystone 用 panic——我们返回错误码，签名器不容 panic）
+    // Ownership validation (keystone panics — we return an error code; a signer must not panic)
     if pk1 != spend_pub || pk2 != view_pub {
         return Err(err());
     }
 
-    // 2. 解析 outputs
+    // 2. Parse the outputs
     let details = ExportedTransferDetails::from_bytes(&plain)?;
 
-    // 3. 逐 output 算 key image + 伴随签名
+    // 3. Compute key image + accompanying signature per output
     let spend_sk_z = Zeroizing::new(*spend_sk);
-    let _ = spend_sk_z; // Zeroizing 生命周期挂到函数尾
+    let _ = spend_sk_z; // Zeroizing lifetime pinned to end of function
     let mut records = Vec::with_capacity(details.details.len() * KEY_IMAGE_RECORD_LEN);
     for detail in &details.details {
         let rec = compute_key_image_with_signature(view_sk, &spend_sk_scalar, detail, rng)?;
         records.push(rec);
     }
 
-    // 4. KEY_IMAGE_EXPORT_MAGIC 加密
+    // 4. KEY_IMAGE_EXPORT_MAGIC encryption
     let wire = serialize_key_images(&records);
     encrypt_export_payload(
         KEY_IMAGE_EXPORT_MAGIC,
@@ -262,14 +262,14 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     )
 }
 
-/// 单 output key image + 签名（对齐 keystone `generate_key_image`）。
+/// Single-output key image + signature (aligned with keystone `generate_key_image`).
 fn compute_key_image_with_signature<R: RngCore + CryptoRng>(
     view_sk: &[u8; 32],
     spend_sk: &Scalar,
     detail: &ExportedTransferDetail,
     rng: &mut R,
 ) -> Result<([u8; 32], [u8; 64])> {
-    // additional key 语义：子地址 output 用 per-output additional tx key
+    // additional key semantics: subaddress outputs use the per-output additional tx key
     let key_to_use: [u8; 32] = if detail.major != 0 || detail.minor != 0 {
         match detail.additional_tx_keys.len() {
             1 => detail.additional_tx_keys[0],
@@ -292,7 +292,7 @@ fn compute_key_image_with_signature<R: RngCore + CryptoRng>(
         detail.minor,
     )?;
 
-    // input_sk = spend_sk + offset；验证 input_sk·G == output_pubkey
+    // input_sk = spend_sk + offset; verifies input_sk·G == output_pubkey
     let input_sk = spend_sk + Scalar::from_bytes_mod_order(offset);
     let input_pub = (ED25519_BASEPOINT_TABLE * &input_sk).compress().to_bytes();
     if input_pub != detail.pubkey {
@@ -305,7 +305,7 @@ fn compute_key_image_with_signature<R: RngCore + CryptoRng>(
         (point * input_sk).compress().to_bytes()
     };
 
-    // 伴随签名：prefix = image 本身
+    // Accompanying signature: prefix = the image itself
     let sig = generate_key_image_signature(&image, &input_sk, rng)?;
     Ok((image, sig))
 }
@@ -402,11 +402,11 @@ mod tests {
 
     #[test]
     fn key_image_export_end_to_end() {
-        // 端到端：构造 output export（含 1 个主地址 output）→ 全流程 → 解密验证
+        // End-to-end: build an output export (with 1 main-address output) → full flow → decrypt and verify
         let mut rng = rng_from(5);
         let (spend_sk, spend_pub, view_sk, view_pub) = make_keypair(5);
 
-        // 构造明文 ExportedTransferDetails（主地址 output: major=0,minor=0）
+        // Build the plaintext ExportedTransferDetails (main-address output: major=0,minor=0)
         let mut plain = Vec::new();
         plain.extend_from_slice(&[0x01]); // has_transfers
         plain.extend_from_slice(&[0x00]); // offset
@@ -440,16 +440,16 @@ mod tests {
         )
         .unwrap();
 
-        // 设备侧全流程
+        // Device-side full flow
         let enc_resp = generate_key_image_export(&view_sk, &spend_sk, &enc_req, &mut rng).unwrap();
 
-        // 热端解密（用 monero 解密路径验证）
+        // Hot-side decryption (verified via the monero decryption path)
         let (_, _, resp_plain) =
             decrypt_export_payload(&enc_resp, KEY_IMAGE_EXPORT_MAGIC, &view_sk).unwrap();
         let records = deserialize_key_images(&resp_plain);
         assert_eq!(records.len(), 1);
 
-        // key image 独立重算交叉验证
+        // Independent key image recomputation cross-check
         let (image, sig) = &records[0];
         let expected: [u8; 32] = {
             let hp: curve25519_dalek::EdwardsPoint = Point::biased_hash(out_pub).into();
@@ -457,14 +457,14 @@ mod tests {
         };
         assert_eq!(*image, expected);
 
-        // 伴随签名验证（单环重算 Hs）
+        // Accompanying signature verification (single-ring Hs recomputation)
         let i_point: curve25519_dalek::EdwardsPoint = Point::biased_hash(out_pub).into();
         let c = Scalar::from_canonical_bytes(sig[..32].try_into().unwrap()).unwrap();
         let r = Scalar::from_canonical_bytes(sig[32..].try_into().unwrap()).unwrap();
         let lhs = (ED25519_BASEPOINT_TABLE * &r) + (ED25519_BASEPOINT_TABLE * &c);
         let rhs = (r * i_point) + (c * i_point);
-        // 期望：Hs(prefix || r·B + c·P || r·I + c·I) == c，其中 P = input_sk·G = out_pub
-        // P 点：input_sk·G
+        // Expectation: Hs(prefix || r·B + c·P || r·I + c·I) == c, where P = input_sk·G = out_pub
+        // P point: input_sk·G
         let p_point = ED25519_BASEPOINT_TABLE * &input_sk;
         let rb = (ED25519_BASEPOINT_TABLE * &r).compress().to_bytes();
         let r_p = (r * p_point).compress().to_bytes();
@@ -472,10 +472,10 @@ mod tests {
         let _ = rhs;
         let _ = r_p;
         let _ = rb;
-        // 完整验证：重算 challenge
+        // Full verification: recompute the challenge
         let mut buff = Vec::new();
         buff.extend_from_slice(image);
-        // k·B 不可重算（k 丢失）→ 验证式：Hs(prefix || r·B + c·P || r·I + c·I) == c
+        // k·B cannot be recomputed (k is lost) → verification formula: Hs(prefix || r·B + c·P || r·I + c·I) == c
         //   r·B + c·P（P=input_sk·G=out_pub）
         let s1 = (ED25519_BASEPOINT_TABLE * &r) + (c * p_point);
         //   r·Hp(P) + c·I = (r + c·input_sk)·Hp(P)
@@ -515,7 +515,7 @@ mod tests {
             .expect("plaintext must parse as ExportedTransferDetails");
         assert!(!details.details.is_empty());
         assert!(details.details.len() <= 8);
-        // 首个 output 是 key_image_request 且 amount 已知(真钱包数据特征)
+        // The first output is a key_image_request with a known amount (characteristic of real wallet data)
         assert!(details.details[0].is_key_image_request());
         assert!(details.details[0].amount > 0);
     }

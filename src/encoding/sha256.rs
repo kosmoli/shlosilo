@@ -1,16 +1,16 @@
-//! SHA-256 hash（BTC double-SHA256 用）
+//! SHA-256 hash (for BTC double-SHA256)
 
 use crate::error::Result;
 use sha2::{Digest, Sha256};
 
-/// SHA-256 输出长度
+/// SHA-256 output length
 pub const SHA256_OUTPUT_LEN: usize = 32;
 
 /// SHA-256 hash
 ///
-/// Phase 4 真实实现：`sha2::Sha256::digest(data)`
+/// Phase 4 real implementation: `sha2::Sha256::digest(data)`
 ///
-/// **v2.4 安全**：输入 borrow，输出 owned（hash 不携带 secret 信息）
+/// **v2.4 security**: inputs are borrows, outputs are owned (the hash carries no secret information)
 pub fn hash(data: &[u8]) -> Result<[u8; SHA256_OUTPUT_LEN]> {
     let result = Sha256::digest(data);
     let bytes: [u8; SHA256_OUTPUT_LEN] = result.into();
@@ -19,7 +19,7 @@ pub fn hash(data: &[u8]) -> Result<[u8; SHA256_OUTPUT_LEN]> {
 
 /// Bitcoin double-SHA256 = sha256(sha256(data))
 ///
-/// BTC P2PKH 地址构造用：base58check(0x00 || ripemd160(double_sha256(pubkey)))
+/// For BTC P2PKH address construction: base58check(0x00 || ripemd160(double_sha256(pubkey)))
 pub fn hash_twice(data: &[u8]) -> Result<[u8; SHA256_OUTPUT_LEN]> {
     let first = Sha256::digest(data);
     let second = Sha256::digest(first);
@@ -27,9 +27,9 @@ pub fn hash_twice(data: &[u8]) -> Result<[u8; SHA256_OUTPUT_LEN]> {
     Ok(bytes)
 }
 
-/// 空 hash（用于不输入数据场景）
+/// Empty hash (for scenarios with no data input)
 ///
-/// `Sha256::digest([])` 标准结果
+/// Standard result of `Sha256::digest([])`
 pub fn empty_hash() -> [u8; SHA256_OUTPUT_LEN] {
     let result = Sha256::digest([]);
     result.into()
@@ -38,7 +38,7 @@ pub fn empty_hash() -> [u8; SHA256_OUTPUT_LEN] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// inline hex 编码（避免跨模块 cfg(test) 复杂性）
+    /// inline hex encoding (avoids cross-module cfg(test) complexity)
     fn hex_encode(bytes: &[u8]) -> alloc::string::String {
         const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
         let mut s = alloc::string::String::with_capacity(bytes.len() * 2);
@@ -57,7 +57,7 @@ mod tests {
         assert_eq!(SHA256_OUTPUT_LEN, 32);
     }
 
-    /// SHA-256("") 标准测试向量
+    /// SHA-256("") standard test vector
     /// https://www.di-mgt.com.au/sha_testvectors.html
     #[test]
     fn hash_empty() {
@@ -68,7 +68,7 @@ mod tests {
         );
     }
 
-    /// SHA-256("abc") 标准测试向量
+    /// SHA-256("abc") standard test vector
     #[test]
     fn hash_abc() {
         let h = hash(b"abc").unwrap();
@@ -78,7 +78,7 @@ mod tests {
         );
     }
 
-    /// empty_hash 常量
+    /// empty_hash constant
     #[test]
     fn empty_hash_standard() {
         let h = empty_hash();
@@ -88,7 +88,7 @@ mod tests {
         );
     }
 
-    /// Double-SHA-256("") 标准测试向量
+    /// Double-SHA-256("") standard test vector
     /// https://en.bitcoin.it/wiki/Protocol_documentation
     #[test]
     fn double_sha256_empty() {
@@ -100,4 +100,4 @@ mod tests {
     }
 }
 
-// hex 模块：移到 encoding/mod.rs 让其他文件共享
+// hex module: moved to encoding/mod.rs so other files can share it

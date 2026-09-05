@@ -1,7 +1,7 @@
-//! UR codec 子模块集合
+//! UR codec submodule collection
 //!
-//! 各 codec 接受 chain-agnostic 输入（Bip32XPub / TxTemplate 等），
-//! 输出 chain-specific UR payload bytes（CBOR encoded）。
+//! Each codec accepts chain-agnostic inputs (Bip32XPub / TxTemplate etc.),
+//! Outputs chain-specific UR payload bytes (CBOR encoded).
 
 pub mod arweave_crypto_account;
 pub mod bytes;

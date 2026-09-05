@@ -1,24 +1,24 @@
-//! bech32 / bech32m 编码（BTC segwit + 通用）
+//! bech32 / bech32m encoding (BTC segwit + general)
 //!
-//! **Phase 4 真实实现**（v2 §3.5 原则——L1 编码自己实现，不引入 alloc crate 依赖）：
+//! **Phase 4 real implementation** (v2 §3.5 principle — L1 encodings implemented in-house, no alloc-heavy crate dependencies):
 //!
-//! 算法直接参考 BIP-173 / BIP-350 + sipa bech32 参考 Python 实现（sipa/bech32）。
-//! 字符集、generator、polymod、target residue 均为公开标准，不涉及密钥输入。
+//! The algorithm directly follows BIP-173 / BIP-350 + the sipa bech32 reference Python implementation (sipa/bech32).
+//! charset, generator, polymod, and target residue are all public standards; no key inputs are involved.
 //!
-//! 风险 = 字符串显示错（不会泄露密钥）。密码学原语（sha256 / sha512 / k256 / ed25519-dalek）
-//! 保留 crate 依赖；编码模块自己实现以严格遵守 v2 §3.5 零堆分配。
+//! Risk = a wrongly displayed string (no key leakage). Cryptographic primitives (sha256 / sha512 / k256 / ed25519-dalek)
+//! keep the crate dependency; the encoding module implements it itself to strictly honor v2 §3.5 zero heap allocation.
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// bech32 字符串最大长度
+/// bech32 maximum string length
 pub const BECH32_MAX_LEN: usize = 128;
 
-/// bech32 字符表（32 字符，按 ASCII 排序）
+/// bech32 charset (32 characters, ASCII-sorted)
 const BECH32_CHARSET: &[u8; 32] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
-/// bech32 spec 常数（target residue）
+/// bech32 spec constant (target residue)
 const BECH32_CONST: u32 = 1;
-/// bech32m spec 常数（target residue）
+/// bech32m spec constant (target residue)
 const BECH32M_CONST: u32 = 0x2bc830a3;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -49,7 +49,7 @@ impl core::fmt::Debug for Bech32String {
     }
 }
 
-/// bech32 polymod（参考 BIP-173 算法）
+/// bech32 polymod (per the BIP-173 algorithm)
 fn bech32_polymod(values: &[u8]) -> u32 {
     const GEN: [u32; 5] = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
     let mut chk: u32 = 1;
@@ -65,10 +65,10 @@ fn bech32_polymod(values: &[u8]) -> u32 {
     chk
 }
 
-/// hrp expand（参考 BIP-173 算法）
+/// hrp expand (per the BIP-173 algorithm)
 fn bech32_hrp_expand(hrp: &str) -> [u8; 16] {
-    // 展开格式：[hrp>>5 chars] + [0] + [hrp&31 chars]
-    // 例: 'bc' = [b>>5, c>>5, 0, b&31, c&31] = [3, 3, 0, 2, 3]
+    // expansion format: [hrp>>5 chars] + [0] + [hrp&31 chars]
+    // e.g.: 'bc' = [b>>5, c>>5, 0, b&31, c&31] = [3, 3, 0, 2, 3]
     let mut expanded = [0u8; 16];
     let hrp_bytes = hrp.as_bytes();
     let n = hrp_bytes.len();
@@ -84,7 +84,7 @@ fn bech32_hrp_expand(hrp: &str) -> [u8; 16] {
     expanded
 }
 
-/// bech32 create_checksum（spec = 1 或 BECH32M_CONST）
+/// bech32 create_checksum (spec = 1 or BECH32M_CONST)
 fn bech32_create_checksum(hrp: &str, data: &[u8], spec: u32) -> [u8; 6] {
     let hrp_bytes = hrp.as_bytes();
     let n = hrp_bytes.len();
@@ -108,9 +108,9 @@ fn bech32_create_checksum(hrp: &str, data: &[u8], spec: u32) -> [u8; 6] {
     checksum
 }
 
-/// 通用 power-of-2 base conversion（参考 sipa convertbits）
+/// Generic power-of-2 base conversion (after sipa convertbits)
 ///
-/// 用于 bech32/bech32m 编码：8-bit bytes → 5-bit groups
+/// Used for bech32/bech32m encoding: 8-bit bytes → 5-bit groups
 pub fn convertbits(
     data: &[u8],
     frombits: u32,
@@ -148,8 +148,8 @@ pub fn convertbits(
     Ok(ret)
 }
 
-/// bech32 编码（segwit v0, spec=1）
-/// data 已经是 5-bit groups（每个 byte 是 0-31 的 5-bit 值）
+/// bech32 encoding (segwit v0, spec=1)
+/// data is already 5-bit groups (each byte is a 5-bit value 0-31)
 pub fn encode(hrp: &str, data: &[u8]) -> Result<Bech32String> {
     if hrp.is_empty() || hrp.len() > 90 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -172,8 +172,8 @@ pub fn encode(hrp: &str, data: &[u8]) -> Result<Bech32String> {
     Ok(Bech32String { bytes: out })
 }
 
-/// bech32m 编码（segwit v1+, spec=BECH32M_CONST）
-/// data 已经是 5-bit groups
+/// bech32m encoding (segwit v1+, spec=BECH32M_CONST)
+/// data is already 5-bit groups
 pub fn encode_m(hrp: &str, data: &[u8]) -> Result<Bech32String> {
     if hrp.is_empty() || hrp.len() > 90 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -196,7 +196,7 @@ pub fn encode_m(hrp: &str, data: &[u8]) -> Result<Bech32String> {
     Ok(Bech32String { bytes: out })
 }
 
-/// bech32 / bech32m 通用解码（验证任一 variant）
+/// bech32 / bech32m generic decoding (accepts either variant)
 pub fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8, 128>)> {
     if s.is_empty() || s.len() > 90 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -238,7 +238,7 @@ pub fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8, 128>)>
 
     let mut data_5bit: heapless::Vec<u8, 256> = heapless::Vec::new();
     for c in data_part.bytes() {
-        // BIP-173：所有 char 应该是 lowercase 或数字（已在 hrp 提取前 lowercase 化）
+        // BIP-173: all chars must be lowercase or digits (already lowercased before hrp extraction)
         let b = match BECH32_CHARSET.iter().position(|&x| x == c) {
             Some(p) => p as u8,
             None => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
@@ -267,12 +267,12 @@ pub fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8, 128>)>
         ));
     }
 
-    // 剥 witver (data_5bit[0]) + checksum (data_5bit[-6..]) — sipa segwit 格式
-    // 通用 bech32 测试向量可能 data_5bit[1..-6] 不是 8-bit byte 对齐（sipa reference 已知行为）
+    // strip witver (data_5bit[0]) + checksum (data_5bit[-6..]) — sipa segwit format
+    // generic bech32 test vectors may have data_5bit[1..-6] that is not 8-bit byte aligned (known sipa reference behavior)
     let data_8bit = if data_5bit.len() >= 7 {
         match convertbits(&data_5bit[1..data_5bit.len() - 6], 5, 8, false) {
             Ok(v) => v,
-            Err(_) => heapless::Vec::new(), // 通用 bech32（非 segwit）允许空 witprog
+            Err(_) => heapless::Vec::new(), // generic bech32 (non-segwit) allows an empty witprog
         }
     } else {
         heapless::Vec::new()
@@ -297,7 +297,7 @@ pub fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8, 128>)>
 mod tests {
     use super::*;
 
-    /// 辅助：[witver] + convertbits(witprog, 8→5)（sipa segwit 编码格式）
+    /// Helper: [witver] + convertbits(witprog, 8→5) (sipa segwit encoding format)
     fn build_data(witver: u8, witprog: &[u8]) -> heapless::Vec<u8, 64> {
         let bits_5 = convertbits(witprog, 8, 5, true).unwrap();
         let mut out: heapless::Vec<u8, 64> = heapless::Vec::new();
@@ -308,9 +308,9 @@ mod tests {
         out
     }
 
-    /// BIP-173 BTC P2WPKH 测试向量
+    /// BIP-173 BTC P2WPKH test vector
     /// scriptpubkey = 0014751e76e8199196d454941c45d1b3a323f1433bd6
-    /// sipa 编码格式：witver(0x00) + convertbits(20-byte hash)
+    /// sipa encoding format: witver(0x00) + convertbits(20-byte hash)
     #[test]
     fn encode_btc_p2wpkh_known() {
         let hrp = "bc";
@@ -326,9 +326,9 @@ mod tests {
         );
     }
 
-    /// BIP-173 testnet P2WSH 测试向量
+    /// BIP-173 testnet P2WSH test vector
     /// scriptpubkey = 00201863143c14c5166804bd19203356da136c985678cd4d27a1b8c6329604903262
-    /// sipa 编码格式：witver(0x00) + convertbits(32-byte hash)
+    /// sipa encoding format: witver(0x00) + convertbits(32-byte hash)
     #[test]
     fn encode_testnet_p2wsh_known() {
         let hrp = "tb";
@@ -345,7 +345,7 @@ mod tests {
         );
     }
 
-    /// BIP-173 通用（非 segwit）bech32 测试向量
+    /// BIP-173 generic (non-segwit) bech32 test vector
     #[test]
     fn decode_valid_bip173_vectors() {
         for s in &[
@@ -372,7 +372,7 @@ mod tests {
         let data = build_data(0, &witprog);
         let encoded = encode(hrp, &data).unwrap();
         let (_hrp_decoded, witprog_decoded) = decode(encoded.as_ref()).unwrap();
-        // decode 返回 witprog（剥 witver）
+        // decode returns the witprog (witver stripped)
         assert_eq!(witprog_decoded.as_slice(), &witprog[..]);
     }
 
@@ -391,21 +391,21 @@ mod tests {
         assert_eq!(witprog_decoded.as_slice(), &witprog[..]);
     }
 
-    /// 空 hrp 拒绝
+    /// Empty hrp rejected
     #[test]
     fn encode_empty_hrp_rejected() {
         let result = encode("", b"hello");
         assert!(result.is_err());
     }
 
-    /// decode 错误字符串 → 返回错误
+    /// decode error string → return the error
     #[test]
     fn decode_invalid_string_rejected() {
         let result = decode("invalid!!!");
         assert!(result.is_err());
     }
 
-    /// mixed case 拒绝（BIP-173 严格禁止）
+    /// mixed case rejected (strictly forbidden by BIP-173)
     #[test]
     fn decode_mixed_case_rejected() {
         let result = decode("aBc1qpzry9x8gf2tvdw0s3jn54khce6mua7l");

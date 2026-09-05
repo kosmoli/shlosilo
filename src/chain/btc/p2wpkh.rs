@@ -1,12 +1,12 @@
-//! BTC P2WPKH 完整交易签名（Phase 5 v6 真实实现）
+//! BTC P2WPKH full transaction signing (Phase 5 v6 real implementation)
 //!
-//! 实现：
-//! - 基础数据结构：OutPoint / TxIn / TxOut / Transaction / Witness
-//! - BIP-143 segwit sighash 算法（含 hash_prevouts / hash_sequence / hash_outputs）
-//! - sign_p2wpkh 业务函数（sighash → ECDSA → DER + sighash byte → witness 拼装）
-//! - BIP-144 segwit 交易序列化（marker + flag + witness + locktime）
+//! Implements:
+//! - Base data structures: OutPoint / TxIn / TxOut / Transaction / Witness
+//! - BIP-143 segwit sighash algorithm (including hash_prevouts / hash_sequence / hash_outputs)
+//! - sign_p2wpkh business function (sighash → ECDSA → DER + sighash byte → witness assembly)
+//! - BIP-144 segwit transaction serialization (marker + flag + witness + locktime)
 //!
-//! ## 算法摘要
+//! ## Algorithm summary
 //!
 //! **BIP-143 segwit sighash** (P2WPKH):
 //! ```text
@@ -34,9 +34,9 @@
 //! [signature-with-sighash-byte, compressed-pubkey]
 //! ```text
 //!
-//! ## 测试向量
+//! ## Test vectors
 //!
-//! BIP-143 Native P2WPKH 官方 test vector（已验证 sighash + signature + 完整 signed tx）
+//! BIP-143 Native P2WPKH official test vector (sighash + signature + full signed tx verified)
 
 extern crate alloc;
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
@@ -47,7 +47,7 @@ use crate::types::SecretBytes;
 use alloc::vec;
 use alloc::vec::Vec;
 
-// ─── 数据结构 ──────────────────────────────────────────────────────
+// --- Data structures ------------------------------------------------
 
 /// 32-byte txid
 pub type Txid = [u8; 32];
@@ -59,7 +59,7 @@ pub struct OutPoint {
     pub vout: u32,
 }
 
-/// TxIn (含 witness)
+/// TxIn (with witness)
 #[derive(Clone, Debug)]
 pub struct TxIn {
     pub prev_out: OutPoint,
@@ -69,8 +69,8 @@ pub struct TxIn {
 }
 
 impl TxIn {
-    /// 序列化（BIP-144 legacy 格式：outpoint + scriptSig + sequence）
-    /// 包含 scriptSig 长度 varint
+    /// Serialization (BIP-144 legacy format: outpoint + scriptSig + sequence)
+    /// Includes the scriptSig length varint
     pub fn serialize_legacy(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(32 + 4 + 1 + self.script_sig.len() + 4);
         out.extend_from_slice(&self.prev_out.txid);
@@ -99,7 +99,7 @@ impl TxOut {
     }
 }
 
-/// Transaction (legacy + segwit 格式)
+/// Transaction (legacy + segwit format)
 #[derive(Clone, Debug)]
 pub struct Transaction {
     pub version: i32,
@@ -109,7 +109,7 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// BIP-144 segwit 序列化（marker=0x00, flag=0x01）
+    /// BIP-144 segwit serialization (marker=0x00, flag=0x01)
     pub fn serialize_segwit(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&self.version.to_le_bytes());
@@ -144,7 +144,7 @@ impl Transaction {
     }
 }
 
-// impl block 辅助方法（避免与 Transaction 方法签名冲突）
+// impl block helpers (avoids clashing with Transaction method signatures)
 impl TxIn {
     fn serialize_into(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.prev_out.txid);
@@ -161,7 +161,7 @@ impl TxOut {
     }
 }
 
-/// BTC varint 编码（用于 script_pubkey 长度等）
+/// BTC varint encoding (used for script_pubkey length etc.)
 pub fn encode_varint(out: &mut Vec<u8>, n: u64) {
     if n < 0xfd {
         out.push(n as u8);
@@ -177,27 +177,27 @@ pub fn encode_varint(out: &mut Vec<u8>, n: u64) {
     }
 }
 
-/// double SHA-256（BIP-143 hashPrevouts / hashSequence / hashOutputs 都用）
+/// double SHA-256 (used by BIP-143 hashPrevouts / hashSequence / hashOutputs alike)
 fn dsha256(data: &[u8]) -> Result<[u8; 32]> {
     let h1 = sha256::hash(data)?;
     sha256::hash(&h1)
 }
 
-// ─── BIP-143 sighash 算法 ───────────────────────────────────────────
+// --- BIP-143 sighash algorithm -------------------------------------
 
-/// SIGHASH 类型
+/// SIGHASH type
 pub(crate) const SIGHASH_ALL: u32 = 1;
 
 /// BIP-143 segwit sighash for P2WPKH input
 ///
-/// **输入**：
-/// - `tx`: 完整交易
-/// - `input_index`: 正在签名的 input 在 tx.inputs 中的位置
+/// **Inputs**:
+/// - `tx`: the full transaction
+/// - `input_index`: position in tx.inputs of the input being signed
 /// - `script_code`: P2WPKH scriptCode = 0x1976a914{20-byte-pubkey-hash}88ac
-/// - `amount`: 这个 input 的 value (satoshis)
+/// - `amount`: this input's value (satoshis)
 /// - `hash_type`: SIGHASH_ALL = 1
 ///
-/// **返回**：32-byte sighash
+/// **Returns**: 32-byte sighash
 pub fn segwit_sighash_p2wpkh(
     tx: &Transaction,
     input_index: usize,
@@ -211,7 +211,7 @@ pub fn segwit_sighash_p2wpkh(
 
     // BIP-143: hashPrevouts
     // SIGHASH_ALL: dSHA256(all prevouts serialized)
-    // SIGHASH_ALL 不带 ANYONECANPAY
+    // SIGHASH_ALL without ANYONECANPAY
     let hash_prevouts = {
         let mut buf = Vec::with_capacity(36 * tx.inputs.len());
         for txin in &tx.inputs {
@@ -223,7 +223,7 @@ pub fn segwit_sighash_p2wpkh(
 
     // BIP-143: hashSequence
     // SIGHASH_ALL: dSHA256(all sequences)
-    // SIGHASH_ALL 不带 SINGLE/NONE
+    // SIGHASH_ALL without SINGLE/NONE
     let hash_sequence = {
         let mut buf = Vec::with_capacity(4 * tx.inputs.len());
         for txin in &tx.inputs {
@@ -262,43 +262,43 @@ pub fn segwit_sighash_p2wpkh(
     dsha256(&preimage)
 }
 
-// ─── P2WPKH 签名业务 ───────────────────────────────────────────────
+// --- P2WPKH signing business ---------------------------------------
 
-/// P2WPKH 签名输入（per-input 信息）
+/// P2WPKH signing input (per-input info)
 ///
-/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+/// P1-03: private keys use `SecretBytes<32>` — no Clone, no Debug, ZeroizeOnDrop, constant-time comparison.
 pub struct P2WPKHSignInput<'k> {
-    /// 正在签名的 input index
+    /// Index of the input being signed
     pub input_index: usize,
-    /// 这个 input 的私钥（32 bytes）——借用，零副本转发
+    /// This input's private key (32 bytes) — borrowed, forwarded with zero copies
     pub private_key: &'k SecretBytes<32>,
-    /// 这个 input 的 value (satoshis)
+    /// This input's value (satoshis)
     pub amount: u64,
     /// pubkey hash (20 bytes) = witness program
     pub pubkey_hash: [u8; 20],
 }
 
-/// P2WPKH 签名输出
+/// P2WPKH signing output
 #[derive(Clone, Debug)]
 pub struct P2WPKHSignedTx {
-    /// 完整签名交易 bytes
+    /// Full signed transaction bytes
     pub tx_bytes: Vec<u8>,
     /// signature DER + sighash byte (per-input)
     pub signatures: Vec<Vec<u8>>,
 }
 
-/// 签名 P2WPKH 交易
+/// Sign a P2WPKH transaction
 ///
-/// 1. 计算 BIP-143 sighash
+/// 1. Compute the BIP-143 sighash
 /// 2. ECDSA sign_prehash
-/// 3. DER 编码 + append sighash byte (0x01)
-/// 4. 拼装到 input.witness: [signature_with_sighash, compressed_pubkey]
-/// 5. 序列化完整交易 (BIP-144 segwit format)
+/// 3. DER encoding + append the sighash byte (0x01)
+/// 4. Assemble into input.witness: [signature_with_sighash, compressed_pubkey]
+/// 5. Serialize the full transaction (BIP-144 segwit format)
 pub fn sign_p2wpkh(
     tx: &mut Transaction,
     sign_input: &P2WPKHSignInput<'_>,
 ) -> Result<P2WPKHSignedTx> {
-    // 1. scriptCode = `76a914{20-byte-pubkey-hash}88ac` (raw P2PKH，**不含** length prefix)
+    // 1. scriptCode = `76a914{20-byte-pubkey-hash}88ac` (raw P2PKH, **without** the length prefix)
     let mut script_code = Vec::with_capacity(25);
     script_code.push(0x76); // OP_DUP
     script_code.push(0xa9); // OP_HASH160
@@ -306,8 +306,8 @@ pub fn sign_p2wpkh(
     script_code.extend_from_slice(&sign_input.pubkey_hash);
     script_code.push(0x88); // OP_EQUALVERIFY
     script_code.push(0xac); // OP_CHECKSIG
-                            // script_code 是 25 bytes raw P2PKH（无 length prefix）
-                            // segwit_sighash_p2wpkh 内部会用 varint(25) = 0x19 + 25 bytes = 26 bytes preimage 段
+                            // script_code is 25 bytes of raw P2PKH (no length prefix)
+                            // segwit_sighash_p2wpkh internally uses varint(25) = 0x19 + 25 bytes = a 26-byte preimage segment
 
     // 2. BIP-143 sighash
     let sighash = segwit_sighash_p2wpkh(
@@ -324,7 +324,7 @@ pub fn sign_p2wpkh(
 
     // 4. DER + sighash byte
     let mut sig_with_sighash = ecdsa::to_der(&sig)?;
-    // DER 最长 72B + sighash 1B = 73B > 72 容量上界只在极端 l 值出现；溢出必须显式报错而非忽略
+    // DER at most 72B + sighash 1B = 73B; the 72-capacity bound is only exceeded by extreme l values; overflow must error explicitly, never be ignored
     sig_with_sighash
         .push(SIGHASH_ALL as u8)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
@@ -338,7 +338,7 @@ pub fn sign_p2wpkh(
     if input_idx >= tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    // to_der 返回 heapless::Vec<u8, 72>，转 alloc::vec::Vec 喂给 witness
+    // to_der returns heapless::Vec<u8, 72>; converted to alloc::vec::Vec to feed the witness
     let sig_bytes: Vec<u8> = sig_with_sighash.iter().copied().collect();
     tx.inputs[input_idx].witness.clear();
     tx.inputs[input_idx].witness.push(sig_bytes.clone());
@@ -353,7 +353,7 @@ pub fn sign_p2wpkh(
     })
 }
 
-// ─── 辅助：hex decode ──────────────────────────────────────────────
+// --- Helpers: hex decode -------------------------------------------
 
 #[cfg(test)]
 /// hex string → bytes
@@ -383,29 +383,29 @@ fn hex_nibble(c: u8) -> Result<u8> {
     }
 }
 
-// ─── 单元测试 ──────────────────────────────────────────────────────
+// --- Unit tests ----------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::curve_primitive::secp256k1::point_to_compressed;
 
-    /// BIP-143 Native P2WPKH 官方 test vector
-    /// 来源：https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki
+    /// BIP-143 Native P2WPKH official test vector
+    /// Source: https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki
     #[test]
     fn bip143_native_p2wpkh_test_vector() {
-        // 未签名交易（hex）
+        // Unsigned transaction (hex)
         let unsigned_tx_hex = "0100000002fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f0000000000eeffffffef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a0100000000ffffffff02202cb206000000001976a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac9093510d000000001976a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac11000000";
         let _unsigned_tx_bytes = hex_decode(unsigned_tx_hex).unwrap();
 
-        // Input 0: P2PK (普通), 6.25 BTC
-        // Input 1: P2WPKH (要签名), 6 BTC
+        // Input 0: P2PK (regular), 6.25 BTC
+        // Input 1: P2WPKH (to be signed), 6 BTC
         let _input0_txid =
             hex_decode("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f").unwrap();
         let _input1_txid =
             hex_decode("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a").unwrap();
 
-        // 构造 Transaction
+        // Build the Transaction
         // Input 0
         let input0 = TxIn {
             prev_out: OutPoint {
@@ -489,7 +489,7 @@ mod tests {
         )
         .unwrap();
 
-        // 预期 sighash
+        // Expected sighash
         let expected_sighash =
             hex_decode("c37af31116d1b27caf68aae9e3ac82f1477929014d5b917657d0eb49478cb670").unwrap();
         assert_eq!(
@@ -498,7 +498,7 @@ mod tests {
             "BIP-143 Native P2WPKH sighash mismatch"
         );
 
-        // 签名
+        // Sign
         let mut key_buf = {
             let mut k = [0u8; 32];
             k.copy_from_slice(
@@ -511,15 +511,15 @@ mod tests {
         let sk = scalar_from_bytes(private_key.expose()).unwrap();
         let sig = ecdsa::sign(&sk, &sighash).unwrap();
 
-        // 预期 signature
+        // Expected signature
         let expected_sig = hex_decode("304402203609e17b84f6a7d30c80bfa610b5b4542f32a8a0d5447a12fb1366d7f01cc44a0220573a954c4518331561406f90300e8f3358f51928d43c212a8caed02de67eebee")
             .unwrap();
 
-        // 把 shlosilo signature 转为 DER 比较
+        // Convert the shlosilo signature to DER for comparison
         let sig_der = ecdsa::to_der(&sig).unwrap();
         assert_eq!(&sig_der[..], &expected_sig[..], "ECDSA signature mismatch");
 
-        // pubkey 验证
+        // pubkey verification
         let pk = base_mul(&sk);
         let expected_pubkey =
             hex_decode("025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee6357")
@@ -528,10 +528,10 @@ mod tests {
         assert_eq!(&pk_bytes[..], &expected_pubkey[..], "pubkey mismatch");
     }
 
-    /// 完整 sign_p2wpkh 业务函数（用 BIP-143 test vector）
+    /// Full sign_p2wpkh business function (using the BIP-143 test vector)
     #[test]
     fn sign_p2wpkh_full_pipeline() {
-        // 构造 input 1 (P2WPKH)
+        // Build input 1 (P2WPKH)
         let input1 = TxIn {
             prev_out: OutPoint {
                 txid: {
@@ -551,7 +551,7 @@ mod tests {
             witness: Vec::new(),
         };
 
-        // Input 0 (P2PK, 我们不签名, 但 hashPrevouts/sequence 需要)
+        // Input 0 (P2PK, not signed by us, but needed for hashPrevouts/sequence)
         let input0 = TxIn {
             prev_out: OutPoint {
                 txid: {
@@ -614,11 +614,11 @@ mod tests {
 
         let signed = sign_p2wpkh(&mut tx, &sign_input).unwrap();
 
-        // 验证 witness 拼装：每个 item 是 [varint_len][bytes]
+        // Verify witness assembly: each item is [varint_len][bytes]
         // Input 1 witness: [sig+01, pubkey] (2 items)
         assert_eq!(tx.inputs[1].witness.len(), 2);
 
-        // 验证 signature 以 sighash byte 0x01 结尾
+        // Verify the signature ends with sighash byte 0x01
         let sig_witness = &tx.inputs[1].witness[0];
         assert_eq!(
             sig_witness[sig_witness.len() - 1],
@@ -626,19 +626,19 @@ mod tests {
             "sighash byte should be 0x01"
         );
 
-        // 验证 pubkey
+        // Verify the pubkey
         let pk_witness = &tx.inputs[1].witness[1];
         let expected_pubkey =
             hex_decode("025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee6357")
                 .unwrap();
         assert_eq!(&pk_witness[..], &expected_pubkey[..]);
 
-        // 验证序列化包含 marker (0x00) + flag (0x01)
+        // Verify the serialization contains marker (0x00) + flag (0x01)
         assert_eq!(signed.tx_bytes[4], 0x00, "segwit marker");
         assert_eq!(signed.tx_bytes[5], 0x01, "segwit flag");
     }
 
-    /// hash_prevouts 单独测试（BIP-143 官方值）
+    /// hash_prevouts standalone test (BIP-143 official value)
     #[test]
     fn hash_prevouts_bip143() {
         // input 0 outpoint + input 1 outpoint
@@ -659,7 +659,7 @@ mod tests {
         assert_eq!(&h[..], &expected[..], "hash_prevouts mismatch");
     }
 
-    /// hash_sequence 单独测试
+    /// hash_sequence standalone test
     #[test]
     fn hash_sequence_bip143() {
         let mut buf = Vec::new();
@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(&h[..], &expected[..], "hash_sequence mismatch");
     }
 
-    /// hash_outputs 单独测试
+    /// hash_outputs standalone test
     #[test]
     fn hash_outputs_bip143() {
         let mut buf = Vec::new();
@@ -695,7 +695,7 @@ mod tests {
         assert_eq!(&h[..], &expected[..], "hash_outputs mismatch");
     }
 
-    /// 序列化 BIP-144 signed tx 完整对比
+    /// Full comparison of the serialized BIP-144 signed tx
     #[test]
     fn serialize_full_signed_tx_bip144() {
         let input1 = TxIn {
@@ -730,7 +730,7 @@ mod tests {
                 },
                 vout: 0,
             },
-            // P2PK input 0 实际 signed scriptSig 较长，我们简化用空
+            // The real signed scriptSig for P2PK input 0 is long; we simplify by leaving it empty
             script_sig: Vec::new(),
             sequence: 0xffffffee,
             witness: Vec::new(),
@@ -777,14 +777,14 @@ mod tests {
 
         let signed = sign_p2wpkh(&mut tx, &sign_input).unwrap();
 
-        // 验证：开头 4 bytes version + 00 01 marker/flag
+        // Verify: leading 4 bytes version + 00 01 marker/flag
         assert_eq!(&signed.tx_bytes[0..4], &[0x01, 0x00, 0x00, 0x00]);
         assert_eq!(signed.tx_bytes[4], 0x00);
         assert_eq!(signed.tx_bytes[5], 0x01);
 
-        // 验证：长度应该合理（unsigned tx ~ 193 bytes, signed 多 ~108 bytes witness）
-        // 我们简化 input 0 (P2PK, 无 signature) → unsigned tx 较短
-        // 不比对完整 hex (input 0 的 scriptSig 缺失), 只验证结构 OK
+        // Verify: length should be reasonable (unsigned tx ~ 193 bytes; signed adds ~108 bytes of witness)
+        // We simplify input 0 (P2PK, no signature) → the unsigned tx is shorter
+        // Skip full-hex comparison (input 0's scriptSig is missing); only verify the structure is OK
         assert!(signed.tx_bytes.len() > 200);
     }
 }

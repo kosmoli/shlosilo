@@ -1,4 +1,4 @@
-//! 诊断：定位 sign_tx_from_construction 内部失败步骤
+//! Diagnostics: locate the failing step inside sign_tx_from_construction
 use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
 
 const PLAIN: &[u8] = include_bytes!("fixtures/txset_plain.bin");
@@ -19,7 +19,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 #[test]
-/// 排障期一次性诊断: 需 SHLOSILO_TEST_XMR_* env（真 spend/view key），默认 ignore。
+/// One-off troubleshooting diagnostics: requires SHLOSILO_TEST_XMR_* env vars (real spend/view keys); ignored by default.
 #[ignore]
 fn diag_step_by_step() {
     let view_sk = env_hex("SHLOSILO_TEST_XMR_VIEW_SK").expect("VIEW_SK");
@@ -28,7 +28,7 @@ fn diag_step_by_step() {
     let utx = deserialize_unsigned_tx(PLAIN).expect("deserialize");
     let tx_data = &utx.txes[0];
 
-    // step A: derive_input_from_source（key image）
+    // step A: derive_input_from_source(key image)
     let src = &tx_data.sources[0];
     let ki = shlosilo::chain::xmr::subaddress::derive_input_from_source(
         &view_sk,
@@ -47,7 +47,7 @@ fn diag_step_by_step() {
 }
 
 #[test]
-/// 同上，env 驱动诊断。
+/// Same as above; env-driven diagnostics.
 #[ignore]
 fn diag_clsag_with_fixture_ring() {
     use rand_core::OsRng;
@@ -62,7 +62,7 @@ fn diag_clsag_with_fixture_ring() {
     let tx_data = &utx.txes[0];
     let src = &tx_data.sources[0];
 
-    // one-time input sk（spend + key_offset）
+    // one-time input sk(spend + key_offset)
     let (_, key_offset) = shlosilo::chain::xmr::subaddress::derive_input_from_source(
         &view_sk,
         &spend_sk,
@@ -74,7 +74,7 @@ fn diag_clsag_with_fixture_ring() {
     let input_sk = shlosilo::chain::xmr::subaddress::derive_input_spend_key(&spend_sk, &key_offset)
         .expect("input_sk");
 
-    // ring 与签名路径一致：(dest, 链上 C 点) — OutputEntry.mask 是链上 commitment 点
+    // ring matches the signing path: (dest, on-chain C point) — OutputEntry.mask is the on-chain commitment point
     let ring: Vec<(
         monero_ed25519::CompressedPoint,
         monero_ed25519::CompressedPoint,
@@ -90,11 +90,11 @@ fn diag_clsag_with_fixture_ring() {
         .collect();
     assert_eq!(ring.len(), 16);
 
-    // pseudo_mask = mask_real ± delta —— 用真实推导：sum_out_masks − real_mask
-    // 但此处无 outputs；先直接用 real_mask + 1 来测 CLSAG 本身是否可签
-    // 真 blinding factor = TxSourceEntry.mask（wallet2 sources[i].mask），
-    // 而 OutputEntry.mask 是链上 C 点。ClsagContext 断言 C == Commitment(blinding, amount)。
-    // P1-03: mask 现为 SecretBytes——诊断打印场景，本地副本用完即弃
+    // pseudo_mask = mask_real ± delta — use the real derivation: sum_out_masks − real_mask
+    // but there are no outputs here; first use real_mask + 1 directly to test whether the CLSAG itself can be signed
+    // true blinding factor = TxSourceEntry.mask (wallet2 sources[i].mask),
+    // while OutputEntry.mask is the on-chain C point. ClsagContext asserts C == Commitment(blinding, amount).
+    // P1-03: mask is now SecretBytes — diagnostic printing scenario, local copy discarded after use
     let mut real_mask_buf = [0u8; 32];
     src.mask.write_into(&mut real_mask_buf);
     let real_mask = real_mask_buf;
@@ -129,7 +129,7 @@ fn diag_bp_size_and_verify() {
     use shlosilo::chain::xmr::rct_sig::prove_bulletproofs_plus;
 
     let mut rng = OsRng;
-    // 与签名路径相同：2 outputs，金额 1869360000 / 100000000
+    // same as the signing path: 2 outputs, amounts 1869360000 / 100000000
     let masks: Vec<[u8; 32]> = vec![[0xaau8; 32], [0xbbu8; 32]];
     use shlosilo::chain::xmr::transaction::bytes_to_monerod_scalar;
     let commitments = masks

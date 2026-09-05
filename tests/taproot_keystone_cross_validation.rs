@@ -1,20 +1,20 @@
 //! BTC Taproot ↔ keystone3-firmware Cross-Validation (v9.13)
 //!
-//! ## 目的
-//! 用 keystone `apps/bitcoin/src/transactions/psbt/wrapped_psbt.rs::test_taproot_sign`
-//! 的 PSBT fixture 作为 oracle，验证 shlosilo 完整 BIP-341 keypath 签名链路：
+//! ## Purpose
+//! Use the keystone `apps/bitcoin/src/transactions/psbt/wrapped_psbt.rs::test_taproot_sign`
+//! PSBT fixture as an oracle to validate shlosilo's full BIP-341 keypath signing chain:
 //!
 //! ```text
 //! BIP32(seed, m/86'/1'/0'/0/2) → internal_key
 //! TapTweak = tagged_hash("TapTweak", internal_key || merkle_root)
-//! output_key Q = lift_x(internal_key) + tweak·G     ← 必须等于 witness program
+//! output_key Q = lift_x(internal_key) + tweak·G     ← must equal the witness program
 //! sighash = tagged_hash("TapSighash", 0x00 || SigMsg(SIGHASH_DEFAULT, 0))
-//! sig = Schnorr(tweaked_sk, sighash, aux)           ← keystone 签名必须对此验证通过
+//! sig = Schnorr(tweaked_sk, sighash, aux)           ← the keystone signature must verify against this
 //! ```
 //!
 //! ## Oracle
-//! - keystone 用 rust-bitcoin 0.32 `Psbt::sign`（标准实现）
-//! - 其签名对 shlosilo 计算的 sighash 验证通过 ⟺ shlosilo 的 BIP-341 实现正确
+//! - keystone uses rust-bitcoin 0.32 `Psbt::sign` (standard implementation)
+//! - its signature verifying against shlosilo's computed sighash ⟺ shlosilo's BIP-341 implementation is correct
 #![cfg(test)]
 extern crate alloc;
 
@@ -50,11 +50,11 @@ fn tagged_hash(tag: &[u8], msg: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// keystone test_taproot_sign fixture 数据（从 PSBT 提取）
+/// keystone test_taproot_sign fixture data (extracted from the PSBT)
 mod fixture {
-    /// 测试 seed（keystone 全家桶共用）
+    /// test seed (shared across the keystone suite)
     pub const SEED_HEX: &str = "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4";
-    /// tap_internal_key (PSBT_IN_TAP_BIP32_DERIVATION key)，路径 m/86'/1'/0'/0/2
+    /// tap_internal_key (PSBT_IN_TAP_BIP32_DERIVATION key), path m/86'/1'/0'/0/2
     pub const INTERNAL_KEY: &str =
         "b68df382cad577d8304d5a8e640c3cb42d77c10016ab754caa4d6e68b6cb296d";
     /// merkle root (PSBT_IN_TAP_MERKLE_ROOT / TAP_LEAF_SCRIPT leaf hash)
@@ -70,13 +70,13 @@ mod fixture {
     pub const OUT_VALUE: u64 = 6400;
     pub const OUT_SPK: &str =
         "51202258f2d4637b2ca3fd27614868b33dee1a242b42582d5474f51730005fa99ce8";
-    /// keystone 产生的 keypath 签名（PSBT_IN_TAP_KEY_SIG，SIGHASH_DEFAULT）
+    /// keystone-produced keypath signature (PSBT_IN_TAP_KEY_SIG, SIGHASH_DEFAULT)
     pub const KEYSTONE_SIG: &str =
         "92864dc9e56b6260ecbd54ec16b94bb597a2e6be7cca0de89d75e17921e0e1528cba32dd04217175c237e1835b5db1c8b384401718514f9443dce933c6ba9c87";
 }
 
 // ============================================================================
-// 1. BIP-341 output key 跨验证
+// 1. BIP-341 output key cross-validation
 // ============================================================================
 
 #[test]
@@ -88,7 +88,7 @@ fn keystone_taproot_output_key_matches_witness_program() {
     let q = compute_output_key_scriptpath(&internal_x, &merkle_root).unwrap();
     let compressed = shlosilo::curve_primitive::secp256k1::point_to_compressed(&q);
 
-    // output key 必须 = spent output 的 witness program
+    // the output key must = the spent output's witness program
     let spk = hex_decode(fixture::SPENT_SPK);
     assert_eq!(
         &compressed[1..],
@@ -100,7 +100,7 @@ fn keystone_taproot_output_key_matches_witness_program() {
 }
 
 // ============================================================================
-// 2. BIP-341 keypath sighash 跨验证
+// 2. BIP-341 keypath sighash cross-validation
 // ============================================================================
 
 #[test]
@@ -160,7 +160,7 @@ fn keystone_taproot_keypath_sighash_verifies_keystone_sig() {
     sigmsg.push(spend_type);
     sigmsg.extend_from_slice(&input_index.to_le_bytes());
 
-    let _ = seed; // seed 用于注释文档；签名本身来自 keystone fixture
+    let _ = seed; // seed documented in comments; the signature itself comes from the keystone fixture
     let sighash = tagged_hash(
         b"TapSighash",
         &[0x00]
@@ -180,8 +180,8 @@ fn keystone_taproot_keypath_sighash_verifies_keystone_sig() {
 }
 
 /// Minimal BIP-340 Schnorr verify (test-only reference implementation).
-/// 生产路径用 shlosilo::signature::schnorr_secp256k1::verify，
-/// 但那需要构造 Secp256k1Point；这里直接做点运算以独立对照。
+/// The production path uses shlosilo::signature::schnorr_secp256k1::verify,
+/// but that requires constructing a Secp256k1Point; here we do point arithmetic directly for independent comparison.
 fn bip340_verify(pk_x: &[u8; 32], msg: &[u8; 32], sig: &[u8]) -> bool {
     let vk = match k256::schnorr::VerifyingKey::from_bytes(pk_x.into()) {
         Ok(v) => v,

@@ -1,13 +1,13 @@
-//! P0-01 整改落地测试(2026-09-01 第三次复审 #4)——PSBT parser totality
+//! P0-01 remediation landing tests (2026-09-01 third re-review #4) — PSBT parser totality
 //!
-//! 审计要求:同 parser 多处同模式需系统性加固,不是只补 723 行。
-//! 覆盖:
-//! - checked_add(take_bytes):恶意 CompactSize 长度不得溢出 panic
-//! - 预算(PSBT_WIRE_MAX_LEN):长度/计数域不得触发 OOM 预分配
-//! - 非规范 CompactSize 拒绝(同值多编码解析歧义)
-//! - 全部四个 panic 点位:decode_witness_utxo:723 / deserialize_unsigned_tx:272 /
+//! Audit requirement: where the same parser repeats a pattern, hardening must be systematic, not just patching line 723.
+//! Coverage:
+//! - checked_add (take_bytes): a malicious CompactSize length must not overflow-panic
+//! - Budget (PSBT_WIRE_MAX_LEN): length/count fields must not trigger OOM preallocation
+//! - Non-canonical CompactSize rejection (multiple encodings of the same value cause parse ambiguity)
+//! - All four panic points: decode_witness_utxo:723 / deserialize_unsigned_tx:272 /
 //!   decode_map:356 / Vec::with_capacity:251
-//! - 真实 fixture 兼容性(p63_btc_psbt.rs 锁定,不在此重复)
+//! - Real fixture compatibility (locked by p63_btc_psbt.rs, not duplicated here)
 
 use shlosilo::chain::btc::psbt::{decode_witness_utxo, parse_psbt};
 
@@ -15,28 +15,28 @@ fn psbt_magic() -> Vec<u8> {
     vec![0x70, 0x73, 0x62, 0x74, 0xff]
 }
 
-/// 最小合法 unsigned tx 骨架(1 输入 0 输出),script_sig_len 可注入
+/// Minimal legal unsigned tx skeleton (1 input, 0 outputs); script_sig_len injectable
 fn tx_with_script_sig_len(len_wire: &[u8]) -> Vec<u8> {
     let mut tx = Vec::new();
     tx.extend_from_slice(&2i32.to_le_bytes()); // version
     tx.push(1); // n_inputs = 1
     tx.extend_from_slice(&[0u8; 32]); // txid
     tx.extend_from_slice(&0u32.to_le_bytes()); // vout
-    tx.extend_from_slice(len_wire); // script_sig_len(注入点)
+    tx.extend_from_slice(len_wire); // script_sig_len (injection point)
     tx.extend_from_slice(&0xffffffffu32.to_le_bytes()); // sequence
     tx.push(0); // n_outputs
     tx.extend_from_slice(&0u32.to_le_bytes()); // locktime
     tx
 }
 
-/// 把 global map(unsigned_tx)+ 与之一致的空 input/output map 包成完整 PSBT
-/// (审计 #5 exact-consumption 后:map 数必须与 unsigned_tx 的 n_inputs/n_outputs
-/// 一致,多余 separator 会被整体消费检查拒绝)
+/// Wrap the global map (unsigned_tx) plus a matching empty input/output map into a full PSBT
+/// (after audit #5 exact-consumption: map counts must match the unsigned_tx n_inputs/n_outputs;
+/// extra separators are rejected by the whole-consumption check)
 fn wrap_psbt(tx: &[u8]) -> Vec<u8> {
     wrap_psbt_full(tx, 1, 0)
 }
 
-/// 显式指定 n_inputs/n_outputs 的版本(恶意 count / 多 output 测试用)
+/// Variant with explicit n_inputs/n_outputs (for malicious count / multi-output tests)
 fn wrap_psbt_full(tx: &[u8], n_inputs: usize, n_outputs: usize) -> Vec<u8> {
     let mut b = psbt_magic();
     b.push(1); // keylen
@@ -49,11 +49,11 @@ fn wrap_psbt_full(tx: &[u8], n_inputs: usize, n_outputs: usize) -> Vec<u8> {
     b
 }
 
-// ── 1. 审计原始指控:decode_witness_utxo 加法溢出 ──
+// ── 1. Original audit charge: decode_witness_utxo addition overflow ──
 
 #[test]
 fn p001_witness_utxo_len_overflow_rejected() {
-    // amount ‖ 0xff ‖ u64::MAX —— 审计复现向量
+    // amount ‖ 0xff ‖ u64::MAX — the audit reproduction vector
     let mut v = Vec::new();
     v.extend_from_slice(&651_157u64.to_le_bytes());
     v.push(0xff);
@@ -63,7 +63,7 @@ fn p001_witness_utxo_len_overflow_rejected() {
 
 #[test]
 fn p001_witness_utxo_oversized_len_rejected() {
-    // 不溢出但超预算(0xfe ‖ 0xffffffff):必须拒绝,不得尝试分配 4GB
+    // No overflow but over budget (0xfe ‖ 0xffffffff): must reject, must not attempt a 4GB allocation
     let mut v = Vec::new();
     v.extend_from_slice(&651_157u64.to_le_bytes());
     v.push(0xfe);
@@ -73,14 +73,14 @@ fn p001_witness_utxo_oversized_len_rejected() {
 
 #[test]
 fn p001_witness_utxo_trailing_garbage_rejected() {
-    // 审计 #5 P0-02(替换旧反向测试"trailing_garbage_tolerated"):
-    // exact-consumption——CTxOut 值尾随字节 = 非规范编码,必须拒绝
-    // (旧测试错误地把尾随垃圾定义为"应接受")
+    // Audit #5 P0-02 (replacing the old reversed test "trailing_garbage_tolerated"):
+    // exact-consumption — trailing bytes of the CTxOut value = non-canonical encoding, must reject
+    // (the old test wrongly defined trailing garbage as "should be accepted")
     let mut v = Vec::new();
     v.extend_from_slice(&651_157u64.to_le_bytes());
     v.push(3); // spk_len = 3
-    v.extend_from_slice(&[0x00, 0x14, 0x99]); // 占位 spk
-    v.push(0xde); // 尾随垃圾
+    v.extend_from_slice(&[0x00, 0x14, 0x99]); // placeholder spk
+    v.push(0xde); // trailing garbage
     let r = decode_witness_utxo(&v);
     assert!(
         r.is_err(),
@@ -88,7 +88,7 @@ fn p001_witness_utxo_trailing_garbage_rejected() {
     );
 }
 
-// ── 2. deserialize_unsigned_tx:script_sig_len / script_pubkey_len 溢出 ──
+// ── 2. deserialize_unsigned_tx: script_sig_len / script_pubkey_len overflow ──
 
 #[test]
 fn p001_script_sig_len_overflow_rejected() {
@@ -100,13 +100,13 @@ fn p001_script_sig_len_overflow_rejected() {
     let r = parse_psbt(&wrap_psbt(&tx));
     assert!(
         r.is_err(),
-        "恶意 script_sig_len 必须稳定报错(修复前 panic psbt.rs:272)"
+        "malicious script_sig_len must error stably (panicked at psbt.rs:272 before the fix)"
     );
 }
 
 #[test]
 fn p001_script_pubkey_len_oversized_rejected() {
-    // outputs: 1 个 output,value(8B) + script_pubkey_len = 0xfe ‖ 0xffffffff
+    // outputs: 1 output, value(8B) + script_pubkey_len = 0xfe ‖ 0xffffffff
     let mut tx = Vec::new();
     tx.extend_from_slice(&2i32.to_le_bytes());
     tx.push(1); // n_inputs
@@ -117,16 +117,16 @@ fn p001_script_pubkey_len_oversized_rejected() {
     tx.push(1); // n_outputs = 1
     tx.extend_from_slice(&1000u64.to_le_bytes()); // value
     tx.push(0xfe); // spk_len prefix
-    tx.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // 超预算
+    tx.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // over budget
     let r = parse_psbt(&wrap_psbt_full(&tx, 1, 1));
     assert!(r.is_err());
 }
 
-// ── 3. decode_map:key_len / value_len 溢出 ──
+// ── 3. decode_map: key_len / value_len overflow ──
 
 #[test]
 fn p001_map_value_len_overflow_rejected() {
-    // global map 第一条就塞恶意 value_len
+    // The first global map entry carries a malicious value_len
     let mut b = psbt_magic();
     b.push(1);
     b.push(0x00);
@@ -135,7 +135,7 @@ fn p001_map_value_len_overflow_rejected() {
     let r = parse_psbt(&b);
     assert!(
         r.is_err(),
-        "恶意 value_len 必须稳定报错(修复前 panic psbt.rs:356)"
+        "malicious value_len must error stably (panicked at psbt.rs:356 before the fix)"
     );
 }
 
@@ -148,7 +148,7 @@ fn p001_map_key_len_oversized_rejected() {
     assert!(r.is_err());
 }
 
-// ── 4. with_capacity OOM:n_inputs / n_outputs 巨量 ──
+// ── 4. with_capacity OOM: huge n_inputs / n_outputs ──
 
 #[test]
 fn p001_huge_input_count_no_oom() {
@@ -159,20 +159,20 @@ fn p001_huge_input_count_no_oom() {
     let r = parse_psbt(&wrap_psbt_full(&tx, 0, 0));
     assert!(
         r.is_err(),
-        "恶意 input count 必须报错(修复前 capacity overflow abort)"
+        "malicious input count must error (capacity overflow abort before the fix)"
     );
 }
 
 #[test]
 fn p001_count_exceeding_physical_bytes_rejected_before_alloc() {
-    // 审计 #5 P0-02 + 第六次复审 P2-01:物理可行性判断已提成纯 helper
-    // count_physically_feasible(见 psbt.rs),本测试断言 helper 行为,
-    // 不再依赖时序观察(复审判定:100ms 阈值不可靠,with_capacity 不 memset,
-    // host allocator 完全可能更快;旧漏洞回归时时序测试仍会通过)。
+    // Audit #5 P0-02 + sixth re-review P2-01: the physical-feasibility check has been extracted into a pure helper
+    // count_physically_feasible (see psbt.rs); this test asserts helper behavior
+    // and no longer relies on timing observation (re-review verdict: the 100ms threshold is unreliable, with_capacity does not memset,
+    // and the host allocator could well be faster; if the old vulnerability regresses, a timing test would still pass).
     //
-    // 行为链:恶意 n_inputs=60000 + 小 wire → helper false → parser 在
-    // Vec::with_capacity 之前返回 Err(helper 调用位置在实现中位于
-    // with_capacity 之前,由代码顺序锁定)。
+    // Behavior chain: malicious n_inputs=60000 + small wire → helper false → the parser returns Err
+    // before Vec::with_capacity (the helper call site precedes with_capacity in the implementation, locked by code order).
+    // before with_capacity, locked by code order).
     let mut tx = Vec::new();
     tx.extend_from_slice(&2i32.to_le_bytes());
     tx.push(0xfd); // n_inputs 2-byte prefix
@@ -183,16 +183,16 @@ fn p001_count_exceeding_physical_bytes_rejected_before_alloc() {
 
 #[test]
 fn p001_duplicate_map_key_rejected() {
-    // 审计 #5 P0-02:重复 key 拒绝——BIP-174 "key must be unique in a map",
-    // 重复 = first-wins/last-wins parser differential 向量
+    // Audit #5 P0-02: duplicate key rejection — BIP-174 "key must be unique in a map",
+    // duplicates = a first-wins/last-wins parser differential vector
     let mut b = psbt_magic();
-    // global map:两条相同 key=[0x00](UNSIGNED_TX)
+    // global map: two identical key=[0x00] (UNSIGNED_TX) entries
     b.push(1); // keylen
     b.push(0x00); // key = UNSIGNED_TX
     b.push(4); // valuelen
     b.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // value1
     b.push(1); // keylen
-    b.push(0x00); // key = UNSIGNED_TX(重复!)
+    b.push(0x00); // key = UNSIGNED_TX (duplicate!)
     b.push(4); // valuelen
     b.extend_from_slice(&[0x05, 0x06, 0x07, 0x08]); // value2
     let r = parse_psbt(&b);
@@ -201,11 +201,11 @@ fn p001_duplicate_map_key_rejected() {
 
 #[test]
 fn p001_psbt_trailing_bytes_after_output_maps_rejected() {
-    // 审计 #5 P0-02:整体 exact-consumption——所有 map 解析完后剩余字节 = 拒绝
+    // Audit #5 P0-02: whole-message exact-consumption — leftover bytes after all maps parse = reject
     let tx = tx_with_script_sig_len(&[0x00]);
     let mut b = wrap_psbt(&tx);
     b.push(0xde);
-    b.push(0xad); // 尾随垃圾
+    b.push(0xad); // trailing garbage
     let r = parse_psbt(&b);
     assert!(
         r.is_err(),
@@ -215,7 +215,7 @@ fn p001_psbt_trailing_bytes_after_output_maps_rejected() {
 
 #[test]
 fn p001_unsigned_tx_trailing_bytes_rejected() {
-    // 审计 #5 P0-02:unsigned tx 内嵌尾随——sighash preimage 一致性风险
+    // Audit #5 P0-02: unsigned tx embedded trailing data — sighash preimage consistency risk
     let mut tx = Vec::new();
     tx.extend_from_slice(&2i32.to_le_bytes());
     tx.push(1); // n_inputs
@@ -225,43 +225,43 @@ fn p001_unsigned_tx_trailing_bytes_rejected() {
     tx.extend_from_slice(&0xffffffffu32.to_le_bytes()); // sequence
     tx.push(0); // n_outputs
     tx.extend_from_slice(&0u32.to_le_bytes()); // locktime
-    tx.push(0xde); // 内嵌尾随
+    tx.push(0xde); // embedded trailing
     let r = parse_psbt(&wrap_psbt(&tx));
     assert!(r.is_err(), "unsigned tx trailing bytes must be rejected");
 }
 
-// ── 5. 非规范 CompactSize 拒绝 ──
+// ── 5. Non-canonical CompactSize rejection ──
 
 #[test]
 fn p001_noncanonical_compact_size_rejected() {
-    // script_sig_len = 5 用 0xfd ‖ 0x0005 编码(非规范)——拒绝
+    // script_sig_len = 5 encoded as 0xfd ‖ 0x0005 (non-canonical) — reject
     let mut t = Vec::new();
     t.extend_from_slice(&2i32.to_le_bytes());
     t.push(1);
     t.extend_from_slice(&[0u8; 32]);
     t.extend_from_slice(&0u32.to_le_bytes());
-    t.extend_from_slice(&[0xfd, 0x05, 0x00]); // 非规范 5
-    t.extend_from_slice(&[0xaa; 5]); // 5 字节 script_sig
+    t.extend_from_slice(&[0xfd, 0x05, 0x00]); // non-canonical 5
+    t.extend_from_slice(&[0xaa; 5]); // 5-byte script_sig
     t.extend_from_slice(&0xffffffffu32.to_le_bytes());
     t.push(0);
     t.extend_from_slice(&0u32.to_le_bytes());
     let r = parse_psbt(&wrap_psbt(&t));
     assert!(
         r.is_err(),
-        "非规范 CompactSize(0xfd 前缀编码 <0xfd 的值)必须拒绝"
+        "non-canonical CompactSize (0xfd prefix encoding a value < 0xfd) must be rejected"
     );
 }
 
 #[test]
 fn p001_zero_prefix_0xff_rejected() {
-    // 0xff ‖ 0x0000000000000005(值 5,非规范 8 字节编码)——拒绝
+    // 0xff ‖ 0x0000000000000005 (value 5, non-canonical 8-byte encoding) — reject
     let mut t = Vec::new();
     t.extend_from_slice(&2i32.to_le_bytes());
     t.push(1);
     t.extend_from_slice(&[0u8; 32]);
     t.extend_from_slice(&0u32.to_le_bytes());
     t.push(0xff);
-    t.extend_from_slice(&5u64.to_le_bytes()); // 值 5 < 0x1_0000_0000,非规范
+    t.extend_from_slice(&5u64.to_le_bytes()); // value 5 < 0x1_0000_0000, non-canonical
     t.extend_from_slice(&[0xaa; 5]);
     t.extend_from_slice(&0xffffffffu32.to_le_bytes());
     t.push(0);
@@ -270,7 +270,7 @@ fn p001_zero_prefix_0xff_rejected() {
     assert!(r.is_err());
 }
 
-// ── 6. 合法 PSBT 不受预算影响(冒烟) ──
+// ── 6. Legal PSBT unaffected by the budget (smoke) ──
 
 #[test]
 fn p001_valid_minimal_psbt_still_parses() {
@@ -282,14 +282,14 @@ fn p001_valid_minimal_psbt_still_parses() {
     assert_eq!(p.unsigned_tx.outputs.len(), 0);
 }
 
-// ── 7. 审计 #5 开-01:NON_WITNESS_UTXO full-tx/txid/vout 绑定 ──
+// ── 7. Audit #5 open-01: NON_WITNESS_UTXO full-tx/txid/vout binding ──
 
-/// 构造最小 legacy full tx(version+1in+1out+locktime)
+/// Build a minimal legacy full tx (version + 1in + 1out + locktime)
 fn make_full_tx(vout_value: u64, spk_byte: u8) -> Vec<u8> {
     let mut tx = Vec::new();
     tx.extend_from_slice(&2i32.to_le_bytes()); // version
     tx.push(1); // n_inputs = 1
-    tx.extend_from_slice(&[0xaau8; 32]); // parent txid(占位)
+    tx.extend_from_slice(&[0xaau8; 32]); // parent txid (placeholder)
     tx.extend_from_slice(&0u32.to_le_bytes()); // vout
     tx.push(0); // script_sig len
     tx.extend_from_slice(&0xffffffffu32.to_le_bytes()); // sequence
@@ -315,7 +315,7 @@ fn kai01_nonwitness_full_tx_bound_happy_path() {
         key: vec![0x00], // NON_WITNESS_UTXO
         value: full_tx.clone(),
     }];
-    // prev_out 匹配
+    // prev_out matches
     let prev_out = OutPoint { txid, vout: 0 };
     let r = get_utxo_any(&input_map, &prev_out);
     assert!(r.is_some(), "bound NON_WITNESS_UTXO must resolve");
@@ -334,7 +334,7 @@ fn kai01_nonwitness_txid_mismatch_rejected() {
         value: full_tx.clone(),
     }];
 
-    // 攻击者给的 prev_out.txid ≠ full-tx 实际 txid → 拒绝
+    // The attacker-provided prev_out.txid ≠ the full-tx actual txid → reject
     let fake_txid = {
         let mut t = sha256::hash_twice(&full_tx).unwrap();
         t[0] ^= 0xff;
@@ -361,7 +361,7 @@ fn kai01_nonwitness_vout_oob_rejected() {
         value: full_tx,
     }];
     let txid = sha256::hash_twice(&make_full_tx(651_157, 0x00)).unwrap();
-    // full tx 只有 1 个 output,vout=1 越界
+    // The full tx has only 1 output; vout=1 is out of bounds
     let prev_out = OutPoint { txid, vout: 1 };
     assert!(
         get_utxo_any(&input_map, &prev_out).is_none(),

@@ -1,14 +1,14 @@
-//! BTC segwit 地址编码（bech32 + bech32m，P2WPKH + P2TR）
+//! BTC segwit address encoding (bech32 + bech32m, P2WPKH + P2TR)
 //!
-//! Phase 5 v5 真实实现：`bech32` + `bitcoin_hashes::ripemd160` + `sha256`
+//! Phase 5 v5 real implementation: `bech32` + `bitcoin_hashes::ripemd160` + `sha256`
 //!
-//! ## 算法（P2WPKH, BIP-84）
+//! ## Algorithm (P2WPKH, BIP-84)
 //!
 //! 1. witness_program = RIPEMD-160(SHA-256(compressed_pubkey)) (20 bytes)
 //! 2. data = [0x00] + witness_program (21 bytes, version 0 + 20 bytes program)
 //! 3. address = bech32_encode("bc"/"tb", data) (~42 chars)
 //!
-//! ## 算法（P2TR, BIP-86 / BIP-341）
+//! ## Algorithm (P2TR, BIP-86 / BIP-341)
 //!
 //! 1. tweaked_x_only_pubkey = lift_x(sha256(compressed_pubkey)) tweaked by tagged_hash("TapTweak", x_only_pubkey)
 //! 2. witness_program = x_only_pubkey (32 bytes)
@@ -21,7 +21,7 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::network::Network;
 use core::fmt;
 
-/// Segwit 变体（v2.3 §2.4 Layer D 表）
+/// Segwit variant (v2.3 §2.4 Layer D table)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SegwitVariant {
     /// V0: P2WPKH（ECDSA + BIP-84 / BIP-49）
@@ -30,13 +30,13 @@ pub enum SegwitVariant {
     V1,
 }
 
-/// BTC 地址（最大 90 chars bech32 编码）
+/// BTC address (max 90 chars bech32 encoding)
 pub const BTC_ADDRESS_MAX_LEN: usize = 90;
 
-/// P2WPKH witness program 长度（20 bytes）
+/// P2WPKH witness program length (20 bytes)
 pub const P2WPKH_WITNESS_PROGRAM_LEN: usize = 20;
 
-/// P2TR witness program 长度（32 bytes x-only pubkey）
+/// P2TR witness program length (32-byte x-only pubkey)
 pub const P2TR_WITNESS_PROGRAM_LEN: usize = 32;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -58,7 +58,7 @@ impl fmt::Display for BtcAddress {
 
 impl fmt::Debug for BtcAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // 不泄露完整地址（隐私）——只暴露前 6 后 4 字符
+        // Do not leak the full address (privacy) — only the first 6 and last 4 chars are exposed
         let s = self.bytes.as_str();
         if s.len() > 12 {
             write!(f, "BtcAddress({}…{})", &s[..6], &s[s.len() - 4..])
@@ -85,9 +85,9 @@ fn p2wpkh_witness_program(pubkey: &Secp256k1Point) -> Result<[u8; P2WPKH_WITNESS
     ripemd160::hash(&sha)
 }
 
-/// BTC segwit 地址编码（P2WPKH / P2TR）
+/// BTC segwit address encoding (P2WPKH / P2TR)
 ///
-/// # Phase 5 v5 实现
+/// # Phase 5 v5 implementation
 ///
 /// - V0 (P2WPKH): `bech32_encode(hrp, [0x00] + RIPEMD-160(SHA-256(pubkey)))`
 /// - V1 (P2TR): `bech32m_encode(hrp, [0x01] + x_only_tweaked_pubkey)` — TODO BIP-341 tweak
@@ -122,9 +122,9 @@ pub fn encode(
             Ok(BtcAddress { bytes: address })
         }
         SegwitVariant::V1 => {
-            // P2TR: 需要 BIP-341 tweaked x-only pubkey
-            // Phase 5 v5 暂未实现（需要 BIP-341 tagged_hash + tweak_x_only）
-            // P2TR 留给 Phase 6+（taproot 部署率低）
+            // P2TR: needs the BIP-341 tweaked x-only pubkey
+            // Phase 5 v5 not yet implemented (needs BIP-341 tagged_hash + tweak_x_only)
+            // P2TR is left for Phase 6+ (low taproot deployment)
             Err(ShlosiloError::new(
                 ShlosiloErrorKind::ExportProtocolUnimplemented,
             ))
@@ -137,23 +137,23 @@ mod tests {
     use super::*;
     use crate::curve_primitive::secp256k1::{base_mul, scalar_from_bytes};
 
-    /// BIP-173 P2WPKH Mainnet 官方测试向量
+    /// BIP-173 P2WPKH Mainnet official test vector
     /// (BIP-173 Appendix)
     #[test]
     fn bip173_p2wpkh_mainnet_official() {
         // pubkey: 751e76e8199196d454941c45d1b3a323f1433bd6
-        // 这里我们生成 pubkey 测 roundtrip，而非比对特定字符串
-        let sk_bytes = [0x01u8; 32]; // 任意 sk
+        // Here we generate a pubkey to test the roundtrip, rather than comparing a specific string
+        let sk_bytes = [0x01u8; 32]; // arbitrary sk
         let sk = scalar_from_bytes(&sk_bytes).unwrap();
         let pk = base_mul(&sk);
 
         let addr = encode(&pk, Network::BitcoinMainnet, SegwitVariant::V0).unwrap();
-        // P2WPKH Mainnet 地址以 "bc1q" 开头，长度 42 chars
+        // A P2WPKH Mainnet address starts with "bc1q" and is 42 chars long
         assert!(addr.as_ref().starts_with("bc1q"), "got: {}", addr.as_ref());
         assert_eq!(addr.as_ref().len(), 42);
     }
 
-    /// P2WPKH Testnet (tb1q...) 前缀
+    /// P2WPKH Testnet (tb1q...) prefix
     #[test]
     fn bip173_p2wpkh_testnet_prefix() {
         let sk = scalar_from_bytes(&[0x02u8; 32]).unwrap();
@@ -162,7 +162,7 @@ mod tests {
         assert!(addr.as_ref().starts_with("tb1q"), "got: {}", addr.as_ref());
     }
 
-    /// 确定性：相同 sk → 相同地址
+    /// Determinism: same sk → same address
     #[test]
     fn deterministic_address() {
         let sk = scalar_from_bytes(&[0x03u8; 32]).unwrap();
@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(addr1.as_ref(), addr2.as_ref());
     }
 
-    /// 不同 sk → 不同地址
+    /// Different sk → different addresses
     #[test]
     fn different_sk_different_address() {
         let sk1 = scalar_from_bytes(&[0x04u8; 32]).unwrap();
@@ -184,7 +184,7 @@ mod tests {
         assert_ne!(addr1.as_ref(), addr2.as_ref());
     }
 
-    /// P2TR (V1) 暂未实现 → Err
+    /// P2TR (V1) not yet implemented → Err
     #[test]
     fn p2tr_not_implemented() {
         let sk = scalar_from_bytes(&[0x06u8; 32]).unwrap();
@@ -193,7 +193,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// 非 BTC 网络 → Err
+    /// Non-BTC network → Err
     #[test]
     fn non_btc_network_rejected() {
         let sk = scalar_from_bytes(&[0x07u8; 32]).unwrap();

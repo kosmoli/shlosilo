@@ -1,8 +1,8 @@
-//! 编码原语（hash + 字符串编码）
+//! Encoding primitives (hash + string encoding)
 //!
-//! Phase 4 真实实现（v2 §2.4）：
+//! Phase 4 real implementation (v2 §2.4):
 //! - `sha2::Sha256` / `sha2::Sha512`
-//! - `tiny-keccak`（Keccak256，**不是** SHA3-256）
+//! - `tiny-keccak` (Keccak256, **not** SHA3-256)
 //! - `bech32` / `bech32m`
 //! - `bs58`（base58check）
 
@@ -17,12 +17,12 @@ pub mod ripemd160;
 pub mod sha256;
 pub mod sha512;
 
-/// 共享 hex 模块（仅 dev/test 用）
+/// Shared hex module (dev/test only)
 ///
-/// **Phase 4 简化**：自己实现 hex 编码，避免 hex crate 依赖
+/// **Phase 4 simplification**: hex encoding implemented in-house, avoiding the hex crate dependency
 #[cfg(test)]
 pub mod hex {
-    /// 简化版 hex 编码
+    /// Simplified hex encoding
     pub fn encode(bytes: &[u8]) -> alloc::string::String {
         let mut s = alloc::string::String::with_capacity(bytes.len() * 2);
         for &b in bytes {

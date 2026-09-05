@@ -1,18 +1,18 @@
 //! XMR ↔ keystone3-firmware Cross-Validation Test Module (v9.12)
 //!
-//! ## 目的
-//! 把 keystone3-firmware monero app 的测试 fixture 搬过来，作为 shlosilo 的 oracle。
-//! oracle 失败 = shlosilo bug，必须修。
+//! ## Purpose
+//! Brings in the keystone3-firmware monero app's test fixtures as shlosilo's oracle.
+//! oracle failure = shlosilo bug; it must be fixed.
 //!
-//! ## 范围 (Phase 5 §7.2 v9.12)
+//! ## Scope (Phase 5 §7.2 v9.12)
 //! 1. cn_fast_hash (Keccak-256) — `apps/monero/src/utils/hash.rs`
 //! 2. subaddress derivation (calc_subaddress_m) — `apps/monero/src/key.rs`
 //! 3. subaddress spend/view pub — `apps/monero/src/key.rs` + `address.rs`
 //! 4. key image (hash_to_point Hp) — `apps/monero/src/key.rs` (moneroinflation vector)
 //!
-//! ## 来源
-//! Fixtures 从 `/home/komo/works/keystone3-firmware/rust/apps/monero/src/` 提取。
-//! keystone = 已审计 + 部署在硬件钱包，是 shlosilo 的 oracle。
+//! ## Sources
+//! Fixtures extracted from `/home/komo/works/keystone3-firmware/rust/apps/monero/src/`.
+//! keystone = audited and deployed on hardware wallets; it is shlosilo's oracle.
 #![cfg(test)]
 extern crate alloc;
 
@@ -41,16 +41,16 @@ fn hex_decode_32(s: &str) -> [u8; 32] {
 }
 
 // ============================================================================
-// 1. cn_fast_hash (Keccak-256) 跨验证
+// 1. cn_fast_hash (Keccak-256) cross-validation
 // ============================================================================
 //
-// Monero `cn_fast_hash` = Keccak-256（不是 SHA3-256）。keystone 用 cryptoxide
-// Keccak256，shlosilo 用 tiny_keccak。两者都对齐标准 Keccak-256 向量。
+// Monero `cn_fast_hash` = Keccak-256 (not SHA3-256). keystone uses cryptoxide
+// Keccak256; shlosilo uses tiny_keccak. Both align with the standard Keccak-256 vectors.
 
 #[test]
 fn keystone_xmr_cn_fast_hash_matches() {
     use shlosilo::encoding::keccak256::hash;
-    // Keccak-256("") 标准向量（= Monero cn_fast_hash("")）
+    // Keccak-256("") standard vector (= Monero cn_fast_hash(""))
     let h = hash(b"").unwrap();
     let expected = hex_decode("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
     assert_eq!(
@@ -96,7 +96,7 @@ fn keystone_xmr_calc_subaddress_m() {
 //   sub (0,1) spend_pub = 3dca7526...
 //   sub (0,1) view_pub  = 33f3f7b3...
 //
-// 算法 (Monero 官方 MRL-0006):
+// Algorithm (official Monero MRL-0006):
 //   sub_spend_pub = main_spend_pub + m*G
 //   sub_view_pub  = sub_spend_pub * view_sec
 
@@ -189,16 +189,16 @@ fn keystone_xmr_key_image() {
 }
 
 // ============================================================================
-// 5. output key 恢复 → key image (完整链路)
+// 5. Output key recovery → key image (full pipeline)
 // ============================================================================
 //
 // Source: keystone key_images.rs::test_include_additional_keys
-//   验证 Monero "识别 output → 计算 key image" 的完整链路：
+//   Verifies the full Monero "identify output → compute key image" pipeline:
 //     recv_derivation = (view_sec * tx_pubkey) * 8   (ECDH + mul_by_cofactor)
 //     key_offset      = Hs(recv_derivation_compressed || varint(output_index))
 //     x               = spend_sec + key_offset         (mod L)
 //     key image       = x * Hp(x*G)
-//   (major=0, minor=0，故不加 subaddress m；output_index=1 → varint=0x01)
+//   (major=0, minor=0, so no subaddress m added; output_index=1 → varint=0x01)
 
 #[test]
 fn keystone_xmr_output_key_image() {
@@ -244,16 +244,16 @@ fn keystone_xmr_output_key_image() {
 }
 
 // ============================================================================
-// 6. keypair 派生 (BIP32 secp256k1 → hash_to_scalar → spend/view key)
+// 6. Keypair derivation (BIP32 secp256k1 → hash_to_scalar → spend/view key)
 // ============================================================================
 //
 // Source: keystone key.rs::test_monero_keys
-//   链路：
-//     sk    = BIP32(seed, "m/44'/128'/0'/0/0")   (secp256k1 私钥)
+//   Pipeline:
+//     sk    = BIP32(seed, "m/44'/128'/0'/0/0")   (secp256k1 private key)
 //     spend = Hs(sk)                              (hash_to_scalar)
 //     view  = Hs(spend)                           (hash_to_scalar)
-//     spend_pub = spend * G, view_pub = view * G  (ed25519, 无 clamp)
-//   keystone 用 rust-bitcoin BIP32，shlosilo 用 bip32 crate，都是标准 BIP32。
+//     spend_pub = spend * G, view_pub = view * G  (ed25519, no clamp)
+//   keystone uses rust-bitcoin BIP32, shlosilo uses the bip32 crate; both are standard BIP32.
 
 #[test]
 fn keystone_xmr_keypair_from_seed() {
@@ -266,12 +266,12 @@ fn keystone_xmr_keypair_from_seed() {
 
     let seed = hex_decode("45a5056acbe881d7a5f2996558b303e08b4ad1daffacf6ffb757ff2a9705e6b9f806cffe3bd90ff8e3f8e8b629d9af78bcd2ed23e8c711f238308e65b62aa5f0");
 
-    // 1. BIP32 派生 secp256k1 私钥
+    // 1. BIP32 derives the secp256k1 private key
     let path = DerivationPath::parse("m/44'/128'/0'/0/0").unwrap();
     let scalar = derive_from_seed(&seed, &path).unwrap();
     let secp_priv = scalar_to_bytes(&scalar);
 
-    // 2. spend = Hs(secp256k1 私钥)
+    // 2. spend = Hs(secp256k1 private key)
     let spend = hash_to_scalar(&secp_priv).unwrap();
     let expected_spend =
         hex_decode_32("6c3895c1dfd7c3ed22be481ed5ec7f40e3d8ded84f0a3d65a542915475ca6f0e");
@@ -291,7 +291,7 @@ fn keystone_xmr_keypair_from_seed() {
         "view key must match keystone test_monero_keys"
     );
 
-    // 4. spend_pub = spend * G (无 clamp，curve25519_dalek)
+    // 4. spend_pub = spend * G (no clamp, curve25519_dalek)
     let spend_pub = (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(spend))
         .compress()
         .to_bytes();

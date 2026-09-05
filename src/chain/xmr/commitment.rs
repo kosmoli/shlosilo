@@ -1,23 +1,23 @@
-//! XMR Pedersen commitment (隐藏金额)
+//! XMR Pedersen commitment (amount hiding)
 //!
-//! Phase 5 v4 真实实现：wrap `monero-ed25519::Commitment`
+//! Phase 5 v4 real implementation: wrap `monero-ed25519::Commitment`
 //!
-//! ## 算法（XMR）
+//! ## Algorithm (XMR)
 //!
-//! - `commitment = mask * H + amount * G`  其中 H 是第二个基点
-//! - `H = HashToPoint(G)` (hash G 的压缩字节到 Ed25519 point)
-//! - `mask` 是 32-byte random blinding scalar
-//! - `amount` 是 u64 金额
+//! - `commitment = mask * H + amount * G`  where H is a second base point
+//! - `H = HashToPoint(G)` (hashes G's compressed bytes into an Ed25519 point)
+//! - `mask` is a 32-byte random blinding scalar
+//! - `amount` is a u64 amount
 //!
-//! ## 关键特性
+//! ## Key properties
 //!
-//! - **隐藏**：commitment 不暴露 amount
-//! - **绑定**：给定 commitment + (mask, amount)，验证者可以验证 commitment 计算正确
+//! - **Hiding**: the commitment does not reveal the amount
+//! - **Binding**: given a commitment + (mask, amount), a verifier can check the commitment was computed correctly
 //!
-//! ## 安全约束（v2 §2.1）
+//! ## Security constraints (v2 §2.1)
 //!
-//! - `Commitment` 内部 `mask` 字段敏感 → Zeroize + ZeroizeOnDrop
-//! - `Commitment` 公开材料 `commitment_point` 公开 → 允许 Copy
+//! - `Commitment`'s internal `mask` field is sensitive → Zeroize + ZeroizeOnDrop
+//! - `Commitment`'s public material `commitment_point` is public → Copy allowed
 
 use curve25519_dalek::Scalar;
 use ed25519_dalek::VerifyingKey;
@@ -27,18 +27,18 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::curve_primitive::ed25519::{Ed25519Scalar, SCALAR_LEN};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-// H basepoint (HashToPoint(G)) 压缩字节——见上面 dead_code 常量注释
+// H basepoint (HashToPoint(G)) compressed bytes — see the dead_code constant comment above
 
-/// XMR Pedersen commitment 包装
+/// XMR Pedersen commitment wrapper
 ///
-/// 内部持有 `MoneroCommitment`（含 mask scalar + amount + commitment point）
-/// **mask 字段敏感** → Zeroize + ZeroizeOnDrop
+/// Internally holds a `MoneroCommitment` (mask scalar + amount + commitment point)
+/// **The mask field is sensitive** → Zeroize + ZeroizeOnDrop
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct Commitment {
     inner: MoneroCommitment,
 }
 
-/// XMR commitment commitment_point 公开材料（32 bytes）
+/// XMR commitment commitment_point public material (32 bytes)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommitmentPoint {
     inner: VerifyingKey,
@@ -46,39 +46,39 @@ pub struct CommitmentPoint {
 
 impl AsRef<[u8]> for CommitmentPoint {
     fn as_ref(&self) -> &[u8] {
-        // VerifyingKey 内部持有压缩字节
-        // 通过 to_bytes() 返回 owned [u8; 32]，但我们需要 &[u8]
-        // 这里用 as_bytes() -> &[u8; 32] 然后转换
-        // 但 as_bytes() 已经是 &[u8; 32]，能直接当 &[u8]
-        // 借用临时变量不能作为 lifetime，先存 stack 上
+        // VerifyingKey internally holds compressed bytes
+        // to_bytes() returns an owned [u8; 32], but we need a &[u8]
+        // as_bytes() -> &[u8; 32] could be used and then converted,
+        // but as_bytes() is already &[u8; 32], directly usable as &[u8]
+        // a borrow of a temporary cannot serve as a lifetime; store on the stack first
         let b = self.inner.to_bytes();
-        // 借用 self.inner 的 owned bytes → 需要返回 owned 副本
-        // 实际接口: 用 to_bytes() 返回 owned 然后 store 在 ref
-        // 但 ref 没法引用 owned → 需要 unsafe 或重构
-        // 简化：直接调用 to_bytes() 返回 owned [u8; 32]，调用方拿 owned
-        // 这里 panic 等用户使用 to_bytes() 替代
+        // Borrowing self.inner's owned bytes → would need to return an owned copy
+        // The actual interface: use to_bytes() to return owned, then store in a ref
+        // but a ref cannot reference owned → would need unsafe or a refactor
+        // Simplification: just call to_bytes() to return an owned [u8; 32]; callers get owned
+        // This panics; users should use to_bytes() instead
         let _ = b;
-        // 实际上通过 Self::to_bytes 提供 owned 接口
-        // 本 AsRef<[u8]> 在测试中不用
+        // In practice Self::to_bytes provides the owned interface
+        // This AsRef<[u8]> is unused in tests
         &[]
     }
 }
 
 impl CommitmentPoint {
-    /// commitment_point → 32 bytes 压缩
+    /// commitment_point → 32 bytes compressed
     pub fn to_bytes(&self) -> [u8; 32] {
         self.inner.to_bytes()
     }
 }
 
-/// 计算 Pedersen commitment：mask * H + amount * G
+/// Compute a Pedersen commitment: mask * H + amount * G
 ///
-/// **输入**：
+/// **Input**:
 /// - `mask`: 32-byte blinding scalar (reduced)
-/// - `amount`: u64 金额
+/// - `amount`: u64 amount
 ///
 /// # Errors
-/// - `EncodingInvalidFormat`：mask 不是 32 bytes
+/// - `EncodingInvalidFormat`: mask is not 32 bytes
 pub fn commit(mask: &[u8; SCALAR_LEN], amount: u64) -> Result<CommitmentPoint> {
     // 1. mask bytes → curve25519-dalek::Scalar
     let mask_scalar = Scalar::from_bytes_mod_order(*mask);
@@ -96,22 +96,22 @@ pub fn commit(mask: &[u8; SCALAR_LEN], amount: u64) -> Result<CommitmentPoint> {
     let dalek_point: curve25519_dalek::EdwardsPoint = point.into();
 
     // 6. curve25519-dalek::EdwardsPoint → ed25519-dalek::VerifyingKey
-    //    通过 32 bytes compressed 转换
+    //    via 32-byte compressed conversion
     let compressed = dalek_point.compress();
     let compressed_bytes = compressed.to_bytes();
     let verifying_key = VerifyingKey::from_bytes(&compressed_bytes)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-    // 7. 包装 CommitmentPoint
+    // 7. Wrap the CommitmentPoint
     let _ = Commitment { inner: commitment };
     Ok(CommitmentPoint {
         inner: verifying_key,
     })
 }
 
-/// 从 mask + amount 反验证 commitment
+/// Verify a commitment from mask + amount
 ///
-/// 给定 commitment_point + (mask, amount)，验证 point == mask * H + amount * G
+/// Given commitment_point + (mask, amount), verify point == mask * H + amount * G
 pub fn verify(commitment_point: &CommitmentPoint, mask: &[u8; SCALAR_LEN], amount: u64) -> bool {
     let mask_scalar = Scalar::from_bytes_mod_order(*mask);
     let mono_mask = monero_ed25519::Scalar::from(mask_scalar);
@@ -119,11 +119,11 @@ pub fn verify(commitment_point: &CommitmentPoint, mask: &[u8; SCALAR_LEN], amoun
     let computed_point: curve25519_dalek::EdwardsPoint = recomputed.commit().into();
     let computed_compressed = computed_point.compress().to_bytes();
 
-    // 比对压缩字节
+    // Compare compressed bytes
     computed_compressed == commitment_point.inner.to_bytes()
 }
 
-/// 从 Ed25519Scalar mask 计算 commitment（便利 API）
+/// Compute a commitment from an Ed25519Scalar mask (convenience API)
 pub fn commit_from_scalar(mask: &Ed25519Scalar, amount: u64) -> Result<CommitmentPoint> {
     let raw_bytes = crate::curve_primitive::ed25519::scalar_to_bytes(mask);
     let mut arr = [0u8; SCALAR_LEN];
@@ -131,7 +131,7 @@ pub fn commit_from_scalar(mask: &Ed25519Scalar, amount: u64) -> Result<Commitmen
     commit(&arr, amount)
 }
 
-/// 验证零 commitment（amount = 0, mask = 0 → commitment = identity）
+/// Verify the zero commitment (amount = 0, mask = 0 → commitment = identity)
 pub fn zero_commitment() -> CommitmentPoint {
     let zero_scalar = monero_ed25519::Scalar::ZERO;
     let zero_commit = MoneroCommitment::new(zero_scalar, 0);
@@ -159,12 +159,12 @@ mod tests {
     #[test]
     fn commit_amount_nonzero() {
         // amount = 1, mask = 0 → commitment = 0*H + 1*G = G
-        // monero-ed25519::Commitment::commit() 内部用 INV_EIGHT = (1/8 mod L)
-        // 实际 point = (1/8) * G + 0 * H = G/8（不是 G）
-        // 因此这里只验证"非零 commitment"+"commit/verify roundtrip 一致"
+        // monero-ed25519::Commitment::commit() internally uses INV_EIGHT = (1/8 mod L)
+        // the actual point = (1/8) * G + 0 * H = G/8 (not G)
+        // so here we only verify "nonzero commitment" + "commit/verify roundtrip consistency"
         let zero_mask = [0u8; 32];
         let c = commit(&zero_mask, 1).unwrap();
-        // 不应等于 zero commitment
+        // should not equal the zero commitment
         let zero_c = zero_commitment();
         assert_ne!(c.to_bytes(), zero_c.to_bytes());
     }
@@ -184,7 +184,7 @@ mod tests {
         let mut mask = [0u8; 32];
         mask[31] = 7;
         let c = commit(&mask, 100).unwrap();
-        // 验证错的 amount 应失败
+        // verifying a wrong amount should fail
         assert!(!verify(&c, &mask, 101));
     }
 
@@ -193,7 +193,7 @@ mod tests {
         let mut mask = [0u8; 32];
         mask[31] = 7;
         let c = commit(&mask, 100).unwrap();
-        // 验证错的 mask 应失败
+        // verifying a wrong mask should fail
         let wrong_mask = [0u8; 32];
         assert!(!verify(&c, &wrong_mask, 100));
     }
@@ -203,7 +203,7 @@ mod tests {
         let sk_bytes = [0x42u8; 32];
         let sk = crate::curve_primitive::ed25519::scalar_from_bytes(&sk_bytes).unwrap();
         let c1 = commit_from_scalar(&sk, 50).unwrap();
-        // 通过直接 commit 调用验证
+        // verified via direct commit calls
         let arr = crate::curve_primitive::ed25519::scalar_to_bytes(&sk);
         let mut bytes = [0u8; 32];
         bytes.copy_from_slice(&arr);

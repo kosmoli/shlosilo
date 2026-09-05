@@ -1,13 +1,13 @@
-//! secp256k1 曲线原语（Layer A / BTC + ETH + Cosmos 等）
+//! secp256k1 curve primitives (Layer A / BTC + ETH + Cosmos etc.)
 //!
-//! Phase 5 真实实现（v2 §2.3 决策）：`k256` crate 0.14
+//! Phase 5 real implementation (v2 §2.3 decision): `k256` crate 0.14
 //!
-//! ## 安全约束（v2 §2.1）
+//! ## Security constraints (v2 §2.1)
 //!
-//! - `Secp256k1Scalar` 禁用 `Copy`，实现 `Zeroize + ZeroizeOnDrop`
-//! - `Secp256k1Point` 允许 `Copy + Eq`（公钥是公开材料）
-//! - 字段私有，外部不能凭空构造 `Secp256k1Scalar`——必须通过本模块 free function 或派生模块
-//! - Clone 在聚合结构场景下需要（v2 §2.7）
+//! - `Secp256k1Scalar` forbids `Copy`, implements `Zeroize + ZeroizeOnDrop`
+//! - `Secp256k1Point` allows `Copy + Eq` (public keys are public material)
+//! - Fields private; outsiders cannot construct a `Secp256k1Scalar` out of thin air — only via this module's free functions or the derivation module
+//! - Clone is needed for aggregate-structure scenarios (v2 §2.7)
 
 use k256::{AffinePoint, FieldBytes, ProjectivePoint, Scalar};
 use primeorder::PrimeField;
@@ -15,91 +15,91 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-/// secp256k1 标量长度（32 bytes）
+/// secp256k1 scalar length (32 bytes)
 pub(crate) const SCALAR_LEN: usize = 32;
 
-/// secp256k1 压缩公钥长度（33 bytes）
+/// secp256k1 compressed public key length (33 bytes)
 pub(crate) const COMPRESSED_POINT_LEN: usize = 33;
 
-/// secp256k1 未压缩公钥长度（65 bytes，0x04 || X(32) || Y(32)）
+/// secp256k1 uncompressed public key length (65 bytes, 0x04 || X(32) || Y(32))
 pub const UNCOMPRESSED_POINT_LEN: usize = 65;
 
-/// secp256k1 标量（私钥分量的内部表示）
+/// secp256k1 scalar (internal representation of private key components)
 ///
-/// 内部存储 `k256::Scalar`（在 `Zeroizing<Scalar>` 包装中保证 zeroize）。
-/// 字段全部私有——外部只能通过 `&Secp256k1Scalar` 或 `&mut Secp256k1Scalar` 借用。
-/// **禁用 Copy**：v2 §2.1 v2.x 安全约束。
+/// Internally stores `k256::Scalar` (inside a `Zeroizing<Scalar>` wrapper guaranteeing zeroization).
+/// All fields private — outsiders can only borrow via `&Secp256k1Scalar` or `&mut Secp256k1Scalar`.
+/// **Copy forbidden**: v2 §2.1 v2.x security constraint.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct Secp256k1Scalar {
     inner: Scalar,
 }
 
-/// secp256k1 点（公钥的内部表示）
+/// secp256k1 point (internal representation of a public key)
 ///
-/// **公开材料**——允许 `Copy + Eq`。
-/// 字段私有不导出——保证 `Secp256k1Point` 永远代表曲线上有效点。
+/// **Public material** — `Copy + Eq` allowed.
+/// Fields private and not exported — guarantees a `Secp256k1Point` always represents a valid on-curve point.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Secp256k1Point {
     inner: AffinePoint,
-    // 不实现 Drop：Rust 禁止类型同时 derive Copy + impl Drop
-    // AffinePoint 内部 X/Y 是公开材料，零拷贝保证安全
+    // No Drop impl: Rust forbids a type deriving Copy while implementing Drop
+    // AffinePoint's internal X/Y are public material; zero-copy keeps it safe
 }
 
 // ============================================================================
-// Free functions（v2.2 删除 trait 决策：编译期由类型签名直接表达约束）
+// Free functions (v2.2 removed the trait decision: constraints expressed directly by type signatures at compile time)
 // ============================================================================
 
-/// secp256k1 曲线生成元（generator point G）
+/// secp256k1 curve generator (generator point G)
 pub fn generator() -> Secp256k1Point {
     let p = AffinePoint::GENERATOR;
     Secp256k1Point { inner: p }
 }
 
-/// 标量乘法：result = s * p
+/// Scalar multiplication: result = s * p
 ///
-/// 接受 `&Secp256k1Scalar` + `&Secp256k1Point`，返回 owned `Secp256k1Point`
+/// Accepts `&Secp256k1Scalar` + `&Secp256k1Point`, returns an owned `Secp256k1Point`
 pub fn scalar_mul(s: &Secp256k1Scalar, p: &Secp256k1Point) -> Secp256k1Point {
     let proj = ProjectivePoint::from(&p.inner) * s.inner;
     let affine = proj.to_affine();
     Secp256k1Point { inner: affine }
 }
 
-/// 基点乘法：result = s * G（generator）
+/// Basepoint multiplication: result = s * G (generator)
 ///
-/// 业务模块最常用：派生公钥 pk = base_mul(sk)
+/// Most common in business modules: derive public key pk = base_mul(sk)
 pub fn base_mul(s: &Secp256k1Scalar) -> Secp256k1Point {
     scalar_mul(s, &generator())
 }
 
-/// 点加：result = a + b
+/// Point addition: result = a + b
 pub fn point_add(a: &Secp256k1Point, b: &Secp256k1Point) -> Secp256k1Point {
-    // 用 &a.inner / &b.inner 避免移动（AffinePoint 不是 Copy）
+    // Use &a.inner / &b.inner to avoid moves (AffinePoint is not Copy)
     let proj = ProjectivePoint::from(&a.inner) + ProjectivePoint::from(&b.inner);
     Secp256k1Point {
         inner: proj.to_affine(),
     }
 }
 
-/// 零标量（用于累加器初始化）
+/// Zero scalar (for accumulator initialization)
 pub fn scalar_zero() -> Secp256k1Scalar {
     Secp256k1Scalar {
         inner: Scalar::ZERO,
     }
 }
 
-/// Scalar 加法（mod curve order）: result = a + b
+/// Scalar addition (mod curve order): result = a + b
 pub fn scalar_add(a: &Secp256k1Scalar, b: &Secp256k1Scalar) -> Secp256k1Scalar {
     Secp256k1Scalar {
         inner: a.inner + b.inner,
     }
 }
 
-/// 标量乘法点: result = -p (point negation, 翻转 y)
+/// Point negation: result = -p (flips y)
 pub fn point_negate(p: &Secp256k1Point) -> Secp256k1Point {
     Secp256k1Point { inner: -p.inner }
 }
 
-/// Scalar 否定 (mod curve order): -a = L - a
+/// Scalar negation (mod curve order): -a = L - a
 pub fn scalar_negate(a: &Secp256k1Scalar) -> Secp256k1Scalar {
     Secp256k1Scalar { inner: -a.inner }
 }
@@ -112,12 +112,12 @@ pub fn scalar_mul_n(a: &Secp256k1Scalar, b: &Secp256k1Scalar) -> Secp256k1Scalar
     }
 }
 
-/// 从 32 字节构造 secp256k1 标量
+/// Construct a secp256k1 scalar from 32 bytes
 ///
-/// 使用 `primeorder::PrimeField::from_repr`（k256 0.14 Scalar 实现 PrimeField）
+/// Uses `primeorder::PrimeField::from_repr` (k256 0.14 Scalar implements PrimeField)
 ///
 /// # Errors
-/// - `EncodingInvalidFormat`：bytes 长度不是 32 或 bytes 解释为 scalar 超出曲线阶
+/// - `EncodingInvalidFormat`: bytes length is not 32, or the bytes interpreted as a scalar exceed the curve order
 pub fn scalar_from_bytes(bytes: &[u8]) -> Result<Secp256k1Scalar> {
     if bytes.len() != SCALAR_LEN {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -133,7 +133,7 @@ pub fn scalar_from_bytes(bytes: &[u8]) -> Result<Secp256k1Scalar> {
     }
 }
 
-/// secp256k1 标量 → 32 字节（大端）
+/// secp256k1 scalar → 32 bytes (big-endian)
 pub fn scalar_to_bytes(s: &Secp256k1Scalar) -> [u8; SCALAR_LEN] {
     let bytes = s.inner.to_bytes();
     let mut arr = [0u8; SCALAR_LEN];
@@ -141,7 +141,7 @@ pub fn scalar_to_bytes(s: &Secp256k1Scalar) -> [u8; SCALAR_LEN] {
     arr
 }
 
-/// secp256k1 标量 → 压缩公钥（33 bytes）
+/// secp256k1 scalar → compressed public key (33 bytes)
 pub fn point_to_compressed(p: &Secp256k1Point) -> [u8; COMPRESSED_POINT_LEN] {
     use k256::elliptic_curve::sec1::ToSec1Point;
     let encoded = p.inner.to_sec1_point(true);
@@ -151,7 +151,7 @@ pub fn point_to_compressed(p: &Secp256k1Point) -> [u8; COMPRESSED_POINT_LEN] {
     arr
 }
 
-/// secp256k1 标量 → 未压缩公钥（65 bytes）
+/// secp256k1 scalar → uncompressed public key (65 bytes)
 pub fn point_to_uncompressed(p: &Secp256k1Point) -> [u8; UNCOMPRESSED_POINT_LEN] {
     use k256::elliptic_curve::sec1::ToSec1Point;
     let encoded = p.inner.to_sec1_point(false);
@@ -161,7 +161,7 @@ pub fn point_to_uncompressed(p: &Secp256k1Point) -> [u8; UNCOMPRESSED_POINT_LEN]
     arr
 }
 
-/// 从压缩公钥（33 bytes）构造 secp256k1 点
+/// Construct a secp256k1 point from a compressed public key (33 bytes)
 pub fn point_from_compressed(bytes: &[u8]) -> Result<Secp256k1Point> {
     use k256::elliptic_curve::sec1::FromSec1Point;
     if bytes.len() != COMPRESSED_POINT_LEN {
@@ -178,7 +178,7 @@ pub fn point_from_compressed(bytes: &[u8]) -> Result<Secp256k1Point> {
 mod tests {
     use super::*;
 
-    // 类型级断言（保留 Phase 2.1 stub 测试）：
+    // Type-level assertions (keep the Phase 2.1 stub tests):
     const _: fn() -> Secp256k1Point = generator;
     const _: fn(&Secp256k1Scalar, &Secp256k1Point) -> Secp256k1Point = scalar_mul;
     const _: fn(&Secp256k1Scalar) -> Secp256k1Point = base_mul;
@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(out, [0u8; SCALAR_LEN]);
     }
 
-    /// Phase 5 真实实现：scalar_from_bytes round-trip
+    /// Phase 5 real implementation: scalar_from_bytes round-trip
     #[test]
     fn scalar_from_bytes_works() {
         let mut bytes = [0u8; 32];
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(out, bytes);
     }
 
-    /// Phase 5 真实实现：scalar_from_bytes 拒绝超曲线阶
+    /// Phase 5 real implementation: scalar_from_bytes rejects values above the curve order
     #[test]
     fn scalar_from_bytes_rejects_overflow() {
         let bytes = [0xFFu8; 32];
@@ -220,7 +220,7 @@ mod tests {
         assert!(r.is_err());
     }
 
-    /// Phase 5 真实实现：base_mul(G) = G
+    /// Phase 5 real implementation: base_mul(G) = G
     #[test]
     fn base_mul_returns_generator_for_one() {
         let mut one_bytes = [0u8; 32];
@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(point_to_compressed(&p), point_to_compressed(&g));
     }
 
-    /// Phase 5 真实实现：G + G = 2G
+    /// Phase 5 real implementation: G + G = 2G
     #[test]
     fn point_add_g_g_equals_2g() {
         let g = generator();
@@ -258,7 +258,7 @@ mod tests {
         s
     }
 
-    /// Phase 5 真实实现：压缩公钥 round-trip
+    /// Phase 5 real implementation: compressed public key round-trip
     #[test]
     fn point_compressed_roundtrip() {
         let mut sk_bytes = [0u8; 32];
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(point_to_compressed(&pk), point_to_compressed(&pk2));
     }
 
-    /// Phase 5 真实实现：BIP-340 / secp256k1 测试向量（生成器点）
+    /// Phase 5 real implementation: BIP-340 / secp256k1 test vectors (generator point)
     #[test]
     fn generator_point_bip340_test_vector() {
         let g = generator();
@@ -283,6 +283,6 @@ mod tests {
             0x16, 0xF8, 0x17, 0x98,
         ];
         assert_eq!(&g_compressed[1..33], &g_x);
-        assert_eq!(g_compressed[0], 0x02); // y 是偶数
+        assert_eq!(g_compressed[0], 0x02); // y is even
     }
 }

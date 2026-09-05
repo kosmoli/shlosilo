@@ -1,14 +1,14 @@
-//! APT / SUI 地址编码（hex 0x + 32-byte pubkey）
+//! APT / SUI address encoding (hex 0x + 32-byte pubkey)
 //!
 //! Phase 2.3 stub
-//! Phase 4 真实实现：hex(0x || pubkey.to_bytes())
+//! Phase 4 real implementation: hex(0x || pubkey.to_bytes())
 
 use crate::curve_primitive::ed25519::Ed25519Point;
 use crate::error::Result;
 use crate::network::Network;
 use core::fmt;
 
-/// APT 地址长度（"0x" + 64 hex = 66 字符）
+/// APT address length ("0x" + 64 hex = 66 chars)
 pub const APTOS_ADDRESS_LEN: usize = 66;
 pub const SUI_ADDRESS_LEN: usize = 66;
 
@@ -58,23 +58,23 @@ macro_rules! impl_address_traits {
 impl_address_traits!(AptosAddress, APTOS_ADDRESS_LEN);
 impl_address_traits!(SuiAddress, SUI_ADDRESS_LEN);
 
-/// APT 地址编码
+/// APT address encoding
 ///
-/// # Phase 4 实现
-/// - hex("0x" || pubkey.to_bytes()) — Aptos 直接用 32-byte ed25519 pubkey
+/// # Phase 4 implementation
+/// - hex("0x" || pubkey.to_bytes()) — Aptos uses the 32-byte ed25519 pubkey directly
 pub fn encode_aptos(_pubkey: &Ed25519Point, _network: Network) -> Result<AptosAddress> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
 }
 
-/// SUI 地址编码
+/// SUI address encoding
 ///
-/// # Phase 4 实现
-/// - hex("0x" || pubkey.to_bytes()) — Sui 用 ed25519 scheme flag + pubkey（实际 hex 前缀 + 64 chars）
+/// # Phase 4 implementation
+/// - hex("0x" || pubkey.to_bytes()) — Sui uses the ed25519 scheme flag + pubkey (actual: hex prefix + 64 chars)
 pub fn encode_sui(_pubkey: &Ed25519Point, _network: Network) -> Result<SuiAddress> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        // P2-01: the stub was changed to a stable error code; no panic-macro regression allowed (comment lines skipped)
         for line in include_str!("aptos_sui.rs").lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

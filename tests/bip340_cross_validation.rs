@@ -1,6 +1,6 @@
 //! BIP-340 / keystone cross-validation test module for shlosilo secp256k1 primitives
 //!
-//! ## 目的 (2026-08-22)
+//! ## Purpose (2026-08-22)
 //! Validate shlosilo's `curve_primitive::secp256k1` against BIP-340 official test vectors
 //! to catch any future curve arithmetic regressions. Before this module was added, shlosilo's
 //! lib tests used `scalar_from_bytes(&[2u8; 32])` which is a HUGE scalar (32 × 0x02),
@@ -11,7 +11,7 @@
 //! - priv = 0x000...002 → pub = 2G.x = 0xC6047F9441ED7D6D3045406E95C07CD85C778E4B8CEF3CA7ABAC09B95C709EE5
 //! - priv = 0x000...003 → pub = 3G.x = 0xF9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9
 //!
-//! ## 大端 scalar 字节顺序规则
+//! ## Big-endian scalar byte order rule
 //! secp256k1 private keys are 32 bytes big-endian. To get scalar value N (small integer),
 //! use `{0;31, N}` (last byte = N), NOT `[N; 32]` (all 32 bytes = N — that's scalar(0xNNNN...NN)).
 

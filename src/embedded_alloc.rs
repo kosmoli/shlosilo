@@ -1,8 +1,8 @@
-//! embedded（thumbv7em-none-eabihf）构建的 allocator + panic handler
+//! allocator + panic handler for embedded (thumbv7em-none-eabihf) builds
 //!
-//! 仅在 `--no-default-features` + embedded target 下编译。
-//! L3 宿主（keystone 固件 / ForgeBox）提供 `shlosilo_embedded_malloc/free`
-//! （FreeRTOS heap_4 包装），panic 走固件日志。
+//! Compiles only under `--no-default-features` + the embedded target.
+//! The L3 host (keystone firmware / ForgeBox) provides `shlosilo_embedded_malloc/free`
+//! (FreeRTOS heap_4 wrappers); panics go to the firmware log.
 
 #![cfg(not(feature = "std"))]
 
@@ -13,9 +13,9 @@ use core::panic::PanicInfo;
 use critical_section::RawRestoreState;
 
 extern "C" {
-    /// L3 提供：FreeRTOS pvPortMalloc 包装
+    /// Provided by L3: FreeRTOS pvPortMalloc wrapper
     fn shlosilo_embedded_malloc(size: usize) -> *mut u8;
-    /// L3 提供：vPortFree 包装
+    /// Provided by L3: vPortFree wrapper
     fn shlosilo_embedded_free(ptr: *mut u8);
 }
 
@@ -33,11 +33,11 @@ unsafe impl GlobalAlloc for EmbeddedAllocator {
 #[global_allocator]
 static EMBEDDED_ALLOCATOR: EmbeddedAllocator = EmbeddedAllocator;
 
-// ── critical-section Impl（单核 MCU：全局中断关闭/恢复）──
+// ── critical-section impl (single-core MCU: global interrupt disable/restore) ──
 //
-// critical-section 1.x 在 no_std 下要求使用者通过 set_impl! 提供实现。
-// 单核 Cortex-M 上最简单的正确实现是 PRIMASK 关中断（cortex-m::interrupt::free 语义）；
-// 这里不引 cortex-m 依赖，直接内联 CPSID/CPSIE。
+// critical-section 1.x on no_std requires the user to provide an implementation via set_impl!.
+// On a single-core Cortex-M the simplest correct implementation is PRIMASK interrupt masking (cortex-m::interrupt::free semantics);
+// we avoid the cortex-m dependency and inline CPSID/CPSIE directly.
 struct SingleCoreInterrupts;
 
 unsafe impl critical_section::Impl for SingleCoreInterrupts {
@@ -65,7 +65,7 @@ critical_section::set_impl!(SingleCoreInterrupts);
 
 #[panic_handler]
 fn shlosilo_panic(info: &PanicInfo) -> ! {
-    // 收集 panic 消息到栈 buffer，交 C 侧 hook 显示到 LCD（真机无串口）
+    // collect the panic message into a stack buffer and hand it to the C-side hook to display on the LCD (no serial port on device)
     let mut buf = [0u8; 160];
     let pos;
     {
@@ -85,8 +85,8 @@ fn shlosilo_panic(info: &PanicInfo) -> ! {
             );
         }
         pos = w.pos;
-    } // w drop，buf 借用结束
-      // 契约：hook 返回 !（LCD 显示 + 死循环保持系统运行），永不返回
+    } // w dropped, buf borrow ends
+      // contract: the hook returns ! (LCD display + infinite loop keeps the system alive) and never returns
     unsafe {
         shlosilo_panic_hook(buf.as_ptr(), pos);
     }
@@ -107,6 +107,6 @@ impl core::fmt::Write for PanicWriter<'_> {
 }
 
 extern "C" {
-    /// L3 提供：panic 信息显示（LCD）+ 保持系统运行/刷新
+    /// Provided by L3: display panic info (LCD) + keep the system alive/refresh
     fn shlosilo_panic_hook(msg: *const u8, len: usize) -> !;
 }

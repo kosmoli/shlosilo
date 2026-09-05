@@ -1,16 +1,16 @@
-//! Monero Subaddress 派生 (Phase 5 v9.6)
+//! Monero Subaddress derivation (Phase 5 v9.6)
 //!
-//! ## 算法 (RFC / monero-project/research-lab)
+//! ## Algorithm (RFC / monero-project/research-lab)
 //!
-//! Subaddress 允许接收方在一个 seed 下生成无限多不可关联的地址(账目隔离),
-//! 不暴露 XMR 主地址关联性.
+//! Subaddresses let the receiver generate unlimited unlinkable addresses under one seed (ledger isolation),
+//! Does not expose the linkage to the XMR main address.
 //!
 //! **Derivation scalar**:
 //! ```text
 //! m = Hs("SubAddr" || 0x00 || view_sec || major_idx || minor_idx)
 //! ```
 //!
-//! 其中 `Hs` = Keccak-256 hash to scalar (modulo curve order L).
+//! where `Hs` = Keccak-256 hash to scalar (modulo the curve order L).
 //!
 //! **Subaddress key pairs**:
 //! ```text
@@ -21,11 +21,11 @@
 //! subaddr_view_sec   = (view_sec * subaddr_spend_sec) mod L
 //! ```
 //!
-//! **注意**: shlosilo 不负责生成 XMR 地址字符串(那需要 base58 + network byte + checksum),
-//! 只生成 (subaddr_spend_pub, subaddr_view_pub) 字节对. 完整地址生成在 keystone reference
-//! 实现 (c) 中负责.
+//! **NOTE**: shlosilo does not generate XMR address strings (that needs base58 + network byte + checksum),
+//! Only generates the (subaddr_spend_pub, subaddr_view_pub) byte pair. Full address generation lives in the keystone reference
+//! is handled by (c).
 //!
-//! **参考**:
+//! **References**:
 //! - <https://github.com/monero-project/monero/blob/master/src/wallet/wallet2.cpp> (get_subaddress_*)
 //! - <https://github.com/monero-project/research-lab/blob/master/monero-subaddresses.md>
 
@@ -50,8 +50,8 @@ pub const L: [u8; 32] = [
 /// Hash to scalar (Monero Hs):
 /// Hs(data) = Keccak-256(data) interpreted as reduced scalar modulo L
 ///
-/// **输入**: `data: &[u8]` 任意长度
-/// **输出**: 32-byte reduced scalar
+/// **Input**: `data: &[u8]` of any length
+/// **Output**: 32-byte reduced scalar
 pub fn hash_to_scalar(data: &[u8]) -> Result<[u8; 32]> {
     let mut hasher = Keccak::v256();
     hasher.update(data);
@@ -61,21 +61,21 @@ pub fn hash_to_scalar(data: &[u8]) -> Result<[u8; 32]> {
     Ok(crate::curve_primitive::ed25519::scalar_to_bytes(&scalar))
 }
 
-/// 计算 subaddress derivation scalar m（对齐 keystone / Monero 官方 wallet2.cpp）
+/// Compute the subaddress derivation scalar m (aligned with keystone / official Monero wallet2.cpp)
 ///
 /// ```text
 /// m = Hs("SubAddr" || 0x00 || view_sec || major_idx (LE u32) || minor_idx (LE u32))
 /// ```
 ///
-/// 这是 Monero 官方 subaddress 派生（MRL-0006 / wallet2.cpp `get_subaddress_secret_key`），
-/// 与 keystone3-firmware `apps/monero/src/key.rs::calc_subaddress_m` 逐字节一致。
+/// This is the official Monero subaddress derivation (MRL-0006 / wallet2.cpp `get_subaddress_secret_key`),
+/// byte-for-byte identical to keystone3-firmware `apps/monero/src/key.rs::calc_subaddress_m`.
 ///
-/// **输入**:
+/// **Input**:
 /// - view_sec: 32-byte view private key (reduced scalar)
 /// - account: major index (u32)
 /// - minor: minor index (u32)
 ///
-/// **输出**: 32-byte derivation scalar m (reduced)
+/// **Output**: 32-byte derivation scalar m (reduced)
 pub fn calc_subaddress_m(view_sec: &[u8; 32], account: u32, minor: u32) -> Result<[u8; 32]> {
     // data = "SubAddr" || 0x00 || view_sec || major_LE || minor_LE
     let mut data = Vec::with_capacity(7 + 1 + 32 + 4 + 4);
@@ -88,8 +88,8 @@ pub fn calc_subaddress_m(view_sec: &[u8; 32], account: u32, minor: u32) -> Resul
 }
 
 /// Subaddress key pair
-/// R1 (2026-08-31 复审整改): 秘密字段走 SecretBytes<32> (ZeroizeOnDrop、
-/// 不 Clone 不 Debug), 公开字段手写 Debug 照常输出。
+/// R1 (2026-08-31 review remediation): secret fields go through SecretBytes<32> (ZeroizeOnDrop,
+/// no Clone, no Debug), while public fields output normally via a hand-written Debug.
 pub struct SubaddressKeys {
     /// subaddress spend public key (32 bytes compressed)
     pub spend_pub: [u8; 32],
@@ -112,9 +112,9 @@ impl core::fmt::Debug for SubaddressKeys {
     }
 }
 
-/// 派生子地址 (完整 key pair)
+/// Derive a subaddress (full key pair)
 ///
-/// **输入**:
+/// **Input**:
 /// - main_spend_sec: 32-byte main spend private key (reduced scalar)
 /// - main_view_sec: 32-byte main view private key (reduced scalar)
 /// - main_spend_pub: 32-byte main spend public key (compressed)
@@ -122,7 +122,7 @@ impl core::fmt::Debug for SubaddressKeys {
 /// - account: major index
 /// - minor: minor index
 ///
-/// **输出**: `SubaddressKeys { spend_pub, view_pub, spend_sec, view_sec }`
+/// **Output**: `SubaddressKeys { spend_pub, view_pub, spend_sec, view_sec }`
 pub fn derive_subaddress(
     main_spend_sec: &[u8; 32],
     main_view_sec: &[u8; 32],
@@ -151,7 +151,7 @@ pub fn derive_subaddress(
     let subaddr_spend_pub = subaddr_spend_pub_point.compress().to_bytes();
 
     // 4. subaddr_view_sec = (view_sec * subaddr_spend_sec) mod L
-    //    (Monero 官方 sub view secret c = a * d, d = spend secret, a = view secret)
+    //    (official Monero sub view secret c = a * d, d = spend secret, a = view secret)
     let view_sec_dalek = reduce_scalar_to_dalek(main_view_sec);
     let subaddr_view_sec_dalek = view_sec_dalek * subaddr_spend_sec_dalek;
     let mut subaddr_view_sec: [u8; 32] = subaddr_view_sec_dalek.to_bytes();
@@ -163,17 +163,17 @@ pub fn derive_subaddress(
     Ok(SubaddressKeys {
         spend_pub: subaddr_spend_pub,
         view_pub: subaddr_view_pub,
-        // P1-C: take 接管并清零调用方中间数组（new 只清参数副本，此处 take 是正原语）
+        // P1-C: take over and zero the caller's intermediate array (new only zeroes the parameter copy; take is the proper primitive here)
         spend_sec: crate::types::SecretBytes::take(&mut subaddr_spend_sec),
         view_sec: crate::types::SecretBytes::take(&mut subaddr_view_sec),
     })
 }
 
-/// 从 (account, minor) 派生第 N 个子地址 (简化版 - 接收方场景)
+/// Derive the Nth subaddress from (account, minor) (simplified — receiver scenario)
 ///
-/// **返回**: 32-byte subaddress spend public key
+/// **Returns**: 32-byte subaddress spend public key
 ///
-/// **使用场景**: 接收方公开 subaddress spend pub, 发送方用它构造 tx 输出
+/// **Use case**: the receiver publishes the subaddress spend pub; the sender uses it to build tx outputs
 pub fn derive_subaddress_spend_pub(
     main_spend_pub: &[u8; 32],
     main_view_sec: &[u8; 32],
@@ -192,7 +192,7 @@ pub fn derive_subaddress_spend_pub(
     Ok(subaddr_spend_pub_point.compress().to_bytes())
 }
 
-/// 单元测试
+/// Unit tests
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -237,7 +237,7 @@ mod tests {
         (spend_sec_bytes, view_sec_bytes, spend_pub, view_pub)
     }
 
-    /// 完整 subaddress 派生 round-trip
+    /// Full subaddress derivation round-trip
     #[test]
     fn subaddress_derivation_round_trip() {
         let (spend_sec, view_sec, spend_pub, view_pub) = make_test_keypair(0x11);
@@ -251,7 +251,7 @@ mod tests {
         assert_ne!(sub0_0.spend_pub, sub1_0.spend_pub);
         assert_ne!(sub0_1.spend_pub, sub1_0.spend_pub);
 
-        // spend_pub 必须 = spend_sec * G
+        // spend_pub must = spend_sec * G
         let sec_dalek = reduce_scalar_to_dalek(sub0_0.spend_sec.expose());
         let pub_point = ED25519_BASEPOINT_TABLE * &sec_dalek;
         assert_eq!(pub_point.compress().to_bytes(), sub0_0.spend_pub);
@@ -259,15 +259,15 @@ mod tests {
         eprintln!("Sub(0,0) spend_pub: {}", hex_encode(&sub0_0.spend_pub));
     }
 
-    /// Subaddress 简化派生 (公开 spend_pub only) 应与完整派生一致
+    /// The simplified subaddress derivation (public spend_pub only) should match the full derivation
     #[test]
     fn subaddress_spend_pub_derivation() {
         let (spend_sec, view_sec, spend_pub, view_pub) = make_test_keypair(0x33);
 
-        // 完整派生
+        // full derivation
         let full = derive_subaddress(&spend_sec, &view_sec, &spend_pub, &view_pub, 2, 5).unwrap();
 
-        // 简化派生 (仅 spend_pub)
+        // simplified derivation (spend_pub only)
         let simple_pub = derive_subaddress_spend_pub(&spend_pub, &view_sec, 2, 5).unwrap();
 
         assert_eq!(full.spend_pub, simple_pub);
@@ -275,7 +275,7 @@ mod tests {
         eprintln!("Sub(2,5) spend_pub: {}", hex_encode(&simple_pub));
     }
 
-    /// 派生确定性: 同样输入 → 同样输出
+    /// Derivation determinism: same input → same output
     #[test]
     fn subaddress_deterministic() {
         let (spend_sec, view_sec, spend_pub, view_pub) = make_test_keypair(0x77);
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(s1.view_sec, s2.view_sec);
     }
 
-    /// Main address ≠ subaddress (subaddress 应该是独立不可关联的)
+    /// Main address ≠ subaddress (subaddresses should be independent and unlinkable)
     #[test]
     fn main_not_equal_subaddress() {
         let (spend_sec, view_sec, spend_pub, view_pub) = make_test_keypair(0x42);
@@ -302,7 +302,7 @@ mod tests {
         assert_ne!(*sub.view_sec.expose(), view_sec);
     }
 
-    /// 跨 account / minor 大量派生 (100 个) 都不相同
+    /// Deriving many (100) across accounts / minors yields all-distinct results
     #[test]
     fn subaddress_many_derivations() {
         let (spend_sec, view_sec, spend_pub, view_pub) = make_test_keypair(0x99);
@@ -326,22 +326,22 @@ mod tests {
         eprintln!("100 subaddresses all unique");
     }
 
-    /// Hs 与 keccak 一致性 (verify hash_to_scalar 通过 keccak-256 + reduce)
+    /// Hs and keccak consistency (verify hash_to_scalar via keccak-256 + reduce)
     #[test]
     fn hash_to_scalar_keccak_match() {
-        // 同样的输入 → 同样的 hash
+        // same input → same hash
         let data = b"another test";
         let h1 = hash_to_scalar(data).unwrap();
         let h2 = hash_to_scalar(data).unwrap();
         assert_eq!(h1, h2);
 
-        // 不同输入 → 不同 hash
+        // different input → different hash
         let h3 = hash_to_scalar(b"different input").unwrap();
         assert_ne!(h1, h3);
     }
 }
 
-/// 计算 output key offset（对齐 keystone key_images.rs::calc_output_key_offset）
+/// Compute the output key offset (aligned with keystone key_images.rs::calc_output_key_offset)
 ///
 /// ```text
 /// recv_derivation = view_sec · tx_pubkey · cofactor(8)
@@ -349,16 +349,16 @@ mod tests {
 ///              + (major≠0 || minor≠0) ? m(major,minor) : 0
 /// ```
 ///
-/// 用于从子地址 input 恢复真实 spend 私钥：`input_sk = spend_sec + key_offset`。
-/// 验证：`input_sk · G == output_pubkey`（keystone 的 generate_key_image_from_offset）。
+/// Used to recover the real spend private key from a subaddress input: `input_sk = spend_sec + key_offset`.
+/// Verify: `input_sk · G == output_pubkey` (keystone's generate_key_image_from_offset).
 ///
-/// **输入**:
+/// **Input**:
 /// - view_sec: 32-byte view private key
-/// - tx_pubkey: 真实输入的 tx pub key（real_out_tx_key）
+/// - tx_pubkey: the real input's tx pub key (real_out_tx_key)
 /// - internal_output_index: real_output_in_tx_index
-/// - major/minor: subaddress (account, minor)；主地址 = (0,0)
+/// - major/minor: subaddress (account, minor); main address = (0,0)
 ///
-/// **输出**: 32-byte key offset（reduced scalar）
+/// **Output**: 32-byte key offset (reduced scalar)
 pub fn calc_output_key_offset(
     view_sec: &[u8; 32],
     tx_pubkey: &[u8; 32],
@@ -366,7 +366,7 @@ pub fn calc_output_key_offset(
     major: u32,
     minor: u32,
 ) -> Result<[u8; 32]> {
-    // 1. recv_derivation = view · tx_pub，乘 cofactor 8
+    // 1. recv_derivation = view · tx_pub, multiplied by cofactor 8
     let view_scalar = reduce_scalar_to_dalek(view_sec);
     let tx_pub_point: curve25519_dalek::EdwardsPoint = CompressedPoint::from(*tx_pubkey)
         .decompress()
@@ -381,7 +381,7 @@ pub fn calc_output_key_offset(
     crate::chain::xmr::transaction::encode_varint(&mut data, internal_output_index);
     let mut key_offset = hash_to_scalar(&data)?;
 
-    // 3. 子地址加 m(major,minor)
+    // 3. Add subaddress m(major,minor)
     if major != 0 || minor != 0 {
         let m = calc_subaddress_m(view_sec, major, minor)?;
         let m_dalek = reduce_scalar_to_dalek(&m);
@@ -391,19 +391,19 @@ pub fn calc_output_key_offset(
     Ok(key_offset)
 }
 
-/// 计算 input 的真实 spend 私钥：spend_sec + key_offset
+/// Compute the input's real spend private key: spend_sec + key_offset
 ///
-/// 对齐 keystone `generate_key_image_from_offset`。
+/// Aligned with keystone `generate_key_image_from_offset`.
 pub fn derive_input_spend_key(spend_sec: &[u8; 32], key_offset: &[u8; 32]) -> Result<[u8; 32]> {
     let s = reduce_scalar_to_dalek(spend_sec);
     let o = reduce_scalar_to_dalek(key_offset);
     Ok((s + o).to_bytes())
 }
 
-/// 从子地址 input 派生 key image（完整路径，对齐 keystone）
+/// Derive the key image from a subaddress input (full path, aligned with keystone)
 ///
-/// 验证 input_sk·G == output_pubkey 后才返回 key image；
-/// 验证失败 = 该 output 不属于当前 wallet → Err。
+/// Returns the key image only after verifying input_sk·G == output_pubkey;
+/// Verification failure = this output does not belong to the current wallet → Err.
 pub fn derive_key_image_with_offset(
     spend_sec: &[u8; 32],
     key_offset: &[u8; 32],
@@ -412,7 +412,7 @@ pub fn derive_key_image_with_offset(
     let input_sk = derive_input_spend_key(spend_sec, key_offset)?;
     let input_sk_dalek = reduce_scalar_to_dalek(&input_sk);
 
-    // 验证 input_sk · G == output_pubkey
+    // verify input_sk · G == output_pubkey
     let derived_pub = (ED25519_BASEPOINT_TABLE * &input_sk_dalek)
         .compress()
         .to_bytes();
@@ -427,11 +427,11 @@ pub fn derive_key_image_with_offset(
     Ok(image)
 }
 
-/// 从 source entry 派生完整 input（key_image + key_offset）——真实签名路径
+/// Derive a full input from a source entry (key_image + key_offset) — the real signing path
 ///
-/// 对齐 keystone `calc_key_image_by_index` + `try_to_generate_image`：
-/// 1. 选 tx pubkey（有 additional keys 时用 additional[internal_output_index]）
-/// 2. 对每个 subaddr minor：算 key_offset → 验证 output_pubkey → key image
+/// Aligned with keystone `calc_key_image_by_index` + `try_to_generate_image`:
+/// 1. Select the tx pubkey (with additional keys, use additional[internal_output_index])
+/// 2. For each subaddr minor: compute key_offset → verify output_pubkey → key image
 pub fn derive_input_from_source(
     view_sec: &[u8; 32],
     spend_sec: &[u8; 32],
@@ -445,7 +445,7 @@ pub fn derive_input_from_source(
         .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let output_pubkey = real.dest;
 
-    // tx pubkey：有 additional keys 时用 additional[internal_output_index]
+    // tx pubkey: with additional keys, use additional[internal_output_index]
     let tx_pubkey = if !source.real_out_additional_tx_keys.is_empty() {
         let idx = source.real_output_in_tx_index as usize;
         *source
@@ -457,7 +457,7 @@ pub fn derive_input_from_source(
         source.real_out_tx_key
     };
 
-    // 遍历 subaddr minors，验证 output_pubkey
+    // iterate subaddr minors, verifying output_pubkey
     for &minor in subaddr_indices {
         let offset = calc_output_key_offset(
             view_sec,
@@ -470,7 +470,7 @@ pub fn derive_input_from_source(
             return Ok((image, offset));
         }
     }
-    // 主地址兜底（major=0, minor=0）
+    // main-address fallback (major=0, minor=0)
     let offset = calc_output_key_offset(
         view_sec,
         &tx_pubkey,
@@ -482,7 +482,7 @@ pub fn derive_input_from_source(
     Ok((image, offset))
 }
 
-/// 主地址 input 派生（无子地址偏移，image = spend · Hp(spend·G)）
+/// Main-address input derivation (no subaddress offset; image = spend · Hp(spend·G))
 pub fn derive_key_image_main(spend_sec: &[u8; 32]) -> Result<[u8; 32]> {
     crate::chain::xmr::clsag::derive_key_image(spend_sec)
 }
@@ -491,7 +491,7 @@ pub fn derive_key_image_main(spend_sec: &[u8; 32]) -> Result<[u8; 32]> {
 mod tests2 {
     use super::*;
 
-    /// key_offset 确定性：同输入同输出
+    /// key_offset determinism: same input, same output
     #[test]
     fn offset_deterministic() {
         let view = [0x42u8; 32];
@@ -501,7 +501,7 @@ mod tests2 {
         assert_eq!(o1, o2);
     }
 
-    /// key_offset 依赖 index（不同 internal_output_index → 不同 offset）
+    /// key_offset depends on the index (different internal_output_index → different offset)
     #[test]
     fn offset_differs_by_index() {
         let view = [0x42u8; 32];
@@ -511,7 +511,7 @@ mod tests2 {
         assert_ne!(o0, o1);
     }
 
-    /// 子地址 offset 加 m（major≠0 时与主地址不同）
+    /// Add the subaddress offset m (differs from the main address when major≠0)
     #[test]
     fn offset_differs_by_subaddr() {
         let view = [0x42u8; 32];
@@ -521,7 +521,7 @@ mod tests2 {
         assert_ne!(main, sub);
     }
 
-    /// key image + offset 端到端：spend·G 与 output_pubkey 匹配时能派生 image
+    /// key image + offset end-to-end: the image can be derived when spend·G matches output_pubkey
     #[test]
     fn derive_image_roundtrip() {
         let spend_sec = [0x55u8; 32];
@@ -532,12 +532,12 @@ mod tests2 {
         let offset = [0u8; 32];
         let image = derive_key_image_with_offset(&spend_sec, &offset, &output_pubkey).unwrap();
         assert_eq!(image.len(), 32);
-        // 与 clsag::derive_key_image 一致（offset=0 时）
+        // consistent with clsag::derive_key_image (when offset=0)
         let direct = crate::chain::xmr::clsag::derive_key_image(&spend_sec).unwrap();
         assert_eq!(image, direct);
     }
 
-    /// output_pubkey 不匹配 → Err（该 output 不属于此 wallet）
+    /// output_pubkey mismatch → Err (this output does not belong to this wallet)
     #[test]
     fn derive_image_wrong_pubkey_rejected() {
         let spend_sec = [0x55u8; 32];

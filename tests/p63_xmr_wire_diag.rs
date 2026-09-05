@@ -1,9 +1,9 @@
-//! P1-06 wire 诊断：逐字段用 monero-rs 原语解码，打印 cursor 偏移
+//! P1-06 wire diagnostics: decode field by field with monero-rs primitives, print cursor offsets
 use monero::consensus::Decodable;
 use std::io::Cursor;
 
 #[test]
-#[ignore = "X7: 需外部凭据/env（SHLOSILO_TEST_XMR_*）——缺 env 不再静默计入 passed；跑法: cargo test -- --ignored 并注入 env"]
+#[ignore = "X7: needs external credentials/env (SHLOSILO_TEST_XMR_*) — missing env no longer silently counts as passed; run: cargo test -- --ignored with env injected"]
 fn progressive_decode() {
     let Ok(s) = std::env::var("SHLOSILO_SIGNED_TX_IN") else {
         eprintln!("SKIP");
@@ -75,7 +75,7 @@ fn progressive_decode() {
     }
     let fee: u64 = <VarInt as Decodable>::consensus_decode(&mut c).unwrap().0;
     eprintln!("fee={} pos={}", fee, c.position());
-    // ecdhInfo 无 count
+    // ecdhInfo has no count
     for i in 0..n_out {
         let mut amt = [0u8; 8];
         std::io::Read::read_exact(&mut c, &mut amt).unwrap();

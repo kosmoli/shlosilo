@@ -1,21 +1,21 @@
-//! Monero Transaction 完整序列化 (Phase 5 v9.5 Phase A)
+//! Monero Transaction full serialization (Phase 5 v9.5 Phase A)
 //!
-//! 实现:
-//! - XMR tx 结构: `Transaction` / `TransactionPrefix` / `TxInput` / `TxOutput` / `extra`
-//! - tx 序列化 (varint encoding)
-//! - Round-trip 测试
-//! - Key image 构造 (复用 v8 CLSAG `derive_key_image`)
+//! Implements:
+//! - XMR tx structure: `Transaction` / `TransactionPrefix` / `TxInput` / `TxOutput` / `extra`
+//! - tx serialization (varint encoding)
+//! - Round-trip tests
+//! - Key image construction (reuses the v8 CLSAG `derive_key_image`)
 //!
-//! **未实现 (Phase B + C 后续)**:
+//! **Not implemented (later in Phase B + C)**:
 //! - RingCT signatures (rctSigBase + rctSigPrunable) — Phase B
-//! - Bulletproofs+ 生成 — Phase B
-//! - CLSAG sign 集成 — Phase B
+//! - Bulletproofs+ generation — Phase B
+//! - CLSAG sign integration — Phase B
 //! - encrypted_amounts (epee) — Phase B
-//! - 端到端构造 → 签名 → 序列化 → 验证 — Phase C
+//! - End-to-end construct → sign → serialize → verify — Phase C
 //!
-//! ## 算法
+//! ## Algorithm
 //!
-//! Monero tx 格式 (BIP 形式 v2, hard-fork 后):
+//! Monero tx format (BIP-style v2, post hard-fork):
 //! ```text
 //! TransactionPrefix {
 //!   u8 version,         // always 2
@@ -37,9 +37,9 @@
 //! + rct_signatures: { type, txnFee, pseudoOuts, ... }
 //! ```
 //!
-//! **注意**: shlosilo 实现 version=2 only (RingCT 强制)。Pre-RingCT (version=1) 已被主网弃用。
+//! **Note**: shlosilo implements version=2 only (RingCT mandatory). Pre-RingCT (version=1) has been deprecated on mainnet.
 //!
-//! **参考**: <https://github.com/monero-project/monero/blob/master/src/cryptonote_basic/cryptonote_format_utils.cpp>
+//! **Reference**: <https://github.com/monero-project/monero/blob/master/src/cryptonote_basic/cryptonote_format_utils.cpp>
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -115,13 +115,13 @@ impl TxInput {
     }
 }
 
-/// TxOut type (BIP 格式, used in TransactionOutput)
+/// TxOut type (BIP format, used in TransactionOutput)
 pub mod out_type {
     /// Legacy (pre-RingCT, deprecated)
     pub const TX_OUT_GEN: u8 = 0x00;
-    /// TxOutToKey: standard stealth output (RingCT 兼容)
+    /// TxOutToKey: standard stealth output (RingCT compatible)
     pub const TX_OUT_TO_KEY: u8 = 0x02;
-    /// TxOutToTaggedKey: 标记密钥输出 (subaddress)
+    /// TxOutToTaggedKey: tagged-key output (subaddress)
     pub const TX_OUT_TO_TAGGED_KEY: u8 = 0x03;
 }
 
@@ -134,12 +134,12 @@ pub struct TxOutput {
     pub output_type: u8,
     /// stealth address / tagged key (32 bytes Ed25519 compressed point)
     pub stealth_address: [u8; 32],
-    /// view tag (type 0x03 时 1 字节；type 0x02 为 None)
+    /// view tag (1 byte when type 0x03; None for type 0x02)
     pub view_tag: Option<u8>,
 }
 
 impl TxOutput {
-    /// 构造 P2WPKH-style output
+    /// Construct a P2WPKH-style output
     pub fn new(amount: u64, stealth_address: [u8; 32]) -> Self {
         Self {
             amount,
@@ -149,7 +149,7 @@ impl TxOutput {
         }
     }
 
-    /// 构造 tagged-key output（带 view tag）
+    /// Construct a tagged-key output (with view tag)
     pub fn new_tagged(amount: u64, stealth_address: [u8; 32], view_tag: u8) -> Self {
         Self {
             amount,
@@ -159,7 +159,7 @@ impl TxOutput {
         }
     }
 
-    /// Serialize output (官方 binary_archive: amount 用 VARINT，非 8B LE)
+    /// Serialize the output (official binary_archive: amount is a VARINT, not 8B LE)
     /// - varint(amount) + type + stealth_address [+ view_tag]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -198,16 +198,16 @@ impl TxOutput {
     }
 }
 
-/// extra 字段 (BIP 格式, Monero protocol 集合)
+/// extra field (BIP format, Monero protocol set)
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct TxExtra {
     /// tx public key (transaction extra field tag 0x01, length 32)
     pub tx_pub_key: Option<[u8; 32]>,
-    /// additional public keys (tag 0x04, 每个 varint length + 32 bytes)
+    /// additional public keys (tag 0x04, each varint length + 32 bytes)
     pub additional_pub_keys: Vec<[u8; 32]>,
     /// payment ID (tag 0x02 or 0x07 for encrypted/integrated)
     pub payment_id: Option<[u8; 8]>,
-    /// 加密 payment ID（extra nonce: tag 0x02, 9 bytes = 0x01 || enc[8]）
+    /// Encrypted payment ID (extra nonce: tag 0x02, 9 bytes = 0x01 || enc[8])
     pub encrypted_payment_id: Option<[u8; 8]>,
     /// nonce (raw bytes, optional field)
     pub nonce: Option<Vec<u8>>,
@@ -236,12 +236,12 @@ impl TxExtra {
     /// Serialize extra (BIP format: tag + varint len + data)*
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        // tx_pub_key: tag 0x01 + 32B raw（官方 tx_extra_pub_key 无 length 字段）
+        // tx_pub_key: tag 0x01 + 32B raw (official tx_extra_pub_key has no length field)
         if let Some(pk) = &self.tx_pub_key {
             out.push(0x01);
             out.extend_from_slice(pk);
         }
-        // additional_pub_keys: tag 0x04 + varint count + N×32B（FIELD(vector) 带 count）
+        // additional_pub_keys: tag 0x04 + varint count + N×32B (FIELD(vector) carries a count)
         if !self.additional_pub_keys.is_empty() {
             out.push(0x04);
             monero_encode_varint(&mut out, self.additional_pub_keys.len() as u64);
@@ -250,7 +250,7 @@ impl TxExtra {
             }
         }
         // payment_id (tag 0x02 for plaintext, varint len=8, 8 bytes)
-        // payment_id plaintext (tag 0x02, len=8) — 与 encrypted 互斥，encrypted 优先
+        // payment_id plaintext (tag 0x02, len=8) — mutually exclusive with encrypted; encrypted takes priority
         if let Some(enc) = &self.encrypted_payment_id {
             out.push(0x02);
             out.push(9);
@@ -275,8 +275,8 @@ impl TxExtra {
         while *pos < bytes.len() {
             let tag = bytes[*pos];
             *pos += 1;
-            // 官方格式：tx_extra_pub_key(0x01) 后直接 32B 裸 key，无 length 字段；
-            // 其余字段为 varint 长度前缀
+            // Official format: 32B bare key directly after tx_extra_pub_key(0x01), no length field;
+            // the other fields have a varint length prefix
             if tag == 0x01 {
                 if *pos + 32 > bytes.len() {
                     return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -293,7 +293,7 @@ impl TxExtra {
             }
             match tag {
                 0x04 => {
-                    // additional_pub_keys：len 是 **key 数量**（FIELD(vector) 的 count），非字节数
+                    // additional_pub_keys: len is the **key count** (FIELD(vector)'s count), not a byte count
                     for _ in 0..len {
                         let mut pk = [0u8; 32];
                         pk.copy_from_slice(&bytes[*pos..*pos + 32]);
@@ -331,7 +331,7 @@ impl TxExtra {
     }
 }
 
-/// Monero transaction prefix (BIP 格式, before RCT signatures)
+/// Monero transaction prefix (BIP format, before RCT signatures)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransactionPrefix {
     /// version (always 2)
@@ -342,7 +342,7 @@ pub struct TransactionPrefix {
     pub inputs: Vec<TxInput>,
     /// outputs
     pub outputs: Vec<TxOutput>,
-    /// extra 字段
+    /// extra field
     pub extra: TxExtra,
 }
 
@@ -424,7 +424,7 @@ impl TransactionPrefix {
 pub struct Transaction {
     pub prefix: TransactionPrefix,
     /// rct_signatures bytes (Phase B/C will populate with actual RctSigBase + Prunable)
-    /// Phase A: 设为空 Vec (no RCT, 但这是 invalid mainnet tx; 仅用于结构测试)
+    /// Phase A: set to an empty Vec (no RCT, but this is an invalid mainnet tx; for structural tests only)
     pub rct_signatures: Vec<u8>,
 }
 
@@ -478,8 +478,8 @@ pub fn construct_key_image(spend_key: &[u8; 32]) -> Result<[u8; 32]> {
 
 /// Convert 32 bytes to monero-ed25519 Scalar
 ///
-/// 先经 curve25519-dalek `from_bytes_mod_order` 归约——Monero 协议中部分标量
-/// （如 decoy commitment masks）不保证 canonical 编码，`Scalar::read` 会拒收。
+/// First reduced via curve25519-dalek's `from_bytes_mod_order` — some scalars in the Monero protocol
+/// (e.g. decoy commitment masks) are not guaranteed canonical, and `Scalar::read` would reject them.
 pub fn bytes_to_monerod_scalar(bytes: &[u8; 32]) -> Scalar {
     let reduced = curve25519_dalek::Scalar::from_bytes_mod_order(*bytes).to_bytes();
     let mut cursor = Read32Cursor(reduced);
@@ -532,9 +532,9 @@ pub fn encode_varint(out: &mut Vec<u8>, n: u64) {
     }
 }
 
-/// Monero (LEB128) varint：7-bit 分组，低字节在前，最高位=继续标志。
-/// 注意与 `encode_varint`（Bitcoin 风格前缀+定长 LE，BTC 模块专用）语义不同，
-/// 不可混用 —— P1-06 oracle 实证。
+/// Monero (LEB128) varint: 7-bit groups, low byte first, the high bit = continuation flag.
+/// Note this differs semantically from `encode_varint` (Bitcoin-style prefix + fixed-width LE, BTC module only);
+/// do not mix them — confirmed empirically by the P1-06 oracle.
 pub fn monero_encode_varint(out: &mut Vec<u8>, mut n: u64) {
     loop {
         let b = (n & 0x7f) as u8;
@@ -547,7 +547,7 @@ pub fn monero_encode_varint(out: &mut Vec<u8>, mut n: u64) {
     }
 }
 
-/// Monero LEB128 varint 解码。返回 (值, 新位置)。
+/// Monero LEB128 varint decode. Returns (value, new position).
 pub fn monero_decode_varint(bytes: &[u8], pos: &mut usize) -> Result<u64> {
     let mut result: u64 = 0;
     let mut shift = 0u32;
@@ -602,7 +602,7 @@ mod tests {
 
         out.clear();
         monero_encode_varint(&mut out, 1000);
-        // 1000 = 0x3e8 → LEB128: 低7位 0x68|0x80, 高位 0x07
+        // 1000 = 0x3e8 → LEB128: low 7 bits 0x68|0x80, high part 0x07
         assert_eq!(out, vec![0xe8, 0x07]);
         let mut pos = 0;
         assert_eq!(monero_decode_varint(&out, &mut pos).unwrap(), 1000);
@@ -742,7 +742,7 @@ mod tests {
         assert_eq!(parsed.rct_signatures.len(), 0);
     }
 
-    /// 越界错误处理
+    /// Out-of-bounds error handling
     #[test]
     fn tx_empty_deserialize() {
         let bytes = [];
@@ -771,13 +771,13 @@ mod tests {
     /// shlosilo Scalar → monero-ed25519 Scalar bridge
     #[test]
     fn scalar_bridge() {
-        // 用 reduce_scalar 确保 bytes 是 reduced scalar
-        // (否则 monero-ed25519 Scalar::read 会失败: "unreduced scalar")
+        // Use reduce_scalar to ensure the bytes are a reduced scalar
+        // (otherwise monero-ed25519 Scalar::read fails: "unreduced scalar")
         use crate::chain::xmr::reduce_scalar::reduce_scalar;
         let shlosilo_scalar = reduce_scalar(&[0x33u8; 32]).unwrap();
         let monerod_scalar = shlosilo_scalar_to_monerod(&shlosilo_scalar);
         let bytes = monerod_scalar_to_bytes(&monerod_scalar);
-        // bytes 应等于 shlosilo scalar 的 32 字节表示
+        // the bytes should equal the shlosilo scalar's 32-byte representation
         let shlosilo_bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&shlosilo_scalar);
         assert_eq!(bytes, shlosilo_bytes);
     }

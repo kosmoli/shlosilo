@@ -1,14 +1,14 @@
-//! SecretScalar:不可 Copy 的 dalek Scalar 秘密 owner(审计 #9-#10 P1)
+//! SecretScalar: a non-Copy dalek Scalar secret owner (audits #9-#10 P1)
 //!
-//! 设计(审计 #10 P1-01/P1-02 重构):
-//! - **白名单运算**:不向调用者暴露 `&Scalar`——`Scalar: Copy`,任何返回
-//!   泛型 `R` 或 `&Scalar` 的回调都能让值逃逸(第十次复审用仓库外最小
-//!   程序编译运行复现)。所有消费走本模块白名单:点乘/标量加/write_bytes。
-//! - **内部 Zeroizing<Scalar>**:构造不建立普通 `let s: Scalar` 中间绑定
-//!   (上一轮 `let s = ...; Self { scalar: s }` 的来源绑定不受 wrapper
-//!   Drop 覆盖——Copy 类型构造后复制进 owner 不能证明来源栈槽已擦)。
-//! - 算术结果如需继续保护,由本模块返回新的 SecretScalar;公开点结果
-//!   (EdwardsPoint/压缩字节)本身非秘密,直接返回。
+//! Design (audit #10 P1-01/P1-02 refactor):
+//! - **Whitelisted operations**: never expose `&Scalar` to callers — `Scalar: Copy`, so any callback
+//!   returning a generic `R` or `&Scalar` lets the value escape (reproduced by the 10th re-review
+//!   with a minimal out-of-repo program). All consumption goes through this module's whitelist: point mul / scalar add / write_bytes.
+//! - **Internal Zeroizing<Scalar>**: construction never establishes a plain `let s: Scalar` intermediate binding
+//!   (last round's `let s = ...; Self { scalar: s }` source binding was not covered by any wrapper's Drop —
+//!   for a Copy type, copying into the owner after construction cannot prove the source stack slot was erased).
+//! - If arithmetic results need continued protection, this module returns a new SecretScalar; public point results
+//!   (EdwardsPoint/compressed bytes) are not secrets and are returned directly.
 
 use curve25519_dalek::scalar::Scalar;
 use zeroize::Zeroize;
@@ -17,43 +17,43 @@ pub struct SecretScalar {
     scalar: Zeroizing<Scalar>,
 }
 
-// Zeroizing<Scalar> 提供 Deref<Target=Scalar> 与 Drop 清零
+// Zeroizing<Scalar> provides Deref<Target=Scalar> and Drop zeroization
 use zeroize::Zeroizing;
 
 impl SecretScalar {
-    /// 从字节构造。raw 为调用方缓冲——本函数内部直接在 Zeroizing 中
-    /// 建立 Scalar,不落地普通 `let s: Scalar` 中间绑定。
+    /// Construct from bytes. raw is the caller's buffer — this function builds the Scalar directly
+    /// inside a Zeroizing; no plain `let s: Scalar` intermediate binding ever lands.
     pub fn from_bytes_mod_order(raw: [u8; 32]) -> Self {
         Self {
             scalar: Zeroizing::new(Scalar::from_bytes_mod_order(raw)),
         }
     }
 
-    /// 从字节切片构造(view_sec 等已有 owner 的 expose() 结果)。
+    /// Construct from a byte slice (e.g. the expose() result of an existing owner like view_sec).
     pub fn from_slice(bytes: &[u8; 32]) -> Self {
         Self::from_bytes_mod_order(*bytes)
     }
 
-    /// 白名单:标量加(bytes 形式,monero key_offset 派生场景)。
-    /// 返回新 owner。审计 #11 P1-01:表达式直接进 owner——上一版
-    /// `let o = ...; let sum = ...; let out = ...;` 三个普通绑定
-    /// (注释声称"临时 o 被 Zeroizing 接管"与代码不符)全部消除
+    /// Whitelist: scalar addition (bytes form, monero key_offset derivation).
+    /// Returns a new owner. Audit #11 P1-01: expressions go straight into the owner — the previous
+    /// version's three plain bindings `let o = ...; let sum = ...; let out = ...;`
+    /// (whose comment claimed "temporary o is taken over by Zeroizing", contradicting the code) are all eliminated
     pub fn add_bytes(&self, other: &[u8; 32]) -> Self {
         Self {
             scalar: Zeroizing::new(*self.scalar + Scalar::from_bytes_mod_order(*other)),
         }
     }
 
-    /// 白名单:基础点乘(r·G)→ 压缩点(公开值)。
+    /// Whitelist: basepoint multiplication (r·G) → compressed point (public value).
     pub fn mul_basepoint(&self) -> [u8; 32] {
         use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
         self.with(|v| (ED25519_BASEPOINT_TABLE * v).compress().to_bytes())
     }
 
-    /// 白名单:任意点乘(point * scalar)→ 压缩点(公开值)。
-    /// 接收压缩点字节(内部解压)。审计 #11 P0-01:解压失败返回 Err
-    /// (不可信点编码可从敌对签名请求到达——expect panic 在真机
-    /// panic=abort 下是整机 DoS;恢复改造前的 totality)
+    /// Whitelist: arbitrary point multiplication (point * scalar) → compressed point (public value).
+    /// Accepts compressed point bytes (decompressed internally). Audit #11 P0-01: decompression failure returns Err
+    /// (untrusted point encodings can arrive from hostile signing requests — an expect panic on device
+    /// with panic=abort is a full-device DoS; restores the pre-refactor totality)
     pub fn mul_point(
         &self,
         point_bytes: &[u8; 32],
@@ -69,7 +69,7 @@ impl SecretScalar {
         Ok(self.with(|v| (point * v).compress().to_bytes()))
     }
 
-    /// 白名单:点乘 + cofactor(8Ra = (A_v·r)·8 变体,输入压缩点)。
+    /// Whitelist: point multiplication + cofactor (8Ra = (A_v·r)·8 variant, compressed point input).
     pub fn mul_point_cofactor(
         &self,
         point_bytes: &[u8; 32],
@@ -85,55 +85,55 @@ impl SecretScalar {
         Ok(self.with(|v| (point * v).mul_by_cofactor().compress().to_bytes()))
     }
 
-    /// 白名单:多标量点乘(monero stealth = B_dest + Hs·G)。
-    /// 返回压缩点(公开值)。
+    /// Whitelist: multi-scalar multiplication (monero stealth = B_dest + Hs·G).
+    /// Returns a compressed point (public value).
     pub fn mul_basepoint_add_point(&self, point: &curve25519_dalek::EdwardsPoint) -> [u8; 32] {
         use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
         self.with(|v| (point + ED25519_BASEPOINT_TABLE * v).compress().to_bytes())
     }
 
-    /// 白名单:域加法,原地累加(累加 blinding mask 场景)。
-    /// 审计 #12 P1-01:收 owner 输入——旧签名 add_assign(&Scalar) 让
-    /// 调用方持有的普通 Scalar(不受 owner 管理的秘密)成为合法输入;
-    /// 现只接受另一 SecretScalar。
+    /// Whitelist: field addition, in-place accumulation (blinding mask accumulation).
+    /// Audit #12 P1-01: takes an owner input — the old signature add_assign(&Scalar) made a plain Scalar
+    /// held by callers (a secret not managed by any owner) a legitimate input;
+    /// now only another SecretScalar is accepted.
     pub fn add_assign(&mut self, other: &SecretScalar) {
         *self.scalar += *other.scalar;
     }
 
-    /// 白名单:显式立即清零(正常路径收尾;错误路径由 Drop 覆盖)。
+    /// Whitelist: explicit immediate zeroization (normal-path cleanup; error paths covered by Drop).
     pub fn zeroize_now(&mut self) {
         self.scalar.zeroize();
     }
 
-    /// 白名单:与另一 SecretScalar 相加 → 新 SecretScalar。
-    /// 审计 #11 P1-01:表达式直接进 owner(上版先建普通 sum 再复制)
+    /// Whitelist: add another SecretScalar → new SecretScalar.
+    /// Audit #11 P1-01: expressions go straight into the owner (last version built a plain sum first, then copied)
     pub fn add_secret(&self, other: &SecretScalar) -> SecretScalar {
         Self {
             scalar: Zeroizing::new(self.with(|a| other.with(|b| a + b))),
         }
     }
 
-    /// 白名单:与另一 SecretScalar 相减 → 新 SecretScalar。
-    /// genRctSimple 最后输入 `a[last] = Σout_masks − Σprev_pseudo`。
+    /// Whitelist: subtract another SecretScalar → new SecretScalar.
+    /// genRctSimple's last input `a[last] = Σout_masks − Σprev_pseudo`.
     pub fn sub_secret(&self, other: &SecretScalar) -> SecretScalar {
         Self {
             scalar: Zeroizing::new(self.with(|a| other.with(|b| a - b))),
         }
     }
 
-    /// 白名单:写出字节(wire 序列化等公开消费)。
+    /// Whitelist: write out bytes (public consumption such as wire serialization).
     pub fn write_bytes(&self, out: &mut [u8; 32]) {
         *out = self.scalar.to_bytes();
     }
 
-    /// 读出字节副本(审计 #12 P1-01:收窄 crate-private——公开 API 不允许
-    /// 秘密 Copy 逃逸,消费方只能靠约定"立即进下一个 owner/哈希",类型系统
-    /// 约束不了;crate 内合法场景:push_take 前的 wire 序列化、测试断言)。
+    /// Read a copy of the bytes (audit #12 P1-01: narrowed to crate-private — the public API must not let
+    /// secrets Copy-escape; consumers could only rely on the convention "go straight into the next owner/hash",
+    /// which the type system cannot enforce; legitimate in-crate uses: wire serialization before push_take, test assertions).
     pub(crate) fn to_bytes(&self) -> [u8; 32] {
         self.scalar.to_bytes()
     }
 
-    /// 内部:受控借用(仅限本模块白名单实现使用)
+    /// Internal: controlled borrow (only for this module's whitelist implementations)
     fn with<R>(&self, f: impl FnOnce(&Scalar) -> R) -> R {
         f(&self.scalar)
     }
@@ -150,17 +150,17 @@ mod tests {
     use super::*;
     static_assertions::assert_not_impl_any!(SecretScalar: Clone, Copy);
 
-    /// 审计 #10 P1-01:白名单 API 不再暴露 &Scalar——点乘/加法返回公开点
-    /// 或新 owner,不存在可复制底层 Scalar 的通用回调。
-    /// (旧 API `with_scalar<R>(&self, f: impl FnOnce(&Scalar) -> R)` 已删除:
-    ///  Scalar: Copy 时 `|s| *s` 可合法逃逸,复审判定为 owner 逃逸漏洞)
+    /// Audit #10 P1-01: the whitelisted API no longer exposes &Scalar — point mul/addition returns a public point
+    /// or a new owner; there is no generic callback that could copy the underlying Scalar out.
+    /// (The old API `with_scalar<R>(&self, f: impl FnOnce(&Scalar) -> R)` was removed:
+    ///  with Scalar: Copy, `|s| *s` could legally escape — re-review judged it an owner-escape vulnerability)
     #[test]
     fn whitelist_ops_return_public_or_owner() {
         let owner = SecretScalar::from_bytes_mod_order([0x77u8; 32]);
-        // 点乘:返回压缩点(公开值)——无 Scalar 逃逸路径
+        // point mul: returns a compressed point (public value) — no Scalar escape path
         let pub_point = owner.mul_basepoint();
         assert_ne!(pub_point, [0u8; 32]);
-        // 标量加:返回新 owner
+        // scalar add: returns a new owner
         let sum = owner.add_bytes(&[0x11u8; 32]);
         let mut expect = [0u8; 32];
         expect.copy_from_slice(
@@ -171,33 +171,33 @@ mod tests {
         assert_eq!(sum.to_bytes(), expect);
     }
 
-    /// 审计 #10 P1-02:构造不建立普通 let s 中间绑定(内部直接
-    /// Zeroizing<Scalar>);本测试锁定 API 面不被回退。
+    /// Audit #10 P1-02: construction establishes no plain let s intermediate binding (a Zeroizing<Scalar>
+    /// internally); this test locks the API surface against regression.
     #[test]
     fn construction_contract() {
-        // 注意:from_bytes_mod_order 会 reduce mod l——非规范编码(如 0x42
-        // 全填充)的字节表示会变化;测试用规范小标量(0x42 仅最低字节)
+        // Note: from_bytes_mod_order reduces mod l — non-canonical encodings (e.g. all bytes 0x42)
+        // change their byte representation; tests use canonical small scalars (0x42 only in the lowest byte)
         let mut raw = [0u8; 32];
         raw[0] = 0x42;
         let owner = SecretScalar::from_bytes_mod_order(raw);
         let mut out = [0u8; 32];
         owner.write_bytes(&mut out);
         assert_eq!(out, raw);
-        // mul_basepoint(BP+ 场景)
+        // mul_basepoint (BP+ scenario)
         let p = owner.mul_basepoint();
         assert_ne!(p, [0u8; 32]);
     }
 
-    /// 审计 #11 P0-01:不可信压缩点解压失败 → Err(不 panic)。
-    /// 复审以仓库外 PoC 复现 [0x02;32] 触发 expect panic(真机=abort/DoS)。
-    /// totality 是本类型 API 的硬门禁——回归即失败。
+    /// Audit #11 P0-01: untrusted compressed point decompression failure → Err (no panic).
+    /// The re-review reproduced the panic with an out-of-repo PoC using [0x02;32] (on device = abort/DoS).
+    /// Totality is a hard gate for this type's API — any regression fails.
     #[test]
     fn invalid_point_encoding_returns_err_not_panic() {
         let owner = SecretScalar::from_bytes_mod_order([0x42u8; 32]);
-        // [0x02;32] 不是合法压缩点(复审 PoC 用的编码)
+        // [0x02;32] is not a valid compressed point (the re-review PoC's encoding)
         assert!(owner.mul_point(&[0x02u8; 32]).is_err());
         assert!(owner.mul_point_cofactor(&[0x02u8; 32]).is_err());
-        // 合法点仍正常工作(不误伤)
+        // valid points still work (no false positives)
         let pt = curve25519_dalek::constants::ED25519_BASEPOINT_TABLE
             * &curve25519_dalek::Scalar::from(1u8);
         let pt_bytes = pt.compress().to_bytes();
@@ -205,7 +205,7 @@ mod tests {
         assert!(owner.mul_point_cofactor(&pt_bytes).is_ok());
     }
 
-    /// add_secret:owner + owner → owner(域算术全封闭)
+    /// add_secret: owner + owner → owner (field arithmetic fully closed)
     #[test]
     fn add_secret_returns_owner() {
         let a = SecretScalar::from_bytes_mod_order([1u8; 32]);
@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(out, expect.to_bytes());
     }
 
-    /// sub_secret:owner − owner → owner(genRctSimple last-mask 用)
+    /// sub_secret: owner − owner → owner (used for genRctSimple's last mask)
     #[test]
     fn sub_secret_returns_owner() {
         let a = SecretScalar::from_bytes_mod_order([7u8; 32]);
@@ -231,9 +231,9 @@ mod tests {
         assert_eq!(out, expect.to_bytes());
     }
 
-    /// 审计 #12 P1-01 API 门禁:白名单输入/输出不产生普通 Scalar 通道——
-    /// add_assign 只收 owner;to_bytes 退出公开面(pub(crate),集成测试
-    /// 编译期即被拒);公开输出仅压缩点(公开值)与 write_bytes(写调用方缓冲)。
+    /// Audit #12 P1-01 API gate: whitelisted inputs/outputs create no plain Scalar channels —
+    /// add_assign only accepts owners; to_bytes exits the public surface (pub(crate), integration tests
+    /// are rejected at compile time); public outputs are only compressed points (public values) and write_bytes (into the caller's buffer).
     #[test]
     fn add_assign_owner_only_api_gate() {
         assert!(core::mem::needs_drop::<SecretScalar>());

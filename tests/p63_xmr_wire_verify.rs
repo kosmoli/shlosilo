@@ -1,14 +1,14 @@
-//! P63-XMR 决定性诊断：用 wire blob 自身数据调用 monero-clsag::verify
+//! P63-XMR decisive diagnostics: call monero-clsag::verify with the wire blob's own data
 //!
-//! 逻辑：解析 /tmp/signed_tx.hex → 提取 ring(pseudoOuts 前需 mixRing，从 fixture)
-//! 关键是复现 monerod 的 verify 输入：
+//! Logic: parse /tmp/signed_tx.hex → extract the ring (mixRing needed before pseudoOuts, from the fixture)
+//! The key is reproducing monerod's verify inputs:
 //!   - ring = fixture sources[0].outputs (dest, commitment=mask|amount)
 //!   - I = wire vin key image
 //!   - pseudo_out = wire pseudoOuts[0]
 //!   - D, s, c1 = wire CLSAGs[0]
-//!   - msg_hash = keccak(prefix_hash + H(base) + BP elements) - 从 wire 重算
+//!   - msg_hash = keccak(prefix_hash + H(base) + BP elements) - recomputed from the wire
 //!
-//! 若本地 verify 失败 ⇒ msg_hash 与 wire 不一致（签名时用了别的值）；若成功 ⇒ mixRing 与 monerod 展开不同。
+//! If local verify fails ⇒ msg_hash differs from the wire (a different value was used when signing); if it succeeds ⇒ the mixRing expansion differs from monerod's.
 
 use std::fs;
 
@@ -24,14 +24,14 @@ fn diag_clsag_verify_from_wire() {
         .collect();
     println!("blob len: {}", blob.len());
 
-    // 用 p63_xmr_sign 相同的 env 拿 fixture（走 TxConstructionData）
+    // uses the same env as p63_xmr_sign to get the fixture (via TxConstructionData)
     let view_sk_hex = std::env::var("SHLOSILO_TEST_XMR_VIEW_SK").unwrap();
     let spend_sk_hex = std::env::var("SHLOSILO_TEST_XMR_SPEND_SK").unwrap();
     let _ = (view_sk_hex, spend_sk_hex);
 
-    // 完整重算 msg_hash 需要构造侧数据 —— 改为直接暴露 sign 的中间值:
-    // 这里打印 wire 中 CLSAG 段的 s/c1/D/pseudo_out 与 key image，供与官方 verRctCLSAGSimple 手工对照。
+    // recomputing msg_hash fully needs construction-side data — expose sign's intermediate value directly instead:
+    // prints the s/c1/D/pseudo_out and key image of the wire's CLSAG section for manual comparison against the official verRctCLSAGSimple.
     let _ = &blob;
 
-    // TODO-full：待 tx_signer 暴露 diag 接口后完成端到端本地验证。
+    // TODO-full: complete the end-to-end local verification once tx_signer exposes a diag interface.
 }

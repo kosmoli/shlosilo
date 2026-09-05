@@ -1,10 +1,10 @@
-//! BIP-67 多签（v1 不支持，Phase 8+ 真实实现）
+//! BIP-67 multisig (unsupported in v1; real implementation in Phase 8+)
 
 use crate::curve_primitive::secp256k1::{Secp256k1Point, Secp256k1Scalar};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// BIP-67 排序的公钥列表（用于 P2SH multisig redeem script）
+/// BIP-67 sorted public key list (for the P2SH multisig redeem script)
 pub const MAX_MULTISIG_SIGNERS: usize = 15;
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -24,17 +24,17 @@ impl core::fmt::Debug for MultisigScript {
     }
 }
 
-/// Multisig 聚合公钥（Phase 8+ 真实实现）
+/// Multisig aggregated public key (real implementation in Phase 8+)
 pub fn aggregate_pubkey(_pubkeys: &[Secp256k1Point]) -> Result<Secp256k1Point> {
     Err(ShlosiloError::new(ShlosiloErrorKind::MultisigNotSupported))
 }
 
-/// 构造 m-of-n P2SH redeem script（Phase 8+ 真实实现）
+/// Build an m-of-n P2SH redeem script (real implementation in Phase 8+)
 pub fn redeem_script(_m: u8, _sorted_pubkeys: &[Secp256k1Point]) -> Result<MultisigScript> {
     Err(ShlosiloError::new(ShlosiloErrorKind::MultisigNotSupported))
 }
 
-/// Multisig 签名（Phase 8+ 真实实现）
+/// Multisig signing (real implementation in Phase 8+)
 pub fn sign_multisig(
     _sk: &Secp256k1Scalar,
     _msg_hash: &[u8; 32],
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn stub_phase_documented() {
         let source = include_str!("bip32_secp256k1_multisig.rs");
-        // v1 不支持，所以错误码是 MultisigNotSupported（不是 unimplemented!）
+        // Unsupported in v1, so the error code is MultisigNotSupported (not unimplemented!)
         assert!(source.contains("MultisigNotSupported"));
         assert!(source.contains("Phase 8+"));
     }

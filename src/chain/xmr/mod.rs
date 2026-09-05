@@ -1,9 +1,9 @@
-//! XMR 链业务模块
+//! XMR chain business module
 //!
-//! Phase 5 v4 真实实现：reduce_scalar + Pedersen commitment + CLSAG 签名
+//! Phase 5 v4 real implementation: reduce_scalar + Pedersen commitment + CLSAG signatures
 //! Phase 5 v9.5 (2026-08-22):
-//! transaction 模块 (Phase A 基础设施)、rct_sig 模块 (Phase B RingCT 集成)、
-//! tx_builder 模块 (Phase C 端到端构造+签名+序列化)。
+//! transaction module (Phase A infrastructure), rct_sig module (Phase B RingCT integration),
+//! tx_builder module (Phase C end-to-end construct+sign+serialize).
 //! Phase 5 v9.19: view_tag + encrypted payment ID + payment proof
 
 pub mod clsag;

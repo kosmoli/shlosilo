@@ -1,8 +1,8 @@
 //! BIP-86 / BIP-341 Taproot keypath-only spending (Phase 5 v9.7)
 //!
-//! ## 算法
+//! ## Algorithm
 //!
-//! **BIP-86 P2TR keypath-only 地址构造**:
+//! **BIP-86 P2TR keypath-only address construction**:
 //! ```text
 //! 1. internal_key_x = compressed_pubkey[1..33]  (x-only, 32 bytes)
 //! 2. tweak = SHA256("TapTweak"/internal_key_x)
@@ -11,19 +11,19 @@
 //! 5. address = bech32m_encode("bc"/"tb", 1, output_key_x)
 //! ```
 //!
-//! **BIP-341 KeyPath 签名**:
+//! **BIP-341 KeyPath signing**:
 //! ```text
 //! sighash = SHA256(SHA256(0x00 || version || locktime || ...))  // BIP-341 sighash
 //! sig = Schnorr_sign(spend_sk, sighash, aux_rand)
 //! witness = [sig]  // single 64-byte element
 //! ```
 //!
-//! **L1 纯函数**: 全 taproot 模块无 IO/全局状态.
+//! **L1 pure functions**: the whole taproot module has no IO/global state.
 //!
-//! **参考**:
-//! - BIP-340 (Schnorr) — 已实现于 signature::schnorr_secp256k1
+//! **References**:
+//! - BIP-340 (Schnorr) — implemented in signature::schnorr_secp256k1
 //! - BIP-341 (Taproot) — https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
-//! - BIP-350 (bech32m) — 已实现于 encoding::bech32
+//! - BIP-350 (bech32m) — implemented in encoding::bech32
 //! - BIP-86 (P2TR key-path-only) — https://github.com/bitcoin/bips/blob/master/bip-0086.mediawiki
 
 extern crate alloc;
@@ -59,8 +59,8 @@ const TAPSIGHASH_TAG: &[u8] = b"TapSighash";
 /// BIP-340/341 tagged hash (domain separation):
 /// hash_tag(x) = SHA256(SHA256(tag) || SHA256(tag) || x)
 ///
-/// 这是 BIP-340 引入的 tagged hash，BIP-341 的 TapTweak/TapLeaf/TapBranch/TapSighash
-/// 全部用它做域分离。**不是** SHA256(tag || x)。
+/// This is the tagged hash introduced by BIP-340; BIP-341's TapTweak/TapLeaf/TapBranch/TapSighash
+/// all use it for domain separation. **Not** SHA256(tag || x).
 fn tagged_hash(tag: &[u8], msg: &[u8]) -> [u8; 32] {
     let tag_hash = {
         let mut h = Sha256Std::new();
@@ -80,18 +80,18 @@ fn tagged_hash(tag: &[u8], msg: &[u8]) -> [u8; 32] {
 /// Compute Taproot tweak from internal_key_x-only:
 /// tweak = SHA256("TapTweak"/internal_key_x) interpreted as scalar
 ///
-/// **输入**: 32-byte x-only internal public key
-/// **输出**: 32-byte tweak scalar
+/// **Input**: 32-byte x-only internal public key
+/// **Output**: 32-byte tweak scalar
 pub fn compute_taproot_tweak(internal_key_x: &[u8; 32]) -> [u8; 32] {
-    // tweak = tagged_hash("TapTweak", internal_key_x)  (keypath: merkle root 为空)
+    // tweak = tagged_hash("TapTweak", internal_key_x)  (keypath: merkle root is empty)
     tagged_hash(TAPTWEAK_TAG, internal_key_x)
 }
 
 /// Lift x-only pubkey (BIP-340):
 /// Given 32-byte x, find y such that y is even and (x, y) is on the curve.
 ///
-/// **输入**: 32-byte x-only public key
-/// **输出**: Full Secp256k1Point with even y (y=0 mod 2), or Err if x invalid
+/// **Input**: 32-byte x-only public key
+/// **Output**: Full Secp256k1Point with even y (y=0 mod 2), or Err if x invalid
 pub fn lift_x_pubkey(internal_key_x: &[u8; 32]) -> Result<Secp256k1Point> {
     // Construct compressed pubkey with prefix 0x02 (even y)
     let mut compressed = [0u8; 33];
@@ -103,10 +103,10 @@ pub fn lift_x_pubkey(internal_key_x: &[u8; 32]) -> Result<Secp256k1Point> {
 /// Compute output key Q (BIP-341):
 /// Q = lift_x(internal_key_x) + tweak * G
 ///
-/// **输入**:
+/// **Input**:
 /// - internal_key_x: 32-byte x-only internal pubkey
 ///
-/// **输出**: Tapped Secp256k1Point (must have even y per BIP-341)
+/// **Output**: Tapped Secp256k1Point (must have even y per BIP-341)
 pub fn compute_output_key(internal_key_x: &[u8; 32]) -> Result<Secp256k1Point> {
     let lifted = lift_x_pubkey(internal_key_x)?;
     // tweak scalar
@@ -126,11 +126,11 @@ pub fn compute_output_key(internal_key_x: &[u8; 32]) -> Result<Secp256k1Point> {
 
 /// BIP-86 P2TR address from x-only public key
 ///
-/// **输入**:
+/// **Input**:
 /// - internal_key_x: 32-byte x-only internal public key
 /// - hrp: "bc" (mainnet) or "tb" (testnet)
 ///
-/// **输出**: bech32m-encoded address (e.g. "bc1p...")
+/// **Output**: bech32m-encoded address (e.g. "bc1p...")
 pub fn p2tr_address_from_x_only(
     internal_key_x: &[u8; 32],
     hrp: &str,
@@ -154,8 +154,8 @@ pub fn p2tr_address_from_x_only(
     Ok(alloc::format!("{}", result))
 }
 
-/// SIGHASH 类型常量 (BIP-341)
-#[allow(dead_code)] // BIP-341 常量集 = 完整契约文档
+/// SIGHASH type constants (BIP-341)
+#[allow(dead_code)] // the BIP-341 constant set = full contract documentation
 pub(crate) const SIGHASH_DEFAULT: u8 = 0x00;
 #[allow(dead_code)]
 pub(crate) const SIGHASH_ALL: u8 = 0x01;
@@ -164,54 +164,54 @@ pub(crate) const SIGHASH_SINGLE: u8 = 0x03;
 #[allow(dead_code)]
 pub(crate) const SIGHASH_ANYONECANPAY: u8 = 0x80;
 
-/// 一个 spent output（BIP-341 sighash 需要所有 spent outputs 的 value + scriptPubKey）
+/// A spent output (BIP-341 sighash needs the value + scriptPubKey of all spent outputs)
 #[derive(Clone, Debug)]
 pub struct SpentOutput {
     pub value: u64,
     pub script_pubkey: alloc::vec::Vec<u8>,
 }
 
-/// BIP-341 keypath sighash 输入
+/// BIP-341 keypath sighash inputs
 #[derive(Clone, Debug)]
 pub struct TaprootSighashInput<'a> {
-    /// 交易 nVersion
+    /// transaction nVersion
     pub tx_version: u32,
-    /// 交易 nLockTime
+    /// transaction nLockTime
     pub locktime: u32,
-    /// 所有 input 的 prevouts（txid + vout）
+    /// prevouts of all inputs (txid + vout)
     pub prevouts: &'a [([u8; 32], u32)],
-    /// 所有 input 的 nSequence
+    /// nSequence of all inputs
     pub sequences: &'a [u32],
-    /// 所有 spent outputs（value + scriptPubKey，按 input 顺序）
+    /// all spent outputs (value + scriptPubKey, in input order)
     pub spent_outputs: &'a [SpentOutput],
-    /// 交易 outputs（value + scriptPubKey）
+    /// transaction outputs (value + scriptPubKey)
     pub tx_outputs: &'a [SpentOutput],
-    /// 正在签名的 input index
+    /// index of the input being signed
     pub input_index: usize,
     /// hash_type（SIGHASH_DEFAULT / ALL / NONE / SINGLE / +ANYONECANPAY）
     pub hash_type: u8,
-    /// annex 是否存在（有 annex 时 sighash 需含 sha_annex；shlosilo 暂不支持 annex 内容，仅置 spend_type 位）
+    /// whether an annex exists (with an annex the sighash must include sha_annex; shlosilo does not yet support annex contents, only sets the spend_type bit)
     pub annex_present: bool,
-    /// scriptpath 签名时的 TapLeaf hash（keypath 时为 None → ext_flag=0）
+    /// TapLeaf hash when signing a scriptpath (None for keypath → ext_flag=0)
     ///
-    /// Some(leaf_hash) → spend_type = 2 | annex_present（ext_flag=1，BIP-342 复用 SigMsg），
-    /// sigmsg 尾部追加该 leaf hash。
+    /// Some(leaf_hash) → spend_type = 2 | annex_present (ext_flag=1, BIP-342 reuses SigMsg);
+    /// the leaf hash is appended to the end of sigmsg.
     pub tapleaf_hash: Option<[u8; 32]>,
 }
 
-/// 完整 BIP-341 keypath sighash（SigMsg 全字段实现）
+/// Full BIP-341 keypath sighash (SigMsg with all fields implemented)
 ///
 /// sigmsg = hash_type || nVersion || nLockTime
-///        || [sha_prevouts || sha_amounts || sha_scriptpubkeys || sha_sequences]  (非 ANYONECANPAY)
-///        || [sha_outputs]                                                        (非 NONE/SINGLE)
+///        || [sha_prevouts || sha_amounts || sha_scriptpubkeys || sha_sequences]  (non-ANYONECANPAY)
+///        || [sha_outputs]                                                        (non-NONE/SINGLE)
 ///        || spend_type || ([outpoint || amount || scriptPubKey || nSequence]     (ANYONECANPAY)
-///                          | input_index)                                        (否则)
-///        || [sha_annex]                                                          (有 annex)
+///                          | input_index)                                        (otherwise)
+///        || [sha_annex]                                                          (with annex)
 ///        || [sha_single_output]                                                  (SINGLE)
 ///
 /// sighash = tagged_hash("TapSighash", 0x00 || sigmsg)
 ///
-/// **返回**: 32-byte sighash（供 BIP-340 Schnorr 签名）
+/// **Returns**: 32-byte sighash (for BIP-340 Schnorr signing)
 pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
     use crate::encoding::sha256;
 
@@ -221,7 +221,7 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
     if input.input_index >= input.spent_outputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    // hash_type 合法性（BIP-341）：只允许 0x00/0x01/0x02/0x03/0x81/0x82/0x83
+    // hash_type validity (BIP-341): only 0x00/0x01/0x02/0x03/0x81/0x82/0x83 allowed
     match input.hash_type {
         0x00 | 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83 => {}
         _ => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
@@ -232,7 +232,7 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
         output_type == SIGHASH_NONE & 0x03 || output_type == SIGHASH_SINGLE & 0x03;
     let is_single = output_type == SIGHASH_SINGLE & 0x03;
     if is_single && input.input_index >= input.tx_outputs.len() {
-        // SIGHASH_SINGLE 需要有对应 index 的 output
+        // SIGHASH_SINGLE requires an output at the corresponding index
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
@@ -243,23 +243,23 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
     msg.extend_from_slice(&input.tx_version.to_le_bytes());
     msg.extend_from_slice(&input.locktime.to_le_bytes());
     if !is_anyonecanpay {
-        // sha_prevouts: SHA256(所有 outpoints 序列化)
+        // sha_prevouts: SHA256(all outpoints serialized)
         let mut buf = alloc::vec::Vec::with_capacity(36 * input.prevouts.len());
         for (txid, vout) in input.prevouts {
             buf.extend_from_slice(txid);
             buf.extend_from_slice(&vout.to_le_bytes());
         }
         msg.extend_from_slice(&sha256::hash(&buf)?);
-        // sha_amounts: SHA256(所有 spent value, 8B LE each)
+        // sha_amounts: SHA256(all spent values, 8B LE each)
         let mut buf = alloc::vec::Vec::with_capacity(8 * input.spent_outputs.len());
         for so in input.spent_outputs {
             buf.extend_from_slice(&so.value.to_le_bytes());
         }
         msg.extend_from_slice(&sha256::hash(&buf)?);
-        // sha_scriptpubkeys: SHA256(varint(len) || spk, 每个 spent output)
+        // sha_scriptpubkeys: SHA256(varint(len) || spk, per spent output)
         let mut buf = alloc::vec::Vec::new();
         for so in input.spent_outputs {
-            buf.push(so.script_pubkey.len() as u8); // P2TR spk = 35B, 单字节 varint 足够
+            buf.push(so.script_pubkey.len() as u8); // P2TR spk = 35B, a single-byte varint suffices
             buf.extend_from_slice(&so.script_pubkey);
         }
         msg.extend_from_slice(&sha256::hash(&buf)?);
@@ -271,7 +271,7 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
         msg.extend_from_slice(&sha256::hash(&buf)?);
     }
     if !is_none_or_single {
-        // sha_outputs: SHA256(所有 tx outputs, CTxOut 格式)
+        // sha_outputs: SHA256(all tx outputs, CTxOut format)
         let mut buf = alloc::vec::Vec::new();
         for o in input.tx_outputs {
             buf.extend_from_slice(&o.value.to_le_bytes());
@@ -300,9 +300,9 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
     } else {
         msg.extend_from_slice(&(input.input_index as u32).to_le_bytes());
     }
-    // annex / single output 扩展（shlosilo 当前不携带 annex 内容；SINGLE 需 sha_single_output）
+    // annex / single-output extensions (shlosilo currently carries no annex contents; SINGLE needs sha_single_output)
     if input.annex_present {
-        // 调用方需自行保证 annex 一致性；shlosilo 暂不支持带 annex 签名
+        // the caller must guarantee annex consistency; shlosilo does not yet support signing with an annex
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     if is_single {
@@ -313,7 +313,7 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
         buf.extend_from_slice(&o.script_pubkey);
         msg.extend_from_slice(&sha256::hash(&buf)?);
     }
-    // BIP-342 扩展: scriptpath (ext_flag=1) 时 sigmsg 尾部追加 tapleaf hash
+    // BIP-342 extension: with scriptpath (ext_flag=1) the tapleaf hash is appended to the end of sigmsg
     if let Some(leaf_hash) = &input.tapleaf_hash {
         msg.extend_from_slice(leaf_hash);
     }
@@ -325,45 +325,45 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
     Ok(tagged_hash(TAPSIGHASH_TAG, &epoch))
 }
 
-/// P2TR keypath 签名输入
+/// P2TR keypath signing input
 #[derive(Clone, Debug)]
 pub struct P2TRKeypathSignInput {
-    /// internal private key (32 bytes, 未 tweak)
+    /// internal private key (32 bytes, untweaked)
     pub internal_sk: [u8; 32],
-    /// merkle root（keypath-only 时为 None；有 script tree 时为 Some）
+    /// merkle root (None for keypath-only; Some when a script tree exists)
     pub merkle_root: Option<[u8; 32]>,
 }
 
-/// Sign Taproot keypath spending (BIP-340 + BIP-341) — 完整业务函数
+/// Sign a Taproot keypath spend (BIP-340 + BIP-341) — full business function
 ///
-/// 链路:
+/// Chain:
 /// 1. tweaked_sk = BIP-86 taproot_tweak_seckey(internal_sk, merkle_root)
-///    （parity 调整：P.y 为奇时 negated，再加 tweak）
+///    (parity adjustment: negated when P.y is odd, then the tweak is added)
 /// 2. sig = Schnorr_sign(tweaked_sk, sighash, aux_rand)
 ///
-/// **输入**:
+/// **Input**:
 /// - spend_sk: 32-byte spend private key (raw secp256k1 scalar)
 /// - output_key_x: 32-byte x-only output key (after taproot tweak)
 /// - sighash: 32-byte BIP-341 sighash
 /// - aux_rand: 32-byte auxiliary randomness (BIP-340)
 ///
-/// **输出**: 64-byte Schnorr signature (witness 单元素；SIGHASH_DEFAULT 不加后缀字节)
+/// **Output**: 64-byte Schnorr signature (single witness element; SIGHASH_DEFAULT adds no suffix byte)
 pub fn sign_taproot_keypath(
     spend_sk: &Secp256k1Scalar,
     _output_key_x: &[u8; 32],
     sighash: &[u8; 32],
     aux_rand: &[u8; 32],
 ) -> Result<SchnorrSignature> {
-    // caller 已提供 tweaked sk（BIP-341: spend_sk = adjusted_internal_sk + tweak_scalar）
+    // caller already provides the tweaked sk (BIP-341: spend_sk = adjusted_internal_sk + tweak_scalar)
     schnorr_sign(spend_sk, sighash, aux_rand)
 }
 
-/// 一站式 P2TR keypath 签名：internal_sk + sighash 输入 → 64/65 字节 witness 签名
+/// One-stop P2TR keypath signing: internal_sk + sighash inputs → 64/65-byte witness signature
 ///
-/// 自动完成 parity 调整 + tweak + Schnorr 签名。
-/// 返回的签名字节可直接作为 witness 第一个元素：
-/// - SIGHASH_DEFAULT → 64 bytes（无后缀）
-/// - 其他 hash_type   → 65 bytes（sig || hash_type）
+/// Automatically performs parity adjustment + tweak + Schnorr signing.
+/// The returned signature bytes can be used directly as the first witness element:
+/// - SIGHASH_DEFAULT → 64 bytes (no suffix)
+/// - other hash_type  → 65 bytes (sig || hash_type)
 pub fn sign_p2tr_keypath(
     input: &P2TRKeypathSignInput,
     sighash: &[u8; 32],
@@ -374,7 +374,7 @@ pub fn sign_p2tr_keypath(
         base_mul, scalar_add, scalar_from_bytes, scalar_negate, scalar_to_bytes,
     };
 
-    // 1. internal pubkey x-only（用于 TapTweak 消息）
+    // 1. internal pubkey x-only (used for the TapTweak message)
     let internal_sk = scalar_from_bytes(&input.internal_sk)?;
     let internal_pub = base_mul(&internal_sk);
     let internal_compressed = point_to_compressed(&internal_pub);
@@ -388,7 +388,7 @@ pub fn sign_p2tr_keypath(
     };
     let tweak = scalar_from_bytes(&tweak_bytes)?;
 
-    // 3. parity 调整: P.y 奇 → sk 取负，再加 tweak
+    // 3. parity adjustment: P.y odd → negate sk, then add the tweak
     let adjusted = if internal_compressed[0] == 0x02 {
         internal_sk
     } else {
@@ -400,7 +400,7 @@ pub fn sign_p2tr_keypath(
     // 4. Schnorr sign with tweaked sk
     let sig = schnorr_sign(&tweaked_sk, sighash, aux_rand)?;
 
-    // 5. witness item: SIGHASH_DEFAULT 无后缀，其余追加 hash_type byte
+    // 5. witness item: SIGHASH_DEFAULT has no suffix; the others append the hash_type byte
     let mut out = alloc::vec::Vec::with_capacity(65);
     out.extend_from_slice(sig.as_ref());
     if hash_type != SIGHASH_DEFAULT {
@@ -413,11 +413,11 @@ pub fn sign_p2tr_keypath(
 /// tweaked_sk = internal_sk + tweak_scalar (mod L)
 /// OR tweaked_sk = -internal_sk + tweak_scalar if output_key y is odd (BIP-341).
 ///
-/// **输入**:
+/// **Input**:
 /// - internal_sk: 32-byte x-only internal private key
 /// - internal_pub_x: 32-byte x-only internal public key
 ///
-/// **输出**: Tweaked 32-byte private key (sum mod curve order)
+/// **Output**: Tweaked 32-byte private key (sum mod curve order)
 pub fn tweak_private_key(internal_sk: &[u8; 32], internal_pub_x: &[u8; 32]) -> Result<[u8; 32]> {
     use crate::curve_primitive::secp256k1::{scalar_add, scalar_from_bytes, scalar_negate};
     let internal_scalar = scalar_from_bytes(internal_sk)?;
@@ -495,11 +495,11 @@ pub fn compute_merkle_root(leaf_hash: &[u8; 32], co_path: &[[u8; 32]]) -> [u8; 3
 /// TapTweak for script-path (BIP-341):
 /// tweak = SHA256("TapTweak"/internal_key_x || merkle_root)
 ///
-/// **输入**:
+/// **Input**:
 /// - internal_key_x: 32-byte x-only internal public key
 /// - merkle_root: 32-byte merkle root of tapscript tree
 ///
-/// **输出**: 32-byte tweak scalar (raw bytes, mod L to use)
+/// **Output**: 32-byte tweak scalar (raw bytes, reduced mod L to use)
 pub fn taproot_script_tweak(internal_key_x: &[u8; 32], merkle_root: &[u8; 32]) -> [u8; 32] {
     // tweak = tagged_hash("TapTweak", internal_key_x || merkle_root)
     let mut msg = alloc::vec::Vec::with_capacity(64);
@@ -512,11 +512,11 @@ pub fn taproot_script_tweak(internal_key_x: &[u8; 32], merkle_root: &[u8; 32]) -
 /// Q = lift_x(internal_key_x) + tweak * G
 /// where tweak = SHA256("TapTweak"/internal_key_x || merkle_root)
 ///
-/// **输入**:
+/// **Input**:
 /// - internal_key_x: 32-byte x-only internal public key
 /// - merkle_root: 32-byte merkle root of tapscript tree
 ///
-/// **输出**: Tapped Secp256k1Point
+/// **Output**: Tapped Secp256k1Point
 pub fn compute_output_key_scriptpath(
     internal_key_x: &[u8; 32],
     merkle_root: &[u8; 32],
@@ -575,7 +575,7 @@ pub fn build_control_block(
 }
 
 /// Parse control block (returns leaf_version, parity_bit, internal_key_x, merkle_path)
-/// 返回：(leaf_version, parity_bit, internal_key_x, merkle_path)
+/// Returns: (leaf_version, parity_bit, internal_key_x, merkle_path)
 type ParsedControlBlock = (u8, u8, [u8; 32], alloc::vec::Vec<[u8; 32]>);
 pub fn parse_control_block(cb: &[u8]) -> Option<ParsedControlBlock> {
     if cb.len() < 33 {
@@ -599,7 +599,7 @@ pub fn parse_control_block(cb: &[u8]) -> Option<ParsedControlBlock> {
     Some((leaf_version, parity_bit, internal_key_x, merkle_path))
 }
 
-/// 单元测试
+/// Unit tests
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -617,10 +617,10 @@ mod tests {
         s
     }
 
-    /// TapTweak 计算一致性
+    /// TapTweak computation consistency
     #[test]
     fn taproot_tweak_computation() {
-        // 从 fixed test vector 验证 (BIP-86 test vector 1)
+        // verified against a fixed test vector (BIP-86 test vector 1)
         // internal_key: m/86'/0'/0'/0/0 — second public key of BIP-86 test
         let internal_key_x = [
             0xc8, 0x79, 0x39, 0x73, 0x44, 0x85, 0x68, 0x4c, 0x98, 0x8b, 0x55, 0x9e, 0xc7, 0x77,
@@ -635,7 +635,7 @@ mod tests {
         assert_eq!(tweak.len(), 32);
     }
 
-    /// Output key 派生
+    /// Output key derivation
     #[test]
     fn output_key_derivation() {
         let internal_key_x: [u8; 32] = [
@@ -667,7 +667,7 @@ mod tests {
         assert_eq!(&compressed[1..], &internal_key_x[..]);
     }
 
-    /// BIP-86 P2TR 地址构造
+    /// BIP-86 P2TR address construction
     #[test]
     fn p2tr_address_construction() {
         let internal_key_x: [u8; 32] = [
@@ -714,13 +714,13 @@ mod tests {
         assert_eq!(tweaked_compressed, sum_compressed);
     }
 
-    /// BIP-341 sighash: 完整 SigMsg 实现，对照 keystone PSBT fixture 的已知 sighash
+    /// BIP-341 sighash: full SigMsg implementation, checked against the known sighash of the keystone PSBT fixture
     #[test]
     fn bip341_keypath_sighash_keystone_fixture() {
         use crate::chain::btc::taproot::{
             bip341_keypath_sighash, SpentOutput, TaprootSighashInput, SIGHASH_DEFAULT,
         };
-        // keystone test_taproot_sign fixture (同 tests/taproot_keystone_cross_validation.rs)
+        // keystone test_taproot_sign fixture (same as tests/taproot_keystone_cross_validation.rs)
         let prev_txid =
             hex_decode_32("3aee4d6b51da574900e56d173041115bd1e1d01d4697a845784cf716a10c9806");
         let spent_spk =
@@ -748,7 +748,7 @@ mod tests {
             tapleaf_hash: None,
         };
         let sighash = bip341_keypath_sighash(&input).unwrap();
-        // Python 独立实现 + keystone 签名验签通过的那个 sighash
+        // the sighash verified by an independent Python implementation + keystone signature verification
         let expected =
             hex_decode_32("90ecc5ee16cde022e26535908bbfdada42bd19b2f7dd1d6db8699946523d4ec3");
         assert_eq!(
@@ -757,8 +757,8 @@ mod tests {
         );
     }
 
-    /// scriptpath sighash (ext_flag=1): 同一 tx，spend_type=2 且尾部追加 tapleaf hash。
-    /// 参考值由独立 Python 实现计算（与 keypath 的差异仅在 spend_type 和 leaf hash）。
+    /// scriptpath sighash (ext_flag=1): same tx, spend_type=2 and the tapleaf hash appended at the end.
+    /// Reference value computed by an independent Python implementation (differs from keypath only in spend_type and the leaf hash).
     #[test]
     fn bip341_scriptpath_sighash_reference() {
         use crate::chain::btc::taproot::{
@@ -781,7 +781,7 @@ mod tests {
         let leaf_hash =
             hex_decode_32("f87f124e735a592a8ff390a68f6f05469ba8422e246dc78b0b57cd1576ffa98c");
 
-        // 交叉验证: leaf hash 应能从 script 20<b68d...>ac 重算出来
+        // cross-validation: the leaf hash should be recomputable from script 20<b68d...>ac
         let script =
             hex_decode_vec("20b68df382cad577d8304d5a8e640c3cb42d77c10016ab754caa4d6e68b6cb296dac");
         assert_eq!(
@@ -810,15 +810,15 @@ mod tests {
             "scriptpath sighash must match independent Python reference"
         );
 
-        // scriptpath sighash 必须不同于 keypath sighash（spend_type + leaf hash 都变了）
+        // the scriptpath sighash must differ from the keypath sighash (both spend_type and the leaf hash changed)
         assert_ne!(
             sighash,
             hex_decode_32("90ecc5ee16cde022e26535908bbfdada42bd19b2f7dd1d6db8699946523d4ec3")
         );
     }
 
-    /// sign_p2tr_keypath 端到端: internal_sk → tweaked_sk → Schnorr
-    /// 验证: tweaked_sk·G == output_key 且签名对 output key 可验证
+    /// sign_p2tr_keypath end-to-end: internal_sk → tweaked_sk → Schnorr
+    /// Verify: tweaked_sk·G == output_key and the signature verifies against the output key
     #[test]
     fn sign_p2tr_keypath_end_to_end() {
         use crate::chain::btc::taproot::{
@@ -827,7 +827,7 @@ mod tests {
         use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
         use crate::signature::schnorr_secp256k1;
 
-        // keystone fixture 的 internal key（m/86'/1'/0'/0/2 派生）
+        // internal key of the keystone fixture (derived at m/86'/1'/0'/0/2)
         let internal_sk_bytes =
             hex_decode_32("1fb777f1a6fb9b76724551f8bc8ad91b77f33b8c456d65d746035391d724922a");
         let merkle_root =
@@ -838,7 +838,7 @@ mod tests {
             merkle_root: Some(merkle_root),
         };
 
-        // sighash 用 keystone fixture 的 oracle 值
+        // sighash uses the keystone fixture's oracle value
         let sighash =
             hex_decode_32("90ecc5ee16cde022e26535908bbfdada42bd19b2f7dd1d6db8699946523d4ec3");
         let aux_rand = [0u8; 32];
@@ -851,7 +851,7 @@ mod tests {
             "SIGHASH_DEFAULT → 64-byte witness item"
         );
 
-        // 验证 1: tweaked_sk·G == output key（witness program 22f395...）
+        // Verification 1: tweaked_sk·G == output key (witness program 22f395...)
         let output_key = compute_output_key_scriptpath(
             &{
                 let sk = scalar_from_bytes(&internal_sk_bytes).unwrap();
@@ -872,13 +872,13 @@ mod tests {
             "tweaked output key mismatch"
         );
 
-        // 验证 2: 签名对 output key + sighash 可验证（用 shlosilo 自己的 verify）
+        // Verification 2: the signature verifies against the output key + sighash (using shlosilo's own verify)
         let mut sig_bytes = [0u8; 64];
         sig_bytes.copy_from_slice(&witness_sig);
         let _sig_obj = schnorr_secp256k1::from_bytes(&sig_bytes).unwrap();
         let mut q = [0u8; 32];
         q.copy_from_slice(&out_comp[1..]);
-        // 用 k256 schnorr verify（x-only pubkey）
+        // verify with k256 schnorr (x-only pubkey)
         let k_sig = k256::schnorr::Signature::try_from(sig_bytes.as_slice()).unwrap();
         let vk = k256::schnorr::VerifyingKey::from_bytes((&q).into()).unwrap();
         use k256::schnorr::signature::hazmat::PrehashVerifier;
@@ -888,7 +888,7 @@ mod tests {
         );
     }
 
-    /// 端到端: tweaked_sk * G = output_key (BIP-341 invariant)
+    /// End-to-end: tweaked_sk * G = output_key (BIP-341 invariant)
     #[test]
     fn taproot_tweaked_sk_consistency() {
         use crate::curve_primitive::secp256k1::scalar_from_bytes;
@@ -1066,7 +1066,7 @@ mod tests {
         assert!(parse_control_block(&cb).is_none());
     }
 
-    // === v9.13 BIP-86 官方测试向量 (tweak + output key + address) ===
+    // === v9.13 BIP-86 official test vectors (tweak + output key + address) ===
 
     fn hex_decode_32(s: &str) -> [u8; 32] {
         let mut out = [0u8; 32];
@@ -1100,7 +1100,7 @@ mod tests {
     }
 
     /// BIP-86 Test Vector 1: m/86'/0'/0'/0/0
-    /// internal_key → output_key (TapTweak tagged hash 验证)
+    /// internal_key → output_key (TapTweak tagged hash verification)
     #[test]
     fn bip86_test_vector_1_output_key() {
         let internal_key_x =

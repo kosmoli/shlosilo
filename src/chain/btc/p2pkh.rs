@@ -1,31 +1,31 @@
-//! BTC P2PKH 完整交易签名 (legacy, pre-segwit)
+//! BTC P2PKH full transaction signing (legacy, pre-segwit)
 //!
-//! 实现:
-//! - P2PKH sighash 算法 (BIP-143 同一套, 但 scriptCode 是 76a914{20}88ac 嵌入 scriptSig)
-//! - sign_p2pkh 业务函数 (sighash → ECDSA → DER + sighash byte → scriptSig 拼装)
-//! - Legacy 交易序列化 (无 marker/flag/witness)
+//! Implements:
+//! - P2PKH sighash algorithm (the same BIP-143 set, but the scriptCode is 76a914{20}88ac embedded in the scriptSig)
+//! - sign_p2pkh business function (sighash → ECDSA → DER + sighash byte → scriptSig assembly)
+//! - Legacy transaction serialization (no marker/flag/witness)
 //!
-//! ## 算法摘要
+//! ## Algorithm summary
 //!
-//! **P2PKH sighash 算法与 BIP-143 P2WPKH 完全相同**, 但:
-//! - scriptCode 嵌入 scriptSig (`OP_DUP OP_HASH160 <pubkeyhash> OP_EQUALVERIFY OP_CHECKSIG`)
-//! - witness 为空
-//! - 序列化无 marker/flag
+//! **The P2PKH sighash algorithm is identical to BIP-143 P2WPKH**, but:
+//! - scriptCode embedded in scriptSig (`OP_DUP OP_HASH160 <pubkeyhash> OP_EQUALVERIFY OP_CHECKSIG`)
+//! - witness empty
+//! - serialization has no marker/flag
 //!
 //! **P2PKH scriptCode**:
 //! ```text
 //! 0x1976a914{20-byte-pubkey-hash}88ac
 //! ```
 //!
-//! **P2PKH scriptSig** (签名后):
+//! **P2PKH scriptSig** (after signing):
 //! ```text
 //! <varint_push_data_len><DER-sig + sighash-byte><varint_push_data_len><compressed-pubkey>
 //! ```
 //!
-//! ## 参考
+//! ## Reference
 //!
 //! - Bitcoin Core 0.21+ test/functional/test_framework/script.py
-//! - 比特币交易 preimage 算法 (<https://en.bitcoin.it/wiki/OP_CHECKSIG>)
+//! - Bitcoin transaction preimage algorithm (<https://en.bitcoin.it/wiki/OP_CHECKSIG>)
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -53,47 +53,47 @@ pub fn p2pkh_script_pubkey(pubkey_hash: &[u8; 20]) -> Vec<u8> {
     p2pkh_script_code(pubkey_hash).to_vec()
 }
 
-/// P2PKH 签名输入 (per-input 信息)
+/// P2PKH signing input (per-input info)
 ///
-/// P1-03：私钥走 `SecretBytes<32>`——不 Clone 不 Debug、ZeroizeOnDrop、常时比较。
+/// P1-03: the private key uses `SecretBytes<32>` — no Clone or Debug, ZeroizeOnDrop, constant-time comparison.
 pub struct P2PKHSignInput<'k> {
-    /// 正在签名的 input index
+    /// The input index being signed
     pub input_index: usize,
-    /// 这个 input 的私钥 (32 bytes)——借用，零副本转发
+    /// The private key for this input (32 bytes) — borrowed, zero-copy forwarding
     pub private_key: &'k SecretBytes<32>,
     /// pubkey hash (20 bytes)
     pub pubkey_hash: [u8; 20],
 }
 
-/// P2PKH 签名输出
+/// P2PKH signing output
 #[derive(Clone, Debug)]
 pub struct P2PKHSignedTx {
-    /// 完整 legacy 序列化交易 (无 marker/flag/witness)
+    /// Full legacy serialized transaction (no marker/flag/witness)
     pub tx_bytes: Vec<u8>,
-    /// 这个 input 的 sighash (签名时用的 preimage hash)
+    /// The sighash of this input (the preimage hash used when signing)
     pub sighash: [u8; 32],
 }
 
-/// 签名 P2PKH input
+/// Sign a P2PKH input
 ///
-/// **副作用**: 修改 `tx.inputs[input_index].script_sig` (注入签名 + pubkey),
-/// 设置其他 inputs 的 script_sig 为空.
+/// **Side effects**: modifies `tx.inputs[input_index].script_sig` (injects signature + pubkey),
+/// sets the other inputs\' script_sig to empty.
 pub fn sign_p2pkh(tx: &mut Transaction, input: &P2PKHSignInput<'_>) -> Result<P2PKHSignedTx> {
     if input.input_index >= tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 1. 计算 sighash
+    // 1. Compute the sighash
     let script_code = p2pkh_script_code(&input.pubkey_hash);
     let sighash = segwit_sighash_p2wpkh(
         tx,
         input.input_index,
         &script_code,
-        0, // P2PKH 是 legacy, amount 不参与 sighash (旧式算法) → 但 BIP-143 用了 amount
+        0, // P2PKH is legacy, amount does not participate in the sighash (old-style algorithm) → but BIP-143 does use amount
         SIGHASH_ALL,
     )?;
 
-    // 2. ECDSA 签名 (DER + sighash byte)
+    // 2. ECDSA signature (DER + sighash byte)
     let sig_scalar = scalar_from_bytes(input.private_key.expose())?;
     let pk_point = base_mul(&sig_scalar);
     let pk_compressed = point_to_compressed(&pk_point);
@@ -104,17 +104,17 @@ pub fn sign_p2pkh(tx: &mut Transaction, input: &P2PKHSignInput<'_>) -> Result<P2
     sig_with_sighash.extend_from_slice(&der_sig);
     sig_with_sighash.push(SIGHASH_ALL as u8);
 
-    // 3. 构造 scriptSig: <sig-with-sighash-byte> <compressed-pubkey>
+    // 3. Build the scriptSig: <sig-with-sighash-byte> <compressed-pubkey>
     let mut script_sig = Vec::new();
     encode_varint(&mut script_sig, sig_with_sighash.len() as u64);
     script_sig.extend_from_slice(&sig_with_sighash);
     encode_varint(&mut script_sig, pk_compressed.len() as u64);
     script_sig.extend_from_slice(&pk_compressed);
 
-    // 4. 注入 scriptSig
+    // 4. Inject the scriptSig
     tx.inputs[input.input_index].script_sig = script_sig;
 
-    // 5. Legacy 序列化 (与 BIP-144 segwit 不同: 无 marker/flag/witness)
+    // 5. Legacy serialization (differs from BIP-144 segwit: no marker/flag/witness)
     let mut out = Vec::new();
     out.extend_from_slice(&tx.version.to_le_bytes());
 
@@ -142,7 +142,7 @@ pub fn sign_p2pkh(tx: &mut Transaction, input: &P2PKHSignInput<'_>) -> Result<P2
     })
 }
 
-/// 单元测试
+/// Unit tests
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -183,7 +183,7 @@ mod tests {
         s
     }
 
-    /// P2PKH script_code 构造正确
+    /// P2PKH script_code constructed correctly
     #[test]
     fn p2pkh_script_code_format() {
         let pk_hash = [0xab; 20];
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(code[24], 0xac); // OP_CHECKSIG
     }
 
-    /// scriptPubKey 应该是 script_code 的副本
+    /// scriptPubKey should be a copy of script_code
     #[test]
     fn p2pkh_script_pubkey_matches() {
         let pk_hash = [0x12; 20];
@@ -206,9 +206,9 @@ mod tests {
         assert_eq!(pk.as_slice(), &code[..]);
     }
 
-    /// 端到端: P2PKH 1-input 1-output 签名
-    /// 注: shlosilo 与 Bitcoin Core 的 RFC6979 deterministic k 实现可能不同,
-    /// 所以只验证 sighash 一致 + signature 以 sighash byte 0x01 结尾.
+    /// End-to-end: P2PKH 1-input 1-output signing
+    /// Note: shlosilo and Bitcoin Core may implement RFC6979 deterministic k differently,
+    /// so only sighash consistency is verified + the signature ends with sighash byte 0x01.
     #[test]
     fn p2pkh_end_to_end() {
         let mut txid = [0u8; 32];
@@ -250,25 +250,25 @@ mod tests {
 
         let signed = sign_p2pkh(&mut tx, &input).unwrap();
 
-        // 1. sighash 不为零
+        // 1. sighash is non-zero
         assert_ne!(signed.sighash, [0u8; 32]);
 
-        // 2. scriptSig 已注入 (signature + pubkey)
+        // 2. scriptSig injected (signature + pubkey)
         let script_sig = &tx.inputs[0].script_sig;
         assert!(!script_sig.is_empty(), "script_sig must be populated");
 
-        // 3. tx_bytes 不含 marker/flag (legacy)
+        // 3. tx_bytes has no marker/flag (legacy)
         assert_ne!(signed.tx_bytes[4], 0x00, "legacy tx has no marker 0x00");
         assert_ne!(signed.tx_bytes[5], 0x01, "legacy tx has no flag 0x01");
 
-        // 4. scriptSig 第二个 push 是 compressed pubkey (33 bytes)
-        // 前 ~71-73 bytes 是 DER sig (含 sighash byte), 后 33 bytes 是 pubkey
+        // 4. The scriptSig\'s second push is the compressed pubkey (33 bytes)
+        // the first ~71-73 bytes are the DER sig (including the sighash byte), then 33 bytes of pubkey
         let total = script_sig.len();
         assert!(total >= 33 + 9, "script_sig too short");
         let pubkey_len = script_sig[total - 33 - 1]; // varint 33 = 0x21
         assert_eq!(pubkey_len, 33, "compressed pubkey should be 33 bytes");
 
-        // 5. pubkey 必须是 33-byte compressed (0x02/0x03 前缀)
+        // 5. The pubkey must be a 33-byte compressed one (0x02/0x03 prefix)
         let pk_prefix = script_sig[total - 33];
         assert!(
             pk_prefix == 0x02 || pk_prefix == 0x03,
@@ -282,7 +282,7 @@ mod tests {
         );
     }
 
-    /// 不同 input → 不同 sighash
+    /// Different input → different sighash
     #[test]
     fn p2pkh_different_input_different_sighash() {
         let tx_a = Transaction {
@@ -329,7 +329,7 @@ mod tests {
         assert_ne!(h_a, h_b, "different inputs must produce different sighash");
     }
 
-    /// SIGHASH_ALL byte 在签名末尾
+    /// SIGHASH_ALL byte at the end of the signature
     #[test]
     fn p2pkh_sighash_byte_appended() {
         let mut txid = [0u8; 32];
@@ -357,10 +357,10 @@ mod tests {
 
         let _ = sign_p2pkh(&mut tx, &input).unwrap();
 
-        // script_sig 最后一个 byte 必须是 0x01 (SIGHASH_ALL)
+        // The script_sig\'s last byte must be 0x01 (SIGHASH_ALL)
         let script_sig = &tx.inputs[0].script_sig;
         let total = script_sig.len();
-        // compressed pubkey 是最后 33 bytes (varint 0x21 + 33 bytes)
+        // The compressed pubkey is the last 33 bytes (varint 0x21 + 33 bytes)
         let sighash_byte_pos = total - 33 - 1;
         assert_eq!(
             script_sig[sighash_byte_pos - 1],
@@ -369,7 +369,7 @@ mod tests {
         );
     }
 
-    /// Input index 越界
+    /// Input index out of bounds
     #[test]
     fn p2pkh_out_of_bounds_input() {
         let tx = Transaction {
@@ -387,7 +387,7 @@ mod tests {
         assert!(sign_p2pkh(&mut tx, &input).is_err());
     }
 
-    /// 重用已有 shlosilo k256 ECDSA API 测试 round-trip
+    /// Reuse the existing shlosilo k256 ECDSA API to test a round-trip
     #[test]
     fn p2pkh_signature_deterministic() {
         let mut txid = [0u8; 32];
@@ -413,7 +413,7 @@ mod tests {
             pubkey_hash: [0x42; 20],
         };
 
-        // 两次签名 → 同一 sighash (因 RFC6979 确定性)
+        // Two signatures → the same sighash (because of RFC6979 determinism)
         let sighash1 =
             segwit_sighash_p2wpkh(&tx, 0, &p2pkh_script_code(&[0x42; 20]), 0, SIGHASH_ALL).unwrap();
         let sighash2 =

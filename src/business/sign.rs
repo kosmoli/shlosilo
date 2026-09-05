@@ -1,10 +1,10 @@
-//! 业务 1：签名（v2 §1.1 + §4.3）
+//! Business 1: Signing (v2 §1.1 + §4.3)
 //!
-//! **P6.0d/e 真实化**：
-//! - Mnemonic 输入 → restore_seed（真实 BIP-39）
-//! - BTC（crypto-psbt）：CBOR 解出 PSBT bytes → parse_psbt → 逐 input 签名 → serialize
-//! - ETH（eth-sign-request）：payload = raw EIP-1559 tx → parse_eip1559_raw → sign_eip1559
-//! - XMR / 其他链：显式拒绝（XMR 等 Feather 真实 fixture，v2 定位不构造交易）
+//! **P6.0d/e realization**:
+//! - Mnemonic input → restore_seed (real BIP-39)
+//! - BTC (crypto-psbt): extract PSBT bytes from CBOR → parse_psbt → sign input by input → serialize
+//! - ETH(eth-sign-request): payload = raw EIP-1559 tx → parse_eip1559_raw → sign_eip1559
+//! - XMR / other chains: explicitly rejected (XMR awaits a real Feather fixture; v2 scope does not build transactions)
 
 use crate::derivation::path::DerivationPath;
 use crate::entropy::mnemonic::Mnemonic;
@@ -21,38 +21,38 @@ fn err(kind: ShlosiloErrorKind) -> ShlosiloError {
     ShlosiloError::new(kind)
 }
 
-/// 签名输入（v2 §1.1 双流程：默认 dice-roll 零存储 + 备选 TRNG/SE 持久化）
+/// Signing input (v2 §1.1 dual flows: default dice-roll zero-storage + alternative TRNG/SE persistence)
 ///
-/// **v2.4 安全**：`Mnemonic` 变体持有 owned `Mnemonic`——业务模块签名完即 drop 出 scope。
-/// `passphrase` 是 `&[u8]` borrow。`Seed` 变体是 `&[u8; 64]` borrow。
+/// **v2.4 security**: the `Mnemonic` variant holds an owned `Mnemonic` — dropped out of scope right after the business module signs.
+/// `passphrase` is a `&[u8]` borrow. The `Seed` variant is a `&[u8; 64]` borrow.
 pub enum SignInput<'a> {
-    /// 默认：零存储流程（mnemonic QR + passphrase 现场恢复 seed）
+    /// Default: zero-storage flow (mnemonic QR + passphrase restores the seed on the spot)
     Mnemonic {
         mnemonic: Mnemonic,
         passphrase: &'a [u8],
     },
-    /// 备选：从 SE 芯片 / HSM 读取的 seed
+    /// Alternative: a seed read from an SE chip / HSM
     Seed { seed: &'a [u8; 64] },
 }
 
-/// 签名结果长度上界（按 ChainKind 不同，buffer 预检用）
+/// Upper bound on signature length (varies by ChainKind; used for buffer pre-checks)
 pub fn stub_signature_len(chain_kind: crate::types::chain_kind::ChainKind) -> usize {
     use crate::types::chain_kind::ChainKind;
     match chain_kind {
         ChainKind::Btc => 64,  // ECDSA P2WPKH 64 bytes
         ChainKind::Eth => 65,  // ECDSA r/s/v 65 bytes
         ChainKind::Xmr => 96,  // CLSAG proof ≈ 96 bytes
-        ChainKind::Tron => 65, // ECDSA（同 ETH）
+        ChainKind::Tron => 65, // ECDSA (same as ETH)
         ChainKind::Sol => 64,  // EdDSA 64 bytes
         ChainKind::Apt | ChainKind::Sui | ChainKind::Near => 64,
         ChainKind::Ada => 64, // EdDSA 64 bytes
         ChainKind::Ar => 512, // RSA-PSS 512 bytes
-        _ => 96,              // 其他链用最大估计
+        _ => 96,              // other chains use the maximum estimate
     }
 }
 
-/// 从 SignInput 拿 BIP-39 seed（P1-03：SecretBytes 承载——Mnemonic 路径现场恢复，
-/// restore 写入的栈 buffer 被 take 接管并清零原副本）
+/// Get the BIP-39 seed from a SignInput (P1-03: carried in SecretBytes — the Mnemonic path restores on the spot,
+/// the stack buffer written by restore is taken over via take and the original copy zeroed)
 fn resolve_seed(sign_input: &SignInput<'_>) -> Result<SecretBytes<64>> {
     let mut restored = [0u8; 64];
     match sign_input {
@@ -67,11 +67,11 @@ fn resolve_seed(sign_input: &SignInput<'_>) -> Result<SecretBytes<64>> {
     }
 }
 
-/// 签名业务入口：typed UR payload → 按链 dispatch → 签名 bytes 写 output_buf
+/// Signing business entry: typed UR payload → dispatch by chain → signed bytes written to output_buf
 ///
-/// **P1-01（2026-08-26）**：`type_tag` 由 UR decode 层携带，不靠 payload 首字节
-/// 推断；payload 是 codec 原样的 CBOR（crypto-psbt=bytes item，
-/// eth-sign-request=map）。链处理函数按各自 codec 解析。
+/// **P1-01 (2026-08-26)**: `type_tag` is carried by the UR decode layer, not inferred from the payload's first byte
+/// inference; the payload is the CBOR as handed over by the codec (crypto-psbt=bytes item,
+/// eth-sign-request=map). Each chain handler parses with its own codec.
 pub fn sign(
     sign_input: SignInput<'_>,
     type_tag: crate::ur::ur_encode::UrTypeTag,
@@ -81,12 +81,12 @@ pub fn sign(
     sign_with_entropy(sign_input, type_tag, ur_payload, &[], output_buf)
 }
 
-/// 签名业务入口（§B.5 RNG 注入扩展）：entropy 参数供 XMR 路径派生签名随机流。
+/// Signing business entry (§B.5 RNG injection extension): the entropy parameter feeds the XMR path's signing randomness stream.
 ///
-/// - XMR（xmr-txunsigned / xmr-txsigned / crypto-monero-tx）：entropy **REQUIRED**，
-///   < 16B 报 `EntropyInjectionInvalid`（misuse guard，非熵质量验证）
-/// - BTC / ETH：deterministic backend **entropy NOT REQUIRED by current backend**
-///   （RFC-6979 路径），传空切片即可
+/// - XMR(xmr-txunsigned / xmr-txsigned / crypto-monero-tx): entropy **REQUIRED**,
+///   < 16B raises `EntropyInjectionInvalid` (misuse guard, not an entropy-quality check)
+/// - BTC / ETH: deterministic backend **entropy NOT REQUIRED by current backend**
+///   (the RFC-6979 path) — just pass an empty slice
 pub fn sign_with_entropy(
     sign_input: SignInput<'_>,
     type_tag: crate::ur::ur_encode::UrTypeTag,
@@ -98,7 +98,7 @@ pub fn sign_with_entropy(
 
     let template = tx_normalize::to_template(type_tag, ur_payload)?;
     let chain_kind = template.chain_kind;
-    // payload 是完整 CBOR（不剥首字节——P1-01）
+    // payload is the complete CBOR (no leading-byte stripping — P1-01)
     if template.payload.is_empty() {
         return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor));
     }
@@ -121,15 +121,15 @@ pub fn sign_with_entropy(
     }
 }
 
-/// XMR：xmr-txunsigned 加密 blob → 解密 → 逐 tx 签名 → SignedTxSet → 加密输出
+/// XMR: xmr-txunsigned encrypted blob → decrypt → sign tx by tx → SignedTxSet → encrypted output
 ///
-/// §B.5 定案实施（P1-06 收尾）。对齐 keystone `sign_tx`：
-/// 1. seed → Monero keypair（`monero_reduce_scalar::derive`，无 clamp Icarus 路径）
-/// 2. 解密 unsigned_txset（view key；magic + Schnorr 验签 + ChaCha20-Legacy）
-/// 3. 逐 tx `sign_tx_from_construction`（tx-key / BP+ / CLSAG(i) 三 purpose 子域 RNG）
-/// 4. SignedTxSet 序列化（tx_key=ONE 占位）→ encrypt_signed_txset（SIGNED_TX_PREFIX）
+/// §B.5 finalized implementation (P1-06 wrap-up). Aligned with keystone `sign_tx`:
+/// 1. seed → Monero keypair (`monero_reduce_scalar::derive`, unclamped Icarus path)
+/// 2. Decrypt the unsigned_txset (view key; magic + Schnorr verification + ChaCha20-Legacy)
+/// 3. `sign_tx_from_construction` per tx (tx-key / BP+ / CLSAG(i) — three purpose-subdomain RNGs)
+/// 4. Serialize the SignedTxSet (tx_key=ONE placeholder) → encrypt_signed_txset (SIGNED_TX_PREFIX)
 ///
-/// rng 用途：BP+/CLSAG/加密 nonce+签名 k；tx_key r 的熵来自 entropy 派生。
+/// rng usage: BP+/CLSAG/encryption nonce + signing k; the tx_key r entropy comes from the entropy derivation.
 fn sign_xmr(
     seed: &[u8],
     encrypted_unsigned: &[u8],
@@ -142,22 +142,22 @@ fn sign_xmr(
     use crate::chain::xmr::signing_rng::{purpose_rng, RngPurpose};
     use crate::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
 
-    // 1. seed → Monero 密钥对（v2 §2.7：MoneroPath 非 BIP-32；account 0 = 主钱包）
+    // 1. seed → Monero keypair (v2 §2.7: MoneroPath is not BIP-32; account 0 = main wallet)
     let path = crate::derivation::monero_reduce_scalar::MoneroPath::mainnet(0);
     let kp = crate::derivation::monero_reduce_scalar::derive(seed, &path)?;
-    // 审计 #6 P1-01:主密钥字节走 Zeroizing(所有返回路径 drop 时清零)
+    // Audit #6 P1-01: master key bytes go through Zeroizing (zeroed on drop on all return paths)
     let spend_sec = zeroize::Zeroizing::new(crate::curve_primitive::ed25519::scalar_to_bytes(
         kp.spend_priv(),
     ));
     let view_sec = zeroize::Zeroizing::new(crate::curve_primitive::ed25519::scalar_to_bytes(
         kp.view_priv(),
     ));
-    // 同一 view_sk 的 CN 只算一次（decrypt + encrypt 共用；真机 2MB scratchpad 是大头）
-    // 审计 #12 P1-02:CN key 从产生即 owner(Zeroizing),helper 返回 owner。
+    // CN computed only once for the same view_sk (shared by decrypt + encrypt; the 2MB scratchpad dominates on device)
+    // Audit #12 P1-02: the CN key is an owner from creation (Zeroizing); the helper returns the owner.
     let cn_key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&view_sec);
 
-    // 2. 解密（内部验签，view key 不匹配 → Err）
-    // 审计 #6 P1-01:解密明文 txset 走 Zeroizing(解析后不再需要明文残留)
+    // 2. Decrypt (signature verified internally; view key mismatch → Err)
+    // Audit #6 P1-01: decrypted plaintext txset goes through Zeroizing (no plaintext residue needed after parsing)
     let plain = crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset_with_chacha_key(
         encrypted_unsigned,
         &view_sec,
@@ -165,13 +165,13 @@ fn sign_xmr(
     )?;
     let unsigned_tx = deserialize_unsigned_tx(&plain)?;
 
-    // 3. 逐 tx 签名（§B.5 purpose 子域：tx-key r / BP+ / CLSAG(i) 独立派生）
-    //    context = tx construction data 的 keccak 摘要（domain separation，不计熵）
+    // 3. Sign tx by tx (§B.5 purpose subdomains: tx-key r / BP+ / CLSAG(i) derived independently)
+    //    context = keccak digest of the tx construction data (domain separation, not counted as entropy)
     let mut rng = {
         use rand_chacha::rand_core::SeedableRng;
         let mut merged = alloc::vec::Vec::with_capacity(entropy.len() + 32);
         merged.extend_from_slice(entropy);
-        // BP+/CLSAG 的临时随机性与 tx 无关（不复用 r 的流），统一流：TxKey 子域
+        // BP+/CLSAG ephemeral randomness is tx-independent (does not reuse the r stream); unified stream: TxKey subdomain
         let mut seed_rng = purpose_rng(&merged, RngPurpose::TxKey, &[0u8; 32])?;
         let mut seed_bytes = [0u8; 32];
         use rand_chacha::rand_core::RngCore as _;
@@ -183,19 +183,19 @@ fn sign_xmr(
     let mut key_images_outer: alloc::vec::Vec<[u8; 32]> = alloc::vec::Vec::new();
     let mut tx_key_images: alloc::vec::Vec<TxKeyImageEntry> = alloc::vec::Vec::new();
 
-    // P1-03: into_iter 拿所有权——construction_data move 进 PendingTx（原本是
-    // 深拷贝秘密的 tx_data.clone()，TxSourceEntry 不可 Clone 后 move 是唯一路径，
-    // 也是审计要求的"秘密副本不扩散"）
+    // P1-03: into_iter takes ownership — construction_data is moved into PendingTx (previously
+    // the deep-copying tx_data.clone(); once TxSourceEntry is not Clone, move is the only path,
+    // also the audit-required "secret copies must not proliferate")
     for tx_data in unsigned_tx.txes {
         // per-tx context digest
-        // 审计 #9 P1-04:ctx_src 拼入 source mask 明文——Zeroizing owner
-        // (hash 完成或中途 ? 均在 Drop 时擦除)
+        // Audit #9 P1-04: ctx_src is folded into the source mask plaintext — Zeroizing owner
+        // (erased on Drop whether the hash completes or an early ? returns)
         let mut ctx_src = zeroize::Zeroizing::new(alloc::vec::Vec::new());
         ctx_src.extend_from_slice(&tx_data.unlock_time.to_le_bytes());
         ctx_src.extend_from_slice(&tx_data.extra);
         for s in &tx_data.sources {
             ctx_src.extend_from_slice(&s.real_out_tx_key);
-            // P1-03: mask 明文访问收敛到 expose()（context digest 只读哈希）
+            // P1-03: mask plaintext access funneled through expose() (context digest is a read-only hash)
             ctx_src.extend_from_slice(s.mask.expose());
         }
         for d in &tx_data.splitted_dsts {
@@ -204,19 +204,19 @@ fn sign_xmr(
         }
         let context = crate::encoding::keccak256::hash(&ctx_src)?;
 
-        // tx_key r：独立 TxKey 子域流（§B.5）
+        // tx_key r: independent TxKey subdomain stream (§B.5)
         let mut tx_key_rng = purpose_rng(entropy, RngPurpose::TxKey, &context)
             .map_err(crate::error::ShlosiloError::from)?;
-        // 审计 #8 P1-02:生产入口的 tx secret key 从产生即入 Zeroizing owner,
-        // 以字节形态传给 signer(signer 内部按需转 Scalar,不落地 Copy 绑定)
+        // Audit #8 P1-02: the tx secret key at the production entry is placed in a Zeroizing owner from creation,
+        // passed to the signer as bytes (the signer converts to Scalar on demand internally; no Copy binding is created)
         let mut r_bytes = zeroize::Zeroizing::new([0u8; 32]);
         use rand_chacha::rand_core::RngCore as _;
         tx_key_rng.fill_bytes(r_bytes.as_mut());
 
-        // BP+ 随机性：独立子域
+        // BP+ randomness: independent subdomain
         let mut bp_rng = purpose_rng(entropy, RngPurpose::BulletproofPlus, &context)
             .map_err(crate::error::ShlosiloError::from)?;
-        // CLSAG：per-input 子域（sign_tx_from_construction 内部按 source 顺序消费）
+        // CLSAG: per-input subdomain (consumed in source order inside sign_tx_from_construction)
 
         let tx_bytes = crate::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs(
             &tx_data,
@@ -227,12 +227,12 @@ fn sign_xmr(
             &mut rng,
         )?;
 
-        // fee（= inputs − splitted outputs）
+        // fee(= inputs − splitted outputs)
         let input_sum: u64 = tx_data.sources.iter().map(|s| s.amount).sum();
         let out_sum: u64 = tx_data.splitted_dsts.iter().map(|d| d.amount).sum();
         let fee = input_sum.saturating_sub(out_sum);
 
-        // key images：签名 wire 内已有；此处重建字符串 + 外层列表
+        // key images: already present in the signed wire; rebuild the string + outer list here
         let mut ki_str = String::new();
         for src in &tx_data.sources {
             let (ki, _off) = crate::chain::xmr::subaddress::derive_input_from_source(
@@ -251,20 +251,20 @@ fn sign_xmr(
             key_images_outer.push(ki);
         }
 
-        // tx_key_images：输出一次性地址 + Hs(shared_key)·Hp(stealth)
+        // tx_key_images: output one-time address + Hs(shared_key)·Hp(stealth)
         for (i, dest) in tx_data.splitted_dsts.iter().enumerate() {
-            // change 输出跳过（接收方是自己的 change 地址，keystone outputs() 也算，
-            // 但 shlosilo v1 范围只登记外部收款输出）
+            // change outputs skipped (the recipient is our own change address; keystone outputs() counts it too,
+            // but shlosilo v1 only records external receiving outputs)
             if dest.amount == tx_data.change_dts.amount
                 && dest.spend_public_key == tx_data.change_dts.spend_public_key
             {
                 continue;
             }
-            // 审计 #9 P1-04:key-image 重算段秘密全部 owner 化:
-            // r → SecretScalar(错误路径 Drop 清零;dalek Scalar 本体 Copy 无 Drop)
+            // Audit #9 P1-04: all secrets in the key-image recomputation section are owner-wrapped:
+            // r → SecretScalar (zeroed on Drop on error paths; dalek Scalar itself is Copy with no Drop)
             let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*r_bytes);
-            // shared(8Ra 点压缩字节)= ECDH 中间值(可重算 shared_key)→ Zeroizing
-            // 解构在闭包外做(闭包返回 Result 无法用 ?)
+            // shared (compressed 8Ra point bytes) = ECDH intermediate (shared_key is recomputable) → Zeroizing
+            // destructuring done outside the closure (a closure returning Result cannot use ?)
             let a = monero_ed25519::CompressedPoint::from(dest.view_public_key)
                 .decompress()
                 .ok_or_else(|| {
@@ -284,11 +284,11 @@ fn sign_xmr(
             crate::chain::xmr::transaction::monero_encode_varint(&mut od, i as u64);
             let shared_key =
                 zeroize::Zeroizing::new(crate::chain::xmr::subaddress::hash_to_scalar(&od)?);
-            // hs(SecretScalar):key-image = Hp(stealth) · hs——owner 持有,
-            // 作用域结束 Drop 清零
+            // hs(SecretScalar): key-image = Hp(stealth) · hs — held by an owner,
+            // zeroed on Drop at end of scope
             let hs = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*shared_key);
-            // key image = Hs(shared_key) · Hp(stealth)——stealth 即该 output 的
-            // 一次性地址 = B_dest + hs·G
+            // key image = Hs(shared_key) · Hp(stealth) — stealth is the output's
+            // one-time address = B_dest + hs·G
             let b_dest: curve25519_dalek::EdwardsPoint =
                 monero_ed25519::CompressedPoint::from(dest.spend_public_key)
                     .decompress()
@@ -298,7 +298,7 @@ fn sign_xmr(
                         )
                     })?
                     .into();
-            // stealth 与 image 都消费 hs——within_scalar 闭包内完成全部点乘
+            // both stealth and image consume hs — all scalar multiplications complete inside the within_scalar closure
             let stealth = hs.mul_basepoint_add_point(&b_dest);
             let hp: curve25519_dalek::EdwardsPoint =
                 monero_ed25519::Point::biased_hash(stealth).into();
@@ -328,7 +328,7 @@ fn sign_xmr(
             key_images_str: ki_str,
             additional_tx_keys: alloc::vec::Vec::new(),
             dests: tx_data.dests.clone(),
-            // P1-03: move 而非 clone——秘密（mask/kLRki）不再产生新副本
+            // P1-03: move instead of clone — secrets (mask/kLRki) no longer produce new copies
             construction_data: tx_data,
         });
     }
@@ -340,7 +340,7 @@ fn sign_xmr(
     };
     let plain_signed = set.serialize();
 
-    // 4. 加密输出（nonce + Schnorr k 也在 entropy 派生流上）
+    // 4. Encrypted output (nonce + Schnorr k also on the entropy-derived stream)
     let mut enc_rng = purpose_rng(entropy, RngPurpose::BulletproofPlus, &[1u8; 32])
         .map_err(crate::error::ShlosiloError::from)?;
     let encrypted =
@@ -356,9 +356,9 @@ fn sign_xmr(
     Ok(encrypted.len())
 }
 
-/// 从 BIP32_DERIVATION value 解析 master fingerprint + 派生路径
-/// value 格式（BIP-174）：master_key_fingerprint(4B) || derivation_index(u32LE) × depth
-/// P1-02：fingerprint 与路径一起返回（调用方比对本机 master fingerprint，防错链签名）
+/// Parse the master fingerprint + derivation path from a BIP32_DERIVATION value
+/// value format (BIP-174): master_key_fingerprint(4B) || derivation_index(u32LE) × depth
+/// P1-02: fingerprint returned together with the path (the caller compares against our master fingerprint to prevent signing for the wrong chain)
 /// BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth)
 fn parse_derivation_value(value: &[u8]) -> Option<([u8; 4], DerivationPath)> {
     if value.len() < 8 || !(value.len() - 4).is_multiple_of(4) {
@@ -386,11 +386,11 @@ fn read_bip32_derivation(
     parse_derivation_value(&kv.value)
 }
 
-/// BTC：crypto-psbt CBOR（裸 bytes item）→ PSBT 签名
+/// BTC: crypto-psbt CBOR (bare bytes item) → PSBT signing
 ///
-/// 派生路径 = m/84'/0'/0'/0/0（native segwit 标准路径）。
-/// 每个 input 用 BIP32_DERIVATION 提示的路径派生私钥；
-/// 无提示时统一走默认路径。
+/// Derivation path = m/84'/0'/0'/0/0 (standard native segwit path).
+/// Each input derives its private key from the path hinted by BIP32_DERIVATION;
+/// Without a hint, always take the default path.
 fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<usize> {
     use crate::chain::btc::psbt as psbt_mod;
     use crate::encoding::cbor;
@@ -402,17 +402,17 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
 
     let mut psbt = psbt_mod::parse_psbt(psbt_bytes)?;
 
-    // P1-02：本机 master fingerprint（BIP-32 序列化字段 5..9），PSBT 提示的
-    // fingerprint 不一致 = 该 PSBT 不是本机钱包的（错 seed/错钱包），拒绝签名
+    // P1-02: our master fingerprint (BIP-32 serialization field 5..9); the fingerprint
+    // fingerprint mismatch = this PSBT is not from our wallet (wrong seed/wrong wallet); refuse to sign
     use alloc::vec::Vec;
     let local_fp = crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(seed)?;
 
     for idx in 0..psbt.unsigned_tx.inputs.len() {
-        // P1-02：BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth)，
-        // 路径从 PSBT 读出而非硬编码；fingerprint 与本机不一致 → 拒绝；
-        // 无该字段时才 fallback 默认路径（过渡行为，P6.4 收紧）。
-        // P1-B：无 BIP32_DERIVATION 的输入不再 fallback 默认路径（收紧），
-        // 所有输入必须显式携带 ownership records（P6.4 过渡行为提前落地）。
+        // P1-02: BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth),
+        // paths are read from the PSBT rather than hardcoded; fingerprint mismatch with ours → reject;
+        // fall back to the default path only when the field is absent (transitional; tightened at P6.4).
+        // P1-B: inputs without BIP32_DERIVATION no longer fall back to the default path (tightened),
+        // all inputs must carry ownership records explicitly (the P6.4 transitional behavior landed early).
         let (_fp0, path_used) = read_bip32_derivation(
             psbt.inputs
                 .get(idx)
@@ -425,17 +425,17 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path_used)?;
         let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
 
-        // R4 所有权绑定：派生公钥必须与 PSBT BIP32_DERIVATION 携带的 pubkey 一致。
-        // 没有这条等值断言,恶意/构造 PSBT 可让设备对「成功但不可用」的输入签名
-        // (HASH160 匹配 ≠ 该哈希确实来自我们即将使用的私钥——碰撞或账本不一致均绕过)。
+        // R4 ownership binding: the derived public key must match the pubkey carried by the PSBT BIP32_DERIVATION.
+        // without this equality assertion, a malicious/crafted PSBT could get the device to sign inputs that "succeed but are unusable"
+        // (HASH160 match ≠ the hash actually came from the private key we are about to use — a collision or ledger inconsistency can bypass this).
         let derived_pub = crate::curve_primitive::secp256k1::point_to_compressed(
             &crate::curve_primitive::secp256k1::base_mul(&sk),
         );
 
-        // P1-B（2026-09-01 再复审）：全部 BIP32_DERIVATION records 严格核验。
-        // 每条 record 的 (fingerprint, path, pubkey) 都要过三关：
-        //   fingerprint == 本机；path 派生公钥 == record 携带 pubkey；
-        //   且所有 record 核验结果一致（不同 pubkey = 多签/异源混合，单签设备拒绝）。
+        // P1-B (2026-09-01 re-review): all BIP32_DERIVATION records strictly verified.
+        // every record's (fingerprint, path, pubkey) must pass three checks:
+        //   fingerprint == ours; path-derived public key == the pubkey carried by the record;
+        //   and all record verifications must agree (different pubkeys = multisig/mixed-source; single-sig device rejects).
         let input_map = psbt
             .inputs
             .get(idx)
@@ -455,7 +455,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         if records.is_empty() {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        // R4 语义保留：签名 key 派生公钥与第一条 record pubkey 等值断言
+        // R4 semantics preserved: assert the signing key's derived pubkey equals the first record's pubkey
         if derived_pub != records[0].2.as_slice() {
             return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
         }
@@ -471,18 +471,18 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             if rec_pub != pk.as_slice() {
                 return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
             }
-            // 与本输入实际签名用的 (path, sk) 一致性：record path 必须等于签名 path
+            // consistency with the (path, sk) actually used to sign this input: the record path must equal the signing path
             let h = crate::encoding::sha256::hash(pk)?;
             let h20 = crate::encoding::ripemd160::hash(&h)?;
             match &pubkey_hash {
                 Some(prev) if *prev != h20 => {
-                    // 多条 record 指向不同公钥 = 非 P2WPKH 单签语义
+                    // multiple records pointing to different pubkeys = not P2WPKH single-sig semantics
                     return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
                 }
                 Some(_) => {}
                 None => {
                     pubkey_hash = Some(h20);
-                    // 签名 key 用第一条核验通过的 record path（与 derived_pub 对齐）
+                    // the signing key uses the first record path that passes verification (aligned with derived_pub)
                     if *path != path_used {
                         return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
                     }
@@ -492,9 +492,9 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         let pubkey_hash =
             pubkey_hash.ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-        // P1-B：witness utxo 绑定——金额与 scriptPubKey 必须是本输入自己的，
-        // 且 scriptPubKey 必须是 P2WPKH(OP_0 PUSH20) 且 HASH160 == 我们的 pubkey_hash
-        // （prevout txid 链上即指向该 script，从而把签名输入间接锚定到本 key）。
+        // P1-B: witness utxo binding — the amount and scriptPubKey must belong to this very input,
+        // and the scriptPubKey must be P2WPKH (OP_0 PUSH20) with HASH160 == our pubkey_hash
+        // (the prevout txid points to that script on-chain, indirectly anchoring the signed input to this key).
         let (amount, spk) = psbt
             .inputs
             .get(idx)
@@ -526,13 +526,13 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     Ok(signed.len())
 }
 
-/// ETH：eth-sign-request CBOR map → 签名 tx bytes
+/// ETH: eth-sign-request CBOR map → signed tx bytes
 ///
-/// P1-01（2026-08-26）：真实 UR 的 payload 是 CBOR map，含 sign_data / data_type /
-/// chain_id / derivation_path。只支持 Transaction(1) / TypedTransaction(4) 的
-/// raw tx 签名（= EIP-1559/legacy）；PersonalMessage / TypedData 显式拒绝。
+/// P1-01 (2026-08-26): a real UR's payload is a CBOR map with sign_data / data_type /
+/// chain_id / derivation_path. Only raw tx signing of Transaction(1) / TypedTransaction(4)
+/// raw tx signing (= EIP-1559/legacy); PersonalMessage / TypedData explicitly rejected.
 ///
-/// 派生路径 = m/44'/60'/0'/0/0。
+/// Derivation path = m/44'/60'/0'/0/0.
 fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<usize> {
     use crate::chain::eth::{eip1559, from_rlp};
     use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
@@ -541,19 +541,19 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     match req.data_type {
         EthSignDataType::Transaction | EthSignDataType::TypedTransaction => {}
         EthSignDataType::TypedData | EthSignDataType::PersonalMessage => {
-            // P6.4 才开放 typed-data / personal-message；现在显式拒绝
+            // typed-data / personal-message only open up at P6.4; explicitly rejected for now
             return Err(err(ShlosiloErrorKind::ChainKindUnsupported));
         }
     }
 
     let tx = from_rlp::parse_eip1559_raw(&req.sign_data)?;
-    // P1-02（ETH 部分）：eth-sign-request 自带 chain_id 时校验与 tx 一致
+    // P1-02 (ETH part): when eth-sign-request carries its own chain_id, verify it matches the tx
     if let Some(req_chain) = req.chain_id {
         if req_chain != tx.chain_id as i128 {
             return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
         }
     }
-    // P1-02：请求带 derivation_path 时用它派生；缺省 fallback 标准 path
+    // P1-02: when the request carries a derivation_path, derive with it; otherwise fall back to the standard path
     let path = match req.derivation_path {
         Some(p) => p,
         None => DerivationPath::parse("m/44'/60'/0'/0/0")?,
@@ -575,12 +575,12 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     Ok(signed.tx_bytes.len())
 }
 
-/// 签名（network 进决策，P1-02 收口）
+/// Signing (network enters the decision; closed out at P1-02)
 ///
-/// 校验规则：
-/// - BTC：只支持 BitcoinMainnet（v1 范围；非 mainnet 显式拒绝，与 P2-05 xpub 策略一致）
-/// - ETH：tx.chain_id 必须 = network 映射的 EIP-155 chain id
-/// - 其他链：network 仅校验合法性（FFI 层 from_u8 已做），业务层不再拦截
+/// Validation rules:
+/// - BTC: only BitcoinMainnet is supported (v1 scope; non-mainnet explicitly rejected, consistent with the P2-05 xpub policy)
+/// - ETH: tx.chain_id must equal the EIP-155 chain id mapped from the network
+/// - other chains: the network is only validated for legality (done by the FFI layer's from_u8); the business layer no longer gates it
 pub fn sign_with_network(
     sign_input: SignInput<'_>,
     type_tag: crate::ur::ur_encode::UrTypeTag,
@@ -592,12 +592,12 @@ pub fn sign_with_network(
     sign(sign_input, type_tag, ur_payload, output_buf)
 }
 
-/// P1-02：network 参数进决策
+/// P1-02: the network parameter enters the decision
 ///
-/// - BTC（crypto-psbt）：v1 只支持 BitcoinMainnet（与 P2-05 xpub mainnet-only 策略一致）
-/// - ETH（eth-sign-request）：network 映射 EIP-155 chain id，必须与 tx 实际 chain_id
-///   （及请求自带 chain_id 字段，若给）一致
-/// - 其他链：FFI 层已校验 u8 合法性，业务层不拦
+/// - BTC (crypto-psbt): v1 only supports BitcoinMainnet (consistent with the P2-05 xpub mainnet-only policy)
+/// - ETH (eth-sign-request): the network maps to an EIP-155 chain id, which must match the tx's actual chain_id
+///   (and the request's own chain_id field, if given) must match
+/// - other chains: the FFI layer already validates the u8; the business layer does not gate it
 pub(crate) fn check_network(
     type_tag: crate::ur::ur_encode::UrTypeTag,
     ur_payload: &[u8],
@@ -654,7 +654,7 @@ mod tests {
     fn sign_unknown_chain_kind_rejected() {
         let seed = [0u8; 64];
         let input = SignInput::Seed { seed: &seed };
-        let ur_payload = [99u8, 1, 2, 3]; // payload 任意
+        let ur_payload = [99u8, 1, 2, 3]; // arbitrary payload
         let mut output_buf = [0u8; 4096];
         let result = sign(
             input,
@@ -668,15 +668,15 @@ mod tests {
         );
     }
 
-    /// XMR 现已接入（P1-06 收尾）：无 entropy 时报 EntropyInjectionInvalid
-    /// （§B.5 misuse guard，原 ChainKindUnsupported 行为已移除）
+    /// XMR is now wired in (P1-06 wrap-up): missing entropy raises EntropyInjectionInvalid
+    /// (§B.5 misuse guard; the old ChainKindUnsupported behavior has been removed)
     #[test]
     fn sign_xmr_requires_entropy() {
         let seed = [0u8; 64];
         let input = SignInput::Seed { seed: &seed };
-        // crypto-monero-tx 兼容别名 + payload 任意（XMR 分支先做 entropy guard？——
-        // 实际先解密，fake payload 在解密处失败；用官方 tag + 短 entropy 验证 guard 顺序：
-        // sign_xmr 先派生 keypair 再解密，entropy guard 在 purpose_rng 首次调用时触发）
+        // crypto-monero-tx compatibility alias + arbitrary payload (does the XMR branch do the entropy guard first? —
+        // in practice it decrypts first and the fake payload fails at decryption; use the official tag + short entropy to verify the guard ordering:
+        // sign_xmr derives the keypair before decrypting; the entropy guard triggers on the first purpose_rng call)
         let ur_payload = [1u8, 2, 3];
         let mut output_buf = [0u8; 4096];
         let result = sign(
@@ -685,8 +685,8 @@ mod tests {
             &ur_payload,
             &mut output_buf,
         );
-        // 短 payload 在 decrypt 阶段即失败（magic 校验）——两种错误都可接受，
-        // 关键是不再是 ChainKindUnsupported
+        // short payloads fail at the decrypt stage (magic check) — either error is acceptable,
+        // the key point is it is no longer ChainKindUnsupported
         let kind = result.unwrap_err().kind;
         assert!(
             kind == ShlosiloErrorKind::EncodingInvalidFormat
@@ -696,7 +696,7 @@ mod tests {
         );
     }
 
-    /// ETH 端到端：构造 raw EIP-1559 tx → 真实 eth-sign-request CBOR map → sign → 输出合法 0x02 签名 tx
+    /// ETH end-to-end: build a raw EIP-1559 tx → real eth-sign-request CBOR map → sign → output a valid 0x02 signed tx
     #[test]
     fn sign_eth_end_to_end() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
@@ -712,8 +712,8 @@ mod tests {
             data: Vec::new(),
             access_list: Vec::new(),
         };
-        // 构造 unsigned preimage 再剥掉签名部分——直接用 signing_preimage + 手动 RLP
-        // 简单方式：from_rlp round-trip——先签一次拿 raw，再当输入
+        // build the unsigned preimage then strip the signature part — use signing_preimage + manual RLP directly
+        // simple approach: from_rlp round-trip — sign once to get the raw, then use it as input
         let sk = crate::curve_primitive::secp256k1::scalar_from_bytes(&[42u8; 32]).unwrap();
         let direct = crate::chain::eth::eip1559::sign_eip1559(
             &crate::chain::eth::eip1559::Eip1559SignInput {
@@ -726,8 +726,8 @@ mod tests {
         .unwrap();
 
         let mut output_buf = [0u8; 512];
-        // seed 派生 m/44'/60'/0'/0/0 与上面直接签的 key 不同——这里验证流程而非字节一致：
-        // 用同一 seed 先推出 child key，再用该 key 直签做对照
+        // seed derives m/44'/60'/0'/0/0, a different key than the one signed with directly above — this verifies the flow, not byte equality:
+        // first derive the child key from the same seed, then sign directly with that key as a cross-check
         let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
         let test_seed = [7u8; 64];
         let derived =
@@ -742,7 +742,7 @@ mod tests {
         .unwrap();
         let _ = direct;
 
-        // P1-01：构造真实 eth-sign-request CBOR map（ur-registry 形状）
+        // P1-01: build a real eth-sign-request CBOR map (ur-registry shape)
         // {2: sign_data(bytes), 3: data_type(1), 4: chain_id(1)}
         let raw = encode_unsigned_tx_for_test(&tx);
         let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(output_buf[0], 0x02);
     }
 
-    /// P1-01：ETH 端到端拒绝 chain_id 不匹配的请求
+    /// P1-01: ETH end-to-end rejects requests with a mismatched chain_id
     #[test]
     fn sign_eth_rejects_chain_id_mismatch() {
         let tx = crate::chain::eth::eip1559::Eip1559Transaction {
@@ -775,7 +775,7 @@ mod tests {
             access_list: Vec::new(),
         };
         let raw = encode_unsigned_tx_for_test(&tx);
-        // 请求 chain_id=5（≠ tx 的 1）
+        // request chain_id=5 (≠ the tx's 1)
         let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 5);
         let test_seed = [7u8; 64];
         let input = SignInput::Seed { seed: &test_seed };
@@ -792,7 +792,7 @@ mod tests {
         );
     }
 
-    /// P1-01：ETH 端到端拒绝 personal-message（当前不支持）
+    /// P1-01: ETH end-to-end rejects personal-message (not currently supported)
     #[test]
     fn sign_eth_rejects_personal_message() {
         let raw = encode_unsigned_tx_for_test(&crate::chain::eth::eip1559::Eip1559Transaction {
@@ -823,7 +823,7 @@ mod tests {
         );
     }
 
-    /// 测试辅助：把未签名 EIP-1559 tx 编成 raw bytes（供 from_rlp 解析）
+    /// Test helper: encode an unsigned EIP-1559 tx into raw bytes (for from_rlp parsing)
     fn encode_unsigned_tx_for_test(
         tx: &crate::chain::eth::eip1559::Eip1559Transaction,
     ) -> alloc::vec::Vec<u8> {
@@ -838,7 +838,7 @@ mod tests {
             rlp::encode_uint(tx.amount),
             rlp::encode_bytes(&tx.data),
             rlp::encode_list(&[]),
-            rlp::encode_bytes(b""), // y_parity placeholder（unsigned 形状）
+            rlp::encode_bytes(b""), // y_parity placeholder (unsigned shape)
             rlp::encode_bytes(b""),
             rlp::encode_bytes(b""),
         ]);
@@ -847,7 +847,7 @@ mod tests {
         out
     }
 
-    /// 测试辅助：构造 eth-sign-request CBOR map（ur-registry 形状，最小集）
+    /// Test helper: build an eth-sign-request CBOR map (ur-registry shape, minimal set)
     /// {2: sign_data(bytes), 3: data_type(uint), 4: chain_id(uint)}
     fn encode_eth_sign_request_for_test(
         sign_data: &[u8],
@@ -857,7 +857,7 @@ mod tests {
         encode_eth_sign_request_with_path_for_test(sign_data, data_type, chain_id, None)
     }
 
-    /// + 可选 derivation_path（key 5, tag 305 crypto-keypath）
+    /// + optional derivation_path (key 5, tag 305 crypto-keypath)
     fn encode_eth_sign_request_with_path_for_test(
         sign_data: &[u8],
         data_type: u64,
@@ -872,7 +872,7 @@ mod tests {
         ];
         if let Some(p) = path {
             // crypto-keypath: tag(304, {1: [idx, hardened, ...], 2: depth})
-            // P1-01（审计 #4）：registry tag 是 304——旧注释/编码误写 305 已纠正
+            // P1-01 (audit #4): the registry tag is 304 — older comments/encoding mistakenly wrote 305; corrected
             let mut comps = alloc::vec::Vec::new();
             for idx in p.as_slice() {
                 comps.push(cbor::encode_uint(idx.value() as u64));
@@ -887,27 +887,27 @@ mod tests {
         cbor::encode_map(&pairs)
     }
 
-    /// BTC 端到端：构造 P2WPKH PSBT → crypto-psbt CBOR → sign() → 验证 PARTIAL_SIG
+    /// BTC end-to-end: build a P2WPKH PSBT → crypto-psbt CBOR → sign() → verify PARTIAL_SIG
     #[test]
     fn sign_btc_psbt_end_to_end() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
         use crate::chain::btc::psbt::{self, input_type, Psbt};
         use crate::encoding::cbor;
 
-        // 1. 派生 key：seed → m/84'/0'/0'/0/0
+        // 1. Derive key: seed → m/84'/0'/0'/0/0
         let seed = [0xA5u8; 64];
         let path = DerivationPath::parse("m/84'/0'/0'/0/0").unwrap();
         let sk = crate::derivation::bip32_secp256k1::derive_from_seed(&seed, &path).unwrap();
         let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
 
-        // 2. 从 sk 算 compressed pubkey + hash160
+        // 2. Compute compressed pubkey + hash160 from the sk
         let sk_scalar = crate::curve_primitive::secp256k1::scalar_from_bytes(&sk_bytes).unwrap();
         let pk_point = crate::curve_primitive::secp256k1::base_mul(&sk_scalar);
         let compressed_pk = crate::curve_primitive::secp256k1::point_to_compressed(&pk_point);
         let h = crate::encoding::sha256::hash(&compressed_pk).unwrap();
         let pk_hash = crate::encoding::ripemd160::hash(&h).unwrap();
 
-        // 3. 构造 PSBT：1 in (P2WPKH witness utxo) + 1 out
+        // 3. Build the PSBT: 1 in (P2WPKH witness utxo) + 1 out
         let mut spk = alloc::vec![0x00u8, 0x14];
         spk.extend_from_slice(&pk_hash);
         let mut psbt = Psbt {
@@ -929,7 +929,7 @@ mod tests {
                 lock_time: 0,
             },
             inputs: alloc::vec![],
-            outputs: alloc::vec![alloc::vec![]], // 1 个 output map（空）
+            outputs: alloc::vec![alloc::vec![]], // 1 output map (empty)
         };
         // input map: WITNESS_UTXO + BIP32_DERIVATION
         let mut wu_value = alloc::vec::Vec::new();
@@ -947,7 +947,7 @@ mod tests {
                     k.extend_from_slice(&compressed_pk);
                     k
                 },
-                // BIP-174 规范形状：master_fingerprint(4B) || child(u32LE) × depth
+                // BIP-174 canonical shape: master_fingerprint(4B) || child(u32LE) × depth
                 value: {
                     let local_fp =
                         crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed)
@@ -962,11 +962,11 @@ mod tests {
             },
         ]);
 
-        // 4. serialize → CBOR bytes（crypto-psbt payload 就是 CBOR bytes item，无首字节 tag）
+        // 4. serialize → CBOR bytes (the crypto-psbt payload is a CBOR bytes item, no leading type byte)
         let psbt_bytes = psbt::serialize_psbt(&psbt);
         let ur_payload = cbor::encode_bytes(&psbt_bytes);
 
-        // 5. 走业务入口（P1-01：type 由 tag 显式携带）
+        // 5. Go through the business entry point (P1-01: type carried explicitly by the tag)
         let mut output_buf = [0u8; 4096];
         let input = SignInput::Seed { seed: &seed };
         let n = sign(
@@ -977,7 +977,7 @@ mod tests {
         )
         .expect("sign ok");
 
-        // 6. 验证输出是合法 PSBT 且含我们的 PARTIAL_SIG
+        // 6. Verify the output is a valid PSBT containing our PARTIAL_SIG
         let signed = psbt::parse_psbt(&output_buf[..n]).expect("re-parse");
         assert_eq!(signed.unsigned_tx.inputs.len(), 1);
         let partial = signed.inputs[0]
@@ -987,10 +987,10 @@ mod tests {
         assert_eq!(&partial.key[1..], &compressed_pk[..]);
         assert_eq!(partial.value.last(), Some(&0x01));
 
-        // 7. L1 verifier 验证签名：重算 BIP-143 sighash 并 verify
+        // 7. L1 verifier validates the signature: recompute the BIP-143 sighash and verify
         let der_sig = &partial.value[..partial.value.len() - 1];
         let ecdsa_sig = crate::signature::ecdsa_secp256k1::from_der(der_sig).expect("der parse");
-        // BIP-143 scriptCode = 76a914{pk_hash}88ac（25 bytes，无 length prefix）
+        // BIP-143 scriptCode = 76a914{pk_hash}88ac (25 bytes, no length prefix)
         let mut script_code = alloc::vec![0x76u8, 0xa9, 0x14];
         script_code.extend_from_slice(&pk_hash);
         script_code.extend_from_slice(&[0x88, 0xac]);
@@ -1008,7 +1008,7 @@ mod tests {
         ));
     }
 
-    /// P1-02：PSBT 用非默认路径（m/84'/0'/1'/0/0）→ 签名用该路径派生 key（贯通证明）
+    /// P1-02: PSBT with a non-default path (m/84'/0'/1'/0/0) → signing derives the key from that path (threading proof)
     #[test]
     fn sign_btc_psbt_uses_psbt_derivation_path() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
@@ -1087,14 +1087,14 @@ mod tests {
             &ur_payload,
             &mut output_buf,
         );
-        // 路径贯通证明：若 fallback 默认路径，派生 key ≠ fixture key → 签名失败
+        // path-threading proof: if the default path were used as fallback, the derived key ≠ fixture key → signing fails
         assert!(
             result.is_ok(),
             "non-default-path PSBT must sign via BIP32_DERIVATION path"
         );
     }
 
-    /// P1-02：BIP32_DERIVATION fingerprint 与本机不一致 → 拒绝（防错钱包签名）
+    /// P1-02: BIP32_DERIVATION fingerprint mismatch with ours → reject (prevents signing from the wrong wallet)
     #[test]
     fn sign_btc_psbt_rejects_fingerprint_mismatch() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
@@ -1178,7 +1178,7 @@ mod tests {
         );
     }
 
-    /// P1-B：witness_utxo scriptPubKey 与签名 key 不绑定（换到他人 P2WPKH）→ 拒绝
+    /// P1-B: witness_utxo scriptPubKey not bound to the signing key (swapped to someone else's P2WPKH) → reject
     #[test]
     fn p1b_rejects_witness_utxo_script_mismatch() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
@@ -1194,7 +1194,7 @@ mod tests {
             &crate::curve_primitive::secp256k1::base_mul(&sk_scalar),
         );
 
-        // scriptPubKey 用别的 hash —— witness_utxo 与签名 key 脱钩
+        // scriptPubKey uses a different hash — witness_utxo is decoupled from the signing key
         let mut spk = alloc::vec![0x00u8, 0x14];
         spk.extend_from_slice(&[0x11u8; 20]);
         let _ = compressed_pk;
@@ -1266,7 +1266,7 @@ mod tests {
         );
     }
 
-    /// P1-B：无 BIP32_DERIVATION record（旧 fallback 默认路径已删除）→ 拒绝
+    /// P1-B: no BIP32_DERIVATION record (the old default-path fallback has been removed) → reject
     #[test]
     fn p1b_rejects_missing_derivation_record() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
@@ -1324,7 +1324,7 @@ mod tests {
         );
     }
 
-    /// P1-02：eth-sign-request 带 derivation_path → 用该路径派生 key 签名（贯通证明）
+    /// P1-02: eth-sign-request with a derivation_path → signing derives the key from that path (threading proof)
     #[test]
     fn sign_eth_uses_request_derivation_path() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
@@ -1341,7 +1341,7 @@ mod tests {
             access_list: Vec::new(),
         };
         let test_seed = [7u8; 64];
-        // 非默认路径：account 1
+        // non-default path: account 1
         let path = DerivationPath::parse("m/44'/60'/1'/0/0").unwrap();
         let derived =
             crate::derivation::bip32_secp256k1::derive_from_seed(&test_seed, &path).unwrap();
@@ -1367,16 +1367,16 @@ mod tests {
         )
         .expect("sign ok");
 
-        // 签名 bytes 与该路径派生 key 的直签结果一致 → 路径贯通
+        // the signature bytes match a direct sign with the key derived from that path → path threading proven
         assert_eq!(&output_buf[..n], expected.tx_bytes.as_slice());
     }
 
-    /// P1-02：network 进决策——BTC 非 mainnet 拒绝
+    /// P1-02: network in decision — BTC rejects non-mainnet
     #[test]
     fn sign_with_network_btc_rejects_testnet() {
         let seed = [0xA5u8; 64];
         let input = SignInput::Seed { seed: &seed };
-        let ur_payload = [1u8, 2, 3]; // 内容无关紧要：network 检查在解析前
+        let ur_payload = [1u8, 2, 3]; // contents don't matter: the network check happens before parsing
         let mut output_buf = [0u8; 4096];
         let result = sign_with_network(
             input,
@@ -1391,12 +1391,12 @@ mod tests {
         );
     }
 
-    /// P1-02：network 进决策——ETH network(10=mainnet,chain_id=1) 与 tx chain_id 不匹配拒绝
+    /// P1-02: network in decision — ETH rejects when network(10=mainnet,chain_id=1) does not match the tx chain_id
     #[test]
     fn sign_with_network_eth_rejects_chain_id_mismatch() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
         let tx = Eip1559Transaction {
-            chain_id: 137, // polygon，≠ mainnet 1
+            chain_id: 137, // polygon, ≠ mainnet 1
             nonce: 0,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
@@ -1424,7 +1424,7 @@ mod tests {
         );
     }
 
-    /// P1-02：network 进决策——ETH network 与 tx chain_id 匹配时放行（成功签名）
+    /// P1-02: network in decision — ETH allows when the network matches the tx chain_id (successful signing)
     #[test]
     fn sign_with_network_eth_accepts_matching() {
         use crate::chain::eth::eip1559::Eip1559Transaction;

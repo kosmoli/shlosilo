@@ -1,7 +1,7 @@
 //! crypto-hdkey UR codec（BCR-2020-006）
 //!
-//! 公钥导出：从 BIP-32 xpub（78 bytes）拆 key / chain_code / parent fingerprint，
-//! 编成 UR registry map。origin（tag 304 crypto-keypath）在给了 path 时写入。
+//! Public key export: split key / chain_code / parent fingerprint from a BIP-32 xpub (78 bytes),
+//! and encode them into a UR registry map. origin (tag 304 crypto-keypath) is written when a path is given.
 
 extern crate alloc;
 
@@ -11,7 +11,7 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::ur::ur_decode;
 use crate::ur::ur_encode::{self, UrEncoded, UrTypeTag};
 
-/// BIP-32 扩展公钥（xpub，78 bytes）
+/// BIP-32 extended public key (xpub, 78 bytes)
 pub type Bip32XPub = [u8; 78];
 
 const KEY_DATA: u64 = 3;
@@ -26,7 +26,7 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-/// 公钥 HDKey 编码（不导出私钥）
+/// Public key HDKey encoding (never exports the private key)
 pub fn encode(xpub: &Bip32XPub, path: Option<&DerivationPath>) -> Result<UrEncoded> {
     let key = &xpub[45..78];
     let chain = &xpub[13..45];
@@ -70,7 +70,7 @@ fn encode_keypath(path: &DerivationPath) -> alloc::vec::Vec<u8> {
     ])
 }
 
-/// 解码 crypto-hdkey：返回 (key 33B, chain_code 32B, parent_fp)
+/// Decode crypto-hdkey: returns (key 33B, chain_code 32B, parent_fp)
 pub fn decode_key_material(uri: &str) -> Result<([u8; 33], [u8; 32], u32)> {
     let d = ur_decode::decode(uri)?;
     if d.type_tag() != UrTypeTag::CryptoHdKey {
@@ -104,7 +104,7 @@ mod tests {
         assert_eq!(core::mem::size_of::<Bip32XPub>(), 78);
     }
 
-    /// 从构造的 xpub 编解码 key / chain / parent_fp
+    /// Codec round of key / chain / parent_fp from a constructed xpub
     #[test]
     fn encode_decode_key_material() {
         let mut xpub = [0u8; 78];

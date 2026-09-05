@@ -1,13 +1,13 @@
 //! json-monero-viewkey UR codec（Feather Wallet / Monero GUI compatible）
 //!
-//! 与 BC-UR 不同——这是 JSON 编码的 XMR view key 导出格式
-//! v2 §2.5 Layer E 表：`ur::codec::json_monero_viewkey`（非 BC-UR）
+//! Unlike BC-UR — this is a JSON-encoded XMR view key export format
+//! v2 §2.5 Layer E table: `ur::codec::json_monero_viewkey` (not BC-UR)
 
 use crate::address::xmr::XmrAddress;
 use crate::curve_primitive::ed25519::Ed25519Scalar;
 use crate::error::Result;
 
-/// JSON 编码的 view key 字符串（Feather Wallet 兼容，最长 ~256 字符）
+/// JSON-encoded view key string (Feather Wallet compatible, max ~256 characters)
 pub const JSON_MONERO_VIEWKEY_MAX_LEN: usize = 512;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -32,19 +32,19 @@ impl core::fmt::Debug for JsonMoneroViewkey {
     }
 }
 
-/// JSON view key 编码
+/// JSON view key encoding
 ///
-/// # Phase 4 实现
+/// # Phase 4 implementation
 /// - JSON `{"address": "...", "viewkey": "...", "restore_height": N}`
-/// - Phase 8+ wownero 复用
+/// - Phase 8+ wownero reuse
 ///
-/// **v2.4 安全**：view_priv 通过 `&Ed25519Scalar` 借出，不 clone 副本。
+/// **v2.4 security**: view_priv is lent out via `&Ed25519Scalar`, no cloned copies.
 pub fn encode(
     _address: &XmrAddress,
     _view_priv: &Ed25519Scalar,
     _restore_height: u64,
 ) -> Result<JsonMoneroViewkey> {
-    // P2-01: unimplemented!() panic → 稳定错误码
+    // P2-01: unimplemented!() panic → stable error code
     Err(crate::error::ShlosiloError::new(
         crate::error::ShlosiloErrorKind::FeatureNotImplemented,
     ))
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn stub_no_panic_marker() {
-        // P2-01：stub 已改为稳定错误码，不允许 panic 宏回归（跳过注释行）
+        // P2-01: stubs now return stable error codes; panic macros must not regress (skip comment lines)
         for line in include_str!("json_monero_viewkey.rs").lines() {
             let t = line.trim_start();
             if t.starts_with("//") {

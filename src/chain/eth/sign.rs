@@ -1,22 +1,22 @@
-//! ETH 共享 sign 工具（Phase 5 v8）
+//! ETH shared sign utilities (Phase 5 v8)
 //!
-//! 提供 EIP-155 / EIP-2930 / EIP-1559 共用的：
-//! - `compute_y_parity` — 从 (r, s, sighash, sk) 恢复 y_parity
+//! Provides what EIP-155 / EIP-2930 / EIP-1559 share:
+//! - `compute_y_parity` — recover y_parity from (r, s, sighash, sk)
 //! - `apply_low_s` — BIP-146 low-s enforcement
-//! - `compute_y_parity_with_low_s` — 一站式: ECDSA sign → low-s → y_parity
+//! - `compute_y_parity_with_low_s` — one-stop: ECDSA sign → low-s → y_parity
 //!
-//! 所有 ETH tx 类型的业务函数复用此模块，避免代码重复。
+//! Business functions for all ETH tx types reuse this module to avoid code duplication.
 
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
 
-/// 计算 y_parity (recovery_id) — 从 (r, s, sighash, sk) 推 R.y parity
+/// Compute y_parity (recovery_id) — derive R.y parity from (r, s, sighash, sk)
 ///
-/// 算法: 用 `VerifyingKey::recover_from_prehash(sighash, &sig, recid)` 试 y_parity=0,1
-/// 比对恢复出的 pubkey 和 sk 对应的 pubkey 找出正确的 y_parity。
+/// Algorithm: try y_parity=0,1 with `VerifyingKey::recover_from_prehash(sighash, &sig, recid)`
+/// and compare the recovered pubkey with the pubkey of sk to find the correct y_parity.
 ///
-/// k256 0.14 `recover_from_prehash` 接受 32-byte prehash (不要求 Digest trait)
+/// k256 0.14 `recover_from_prehash` accepts a 32-byte prehash (no Digest trait required)
 fn compute_y_parity(
     sk: &crate::curve_primitive::secp256k1::Secp256k1Scalar,
     sighash: &[u8; 32],
@@ -52,7 +52,7 @@ fn compute_y_parity(
 /// BIP-146 / EIP-2 low-s enforcement helper
 ///
 /// secp256k1 curve order n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
-/// 若 s > n/2，flip s = n - s 并返回 y_parity ^ 1；否则不动
+/// If s > n/2, flip s = n - s and return y_parity ^ 1; otherwise leave unchanged
 pub fn apply_low_s(
     sighash: &[u8; 32],
     sk: &crate::curve_primitive::secp256k1::Secp256k1Scalar,
@@ -65,10 +65,10 @@ pub fn apply_low_s(
     r_bytes.copy_from_slice(&sig_bytes[..32]);
     s_bytes.copy_from_slice(&sig_bytes[32..]);
 
-    // 2. compute y_parity 用原始 sig
+    // 2. compute y_parity with the original sig
     let y_parity_original = compute_y_parity(sk, sighash, r_bytes, s_bytes)?;
 
-    // 3. 判断 s > n/2
+    // 3. check s > n/2
     let half_n_high: [u8; 16] = [
         0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
         0xff,
@@ -105,29 +105,29 @@ pub fn apply_low_s(
             borrow = (b1 || b2) as u8;
         }
         s_bytes.copy_from_slice(&new_s);
-        // flip y_parity (R → -R, parity 翻转)
+        // flip y_parity (R → -R, parity flips)
         Ok(y_parity_original ^ 1)
     } else {
         Ok(y_parity_original)
     }
 }
 
-/// 从 32-byte private key 转换到 scalar
+/// Convert a 32-byte private key to a scalar
 pub fn sk_from_pk(pk: &[u8; 32]) -> Result<crate::curve_primitive::secp256k1::Secp256k1Scalar> {
     scalar_from_bytes(pk)
 }
 
-/// ECDSA 公钥恢复 (L1 pure verify)
+/// ECDSA public key recovery (L1 pure verify)
 ///
-/// 输入: prehash + 65-byte 签名 (r || s || v), v = 27/28 即 y_parity ∈ {0, 1}.
+/// Input: prehash + 65-byte signature (r || s || v), v = 27/28 meaning y_parity ∈ {0, 1}.
 ///
-/// 输出: 64-byte 未压缩公钥 (x || y, 32 + 32 bytes), 失败返回 Err.
+/// Output: 64-byte uncompressed public key (x || y, 32 + 32 bytes), Err on failure.
 ///
-/// 用于 EIP-191 personal_ecRecover, 未来可用作 wallet 端 verify 工具.
+/// Used for EIP-191 personal_ecRecover; can later serve as a wallet-side verify tool.
 pub fn ecdsa_recover(prehash: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 64]> {
     use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 
-    // 解析 r || s
+    // parse r || s
     let mut sig_64 = [0u8; 64];
     sig_64.copy_from_slice(&sig[..64]);
     let signature = Signature::from_slice(&sig_64)
@@ -144,11 +144,11 @@ pub fn ecdsa_recover(prehash: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 64]> {
     let y_parity = v - 27;
     let recid = RecoveryId::new(y_parity == 1, false);
 
-    // 恢复
+    // recover
     let recovered_pk = VerifyingKey::recover_from_prehash(prehash, &signature, recid)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
-    // 转成 65-byte 未压缩 (0x04 || x || y)
+    // convert to 65-byte uncompressed (0x04 || x || y)
     let encoded_point = recovered_pk.to_sec1_point(false);
     let bytes = encoded_point.as_bytes();
     if bytes.len() != 65 || bytes[0] != 0x04 {
