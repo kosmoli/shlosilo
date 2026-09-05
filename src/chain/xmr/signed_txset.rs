@@ -148,8 +148,10 @@ pub struct SignedTxSet {
 }
 
 impl SignedTxSet {
-    /// 对齐 keystone `SignedTxSet::serialize`（逐字节一致）
-    pub fn serialize(&self) -> Vec<u8> {
+    /// 对齐 keystone `SignedTxSet::serialize`（逐字节一致）。
+    /// 审计 #12 P1-02:输出含 construction_data(mask/kLRki)秘密字段,
+    /// 返回 Zeroizing owner。
+    pub fn serialize(&self) -> zeroize::Zeroizing<Vec<u8>> {
         let mut res = Vec::new();
         // signed_tx_set version 00
         res.push(0u8);
@@ -198,7 +200,7 @@ impl SignedTxSet {
             res.extend_from_slice(&e.output_pubkey);
             res.extend_from_slice(&e.key_image);
         }
-        res
+        zeroize::Zeroizing::new(res)
     }
 }
 
@@ -224,15 +226,19 @@ pub fn monero_sign(
     view_sk: &[u8; 32],
     rng: &mut impl rand_core::RngCore,
 ) -> Result<[[u8; 32]; 2]> {
-    let x = Scalar::from_bytes_mod_order(*view_sk);
-    let p_bytes = (ED25519_BASEPOINT_TABLE * &x).compress().to_bytes();
+    // 审计 #12 P1-02:秘密标量全程 Zeroizing owner——x(view secret)/k(nonce)/
+    // r(k−c·x) 不落地普通 Scalar 绑定;输出 c/r 是签名分量(公开值)。
+    // Zeroizing<Scalar> Deref 到 Scalar,域算术写法不变。
+    use zeroize::Zeroizing;
+    let x = Zeroizing::new(Scalar::from_bytes_mod_order(*view_sk));
+    let p_bytes = (ED25519_BASEPOINT_TABLE * &*x).compress().to_bytes();
 
-    let mut k_bytes = [0u8; 32];
+    let mut k_bytes = Zeroizing::new([0u8; 32]);
     let (mut c, mut r);
     loop {
-        rng.fill_bytes(&mut k_bytes);
-        let k = Scalar::from_bytes_mod_order(k_bytes);
-        let k_pub = (ED25519_BASEPOINT_TABLE * &k).compress().to_bytes();
+        rng.fill_bytes(k_bytes.as_mut());
+        let k = Zeroizing::new(Scalar::from_bytes_mod_order(*k_bytes));
+        let k_pub = (ED25519_BASEPOINT_TABLE * &*k).compress().to_bytes();
 
         let mut data = Vec::with_capacity(96);
         data.extend_from_slice(hash);
@@ -243,8 +249,8 @@ pub fn monero_sign(
         if c == Scalar::ZERO {
             continue;
         }
-        r = k - c * x;
-        if r == Scalar::ZERO {
+        r = Zeroizing::new(*k - c * *x);
+        if *r == Scalar::ZERO {
             continue;
         }
         break;
@@ -267,18 +273,20 @@ pub fn encrypt_signed_txset(
     plain: Vec<u8>,
     view_sk: &[u8; 32],
     rng: &mut impl rand_core::RngCore,
-) -> Result<Vec<u8>> {
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk);
-    encrypt_signed_txset_with_chacha_key(plain, view_sk, &key, rng)
+    encrypt_signed_txset_with_chacha_key(zeroize::Zeroizing::new(plain), view_sk, &key, rng)
 }
 
 /// 与 `encrypt_signed_txset` 相同，ChaCha 密钥由调用方注入（避免重复 CN）。
+/// 审计 #12 P1-02:接收 owner 密钥,返回 Zeroizing(输出整体=密文,加密失败
+/// 路径的 nonce/明文中间量由 owner Drop 覆盖)。
 pub fn encrypt_signed_txset_with_chacha_key(
-    plain: Vec<u8>,
+    plain: zeroize::Zeroizing<Vec<u8>>,
     view_sk: &[u8; 32],
-    chacha_key: &[u8; 32],
+    chacha_key: &zeroize::Zeroizing<[u8; 32]>,
     rng: &mut impl rand_core::RngCore,
-) -> Result<Vec<u8>> {
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     use chacha20::cipher::{KeyIvInit, StreamCipher};
     use chacha20::ChaCha20Legacy;
 
@@ -287,7 +295,7 @@ pub fn encrypt_signed_txset_with_chacha_key(
 
     let mut buffer = plain;
     let nonce: chacha20::LegacyNonce = nonce_num_bytes.into();
-    let mut cipher = ChaCha20Legacy::new_from_slices(chacha_key, &nonce).map_err(|_| err())?;
+    let mut cipher = ChaCha20Legacy::new_from_slices(&**chacha_key, &nonce).map_err(|_| err())?;
     cipher.apply_keystream(&mut buffer);
 
     // 3. 签名 = Monero Schnorr over keccak256(nonce ‖ 密文)，公钥 = view_pub
@@ -304,25 +312,26 @@ pub fn encrypt_signed_txset_with_chacha_key(
     out.extend_from_slice(&buffer);
     out.extend_from_slice(&c);
     out.extend_from_slice(&r);
-    Ok(out)
+    Ok(zeroize::Zeroizing::new(out))
 }
 
 /// 加密 unsigned txset（与 `encrypt_signed_txset` 同构，magic 换 `UNSIGNED_TX_PREFIX`）。
 /// 供把自造 TxConstructionData 送进 `business::sign` / `sign_ur_ffi`。
 pub fn encrypt_unsigned_txset(
-    plain: Vec<u8>,
+    plain: zeroize::Zeroizing<Vec<u8>>,
     view_sk: &[u8; 32],
     rng: &mut impl rand_core::RngCore,
-) -> Result<Vec<u8>> {
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     use crate::chain::xmr::unsigned_txset::UNSIGNED_TX_PREFIX;
     use chacha20::cipher::{KeyIvInit, StreamCipher};
     use chacha20::ChaCha20Legacy;
 
-    let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
+    // 审计 #12 P1-02:CN key 从产生即 owner(不再本地裸 CN 后包)。
+    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk);
     let nonce_num_bytes = rng.next_u64().to_be_bytes();
     let mut buffer = plain;
     let nonce: chacha20::LegacyNonce = nonce_num_bytes.into();
-    let mut cipher = ChaCha20Legacy::new_from_slices(&key, &nonce).map_err(|_| err())?;
+    let mut cipher = ChaCha20Legacy::new_from_slices(&*key, &nonce).map_err(|_| err())?;
     cipher.apply_keystream(&mut buffer);
 
     let mut unsigned = Vec::with_capacity(NONCE_LEN + buffer.len());
@@ -337,13 +346,16 @@ pub fn encrypt_unsigned_txset(
     out.extend_from_slice(&buffer);
     out.extend_from_slice(&c);
     out.extend_from_slice(&r);
-    Ok(out)
+    Ok(zeroize::Zeroizing::new(out))
 }
 
 /// 解密 signed txset（自验 round-trip 用；对齐 keystone `decrypt_data_with_pvk`）。
 ///
 /// magic 校验 → nonce → Schnorr 验签（view_pub，keccak256(nonce‖密文)）→ 解密。
-pub fn decrypt_signed_txset(data: &[u8], view_sk: &[u8; 32]) -> Result<Vec<u8>> {
+pub fn decrypt_signed_txset(
+    data: &[u8],
+    view_sk: &[u8; 32],
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     use chacha20::cipher::{KeyIvInit, StreamCipher};
     use chacha20::ChaCha20Legacy;
 
@@ -359,19 +371,22 @@ pub fn decrypt_signed_txset(data: &[u8], view_sk: &[u8; 32]) -> Result<Vec<u8>> 
 
     // 验签（复用 unsigned_txset.rs 的实现——同一方案两侧对称）
     use curve25519_dalek::scalar::Scalar;
-    let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
-    let view_pub = (ED25519_BASEPOINT_TABLE * &v_scalar).compress().to_bytes();
+    // 审计 #12 P1-02:v_scalar(view secret)从产生即 owner。
+    let v_scalar = zeroize::Zeroizing::new(Scalar::from_bytes_mod_order(*view_sk));
+    let view_pub = (ED25519_BASEPOINT_TABLE * &*v_scalar).compress().to_bytes();
     let msg_hash = crate::encoding::keccak256::hash(raw)?;
     if !super::unsigned_txset::verify_monero_signature_pubkey(&msg_hash, &view_pub, sig)? {
         return Err(err());
     }
 
-    let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
-    let mut plain = raw[NONCE_LEN..].to_vec();
+    // 审计 #12 P1-02:CN key 从产生即 owner;明文 Zeroizing(错误/提前返回
+    // 路径由 Drop 覆盖)。
+    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk);
+    let mut plain = zeroize::Zeroizing::new(raw[NONCE_LEN..].to_vec());
     let mut nb = [0u8; 8];
     nb.copy_from_slice(nonce_bytes);
     let nonce: chacha20::LegacyNonce = nb.into();
-    let mut cipher = ChaCha20Legacy::new_from_slices(&key, &nonce).map_err(|_| err())?;
+    let mut cipher = ChaCha20Legacy::new_from_slices(&*key, &nonce).map_err(|_| err())?;
     cipher.apply_keystream(&mut plain);
     Ok(plain)
 }
@@ -432,7 +447,7 @@ mod tests {
         assert_eq!(&enc[..SIGNED_TX_PREFIX.len()], SIGNED_TX_PREFIX);
         assert_eq!(enc.len(), SIGNED_TX_PREFIX.len() + 8 + plain.len() + 64);
         let dec = decrypt_signed_txset(&enc, &sk).unwrap();
-        assert_eq!(dec, plain);
+        assert_eq!(*dec, plain);
 
         // 篡改密文中间字节 → 验签拒绝
         let mut tampered = enc.clone();

@@ -34,7 +34,7 @@ fn decrypt_with_external_view_key() {
         v.try_into().expect("32-byte view key")
     };
     let plain = decrypt_unsigned_txset(ENCRYPTED, &view_sk).expect("decrypt with real view key");
-    assert_eq!(plain, PLAIN, "plaintext must match P6.3 python result");
+    assert_eq!(*plain, PLAIN, "plaintext must match P6.3 python result");
     let utx = deserialize_unsigned_tx(&plain).expect("deserialize");
     assert!(!utx.txes.is_empty(), "at least one tx");
     let tx = &utx.txes[0];

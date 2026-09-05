@@ -146,7 +146,7 @@ fn sign_xmr_business_end_to_end() {
 
     // ---- (c) 管线可达性：解密自加密 blob 确认加密格式正确 ----
     let dec = decrypt_unsigned_txset(&encrypted_for_self, &view_sec).unwrap();
-    assert_eq!(dec, plain_txset);
+    assert_eq!(*dec, plain_txset);
 
     let _ = (&mut plain_txset, SIGNED_TX_PREFIX, decrypt_signed_txset);
     let _ = deserialize_unsigned_tx(&dec);

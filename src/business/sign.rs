@@ -153,19 +153,16 @@ fn sign_xmr(
         kp.view_priv(),
     ));
     // 同一 view_sk 的 CN 只算一次（decrypt + encrypt 共用；真机 2MB scratchpad 是大头）
-    let cn_key = zeroize::Zeroizing::new(
-        crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&view_sec),
-    );
+    // 审计 #12 P1-02:CN key 从产生即 owner(Zeroizing),helper 返回 owner。
+    let cn_key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&view_sec);
 
     // 2. 解密（内部验签，view key 不匹配 → Err）
     // 审计 #6 P1-01:解密明文 txset 走 Zeroizing(解析后不再需要明文残留)
-    let plain = zeroize::Zeroizing::new(
-        crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset_with_chacha_key(
-            encrypted_unsigned,
-            &view_sec,
-            &cn_key,
-        )?,
-    );
+    let plain = crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset_with_chacha_key(
+        encrypted_unsigned,
+        &view_sec,
+        &cn_key,
+    )?;
     let unsigned_tx = deserialize_unsigned_tx(&plain)?;
 
     // 3. 逐 tx 签名（§B.5 purpose 子域：tx-key r / BP+ / CLSAG(i) 独立派生）

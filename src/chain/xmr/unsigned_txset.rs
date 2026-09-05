@@ -313,8 +313,10 @@ pub fn verify_monero_signature_pubkey(
 
 /// ChaCha20 密钥 = CryptoNight-V0(view_sk)。2MB scratchpad，真机上是 XMR 签名的大头；
 /// 同一 view_sk 在 decrypt unsigned + encrypt signed 各调一次会翻倍，调用方应复用。
-pub fn chacha_key_from_view_sk(view_sk: &[u8; 32]) -> [u8; 32] {
-    cuprate_cryptonight::cryptonight_hash_v0(view_sk)
+/// 审计 #12 P1-02:返回 Zeroizing owner,不落地普通 [u8;32] 绑定;crate 内部
+/// helper(旧 pub 让调用方"外层再包 Zeroizing"——构造后包 owner 不擦来源绑定)。
+pub(crate) fn chacha_key_from_view_sk(view_sk: &[u8; 32]) -> zeroize::Zeroizing<[u8; 32]> {
+    zeroize::Zeroizing::new(cuprate_cryptonight::cryptonight_hash_v0(view_sk))
 }
 
 /// 解密 unsigned_txset（对齐 keystone decrypt_data_with_pvk）
@@ -322,17 +324,22 @@ pub fn chacha_key_from_view_sk(view_sk: &[u8; 32]) -> [u8; 32] {
 /// 流程：magic 校验 → nonce=8B → Ed25519 验签（view_pub 对
 /// keccak256(nonce||密文)，尾部 64B）→ ChaCha20-Legacy keystream。
 /// 验签失败 = 数据被篡改或 view key 不匹配 → 拒绝。
-pub fn decrypt_unsigned_txset(data: &[u8], view_sk: &[u8; 32]) -> Result<Vec<u8>> {
+pub fn decrypt_unsigned_txset(
+    data: &[u8],
+    view_sk: &[u8; 32],
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     let key = chacha_key_from_view_sk(view_sk);
     decrypt_unsigned_txset_with_chacha_key(data, view_sk, &key)
 }
 
 /// 与 `decrypt_unsigned_txset` 相同，ChaCha 密钥由调用方注入（避免重复 CN）。
-pub fn decrypt_unsigned_txset_with_chacha_key(
+/// 审计 #12 P1-02:明文 owner 化——返回 Zeroizing<Vec<u8>>,错误/提前返回
+/// 路径由 Drop 覆盖,不再返回普通 Vec。
+pub(crate) fn decrypt_unsigned_txset_with_chacha_key(
     data: &[u8],
     view_sk: &[u8; 32],
-    chacha_key: &[u8; 32],
-) -> Result<Vec<u8>> {
+    chacha_key: &zeroize::Zeroizing<[u8; 32]>,
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     if data.len() < MAGIC_LEN + NONCE_LEN + SIG_LEN {
         return Err(err());
     }
@@ -362,8 +369,8 @@ pub fn decrypt_unsigned_txset_with_chacha_key(
     }
 
     // 2. ChaCha20-Legacy 解密
-    let mut cipher = ChaCha20Legacy::new_from_slices(chacha_key, nonce).map_err(|_| err())?;
-    let mut plain = raw_data[NONCE_LEN..].to_vec();
+    let mut cipher = ChaCha20Legacy::new_from_slices(&**chacha_key, nonce).map_err(|_| err())?;
+    let mut plain = zeroize::Zeroizing::new(raw_data[NONCE_LEN..].to_vec());
     cipher.apply_keystream(&mut plain);
     Ok(plain)
 }
@@ -558,15 +565,16 @@ fn write_unsigned_construction(out: &mut Vec<u8>, d: &TxConstructionData) {
     }
 }
 
-/// epee serialize（与 `deserialize_unsigned_tx` 对偶；不含 transfers 尾段）
-pub fn serialize_unsigned_tx(tx: &UnsignedTx) -> Vec<u8> {
+/// epee serialize（与 `deserialize_unsigned_tx` 对偶；不含 transfers 尾段）。
+/// 审计 #12 P1-02:输出含 mask/kLRki 秘密字段,返回 Zeroizing owner。
+pub fn serialize_unsigned_tx(tx: &UnsignedTx) -> zeroize::Zeroizing<Vec<u8>> {
     let mut out = Vec::new();
     put_varint(&mut out, 2);
     put_varint(&mut out, tx.txes.len() as u64);
     for d in &tx.txes {
         write_unsigned_construction(&mut out, d);
     }
-    out
+    zeroize::Zeroizing::new(out)
 }
 
 /// epee deserialize（对齐 keystone UnsignedTx::deserialize）
@@ -760,6 +768,14 @@ mod tests {
             crate::chain::xmr::signed_txset::encrypt_unsigned_txset(plain.clone(), &view, &mut rng)
                 .expect("encrypt");
         let dec = decrypt_unsigned_txset(&enc, &view).expect("decrypt");
-        assert_eq!(dec, plain);
+        assert_eq!(*dec, *plain);
+    }
+
+    /// 审计 #12 P1-02 API 门禁:明文/密文/CN key 的 owner 类型必须带
+    /// Drop 清零语义(Zeroizing);错误路径与提前返回由 Drop 覆盖。
+    #[test]
+    fn plaintext_owner_types_have_drop() {
+        assert!(core::mem::needs_drop::<zeroize::Zeroizing<Vec<u8>>>());
+        assert!(core::mem::needs_drop::<zeroize::Zeroizing<[u8; 32]>>());
     }
 }
