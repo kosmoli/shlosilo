@@ -60,6 +60,26 @@ const NONCE_LEN: usize = 8;
 
 // ============ 读取器（epee binary_archive 小工具） ============
 
+/// 审计 #12 P1-03:入口总预算。对齐 multipart payload 上限(加密 blob 只会
+/// 更小;解密明文不可能超过 wire 输入总量)。恶意但签名有效的请求在入口
+/// 即拒,不进入任何分配路径。
+const UNSIGNED_TXSET_MAX_PLAIN_LEN: usize = crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN;
+
+/// 预算化计数读取(审计 #12 P1-03,X1 单一 helper 纪律——同族检查点共用):
+/// varint → usize fallible 转换(拒绝 32 位窄化回绕)→ 物理可行性校验
+/// (count × min_elem_bytes > 剩余字节 = 物理上解析不完,分配前拒绝)。
+/// min_elem_bytes 是该元素在 wire 上的最小字节数(保守下界);0 值防御性
+/// 按 1 处理(防除零,审计 #7 P2-01 教训)。
+fn read_count(data: &[u8], off: &mut usize, min_elem_bytes: usize) -> Result<usize> {
+    let v = read_varint(data, off)?;
+    let count = usize::try_from(v).map_err(|_| err())?;
+    let remaining = data.len().saturating_sub(*off);
+    if count > remaining / min_elem_bytes.max(1) {
+        return Err(err());
+    }
+    Ok(count)
+}
+
 fn read_varint(data: &[u8], off: &mut usize) -> Result<u64> {
     let mut value: u64 = 0;
     let mut shift = 0;
@@ -101,8 +121,11 @@ fn read_u64(data: &[u8], off: &mut usize) -> Result<u64> {
 }
 
 fn read_bytes(data: &[u8], off: &mut usize, len: usize) -> Result<Vec<u8>> {
-    let s = data.get(*off..*off + len).ok_or_else(err)?;
-    *off += len;
+    // 审计 #12 P1-03:offset+len 走 checked_add(32 位平台截断/64 位溢出都
+    // 是真问题),取值用 get(单次越界判定),失败不产生任何分配。
+    let end = off.checked_add(len).ok_or_else(err)?;
+    let s = data.get(*off..end).ok_or_else(err)?;
+    *off = end;
     Ok(s.to_vec())
 }
 
@@ -378,7 +401,7 @@ pub(crate) fn decrypt_unsigned_txset_with_chacha_key(
 // ============ epee deserialize ============
 
 fn read_destination_entry(data: &[u8], off: &mut usize) -> Result<TxDestinationEntry> {
-    let original_len = read_varint(data, off)? as usize;
+    let original_len = usize::try_from(read_varint(data, off)?).map_err(|_| err())?;
     let original = read_bytes(data, off, original_len)?;
     let amount = read_varint(data, off)?;
     let spend_public_key = read_u8_32(data, off)?;
@@ -405,14 +428,16 @@ fn read_output_entry(data: &[u8], off: &mut usize) -> Result<OutputEntry> {
 }
 
 fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
-    let outputs_len = read_varint(data, off)? as usize;
+    // OutputEntry wire 最小 = varint pair_tag(1) + varint index(1) + 64B = 66
+    let outputs_len = read_count(data, off, 66)?;
     let mut outputs = Vec::with_capacity(outputs_len);
     for _ in 0..outputs_len {
         outputs.push(read_output_entry(data, off)?);
     }
     let real_output = read_u64(data, off)?;
     let real_out_tx_key = read_u8_32(data, off)?;
-    let additional_len = read_varint(data, off)? as usize;
+    // additional tx key wire 最小 = 32B
+    let additional_len = read_count(data, off, 32)?;
     let mut real_out_additional_tx_keys = Vec::with_capacity(additional_len);
     for _ in 0..additional_len {
         real_out_additional_tx_keys.push(read_u8_32(data, off)?);
@@ -441,39 +466,44 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
 }
 
 fn read_tx_construction_data(data: &[u8], off: &mut usize) -> Result<TxConstructionData> {
-    let sources_len = read_varint(data, off)? as usize;
+    // TxSourceEntry wire 最小 = outputs_len(1) + outputs(66) + 8+32+1(keys len+key+…)
+    // 保守取 100；其实任何恶意值都会被后续字段读取拒绝
+    let sources_len = read_count(data, off, 100)?;
     let mut sources = Vec::with_capacity(sources_len);
     for _ in 0..sources_len {
         sources.push(read_source_entry(data, off)?);
     }
     let change_dts = read_destination_entry(data, off)?;
-    let splitted_dsts_len = read_varint(data, off)? as usize;
+    // TxDestinationEntry wire 最小 = original_len(1) + varint amount(1) + 64 + 2 ≈ 68
+    let splitted_dsts_len = read_count(data, off, 68)?;
     let mut splitted_dsts = Vec::with_capacity(splitted_dsts_len);
     for _ in 0..splitted_dsts_len {
         splitted_dsts.push(read_destination_entry(data, off)?);
     }
-    let selected_len = read_varint(data, off)? as usize;
+    let selected_len = read_count(data, off, 1)?;
     let mut selected_transfers = Vec::with_capacity(selected_len);
     for _ in 0..selected_len {
-        selected_transfers.push(read_varint(data, off)? as usize);
+        // u64 → usize fallible(32 位窄化回绕拒绝)
+        selected_transfers.push(usize::try_from(read_varint(data, off)?).map_err(|_| err())?);
     }
-    let extra_len = read_varint(data, off)? as usize;
+    let extra_len = usize::try_from(read_varint(data, off)?).map_err(|_| err())?;
     let extra = read_bytes(data, off, extra_len)?;
     let unlock_time = read_u64(data, off)?;
     let use_rct = read_u8(data, off)?;
     let version = read_varint(data, off)?;
     let range_proof_type = read_varint(data, off)?;
     let bp_version = read_varint(data, off)?;
-    let dests_len = read_varint(data, off)? as usize;
+    let dests_len = read_count(data, off, 68)?;
     let mut dests = Vec::with_capacity(dests_len);
     for _ in 0..dests_len {
         dests.push(read_destination_entry(data, off)?);
     }
     let subaddr_account = read_u32(data, off)?;
-    let subaddr_indices_len = read_varint(data, off)? as usize;
+    let subaddr_indices_len = read_count(data, off, 1)?;
     let mut subaddr_indices = Vec::with_capacity(subaddr_indices_len);
     for _ in 0..subaddr_indices_len {
-        subaddr_indices.push(read_varint(data, off)? as u32);
+        // u64 → u32 fallible(高位截断 256→0 类回绕拒绝)
+        subaddr_indices.push(u32::try_from(read_varint(data, off)?).map_err(|_| err())?);
     }
     Ok(TxConstructionData {
         sources,
@@ -577,14 +607,21 @@ pub fn serialize_unsigned_tx(tx: &UnsignedTx) -> zeroize::Zeroizing<Vec<u8>> {
     zeroize::Zeroizing::new(out)
 }
 
-/// epee deserialize（对齐 keystone UnsignedTx::deserialize）
+/// epee deserialize（对齐 keystone UnsignedTx::deserialize）。
+/// 审计 #12 P1-03:入口资源预算三层——总长度预算(分配前)→ txes 计数
+/// 物理可行性 → 逐字段 checked 读取;恶意但签名有效的请求稳定返回 Err。
 pub fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<UnsignedTx> {
+    if bytes.len() > UNSIGNED_TXSET_MAX_PLAIN_LEN {
+        return Err(err());
+    }
     let mut off = 0usize;
     let version = read_varint(bytes, &mut off)?;
     if version != 2 {
         return Err(err());
     }
-    let txes_len = read_varint(bytes, &mut off)? as usize;
+    // TxConstructionData wire 最小量级 100B(1 source + change + 逐字段);
+    // 恶意大计数在 with_capacity 前被拒。
+    let txes_len = read_count(bytes, &mut off, 100)?;
     let mut txes = Vec::with_capacity(txes_len);
     for _ in 0..txes_len {
         txes.push(read_tx_construction_data(bytes, &mut off)?);
@@ -777,5 +814,57 @@ mod tests {
     fn plaintext_owner_types_have_drop() {
         assert!(core::mem::needs_drop::<zeroize::Zeroizing<Vec<u8>>>());
         assert!(core::mem::needs_drop::<zeroize::Zeroizing<[u8; 32]>>());
+    }
+
+    // ============ 审计 #12 P1-03:parser 资源预算边界 ============
+
+    /// read_count 物理可行性边界(纯 helper 直测,#6 复审 P2-01 终态——
+    /// 不依赖时序/分配观察):count > remaining/min_elem 即拒。
+    #[test]
+    fn read_count_physical_feasibility_boundaries() {
+        // count=1, varint 后剩 19, min_elem=10 → 1 ≤ 19/10=1 可行
+        let data = [1u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut off = 0usize;
+        assert_eq!(read_count(&data, &mut off, 10).unwrap(), 1);
+        // count=2, varint 后剩 9, min_elem=5 → 2 > 9/5=1 → 拒
+        let data2 = [2u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut off2 = 0usize;
+        assert!(read_count(&data2, &mut off2, 5).is_err());
+        // min_elem=0 防御(不 panic,#7 P2-01 教训):count=9, 剩 9, 按 1 处理 → 9 ≤ 9
+        let data3 = [9u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut off3 = 0usize;
+        assert_eq!(read_count(&data3, &mut off3, 0).unwrap(), 9);
+        // u64::MAX 计数 → usize::try_from 在 32 位拒绝/64 位被物理可行性拒
+        let huge = {
+            // LEB128 of u64::MAX
+            [0xffu8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]
+        };
+        let mut off4 = 0usize;
+        assert!(read_count(&huge, &mut off4, 1).is_err());
+    }
+
+    /// 入口总预算:明文 > UNSIGNED_TXSET_MAX_PLAIN_LEN(16384)在分配前拒绝。
+    #[test]
+    fn entry_total_budget_rejects_oversize() {
+        let big = alloc::vec![0u8; UNSIGNED_TXSET_MAX_PLAIN_LEN + 1];
+        assert!(deserialize_unsigned_tx(&big).is_err());
+        // 边界内(空 txset 合法形态)不被误伤
+        let ok = alloc::vec![2u8, 0];
+        assert!(deserialize_unsigned_tx(&ok).is_ok());
+    }
+
+    /// 恶意 corpus:合法 version=2 + 巨大 txes 计数 → 物理可行性在
+    /// with_capacity 前拒绝(敌对但结构合法的 wire,发布阻断验收)。
+    #[test]
+    fn malicious_huge_txes_count_rejected_pre_alloc() {
+        // version=2(1B) + txes_len = u64::MAX LEB128(10B)
+        let mut wire = alloc::vec![2u8];
+        wire.extend_from_slice(&[0xffu8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]);
+        assert!(deserialize_unsigned_tx(&wire).is_err());
+        // 次极端:预算内但物理不可行(60000 × 100B >> 16KiB 预算)
+        let mut wire2 = alloc::vec![2u8];
+        // LEB128 of 60000 = 0xF0 0xD4 0x03
+        wire2.extend_from_slice(&[0xf0, 0xd4, 0x03]);
+        assert!(deserialize_unsigned_tx(&wire2).is_err());
     }
 }
