@@ -18,6 +18,12 @@ name = "parse_psbt"
 path = "fuzz_targets/parse_psbt.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "xmr_unsigned_txset"
+path = "fuzz_targets/xmr_unsigned_txset.rs"
+test = false
+doc = false
 bench = false
 
 [[bin]]

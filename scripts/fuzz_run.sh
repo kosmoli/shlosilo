@@ -20,7 +20,7 @@ NIGHTLY="nightly-2026-05-22"
 SECS="${1:-90}"
 SEED="${SEED:-20260902}"
 
-TARGETS=(parse_psbt multipart_decoder cbor_eth_sign)
+TARGETS=(parse_psbt multipart_decoder cbor_eth_sign xmr_unsigned_txset)
 rc_total=0
 
 for t in "${TARGETS[@]}"; do
