@@ -31,11 +31,8 @@ const H0: [u32; 16] = [
 ];
 
 /// Round constants K[0..80] as hi/lo u32 pairs, flattened (k[i] = (K2[2i], K2[2i+1])).
-/// On the embedded target this static lives in the `.data` input section so the firmware
-/// startup copy places it in SRAM alongside `compress` (see below).
-#[cfg_attr(target_arch = "arm", link_section = ".data")]
 #[rustfmt::skip]
-static K2: [u32; 160] = [
+const K2: [u32; 160] = [
     0x428a2f98, 0xd728ae22, 0x71374491, 0x23ef65cd, 0xb5c0fbcf, 0xec4d3b2f,
     0xe9b5dba5, 0x8189dbbc, 0x3956c25b, 0xf348b538, 0x59f111f1, 0xb605d019,
     0x923f82a4, 0xaf194f9b, 0xab1c5ed5, 0xda6d8118, 0xd807aa98, 0xa3030242,
@@ -201,13 +198,6 @@ macro_rules! round {
 
 /// Compress one 128-byte block into `state` (16 u32s, initialized from `H0`
 /// or carried from the previous block). `block` is in raw big-endian bytes.
-///
-/// On the embedded target the whole function is placed in the `.data` input section:
-/// the MH1903 firmware startup copies `.data` from flash to SRAM before `main`, so the
-/// hot loop executes from 0-wait-state SRAM instead of XIP flash (刀口 5B). All helper
-/// functions are `inline(always)` and fold into this body; `K2` is a static in the
-/// same section. On non-arm hosts the attribute is skipped so tests run from `.text`.
-#[cfg_attr(target_arch = "arm", link_section = ".data")]
 pub fn compress(state: &mut [u32; 16], block: &[u8; 128]) {
     debug_assert_eq!(state.len(), 16);
 
