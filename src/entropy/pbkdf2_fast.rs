@@ -34,13 +34,10 @@ impl HmacSha512Fast {
         if key.len() > SHA512_BLOCK_LEN {
             // H(key): compress H0 over key blocks, take 64-byte digest, use as key.
             let mut state = initial_state();
-            let mut blocks = key.chunks_exact(SHA512_BLOCK_LEN);
-            let mut buf = [0u8; SHA512_BLOCK_LEN];
-            for block in &mut blocks {
-                buf.copy_from_slice(block);
-                compress(&mut state, &buf);
+            let (blocks, rem) = key.as_chunks::<SHA512_BLOCK_LEN>();
+            for block in blocks {
+                compress(&mut state, block);
             }
-            let rem = blocks.remainder();
             let mut last = [0u8; SHA512_BLOCK_LEN];
             last[..rem.len()].copy_from_slice(rem);
             last[rem.len()] = 0x80;
