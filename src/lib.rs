@@ -32,6 +32,7 @@ pub mod business;
 pub mod chain;
 pub mod curve_primitive;
 pub mod derivation;
+pub mod device_timing;
 pub mod encoding;
 pub mod entropy;
 pub mod error;

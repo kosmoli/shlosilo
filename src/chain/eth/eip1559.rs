@@ -195,10 +195,17 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     let sk = scalar_from_bytes(input.private_key.expose())?;
 
     // 1. signing hash
+    let t_hash = crate::device_timing::Mark::start(crate::device_timing::STAGE_KECCAK);
     let sighash = signing_hash(&input.tx)?;
+    t_hash.end();
 
     // 2. ECDSA sign_prehash (returns r||s = 64 bytes)
+    let t_ecdsa = crate::device_timing::Mark::start(crate::device_timing::STAGE_Y_PARITY);
     let sig = ecdsa::sign(&sk, &sighash)?;
+    t_ecdsa.end();
+    // NOTE: STAGE_Y_PARITY slot doubles as the ecdsa::sign measurement; y_parity
+    // recovery is measured into STAGE_SERIALIZE below (slot reuse keeps the FFI
+    // surface at 8 stages; see device_timing.rs for the stage map).
     let sig_bytes = sig.as_ref();
     let mut r_bytes = [0u8; 32];
     let mut s_bytes = [0u8; 32];
@@ -209,7 +216,9 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     // 2.5 BIP-146 / EIP-2 low-s enforcement:
     //     compute y_parity with the original s first, then flip s to (n - s) if s > n/2
     //     flipping s is equivalent to R → -R (R.y parity flips)
+    let t_yp = crate::device_timing::Mark::start(crate::device_timing::STAGE_SERIALIZE);
     let y_parity_original = compute_y_parity(&sk, &sighash, &r_bytes, &s_bytes)?;
+    t_yp.end();
 
     let half_n_high: [u8; 16] = [
         0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -254,6 +263,7 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     // 4. Build signed transaction
     // 0x02 || rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit,
     //               destination, amount, data, access_list, y_parity, r, s])
+    let t_ser = crate::device_timing::Mark::start(crate::device_timing::STAGE_RLP);
     let chain_id_rlp = rlp::encode_uint(input.tx.chain_id as u128);
     let nonce_rlp = rlp::encode_uint(input.tx.nonce as u128);
     let max_prio_rlp = rlp::encode_uint(input.tx.max_priority_fee_per_gas);
@@ -290,6 +300,7 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     let mut tx_bytes = Vec::with_capacity(1 + signed_rlp.len());
     tx_bytes.push(0x02);
     tx_bytes.extend_from_slice(&signed_rlp);
+    t_ser.end();
 
     Ok(Eip1559SignedTx {
         tx_bytes,

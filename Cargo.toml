@@ -84,6 +84,8 @@ default = ["std"]
 std = ["rand_core/std"]
 # alloc enabled (ffi module uses Vec as a staging buffer for path elements)
 # alloc = []  # heapless itself is no_std
+# Device-side stage timing instrumentation (diagnostic only, never in production firmware)
+device-timing = []
 
 [lib]
 crate-type = ["rlib", "staticlib"]

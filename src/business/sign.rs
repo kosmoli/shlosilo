@@ -94,7 +94,10 @@ pub fn sign_with_entropy(
     entropy: &[u8],
     output_buf: &mut [u8],
 ) -> Result<usize> {
+    let t_total = crate::device_timing::Mark::start(crate::device_timing::STAGE_PBKDF2);
     let seed = resolve_seed(&sign_input)?;
+    t_total.end();
+    // STAGE_PBKDF2 slot doubles as the resolve_seed (validate + PBKDF2) measurement.
 
     let template = tx_normalize::to_template(type_tag, ur_payload)?;
     let chain_kind = template.chain_kind;
@@ -558,13 +561,17 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         Some(p) => p,
         None => DerivationPath::parse("m/44'/60'/0'/0/0")?,
     };
+    let t_derive = crate::device_timing::Mark::start(crate::device_timing::STAGE_BIP32);
     let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path)?;
+    t_derive.end();
     let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
 
+    let t_sign = crate::device_timing::Mark::start(crate::device_timing::STAGE_ECDSA);
     let signed = eip1559::sign_eip1559(&eip1559::Eip1559SignInput {
         tx,
         private_key: SecretBytes::new(sk_bytes),
     })?;
+    t_sign.end();
     if output_buf.len() < signed.tx_bytes.len() {
         return Err(ShlosiloError::with_context(
             ShlosiloErrorKind::BufferTooSmall,

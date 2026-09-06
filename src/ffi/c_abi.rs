@@ -283,7 +283,9 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
             .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
         // UR decoding
+        let t_ur = crate::device_timing::Mark::start(crate::device_timing::STAGE_UR_DECODE);
         let decoded = crate::ur::ur_decode::decode(uri_str)?;
+        t_ur.end();
 
         // §B.5 entropy injection (NULL → empty slice; the XMR branch does an internal ≥16B misuse guard)
         // P0-02 #2: (NULL, len>0) rejected

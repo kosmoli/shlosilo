@@ -571,3 +571,20 @@ const uint8_t *shlosilo_cabi_version(void);
 int32_t shlosilo_cabi_check(uint16_t l3_expected_major,
                             uint16_t l3_expected_minor,
                             uint16_t l3_expected_patch);
+
+/* ---- device-timing diagnostics (weak: only present with the Rust
+ * `device-timing` feature; all return 0 when linked against a production .a) ---- */
+
+/* Register the millisecond clock callback (e.g. a wrapper around osKernelGetTickCount). */
+void shlosilo_timing_set_clock_fn(unsigned int fptr);
+
+/* Stage ids (u8): 1=ur_decode 2=pbkdf2_seed(resolve_seed) 3=bip32_derive
+ * 4=rlp_serialize 5=keccak_sighash 6=ecdsa_k256_sign 7=ecdsa_sign_lowlevel
+ * 8=y_parity_recover. Read with shlosilo_timing_get_stage(id). */
+unsigned int shlosilo_timing_get_stage(unsigned char stage);
+
+/* Total measured sign ms (0 when the feature is off). */
+unsigned int shlosilo_timing_get_total(void);
+
+/* Reset all stage counters. */
+void shlosilo_timing_reset(void);
