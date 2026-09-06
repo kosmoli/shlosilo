@@ -151,37 +151,41 @@ pub extern "C" fn shlosilo_timing_set_clock_fn(fptr: u32) {
 }
 
 /// C-ABI: read one stage's measured milliseconds (0 when the feature is off).
+#[cfg(feature = "device-timing")]
 #[no_mangle]
 pub extern "C" fn shlosilo_timing_get_stage(stage: u8) -> u32 {
     imp::read_stage(stage)
 }
 
 /// C-ABI: total measured sign ms (0 when the feature is off).
+#[cfg(feature = "device-timing")]
 #[no_mangle]
 pub extern "C" fn shlosilo_timing_get_total() -> u32 {
     imp::total_ms()
 }
 
 /// C-ABI: reset all counters.
+#[cfg(feature = "device-timing")]
 #[no_mangle]
 pub extern "C" fn shlosilo_timing_reset() {
     imp::reset_all();
 }
 
-/// Production builds (feature off): weak no-op symbols so the C smoke task
+/// Production builds (feature off): no-op symbols so the C smoke task
 /// links against both variants.
 #[cfg(not(feature = "device-timing"))]
-mod weak_nops {
-    #[no_mangle]
-    pub extern "C" fn shlosilo_timing_set_clock_fn(_fptr: u32) {}
-    #[no_mangle]
-    pub extern "C" fn shlosilo_timing_get_stage(_stage: u8) -> u32 {
-        0
-    }
-    #[no_mangle]
-    pub extern "C" fn shlosilo_timing_get_total() -> u32 {
-        0
-    }
-    #[no_mangle]
-    pub extern "C" fn shlosilo_timing_reset() {}
+#[no_mangle]
+pub extern "C" fn shlosilo_timing_set_clock_fn(_fptr: u32) {}
+#[cfg(not(feature = "device-timing"))]
+#[no_mangle]
+pub extern "C" fn shlosilo_timing_get_stage(_stage: u8) -> u32 {
+    0
 }
+#[cfg(not(feature = "device-timing"))]
+#[no_mangle]
+pub extern "C" fn shlosilo_timing_get_total() -> u32 {
+    0
+}
+#[cfg(not(feature = "device-timing"))]
+#[no_mangle]
+pub extern "C" fn shlosilo_timing_reset() {}
