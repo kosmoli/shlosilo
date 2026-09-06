@@ -289,13 +289,10 @@ mod tests {
     fn our_hash(message: &[u8]) -> [u8; 64] {
         // Pad the message per FIPS 180-4 and compress block by block.
         let mut state = initial_state();
-        let mut blocks = message.chunks_exact(128);
-        let mut buf = [0u8; 128];
-        for block in &mut blocks {
-            buf.copy_from_slice(block);
-            compress(&mut state, &buf);
+        let (blocks, rem) = message.as_chunks::<128>();
+        for block in blocks {
+            compress(&mut state, block);
         }
-        let rem = blocks.remainder();
         // Padding: 0x80, zeros, 128-bit length (big-endian bit count).
         let mut last = [0u8; 128];
         last[..rem.len()].copy_from_slice(rem);
