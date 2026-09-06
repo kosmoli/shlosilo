@@ -16,6 +16,7 @@ pub mod keccak256;
 pub mod ripemd160;
 pub mod sha256;
 pub mod sha512;
+pub mod sha512_u32;
 
 /// Shared hex module (dev/test only)
 ///

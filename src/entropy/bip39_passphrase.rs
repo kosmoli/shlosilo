@@ -8,9 +8,8 @@ use alloc::string::String;
 
 use crate::entropy::bip39_words;
 use crate::entropy::mnemonic::Mnemonic;
+use crate::entropy::pbkdf2_fast::pbkdf2_hmac_sha512;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
-use pbkdf2::pbkdf2_hmac;
-use sha2::Sha512;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// BIP-39 seed length (64 bytes)
@@ -63,7 +62,9 @@ pub fn mnemonic_to_seed(mnemonic: &Mnemonic, passphrase: &[u8]) -> Result<Bip39S
     }
     salt.push_str(p);
     let mut bytes = [0u8; BIP39_SEED_LEN];
-    pbkdf2_hmac::<Sha512>(sentence.as_bytes(), salt.as_bytes(), 2048, &mut bytes);
+    // PBKDF2-HMAC-SHA512 via the u32-pair fast path (bit-identical to the pbkdf2 crate;
+    // see entropy::pbkdf2_fast — the u64 sha2 backend costs ~40k cycles/block on CM4).
+    pbkdf2_hmac_sha512(sentence.as_bytes(), salt.as_bytes(), 2048, &mut bytes);
     sentence.zeroize();
     salt.zeroize();
     Ok(Bip39Seed { bytes })

@@ -13,4 +13,5 @@ pub mod bip39_passphrase;
 pub mod bip39_words;
 pub mod dice_rolls;
 pub mod mnemonic;
+pub mod pbkdf2_fast;
 pub mod source;
