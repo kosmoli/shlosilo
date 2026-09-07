@@ -11,11 +11,21 @@
 #include "shlosilo.h"
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include "cmsis_os.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "psram_heap_4.h"
 #include "lvgl.h"
 #include "hal_lcd.h"
 #define SHLOSILO_SMOKE_OK 0 /* ShlosiloErrorCode::Ok */
+
+/* device-timing 时钟回调：给 Rust 侧的毫秒计数（定义在文件尾） */
+static unsigned int smoke_tick_ms(void);
+/* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。
+ * 64KB：ETH 实测 used 35K。生成元改为循环 decompress 后不再需要 512KB。 */
+#define SHLOSILO_SMOKE_STACK_BYTES (64u * 1024u)
 
 LV_FONT_DECLARE(openSansEnTitle);
 LV_FONT_DECLARE(openSansEnText);
@@ -29,9 +39,67 @@ static const char *FIXTURE_ETH_SIGN_REQUEST =
     "mwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxad"
     "aaadrpceaadt";
 
+/* P6.6：idx12 自造 1-input ring16 unsigned_txset UR（host 测过 sign 3458B） */
+static const char *FIXTURE_XMR_TX_UNSIGNED =
+    "ur:xmr-txunsigned/gtjljtihjpjlcxkpjtjkiniojtihiecxjykscxjkih"
+    "jyahpfgrdenezeqzonlohftibejpleldinsabdjoaohgrpdeiyotdnfxoxfz"
+    "jetsoymwvogdpsiseedaotdkdmylnllnjkjkwdsrttfghdcegadshgpyhlkp"
+    "rptnseyldafshebkfhoyceotehlkceasfdsowyjtlremvwbwsgsbtemwrfft"
+    "wtmwaouejzweaeuohysatszeroosfdbswkwfwyglgwbzfytpckhyfzdnldbg"
+    "pkdpcknygmaychjlhgghhehlgekiingwfgfseymhbshglsglwylnpkfdtbhh"
+    "rsfphkadwfiyfmhsbylanylowpfejpndctcyhhwyrnmkeehkwegavyjlreur"
+    "hlhkceutytfnasgebwlgvwsoytkernhdflbwioclfntbnsynvtbnsahlckwn"
+    "fejyjsisrnyademhdwlscxcwkobkfzlyvenbskmensrkvthkjprdeodijzem"
+    "tovamdiaatfturrnknstylgsieglimvwpftbdmbzbzinfelkhshpgofsvdlk"
+    "jkgwrljsnbrpkghlqdrflyptaetsvwsobdspwnuyrnwplpvsfslkgovwtiwl"
+    "ctzemdfgdekpvdflcwcajotlptqdcposoyhposoecpfzpdfsfxgsfmcmkbdn"
+    "ylguhnwmykaeptlekghywfjkoypfchjolafejlhlgtgakslunnfrmernuega"
+    "adaoytetnyahcmesghgwtkuobzwmknbdwltyswaodabylkgobdmkyktsrnpy"
+    "mewnfpckspghmwtkltwkcfmygdlkchiewskbbzemrnmtlesgmwenvsgdkkim"
+    "wmvdfnzsvtamuodrcxdkspbnsonsjynypepfknkgktlusefstdpmmeztjphe"
+    "asckihspmdfthsglrtreldmkghctnnvawtceatfwwzfmgdlnvszowdsghedm"
+    "hsbdpsatbtndzedyndvlkscatihkmwtbvwjswpbwlbkstiwspfcygladluyk"
+    "lbcxvyiafrspntlkgsahdnpalflurskptptihfjkaefdeosatiimchdpwsis"
+    "ynsfvszetldwcpclbefypsprclplbslssagomncwmhjlbkwkhtlnwyythkdw"
+    "vduochhtsplplfvecnknrsztfslokorhlkidlkyarpvtdafsrezsceaaemcm"
+    "jeykpdckidgotarelsbgtagwgsplnelopswzmyeeiamsnetybywlrpylrynb"
+    "hfkifxpfrduoqdfplpmspmossnguzmdshfgssrvabkcmbkkpzojpftdkmtdt"
+    "iscfwpftadvamenemwonmwhfdtftkgsegsnnsrvaisfpcstoasfzytdmhtmh"
+    "bamopeceehylhpsftlfdbabafsdacpvoptgoesftylhknncsaxtkhebbdydy"
+    "tdkbaaneeycxkpbzcngyeturemtbmymhwnbkdrztdrsfvomkytjswfmhgmko"
+    "zmctspldgdvwfmihglghvereololkggykbemmdhgplcwosinqdlyvtqdhejz"
+    "rhlabbihvosesehyihbyhsoljechptqzhdmstsetceeotnwkeoemrocefdhh"
+    "drfdeemefxdpceykonmuuywkpdckhgjngumngatllstsisyachktdacpwyty"
+    "aoeygywluyluimyactjywsdliataskoscfzmpteszchkwybkatpsoykotaoe"
+    "lgltpmdasorhtibzcmjpimgorfvohegtldmtpsasdkpedmiopsiobtdihtvs"
+    "bslybagubwveoshnvtwdmnfeaecxvdcllfwzmnckcavdneprpdaokkcxyags"
+    "hsimytltplnybzcabdvtgulkmkmtbwswcektzerfoyloqdbgdkhtzopagezs"
+    "rltsjolafximoyperklkpmnefwkiztisztpmglidpkfxfztnlgcsylfelpcs"
+    "dakindpmssdafmwmzcrootihjezoeeltadaejeiypsgaghvwmdmevabsmuhy"
+    "dprdtacmhpwldtpthymtlrlppfvejsttgdesroprgmeeztroemcfpmnehdon"
+    "stolfgndotaxdrksgyzmsscxosjsstaxcsaysecabsmtwmjeehhksbimghgy"
+    "jzotpkrlhyvocwnsuedlnyaobecloxemgwaapmchvtjtwtlohflsghltchht"
+    "rphgbscyjkwnsgvddnhejnjzdkbndptyfdmkweiehsvoayiantgeasolfthg"
+    "eoahplfepeuerysbdefmamieiesnlakohkpayaoxwnmoguemvdhsheqduyvy"
+    "kpglctkszofxwkldlrpluehtspfttbmhlnrdplsbielsuymeaegdlkmeclfp"
+    "pyldaywyrpykprsbiylacmrdtnqdfyfsdpwzahhgemhfgughskhkrslegykp"
+    "koftrhktwpveptbnlketrorhnbrhwnckchdateecjtqzmedncejlehhybgjy"
+    "lddlbzjlaxcltonylatovoksztbnrsskmdaaenrsfmvswltakpgrgohgcyrh"
+    "prlycapdtkclzscmresteetsdnjzfrflptotjslktoemvypmlrglsfadknsp"
+    "vyfrntsnynctkojetnsklteheeolsbhkrerdwnutfhwfbdihcyasbbemflgh"
+    "byuypdfhlbaopkbtykiykscftkvysbfshfpaeedkjsehfwssiyaszoytetvt"
+    "tyknenfxbknnplgrgalegoetglurgsbwbnwpztvtiovobnetatrpjyotfwdk"
+    "cyswgrwdcfaaietbpdhsvomoytdkmthpptimbaaasejldrdtspcprkesdnnb"
+    "lkeohsamwsfllauthpgafsdrinzmjonbatfpghgujlnnpkdktkjlhgiogswy"
+    "gdcmfzrysovwgmgsdpisbtnyytfzsesnwdgordwftniydngmteamimpsdrro"
+    "ytkngoreonkbjyhdhfswjnaemypdaxctfnvtidaasoryynvtpfchbswmmutt"
+    "cfnntbdlkbeoihskpdtikowkwljejeadsbhdgumhdraeknlruyclbnhkrfis"
+    "wpisdkfxetjnprpfsndnbyfzttoyvybawyrsprssgwgdssmnlrdtvalgaawy"
+    "ytbkdw";
+
 static lv_obj_t *g_title = NULL;
 static lv_obj_t *g_log   = NULL;
-static char g_logbuf[512];
+static char g_logbuf[768];
 
 static void log_line(const char *fmt, ...)
 {
@@ -115,6 +183,9 @@ static int run_checks(void)
 
     /* 5. sign_ur — 真实 EIP-1559 签名 + 耗时基准 */
     log_line("sign: start...");
+    /* device-timing: 注册 ms 时钟（weak 符号，production .a 为 no-op） */
+    shlosilo_timing_reset();
+    shlosilo_timing_set_clock_fn((unsigned int)smoke_tick_ms);
     uint32_t t0 = osKernelGetTickCount();
     int rc = shlosilo_sign_ur_ffi(FIXTURE_ETH_SIGN_REQUEST, idx12, 12,
                                   NULL, 0, 0, NULL, 0, out, sizeof(out), &actual);
@@ -122,6 +193,28 @@ static int run_checks(void)
     if (rc == 0 && actual > 0 && out[0] == 0x02) {
         log_line("sign: PASS (%u bytes, type=0x%02x)", actual, out[0]);
         log_line("sign time: %u ms", dt);
+        log_line("t1 ur_decode: %u", shlosilo_timing_get_stage(1));
+        log_line("t2 pbkdf2: %u", shlosilo_timing_get_stage(2));
+        log_line("t3 bip32: %u", shlosilo_timing_get_stage(3));
+        log_line("t5 keccak: %u", shlosilo_timing_get_stage(5));
+        log_line("t6 ecdsa_hi: %u", shlosilo_timing_get_stage(6));
+        log_line("t7 ecdsa_lo: %u", shlosilo_timing_get_stage(7));
+        log_line("t8 yparity: %u", shlosilo_timing_get_stage(8));
+        log_line("t4 rlp_ser: %u", shlosilo_timing_get_stage(4));
+
+        /* XIP cache/布局效应实验：连跑第二次（热 I-cache/D-cache）。
+         * 若 t2 显著变小 → PBKDF2 差异来自 flash XIP cache 冷启动，而非代码回退。 */
+        shlosilo_timing_reset();
+        uint32_t t0b = osKernelGetTickCount();
+        int rc2 = shlosilo_sign_ur_ffi(FIXTURE_ETH_SIGN_REQUEST, idx12, 12,
+                                       NULL, 0, 0, NULL, 0, out, sizeof(out), &actual);
+        uint32_t dt2 = osKernelGetTickCount() - t0b;
+        if (rc2 == 0 && actual > 0) {
+            log_line("run2: %u ms (t2 pbkdf2: %u)",
+                     dt2, shlosilo_timing_get_stage(2));
+        } else {
+            log_line("run2: FAIL rc=%d", rc2);
+        }
     } else {
         fail++;
         log_line("sign: FAIL rc=%d", rc);
@@ -184,7 +277,33 @@ static int run_checks(void)
         memset(frame, 0, sizeof(frame));
     }
 
-return fail;
+    /* 8. XMR 1-input BP+（P6.6 MCU 峰值；idx12 自造 ring16，非真实资金） */
+    log_line("xmr: start...");
+    {
+        static uint8_t xmr_out[4096];
+        uint8_t entropy[32];
+        unsigned xmr_len = 0;
+        int i;
+        for (i = 0; i < 32; i++) {
+            entropy[i] = 0x77;
+        }
+        uint32_t t0 = osKernelGetTickCount();
+        int rc = shlosilo_sign_ur_ffi(FIXTURE_XMR_TX_UNSIGNED, idx12, 12,
+                                      NULL, 0, 0, entropy, sizeof(entropy),
+                                      xmr_out, sizeof(xmr_out), &xmr_len);
+        uint32_t dt = osKernelGetTickCount() - t0;
+        if (rc == 0 && xmr_len > 64) {
+            log_line("xmr: PASS (%u bytes)", xmr_len);
+            log_line("xmr time: %u ms", dt);
+        } else {
+            fail++;
+            log_line("xmr: FAIL rc=%d", rc);
+        }
+        memset(xmr_out, 0, sizeof(xmr_out));
+        memset(entropy, 0, sizeof(entropy));
+    }
+
+    return fail;
 }
 
 
@@ -192,7 +311,7 @@ return fail;
 void CreateShlosiloSmokeTask(void) {
     const osThreadAttr_t smoke_attr = {
         .name = "shlosilo_smoke",
-        .stack_size = 65536, /* 64KB: export(PBKDF2+BIP32 chain) + sign(ECDSA, no precomputed-tables) deep call stacks */
+        .stack_size = SHLOSILO_SMOKE_STACK_BYTES,
         .priority = (osPriority_t)osPriorityNormal,
     };
     osThreadId_t tid = osThreadNew(ShlosiloSmokeTask, NULL, &smoke_attr);
@@ -227,11 +346,17 @@ void shlosilo_panic_hook(const uint8_t *msg, size_t len)
     }
 }
 
+/* device-timing 时钟回调：给 Rust 侧的毫秒计数 */
+static unsigned int smoke_tick_ms(void);
+static unsigned int smoke_tick_ms(void)
+{
+    return (unsigned int)osKernelGetTickCount();
+}
+
 void ShlosiloSmokeTask(void *argument)
 {
     (void)argument;
     osDelay(500); /* 等 LVGL/helloworld task 初始化 */
-
     g_title = lv_label_create(lv_scr_act());
     lv_label_set_text(g_title, "shlosilo P6.2");
     lv_obj_align(g_title, LV_ALIGN_TOP_LEFT, 10, 10);
@@ -240,10 +365,50 @@ void ShlosiloSmokeTask(void *argument)
     g_log = lv_label_create(lv_scr_act());
     lv_label_set_text(g_log, "running...");
     lv_obj_align(g_log, LV_ALIGN_TOP_LEFT, 10, 50);
+    /* Same fluorescent green as the title for readability on the black background */
+    lv_obj_set_style_text_color(g_log, lv_color_hex(0x00FF00), 0);
 
     memset(g_logbuf, 0, sizeof(g_logbuf));
 
     int fail = run_checks();
+
+    /* Phase 6.6：MCU 峰值（heap_4 min-ever = 自启动以来的高水位）。
+     * PSRAM = LCD framebuffer + shlosilo Rust alloc；SRAM = FreeRTOS/LVGL。
+     * 本 smoke 含 ETH sign + multipart + XMR 1-input BP+。 */
+    {
+        const size_t psram_total = PsramGetTotalSize();
+        const size_t psram_min   = PsramGetMinimumEverFreeHeapSize();
+        const size_t psram_free  = PsramGetFreeHeapSize();
+        const size_t sram_total  = (size_t)configTOTAL_HEAP_SIZE;
+        const size_t sram_min    = xPortGetMinimumEverFreeHeapSize();
+        const size_t sram_free   = xPortGetFreeHeapSize();
+        const UBaseType_t stk_remain_w = uxTaskGetStackHighWaterMark(NULL);
+        const unsigned stk_remain_b =
+            (unsigned)stk_remain_w * (unsigned)sizeof(StackType_t);
+        const unsigned stk_used_b =
+            (SHLOSILO_SMOKE_STACK_BYTES > stk_remain_b)
+                ? (unsigned)SHLOSILO_SMOKE_STACK_BYTES - stk_remain_b
+                : 0u;
+        const unsigned psram_peak_k =
+            (psram_total >= psram_min)
+                ? (unsigned)((psram_total - psram_min) / 1024)
+                : 0u;
+        const unsigned sram_peak_k =
+            (sram_total >= sram_min)
+                ? (unsigned)((sram_total - sram_min) / 1024)
+                : 0u;
+        log_line("psram peak %uK/%uK free %uK",
+                 psram_peak_k,
+                 (unsigned)(psram_total / 1024),
+                 (unsigned)(psram_free / 1024));
+        log_line("sram  peak %uK/%uK free %uK",
+                 sram_peak_k,
+                 (unsigned)(sram_total / 1024),
+                 (unsigned)(sram_free / 1024));
+        log_line("stk   used %uK remain %uW",
+                 stk_used_b / 1024,
+                 (unsigned)stk_remain_w);
+    }
 
     /* panic 检测：Rust panic handler 写过 0xDEADBEEF 到 0x2000F000 */
     if (*(volatile uint32_t *)0x2000F000 == 0xDEADBEEF) {
