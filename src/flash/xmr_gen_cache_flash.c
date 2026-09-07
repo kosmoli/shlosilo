@@ -19,10 +19,12 @@
  * verify (XIP), all under the ROM QSPI API.
  */
 #include "mhscpu_qspi.h"
+#include "mhscpu_wdt.h"
 #include "mhscpu_cache.h"
 #include "mhscpu.h"
 #include <stdint.h>
 #include <string.h>
+#include "cmsis_os.h"
 
 /* Reserved slot: 65 x 4KB sectors = 260KB (256KB blob + header + slack). */
 #define GEN_CACHE_FLASH_BASE 0x01E00000u
@@ -91,9 +93,10 @@ static uint32_t gc_crc32(const uint8_t *data, uint32_t len)
  */
 void gc_flash_init(void)
 {
-    SYSCTRL_AHBPeriphClockCmd(SYSCTRL_AHBPeriph_DMA | SYSCTRL_AHBPeriph_CRYPT, ENABLE);
-    SYSCTRL_AHBPeriphResetCmd(SYSCTRL_AHBPeriph_DMA | SYSCTRL_AHBPeriph_CRYPT, ENABLE);
-    /* QSPI_SetLatency(0) inlined (mhscpu_qspi.c is not compiled here). */
+    /* No clock/reset pokes: the system is live when this runs (resetting DMA/CRYPT
+     * mid-flight can break other peripherals). The QSPI controller is already up —
+     * the firmware itself boots from this flash via XIP. Only refresh the latency
+     * field (QSPI_SetLatency(0) inlined; mhscpu_qspi.c is not compiled here). */
     {
         SYSCTRL_ClocksTypeDef clocks;
         SYSCTRL_GetClocksFreq(&clocks);
@@ -179,28 +182,38 @@ uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
         hdr[11] = (uint8_t)((crc >> 24) & 0xFF);
     }
 
+    (void)total; /* reserved for future multi-slot layout */
     total = 12u + blob_len;
+    /* Per-sector irq windows: a single multi-second critical section starves the
+     * scheduler and the watchdog feed task (observed as a device reset on the
+     * first XMR sign). Erase one sector, re-enable irqs, feed the WDT, continue. */
     addr = GEN_CACHE_FLASH_BASE;
-    __disable_irq();
     for (i = 0; i < GEN_CACHE_SECTORS; i++) {
+        __disable_irq();
         gc_rom_erase_sector(addr);
         gc_cache_clean_all();
+        __enable_irq();
         addr += GEN_CACHE_SECTOR_SIZE;
+        WDT_ReloadCounter();
+        osDelay(1);
     }
-    /* Program header, then the blob in 256B pages. */
+    /* Program header, then the blob in 256B pages (ROM program wrapper manages
+     * its own short irq window; feed the WDT every ~4KB). */
     {
         QSPI_CommandTypeDef cmd;
         cmd.Instruction = PAGE_PROG_CMD;
         cmd.BusMode = QSPI_BUSMODE_111;
         cmd.CmdFormat = QSPI_CMDFORMAT_CMD8_ADDR24_PDAT;
 
+        uint32_t programmed = 0;
         addr = GEN_CACHE_FLASH_BASE;
         gc_rom_program_page(&cmd, addr, sizeof(hdr), (uint8_t *)hdr);
         gc_cache_clean_all();
         addr += sizeof(hdr);
+        programmed += sizeof(hdr);
 
         uint32_t remaining = blob_len;
-        const uint8_t *src = blob;
+        const uint8_t *srcp = blob;
         while (remaining > 0) {
             uint32_t chunk = (remaining > 256u) ? 256u : remaining;
             /* Page program cannot cross a 256B page boundary. */
@@ -208,14 +221,18 @@ uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
             if (page_off + chunk > 256u) {
                 chunk = 256u - page_off;
             }
-            gc_rom_program_page(&cmd, addr, chunk, (uint8_t *)src);
+            gc_rom_program_page(&cmd, addr, chunk, (uint8_t *)srcp);
             gc_cache_clean_all();
             addr += chunk;
-            src += chunk;
+            srcp += chunk;
             remaining -= chunk;
+            programmed += chunk;
+            if ((programmed & 0xFFFu) < 256u) {
+                WDT_ReloadCounter();
+                osDelay(1);
+            }
         }
     }
-    __enable_irq();
 
     /* Read back via XIP and CRC-verify. */
     {
