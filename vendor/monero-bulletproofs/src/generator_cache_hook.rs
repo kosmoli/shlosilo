@@ -16,7 +16,10 @@
 //! soundness for the affected transaction (detectable on verification), never leak
 //! secrets. The load path deliberately does NOT re-check curve membership.
 
-use std_shims::{sync::{LazyLock, Mutex}, vec::Vec};
+use std_shims::{
+    sync::{LazyLock, Mutex},
+    vec::Vec,
+};
 
 pub(crate) type LoadFn = fn(prefix: &'static [u8]) -> Option<Vec<u8>>;
 pub(crate) type StoreFn = fn(prefix: &'static [u8], blob: &[u8]);
