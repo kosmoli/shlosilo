@@ -22,6 +22,12 @@
 #define SHLOSILO_SMOKE_OK 0 /* ShlosiloErrorCode::Ok */
 
 /* device-timing 时钟回调：给 Rust 侧的毫秒计数（定义在文件尾） */
+/* xmr_gen_cache_flash.c */
+extern void gc_flash_init(void);
+extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
+extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
+                         const uint8_t *blob, uint32_t blob_len);
+
 static unsigned int smoke_tick_ms(void);
 /* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。
  * 64KB：ETH 实测 used 35K。生成元改为循环 decompress 后不再需要 512KB。 */
@@ -278,6 +284,10 @@ static int run_checks(void)
     }
 
     /* 8. XMR 1-input BP+（P6.6 MCU 峰值；idx12 自造 ring16，非真实资金） */
+    /* BP+ generator cache: register flash backend (no-op against a production
+     * .a without the generator-cache-ffi feature). */
+    gc_flash_init();
+    shlosilo_gen_cache_set_hooks((unsigned int)gc_load, (unsigned int)gc_store);
     log_line("xmr: start...");
     {
         static uint8_t xmr_out[4096];

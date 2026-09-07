@@ -53,6 +53,19 @@ set(INCLUDE_DIR
     ${EXTERNAL_INCLUDE_PATH}
 )
 
+# ====== shlosilo (Rust staticlib) integration ======
+# PoC 3: shlosilo Rust 业务库集成
+# - libshlosilo.a 由 shlosilo-poc3 cargo build --release 产出
+# - 已用 arm-none-eabi-strip 删 debug info
+# - 通过 C-ABI 给 FreeRTOS task 调用（src/tasks/shlosilo_smoke_task.c）
+set(SHLOSILO_PATH "${CMAKE_CURRENT_SOURCE_DIR}/shlosilo")
+if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
+    message(STATUS "shlosilo: integrating libshlosilo.a from ${SHLOSILO_PATH}")
+    list(APPEND INCLUDE_DIR "${SHLOSILO_PATH}")
+else()
+    message(WARNING "shlosilo: libshlosilo.a not found at ${SHLOSILO_PATH}, skipping integration")
+endif()
+
 # LVGL source files
 file(GLOB_RECURSE LVGL
     "external/lvgl/src/core/*.c"
@@ -85,6 +98,10 @@ aux_source_directory(external/mh1903_lib/MHSCPU_Driver/src/ MH1903_DRIVER)
 set(APP_SRC
     src/main.c
     src/tasks/helloworld_task.c
+
+    src/tasks/shlosilo_smoke_task.c
+    shlosilo/embedded_alloc_glue.c
+
     src/driver/drv_sys.c
     src/driver/drv_uart.c
     src/driver/drv_psram.c
@@ -104,12 +121,13 @@ set(APP_SRC
     src/config/version.c
     src/driver/drv_power.c
     src/driver/low_power.c
+    src/flash/xmr_gen_cache_flash.c
     src/ui/imgDevLogo.c
     src/ui/openSansEnTitle.c
     src/ui/openSansEnText.c
 )
 
-set(objsrc 
+set(objsrc
     ${MH1903_DRIVER}
     ${APP_SRC}
     ${FREERTOS}
@@ -117,9 +135,19 @@ set(objsrc
     external/mh1903_lib/Device/MegaHunt/mhscpu/Source/GCC/startup_mhscpu.s
 )
 
+# Append shlosilo static library to objsrc (after APP_SRC)
+if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
+    list(APPEND objsrc "${SHLOSILO_PATH}/libshlosilo.a")
+endif()
+
 add_executable(${PROJECT_NAME}.elf ${objsrc})
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ${COMMON_DEFINITIONS})
 target_include_directories(${PROJECT_NAME}.elf PRIVATE ${INCLUDE_DIR})
+
+# Link shlosilo static library (must come AFTER target creation so link order is correct)
+if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
+    target_link_libraries(${PROJECT_NAME}.elf "${SHLOSILO_PATH}/libshlosilo.a")
+endif()
 
 target_link_libraries(${PROJECT_NAME}.elf m)
 
