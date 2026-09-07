@@ -59,6 +59,8 @@ version = "4"
 features = [
     "alloc",
     "zeroize",
+    # shlosilo vendor patch: raw extended-coordinate access for the generator cache
+    "generator-cache",
 ]
 default-features = false
 

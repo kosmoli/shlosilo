@@ -1,0 +1,71 @@
+# shlosilo vendor patch: curve25519-dalek 4.1.3 generator-cache feature
+#
+# Adds a feature-gated (generator-cache) symmetric pair for the BP+ generator
+# cache: raw extended-coordinate serialization + lossless reconstruction.
+# No crypto semantics touched: no sqrt, no inversion, no curve check. Callers must
+# only pass coordinates from previously validated points (see doc comments).
+#
+# Reapply after dalek upgrade: re-vendor the new version into vendor/curve25519-dalek,
+# apply this patch, run tests/xmr_generator_cache.rs (all_generators_rebuild_equal_reference).
+# Remove this vendor + [patch.crates-io] entry if upstream ever ships an equivalent
+# constructor pair (exit condition, per vendor policy 2026-09-03).
+#
+--- /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/curve25519-dalek-4.1.3/src/edwards.rs	2006-07-24 09:21:28.000000000 +0800
++++ vendor/curve25519-dalek/src/edwards.rs	2026-09-07 17:47:40.291904384 +0800
+@@ -505,6 +505,44 @@
+ // ------------------------------------------------------------------------
+ 
+ impl EdwardsPoint {
++    #[cfg(feature = "generator-cache")]
++    /// shlosilo vendor patch (2026-09-07): raw extended-coordinate serialization.
++    ///
++    /// Serializes (X, Y, Z, T) as 4 x 32-byte little-endian limbs (128 bytes total).
++    /// Used by the BP+ generator cache to persist decompressed generators without any
++    /// inversion or square root; the load side rebuilds points losslessly via
++    /// [`EdwardsPoint::from_raw_extended_bytes`].
++    pub fn to_raw_extended_bytes(&self) -> [u8; 128] {
++        let mut out = [0u8; 128];
++        out[0..32].copy_from_slice(&self.X.as_bytes());
++        out[32..64].copy_from_slice(&self.Y.as_bytes());
++        out[64..96].copy_from_slice(&self.Z.as_bytes());
++        out[96..128].copy_from_slice(&self.T.as_bytes());
++        out
++    }
++
++    #[cfg(feature = "generator-cache")]
++    /// shlosilo vendor patch (2026-09-07): direct reconstruction from raw extended
++    /// coordinates. NOT a decompression path: no curve membership check, no sqrt.
++    /// Callers MUST only pass coordinates that came from a validated point (e.g.
++    /// produced by [`EdwardsPoint::to_raw_extended_bytes`] on a decompressed generator).
++    pub fn from_raw_extended_bytes(bytes: &[u8; 128]) -> EdwardsPoint {
++        let mut x = [0u8; 32];
++        let mut y = [0u8; 32];
++        let mut z = [0u8; 32];
++        let mut t = [0u8; 32];
++        x.copy_from_slice(&bytes[0..32]);
++        y.copy_from_slice(&bytes[32..64]);
++        z.copy_from_slice(&bytes[64..96]);
++        t.copy_from_slice(&bytes[96..128]);
++        EdwardsPoint {
++            X: FieldElement::from_bytes(&x),
++            Y: FieldElement::from_bytes(&y),
++            Z: FieldElement::from_bytes(&z),
++            T: FieldElement::from_bytes(&t),
++        }
++    }
++
+     /// Convert to a ProjectiveNielsPoint
+     pub(crate) fn as_projective_niels(&self) -> ProjectiveNielsPoint {
+         ProjectiveNielsPoint {
+--- /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/curve25519-dalek-4.1.3/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
++++ vendor/curve25519-dalek/Cargo.toml	2026-09-07 17:46:25.456361790 +0800
+@@ -127,6 +127,9 @@
+ version = "0.4.0"
+ 
+ [features]
++# shlosilo vendor patch: exposes the raw extended-coordinate generator cache
++# serialize/reconstruct pair (to_raw_extended_bytes / from_raw_extended_bytes).
++generator-cache = []
+ alloc = ["zeroize?/alloc"]
+ default = [
+     "alloc",

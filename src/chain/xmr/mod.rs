@@ -8,6 +8,10 @@
 
 pub mod clsag;
 pub mod commitment;
+/// Test-only hooks for the BP+ generator cache (`#[doc(hidden)]`, not public API).
+#[cfg(feature = "std")]
+#[doc(hidden)]
+pub mod generator_cache_test_hooks;
 pub mod key_image_export;
 pub mod output_export;
 pub mod rct_sig;

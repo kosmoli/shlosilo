@@ -51,15 +51,43 @@ fn generators(prefix: &'static str, path: &str) {
             }}
             out
           }}
+          fn rebuild_from_blob(blob: &[u8], n: usize) -> Generators {{
+            // n points x 128 bytes of raw extended coordinates (X, Y, Z, T),
+            // all G first, then all H. Coordinates came from validated points.
+            let mut g = std_shims::vec::Vec::with_capacity(n / 2);
+            let mut h = std_shims::vec::Vec::with_capacity(n / 2);
+            let mut buf = [0u8; 128];
+            let mut idx = 0;
+            for _ in 0..(n / 2) {{
+              buf.copy_from_slice(&blob[idx..idx + 128]);
+              idx += 128;
+              g.push(curve25519_dalek::EdwardsPoint::from_raw_extended_bytes(&buf));
+            }}
+            for _ in 0..(n / 2) {{
+              buf.copy_from_slice(&blob[idx..idx + 128]);
+              idx += 128;
+              h.push(curve25519_dalek::EdwardsPoint::from_raw_extended_bytes(&buf));
+            }}
+            Generators {{ G: g, H: h }}
+          }}
           pub(crate) static GENERATORS: LazyLock<Generators> = LazyLock::new(|| {{
             const G_BYTES: &[[u8; 32]] = &[
 {G_str}            ];
             const H_BYTES: &[[u8; 32]] = &[
 {H_str}            ];
-            Generators {{
-              G: decompress_generator_vec(G_BYTES),
-              H: decompress_generator_vec(H_BYTES),
+            let n_points = G_BYTES.len() + H_BYTES.len();
+            if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
+              return rebuild_from_blob(&blob, n_points);
             }}
+            let g = decompress_generator_vec(G_BYTES);
+            let h = decompress_generator_vec(H_BYTES);
+            {{
+              let mut blob = std_shims::vec::Vec::with_capacity(n_points * 128);
+              for p in g.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
+              for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
+              crate::generator_cache_hook::try_store_blob(b"{prefix}", &blob);
+            }}
+            Generators {{ G: g, H: h }}
           }});
         "#,
       )

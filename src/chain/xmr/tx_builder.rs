@@ -1079,3 +1079,38 @@ mod tests {
         assert_eq!(plain, 1);
     }
 }
+
+#[cfg(test)]
+mod generator_cache_tests {
+    use curve25519_dalek::EdwardsPoint;
+
+    /// Vendor-patch round trip: raw extended serialization must reconstruct a point
+    /// bit-identically (all arithmetic later depends on the extended coordinates).
+    #[test]
+    fn raw_extended_round_trip_is_lossless() {
+        let base = curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
+        // a few distinct points via scalar mul
+        for k in [1u8, 2, 7, 42, 200] {
+            let p = base * curve25519_dalek::Scalar::from(k);
+            let blob = p.to_raw_extended_bytes();
+            let q = EdwardsPoint::from_raw_extended_bytes(&blob);
+            assert_eq!(p.compress().to_bytes(), q.compress().to_bytes());
+            // extended coordinates must match exactly, not just the compressed form
+            assert_eq!(blob, q.to_raw_extended_bytes());
+        }
+    }
+
+    /// A decompressed generator's raw extended bytes reconstruct to the same point.
+    #[test]
+    fn decompress_then_rebuild_is_lossless() {
+        let base = curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
+        let p = base * curve25519_dalek::Scalar::from(12345u32);
+        let compressed = p.compress();
+        let decompressed = compressed.decompress().expect("valid point");
+        let rebuilt = EdwardsPoint::from_raw_extended_bytes(&decompressed.to_raw_extended_bytes());
+        assert_eq!(
+            decompressed.compress().to_bytes(),
+            rebuilt.compress().to_bytes()
+        );
+    }
+}

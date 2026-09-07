@@ -22,6 +22,9 @@ use monero_io::*;
 pub(crate) mod point_vector;
 pub(crate) mod scalar_vector;
 
+pub(crate) mod generator_cache_hook;
+pub use generator_cache_hook::register_generator_cache_hooks;
+
 pub(crate) mod core;
 
 pub(crate) mod batch_verifier;
