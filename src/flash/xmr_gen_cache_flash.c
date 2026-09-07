@@ -49,9 +49,13 @@ static uint8_t gc_rom_erase_sector(uint32_t sectorAddress)
 static uint8_t gc_rom_program_page(QSPI_CommandTypeDef *cmd, uint32_t addr,
                                    uint32_t size, uint8_t *buffer)
 {
+    /* AES_Program, NOT ROM_QSPI_ProgramPage: the proven keystone write path
+     * (drv_qspi_flash.c) programs through the CRYPT engine and has ROM_QSPI_
+     * ProgramPage commented out — the direct ROM path corrupts data on this
+     * platform (observed: slot read back with invalid magic/CRC, pre/post=2). */
     __disable_irq();
     __disable_fault_irq();
-    uint8_t ret = ROM_QSPI_ProgramPage(cmd, NULL, addr, size, buffer);
+    uint8_t ret = AES_Program(cmd, NULL, addr, size, buffer);
     __enable_fault_irq();
     __enable_irq();
     return ret;
@@ -103,6 +107,9 @@ void gc_flash_init(void)
         QSPI->DEVICE_PARA = (QSPI->DEVICE_PARA & 0xFFFFu) |
                             (((clocks.CPU_Frequency * 2u / 1000000u)) << 16);
     }
+    /* AES_Program runs through the CRYPT engine: enable its clock (enable only —
+     * never reset a peripheral mid-flight on a live system). */
+    SYSCTRL_AHBPeriphClockCmd(SYSCTRL_AHBPeriph_CRYPT, ENABLE);
     g_gc_ready = 1;
 }
 
