@@ -27,6 +27,7 @@ extern void gc_flash_init(void);
 extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
 extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
                          const uint8_t *blob, uint32_t blob_len);
+extern uint32_t gc_probe(void);
 
 static unsigned int smoke_tick_ms(void);
 /* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。
@@ -288,8 +289,8 @@ static int run_checks(void)
      * .a without the generator-cache-ffi feature). */
     gc_flash_init();
     shlosilo_gen_cache_set_hooks((unsigned int)gc_load, (unsigned int)gc_store);
-    /* Cache state probe: non-NULL means a valid blob is already in flash. */
-    log_line("gencache: %s", gc_load((const uint8_t *)"probe", 5) != NULL ? "HIT" : "MISS");
+    /* Cache state probe: 0=hit 1=blank 2=corrupt 3=not-ready */
+    log_line("gencache pre: %u", (unsigned)gc_probe());
     log_line("xmr: start...");
     {
         static uint8_t xmr_out[4096];
@@ -307,6 +308,7 @@ static int run_checks(void)
         if (rc == 0 && xmr_len > 64) {
             log_line("xmr: PASS (%u bytes)", xmr_len);
             log_line("xmr time: %u ms", dt);
+            log_line("gencache post: %u", (unsigned)gc_probe());
         } else {
             fail++;
             log_line("xmr: FAIL rc=%d", rc);

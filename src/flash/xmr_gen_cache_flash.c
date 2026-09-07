@@ -245,3 +245,29 @@ uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
     }
     return 0;
 }
+
+
+/**
+ * @brief Diagnostic: report slot state. 0 = load hit; 1 = blank (all 0xFF at header);
+ *        2 = non-blank but magic/CRC rejected; 3 = not ready.
+ */
+uint32_t gc_probe(void)
+{
+    const uint8_t volatile *base = (const uint8_t volatile *)GEN_CACHE_FLASH_BASE;
+    uint32_t i;
+    uint8_t all_ff = 1;
+
+    if (!g_gc_ready) {
+        return 3;
+    }
+    for (i = 0; i < 16; i++) {
+        if (base[i] != 0xFF) {
+            all_ff = 0;
+            break;
+        }
+    }
+    if (all_ff) {
+        return 1;
+    }
+    return (gc_load((const uint8_t *)"probe", 5) != NULL) ? 0 : 2;
+}
