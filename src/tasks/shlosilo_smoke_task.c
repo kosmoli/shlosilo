@@ -288,6 +288,8 @@ static int run_checks(void)
      * .a without the generator-cache-ffi feature). */
     gc_flash_init();
     shlosilo_gen_cache_set_hooks((unsigned int)gc_load, (unsigned int)gc_store);
+    /* Cache state probe: non-NULL means a valid blob is already in flash. */
+    log_line("gencache: %s", gc_load((const uint8_t *)"probe", 5) != NULL ? "HIT" : "MISS");
     log_line("xmr: start...");
     {
         static uint8_t xmr_out[4096];
