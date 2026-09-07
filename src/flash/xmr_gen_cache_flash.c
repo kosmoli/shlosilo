@@ -39,38 +39,23 @@
 
 static uint8_t volatile g_gc_ready = 0;
 
-/* Local ROM-based flash wrappers: the trimmed mh1903_lib in this project does not
- * compile mhscpu_qspi.c / mhscpu_cache.c, so we bind the ROM table directly. */
-static uint8_t gc_rom_erase_sector(uint32_t sectorAddress)
+static uint8_t gc_rom_program_page(uint32_t addr, uint32_t size, uint8_t *buffer)
 {
-    return ROM_QSPI_EraseSector(NULL, sectorAddress);
-}
-
-static uint8_t gc_rom_program_page(QSPI_CommandTypeDef *cmd, uint32_t addr,
-                                   uint32_t size, uint8_t *buffer)
-{
-    /* AES_Program, NOT ROM_QSPI_ProgramPage: the proven keystone write path
-     * (drv_qspi_flash.c) programs through the CRYPT engine and has ROM_QSPI_
-     * ProgramPage commented out — the direct ROM path corrupts data on this
-     * platform (observed: slot read back with invalid magic/CRC, pre/post=2). */
+    /* AES_Program with NULL cmd — the exact keystone QspiFlashEraseAndWrite write
+     * path (drv_qspi_flash.c): under GCC it routes to the full mhscpu_qspi.c
+     * driver (QSPI_ProgramPage, WREN + DMA + quad select for GD chips), which is
+     * why the whole driver is now vendored. The bare ROM_QSPI_ProgramPage path
+     * corrupts data on this platform (observed pre/post=2). */
     __disable_irq();
     __disable_fault_irq();
-    uint8_t ret = AES_Program(cmd, NULL, addr, size, buffer);
+    uint8_t ret = AES_Program(NULL, NULL, addr, size, buffer);
     __enable_fault_irq();
     __enable_irq();
     return ret;
 }
 
-static void gc_cache_clean_all(void)
-{
-    /* CACHE_CleanAll(CACHE) inlined (mhscpu_cache.c is not compiled here). */
-    while (CACHE->CACHE_AES_CS & CACHE_IS_BUSY) {
-    }
-    CACHE->CACHE_REF = CACHE_REFRESH_ALLTAG;
-    CACHE->CACHE_REF |= CACHE_REFRESH;
-    while (CACHE->CACHE_REF & CACHE_REFRESH) {
-    }
-}
+#define gc_rom_erase_sector(addr) FLASH_EraseSector((addr))
+#define gc_cache_clean_all() CACHE_CleanAll(CACHE)
 
 /* CRC32 (IEEE 802.3, reflected, poly 0xEDB88320, init/xorout 0xFFFFFFFF). */
 static uint32_t gc_crc32(const uint8_t *data, uint32_t len)
@@ -97,19 +82,11 @@ static uint32_t gc_crc32(const uint8_t *data, uint32_t len)
  */
 void gc_flash_init(void)
 {
-    /* No clock/reset pokes: the system is live when this runs (resetting DMA/CRYPT
-     * mid-flight can break other peripherals). The QSPI controller is already up —
-     * the firmware itself boots from this flash via XIP. Only refresh the latency
-     * field (QSPI_SetLatency(0) inlined; mhscpu_qspi.c is not compiled here). */
-    {
-        SYSCTRL_ClocksTypeDef clocks;
-        SYSCTRL_GetClocksFreq(&clocks);
-        QSPI->DEVICE_PARA = (QSPI->DEVICE_PARA & 0xFFFFu) |
-                            (((clocks.CPU_Frequency * 2u / 1000000u)) << 16);
-    }
-    /* AES_Program runs through the CRYPT engine: enable its clock (enable only —
-     * never reset a peripheral mid-flight on a live system). */
+    /* No clock/reset pokes beyond what AES_Program needs: the system is live when
+     * this runs. The QSPI controller is already up — the firmware itself boots
+     * from this flash via XIP. */
     SYSCTRL_AHBPeriphClockCmd(SYSCTRL_AHBPeriph_CRYPT, ENABLE);
+    QSPI_SetLatency(0);
     g_gc_ready = 1;
 }
 
@@ -214,7 +191,7 @@ uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
 
         uint32_t programmed = 0;
         addr = GEN_CACHE_FLASH_BASE;
-        gc_rom_program_page(&cmd, addr, sizeof(hdr), (uint8_t *)hdr);
+        gc_rom_program_page(addr, sizeof(hdr), (uint8_t *)hdr);
         gc_cache_clean_all();
         addr += sizeof(hdr);
         programmed += sizeof(hdr);
@@ -228,7 +205,7 @@ uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
             if (page_off + chunk > 256u) {
                 chunk = 256u - page_off;
             }
-            gc_rom_program_page(&cmd, addr, chunk, (uint8_t *)srcp);
+            gc_rom_program_page(addr, chunk, (uint8_t *)srcp);
             gc_cache_clean_all();
             addr += chunk;
             srcp += chunk;

@@ -62,6 +62,8 @@ set(SHLOSILO_PATH "${CMAKE_CURRENT_SOURCE_DIR}/shlosilo")
 if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
     message(STATUS "shlosilo: integrating libshlosilo.a from ${SHLOSILO_PATH}")
     list(APPEND INCLUDE_DIR "${SHLOSILO_PATH}")
+list(APPEND INCLUDE_DIR "external/mh1903_lib/MHSCPU_Driver/inc/cryptlib")
+list(APPEND INCLUDE_DIR "external/mh1903_lib/ctaes")
 else()
     message(WARNING "shlosilo: libshlosilo.a not found at ${SHLOSILO_PATH}, skipping integration")
 endif()
@@ -94,6 +96,11 @@ file(GLOB_RECURSE FREERTOS
 
 # MH1903 driver source files
 aux_source_directory(external/mh1903_lib/MHSCPU_Driver/src/ MH1903_DRIVER)
+# The vendored mhscpu_qspi.c (keystone's proven QSPI flash driver, needed by the BP+
+# generator cache backend) is wrapped in #ifdef BUILD_PRODUCTION upstream — compile it
+# with the define regardless of the global BUILD_ENVIRONMENT.
+set_source_files_properties(external/mh1903_lib/MHSCPU_Driver/src/mhscpu_qspi.c
+    PROPERTIES COMPILE_DEFINITIONS BUILD_PRODUCTION)
 
 set(APP_SRC
     src/main.c
@@ -122,6 +129,7 @@ set(APP_SRC
     src/driver/drv_power.c
     src/driver/low_power.c
     src/flash/xmr_gen_cache_flash.c
+    external/mh1903_lib/ctaes/ctaes.c
     src/ui/imgDevLogo.c
     src/ui/openSansEnTitle.c
     src/ui/openSansEnText.c

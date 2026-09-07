@@ -22,8 +22,6 @@ void RustFree(void *p);
 
 void PrintHeapInfo(void);
 
-#ifdef COMPILE_SIMULATOR
-#include <stdlib.h>
 #ifndef snprintf_s
 #define snprintf_s                          snprintf
 #endif
@@ -46,6 +44,7 @@ void PrintHeapInfo(void);
 #define strcasecmp_s(s, slen, dest, result_p) strcasecmp(s, dest)
 #endif
 
+#ifdef COMPILE_SIMULATOR
 #define SRAM_MALLOC(size)                   malloc(size)
 #define SRAM_FREE(p)                        free(p)
 #define SRAM_REALLOC(p, size)               realloc(p, size)
