@@ -40,9 +40,7 @@ mod imp {
             return None;
         }
         // Header: [len u32 LE][crc u32 LE] — C side guarantees CRC validity.
-        let len = unsafe {
-            u32::from_le_bytes(core::ptr::read(hdr as *const [u8; 4]))
-        } as usize;
+        let len = unsafe { u32::from_le_bytes(core::ptr::read(hdr as *const [u8; 4])) } as usize;
         // Sanity bound: blob must fit the known generator sizes; reject absurd values
         // before slicing device memory.
         if len == 0 || len > 4096 * 128 {
@@ -60,7 +58,12 @@ mod imp {
         }
         let fptr: StoreC = unsafe { core::mem::transmute(f as usize) };
         // Best effort: a failed store only costs boot time on the next run.
-        let _ = fptr(prefix.as_ptr(), prefix.len() as u32, blob.as_ptr(), blob.len() as u32);
+        let _ = fptr(
+            prefix.as_ptr(),
+            prefix.len() as u32,
+            blob.as_ptr(),
+            blob.len() as u32,
+        );
     }
 }
 
