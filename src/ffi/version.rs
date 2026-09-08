@@ -5,8 +5,11 @@ pub const SHLOSILO_VERSION_MAJOR: u16 = 0;
 pub const SHLOSILO_VERSION_MINOR: u16 = 5;
 pub const SHLOSILO_VERSION_PATCH: u16 = 0;
 
-/// Version string ("v0.5.0-poc4"; NUL-terminated — safe for C-side printf/strlen)
-pub const SHLOSILO_VERSION_STRING: &str = "v0.5.0-poc4\0";
+/// Version string ("v0.5.0-poc4+b571508"; NUL-terminated — safe for C-side printf/strlen).
+///
+/// The `+<git7>` build suffix is injected by build.rs (SHLOSILO_BUILD_GIT) and changes
+/// with every commit, so on-device smoke output identifies the exact firmware build.
+pub const SHLOSILO_VERSION_STRING: &str = concat!("v0.5.0-poc4+", env!("SHLOSILO_BUILD_GIT"), "\0");
 
 /// C ABI version (**independent of the runtime version** — L3 must validate the ABI version matches)
 ///
