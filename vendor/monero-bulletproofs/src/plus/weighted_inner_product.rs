@@ -1,5 +1,25 @@
 use std_shims::{vec, vec::Vec};
 
+// shlosilo vendor patch: prove-phase timing (WIP round decomposition: L/R multiexp
+// vs generator folding). No-op stubs keep call sites unconditional; real impl is
+// feature-gated (mirrors aggregate_range_proof.rs pattern).
+#[cfg(feature = "prove-timing")]
+use crate::prove_timing_hook::{PhaseProbe, PHASE_WIP_FOLD, PHASE_WIP_L_R};
+#[cfg(not(feature = "prove-timing"))]
+mod timing_noop {
+    pub(crate) struct PhaseProbe(pub(crate) u8, pub(crate) u32);
+    impl PhaseProbe {
+        pub(crate) fn start(_phase: u8) -> Self {
+            PhaseProbe(0, 0)
+        }
+        pub(crate) fn end(self) {}
+    }
+    pub(crate) const PHASE_WIP_FOLD: u8 = 0;
+    pub(crate) const PHASE_WIP_L_R: u8 = 0;
+}
+#[cfg(not(feature = "prove-timing"))]
+use timing_noop::{PhaseProbe, PHASE_WIP_FOLD, PHASE_WIP_L_R};
+
 use rand_core::{CryptoRng, RngCore};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -122,6 +142,7 @@ impl WipStatement {
 
         let e = Self::transcript_L_R(transcript, L, R);
         let inv_e = e.invert();
+        let _fold_probe = PhaseProbe::start(PHASE_WIP_FOLD);
 
         // This vartime is safe as all of these arguments are public
         let mut new_g_bold = Vec::with_capacity(g_bold1.len());
@@ -138,6 +159,7 @@ impl WipStatement {
         let e_square = e * e;
         let inv_e_square = inv_e * inv_e;
 
+        _fold_probe.end();
         (
             e,
             inv_e,
@@ -251,6 +273,7 @@ impl WipStatement {
                 .collect::<Vec<_>>();
             L_terms.push((c_l, g));
             L_terms.push((d_l, h));
+            let lr_probe = PhaseProbe::start(PHASE_WIP_L_R);
             let L = CompressedPoint::from(
                 (multiexp(&L_terms) * INV_EIGHT.into())
                     .compress()
@@ -274,6 +297,7 @@ impl WipStatement {
             );
             R_vec.push(R);
             R_terms.zeroize();
+            lr_probe.end();
 
             let (e, inv_e, e_square, inv_e_square);
             (e, inv_e, e_square, inv_e_square, g_bold, h_bold) = Self::next_G_H(

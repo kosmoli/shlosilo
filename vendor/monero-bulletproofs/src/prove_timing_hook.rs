@@ -18,6 +18,8 @@ pub(crate) const PHASE_INITIAL_MULTISEXP: u8 = 1;
 pub(crate) const PHASE_A_HAT: u8 = 2;
 pub(crate) const PHASE_WIP_ROUNDS: u8 = 3;
 pub(crate) const PHASE_TOTAL: u8 = 4;
+pub(crate) const PHASE_WIP_L_R: u8 = 5;
+pub(crate) const PHASE_WIP_FOLD: u8 = 6;
 
 static CLOCK_FN: AtomicU32 = AtomicU32::new(0);
 
@@ -50,8 +52,10 @@ impl PhaseProbe {
 }
 
 /// Accumulate elapsed ms per phase (wrapping add; smoke task reads and logs).
-static PHASE_MS: [AtomicU32; 5] = [
+static PHASE_MS: [AtomicU32; 7] = [
     AtomicU32::new(0), // unused 0-index
+    AtomicU32::new(0),
+    AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
