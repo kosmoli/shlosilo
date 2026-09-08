@@ -15,6 +15,8 @@ fn main() {
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=SHLOSILO_BUILD_GIT={git_hash}");
     // Rebuild when HEAD moves so the hash stays current.
-    println!("cargo:rerun-if-changed=../.git/HEAD");
+    // Track the git reflog: it changes on every commit/checkout, unlike .git/HEAD
+    // (a symref whose content only changes on branch switches).
+    println!("cargo:rerun-if-changed=.git/logs/HEAD");
     println!("cargo:rerun-if-changed=build.rs");
 }
