@@ -13,6 +13,8 @@
 //! - **raw private key pointers are never exposed** — only public outputs (signed tx bytes / xpub)
 
 pub mod c_abi;
+#[cfg(feature = "cn-timing-ffi")]
+pub mod cn_timing_ffi;
 pub mod error_code;
 /// BP+ generator cache FFI hooks (device flash backend). See module docs.
 #[cfg(feature = "generator-cache-ffi")]

@@ -22,3 +22,8 @@ digest = "0.10.7"
 
 [dev-dependencies]
 hex = "0.4"
+
+[features]
+default = []
+## Device-side CN slow-hash phase timing probes (smoke build only).
+cn-timing = []

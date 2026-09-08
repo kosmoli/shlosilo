@@ -13,6 +13,22 @@ use crate::{
     cnaes,
     util::{subarray, subarray_copy, subarray_mut},
 };
+// Mirror the bp probe pattern: cfg-gated use + noop fallback so feature-off
+// builds compile unchanged.
+#[cfg(feature = "cn-timing")]
+use crate::cn_timing_hook::PhaseProbe;
+#[cfg(not(feature = "cn-timing"))]
+mod noop_probe {
+    pub(crate) struct PhaseProbe;
+    impl PhaseProbe {
+        pub(crate) fn start(_phase: u8) -> Option<Self> {
+            None
+        }
+        pub(crate) fn end(&mut self) {}
+    }
+}
+#[cfg(not(feature = "cn-timing"))]
+use noop_probe::PhaseProbe;
 
 pub(crate) const MEMORY: usize = 1 << 21; // 2MB scratchpad
 pub(crate) const MEMORY_BLOCKS: usize = MEMORY / AES_BLOCK_SIZE;
@@ -254,8 +270,14 @@ fn extra_hashes(input: &[u8; KECCAK1600_BYTE_SIZE]) -> [u8; 32] {
 /// <https://github.com/monero-project/monero/blob/v0.18.3.4/src/crypto/slow-hash.c#L1776-L1873>
 #[expect(clippy::cast_possible_truncation)]
 pub(crate) fn cn_slow_hash(data: &[u8], variant: Variant, height: u64) -> [u8; 32] {
+    #[cfg(feature = "cn-timing")]
+    let mut probe_total = PhaseProbe::start(5);
     let mut state = CnSlowHashState::default();
+    #[cfg(feature = "cn-timing")]
+    let mut p1 = PhaseProbe::start(1);
     keccak1600(data, state.get_keccak_bytes_mut());
+    #[cfg(feature = "cn-timing")]
+    p1.as_mut().map_or((), |p| p.end());
     let aes_expanded_key = cnaes::key_extend(state.get_aes_key0());
     let mut text = state.get_init();
 
@@ -269,11 +291,15 @@ pub(crate) fn cn_slow_hash(data: &[u8], variant: Variant, height: u64) -> [u8; 3
     // this code was still used for mining.
     let mut long_state: Vec<u128> = Vec::with_capacity(MEMORY_BLOCKS);
 
+    #[cfg(feature = "cn-timing")]
+    let mut p2 = PhaseProbe::start(2);
     for i in 0..MEMORY_BLOCKS {
         let block = &mut text[i % INIT_BLOCKS];
         *block = cnaes::aesb_pseudo_round(*block, &aes_expanded_key);
         long_state.push(*block);
     }
+    #[cfg(feature = "cn-timing")]
+    p2.as_mut().map_or((), |p| p.end());
 
     // Treat long_state as an array now that it's initialized on the heap
     let long_state: &mut [u128; MEMORY_BLOCKS] = subarray_mut(&mut long_state, 0);
@@ -286,6 +312,8 @@ pub(crate) fn cn_slow_hash(data: &[u8], variant: Variant, height: u64) -> [u8; 3
     let mut c2;
     let mut a1;
 
+    #[cfg(feature = "cn-timing")]
+    let mut p3 = PhaseProbe::start(3);
     for _ in 0..ITER / 2 {
         /* Dependency chain: address -> read value ------+
          * written value <-+ hard function (AES or MUL) <+
@@ -327,8 +355,13 @@ pub(crate) fn cn_slow_hash(data: &[u8], variant: Variant, height: u64) -> [u8; 3
         a = a1;
     }
 
+    #[cfg(feature = "cn-timing")]
+    p3.as_mut().map_or((), |p| p.end());
+
     let mut text = state.get_init();
     let aes_expanded_key = cnaes::key_extend(state.get_aes_key1());
+    #[cfg(feature = "cn-timing")]
+    let mut p4 = PhaseProbe::start(4);
     for i in 0..MEMORY / INIT_SIZE_BYTE {
         for (j, block) in text.iter_mut().enumerate() {
             let ls_index = i * INIT_BLOCKS + j;
@@ -340,7 +373,12 @@ pub(crate) fn cn_slow_hash(data: &[u8], variant: Variant, height: u64) -> [u8; 3
 
     hash_permutation(state.get_keccak_bytes_mut());
 
-    extra_hashes(state.get_keccak_bytes())
+    let out = extra_hashes(state.get_keccak_bytes());
+    #[cfg(feature = "cn-timing")]
+    p4.as_mut().map_or((), |p| p.end());
+    #[cfg(feature = "cn-timing")]
+    probe_total.as_mut().map_or((), |p| p.end());
+    out
 }
 
 #[cfg(test)]

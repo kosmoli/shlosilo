@@ -7,7 +7,22 @@ mod cnaes;
 mod slow_hash;
 mod util;
 
+#[cfg(feature = "cn-timing")]
+pub mod cn_timing_hook;
+
 use slow_hash::cn_slow_hash;
+
+/// Device-phase timing hooks (feature `cn-timing`; no-op stubs otherwise).
+#[cfg(feature = "cn-timing")]
+pub use cn_timing_hook::{phase_ms, register_clock, reset_all};
+#[cfg(not(feature = "cn-timing"))]
+pub fn register_clock(_f: fn() -> u32) {}
+#[cfg(not(feature = "cn-timing"))]
+pub fn reset_all() {}
+#[cfg(not(feature = "cn-timing"))]
+pub fn phase_ms(_phase: u8) -> u32 {
+    0
+}
 
 /// Calculates the `CryptoNight` v0 hash of buf.
 pub fn cryptonight_hash_v0(buf: &[u8]) -> [u8; 32] {
