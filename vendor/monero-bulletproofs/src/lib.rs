@@ -25,6 +25,12 @@ pub(crate) mod scalar_vector;
 pub(crate) mod generator_cache_hook;
 pub use generator_cache_hook::register_generator_cache_hooks;
 
+#[cfg(feature = "prove-timing")]
+#[path = "prove_timing_hook.rs"]
+pub(crate) mod prove_timing_hook;
+#[cfg(feature = "prove-timing")]
+pub use prove_timing_hook::{phase_ms, register_prove_timing_clock, reset as reset_prove_timing};
+
 pub(crate) mod core;
 
 pub(crate) mod batch_verifier;

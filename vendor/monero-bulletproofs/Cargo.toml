@@ -35,6 +35,8 @@ rustdoc-args = [
 
 [features]
 compile-time-generators = ["curve25519-dalek/precomputed-tables"]
+# shlosilo vendor patch: prove-phase timing probes (device perf decomposition)
+prove-timing = []
 default = [
     "std",
     "compile-time-generators",

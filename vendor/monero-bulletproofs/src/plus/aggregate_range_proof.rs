@@ -1,5 +1,30 @@
 use std_shims::{vec, vec::Vec};
 
+// shlosilo vendor patch: prove-phase timing (device perf decomposition).
+// No-op stubs keep call sites unconditional; real impl is feature-gated.
+#[cfg(feature = "prove-timing")]
+use crate::prove_timing_hook::{
+    PhaseProbe, PHASE_A_HAT, PHASE_INITIAL_MULTISEXP, PHASE_TOTAL, PHASE_WIP_ROUNDS,
+};
+#[cfg(not(feature = "prove-timing"))]
+mod timing_noop {
+    pub(crate) struct PhaseProbe(pub(crate) u8, pub(crate) u32);
+    impl PhaseProbe {
+        pub(crate) fn start(_phase: u8) -> Self {
+            PhaseProbe(0, 0)
+        }
+        pub(crate) fn end(self) {}
+    }
+    pub(crate) const PHASE_A_HAT: u8 = 0;
+    pub(crate) const PHASE_INITIAL_MULTISEXP: u8 = 0;
+    pub(crate) const PHASE_TOTAL: u8 = 0;
+    pub(crate) const PHASE_WIP_ROUNDS: u8 = 0;
+}
+#[cfg(not(feature = "prove-timing"))]
+use timing_noop::{
+    PhaseProbe, PHASE_A_HAT, PHASE_INITIAL_MULTISEXP, PHASE_TOTAL, PHASE_WIP_ROUNDS,
+};
+
 use rand_core::{CryptoRng, RngCore};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -179,6 +204,7 @@ impl<'a> AggregateRangeStatement<'a> {
                 return None;
             }
         }
+        let _total = PhaseProbe::start(PHASE_TOTAL);
 
         let Self { generators, V } = self;
         // Monero expects all of these points to be torsion-free
@@ -231,7 +257,9 @@ impl<'a> AggregateRangeStatement<'a> {
             A_terms.push((*a_r, generators.generator(GeneratorsList::HBold, i)));
         }
         A_terms.push((alpha, BpPlusGenerators::h()));
+        let _p1 = PhaseProbe::start(PHASE_INITIAL_MULTISEXP);
         let mut A = multiexp(&A_terms);
+        _p1.end();
         A_terms.zeroize();
 
         // Multiply by INV_EIGHT per earlier commentary
@@ -239,6 +267,7 @@ impl<'a> AggregateRangeStatement<'a> {
 
         let A = CompressedPoint::from(A.compress().to_bytes());
 
+        let _p2 = PhaseProbe::start(PHASE_A_HAT);
         let AHatComputation {
             y,
             d_descending_y_plus_z,
@@ -248,6 +277,7 @@ impl<'a> AggregateRangeStatement<'a> {
             A_hat,
         } = Self::compute_A_hat(PointVector(V), &generators, &mut transcript, A)
             .expect("A is a valid point as we just compressed it");
+        _p2.end();
 
         let a_l = a_l - z;
         let a_r = a_r + &d_descending_y_plus_z;
@@ -258,16 +288,21 @@ impl<'a> AggregateRangeStatement<'a> {
 
         Some(AggregateRangeProof {
             A,
-            wip: WipStatement::new(generators, A_hat, y)
-                .prove(
-                    rng,
-                    transcript,
-                    &Zeroizing::new(
-                        WipWitness::new(a_l, a_r, alpha)
-                            .expect("Bulletproofs::Plus created an invalid WipWitness"),
-                    ),
-                )
-                .expect("Bulletproof::Plus failed to prove the weighted inner-product"),
+            wip: {
+                let _p3 = PhaseProbe::start(PHASE_WIP_ROUNDS);
+                let wip = WipStatement::new(generators, A_hat, y)
+                    .prove(
+                        rng,
+                        transcript,
+                        &Zeroizing::new(
+                            WipWitness::new(a_l, a_r, alpha)
+                                .expect("Bulletproofs::Plus created an invalid WipWitness"),
+                        ),
+                    )
+                    .expect("Bulletproof::Plus failed to prove the weighted inner-product");
+                _p3.end();
+                wip
+            },
         })
     }
 

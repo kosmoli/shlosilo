@@ -595,3 +595,11 @@ void shlosilo_timing_reset(void);
  * gc_load / gc_store (see xmr_gen_cache_flash.c). When linked against an .a built
  * without the generator-cache-ffi feature this is a no-op. */
 void shlosilo_gen_cache_set_hooks(unsigned int load_fptr, unsigned int store_fptr);
+
+/* BP+ prove-phase timing (device perf decomposition; no-op when the .a lacks
+ * prove-timing-ffi). Same clock as shlosilo_timing_set_clock_fn. Phase ids:
+ * 1 = initial multiexp (A commit), 2 = A_hat computation, 3 = WIP rounds,
+ * 4 = total prove. Values are accumulated ms. */
+void shlosilo_bp_timing_set_clock(unsigned int clock_fptr);
+void shlosilo_bp_timing_reset(void);
+unsigned int shlosilo_bp_timing_phase(unsigned char phase);
