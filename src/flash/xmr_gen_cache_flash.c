@@ -43,15 +43,9 @@ static uint8_t gc_rom_program_page(uint32_t addr, uint32_t size, uint8_t *buffer
 {
     /* AES_Program with NULL cmd — the exact keystone QspiFlashEraseAndWrite write
      * path (drv_qspi_flash.c): under GCC it routes to the full mhscpu_qspi.c
-     * driver (QSPI_ProgramPage, WREN + DMA + quad select for GD chips), which is
-     * why the whole driver is now vendored. The bare ROM_QSPI_ProgramPage path
-     * corrupts data on this platform (observed pre/post=2). */
-    __disable_irq();
-    __disable_fault_irq();
-    uint8_t ret = AES_Program(NULL, NULL, addr, size, buffer);
-    __enable_fault_irq();
-    __enable_irq();
-    return ret;
+     * driver (QSPI_ProgramPage, WREN + DMA + quad select for GD chips). Caller
+     * manages the irq window and feeds the WDT between 4KB blocks. */
+    return AES_Program(NULL, NULL, addr, size, buffer);
 }
 
 #define gc_rom_erase_sector(addr) FLASH_EraseSector((addr))
@@ -181,41 +175,39 @@ uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
         WDT_ReloadCounter();
         osDelay(1);
     }
-    /* Program header, then the blob in 256B pages (ROM program wrapper manages
-     * its own short irq window; feed the WDT every ~4KB). */
+    /* Program in full 4KB units at 4KB-aligned addresses: AES_Program asserts
+     * (addr % 4096) == 0 and the keystone write path always passes exactly one
+     * sector (QspiFlashEraseAndWrite asserts len == 4096). The 12B header is
+     * fused into block 0 ahead of the blob; the tail block is zero-padded.
+     * Buffer lives in PSRAM via the smoke task's heap? No — static SRAM buffer is
+     * 4KB; acceptable (SRAM peak 101K/450K). */
     {
-        QSPI_CommandTypeDef cmd;
-        cmd.Instruction = PAGE_PROG_CMD;
-        cmd.BusMode = QSPI_BUSMODE_111;
-        cmd.CmdFormat = QSPI_CMDFORMAT_CMD8_ADDR24_PDAT;
-
-        uint32_t programmed = 0;
+        static uint8_t block[4096];
+        uint32_t blob_off = 0;
         addr = GEN_CACHE_FLASH_BASE;
-        gc_rom_program_page(addr, sizeof(hdr), (uint8_t *)hdr);
-        gc_cache_clean_all();
-        addr += sizeof(hdr);
-        programmed += sizeof(hdr);
-
-        uint32_t remaining = blob_len;
-        const uint8_t *srcp = blob;
-        while (remaining > 0) {
-            uint32_t chunk = (remaining > 256u) ? 256u : remaining;
-            /* Page program cannot cross a 256B page boundary. */
-            uint32_t page_off = addr & (256u - 1u);
-            if (page_off + chunk > 256u) {
-                chunk = 256u - page_off;
+        for (uint32_t blk = 0; blk < GEN_CACHE_SECTORS; blk++) {
+            uint32_t fill;
+            if (blk == 0) {
+                memcpy(block, hdr, sizeof(hdr));
+                fill = sizeof(hdr);
+            } else {
+                fill = 0;
             }
-            gc_rom_program_page(addr, chunk, (uint8_t *)srcp);
+            while (fill < 4096u && blob_off < blob_len) {
+                block[fill++] = blob[blob_off++];
+            }
+            while (fill < 4096u) {
+                block[fill++] = 0xFFu;
+            }
+            __disable_irq();
+            gc_rom_program_page(addr, 4096u, block);
             gc_cache_clean_all();
-            addr += chunk;
-            srcp += chunk;
-            remaining -= chunk;
-            programmed += chunk;
-            if ((programmed & 0xFFFu) < 256u) {
-                WDT_ReloadCounter();
-                osDelay(1);
-            }
+            __enable_irq();
+            addr += GEN_CACHE_SECTOR_SIZE;
+            WDT_ReloadCounter();
+            osDelay(1);
         }
+        WDT_ReloadCounter();
     }
 
     /* Read back via XIP and CRC-verify. */
