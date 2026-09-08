@@ -80,6 +80,8 @@ curve25519-dalek = { version = "4", default-features = false, features = ["alloc
 monero = { version = "0.21" }
 
 [features]
+# Device-side BP+ generator cache FFI bridge (C flash backend). Off = no-op stub symbol.
+generator-cache-ffi = []
 default = ["std"]
 # std enabled (on by default, only for cargo test; Phase 5 real implementation switches to panic = "abort" without std)
 std = ["rand_core/std"]

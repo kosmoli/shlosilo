@@ -588,3 +588,10 @@ unsigned int shlosilo_timing_get_total(void);
 
 /* Reset all stage counters. */
 void shlosilo_timing_reset(void);
+
+/* ---- BP+ generator cache FFI (XMR knife-1 L3) ---- */
+/* Register the C flash-backend callbacks for the BP+ generator cache. Call once
+ * after shlosilo_init, before the first XMR sign. Pass the ARM thumb addresses of
+ * gc_load / gc_store (see xmr_gen_cache_flash.c). When linked against an .a built
+ * without the generator-cache-ffi feature this is a no-op. */
+void shlosilo_gen_cache_set_hooks(unsigned int load_fptr, unsigned int store_fptr);
