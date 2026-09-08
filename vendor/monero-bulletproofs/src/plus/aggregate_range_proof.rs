@@ -286,7 +286,7 @@ impl<'a> AggregateRangeStatement<'a> {
             alpha += z_pow[j - 1] * witness.0[j - 1].mask.into() * y_mn_plus_one;
         }
 
-        Some(AggregateRangeProof {
+        let proof = AggregateRangeProof {
             A,
             wip: {
                 let _p3 = PhaseProbe::start(PHASE_WIP_ROUNDS);
@@ -303,7 +303,9 @@ impl<'a> AggregateRangeStatement<'a> {
                 _p3.end();
                 wip
             },
-        })
+        };
+        _total.end();
+        Some(proof)
     }
 
     pub(crate) fn verify<R: RngCore + CryptoRng>(
