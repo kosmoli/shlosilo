@@ -18,6 +18,8 @@
 #include "task.h"
 #include "psram_heap_4.h"
 #include "lvgl.h"
+#include "helloworld_task.h"
+#include "hal_touch.h"
 #include "hal_lcd.h"
 #define SHLOSILO_SMOKE_OK 0 /* ShlosiloErrorCode::Ok */
 
@@ -28,6 +30,13 @@ extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
 extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
                          const uint8_t *blob, uint32_t blob_len);
 extern uint32_t gc_probe(void);
+extern unsigned int shlosilo_sram_pool_fallback_count(void);
+extern void shlosilo_cn_timing_set_clock(unsigned int clock_fptr);
+extern void shlosilo_cn_timing_reset(void);
+extern unsigned int shlosilo_cn_timing_phase(unsigned char phase);
+extern void shlosilo_tx_phase_set_clock(unsigned int clock_fptr);
+extern void shlosilo_tx_phase_reset(void);
+extern unsigned int shlosilo_tx_phase_phase(unsigned char phase);
 
 static unsigned int smoke_tick_ms(void);
 /* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。
@@ -106,7 +115,9 @@ static const char *FIXTURE_XMR_TX_UNSIGNED =
 
 static lv_obj_t *g_title = NULL;
 static lv_obj_t *g_log   = NULL;
-static char g_logbuf[768];
+/* 768→2048：cn 探针 +5 行后文本逼近上限，结尾未加保护的 strcat(ALL PASS)
+ * 越界写 .bss 邻居 → crash。SRAM 池后仍有 ~65KB 余量，2048B 无压力。 */
+static char g_logbuf[2048];
 
 static void log_line(const char *fmt, ...)
 {
@@ -118,7 +129,9 @@ static void log_line(const char *fmt, ...)
     if (strlen(g_logbuf) + strlen(line) + 2 < sizeof(g_logbuf)) {
         strcat(g_logbuf, line);
         strcat(g_logbuf, "\n");
+        lvgl_lock();
         lv_label_set_text(g_log, g_logbuf);
+        lvgl_unlock();
     }
 }
 
@@ -291,6 +304,13 @@ static int run_checks(void)
     shlosilo_gen_cache_set_hooks((unsigned int)gc_load, (unsigned int)gc_store);
     /* Cache state probe: 0=hit 1=blank 2=corrupt 3=not-ready */
     log_line("gencache pre: %u", (unsigned)gc_probe());
+    /* BP+ prove-phase timing: same clock as device-timing. */
+    shlosilo_bp_timing_set_clock((unsigned int)smoke_tick_ms);
+    shlosilo_bp_timing_reset();
+    shlosilo_cn_timing_set_clock((unsigned int)smoke_tick_ms);
+    shlosilo_cn_timing_reset();
+    shlosilo_tx_phase_set_clock((unsigned int)smoke_tick_ms);
+    shlosilo_tx_phase_reset();
     log_line("xmr: start...");
     {
         static uint8_t xmr_out[4096];
@@ -308,6 +328,27 @@ static int run_checks(void)
         if (rc == 0 && xmr_len > 64) {
             log_line("xmr: PASS (%u bytes)", xmr_len);
             log_line("xmr time: %u ms", dt);
+            /* BP+ phase decomposition: 1=initial multiexp 2=A_hat 3=WIP rounds
+             * 4=total prove (ms, accumulated). */
+            log_line("bp1 commit: %u ms", (unsigned)shlosilo_bp_timing_phase(1));
+            log_line("bp2 ahat: %u ms", (unsigned)shlosilo_bp_timing_phase(2));
+            log_line("bp3 wip: %u ms", (unsigned)shlosilo_bp_timing_phase(3));
+            log_line("bp4 total: %u ms", (unsigned)shlosilo_bp_timing_phase(4));
+            log_line("bp5 l_r: %u ms", (unsigned)shlosilo_bp_timing_phase(5));
+            log_line("bp6 fold: %u ms", (unsigned)shlosilo_bp_timing_phase(6));
+            log_line("sram fallback: %u", (unsigned)shlosilo_sram_pool_fallback_count());
+            log_line("cn1 keccak: %u ms", (unsigned)shlosilo_cn_timing_phase(1));
+            log_line("cn2 fill: %u ms", (unsigned)shlosilo_cn_timing_phase(2));
+            log_line("cn3 loop: %u ms", (unsigned)shlosilo_cn_timing_phase(3));
+            log_line("cn4 final: %u ms", (unsigned)shlosilo_cn_timing_phase(4));
+            log_line("cn5 total: %u ms", (unsigned)shlosilo_cn_timing_phase(5));
+            log_line("x1 decrypt: %u ms", (unsigned)shlosilo_tx_phase_phase(1));
+            log_line("x2 outderiv: %u ms", (unsigned)shlosilo_tx_phase_phase(2));
+            log_line("x3 prefix+rct: %u ms", (unsigned)shlosilo_tx_phase_phase(3));
+            log_line("x4 clsag: %u ms", (unsigned)shlosilo_tx_phase_phase(4));
+            log_line("x5 wire: %u ms", (unsigned)shlosilo_tx_phase_phase(5));
+            log_line("x6 keyimg: %u ms", (unsigned)shlosilo_tx_phase_phase(6));
+            log_line("x7 encrypt: %u ms", (unsigned)shlosilo_tx_phase_phase(7));
             log_line("gencache post: %u", (unsigned)gc_probe());
         } else {
             fail++;
@@ -350,11 +391,15 @@ void shlosilo_panic_hook(const uint8_t *msg, size_t len)
     if (g_log != NULL) {
         char line[224];
         snprintf(line, sizeof(line), "PANIC: %s", tmp);
+        lvgl_lock();
         lv_label_set_text(g_log, line);
+        lvgl_unlock();
     }
 
     for (;;) {
+        lvgl_lock();
         lv_task_handler();   /* 保持屏幕刷新（panic 消息可见） */
+        lvgl_unlock();
         WDT_ReloadCounter(); /* 喂狗防复位 */
         osDelay(5);
     }
@@ -371,20 +416,64 @@ void ShlosiloSmokeTask(void *argument)
 {
     (void)argument;
     osDelay(500); /* 等 LVGL/helloworld task 初始化 */
+    lvgl_lock();
     g_title = lv_label_create(lv_scr_act());
     lv_label_set_text(g_title, "shlosilo P6.2");
     lv_obj_align(g_title, LV_ALIGN_TOP_LEFT, 10, 10);
     lv_obj_set_style_text_color(g_title, lv_color_hex(0x00FF00), 0);
 
-    g_log = lv_label_create(lv_scr_act());
+    /* 可滚动日志容器：测试行数已超出一屏，触摸滑动查看（indev 注册于 helloworld_task） */
+    lv_obj_t *scroll = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(scroll, 480, 800 - 60);
+    lv_obj_align(scroll, LV_ALIGN_TOP_LEFT, 0, 60);
+    lv_obj_set_style_bg_opa(scroll, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(scroll, 0, 0);
+    lv_obj_set_style_pad_all(scroll, 0, 0);
+    lv_obj_set_scrollbar_mode(scroll, LV_SCROLLBAR_MODE_AUTO);
+
+    g_log = lv_label_create(scroll);
     lv_label_set_text(g_log, "running...");
-    lv_obj_align(g_log, LV_ALIGN_TOP_LEFT, 10, 50);
+    lv_obj_align(g_log, LV_ALIGN_TOP_LEFT, 10, 0);
+    lv_label_set_long_mode(g_log, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(g_log, 460);
     /* Same fluorescent green as the title for readability on the black background */
     lv_obj_set_style_text_color(g_log, lv_color_hex(0x00FF00), 0);
+    lvgl_unlock();
 
     memset(g_logbuf, 0, sizeof(g_logbuf));
 
+    /* 触摸探测结果屏显（build D 诊断）。TouchInit 位bang扫 128 地址
+     * ~1s，helloworld/smoke 两任务并发，等 3s 保证探测已完成。 */
+    osDelay(3000);
+    log_line("touch probe: addr=0x%02X ok=%d",
+             (unsigned)g_touch_probe_addr, (int)g_touch_probe_ok);
+    extern volatile uint16_t g_touch_diag_x;
+    extern volatile uint16_t g_touch_diag_y;
+    extern volatile uint32_t g_touch_diag_err;
+    extern volatile uint32_t g_touch_diag_press;
+
+    /* K2-D 诊断：上次复位的 HardFault 捕获记录（hardfault_diag.c 写入） */
+    {
+        extern const volatile uint32_t *const g_fault_log;
+        if (g_fault_log[0] == 0x464C5444U) {
+            log_line("FAULT cfsr=%08x hfsr=%08x",
+                     (unsigned)g_fault_log[1], (unsigned)g_fault_log[2]);
+            log_line("FAULT bfar=%08x pc=%08x lr=%08x",
+                     (unsigned)g_fault_log[3], (unsigned)g_fault_log[4],
+                     (unsigned)g_fault_log[5]);
+            /* 清除，避免下次开机误报 */
+            for (int i = 0; i < 7; i++) {
+                ((volatile uint32_t *)g_fault_log)[i] = 0;
+            }
+        }
+    }
+
     int fail = run_checks();
+
+    /* 触摸诊断汇总：run_checks 期间(~45s)的按下次数/错误/末次坐标 */
+    log_line("touch diag: press=%u err=%u x=%u y=%u",
+             (unsigned)g_touch_diag_press, (unsigned)g_touch_diag_err,
+             (unsigned)g_touch_diag_x, (unsigned)g_touch_diag_y);
 
     /* Phase 6.6：MCU 峰值（heap_4 min-ever = 自启动以来的高水位）。
      * PSRAM = LCD framebuffer + shlosilo Rust alloc；SRAM = FreeRTOS/LVGL。
@@ -430,13 +519,19 @@ void ShlosiloSmokeTask(void *argument)
     }
 
     if (fail == 0) {
-        strcat(g_logbuf, "== ALL PASS ==");
+        if (strlen(g_logbuf) + 14 < sizeof(g_logbuf)) {
+            strcat(g_logbuf, "== ALL PASS ==");
+        }
     } else {
         char tail[32];
         snprintf(tail, sizeof(tail), "== FAIL n=%d ==", fail);
-        strcat(g_logbuf, tail);
+        if (strlen(g_logbuf) + strlen(tail) + 1 < sizeof(g_logbuf)) {
+            strcat(g_logbuf, tail);
+        }
     }
+    lvgl_lock();
     lv_label_set_text(g_log, g_logbuf);
+    lvgl_unlock();
 
     for (;;) {
         osDelay(10000); /* 常驻：结果留在屏幕上，WDT 由 helloworld task 喂 */

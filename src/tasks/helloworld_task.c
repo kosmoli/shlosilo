@@ -4,6 +4,8 @@
 #include "mhscpu.h"
 #include "mhscpu_wdt.h"
 #include "hal_lcd.h"
+#include "hal_touch.h"
+#include "drv_exti.h"
 #include "lvgl.h"
 #include "stdlib.h"
 #include "mhscpu_gpio.h"
@@ -34,6 +36,56 @@ static lv_obj_t *g_container;
 
 static uint32_t g_buttonPressStartTime = 0;
 static bool g_buttonPressed = false;
+
+/* LVGL 非线程安全：helloworld 任务跑 lv_timer_handler，smoke 任务直接调
+ * lv_* 更新日志——触摸引入 indev 命中测试后，两任务并发操作对象树导致
+ * crash。用全局互斥锁串行化两侧。 */
+static osMutexId_t g_lvglMutex = NULL;
+
+void lvgl_lock(void)
+{
+    if (g_lvglMutex != NULL) {
+        osMutexAcquire(g_lvglMutex, osWaitForever);
+    }
+}
+
+void lvgl_unlock(void)
+{
+    if (g_lvglMutex != NULL) {
+        osMutexRelease(g_lvglMutex);
+    }
+}
+
+/* 触摸 indev：smoke 日志可滚动（K2 诊断需求——测试输出已超出一屏） */
+static lv_indev_drv_t g_touchDrv;
+/* 诊断计数：最近一次按下的原始坐标 + 错误/按下计数（smoke 屏显） */
+volatile uint16_t g_touch_diag_x = 0xFFFF;
+volatile uint16_t g_touch_diag_y = 0xFFFF;
+volatile uint32_t g_touch_diag_err = 0;
+volatile uint32_t g_touch_diag_press = 0;
+
+static bool touch_indev_read_cb(struct _lv_indev_drv_t *drv, lv_indev_data_t *data)
+{
+    (void)drv;
+    TouchStatus_t st;
+    int32_t rc = TouchGetStatus(&st);
+    if (rc != 0) {
+        g_touch_diag_err++;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return false;
+    }
+    if (st.touch) {
+        g_touch_diag_press++;
+        g_touch_diag_x = st.x;
+        g_touch_diag_y = st.y;
+        data->point.x = st.x;
+        data->point.y = st.y;
+        data->state = LV_INDEV_STATE_PRESSED;
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+    return false; /* 不缓冲多点 */
+}
 
 void CreateHelloWorldTask(void)
 {
@@ -69,6 +121,27 @@ static void HelloWorldTask(void *argument)
     lv_disp_drv_register(&dispDrv);
     printf("Display driver registered\n");
 
+    /* 触摸输入设备：让 smoke 日志可以滑动（480x800 与屏 1:1）
+     * I2cInit 必须先于触摸探测——helloworld 初始化链没有调用它
+     * （keystone 生产固件在其 init 链中调用），缺它则 I2C0 时钟未开，
+     * 触摸 IC 驱动的寄存器访问=总线 fault。 */
+    g_lvglMutex = osMutexNew(NULL);
+
+    /* build C：完全复刻 keystone 生产架构——ExtInterruptInit 使能 EXTI
+     * (PA2 tamper/PD7 SD/PE14 button/PF1 touch INT) + 真实 TouchInit。
+     * keystone 生产固件同硬件上触摸正常，证明此初始化链是正确姿势。 */
+    ExtInterruptInit();
+    /* 注意：触摸走 I2CIO 位bang（GPIOB0/B1），不能用 drv_i2c 硬件 I2C0
+     * （remap 到同两个引脚会打架，probe 全盲）。keystone 生产固件同样
+     * 不为触摸调 I2cInit。 */
+    TouchInit(NULL);
+    TouchOpen();
+    lv_indev_drv_init(&g_touchDrv);
+    g_touchDrv.type = LV_INDEV_TYPE_POINTER;
+    g_touchDrv.read_cb = touch_indev_read_cb;
+    lv_indev_drv_register(&g_touchDrv);
+    printf("Touch indev registered\n");
+
     // Start LVGL tick timer
     osTimerStart(g_lvglTickTimer, LVGL_TICK_MS);
     printf("Timer started\n");
@@ -102,7 +175,9 @@ static void HelloWorldTask(void *argument)
             PowerButtonCheck();
         }
 
+        lvgl_lock();
         lv_timer_handler();
+        lvgl_unlock();
         osDelay(5);
     }
 }

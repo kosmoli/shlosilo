@@ -1,4 +1,13 @@
 #include "hal_touch.h"
+
+/* drv_gsl1691.c 调试用打印在 helloworld 无 UART shell 上下文里没有实现——
+ * 提供 no-op 桩以满足链接（触摸调试输出在 smoke 中无用）。 */
+__attribute__((weak)) void PrintArray(const char *tag, const uint8_t *buf, uint32_t len)
+{
+    (void)tag;
+    (void)buf;
+    (void)len;
+}
 #include "drv_i2c_io.h"
 #include "drv_cst726.h"
 #include "drv_ft6336.h"
@@ -13,6 +22,10 @@
 HalTouchOpt_t g_halTouchOpt = {0};
 static TouchPadIntCallbackFunc_t g_touchPadIntCallback;
 static volatile bool g_touchOpen = false;
+
+/* 探测结果暴露给 smoke 屏幕（printf 只到 UART，用户看不到） */
+volatile uint8_t g_touch_probe_addr = 0xFF;   /* 0xFF = 未探测 */
+volatile uint8_t g_touch_probe_ok = 0;        /* 1 = 匹配到已知 IC */
 
 /// @brief Touch init.
 /// @param[in] func Interrupt callback function, called when EXTINT gpio rasing/falling.
@@ -33,6 +46,7 @@ void TouchInit(TouchPadIntCallbackFunc_t func)
 
     I2CIO_Init(&i2cioConfig, GPIOB, GPIO_Pin_0, GPIOB, GPIO_Pin_1);
     addr = I2CIO_SearchDevices(&i2cioConfig);
+    g_touch_probe_addr = addr;
     switch (addr) {
     case CST726_I2C_ADDR: {
         g_halTouchOpt.Init = Cst726Init;
@@ -68,6 +82,7 @@ void TouchInit(TouchPadIntCallbackFunc_t func)
     break;
     }
     g_touchPadIntCallback = func;
+    g_touch_probe_ok = g_halTouchOpt.Init ? 1 : 0;
 
     if (g_halTouchOpt.Init) {
         g_halTouchOpt.Init();

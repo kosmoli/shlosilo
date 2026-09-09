@@ -122,6 +122,16 @@ set(APP_SRC
     src/driver/drv_i2c_io.c
     src/ram/psram_heap_4.c
     src/ram/user_memory.c
+    src/ram/hardfault_diag.c
+    src/driver/hal_touch.c
+    src/driver/drv_i2c.c
+    src/driver/drv_exti.c
+    src/driver/exti_stubs.c
+    src/driver/hardware_version.c
+    src/driver/drv_cst3xx.c
+    src/driver/drv_cst726.c
+    src/driver/drv_ft6336.c
+    src/driver/drv_gsl1691.c
     src/utils/assert.c
     src/utils/user_delay.c
     src/utils/user_utils.c

@@ -2,7 +2,7 @@
 #include "hal_touch.h"
 #include "drv_aw32001.h"
 #include "drv_button.h"
-#include "anti_tamper.h"
+/* anti_tamper.h：helloworld 无 tamper 子系统，TamperIntHandler 桩在 exti_stubs.c */
 #include "drv_sdcard.h"
 
 void ExtInterruptInit(void)

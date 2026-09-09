@@ -32,3 +32,7 @@ void TouchPadIntHandler(void);
 void TouchPadTest(int argc, char *argv[]);
 
 #endif
+
+/* 探测结果（smoke 屏显用）：0xFF=未探测, 否则=应答的 I2C 地址; ok=匹配已知 IC */
+extern volatile uint8_t g_touch_probe_addr;
+extern volatile uint8_t g_touch_probe_ok;
