@@ -567,6 +567,10 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // Audit #7 Gate1 #5: commitments are public on-chain data (Pedersen commitments are broadcast with the tx and contain
     // no mask plaintext); clone is not a secret-copy problem — but the value has no consumers after this, so move it to eliminate the copy
     let bp = prove_bulletproofs_plus(bp_rng, commitments)?;
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    px9.as_mut().map_or((), |p| p.end());
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    let mut px11 = PhaseProbe::start(11);
     // Σ out masks: curve25519_dalek scalar field arithmetic, then converted back to monero bytes
     // Audit #9 P1-02: sum of blinding masks — SecretScalar owner (zeroized by Drop on error paths;
     // m inside the loop is erased after use, never landing in a plain binding)
@@ -605,7 +609,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     };
     let rct_base_hash = crate::encoding::keccak256::hash(&rct_base_bytes)?;
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px9.as_mut().map_or((), |p| p.end());
+    px11.as_mut().map_or((), |p| p.end());
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px10 = PhaseProbe::start(10);
     let mut bp_sig_bytes = Vec::new();

@@ -8,17 +8,19 @@
 //! Sub-probes inside x3 (rct_base drill-down, bb3aa58 follow-up):
 //! 8 = commitments build, 9 = prove_bulletproofs_plus total
 //! (incl. statement/witness; bp4 is its inner prove-only total),
-//! 10 = rct_base serialize + 3x keccak.
+//! 10 = bp sig encode + pre-MLSAG keccaks.
+//! 11 = sum masks + rct_base serialize + rct_base keccak.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-pub const TX_PHASES: usize = 10;
+pub const TX_PHASES: usize = 11;
 
 type ClockFn = fn() -> u32;
 
 #[allow(static_mut_refs)]
 static mut CLOCK_FN: Option<ClockFn> = None;
 static ACC: [AtomicU32; TX_PHASES] = [
+    AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
