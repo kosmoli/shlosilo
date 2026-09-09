@@ -174,17 +174,30 @@ impl Bulletproof {
         if outputs.len() > MAX_COMMITMENTS {
             Err(BulletproofError::TooManyCommitments)?;
         }
+        // shlosilo vendor patch: wrapper sub-phase probes (device perf).
+        #[cfg(feature = "prove-timing")]
+        let wrap_commits =
+            prove_timing_hook::PhaseProbe::start(prove_timing_hook::PHASE_WRAP_COMMITS);
         let commitments = outputs
             .iter()
             .map(|commitment| commitment.commit().into())
             .collect::<Vec<_>>();
+        #[cfg(feature = "prove-timing")]
+        wrap_commits.end();
+        #[cfg(feature = "prove-timing")]
+        let wrap_statement =
+            prove_timing_hook::PhaseProbe::start(prove_timing_hook::PHASE_WRAP_STATEMENT);
+        let statement_res = PlusStatement::new(&commitments);
+        let witness_res = PlusWitness::new(outputs);
+        #[cfg(feature = "prove-timing")]
+        wrap_statement.end();
         Ok(Bulletproof::Plus(
-      PlusStatement::new(&commitments)
+      statement_res
         .expect("failed to create statement despite checking amount of commitments")
         .prove(
           rng,
           &Zeroizing::new(
-            PlusWitness::new(outputs)
+            witness_res
               .expect("failed to create witness despite checking amount of commitments"),
           ),
         )

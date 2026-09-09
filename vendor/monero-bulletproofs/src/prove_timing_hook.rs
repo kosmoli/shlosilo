@@ -20,6 +20,10 @@ pub(crate) const PHASE_WIP_ROUNDS: u8 = 3;
 pub(crate) const PHASE_TOTAL: u8 = 4;
 pub(crate) const PHASE_WIP_L_R: u8 = 5;
 pub(crate) const PHASE_WIP_FOLD: u8 = 6;
+// prove_plus wrapper sub-phases (2026-09-10, rct_base drill-down):
+pub(crate) const PHASE_WRAP_COMMITS: u8 = 7;
+pub(crate) const PHASE_WRAP_STATEMENT: u8 = 8;
+pub(crate) const PHASE_WRAP_CONSISTENCY: u8 = 9;
 
 static CLOCK_FN: AtomicU32 = AtomicU32::new(0);
 
@@ -52,8 +56,11 @@ impl PhaseProbe {
 }
 
 /// Accumulate elapsed ms per phase (wrapping add; smoke task reads and logs).
-static PHASE_MS: [AtomicU32; 7] = [
+static PHASE_MS: [AtomicU32; 10] = [
     AtomicU32::new(0), // unused 0-index
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),

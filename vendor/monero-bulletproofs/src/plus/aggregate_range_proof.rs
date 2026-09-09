@@ -196,6 +196,8 @@ impl<'a> AggregateRangeStatement<'a> {
         witness: &AggregateRangeWitness,
     ) -> Option<AggregateRangeProof> {
         // Check for consistency with the witness
+        #[cfg(feature = "prove-timing")]
+        let consistency = PhaseProbe::start(crate::prove_timing_hook::PHASE_WRAP_CONSISTENCY);
         if self.V.len() != witness.0.len() {
             return None;
         }
@@ -204,6 +206,8 @@ impl<'a> AggregateRangeStatement<'a> {
                 return None;
             }
         }
+        #[cfg(feature = "prove-timing")]
+        consistency.end();
         let _total = PhaseProbe::start(PHASE_TOTAL);
 
         let Self { generators, V } = self;
