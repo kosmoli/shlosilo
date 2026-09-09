@@ -152,6 +152,8 @@ use crate::chain::xmr::transaction::{
 };
 use crate::chain::xmr::unsigned_txset::{TxConstructionData, TxDestinationEntry};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+#[cfg(feature = "tx-phase-timing-ffi")]
+use crate::tx_phase_hook::PhaseProbe;
 
 // monero-ed25519 Pedersen commitment (same type as tx_builder)
 type MonCommitment = monero_ed25519::Commitment;
@@ -360,6 +362,8 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     };
     let tx_pub = tx_pub_point; // mul_point/mul_basepoint already return compressed bytes
 
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    let mut px2 = PhaseProbe::start(2);
     // ---- 2. per-output derivation (keystone commitments_and_encrypted_amounts) ----
     // change_dts is "back to self" — ecdh = view_sec · TxPub (is_change_dest branch)
     // Audit #9 P1-02 + #10 P1-04: v_scalar derives from the long-term view secret — whitelisted point multiplication
@@ -531,6 +535,10 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         rings.push(ring);
     }
 
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    px2.as_mut().map_or((), |p| p.end());
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    let mut px3 = PhaseProbe::start(3);
     // ---- 6. prefix hash (CLSAG message additionally needs rct base + BP elements; see step 8) ----
     let prefix = TransactionPrefix::new(0, tx_inputs.clone(), tx_outputs.clone(), extra.clone());
     // Serialize once and reuse these exact bytes for both the CLSAG message and
@@ -605,6 +613,10 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // when any `?` in the CLSAG section (derive_input_spend_key / clsag sign) fails,
     // Drop still erases all masks (re-review evidence: 3 kinds of early returns after into_inner skipped zeroization)
 
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    px3.as_mut().map_or((), |p| p.end());
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    let mut px4 = PhaseProbe::start(4);
     // ---- 9. CLSAG per input: pseudo_mask follows the genRctSimple chain ----
     // Official: a[i]=skGen (i<last); a[last]=Σout_masks−Σprev_pseudo.
     // Single input ⇒ no rng consumed, a[0]=Σout_masks, consistent with the existing monero-clsag sum_outputs semantics.
@@ -648,6 +660,10 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // (dalek Scalar is itself Copy with no Drop — last round's comment was an incorrect safety claim)
     sum_out_masks.zeroize_now();
 
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    px4.as_mut().map_or((), |p| p.end());
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    let mut px5 = PhaseProbe::start(5);
     // ---- 10. official monerod wire serialization ----
     let bp_buf = {
         let mut b = Vec::new();
@@ -655,13 +671,16 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         b
     };
-    build_official_wire(
+    let wire = build_official_wire(
         &prefix_bytes,
         &rct_base_bytes,
         &bp_buf,
         &clsag_wire,
         &pseudo_outs_arr,
-    )
+    );
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    px5.as_mut().map_or((), |p| p.end());
+    wire
 }
 
 /// fee = inputs − splitted outputs (change already included in splitted)

@@ -22,4 +22,6 @@ pub mod generator_cache_ffi;
 /// BP+ prove-phase timing FFI (device perf decomposition). See module docs.
 #[cfg(feature = "prove-timing-ffi")]
 pub mod prove_timing_ffi;
+#[cfg(feature = "tx-phase-timing-ffi")]
+pub mod tx_phase_ffi;
 pub mod version;

@@ -84,6 +84,7 @@ monero = { version = "0.21" }
 generator-cache-ffi = []
 prove-timing-ffi = ["monero-bulletproofs/prove-timing"]
 cn-timing-ffi = ["prove-timing-ffi", "cuprate-cryptonight/cn-timing"]
+tx-phase-timing-ffi = ["prove-timing-ffi"]
 default = ["std"]
 # std enabled (on by default, only for cargo test; Phase 5 real implementation switches to panic = "abort" without std)
 std = ["rand_core/std"]

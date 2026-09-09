@@ -40,6 +40,8 @@ pub mod ffi;
 pub mod network;
 pub mod signature;
 pub mod tx;
+#[cfg(feature = "tx-phase-timing-ffi")]
+pub mod tx_phase_hook;
 pub mod types;
 pub mod ur;
 

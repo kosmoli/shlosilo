@@ -133,6 +133,9 @@ pub fn sign_with_entropy(
 /// 4. Serialize the SignedTxSet (tx_key=ONE placeholder) → encrypt_signed_txset (SIGNED_TX_PREFIX)
 ///
 /// rng usage: BP+/CLSAG/encryption nonce + signing k; the tx_key r entropy comes from the entropy derivation.
+#[cfg(feature = "tx-phase-timing-ffi")]
+use crate::tx_phase_hook::PhaseProbe;
+
 fn sign_xmr(
     seed: &[u8],
     encrypted_unsigned: &[u8],
@@ -161,12 +164,16 @@ fn sign_xmr(
 
     // 2. Decrypt (signature verified internally; view key mismatch → Err)
     // Audit #6 P1-01: decrypted plaintext txset goes through Zeroizing (no plaintext residue needed after parsing)
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    let mut px1 = PhaseProbe::start(1);
     let plain = crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset_with_chacha_key(
         encrypted_unsigned,
         &view_sec,
         &cn_key,
     )?;
     let unsigned_tx = deserialize_unsigned_tx(&plain)?;
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    px1.as_mut().map_or((), |p| p.end());
 
     // 3. Sign tx by tx (§B.5 purpose subdomains: tx-key r / BP+ / CLSAG(i) derived independently)
     //    context = keccak digest of the tx construction data (domain separation, not counted as entropy)
@@ -235,6 +242,8 @@ fn sign_xmr(
         let out_sum: u64 = tx_data.splitted_dsts.iter().map(|d| d.amount).sum();
         let fee = input_sum.saturating_sub(out_sum);
 
+        #[cfg(feature = "tx-phase-timing-ffi")]
+        let mut px6 = PhaseProbe::start(6);
         // key images: already present in the signed wire; rebuild the string + outer list here
         let mut ki_str = String::new();
         for src in &tx_data.sources {
@@ -317,6 +326,9 @@ fn sign_xmr(
             });
         }
 
+        #[cfg(feature = "tx-phase-timing-ffi")]
+        px6.as_mut().map_or((), |p| p.end());
+
         ptxs.push(PendingTx {
             tx_bytes,
             dust: 0,
@@ -346,8 +358,12 @@ fn sign_xmr(
     // 4. Encrypted output (nonce + Schnorr k also on the entropy-derived stream)
     let mut enc_rng = purpose_rng(entropy, RngPurpose::BulletproofPlus, &[1u8; 32])
         .map_err(crate::error::ShlosiloError::from)?;
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    let mut px7 = PhaseProbe::start(7);
     let encrypted =
         encrypt_signed_txset_with_chacha_key(plain_signed, &view_sec, &cn_key, &mut enc_rng)?;
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    px7.as_mut().map_or((), |p| p.end());
 
     if output_buf.len() < encrypted.len() {
         return Err(ShlosiloError::with_context(
