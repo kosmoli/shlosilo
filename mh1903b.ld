@@ -65,7 +65,20 @@ SECTIONS
 		. = ALIGN(4);
 		__data_parser_end = .;
 	} > SRAM
-	
+
+	/* K2-D SRAM-first allocator pool: dedicated on-chip SRAM for Rust
+	 * allocs, in the free window between the .bss end (~0x20091600 with
+	 * heap_4 450K) and the reserved parser section at 0x200FC000.
+	 * NOLOAD: contents need no init image (allocator initializes lazily). */
+	.sram_pool 0x2009D000 (NOLOAD) :
+	{
+		. = ALIGN(8);
+		__sram_pool_start = .;
+		KEEP(*(.sram_pool))
+		. = ALIGN(8);
+		__sram_pool_end = .;
+	} > SRAM
+
 	
 	/DISCARD/ :
 	{

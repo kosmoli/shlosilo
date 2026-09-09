@@ -1,50 +1,138 @@
 /* shlosilo_embedded_alloc_glue.c — P6.2c/K2-D: L3 memory interface
  *
  * embedded_alloc.rs's EmbeddedAllocator calls these two symbols.
- * K2-D SRAM-first policy (2026-09): Rust allocations try the on-chip
- * SRAM heap first (450K, zero XIP wait); on exhaustion fall back to the
- * PSRAM heap_4 (8MB) and count the fallback for smoke diagnostics.
- * Reconstructed 2026-09-10 after the filter-repo checkout reverted the
- * uncommitted K2-D working-tree version (lesson: commit before rewrite).
+ *
+ * K2-D SRAM-first (restored 2026-09-10 after the filter-repo checkout
+ * reverted the uncommitted original): Rust allocations are served from a
+ * dedicated first-fit pool in on-chip SRAM (.sram_pool, NOLOAD) — no XIP
+ * flash wait states, dramatically faster than PSRAM for the many small
+ * BP+/CLSAG temporaries. Allocations that do not fit the pool (CN
+ * scratchpad 2MB, oversized spill) go to the PSRAM heap_4 and are counted
+ * for smoke diagnostics (shlosilo_sram_pool_fallback_count).
+ *
+ * Pool sizing: SRAM 1MB = FreeRTOS heap_4 450K (ucHeap, untouched) +
+ * statics/stacks (~580K used incl. heap_4) leaves ~436K before the
+ * reserved .data_parser_section at 0x200FC000. Pool = 384K, padded down
+ * from the measured free window for margin. Per-run pool peak ~350K
+ * (device-verified fallback=17 with pool+PSRAM split).
+ *
+ * Concurrency: Rust alloc/free happen only on the single smoke task
+ * (see shlosilo/critical_section_impl.c rationale); no lock here.
  */
 
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include "user_memory.h"
-/* PSRAM memory window base (mhscpu.h MHSCPU_PSRAM_BASE); kept literal
- * here because the shlosilo/ include path does not cover driver headers. */
-#define SHLOSILO_PSRAM_ADDR_BASE 0x80000000UL
 
 #ifndef SRAM_POOL_ENABLED
 #define SRAM_POOL_ENABLED 1
 #endif
 
 #if SRAM_POOL_ENABLED
+
+#define SHLOSILO_POOL_SIZE ((size_t)352 * 1024)
+#define SHLOSILO_POOL_ALIGN 8u
+
+/* Placed in its own NOLOAD SRAM section (see mh1903b.ld). */
+static uint8_t g_sram_pool[SHLOSILO_POOL_SIZE]
+    __attribute__((section(".sram_pool"), aligned(8), used));
+
+/* First-fit allocator over one contiguous pool.
+ * Block header: size (incl. header) with bit0 = in-use flag. */
+typedef struct {
+    size_t size_and_flag;
+} pool_hdr_t;
+
+#define HDR_SIZE (sizeof(pool_hdr_t))
+#define FLAG_USED 1u
+
+static pool_hdr_t *pool_first(void)
+{
+    return (pool_hdr_t *)g_sram_pool;
+}
+
+static pool_hdr_t *pool_next(pool_hdr_t *h)
+{
+    uint8_t *p = (uint8_t *)h;
+    p += (h->size_and_flag & ~FLAG_USED);
+    if (p >= g_sram_pool + SHLOSILO_POOL_SIZE) {
+        return NULL;
+    }
+    return (pool_hdr_t *)p;
+}
+
 static unsigned int g_sram_pool_fallback_count = 0;
+static size_t g_pool_initialized;
 
 unsigned int shlosilo_sram_pool_fallback_count(void)
 {
     return g_sram_pool_fallback_count;
 }
-#else
-unsigned int shlosilo_sram_pool_fallback_count(void)
+
+static void pool_init(void)
 {
-    return 0u;
+    if (g_pool_initialized != 0x5A5A5A5Au) {
+        pool_first()->size_and_flag = SHLOSILO_POOL_SIZE - HDR_SIZE;
+        g_pool_initialized = 0x5A5A5A5Au;
+    }
 }
-#endif
+
+void *shlosilo_sram_pool_malloc(size_t size)
+{
+    if (size == 0) {
+        size = 1;
+    }
+    size = (size + SHLOSILO_POOL_ALIGN - 1u) & ~(size_t)(SHLOSILO_POOL_ALIGN - 1u);
+
+    pool_init();
+    for (pool_hdr_t *h = pool_first(); h != NULL; h = pool_next(h)) {
+        if (h->size_and_flag & FLAG_USED) {
+            continue;
+        }
+        size_t avail = h->size_and_flag & ~FLAG_USED;
+        if (avail < size) {
+            continue;
+        }
+        /* Split if the remainder can hold header + 8 bytes. */
+        if (avail >= size + HDR_SIZE + SHLOSILO_POOL_ALIGN) {
+            uint8_t *base = (uint8_t *)h;
+            pool_hdr_t *rest = (pool_hdr_t *)(base + HDR_SIZE + size);
+            rest->size_and_flag = avail - size - HDR_SIZE;
+            h->size_and_flag = size | FLAG_USED;
+        } else {
+            h->size_and_flag |= FLAG_USED;
+        }
+        return (uint8_t *)h + HDR_SIZE;
+    }
+    return NULL;
+}
+
+void shlosilo_sram_pool_free(void *ptr)
+{
+    if (ptr == NULL) {
+        return;
+    }
+    pool_hdr_t *h = (pool_hdr_t *)((uint8_t *)ptr - HDR_SIZE);
+    h->size_and_flag &= ~FLAG_USED;
+
+    /* Coalesce forward (enough for the observed churn pattern). */
+    pool_hdr_t *next = pool_next(h);
+    if (next != NULL && !(next->size_and_flag & FLAG_USED)) {
+        h->size_and_flag += HDR_SIZE + (next->size_and_flag & ~FLAG_USED);
+    }
+}
+
+#endif /* SRAM_POOL_ENABLED */
 
 void *shlosilo_embedded_malloc(size_t size)
 {
     /* P6.4 zero-on-alloc (v2-security §3 threat 1: uninitialized read of
-     * old key material): heap does not zero returned memory, zero here.
-     * Key material is filled right after alloc; the extra memset on
-     * non-key allocs is negligible. */
+     * old key material): the heap does not zero returned memory, zero
+     * here. Key material is filled right after alloc; the extra memset
+     * on non-key allocs is negligible. */
 #if SRAM_POOL_ENABLED
-    /* K2-D SRAM-first: on-chip SRAM has no XIP flash wait states.
-     * Big allocations (CN scratchpad 2MB) cannot fit the 450K SRAM heap
-     * and take the PSRAM fallback path — each fallback is counted. */
-    void *p = SramMalloc(size);
+    void *p = shlosilo_sram_pool_malloc(size);
     if (p != NULL) {
         memset(p, 0, size);
         return p;
@@ -64,11 +152,12 @@ void shlosilo_embedded_free(void *ptr)
         return;
     }
 #if SRAM_POOL_ENABLED
-    /* SramFree (FreeRTOS heap_4, SRAM @0x2000xxxx) and ExtFree (PSRAM
-     * heap_4 @0x8000xxxx) operate on disjoint heaps; dispatch on the
-     * address range the pointer lives in. */
-    if ((uintptr_t)ptr < SHLOSILO_PSRAM_ADDR_BASE) {
-        SramFree(ptr);
+    /* Pool pointers live inside g_sram_pool (SRAM @0x2000xxxx); PSRAM
+     * heap pointers live at/above MHSCPU_PSRAM_BASE (0x80000000).
+     * Dispatch on the address range. */
+    if ((uintptr_t)ptr >= (uintptr_t)g_sram_pool &&
+        (uintptr_t)ptr < (uintptr_t)(g_sram_pool + SHLOSILO_POOL_SIZE)) {
+        shlosilo_sram_pool_free(ptr);
         return;
     }
 #endif
