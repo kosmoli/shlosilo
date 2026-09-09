@@ -336,6 +336,9 @@ static int run_checks(void)
             log_line("bp4 total: %u ms", (unsigned)shlosilo_bp_timing_phase(4));
             log_line("bp5 l_r: %u ms", (unsigned)shlosilo_bp_timing_phase(5));
             log_line("bp6 fold: %u ms", (unsigned)shlosilo_bp_timing_phase(6));
+            log_line("b7 wrapcmt: %u ms", (unsigned)shlosilo_bp_timing_phase(7));
+            log_line("b8 stmt: %u ms", (unsigned)shlosilo_bp_timing_phase(8));
+            log_line("b9 consist: %u ms", (unsigned)shlosilo_bp_timing_phase(9));
             log_line("sram fallback: %u", (unsigned)shlosilo_sram_pool_fallback_count());
             log_line("cn1 keccak: %u ms", (unsigned)shlosilo_cn_timing_phase(1));
             log_line("cn2 fill: %u ms", (unsigned)shlosilo_cn_timing_phase(2));
@@ -349,6 +352,10 @@ static int run_checks(void)
             log_line("x5 wire: %u ms", (unsigned)shlosilo_tx_phase_phase(5));
             log_line("x6 keyimg: %u ms", (unsigned)shlosilo_tx_phase_phase(6));
             log_line("x7 encrypt: %u ms", (unsigned)shlosilo_tx_phase_phase(7));
+            log_line("x8 commits: %u ms", (unsigned)shlosilo_tx_phase_phase(8));
+            log_line("x9 bp+wrap: %u ms", (unsigned)shlosilo_tx_phase_phase(9));
+            log_line("x10 bpsig: %u ms", (unsigned)shlosilo_tx_phase_phase(10));
+            log_line("x11 rctbase: %u ms", (unsigned)shlosilo_tx_phase_phase(11));
             log_line("gencache post: %u", (unsigned)gc_probe());
         } else {
             fail++;

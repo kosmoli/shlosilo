@@ -1,4 +1,5 @@
 #include "helloworld_task.h"
+#include "shlosilo_smoke_task.h"
 #include "stdio.h"
 #include "cmsis_os.h"
 #include "mhscpu.h"
@@ -156,6 +157,9 @@ static void HelloWorldTask(void *argument)
     lv_obj_set_style_pad_all(g_container, 0, 0);
     lv_obj_clear_flag(g_container, LV_OBJ_FLAG_SCROLLABLE);
     printf("Container created\n");
+
+    /* Smoke diagnostics task draws its title/log onto the container. */
+    CreateShlosiloSmokeTask();
 
     PowerButtonInit();
 
