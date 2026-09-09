@@ -548,6 +548,9 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     let prefix_hash = crate::encoding::keccak256::hash(&prefix_bytes)?;
 
     // ---- 7. BP+ over output commitments ----
+    // x8/x9/x10: rct_base drill-down sub-probes (bb3aa58 follow-up)
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    let mut px8 = PhaseProbe::start(8);
     let commitments: Vec<MonCommitment> = outs
         .iter()
         .map(|o| {
@@ -557,6 +560,10 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             )
         })
         .collect();
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    px8.as_mut().map_or((), |p| p.end());
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    let mut px9 = PhaseProbe::start(9);
     // Audit #7 Gate1 #5: commitments are public on-chain data (Pedersen commitments are broadcast with the tx and contain
     // no mask plaintext); clone is not a secret-copy problem — but the value has no consumers after this, so move it to eliminate the copy
     let bp = prove_bulletproofs_plus(bp_rng, commitments)?;
@@ -597,6 +604,10 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         b
     };
     let rct_base_hash = crate::encoding::keccak256::hash(&rct_base_bytes)?;
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    px9.as_mut().map_or((), |p| p.end());
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    let mut px10 = PhaseProbe::start(10);
     let mut bp_sig_bytes = Vec::new();
     bp.signature_write(&mut bp_sig_bytes)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -613,6 +624,8 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // when any `?` in the CLSAG section (derive_input_spend_key / clsag sign) fails,
     // Drop still erases all masks (re-review evidence: 3 kinds of early returns after into_inner skipped zeroization)
 
+    #[cfg(feature = "tx-phase-timing-ffi")]
+    px10.as_mut().map_or((), |p| p.end());
     #[cfg(feature = "tx-phase-timing-ffi")]
     px3.as_mut().map_or((), |p| p.end());
     #[cfg(feature = "tx-phase-timing-ffi")]
