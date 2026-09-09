@@ -54,8 +54,7 @@ static pool_hdr_t *pool_first(void)
 
 static pool_hdr_t *pool_next(pool_hdr_t *h)
 {
-    uint8_t *p = (uint8_t *)h;
-    p += (h->size_and_flag & ~FLAG_USED);
+    uint8_t *p = (uint8_t *)h + (h->size_and_flag & ~FLAG_USED);
     if (p >= g_sram_pool + SHLOSILO_POOL_SIZE) {
         return NULL;
     }
@@ -73,7 +72,7 @@ unsigned int shlosilo_sram_pool_fallback_count(void)
 static void pool_init(void)
 {
     if (g_pool_initialized != 0x5A5A5A5Au) {
-        pool_first()->size_and_flag = SHLOSILO_POOL_SIZE - HDR_SIZE;
+        pool_first()->size_and_flag = SHLOSILO_POOL_SIZE;
         g_pool_initialized = 0x5A5A5A5Au;
     }
 }
@@ -84,22 +83,22 @@ void *shlosilo_sram_pool_malloc(size_t size)
         size = 1;
     }
     size = (size + SHLOSILO_POOL_ALIGN - 1u) & ~(size_t)(SHLOSILO_POOL_ALIGN - 1u);
+    size_t need = size + HDR_SIZE; /* header-inclusive block size */
 
     pool_init();
     for (pool_hdr_t *h = pool_first(); h != NULL; h = pool_next(h)) {
         if (h->size_and_flag & FLAG_USED) {
             continue;
         }
-        size_t avail = h->size_and_flag & ~FLAG_USED;
-        if (avail < size) {
+        size_t total = h->size_and_flag & ~FLAG_USED;
+        if (total < need) {
             continue;
         }
-        /* Split if the remainder can hold header + 8 bytes. */
-        if (avail >= size + HDR_SIZE + SHLOSILO_POOL_ALIGN) {
-            uint8_t *base = (uint8_t *)h;
-            pool_hdr_t *rest = (pool_hdr_t *)(base + HDR_SIZE + size);
-            rest->size_and_flag = avail - size - HDR_SIZE;
-            h->size_and_flag = size | FLAG_USED;
+        /* Split if the remainder can hold a header + 8 payload bytes. */
+        if (total >= need + HDR_SIZE + SHLOSILO_POOL_ALIGN) {
+            pool_hdr_t *rest = (pool_hdr_t *)((uint8_t *)h + need);
+            rest->size_and_flag = total - need;
+            h->size_and_flag = need | FLAG_USED;
         } else {
             h->size_and_flag |= FLAG_USED;
         }
@@ -119,7 +118,7 @@ void shlosilo_sram_pool_free(void *ptr)
     /* Coalesce forward (enough for the observed churn pattern). */
     pool_hdr_t *next = pool_next(h);
     if (next != NULL && !(next->size_and_flag & FLAG_USED)) {
-        h->size_and_flag += HDR_SIZE + (next->size_and_flag & ~FLAG_USED);
+        h->size_and_flag += next->size_and_flag;
     }
 }
 
