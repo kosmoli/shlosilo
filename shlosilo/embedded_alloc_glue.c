@@ -223,9 +223,11 @@ void *shlosilo_embedded_malloc(size_t size)
      * the many small hot allocs are where SRAM latency pays off. This
      * keeps the pool's live set under its 400K capacity — device data
      * showed transient exhaustion at the BP+ peak (685 avg-7.4KB
-     * fallbacks with a 48K hole free afterwards). */
+     * fallbacks with a 48K hole free afterwards). 48K: the 43520B
+     * mid-run alloc (17-fallback device run) stays in SRAM — at 32K it
+     * landed in PSRAM and bp4 regressed ~400ms vs the pre-rewrite run. */
 #ifndef SRAM_POOL_MAX_ALLOC
-#define SRAM_POOL_MAX_ALLOC (32u * 1024u)
+#define SRAM_POOL_MAX_ALLOC (48u * 1024u)
 #endif
     if (size > SRAM_POOL_MAX_ALLOC) {
         g_sram_pool_fallback_count++;

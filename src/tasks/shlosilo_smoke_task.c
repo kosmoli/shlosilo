@@ -356,7 +356,7 @@ static int run_checks(void)
                      shlosilo_sram_pool_free_total() / 1024u,
                      shlosilo_sram_pool_free_largest() / 1024u,
                      shlosilo_sram_pool_block_count());
-            log_line("sram pool: peak live=%luK blocks=%u (cap 400K)",
+            log_line("sram pool: peak live=%luK blocks=%u cap=400K thr=48K",
                      shlosilo_sram_pool_peak_live() / 1024u,
                      shlosilo_sram_pool_peak_blocks());
             log_line("cn1 keccak: %u ms", (unsigned)shlosilo_cn_timing_phase(1));
