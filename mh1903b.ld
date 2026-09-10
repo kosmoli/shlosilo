@@ -70,7 +70,7 @@ SECTIONS
 	 * allocs, in the free window between the .bss end (~0x20091600 with
 	 * heap_4 450K) and the reserved parser section at 0x200FC000.
 	 * NOLOAD: contents need no init image (allocator initializes lazily). */
-	.sram_pool 0x2009D000 (NOLOAD) :
+	.sram_pool 0x20098000 (NOLOAD) :
 	{
 		. = ALIGN(8);
 		__sram_pool_start = .;

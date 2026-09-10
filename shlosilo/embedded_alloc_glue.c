@@ -11,10 +11,13 @@
  * for smoke diagnostics (shlosilo_sram_pool_fallback_count).
  *
  * Pool sizing: SRAM 1MB = FreeRTOS heap_4 450K (ucHeap, untouched) +
- * statics/stacks (~580K used incl. heap_4) leaves ~436K before the
- * reserved .data_parser_section at 0x200FC000. Pool = 384K, padded down
- * from the measured free window for margin. Per-run pool peak ~350K
- * (device-verified fallback=17 with pool+PSRAM split).
+ * statics/stacks (.bss ends 0x20095C9B) leaves ~415K before the MSP
+ * stack reservation (.data_parser_section at 0x200FC000..0x20100000).
+ * Pool = 400K at 0x20098000..0x200FC000 — the entire free window. The
+ * BP+/CLSAG live set needs it: at 352K the pool exhausted mid-proof
+ * (599 fallbacks, xmr +2.4s); the full window is what brings the
+ * fallback count back to the ~17 oversized allocations (CN scratchpad
+ * and friends) that must go to PSRAM anyway.
  *
  * Concurrency: Rust alloc/free happen only on the single smoke task
  * (see shlosilo/critical_section_impl.c rationale); no lock here.
@@ -31,7 +34,7 @@
 
 #if SRAM_POOL_ENABLED
 
-#define SHLOSILO_POOL_SIZE ((size_t)352 * 1024)
+#define SHLOSILO_POOL_SIZE ((size_t)400 * 1024)
 #define SHLOSILO_POOL_ALIGN 8u
 
 /* Placed in its own NOLOAD SRAM section (see mh1903b.ld). */
@@ -63,10 +66,70 @@ static pool_hdr_t *pool_next(pool_hdr_t *h)
 
 static unsigned int g_sram_pool_fallback_count = 0;
 static size_t g_pool_initialized;
+/* Diagnostics: why did fallbacks happen? Capacity (one huge alloc) vs
+ * fragmentation (many small allocs while free bytes remain). */
+static size_t g_fb_max_size;
+static size_t g_fb_total_bytes;
+static size_t g_fb_first[4];
+static size_t g_fb_last_size;
 
 unsigned int shlosilo_sram_pool_fallback_count(void)
 {
     return g_sram_pool_fallback_count;
+}
+
+size_t shlosilo_sram_pool_fallback_max_size(void)
+{
+    return g_fb_max_size;
+}
+
+size_t shlosilo_sram_pool_fallback_total_bytes(void)
+{
+    return g_fb_total_bytes;
+}
+
+const size_t *shlosilo_sram_pool_fallback_first4(void)
+{
+    return g_fb_first;
+}
+
+size_t shlosilo_sram_pool_fallback_last_size(void)
+{
+    return g_fb_last_size;
+}
+
+size_t shlosilo_sram_pool_free_total(void)
+{
+    size_t free_bytes = 0;
+    for (pool_hdr_t *h = pool_first(); h != NULL; h = pool_next(h)) {
+        if (!(h->size_and_flag & FLAG_USED)) {
+            free_bytes += h->size_and_flag & ~FLAG_USED;
+        }
+    }
+    return free_bytes;
+}
+
+size_t shlosilo_sram_pool_free_largest(void)
+{
+    size_t largest = 0;
+    for (pool_hdr_t *h = pool_first(); h != NULL; h = pool_next(h)) {
+        if (!(h->size_and_flag & FLAG_USED)) {
+            size_t sz = h->size_and_flag & ~FLAG_USED;
+            if (sz > largest) {
+                largest = sz;
+            }
+        }
+    }
+    return largest;
+}
+
+unsigned int shlosilo_sram_pool_block_count(void)
+{
+    unsigned int n = 0;
+    for (pool_hdr_t *h = pool_first(); h != NULL; h = pool_next(h)) {
+        n++;
+    }
+    return n;
 }
 
 static void pool_init(void)
@@ -137,6 +200,14 @@ void *shlosilo_embedded_malloc(size_t size)
         return p;
     }
     g_sram_pool_fallback_count++;
+    if (size > g_fb_max_size) {
+        g_fb_max_size = size;
+    }
+    g_fb_total_bytes += size;
+    g_fb_last_size = size;
+    if (g_sram_pool_fallback_count <= 4) {
+        g_fb_first[g_sram_pool_fallback_count - 1] = size;
+    }
 #endif
     void *p2 = ExtMalloc(size);
     if (p2 != NULL) {

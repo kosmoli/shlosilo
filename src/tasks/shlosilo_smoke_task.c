@@ -31,6 +31,12 @@ extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
                          const uint8_t *blob, uint32_t blob_len);
 extern uint32_t gc_probe(void);
 extern unsigned int shlosilo_sram_pool_fallback_count(void);
+extern unsigned long shlosilo_sram_pool_fallback_max_size(void);
+extern unsigned long shlosilo_sram_pool_fallback_total_bytes(void);
+extern unsigned long shlosilo_sram_pool_fallback_last_size(void);
+extern unsigned long shlosilo_sram_pool_free_total(void);
+extern unsigned long shlosilo_sram_pool_free_largest(void);
+extern unsigned int shlosilo_sram_pool_block_count(void);
 extern void shlosilo_cn_timing_set_clock(unsigned int clock_fptr);
 extern void shlosilo_cn_timing_reset(void);
 extern unsigned int shlosilo_cn_timing_phase(unsigned char phase);
@@ -339,7 +345,15 @@ static int run_checks(void)
             log_line("b7 wrapcmt: %u ms", (unsigned)shlosilo_bp_timing_phase(7));
             log_line("b8 stmt: %u ms", (unsigned)shlosilo_bp_timing_phase(8));
             log_line("b9 consist: %u ms", (unsigned)shlosilo_bp_timing_phase(9));
-            log_line("sram fallback: %u", (unsigned)shlosilo_sram_pool_fallback_count());
+            log_line("sram fallback: %u max=%luK bytes=%luK last=%luB",
+                     (unsigned)shlosilo_sram_pool_fallback_count(),
+                     shlosilo_sram_pool_fallback_max_size() / 1024u,
+                     shlosilo_sram_pool_fallback_total_bytes() / 1024u,
+                     shlosilo_sram_pool_fallback_last_size());
+            log_line("sram pool: free=%luK hole=%luK blocks=%u",
+                     shlosilo_sram_pool_free_total() / 1024u,
+                     shlosilo_sram_pool_free_largest() / 1024u,
+                     shlosilo_sram_pool_block_count());
             log_line("cn1 keccak: %u ms", (unsigned)shlosilo_cn_timing_phase(1));
             log_line("cn2 fill: %u ms", (unsigned)shlosilo_cn_timing_phase(2));
             log_line("cn3 loop: %u ms", (unsigned)shlosilo_cn_timing_phase(3));
