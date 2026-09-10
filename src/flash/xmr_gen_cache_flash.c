@@ -123,7 +123,11 @@ const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len)
     for (i = 0; i < 12; i++) {
         (void)base[i];
     }
-    return (const uint8_t *)GEN_CACHE_FLASH_BASE;
+    /* Rust adapter expects [len][crc][blob] at the returned pointer —
+     * skip the magic. Returning base made the adapter read the magic as
+     * len (0x31434758), fail the bound check, and fall into the full
+     * decompress path every boot (~2.1s inside BP+ statement init). */
+    return (const uint8_t *)GEN_CACHE_FLASH_BASE + 4;
 }
 
 /**
