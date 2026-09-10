@@ -180,9 +180,11 @@ void *shlosilo_sram_pool_malloc(size_t size)
         } else {
             h->size_and_flag |= FLAG_USED;
         }
-        g_pool_live_bytes += total; /* block's true size incl. internal
-                                       fragmentation — free() subtracts
-                                       the same total */
+        /* Count exactly what the block records: free() subtracts
+         * (size_and_flag & ~FLAG) of whatever block is freed — for a
+         * split allocation that is 'need', for a non-split one 'total'.
+         * Anything else drifts (device showed peak live = 35MB). */
+        g_pool_live_bytes += (h->size_and_flag & ~FLAG_USED);
         g_pool_live_blocks++;
         if (g_pool_live_bytes > g_pool_peak_live) {
             g_pool_peak_live = g_pool_live_bytes;
