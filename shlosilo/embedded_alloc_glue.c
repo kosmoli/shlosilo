@@ -180,7 +180,9 @@ void *shlosilo_sram_pool_malloc(size_t size)
         } else {
             h->size_and_flag |= FLAG_USED;
         }
-        g_pool_live_bytes += need;
+        g_pool_live_bytes += total; /* block's true size incl. internal
+                                       fragmentation — free() subtracts
+                                       the same total */
         g_pool_live_blocks++;
         if (g_pool_live_bytes > g_pool_peak_live) {
             g_pool_peak_live = g_pool_live_bytes;
