@@ -72,6 +72,11 @@ static size_t g_fb_max_size;
 static size_t g_fb_total_bytes;
 static size_t g_fb_first[4];
 static size_t g_fb_last_size;
+/* Pool utilization: is the pool genuinely capacity-bound at peak? */
+static size_t g_pool_live_bytes;
+static size_t g_pool_peak_live;
+static unsigned int g_pool_live_blocks;
+static unsigned int g_pool_peak_blocks;
 
 unsigned int shlosilo_sram_pool_fallback_count(void)
 {
@@ -132,6 +137,16 @@ unsigned int shlosilo_sram_pool_block_count(void)
     return n;
 }
 
+size_t shlosilo_sram_pool_peak_live(void)
+{
+    return g_pool_peak_live;
+}
+
+unsigned int shlosilo_sram_pool_peak_blocks(void)
+{
+    return g_pool_peak_blocks;
+}
+
 static void pool_init(void)
 {
     if (g_pool_initialized != 0x5A5A5A5Au) {
@@ -165,6 +180,12 @@ void *shlosilo_sram_pool_malloc(size_t size)
         } else {
             h->size_and_flag |= FLAG_USED;
         }
+        g_pool_live_bytes += need;
+        g_pool_live_blocks++;
+        if (g_pool_live_bytes > g_pool_peak_live) {
+            g_pool_peak_live = g_pool_live_bytes;
+            g_pool_peak_blocks = g_pool_live_blocks;
+        }
         return (uint8_t *)h + HDR_SIZE;
     }
     return NULL;
@@ -176,6 +197,7 @@ void shlosilo_sram_pool_free(void *ptr)
         return;
     }
     pool_hdr_t *h = (pool_hdr_t *)((uint8_t *)ptr - HDR_SIZE);
+    g_pool_live_bytes -= (h->size_and_flag & ~FLAG_USED);
     h->size_and_flag &= ~FLAG_USED;
 
     /* Coalesce forward (enough for the observed churn pattern). */
@@ -194,6 +216,26 @@ void *shlosilo_embedded_malloc(size_t size)
      * here. Key material is filled right after alloc; the extra memset
      * on non-key allocs is negligible. */
 #if SRAM_POOL_ENABLED
+    /* Large allocations bypass the pool: PSRAM copy cost amortizes on
+     * big linear buffers (CN scratchpad 2MB, BP+ bulk vectors), while
+     * the many small hot allocs are where SRAM latency pays off. This
+     * keeps the pool's live set under its 400K capacity — device data
+     * showed transient exhaustion at the BP+ peak (685 avg-7.4KB
+     * fallbacks with a 48K hole free afterwards). */
+#ifndef SRAM_POOL_MAX_ALLOC
+#define SRAM_POOL_MAX_ALLOC (32u * 1024u)
+#endif
+    if (size > SRAM_POOL_MAX_ALLOC) {
+        g_sram_pool_fallback_count++;
+        if (size > g_fb_max_size) {
+            g_fb_max_size = size;
+        }
+        g_fb_total_bytes += size;
+        g_fb_last_size = size;
+        if (g_sram_pool_fallback_count <= 4) {
+            g_fb_first[g_sram_pool_fallback_count - 1] = size;
+        }
+    } else {
     void *p = shlosilo_sram_pool_malloc(size);
     if (p != NULL) {
         memset(p, 0, size);
@@ -207,6 +249,7 @@ void *shlosilo_embedded_malloc(size_t size)
     g_fb_last_size = size;
     if (g_sram_pool_fallback_count <= 4) {
         g_fb_first[g_sram_pool_fallback_count - 1] = size;
+    }
     }
 #endif
     void *p2 = ExtMalloc(size);

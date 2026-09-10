@@ -37,6 +37,8 @@ extern unsigned long shlosilo_sram_pool_fallback_last_size(void);
 extern unsigned long shlosilo_sram_pool_free_total(void);
 extern unsigned long shlosilo_sram_pool_free_largest(void);
 extern unsigned int shlosilo_sram_pool_block_count(void);
+extern unsigned long shlosilo_sram_pool_peak_live(void);
+extern unsigned int shlosilo_sram_pool_peak_blocks(void);
 extern void shlosilo_cn_timing_set_clock(unsigned int clock_fptr);
 extern void shlosilo_cn_timing_reset(void);
 extern unsigned int shlosilo_cn_timing_phase(unsigned char phase);
@@ -354,6 +356,9 @@ static int run_checks(void)
                      shlosilo_sram_pool_free_total() / 1024u,
                      shlosilo_sram_pool_free_largest() / 1024u,
                      shlosilo_sram_pool_block_count());
+            log_line("sram pool: peak live=%luK blocks=%u (cap 400K)",
+                     shlosilo_sram_pool_peak_live() / 1024u,
+                     shlosilo_sram_pool_peak_blocks());
             log_line("cn1 keccak: %u ms", (unsigned)shlosilo_cn_timing_phase(1));
             log_line("cn2 fill: %u ms", (unsigned)shlosilo_cn_timing_phase(2));
             log_line("cn3 loop: %u ms", (unsigned)shlosilo_cn_timing_phase(3));
