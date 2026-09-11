@@ -82,6 +82,8 @@ monero = { version = "0.21" }
 [features]
 # Device-side BP+ generator cache FFI bridge (C flash backend). Off = no-op stub symbol.
 generator-cache-ffi = []
+# Device primitive perf-bench FFI (raw per-op costs; diagnostic only).
+perf-bench-ffi = ["curve25519-dalek/perf-bench"]
 prove-timing-ffi = ["monero-bulletproofs/prove-timing"]
 cn-timing-ffi = ["prove-timing-ffi", "cuprate-cryptonight/cn-timing"]
 tx-phase-timing-ffi = ["prove-timing-ffi"]

@@ -104,6 +104,10 @@ pub(crate) mod backend;
 // Generic code for window lookups
 pub(crate) mod window;
 
+// Device perf-bench entry points (feature `perf-bench`; shlosilo vendor patch).
+#[cfg(feature = "perf-bench")]
+pub mod perf_bench;
+
 pub use crate::{
     edwards::EdwardsPoint, montgomery::MontgomeryPoint, ristretto::RistrettoPoint, scalar::Scalar,
 };

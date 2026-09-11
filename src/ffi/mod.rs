@@ -19,6 +19,9 @@ pub mod error_code;
 /// BP+ generator cache FFI hooks (device flash backend). See module docs.
 #[cfg(feature = "generator-cache-ffi")]
 pub mod generator_cache_ffi;
+/// Device primitive perf-bench FFI (raw per-op costs). See module docs.
+#[cfg(feature = "perf-bench-ffi")]
+pub mod perf_bench_ffi;
 /// BP+ prove-phase timing FFI (device perf decomposition). See module docs.
 #[cfg(feature = "prove-timing-ffi")]
 pub mod prove_timing_ffi;

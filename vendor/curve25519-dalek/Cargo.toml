@@ -130,6 +130,8 @@ version = "0.4.0"
 # shlosilo vendor patch: exposes the raw extended-coordinate generator cache
 # serialize/reconstruct pair (to_raw_extended_bytes / from_raw_extended_bytes).
 generator-cache = []
+# shlosilo vendor patch: device perf-bench entry points (see src/perf_bench.rs).
+perf-bench = []
 alloc = ["zeroize?/alloc"]
 default = [
     "alloc",
