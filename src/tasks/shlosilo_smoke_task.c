@@ -50,6 +50,54 @@ static uint32_t d_alu_chain(uint32_t iters)
     return x;
 }
 
+/* 32-add variant: the differential against d_alu_chain cancels the
+ * per-iteration branch/loop overhead and directly measures the clock
+ * (24 extra ADDS = 24 cycles per iteration). */
+static uint32_t d_alu_chain32(uint32_t iters)
+{
+    uint32_t x = 1;
+    __asm volatile(
+        "1:\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "subs %1, %1, #1\n\t"
+        "bne 1b\n\t"
+        : "+l"(x), "+l"(iters)
+        :
+        : "cc");
+    return x;
+}
+
 
 /* device-timing 时钟回调：给 Rust 侧的毫秒计数（定义在文件尾） */
 /* xmr_gen_cache_flash.c */
@@ -82,6 +130,8 @@ extern unsigned long long shlosilo_perf_madd(unsigned int iters);
 extern unsigned long long shlosilo_perf_quadruple(unsigned int iters);
 extern unsigned long long shlosilo_perf_ct_chunk(unsigned int n, unsigned int iters);
 extern unsigned long long shlosilo_perf_vartime_2term(unsigned int iters);
+extern unsigned long long shlosilo_perf_select_affine(unsigned int iters);
+extern unsigned long long shlosilo_perf_madd_affine(unsigned int iters);
 
 static unsigned int smoke_tick_ms(void);
 /* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。
@@ -162,8 +212,9 @@ static lv_obj_t *g_title = NULL;
 static lv_obj_t *g_log   = NULL;
 /* 768→2048：cn 探针 +5 行后文本逼近上限，结尾未加保护的 strcat(ALL PASS)
  * 越界写 .bss 邻居 → crash。2048→4096：perf-bench 行加入后总量超 2K。
- * 4096→6144：实验 D（cpu regs / alu / hot / blk32 共 10 行）再加余量。 */
-static char g_logbuf[6144];
+ * 4096→6144：实验 D（cpu regs / alu / hot / blk32 共 10 行）再加余量。
+ * 6144→8192：实验 E（cyccnt / alu diff / cyc×4 / selaff / maddaff / psram cfg）。 */
+static char g_logbuf[8192];
 
 static void log_line(const char *fmt, ...)
 {
@@ -719,6 +770,70 @@ void ShlosiloSmokeTask(void *argument)
                 log_line("bench blk32 %s: %u ms (a=%08X)", bregions[bi].name,
                          (unsigned)tb, (unsigned)acc);
             }
+        }
+
+        /* Experiment E: DWT CYCCNT ground-truth cycles (no clock
+         * assumption) + differential core-clock measurement + PSRAM
+         * controller config dump. */
+        log_line("psram cfg: cmd=%08X devpara=%08X",
+                 (unsigned)PSRAM->PSRAM_CMD, (unsigned)PSRAM->DEVICE_PARA);
+        {
+            int cyc_ok;
+            uint32_t cc0, cc1;
+            CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+            DWT->CYCCNT = 0;
+            DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+            cc0 = DWT->CYCCNT;
+            (void)d_alu_chain(1000u);
+            cc1 = DWT->CYCCNT;
+            cyc_ok = (cc1 != cc0);
+            log_line("cyccnt: %s (ctrl=%08X)",
+                     cyc_ok ? "alive" : "dead", (unsigned)DWT->CTRL);
+
+            /* Differential clock: the extra 24 ADDS per iteration of the
+             * 32-add chain cost exactly 4e6 x 24 = 96e6 core cycles; the
+             * per-iteration branch/loop overhead cancels in the delta. */
+            {
+                uint32_t ta8, ta32;
+                ta8 = osKernelGetTickCount();
+                (void)d_alu_chain(4000000u);
+                ta8 = osKernelGetTickCount() - ta8;
+                ta32 = osKernelGetTickCount();
+                (void)d_alu_chain32(4000000u);
+                ta32 = osKernelGetTickCount() - ta32;
+                log_line("alu diff: t8=%u t32=%u dt=%u MHz~%u",
+                         (unsigned)ta8, (unsigned)ta32,
+                         (unsigned)(ta32 - ta8),
+                         (unsigned)((ta32 > ta8) ? (96000u / (ta32 - ta8)) : 0u));
+            }
+
+            if (cyc_ok) {
+                cc0 = DWT->CYCCNT;
+                (void)d_alu_chain(1000000u);
+                cc1 = DWT->CYCCNT;
+                log_line("cyc alu 1Mx8: %u", (unsigned)(cc1 - cc0));
+                cc0 = DWT->CYCCNT; (void)shlosilo_perf_fmul(20000); cc1 = DWT->CYCCNT;
+                log_line("cyc fmul 20k: %u", (unsigned)(cc1 - cc0));
+                cc0 = DWT->CYCCNT; (void)shlosilo_perf_select(5000); cc1 = DWT->CYCCNT;
+                log_line("cyc select 5k: %u", (unsigned)(cc1 - cc0));
+                cc0 = DWT->CYCCNT; (void)shlosilo_perf_madd(4000); cc1 = DWT->CYCCNT;
+                log_line("cyc madd 4k: %u", (unsigned)(cc1 - cc0));
+            }
+        }
+
+        /* Experiment E: affine-niels table variants (96B/entry vs 160B:
+         * 40% less scan + conditional-select work). Zero when the .a lacks
+         * the feature. */
+        {
+            uint32_t t2, b2;
+            b2 = osKernelGetTickCount();
+            (void)shlosilo_perf_select_affine(5000);
+            t2 = osKernelGetTickCount() - b2;
+            log_line("bench selaff 5k: %u ms", (unsigned)t2);
+            b2 = osKernelGetTickCount();
+            (void)shlosilo_perf_madd_affine(4000);
+            t2 = osKernelGetTickCount() - b2;
+            log_line("bench maddaff 4k: %u ms", (unsigned)t2);
         }
     }
 
