@@ -39,6 +39,16 @@
 
 static uint8_t volatile g_gc_ready = 0;
 
+/* Experiment C (2026-09-11): QSPI DEVICE_PARA snapshots. keystone's
+ * QspiFlashInit() calls QSPI_Init(NULL) (sets DEVICE_PARA[7:0]=0x6B:
+ * FreqSel/DummyCycles/read timing for the flash bus) before SetLatency(0).
+ * This firmware only ever called SetLatency. A conservative boot default in
+ * the low byte would slow EVERY flash access, including XIP instruction
+ * fetch — printed for A/B comparison. */
+uint32_t g_qspi_dp_boot = 0;
+uint32_t g_qspi_dp_after_init = 0;
+uint32_t g_qspi_dp_after_latency = 0;
+
 static uint8_t gc_rom_program_page(uint32_t addr, uint32_t size, uint8_t *buffer)
 {
     /* AES_Program with NULL cmd — the exact keystone QspiFlashEraseAndWrite write
@@ -80,7 +90,14 @@ void gc_flash_init(void)
      * this runs. The QSPI controller is already up — the firmware itself boots
      * from this flash via XIP. */
     SYSCTRL_AHBPeriphClockCmd(SYSCTRL_AHBPeriph_CRYPT, ENABLE);
+    g_qspi_dp_boot = QSPI->DEVICE_PARA;
+    /* Experiment C: mirror keystone QspiFlashInit()'s QSPI_Init(NULL) call.
+     * Sets DEVICE_PARA[7:0] = 0x6B (flash read timing: dummy cycles / freq
+     * select). Order matches keystone: QSPI_Init(NULL) then SetLatency(0). */
+    QSPI_Init(NULL);
+    g_qspi_dp_after_init = QSPI->DEVICE_PARA;
     QSPI_SetLatency(0);
+    g_qspi_dp_after_latency = QSPI->DEVICE_PARA;
     g_gc_ready = 1;
 }
 

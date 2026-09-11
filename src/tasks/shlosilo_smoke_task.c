@@ -321,6 +321,12 @@ static int run_checks(void)
     shlosilo_gen_cache_set_hooks((unsigned int)gc_load, (unsigned int)gc_store);
     /* Cache state probe: 0=hit 1=blank 2=corrupt 3=not-ready */
     log_line("gencache pre: %u", (unsigned)gc_probe());
+    {
+        extern uint32_t g_qspi_dp_boot, g_qspi_dp_after_init, g_qspi_dp_after_latency;
+        log_line("qspi dp: boot=%08X init=%08X lat=%08X",
+                 (unsigned)g_qspi_dp_boot, (unsigned)g_qspi_dp_after_init,
+                 (unsigned)g_qspi_dp_after_latency);
+    }
     /* BP+ prove-phase timing: same clock as device-timing. */
     shlosilo_bp_timing_set_clock((unsigned int)smoke_tick_ms);
     shlosilo_bp_timing_reset();
@@ -589,6 +595,33 @@ void ShlosiloSmokeTask(void *argument)
                  (unsigned)(dsel & 0xff), (unsigned)(dmad & 0xff),
                  (unsigned)(dquad & 0xff), (unsigned)(dct & 0xff),
                  (unsigned)(dvt & 0xff));
+
+        /* Experiment C: linear-read bandwidth, SRAM vs PSRAM vs XIP flash.
+         * 128KB per pass, u32 strided reads (one load per 4 bytes; both this
+         * loop's own code and the data come from their respective regions).
+         * If flash read cost dwarfs SRAM (~10x+), the XIP path explains the
+         * device-wide slowdown; if comparable, flash fetch is NOT the issue. */
+        {
+            static const struct { const char *name; const uint8_t *base; } regions[3] = {
+                { "sram", (const uint8_t *)0x20098000u },   /* .sram_pool (SRAM) */
+                { "psram", (const uint8_t *)0x80000000u },  /* PSRAM heap */
+                { "xip", (const uint8_t *)0x01081000u },    /* firmware image (flash) */
+            };
+            int ri, rep;
+            for (ri = 0; ri < 3; ri++) {
+                for (rep = 0; rep < 2; rep++) {
+                    uint32_t acc = 0;
+                    uint32_t t0b = osKernelGetTickCount();
+                    uint32_t i;
+                    for (i = 0; i < 131072u; i += 4) {
+                        acc += *(volatile const uint32_t *)(regions[ri].base + i);
+                    }
+                    t = osKernelGetTickCount() - t0b;
+                    log_line("bench rd128K %s#%d: %u ms (a=%08X)",
+                             regions[ri].name, rep + 1, (unsigned)t, (unsigned)acc);
+                }
+            }
+        }
     }
 
     /* panic 检测：Rust panic handler 写过 0xDEADBEEF 到 0x2000F000 */
