@@ -224,22 +224,28 @@ void *shlosilo_embedded_malloc(size_t size)
      * the pool serves the BP+ hot set, huge linear buffers (CN scratchpad
      * 2MB) always go to the PSRAM heap.
      *
-     * Threshold history:
-     *  - 32K: the 43520B mid-run alloc landed in PSRAM, bp4 regressed
-     *    ~400ms vs the pre-rewrite run.
-     *  - 48K (K2-D final): that 43520B alloc stays in SRAM. It is the BP+
-     *    WIP round-3 CT Straus lookup table (34 items x 1280B), and the
-     *    ~409ms recovery anchors the per-byte cost of a PSRAM-resident
-     *    CT table (~4352 select steps x ~27k cycles).
-     *  - 192K (A1 experiment, 2026-09-11): the WIP round-1/round-2 tables
-     *    (166400B = 130 items, 84480B = 66 items) also land in SRAM. Each
-     *    CT select scans all 8 ProjectiveNiels entries (1280B); from QSPI
-     *    PSRAM that costs ~21-23 cycles/byte (~30k cycles per select+add),
-     *    from SRAM ~2k. The bp1/bp2 tables (321K/322K, 257/258 items)
-     *    exceed 192K and keep their previous PSRAM path. Fallback stays a
-     *    safe no-op: a pool that cannot fit the table degrades to PSRAM. */
+     * ⚠️ Keep this threshold strictly BELOW 163,840B (the size of each
+     * gencache generator vector). Those two allocations are permanent
+     * `LazyLock` statics that never free; the A1 experiment (2026-09-11)
+     * raised the threshold to 192K so the BP+ WIP lookup tables could
+     * enter, but the generators crossed the threshold too: 320K of the
+     * 400K pool was gone for the whole run, the entire BP+ working set
+     * spilled to PSRAM and xmr regressed +1.5s (687 fallbacks).
+     *
+     * The tables are now CHUNKED in Rust instead (multiexp chunk = 36
+     * terms -> 36 x 1280B = 46,080B per table), so the pool stays at 48K:
+     *  - The BP+ WIP round-1 table (130 terms, 166,400B) and the initial
+     *    commit table (257 terms, 328,960B) previously went to PSRAM,
+     *    where each constant-time select scans 1280B via QSPI (~30k
+     *    cycles per select+add step). Chunked, every table lands in SRAM.
+     *  - No size threshold can admit those tables while excluding the
+     *    163,840B generators (163,840 < 166,400), which is why chunking
+     *    is the fix rather than a higher threshold.
+     *  - Historical anchor: at 32K the 43520B mid-run alloc (WIP round-3
+     *    table, 34 terms) fell to PSRAM and bp4 regressed ~400ms; at 48K
+     *    it stays in SRAM. Same mechanism, now extended to all rounds. */
 #ifndef SRAM_POOL_MAX_ALLOC
-#define SRAM_POOL_MAX_ALLOC (192u * 1024u)
+#define SRAM_POOL_MAX_ALLOC (48u * 1024u)
 #endif
     if (size > SRAM_POOL_MAX_ALLOC) {
         g_sram_pool_fallback_count++;
