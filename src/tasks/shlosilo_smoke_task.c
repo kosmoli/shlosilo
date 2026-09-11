@@ -45,6 +45,15 @@ extern unsigned int shlosilo_cn_timing_phase(unsigned char phase);
 extern void shlosilo_tx_phase_set_clock(unsigned int clock_fptr);
 extern void shlosilo_tx_phase_reset(void);
 extern unsigned int shlosilo_tx_phase_phase(unsigned char phase);
+/* Device primitive perf-bench (perf-bench-ffi; zero-returning stubs when the
+ * .a lacks the feature). Each call returns a digest; the caller times it. */
+extern unsigned long long shlosilo_perf_fmul(unsigned int iters);
+extern unsigned long long shlosilo_perf_fsq(unsigned int iters);
+extern unsigned long long shlosilo_perf_select(unsigned int iters);
+extern unsigned long long shlosilo_perf_madd(unsigned int iters);
+extern unsigned long long shlosilo_perf_quadruple(unsigned int iters);
+extern unsigned long long shlosilo_perf_ct_chunk(unsigned int n, unsigned int iters);
+extern unsigned long long shlosilo_perf_vartime_2term(unsigned int iters);
 
 static unsigned int smoke_tick_ms(void);
 /* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。
@@ -124,8 +133,8 @@ static const char *FIXTURE_XMR_TX_UNSIGNED =
 static lv_obj_t *g_title = NULL;
 static lv_obj_t *g_log   = NULL;
 /* 768→2048：cn 探针 +5 行后文本逼近上限，结尾未加保护的 strcat(ALL PASS)
- * 越界写 .bss 邻居 → crash。SRAM 池后仍有 ~65KB 余量，2048B 无压力。 */
-static char g_logbuf[2048];
+ * 越界写 .bss 邻居 → crash。2048→4096：perf-bench 行加入后总量超 2K。 */
+static char g_logbuf[4096];
 
 static void log_line(const char *fmt, ...)
 {
@@ -537,6 +546,49 @@ void ShlosiloSmokeTask(void *argument)
         log_line("stk   used %uK remain %uW",
                  stk_used_b / 1024,
                  (unsigned)stk_remain_w);
+    }
+
+    /* ---- device primitive perf-bench (feature perf-bench-ffi) ----
+     * Raw per-primitive costs, timed with the kernel tick. Zero when the .a
+     * lacks the feature (stubs). Digests prove the calls ran (deterministic
+     * across boots); the numbers calibrate the loop models. */
+    {
+        uint32_t t, b0;
+        unsigned long long dfm, dfs, dsel, dmad, dquad, dct, dvt;
+
+        b0 = osKernelGetTickCount();
+        dfm = shlosilo_perf_fmul(20000);
+        t = osKernelGetTickCount() - b0;
+        log_line("bench fmul 20k: %u ms", (unsigned)t);
+        b0 = osKernelGetTickCount();
+        dfs = shlosilo_perf_fsq(20000);
+        t = osKernelGetTickCount() - b0;
+        log_line("bench fsq 20k: %u ms", (unsigned)t);
+        b0 = osKernelGetTickCount();
+        dsel = shlosilo_perf_select(5000);
+        t = osKernelGetTickCount() - b0;
+        log_line("bench select 5k: %u ms", (unsigned)t);
+        b0 = osKernelGetTickCount();
+        dmad = shlosilo_perf_madd(4000);
+        t = osKernelGetTickCount() - b0;
+        log_line("bench madd 4k: %u ms", (unsigned)t);
+        b0 = osKernelGetTickCount();
+        dquad = shlosilo_perf_quadruple(800);
+        t = osKernelGetTickCount() - b0;
+        log_line("bench quad 800: %u ms", (unsigned)t);
+        b0 = osKernelGetTickCount();
+        dct = shlosilo_perf_ct_chunk(36, 2);
+        t = osKernelGetTickCount() - b0;
+        log_line("bench ct36 x2: %u ms", (unsigned)t);
+        b0 = osKernelGetTickCount();
+        dvt = shlosilo_perf_vartime_2term(4);
+        t = osKernelGetTickCount() - b0;
+        log_line("bench vart2 x4: %u ms", (unsigned)t);
+        log_line("bench dig: %02x %02x %02x %02x %02x %02x %02x",
+                 (unsigned)(dfm & 0xff), (unsigned)(dfs & 0xff),
+                 (unsigned)(dsel & 0xff), (unsigned)(dmad & 0xff),
+                 (unsigned)(dquad & 0xff), (unsigned)(dct & 0xff),
+                 (unsigned)(dvt & 0xff));
     }
 
     /* panic 检测：Rust panic handler 写过 0xDEADBEEF 到 0x2000F000 */
