@@ -21,7 +21,35 @@
 #include "helloworld_task.h"
 #include "hal_touch.h"
 #include "hal_lcd.h"
+#include "mhscpu.h"
 #define SHLOSILO_SMOKE_OK 0 /* ShlosiloErrorCode::Ok */
+
+/* Experiment D (2026-09-11): dependent-add chain. Cortex-M4 executes each
+ * dependent ADDS in exactly 1 cycle (single-issue, no dual-issue on M4), so
+ * f_core = (8 * iters) / elapsed_s. This is the ground-truth core clock —
+ * the SYSCTRL registers describe the CONFIGURED clock, which may differ
+ * (HCLKConfig silently forces HCLK = CPU/2 above 102MHz). */
+static uint32_t d_alu_chain(uint32_t iters)
+{
+    uint32_t x = 1;
+    __asm volatile(
+        "1:\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "adds %0, %0, #1\n\t"
+        "subs %1, %1, #1\n\t"
+        "bne 1b\n\t"
+        : "+l"(x), "+l"(iters)
+        :
+        : "cc");
+    return x;
+}
+
 
 /* device-timing 时钟回调：给 Rust 侧的毫秒计数（定义在文件尾） */
 /* xmr_gen_cache_flash.c */
@@ -133,8 +161,9 @@ static const char *FIXTURE_XMR_TX_UNSIGNED =
 static lv_obj_t *g_title = NULL;
 static lv_obj_t *g_log   = NULL;
 /* 768→2048：cn 探针 +5 行后文本逼近上限，结尾未加保护的 strcat(ALL PASS)
- * 越界写 .bss 邻居 → crash。2048→4096：perf-bench 行加入后总量超 2K。 */
-static char g_logbuf[4096];
+ * 越界写 .bss 邻居 → crash。2048→4096：perf-bench 行加入后总量超 2K。
+ * 4096→6144：实验 D（cpu regs / alu / hot / blk32 共 10 行）再加余量。 */
+static char g_logbuf[6144];
 
 static void log_line(const char *fmt, ...)
 {
@@ -620,6 +649,75 @@ void ShlosiloSmokeTask(void *argument)
                     log_line("bench rd128K %s#%d: %u ms (a=%08X)",
                              regions[ri].name, rep + 1, (unsigned)t, (unsigned)acc);
                 }
+            }
+        }
+
+        /* Experiment D: configured-clock registers + ground-truth core clock.
+         * FREQ_SEL raw; HCLK_1MS_VAL / PCLK_1MS_VAL are hardware counters
+         * (cycles per ms — divide by 1000 for MHz). Then the dependent-add
+         * chain: 8 adds x iters, M4 = 1 cycle per dependent add. */
+        log_line("cpu regs: freq_sel=%08X hclk_ms=%u pclk_ms=%u",
+                 (unsigned)SYSCTRL->FREQ_SEL,
+                 (unsigned)SYSCTRL->HCLK_1MS_VAL,
+                 (unsigned)SYSCTRL->PCLK_1MS_VAL);
+        {
+            uint32_t ta = osKernelGetTickCount();
+            uint32_t dv = d_alu_chain(4000000u);
+            ta = osKernelGetTickCount() - ta;
+            /* 4e6 iters x 8 dependent adds = 32e6 core cycles minimum.
+             * A tick-based derivative: kcyc/ms = 32000/ta (if ta>0). */
+            log_line("bench alu 4Mx8: %u ms (d=%u kcyc/ms=%u)",
+                     (unsigned)ta, (unsigned)(dv & 0xff),
+                     (unsigned)(ta ? (32000u / ta) : 0u));
+        }
+
+        /* Experiment D: repeated read of ONE word (data-cache test).
+         * 65536 reads of the same address: if a data cache exists, this is
+         * a few cycles/read; if not, every read pays the full bus cost. */
+        {
+            const uint8_t *spots[3] = {
+                (const uint8_t *)0x20098000u, (const uint8_t *)0x80000000u,
+                (const uint8_t *)0x01081000u,
+            };
+            static const char *spot_names[3] = { "sram", "psram", "xip" };
+            int si;
+            for (si = 0; si < 3; si++) {
+                uint32_t acc = 0;
+                uint32_t i;
+                uint32_t th = osKernelGetTickCount();
+                for (i = 0; i < 65536u; i++) {
+                    acc += *(volatile const uint32_t *)spots[si];
+                }
+                th = osKernelGetTickCount() - th;
+                log_line("bench hot %s: %u ms (a=%08X)", spot_names[si],
+                         (unsigned)th, (unsigned)acc);
+            }
+        }
+
+        /* Experiment D: 32-byte block reads (8 words per iteration, the
+         * compiler sees the full row so it can issue the loads back to back).
+         * Compare against the 4-byte-stride rd128K above: if block reads are
+         * much faster, the bus rewards locality/pipelining; if equal, each
+         * 4-byte access is a fixed-latency transaction. */
+        {
+            static const struct { const char *name; const uint8_t *base; } bregions[3] = {
+                { "sram", (const uint8_t *)0x20098000u },
+                { "psram", (const uint8_t *)0x80000000u },
+                { "xip", (const uint8_t *)0x01081000u },
+            };
+            int bi;
+            for (bi = 0; bi < 3; bi++) {
+                volatile const uint32_t *p = (volatile const uint32_t *)bregions[bi].base;
+                uint32_t acc = 0;
+                uint32_t blk;
+                uint32_t tb = osKernelGetTickCount();
+                for (blk = 0; blk < 4096u; blk++) {   /* 4096 x 32B = 128KB */
+                    acc += p[0] + p[1] + p[2] + p[3] + p[4] + p[5] + p[6] + p[7];
+                    p += 8;
+                }
+                tb = osKernelGetTickCount() - tb;
+                log_line("bench blk32 %s: %u ms (a=%08X)", bregions[bi].name,
+                         (unsigned)tb, (unsigned)acc);
             }
         }
     }
