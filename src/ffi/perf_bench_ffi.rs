@@ -86,3 +86,25 @@ pub extern "C" fn shlosilo_perf_vartime_2term(iters: u32) -> u64 {
 pub extern "C" fn shlosilo_perf_vartime_2term(_iters: u32) -> u64 {
     0
 }
+
+#[cfg(feature = "perf-bench-ffi")]
+#[no_mangle]
+pub extern "C" fn shlosilo_perf_select_affine(iters: u32) -> u64 {
+    pb::select_affine(iters)
+}
+#[cfg(not(feature = "perf-bench-ffi"))]
+#[no_mangle]
+pub extern "C" fn shlosilo_perf_select_affine(_iters: u32) -> u64 {
+    0
+}
+
+#[cfg(feature = "perf-bench-ffi")]
+#[no_mangle]
+pub extern "C" fn shlosilo_perf_madd_affine(iters: u32) -> u64 {
+    pb::madd_affine(iters)
+}
+#[cfg(not(feature = "perf-bench-ffi"))]
+#[no_mangle]
+pub extern "C" fn shlosilo_perf_madd_affine(_iters: u32) -> u64 {
+    0
+}

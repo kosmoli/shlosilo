@@ -26,6 +26,38 @@ use crate::window::LookupTable;
 
 use crate::backend::serial::curve_models::ProjectiveNielsPoint;
 
+/// Affine-niels table variant of `select`: 3 field elements per entry
+/// (96 bytes) instead of 5 (160 bytes), so the constant-time scan and the
+/// conditional selects shrink by 40%. Candidate for the CT Straus hot loop;
+/// costs one batch inversion to build the table (not timed here).
+pub fn select_affine(iters: u32) -> u64 {
+    let table = LookupTable::<crate::backend::serial::curve_models::AffineNielsPoint>::from(
+        &ED25519_BASEPOINT_POINT,
+    );
+    let mut acc: u64 = 0;
+    for i in 0..iters {
+        let d = ((i % 15) as i8) - 7;
+        let t = table.select(black_box(d));
+        black_box(t);
+        acc = acc.wrapping_add(1);
+    }
+    black_box(acc)
+}
+
+/// Affine variant of `madd`: select + mixed add + convert.
+pub fn madd_affine(iters: u32) -> u64 {
+    let table = LookupTable::<crate::backend::serial::curve_models::AffineNielsPoint>::from(
+        &ED25519_BASEPOINT_POINT,
+    );
+    let mut q = ED25519_BASEPOINT_POINT;
+    for i in 0..iters {
+        let d = ((i % 15) as i8) - 7;
+        let r = table.select(d);
+        q = (&q + &r).as_extended();
+    }
+    q.compress().to_bytes()[0] as u64
+}
+
 /// Field multiplication `x = x * y` iterated `iters` times.
 /// Digest: first byte of the final element.
 pub fn fmul(iters: u32) -> u64 {
