@@ -11,13 +11,15 @@
  * for smoke diagnostics (shlosilo_sram_pool_fallback_count).
  *
  * Pool sizing: SRAM 1MB = FreeRTOS heap_4 450K (ucHeap, untouched) +
- * statics/stacks (.bss ends 0x20095C9B) leaves ~415K before the MSP
- * stack reservation (.data_parser_section at 0x200FC000..0x20100000).
- * Pool = 400K at 0x20098000..0x200FC000 — the entire free window. The
- * BP+/CLSAG live set needs it: at 352K the pool exhausted mid-proof
- * (599 fallbacks, xmr +2.4s); the full window is what brings the
- * fallback count back to the ~17 oversized allocations (CN scratchpad
- * and friends) that must go to PSRAM anyway.
+ * statics/stacks (.bss ends 0x200984D7 after the 2026-09-11 CN-SBOX
+ * SRAM copy) before the MSP stack reservation
+ * (.data_parser_section at 0x200FC000..0x20100000).
+ * Pool = 396K at 0x20099000..0x200FC000 — the entire free window
+ * (moved from 400K@0x20098000 when the +4KB SBOX .data copy pushed
+ * .bss past the old base). The BP+/CLSAG live set needs it: at 352K
+ * the pool exhausted mid-proof (599 fallbacks, xmr +2.4s); the full
+ * window is what brings the fallback count back to the ~17 oversized
+ * allocations (CN scratchpad and friends) that must go to PSRAM anyway.
  *
  * Concurrency: Rust alloc/free happen only on the single smoke task
  * (see shlosilo/critical_section_impl.c rationale); no lock here.
@@ -34,7 +36,7 @@
 
 #if SRAM_POOL_ENABLED
 
-#define SHLOSILO_POOL_SIZE ((size_t)400 * 1024)
+#define SHLOSILO_POOL_SIZE ((size_t)396 * 1024)
 #define SHLOSILO_POOL_ALIGN 8u
 
 /* Placed in its own NOLOAD SRAM section (see mh1903b.ld). */

@@ -451,7 +451,7 @@ static int run_checks(void)
                      shlosilo_sram_pool_free_total() / 1024u,
                      shlosilo_sram_pool_free_largest() / 1024u,
                      shlosilo_sram_pool_block_count());
-            log_line("sram pool: peak live=%luK blocks=%u cap=400K thr=48K ch=36",
+            log_line("sram pool: peak live=%luK blocks=%u cap=396K thr=48K ch=36",
                      shlosilo_sram_pool_peak_live() / 1024u,
                      shlosilo_sram_pool_peak_blocks());
             log_line("cn1 keccak: %u ms", (unsigned)shlosilo_cn_timing_phase(1));
@@ -683,7 +683,7 @@ void ShlosiloSmokeTask(void *argument)
          * device-wide slowdown; if comparable, flash fetch is NOT the issue. */
         {
             static const struct { const char *name; const uint8_t *base; } regions[3] = {
-                { "sram", (const uint8_t *)0x20098000u },   /* .sram_pool (SRAM) */
+                { "sram", (const uint8_t *)0x20099000u },   /* .sram_pool (SRAM) */
                 { "psram", (const uint8_t *)0x80000000u },  /* PSRAM heap */
                 { "xip", (const uint8_t *)0x01081000u },    /* firmware image (flash) */
             };
@@ -727,7 +727,7 @@ void ShlosiloSmokeTask(void *argument)
          * a few cycles/read; if not, every read pays the full bus cost. */
         {
             const uint8_t *spots[3] = {
-                (const uint8_t *)0x20098000u, (const uint8_t *)0x80000000u,
+                (const uint8_t *)0x20099000u, (const uint8_t *)0x80000000u,
                 (const uint8_t *)0x01081000u,
             };
             static const char *spot_names[3] = { "sram", "psram", "xip" };
@@ -752,7 +752,7 @@ void ShlosiloSmokeTask(void *argument)
          * 4-byte access is a fixed-latency transaction. */
         {
             static const struct { const char *name; const uint8_t *base; } bregions[3] = {
-                { "sram", (const uint8_t *)0x20098000u },
+                { "sram", (const uint8_t *)0x20099000u },
                 { "psram", (const uint8_t *)0x80000000u },
                 { "xip", (const uint8_t *)0x01081000u },
             };

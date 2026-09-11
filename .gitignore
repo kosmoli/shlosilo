@@ -14,3 +14,6 @@ pyenv
 !/rust/apps/Cargo.lock
 *.rustfmt.toml
 /tools/boot.sig
+# build artifacts (poC3 era)
+/build_poc3/
+/forgebox.bin
