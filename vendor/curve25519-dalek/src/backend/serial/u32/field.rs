@@ -124,7 +124,6 @@ impl<'b> MulAssign<&'b FieldElement2625> for FieldElement2625 {
 impl<'a, 'b> Mul<&'b FieldElement2625> for &'a FieldElement2625 {
     type Output = FieldElement2625;
 
-    #[inline(always)] // B1a experiment: allow hot callers to keep limbs in registers
     #[rustfmt::skip] // keep alignment of z* calculations
     fn mul(self, _rhs: &'b FieldElement2625) -> FieldElement2625 {
         /// Helper function to multiply two 32-bit integers with 64 bits
