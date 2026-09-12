@@ -171,18 +171,6 @@ const CRYPTONIGHT_SBOX: [u32; 1024] = [
     0x82c34141, 0x29b09999, 0x5a772d2d, 0x1e110f0f, 0x7bcbb0b0, 0xa8fc5454, 0x6dd6bbbb, 0x2c3a1616,
 ];
 
-/// shlosilo vendor patch (device perf; output-identical): SRAM-resident copy
-/// of the CN S-box/T-table.
-///
-/// The `const` table above lives in .rodata, which on the target lands in the
-/// external QSPI NOR flash (XIP map). `round_fwd` reads it 16 times per AES
-/// round (~59M lookups across one CryptoNight hash), and a flash-served read
-/// costs several cycles more than an SRAM read even when the line is warm.
-/// This copy is placed in `.data`, so the C runtime copies it into on-chip
-/// SRAM at boot: identical bytes, ~2-cycle reads. Hosts are unaffected.
-#[link_section = ".data"]
-static CRYPTONIGHT_SBOX_RAM: [u32; 1024] = CRYPTONIGHT_SBOX;
-
 const fn substitute_word(word: u32) -> u32 {
     let wb: [u8; 4] = word.to_le_bytes();
     u32::from_le_bytes([
@@ -249,25 +237,25 @@ pub(crate) fn key_extend(key_bytes: &[u8; CN_AES_KEY_SIZE]) -> [u128; NUM_AES_RO
 
 #[expect(clippy::cast_possible_truncation)]
 pub(crate) fn round_fwd(state: u128, key: u128) -> u128 {
-    let mut r1 = CRYPTONIGHT_SBOX_RAM[usize::from(state as u8)];
-    r1 ^= CRYPTONIGHT_SBOX_RAM[256 + usize::from((state >> 40) as u8)];
-    r1 ^= CRYPTONIGHT_SBOX_RAM[512 + usize::from((state >> 80) as u8)];
-    r1 ^= CRYPTONIGHT_SBOX_RAM[768 + usize::from((state >> 120) as u8)];
+    let mut r1 = CRYPTONIGHT_SBOX[usize::from(state as u8)];
+    r1 ^= CRYPTONIGHT_SBOX[256 + usize::from((state >> 40) as u8)];
+    r1 ^= CRYPTONIGHT_SBOX[512 + usize::from((state >> 80) as u8)];
+    r1 ^= CRYPTONIGHT_SBOX[768 + usize::from((state >> 120) as u8)];
 
-    let mut r2 = CRYPTONIGHT_SBOX_RAM[usize::from((state >> 32) as u8)];
-    r2 ^= CRYPTONIGHT_SBOX_RAM[256 + usize::from((state >> 72) as u8)];
-    r2 ^= CRYPTONIGHT_SBOX_RAM[512 + usize::from((state >> 112) as u8)];
-    r2 ^= CRYPTONIGHT_SBOX_RAM[768 + usize::from((state >> 24) as u8)];
+    let mut r2 = CRYPTONIGHT_SBOX[usize::from((state >> 32) as u8)];
+    r2 ^= CRYPTONIGHT_SBOX[256 + usize::from((state >> 72) as u8)];
+    r2 ^= CRYPTONIGHT_SBOX[512 + usize::from((state >> 112) as u8)];
+    r2 ^= CRYPTONIGHT_SBOX[768 + usize::from((state >> 24) as u8)];
 
-    let mut r3 = CRYPTONIGHT_SBOX_RAM[usize::from((state >> 64) as u8)];
-    r3 ^= CRYPTONIGHT_SBOX_RAM[256 + usize::from((state >> 104) as u8)];
-    r3 ^= CRYPTONIGHT_SBOX_RAM[512 + usize::from((state >> 16) as u8)];
-    r3 ^= CRYPTONIGHT_SBOX_RAM[768 + usize::from((state >> 56) as u8)];
+    let mut r3 = CRYPTONIGHT_SBOX[usize::from((state >> 64) as u8)];
+    r3 ^= CRYPTONIGHT_SBOX[256 + usize::from((state >> 104) as u8)];
+    r3 ^= CRYPTONIGHT_SBOX[512 + usize::from((state >> 16) as u8)];
+    r3 ^= CRYPTONIGHT_SBOX[768 + usize::from((state >> 56) as u8)];
 
-    let mut r4 = CRYPTONIGHT_SBOX_RAM[usize::from((state >> 96) as u8)];
-    r4 ^= CRYPTONIGHT_SBOX_RAM[256 + usize::from((state >> 8) as u8)];
-    r4 ^= CRYPTONIGHT_SBOX_RAM[512 + usize::from((state >> 48) as u8)];
-    r4 ^= CRYPTONIGHT_SBOX_RAM[768 + usize::from((state >> 88) as u8)];
+    let mut r4 = CRYPTONIGHT_SBOX[usize::from((state >> 96) as u8)];
+    r4 ^= CRYPTONIGHT_SBOX[256 + usize::from((state >> 8) as u8)];
+    r4 ^= CRYPTONIGHT_SBOX[512 + usize::from((state >> 48) as u8)];
+    r4 ^= CRYPTONIGHT_SBOX[768 + usize::from((state >> 88) as u8)];
 
     let mut new_state =
         (u128::from(r4) << 96) | (u128::from(r3) << 64) | (u128::from(r2) << 32) | u128::from(r1);
