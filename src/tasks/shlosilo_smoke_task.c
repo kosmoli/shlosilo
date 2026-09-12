@@ -106,6 +106,7 @@ extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
 extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
                          const uint8_t *blob, uint32_t blob_len);
 extern uint32_t gc_probe(void);
+extern uint32_t gc_last_crc_ms(void);
 extern unsigned int shlosilo_sram_pool_fallback_count(void);
 extern unsigned long shlosilo_sram_pool_fallback_max_size(void);
 extern unsigned long shlosilo_sram_pool_fallback_total_bytes(void);
@@ -471,6 +472,7 @@ static int run_checks(void)
             log_line("x10 bpsig: %u ms", (unsigned)shlosilo_tx_phase_phase(10));
             log_line("x11 rctbase: %u ms", (unsigned)shlosilo_tx_phase_phase(11));
             log_line("gencache post: %u", (unsigned)gc_probe());
+            log_line("gc crc: %u ms", (unsigned)gc_last_crc_ms());
         } else {
             fail++;
             log_line("xmr: FAIL rc=%d", rc);
