@@ -10,7 +10,7 @@ use shlosilo::chain::xmr::generator_cache_test_hooks;
 
 static CAPTURED: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
 
-fn test_load(_prefix: &'static [u8]) -> Option<Vec<u8>> {
+fn test_load(_prefix: &'static [u8]) -> Option<&'static [u8]> {
     None // first run in this process: nothing persisted yet
 }
 

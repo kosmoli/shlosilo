@@ -13,8 +13,6 @@
 
 #[cfg(feature = "generator-cache-ffi")]
 mod imp {
-    extern crate alloc;
-    use alloc::vec::Vec;
     use core::sync::atomic::{AtomicU32, Ordering};
 
     static LOAD_FPTR: AtomicU32 = AtomicU32::new(0);
@@ -29,7 +27,7 @@ mod imp {
         let _ = monero_bulletproofs::register_generator_cache_hooks(load_adapter, store_adapter);
     }
 
-    fn load_adapter(prefix: &'static [u8]) -> Option<Vec<u8>> {
+    fn load_adapter(prefix: &'static [u8]) -> Option<&'static [u8]> {
         let f = LOAD_FPTR.load(Ordering::Relaxed);
         if f == 0 {
             return None;
@@ -46,9 +44,11 @@ mod imp {
         if len == 0 || len > 4096 * 128 {
             return None;
         }
-        let mut v = alloc::vec::Vec::with_capacity(len);
-        v.extend_from_slice(unsafe { core::slice::from_raw_parts(hdr.add(8), len) });
-        Some(v)
+        // Zero-copy: the C backend returns a pointer into its own storage — the
+        // firmware's memory-mapped flash region on the device (stable for the program
+        // lifetime). Borrow it in place instead of copying 256 KB into an allocation
+        // (a 256 KB copy means an alloc + zeroing + a PSRAM round trip on the device).
+        Some(unsafe { core::slice::from_raw_parts(hdr.add(8), len) })
     }
 
     fn store_adapter(prefix: &'static [u8], blob: &[u8]) {

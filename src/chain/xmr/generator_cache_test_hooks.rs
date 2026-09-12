@@ -12,7 +12,7 @@ use monero_bulletproofs::register_generator_cache_hooks;
 /// Register load/store hooks into the vendored bulletproofs crate. Idempotent: a second
 /// call with the same functions (e.g. two tests in one binary) returns true.
 pub fn register(
-    load: fn(&'static [u8]) -> Option<Vec<u8>>,
+    load: fn(&'static [u8]) -> Option<&'static [u8]>,
     store: fn(&'static [u8], &[u8]),
 ) -> bool {
     use core::sync::atomic::{AtomicBool, Ordering};

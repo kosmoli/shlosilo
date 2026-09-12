@@ -77,7 +77,7 @@ fn generators(prefix: &'static str, path: &str) {
 {H_str}            ];
             let n_points = G_BYTES.len() + H_BYTES.len();
             if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
-              return rebuild_from_blob(&blob, n_points);
+              return rebuild_from_blob(blob, n_points);
             }}
             let g = decompress_generator_vec(G_BYTES);
             let h = decompress_generator_vec(H_BYTES);

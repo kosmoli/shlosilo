@@ -8,6 +8,11 @@
 //! with the dalek vendor-patch constructor `EdwardsPoint::from_raw_extended_bytes`
 //! (no sqrt, no hash-to-curve, no inversions).
 //!
+//! The LOAD hook returns a BORROWED slice: the backend owns the storage (memory-mapped
+//! flash on the device) and the bytes stay valid for the program lifetime, so the load
+//! path reads them in place — no intermediate copy, no allocation (the blob is 256 KB;
+//! copying it cost an alloc + memset + a PSRAM round trip on the device).
+//!
 //! Hooks are tagged by the generator-set prefix ("bulletproof" / "bulletproof_plus")
 //! so multiple generator sets can persist independently.
 //!
@@ -16,12 +21,9 @@
 //! soundness for the affected transaction (detectable on verification), never leak
 //! secrets. The load path deliberately does NOT re-check curve membership.
 
-use std_shims::{
-    sync::{LazyLock, Mutex},
-    vec::Vec,
-};
+use std_shims::sync::{LazyLock, Mutex};
 
-pub(crate) type LoadFn = fn(prefix: &'static [u8]) -> Option<Vec<u8>>;
+pub(crate) type LoadFn = fn(prefix: &'static [u8]) -> Option<&'static [u8]>;
 pub(crate) type StoreFn = fn(prefix: &'static [u8], blob: &[u8]);
 
 static LOAD: LazyLock<Mutex<Option<LoadFn>>> = LazyLock::new(|| Mutex::new(None));
@@ -46,7 +48,7 @@ pub(crate) fn blob_len(n_points: usize) -> usize {
     n_points * 128
 }
 
-pub(crate) fn try_load_blob(prefix: &'static [u8], n_points: usize) -> Option<Vec<u8>> {
+pub(crate) fn try_load_blob(prefix: &'static [u8], n_points: usize) -> Option<&'static [u8]> {
     let blob = match *LOAD.lock() {
         Some(f) => f(prefix),
         None => return None,
