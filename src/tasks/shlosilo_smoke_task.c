@@ -402,6 +402,9 @@ static int run_checks(void)
     shlosilo_gen_cache_set_hooks((unsigned int)gc_load, (unsigned int)gc_store);
     /* Cache state probe: 0=hit 1=blank 2=corrupt 3=not-ready */
     log_line("gencache pre: %u", (unsigned)gc_probe());
+    /* A2 diagnostics: CRC time in the pre-sign context (the post value is printed
+     * after the XMR block). Same 256 KB blob, two different cache states. */
+    log_line("gc crc pre: %u ms", (unsigned)gc_last_crc_ms());
     {
         extern uint32_t g_qspi_dp_boot, g_qspi_dp_after_init, g_qspi_dp_after_latency;
         log_line("qspi dp: boot=%08X init=%08X lat=%08X",
@@ -472,7 +475,7 @@ static int run_checks(void)
             log_line("x10 bpsig: %u ms", (unsigned)shlosilo_tx_phase_phase(10));
             log_line("x11 rctbase: %u ms", (unsigned)shlosilo_tx_phase_phase(11));
             log_line("gencache post: %u", (unsigned)gc_probe());
-            log_line("gc crc: %u ms", (unsigned)gc_last_crc_ms());
+            log_line("gc crc post: %u ms", (unsigned)gc_last_crc_ms());
         } else {
             fail++;
             log_line("xmr: FAIL rc=%d", rc);

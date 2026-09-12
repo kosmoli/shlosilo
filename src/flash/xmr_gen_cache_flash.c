@@ -62,10 +62,10 @@ static uint8_t gc_rom_program_page(uint32_t addr, uint32_t size, uint8_t *buffer
 #define gc_cache_clean_all() CACHE_CleanAll(CACHE)
 
 /* CRC32 (IEEE 802.3, reflected, poly 0xEDB88320, init/xorout 0xFFFFFFFF).
- * Table-driven (same algorithm, same results; host-verified against the
- * bit-by-bit original incl. KAT 0xCBF43926 and the 262144-byte blob size).
- * Project A1: the bit loop cost ~40 instr/byte across 3 full passes per
- * boot (Rust load + 2 gc_probe calls); the table loop is ~5 instr/byte. */
+ * Table-driven, word-wide: the blob lives in NOR flash where each access is
+ * slow, so this reads 32 bits per access (4x fewer accesses than byte-wise)
+ * and falls back to byte reads for unaligned input. Host-verified to produce
+ * identical results (KAT 0xCBF43926 + random sweep + unaligned + 262144). */
 static const uint32_t gc_crc32_table[256] = {
     0x00000000u, 0x77073096u, 0xEE0E612Cu, 0x990951BAu, 0x076DC419u, 0x706AF48Fu, 0xE963A535u, 0x9E6495A3u,
     0x0EDB8832u, 0x79DCB8A4u, 0xE0D5E91Eu, 0x97D2D988u, 0x09B64C2Bu, 0x7EB17CBDu, 0xE7B82D07u, 0x90BF1D91u,
@@ -104,8 +104,22 @@ static const uint32_t gc_crc32_table[256] = {
 static uint32_t gc_crc32(const uint8_t *data, uint32_t len)
 {
     uint32_t crc = 0xFFFFFFFFu;
-    uint32_t i;
-    for (i = 0; i < len; i++) {
+    uint32_t i = 0;
+
+    /* Word-wide path: 4 bytes per flash access. */
+    if ((((uintptr_t)data) & 3u) == 0u) {
+        uint32_t nwords = len >> 2;
+        const uint32_t *w = (const uint32_t *)data;
+        for (i = 0; i < nwords; i++) {
+            uint32_t x = w[i];
+            crc = (crc >> 8) ^ gc_crc32_table[(crc ^ (x & 0xFFu)) & 0xFFu];
+            crc = (crc >> 8) ^ gc_crc32_table[(crc ^ ((x >> 8) & 0xFFu)) & 0xFFu];
+            crc = (crc >> 8) ^ gc_crc32_table[(crc ^ ((x >> 16) & 0xFFu)) & 0xFFu];
+            crc = (crc >> 8) ^ gc_crc32_table[(crc ^ ((x >> 24) & 0xFFu)) & 0xFFu];
+        }
+        i = nwords << 2;
+    }
+    for (; i < len; i++) {
         crc = (crc >> 8) ^ gc_crc32_table[(crc ^ data[i]) & 0xFFu];
     }
     return crc ^ 0xFFFFFFFFu;
