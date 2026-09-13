@@ -4,7 +4,7 @@ proptest-regressions
 *.elf
 *.a
 *.o
-simulator-l3/sim_l3
+flux/host-sim/sim_l3
 vendor/cryptonight/target
 vendor/*/target
 

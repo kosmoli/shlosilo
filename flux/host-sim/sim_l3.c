@@ -228,7 +228,10 @@ int main(void) {
 }
 
 /*
- * 构建（在 shlosilo-poc4 目录下）：
- *   gcc -Wall -Wextra -o simulator-l3/sim_l3 simulator-l3/sim_l3.c \
+ * 构建（推荐走本目录的 build.sh，它会先编译 forms 静态库）：
+ *   bash flux/host-sim/build.sh
+ * 等价手动命令（在仓库根目录下）：
+ *   cargo build --release --lib
+ *   gcc -Wall -Wextra -o flux/host-sim/sim_l3 flux/host-sim/sim_l3.c \
  *       -I. -Ltarget/release -lshlosilo -lpthread -ldl -lm
  */

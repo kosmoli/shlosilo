@@ -13,7 +13,7 @@ cargo build --release 2>&1 | tail -1
 
 echo "=== UBSan C simulator ==="
 clang -Wall -Wextra -fsanitize=undefined -fno-sanitize-recover=all \
-    -o /tmp/sim_l3_ubsan simulator-l3/sim_l3.c \
+    -o /tmp/sim_l3_ubsan flux/host-sim/sim_l3.c \
     -I. -Ltarget/release -lshlosilo -lpthread -ldl -lm 2>&1 | head -5
 
 echo "=== run with UBSan ==="

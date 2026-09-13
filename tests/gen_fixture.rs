@@ -1,7 +1,7 @@
 //! Generates the eth-sign-request UR fixture for the C simulator (P6.1d)
 //!
 //! Run: cargo test --offline --test gen_fixture -- --ignored --nocapture
-//! Output: simulator-l3/fixture_eth_sign_request.txt (one UR line)
+//! Output: flux/host-sim/fixture_eth_sign_request.txt (one UR line)
 //!
 //! **After P1-01/P1-02 (fixed 2026-08-29)**: the UR payload must be a CBOR map
 //! {2: sign_data, 3: data_type, 4: chain_id} — the old version stuffed the RLP in directly (wrong wire shape,
@@ -53,7 +53,7 @@ fn gen_fixture() {
 
     let enc = encode(UrTypeTag::EthSignRequest, &payload).unwrap();
     println!("URI: {}", enc.as_str());
-    let out = "simulator-l3/fixture_eth_sign_request.txt";
+    let out = "flux/host-sim/fixture_eth_sign_request.txt";
     std::fs::write(out, enc.as_str()).unwrap();
     println!("written to {out}");
 }
