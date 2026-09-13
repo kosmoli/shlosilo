@@ -13,10 +13,18 @@ shlosilo = { path = "../..", default-features = false }
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "defmt"] }
 embassy-rp = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "defmt"] }
 embassy-time = "0.5"
+embassy-futures = "0.1"
 cortex-m-rt = "0.7"
+
+# USB device stack: CDC-ACM serial so the board is reachable from a host
+# (boot logs without a debug probe; the data channel for the signing flow).
+embassy-usb = "0.6"
+embassy-usb-logger = "0.6"
+log = "0.4"
 
 # runtime glue
 embedded-alloc = "0.7"
 panic-probe = { version = "1", features = ["print-defmt"] }
 defmt = "1"
 defmt-rtt = "1"
+static_cell = "2"
