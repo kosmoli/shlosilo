@@ -1,10 +1,15 @@
-//! allocator + panic handler for embedded (thumbv7em-none-eabihf) builds
+//! C-host runtime hooks: allocator + panic handler + critical-section impl.
 //!
-//! Compiles only under `--no-default-features` + the embedded target.
-//! The L3 host (keystone firmware / ForgeBox) provides `shlosilo_embedded_malloc/free`
-//! (FreeRTOS heap_4 wrappers); panics go to the firmware log.
+//! Compiled only for builds embedded into a C host (`feature = "c-host-rt"`,
+//! i.e. the flux/forgebox staticlib). The C host provides
+//! `shlosilo_embedded_malloc/free` (FreeRTOS heap_4 wrappers) and
+//! `shlosilo_panic_hook` (LCD display); panics also go to the firmware log.
+//!
+//! A Rust-native appearance (flux/pico2) provides its own global allocator,
+//! panic handler and critical-section impl, so it builds shlosilo without
+//! this feature.
 
-#![cfg(not(feature = "std"))]
+#![cfg(all(not(feature = "std"), feature = "c-host-rt"))]
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write as _;

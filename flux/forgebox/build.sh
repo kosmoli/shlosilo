@@ -31,7 +31,7 @@ LANGUAGE_SCRIPT="python3 data_loader.py"
 
 # ---- shlosilo (forms) build configuration for this appearance ----
 SHLOSILO_TARGET="${SHLOSILO_TARGET:-thumbv7em-none-eabihf}"
-SHLOSILO_FEATURES="${SHLOSILO_FEATURES:-generator-cache-ffi,cn-timing-ffi,tx-phase-timing-ffi,device-timing,perf-bench-ffi}"
+SHLOSILO_FEATURES="${SHLOSILO_FEATURES:-c-host-rt,generator-cache-ffi,cn-timing-ffi,tx-phase-timing-ffi,device-timing,perf-bench-ffi}"
 
 # forgebox CLI (firmware signing) lives in the Hermes node bin on the dev box.
 if [[ -d "$HOME/.hermes/node/bin" ]]; then

@@ -22,9 +22,13 @@
 #[cfg(test)]
 extern crate alloc;
 
-// embedded (no_std staticlib) builds need global_allocator + panic_handler
-// (the underlying malloc is provided by the L3 host: shlosilo_embedded_malloc/free)
-#[cfg(not(feature = "std"))]
+// C-host runtime hooks (global_allocator + panic_handler + critical-section).
+// Only for builds embedded INTO a C host (the flux/forgebox staticlib): the C
+// side provides shlosilo_embedded_malloc/free + shlosilo_panic_hook. A
+// Rust-native appearance (flux/pico2) must provide these itself - two
+// #[global_allocator]s / #[panic_handler]s / critical-section impls do not
+// link - so it builds shlosilo WITHOUT this feature.
+#[cfg(all(not(feature = "std"), feature = "c-host-rt"))]
 mod embedded_alloc;
 
 pub mod address;

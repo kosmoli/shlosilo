@@ -36,8 +36,13 @@ can never drift from the source of truth.
 Feature set for this appearance (override with `SHLOSILO_FEATURES`):
 
 ```
-generator-cache-ffi,cn-timing-ffi,tx-phase-timing-ffi,device-timing,perf-bench-ffi
+c-host-rt,generator-cache-ffi,cn-timing-ffi,tx-phase-timing-ffi,device-timing,perf-bench-ffi
 ```
+
+`c-host-rt` is what makes shlosilo use THIS host as its runtime: the global
+allocator (`shlosilo_embedded_malloc/free`), the panic handler
+(`shlosilo_panic_hook`), and the critical-section impl come from here. A
+Rust-native appearance (pico2) builds shlosilo without it.
 
 Output: `build/forgebox.bin` — the single-layer signed firmware to copy to the
 SD card root (recovery-mode load). `build/mh1903_full.bin` is an intermediate;

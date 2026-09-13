@@ -94,6 +94,11 @@ std = ["rand_core/std"]
 # alloc = []  # heapless itself is no_std
 # Device-side stage timing instrumentation (diagnostic only, never in production firmware)
 device-timing = []
+# Rust runtime hooks for a C host: global_allocator + panic_handler +
+# critical-section impl (forms/embedded_alloc.rs). The flux/forgebox staticlib
+# enables this; a Rust-native appearance (flux/pico2) must NOT - it provides
+# its own runtime, and duplicate lang items / critical-section impls do not link.
+c-host-rt = []
 
 [lib]
 # The pure-function core is the `forms` tree; flux appearances consume it.
