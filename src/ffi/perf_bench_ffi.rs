@@ -5,106 +5,127 @@
 //! caller times each call with its own millisecond tick; every entry returns a
 //! digest so nothing is eliminated downstream.
 //!
-//! Feature off -> zero-returning stubs so the C side always links.
+//! Each entry point has a SINGLE definition whose body is cfg-split: the real
+//! implementation under the feature, a zero return otherwise, so the C host
+//! always links. One definition also means cbindgen emits exactly one
+//! declaration per function (dual `#[cfg]`-branches produced duplicates).
 
 #[cfg(feature = "perf-bench-ffi")]
 use curve25519_dalek::perf_bench as pb;
 
-#[cfg(feature = "perf-bench-ffi")]
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
 #[no_mangle]
 pub extern "C" fn shlosilo_perf_fmul(iters: u32) -> u64 {
-    pb::fmul(iters)
-}
-#[cfg(not(feature = "perf-bench-ffi"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_perf_fmul(_iters: u32) -> u64 {
-    0
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::fmul(iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
 }
 
-#[cfg(feature = "perf-bench-ffi")]
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
 #[no_mangle]
 pub extern "C" fn shlosilo_perf_fsq(iters: u32) -> u64 {
-    pb::fsq(iters)
-}
-#[cfg(not(feature = "perf-bench-ffi"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_perf_fsq(_iters: u32) -> u64 {
-    0
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::fsq(iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
 }
 
-#[cfg(feature = "perf-bench-ffi")]
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
 #[no_mangle]
 pub extern "C" fn shlosilo_perf_select(iters: u32) -> u64 {
-    pb::select(iters)
-}
-#[cfg(not(feature = "perf-bench-ffi"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_perf_select(_iters: u32) -> u64 {
-    0
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::select(iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
 }
 
-#[cfg(feature = "perf-bench-ffi")]
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
 #[no_mangle]
 pub extern "C" fn shlosilo_perf_madd(iters: u32) -> u64 {
-    pb::madd(iters)
-}
-#[cfg(not(feature = "perf-bench-ffi"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_perf_madd(_iters: u32) -> u64 {
-    0
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::madd(iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
 }
 
-#[cfg(feature = "perf-bench-ffi")]
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
 #[no_mangle]
 pub extern "C" fn shlosilo_perf_quadruple(iters: u32) -> u64 {
-    pb::quadruple(iters)
-}
-#[cfg(not(feature = "perf-bench-ffi"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_perf_quadruple(_iters: u32) -> u64 {
-    0
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::quadruple(iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
 }
 
-#[cfg(feature = "perf-bench-ffi")]
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
 #[no_mangle]
 pub extern "C" fn shlosilo_perf_ct_chunk(n: u32, iters: u32) -> u64 {
-    pb::ct_chunk(n, iters)
-}
-#[cfg(not(feature = "perf-bench-ffi"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_perf_ct_chunk(_n: u32, _iters: u32) -> u64 {
-    0
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::ct_chunk(n, iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
 }
 
-#[cfg(feature = "perf-bench-ffi")]
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
 #[no_mangle]
 pub extern "C" fn shlosilo_perf_vartime_2term(iters: u32) -> u64 {
-    pb::vartime_2term(iters)
-}
-#[cfg(not(feature = "perf-bench-ffi"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_perf_vartime_2term(_iters: u32) -> u64 {
-    0
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::vartime_2term(iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
 }
 
-#[cfg(feature = "perf-bench-ffi")]
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
 #[no_mangle]
 pub extern "C" fn shlosilo_perf_select_affine(iters: u32) -> u64 {
-    pb::select_affine(iters)
-}
-#[cfg(not(feature = "perf-bench-ffi"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_perf_select_affine(_iters: u32) -> u64 {
-    0
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::select_affine(iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
 }
 
-#[cfg(feature = "perf-bench-ffi")]
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
 #[no_mangle]
 pub extern "C" fn shlosilo_perf_madd_affine(iters: u32) -> u64 {
-    pb::madd_affine(iters)
-}
-#[cfg(not(feature = "perf-bench-ffi"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_perf_madd_affine(_iters: u32) -> u64 {
-    0
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::madd_affine(iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
 }

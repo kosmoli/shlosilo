@@ -6,66 +6,66 @@
 #include <stdlib.h>
 
 /**
- * APT 地址长度（"0x" + 64 hex = 66 字符）
+ * APT address length ("0x" + 64 hex = 66 chars)
  */
 #define APTOS_ADDRESS_LEN 66
 
 #define SUI_ADDRESS_LEN 66
 
 /**
- * Arweave 地址长度（base64url 编码 512-bit SHA-256 digest = 43 字符）
+ * Arweave address length (base64url-encoded 512-bit SHA-256 digest = 43 characters)
  */
 #define ARWEAVE_ADDRESS_MAX_LEN 64
 
 /**
- * BTC 地址（最大 90 chars bech32 编码）
+ * BTC address (max 90 chars bech32 encoding)
  */
 #define BTC_ADDRESS_MAX_LEN 90
 
 /**
- * P2WPKH witness program 长度（20 bytes）
+ * P2WPKH witness program length (20 bytes)
  */
 #define P2WPKH_WITNESS_PROGRAM_LEN 20
 
 /**
- * P2TR witness program 长度（32 bytes x-only pubkey）
+ * P2TR witness program length (32-byte x-only pubkey)
  */
 #define P2TR_WITNESS_PROGRAM_LEN 32
 
 /**
- * Cardano 地址长度（bech32，最长 ~100 字符）
+ * Cardano address length (bech32, up to ~100 chars)
  */
 #define CARDANO_ADDRESS_MAX_LEN 120
 
 /**
- * ETH 地址字符串长度（"0x" + 40 hex = 42 字符）
+ * ETH address string length ("0x" + 40 hex = 42 chars)
  */
 #define ETH_ADDRESS_LEN 42
 
 /**
- * SOL 地址长度（base58 编码 32-byte pubkey，约 32-44 字符）
+ * SOL address length (base58-encoded 32-byte pubkey, roughly 32-44 characters)
  */
 #define SOL_ADDRESS_MAX_LEN 64
 
 /**
- * XMR 地址最大长度（base58 编码 69 bytes = 8-byte × 8 + 5-byte tail → 11×8 + 7 = 95 chars，< 128 安全余量）
+ * Maximum XMR address length (base58-encoding 69 bytes = 8-byte × 8 + 5-byte tail → 11×8 + 7 = 95 chars, safe margin below 128)
  */
 #define XMR_ADDRESS_MAX_LEN 128
 
 /**
- * XRP 地址（classic base58 编码，最长 ~35 字符）
+ * XRP address (classic base58 encoding, up to ~35 chars)
  */
 #define XRP_ADDRESS_MAX_LEN 64
 
 #define UNSIGNED_TX 0
 
 /**
- * BIP-125: nSequence < 0xfffffffe 表示可替换
+ * BIP-125: nSequence < 0xfffffffe means replaceable
  */
 #define RBF_THRESHOLD 4294967294
 
 /**
- * nLockTime 高度/时间分界（BIP-65 / Bitcoin Core）
+ * nLockTime height/time boundary (BIP-65 / Bitcoin Core)
  */
 #define LOCKTIME_THRESHOLD 500000000
 
@@ -75,12 +75,12 @@
 #define SEQUENCE_LOCKTIME_DISABLE_FLAG (1 << 31)
 
 /**
- * BIP-68 type flag（set = 时间，clear = 高度）
+ * BIP-68 type flag (set = time, clear = height)
  */
 #define SEQUENCE_LOCKTIME_TYPE_FLAG (1 << 22)
 
 /**
- * 超过此值视为「巨大」（21M BTC，单位 sat）
+ * Above this value counts as "huge" (21M BTC, in sats)
  */
 #define MAX_MONEY_SATS (21000000 * 100000000)
 
@@ -95,24 +95,24 @@
 #define P2TR_WITNESS_VERSION 1
 
 /**
- * CLSAG ring 最大长度（XMR 协议默认 11 = 1 real + 10 decoys）
+ * CLSAG ring maximum length (XMR protocol default 11 = 1 real + 10 decoys)
  */
 #define DEFAULT_RING_LEN 11
 
 /**
- * CLSAG signature 序列化长度（64 bytes）
- * 实际 monero-clsag Clsag 结构体 serialize 后长度 ≈ 64 bytes
+ * CLSAG signature serialized length (64 bytes)
+ * The actual monero-clsag Clsag struct serializes to ≈ 64 bytes
  */
 #define CLSAG_PROOF_LEN 64
 
 /**
- * Key image 长度（32 bytes compressed）
+ * Key image length (32 bytes compressed)
  */
 #define KEY_IMAGE_LEN 32
 
 /**
- * key image 伴随签名的 wire：连续 `[32B image][64B signature]` 记录流，
- * 对齐 keystone `KeyImages::to_bytes` / `From<&Vec<u8>>`（96B 步长）。
+ * The wire of key-image-with-signature: a continuous stream of `[32B image][64B signature]` records,
+ * aligned with keystone `KeyImages::to_bytes` / `From<&Vec<u8>>` (96B stride).
  */
 #define KEY_IMAGE_RECORD_LEN 96
 
@@ -137,7 +137,7 @@
 #define BULLETPROOFS_PLUS 3
 
 /**
- * entropy 长度下限（misuse guard，非熵质量验证——见模块文档）。
+ * Entropy length lower bound (a misuse guard, not an entropy-quality check — see the module docs).
  */
 #define ENTROPY_MIN_LEN 16
 
@@ -152,89 +152,115 @@
 #define TX_OUT_GEN 0
 
 /**
- * TxOutToKey: standard stealth output (RingCT 兼容)
+ * TxOutToKey: standard stealth output (RingCT compatible)
  */
 #define TX_OUT_TO_KEY 2
 
 /**
- * TxOutToTaggedKey: 标记密钥输出 (subaddress)
+ * TxOutToTaggedKey: tagged-key output (subaddress)
  */
 #define TX_OUT_TO_TAGGED_KEY 3
 
 /**
- * RSA-4096 签名最大长度（512 bytes for 4096-bit key + PSS overhead）
+ * RSA-4096 maximum signature length (512 bytes for a 4096-bit key + PSS overhead)
  */
 #define RSA_SIGNATURE_MAX_LEN 512
 
 /**
- * secp256k1 未压缩公钥长度（65 bytes，0x04 || X(32) || Y(32)）
+ * secp256k1 uncompressed public key length (65 bytes, 0x04 || X(32) || Y(32))
  */
 #define UNCOMPRESSED_POINT_LEN 65
 
 /**
- * BIP-32 扩展私钥（78 bytes：version + depth + fp + chain_code + key + ...）
+ * BIP-32 extended private key (78 bytes: version + depth + fp + chain_code + key + ...)
  */
 #define EXTENDED_PRIVKEY_LEN 78
 
 /**
- * BIP-67 排序的公钥列表（用于 P2SH multisig redeem script）
+ * BIP-67 sorted public key list (for the P2SH multisig redeem script)
  */
 #define MAX_MULTISIG_SIGNERS 15
 
 #define MAX_DEPTH 16
 
 /**
- * BIP-32 hardened bit（最高位）
+ * BIP-32 hardened bit (highest bit)
  */
 #define HARDENED_BIT 2147483648
 
 /**
- * Soft index 上限（无符号 31-bit）
+ * Soft index upper bound (unsigned 31-bit)
  */
 #define MAX_SOFT_INDEX 2147483647
 
 /**
- * SLIP-0010 扩展私钥（ed25519 比特字段不同，长度 32 bytes）
+ * SLIP-0010 extended private key (ed25519 uses a different bit field, 32 bytes long)
  */
 #define SLIP10_EXTENDED_KEY_LEN 32
 
 /**
- * base58check 字符串最大长度
+ * Stage ids (u8): 1=ur_decode 2=pbkdf2_seed 3=bip32_derive 4=rlp_parse
+ * 5=keccak_sighash 6=ecdsa_sign 7=y_parity 8=serialize.
+ *
+ * Defined once at module level (not per feature branch): callers use these in
+ * every configuration, and a single definition keeps cbindgen's C header free
+ * of duplicates.
+ */
+#define STAGE_UR_DECODE 1
+
+#define STAGE_PBKDF2 2
+
+#define STAGE_BIP32 3
+
+#define STAGE_RLP 4
+
+#define STAGE_KECCAK 5
+
+#define STAGE_ECDSA 6
+
+#define STAGE_Y_PARITY 7
+
+#define STAGE_SERIALIZE 8
+
+#define STAGE_COUNT 8
+
+/**
+ * base58check string maximum length
  */
 #define BASE58_MAX_LEN 128
 
 /**
- * base64 字符串最大长度
+ * base64 string maximum length
  */
 #define BASE64_MAX_LEN 256
 
 /**
- * bech32 字符串最大长度
+ * bech32 maximum string length
  */
 #define BECH32_MAX_LEN 128
 
 /**
- * Keccak-256 输出长度
+ * Keccak-256 output length
  */
 #define KECCAK256_OUTPUT_LEN 32
 
 /**
- * RIPEMD-160 输出长度
+ * RIPEMD-160 output length
  */
 #define RIPEMD160_OUTPUT_LEN 20
 
 /**
- * SHA-256 输出长度
+ * SHA-256 output length
  */
 #define SHA256_OUTPUT_LEN 32
 
 /**
- * SHA-512 输出长度
+ * SHA-512 output length
  */
 #define SHA512_OUTPUT_LEN 64
 
 /**
- * BIP-39 seed 长度（64 bytes）
+ * BIP-39 seed length (64 bytes)
  */
 #define BIP39_SEED_LEN 64
 
@@ -251,7 +277,7 @@
 
 
 /**
- * shlosilo 完整版本（cabi + runtime）
+ * Full shlosilo version (cabi + runtime)
  */
 #define SHLOSILO_VERSION_MAJOR 0
 
@@ -260,16 +286,16 @@
 #define SHLOSILO_VERSION_PATCH 0
 
 /**
- * C ABI 版本（**跟 runtime 版本独立**——L3 必须校验 ABI 版本匹配）
+ * C ABI version (**independent of the runtime version** — L3 must validate the ABI version matches)
  *
- * ABI 版本不兼容规则（`shlosilo_cabi_check` 实现为**严格等值**）：
- * - major 不同 → -1（ABI 不兼容，签名/错误码布局变更）
- * - minor 不同 → -2（导出函数集合或语义变更，L3 必须对照新版 shlosilo.h 重编译）
- * - patch 不同 → -3（行为微调，L3 应重新 smoke；检查同样拒绝以保证 determinism）
+ * ABI version incompatibility rules (`shlosilo_cabi_check` implements **strict equality**):
+ * - major differs → -1 (ABI incompatible; signature/error-code layout changed)
+ * - minor differs → -2 (exported function set or semantics changed; L3 must recompile against the new shlosilo.h)
+ * - patch differs → -3 (minor behavior tweaks; L3 should re-smoke; the check rejects it too, for determinism)
  *
- * 注意：这与传统 semver「minor 增 = 向后兼容」**不同**——本项目 C ABI 处于
- * 0.x 阶段，minor 即破坏性位（与 0.x semver 约定一致）。进入 1.x 后应放宽为
- * major-only 检查。
+ * Note: unlike traditional semver where "minor bump = backward compatible", this project's C ABI is in
+ * its 0.x stage, where minor is the breaking component (consistent with 0.x semver convention). After entering 1.x it should relax to
+ * a major-only check.
  */
 #define SHLOSILO_CABI_VERSION_MAJOR 0
 
@@ -278,97 +304,122 @@
 #define SHLOSILO_CABI_VERSION_PATCH 0
 
 /**
- * CLSAG 环签名（可变长度，取决于环大小）
+ * CLSAG ring signature (variable length, depends on ring size)
  */
 #define CLSAG_PROOF_MAX_LEN (32 * 16)
 
 /**
- * ECDSA 签名（r, s 压缩序列化）
+ * ECDSA signature (r, s compact serialization)
  *
- * 字节长度固定：32 (r) + 32 (s) = 64 bytes
+ * Fixed byte length: 32 (r) + 32 (s) = 64 bytes
  */
 #define ECDSA_SIGNATURE_LEN 64
 
 #define EDDSA_SIGNATURE_LEN 64
 
 /**
- * FCMP++ 证明长度（待 Phase 7 实际确定）
+ * FCMP++ proof length (to be determined in Phase 7)
  */
 #define FCMP_PROOF_MAX_LEN 1024
 
 /**
- * RSA-PSS 签名固定长度（512 bytes for RSA-4096）
+ * RSA-PSS signature fixed length (512 bytes for RSA-4096)
  */
 #define RSA_PSS_SIGNATURE_LEN 512
 
 #define SCHNORR_SIGNATURE_LEN 64
 
+#define TX_PHASES 11
+
 /**
- * JSON 编码的 view key 字符串（Feather Wallet 兼容，最长 ~256 字符）
+ * JSON-encoded view key string (Feather Wallet compatible, max ~256 characters)
  */
 #define JSON_MONERO_VIEWKEY_MAX_LEN 512
 
 /**
- * 原始 payload 上限（codec 产出的 CBOR）
+ * Raw payload upper bound (CBOR produced by codecs)
  */
 #define UR_PAYLOAD_MAX_LEN 2048
 
 /**
- * 完整 URI 上限：prefix + bytewords(payload+crc32) ≈ 2×payload + 头
+ * Full URI upper bound: prefix + bytewords(payload+crc32) ≈ 2×payload + header
  */
 #define UR_URI_MAX_LEN 8192
 
 /**
- * 多分片 payload 上限——对齐 TxTemplate 16 KiB（v2-安全 §4 体积护栏同源）
+ * Multipart payload limit — aligned with TxTemplate 16 KiB (same source as the v2-security §4 size guardrail)
  */
 #define MULTIPART_PAYLOAD_MAX_LEN 16384
 
 /**
- * 单帧字符串上限：bytewords ≈ 2×data；data ≤ fragment(≤payload) → 2×16 KiB 裕量
+ * Single-frame string limit: bytewords ≈ 2×data; data ≤ fragment (≤ payload) → 2×16 KiB margin
  */
 #define MULTIPART_FRAME_MAX_LEN 40960
 
 /**
- * 单帧 payload 上限（单帧大 QR 通道走 ur_encode::encode，此处仅分片）
+ * Single-frame payload limit (the single-frame large-QR channel goes through ur_encode::encode; only fragmentation here)
  */
 #define DEFAULT_FRAGMENT_LEN 200
 
 /**
- * 有状态多分片解码器。逐帧 `receive_frame()`，`progress()` 驱动 UI，
- * `complete()` 后 `payload()` 取结果（只读借用——caller 需要所有权时 clone/copy 走 budget）。
- * 审计 #5 P1-01: 会话累计保留内存预算——decoded/buffer/queue 中 Part.data
- * 总字节超过此值 = 异常会话,reset 清空(攻击者不能长期占用内存)。
- * payload 本身 ≤ 16KiB;2 倍裕量覆盖 fountain 消元中间态。
+ * Stateful multipart decoder. Feed frames one by one with `receive_frame()`, drive the UI with `progress()`,
+ * after `complete()` take the result via `payload()` (read-only borrow — clone/copy within budget when the caller needs ownership).
+ * Audit #5 P1-01: cumulative retained memory budget for the session — when the total bytes of Part.data across
+ * decoded/buffer/queue exceed this value = abnormal session, reset to clear (an attacker cannot hold memory long-term).
+ * The payload itself is <= 16 KiB; a 2× margin covers fountain elimination intermediate states.
  */
 #define MULTIPART_SESSION_RETAINED_MAX (MULTIPART_PAYLOAD_MAX_LEN * 2)
 
 typedef struct UrMultipartDecoder UrMultipartDecoder;
 
 /**
- * 有状态多分片编码器。`next_frame()` 产出 URI 帧字符串；
- * XMR 补扫场景用 `next_cyclic_frame()`。
+ * Stateful multipart encoder. `next_frame()` produces URI frame strings;
+ * XMR re-scan scenarios use `next_cyclic_frame()`.
  */
 typedef struct UrMultipartEncoder UrMultipartEncoder;
 
 /**
- * L3 提供：FreeRTOS pvPortMalloc 包装
+ * Provided by L3: FreeRTOS pvPortMalloc wrapper
  */
 extern uint8_t *shlosilo_embedded_malloc(uintptr_t size);
 
 /**
- * L3 提供：vPortFree 包装
+ * Provided by L3: vPortFree wrapper
  */
 extern void shlosilo_embedded_free(uint8_t *ptr);
 
 /**
- * L3 提供：panic 信息显示（LCD）+ 保持系统运行/刷新
+ * Provided by L3: display panic info (LCD) + keep the system alive/refresh
  */
 extern void shlosilo_panic_hook(const uint8_t *msg, uintptr_t len);
 
 /**
- * shlosilo_sign_ffi — mnemonic + UR payload → 签名
+ * C-ABI: register the millisecond clock callback (no-op when the feature is off).
  *
- * 返回 0 = Ok（长度写 *actual_len），负数 = 错误码。
+ * # Safety
+ * `fptr` must be a valid `extern "C" fn() -> u32` on the target.
+ */
+void shlosilo_timing_set_clock_fn(uint32_t fptr);
+
+/**
+ * C-ABI: read one stage's measured milliseconds (0 when the feature is off).
+ */
+uint32_t shlosilo_timing_get_stage(uint8_t stage);
+
+/**
+ * C-ABI: total measured sign ms (0 when the feature is off).
+ */
+uint32_t shlosilo_timing_get_total(void);
+
+/**
+ * C-ABI: reset all counters (no-op when the feature is off).
+ */
+void shlosilo_timing_reset(void);
+
+/**
+ * shlosilo_sign_ffi — mnemonic + UR payload → signature
+ *
+ * Returns 0 = Ok (length written to *actual_len), negative = error code.
  */
 int shlosilo_sign_ffi(const uint16_t *mnemonic_indices,
                       int mnemonic_count,
@@ -382,16 +433,16 @@ int shlosilo_sign_ffi(const uint16_t *mnemonic_indices,
                       unsigned int *actual_len);
 
 /**
- * shlosilo_sign_ur_ffi — 完整 UR 字符串 + mnemonic → 签名（P6.1d）
+ * shlosilo_sign_ur_ffi — full UR string + mnemonic → signature (P6.1d)
  *
- * L3 直接喂 `ur:crypto-psbt/...` / `ur:eth-sign-request/...` / `ur:xmr-txunsigned/...`，
- * UR 解码 + type tag 校验都在库内做（L3 薄、L1 厚）。
+ * L3 feeds `ur:crypto-psbt/...` / `ur:eth-sign-request/...` / `ur:xmr-txunsigned/...` directly;
+ * UR decoding + type tag validation both happen inside the library (thin L3, thick L1).
  *
- * **§B.5 RNG 注入扩展（2026-08-28）**：新增 entropy_ptr / entropy_len 参数——
- * XMR 签名 REQUIRED（≥16B，L3 承诺来源与 min-entropy）；BTC/ETH deterministic
- * backend 传 NULL/0 即可。同一 (keys, tx, entropy) → 同一签名（deterministic retry）。
+ * **§B.5 RNG injection extension (2026-08-28)**: new entropy_ptr / entropy_len parameters —
+ * REQUIRED for XMR signing (≥16B; L3 commits to the source and min-entropy); for BTC/ETH deterministic
+ * backends, pass NULL/0. Same (keys, tx, entropy) → same signature (deterministic retry).
  *
- * 返回 0 = Ok，负数 = 错误码；签名 bytes 写 output_buf。
+ * Returns 0 = Ok, negative = error code; signature bytes are written to output_buf.
  */
 int shlosilo_sign_ur_ffi(const char *uri,
                          const uint16_t *mnemonic_indices,
@@ -406,13 +457,13 @@ int shlosilo_sign_ur_ffi(const char *uri,
                          unsigned int *actual_len);
 
 /**
- * shlosilo_export_readonly_ffi — mnemonic + path → 只读凭证 UR
+ * shlosilo_export_readonly_ffi — mnemonic + path → read-only credential UR
  *
- * **P1-04（2026-08-29）**：seed 不再跨 FFI。入口收 mnemonic indices + passphrase，
- * 库内现场恢复 BIP-39 seed（栈 buffer，`SecretBytes::take` 接管清零），导出完成即弃。
+ * **P1-04 (2026-08-29)**: seed no longer crosses the FFI. The entry takes mnemonic indices + passphrase,
+ * restores the BIP-39 seed on the spot inside the library (stack buffer, `SecretBytes::take` takes over zeroing), discarded once export completes.
  *
- * paths 为 flat u32 数组（hardened bit = 0x8000_0000），
- * `path_elem_count` 是这一个 path 的元素数（v1 单 path）。
+ * paths is a flat u32 array (hardened bit = 0x8000_0000),
+ * `path_elem_count` is the element count of this one path (v1: single path).
  */
 int shlosilo_export_readonly_ffi(const uint16_t *mnemonic_indices,
                                  int mnemonic_count,
@@ -427,11 +478,11 @@ int shlosilo_export_readonly_ffi(const uint16_t *mnemonic_indices,
                                  unsigned int *actual_len);
 
 /**
- * shlosilo_create_account_ffi — dice entropy → mnemonic(u16 LE 索引对)
+ * shlosilo_create_account_ffi — dice entropy → mnemonic (u16 LE index pairs)
  *
- * **P1-04（2026-08-29）**：`seed_out` 删除——seed 不跨 FFI（v2 安全模型）。
- * dice → mnemonic 是唯一产出；后续签名/导出直接收 mnemonic（库内现场恢复 seed）。
- * passphrase 保留（未来离线 create 时写进设备存储的元数据），当前仅做上限校验。
+ * **P1-04 (2026-08-29)**: `seed_out` removed — seed does not cross the FFI (v2 security model).
+ * dice → mnemonic is the sole output; later signing/export takes mnemonic directly (seed restored on the spot inside the library).
+ * passphrase kept (metadata to be written into device storage on a future offline create); currently only length-cap validated.
  */
 int shlosilo_create_account_ffi(unsigned int word_count,
                                 unsigned int sides,
@@ -443,23 +494,23 @@ int shlosilo_create_account_ffi(unsigned int word_count,
                                 unsigned int mnemonic_buf_len);
 
 /**
- * 支持的 Network u8 列表（L3 启动时 UI dispatch 用）
+ * List of supported Network u8 values (for UI dispatch at L3 startup)
  */
 int shlosilo_supported_networks_ffi(uint8_t *output_buf,
                                     unsigned int output_buf_len,
                                     unsigned int *actual_len);
 
 /**
- * 支持的 ExportProtocol u8 列表
+ * List of supported ExportProtocol u8 values
  */
 int shlosilo_supported_protocols_ffi(uint8_t *output_buf,
                                      unsigned int output_buf_len,
                                      unsigned int *actual_len);
 
 /**
- * R3: 创建多分片编码器。成功返回句柄（非 null），失败返回 null。
- * type_name: ASCII 字母数字 + '-'（如 "xmr-txunsigned"）
- * L3 完成后必须调用 shlosilo_ur_encode_free。
+ * R3: create a multipart encoder. Returns a handle (non-null) on success, null on failure.
+ * type_name: ASCII alphanumeric + '-' (e.g. "xmr-txunsigned")
+ * L3 must call shlosilo_ur_encode_free when done.
  */
 struct UrMultipartEncoder *shlosilo_ur_encode_begin(const char *type_name,
                                                     const uint8_t *payload,
@@ -467,8 +518,8 @@ struct UrMultipartEncoder *shlosilo_ur_encode_begin(const char *type_name,
                                                     unsigned int max_fragment_len);
 
 /**
- * R3: 取下一帧 URI 字符串（写 frame_buf，NUL 结尾）。
- * 返回 0 = Ok；负数 = 错误码。重复调用产出 fountain 冗余帧流。
+ * R3: get the next frame URI string (written to frame_buf, NUL-terminated).
+ * Returns 0 = Ok; negative = error code. Repeated calls produce the fountain redundancy frame stream.
  */
 int shlosilo_ur_encode_next(struct UrMultipartEncoder *handle,
                             uint8_t *frame_buf,
@@ -476,7 +527,7 @@ int shlosilo_ur_encode_next(struct UrMultipartEncoder *handle,
                             unsigned int *actual_len);
 
 /**
- * R3: XMR cyclic 补扫帧（seq 到顶回 1，无限循环供软件钱包补扫）
+ * R3: XMR cyclic catch-up frames (seq wraps back to 1 at the top, looping forever so software wallets can catch up)
  */
 int shlosilo_ur_encode_next_cyclic(struct UrMultipartEncoder *handle,
                                    uint8_t *frame_buf,
@@ -484,36 +535,36 @@ int shlosilo_ur_encode_next_cyclic(struct UrMultipartEncoder *handle,
                                    unsigned int *actual_len);
 
 /**
- * R3: 释放编码器句柄。null 安全（幂等）。
+ * R3: release the encoder handle. Null-safe (idempotent).
  */
 void shlosilo_ur_encode_free(struct UrMultipartEncoder *handle);
 
 /**
- * R3: 创建多分片解码器。成功返回句柄，失败返回 null。
+ * R3: create a multipart decoder. Returns a handle on success, null on failure.
  */
 struct UrMultipartDecoder *shlosilo_ur_decode_new(void);
 
 /**
- * R3: 喂一帧 URI（NUL 结尾 C string）。
- * 返回 0 = Ok（accepted 状态写 *accepted_out：1=有新信息，0=重复帧）
+ * R3: feed one frame URI (NUL-terminated C string).
+ * Returns 0 = Ok (accepted status written to *accepted_out: 1 = new information, 0 = duplicate frame)
  */
 int shlosilo_ur_decode_feed(struct UrMultipartDecoder *handle,
                             const char *frame,
                             unsigned int *accepted_out);
 
 /**
- * R3: 解码进度 0..=99（100 用 complete 表达）
+ * R3: decode progress 0..=99 (100 is expressed via complete)
  */
 int shlosilo_ur_decode_progress(struct UrMultipartDecoder *handle);
 
 /**
- * R3: 是否完成
+ * R3: whether decoding is complete
  */
 int shlosilo_ur_decode_complete(struct UrMultipartDecoder *handle);
 
 /**
- * R3: 取完整 payload（写 payload_buf；实际长度写 actual_len）。
- * 完成前调用 → ERR_UNKNOWN；payload 超过 buf → ERR_BUFFER_TOO_SMALL（actual_len 写需求值）。
+ * R3: get the complete payload (written to payload_buf; actual length written to actual_len).
+ * Calling before completion → ERR_UNKNOWN; payload larger than buf → ERR_BUFFER_TOO_SMALL (actual_len gets the required value).
  */
 int shlosilo_ur_decode_payload(struct UrMultipartDecoder *handle,
                                uint8_t *payload_buf,
@@ -521,8 +572,8 @@ int shlosilo_ur_decode_payload(struct UrMultipartDecoder *handle,
                                unsigned int *actual_len);
 
 /**
- * R3/P0-C（2026-09-01）：取解码后的 UR type（写 type_buf 为 NUL 结尾 ASCII）。
- * 完成前或无帧 → EncodingInvalidFormat；缓冲不足 → BufferTooSmall（actual_len 写需求值，含 NUL）。
+ * R3/P0-C (2026-09-01): get the decoded UR type (written to type_buf as NUL-terminated ASCII).
+ * Before completion or with no frames → EncodingInvalidFormat; buffer too small → BufferTooSmall (actual_len gets the required value, including NUL).
  */
 int shlosilo_ur_decode_type(struct UrMultipartDecoder *handle,
                             uint8_t *type_buf,
@@ -530,9 +581,9 @@ int shlosilo_ur_decode_type(struct UrMultipartDecoder *handle,
                             unsigned int *actual_len);
 
 /**
- * R3/P0-C（2026-09-01）：typed sign——multipart 重组后的 (type, payload) 垂直贯通签名。
- * type_name 必须是已知可签名的 UrTypeTag（拒绝 Unknown/任意字符串）；
- * payload 预算 = MULTIPART_PAYLOAD_MAX_LEN（16 KiB，对齐 multipart 重组上限）。
+ * R3/P0-C (2026-09-01): typed sign — vertical pass-through signing of the (type, payload) reassembled from multipart.
+ * type_name must be a known signable UrTypeTag (Unknown/arbitrary strings are rejected);
+ * payload budget = MULTIPART_PAYLOAD_MAX_LEN (16 KiB, aligned with the multipart reassembly cap).
  */
 int shlosilo_sign_typed_ffi(const char *type_name,
                             const uint8_t *payload,
@@ -549,57 +600,110 @@ int shlosilo_sign_typed_ffi(const char *type_name,
                             unsigned int *actual_len);
 
 /**
- * R3: 释放解码器句柄。null 安全（幂等）。
+ * R3: release the decoder handle. Null-safe (idempotent).
  */
 void shlosilo_ur_decode_free(struct UrMultipartDecoder *handle);
 
 /**
- * extern "C" 返回版本字符串（C 端 strdup 后用）
+ * C-ABI: register the millisecond clock for CN phase timing.
+ *
+ * # Safety
+ * `clock_fptr` must be a valid `extern "C" fn() -> u32` address (ARM thumb ok).
+ */
+void shlosilo_cn_timing_set_clock(uint32_t clock_fptr);
+
+/**
+ * C-ABI: reset all CN phase counters.
+ */
+void shlosilo_cn_timing_reset(void);
+
+/**
+ * C-ABI: read one phase's accumulated ms (0 for unknown phase).
+ */
+uint32_t shlosilo_cn_timing_phase(uint8_t phase);
+
+/**
+ * C-ABI: register the flash-backend callbacks. Call once from C init (before the first
+ * XMR sign). `load_fptr`/`store_fptr` are ARM thumb addresses of the C functions.
+ *
+ * # Safety
+ * Both pointers must be valid `extern "C"` functions with the documented signatures.
+ *
+ * Single definition with a cfg-split body (feature on: real hooks; off: no-op)
+ * so the C host always links and cbindgen emits exactly one declaration.
+ */
+void shlosilo_gen_cache_set_hooks(uint32_t load_fptr, uint32_t store_fptr);
+
+uint64_t shlosilo_perf_fmul(uint32_t iters);
+
+uint64_t shlosilo_perf_fsq(uint32_t iters);
+
+uint64_t shlosilo_perf_select(uint32_t iters);
+
+uint64_t shlosilo_perf_madd(uint32_t iters);
+
+uint64_t shlosilo_perf_quadruple(uint32_t iters);
+
+uint64_t shlosilo_perf_ct_chunk(uint32_t n, uint32_t iters);
+
+uint64_t shlosilo_perf_vartime_2term(uint32_t iters);
+
+uint64_t shlosilo_perf_select_affine(uint32_t iters);
+
+uint64_t shlosilo_perf_madd_affine(uint32_t iters);
+
+/**
+ * C-ABI: register the millisecond clock for prove-phase timing. Call from C init
+ * right after `shlosilo_timing_set_clock_fn` (same clock function address works).
+ *
+ * # Safety
+ * `clock_fptr` must be a valid `extern "C" fn() -> u32` address (ARM thumb ok).
+ */
+void shlosilo_bp_timing_set_clock(uint32_t clock_fptr);
+
+/**
+ * C-ABI: reset all prove-phase counters.
+ */
+void shlosilo_bp_timing_reset(void);
+
+/**
+ * C-ABI: read one phase's accumulated ms (0 for unknown phase).
+ */
+uint32_t shlosilo_bp_timing_phase(uint8_t phase);
+
+/**
+ * C-ABI: register the millisecond clock for tx-phase timing.
+ *
+ * # Safety
+ * `clock_fptr` must be a valid `extern "C" fn() -> u32` address (ARM thumb ok).
+ */
+void shlosilo_tx_phase_set_clock(uint32_t clock_fptr);
+
+/**
+ * C-ABI: reset all tx-phase counters.
+ */
+void shlosilo_tx_phase_reset(void);
+
+/**
+ * C-ABI: read one phase's accumulated ms (0 for unknown phase).
+ */
+uint32_t shlosilo_tx_phase_phase(uint8_t phase);
+
+/**
+ * extern "C" returning the version string (C side strdups it before use)
  */
 const uint8_t *shlosilo_version(void);
 
 /**
- * extern "C" 返回 C ABI 版本字符串
+ * extern "C" returning the C ABI version string
  */
 const uint8_t *shlosilo_cabi_version(void);
 
 /**
- * L3 启动时校验 ABI 兼容性（major 必须匹配）
+ * Validate ABI compatibility at L3 startup (major must match)
  *
- * 返回 0 = ABI 兼容，非 0 = 不兼容
+ * Returns 0 = ABI compatible, non-zero = incompatible
  */
 int32_t shlosilo_cabi_check(uint16_t l3_expected_major,
                             uint16_t l3_expected_minor,
                             uint16_t l3_expected_patch);
-
-/* ---- device-timing diagnostics (weak: only present with the Rust
- * `device-timing` feature; all return 0 when linked against a production .a) ---- */
-
-/* Register the millisecond clock callback (e.g. a wrapper around osKernelGetTickCount). */
-void shlosilo_timing_set_clock_fn(unsigned int fptr);
-
-/* Stage ids (u8): 1=ur_decode 2=pbkdf2_seed(resolve_seed) 3=bip32_derive
- * 4=rlp_serialize 5=keccak_sighash 6=ecdsa_k256_sign 7=ecdsa_sign_lowlevel
- * 8=y_parity_recover. Read with shlosilo_timing_get_stage(id). */
-unsigned int shlosilo_timing_get_stage(unsigned char stage);
-
-/* Total measured sign ms (0 when the feature is off). */
-unsigned int shlosilo_timing_get_total(void);
-
-/* Reset all stage counters. */
-void shlosilo_timing_reset(void);
-
-/* ---- BP+ generator cache FFI (XMR knife-1 L3) ---- */
-/* Register the C flash-backend callbacks for the BP+ generator cache. Call once
- * after shlosilo_init, before the first XMR sign. Pass the ARM thumb addresses of
- * gc_load / gc_store (see xmr_gen_cache_flash.c). When linked against an .a built
- * without the generator-cache-ffi feature this is a no-op. */
-void shlosilo_gen_cache_set_hooks(unsigned int load_fptr, unsigned int store_fptr);
-
-/* BP+ prove-phase timing (device perf decomposition; no-op when the .a lacks
- * prove-timing-ffi). Same clock as shlosilo_timing_set_clock_fn. Phase ids:
- * 1 = initial multiexp (A commit), 2 = A_hat computation, 3 = WIP rounds,
- * 4 = total prove. Values are accumulated ms. */
-void shlosilo_bp_timing_set_clock(unsigned int clock_fptr);
-void shlosilo_bp_timing_reset(void);
-unsigned int shlosilo_bp_timing_phase(unsigned char phase);

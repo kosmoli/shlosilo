@@ -1,8 +1,9 @@
 //! Device-side stage timing (feature `device-timing`).
 //!
-//! Zero-cost when the feature is off: no state, no code in the binary.
-//! When on, business/sign hot-path stages record elapsed milliseconds and
-//! `shlosilo_timing_ffi` exposes the counters to the C smoke task.
+//! When the feature is on, business/sign hot-path stages record elapsed
+//! milliseconds and `shlosilo_timing_*` exposes the counters to the C smoke
+//! task. When off, the entry points still exist but collapse to no-ops (see
+//! the note on single definitions below).
 //!
 //! Timing source: a monotonically increasing millisecond counter supplied by
 //! the C side (`shlosilo_timing_set_clock_fn`), so no platform-specific time
@@ -10,6 +11,22 @@
 
 #![allow(dead_code)]
 #![allow(unused_imports)]
+
+/// Stage ids (u8): 1=ur_decode 2=pbkdf2_seed 3=bip32_derive 4=rlp_parse
+/// 5=keccak_sighash 6=ecdsa_sign 7=y_parity 8=serialize.
+///
+/// Defined once at module level (not per feature branch): callers use these in
+/// every configuration, and a single definition keeps cbindgen's C header free
+/// of duplicates.
+pub const STAGE_UR_DECODE: u8 = 1;
+pub const STAGE_PBKDF2: u8 = 2;
+pub const STAGE_BIP32: u8 = 3;
+pub const STAGE_RLP: u8 = 4;
+pub const STAGE_KECCAK: u8 = 5;
+pub const STAGE_ECDSA: u8 = 6;
+pub const STAGE_Y_PARITY: u8 = 7;
+pub const STAGE_SERIALIZE: u8 = 8;
+pub const STAGE_COUNT: usize = 8;
 
 #[cfg(feature = "device-timing")]
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -21,18 +38,6 @@ mod imp {
     pub static CLOCK_FN: AtomicU32 = AtomicU32::new(0);
     pub static ENABLED: AtomicBool = AtomicBool::new(false);
     pub static LAST_MS: AtomicU32 = AtomicU32::new(0);
-
-    /// Stage ids (u8): 1=ur_decode 2=pbkdf2_seed 3=bip32_derive 4=rlp_parse
-    /// 5=keccak_sighash 6=ecdsa_sign 7=y_parity 8=serialize 9=total
-    pub const STAGE_UR_DECODE: u8 = 1;
-    pub const STAGE_PBKDF2: u8 = 2;
-    pub const STAGE_BIP32: u8 = 3;
-    pub const STAGE_RLP: u8 = 4;
-    pub const STAGE_KECCAK: u8 = 5;
-    pub const STAGE_ECDSA: u8 = 6;
-    pub const STAGE_Y_PARITY: u8 = 7;
-    pub const STAGE_SERIALIZE: u8 = 8;
-    pub const STAGE_COUNT: usize = 8;
 
     static STAGE_MS: [AtomicU32; STAGE_COUNT] = [
         AtomicU32::new(0),
@@ -112,15 +117,6 @@ mod imp {
 
 #[cfg(not(feature = "device-timing"))]
 mod imp {
-    pub const STAGE_UR_DECODE: u8 = 1;
-    pub const STAGE_PBKDF2: u8 = 2;
-    pub const STAGE_BIP32: u8 = 3;
-    pub const STAGE_RLP: u8 = 4;
-    pub const STAGE_KECCAK: u8 = 5;
-    pub const STAGE_ECDSA: u8 = 6;
-    pub const STAGE_Y_PARITY: u8 = 7;
-    pub const STAGE_SERIALIZE: u8 = 8;
-
     pub struct Mark;
     impl Mark {
         pub fn start(_stage: u8) -> Self {
@@ -144,52 +140,59 @@ mod imp {
 
 pub use imp::*;
 
-/// C-ABI: register the millisecond clock callback (feature-gated no-op otherwise).
+// C-ABI entry points. Each has a SINGLE definition whose body is cfg-split:
+// the real implementation under the feature, a no-op otherwise. The C host
+// links against both variants, and one definition keeps cbindgen's header free
+// of duplicate declarations (audit #15 follow-up).
+
+/// C-ABI: register the millisecond clock callback (no-op when the feature is off).
 ///
 /// # Safety
 /// `fptr` must be a valid `extern "C" fn() -> u32` on the target.
-#[cfg(feature = "device-timing")]
 #[no_mangle]
 pub extern "C" fn shlosilo_timing_set_clock_fn(fptr: u32) {
-    imp::set_clock(fptr);
+    #[cfg(feature = "device-timing")]
+    {
+        imp::set_clock(fptr);
+    }
+    #[cfg(not(feature = "device-timing"))]
+    {
+        let _ = fptr;
+    }
 }
 
 /// C-ABI: read one stage's measured milliseconds (0 when the feature is off).
-#[cfg(feature = "device-timing")]
 #[no_mangle]
 pub extern "C" fn shlosilo_timing_get_stage(stage: u8) -> u32 {
-    imp::read_stage(stage)
+    #[cfg(feature = "device-timing")]
+    {
+        imp::read_stage(stage)
+    }
+    #[cfg(not(feature = "device-timing"))]
+    {
+        let _ = stage;
+        0
+    }
 }
 
 /// C-ABI: total measured sign ms (0 when the feature is off).
-#[cfg(feature = "device-timing")]
 #[no_mangle]
 pub extern "C" fn shlosilo_timing_get_total() -> u32 {
-    imp::total_ms()
+    #[cfg(feature = "device-timing")]
+    {
+        imp::total_ms()
+    }
+    #[cfg(not(feature = "device-timing"))]
+    {
+        0
+    }
 }
 
-/// C-ABI: reset all counters.
-#[cfg(feature = "device-timing")]
+/// C-ABI: reset all counters (no-op when the feature is off).
 #[no_mangle]
 pub extern "C" fn shlosilo_timing_reset() {
-    imp::reset_all();
+    #[cfg(feature = "device-timing")]
+    {
+        imp::reset_all();
+    }
 }
-
-/// Production builds (feature off): no-op symbols so the C smoke task
-/// links against both variants.
-#[cfg(not(feature = "device-timing"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_timing_set_clock_fn(_fptr: u32) {}
-#[cfg(not(feature = "device-timing"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_timing_get_stage(_stage: u8) -> u32 {
-    0
-}
-#[cfg(not(feature = "device-timing"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_timing_get_total() -> u32 {
-    0
-}
-#[cfg(not(feature = "device-timing"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_timing_reset() {}

@@ -93,13 +93,14 @@ pub use imp::*;
 ///
 /// # Safety
 /// Both pointers must be valid `extern "C"` functions with the documented signatures.
-#[cfg(feature = "generator-cache-ffi")]
+///
+/// Single definition with a cfg-split body (feature on: real hooks; off: no-op)
+/// so the C host always links and cbindgen emits exactly one declaration.
+#[cfg_attr(not(feature = "generator-cache-ffi"), allow(unused_variables))]
 #[no_mangle]
 pub extern "C" fn shlosilo_gen_cache_set_hooks(load_fptr: u32, store_fptr: u32) {
-    imp::set_hooks(load_fptr, store_fptr);
+    #[cfg(feature = "generator-cache-ffi")]
+    {
+        imp::set_hooks(load_fptr, store_fptr);
+    }
 }
-
-// Production no-op stubs (feature off) so the C side always links.
-#[cfg(not(feature = "generator-cache-ffi"))]
-#[no_mangle]
-pub extern "C" fn shlosilo_gen_cache_set_hooks(_load_fptr: u32, _store_fptr: u32) {}
