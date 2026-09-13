@@ -17,8 +17,10 @@
 use core::cell::RefCell;
 use core::fmt::Write as _;
 
+use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_time::Instant;
 use embassy_usb_logger::ReceiverHandler;
 
 use shlosilo::business::sign::SignInput;
@@ -30,6 +32,7 @@ use shlosilo::ur::ur_encode::UrTypeTag;
 use shlosilo::ur::ur_multipart::UrMultipartDecoder;
 
 use crate::sign_smoke::{self, BufWriter};
+use crate::trng::{self, TrngError, TrngStats};
 
 /// Longest accepted input line: covers a single-frame UR (UR_URI_MAX_LEN =
 /// 8192) and every multipart fragment (MULTIPART_FRAME_MAX_LEN is larger,
@@ -63,8 +66,11 @@ impl ConsoleState {
         }
     }
 
-    /// Append incoming bytes; process each completed line.
-    fn feed(&mut self, data: &[u8]) {
+    /// Append incoming bytes; process each completed line. Returns a
+    /// deferred job when the line requests one (TRNG streaming must run
+    /// with awaits — see `handle_data`).
+    fn feed(&mut self, data: &[u8]) -> Option<TrngJob> {
+        let mut job = None;
         for &b in data {
             match b {
                 b'\n' | b'\r' => {
@@ -78,7 +84,9 @@ impl ConsoleState {
                         let n = self.line_len;
                         buf[..n].copy_from_slice(&self.line[..n]);
                         self.line_len = 0;
-                        self.process(&buf[..n]);
+                        if let Some(j) = self.process(&buf[..n]) {
+                            job = Some(j);
+                        }
                     }
                 }
                 _ => {
@@ -91,17 +99,18 @@ impl ConsoleState {
                 }
             }
         }
+        job
     }
 
-    fn process(&mut self, raw: &[u8]) {
+    fn process(&mut self, raw: &[u8]) -> Option<TrngJob> {
         let line = trim_ascii(raw);
         if line.is_empty() {
-            return;
+            return None;
         }
 
         if line.starts_with(b"ur:") {
             self.handle_ur(line);
-            return;
+            return None;
         }
 
         let (cmd, args) = split_first_word(line);
@@ -111,11 +120,13 @@ impl ConsoleState {
             b"smoke" => self.cmd_smoke(),
             b"heap" => self.cmd_heap(args),
             b"entropy" => self.cmd_entropy(args),
+            b"trng" => return Some(parse_trng_job(args)),
             _ => {
                 let echo = core::str::from_utf8(cmd).unwrap_or("<non-utf8>");
                 log::info!("[err] unknown command: {echo} (try: help)");
             }
         }
+        None
     }
 
     fn cmd_help(&self) {
@@ -134,6 +145,13 @@ impl ConsoleState {
         log::info!(
             "[help]                   order); signs on completion with the session mnemonic"
         );
+        log::info!(
+            "[help]   trng [stress] [n]  read n TRNG blocks (24 B each, default 64) as hex;"
+        );
+        log::info!(
+            "[help]                   `stress` uses a failure-prone sample count to exercise"
+        );
+        log::info!("[help]                   the retry paths; ends with a stats line");
         log::info!("[help] lines end with \\n or \\r");
     }
 
@@ -340,15 +358,112 @@ pub struct CommandHandler;
 
 impl ReceiverHandler for CommandHandler {
     fn handle_data(&self, data: &[u8]) -> impl core::future::Future<Output = ()> + Send {
-        // The work is synchronous; run it at call time and hand the logger a
-        // ready future. (Signing blocks the executor for its duration - fine
-        // on this single-task bench channel.)
-        CONSOLE.lock(|cell| cell.borrow_mut().feed(data));
-        core::future::ready(())
+        // Synchronous commands run at call time; a TRNG job is returned as a
+        // deferred job because it streams over seconds: the job yields
+        // between blocks so the logger's sender half (polled via the join in
+        // the logger task) keeps draining the log pipe. A synchronous
+        // multi-second burst would overflow the 1 KiB pipe and drop output.
+        let job = CONSOLE.lock(|cell| cell.borrow_mut().feed(data));
+        async move {
+            if let Some(job) = job {
+                run_trng_stream(job).await;
+            }
+        }
     }
 
     fn new() -> Self {
         Self
+    }
+}
+
+/// A deferred console job (see `handle_data`).
+#[derive(Clone, Copy)]
+struct TrngJob {
+    stress: bool,
+    count: u32,
+}
+
+/// Parse `trng [stress] [n]`; default 64 blocks, capped at 4096.
+fn parse_trng_job(args: &[u8]) -> TrngJob {
+    let mut stress = false;
+    let mut count: u32 = 64;
+    for word in args
+        .split(|b| b.is_ascii_whitespace())
+        .filter(|w| !w.is_empty())
+    {
+        if word == b"stress" {
+            stress = true;
+        } else if let Ok(n) = core::str::from_utf8(word).unwrap_or("").parse::<u32>() {
+            count = n.clamp(1, 4096);
+        }
+    }
+    TrngJob { stress, count }
+}
+
+/// Stream `count` TRNG blocks as hex lines, then a stats summary.
+///
+/// `stress` reconfigures the block to a failure-prone sample count for the
+/// job's duration: datasheet 12.12.2 notes that low sample counts increase
+/// the chance of failed entropy checks — that is what exercises the CRNGT /
+/// VN clear-and-retry and the autocorr reset-and-retry paths on real silicon.
+async fn run_trng_stream(job: TrngJob) {
+    if job.stress {
+        trng::set_sample_count(2);
+        log::info!("[trng] stress: sample_cnt=2 (failure-prone; exercises the retry paths)");
+    } else {
+        trng::set_sample_count(trng::DEFAULT_SAMPLE_COUNT);
+    }
+
+    let t0 = Instant::now();
+    let mut stats = TrngStats::default();
+    let mut error: Option<TrngError> = None;
+    let mut hex = [0u8; trng::BLOCK_LEN * 2];
+
+    for _ in 0..job.count {
+        match trng::read_block(&mut stats) {
+            Ok(block) => log::info!("[trng] {}", sign_smoke::to_hex(&block, &mut hex)),
+            Err(e) => {
+                error = Some(e);
+                break;
+            }
+        }
+        // Let the executor run the logger's sender (and the rest) between
+        // blocks; each block is a few hundred microseconds to milliseconds
+        // of CPU work.
+        yield_now().await;
+    }
+    trng::stop();
+    trng::set_sample_count(trng::DEFAULT_SAMPLE_COUNT);
+
+    let ms = t0.elapsed().as_millis();
+    let per_block_us = if stats.blocks > 0 {
+        ms * 1000 / stats.blocks as u64
+    } else {
+        0
+    };
+    match error {
+        None => log::info!(
+            "[trng] done: {} blocks in {} ms (~{} us/block); crngt={} vn={} autocorr={} odd={} timeout={}",
+            stats.blocks,
+            ms,
+            per_block_us,
+            stats.crngt_err,
+            stats.vn_err,
+            stats.autocorr_err,
+            stats.odd_states,
+            stats.busy_timeouts
+        ),
+        Some(e) => log::info!(
+            "[trng] FAILED after {} blocks in {} ms: {:?}; crngt={} vn={} autocorr={} odd={} timeout={}",
+            stats.blocks,
+            ms,
+            e,
+            stats.crngt_err,
+            stats.vn_err,
+            stats.autocorr_err,
+            stats.odd_states,
+            stats.busy_timeouts
+        ),
     }
 }
 

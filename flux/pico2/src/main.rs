@@ -16,6 +16,7 @@
 
 mod console;
 mod sign_smoke;
+mod trng;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::MaybeUninit;
@@ -202,6 +203,9 @@ async fn main(spawner: Spawner) {
     }
 
     let p = embassy_rp::init(Default::default());
+
+    // Bring up the hardware TRNG (checked path; see trng.rs for the design).
+    trng::init();
 
     let driver = Driver::new(p.USB, Irqs);
     // Each task pool holds one slot, so these first spawns cannot fail.

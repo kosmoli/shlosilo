@@ -67,6 +67,10 @@ The console is bidirectional: send ASCII lines (`\n` or `\r` terminates):
 - `ur:<type>/<body>` — a single-frame UR is decoded and signed immediately
 - `ur:<type>/<n>-<m>/<body>` — multipart fragments, fed in any order; the
   payload is signed once the session completes
+- `trng [stress] [n]` — read `n` hardware-TRNG blocks (24 B each, default
+  64, max 4096) and stream them as hex; ends with a stats line (retry
+  counters + per-block timing); `stress` switches to a failure-prone
+  sample count for the job, to exercise the retry paths on real silicon
 
 Signing prints `[sign] <type> ok: <n> bytes sha256=<hex>`, plus
 `[sign] <type> hex: <hex>` when the output is ≤128 bytes (covers the ETH
@@ -119,6 +123,37 @@ cargo test --release --test pico2_smoke_parity -- --ignored --nocapture   # fixt
 python3 flux/pico2/bench/run_bench.py                                    # board must be plugged in
 ```
 
+## Hardware TRNG
+
+`src/trng.rs` is a blocking reader for the RP2350 TRNG, on the **checked
+path**: all three hardware entropy checks (autocorrelation, CRNGT, Von
+Neumann) stay enabled, ROSC inverter chain 1 / sample count 25 (datasheet
+12.12.2 recommended range), one accepted 192-bit block (24 B) per read.
+
+Why not `embassy_rp::trng::blocking_fill_bytes`: that blocking path panics
+whenever a run ends without a result for any reason other than
+autocorrelation failure (datasheet 12.12.3: a run stops on success *or* on a
+failed entropy check; 12.12.2: failed checks occur even at recommended
+settings). With panic = abort that would eventually kill the firmware. This
+module applies embassy's *async* policy (reinitialize + restart on failure)
+in blocking form: CRNGT/VN failures clear-and-retry, autocorrelation
+(sticky) takes a full software reset, every wait and the retry budget are
+bounded, and the outcome is a `Result` with counters.
+
+On the bench channel, `trng <n>` streams raw accepted blocks for host-side
+analysis; `bench/trng_test.py` runs the quality checks (duplicate blocks,
+monobit, byte chi-square, serial correlation, runs test, crude min-entropy)
+and prints the device-side retry counters:
+
+```sh
+python3 flux/pico2/bench/trng_test.py            # 1024 blocks, normal config
+python3 flux/pico2/bench/trng_test.py --stress   # failure-prone config, expect retries
+```
+
+These are single-run sanity checks, not a certification — the hardware
+checks are the primary defense. The signing-path consumer (XMR randomness
+injection, §B.5 entropy parameter) lands with the next milestone.
+
 ## Status
 
 Flashed and verified on hardware (2026-09-13/14, RP2350 board): BOOTSEL
@@ -128,6 +163,6 @@ host oracle, and the serial bench channel signs host-fed fixtures — the
 ETH fixture (full hex match) and the 12.4 KiB Sparrow signet PSBT as 32
 multipart fragments (12447-byte signed output, sha256 match).
 
-Next steps: the RP2350 TRNG for the real entropy path (incl. XMR signing
-randomness), heap sizing for the XMR path, then QR (camera) input in place
+Next steps: XMR randomness injection from the TRNG (the §B.5 entropy
+parameter), heap sizing for the XMR path, then QR (camera) input in place
 of the bench channel.

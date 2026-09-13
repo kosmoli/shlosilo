@@ -11,7 +11,7 @@ shlosilo = { path = "../..", default-features = false }
 
 # RP2350 async stack
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "defmt"] }
-embassy-rp = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "defmt"] }
+embassy-rp = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "defmt", "unstable-pac"] }
 embassy-time = "0.5"
 embassy-futures = "0.1"
 embassy-sync = "0.8"
