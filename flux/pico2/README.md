@@ -52,6 +52,29 @@ within 0.5 s of the node appearing, with ModemManager stopped, saw none of
 it; live-cadence output always arrived). The boot banner is kept as a
 best-effort first record but nothing depends on it.
 
+### Console commands (bench channel)
+
+The console is bidirectional: send ASCII lines (`\n` or `\r` terminates):
+
+- `help` — command list
+- `version` — version + C-ABI version
+- `smoke` — print the boot signing-smoke report (same as the 20 s replay)
+- `heap [reset]` — allocator used/free/peak; `reset` re-arms the peak
+  watermark for measuring one operation
+- `entropy <hex>` — set the session mnemonic from test-vector entropy
+  (16/20/24/28/32 bytes → 12/15/18/21/24 words); default = the built-in
+  dice fixture (the smoke wallet)
+- `ur:<type>/<body>` — a single-frame UR is decoded and signed immediately
+- `ur:<type>/<n>-<m>/<body>` — multipart fragments, fed in any order; the
+  payload is signed once the session completes
+
+Signing prints `[sign] <type> ok: <n> bytes sha256=<hex>`, plus
+`[sign] <type> hex: <hex>` when the output is ≤128 bytes (covers the ETH
+fixture). This is a bench channel on the bring-up firmware, not a
+production input path: production appearances take inputs via QR/dice with
+on-device confirmation; `entropy` loads test key material by the same
+reasoning.
+
 Host-side notes (Linux):
 - `99-shlosilo-pico2.rules` (this directory; installed to
   /etc/udev/rules.d/ on the dev machine) marks the device
@@ -75,17 +98,20 @@ signed hex match the host oracle byte for byte.
 
 The flow is deterministic (dice → exact rejection sampling, no RNG;
 BTC/ETH → RFC-6979), so no entropy source is needed for the fixture path; a
-real-device flow will use the RP2350 TRNG. Heap: the 16 KiB embedded-alloc
-heap is untouched by this flow (0 used before and after — no leak); the XMR
-path's BP+ generator allocations (~256 KiB-class) are the next sizing item.
+real-device flow will use the RP2350 TRNG. Heap: 128 KiB embedded-alloc heap
+with live/peak counters (the `heap` console command); the boot smoke's own
+peak is visible in its report, and one-shot operations can be measured with
+`heap reset` first. The XMR path's BP+ generator allocations (~256 KiB-class)
+are the next sizing item.
 
 ## Status
 
 Flashed and verified on hardware (2026-09-13/14, RP2350 board): BOOTSEL
-drag-and-drop works, the LED heartbeat runs, the USB console is live, and
-the three-step signing flow runs on-device with byte-identical output to
-the host oracle.
+drag-and-drop works, the LED heartbeat runs, the USB console is live, the
+three-step signing flow runs on-device with byte-identical output to the
+host oracle, and the console accepts fixtures over serial (single-frame and
+multipart URs) and signs them.
 
-Next steps: the USB data channel for real inputs (fixtures in / results
-out, replacing the hard-coded fixture), then the RP2350 TRNG for the real
-entropy path, then heap sizing for the XMR path.
+Next steps: the RP2350 TRNG for the real entropy path (incl. XMR signing
+randomness), heap sizing for the XMR path, then QR (camera) input in place
+of the bench channel.

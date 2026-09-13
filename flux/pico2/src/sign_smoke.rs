@@ -39,6 +39,26 @@ fn fixture_rolls() -> [u8; 64] {
     rolls
 }
 
+/// The dice-fixture mnemonic (create_account on the fixed rolls). Also the
+/// console channel's default session key.
+pub(crate) fn fixture_mnemonic() -> Result<Mnemonic, ShlosiloError> {
+    let rolls = fixture_rolls();
+    let mut mnemonic_buf = [0u8; 24];
+    business::create_account::create_account(
+        WordCount::Words12,
+        6,
+        &rolls,
+        b"",
+        &mut mnemonic_buf,
+    )?;
+    let mut indices = [0u16; 12];
+    for (i, idx) in indices.iter_mut().enumerate() {
+        *idx = u16::from_le_bytes([mnemonic_buf[i * 2], mnemonic_buf[i * 2 + 1]]);
+    }
+    mnemonic_buf.fill(0);
+    Mnemonic::from_indices(&indices, WordCount::Words12)
+}
+
 /// ETH sign-request fixture UR (matches flux/host-sim/sim_l3.c).
 const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
 
@@ -87,9 +107,19 @@ pub fn report() -> Option<&'static str> {
 /// Minimal fixed-buffer writer: truncates silently at capacity (the report
 /// fits with a wide margin; truncation would be a code-size bug, not a
 /// runtime condition worth an error path here).
-struct BufWriter<'a> {
+pub(crate) struct BufWriter<'a> {
     buf: &'a mut [u8],
     pos: usize,
+}
+
+impl<'a> BufWriter<'a> {
+    pub(crate) fn new(buf: &'a mut [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[..self.pos]).unwrap_or("<non-utf8>")
+    }
 }
 
 impl core::fmt::Write for BufWriter<'_> {
@@ -101,14 +131,8 @@ impl core::fmt::Write for BufWriter<'_> {
     }
 }
 
-impl BufWriter<'_> {
-    fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.buf[..self.pos]).unwrap_or("<non-utf8>")
-    }
-}
-
 /// Render bytes as lowercase hex into `out`; returns the hex &str.
-fn to_hex<'a>(bytes: &[u8], out: &'a mut [u8]) -> &'a str {
+pub(crate) fn to_hex<'a>(bytes: &[u8], out: &'a mut [u8]) -> &'a str {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     assert!(out.len() >= bytes.len() * 2, "hex buffer too small");
     for (i, b) in bytes.iter().enumerate() {
@@ -119,14 +143,11 @@ fn to_hex<'a>(bytes: &[u8], out: &'a mut [u8]) -> &'a str {
 }
 
 /// Run the three-step fixture flow once and store the report. `heap_probe`
-/// reports (used, free) from the caller's allocator so the report can carry
-/// heap before/after figures without this module knowing the allocator.
-pub fn run(heap_probe: fn() -> (usize, usize)) -> Result<(), ShlosiloError> {
+/// reports (used, free, peak) from the caller's allocator so the report can
+/// carry heap figures without this module knowing the allocator.
+pub fn run(heap_probe: fn() -> (usize, usize, usize)) -> Result<(), ShlosiloError> {
     let mut scratch = [0u8; REPORT_CAP];
-    let mut w = BufWriter {
-        buf: &mut scratch,
-        pos: 0,
-    };
+    let mut w = BufWriter::new(&mut scratch);
     let result = run_inner(&mut w, heap_probe);
     if let Err(e) = &result {
         let _ = writeln!(w, "[smoke] FAILED: {:?}", e.kind);
@@ -137,25 +158,14 @@ pub fn run(heap_probe: fn() -> (usize, usize)) -> Result<(), ShlosiloError> {
 
 fn run_inner(
     w: &mut BufWriter<'_>,
-    heap_probe: fn() -> (usize, usize),
+    heap_probe: fn() -> (usize, usize, usize),
 ) -> Result<(), ShlosiloError> {
-    let (heap_used_before, heap_free_before) = heap_probe();
+    let (used_before, free_before, peak_before) = heap_probe();
 
     // ── Step 1: create_account — dice rolls → mnemonic indices ──
-    let rolls = fixture_rolls();
-    let mut mnemonic_buf = [0u8; 24];
-    business::create_account::create_account(
-        WordCount::Words12,
-        6,
-        &rolls,
-        b"",
-        &mut mnemonic_buf,
-    )?;
-
+    let mnemonic = fixture_mnemonic()?;
     let mut indices = [0u16; 12];
-    for (i, idx) in indices.iter_mut().enumerate() {
-        *idx = u16::from_le_bytes([mnemonic_buf[i * 2], mnemonic_buf[i * 2 + 1]]);
-    }
+    indices.copy_from_slice(mnemonic.indices());
     let _ = writeln!(
         w,
         "[smoke] create_account ok: idx = {} {} {} {} {} {} {} {} {} {} {} {}",
@@ -174,7 +184,6 @@ fn run_inner(
     );
 
     // ── Step 2: export_readonly — mnemonic → crypto-hdkey UR ──
-    let mnemonic = Mnemonic::from_indices(&indices, WordCount::Words12)?;
     let mut seed = [0u8; 64];
     business::restore_seed::restore_seed(&mnemonic, b"", &mut seed)?;
     let path = DerivationPath::from_flat([44u32 | 0x8000_0000, 0x8000_0000, 0x8000_0000, 0, 0])?;
@@ -218,12 +227,11 @@ fn run_inner(
 
     // Zero the sensitive stack material (parity with the C host's cleanup).
     seed.fill(0);
-    mnemonic_buf.fill(0);
 
-    let (heap_used_after, heap_free_after) = heap_probe();
+    let (used_after, free_after, peak_after) = heap_probe();
     let _ = writeln!(
         w,
-        "[smoke] heap used/free: {heap_used_before} {heap_free_before} -> {heap_used_after} {heap_free_after}"
+        "[smoke] heap used/free/peak: {used_before} {free_before} {peak_before} -> {used_after} {free_after} {peak_after}"
     );
 
     Ok(())

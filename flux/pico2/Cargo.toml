@@ -14,6 +14,7 @@ embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executo
 embassy-rp = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "defmt"] }
 embassy-time = "0.5"
 embassy-futures = "0.1"
+embassy-sync = "0.8"
 cortex-m-rt = "0.7"
 
 # USB device stack: CDC-ACM serial so the board is reachable from a host
