@@ -116,23 +116,13 @@ extern unsigned long shlosilo_sram_pool_free_largest(void);
 extern unsigned int shlosilo_sram_pool_block_count(void);
 extern unsigned long shlosilo_sram_pool_peak_live(void);
 extern unsigned int shlosilo_sram_pool_peak_blocks(void);
-extern void shlosilo_cn_timing_set_clock(unsigned int clock_fptr);
-extern void shlosilo_cn_timing_reset(void);
-extern unsigned int shlosilo_cn_timing_phase(unsigned char phase);
-extern void shlosilo_tx_phase_set_clock(unsigned int clock_fptr);
-extern void shlosilo_tx_phase_reset(void);
-extern unsigned int shlosilo_tx_phase_phase(unsigned char phase);
-/* Device primitive perf-bench (perf-bench-ffi; zero-returning stubs when the
- * .a lacks the feature). Each call returns a digest; the caller times it. */
-extern unsigned long long shlosilo_perf_fmul(unsigned int iters);
-extern unsigned long long shlosilo_perf_fsq(unsigned int iters);
-extern unsigned long long shlosilo_perf_select(unsigned int iters);
-extern unsigned long long shlosilo_perf_madd(unsigned int iters);
-extern unsigned long long shlosilo_perf_quadruple(unsigned int iters);
-extern unsigned long long shlosilo_perf_ct_chunk(unsigned int n, unsigned int iters);
-extern unsigned long long shlosilo_perf_vartime_2term(unsigned int iters);
-extern unsigned long long shlosilo_perf_select_affine(unsigned int iters);
-extern unsigned long long shlosilo_perf_madd_affine(unsigned int iters);
+
+/* The Rust (forms) ABI — shlosilo_cn_timing_*, shlosilo_tx_phase_*,
+ * shlosilo_perf_*, shlosilo_bp_timing_*, shlosilo_timing_*, the UR entry
+ * points — is declared by the generated header shlosilo.h (included above),
+ * which the build syncs from the crate. Do not re-declare those here: local
+ * `extern unsigned long long f(unsigned int)` forms clash with the header's
+ * uint32_t/uint64_t (on arm-none-eabi uint32_t is `unsigned long`). */
 
 static unsigned int smoke_tick_ms(void);
 /* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。

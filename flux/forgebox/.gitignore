@@ -17,3 +17,7 @@ pyenv
 # build artifacts (poC3 era)
 /build_poc3/
 /forgebox.bin
+
+# shlosilo forms artifacts (built by build.sh from the repo root crate; never committed)
+/shlosilo/libshlosilo.a
+/shlosilo/shlosilo.h

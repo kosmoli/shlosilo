@@ -1,71 +1,52 @@
-# ForgeBox Hello World
+# forgebox appearance (MH1903 · FreeRTOS · LVGL)
 
-## Overview
+This directory is a **flux** appearance of shlosilo: the hardware-facing side
+(drivers, RTOS tasks, UI, flash/SD, power) for the ForgeBox board
+(MH1903, Cortex-M4, 1 MB SRAM + 8 MB QSPI PSRAM, 16 MB QSPI NOR flash).
 
-This repository contains a minimal Hello World firmware example for ForgeBox. It is a small starting point for building and running your first firmware image on the device.
+Naming: `forms` is the pure-function core (the cargo crate at the repository
+root); `flux` is where side effects, time, and hardware live — the layer that
+runs, races, and fails in ways no test vector can capture. This host is flux.
 
-## Getting Started
+## What this host provides (the L3 contract)
 
-### Local Build Requirements
+| Service | Implementation |
+|---|---|
+| allocator | `shlosilo/embedded_alloc_glue.c` — SRAM first-fit pool (`0x20099000..0x200FC000`, 396 KB) with PSRAM `heap_4` fallback, counted for diagnostics |
+| clock | `smoke_tick_ms()` (FreeRTOS tick, 1 ms) registered via `shlosilo_timing_set_clock_fn` |
+| entropy | board TRNG (see `external/mh1903_lib`), never software fallback |
+| generator cache | `src/flash/xmr_gen_cache_flash.c` — QSPI NOR slot `0x01E00000` (65×4 KB), `XGC1` magic + CRC32, XIP zero-copy load |
+| I/O | LVGL display, FT6336 touch (hardware I2C0), SD card, QR via `src/ui` |
 
-- ARM GCC Toolchain (arm-none-eabi-gcc)
-- CMake 3.10 or later
-- Rust toolchain
-- `bindgen-cli`
-- `cbindgen`
+## Build
 
-On macOS:
-
-#### macOS
-
-```bash
-brew install armmbed/formulae/arm-none-eabi-gcc
-rustup install nightly-2025-05-01
-rustup target add thumbv7em-none-eabihf
-cargo install bindgen-cli
-cargo install cbindgen
+```sh
+bash build.sh            # cargo build forms → strip → cmake/make → pad → sign
+bash build.sh rebuild    # also wipes build/ and the embedded cargo target
+bash build.sh simulator  # host simulator build instead of firmware
 ```
 
-### Build Locally
+The build is self-contained: it compiles the forms static library
+(`libshlosilo.a`) from the repository root with the feature set below, runs a
+**header sync gate** (cbindgen output must byte-equal the tracked
+`<repo root>/shlosilo.h`, else the build fails), and copies both into
+`shlosilo/` — those two files are build inputs and are gitignored, so they
+can never drift from the source of truth.
 
-```bash
-python3 build.py -e production
+Feature set for this appearance (override with `SHLOSILO_FEATURES`):
+
+```
+generator-cache-ffi,cn-timing-ffi,tx-phase-timing-ffi,device-timing,perf-bench-ffi
 ```
 
-### Build With Docker
+Output: `build/forgebox.bin` — the single-layer signed firmware to copy to the
+SD card root (recovery-mode load). `build/mh1903_full.bin` is an intermediate;
+never flash it directly, and never pad by hand (the script pads exactly once).
 
-If you prefer not to install the toolchain locally:
+## Notes
 
-```bash
-docker build --target builder -t forgebox-helloworld-builder .
-```
-
-To copy the generated files out of the image:
-
-```bash
-container_id=$(docker create forgebox-helloworld-builder)
-docker cp "$container_id":/forgebox-helloworld/build ./build
-docker rm "$container_id"
-```
-
-### Output Files
-
-After a successful build, you should see:
-
-- `mh1903.elf`
-- `mh1903.bin`
-- `mh1903.hex`
-- `mh1903_full.bin`
-
-### Flashing
-
-Use `forgebox-cli` to sign the `mh1903_full.bin` firmware image, then copy the signed package to an SD card and load it onto your ForgeBox.
-
-
-## License
-
-See `LICENSE.md` for details.
-
-## Contact
-
-For support or inquiries, please contact us at eng@keyst.one
+- `shlosilo/libshlosilo.a` and `shlosilo/shlosilo.h` are **not tracked**.
+- The C host talks to forms through the C ABI (`shlosilo.h`); it never touches
+  Rust internals. See `docs/l3-contract.md` in the repository root.
+- Deeper background (board bring-up, probe workflow, measurement history) lives
+  in the shlosilo project ledger; this README covers only the host itself.

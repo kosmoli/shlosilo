@@ -1,18 +1,42 @@
 #!/bin/bash
+# =============================================================================
+# forgebox appearance build (MH1903 + FreeRTOS + LVGL, C host)
+#
+# This is a "flux" appearance: it owns the hardware-facing side (drivers, RTOS
+# tasks, UI, flash/SD) and consumes the shlosilo *forms* static library — the
+# cargo crate at the repository root — through the generated C ABI.
+#
+# The static library and the C header are BUILD INPUTS, not tracked files:
+#   target/.../libshlosilo.a  -> shlosilo/libshlosilo.a   (stripped)
+#   <repo root>/shlosilo.h    -> shlosilo/shlosilo.h      (after a sync gate)
+# Both are produced here from source so they can never drift from forms.
+# =============================================================================
 
 set -e
 set -o pipefail
 
-BUILD_FOLDER="$(pwd)/build"
-BUILD_SIMULATOR_FOLDER="$(pwd)/build_simulator"
-TOOLS_FOLDER="$(pwd)/tools"
+# Resolve paths regardless of the caller's cwd.
+cd "$(dirname "${BASH_SOURCE[0]}")"
+APP_ROOT="$(pwd)"
+REPO_ROOT="$(cd ../.. && pwd)"
+
+BUILD_FOLDER="$APP_ROOT/build"
+BUILD_SIMULATOR_FOLDER="$APP_ROOT/build_simulator"
+TOOLS_FOLDER="$APP_ROOT/tools"
 MAKE_OAT_FILE_PATH="${TOOLS_FOLDER}/ota_file_maker"
 MAKE_PADDING_FILE_PATH="${TOOLS_FOLDER}/padding_bin_file"
 ASTYLE_PATH="${TOOLS_FOLDER}/AStyle.sh"
-PACK_PATH="$(pwd)/pack.sh"
-LANGUAGE_PATH="$(pwd)/src/ui/lv_i18n"
+LANGUAGE_PATH="$APP_ROOT/src/ui/lv_i18n"
 LANGUAGE_SCRIPT="python3 data_loader.py"
-RUST_C_PATH="$(pwd)/rust/rust_c"
+
+# ---- shlosilo (forms) build configuration for this appearance ----
+SHLOSILO_TARGET="${SHLOSILO_TARGET:-thumbv7em-none-eabihf}"
+SHLOSILO_FEATURES="${SHLOSILO_FEATURES:-generator-cache-ffi,cn-timing-ffi,tx-phase-timing-ffi,device-timing,perf-bench-ffi}"
+
+# forgebox CLI (firmware signing) lives in the Hermes node bin on the dev box.
+if [[ -d "$HOME/.hermes/node/bin" ]]; then
+    export PATH="$HOME/.hermes/node/bin:$PATH"
+fi
 
 declare -A build_options=(
     ["log"]=false
@@ -28,6 +52,7 @@ declare -A build_options=(
     ["simulator"]=false
     ["language"]=false
     ["clean"]=false
+    ["no_sign"]=false
 )
 
 for arg in "$@"; do
@@ -44,13 +69,36 @@ done
 
 echo "Building with options: ${build_options[@]}"
 
+# -----------------------------------------------------------------------------
+# shlosilo (forms) staticlib + header
+# -----------------------------------------------------------------------------
+build_shlosilo() {
+    local lib="$REPO_ROOT/target/$SHLOSILO_TARGET/release/libshlosilo.a"
+
+    echo "=== shlosilo forms: cargo build ($SHLOSILO_TARGET) ==="
+    ( cd "$REPO_ROOT" && cargo build --release --target "$SHLOSILO_TARGET" \
+        --no-default-features --features "$SHLOSILO_FEATURES" --lib )
+    arm-none-eabi-strip --strip-debug "$lib" -o "$APP_ROOT/shlosilo/libshlosilo.a"
+    echo "    staticlib -> shlosilo/libshlosilo.a ($(stat -c%s "$APP_ROOT/shlosilo/libshlosilo.a") bytes)"
+
+    echo "=== shlosilo C header sync gate (cbindgen regen must equal tracked) ==="
+    ( cd "$REPO_ROOT" && cbindgen --config cbindgen.toml --crate shlosilo \
+        --output "$BUILD_FOLDER/shlosilo_regen.h" ) >/dev/null
+    if ! diff -q "$BUILD_FOLDER/shlosilo_regen.h" "$REPO_ROOT/shlosilo.h" >/dev/null; then
+        echo "ERROR: tracked shlosilo.h differs from cbindgen output."
+        echo "       Regenerate and commit shlosilo.h before building this host."
+        diff "$BUILD_FOLDER/shlosilo_regen.h" "$REPO_ROOT/shlosilo.h" | head -20
+        exit 1
+    fi
+    cp "$REPO_ROOT/shlosilo.h" "$APP_ROOT/shlosilo/shlosilo.h"
+    echo "    header OK (tracked == regen)"
+}
+
 if [[ "${build_options[rebuild]}" == true ]]; then
     if [[ -d "$BUILD_FOLDER" ]]; then
         rm -rf "$BUILD_FOLDER"
     fi
-    pushd "$RUST_C_PATH"
-    cargo clean
-    popd
+    ( cd "$REPO_ROOT" && cargo clean --target "$SHLOSILO_TARGET" ) || true
 fi
 
 mkdir -p "$BUILD_FOLDER"
@@ -58,6 +106,10 @@ mkdir -p "$BUILD_FOLDER"
 if [[ ! -f "$BUILD_FOLDER/padding_bin_file.py" ]]; then
     cp "$MAKE_PADDING_FILE_PATH/padding_bin_file.py" "$BUILD_FOLDER/padding_bin_file.py"
 fi
+
+# Build the forms staticlib + sync the header BEFORE cmake configure: the
+# CMakeLists checks for libshlosilo.a at configure time.
+build_shlosilo
 
 execute_build() {
     if [[ "${build_options[language]}" == true ]]; then
@@ -97,8 +149,26 @@ execute_build() {
         else
             make -j16
         fi
+        # padding is built into this script on purpose: mh1903.bin -> mh1903_full.bin
+        # (4K alignment + APP_END magic). Never pad again by hand after this.
         python3 padding_bin_file.py mh1903.bin
         popd
+    fi
+
+    # ---- sign: single fwdata-layer image ready for the SD card ----
+    if [[ "${build_options[simulator]}" != true && "${build_options[no_sign]}" != true ]]; then
+        local local_key="$HOME/.forgebox/keys/private.pem"
+        if command -v forgebox >/dev/null 2>&1 && [[ -f "$local_key" ]]; then
+            echo "=== signing firmware (forgebox sign) ==="
+            forgebox sign --s "$BUILD_FOLDER/mh1903_full.bin" \
+                          --d "$BUILD_FOLDER/forgebox.bin" \
+                          --key "$local_key"
+            echo "    flashable image: build/forgebox.bin ($(stat -c%s "$BUILD_FOLDER/forgebox.bin") bytes)"
+            echo "    sha256: $(sha256sum "$BUILD_FOLDER/forgebox.bin" | cut -d' ' -f1)"
+        else
+            echo "NOTE: forgebox CLI or signing key not found - skipped signing."
+            echo "      Manual: forgebox sign --s build/mh1903_full.bin --d build/forgebox.bin --key ~/.forgebox/keys/private.pem"
+        fi
     fi
 
     if [[ "${build_options[copy]}" == true ]]; then
