@@ -98,19 +98,35 @@ signed hex match the host oracle byte for byte.
 
 The flow is deterministic (dice → exact rejection sampling, no RNG;
 BTC/ETH → RFC-6979), so no entropy source is needed for the fixture path; a
-real-device flow will use the RP2350 TRNG. Heap: 128 KiB embedded-alloc heap
-with live/peak counters (the `heap` console command); the boot smoke's own
-peak is visible in its report, and one-shot operations can be measured with
-`heap reset` first. The XMR path's BP+ generator allocations (~256 KiB-class)
-are the next sizing item.
+real-device flow will use the RP2350 TRNG.
+
+Heap: 128 KiB embedded-alloc heap with live/peak counters (the `heap`
+console command; `heap reset` re-arms the peak for one operation). Measured
+on hardware (2026-09-14): boot smoke peak 649 B; ETH fixture sign peak
+388 B; the 12.4 KiB Sparrow PSBT multipart decode + sign peaks at
+**102,746 B** — over three quarters of the heap, so the XMR path's BP+
+generator allocations (~256 KiB-class) will need a larger budget or a
+different placement strategy (the next sizing item).
+
+### Bench runner
+
+`bench/run_bench.py` drives the channel end to end and checks the board's
+output against the host-pinned values (ETH full hex + sha256; Sparrow
+length + sha256):
+
+```sh
+cargo test --release --test pico2_smoke_parity -- --ignored --nocapture   # fixtures -> /tmp
+python3 flux/pico2/bench/run_bench.py                                    # board must be plugged in
+```
 
 ## Status
 
 Flashed and verified on hardware (2026-09-13/14, RP2350 board): BOOTSEL
 drag-and-drop works, the LED heartbeat runs, the USB console is live, the
 three-step signing flow runs on-device with byte-identical output to the
-host oracle, and the console accepts fixtures over serial (single-frame and
-multipart URs) and signs them.
+host oracle, and the serial bench channel signs host-fed fixtures — the
+ETH fixture (full hex match) and the 12.4 KiB Sparrow signet PSBT as 32
+multipart fragments (12447-byte signed output, sha256 match).
 
 Next steps: the RP2350 TRNG for the real entropy path (incl. XMR signing
 randomness), heap sizing for the XMR path, then QR (camera) input in place
