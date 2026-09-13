@@ -1,0 +1,22 @@
+[package]
+name = "shlosilo-pico2"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# forms core (workspace root crate). Rust-native appearance: the core is a
+# plain rlib here - pico2 owns its runtime (embedded-alloc + panic-probe;
+# critical-section from embassy-rp), so no C-host hooks are involved.
+shlosilo = { path = "../..", default-features = false }
+
+# RP2350 async stack
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-rp = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "defmt"] }
+embassy-time = "0.5"
+cortex-m-rt = "0.7"
+
+# runtime glue
+embedded-alloc = "0.7"
+panic-probe = { version = "1", features = ["print-defmt"] }
+defmt = "1"
+defmt-rtt = "1"

@@ -1,0 +1,29 @@
+[package]
+name = "shlosilo-forgebox"
+version = "0.5.0"
+edition = "2021"
+publish = false
+
+# The C-host staticlib bundle for the forgebox appearance. The core crate
+# (workspace root) is rlib-only: a staticlib declared there would push a
+# staticlib unit - and the runtime lang items it demands - onto every consumer
+# of the crate, including Rust-native appearances (flux/pico2). This package
+# is the only place where the staticlib is requested; the C-host runtime hooks
+# (global allocator, panic handler, critical-section impl) live in its lib.rs.
+[lib]
+name = "shlosilo"
+crate-type = ["staticlib"]
+
+[dependencies]
+# The diagnostic FFI features compiled into the .a for the C host.
+shlosilo = { path = "../../..", default-features = false, features = [
+    "generator-cache-ffi",
+    "cn-timing-ffi",
+    "tx-phase-timing-ffi",
+    "device-timing",
+    "perf-bench-ffi",
+] }
+
+# RawRestoreState for the PRIMASK-based impl in lib.rs (restore-state-u8,
+# aligned with embassy-rp; the core's embedded target dep sets the same).
+critical-section = { version = "1", features = ["restore-state-u8"] }

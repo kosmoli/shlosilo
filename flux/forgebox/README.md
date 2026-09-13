@@ -26,23 +26,18 @@ bash build.sh rebuild    # also wipes build/ and the embedded cargo target
 bash build.sh simulator  # host simulator build instead of firmware
 ```
 
-The build is self-contained: it compiles the forms static library
-(`libshlosilo.a`) from the repository root with the feature set below, runs a
+The build is self-contained: it bundles the forms static library
+(`libshlosilo.a`) via `staticlib/` (feature set and runtime hooks live
+there), runs a
 **header sync gate** (cbindgen output must byte-equal the tracked
 `<repo root>/shlosilo.h`, else the build fails), and copies both into
 `shlosilo/` — those two files are build inputs and are gitignored, so they
 can never drift from the source of truth.
 
-Feature set for this appearance (override with `SHLOSILO_FEATURES`):
-
-```
-c-host-rt,generator-cache-ffi,cn-timing-ffi,tx-phase-timing-ffi,device-timing,perf-bench-ffi
-```
-
-`c-host-rt` is what makes shlosilo use THIS host as its runtime: the global
-allocator (`shlosilo_embedded_malloc/free`), the panic handler
-(`shlosilo_panic_hook`), and the critical-section impl come from here. A
-Rust-native appearance (pico2) builds shlosilo without it.
+The C-host runtime hooks — global allocator (`shlosilo_embedded_malloc/free`),
+panic handler (`shlosilo_panic_hook`), critical-section impl — plus the
+feature set compiled into the .a live in `staticlib/`. A Rust-native
+appearance (pico2) consumes the core directly and none of this applies.
 
 Output: `build/forgebox.bin` — the single-layer signed firmware to copy to the
 SD card root (recovery-mode load). `build/mh1903_full.bin` is an intermediate;

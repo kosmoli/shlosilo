@@ -24,6 +24,23 @@ edition = "2021"
 # Difference from shlosilo-poc3: poc3 is a thumbv7em-none-eabihf embedded target + staticlib,
 # poc4 is a native target + rlib, dedicated to cargo check for Phase 2.0 compile verification.
 
+[workspace]
+# Monorepo: the root crate is the `forms` core; flux appearances live under
+# flux/. pico2 is a Rust-native appearance (it owns its runtime + embassy);
+# forgebox's CMake/build.sh flow consumes the staticlib bundled by its
+# staticlib/ shim package.
+# vendor/* and fuzz/ stay standalone: vendor is third-party patched code (kept
+# out of workspace lint gates, as before the workspace existed); fuzz is a
+# cargo-fuzz crate with its own lockfile.
+members = ["flux/pico2", "flux/forgebox/staticlib"]
+exclude = [
+    "fuzz",
+    "vendor/curve25519-dalek",
+    "vendor/cryptonight",
+    "vendor/monero-bulletproofs",
+]
+resolver = "2"
+
 [dependencies]
 # no_std support + zeroize
 zeroize = { version = "1.7", default-features = false, features = ["zeroize_derive"] }
@@ -94,25 +111,28 @@ std = ["rand_core/std"]
 # alloc = []  # heapless itself is no_std
 # Device-side stage timing instrumentation (diagnostic only, never in production firmware)
 device-timing = []
-# Rust runtime hooks for a C host: global_allocator + panic_handler +
-# critical-section impl (forms/embedded_alloc.rs). The flux/forgebox staticlib
-# enables this; a Rust-native appearance (flux/pico2) must NOT - it provides
-# its own runtime, and duplicate lang items / critical-section impls do not link.
-c-host-rt = []
 
 [lib]
 # The pure-function core is the `forms` tree; flux appearances consume it.
 path = "forms/lib.rs"
-crate-type = ["rlib", "staticlib"]
+# rlib only. The C-host staticlib is bundled by the flux/forgebox/staticlib
+# shim package: a staticlib declared here would push a staticlib unit - and
+# the runtime lang items it demands (global allocator + panic handler) - onto
+# every build that compiles this crate, including Rust-native appearances
+# (flux/pico2) that supply their own runtime.
+crate-type = ["rlib"]
 
 # host (Linux/macOS): critical-section via std, ed25519-dalek with std enabled
 [target.'cfg(not(target_os = "none"))'.dependencies]
 critical-section = { version = "1", features = ["std"] }
 ed25519-dalek = { version = "2.1", features = ["std"] }
 
-# embedded (thumbv7em-none-eabihf etc.): critical-section single-threaded restore-state-bool
+# embedded (thumbv7em-none-eabihf etc.): critical-section RawRestoreState = u8,
+# aligned with embassy-rp's critical-section-impl (flux/pico2) and with the
+# forgebox staticlib bundle (flux/forgebox/staticlib), whose PRIMASK impl
+# returns 0/1.
 [target.'cfg(target_os = "none")'.dependencies]
-critical-section = { version = "1", features = ["restore-state-bool"] }
+critical-section = { version = "1", features = ["restore-state-u8"] }
 
 [profile.release]
 # 2026-09-03: XMR on-device 74.9s vs keystone seconds on the same board. sign_xmr calls CN twice

@@ -30,8 +30,9 @@ LANGUAGE_PATH="$APP_ROOT/src/ui/lv_i18n"
 LANGUAGE_SCRIPT="python3 data_loader.py"
 
 # ---- shlosilo (forms) build configuration for this appearance ----
+# The feature set for the staticlib build (diagnostic FFI features) and the
+# C-host runtime hooks live in flux/forgebox/staticlib/.
 SHLOSILO_TARGET="${SHLOSILO_TARGET:-thumbv7em-none-eabihf}"
-SHLOSILO_FEATURES="${SHLOSILO_FEATURES:-c-host-rt,generator-cache-ffi,cn-timing-ffi,tx-phase-timing-ffi,device-timing,perf-bench-ffi}"
 
 # forgebox CLI (firmware signing) lives in the Hermes node bin on the dev box.
 if [[ -d "$HOME/.hermes/node/bin" ]]; then
@@ -75,9 +76,15 @@ echo "Building with options: ${build_options[@]}"
 build_shlosilo() {
     local lib="$REPO_ROOT/target/$SHLOSILO_TARGET/release/libshlosilo.a"
 
-    echo "=== shlosilo forms: cargo build ($SHLOSILO_TARGET) ==="
-    ( cd "$REPO_ROOT" && cargo build --release --target "$SHLOSILO_TARGET" \
-        --no-default-features --features "$SHLOSILO_FEATURES" --lib )
+    echo "=== shlosilo staticlib: cargo build -p shlosilo-forgebox ($SHLOSILO_TARGET) ==="
+    # The keep-table must be current BEFORE the build: it is what keeps every
+    # C-ABI entry point reachable through LTO. A new entry point without a
+    # regenerated table would otherwise fail late, at the C link.
+    ( cd "$REPO_ROOT" && python3 scripts/gen_ffi_keep.py --check ) || exit 1
+    # The core crate is rlib-only; the staticlib is bundled by the
+    # flux/forgebox/staticlib shim package, so no other consumer of the crate
+    # is ever forced through a staticlib unit.
+    ( cd "$REPO_ROOT" && cargo build -p shlosilo-forgebox --release --target "$SHLOSILO_TARGET" )
     arm-none-eabi-strip --strip-debug "$lib" -o "$APP_ROOT/shlosilo/libshlosilo.a"
     echo "    staticlib -> shlosilo/libshlosilo.a ($(stat -c%s "$APP_ROOT/shlosilo/libshlosilo.a") bytes)"
 
