@@ -1,0 +1,13 @@
+# shlosilo-pico2 (RP2350) USB CDC-ACM console (1209:5353)
+#
+# Install to /etc/udev/rules.d/ then: udevadm control --reload-rules
+#
+# 1) Keep ModemManager from probing this device: its auto-probe opens the
+#    port, drains the buffered console output, then gives up because no AT
+#    commands are answered. The property is set on both the raw USB device
+#    and the tty port: ModemManager checks the port device, while some
+#    tooling looks at the USB device.
+# 2) Allow access for the plugdev group so reading the console does not
+#    require sudo.
+ACTION=="add|change", SUBSYSTEM=="usb", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="5353", ENV{ID_MM_DEVICE_IGNORE}="1"
+ACTION=="add|change", SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="5353", ENV{ID_MM_DEVICE_IGNORE}="1", MODE="0660", GROUP="plugdev"
