@@ -4,6 +4,10 @@
 //! tests and the device smoke task to exercise the vendor generator-cache hooks.
 
 extern crate alloc;
+// std is linked explicitly: the crate is `#![no_std]`, and this module only
+// exists under the `std` feature (host builds) - see the cfg on the `mod`
+// declaration.
+extern crate std;
 use alloc::vec::Vec;
 // Host-only: the embedded build has no OsRng (no getrandom) and no test harness; the
 // device-side hook registration arrives with the L3 flash backend (shlosilo_init FFI path).
@@ -11,18 +15,19 @@ use monero_bulletproofs::register_generator_cache_hooks;
 
 /// Register load/store hooks into the vendored bulletproofs crate. Idempotent: a second
 /// call with the same functions (e.g. two tests in one binary) returns true.
+///
+/// `OnceLock` (not a plain atomic flag): the two integration tests run on separate
+/// threads, and a check-then-call on a flag let both callers through - the second
+/// got the vendored crate's "first registration wins" `false` and failed its
+/// assertion (observed as a flaky `make test-all`). `get_or_init` makes the
+/// initialization atomic, so concurrent callers observe one registration result.
 pub fn register(
     load: fn(&'static [u8]) -> Option<&'static [u8]>,
     store: fn(&'static [u8], &[u8]),
 ) -> bool {
-    use core::sync::atomic::{AtomicBool, Ordering};
-    static REGISTERED_HERE: AtomicBool = AtomicBool::new(false);
-    if REGISTERED_HERE.load(Ordering::Acquire) {
-        return true;
-    }
-    let ok = register_generator_cache_hooks(load, store);
-    REGISTERED_HERE.store(true, Ordering::Release);
-    ok
+    use std::sync::OnceLock;
+    static REGISTERED_HERE: OnceLock<bool> = OnceLock::new();
+    *REGISTERED_HERE.get_or_init(|| register_generator_cache_hooks(load, store))
 }
 
 /// Force the vendored crate's `GENERATORS` LazyLock to initialize through a real BP+
