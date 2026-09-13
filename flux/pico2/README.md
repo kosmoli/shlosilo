@@ -11,8 +11,11 @@ Target: `thumbv8m.main-none-eabihf` (RP2350A, e.g. Raspberry Pi Pico 2).
 ## Build
 
 ```sh
-cargo build --release     # from this directory; target + rustflags come from .cargo/config.toml
+cargo build --release     # from this directory; target comes from .cargo/config.toml,
+                          # linker scripts (link.x/memory.x/defmt.x) from build.rs
 ```
+
+(Or `make pico2` from the repository root.)
 
 ## Status
 
