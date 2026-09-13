@@ -34,9 +34,13 @@ probe — until one is wired up, the LED is the smoke test.
 
 ## Status
 
-Skeleton: heartbeat LED (GPIO25) + boot log over defmt/RTT printing the
+Flashed and verified on hardware (2026-09-13, RP2350 board): BOOTSEL drag-and-
+drop works and the LED heartbeat runs — the forms core is linked and the
+Embassy runtime is live. Details of the flash path: pack_uf2.py below.
+
+Skeleton scope: heartbeat LED (GPIO25) + boot log over defmt/RTT printing the
 shlosilo version string (the git suffix identifies the build).
 
-Next steps: boot2/flash configuration, USB/QR I/O plan, then bring the
-signing flow over and validate it against the same oracle vectors used on
+Next steps: USB (embassy-usb) so the board is reachable from a host, then bring
+the signing flow over and validate it against the same oracle vectors used on
 forgebox.
