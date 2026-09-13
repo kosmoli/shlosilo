@@ -10,6 +10,13 @@ publish = false
 # of the crate, including Rust-native appearances (flux/pico2). This package
 # is the only place where the staticlib is requested; the C-host runtime hooks
 # (global allocator, panic handler, critical-section impl) live in its lib.rs.
+#
+# Embedded-only: build with an explicit embedded target (e.g.
+# cargo build -p shlosilo-forgebox --target thumbv7em-none-eabihf, or via
+# flux/forgebox/build.sh). A hosted-target build is rejected up front by
+# build.rs with a clear error (audit #16 P2-01): the PRIMASK critical-section
+# impl below requires `restore-state-u8`, which collides with the
+# `critical-section/std` feature the core enables on host targets.
 [lib]
 name = "shlosilo"
 crate-type = ["staticlib"]

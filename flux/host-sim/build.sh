@@ -19,6 +19,26 @@ echo "=== shlosilo forms: cargo build -p shlosilo-host-sim --release (host) ==="
 # target/release/libshlosilo.a, which the C simulator links via -lshlosilo.
 ( cd "$REPO_ROOT" && cargo build -p shlosilo-host-sim --release )
 
+echo "=== keep-table gate (sim_l3 calls must be pinned in the keep table) ==="
+# Same discipline as forgebox: extern "C" declarations do not create LTO
+# reachability, so every entry point the C side links against must be
+# referenced through its real Rust path in staticlib/src/lib.rs. A new call
+# in sim_l3.c without a keep-table entry fails the C link - this gate turns
+# that late, confusing failure into an explicit one (audit #16 INFO).
+lib="$REPO_ROOT/target/release/libshlosilo.a"
+for sym in $(grep -oE 'shlosilo_[a-z_0-9]+' "$APP_ROOT/sim_l3.c" | sort -u); do
+    if ! grep -q "$sym as \*const" "$APP_ROOT/staticlib/src/lib.rs"; then
+        echo "ERROR: $sym is called by sim_l3.c but missing from the keep table" >&2
+        echo "       (flux/host-sim/staticlib/src/lib.rs) - add a real Rust-path reference." >&2
+        exit 1
+    fi
+    if ! nm "$lib" | grep -q " T $sym$"; then
+        echo "ERROR: $sym undefined (U) in libshlosilo.a - LTO dropped it despite the keep table" >&2
+        exit 1
+    fi
+done
+echo "    keep table OK (sim_l3 call surface pinned and defined)"
+
 echo "=== linking sim_l3 ==="
 gcc -Wall -Wextra \
     -o "$APP_ROOT/sim_l3" "$APP_ROOT/sim_l3.c" \
