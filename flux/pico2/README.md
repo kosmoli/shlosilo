@@ -40,15 +40,17 @@ pid.codes shared VID; the PID is a dev-only placeholder), product
 string, so `/dev/serial/by-id/` and `udevadm info -n /dev/ttyACM0` identify
 the exact build.
 
-Open `/dev/ttyACM0` at any time: a heartbeat line
-`[hb] shlosilo-pico2; v0.5.0-poc4+<git>` repeats every 5 s, and the buffered
-tail of recent output is delivered immediately on open.
+Open `/dev/ttyACM0` at any time. Two cadences serve the console:
 
-The one-shot boot banner (`shlosilo-pico2 alive; ...`) is best-effort only:
-it is logged while the device is still enumerating — before the host-side
-port exists — and can be lost to an endpoint-activation race or to a
-transient prober draining the port. The heartbeat carries the same version
-string, so the console never looks dead.
+- `[hb] shlosilo-pico2; v0.5.0-poc4+<git>` every 5 s — liveness + version;
+- the stored signing-smoke report (below) every 20 s.
+
+Cadence, not buffering, is the delivery mechanism: output written before a
+host opens the port is not reliably delivered to a reader that attaches
+later (measured on Linux cdc_acm across four boots — even a reader opening
+within 0.5 s of the node appearing, with ModemManager stopped, saw none of
+it; live-cadence output always arrived). The boot banner is kept as a
+best-effort first record but nothing depends on it.
 
 Host-side notes (Linux):
 - `99-shlosilo-pico2.rules` (this directory; installed to
@@ -57,13 +59,33 @@ Host-side notes (Linux):
   the port — and grants the plugdev group access;
 - defmt/RTT stays attached for probe-based debugging.
 
+## On-device signing smoke
+
+At boot the firmware runs the three-step fixture flow once and stores the
+report; `console_report_task` re-serves it on the 20 s cycle:
+
+1. `create_account` — 64 x d6 dice fixture → mnemonic indices (word0 = 1565);
+2. `export_readonly` — m/44'/0'/0'/0/0 crypto-hdkey UR;
+3. `sign` — the eth-sign-request fixture UR → 111-byte signed tx.
+
+The fixtures and expected outputs are shared with `flux/host-sim/sim_l3.c`
+(the C-ABI oracle) and pinned on the host by `tests/pico2_smoke_parity.rs`
+through the same direct Rust path. Verified on hardware: indices, UR and
+signed hex match the host oracle byte for byte.
+
+The flow is deterministic (dice → exact rejection sampling, no RNG;
+BTC/ETH → RFC-6979), so no entropy source is needed for the fixture path; a
+real-device flow will use the RP2350 TRNG. Heap: the 16 KiB embedded-alloc
+heap is untouched by this flow (0 used before and after — no leak); the XMR
+path's BP+ generator allocations (~256 KiB-class) are the next sizing item.
+
 ## Status
 
 Flashed and verified on hardware (2026-09-13/14, RP2350 board): BOOTSEL
-drag-and-drop works, the LED heartbeat runs, and the USB console is live
-(heartbeat lines with the version string read over /dev/ttyACM0). Details of
-the flash path: pack_uf2.py below.
+drag-and-drop works, the LED heartbeat runs, the USB console is live, and
+the three-step signing flow runs on-device with byte-identical output to
+the host oracle.
 
-Next steps: bring the signing flow over (create_account / export_readonly /
-sign) and validate it against the same oracle vectors used on forgebox, with
-the console as the data channel.
+Next steps: the USB data channel for real inputs (fixtures in / results
+out, replacing the hard-coded fixture), then the RP2350 TRNG for the real
+entropy path, then heap sizing for the XMR path.
