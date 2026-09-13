@@ -13,6 +13,8 @@
 #![no_std]
 #![no_main]
 
+mod sign_smoke;
+
 use core::mem::MaybeUninit;
 
 use defmt::info;
@@ -77,6 +79,25 @@ async fn usb_console_task(driver: Driver<'static, USB>) {
     let logs = embassy_usb_logger::with_class!(1024, log::LevelFilter::Info, class);
 
     log::info!("shlosilo-pico2 alive; {version}");
+
+    // On-device signing smoke: fixture parity with flux/host-sim/sim_l3.c, so
+    // this console output can be diffed against the host oracle. Runs once at
+    // startup (a few hundred ms of synchronous work; the USB task catches up
+    // on the buffered log lines right after).
+    log::info!(
+        "[smoke] heap before: {} used / {} free",
+        HEAP.used(),
+        HEAP.free()
+    );
+    match sign_smoke::run() {
+        Ok(()) => log::info!("[smoke] run ok"),
+        Err(e) => log::error!("[smoke] FAILED: {:?}", e.kind),
+    }
+    log::info!(
+        "[smoke] heap after: {} used / {} free",
+        HEAP.used(),
+        HEAP.free()
+    );
 
     // Both futures are divergent; the task only ends if the device were to
     // stop for good.
