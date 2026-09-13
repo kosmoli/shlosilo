@@ -454,6 +454,11 @@ pub fn tap_leaf_hash(script: &[u8], leaf_version: u8) -> [u8; 32] {
 /// BTC compact size encoding (BIP-174 / PSBT / BIP-341):
 /// <0xfd || u16 LE> | <0xfe || u32 LE> | <0xff || u64 LE> | single byte
 fn encode_compact_size(value: usize) -> alloc::vec::Vec<u8> {
+    // Work in the u64 domain: a 32-bit `usize` can never exceed `u32::MAX`,
+    // which would make the third test below "always true" and trip
+    // `clippy::absurd_extreme_comparisons` (denied by default) on 32-bit
+    // targets. Encoding behavior is identical on every target.
+    let value = value as u64;
     if value < 0xfd {
         alloc::vec![value as u8]
     } else if value <= 0xffff {
@@ -466,7 +471,7 @@ fn encode_compact_size(value: usize) -> alloc::vec::Vec<u8> {
         v
     } else {
         let mut v = alloc::vec![0xff];
-        v.extend_from_slice(&(value as u64).to_le_bytes());
+        v.extend_from_slice(&value.to_le_bytes());
         v
     }
 }
