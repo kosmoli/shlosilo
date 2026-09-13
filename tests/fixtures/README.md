@@ -12,5 +12,5 @@
 - **用途**:
   - `tests/p63_btc_sign.rs` — BTC PSBT 签名端到端(signet 广播已裁决合法)
   - `tests/p63_btc_psbt.rs` — 解析/派生路径/UTXO 类型判定
-  - `src/ffi/c_abi.rs` — P0-C typed sign 12.4 KiB E2E(单帧超限 → multipart 路径)
+  - `forms/ffi/c_abi.rs` — P0-C typed sign 12.4 KiB E2E(单帧超限 → multipart 路径)
 - **隐私**: 测试网隔离密钥,无真实资金;可公开提交

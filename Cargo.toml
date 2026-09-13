@@ -96,6 +96,8 @@ std = ["rand_core/std"]
 device-timing = []
 
 [lib]
+# The pure-function core is the `forms` tree; flux appearances consume it.
+path = "forms/lib.rs"
 crate-type = ["rlib", "staticlib"]
 
 # host (Linux/macOS): critical-section via std, ed25519-dalek with std enabled
