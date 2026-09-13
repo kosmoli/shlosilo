@@ -6,9 +6,9 @@
 //! embassy-rp's critical-section impl.
 //!
 //! Current scope: heartbeat LED + a USB CDC-ACM console. The console carries
-//! the boot banner (shlosilo version string; its git suffix identifies the
-//! exact build) and is the I/O channel the signing flow will use next.
-//! defmt/RTT stays attached in parallel for probe-based debugging.
+//! the shlosilo version string (its git suffix identifies the exact build) and
+//! is the I/O channel the signing flow will use next. defmt/RTT stays
+//! attached in parallel for probe-based debugging.
 
 #![no_std]
 #![no_main]
@@ -40,11 +40,8 @@ bind_interrupts!(struct Irqs {
 });
 
 /// USB console task: enumerates as a CDC-ACM serial port and pumps `log!`
-/// records to the host.
-///
-/// Records logged before a host opens the port sit in the logger's 1024-byte
-/// pipe, so the boot banner is delivered on the first connect. Guest input is
-/// discarded for now; the signing flow will take over the receive path.
+/// records to the host. Guest input is discarded for now; the signing flow
+/// will take over the receive path.
 #[embassy_executor::task]
 async fn usb_console_task(driver: Driver<'static, USB>) {
     // The version constant is NUL-terminated for C consumers; trim it for the
@@ -86,6 +83,21 @@ async fn usb_console_task(driver: Driver<'static, USB>) {
     let _ = join(device.run(), logs).await;
 }
 
+/// Periodic console heartbeat: the boot banner is a one-shot record, so a
+/// host that attaches after startup - or a transient reader that drains the
+/// port - would otherwise face a silent console with no way to tell the
+/// firmware is running. A repeating line keeps the link alive on demand and
+/// the version string continuously visible. Revisit when the signing flow
+/// takes over the channel.
+#[embassy_executor::task]
+async fn heartbeat_task() {
+    let version = shlosilo::ffi::version::SHLOSILO_VERSION_STRING.trim_end_matches('\0');
+    loop {
+        Timer::after_secs(5).await;
+        log::info!("[hb] shlosilo-pico2; {version}");
+    }
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // SAFETY: runs once at startup, before any allocation happens.
@@ -94,8 +106,9 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     let driver = Driver::new(p.USB, Irqs);
-    // The task pool holds one slot, so this first spawn cannot fail.
+    // Each task pool holds one slot, so these first spawns cannot fail.
     spawner.spawn(usb_console_task(driver).unwrap());
+    spawner.spawn(heartbeat_task().unwrap());
 
     info!(
         "pico2 alive; shlosilo {}",
