@@ -6,9 +6,15 @@
 //! embassy-rp's critical-section impl.
 //!
 //! Current scope: heartbeat LED + a USB CDC-ACM console. The console carries
-//! the shlosilo version string (its git suffix identifies the exact build) and
-//! is the I/O channel the signing flow will use next. defmt/RTT stays
-//! attached in parallel for probe-based debugging.
+//! the shlosilo version string (its git suffix identifies the exact build),
+//! the periodic on-device signing smoke report, and is the I/O channel the
+//! signing flow will use next. defmt/RTT stays attached in parallel for
+//! probe-based debugging.
+//!
+//! Console delivery: output produced before a host opens the port is not
+//! reliably delivered to a later reader (see sign_smoke.rs), so everything a
+//! reader needs is served on a cadence instead of relying on boot-time
+//! buffering.
 
 #![no_std]
 #![no_main]
@@ -36,6 +42,10 @@ static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
+
+fn heap_used_free() -> (usize, usize) {
+    (HEAP.used(), HEAP.free())
+}
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -80,42 +90,35 @@ async fn usb_console_task(driver: Driver<'static, USB>) {
 
     log::info!("shlosilo-pico2 alive; {version}");
 
-    // On-device signing smoke: fixture parity with flux/host-sim/sim_l3.c, so
-    // this console output can be diffed against the host oracle. Runs once at
-    // startup (a few hundred ms of synchronous work; the USB task catches up
-    // on the buffered log lines right after).
-    log::info!(
-        "[smoke] heap before: {} used / {} free",
-        HEAP.used(),
-        HEAP.free()
-    );
-    match sign_smoke::run() {
-        Ok(()) => log::info!("[smoke] run ok"),
-        Err(e) => log::error!("[smoke] FAILED: {:?}", e.kind),
-    }
-    log::info!(
-        "[smoke] heap after: {} used / {} free",
-        HEAP.used(),
-        HEAP.free()
-    );
+    // On-device signing smoke (fixture parity with flux/host-sim/sim_l3.c):
+    // compute once, store the report; `console_report_task` serves it on a
+    // cycle. Nothing is logged inline here - boot-time output is not
+    // reliably delivered to a host that attaches later.
+    let _ = sign_smoke::run(heap_used_free);
 
     // Both futures are divergent; the task only ends if the device were to
     // stop for good.
     let _ = join(device.run(), logs).await;
 }
 
-/// Periodic console heartbeat: the boot banner is a one-shot record, so a
-/// host that attaches after startup - or a transient reader that drains the
-/// port - would otherwise face a silent console with no way to tell the
-/// firmware is running. A repeating line keeps the link alive on demand and
-/// the version string continuously visible. Revisit when the signing flow
-/// takes over the channel.
+/// Console cadence task: an `[hb]` line every 5 s (liveness + version string)
+/// and the stored smoke report every 4th tick (20 s), so a reader attaching
+/// at any time sees the full report within one cycle. Revisit when the
+/// signing flow takes over the channel.
 #[embassy_executor::task]
-async fn heartbeat_task() {
+async fn console_report_task() {
     let version = shlosilo::ffi::version::SHLOSILO_VERSION_STRING.trim_end_matches('\0');
+    let mut tick: u32 = 0;
     loop {
         Timer::after_secs(5).await;
+        tick = tick.wrapping_add(1);
         log::info!("[hb] shlosilo-pico2; {version}");
+        if tick.is_multiple_of(4) {
+            match sign_smoke::report() {
+                Some(r) => log::info!("{r}"),
+                None => log::info!("[smoke] report not ready yet"),
+            }
+        }
     }
 }
 
@@ -129,7 +132,7 @@ async fn main(spawner: Spawner) {
     let driver = Driver::new(p.USB, Irqs);
     // Each task pool holds one slot, so these first spawns cannot fail.
     spawner.spawn(usb_console_task(driver).unwrap());
-    spawner.spawn(heartbeat_task().unwrap());
+    spawner.spawn(console_report_task().unwrap());
 
     info!(
         "pico2 alive; shlosilo {}",
