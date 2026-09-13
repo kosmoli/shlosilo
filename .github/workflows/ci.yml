@@ -31,9 +31,11 @@ jobs:
         run: cargo test --all-targets
       - name: Tests (all features)
         run: cargo test --all-targets --all-features
-      # Audit #15 P1-02: each diagnostic feature must build on its own (host),
-      # and every FFI module must compile its no-op stubs when its feature is
-      # off (the "always links" contract).
+      # Audit #15 P1-02: each diagnostic feature must build on its own (host).
+      # Note: a host build with --no-default-features is not a supported
+      # configuration (the no_std library's panic_handler collides with the
+      # host's std); the stub build is exercised on the thumb target below,
+      # which is where the C host actually links it.
       - name: Feature matrix (host)
         run: |
           for f in device-timing generator-cache-ffi perf-bench-ffi prove-timing-ffi cn-timing-ffi tx-phase-timing-ffi; do
@@ -41,9 +43,6 @@ jobs:
             cargo check --features "$f"
             echo "::endgroup::"
           done
-          echo "::group::stub build (no features)"
-          cargo check --no-default-features
-          echo "::endgroup::"
       - name: Embedded checks (thumbv7em)
         run: |
           rustup target add thumbv7em-none-eabihf
