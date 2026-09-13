@@ -66,3 +66,42 @@ jobs:
       # rustup 会按需自动安装该工具链
       - name: Run smoke
         run: bash scripts/fuzz_run.sh 30
+
+  appearances:
+    name: Appearances (clean-checkout shims + hosts + gates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf,thumbv8m.main-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      # Audit #16 P1-01: workspace default-members is the root package only,
+      # so the two embedded shims and pico2 were outside every CI gate (the
+      # `test` job above builds default members with no --target). This job
+      # compiles each appearance from a clean checkout and runs the C-host
+      # gates (keep table, header sync) outside the full forgebox build.
+      # Audit #16 P2-01: shim checks pin explicit embedded targets; a hosted
+      # build of the forgebox shim is rejected by its build.rs with a clear
+      # error instead of a cryptic critical-section feature collision.
+      # Audit #16 P2-02: this job *is* the clean-checkout rebuild - ignored
+      # build products from a developer tree can never reach it.
+      - name: C-ABI keep table gate
+        run: python3 scripts/gen_ffi_keep.py --check
+      - name: C header sync gate (pinned cbindgen)
+        run: |
+          cargo install cbindgen --version 0.27.0 --locked
+          bash scripts/check_header.sh
+      - name: forgebox staticlib (embedded, thumbv7em)
+        run: cargo check -p shlosilo-forgebox --release --target thumbv7em-none-eabihf
+      - name: host-sim (POSIX) staticlib + keep gate + link + run
+        run: |
+          make host-sim
+          ./flux/host-sim/sim_l3 | tee /tmp/sim_l3.log
+          grep -q "signed tx (111 bytes)" /tmp/sim_l3.log
+          grep -q "=== all steps completed ===" /tmp/sim_l3.log
+      - name: pico2 image + UF2 pack (thumbv8m)
+        run: |
+          cargo install elf2uf2-rs --version 2.2.0 --locked
+          make pico2-uf2
+          ls -la target/thumbv8m.main-none-eabihf/release/shlosilo-pico2.uf2

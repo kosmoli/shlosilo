@@ -4,11 +4,12 @@
 #   make pico2      build the Rust-native board image (RP2350, flux/pico2)
 #   make pico2-uf2  build + pack the board image into a flashable UF2
 #   make host-sim   build + link the POSIX simulator (flux/host-sim)
+#   make clean-appearances  remove ignored appearance build products
 #   make test       test suite, default features
 #   make test-all   test suite, --all-features
 #   make check      clippy + embedded check gate
 
-.PHONY: forgebox pico2 pico2-uf2 host-sim test test-all check help
+.PHONY: forgebox pico2 pico2-uf2 host-sim clean-appearances test test-all check help
 
 forgebox:
 	cd flux/forgebox && bash build.sh
@@ -22,6 +23,14 @@ pico2-uf2:
 
 host-sim:
 	bash flux/host-sim/build.sh
+
+# Ignored build products must never be used as evidence of the current tree
+# (audit #16 P2-02: a stale libshlosilo.a once masked a broken host-sim
+# link). CI rebuilds all of these from a clean checkout; this target is the
+# local equivalent.
+clean-appearances:
+	rm -rf flux/forgebox/build flux/forgebox/shlosilo flux/host-sim/sim_l3
+	@echo "removed ignored appearance build products (rebuild: make forgebox | make host-sim)"
 
 test:
 	cargo test --offline --all-targets
