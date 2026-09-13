@@ -74,9 +74,12 @@ mod imp {
 
         pub fn end(self) {
             let dt = now_ms().wrapping_sub(self.start);
-            let idx = (self.stage - 1) as usize;
-            if idx < STAGE_COUNT {
-                STAGE_MS[idx].store(dt, Ordering::Relaxed);
+            // Guard before the index arithmetic: `stage == 0` would underflow
+            // (wraps in release, panics in debug). Stage ids are 1-based.
+            // See audit #15 P2-01.
+            let idx = self.stage as usize;
+            if idx > 0 && idx <= STAGE_COUNT {
+                STAGE_MS[idx - 1].store(dt, Ordering::Relaxed);
             }
         }
     }
@@ -90,9 +93,10 @@ mod imp {
     }
 
     pub fn read_stage(stage: u8) -> u32 {
-        let idx = (stage - 1) as usize;
-        if idx < STAGE_COUNT {
-            STAGE_MS[idx].load(Ordering::Relaxed)
+        // Same guard as `Mark::end`: stage 0 must not underflow (audit #15 P2-01).
+        let idx = stage as usize;
+        if idx > 0 && idx <= STAGE_COUNT {
+            STAGE_MS[idx - 1].load(Ordering::Relaxed)
         } else {
             0
         }

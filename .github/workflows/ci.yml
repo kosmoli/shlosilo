@@ -20,10 +20,38 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all -- --check
+      # Audit #15 P1-01/P1-02: the previous gate only built the default feature
+      # set, so the diagnostic-feature code paths (and their clippy lints) were
+      # never compiled. `--all-features` closes that hole.
       - name: Clippy (all targets, warnings denied)
         run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (all features, warnings denied)
+        run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Tests
         run: cargo test --all-targets
+      - name: Tests (all features)
+        run: cargo test --all-targets --all-features
+      # Audit #15 P1-02: each diagnostic feature must build on its own (host),
+      # and every FFI module must compile its no-op stubs when its feature is
+      # off (the "always links" contract).
+      - name: Feature matrix (host)
+        run: |
+          for f in device-timing generator-cache-ffi perf-bench-ffi prove-timing-ffi cn-timing-ffi tx-phase-timing-ffi; do
+            echo "::group::--features $f"
+            cargo check --features "$f"
+            echo "::endgroup::"
+          done
+          echo "::group::stub build (no features)"
+          cargo check --no-default-features
+          echo "::endgroup::"
+      - name: Embedded checks (thumbv7em)
+        run: |
+          rustup target add thumbv7em-none-eabihf
+          cargo check --lib --no-default-features --target thumbv7em-none-eabihf
+          cargo check --lib --no-default-features --target thumbv7em-none-eabihf \
+            --features device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi
+      - name: Vendor crate tests (timing hooks)
+        run: cd vendor/cryptonight && cargo test --features cn-timing --lib
 
   fuzz-smoke:
     name: Fuzz smoke (4 targets x 30s)

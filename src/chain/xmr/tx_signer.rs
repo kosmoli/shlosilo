@@ -536,7 +536,9 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     }
 
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px2.as_mut().map_or((), |p| p.end());
+    if let Some(p) = px2.as_mut() {
+        p.end();
+    }
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px3 = PhaseProbe::start(3);
     // ---- 6. prefix hash (CLSAG message additionally needs rct base + BP elements; see step 8) ----
@@ -561,14 +563,18 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         })
         .collect();
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px8.as_mut().map_or((), |p| p.end());
+    if let Some(p) = px8.as_mut() {
+        p.end();
+    }
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px9 = PhaseProbe::start(9);
     // Audit #7 Gate1 #5: commitments are public on-chain data (Pedersen commitments are broadcast with the tx and contain
     // no mask plaintext); clone is not a secret-copy problem — but the value has no consumers after this, so move it to eliminate the copy
     let bp = prove_bulletproofs_plus(bp_rng, commitments)?;
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px9.as_mut().map_or((), |p| p.end());
+    if let Some(p) = px9.as_mut() {
+        p.end();
+    }
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px11 = PhaseProbe::start(11);
     // Σ out masks: curve25519_dalek scalar field arithmetic, then converted back to monero bytes
@@ -609,7 +615,9 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     };
     let rct_base_hash = crate::encoding::keccak256::hash(&rct_base_bytes)?;
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px11.as_mut().map_or((), |p| p.end());
+    if let Some(p) = px11.as_mut() {
+        p.end();
+    }
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px10 = PhaseProbe::start(10);
     let mut bp_sig_bytes = Vec::new();
@@ -629,9 +637,13 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // Drop still erases all masks (re-review evidence: 3 kinds of early returns after into_inner skipped zeroization)
 
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px10.as_mut().map_or((), |p| p.end());
+    if let Some(p) = px10.as_mut() {
+        p.end();
+    }
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px3.as_mut().map_or((), |p| p.end());
+    if let Some(p) = px3.as_mut() {
+        p.end();
+    }
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px4 = PhaseProbe::start(4);
     // ---- 9. CLSAG per input: pseudo_mask follows the genRctSimple chain ----
@@ -678,7 +690,9 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     sum_out_masks.zeroize_now();
 
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px4.as_mut().map_or((), |p| p.end());
+    if let Some(p) = px4.as_mut() {
+        p.end();
+    }
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px5 = PhaseProbe::start(5);
     // ---- 10. official monerod wire serialization ----
@@ -696,7 +710,9 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         &pseudo_outs_arr,
     );
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px5.as_mut().map_or((), |p| p.end());
+    if let Some(p) = px5.as_mut() {
+        p.end();
+    }
     wire
 }
 

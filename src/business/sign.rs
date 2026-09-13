@@ -173,7 +173,9 @@ fn sign_xmr(
     )?;
     let unsigned_tx = deserialize_unsigned_tx(&plain)?;
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px1.as_mut().map_or((), |p| p.end());
+    if let Some(p) = px1.as_mut() {
+        p.end();
+    }
 
     // 3. Sign tx by tx (§B.5 purpose subdomains: tx-key r / BP+ / CLSAG(i) derived independently)
     //    context = keccak digest of the tx construction data (domain separation, not counted as entropy)
@@ -327,7 +329,9 @@ fn sign_xmr(
         }
 
         #[cfg(feature = "tx-phase-timing-ffi")]
-        px6.as_mut().map_or((), |p| p.end());
+        if let Some(p) = px6.as_mut() {
+            p.end();
+        }
 
         ptxs.push(PendingTx {
             tx_bytes,
@@ -363,7 +367,9 @@ fn sign_xmr(
     let encrypted =
         encrypt_signed_txset_with_chacha_key(plain_signed, &view_sec, &cn_key, &mut enc_rng)?;
     #[cfg(feature = "tx-phase-timing-ffi")]
-    px7.as_mut().map_or((), |p| p.end());
+    if let Some(p) = px7.as_mut() {
+        p.end();
+    }
 
     if output_buf.len() < encrypted.len() {
         return Err(ShlosiloError::with_context(

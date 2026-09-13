@@ -9,7 +9,11 @@
 #[no_mangle]
 pub extern "C" fn shlosilo_tx_phase_set_clock(clock_fptr: u32) {
     // SAFETY: same fptr-as-u32 contract as shlosilo_bp_timing_set_clock.
-    let f: fn() -> u32 = unsafe { core::mem::transmute(clock_fptr) };
+    // `as usize` first: a u32->fn transmute fails to compile on 64-bit hosts
+    // (E0512, pointer width differs). Device (thumbv7em) is 32-bit, host is
+    // 64-bit; the widening is lossless and the C side only ever passes a valid
+    // thumb function address on the device target.
+    let f: fn() -> u32 = unsafe { core::mem::transmute(clock_fptr as usize) };
     crate::tx_phase_hook::register_clock(f);
 }
 

@@ -13,18 +13,18 @@
 //! - **raw private key pointers are never exposed** — only public outputs (signed tx bytes / xpub)
 
 pub mod c_abi;
-#[cfg(feature = "cn-timing-ffi")]
+/// Diagnostic FFI modules. They are compiled UNCONDITIONALLY: each one carries
+/// `#[cfg(feature = ...)]` on its real implementations and `#[cfg(not(feature))]`
+/// no-op stubs, so the C host always links (the stubs' whole point). Gating the
+/// module itself would drop the stubs too, which is what the previous layout did
+/// by mistake (audit #15 P1-01).
 pub mod cn_timing_ffi;
 pub mod error_code;
 /// BP+ generator cache FFI hooks (device flash backend). See module docs.
-#[cfg(feature = "generator-cache-ffi")]
 pub mod generator_cache_ffi;
 /// Device primitive perf-bench FFI (raw per-op costs). See module docs.
-#[cfg(feature = "perf-bench-ffi")]
 pub mod perf_bench_ffi;
 /// BP+ prove-phase timing FFI (device perf decomposition). See module docs.
-#[cfg(feature = "prove-timing-ffi")]
 pub mod prove_timing_ffi;
-#[cfg(feature = "tx-phase-timing-ffi")]
 pub mod tx_phase_ffi;
 pub mod version;

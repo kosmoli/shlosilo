@@ -85,6 +85,35 @@ impl PhaseProbe {
             None => return,
         };
         let dt = now.wrapping_sub(self.t0);
-        ACC[(self.phase - 1) as usize].fetch_add(dt, Ordering::Relaxed);
+        // Guard before indexing: `phase == 0` would underflow the 1-based id
+        // (wraps in release, panics in debug). See audit #15 P2-01.
+        let idx = self.phase as usize;
+        if idx > 0 && idx <= TX_PHASES {
+            ACC[idx - 1].fetch_add(dt, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Audit #15 P2-01: `end()` must not index out of bounds for an invalid
+    /// phase id. Pre-fix it ran `ACC[(phase - 1) as usize]` directly, so phase 0
+    /// wrapped to 255 and panicked on the array bounds check — in every build,
+    /// not just overflow-checked ones.
+    ///
+    /// Single test function on purpose: these touch the `static mut` clock.
+    #[test]
+    fn probe_end_rejects_invalid_phase_ids() {
+        register_clock(|| 1000);
+        for bad in [0u8, TX_PHASES as u8 + 1, 128, 255] {
+            let mut probe = PhaseProbe::start(bad).expect("clock registered");
+            probe.end(); // must not panic
+        }
+        // A valid id still takes the accounting path.
+        let mut probe = PhaseProbe::start(1).expect("clock registered");
+        probe.end();
+        reset_all();
     }
 }

@@ -3,9 +3,27 @@
 //! Bridges the vendored monero-bulletproofs generator cache hooks to C callbacks
 //! implementing a QSPI flash backend. Same fptr-as-u32 pattern as `device_timing`.
 //!
+//! ## Integrity boundary (audit #15 P2-02)
+//!
+//! The blob's integrity (magic, length, CRC32) is verified by the C backend's
+//! `gc_load` and is deliberately NOT re-checked on the Rust side:
+//! - the backend runs in the same trust domain (same firmware image, same
+//!   process), so this is a backend contract rather than an untrusted-input
+//!   boundary;
+//! - re-computing the CRC in Rust would re-read the 256 KB blob on every boot
+//!   (~120 ms on the device) for no additional guarantee;
+//! - the device backend performs the full check (`xmr_gen_cache_flash.c`:
+//!   magic `XGC1`, length bound, CRC32) and returns NULL on any mismatch, which
+//!   routes the Rust side to the decompress-and-store path instead.
+//!
+//! A backend that violates this contract is a firmware bug, not hostile input;
+//! the returned slice is additionally length-checked here before use.
+//!
 //! C side contract:
 //! - load:  `const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len)`
-//!   Returns a pointer to [len:u32 LE][crc32:u32 LE][blob] with a valid CRC, or NULL.
+//!   Returns a pointer to [len:u32 LE][crc32:u32 LE][blob] whose storage stays
+//!   valid and immutable for the program lifetime (memory-mapped flash on the
+//!   device). Returns NULL when the slot is absent/invalid.
 //! - store: `uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
 //!                             const uint8_t *blob, uint32_t blob_len)`
 //!   Returns 0 on success, non-zero on failure (store failure is non-fatal: the cache
