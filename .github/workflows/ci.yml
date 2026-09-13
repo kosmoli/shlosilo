@@ -102,6 +102,10 @@ jobs:
           grep -q "=== all steps completed ===" /tmp/sim_l3.log
       - name: pico2 image + UF2 pack (thumbv8m)
         run: |
+          # elf2uf2-rs pulls in libudev-sys for USB autodetect; the runner
+          # image does not ship the dev package (local dev machines have it).
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libudev-dev
           cargo install elf2uf2-rs --version 2.2.0 --locked
           make pico2-uf2
           ls -la target/thumbv8m.main-none-eabihf/release/shlosilo-pico2.uf2
