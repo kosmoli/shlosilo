@@ -43,6 +43,14 @@ Output: `build/forgebox.bin` — the single-layer signed firmware to copy to the
 SD card root (recovery-mode load). `build/mh1903_full.bin` is an intermediate;
 never flash it directly, and never pad by hand (the script pads exactly once).
 
+The final **signing step is optional and local**: it runs only when the
+`forgebox` CLI is on PATH and `~/.forgebox/keys/private.pem` exists;
+otherwise the script stops after padding, prints a note, and exits
+successfully with only the unsigned intermediate in `build/`. A byte-exact
+signed image therefore depends on the local CLI + key — neither is vendored
+in the repository (deliberately: the key is a secret), so a "self-contained"
+signed build means provisioning both.
+
 ## Notes
 
 - `shlosilo/libshlosilo.a` and `shlosilo/shlosilo.h` are **not tracked**.

@@ -10,6 +10,11 @@
 #   target/.../libshlosilo.a  -> shlosilo/libshlosilo.a   (stripped)
 #   <repo root>/shlosilo.h    -> shlosilo/shlosilo.h      (after a sync gate)
 # Both are produced here from source so they can never drift from forms.
+#
+# Signing (the final step producing build/forgebox.bin) is optional and runs
+# only when the local `forgebox` CLI and ~/.forgebox/keys/private.pem exist;
+# without them the build still succeeds with the unsigned intermediate. See
+# README.md ("Build") - neither tool nor key is vendored in the repository.
 # =============================================================================
 
 set -e
@@ -89,14 +94,7 @@ build_shlosilo() {
     echo "    staticlib -> shlosilo/libshlosilo.a ($(stat -c%s "$APP_ROOT/shlosilo/libshlosilo.a") bytes)"
 
     echo "=== shlosilo C header sync gate (cbindgen regen must equal tracked) ==="
-    ( cd "$REPO_ROOT" && cbindgen --config cbindgen.toml --crate shlosilo \
-        --output "$BUILD_FOLDER/shlosilo_regen.h" ) >/dev/null
-    if ! diff -q "$BUILD_FOLDER/shlosilo_regen.h" "$REPO_ROOT/shlosilo.h" >/dev/null; then
-        echo "ERROR: tracked shlosilo.h differs from cbindgen output."
-        echo "       Regenerate and commit shlosilo.h before building this host."
-        diff "$BUILD_FOLDER/shlosilo_regen.h" "$REPO_ROOT/shlosilo.h" | head -20
-        exit 1
-    fi
+    bash "$REPO_ROOT/scripts/check_header.sh"
     cp "$REPO_ROOT/shlosilo.h" "$APP_ROOT/shlosilo/shlosilo.h"
     echo "    header OK (tracked == regen)"
 }
