@@ -2318,6 +2318,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shlosilo-host-sim"
+version = "0.5.0"
+dependencies = [
+ "shlosilo",
+]
+
+[[package]]
 name = "shlosilo-pico2"
 version = "0.1.0"
 dependencies = [

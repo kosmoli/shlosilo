@@ -13,10 +13,11 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 APP_ROOT="$(pwd)"
 REPO_ROOT="$(cd ../.. && pwd)"
 
-echo "=== shlosilo forms: cargo build --release (host) ==="
-# Host build uses the default feature set (std). The crate produces both rlib
-# and staticlib; the C simulator links the staticlib through -lshlosilo.
-( cd "$REPO_ROOT" && cargo build --release --lib )
+echo "=== shlosilo forms: cargo build -p shlosilo-host-sim --release (host) ==="
+# The host-target staticlib bundle lives in staticlib/ (the core crate itself
+# is rlib-only; each C host owns its staticlib shim). It produces
+# target/release/libshlosilo.a, which the C simulator links via -lshlosilo.
+( cd "$REPO_ROOT" && cargo build -p shlosilo-host-sim --release )
 
 echo "=== linking sim_l3 ==="
 gcc -Wall -Wextra \

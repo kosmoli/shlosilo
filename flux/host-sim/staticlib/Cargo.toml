@@ -1,0 +1,20 @@
+[package]
+name = "shlosilo-host-sim"
+version = "0.5.0"
+edition = "2021"
+publish = false
+
+# The C-host staticlib bundle for the host-sim appearance (POSIX). Symmetric to
+# flux/forgebox/staticlib: the core crate (workspace root) is rlib-only, and
+# each C host gets its own staticlib shim. This one differs in what the host
+# provides: the std runtime (System allocator + panic handler) instead of
+# firmware hooks, and critical-section via the core's host target dependency
+# (`critical-section/std`) instead of a PRIMASK impl.
+[lib]
+# Same artifact name as the forgebox shim - the two never collide because they
+# build for different targets (host triple vs thumbv7em-none-eabihf).
+name = "shlosilo"
+crate-type = ["staticlib"]
+
+[dependencies]
+shlosilo = { path = "../../..", default-features = false }
