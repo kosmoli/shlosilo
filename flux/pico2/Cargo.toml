@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 # forms core (workspace root crate). Rust-native appearance: the core is a
-# plain rlib here - pico2 owns its runtime (embedded-alloc + panic-probe;
+# plain rlib here - pico2 owns its runtime (embedded-alloc + fault.rs;
 # critical-section from embassy-rp), so no C-host hooks are involved.
 shlosilo = { path = "../..", default-features = false }
 
@@ -16,6 +16,7 @@ embassy-time = "0.5"
 embassy-futures = "0.1"
 embassy-sync = "0.8"
 cortex-m-rt = "0.7"
+cortex-m = "0.7"
 
 # USB device stack: CDC-ACM serial so the board is reachable from a host
 # (boot logs without a debug probe; the data channel for the signing flow).
@@ -25,7 +26,9 @@ log = "0.4"
 
 # runtime glue
 embedded-alloc = "0.7"
-panic-probe = { version = "1", features = ["print-defmt"] }
+# panic-probe removed: fault.rs owns the panic + hard-fault handlers so
+# crashes survive a reset and are reported over the console instead of
+# halting silently (no debug probe on this bench).
 defmt = "1"
 defmt-rtt = "1"
 static_cell = "2"

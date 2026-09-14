@@ -2,8 +2,8 @@
 //!
 //! This appearance consumes the `forms` core (the workspace root crate)
 //! directly as a Rust library: no FFI, no C host. It owns its runtime -
-//! embedded-alloc (global allocator), panic-probe (panic handler) - and uses
-//! embassy-rp's critical-section impl.
+//! embedded-alloc (global allocator), fault.rs (panic + hard-fault capture
+//! with console reporting) - and uses embassy-rp's critical-section impl.
 //!
 //! Current scope: heartbeat LED + a bidirectional USB CDC-ACM console. The
 //! console carries the version string, the on-device signing-smoke report,
@@ -15,14 +15,16 @@
 #![no_main]
 
 mod console;
+mod fault;
 mod sign_smoke;
 mod trng;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_rp::bind_interrupts;
@@ -35,7 +37,6 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb_logger::ReceiverHandler as _;
 use embedded_alloc::LlffHeap;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 /// Internal-SRAM heap sized for the small working sets: a 12.4 KiB PSBT
 /// multipart decode plus signing peaks at ~103 KiB (measured), and the
@@ -158,6 +159,109 @@ pub(crate) fn heap_peak_reset() {
         .store(HEAP.psram_live.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
+/// PSRAM status for the console report. The bring-up result used to be a
+/// boot-time log line only - emitted before USB enumerates, i.e. invisible
+/// to any host that attaches later. That made a psram bring-up failure
+/// indistinguishable from a hang on the bench; the status now lives in
+/// statics and is reported every cycle.
+///
+/// 0 = not tried; 1 = ready (heap not yet mapped, r/w untested);
+/// 2 = r/w verified, heap mapped; 3 = bring-up failed (code in STATUS_LOW);
+/// 4 = r/w test failed (first bad offset in PSRAM_RW_BAD_OFF).
+static PSRAM_STATUS: AtomicUsize = AtomicUsize::new(0);
+#[allow(dead_code)] // part of the status contract; read via render
+static PSRAM_STATUS_LOW: AtomicUsize = AtomicUsize::new(0);
+static PSRAM_RW_BAD_OFF: AtomicUsize = AtomicUsize::new(0);
+static PSRAM_BASE: AtomicUsize = AtomicUsize::new(0);
+static PSRAM_SIZE: AtomicUsize = AtomicUsize::new(0);
+static PSRAM_HEAP_READY: AtomicBool = AtomicBool::new(false);
+
+pub(crate) const PSRAM_STATUS_NOT_TRIED: usize = 0;
+pub(crate) const PSRAM_STATUS_READY: usize = 1;
+pub(crate) const PSRAM_STATUS_RW_OK: usize = 2;
+pub(crate) const PSRAM_STATUS_FAILED: usize = 3;
+pub(crate) const PSRAM_STATUS_RW_FAIL: usize = 4;
+
+/// The mapped PSRAM region (base, size), if bring-up succeeded.
+pub(crate) fn psram_region() -> Option<(usize, usize)> {
+    let base = PSRAM_BASE.load(Ordering::Relaxed);
+    if base == 0 {
+        return None;
+    }
+    Some((base, PSRAM_SIZE.load(Ordering::Relaxed)))
+}
+
+/// Record a successful bring-up (region mapped; r/w still untested).
+pub(crate) fn psram_mark_ready(base: usize, size: usize) {
+    PSRAM_BASE.store(base, Ordering::Relaxed);
+    PSRAM_SIZE.store(size, Ordering::Relaxed);
+    PSRAM_STATUS.store(PSRAM_STATUS_READY, Ordering::Relaxed);
+}
+
+/// Record a bring-up failure (code: 0 DeviceNotFound, 1 InvalidConfig,
+/// 2 SizeMismatch - see embassy_rp::psram::Error).
+pub(crate) fn psram_mark_failed(code: usize) {
+    PSRAM_STATUS_LOW.store(code, Ordering::Relaxed);
+    PSRAM_STATUS.store(PSRAM_STATUS_FAILED, Ordering::Relaxed);
+}
+
+/// Record the r/w test outcome; on success also map the heap (only verified
+/// memory is ever handed to the allocator).
+pub(crate) fn psram_mark_rw_ok() -> bool {
+    let Some((base, size)) = psram_region() else {
+        return false;
+    };
+    // SAFETY: the region is memory-mapped and the r/w test just wrote and
+    // read it back; no allocator has handed out any of it.
+    unsafe { HEAP.psram.init(base, size) };
+    PSRAM_HEAP_READY.store(true, Ordering::Relaxed);
+    PSRAM_STATUS.store(PSRAM_STATUS_RW_OK, Ordering::Relaxed);
+    true
+}
+
+/// Record an r/w test failure at the given offset.
+pub(crate) fn psram_mark_rw_fail(off: usize) {
+    PSRAM_RW_BAD_OFF.store(off, Ordering::Relaxed);
+    PSRAM_STATUS.store(PSRAM_STATUS_RW_FAIL, Ordering::Relaxed);
+}
+
+/// Is the PSRAM heap mapped (r/w verified)?
+pub(crate) fn psram_heap_ready() -> bool {
+    PSRAM_HEAP_READY.load(Ordering::Relaxed)
+}
+
+/// Render the one-line PSRAM status for the console report.
+pub(crate) fn psram_status_line(w: &mut impl core::fmt::Write) {
+    match PSRAM_STATUS.load(Ordering::Relaxed) {
+        PSRAM_STATUS_NOT_TRIED => {
+            let _ = write!(w, "[psram] not initialised");
+        }
+        PSRAM_STATUS_READY | PSRAM_STATUS_RW_OK => {
+            let base = PSRAM_BASE.load(Ordering::Relaxed);
+            let size = PSRAM_SIZE.load(Ordering::Relaxed);
+            let rw = if PSRAM_STATUS.load(Ordering::Relaxed) == PSRAM_STATUS_RW_OK {
+                "rw=ok"
+            } else {
+                "rw=untested (psramtest)"
+            };
+            let _ = write!(w, "[psram] ready {} MiB at {:#x} {rw}", size >> 20, base);
+        }
+        PSRAM_STATUS_FAILED => {
+            let code = PSRAM_STATUS_LOW.load(Ordering::Relaxed);
+            let name = match code {
+                0 => "DeviceNotFound",
+                1 => "InvalidConfig",
+                _ => "SizeMismatch",
+            };
+            let _ = write!(w, "[psram] bring-up failed: {name} (SRAM-only)");
+        }
+        _ => {
+            let off = PSRAM_RW_BAD_OFF.load(Ordering::Relaxed);
+            let _ = write!(w, "[psram] r/w test FAILED at offset {off:#x} (SRAM-only)");
+        }
+    }
+}
+
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
 });
@@ -260,11 +364,23 @@ async fn usb_console_task(driver: Driver<'static, USB>) {
 #[embassy_executor::task]
 async fn console_report_task() {
     let version = shlosilo::ffi::version::SHLOSILO_VERSION_STRING.trim_end_matches('\0');
+    // A running report task is the clean-boot milestone: re-arm the crash
+    // reset budget (see fault.rs).
+    fault::boot_ok();
     let mut tick: u32 = 0;
     loop {
         Timer::after_secs(5).await;
         tick = tick.wrapping_add(1);
         log::info!("[hb] shlosilo-pico2; {version}");
+        {
+            let mut buf = [0u8; 160];
+            let mut w = sign_smoke::BufWriter::new(&mut buf);
+            psram_status_line(&mut w);
+            log::info!("{}", w.as_str());
+        }
+        if let Some(line) = fault::report() {
+            log::info!("{line}");
+        }
         if tick.is_multiple_of(4) {
             match sign_smoke::report() {
                 Some(r) => log::info!("{r}"),
@@ -276,6 +392,10 @@ async fn console_report_task() {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // Crash record from the previous run (if the last boot died): render it
+    // before anything else, so the console report can show it.
+    fault::init();
+
     // SAFETY: runs once at startup, before any allocation happens.
     unsafe {
         HEAP.sram.init(
@@ -332,12 +452,27 @@ async fn main(spawner: Spawner) {
         Ok(psram) => {
             let base = psram.base_address() as usize;
             let size = psram.size();
-            // SAFETY: the region is now memory-mapped and writable, and no
-            // allocator has handed out any of it yet.
-            unsafe { HEAP.psram.init(base, size) };
-            info!("psram: {} MiB ready at {=usize:#x}", size >> 20, base);
+            // The heap is NOT mapped here: init() writes no memory (its
+            // state lives in .bss), but nothing has verified that the
+            // memory-mapped data path actually works. That is what the
+            // `psramtest` console command does; it maps the heap only after
+            // a live write/read-back passes. Until then, large allocations
+            // fail (and are caught by the crash recorder instead of hanging
+            // invisibly).
+            psram_mark_ready(base, size);
+            info!(
+                "psram: {} MiB mapped at {=usize:#x} (rw untested)",
+                size >> 20,
+                base
+            );
         }
         Err(e) => {
+            let code = match e {
+                embassy_rp::psram::Error::DeviceNotFound => 0,
+                embassy_rp::psram::Error::InvalidConfig => 1,
+                _ => 2,
+            };
+            psram_mark_failed(code);
             info!("psram: bring-up failed ({:?}); continuing SRAM-only", e);
         }
     }

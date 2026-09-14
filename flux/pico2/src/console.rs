@@ -22,7 +22,7 @@ extern crate alloc;
 use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_time::Instant;
+use embassy_time::{Instant, Timer};
 use embassy_usb_logger::ReceiverHandler;
 
 use shlosilo::business::sign::SignInput;
@@ -185,6 +185,8 @@ impl ConsoleState {
             b"trngemb" => return Some(parse_trng_emb(args)),
             b"xmrout" => self.cmd_xmrout(args),
             b"xmrseed" => self.cmd_xmrseed(args),
+            b"psramtest" => return Some(TrngJob::simple(JobMode::PsramTest)),
+            b"faultclr" => crate::fault::clear(),
             _ => {
                 let echo = core::str::from_utf8(cmd).unwrap_or("<non-utf8>");
                 log::info!("[err] unknown command: {echo} (try: help)");
@@ -226,6 +228,9 @@ impl ConsoleState {
         log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
         log::info!("[help]   ur:xmr-txunsigned/...  signs with TRNG entropy (deferred job;");
         log::info!("[help]                   fetch the result with xmrout)");
+        log::info!("[help]   psramtest       verify PSRAM r/w with patterns at 5 offsets;");
+        log::info!("[help]                   maps the psram heap on success");
+        log::info!("[help]   faultclr        clear the pending [crash] record");
         log::info!("[help] lines end with \\n or \\r");
     }
 
@@ -546,6 +551,8 @@ enum JobMode {
     Rst,
     /// Sign the pending XMR request (TRNG entropy + the full signing path).
     SignXmr,
+    /// Verify the PSRAM memory-mapped data path; map the heap on success.
+    PsramTest,
 }
 
 impl TrngJob {
@@ -658,6 +665,7 @@ async fn run_trng_job(job: TrngJob) {
             log_snapshot(&t.snapshot());
         }
         JobMode::SignXmr => run_sign_xmr().await,
+        JobMode::PsramTest => run_psram_test().await,
     }
 }
 
@@ -677,6 +685,63 @@ fn log_snapshot(s: &trng::RawSnapshot) {
         s.sw_reset,
         s.version
     );
+}
+
+/// Verify the PSRAM memory-mapped data path: write distinct word patterns at
+/// several offsets and read them back. Each step is logged BEFORE the access
+/// (with a drain delay), because the failure this exists to catch - the QMI
+/// bus stalling on a broken memory-mapped path - freezes the core inside the
+/// load/store: the last emitted line then names the exact op that hung.
+///
+/// On success the PSRAM heap is mapped: this is the first moment any
+/// allocator may touch the region (see main.rs).
+async fn run_psram_test() {
+    let Some((base, size)) = crate::psram_region() else {
+        log::info!("[psramtest] no mapped region (bring-up failed); nothing to test");
+        return;
+    };
+    log::info!("[psramtest] region {base:#x}+{size:#x}");
+    let offsets: [usize; 5] = [0, 2 << 20, 4 << 20, 6 << 20, size - 0x1000];
+    for &off in &offsets {
+        let seed = 0xA5A5_0000u32 ^ (off as u32).wrapping_mul(0x9E37_79B9);
+        log::info!("[psramtest] off={off:#x} write");
+        Timer::after_millis(120).await; // drain before a possibly-hanging op
+        unsafe {
+            let p = (base + off) as *mut u32;
+            for i in 0..16u32 {
+                core::ptr::write_volatile(p.add(i as usize), seed ^ i.wrapping_mul(0x0101_0101));
+            }
+        }
+        log::info!("[psramtest] off={off:#x} read");
+        Timer::after_millis(120).await;
+        let mut bad: Option<(u32, u32, u32)> = None;
+        unsafe {
+            let p = (base + off) as *mut u32;
+            for i in 0..16u32 {
+                let want = seed ^ i.wrapping_mul(0x0101_0101);
+                let got = core::ptr::read_volatile(p.add(i as usize));
+                if got != want && bad.is_none() {
+                    bad = Some((i, want, got));
+                }
+            }
+        }
+        match bad {
+            None => log::info!("[psramtest] off={off:#x} ok"),
+            Some((i, want, got)) => {
+                crate::psram_mark_rw_fail(off);
+                log::info!(
+                    "[psramtest] off={off:#x} MISMATCH word {i}: want {want:#010x} got {got:#010x}"
+                );
+                log::info!("[psramtest] FAILED; the psram heap stays unmapped (SRAM-only)");
+                return;
+            }
+        }
+    }
+    if crate::psram_mark_rw_ok() {
+        log::info!("[psramtest] ALL OK; psram heap mapped ({size:#x} bytes usable)");
+    } else {
+        log::info!("[err] psramtest: region vanished mid-test?");
+    }
 }
 
 /// Sign the pending XMR request: fetch TRNG entropy, run the full signing
@@ -710,6 +775,14 @@ async fn run_sign_xmr() {
             return;
         }
     };
+
+    // The XMR path's CN scratchpad is 2 MiB: it can only come from PSRAM,
+    // and only r/w-verified PSRAM may be handed to the allocator. Refuse
+    // early instead of tripping an allocation failure mid-flow.
+    if !crate::psram_heap_ready() {
+        log::info!("[err] xmr: psram heap not ready (run psramtest first); request dropped");
+        return;
+    }
 
     log::info!(
         "[xmr] request: enc_len={} (entropy: {})",
