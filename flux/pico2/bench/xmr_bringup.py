@@ -216,7 +216,20 @@ def main():
     # ---- step 4: feed the UR ----
     before = len(buf)
     send(ur)
-    if not wait_marker("[xmr] request:", 60, before):
+    # Crash-aware wait for the request echo: a [crash] means the device
+    # panicked in the decode/ingest path (or the request itself).
+    t = time.time()
+    got_req = False
+    while time.time() - t < 60:
+        chunk = text()[before:]
+        if "[xmr] request:" in chunk:
+            got_req = True
+            break
+        if "[crash]" in chunk:
+            time.sleep(8)
+            fail("device CRASHED while ingesting the UR (record above)", before)
+        time.sleep(0.4)
+    if not got_req:
         fail("XMR request accepted", before)
     print("  request accepted; signing (silence expected, budget "
           f"{args.timeout}s) ...", flush=True)

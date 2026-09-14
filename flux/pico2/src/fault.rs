@@ -380,9 +380,13 @@ pub fn report() -> Option<&'static str> {
     if !HAVE_RECORD.load(Ordering::Acquire) {
         return None;
     }
-    let len = unsafe { DISPLAY_LEN };
-    let buf = unsafe { &*(ptr::addr_of!(DISPLAY) as *const [u8; 224]) };
-    core::str::from_utf8(&buf[..len]).ok()
+    // Length clamped to the buffer on BOTH sides: the stored length can
+    // never index past DISPLAY. (This exact spot once had a stale fixed-size
+    // cast whose panic overwrote a real crash record - the reporter must
+    // never be able to crash.)
+    let len = unsafe { DISPLAY_LEN }.min(320);
+    let buf = unsafe { core::slice::from_raw_parts(ptr::addr_of!(DISPLAY) as *const u8, len) };
+    core::str::from_utf8(buf).ok()
 }
 
 /// Drop the pending record (`faultclr`).
