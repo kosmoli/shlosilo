@@ -38,11 +38,14 @@ use embassy_usb_logger::ReceiverHandler as _;
 use embedded_alloc::LlffHeap;
 use static_cell::StaticCell;
 
-/// Internal-SRAM heap sized for the small working sets: a 12.4 KiB PSBT
-/// multipart decode plus signing peaks at ~103 KiB (measured), and the
-/// BTC/ETH/console flows all live here. Large XMR allocations (CN's 2 MiB
-/// scratchpad, BP+ generators) go to the PSRAM region instead.
-const SRAM_HEAP_SIZE: usize = 128 * 1024;
+/// Internal-SRAM heap: small working sets (BTC/ETH/console flows) and every
+/// allocation below `PSRAM_THRESHOLD`. The XMR signing path was MEASURED to
+/// demand more than the original 128 KiB: a crash recorder run showed 93088
+/// bytes live plus a 49536-byte request routed here - 142624 total, which is
+/// 11552 bytes over the old capacity (allocation failure -> panic). Grown to
+/// 224 KiB: the measured demand plus ~81 KiB of slack, while leaving ~270 KiB
+/// of the 512 KiB SRAM for stack (embassy tasks run on the main stack).
+const SRAM_HEAP_SIZE: usize = 224 * 1024;
 static mut SRAM_HEAP_MEM: [MaybeUninit<u8>; SRAM_HEAP_SIZE] =
     [MaybeUninit::uninit(); SRAM_HEAP_SIZE];
 

@@ -110,13 +110,17 @@ The flow is deterministic (dice → exact rejection sampling, no RNG;
 BTC/ETH → RFC-6979), so no entropy source is needed for the fixture path; a
 real-device flow will use the RP2350 TRNG.
 
-Heap: 128 KiB embedded-alloc heap with live/peak counters (the `heap`
-console command; `heap reset` re-arms the peak for one operation). Measured
-on hardware (2026-09-14): boot smoke peak 649 B; ETH fixture sign peak
-388 B; the 12.4 KiB Sparrow PSBT multipart decode + sign peaks at
-**102,746 B** — over three quarters of the heap, so the XMR path's BP+
-generator allocations (~256 KiB-class) will need a larger budget or a
-different placement strategy (the next sizing item).
+Heap: dual-region global allocator. Small allocations (< 64 KiB) go to a
+224 KiB internal-SRAM heap; the rest go to the PSRAM region (8 MiB; mapped
+only after `psramtest` verifies r/w). Both heaps have live/peak counters
+(the `heap` console command; `heap reset` re-arms the peaks for one
+operation). Measured on hardware (2026-09-14): boot smoke peak 649 B; ETH
+fixture sign peak 388 B; the 12.4 KiB Sparrow PSBT multipart decode + sign
+peaks at **102,746 B**. The XMR path's sub-64 KiB working set was MEASURED
+at 93088 live + a 49536 request = 142624 B - over the original 128 KiB
+capacity (allocation failure) - which is why the SRAM heap now is 224 KiB.
+Large XMR allocations (CN scratchpad 2 MiB, BP+ generators ~256 KiB) route
+to PSRAM via the threshold.
 
 ### Bench runner
 
