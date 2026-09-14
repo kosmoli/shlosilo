@@ -662,6 +662,14 @@ uint64_t shlosilo_perf_ct_chunked(uint32_t n, uint32_t chunk, uint32_t iters);
 uint64_t shlosilo_perf_vartime_2term_fw(uint32_t iters);
 
 /**
+ * The BP+ WIP L/R call chain replicated in a bench (see
+ * monero_bulletproofs::bench_multiexp_chain): tuple Vec -> chunked
+ * multiexp wrapper -> optional INV_EIGHT + compress tail. `gen_points`
+ * selects generator-table points (in-situ source) vs the basepoint.
+ */
+uint64_t shlosilo_perf_xchain(uint32_t n, uint32_t iters, uint32_t tail, uint32_t gen_points);
+
+/**
  * C-ABI: register the millisecond clock for prove-phase timing. Call from C init
  * right after `shlosilo_timing_set_clock_fn` (same clock function address works).
  *

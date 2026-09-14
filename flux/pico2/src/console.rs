@@ -290,7 +290,7 @@ impl ConsoleState {
         );
         #[cfg(feature = "perf-bench")]
         log::info!(
-            "[help]   perfbench [name] ...  device primitive benchmarks; ctm <n> <chunk> <iters>, vt2f <iters>"
+            "[help]   perfbench [name] ...  probes; ctm <n> <chunk> <iters>, xchain <n> <iters> <tail> <gen>, vt2f <iters>"
         );
         log::info!("[help]   ur:xmr-txunsigned/...  signs with TRNG entropy (deferred job;");
         log::info!("[help]                   fetch the result with xmrout)");
@@ -615,6 +615,29 @@ impl ConsoleState {
                     "[pf] ctm n={n} chunk={c} iters={it}: {us}us total, {per_chunk}us/chunk, {per_term}us/term, dig={dig}",
                     per_chunk = us / u64::from(chunks * it),
                     per_term = us / u64::from(n * it)
+                );
+            }
+            b"xchain" => {
+                // xchain <n> <iters> <tail> <gen>: the in-situ WIP L/R
+                // call chain (tuple Vec + chunked wrapper + optional
+                // INV_EIGHT/compress tail), gen=1 for generator-table
+                // points. Compare against `ctm` for the same n.
+                let mut w = args
+                    .split(|b: &u8| b.is_ascii_whitespace())
+                    .filter(|w| !w.is_empty());
+                let _ = w.next(); // "xchain"
+                let n = parse(w.next(), 130).clamp(1, 1024);
+                let it = parse(w.next(), 1).clamp(1, 512);
+                let tail = parse(w.next(), 1) != 0;
+                let gend = parse(w.next(), 1) != 0;
+                let t0 = Instant::now();
+                let dig = pb::shlosilo_perf_xchain(n, it, tail as u32, gend as u32);
+                let us = t0.elapsed().as_micros();
+                log::info!(
+                    "[pf] xchain n={n} iters={it} tail={} gen={}: {us}us total, {per}us/call, dig={dig}",
+                    tail as u32,
+                    gend as u32,
+                    per = us / u64::from(it)
                 );
             }
             b"vt2f" => {

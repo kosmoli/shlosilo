@@ -85,6 +85,57 @@ fn multiexp_terms(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
     EdwardsPoint::multiscalar_mul(buf_scalars, buf_points)
 }
 
+/// shlosilo bench (feature `prove-timing`): replicate the WIP L/R call
+/// chain in a clean bench, so the in-situ per-round probe times can be
+/// attributed. Mirrors exactly what `weighted_inner_product` does: build a
+/// `Vec<(Scalar, EdwardsPoint)>` (the L_terms shape), run the chunked
+/// `multiexp` wrapper (this crate's monomorphization), then optionally the
+/// `* INV_EIGHT` + `compress` tail that the WIP probes include.
+///
+/// `gen_points` selects the data source: generator-table points (PSRAM
+/// heap, the in-situ source) vs the basepoint constant (the ctm bench).
+#[cfg(feature = "prove-timing")]
+pub fn bench_multiexp_chain(n: usize, iters: u32, tail: bool, gen_points: bool) -> u64 {
+    use crate::plus::{BpPlusGenerators, GeneratorsList};
+
+    let gens = BpPlusGenerators::new();
+    let mut out = [0u8; 32];
+    for it in 0..iters.max(1) {
+        let pairs: Vec<(Scalar, EdwardsPoint)> = (0..n)
+            .map(|i| {
+                let s = bench_scalar(i + (it as usize) * 9973);
+                let p = if gen_points {
+                    // The sign's reduced view: the first 128 generators.
+                    gens.generator(GeneratorsList::GBold, i % 128)
+                } else {
+                    curve25519_dalek::constants::ED25519_BASEPOINT_POINT
+                };
+                (s, p)
+            })
+            .collect();
+        let point = multiexp(&pairs);
+        let point = if tail {
+            point * monero_ed25519::Scalar::INV_EIGHT.into()
+        } else {
+            point
+        };
+        out = point.compress().to_bytes();
+    }
+    u64::from(out[0])
+}
+
+/// Deterministic full-width scalar (the in-situ magnitude class).
+#[cfg(feature = "prove-timing")]
+fn bench_scalar(seed: usize) -> Scalar {
+    let mut b = [0u8; 32];
+    let mut k = (seed as u8).wrapping_mul(31).wrapping_add(7);
+    for x in b.iter_mut() {
+        k = k.wrapping_mul(97).wrapping_add(53);
+        *x = k;
+    }
+    Scalar::from_bytes_mod_order(b)
+}
+
 pub(crate) fn multiexp_vartime(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
     let mut buf_scalars = Vec::with_capacity(pairs.len());
     let mut buf_points = Vec::with_capacity(pairs.len());

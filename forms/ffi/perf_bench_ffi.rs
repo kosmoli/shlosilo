@@ -158,3 +158,20 @@ pub extern "C" fn shlosilo_perf_vartime_2term_fw(iters: u32) -> u64 {
         0
     }
 }
+
+/// The BP+ WIP L/R call chain replicated in a bench (see
+/// monero_bulletproofs::bench_multiexp_chain): tuple Vec -> chunked
+/// multiexp wrapper -> optional INV_EIGHT + compress tail. `gen_points`
+/// selects generator-table points (in-situ source) vs the basepoint.
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
+#[no_mangle]
+pub extern "C" fn shlosilo_perf_xchain(n: u32, iters: u32, tail: u32, gen_points: u32) -> u64 {
+    #[cfg(all(feature = "perf-bench-ffi", feature = "prove-timing-ffi"))]
+    {
+        monero_bulletproofs::bench_multiexp_chain(n as usize, iters, tail != 0, gen_points != 0)
+    }
+    #[cfg(not(all(feature = "perf-bench-ffi", feature = "prove-timing-ffi")))]
+    {
+        0
+    }
+}
