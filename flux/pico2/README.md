@@ -176,6 +176,12 @@ monitor; conditioning removes the residual structure from what consumers
 see — the datasheet-sanctioned fix and the standard source → conditioner
 pattern (NIST SP 800-90B).
 
+Verified on hardware (2026-09-14, same session A/B, 512 units each):
+conditioned outputs pass the full quality suite (runs z **+1.30**, chi2
+270.7, monobit 0.55, min-entropy 7.508, no duplicates/zeros), while the
+raw stream on the same silicon still shows the clustering (runs z −11.35,
+chi2 400.6).
+
 Design consequences baked in: the source lifecycle is job-scoped (a
 per-block restart drives the block into the sticky state); a fresh start
 flushes stale status bits (a leftover EHR_VALID with zeroed data once
