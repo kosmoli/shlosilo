@@ -130,6 +130,10 @@ impl ConsoleState {
             b"heap" => self.cmd_heap(args),
             b"entropy" => self.cmd_entropy(args),
             b"trng" => return Some(parse_trng_job(args)),
+            b"trngdump" => self.cmd_trngdump(),
+            b"trngrst" => self.cmd_trngrst(),
+            b"trngprobe" => return Some(parse_trng_probe(args)),
+            b"trngemb" => return Some(parse_trng_emb(args)),
             _ => {
                 let echo = core::str::from_utf8(cmd).unwrap_or("<non-utf8>");
                 log::info!("[err] unknown command: {echo} (try: help)");
@@ -160,6 +164,10 @@ impl ConsoleState {
         );
         log::info!("[help]                   stress = sample 2; sample/chain override the config;");
         log::info!("[help]                   ends with a stats line");
+        log::info!("[help]   trngdump        raw TRNG register dump (bring-up diagnostic)");
+        log::info!("[help]   trngrst         RESETS-block cycle for the TRNG, then a dump");
+        log::info!("[help]   trngprobe [ms]  cold-start + trace every BUSY/ISR transition");
+        log::info!("[help]   trngemb [n]     read n blocks via the upstream embassy driver");
         log::info!("[help] lines end with \\n or \\r");
     }
 
@@ -186,6 +194,34 @@ impl ConsoleState {
             let (used, free, peak) = crate::heap_stats();
             log::info!("[heap] used {used} free {free} peak {peak}");
         }
+    }
+
+    /// Raw TRNG register dump (bring-up diagnostics; see trng.rs).
+    fn cmd_trngdump(&self) {
+        let s = trng::snapshot();
+        log::info!(
+            "[tdump] isr=0x{:08x} imr=0x{:08x} busy=0x{:08x} valid=0x{:08x} cfg=0x{:08x} \
+             sample={} dbg=0x{:08x} srcen=0x{:08x} acstat=0x{:08x} swrst=0x{:08x} ver=0x{:08x}",
+            s.isr,
+            s.imr,
+            s.busy,
+            s.valid,
+            s.config,
+            s.sample_cnt1,
+            s.debug_control,
+            s.source_enable,
+            s.autocorr_stat,
+            s.sw_reset,
+            s.version
+        );
+    }
+
+    /// RESETS-block cycle on demand (A/B: is the peripheral reset cycle the
+    /// thing that leaves the block in a weird state?).
+    fn cmd_trngrst(&self) {
+        trng::reset_cycle();
+        trng::stop();
+        self.cmd_trngdump();
     }
 
     fn cmd_entropy(&mut self, args: &[u8]) {
@@ -374,7 +410,7 @@ impl ReceiverHandler for CommandHandler {
         let job = CONSOLE.lock(|cell| cell.borrow_mut().feed(data));
         async move {
             if let Some(job) = job {
-                run_trng_stream(job).await;
+                run_trng_job(job).await;
             }
         }
     }
@@ -387,10 +423,22 @@ impl ReceiverHandler for CommandHandler {
 /// A deferred console job (see `handle_data`).
 #[derive(Clone, Copy)]
 struct TrngJob {
+    mode: JobMode,
     stress: bool,
     sample: Option<u32>,
     chain: Option<u8>,
+    /// Stream: block count. Probe: duration in ms. Emb: block count.
     count: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JobMode {
+    /// Our reader, streaming accepted blocks as hex.
+    Stream,
+    /// Raw busy/ISR transition trace after a cold start.
+    Probe,
+    /// The upstream embassy driver (cross-check).
+    Emb,
 }
 
 /// Parse `trng [stress] [sample=<n>] [chain=<0-4>] [nblocks]`;
@@ -416,6 +464,7 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
         }
     }
     TrngJob {
+        mode: JobMode::Stream,
         stress,
         sample,
         chain,
@@ -423,13 +472,119 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
     }
 }
 
-/// Stream `count` TRNG blocks as hex lines, then a stats summary.
+/// Parse `trngprobe [ms]` (default 60 ms): cold-start the block and trace
+/// every BUSY/ISR transition.
+fn parse_trng_probe(args: &[u8]) -> TrngJob {
+    let ms = core::str::from_utf8(trim_ascii(args))
+        .unwrap_or("")
+        .parse::<u32>()
+        .unwrap_or(60)
+        .clamp(1, 5000);
+    TrngJob {
+        mode: JobMode::Probe,
+        stress: false,
+        sample: None,
+        chain: None,
+        count: ms,
+    }
+}
+
+/// Parse `trngemb [n]` (default 4): read n blocks through the upstream
+/// embassy driver, with per-block timing.
+fn parse_trng_emb(args: &[u8]) -> TrngJob {
+    let n = core::str::from_utf8(trim_ascii(args))
+        .unwrap_or("")
+        .parse::<u32>()
+        .unwrap_or(4)
+        .clamp(1, 256);
+    TrngJob {
+        mode: JobMode::Emb,
+        stress: false,
+        sample: None,
+        chain: None,
+        count: n,
+    }
+}
+
+/// Dispatch a deferred TRNG job.
+async fn run_trng_job(job: TrngJob) {
+    match job.mode {
+        JobMode::Stream => run_trng_stream(job).await,
+        JobMode::Probe => run_trng_probe(job).await,
+        JobMode::Emb => run_trng_emb(job).await,
+    }
+}
+
+/// Trace BUSY/ISR transitions after a cold start (bring-up diagnostic: shows
+/// exactly when the state machine latches, and whether it ever generates).
+async fn run_trng_probe(job: TrngJob) {
+    trng::cold_start();
+    let t0 = Instant::now();
+    let mut last = (trng::busy_flag(), trng::isr_raw());
+    log::info!("[tprobe] begin busy={} isr=0x{:08x}", last.0, last.1);
+    let mut transitions: u32 = 0;
+    loop {
+        let now = Instant::now();
+        if now - t0 >= embassy_time::Duration::from_millis(job.count as u64) {
+            break;
+        }
+        let cur = (trng::busy_flag(), trng::isr_raw());
+        if cur != last {
+            transitions += 1;
+            log::info!(
+                "[tprobe] +{}us busy={} isr=0x{:08x}",
+                (now - t0).as_micros(),
+                cur.0,
+                cur.1
+            );
+            last = cur;
+        }
+        yield_now().await;
+    }
+    let now = Instant::now();
+    let cur = (trng::busy_flag(), trng::isr_raw());
+    log::info!(
+        "[tprobe] end +{}us busy={} isr=0x{:08x} transitions={}",
+        (now - t0).as_micros(),
+        cur.0,
+        cur.1,
+        transitions
+    );
+    trng::stop();
+}
+
+/// Cross-check through the upstream embassy driver (see EMB_TRNG in main).
+async fn run_trng_emb(job: TrngJob) {
+    if !crate::emb_trng_ready() {
+        log::info!("[temb] upstream driver not initialised");
+        return;
+    }
+    log::info!("[temb] upstream embassy driver, {} blocks", job.count);
+    let mut buf = [0u8; trng::BLOCK_LEN];
+    let mut hex = [0u8; trng::BLOCK_LEN * 2];
+    for i in 0..job.count {
+        let t0 = Instant::now();
+        crate::emb_trng_fill(&mut buf);
+        let us = (Instant::now() - t0).as_micros();
+        log::info!(
+            "[temb] #{} {} {}us",
+            i,
+            sign_smoke::to_hex(&buf, &mut hex),
+            us
+        );
+        yield_now().await;
+    }
+    log::info!("[temb] done");
+}
+
+/// Stream `count` blocks through our reader as hex lines, then a stats
+/// summary.
 ///
 /// Config precedence: `stress` (sample 2, failure-prone) > explicit
 /// `sample=`/`chain=` overrides > the datasheet-recommended defaults.
 /// The overrides exist for characterisation sweeps on the bench (find the
-/// config where the hardware entropy checks stop failing); the job restores
-/// the defaults on exit either way.
+/// config where the hardware entropy checks behave); the job restores the
+/// defaults on exit either way.
 async fn run_trng_stream(job: TrngJob) {
     let sample = if job.stress {
         2

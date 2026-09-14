@@ -303,3 +303,75 @@ fn read_ehr(regs: &TrngRegs, block: &mut [u8; BLOCK_LEN]) {
         block[i * 4..i * 4 + 4].copy_from_slice(&reg.read().to_ne_bytes());
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Bring-up diagnostics (bench firmware only)
+//
+// The v2 reader showed states that do not match the datasheet's documented
+// behaviour (instant "autocorrelation" failures with a zeroed hardware
+// statistics counter; "successful" blocks far faster than the datasheet's
+// generation-time floor). These accessors expose the raw state machine so
+// the fault is attributed at register level instead of inferred.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Raw register snapshot (all values as read from hardware).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RawSnapshot {
+    pub isr: u32,
+    pub imr: u32,
+    pub busy: u32,
+    pub valid: u32,
+    pub config: u32,
+    pub sample_cnt1: u32,
+    pub debug_control: u32,
+    pub source_enable: u32,
+    pub autocorr_stat: u32,
+    pub sw_reset: u32,
+    pub version: u32,
+}
+
+pub fn snapshot() -> RawSnapshot {
+    let regs = regs();
+    RawSnapshot {
+        isr: regs.rng_isr().read().0,
+        imr: regs.rng_imr().read().0,
+        busy: regs.trng_busy().read().0,
+        valid: regs.trng_valid().read().0,
+        config: regs.trng_config().read().0,
+        sample_cnt1: regs.sample_cnt1().read(),
+        debug_control: regs.trng_debug_control().read().0,
+        source_enable: regs.rnd_source_enable().read().0,
+        autocorr_stat: regs.autocorr_statistic().read().0,
+        sw_reset: regs.trng_sw_reset().read().0,
+        version: regs.rng_version().read().0,
+    }
+}
+
+/// TRNG_BUSY flag alone (hot-path probe point).
+pub fn busy_flag() -> bool {
+    regs().trng_busy().read().trng_busy()
+}
+
+/// RNG_ISR raw value (hot-path probe point).
+pub fn isr_raw() -> u32 {
+    regs().rng_isr().read().0
+}
+
+/// The RESETS-block cycle from `init()`, on demand (A/B probe: is the
+/// peripheral-level reset cycle what leaves the block in a weird state?).
+pub fn reset_cycle() {
+    pac::RESETS.reset().modify(|v| v.set_trng(true));
+    let _ = pac::RESETS.reset().read();
+    pac::RESETS.reset().modify(|v| v.set_trng(false));
+    while !pac::RESETS.reset_done().read().trng() {}
+    SOURCE_RUNNING.store(false, Ordering::Relaxed);
+}
+
+/// Cold start: stop, re-apply the configuration, enable the source. The
+/// probe uses this to watch the state machine from a defined start.
+pub fn cold_start() {
+    stop();
+    let regs = regs();
+    write_config(&regs);
+    start_source(&regs);
+}

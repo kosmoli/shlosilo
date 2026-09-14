@@ -118,6 +118,36 @@ bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
 });
 
+bind_interrupts!(struct TrngIrqs {
+    TRNG_IRQ => embassy_rp::trng::InterruptHandler<embassy_rp::peripherals::TRNG>;
+});
+
+/// The upstream embassy TRNG driver, kept side by side with our own reader
+/// for cross-checking on the bench: if the authoritative driver behaves
+/// differently on the same silicon, the fault is in our reader (or in the
+/// state our bring-up leaves the block in); if it behaves the same, the
+/// fault is in the hardware/configuration understanding.
+static EMB_TRNG: embassy_sync::blocking_mutex::Mutex<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    core::cell::RefCell<Option<embassy_rp::trng::Trng<'static, embassy_rp::peripherals::TRNG>>>,
+> = embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new(None));
+
+/// Read `dest.len()` bytes via the upstream embassy driver (blocking).
+/// Panics inside embassy's wait path kill the firmware (panic = abort) -
+/// which is itself a test result for the bench session.
+pub(crate) fn emb_trng_fill(dest: &mut [u8]) {
+    EMB_TRNG.lock(|cell| {
+        if let Some(t) = cell.borrow_mut().as_mut() {
+            t.blocking_fill_bytes(dest);
+        }
+    });
+}
+
+/// Is the upstream driver initialised (its `new` was called)?
+pub(crate) fn emb_trng_ready() -> bool {
+    EMB_TRNG.lock(|cell| cell.borrow().is_some())
+}
+
 /// USB console task: enumerates as a CDC-ACM serial port. `log!` records go
 /// out over serial; `console::CommandHandler` processes incoming lines (the
 /// bench command channel).
@@ -206,6 +236,15 @@ async fn main(spawner: Spawner) {
 
     // Bring up the hardware TRNG (checked path; see trng.rs for the design).
     trng::init();
+
+    // Side-by-side upstream driver for bench cross-checks (see EMB_TRNG).
+    EMB_TRNG.lock(|cell| {
+        *cell.borrow_mut() = Some(embassy_rp::trng::Trng::new(
+            p.TRNG,
+            TrngIrqs,
+            embassy_rp::trng::Config::default(),
+        ));
+    });
 
     let driver = Driver::new(p.USB, Irqs);
     // Each task pool holds one slot, so these first spawns cannot fail.
