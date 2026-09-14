@@ -5,8 +5,13 @@ Lesson from v1: the transcript must survive the run even when the device
 dies mid-flow - this script appends every received chunk to a transcript
 file immediately, so a frozen device still leaves the full evidence.
 
+Requires the bench build (`make pico2-bench-uf2`): `entropy` / `xmrseed`
+below are bench-only commands (audit #17).
+
 Flow:
-  0. attach; dump 8 s                  ([hb] liveness; [psram]/[crash] lines)
+  0. attach; dump 8 s; `version`       (build-flavor gate: the bench build is
+                                       required - entropy/xmrseed below are
+                                       bench-only commands, audit #17)
   1. psramtest                         (write/read-back at 5 offsets; maps
                                        the psram heap on success)
   2. entropy <hex>                     (session wallet = smoke idx12)
@@ -188,6 +193,22 @@ def main():
         stop.set()
         transcript.close()
         sys.exit(1)
+
+    # ---- step 0: build flavor ----
+    # `entropy` / `xmrseed` below are bench-only commands (audit #17): the
+    # board must run the bench build.
+    before = len(buf)
+    send("version")
+    if not wait_marker("[ver]", 10, before):
+        fail("version (build flavor)", before)
+    fm = re.search(r"\[ver\].*?build=(\w+)", text()[before:])
+    if not fm or fm.group(1) != "bench":
+        print(f"\n### ABORT: board build={fm.group(1) if fm else 'unknown'}; "
+              "this driver needs the bench build: make pico2-bench-uf2",
+              flush=True)
+        stop.set()
+        transcript.close()
+        sys.exit(2)
 
     # ---- step 1: psramtest ----
     before = len(buf)

@@ -9,6 +9,10 @@ Covers every path the lock refactor touched:
   ETH fixture UR          - signing path regression (must match host oracle)
 
 Exit 0 = all smoke checks passed.
+
+Requires the bench build (`make pico2-bench-uf2`): trngdump / trng are
+bench-only commands (audit #17); this script aborts on a production build
+instead of failing them confusingly.
 """
 import os
 import re
@@ -104,6 +108,18 @@ def main():
     ok = wait_marker("[ver]", 10, before)
     m = re.search(r"\[ver\] (v[\w.+-]+) \(cabi (v[\w.+-]+)\)", text()[before:])
     check("console: version", ok and bool(m), (m.group(1) if m else "no [ver] line"))
+
+    # 1b. build flavor: trngdump / trng below only exist in bench builds
+    # (audit #17); abort clearly instead of failing them one by one.
+    fm = re.search(r"\[ver\].*?build=(\w+)", text()[before:])
+    build = fm.group(1) if fm else "unknown"
+    if build != "bench":
+        print(f"ABORT: board build={build}; this smoke needs the bench build "
+              "(make pico2-bench-uf2)")
+        stop.set()
+        th.join(timeout=2)
+        os.close(fd)
+        sys.exit(2)
 
     # 2. heap
     send("heap")

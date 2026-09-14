@@ -109,3 +109,10 @@ jobs:
           cargo install elf2uf2-rs --version 2.2.0 --locked
           make pico2-uf2
           ls -la target/thumbv8m.main-none-eabihf/release/shlosilo-pico2.uf2
+      # Audit #17 P1-01: the fixed-entropy XMR command (xmrseed), the
+      # test-vector mnemonic loader (entropy) and the TRNG diagnostics are
+      # bench-only; production images must not contain them. Builds both
+      # flavors and asserts the absence/presence split (with a positive
+      # control on the bench build).
+      - name: pico2 build flavors (fixed entropy is bench-only)
+        run: bash scripts/check_pico2_flavors.sh

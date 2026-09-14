@@ -26,6 +26,9 @@ record. `--stress` lowers the sample count to a failure-prone setting;
 `--sample=`/`--chain=` sweep the characterisation knobs (the firmware's
 measured operating point is chain 4 / sample 200 - see flux/pico2/README).
 
+Requires the bench build (`make pico2-bench-uf2`): the `trng` command is
+bench-only (audit #17).
+
 Usage:
     python3 trng_test.py [--count 1024] [--chunk 64] [--stress]
                          [--sample N] [--chain 0-4] [--timeout MS]
@@ -149,6 +152,19 @@ def main():
 
     def send(cmd):
         os.write(fd, (cmd + "\n").encode())
+
+    # Build-flavor gate: the `trng` command is bench-only (audit #17).
+    send("version")
+    probe_deadline = time.time() + 10
+    while "[ver]" not in text() and time.time() < probe_deadline:
+        time.sleep(0.2)
+    fm = re.search(r"\[ver\].*?build=(\w+)", text())
+    if not fm or fm.group(1) != "bench":
+        stop.set()
+        th.join(timeout=2)
+        os.close(fd)
+        sys.exit(f"ABORT: board build={fm.group(1) if fm else 'unknown'}; "
+                 "this script needs the bench build (make pico2-bench-uf2)")
 
     opts = ""
     if args.stress:

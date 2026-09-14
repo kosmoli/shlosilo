@@ -18,6 +18,15 @@ python3 pack_uf2.py       # ELF -> RP2350-correct UF2 (see below)
 
 (Or `make pico2` / `make pico2-uf2` from the repository root.)
 
+Two build flavors (audit #17): **production** (default; `make pico2` /
+`make pico2-uf2`) and **bench** (`make pico2-bench` / `make pico2-bench-uf2`,
+i.e. `cargo build --release --features bench`). The `bench` feature adds the
+console's bench-only surface (below: `xmrseed`, `entropy`, the TRNG
+diagnostic commands); production images must not contain it, and
+`scripts/check_pico2_flavors.sh` (CI-gated; also `make pico2-check-flavors`)
+asserts the split. The flavor of a flashed board is visible as
+`build=production` / `build=bench` on the `version` line and every heartbeat.
+
 `pack_uf2.py` post-processes the elf2uf2-rs output: it retags every block to
 the rp2350-arm-s family (0xe48bff59 — the tool emits the RP2040 ID, which the
 RP2350 bootrom rejects) and prepends the RP2350-E10 errata workaround block
@@ -52,22 +61,24 @@ within 0.5 s of the node appearing, with ModemManager stopped, saw none of
 it; live-cadence output always arrived). The boot banner is kept as a
 best-effort first record but nothing depends on it.
 
-### Console commands (bench channel)
+### Console commands
 
-The console is bidirectional: send ASCII lines (`\n` or `\r` terminates):
+The console is bidirectional: send ASCII lines (`\n` or `\r` terminates).
+Commands marked *(bench)* exist only in bench builds (`bench` feature,
+audit #17) - production builds compile them out:
 
 - `help` — command list
 - `version` — version + C-ABI version
 - `smoke` — print the boot signing-smoke report (same as the 20 s replay)
 - `heap [reset]` — allocator used/free/peak; `reset` re-arms the peak
   watermark for measuring one operation
-- `entropy <hex>` — set the session mnemonic from test-vector entropy
-  (16/20/24/28/32 bytes → 12/15/18/21/24 words); default = the built-in
-  dice fixture (the smoke wallet)
+- `entropy <hex>` *(bench)* — set the session mnemonic from test-vector
+  entropy (16/20/24/28/32 bytes → 12/15/18/21/24 words); default = the
+  built-in dice fixture (the smoke wallet)
 - `ur:<type>/<body>` — a single-frame UR is decoded and signed immediately
 - `ur:<type>/<n>-<m>/<body>` — multipart fragments, fed in any order; the
   payload is signed once the session completes
-- `trng [stress] [sample=<n>] [chain=<0-4>] [timeout=<ms>] [nblocks]` —
+- `trng [stress] [sample=<n>] [chain=<0-4>] [timeout=<ms>] [nblocks]` *(bench)* —
   read `nblocks` TRNG blocks (24 B each, default 64, max 4096) and stream
   them as hex; ends with a stats line (retry counters, autocorr statistic,
   per-block timing); `stress` = sample count 2, `sample=`/`chain=`/`timeout=`
@@ -75,10 +86,11 @@ The console is bidirectional: send ASCII lines (`\n` or `\r` terminates):
 
 Signing prints `[sign] <type> ok: <n> bytes sha256=<hex>`, plus
 `[sign] <type> hex: <hex>` when the output is ≤128 bytes (covers the ETH
-fixture). This is a bench channel on the bring-up firmware, not a
-production input path: production appearances take inputs via QR/dice with
-on-device confirmation; `entropy` loads test key material by the same
-reasoning.
+fixture). The channel is a bring-up surface, not a production input path:
+production appearances take inputs via QR/dice with on-device confirmation.
+`xmrseed` (fixed XMR entropy) and `entropy` (test key material) inject
+entropy for the bench and are compiled out of production images entirely
+(audit #17).
 
 Host-side notes (Linux):
 - `99-shlosilo-pico2.rules` (this directory; installed to
@@ -131,7 +143,8 @@ in SRAM now.
 
 `bench/run_bench.py` drives the channel end to end and checks the board's
 output against the host-pinned values (ETH full hex + sha256; Sparrow
-length + sha256):
+length + sha256). It requires the bench build (`make pico2-bench-uf2`): the
+Sparrow session uses the bench-only `entropy` command.
 
 ```sh
 cargo test --release --test pico2_smoke_parity -- --ignored --nocapture   # fixtures -> /tmp
@@ -215,7 +228,7 @@ cycle is sub-millisecond, so attempt counts expire in tens of milliseconds
 while a stressed block may need seconds; the reader awaits between retry
 cycles so the executor (heartbeats, USB) keeps running.
 
-On the bench channel:
+On the bench channel (bench builds only):
 
 - `trng <n>` — raw blocks (source diagnostics);
 - `trng cond <n>` — conditioned 32-byte outputs (consumer path).

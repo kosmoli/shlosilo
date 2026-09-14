@@ -32,3 +32,13 @@ embedded-alloc = "0.7"
 defmt = "1"
 defmt-rtt = "1"
 static_cell = "2"
+
+[features]
+# Bench-only console surface (audit #17 P1-01). Enables the commands that
+# inject entropy or load test key material, and the TRNG diagnostics:
+# `xmrseed` (fixed XMR entropy, for byte-exact host A/B), `entropy`
+# (test-vector mnemonic) and `trng`/`trngdump`/`trngrst`/`trngprobe`/
+# `trngemb`. Production builds (`make pico2` / `make pico2-uf2`) do not
+# compile any of it - the fixed-entropy path must not exist in production
+# images. Bench build: `make pico2-bench-uf2`. See src/console.rs.
+bench = []

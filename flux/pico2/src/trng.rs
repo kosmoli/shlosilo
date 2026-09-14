@@ -184,31 +184,37 @@ impl Trng {
         regs.sample_cnt1().write(|w| *w = self.sample);
     }
 
-    /// Sample-count override (characterisation sweeps).
+    /// Sample-count override (characterisation sweeps; bench builds only).
+    #[cfg(feature = "bench")]
     pub fn set_sample_count(&mut self, n: u32) {
         self.sample = n;
         regs().sample_cnt1().write(|w| *w = n);
     }
 
-    /// ROSC inverter-chain-length override (0..=4).
+    /// ROSC inverter-chain-length override (0..=4; bench builds only).
+    #[cfg(feature = "bench")]
     pub fn set_chain_len(&mut self, len: u8) {
         let len = len.min(4);
         self.chain = len;
         regs().trng_config().write(|w| w.set_rnd_src_sel(len));
     }
 
-    /// Restore the measured operating point.
+    /// Restore the measured operating point (bench builds only).
+    #[cfg(feature = "bench")]
     pub fn restore_default_config(&mut self) {
         self.set_sample_count(DEFAULT_SAMPLE_COUNT);
         self.set_chain_len(DEFAULT_CHAIN_LEN);
     }
 
-    /// RNG_VERSION register (IP revision).
+    /// RNG_VERSION register (IP revision; bench builds only).
+    #[cfg(feature = "bench")]
     pub fn version(&self) -> u32 {
         regs().rng_version().read().0
     }
 
-    /// AUTOCORR_STATISTIC register: (fails, trys) since the last write to it.
+    /// AUTOCORR_STATISTIC register: (fails, trys) since the last write to
+    /// it (bench builds only).
+    #[cfg(feature = "bench")]
     pub fn autocorr_statistic(&self) -> (u8, u16) {
         let raw = regs().autocorr_statistic().read().0;
         (((raw >> 14) & 0xff) as u8, (raw & 0x3fff) as u16)
@@ -409,7 +415,9 @@ impl Trng {
 
     // ── bring-up diagnostics (bench firmware) ──
 
-    /// Raw register snapshot (all values as read from hardware).
+    /// Raw register snapshot (all values as read from hardware; bench
+    /// builds only).
+    #[cfg(feature = "bench")]
     pub fn snapshot(&self) -> RawSnapshot {
         let regs = regs();
         RawSnapshot {
@@ -427,17 +435,21 @@ impl Trng {
         }
     }
 
-    /// TRNG_BUSY flag alone (hot-path probe point).
+    /// TRNG_BUSY flag alone (hot-path probe point; bench builds only).
+    #[cfg(feature = "bench")]
     pub fn busy_flag(&self) -> bool {
         regs().trng_busy().read().trng_busy()
     }
 
-    /// RNG_ISR raw value (hot-path probe point).
+    /// RNG_ISR raw value (hot-path probe point; bench builds only).
+    #[cfg(feature = "bench")]
     pub fn isr_raw(&self) -> u32 {
         regs().rng_isr().read().0
     }
 
-    /// The RESETS-block cycle from `init()`, on demand (A/B probe).
+    /// The RESETS-block cycle from `init()`, on demand (A/B probe; bench
+    /// builds only).
+    #[cfg(feature = "bench")]
     pub fn reset_cycle(&mut self) {
         pac::RESETS.reset().modify(|v| v.set_trng(true));
         let _ = pac::RESETS.reset().read();
@@ -446,7 +458,9 @@ impl Trng {
         self.source_running = false;
     }
 
-    /// Cold start: stop, re-apply the configuration, enable the source.
+    /// Cold start: stop, re-apply the configuration, enable the source
+    /// (bench builds only).
+    #[cfg(feature = "bench")]
     pub fn cold_start(&mut self) {
         self.stop();
         let regs = regs();
@@ -455,7 +469,9 @@ impl Trng {
     }
 }
 
-/// Raw register snapshot (all values as read from hardware).
+/// Raw register snapshot (all values as read from hardware; bench builds
+/// only).
+#[cfg(feature = "bench")]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RawSnapshot {
     pub isr: u32,

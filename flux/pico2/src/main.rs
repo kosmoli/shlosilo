@@ -7,9 +7,10 @@
 //!
 //! Current scope: heartbeat LED + a bidirectional USB CDC-ACM console. The
 //! console carries the version string, the on-device signing-smoke report,
-//! and a bench command channel (test fixtures in over serial, results out -
-//! see console.rs). defmt/RTT stays attached in parallel for probe
-//! debugging.
+//! and a command channel (test fixtures in over serial, results out - see
+//! console.rs): the entropy-injecting and TRNG-diagnostic commands are
+//! compiled in only for bench builds (`bench` feature, audit #17).
+//! defmt/RTT stays attached in parallel for probe debugging.
 
 #![no_std]
 #![no_main]
@@ -394,6 +395,7 @@ bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
 });
 
+#[cfg(feature = "bench")]
 bind_interrupts!(struct TrngIrqs {
     TRNG_IRQ => embassy_rp::trng::InterruptHandler<embassy_rp::peripherals::TRNG>;
 });
@@ -408,7 +410,8 @@ bind_interrupts!(struct TrngIrqs {
 /// it initialises and configures the same peripheral with its own writable
 /// config, so it must not run concurrently with singleton consumers. The
 /// bench serializes console commands, which is the only thing that uses
-/// this; production firmware deletes it.
+/// this; production images do not compile it (audit #17).
+#[cfg(feature = "bench")]
 static EMB_TRNG: embassy_sync::blocking_mutex::Mutex<
     embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
     core::cell::RefCell<Option<embassy_rp::trng::Trng<'static, embassy_rp::peripherals::TRNG>>>,
@@ -417,6 +420,7 @@ static EMB_TRNG: embassy_sync::blocking_mutex::Mutex<
 /// Read `dest.len()` bytes via the upstream embassy driver (blocking).
 /// Panics inside embassy's wait path kill the firmware (panic = abort) -
 /// which is itself a test result for the bench session.
+#[cfg(feature = "bench")]
 pub(crate) fn emb_trng_fill(dest: &mut [u8]) {
     EMB_TRNG.lock(|cell| {
         if let Some(t) = cell.borrow_mut().as_mut() {
@@ -426,6 +430,7 @@ pub(crate) fn emb_trng_fill(dest: &mut [u8]) {
 }
 
 /// Is the upstream driver initialised (its `new` was called)?
+#[cfg(feature = "bench")]
 pub(crate) fn emb_trng_ready() -> bool {
     EMB_TRNG.lock(|cell| cell.borrow().is_some())
 }
@@ -473,7 +478,10 @@ async fn usb_console_task(driver: Driver<'static, USB>) {
         crate::console::CommandHandler
     );
 
-    log::info!("shlosilo-pico2 alive; {version}");
+    log::info!(
+        "shlosilo-pico2 alive; {version} (build={})",
+        crate::console::BUILD_FLAVOR
+    );
 
     // On-device signing smoke (fixture parity with flux/host-sim/sim_l3.c):
     // compute once, store the report; `console_report_task` serves it on a
@@ -499,7 +507,10 @@ async fn console_report_task() {
     loop {
         Timer::after_secs(5).await;
         tick = tick.wrapping_add(1);
-        log::info!("[hb] shlosilo-pico2; {version}");
+        log::info!(
+            "[hb] shlosilo-pico2; {version} (build={})",
+            crate::console::BUILD_FLAVOR
+        );
         {
             let mut buf = [0u8; 160];
             let mut w = sign_smoke::BufWriter::new(&mut buf);
@@ -608,6 +619,9 @@ async fn main(spawner: Spawner) {
     trng::instance().lock().await.init();
 
     // Side-by-side upstream driver for bench cross-checks (see EMB_TRNG).
+    // Bench builds only: it bypasses the trng::instance() single-owner
+    // discipline, so production images do not contain it (audit #17).
+    #[cfg(feature = "bench")]
     EMB_TRNG.lock(|cell| {
         *cell.borrow_mut() = Some(embassy_rp::trng::Trng::new(
             p.TRNG,

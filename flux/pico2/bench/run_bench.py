@@ -15,6 +15,9 @@ host-pinned values:
   - Sparrow 12.4 KiB PSBT as 32 multipart fragments -> signed PSBT
     (length + sha256)
 
+Requires the bench build (`make pico2-bench-uf2`): the Sparrow session
+uses the bench-only `entropy` command (audit #17).
+
 Usage:  python3 run_bench.py [--dev /dev/ttyACM0] [--log /tmp/pico2-bench-run.log]
 Exit code 0 = all checks passed.
 """
@@ -111,6 +114,18 @@ def main():
     time.sleep(3)  # drain boot output
     send("version")
     time.sleep(0.4)
+    # Build-flavor gate: the Sparrow session below uses the bench-only
+    # `entropy` command (audit #17); require the bench build.
+    probe_deadline = time.time() + 10
+    while "[ver]" not in buf.decode(errors="replace") and time.time() < probe_deadline:
+        time.sleep(0.2)
+    fm = re.search(r"\[ver\].*?build=(\w+)", buf.decode(errors="replace"))
+    if not fm or fm.group(1) != "bench":
+        stop.set()
+        th.join(timeout=2)
+        os.close(fd)
+        sys.exit(f"ABORT: board build={fm.group(1) if fm else 'unknown'}; "
+                 "this bench runner needs the bench build: make pico2-bench-uf2")
     send("heap reset")
     time.sleep(0.4)
 

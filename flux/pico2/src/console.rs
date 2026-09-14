@@ -7,14 +7,22 @@
 //! signet PSBT) reaches the board before a QR scanner exists.
 //!
 //! NOT a production input path: production appearances take inputs via QR /
-//! dice with on-device confirmation. This channel exists on the bench
-//! firmware so the host can drive exact test vectors; the same reasoning
-//! applies to `entropy`, which loads test key material.
+//! dice with on-device confirmation.
+//!
+//! Bench-only surface (audit #17 P1-01): the commands that inject entropy or
+//! load test key material, or poke the TRNG, are gated behind the `bench`
+//! cargo feature and are NOT COMPILED into production images - `xmrseed`
+//! (fixed XMR entropy), `entropy` (test-vector mnemonic) and the TRNG
+//! diagnostic family (`trng`, `trngdump`, `trngrst`, `trngprobe`,
+//! `trngemb`). Production keeps the UR input channel and the status
+//! commands; its identity is visible as `build=production` on `version` and
+//! on the heartbeat line.
 //!
 //! Protocol: ASCII lines (`\n` or `\r` terminates; `\r\n` yields one line).
 //! Responses are `log` records on the same port.
 
 use core::cell::RefCell;
+#[cfg(feature = "bench")]
 use core::fmt::Write as _;
 
 extern crate alloc;
@@ -33,8 +41,12 @@ use shlosilo::ur::ur_decode;
 use shlosilo::ur::ur_encode::UrTypeTag;
 use shlosilo::ur::ur_multipart::UrMultipartDecoder;
 
-use crate::sign_smoke::{self, BufWriter};
-use crate::trng::{self, TrngError, TrngStats};
+use crate::sign_smoke;
+#[cfg(feature = "bench")]
+use crate::sign_smoke::BufWriter;
+#[cfg(feature = "bench")]
+use crate::trng::TrngError;
+use crate::trng::{self, TrngStats};
 
 /// Longest accepted input line: covers a single-frame UR (UR_URI_MAX_LEN =
 /// 8192) and every multipart fragment (MULTIPART_FRAME_MAX_LEN is larger,
@@ -53,6 +65,15 @@ const XMR_OUT_CAP: usize = 8 * 1024;
 /// purpose-separated RNG stream, so conditioning plus hashing absorbs any
 /// source bias).
 const XMR_ENTROPY_LEN: usize = 64;
+
+/// Build flavor (audit #17): `bench` when the bench-only console surface is
+/// compiled in, `production` otherwise. Carried by `version` and every
+/// heartbeat line so a flashed board is identifiable at a glance.
+pub(crate) const BUILD_FLAVOR: &str = if cfg!(feature = "bench") {
+    "bench"
+} else {
+    "production"
+};
 
 /// Session state for the command channel.
 struct ConsoleState {
@@ -78,8 +99,9 @@ struct ConsoleState {
     xmr_pending: Option<alloc::vec::Vec<u8>>,
     /// Fixed-entropy override for XMR (`xmrseed <hex>`): when set, the next
     /// XMR job uses this instead of the TRNG, enabling a byte-exact A/B
-    /// against a host recomputation. Bench-only; the production path is
-    /// the TRNG.
+    /// against a host recomputation. Bench-build only (audit #17): the
+    /// field does not exist in production images.
+    #[cfg(feature = "bench")]
     xmr_seed: Option<([u8; 64], usize)>,
     /// Last signed XMR blob, retrievable via `xmrout <hex_off> <hex_len>`.
     xmr_out: [u8; XMR_OUT_CAP],
@@ -101,6 +123,7 @@ impl ConsoleState {
             session: None,
             decoder: None,
             xmr_pending: None,
+            #[cfg(feature = "bench")]
             xmr_seed: None,
             xmr_out: [0u8; XMR_OUT_CAP],
             xmr_out_len: 0,
@@ -177,13 +200,20 @@ impl ConsoleState {
             b"version" => self.cmd_version(),
             b"smoke" => self.cmd_smoke(),
             b"heap" => self.cmd_heap(args),
+            #[cfg(feature = "bench")]
             b"entropy" => self.cmd_entropy(args),
+            #[cfg(feature = "bench")]
             b"trng" => return Some(parse_trng_job(args)),
+            #[cfg(feature = "bench")]
             b"trngdump" => return Some(TrngJob::simple(JobMode::Dump)),
+            #[cfg(feature = "bench")]
             b"trngrst" => return Some(TrngJob::simple(JobMode::Rst)),
+            #[cfg(feature = "bench")]
             b"trngprobe" => return Some(parse_trng_probe(args)),
+            #[cfg(feature = "bench")]
             b"trngemb" => return Some(parse_trng_emb(args)),
             b"xmrout" => self.cmd_xmrout(args),
+            #[cfg(feature = "bench")]
             b"xmrseed" => self.cmd_xmrseed(args),
             b"alloctest" => self.cmd_alloctest(args),
             b"alloctrace" => self.cmd_alloctrace(),
@@ -198,12 +228,14 @@ impl ConsoleState {
     }
 
     fn cmd_help(&self) {
-        log::info!("[help] bench channel commands:");
+        log::info!("[help] console commands (build: {}):", BUILD_FLAVOR);
         log::info!("[help]   help            this text");
         log::info!("[help]   version         version + C-ABI version");
         log::info!("[help]   smoke           boot signing-smoke report (also replayed every 20 s)");
         log::info!("[help]   heap [reset]    allocator used/free/peak (reset re-arms peak)");
+        #[cfg(feature = "bench")]
         log::info!("[help]   entropy <hex>   set session mnemonic from test-vector entropy");
+        #[cfg(feature = "bench")]
         log::info!(
             "[help]                   (16/20/24/28/32 bytes; default = built-in dice fixture)"
         );
@@ -213,19 +245,27 @@ impl ConsoleState {
         log::info!(
             "[help]                   order); signs on completion with the session mnemonic"
         );
+        #[cfg(feature = "bench")]
         log::info!("[help]   trng [stress] [cond] [sample=<n>] [chain=<0-4>] [timeout=<ms>] [n]");
+        #[cfg(feature = "bench")]
         log::info!(
             "[help]                   n raw blocks (24 B) as hex; cond = n conditioned 32-byte"
         );
+        #[cfg(feature = "bench")]
         log::info!(
             "[help]                   outputs (SHA-256 over two blocks - the consumer path);"
         );
+        #[cfg(feature = "bench")]
         log::info!(
             "[help]                   stress = sample 2; overrides are restored on job exit"
         );
+        #[cfg(feature = "bench")]
         log::info!("[help]   trngdump        raw TRNG register dump (bring-up diagnostic)");
+        #[cfg(feature = "bench")]
         log::info!("[help]   trngrst         RESETS-block cycle for the TRNG, then a dump");
+        #[cfg(feature = "bench")]
         log::info!("[help]   trngprobe [ms]  cold-start + trace every BUSY/ISR transition");
+        #[cfg(feature = "bench")]
         log::info!("[help]   trngemb [n]     read n blocks via the upstream embassy driver");
         log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
         log::info!("[help]   ur:xmr-txunsigned/...  signs with TRNG entropy (deferred job;");
@@ -242,7 +282,7 @@ impl ConsoleState {
     fn cmd_version(&self) {
         let v = shlosilo::ffi::version::SHLOSILO_VERSION_STRING.trim_end_matches('\0');
         let cabi = shlosilo::ffi::version::SHLOSILO_CABI_VERSION_STRING.trim_end_matches('\0');
-        log::info!("[ver] {v} (cabi {cabi})");
+        log::info!("[ver] {v} (cabi {cabi}) build={}", BUILD_FLAVOR);
     }
 
     fn cmd_smoke(&self) {
@@ -311,6 +351,8 @@ impl ConsoleState {
     }
 
     /// `xmrseed <hex>`: set fixed entropy for the next XMR job (A/B mode).
+    /// Bench builds only (audit #17).
+    #[cfg(feature = "bench")]
     fn cmd_xmrseed(&mut self, args: &[u8]) {
         let mut buf = [0u8; 64];
         match parse_hex(args, &mut buf) {
@@ -406,6 +448,9 @@ impl ConsoleState {
         }
     }
 
+    /// `entropy <hex>`: test-vector mnemonic loader. Bench builds only
+    /// (audit #17).
+    #[cfg(feature = "bench")]
     fn cmd_entropy(&mut self, args: &[u8]) {
         let mut bytes = [0u8; 32];
         let n = match parse_hex(args, &mut bytes) {
@@ -613,28 +658,40 @@ impl ReceiverHandler for CommandHandler {
 #[derive(Clone, Copy)]
 struct TrngJob {
     mode: JobMode,
+    /// Parameters of the bench-only TRNG diagnostic jobs (`bench` feature).
+    #[cfg(feature = "bench")]
     stress: bool,
     /// Stream conditioned 32-byte outputs (SHA-256) instead of raw blocks.
+    #[cfg(feature = "bench")]
     cond: bool,
+    #[cfg(feature = "bench")]
     sample: Option<u32>,
+    #[cfg(feature = "bench")]
     chain: Option<u8>,
     /// Per-block patience budget in milliseconds.
+    #[cfg(feature = "bench")]
     timeout_ms: u64,
     /// Stream: block/output count. Probe: duration in ms. Emb: block count.
+    #[cfg(feature = "bench")]
     count: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JobMode {
     /// Our reader, streaming accepted blocks as hex.
+    #[cfg(feature = "bench")]
     Stream,
     /// Raw busy/ISR transition trace after a cold start.
+    #[cfg(feature = "bench")]
     Probe,
     /// The upstream embassy driver (cross-check).
+    #[cfg(feature = "bench")]
     Emb,
     /// Raw register dump.
+    #[cfg(feature = "bench")]
     Dump,
     /// RESETS-block cycle, then a dump.
+    #[cfg(feature = "bench")]
     Rst,
     /// Sign the pending XMR request (TRNG entropy + the full signing path).
     SignXmr,
@@ -643,15 +700,21 @@ enum JobMode {
 }
 
 impl TrngJob {
-    /// A job with no parameters (dump / reset).
+    /// A job with no parameters.
     const fn simple(mode: JobMode) -> Self {
         Self {
             mode,
+            #[cfg(feature = "bench")]
             stress: false,
+            #[cfg(feature = "bench")]
             cond: false,
+            #[cfg(feature = "bench")]
             sample: None,
+            #[cfg(feature = "bench")]
             chain: None,
+            #[cfg(feature = "bench")]
             timeout_ms: 0,
+            #[cfg(feature = "bench")]
             count: 0,
         }
     }
@@ -659,6 +722,7 @@ impl TrngJob {
 
 /// Parse `trng [stress] [cond] [sample=<n>] [chain=<0-4>] [timeout=<ms>]
 /// [nblocks]`; default 64 blocks, capped at 4096.
+#[cfg(feature = "bench")]
 fn parse_trng_job(args: &[u8]) -> TrngJob {
     let mut stress = false;
     let mut cond = false;
@@ -698,6 +762,7 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
 
 /// Parse `trngprobe [ms]` (default 60 ms): cold-start the block and trace
 /// every BUSY/ISR transition.
+#[cfg(feature = "bench")]
 fn parse_trng_probe(args: &[u8]) -> TrngJob {
     let ms = core::str::from_utf8(trim_ascii(args))
         .unwrap_or("")
@@ -717,6 +782,7 @@ fn parse_trng_probe(args: &[u8]) -> TrngJob {
 
 /// Parse `trngemb [n]` (default 4): read n blocks through the upstream
 /// embassy driver, with per-block timing.
+#[cfg(feature = "bench")]
 fn parse_trng_emb(args: &[u8]) -> TrngJob {
     let n = core::str::from_utf8(trim_ascii(args))
         .unwrap_or("")
@@ -738,13 +804,18 @@ fn parse_trng_emb(args: &[u8]) -> TrngJob {
 /// single trng::instance() lock (see trng.rs "Ownership").
 async fn run_trng_job(job: TrngJob) {
     match job.mode {
+        #[cfg(feature = "bench")]
         JobMode::Stream => run_trng_stream(job).await,
+        #[cfg(feature = "bench")]
         JobMode::Probe => run_trng_probe(job).await,
+        #[cfg(feature = "bench")]
         JobMode::Emb => run_trng_emb(job).await,
+        #[cfg(feature = "bench")]
         JobMode::Dump => {
             let t = trng::instance().lock().await;
             log_snapshot(&t.snapshot());
         }
+        #[cfg(feature = "bench")]
         JobMode::Rst => {
             let mut t = trng::instance().lock().await;
             t.reset_cycle();
@@ -756,6 +827,7 @@ async fn run_trng_job(job: TrngJob) {
     }
 }
 
+#[cfg(feature = "bench")]
 fn log_snapshot(s: &trng::RawSnapshot) {
     log::info!(
         "[tdump] isr=0x{:08x} imr=0x{:08x} busy=0x{:08x} valid=0x{:08x} cfg=0x{:08x} \
@@ -871,52 +943,42 @@ async fn run_sign_xmr() {
         return;
     }
 
+    #[cfg(feature = "bench")]
+    let source = if CONSOLE.lock(|c| c.borrow().xmr_seed.is_some()) {
+        "fixed A/B"
+    } else {
+        "TRNG"
+    };
+    #[cfg(not(feature = "bench"))]
+    let source = "TRNG";
     log::info!(
-        "[xmr] request: enc_len={} (entropy: {})",
-        payload.len(),
-        if CONSOLE.lock(|c| c.borrow().xmr_seed.is_some()) {
-            "fixed A/B"
-        } else {
-            "TRNG"
-        }
+        "[xmr] request: enc_len={} (entropy: {source})",
+        payload.len()
     );
     yield_now().await; // let the log pipe drain before the long stretch
 
     // §B.5 entropy injection. Production path: conditioned TRNG outputs (the
-    // signer hashes them into its purpose-separated RNG stream). A/B path:
-    // `xmrseed` set a fixed byte string, so the output can be compared
-    // byte-for-byte against a host recomputation.
-    let fixed = CONSOLE.lock(|c| c.borrow_mut().xmr_seed.take());
+    // signer hashes them into its purpose-separated RNG stream). The bench
+    // feature adds the `xmrseed` fixed-entropy override (byte-exact A/B
+    // against a host recomputation), which takes the place of the TRNG read.
     let mut stats = TrngStats::default();
     let mut entropy_buf = [0u8; XMR_ENTROPY_LEN];
-    let entropy_len;
-    if let Some((buf, n)) = fixed {
-        entropy_buf[..n].copy_from_slice(&buf[..n]);
-        entropy_len = n;
-    } else {
-        let mut ok = true;
-        {
-            let mut t = trng::instance().lock().await;
-            for chunk in entropy_buf.chunks_mut(32) {
-                match t
-                    .conditioned32(&mut stats, trng::DEFAULT_BLOCK_TIMEOUT_MS)
-                    .await
-                {
-                    Ok(out) => chunk.copy_from_slice(&out),
-                    Err(e) => {
-                        log::info!("[err] xmr entropy: {:?}", e);
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            t.stop();
+    #[cfg(feature = "bench")]
+    let entropy_len = match CONSOLE.lock(|c| c.borrow_mut().xmr_seed.take()) {
+        Some((buf, n)) => {
+            entropy_buf[..n].copy_from_slice(&buf[..n]);
+            n
         }
-        if !ok {
-            return;
-        }
-        entropy_len = XMR_ENTROPY_LEN;
-    }
+        None => match fill_entropy_from_trng(&mut stats, &mut entropy_buf).await {
+            Some(n) => n,
+            None => return,
+        },
+    };
+    #[cfg(not(feature = "bench"))]
+    let entropy_len = match fill_entropy_from_trng(&mut stats, &mut entropy_buf).await {
+        Some(n) => n,
+        None => return,
+    };
     let entropy = &entropy_buf[..entropy_len];
     log::info!(
         "[xmr] entropy ready ({entropy_len} B); signing... (executor stalls for the duration)"
@@ -954,6 +1016,29 @@ async fn run_sign_xmr() {
         }
         Err(e) => log::info!("[err] xmr sign: {:?}", e.kind),
     }
+}
+
+/// Fetch conditioned TRNG entropy into `buf` - the production entropy path
+/// (and the fallback when no bench fixed-entropy override is set). Returns
+/// the byte count, or None on TRNG failure (already logged). Runs under the
+/// singleton TRNG guard and stops the source before returning.
+async fn fill_entropy_from_trng(stats: &mut TrngStats, buf: &mut [u8]) -> Option<usize> {
+    let mut ok = true;
+    {
+        let mut t = trng::instance().lock().await;
+        for chunk in buf.chunks_mut(32) {
+            match t.conditioned32(stats, trng::DEFAULT_BLOCK_TIMEOUT_MS).await {
+                Ok(out) => chunk.copy_from_slice(&out),
+                Err(e) => {
+                    log::info!("[err] xmr entropy: {:?}", e);
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        t.stop();
+    }
+    if ok { Some(buf.len()) } else { None }
 }
 
 /// Single-allocation probe via the raw allocator API (null on failure, no
@@ -995,6 +1080,7 @@ fn probe_alloc(size: usize, align: usize) {
 
 /// Trace BUSY/ISR transitions after a cold start (bring-up diagnostic: shows
 /// exactly when the state machine latches, and whether it ever generates).
+#[cfg(feature = "bench")]
 async fn run_trng_probe(job: TrngJob) {
     let mut t = trng::instance().lock().await;
     t.cold_start();
@@ -1033,6 +1119,7 @@ async fn run_trng_probe(job: TrngJob) {
 }
 
 /// Cross-check through the upstream embassy driver (see EMB_TRNG in main).
+#[cfg(feature = "bench")]
 async fn run_trng_emb(job: TrngJob) {
     if !crate::emb_trng_ready() {
         log::info!("[temb] upstream driver not initialised");
@@ -1064,6 +1151,7 @@ async fn run_trng_emb(job: TrngJob) {
 /// `sample=`/`chain=` overrides > the measured operating point. The
 /// overrides exist for characterisation sweeps on the bench; the job
 /// restores the defaults on exit either way.
+#[cfg(feature = "bench")]
 async fn run_trng_stream(job: TrngJob) {
     let mut t = trng::instance().lock().await;
     let sample = if job.stress {
@@ -1204,7 +1292,9 @@ fn parse_seq(s: &str) -> Option<(usize, usize)> {
     Some((seq.parse().ok()?, count.parse().ok()?))
 }
 
-/// Parse hex into `out`; returns the byte count on success.
+/// Parse hex into `out`; returns the byte count on success. Bench builds
+/// only (its only consumers are `xmrseed` / `entropy`).
+#[cfg(feature = "bench")]
 fn parse_hex(s: &[u8], out: &mut [u8]) -> Option<usize> {
     let s = trim_ascii(s);
     if s.is_empty() || !s.len().is_multiple_of(2) || s.len() > out.len() * 2 {
@@ -1216,6 +1306,7 @@ fn parse_hex(s: &[u8], out: &mut [u8]) -> Option<usize> {
     Some(s.len() / 2)
 }
 
+#[cfg(feature = "bench")]
 fn hex_val(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
