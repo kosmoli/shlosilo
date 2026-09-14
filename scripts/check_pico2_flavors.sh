@@ -18,6 +18,10 @@
 # a match, and with `set -o pipefail` that poisons the exit status (a
 # negated pipeline test then takes the wrong branch in the match case).
 #
+# Also builds the perf-timing flavor (bench+perf; the XMR phase-probe
+# firmware) so the perf combination stays compileable and its surface
+# marker (`xtiming`) is present.
+#
 # Run from anywhere; CI runs the same script (appearances job). Note: the
 # builds share the cargo output path, and cargo re-points it (uplift) to
 # whichever flavor the invocation requests - so the ELF is read immediately
@@ -55,3 +59,14 @@ for c in "${CANARIES[@]}"; do
   fi
 done
 echo "    ok: bench-only surface present in the bench image"
+
+echo "==> perf-timing build (bench,perf-timing)"
+(cd flux/pico2 && cargo build --release --features bench,perf-timing)
+PERF_STRINGS=$(strings "$ELF")
+for c in "${CANARIES[@]}" xtiming; do
+  if [[ "$PERF_STRINGS" != *"$c"* ]]; then
+    echo "ERROR: perf-timing image lacks expected string: $c" >&2
+    exit 1
+  fi
+done
+echo "    ok: perf-timing surface present (probe firmware)"

@@ -17,6 +17,8 @@
 
 mod console;
 mod fault;
+#[cfg(feature = "perf-timing")]
+mod perf_timing;
 mod sign_smoke;
 mod trng;
 
@@ -617,6 +619,12 @@ async fn main(spawner: Spawner) {
     // Bring up the hardware TRNG through its singleton owner (see trng.rs;
     // all register access is serialized through this instance).
     trng::instance().lock().await.init();
+
+    // XMR perf-timing probes (diagnostic builds): hand this host's
+    // millisecond clock to the shlosilo timing hooks (tx-phase / BP+ prove
+    // / CryptoNight) so phase decomposition runs are possible on-device.
+    #[cfg(feature = "perf-timing")]
+    perf_timing::register();
 
     // Side-by-side upstream driver for bench cross-checks (see EMB_TRNG).
     // Bench builds only: it bypasses the trng::instance() single-owner

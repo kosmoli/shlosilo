@@ -67,10 +67,18 @@ const XMR_OUT_CAP: usize = 8 * 1024;
 const XMR_ENTROPY_LEN: usize = 64;
 
 /// Build flavor (audit #17): `bench` when the bench-only console surface is
-/// compiled in, `production` otherwise. Carried by `version` and every
-/// heartbeat line so a flashed board is identifiable at a glance.
+/// compiled in, `production` otherwise; the `perf-timing` probe feature
+/// appends `+perf` (`bench+perf`, or `perf` without bench) so a
+/// perf-experiment image is distinguishable at a glance. Carried by
+/// `version` and every heartbeat line.
 pub(crate) const BUILD_FLAVOR: &str = if cfg!(feature = "bench") {
-    "bench"
+    if cfg!(feature = "perf-timing") {
+        "bench+perf"
+    } else {
+        "bench"
+    }
+} else if cfg!(feature = "perf-timing") {
+    "perf"
 } else {
     "production"
 };
@@ -213,6 +221,8 @@ impl ConsoleState {
             #[cfg(feature = "bench")]
             b"trngemb" => return Some(parse_trng_emb(args)),
             b"xmrout" => self.cmd_xmrout(args),
+            #[cfg(feature = "perf-timing")]
+            b"xtiming" => crate::perf_timing::log_phases(),
             #[cfg(feature = "bench")]
             b"xmrseed" => self.cmd_xmrseed(args),
             b"alloctest" => self.cmd_alloctest(args),
@@ -268,6 +278,8 @@ impl ConsoleState {
         #[cfg(feature = "bench")]
         log::info!("[help]   trngemb [n]     read n blocks via the upstream embassy driver");
         log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
+        #[cfg(feature = "perf-timing")]
+        log::info!("[help]   xtiming         dump the XMR phase-timing table (probe builds)");
         log::info!("[help]   ur:xmr-txunsigned/...  signs with TRNG entropy (deferred job;");
         log::info!("[help]                   fetch the result with xmrout)");
         log::info!("[help]   psramtest       verify PSRAM r/w with patterns at 5 offsets;");
@@ -985,6 +997,10 @@ async fn run_sign_xmr() {
     );
     yield_now().await;
 
+    // Timing probes: zero the accumulators before the timed stretch.
+    #[cfg(feature = "perf-timing")]
+    crate::perf_timing::reset();
+
     let input = SignInput::Mnemonic {
         mnemonic,
         passphrase: b"",
@@ -1016,6 +1032,12 @@ async fn run_sign_xmr() {
         }
         Err(e) => log::info!("[err] xmr sign: {:?}", e.kind),
     }
+
+    // Phase breakdown after the timed stretch (perf-timing builds only;
+    // emitted here because the executor stall made mid-sign output
+    // impossible).
+    #[cfg(feature = "perf-timing")]
+    crate::perf_timing::log_phases();
 }
 
 /// Fetch conditioned TRNG entropy into `buf` - the production entropy path

@@ -42,3 +42,13 @@ static_cell = "2"
 # compile any of it - the fixed-entropy path must not exist in production
 # images. Bench build: `make pico2-bench-uf2`. See src/console.rs.
 bench = []
+
+# XMR signing phase-timing probes (diagnostic; perf work). Enables the
+# shlosilo timing hooks (L1 tx-phases / vendored BP+ prove / CryptoNight)
+# and registers this host's embassy-time millisecond clock with all three.
+# Diagnostic builds only - never part of production images. Combine with
+# `bench` for the perf-experiment firmware: `make pico2-perf-uf2`.
+perf-timing = [
+    "shlosilo/tx-phase-timing-ffi",
+    "shlosilo/cn-timing-ffi",
+]

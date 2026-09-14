@@ -6,6 +6,7 @@
 #   make pico2-bench       build the bench-flavored image (adds the bench-only
 #                          console surface; audit #17)
 #   make pico2-bench-uf2   build + pack the bench-flavored UF2
+#   make pico2-perf-uf2    bench surface + XMR phase-timing probes (perf work)
 #   make pico2-check-flavors  assert the bench surface is absent from the
 #                          production image and present in the bench image
 #   make host-sim   build + link the POSIX simulator (flux/host-sim)
@@ -14,7 +15,7 @@
 #   make test-all   test suite, --all-features
 #   make check      clippy + embedded check gate
 
-.PHONY: forgebox pico2 pico2-uf2 pico2-bench pico2-bench-uf2 pico2-check-flavors host-sim clean-appearances test test-all check help
+.PHONY: forgebox pico2 pico2-uf2 pico2-bench pico2-bench-uf2 pico2-perf-uf2 pico2-check-flavors host-sim clean-appearances test test-all check help
 
 forgebox:
 	cd flux/forgebox && bash build.sh
@@ -33,6 +34,12 @@ pico2-bench:
 
 pico2-bench-uf2:
 	cd flux/pico2 && cargo build --release --features bench
+	cd flux/pico2 && python3 pack_uf2.py
+
+# Perf-work build: bench console surface + XMR phase-timing probes
+# (diagnostic; the firmware for phase-decomposition runs).
+pico2-perf-uf2:
+	cd flux/pico2 && cargo build --release --features bench,perf-timing
 	cd flux/pico2 && python3 pack_uf2.py
 
 # Same script the CI appearances job runs (see scripts/check_pico2_flavors.sh).

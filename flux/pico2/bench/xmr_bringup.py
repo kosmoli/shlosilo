@@ -50,7 +50,7 @@ XMR_OUT_RE = re.compile(r"\[xmrout\] (\d+)\+(\d+)/(\d+) ([0-9a-f]+)")
 
 # lines worth echoing to stdout live, in order of arrival
 LIVE_RE = re.compile(
-    r"\[psramtest\]|\[psram\]|\[alloctest\]|\[trace\]|\[crash\]|\[entropy\]|\[xmr\]|\[xmrout\]|\[err\]|ALL OK"
+    r"\[psramtest\]|\[psram\]|\[alloctest\]|\[trace\]|\[crash\]|\[entropy\]|\[xmr\]|\[xmrout\]|\[xt\]|\[err\]|ALL OK"
 )
 
 
