@@ -1,5 +1,6 @@
 /target
 proptest-regressions
+__pycache__/
 *.bin
 *.elf
 *.a
