@@ -651,6 +651,17 @@ uint64_t shlosilo_perf_select_affine(uint32_t iters);
 uint64_t shlosilo_perf_madd_affine(uint32_t iters);
 
 /**
+ * Chunked CT multiexp with full-width scalars (in-situ shape): n terms,
+ * chunk terms per Straus call, `iters` repetitions.
+ */
+uint64_t shlosilo_perf_ct_chunked(uint32_t n, uint32_t chunk, uint32_t iters);
+
+/**
+ * Vartime 2-term multiexp with full-width scalars (the fold shape).
+ */
+uint64_t shlosilo_perf_vartime_2term_fw(uint32_t iters);
+
+/**
  * C-ABI: register the millisecond clock for prove-phase timing. Call from C init
  * right after `shlosilo_timing_set_clock_fn` (same clock function address works).
  *
