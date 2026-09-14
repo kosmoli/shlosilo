@@ -220,8 +220,22 @@ def main():
         fail("XMR request accepted", before)
     print("  request accepted; signing (silence expected, budget "
           f"{args.timeout}s) ...", flush=True)
-    if not wait_marker("[xmr] signed ok", args.timeout, before):
-        fail("XMR signing result", before)
+    # Crash-aware wait: a [crash] record means the device panicked and
+    # rebooted (node-followed by the reader) - fail fast with the record
+    # instead of burning the whole budget.
+    t = time.time()
+    got_signed = False
+    while time.time() - t < args.timeout:
+        chunk = text()[before:]
+        if "[xmr] signed ok" in chunk:
+            got_signed = True
+            break
+        if "[crash]" in chunk:
+            time.sleep(8)  # let the record and boot lines finish
+            fail("device CRASHED during signing (record above)", before)
+        time.sleep(0.5)
+    if not got_signed:
+        fail("XMR signing timeout", before)
     m = SIGNED_RE.search(text()[before:])
     if not m:
         fail("signed-ok line parse", before)
