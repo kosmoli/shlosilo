@@ -51,11 +51,11 @@ fn device_blob_matches_host() {
     eprintln!(
         "host: {n} bytes; device: {} bytes; digests h={} d={}",
         device_blob.len(),
-        &shlosilo::encoding::sha256::hash(&out[..n]).unwrap()[..8]
+        shlosilo::encoding::sha256::hash(&out[..n]).unwrap()[..8]
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>(),
-        &shlosilo::encoding::sha256::hash(&device_blob).unwrap()[..8]
+        shlosilo::encoding::sha256::hash(&device_blob).unwrap()[..8]
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>(),
