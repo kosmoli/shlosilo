@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use std_shims::{vec, vec::Vec};
 
 use curve25519_dalek::{
@@ -11,41 +13,62 @@ pub(crate) use monero_bulletproofs_generators::{
 };
 
 /// Constant-time multiexp, chunked so every Straus lookup table fits the
-/// device's SRAM pool (shlosilo L3 allocator, 48K bypass threshold).
+/// host's fast memory. The chunk size is a PER-PLATFORM tuning knob
+/// (runtime, default 36):
 ///
 /// Each term's constant-time Straus table stores 8 `ProjectiveNielsPoint`
 /// entries (8 x 160B = 1280B), and every constant-time select scans all 8
-/// entries: 1280B of memory traffic per select+add step. On the ForgeBox
-/// device (MH1903, QSPI PSRAM heap + SRAM pool) a PSRAM-resident table
-/// costs ~30k cycles per step — measured: bp1 (257 terms, 16,448 steps)
-/// 2.2s; and the K2-D A/B where the 34-term 43,520B table moved between
-/// PSRAM and SRAM swung bp4 by ~409ms over 4,352 steps.
+/// entries: 1280B of memory traffic per select+add step. A table is sized
+/// by the (public) term count: `n` terms -> `n * 1280B`. A host picks the
+/// largest chunk whose table still lands in its fastest memory:
 ///
-/// A table is sized by the (public) term count: `n` terms -> `n * 1280B`.
-/// The prove path's tables are 166,400B (WIP round 1, 130 terms) and
-/// 328,960B (initial commit, 257 terms) — far above the threshold, and no
-/// size threshold can admit them while excluding the gencache generator
-/// vectors (2 x 163,840B, permanent `LazyLock` allocations that must stay
-/// in PSRAM: at a 192K threshold they entered the pool, starved the whole
-/// BP+ working set and regressed xmr by +1.5s). Chunking caps every table
-/// at 36 x 1280B = 46,080B instead, leaving the threshold untouched.
+/// - ForgeBox (MH1903): SRAM pool with a 48K bypass threshold -> 36 terms
+///   = 46,080B fits. Measured: a PSRAM-resident table costs ~30k cycles
+///   per step; the K2-D A/B where the 34-term 43,520B table moved between
+///   PSRAM and SRAM swung bp4 by ~409ms over 4,352 steps; chunking (A2)
+///   cut 3.26s off the full sign.
+/// - pico2 (RP2350): SRAM heap with a 16 KiB PSRAM routing threshold ->
+///   12 terms = 15,360B fits. Measured 2026-09-14 (per chunk, one CT
+///   Straus multiexp): SRAM tables = ~11.7ms + n x 4.0ms; PSRAM tables =
+///   ~7.6ms + n x 9.34ms — ~2x per-term at every size (the 16/32-term
+///   points sit right above the threshold and jump to the PSRAM curve).
+///
+/// No size threshold can admit the unchunked tables (166,400B / 328,960B)
+/// while excluding the gencache generator vectors (2 x 163,840B, permanent
+/// `LazyLock` allocations that must stay in PSRAM: at a 192K threshold
+/// they entered the pool, starved the whole BP+ working set and regressed
+/// xmr by +1.5s on forgebox).
 ///
 /// Correctness: the sum of chunk sums equals the unchunked multiexp
 /// (point addition is associative/commutative); chunk boundaries depend
 /// only on the public term count; each chunk keeps dalek's constant-time
 /// select discipline. The only cost is re-running the per-chunk doubling
-/// chain (64 iterations per chunk instead of once overall) — negligible
-/// next to moving 16k+ select steps from PSRAM to SRAM.
-const MULTIEXP_CHUNK_TERMS: usize = 36;
+/// chain (64 iterations per chunk instead of once overall) — measured at
+/// ~12ms/chunk on pico2, small against the per-term table traffic.
+static MULTIEXP_CHUNK_TERMS: AtomicUsize = AtomicUsize::new(36);
+
+/// Set the per-platform chunk size (terms per CT Straus table). The host
+/// calls this once at boot with the largest chunk whose table
+/// (`n * 1280B`) fits its fastest memory. Values of 0 are clamped to 1.
+pub fn set_multiexp_chunk_terms(n: usize) {
+    MULTIEXP_CHUNK_TERMS.store(n.max(1), Ordering::Relaxed);
+}
+
+/// Current chunk size in terms (default 36).
+#[must_use]
+pub fn multiexp_chunk_terms() -> usize {
+    MULTIEXP_CHUNK_TERMS.load(Ordering::Relaxed)
+}
 
 pub(crate) fn multiexp(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
-    if pairs.len() <= MULTIEXP_CHUNK_TERMS {
+    let chunk = multiexp_chunk_terms();
+    if pairs.len() <= chunk {
         return multiexp_terms(pairs);
     }
     let mut acc = EdwardsPoint::identity();
     let mut remaining = pairs;
     while !remaining.is_empty() {
-        let take = remaining.len().min(MULTIEXP_CHUNK_TERMS);
+        let take = remaining.len().min(chunk);
         acc += multiexp_terms(&remaining[..take]);
         remaining = &remaining[take..];
     }

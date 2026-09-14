@@ -14,6 +14,11 @@ use zeroize::Zeroizing;
 
 use curve25519_dalek::EdwardsPoint;
 
+// shlosilo vendor patch: per-platform BP+ multiexp chunk tuning (core.rs).
+// `crate::core` (not `core::`) — the crate has a module of that name, so the
+// bare path would be ambiguous at the root scope.
+pub use crate::core::{multiexp_chunk_terms, set_multiexp_chunk_terms};
+
 use monero_bulletproofs_generators::COMMITMENT_BITS;
 pub use monero_bulletproofs_generators::MAX_BULLETPROOF_COMMITMENTS as MAX_COMMITMENTS;
 use monero_ed25519::*;

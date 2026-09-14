@@ -223,6 +223,8 @@ impl ConsoleState {
             b"xmrout" => self.cmd_xmrout(args),
             #[cfg(feature = "perf-timing")]
             b"xtiming" => crate::perf_timing::log_phases(),
+            #[cfg(feature = "perf-timing")]
+            b"xmrchunk" => self.cmd_xmrchunk(args),
             #[cfg(feature = "perf-bench")]
             b"perfbench" => self.cmd_perfbench(args),
             #[cfg(feature = "bench")]
@@ -282,6 +284,10 @@ impl ConsoleState {
         log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
         #[cfg(feature = "perf-timing")]
         log::info!("[help]   xtiming         dump the XMR phase-timing table (probe builds)");
+        #[cfg(feature = "perf-timing")]
+        log::info!(
+            "[help]   xmrchunk <n>    BP+ multiexp chunk size (table placement; probe builds)"
+        );
         #[cfg(feature = "perf-bench")]
         log::info!("[help]   perfbench [name] [iters]  device primitive benchmarks (probe builds)");
         log::info!("[help]   ur:xmr-txunsigned/...  signs with TRNG entropy (deferred job;");
@@ -467,6 +473,29 @@ impl ConsoleState {
     /// `entropy <hex>`: test-vector mnemonic loader. Bench builds only
     /// (audit #17).
     #[cfg(feature = "bench")]
+    /// `xmrchunk <n>`: set the BP+ multiexp chunk size (terms per CT table).
+    /// Larger chunks = fewer doubling chains but bigger tables; the table
+    /// routes to PSRAM once `n * 1280B` exceeds the 16 KiB threshold
+    /// (n >= 13). Probe builds only.
+    #[cfg(feature = "perf-timing")]
+    fn cmd_xmrchunk(&self, args: &[u8]) {
+        let n = core::str::from_utf8(trim_ascii(args))
+            .unwrap_or("")
+            .parse::<usize>()
+            .map(|v| v.clamp(1, 256));
+        match n {
+            Ok(v) => {
+                shlosilo::chain::xmr::set_bp_multiexp_chunk_terms(v);
+                let table = v * 1280;
+                log::info!(
+                    "[chunk] bp+ multiexp chunk = {v} terms (table {table} B -> {})",
+                    if table > 16 * 1024 { "PSRAM" } else { "SRAM" }
+                );
+            }
+            Err(_) => log::info!("[err] xmrchunk: usage: xmrchunk <terms>"),
+        }
+    }
+
     /// `perfbench [name] [iters]`: run the dalek device-primitive benchmarks
     /// (fmul / fsq / select / selaff / madd / maddaff / quad / ct <n> / vt2).
     /// With no name (or `all`) runs the standard suite with defaults.
