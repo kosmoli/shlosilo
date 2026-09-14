@@ -60,10 +60,10 @@ for c in "${CANARIES[@]}"; do
 done
 echo "    ok: bench-only surface present in the bench image"
 
-echo "==> perf-timing build (bench,perf-timing)"
-(cd flux/pico2 && cargo build --release --features bench,perf-timing)
+echo "==> perf-timing build (bench,perf-timing,perf-bench)"
+(cd flux/pico2 && cargo build --release --features bench,perf-timing,perf-bench)
 PERF_STRINGS=$(strings "$ELF")
-for c in "${CANARIES[@]}" xtiming; do
+for c in "${CANARIES[@]}" xtiming perfbench; do
   if [[ "$PERF_STRINGS" != *"$c"* ]]; then
     echo "ERROR: perf-timing image lacks expected string: $c" >&2
     exit 1

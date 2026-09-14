@@ -36,10 +36,10 @@ pico2-bench-uf2:
 	cd flux/pico2 && cargo build --release --features bench
 	cd flux/pico2 && python3 pack_uf2.py
 
-# Perf-work build: bench console surface + XMR phase-timing probes
-# (diagnostic; the firmware for phase-decomposition runs).
+# Perf-work build: bench console surface + XMR phase-timing probes +
+# device-primitive benchmarks (diagnostic; the firmware for perf runs).
 pico2-perf-uf2:
-	cd flux/pico2 && cargo build --release --features bench,perf-timing
+	cd flux/pico2 && cargo build --release --features bench,perf-timing,perf-bench
 	cd flux/pico2 && python3 pack_uf2.py
 
 # Same script the CI appearances job runs (see scripts/check_pico2_flavors.sh).

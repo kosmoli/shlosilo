@@ -52,3 +52,8 @@ perf-timing = [
     "shlosilo/tx-phase-timing-ffi",
     "shlosilo/cn-timing-ffi",
 ]
+
+# Dalek device-primitive benchmarks (fmul / CT select / madd / chunked CT
+# Straus / vartime 2-term fold) exposed on the console as `perfbench`.
+# Diagnostic only; part of the perf-experiment firmware.
+perf-bench = ["shlosilo/perf-bench-ffi"]

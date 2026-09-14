@@ -67,17 +67,17 @@ const XMR_OUT_CAP: usize = 8 * 1024;
 const XMR_ENTROPY_LEN: usize = 64;
 
 /// Build flavor (audit #17): `bench` when the bench-only console surface is
-/// compiled in, `production` otherwise; the `perf-timing` probe feature
-/// appends `+perf` (`bench+perf`, or `perf` without bench) so a
+/// compiled in, `production` otherwise; the probe features (`perf-timing` /
+/// `perf-bench`) append `+perf` (`bench+perf`, or `perf` without bench) so a
 /// perf-experiment image is distinguishable at a glance. Carried by
 /// `version` and every heartbeat line.
 pub(crate) const BUILD_FLAVOR: &str = if cfg!(feature = "bench") {
-    if cfg!(feature = "perf-timing") {
+    if cfg!(any(feature = "perf-timing", feature = "perf-bench")) {
         "bench+perf"
     } else {
         "bench"
     }
-} else if cfg!(feature = "perf-timing") {
+} else if cfg!(any(feature = "perf-timing", feature = "perf-bench")) {
     "perf"
 } else {
     "production"
@@ -223,6 +223,8 @@ impl ConsoleState {
             b"xmrout" => self.cmd_xmrout(args),
             #[cfg(feature = "perf-timing")]
             b"xtiming" => crate::perf_timing::log_phases(),
+            #[cfg(feature = "perf-bench")]
+            b"perfbench" => self.cmd_perfbench(args),
             #[cfg(feature = "bench")]
             b"xmrseed" => self.cmd_xmrseed(args),
             b"alloctest" => self.cmd_alloctest(args),
@@ -280,6 +282,8 @@ impl ConsoleState {
         log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
         #[cfg(feature = "perf-timing")]
         log::info!("[help]   xtiming         dump the XMR phase-timing table (probe builds)");
+        #[cfg(feature = "perf-bench")]
+        log::info!("[help]   perfbench [name] [iters]  device primitive benchmarks (probe builds)");
         log::info!("[help]   ur:xmr-txunsigned/...  signs with TRNG entropy (deferred job;");
         log::info!("[help]                   fetch the result with xmrout)");
         log::info!("[help]   psramtest       verify PSRAM r/w with patterns at 5 offsets;");
@@ -462,6 +466,114 @@ impl ConsoleState {
 
     /// `entropy <hex>`: test-vector mnemonic loader. Bench builds only
     /// (audit #17).
+    #[cfg(feature = "bench")]
+    /// `perfbench [name] [iters]`: run the dalek device-primitive benchmarks
+    /// (fmul / fsq / select / selaff / madd / maddaff / quad / ct <n> / vt2).
+    /// With no name (or `all`) runs the standard suite with defaults.
+    /// Diagnostic builds only (feature `perf-bench`).
+    #[cfg(feature = "perf-bench")]
+    fn cmd_perfbench(&self, args: &[u8]) {
+        use shlosilo::ffi::perf_bench_ffi as pb;
+
+        fn timed(label: &str, iters: u32, f: extern "C" fn(u32) -> u64) {
+            let t0 = Instant::now();
+            let dig = f(iters);
+            let us = t0.elapsed().as_micros();
+            let per = if iters > 0 { us / u64::from(iters) } else { 0 };
+            log::info!("[pf] {label} iters={iters}: {us}us total, {per}us/op, dig={dig}");
+        }
+
+        let args = trim_ascii(args);
+        let mut words = args
+            .split(|b| b.is_ascii_whitespace())
+            .filter(|w| !w.is_empty());
+        let name = words.next().unwrap_or(b"all");
+        let parse = |w: Option<&[u8]>, d: u32| -> u32 {
+            w.and_then(|w| core::str::from_utf8(w).ok())
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(d)
+        };
+        let iters = parse(words.next(), 0);
+        let n = parse(words.next(), 36);
+
+        match name {
+            b"all" => {
+                timed(
+                    "fmul",
+                    if iters > 0 { iters } else { 2000 },
+                    pb::shlosilo_perf_fmul,
+                );
+                timed(
+                    "fsq",
+                    if iters > 0 { iters } else { 2000 },
+                    pb::shlosilo_perf_fsq,
+                );
+                timed(
+                    "select",
+                    if iters > 0 { iters } else { 200 },
+                    pb::shlosilo_perf_select,
+                );
+                timed(
+                    "selaff",
+                    if iters > 0 { iters } else { 200 },
+                    pb::shlosilo_perf_select_affine,
+                );
+                timed(
+                    "madd",
+                    if iters > 0 { iters } else { 100 },
+                    pb::shlosilo_perf_madd,
+                );
+                timed(
+                    "maddaff",
+                    if iters > 0 { iters } else { 100 },
+                    pb::shlosilo_perf_madd_affine,
+                );
+                timed(
+                    "quad",
+                    if iters > 0 { iters } else { 100 },
+                    pb::shlosilo_perf_quadruple,
+                );
+                timed(
+                    "vt2",
+                    if iters > 0 { iters } else { 200 },
+                    pb::shlosilo_perf_vartime_2term,
+                );
+                // ct_chunk takes (n, iters): one 36-term chunk per iteration.
+                let t0 = Instant::now();
+                let dig = pb::shlosilo_perf_ct_chunk(36, if iters > 0 { iters } else { 2 });
+                let us = t0.elapsed().as_micros();
+                log::info!(
+                    "[pf] ct36 iters={}: {us}us total, {per}us/chunk, dig={dig}",
+                    if iters > 0 { iters } else { 2 },
+                    per = us / u64::from(if iters > 0 { iters } else { 2 })
+                );
+            }
+            b"fmul" => timed("fmul", warm(iters), pb::shlosilo_perf_fmul),
+            b"fsq" => timed("fsq", warm(iters), pb::shlosilo_perf_fsq),
+            b"select" => timed("select", warm(iters), pb::shlosilo_perf_select),
+            b"selaff" => timed("selaff", warm(iters), pb::shlosilo_perf_select_affine),
+            b"madd" => timed("madd", warm(iters), pb::shlosilo_perf_madd),
+            b"maddaff" => timed("maddaff", warm(iters), pb::shlosilo_perf_madd_affine),
+            b"quad" => timed("quad", warm(iters), pb::shlosilo_perf_quadruple),
+            b"vt2" => timed("vt2", warm(iters), pb::shlosilo_perf_vartime_2term),
+            b"ct" => {
+                let t0 = Instant::now();
+                let dig = pb::shlosilo_perf_ct_chunk(n.min(512), warm(iters));
+                let us = t0.elapsed().as_micros();
+                let it = warm(iters);
+                log::info!(
+                    "[pf] ct{n} iters={it}: {us}us total, {per}us/chunk, dig={dig}",
+                    per = us / u64::from(it)
+                );
+            }
+            _ => log::info!("[err] perfbench: unknown name"),
+        }
+
+        fn warm(iters: u32) -> u32 {
+            if iters == 0 { 200 } else { iters }
+        }
+    }
+
     #[cfg(feature = "bench")]
     fn cmd_entropy(&mut self, args: &[u8]) {
         let mut bytes = [0u8; 32];

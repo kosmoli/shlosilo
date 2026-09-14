@@ -105,6 +105,8 @@ pub(crate) mod backend;
 pub(crate) mod window;
 
 // Device perf-bench entry points (feature `perf-bench`; shlosilo vendor patch).
+/// Device primitive benchmarks (fmul / CT select / madd / chunked CT Straus /
+/// vartime 2-term fold). shlosilo vendor patch, feature-gated.
 #[cfg(feature = "perf-bench")]
 pub mod perf_bench;
 
