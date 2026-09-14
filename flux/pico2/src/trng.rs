@@ -22,6 +22,17 @@
 //!   consecutive blocks, zero CRNGT / VN / autocorrelation failures, ~1.05 ms
 //!   per accepted block (measured; the sweep knobs below found this point).
 //!   These are the defaults; both stay runtime-tunable for other silicon.
+//! - The raw stream carries a **condition-dependent adjacent-bit
+//!   correlation** (bit pairs equal ~50.0-52% instead of 50%): clean for the
+//!   first ~8 blocks of an activation, degrading into clustering with longer
+//!   uninterrupted reads (measured with position-resolved tests; reproducible
+//!   across sessions, extraction independently validated against synthetic
+//!   data). This matches the datasheet's own caveat that the TRNG's
+//!   conditioning logic has pitfalls, "most notably the von Neumann
+//!   decorrelator", which the RP2350 bootrom avoids by hashing raw samples.
+//!   Consumers therefore use `read_conditioned32` (SHA-256 over two accepted
+//!   blocks; the standard source -> conditioner pattern), while the hardware
+//!   health checks remain enabled as the source monitor.
 //!
 //! ## Design
 //!
@@ -99,6 +110,9 @@ pub enum TrngError {
     BusyTimeout,
     /// One block exceeded the time or retry budget.
     Timeout,
+    /// The SHA-256 conditioner failed (unreachable for fixed-size input;
+    /// present so the path never panics).
+    Conditioner,
 }
 
 // ── configuration (runtime-tunable for characterisation sweeps) ──
@@ -340,6 +354,28 @@ fn read_ehr(regs: &TrngRegs, block: &mut [u8; BLOCK_LEN]) {
     for (i, reg) in ehr.iter().enumerate() {
         block[i * 4..i * 4 + 4].copy_from_slice(&reg.read().to_ne_bytes());
     }
+}
+
+/// Read one 32-byte conditioned output: SHA-256 over two consecutive
+/// accepted raw blocks (2 x 192 = 384 raw bits in, 256 out).
+///
+/// Why conditioning: the raw checked-path stream carries a measured,
+/// condition-dependent adjacent-bit correlation (see the module docs and
+/// the README bring-up notes) - an artifact of the hardware conditioning
+/// chain, which the datasheet names as a known pitfall of the Von Neumann
+/// decorrelator; the RP2350 bootrom avoids it by hashing samples. Hashing
+/// two health-checked blocks per output is the datasheet-sanctioned fix and
+/// the standard source -> conditioner pattern (NIST SP 800-90B).
+pub async fn read_conditioned32(
+    stats: &mut TrngStats,
+    timeout_ms: u64,
+) -> Result<[u8; 32], TrngError> {
+    let a = read_block(stats, timeout_ms).await?;
+    let b = read_block(stats, timeout_ms).await?;
+    let mut buf = [0u8; BLOCK_LEN * 2];
+    buf[..BLOCK_LEN].copy_from_slice(&a);
+    buf[BLOCK_LEN..].copy_from_slice(&b);
+    shlosilo::encoding::sha256::hash(&buf).map_err(|_| TrngError::Conditioner)
 }
 
 // ─────────────────────────────────────────────────────────────────────────

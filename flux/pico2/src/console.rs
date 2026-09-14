@@ -181,12 +181,16 @@ impl ConsoleState {
         log::info!(
             "[help]                   order); signs on completion with the session mnemonic"
         );
-        log::info!("[help]   trng [stress] [sample=<n>] [chain=<0-4>] [nblocks]");
+        log::info!("[help]   trng [stress] [cond] [sample=<n>] [chain=<0-4>] [timeout=<ms>] [n]");
         log::info!(
-            "[help]                   read nblocks TRNG blocks (24 B each, default 64) as hex;"
+            "[help]                   n raw blocks (24 B) as hex; cond = n conditioned 32-byte"
         );
-        log::info!("[help]                   stress = sample 2; sample/chain override the config;");
-        log::info!("[help]                   ends with a stats line");
+        log::info!(
+            "[help]                   outputs (SHA-256 over two blocks - the consumer path);"
+        );
+        log::info!(
+            "[help]                   stress = sample 2; overrides are restored on job exit"
+        );
         log::info!("[help]   trngdump        raw TRNG register dump (bring-up diagnostic)");
         log::info!("[help]   trngrst         RESETS-block cycle for the TRNG, then a dump");
         log::info!("[help]   trngprobe [ms]  cold-start + trace every BUSY/ISR transition");
@@ -448,11 +452,13 @@ impl ReceiverHandler for CommandHandler {
 struct TrngJob {
     mode: JobMode,
     stress: bool,
+    /// Stream conditioned 32-byte outputs (SHA-256) instead of raw blocks.
+    cond: bool,
     sample: Option<u32>,
     chain: Option<u8>,
     /// Per-block patience budget in milliseconds.
     timeout_ms: u64,
-    /// Stream: block count. Probe: duration in ms. Emb: block count.
+    /// Stream: block/output count. Probe: duration in ms. Emb: block count.
     count: u32,
 }
 
@@ -466,10 +472,11 @@ enum JobMode {
     Emb,
 }
 
-/// Parse `trng [stress] [sample=<n>] [chain=<0-4>] [timeout=<ms>] [nblocks]`;
-/// default 64 blocks, capped at 4096.
+/// Parse `trng [stress] [cond] [sample=<n>] [chain=<0-4>] [timeout=<ms>]
+/// [nblocks]`; default 64 blocks, capped at 4096.
 fn parse_trng_job(args: &[u8]) -> TrngJob {
     let mut stress = false;
+    let mut cond = false;
     let mut sample: Option<u32> = None;
     let mut chain: Option<u8> = None;
     let mut timeout_ms: u64 = trng::DEFAULT_BLOCK_TIMEOUT_MS;
@@ -481,6 +488,8 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
         let s = core::str::from_utf8(word).unwrap_or("");
         if word == b"stress" {
             stress = true;
+        } else if word == b"cond" {
+            cond = true;
         } else if let Some(v) = s.strip_prefix("sample=") {
             sample = v.parse::<u32>().ok().map(|n| n.min(0xffff));
         } else if let Some(v) = s.strip_prefix("chain=") {
@@ -494,6 +503,7 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
     TrngJob {
         mode: JobMode::Stream,
         stress,
+        cond,
         sample,
         chain,
         timeout_ms,
@@ -512,6 +522,7 @@ fn parse_trng_probe(args: &[u8]) -> TrngJob {
     TrngJob {
         mode: JobMode::Probe,
         stress: false,
+        cond: false,
         sample: None,
         chain: None,
         timeout_ms: 0,
@@ -530,6 +541,7 @@ fn parse_trng_emb(args: &[u8]) -> TrngJob {
     TrngJob {
         mode: JobMode::Emb,
         stress: false,
+        cond: false,
         sample: None,
         chain: None,
         timeout_ms: 0,
@@ -608,14 +620,14 @@ async fn run_trng_emb(job: TrngJob) {
     log::info!("[temb] done");
 }
 
-/// Stream `count` blocks through our reader as hex lines, then a stats
-/// summary.
+/// Stream through our reader as hex lines, then a stats summary:
+/// raw 24-byte blocks (`trng <n>`) or conditioned 32-byte outputs
+/// (`trng cond <n>`, each consuming two raw blocks).
 ///
 /// Config precedence: `stress` (sample 2, failure-prone) > explicit
-/// `sample=`/`chain=` overrides > the datasheet-recommended defaults.
-/// The overrides exist for characterisation sweeps on the bench (find the
-/// config where the hardware entropy checks behave); the job restores the
-/// defaults on exit either way.
+/// `sample=`/`chain=` overrides > the measured operating point. The
+/// overrides exist for characterisation sweeps on the bench; the job
+/// restores the defaults on exit either way.
 async fn run_trng_stream(job: TrngJob) {
     let sample = if job.stress {
         2
@@ -631,8 +643,9 @@ async fn run_trng_stream(job: TrngJob) {
         trng::autocorr_statistic().1,
     );
     log::info!(
-        "[trng] start: n={} sample={} chain={} timeout={}ms ver=0x{:08x} acstat={}/{}",
+        "[trng] start: n={} cond={} sample={} chain={} timeout={}ms ver=0x{:08x} acstat={}/{}",
         job.count,
+        job.cond,
         sample,
         chain,
         job.timeout_ms,
@@ -644,18 +657,35 @@ async fn run_trng_stream(job: TrngJob) {
     let t0 = Instant::now();
     let mut stats = TrngStats::default();
     let mut error: Option<TrngError> = None;
-    let mut hex = [0u8; trng::BLOCK_LEN * 2];
+    let mut hex = [0u8; 64];
 
     for _ in 0..job.count {
-        match trng::read_block(&mut stats, job.timeout_ms).await {
-            Ok(block) => log::info!("[trng] {}", sign_smoke::to_hex(&block, &mut hex)),
-            Err(e) => {
-                error = Some(e);
-                break;
+        let read = if job.cond {
+            match trng::read_conditioned32(&mut stats, job.timeout_ms).await {
+                Ok(out) => {
+                    log::info!("[trng] {}", sign_smoke::to_hex(&out, &mut hex));
+                    Ok(())
+                }
+                Err(e) => Err(e),
             }
+        } else {
+            match trng::read_block(&mut stats, job.timeout_ms).await {
+                Ok(block) => {
+                    log::info!(
+                        "[trng] {}",
+                        sign_smoke::to_hex(&block, &mut hex[..trng::BLOCK_LEN * 2])
+                    );
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        };
+        if let Err(e) = read {
+            error = Some(e);
+            break;
         }
         // `read_block` awaits between retry cycles itself; one more yield
-        // here keeps the logger's sender draining between delivered blocks.
+        // here keeps the logger's sender draining between delivered outputs.
         yield_now().await;
     }
     trng::stop();
@@ -668,10 +698,16 @@ async fn run_trng_stream(job: TrngJob) {
         0
     };
     let (ac_fails, ac_trys) = trng::autocorr_statistic();
+    let mode = if job.cond { "cond outputs" } else { "blocks" };
     match error {
         None => log::info!(
-            "[trng] done: {} blocks in {} ms (~{} us/block); crngt={} vn={} autocorr={} zero={} odd={} timeout={}; acstat={}/{}",
+            "[trng] done: {} raw blocks -> {} {mode} in {} ms (~{} us/block); crngt={} vn={} autocorr={} zero={} odd={} timeout={}; acstat={}/{}",
             stats.blocks,
+            if job.cond {
+                stats.blocks / 2
+            } else {
+                stats.blocks
+            },
             ms,
             per_block_us,
             stats.crngt_err,
@@ -684,7 +720,7 @@ async fn run_trng_stream(job: TrngJob) {
             ac_trys
         ),
         Some(e) => log::info!(
-            "[trng] FAILED after {} blocks in {} ms: {:?}; crngt={} vn={} autocorr={} zero={} odd={} timeout={}; acstat={}/{}",
+            "[trng] FAILED after {} raw blocks in {} ms: {:?}; crngt={} vn={} autocorr={} zero={} odd={} timeout={}; acstat={}/{}",
             stats.blocks,
             ms,
             e,

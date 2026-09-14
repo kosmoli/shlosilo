@@ -45,10 +45,12 @@ import tty
 from collections import Counter
 
 BLOCK_HEX_RE = re.compile(r"\[trng\] ([0-9a-f]{48})\b")
+COND_HEX_RE = re.compile(r"\[trng\] ([0-9a-f]{64})\b")
 DONE_RE = re.compile(r"\[trng\] (done|FAILED)")
 
-# 24 bytes per block -> hex chars per block
+# 24 bytes per block -> hex chars per block; 32 bytes per conditioned output
 BLOCK_HEX_LEN = 48
+COND_HEX_LEN = 64
 
 
 def monobit_z(bits):
@@ -90,8 +92,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dev", default="/dev/ttyACM0")
     ap.add_argument("--count", type=int, default=1024)
-    ap.add_argument("--chunk", type=int, default=64)
+    ap.add_argument("--chunk", type=int, default=16,
+                    help="blocks per command; keep the burst under the device's "
+                         "1 KiB log pipe (a line is ~57 B, so <=16 blocks/burst "
+                         "avoids silent line drops)")
     ap.add_argument("--stress", action="store_true")
+    ap.add_argument("--cond", action="store_true",
+                    help="test the conditioned consumer path (SHA-256 over two raw "
+                         "blocks -> 32-byte outputs) instead of raw blocks")
     ap.add_argument("--sample", type=int, default=None)
     ap.add_argument("--chain", type=int, default=None)
     ap.add_argument("--timeout", type=int, default=None, help="per-block patience (ms)")
@@ -145,6 +153,8 @@ def main():
     opts = ""
     if args.stress:
         opts += " stress"
+    if args.cond:
+        opts += " cond"
     if args.sample is not None:
         opts += f" sample={args.sample}"
     if args.chain is not None:
@@ -152,7 +162,12 @@ def main():
     if args.timeout is not None:
         opts += f" timeout={args.timeout}"
 
-    chunk = max(1, min(64, args.chunk))
+    # conditioned lines are 73 B vs raw 57 B; keep both bursts within the
+    # device's 1 KiB log pipe
+    default_chunk = 8 if args.cond else 16
+    chunk = max(1, min(default_chunk, args.chunk if args.chunk else default_chunk))
+    hex_re = COND_HEX_RE if args.cond else BLOCK_HEX_RE
+    unit = "outputs" if args.cond else "blocks"
     remaining = args.count
     all_blocks = []
     done_lines = []
@@ -163,9 +178,9 @@ def main():
         before_blocks = len(all_blocks)
         before_done = len(DONE_RE.findall(text()))
         cmd = f"trng{opts} {n}"
-        print(f"sending: {cmd}  ({len(all_blocks)}/{args.count} blocks so far)")
+        print(f"sending: {cmd}  ({len(all_blocks)}/{args.count} {unit} so far)")
         send(cmd)
-        deadline = time.time() + max(60, n * 5)
+        deadline = time.time() + max(60, n * 10)
         while time.time() < deadline:
             cur = text()
             if len(DONE_RE.findall(cur)) > before_done:
@@ -173,7 +188,7 @@ def main():
             time.sleep(0.3)
         time.sleep(0.3)
         chunk_text = text()
-        blocks = [b for b in BLOCK_HEX_RE.findall(chunk_text)]
+        blocks = [b for b in hex_re.findall(chunk_text)]
         # blocks accumulate; slice the new ones
         new_blocks = blocks[before_blocks:]
         all_blocks.extend(new_blocks)
@@ -183,7 +198,7 @@ def main():
             if "FAILED" in end[-1]:
                 failed = True
         if len(all_blocks) == before_blocks:
-            print("  !! chunk produced no blocks (see log)")
+            print(f"  !! chunk produced no {unit} (see log)")
             failed = True
         remaining -= n
 
@@ -200,7 +215,7 @@ def main():
 
     data = bytes.fromhex("".join(all_blocks))
     nbytes = len(data)
-    print(f"blocks received: {len(all_blocks)}/{args.count} ({nbytes} bytes)")
+    print(f"{unit} received: {len(all_blocks)}/{args.count} ({nbytes} bytes)")
 
     results = []
 
@@ -209,15 +224,17 @@ def main():
         print(("PASS " if ok else "FAIL ") + name + (("  :: " + detail) if detail else ""))
 
     if nbytes < 1024 or failed:
-        check(f"received all {args.count} requested blocks", len(all_blocks) == args.count,
+        check(f"received all {args.count} requested {unit}", len(all_blocks) == args.count,
               f"got {len(all_blocks)}")
     else:
-        check(f"received all {args.count} requested blocks", len(all_blocks) == args.count,
+        check(f"received all {args.count} requested {unit}", len(all_blocks) == args.count,
               f"got {len(all_blocks)}")
         dup = len(all_blocks) - len(set(all_blocks))
-        check("no duplicate 24-byte blocks", dup == 0, f"{dup} duplicates")
-        zeros = sum(1 for b in all_blocks if b == "0" * BLOCK_HEX_LEN)
-        check("no all-zero blocks", zeros == 0, f"{zeros} zeros")
+        check(f"no duplicate {len(data)//len(all_blocks)}-byte {unit}", dup == 0,
+              f"{dup} duplicates")
+        hex_len = COND_HEX_LEN if args.cond else BLOCK_HEX_LEN
+        zeros = sum(1 for b in all_blocks if b == "0" * hex_len)
+        check(f"no all-zero {unit}", zeros == 0, f"{zeros} zeros")
 
         bits = [(b >> i) & 1 for b in data for i in range(8)]
         z = monobit_z(bits)
