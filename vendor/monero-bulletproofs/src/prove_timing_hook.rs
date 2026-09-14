@@ -24,6 +24,12 @@ pub(crate) const PHASE_WIP_FOLD: u8 = 6;
 pub(crate) const PHASE_WRAP_COMMITS: u8 = 7;
 pub(crate) const PHASE_WRAP_STATEMENT: u8 = 8;
 pub(crate) const PHASE_WRAP_CONSISTENCY: u8 = 9;
+// bp5 drill-down (2026-09-15): per-WIP-round L/R multiexp probes. Round r
+// (1-based) records its L multiexp at PHASE_WIP_L_BASE + r and its R at
+// PHASE_WIP_R_BASE + r, so each round's multiexp can be compared with the
+// clean ct_chunked bench for the same term count.
+pub(crate) const PHASE_WIP_L_BASE: u8 = 10;
+pub(crate) const PHASE_WIP_R_BASE: u8 = 20;
 
 static CLOCK_FN: AtomicU32 = AtomicU32::new(0);
 
@@ -56,18 +62,9 @@ impl PhaseProbe {
 }
 
 /// Accumulate elapsed ms per phase (wrapping add; smoke task reads and logs).
-static PHASE_MS: [AtomicU32; 10] = [
-    AtomicU32::new(0), // unused 0-index
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-];
+/// 32 slots: 1..=9 named above, 10+r / 20+r for the WIP round r L/R
+/// multiexp probes (r = 1..=8).
+static PHASE_MS: [AtomicU32; 32] = [const { AtomicU32::new(0) }; 32];
 
 pub(crate) fn record(phase: u8, ms: u32) {
     if (phase as usize) < PHASE_MS.len() {

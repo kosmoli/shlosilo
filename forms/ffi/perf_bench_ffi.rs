@@ -129,3 +129,32 @@ pub extern "C" fn shlosilo_perf_madd_affine(iters: u32) -> u64 {
         0
     }
 }
+
+/// Chunked CT multiexp with full-width scalars (in-situ shape): n terms,
+/// chunk terms per Straus call, `iters` repetitions.
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
+#[no_mangle]
+pub extern "C" fn shlosilo_perf_ct_chunked(n: u32, chunk: u32, iters: u32) -> u64 {
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::ct_chunked(n, chunk, iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
+}
+
+/// Vartime 2-term multiexp with full-width scalars (the fold shape).
+#[cfg_attr(not(feature = "perf-bench-ffi"), allow(unused_variables))]
+#[no_mangle]
+pub extern "C" fn shlosilo_perf_vartime_2term_fw(iters: u32) -> u64 {
+    #[cfg(feature = "perf-bench-ffi")]
+    {
+        pb::vartime_2term_fullwidth(iters)
+    }
+    #[cfg(not(feature = "perf-bench-ffi"))]
+    {
+        0
+    }
+}

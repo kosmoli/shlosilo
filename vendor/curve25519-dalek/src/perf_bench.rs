@@ -143,3 +143,54 @@ pub fn vartime_2term(iters: u32) -> u64 {
     }
     acc.compress().to_bytes()[0] as u64
 }
+
+/// Deterministic full-width scalar (the in-situ magnitude class: products of
+/// witness scalars, unlike the small `Scalar::from` values used above).
+fn full_width_scalar(seed: u64) -> Scalar {
+    let mut b = [0u8; 32];
+    let mut k = (seed as u8).wrapping_mul(31).wrapping_add(7);
+    for x in b.iter_mut() {
+        k = k.wrapping_mul(97).wrapping_add(53);
+        *x = k;
+    }
+    Scalar::from_bytes_mod_order(b)
+}
+
+/// Chunked constant-time multiexp with full-width scalars, mirroring the
+/// BP+ helper (monero-bulletproofs `core.rs::multiexp`): the n-term sum is
+/// split into chunks of `chunk` terms, each running its own Straus
+/// `multiscalar_mul`. Use this (not `ct_chunk`) to model the in-situ cost:
+/// the signing workload's scalars are full-width.
+pub fn ct_chunked(n: u32, chunk: u32, iters: u32) -> u64 {
+    let n = u64::from(n);
+    let chunk = u64::from(chunk).max(1);
+    let mut acc = EdwardsPoint::identity();
+    for it in 0..iters {
+        let mut off = 0;
+        while off < n {
+            let take = (n - off).min(chunk);
+            let scalars = (0..take).map(|i| full_width_scalar(i + off + u64::from(it) * 1000));
+            let points = repeat(ED25519_BASEPOINT_POINT).take(take as usize);
+            acc = &acc + &EdwardsPoint::multiscalar_mul(scalars, points);
+            off += take;
+        }
+    }
+    acc.compress().to_bytes()[0] as u64
+}
+
+/// One variable-time 2-term multiexp per iteration with full-width scalars
+/// (the bp6 fold shape; `vartime_2term` feeds ~17-bit scalars, which skip
+/// nearly every NAF addition and under-count the real fold cost).
+pub fn vartime_2term_fullwidth(iters: u32) -> u64 {
+    let s1 = full_width_scalar(0x1111);
+    let s2 = full_width_scalar(0x9999);
+    let mut acc = EdwardsPoint::identity();
+    for _ in 0..iters {
+        acc = &acc
+            + &EdwardsPoint::vartime_multiscalar_mul(
+                [black_box(s1), black_box(s2)],
+                [ED25519_BASEPOINT_POINT, ED25519_BASEPOINT_POINT],
+            );
+    }
+    acc.compress().to_bytes()[0] as u64
+}

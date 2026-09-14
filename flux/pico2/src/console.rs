@@ -289,7 +289,9 @@ impl ConsoleState {
             "[help]   xmrchunk <n>    BP+ multiexp chunk size (table placement; probe builds)"
         );
         #[cfg(feature = "perf-bench")]
-        log::info!("[help]   perfbench [name] [iters]  device primitive benchmarks (probe builds)");
+        log::info!(
+            "[help]   perfbench [name] ...  device primitive benchmarks; ctm <n> <chunk> <iters>, vt2f <iters>"
+        );
         log::info!("[help]   ur:xmr-txunsigned/...  signs with TRNG entropy (deferred job;");
         log::info!("[help]                   fetch the result with xmrout)");
         log::info!("[help]   psramtest       verify PSRAM r/w with patterns at 5 offsets;");
@@ -592,6 +594,36 @@ impl ConsoleState {
                 let it = warm(iters);
                 log::info!(
                     "[pf] ct{n} iters={it}: {us}us total, {per}us/chunk, dig={dig}",
+                    per = us / u64::from(it)
+                );
+            }
+            b"ctm" => {
+                // ctm <n> <chunk> <iters>: chunked CT multiexp with
+                // full-width scalars (the in-situ shape; see ct_chunked).
+                let mut w = args
+                    .split(|b: &u8| b.is_ascii_whitespace())
+                    .filter(|w| !w.is_empty());
+                let _ = w.next(); // "ctm"
+                let n = parse(w.next(), 130).clamp(1, 512);
+                let c = parse(w.next(), 12).clamp(1, 512);
+                let it = parse(w.next(), 1).clamp(1, 512);
+                let t0 = Instant::now();
+                let dig = pb::shlosilo_perf_ct_chunked(n, c, it);
+                let us = t0.elapsed().as_micros();
+                let chunks = n.div_ceil(c);
+                log::info!(
+                    "[pf] ctm n={n} chunk={c} iters={it}: {us}us total, {per_chunk}us/chunk, {per_term}us/term, dig={dig}",
+                    per_chunk = us / u64::from(chunks * it),
+                    per_term = us / u64::from(n * it)
+                );
+            }
+            b"vt2f" => {
+                let it = if iters > 0 { iters } else { 20 };
+                let t0 = Instant::now();
+                let dig = pb::shlosilo_perf_vartime_2term_fw(it);
+                let us = t0.elapsed().as_micros();
+                log::info!(
+                    "[pf] vt2f iters={it}: {us}us total, {per}us/op, dig={dig}",
                     per = us / u64::from(it)
                 );
             }

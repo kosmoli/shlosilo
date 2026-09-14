@@ -63,10 +63,11 @@ pub(crate) fn log_phases() {
         log::info!("{}", w.as_str());
     }
     {
-        let mut buf = [0u8; 320];
+        let mut buf = [0u8; 480];
         let mut w = crate::sign_smoke::BufWriter::new(&mut buf);
         let _ = write!(w, "[xt] bp:");
-        for p in 1..=9u8 {
+        // 1..=9 named phases; 11..=17 per-WIP-round L multiexps; 21..=27 R.
+        for p in 1..=27u8 {
             let v = shlosilo::ffi::prove_timing_ffi::shlosilo_bp_timing_phase(p);
             let _ = write!(w, " {p}={v}");
         }

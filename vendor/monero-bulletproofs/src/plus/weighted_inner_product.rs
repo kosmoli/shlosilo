@@ -4,7 +4,9 @@ use std_shims::{vec, vec::Vec};
 // vs generator folding). No-op stubs keep call sites unconditional; real impl is
 // feature-gated (mirrors aggregate_range_proof.rs pattern).
 #[cfg(feature = "prove-timing")]
-use crate::prove_timing_hook::{PhaseProbe, PHASE_WIP_FOLD, PHASE_WIP_L_R};
+use crate::prove_timing_hook::{
+    PhaseProbe, PHASE_WIP_FOLD, PHASE_WIP_L_BASE, PHASE_WIP_L_R, PHASE_WIP_R_BASE,
+};
 #[cfg(not(feature = "prove-timing"))]
 mod timing_noop {
     pub(crate) struct PhaseProbe(pub(crate) u8, pub(crate) u32);
@@ -235,8 +237,17 @@ impl WipStatement {
         let mut L_vec = vec![];
         let mut R_vec = vec![];
 
+        // bp5 drill-down (shlosilo, prove-timing): round counter for the
+        // per-round L/R multiexp probes.
+        #[cfg(feature = "prove-timing")]
+        let mut wip_round: u8 = 0;
+
         // else n > 1 case from figure 1
         while g_bold.len() > 1 {
+            #[cfg(feature = "prove-timing")]
+            {
+                wip_round += 1;
+            }
             let (a1, a2) = a.clone().split();
             let (b1, b2) = b.clone().split();
             let (g_bold1, g_bold2) = g_bold.split();
@@ -274,11 +285,15 @@ impl WipStatement {
             L_terms.push((c_l, g));
             L_terms.push((d_l, h));
             let lr_probe = PhaseProbe::start(PHASE_WIP_L_R);
+            #[cfg(feature = "prove-timing")]
+            let round_l = PhaseProbe::start(PHASE_WIP_L_BASE + wip_round);
             let L = CompressedPoint::from(
                 (multiexp(&L_terms) * INV_EIGHT.into())
                     .compress()
                     .to_bytes(),
             );
+            #[cfg(feature = "prove-timing")]
+            round_l.end();
             L_vec.push(L);
             L_terms.zeroize();
 
@@ -290,11 +305,15 @@ impl WipStatement {
                 .collect::<Vec<_>>();
             R_terms.push((c_r, g));
             R_terms.push((d_r, h));
+            #[cfg(feature = "prove-timing")]
+            let round_r = PhaseProbe::start(PHASE_WIP_R_BASE + wip_round);
             let R = CompressedPoint::from(
                 (multiexp(&R_terms) * INV_EIGHT.into())
                     .compress()
                     .to_bytes(),
             );
+            #[cfg(feature = "prove-timing")]
+            round_r.end();
             R_vec.push(R);
             R_terms.zeroize();
             lr_probe.end();
