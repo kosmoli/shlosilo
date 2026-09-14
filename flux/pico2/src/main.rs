@@ -127,6 +127,12 @@ bind_interrupts!(struct TrngIrqs {
 /// differently on the same silicon, the fault is in our reader (or in the
 /// state our bring-up leaves the block in); if it behaves the same, the
 /// fault is in the hardware/configuration understanding.
+///
+/// **Bench-only, and deliberately outside the trng::instance() discipline**:
+/// it initialises and configures the same peripheral with its own writable
+/// config, so it must not run concurrently with singleton consumers. The
+/// bench serializes console commands, which is the only thing that uses
+/// this; production firmware deletes it.
 static EMB_TRNG: embassy_sync::blocking_mutex::Mutex<
     embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
     core::cell::RefCell<Option<embassy_rp::trng::Trng<'static, embassy_rp::peripherals::TRNG>>>,
@@ -234,8 +240,9 @@ async fn main(spawner: Spawner) {
 
     let p = embassy_rp::init(Default::default());
 
-    // Bring up the hardware TRNG (checked path; see trng.rs for the design).
-    trng::init();
+    // Bring up the hardware TRNG through its singleton owner (see trng.rs;
+    // all register access is serialized through this instance).
+    trng::instance().lock().await.init();
 
     // Side-by-side upstream driver for bench cross-checks (see EMB_TRNG).
     EMB_TRNG.lock(|cell| {

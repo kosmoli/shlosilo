@@ -153,8 +153,8 @@ impl ConsoleState {
             b"heap" => self.cmd_heap(args),
             b"entropy" => self.cmd_entropy(args),
             b"trng" => return Some(parse_trng_job(args)),
-            b"trngdump" => self.cmd_trngdump(),
-            b"trngrst" => self.cmd_trngrst(),
+            b"trngdump" => return Some(TrngJob::simple(JobMode::Dump)),
+            b"trngrst" => return Some(TrngJob::simple(JobMode::Rst)),
             b"trngprobe" => return Some(parse_trng_probe(args)),
             b"trngemb" => return Some(parse_trng_emb(args)),
             _ => {
@@ -221,34 +221,6 @@ impl ConsoleState {
             let (used, free, peak) = crate::heap_stats();
             log::info!("[heap] used {used} free {free} peak {peak}");
         }
-    }
-
-    /// Raw TRNG register dump (bring-up diagnostics; see trng.rs).
-    fn cmd_trngdump(&self) {
-        let s = trng::snapshot();
-        log::info!(
-            "[tdump] isr=0x{:08x} imr=0x{:08x} busy=0x{:08x} valid=0x{:08x} cfg=0x{:08x} \
-             sample={} dbg=0x{:08x} srcen=0x{:08x} acstat=0x{:08x} swrst=0x{:08x} ver=0x{:08x}",
-            s.isr,
-            s.imr,
-            s.busy,
-            s.valid,
-            s.config,
-            s.sample_cnt1,
-            s.debug_control,
-            s.source_enable,
-            s.autocorr_stat,
-            s.sw_reset,
-            s.version
-        );
-    }
-
-    /// RESETS-block cycle on demand (A/B: is the peripheral reset cycle the
-    /// thing that leaves the block in a weird state?).
-    fn cmd_trngrst(&self) {
-        trng::reset_cycle();
-        trng::stop();
-        self.cmd_trngdump();
     }
 
     fn cmd_entropy(&mut self, args: &[u8]) {
@@ -470,6 +442,25 @@ enum JobMode {
     Probe,
     /// The upstream embassy driver (cross-check).
     Emb,
+    /// Raw register dump.
+    Dump,
+    /// RESETS-block cycle, then a dump.
+    Rst,
+}
+
+impl TrngJob {
+    /// A job with no parameters (dump / reset).
+    const fn simple(mode: JobMode) -> Self {
+        Self {
+            mode,
+            stress: false,
+            cond: false,
+            sample: None,
+            chain: None,
+            timeout_ms: 0,
+            count: 0,
+        }
+    }
 }
 
 /// Parse `trng [stress] [cond] [sample=<n>] [chain=<0-4>] [timeout=<ms>]
@@ -549,21 +540,51 @@ fn parse_trng_emb(args: &[u8]) -> TrngJob {
     }
 }
 
-/// Dispatch a deferred TRNG job.
+/// Dispatch a deferred TRNG job. All register access happens under the
+/// single trng::instance() lock (see trng.rs "Ownership").
 async fn run_trng_job(job: TrngJob) {
     match job.mode {
         JobMode::Stream => run_trng_stream(job).await,
         JobMode::Probe => run_trng_probe(job).await,
         JobMode::Emb => run_trng_emb(job).await,
+        JobMode::Dump => {
+            let t = trng::instance().lock().await;
+            log_snapshot(&t.snapshot());
+        }
+        JobMode::Rst => {
+            let mut t = trng::instance().lock().await;
+            t.reset_cycle();
+            t.stop();
+            log_snapshot(&t.snapshot());
+        }
     }
+}
+
+fn log_snapshot(s: &trng::RawSnapshot) {
+    log::info!(
+        "[tdump] isr=0x{:08x} imr=0x{:08x} busy=0x{:08x} valid=0x{:08x} cfg=0x{:08x} \
+         sample={} dbg=0x{:08x} srcen=0x{:08x} acstat=0x{:08x} swrst=0x{:08x} ver=0x{:08x}",
+        s.isr,
+        s.imr,
+        s.busy,
+        s.valid,
+        s.config,
+        s.sample_cnt1,
+        s.debug_control,
+        s.source_enable,
+        s.autocorr_stat,
+        s.sw_reset,
+        s.version
+    );
 }
 
 /// Trace BUSY/ISR transitions after a cold start (bring-up diagnostic: shows
 /// exactly when the state machine latches, and whether it ever generates).
 async fn run_trng_probe(job: TrngJob) {
-    trng::cold_start();
+    let mut t = trng::instance().lock().await;
+    t.cold_start();
     let t0 = Instant::now();
-    let mut last = (trng::busy_flag(), trng::isr_raw());
+    let mut last = (t.busy_flag(), t.isr_raw());
     log::info!("[tprobe] begin busy={} isr=0x{:08x}", last.0, last.1);
     let mut transitions: u32 = 0;
     loop {
@@ -571,7 +592,7 @@ async fn run_trng_probe(job: TrngJob) {
         if now - t0 >= embassy_time::Duration::from_millis(job.count as u64) {
             break;
         }
-        let cur = (trng::busy_flag(), trng::isr_raw());
+        let cur = (t.busy_flag(), t.isr_raw());
         if cur != last {
             transitions += 1;
             log::info!(
@@ -585,7 +606,7 @@ async fn run_trng_probe(job: TrngJob) {
         yield_now().await;
     }
     let now = Instant::now();
-    let cur = (trng::busy_flag(), trng::isr_raw());
+    let cur = (t.busy_flag(), t.isr_raw());
     log::info!(
         "[tprobe] end +{}us busy={} isr=0x{:08x} transitions={}",
         (now - t0).as_micros(),
@@ -593,7 +614,7 @@ async fn run_trng_probe(job: TrngJob) {
         cur.1,
         transitions
     );
-    trng::stop();
+    t.stop();
 }
 
 /// Cross-check through the upstream embassy driver (see EMB_TRNG in main).
@@ -629,18 +650,19 @@ async fn run_trng_emb(job: TrngJob) {
 /// overrides exist for characterisation sweeps on the bench; the job
 /// restores the defaults on exit either way.
 async fn run_trng_stream(job: TrngJob) {
+    let mut t = trng::instance().lock().await;
     let sample = if job.stress {
         2
     } else {
         job.sample.unwrap_or(trng::DEFAULT_SAMPLE_COUNT)
     };
     let chain = job.chain.unwrap_or(trng::DEFAULT_CHAIN_LEN);
-    trng::set_sample_count(sample);
-    trng::set_chain_len(chain);
+    t.set_sample_count(sample);
+    t.set_chain_len(chain);
     let (ver, ac_fails, ac_trys) = (
-        trng::version(),
-        trng::autocorr_statistic().0,
-        trng::autocorr_statistic().1,
+        t.version(),
+        t.autocorr_statistic().0,
+        t.autocorr_statistic().1,
     );
     log::info!(
         "[trng] start: n={} cond={} sample={} chain={} timeout={}ms ver=0x{:08x} acstat={}/{}",
@@ -661,7 +683,7 @@ async fn run_trng_stream(job: TrngJob) {
 
     for _ in 0..job.count {
         let read = if job.cond {
-            match trng::read_conditioned32(&mut stats, job.timeout_ms).await {
+            match t.conditioned32(&mut stats, job.timeout_ms).await {
                 Ok(out) => {
                     log::info!("[trng] {}", sign_smoke::to_hex(&out, &mut hex));
                     Ok(())
@@ -669,7 +691,7 @@ async fn run_trng_stream(job: TrngJob) {
                 Err(e) => Err(e),
             }
         } else {
-            match trng::read_block(&mut stats, job.timeout_ms).await {
+            match t.read_block(&mut stats, job.timeout_ms).await {
                 Ok(block) => {
                     log::info!(
                         "[trng] {}",
@@ -688,8 +710,8 @@ async fn run_trng_stream(job: TrngJob) {
         // here keeps the logger's sender draining between delivered outputs.
         yield_now().await;
     }
-    trng::stop();
-    trng::restore_default_config();
+    t.stop();
+    t.restore_default_config();
 
     let ms = t0.elapsed().as_millis();
     let per_block_us = if stats.blocks > 0 {
@@ -697,7 +719,7 @@ async fn run_trng_stream(job: TrngJob) {
     } else {
         0
     };
-    let (ac_fails, ac_trys) = trng::autocorr_statistic();
+    let (ac_fails, ac_trys) = t.autocorr_statistic();
     let mode = if job.cond { "cond outputs" } else { "blocks" };
     match error {
         None => log::info!(

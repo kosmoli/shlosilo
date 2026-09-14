@@ -173,8 +173,20 @@ the configuration, re-enable), bounded time budget, `Result` with counters.
 two consecutive accepted raw blocks (2 × 192 = 384 health-checked raw bits
 → 256 output bits). The hardware health checks stay enabled as the source
 monitor; conditioning removes the residual structure from what consumers
-see — the datasheet-sanctioned fix and the standard source → conditioner
-pattern (NIST SP 800-90B).
+see — a conditioning design consistent with the datasheet's rationale.
+SHA-256 is a vetted conditioning component in the SP 800-90B taxonomy;
+note the bootrom's variant hashes **raw** samples with all internal
+checking and conditioning bypassed, whereas this reader keeps the three
+health checks enabled and conditions accepted blocks (a different
+instantiation of the same rationale).
+
+**No entropy-accounting claim**: 256 output bits is a bit count, not a
+min-entropy statement — a vetted conditioner redistributes entropy and
+cannot create it. A conservative min-entropy bound for the output requires
+an SP 800-90B non-IID assessment of the raw noise source; that (together
+with multi-board / temperature / voltage / restart coverage and the
+current operating point being characterised on this board only) is an open
+item for the entropy-assurance milestone.
 
 Verified on hardware (2026-09-14, same session A/B, 512 units each):
 conditioned outputs pass the full quality suite (runs z **+1.30**, chi2
@@ -186,7 +198,9 @@ Design consequences baked in: the source lifecycle is job-scoped (a
 per-block restart drives the block into the sticky state); a fresh start
 flushes stale status bits (a leftover EHR_VALID with zeroed data once
 produced a phantom all-zero first block); all-zero reads are rejected and
-retried (a failed check presents no result); patience is a **time budget**
+retried as a **hardware-fault sentinel** (a failed check presents no
+result — the registers read 0; the excluded value biases the output by
+~2^-192, negligible); patience is a **time budget**
 (10 s/block default), not an attempt count — the measured latch-recovery
 cycle is sub-millisecond, so attempt counts expire in tens of milliseconds
 while a stressed block may need seconds; the reader awaits between retry
@@ -209,7 +223,14 @@ python3 flux/pico2/bench/trng_test.py --stress   # failure-prone config, expect 
 
 These are single-run sanity checks, not a certification — the hardware
 checks are the primary defense. The signing-path consumer (XMR randomness
-injection, §B.5 entropy parameter) uses `read_conditioned32`.
+injection, §B.5 entropy parameter) will use `read_conditioned32`; wiring
+that path (and the entropy-assurance work above) is the next milestone —
+it is not connected yet.
+
+All TRNG access is serialized through a single owner (`trng::instance()`,
+an async mutex over one `Trng`): the "two consecutive accepted blocks
+belong to one conditioner invocation" guarantee is structural, not a
+caller convention.
 
 ## Status
 
@@ -221,7 +242,9 @@ ETH fixture (full hex match) and the 12.4 KiB Sparrow signet PSBT as 32
 multipart fragments (12447-byte signed output, sha256 match).
 
 The hardware TRNG is characterised: checked operating point chain 4 /
-sample 200, conditioned consumer path verified (see above).
+sample 200, conditioned consumer path verified, single-owner access (see
+above). Entropy accounting (SP 800-90B assessment of the raw source) and
+multi-board/environment validation are open items.
 
 Next steps: XMR randomness injection from the TRNG (the §B.5 entropy
 parameter), heap sizing for the XMR path, then QR (camera) input in place

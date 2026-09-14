@@ -1,4 +1,4 @@
-//! Blocking RP2350 TRNG reader (checked path).
+//! Blocking RP2350 TRNG reader (checked path) + SHA-256 conditioner.
 //!
 //! Why not `embassy_rp::trng::blocking_fill_bytes`: its blocking wait path
 //! panics whenever a run ends without a result for any reason other than
@@ -8,6 +8,16 @@
 //! panic = abort that path would eventually kill this firmware. This module
 //! is the same policy as embassy's *async* path (reinitialize and restart on
 //! failure) in blocking form, with counters and a `Result`.
+//!
+//! ## Ownership
+//!
+//! All TRNG access goes through the single [`instance`] (an async mutex over
+//! one [`Trng`] owner): the "two consecutive accepted blocks belong to one
+//! conditioner invocation" guarantee is structural, not a caller
+//! convention - a second consumer waits for the current operation instead of
+//! interleaving MMIO accesses. (A dedicated entropy service task built on
+//! this singleton is the natural production evolution; the singleton is the
+//! substrate either way.)
 //!
 //! ## Measured behaviour on this silicon (RP2350, 2026-09-14 bring-up)
 //!
@@ -22,6 +32,8 @@
 //!   consecutive blocks, zero CRNGT / VN / autocorrelation failures, ~1.05 ms
 //!   per accepted block (measured; the sweep knobs below found this point).
 //!   These are the defaults; both stay runtime-tunable for other silicon.
+//!   This operating point is characterised on THIS board only - validation
+//!   across boards, temperature/voltage/load, and restart is an open item.
 //! - The raw stream carries a **condition-dependent adjacent-bit
 //!   correlation** (bit pairs equal ~50.0-52% instead of 50%): clean for the
 //!   first ~8 blocks of an activation, degrading into clustering with longer
@@ -29,10 +41,21 @@
 //!   across sessions, extraction independently validated against synthetic
 //!   data). This matches the datasheet's own caveat that the TRNG's
 //!   conditioning logic has pitfalls, "most notably the von Neumann
-//!   decorrelator", which the RP2350 bootrom avoids by hashing raw samples.
-//!   Consumers therefore use `read_conditioned32` (SHA-256 over two accepted
-//!   blocks; the standard source -> conditioner pattern), while the hardware
-//!   health checks remain enabled as the source monitor.
+//!   decorrelator" - which the bootrom addresses by hashing raw samples with
+//!   all internal checking and conditioning bypassed, a different
+//!   instantiation from this one (see `conditioned32`).
+//!
+//! ## Entropy accounting (not yet established)
+//!
+//! `conditioned32` produces 32 output bytes; that is a **bit count, not a
+//! min-entropy claim**. A vetted conditioner redistributes entropy and
+//! cannot create it: the output's min-entropy depends on the raw source's
+//! assessed min-entropy (NIST SP 800-90B's `n_in` / `h_in` model). What is
+//! established here: the conditioner removes all structure the current test
+//! suite can observe, on verified-clean input. A conservative min-entropy
+//! lower bound requires an SP 800-90B non-IID assessment of the raw noise
+//! source - an open item, alongside multi-board / environment / restart
+//! coverage.
 //!
 //! ## Design
 //!
@@ -43,9 +66,10 @@
 //!   per block (an earlier version's mistake) drives the block into the
 //!   sticky-failure state;
 //! - a fresh start flushes stale status (EHR_VALID / CRNGT / VN bits can
-//!   survive from an earlier user of the block) and all-zero blocks are
-//!   rejected and retried (datasheet: a failed check presents no results -
-//!   the EHR registers read 0 - so a zero block is never a valid read);
+//!   survive from an earlier user of the block); all-zero reads are treated
+//!   as a hardware-fault sentinel (datasheet: a failed check presents no
+//!   result - the registers read 0) and retried. Excluding one value biases
+//!   the output by ~2^-192, which is negligible;
 //! - recovery on autocorrelation failure (the sticky one): stop the source,
 //!   reset the autocorrelation statistics counters, pulse the software
 //!   reset, re-apply the configuration, clear the clearable flags, re-enable;
@@ -59,11 +83,12 @@
 //! - `read_block` returns `Err` on timeout; it can never hang or abort.
 
 use core::hint::spin_loop;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use embassy_futures::yield_now;
 use embassy_rp::pac;
 use embassy_rp::pac::trng::Trng as TrngRegs;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant};
 
 /// Bytes per accepted 192-bit entropy block (datasheet 12.12.1).
@@ -115,272 +140,320 @@ pub enum TrngError {
     Conditioner,
 }
 
-// ── configuration (runtime-tunable for characterisation sweeps) ──
-
-static CONFIG_SAMPLE: AtomicU32 = AtomicU32::new(DEFAULT_SAMPLE_COUNT);
-static CONFIG_CHAIN: AtomicU8 = AtomicU8::new(DEFAULT_CHAIN_LEN);
-/// True while the entropy source is enabled (job-scoped; see module docs).
-static SOURCE_RUNNING: AtomicBool = AtomicBool::new(false);
-
-fn regs() -> TrngRegs {
-    pac::TRNG
+/// The single TRNG owner. All operations go through [`instance`].
+pub struct Trng {
+    source_running: bool,
+    sample: u32,
+    chain: u8,
 }
 
-/// One-time bring-up: clean block reset, then the operating configuration.
-/// Call once at boot, before any TRNG use.
-pub fn init() {
-    // The block's RESETS state at boot is not contractually defined for this
-    // peripheral; give it a clean reset edge and wait for completion.
-    pac::RESETS.reset().modify(|v| v.set_trng(true));
-    let _ = pac::RESETS.reset().read();
-    pac::RESETS.reset().modify(|v| v.set_trng(false));
-    while !pac::RESETS.reset_done().read().trng() {}
-
-    let regs = regs();
-    write_config(&regs);
-    regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
-    SOURCE_RUNNING.store(false, Ordering::Relaxed);
-}
-
-fn write_config(regs: &TrngRegs) {
-    // All three entropy checks enabled (explicit `false` = not bypassed).
-    regs.trng_debug_control().write(|w| {
-        w.set_auto_correlate_bypass(false);
-        w.set_trng_crngt_bypass(false);
-        w.set_vnc_bypass(false);
-    });
-    regs.trng_config()
-        .write(|w| w.set_rnd_src_sel(CONFIG_CHAIN.load(Ordering::Relaxed)));
-    regs.sample_cnt1()
-        .write(|w| *w = CONFIG_SAMPLE.load(Ordering::Relaxed));
-}
-
-/// Sample-count override (characterisation sweeps).
-pub fn set_sample_count(n: u32) {
-    CONFIG_SAMPLE.store(n, Ordering::Relaxed);
-    regs().sample_cnt1().write(|w| *w = n);
-}
-
-/// ROSC inverter-chain-length override (0..=4).
-pub fn set_chain_len(len: u8) {
-    let len = len.min(4);
-    CONFIG_CHAIN.store(len, Ordering::Relaxed);
-    regs().trng_config().write(|w| w.set_rnd_src_sel(len));
-}
-
-/// Restore the measured operating point.
-pub fn restore_default_config() {
-    set_sample_count(DEFAULT_SAMPLE_COUNT);
-    set_chain_len(DEFAULT_CHAIN_LEN);
-}
-
-/// RNG_VERSION register (IP revision).
-pub fn version() -> u32 {
-    regs().rng_version().read().0
-}
-
-/// AUTOCORR_STATISTIC register: (fails, trys) since the last write to it.
-pub fn autocorr_statistic() -> (u8, u16) {
-    let raw = regs().autocorr_statistic().read().0;
-    (((raw >> 14) & 0xff) as u8, (raw & 0x3fff) as u16)
-}
-
-fn start_source(regs: &TrngRegs) {
-    regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
-    let _ = regs.rnd_source_enable().read();
-    regs.rst_bits_counter()
-        .write(|w| w.set_rst_bits_counter(true));
-    let _ = regs.rnd_source_enable().read();
-    // Flush stale status from an earlier user of the block: a leftover
-    // EHR_VALID with zeroed data registers used to produce a phantom
-    // all-zero "block" as the first read of a job.
-    regs.rng_icr().write(|w| {
-        w.set_ehr_valid(true);
-        w.set_crngt_err(true);
-        w.set_vn_err(true);
-    });
-    regs.rnd_source_enable().write(|w| w.set_rnd_src_en(true));
-    SOURCE_RUNNING.store(true, Ordering::Relaxed);
-}
-
-/// Stop the entropy source (block idle, low power). Called at job end.
-pub fn stop() {
-    let regs = regs();
-    regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
-    regs.rst_bits_counter()
-        .write(|w| w.set_rst_bits_counter(true));
-    SOURCE_RUNNING.store(false, Ordering::Relaxed);
-}
-
-/// Full recovery for the sticky autocorrelation failure: stop the source,
-/// clear the statistics counters, pulse the soft reset, re-apply the
-/// configuration, clear the clearable flags, re-enable.
-fn recover(regs: &TrngRegs) {
-    regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
-    let _ = regs.rnd_source_enable().read();
-    // "Any write to the register reset the counter" (AUTOCORR_STATISTIC).
-    regs.autocorr_statistic()
-        .write(|w| *w = pac::trng::regs::AutocorrStatistic(0));
-    // Internal RNG reset (the only thing that clears AUTOCORR_ERR); a fixed
-    // delay is required afterwards - the register reads are that delay.
-    regs.trng_sw_reset().write(|w| w.set_trng_sw_reset(true));
-    let _ = regs.trng_sw_reset().read();
-    let _ = regs.trng_sw_reset().read();
-    write_config(regs);
-    regs.rng_icr().write(|w| {
-        w.set_ehr_valid(true);
-        w.set_crngt_err(true);
-        w.set_vn_err(true);
-    });
-    start_source(regs);
-}
-
-/// Read one accepted 192-bit block, retrying failed runs within
-/// `timeout_ms`. `Err` on timeout - never hangs, never aborts.
-pub async fn read_block(
-    stats: &mut TrngStats,
-    timeout_ms: u64,
-) -> Result<[u8; BLOCK_LEN], TrngError> {
-    let regs = regs();
-    if !SOURCE_RUNNING.load(Ordering::Relaxed) {
-        start_source(&regs);
+impl Trng {
+    const fn new() -> Self {
+        Self {
+            source_running: false,
+            sample: DEFAULT_SAMPLE_COUNT,
+            chain: DEFAULT_CHAIN_LEN,
+        }
     }
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut failures = 0u32;
 
-    loop {
-        if Instant::now() >= deadline {
-            return Err(TrngError::Timeout);
-        }
-        if failures >= MAX_FAILED_ATTEMPTS {
-            return Err(TrngError::Timeout);
-        }
+    /// One-time bring-up: clean block reset, then the operating
+    /// configuration. Call once at boot, before any TRNG use.
+    pub fn init(&mut self) {
+        // The block's RESETS state at boot is not contractually defined for
+        // this peripheral; give it a clean reset edge and wait for
+        // completion.
+        pac::RESETS.reset().modify(|v| v.set_trng(true));
+        let _ = pac::RESETS.reset().read();
+        pac::RESETS.reset().modify(|v| v.set_trng(false));
+        while !pac::RESETS.reset_done().read().trng() {}
 
-        // Phase 1: wait for the run to become visible — BUSY rising, or
-        // already-terminated status.
-        let mut spins = 0u32;
-        let mut running = false;
+        let regs = regs();
+        self.write_config(&regs);
+        regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
+        self.source_running = false;
+    }
+
+    fn write_config(&self, regs: &TrngRegs) {
+        // All three entropy checks enabled (explicit `false` = not bypassed).
+        regs.trng_debug_control().write(|w| {
+            w.set_auto_correlate_bypass(false);
+            w.set_trng_crngt_bypass(false);
+            w.set_vnc_bypass(false);
+        });
+        regs.trng_config().write(|w| w.set_rnd_src_sel(self.chain));
+        regs.sample_cnt1().write(|w| *w = self.sample);
+    }
+
+    /// Sample-count override (characterisation sweeps).
+    pub fn set_sample_count(&mut self, n: u32) {
+        self.sample = n;
+        regs().sample_cnt1().write(|w| *w = n);
+    }
+
+    /// ROSC inverter-chain-length override (0..=4).
+    pub fn set_chain_len(&mut self, len: u8) {
+        let len = len.min(4);
+        self.chain = len;
+        regs().trng_config().write(|w| w.set_rnd_src_sel(len));
+    }
+
+    /// Restore the measured operating point.
+    pub fn restore_default_config(&mut self) {
+        self.set_sample_count(DEFAULT_SAMPLE_COUNT);
+        self.set_chain_len(DEFAULT_CHAIN_LEN);
+    }
+
+    /// RNG_VERSION register (IP revision).
+    pub fn version(&self) -> u32 {
+        regs().rng_version().read().0
+    }
+
+    /// AUTOCORR_STATISTIC register: (fails, trys) since the last write to it.
+    pub fn autocorr_statistic(&self) -> (u8, u16) {
+        let raw = regs().autocorr_statistic().read().0;
+        (((raw >> 14) & 0xff) as u8, (raw & 0x3fff) as u16)
+    }
+
+    fn start_source(&mut self, regs: &TrngRegs) {
+        regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
+        let _ = regs.rnd_source_enable().read();
+        regs.rst_bits_counter()
+            .write(|w| w.set_rst_bits_counter(true));
+        let _ = regs.rnd_source_enable().read();
+        // Flush stale status from an earlier user of the block: a leftover
+        // EHR_VALID with zeroed data registers used to produce a phantom
+        // all-zero "block" as the first read of a job.
+        regs.rng_icr().write(|w| {
+            w.set_ehr_valid(true);
+            w.set_crngt_err(true);
+            w.set_vn_err(true);
+        });
+        regs.rnd_source_enable().write(|w| w.set_rnd_src_en(true));
+        self.source_running = true;
+    }
+
+    /// Stop the entropy source (block idle, low power). Called at job end.
+    pub fn stop(&mut self) {
+        let regs = regs();
+        regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
+        regs.rst_bits_counter()
+            .write(|w| w.set_rst_bits_counter(true));
+        self.source_running = false;
+    }
+
+    /// Full recovery for the sticky autocorrelation failure: stop the source,
+    /// clear the statistics counters, pulse the soft reset, re-apply the
+    /// configuration, clear the clearable flags, re-enable.
+    fn recover(&mut self, regs: &TrngRegs) {
+        regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
+        let _ = regs.rnd_source_enable().read();
+        // "Any write to the register reset the counter" (AUTOCORR_STATISTIC).
+        regs.autocorr_statistic()
+            .write(|w| *w = pac::trng::regs::AutocorrStatistic(0));
+        // Internal RNG reset (the only thing that clears AUTOCORR_ERR); a
+        // fixed delay is required afterwards - the register reads are that
+        // delay.
+        regs.trng_sw_reset().write(|w| w.set_trng_sw_reset(true));
+        let _ = regs.trng_sw_reset().read();
+        let _ = regs.trng_sw_reset().read();
+        self.write_config(regs);
+        regs.rng_icr().write(|w| {
+            w.set_ehr_valid(true);
+            w.set_crngt_err(true);
+            w.set_vn_err(true);
+        });
+        self.start_source(regs);
+    }
+
+    /// Read one accepted 192-bit block, retrying failed runs within
+    /// `timeout_ms`. `Err` on timeout - never hangs, never aborts.
+    pub async fn read_block(
+        &mut self,
+        stats: &mut TrngStats,
+        timeout_ms: u64,
+    ) -> Result<[u8; BLOCK_LEN], TrngError> {
+        let regs = regs();
+        if !self.source_running {
+            self.start_source(&regs);
+        }
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut failures = 0u32;
+
         loop {
-            let isr = regs.rng_isr().read();
-            if isr.ehr_valid() || isr.autocorr_err() || isr.crngt_err() || isr.vn_err() {
-                break;
+            if Instant::now() >= deadline {
+                return Err(TrngError::Timeout);
             }
-            if regs.trng_busy().read().trng_busy() {
-                running = true;
-                break;
+            if failures >= MAX_FAILED_ATTEMPTS {
+                return Err(TrngError::Timeout);
             }
-            spins += 1;
-            if spins > BUSY_SIGNAL_SPINS {
-                stats.busy_timeouts += 1;
-                return Err(TrngError::BusyTimeout);
-            }
-        }
 
-        // Phase 2: a running generation must conclude.
-        if running {
-            spins = 0;
-            while regs.trng_busy().read().trng_busy() {
+            // Phase 1: wait for the run to become visible — BUSY rising, or
+            // already-terminated status.
+            let mut spins = 0u32;
+            let mut running = false;
+            loop {
+                let isr = regs.rng_isr().read();
+                if isr.ehr_valid() || isr.autocorr_err() || isr.crngt_err() || isr.vn_err() {
+                    break;
+                }
+                if regs.trng_busy().read().trng_busy() {
+                    running = true;
+                    break;
+                }
                 spins += 1;
-                if spins > BUSY_FALL_SPINS {
+                if spins > BUSY_SIGNAL_SPINS {
                     stats.busy_timeouts += 1;
                     return Err(TrngError::BusyTimeout);
                 }
             }
-            for _ in 0..SETTLE_SPINS {
-                spin_loop();
-            }
-        }
 
-        // Phase 3: dispatch on the run's outcome.
-        let isr = regs.rng_isr().read();
-        if isr.ehr_valid() {
-            let mut block = [0u8; BLOCK_LEN];
-            read_ehr(&regs, &mut block);
-            // Clear the status bit so the next attempt cannot mistake a
-            // stale latch for a fresh result.
-            regs.rng_icr().write(|w| w.set_ehr_valid(true));
-            if block.iter().all(|&b| b == 0) {
-                // A failed check presents no results (datasheet 12.12.3):
-                // a zero block is never a valid read. Retry.
-                stats.zero_blocks += 1;
+            // Phase 2: a running generation must conclude.
+            if running {
+                spins = 0;
+                while regs.trng_busy().read().trng_busy() {
+                    spins += 1;
+                    if spins > BUSY_FALL_SPINS {
+                        stats.busy_timeouts += 1;
+                        return Err(TrngError::BusyTimeout);
+                    }
+                }
+                for _ in 0..SETTLE_SPINS {
+                    spin_loop();
+                }
+            }
+
+            // Phase 3: dispatch on the run's outcome.
+            let isr = regs.rng_isr().read();
+            if isr.ehr_valid() {
+                let mut block = [0u8; BLOCK_LEN];
+                read_ehr(&regs, &mut block);
+                // Clear the status bit so the next attempt cannot mistake a
+                // stale latch for a fresh result.
+                regs.rng_icr().write(|w| w.set_ehr_valid(true));
+                if block.iter().all(|&b| b == 0) {
+                    // Hardware-state fault sentinel: a failed check presents
+                    // no result (datasheet 12.12.3), so zeroed registers mean
+                    // the read is not evidence of a generated block. The
+                    // excluded value biases the output by ~2^-192,
+                    // negligible.
+                    stats.zero_blocks += 1;
+                    failures += 1;
+                    continue;
+                }
+                stats.blocks += 1;
+                return Ok(block);
+            }
+            if isr.autocorr_err() {
+                stats.autocorr_err += 1;
                 failures += 1;
+                self.recover(&regs);
+                yield_now().await;
                 continue;
             }
-            stats.blocks += 1;
-            return Ok(block);
-        }
-        if isr.autocorr_err() {
-            stats.autocorr_err += 1;
-            failures += 1;
-            recover(&regs);
-            yield_now().await;
-            continue;
-        }
-        if isr.crngt_err() || isr.vn_err() {
-            if isr.crngt_err() {
-                stats.crngt_err += 1;
+            if isr.crngt_err() || isr.vn_err() {
+                if isr.crngt_err() {
+                    stats.crngt_err += 1;
+                }
+                if isr.vn_err() {
+                    stats.vn_err += 1;
+                }
+                failures += 1;
+                // Not terminal for the block: clear and keep waiting.
+                regs.rng_icr().write(|w| {
+                    w.set_crngt_err(true);
+                    w.set_vn_err(true);
+                });
+                yield_now().await;
+                continue;
             }
-            if isr.vn_err() {
-                stats.vn_err += 1;
-            }
+            // No result, no error: not a documented terminal state; recover.
+            stats.odd_states += 1;
             failures += 1;
-            // Not terminal for the block: clear and keep waiting.
-            regs.rng_icr().write(|w| {
-                w.set_crngt_err(true);
-                w.set_vn_err(true);
-            });
+            self.recover(&regs);
             yield_now().await;
-            continue;
         }
-        // No result, no error: not a documented terminal state; recover.
-        stats.odd_states += 1;
-        failures += 1;
-        recover(&regs);
-        yield_now().await;
+    }
+
+    /// Read one 32-byte conditioned output: SHA-256 over two consecutive
+    /// accepted raw blocks (2 x 192 = 384 raw bits in, 256 out).
+    ///
+    /// Why conditioning: the raw checked-path stream carries a measured,
+    /// condition-dependent adjacent-bit correlation (see the module docs and
+    /// the README bring-up notes) - an artifact of the hardware conditioning
+    /// chain, which the datasheet names as a known pitfall of the Von Neumann
+    /// decorrelator. Hashing is a conditioning design consistent with the
+    /// datasheet's rationale; note the bootrom's variant hashes RAW samples
+    /// with all internal checking and conditioning bypassed, whereas this
+    /// reader keeps the three health checks enabled and conditions accepted
+    /// blocks (a different instantiation of the same rationale). SHA-256 is
+    /// a vetted conditioning component in the SP 800-90B taxonomy - and as
+    /// with any conditioner, it redistributes entropy rather than creating
+    /// it: no min-entropy claim is made for the output (see "Entropy
+    /// accounting" in the module docs).
+    ///
+    /// Callers must hold the [`instance`] guard across the whole call so
+    /// both blocks belong to one invocation (the API enforces this by taking
+    /// `&mut self`).
+    pub async fn conditioned32(
+        &mut self,
+        stats: &mut TrngStats,
+        timeout_ms: u64,
+    ) -> Result<[u8; 32], TrngError> {
+        let a = self.read_block(stats, timeout_ms).await?;
+        let b = self.read_block(stats, timeout_ms).await?;
+        let mut buf = [0u8; BLOCK_LEN * 2];
+        buf[..BLOCK_LEN].copy_from_slice(&a);
+        buf[BLOCK_LEN..].copy_from_slice(&b);
+        shlosilo::encoding::sha256::hash(&buf).map_err(|_| TrngError::Conditioner)
+    }
+
+    // ── bring-up diagnostics (bench firmware) ──
+
+    /// Raw register snapshot (all values as read from hardware).
+    pub fn snapshot(&self) -> RawSnapshot {
+        let regs = regs();
+        RawSnapshot {
+            isr: regs.rng_isr().read().0,
+            imr: regs.rng_imr().read().0,
+            busy: regs.trng_busy().read().0,
+            valid: regs.trng_valid().read().0,
+            config: regs.trng_config().read().0,
+            sample_cnt1: regs.sample_cnt1().read(),
+            debug_control: regs.trng_debug_control().read().0,
+            source_enable: regs.rnd_source_enable().read().0,
+            autocorr_stat: regs.autocorr_statistic().read().0,
+            sw_reset: regs.trng_sw_reset().read().0,
+            version: regs.rng_version().read().0,
+        }
+    }
+
+    /// TRNG_BUSY flag alone (hot-path probe point).
+    pub fn busy_flag(&self) -> bool {
+        regs().trng_busy().read().trng_busy()
+    }
+
+    /// RNG_ISR raw value (hot-path probe point).
+    pub fn isr_raw(&self) -> u32 {
+        regs().rng_isr().read().0
+    }
+
+    /// The RESETS-block cycle from `init()`, on demand (A/B probe).
+    pub fn reset_cycle(&mut self) {
+        pac::RESETS.reset().modify(|v| v.set_trng(true));
+        let _ = pac::RESETS.reset().read();
+        pac::RESETS.reset().modify(|v| v.set_trng(false));
+        while !pac::RESETS.reset_done().read().trng() {}
+        self.source_running = false;
+    }
+
+    /// Cold start: stop, re-apply the configuration, enable the source.
+    pub fn cold_start(&mut self) {
+        self.stop();
+        let regs = regs();
+        self.write_config(&regs);
+        self.start_source(&regs);
     }
 }
-
-/// Read the six EHR registers into `block`. Order matters: reading
-/// EHR_DATA[5] clears all result registers and restarts sampling.
-fn read_ehr(regs: &TrngRegs, block: &mut [u8; BLOCK_LEN]) {
-    let ehr = [
-        regs.ehr_data0(),
-        regs.ehr_data1(),
-        regs.ehr_data2(),
-        regs.ehr_data3(),
-        regs.ehr_data4(),
-        regs.ehr_data5(),
-    ];
-    for (i, reg) in ehr.iter().enumerate() {
-        block[i * 4..i * 4 + 4].copy_from_slice(&reg.read().to_ne_bytes());
-    }
-}
-
-/// Read one 32-byte conditioned output: SHA-256 over two consecutive
-/// accepted raw blocks (2 x 192 = 384 raw bits in, 256 out).
-///
-/// Why conditioning: the raw checked-path stream carries a measured,
-/// condition-dependent adjacent-bit correlation (see the module docs and
-/// the README bring-up notes) - an artifact of the hardware conditioning
-/// chain, which the datasheet names as a known pitfall of the Von Neumann
-/// decorrelator; the RP2350 bootrom avoids it by hashing samples. Hashing
-/// two health-checked blocks per output is the datasheet-sanctioned fix and
-/// the standard source -> conditioner pattern (NIST SP 800-90B).
-pub async fn read_conditioned32(
-    stats: &mut TrngStats,
-    timeout_ms: u64,
-) -> Result<[u8; 32], TrngError> {
-    let a = read_block(stats, timeout_ms).await?;
-    let b = read_block(stats, timeout_ms).await?;
-    let mut buf = [0u8; BLOCK_LEN * 2];
-    buf[..BLOCK_LEN].copy_from_slice(&a);
-    buf[BLOCK_LEN..].copy_from_slice(&b);
-    shlosilo::encoding::sha256::hash(&buf).map_err(|_| TrngError::Conditioner)
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Bring-up diagnostics (bench firmware only)
-// ─────────────────────────────────────────────────────────────────────────
 
 /// Raw register snapshot (all values as read from hardware).
 #[derive(Clone, Copy, Debug, Default)]
@@ -398,46 +471,29 @@ pub struct RawSnapshot {
     pub version: u32,
 }
 
-pub fn snapshot() -> RawSnapshot {
-    let regs = regs();
-    RawSnapshot {
-        isr: regs.rng_isr().read().0,
-        imr: regs.rng_imr().read().0,
-        busy: regs.trng_busy().read().0,
-        valid: regs.trng_valid().read().0,
-        config: regs.trng_config().read().0,
-        sample_cnt1: regs.sample_cnt1().read(),
-        debug_control: regs.trng_debug_control().read().0,
-        source_enable: regs.rnd_source_enable().read().0,
-        autocorr_stat: regs.autocorr_statistic().read().0,
-        sw_reset: regs.trng_sw_reset().read().0,
-        version: regs.rng_version().read().0,
+/// The single TRNG owner. Every consumer takes this guard; register access
+/// from outside the module is not possible.
+pub fn instance() -> &'static Mutex<CriticalSectionRawMutex, Trng> {
+    static INSTANCE: Mutex<CriticalSectionRawMutex, Trng> = Mutex::new(Trng::new());
+    &INSTANCE
+}
+
+fn regs() -> TrngRegs {
+    pac::TRNG
+}
+
+/// Read the six EHR registers into `block`. Order matters: reading
+/// EHR_DATA[5] clears all result registers and restarts sampling.
+fn read_ehr(regs: &TrngRegs, block: &mut [u8; BLOCK_LEN]) {
+    let ehr = [
+        regs.ehr_data0(),
+        regs.ehr_data1(),
+        regs.ehr_data2(),
+        regs.ehr_data3(),
+        regs.ehr_data4(),
+        regs.ehr_data5(),
+    ];
+    for (i, reg) in ehr.iter().enumerate() {
+        block[i * 4..i * 4 + 4].copy_from_slice(&reg.read().to_ne_bytes());
     }
-}
-
-/// TRNG_BUSY flag alone (hot-path probe point).
-pub fn busy_flag() -> bool {
-    regs().trng_busy().read().trng_busy()
-}
-
-/// RNG_ISR raw value (hot-path probe point).
-pub fn isr_raw() -> u32 {
-    regs().rng_isr().read().0
-}
-
-/// The RESETS-block cycle from `init()`, on demand (A/B probe).
-pub fn reset_cycle() {
-    pac::RESETS.reset().modify(|v| v.set_trng(true));
-    let _ = pac::RESETS.reset().read();
-    pac::RESETS.reset().modify(|v| v.set_trng(false));
-    while !pac::RESETS.reset_done().read().trng() {}
-    SOURCE_RUNNING.store(false, Ordering::Relaxed);
-}
-
-/// Cold start: stop, re-apply the configuration, enable the source.
-pub fn cold_start() {
-    stop();
-    let regs = regs();
-    write_config(&regs);
-    start_source(&regs);
 }
