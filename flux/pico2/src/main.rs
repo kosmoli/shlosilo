@@ -63,6 +63,21 @@ static mut SRAM_HEAP_MEM: [MaybeUninit<u8>; SRAM_HEAP_SIZE] =
 /// PSRAM heap is its home. Only genuinely small allocations stay in SRAM.
 const PSRAM_THRESHOLD: usize = 16 * 1024;
 
+/// BP+ multiexp chunk size for this host: fewer, bigger CT Straus tables
+/// (fewer per-chunk doubling chains) vs table placement. Each term's table
+/// is 1280B (8 x ProjectiveNielsPoint, fully scanned per constant-time
+/// select), so 12 terms = 15,360B is the largest chunk whose table still
+/// routes to the SRAM heap. Measured on this board (2026-09-14, same
+/// fixture + fixed entropy, byte-identical output): chunk=12 (SRAM) 18.58s
+/// vs chunk=36 (46,080B -> PSRAM) ~25.5s steady-state; the perfbench sweep
+/// gives the per-term price of each side - SRAM tables ~11.7ms + n*4.0ms
+/// per chunk, PSRAM tables ~7.6ms + n*9.34ms. Forgebox keeps the default
+/// 36 (its SRAM pool admits 46,080B; same constant, opposite optimum).
+const BP_MULTIEXP_CHUNK_TERMS: usize = 12;
+/// The whole optimization premise: the table must land in SRAM. If the
+/// threshold ever drops below the table size, this stops compiling.
+const _: () = assert!(BP_MULTIEXP_CHUNK_TERMS * 1280 < PSRAM_THRESHOLD);
+
 /// Global allocator: two embedded-alloc LLFF heaps plus live/peak counters.
 ///
 /// - internal SRAM heap: SRAM_HEAP_SIZE, low-latency;
@@ -619,6 +634,10 @@ async fn main(spawner: Spawner) {
     // Bring up the hardware TRNG through its singleton owner (see trng.rs;
     // all register access is serialized through this instance).
     trng::instance().lock().await.init();
+
+    // BP+ multiexp table placement: this host's SRAM heap is the fast
+    // memory for the CT Straus tables (see BP_MULTIEXP_CHUNK_TERMS).
+    shlosilo::chain::xmr::set_bp_multiexp_chunk_terms(BP_MULTIEXP_CHUNK_TERMS);
 
     // XMR perf-timing probes (diagnostic builds): hand this host's
     // millisecond clock to the shlosilo timing hooks (tx-phase / BP+ prove
