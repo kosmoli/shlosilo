@@ -34,6 +34,10 @@ SMOKE_ENTROPY = "11" * 16  # -> the idx12 smoke wallet
 FIXED_ENTROPY = "77" * 32  # must match FIXED_ENTROPY in the verify test
 UR_FILE = "/tmp/xmr_smoke_ur.txt"
 OUT_BIN = "/tmp/xmr_device_signed.bin"
+# In A/B mode (fixed entropy) the blob is ALSO saved here, with a stable
+# name: the byte-exact A/B test (device_blob_matches_host) reads this file,
+# so a later TRNG run overwriting OUT_BIN cannot invalidate it.
+OUT_BIN_FIXED = "/tmp/xmr_device_signed_fixed.bin"
 TRANSCRIPT = "/tmp/pico2-bringup-transcript.txt"
 
 SIGNED_RE = re.compile(r"\[xmr\] signed ok: (\d+) bytes in (\d+) ms sha256=([0-9a-f]{64})")
@@ -290,6 +294,9 @@ def main():
         fail(f"assembled {len(blob)} != {total_blob}", before)
     with open(OUT_BIN, "wb") as f:
         f.write(blob)
+    if not args.trng:
+        with open(OUT_BIN_FIXED, "wb") as f:
+            f.write(blob)
     print(f"blob assembled: {len(blob)} bytes -> {OUT_BIN}", flush=True)
 
     # ---- liveness after the stretch ----

@@ -1,11 +1,18 @@
-//! Device/host A/B verification for the XMR signing path.
+//! Device/host verification for the XMR signing path.
 //!
-//! The board signed the smoke fixture with FIXED entropy (`xmrseed`); this
-//! test recomputes the same signing on the host with the same inputs and
-//! requires byte-identical output, then decrypts the board's blob and checks
-//! the signed-txset structure. Reads:
-//!   /tmp/xmr_device_signed.bin  (fetched from the board by bench/xmr_sign.py)
-//!   /tmp/xmr_smoke_enc.bin      (the same fixture the board signed)
+//! Two independent checks over the blob fetched from the board
+//! (bench/xmr_bringup.py -> /tmp/xmr_device_signed.bin):
+//!
+//! 1. `device_blob_decrypts` - structure check that works for ANY device
+//!    run (fixed-entropy A/B or the production TRNG path): the blob is a
+//!    valid signed txset, decryptable with the fixture wallet's view key.
+//! 2. `device_blob_matches_host` - byte-exact A/B against a host
+//!    recomputation; requires the blob to have been signed with the FIXED
+//!    entropy (`xmrseed`), so it only applies to the A/B run.
+//!
+//! Reads:
+//!   /tmp/xmr_device_signed.bin  (the fetched device blob)
+//!   /tmp/xmr_smoke_enc.bin      (the fixture the board signed)
 //!
 //! Run:
 //!   cargo test --release --test xmr_device_blob_verify -- --ignored --nocapture
@@ -22,14 +29,48 @@ const SMOKE_IDX12: [u16; 12] = [
     136, 1092, 546, 273, 136, 1092, 546, 273, 136, 1092, 546, 283,
 ];
 
-/// Must match what bench/xmr_sign.py passed via `xmrseed`.
+/// Must match what bench/xmr_bringup.py passed via `xmrseed`.
 const FIXED_ENTROPY: [u8; 32] = [0x77u8; 32];
 
+/// The fixture wallet's Monero view key.
+fn smoke_view_key() -> [u8; 32] {
+    let m = Mnemonic::from_indices(&SMOKE_IDX12, WordCount::Words12).expect("mnemonic");
+    let mut seed = [0u8; 64];
+    shlosilo::business::restore_seed::restore_seed(&m, &[], &mut seed).expect("restore");
+    let kp = derive(&seed, &MoneroPath::mainnet(0)).expect("derive");
+    shlosilo::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv())
+}
+
 #[test]
-#[ignore = "hardware A/B: needs the fetched device blob (bench/xmr_sign.py)"]
-fn device_blob_matches_host() {
+#[ignore = "hardware: needs the fetched device blob (bench/xmr_bringup.py)"]
+fn device_blob_decrypts() {
     let device_blob =
-        std::fs::read("/tmp/xmr_device_signed.bin").expect("device blob (run bench/xmr_sign.py)");
+        std::fs::read("/tmp/xmr_device_signed.bin").expect("device blob (run bench/xmr_bringup)");
+    let view_sec = smoke_view_key();
+    let plain =
+        decrypt_signed_txset(&device_blob, &view_sec).expect("decrypt device blob with view key");
+    eprintln!(
+        "device blob decrypts: {} bytes plaintext (blob {} bytes)",
+        plain.len(),
+        device_blob.len()
+    );
+    assert!(!plain.is_empty(), "empty plaintext");
+}
+
+#[test]
+#[ignore = "hardware A/B: needs the FIXED-entropy device blob (xmrseed run)"]
+fn device_blob_matches_host() {
+    // Prefer the fixed-entropy blob saved under its stable name (a later
+    // TRNG run overwrites /tmp/xmr_device_signed.bin with a random result
+    // that cannot match a host recomputation, by design).
+    let fixed_path = "/tmp/xmr_device_signed_fixed.bin";
+    let blob_path = if std::path::Path::new(fixed_path).exists() {
+        fixed_path
+    } else {
+        "/tmp/xmr_device_signed.bin"
+    };
+    let device_blob = std::fs::read(blob_path).expect("device blob (run bench/xmr_bringup)");
+    eprintln!("A/B source: {blob_path}");
     let enc =
         std::fs::read("/tmp/xmr_smoke_enc.bin").expect("fixture (run xmr_device_peak_fixture)");
 
@@ -67,18 +108,4 @@ fn device_blob_matches_host() {
         "A/B FAILED: device blob differs from the host recomputation"
     );
     eprintln!("A/B MATCH ({n} bytes)");
-
-    // Independent structure check: decrypt the board's blob with the wallet's
-    // view key and confirm it parses as a signed txset.
-    let seed = {
-        let m = Mnemonic::from_indices(&SMOKE_IDX12, WordCount::Words12).expect("mnemonic");
-        let mut s = [0u8; 64];
-        shlosilo::business::restore_seed::restore_seed(&m, &[], &mut s).expect("restore");
-        s
-    };
-    let kp = derive(&seed, &MoneroPath::mainnet(0)).expect("derive");
-    let view_sec = shlosilo::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv());
-    let plain = decrypt_signed_txset(&device_blob, &view_sec).expect("decrypt device blob");
-    eprintln!("device blob decrypts: {} bytes plaintext", plain.len());
-    assert!(!plain.is_empty());
 }
