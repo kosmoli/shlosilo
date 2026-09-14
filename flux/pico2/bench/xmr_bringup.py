@@ -41,7 +41,7 @@ XMR_OUT_RE = re.compile(r"\[xmrout\] (\d+)\+(\d+)/(\d+) ([0-9a-f]+)")
 
 # lines worth echoing to stdout live, in order of arrival
 LIVE_RE = re.compile(
-    r"\[psramtest\]|\[psram\]|\[alloctest\]|\[crash\]|\[entropy\]|\[xmr\]|\[xmrout\]|\[err\]|ALL OK"
+    r"\[psramtest\]|\[psram\]|\[alloctest\]|\[trace\]|\[crash\]|\[entropy\]|\[xmr\]|\[xmrout\]|\[err\]|ALL OK"
 )
 
 
@@ -163,9 +163,20 @@ def main():
         return False
 
     def fail(step, start):
+        # On a crash the trace ring (.uninit) survives the reset: pull it
+        # plus heap stats for the post-mortem before exiting.
+        pre = text()[start:]
+        if "[crash]" in pre and state["fd"] is not None:
+            try:
+                for cmd in ("alloctrace", "heap"):
+                    os.write(state["fd"], (cmd + "\n").encode())
+                    time.sleep(3)
+            except OSError:
+                pass
+            time.sleep(1)
         print(f"\n### FAILED at: {step}", flush=True)
         chunk = text()[start:]
-        tail = [l for l in chunk.replace("\r\n", "\n").split("\n") if l.strip()][-12:]
+        tail = [l for l in chunk.replace("\r\n", "\n").split("\n") if l.strip()][-24:]
         print("last device output in window:")
         for l in tail:
             print("  " + l, flush=True)

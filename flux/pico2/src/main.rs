@@ -50,11 +50,15 @@ static mut SRAM_HEAP_MEM: [MaybeUninit<u8>; SRAM_HEAP_SIZE] =
     [MaybeUninit::uninit(); SRAM_HEAP_SIZE];
 
 /// Allocations at or above this size route to PSRAM (QSPI, slower); smaller
-/// ones stay in internal SRAM. The CN scratchpad (2 MiB) and BP+ generator
-/// tables (~256 KiB-class) are the consumers. Routing is by layout size
-/// ONLY, on both alloc and dealloc - a fallback to the other region would
-/// make free-time routing ambiguous.
-const PSRAM_THRESHOLD: usize = 64 * 1024;
+/// ones stay in internal SRAM. Routing is by layout size ONLY, on both alloc
+/// and dealloc - a fallback to the other region would make free-time routing
+/// ambiguous.
+///
+/// Lowered 64 KiB -> 16 KiB (measured): the XMR path's mid-size working set
+/// (tens of buffers in the 16-64 KiB class, 169 KiB live at last crash)
+/// cannot live in the 512 KiB internal SRAM alongside the stack; the 8 MiB
+/// PSRAM heap is its home. Only genuinely small allocations stay in SRAM.
+const PSRAM_THRESHOLD: usize = 16 * 1024;
 
 /// Global allocator: two embedded-alloc LLFF heaps plus live/peak counters.
 ///
@@ -100,6 +104,56 @@ pub(crate) fn last_big_alloc() -> usize {
     LAST_BIG_ALLOC.load(Ordering::Relaxed)
 }
 
+/// Allocation trace ring: the last TRACE_N traced allocations (>= TRACE_MIN
+/// bytes, plus every FAILED one), with size and region. Lives in .uninit so
+/// it SURVIVES a crash reset - after a panic+reboot, `alloctrace` prints
+/// exactly what the failing path requested, in order.
+///
+/// Diagnostics contract: this ring is read through `trace_len`/`trace_entry`
+/// only.
+const TRACE_N: usize = 24;
+const TRACE_MIN: usize = 4096;
+#[unsafe(link_section = ".uninit.trace")]
+static TRACE_CURSOR: AtomicUsize = AtomicUsize::new(0);
+#[unsafe(link_section = ".uninit.trace")]
+static TRACE_SIZE: [core::sync::atomic::AtomicU32; TRACE_N] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; TRACE_N];
+#[unsafe(link_section = ".uninit.trace")]
+static TRACE_FLAGS: [core::sync::atomic::AtomicU32; TRACE_N] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; TRACE_N];
+
+/// Record one traced allocation (bit 31 of flags = failed; bit 0 = region).
+fn trace_alloc(size: usize, to_psram: bool, failed: bool) {
+    if size < TRACE_MIN && !failed {
+        return;
+    }
+    let n = TRACE_CURSOR.fetch_add(1, Ordering::Relaxed);
+    let i = n % TRACE_N;
+    let mut flags = to_psram as u32;
+    if failed {
+        flags |= 1 << 31;
+    }
+    TRACE_SIZE[i].store(size as u32, Ordering::Relaxed);
+    TRACE_FLAGS[i].store(flags, Ordering::Relaxed);
+}
+
+/// Number of live ring entries (<= TRACE_N).
+pub(crate) fn trace_len() -> usize {
+    TRACE_CURSOR.load(Ordering::Relaxed).min(TRACE_N)
+}
+
+/// The k-th oldest live entry: (size, flags). flags bit31 = failed,
+/// bit0 = region (0 sram, 1 psram).
+pub(crate) fn trace_entry(k: usize) -> (u32, u32) {
+    let total = TRACE_CURSOR.load(Ordering::Relaxed);
+    let start = total - total.min(TRACE_N);
+    let idx = (start + k) % TRACE_N;
+    (
+        TRACE_SIZE[idx].load(Ordering::Relaxed),
+        TRACE_FLAGS[idx].load(Ordering::Relaxed),
+    )
+}
+
 impl DualHeap {
     const fn empty() -> Self {
         Self {
@@ -140,10 +194,12 @@ unsafe impl GlobalAlloc for DualHeap {
             ALLOC_FAIL_SIZE.store(layout.size(), Ordering::Relaxed);
             ALLOC_FAIL_ALIGN.store(layout.align(), Ordering::Relaxed);
             ALLOC_FAIL_REGION.store(to_psram as usize, Ordering::Relaxed);
+            trace_alloc(layout.size(), to_psram, true);
         } else {
             if to_psram {
                 LAST_BIG_ALLOC.store(layout.size(), Ordering::Relaxed);
             }
+            trace_alloc(layout.size(), to_psram, false);
             let (live_c, peak_c) = if to_psram {
                 (&self.psram_live, &self.psram_peak)
             } else {
@@ -242,15 +298,19 @@ pub(crate) fn psram_mark_failed(code: usize) {
 }
 
 /// Record the r/w test outcome; on success also map the heap (only verified
-/// memory is ever handed to the allocator).
+/// memory is ever handed to the allocator). Idempotent: calling it again
+/// after the heap is already mapped just re-affirms the status (the
+/// underlying init() must run exactly once).
 pub(crate) fn psram_mark_rw_ok() -> bool {
     let Some((base, size)) = psram_region() else {
         return false;
     };
-    // SAFETY: the region is memory-mapped and the r/w test just wrote and
-    // read it back; no allocator has handed out any of it.
-    unsafe { HEAP.psram.init(base, size) };
-    PSRAM_HEAP_READY.store(true, Ordering::Relaxed);
+    if !PSRAM_HEAP_READY.load(Ordering::Relaxed) {
+        // SAFETY: the region is memory-mapped and the r/w test just wrote and
+        // read it back; no allocator has handed out any of it.
+        unsafe { HEAP.psram.init(base, size) };
+        PSRAM_HEAP_READY.store(true, Ordering::Relaxed);
+    }
     PSRAM_STATUS.store(PSRAM_STATUS_RW_OK, Ordering::Relaxed);
     true
 }
@@ -295,6 +355,38 @@ pub(crate) fn psram_status_line(w: &mut impl core::fmt::Write) {
             let off = PSRAM_RW_BAD_OFF.load(Ordering::Relaxed);
             let _ = write!(w, "[psram] r/w test FAILED at offset {off:#x} (SRAM-only)");
         }
+    }
+}
+
+/// Boot-time PSRAM r/w verification: write/read-back distinct word patterns
+/// at five offsets; only a full pass maps the heap (see `psram_mark_rw_ok`).
+fn boot_psram_check(base: usize, size: usize) {
+    let offsets: [usize; 5] = [0, 2 << 20, 4 << 20, 6 << 20, size - 0x1000];
+    for &off in &offsets {
+        let p = (base + off) as *mut u32;
+        let seed = 0xA5A5_0000u32 ^ (off as u32).wrapping_mul(0x9E37_79B9);
+        unsafe {
+            for i in 0..16u32 {
+                core::ptr::write_volatile(p.add(i as usize), seed ^ i.wrapping_mul(0x0101_0101));
+            }
+            for i in 0..16u32 {
+                let want = seed ^ i.wrapping_mul(0x0101_0101);
+                if core::ptr::read_volatile(p.add(i as usize)) != want {
+                    psram_mark_rw_fail(off);
+                    info!(
+                        "psram: boot r/w check FAILED at {=usize:#x} (SRAM-only)",
+                        off
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    if psram_mark_rw_ok() {
+        info!(
+            "psram: boot r/w check ok; heap mapped ({=usize} bytes)",
+            size
+        );
     }
 }
 
@@ -488,16 +580,14 @@ async fn main(spawner: Spawner) {
         Ok(psram) => {
             let base = psram.base_address() as usize;
             let size = psram.size();
-            // The heap is NOT mapped here: init() writes no memory (its
-            // state lives in .bss), but nothing has verified that the
-            // memory-mapped data path actually works. That is what the
-            // `psramtest` console command does; it maps the heap only after
-            // a live write/read-back passes. Until then, large allocations
-            // fail (and are caught by the crash recorder instead of hanging
-            // invisibly).
             psram_mark_ready(base, size);
+            // Boot r/w verification, immediately - before any task runs, so
+            // no allocation can ever see an unverified heap. Silent on
+            // success (the [psram] status line reports it); a failure marks
+            // SRAM-only and the heartbeat line carries the reason.
+            boot_psram_check(base, size);
             info!(
-                "psram: {} MiB mapped at {=usize:#x} (rw untested)",
+                "psram: {} MiB at {=usize:#x} (boot check done)",
                 size >> 20,
                 base
             );

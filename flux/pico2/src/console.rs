@@ -186,6 +186,7 @@ impl ConsoleState {
             b"xmrout" => self.cmd_xmrout(args),
             b"xmrseed" => self.cmd_xmrseed(args),
             b"alloctest" => self.cmd_alloctest(args),
+            b"alloctrace" => self.cmd_alloctrace(),
             b"psramtest" => return Some(TrngJob::simple(JobMode::PsramTest)),
             b"faultclr" => crate::fault::clear(),
             _ => {
@@ -233,6 +234,7 @@ impl ConsoleState {
         log::info!("[help]                   maps the psram heap on success");
         log::info!("[help]   alloctest <sz>  probe a single allocation (64k/256k/1m/2m...);");
         log::info!("[help]                   'sweep' = standard ladder, 'free' = heap stats");
+        log::info!("[help]   alloctrace      print the allocation trace ring (survives resets)");
         log::info!("[help]   faultclr        clear the pending [crash] record");
         log::info!("[help] lines end with \\n or \\r");
     }
@@ -382,6 +384,24 @@ impl ConsoleState {
             Some(size) => probe_alloc(size, align.unwrap_or(8)),
             None => {
                 log::info!("[err] alloctest: usage: alloctest <size>[k|m] [align] | sweep | free")
+            }
+        }
+    }
+
+    /// `alloctrace`: print the allocation trace ring (>= 4 KiB allocations
+    /// plus every failed one). The ring lives in .uninit and SURVIVES a
+    /// crash reset: run this after a reboot to see what the failing path
+    /// requested, in order, newest last.
+    fn cmd_alloctrace(&self) {
+        let n = crate::trace_len();
+        log::info!("[trace] ring: {n} entries, newest last (>= 4 KiB and failures)");
+        for k in 0..n {
+            let (size, flags) = crate::trace_entry(k);
+            let region = if flags & 1 == 1 { "psram" } else { "sram" };
+            if flags & (1 << 31) != 0 {
+                log::info!("[trace] {k}: size={size} region={region} FAILED");
+            } else {
+                log::info!("[trace] {k}: size={size} region={region}");
             }
         }
     }
@@ -805,7 +825,7 @@ async fn run_psram_test() {
         }
     }
     if crate::psram_mark_rw_ok() {
-        log::info!("[psramtest] ALL OK; psram heap mapped ({size:#x} bytes usable)");
+        log::info!("[psramtest] ALL OK; psram heap ready ({size:#x} bytes usable)");
     } else {
         log::info!("[err] psramtest: region vanished mid-test?");
     }

@@ -110,17 +110,22 @@ The flow is deterministic (dice → exact rejection sampling, no RNG;
 BTC/ETH → RFC-6979), so no entropy source is needed for the fixture path; a
 real-device flow will use the RP2350 TRNG.
 
-Heap: dual-region global allocator. Small allocations (< 64 KiB) go to a
-224 KiB internal-SRAM heap; the rest go to the PSRAM region (8 MiB; mapped
-only after `psramtest` verifies r/w). Both heaps have live/peak counters
-(the `heap` console command; `heap reset` re-arms the peaks for one
-operation). Measured on hardware (2026-09-14): boot smoke peak 649 B; ETH
-fixture sign peak 388 B; the 12.4 KiB Sparrow PSBT multipart decode + sign
-peaks at **102,746 B**. The XMR path's sub-64 KiB working set was MEASURED
-at 93088 live + a 49536 request = 142624 B - over the original 128 KiB
-capacity (allocation failure) - which is why the SRAM heap now is 224 KiB.
-Large XMR allocations (CN scratchpad 2 MiB, BP+ generators ~256 KiB) route
-to PSRAM via the threshold.
+Heap: dual-region global allocator. Allocations < 16 KiB go to a 224 KiB
+internal-SRAM heap; the rest go to the PSRAM region (8 MiB). The PSRAM r/w
+path is verified at boot (five offsets, write/read-back) before the heap is
+mapped; `psramtest` re-runs the check on demand. Both heaps have live/peak
+counters (the `heap` console command; `heap reset` re-arms the peaks).
+`alloctest <size>|sweep` probes single allocations (null-on-failure, no
+panic); `alloctrace` prints the allocation trace ring (>= 4 KiB allocations
+plus failures), which lives in `.uninit` and survives a crash reset.
+
+Measured on hardware (2026-09-14): boot smoke peak 649 B; ETH fixture sign
+peak 388 B; the 12.4 KiB Sparrow PSBT multipart decode + sign peaks at
+**102,746 B**. The XMR path's working set outgrew the SRAM heap in two
+recorded steps (93088 live + 49536 request, then 169264 live + 57344
+request - allocation failures at 128 KiB and 224 KiB), which is why the
+threshold dropped 64 KiB -> 16 KiB: only genuinely small allocations stay
+in SRAM now.
 
 ### Bench runner
 
