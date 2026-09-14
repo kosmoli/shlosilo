@@ -67,11 +67,11 @@ The console is bidirectional: send ASCII lines (`\n` or `\r` terminates):
 - `ur:<type>/<body>` — a single-frame UR is decoded and signed immediately
 - `ur:<type>/<n>-<m>/<body>` — multipart fragments, fed in any order; the
   payload is signed once the session completes
-- `trng [stress] [sample=<n>] [chain=<0-4>] [nblocks]` — read `nblocks`
-  TRNG blocks (24 B each, default 64, max 4096) and stream them as hex;
-  ends with a stats line (retry counters, autocorr statistic, per-block
-  timing); `stress` = sample count 2, `sample=`/`chain=` override the
-  characterisation settings (all restored on job exit)
+- `trng [stress] [sample=<n>] [chain=<0-4>] [timeout=<ms>] [nblocks]` —
+  read `nblocks` TRNG blocks (24 B each, default 64, max 4096) and stream
+  them as hex; ends with a stats line (retry counters, autocorr statistic,
+  per-block timing); `stress` = sample count 2, `sample=`/`chain=`/`timeout=`
+  override the characterisation settings (all restored on job exit)
 
 Signing prints `[sign] <type> ok: <n> bytes sha256=<hex>`, plus
 `[sign] <type> hex: <hex>` when the output is ≤128 bytes (covers the ETH
@@ -126,38 +126,46 @@ python3 flux/pico2/bench/run_bench.py                                    # board
 
 ## Hardware TRNG
 
-`src/trng.rs` is a blocking reader for the RP2350 TRNG, on the **checked
+`src/trng.rs` is a blocking reader for the RP2350 TRNG on the **checked
 path**: all three hardware entropy checks (autocorrelation, CRNGT, Von
-Neumann) stay enabled, ROSC inverter chain 1 / sample count 25 (datasheet
-12.12.2 recommended range), one accepted 192-bit block (24 B) per read.
+Neumann) stay enabled; one accepted 192-bit block (24 B) per read.
 
 Why not `embassy_rp::trng::blocking_fill_bytes`: that blocking path panics
 whenever a run ends without a result for any reason other than
 autocorrelation failure (datasheet 12.12.3: a run stops on success *or* on a
-failed entropy check; 12.12.2: failed checks occur even at recommended
-settings). With panic = abort that would eventually kill the firmware. This
-module applies embassy's *async* policy (reinitialize + restart on failure)
-in blocking form: recovery is ordered (stop source, reset the
-autocorrelation statistics counters, pulse the software reset, re-apply the
-configuration, re-enable), CRNGT/VN failures clear-and-retry, every wait and
-the retry budget are bounded, and the outcome is a `Result` with counters.
+failed entropy check). With panic = abort that would eventually kill the
+firmware. This module applies embassy's *async* policy (reinitialize +
+restart on failure) in blocking form: ordered recovery (stop source, reset
+the autocorrelation statistics counters, pulse the software reset, re-apply
+the configuration, re-enable), bounded time budget, `Result` with counters.
 
-Two hardware-verified behaviours shape the design (bring-up measurements):
+**Measured behaviour on this silicon (2026-09-14 bring-up):**
 
-- the entropy source is **job-scoped** - started on first use and kept
-  running across consecutive blocks. Restarting it per block (an earlier
-  version's behaviour) latched the block into a state where every attempt
-  failed instantly without generating (64 fast retries burning the budget
-  in ~40 ms), while the first block after a clean start always succeeded;
-- the hardware entropy checks do fail in normal operation, so the retry
-  paths above are the expected steady-state, not an error path. The
-  `sample=`/`chain=` sweep knobs exist to characterise this silicon and pick
-  an operating point with a low failure rate.
+- At the datasheet-recommended point (chain 1, sample 25) the hardware
+  autocorrelation check fails **four times in a row within ~550 µs** and
+  latches — every later attempt fails instantly until a software reset.
+  The upstream embassy driver produces blocks at that point only by
+  retrying for a long time (measured per-block latencies: 101 s, 25 s,
+  10.7 s, 7.5 s, 1.4 s across runs — plus occasional millisecond passes).
+- At **chain 4 / sample 200** the same checks run clean: 256 consecutive
+  blocks, zero failures, **~1.05 ms/block**. These are now the firmware
+  defaults (`DEFAULT_CHAIN_LEN` / `DEFAULT_SAMPLE_COUNT`); both remain
+  runtime-tunable for other silicon via `sample=`/`chain=`.
+
+Design consequences baked in: the source lifecycle is job-scoped (a
+per-block restart drives the block into the sticky state); a fresh start
+flushes stale status bits (a leftover EHR_VALID with zeroed data once
+produced a phantom all-zero first block); all-zero reads are rejected and
+retried (a failed check presents no result); patience is a **time budget**
+(10 s/block default), not an attempt count — the measured latch-recovery
+cycle is sub-millisecond, so attempt counts expire in tens of milliseconds
+while a stressed block may need seconds; the reader awaits between retry
+cycles so the executor (heartbeats, USB) keeps running.
 
 On the bench channel, `trng <n>` streams raw accepted blocks for host-side
 analysis; `bench/trng_test.py` runs the quality checks (duplicate blocks,
-monobit, byte chi-square, serial correlation, runs test, crude min-entropy)
-and prints the device-side retry counters:
+all-zero blocks, monobit, byte chi-square, serial correlation, runs test,
+crude min-entropy) in chunks and prints the device-side retry counters:
 
 ```sh
 python3 flux/pico2/bench/trng_test.py            # 1024 blocks, normal config
@@ -176,6 +184,9 @@ three-step signing flow runs on-device with byte-identical output to the
 host oracle, and the serial bench channel signs host-fed fixtures — the
 ETH fixture (full hex match) and the 12.4 KiB Sparrow signet PSBT as 32
 multipart fragments (12447-byte signed output, sha256 match).
+
+The hardware TRNG is characterised and running on the checked path at its
+measured operating point (chain 4 / sample 200, see above).
 
 Next steps: XMR randomness injection from the TRNG (the §B.5 entropy
 parameter), heap sizing for the XMR path, then QR (camera) input in place

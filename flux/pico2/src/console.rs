@@ -427,6 +427,8 @@ struct TrngJob {
     stress: bool,
     sample: Option<u32>,
     chain: Option<u8>,
+    /// Per-block patience budget in milliseconds.
+    timeout_ms: u64,
     /// Stream: block count. Probe: duration in ms. Emb: block count.
     count: u32,
 }
@@ -441,12 +443,13 @@ enum JobMode {
     Emb,
 }
 
-/// Parse `trng [stress] [sample=<n>] [chain=<0-4>] [nblocks]`;
+/// Parse `trng [stress] [sample=<n>] [chain=<0-4>] [timeout=<ms>] [nblocks]`;
 /// default 64 blocks, capped at 4096.
 fn parse_trng_job(args: &[u8]) -> TrngJob {
     let mut stress = false;
     let mut sample: Option<u32> = None;
     let mut chain: Option<u8> = None;
+    let mut timeout_ms: u64 = trng::DEFAULT_BLOCK_TIMEOUT_MS;
     let mut count: u32 = 64;
     for word in args
         .split(|b| b.is_ascii_whitespace())
@@ -459,6 +462,8 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
             sample = v.parse::<u32>().ok().map(|n| n.min(0xffff));
         } else if let Some(v) = s.strip_prefix("chain=") {
             chain = v.parse::<u8>().ok().map(|n| n.min(4));
+        } else if let Some(v) = s.strip_prefix("timeout=") {
+            timeout_ms = v.parse::<u64>().unwrap_or(timeout_ms).clamp(100, 120_000);
         } else if let Ok(n) = s.parse::<u32>() {
             count = n.clamp(1, 4096);
         }
@@ -468,6 +473,7 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
         stress,
         sample,
         chain,
+        timeout_ms,
         count,
     }
 }
@@ -485,6 +491,7 @@ fn parse_trng_probe(args: &[u8]) -> TrngJob {
         stress: false,
         sample: None,
         chain: None,
+        timeout_ms: 0,
         count: ms,
     }
 }
@@ -502,6 +509,7 @@ fn parse_trng_emb(args: &[u8]) -> TrngJob {
         stress: false,
         sample: None,
         chain: None,
+        timeout_ms: 0,
         count: n,
     }
 }
@@ -600,10 +608,11 @@ async fn run_trng_stream(job: TrngJob) {
         trng::autocorr_statistic().1,
     );
     log::info!(
-        "[trng] start: n={} sample={} chain={} ver=0x{:08x} acstat={}/{}",
+        "[trng] start: n={} sample={} chain={} timeout={}ms ver=0x{:08x} acstat={}/{}",
         job.count,
         sample,
         chain,
+        job.timeout_ms,
         ver,
         ac_fails,
         ac_trys
@@ -615,16 +624,15 @@ async fn run_trng_stream(job: TrngJob) {
     let mut hex = [0u8; trng::BLOCK_LEN * 2];
 
     for _ in 0..job.count {
-        match trng::read_block(&mut stats) {
+        match trng::read_block(&mut stats, job.timeout_ms).await {
             Ok(block) => log::info!("[trng] {}", sign_smoke::to_hex(&block, &mut hex)),
             Err(e) => {
                 error = Some(e);
                 break;
             }
         }
-        // Let the executor run the logger's sender (and the rest) between
-        // blocks; each block is a few hundred microseconds to milliseconds
-        // of CPU work.
+        // `read_block` awaits between retry cycles itself; one more yield
+        // here keeps the logger's sender draining between delivered blocks.
         yield_now().await;
     }
     trng::stop();
@@ -639,26 +647,28 @@ async fn run_trng_stream(job: TrngJob) {
     let (ac_fails, ac_trys) = trng::autocorr_statistic();
     match error {
         None => log::info!(
-            "[trng] done: {} blocks in {} ms (~{} us/block); crngt={} vn={} autocorr={} odd={} timeout={}; acstat={}/{}",
+            "[trng] done: {} blocks in {} ms (~{} us/block); crngt={} vn={} autocorr={} zero={} odd={} timeout={}; acstat={}/{}",
             stats.blocks,
             ms,
             per_block_us,
             stats.crngt_err,
             stats.vn_err,
             stats.autocorr_err,
+            stats.zero_blocks,
             stats.odd_states,
             stats.busy_timeouts,
             ac_fails,
             ac_trys
         ),
         Some(e) => log::info!(
-            "[trng] FAILED after {} blocks in {} ms: {:?}; crngt={} vn={} autocorr={} odd={} timeout={}; acstat={}/{}",
+            "[trng] FAILED after {} blocks in {} ms: {:?}; crngt={} vn={} autocorr={} zero={} odd={} timeout={}; acstat={}/{}",
             stats.blocks,
             ms,
             e,
             stats.crngt_err,
             stats.vn_err,
             stats.autocorr_err,
+            stats.zero_blocks,
             stats.odd_states,
             stats.busy_timeouts,
             ac_fails,

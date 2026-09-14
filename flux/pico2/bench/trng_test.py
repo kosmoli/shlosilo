@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """TRNG quality check for the pico2 bench channel.
 
-Drives the console's `trng [stress] <n>` command and analyses the returned
-192-bit blocks (24 B each) on the host:
+Drives the console's `trng` command and analyses the returned 192-bit blocks
+(24 B each) on the host:
 
   - duplicate-block check (no two 24-byte blocks equal),
+  - all-zero block check (a failed entropy check presents no result),
   - monobit z-score over all bits,
   - byte-distribution chi-square (df=255),
   - serial correlation (lag 1, over bytes),
@@ -14,16 +15,21 @@ Drives the console's `trng [stress] <n>` command and analyses the returned
 These are single-run sanity checks, not a certification: they catch gross
 failures (stuck/degenerate source, severe bias) within one run. The real
 gate for the entropy path is the hardware's own NIST SP 800-90B-aligned
-checks, which stay enabled in the firmware (see trng.rs).
+checks, which stay enabled in the firmware (see src/trng.rs).
 
-The device-side retry counters from the `[trng] done` line are printed for
-the record. In `--stress` mode the firmware lowers the sample count to a
-failure-prone setting: CRNGT / Von-Neumann retry counters are then
-EXPECTED to be non-zero - that is what exercises the retry paths on real
-silicon.
+Blocks are requested in CHUNKS (default 64 per command): a large job emits
+its hex lines faster than the 1 KiB log pipe drains, and the pipe drops
+silently - a 256-block single command lost ~40% of its lines on the bench.
+
+The device-side counters from each `[trng] done` line are printed for the
+record. `--stress` lowers the sample count to a failure-prone setting;
+`--sample=`/`--chain=` sweep the characterisation knobs (the firmware's
+measured operating point is chain 4 / sample 200 - see flux/pico2/README).
 
 Usage:
-    python3 trng_test.py [--count 1024] [--stress] [--dev /dev/ttyACM0]
+    python3 trng_test.py [--count 1024] [--chunk 64] [--stress]
+                         [--sample N] [--chain 0-4] [--timeout MS]
+                         [--dev /dev/ttyACM0]
 Exit code 0 = all checks passed.
 """
 import argparse
@@ -38,11 +44,10 @@ import tty
 from collections import Counter
 
 BLOCK_HEX_RE = re.compile(r"\[trng\] ([0-9a-f]{48})\b")
-DONE_RE = re.compile(
-    r"\[trng\] done: (\d+) blocks in (\d+) ms \(~(\d+) us/block\);"
-    r" crngt=(\d+) vn=(\d+) autocorr=(\d+) odd=(\d+) timeout=(\d+)"
-)
-FAILED_RE = re.compile(r"\[trng\] FAILED")
+DONE_RE = re.compile(r"\[trng\] (done|FAILED)")
+
+# 24 bytes per block -> hex chars per block
+BLOCK_HEX_LEN = 48
 
 
 def monobit_z(bits):
@@ -54,7 +59,7 @@ def monobit_z(bits):
 def chi2_bytes(data):
     counts = Counter(data)
     e = len(data) / 256.0
-    return sum((counts.get(i, 0) - e) ** 2 / e for i in range(256)), 255
+    return sum((counts.get(i, 0) - e) ** 2 / e for i in range(256))
 
 
 def serial_corr(data):
@@ -84,13 +89,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dev", default="/dev/ttyACM0")
     ap.add_argument("--count", type=int, default=1024)
+    ap.add_argument("--chunk", type=int, default=64)
     ap.add_argument("--stress", action="store_true")
+    ap.add_argument("--sample", type=int, default=None)
+    ap.add_argument("--chain", type=int, default=None)
+    ap.add_argument("--timeout", type=int, default=None, help="per-block patience (ms)")
     ap.add_argument("--log", default="/tmp/pico2-trng-run.log")
     args = ap.parse_args()
 
     t0 = time.time()
     while not os.path.exists(args.dev):
-        if time.time() - t0 > 180:
+        if time.time() - t0 > 300:
             sys.exit("TIMEOUT: console never appeared")
         time.sleep(0.5)
 
@@ -113,52 +122,73 @@ def main():
 
     th = threading.Thread(target=reader, daemon=True)
     th.start()
+    time.sleep(2.0)
 
-    time.sleep(2.0)  # drain boot output / replays
+    def text():
+        return buf.decode(errors="replace")
 
-    cmd = f"trng {'stress ' if args.stress else ''}{args.count}"
-    print(f"sending: {cmd}")
-    os.write(fd, (cmd + "\n").encode())
+    def send(cmd):
+        os.write(fd, (cmd + "\n").encode())
 
-    # Generous deadline: worst case is dominated by a slow/odd TRNG, and the
-    # firmware bounds each block attempt itself.
-    deadline = time.time() + max(180, args.count * 0.2)
-    while time.time() < deadline:
-        text = buf.decode(errors="replace")
-        if DONE_RE.search(text) or FAILED_RE.search(text):
-            break
-        time.sleep(0.5)
+    opts = ""
+    if args.stress:
+        opts += " stress"
+    if args.sample is not None:
+        opts += f" sample={args.sample}"
+    if args.chain is not None:
+        opts += f" chain={args.chain}"
+    if args.timeout is not None:
+        opts += f" timeout={args.timeout}"
+
+    chunk = max(1, min(64, args.chunk))
+    remaining = args.count
+    all_blocks = []
+    done_lines = []
+    failed = False
+
+    while remaining > 0 and not failed:
+        n = min(chunk, remaining)
+        before_blocks = len(all_blocks)
+        before_done = len(DONE_RE.findall(text()))
+        cmd = f"trng{opts} {n}"
+        print(f"sending: {cmd}  ({len(all_blocks)}/{args.count} blocks so far)")
+        send(cmd)
+        deadline = time.time() + max(60, n * 5)
+        while time.time() < deadline:
+            cur = text()
+            if len(DONE_RE.findall(cur)) > before_done:
+                break
+            time.sleep(0.3)
+        time.sleep(0.3)
+        chunk_text = text()
+        blocks = [b for b in BLOCK_HEX_RE.findall(chunk_text)]
+        # blocks accumulate; slice the new ones
+        new_blocks = blocks[before_blocks:]
+        all_blocks.extend(new_blocks)
+        end = [l.strip() for l in chunk_text.split("\r\n") if DONE_RE.search(l)]
+        if end:
+            done_lines.append(end[-1])
+            if "FAILED" in end[-1]:
+                failed = True
+        if len(all_blocks) == before_blocks:
+            print("  !! chunk produced no blocks (see log)")
+            failed = True
+        remaining -= n
 
     stop.set()
     th.join(timeout=2)
     os.close(fd)
 
-    text = buf.decode(errors="replace")
+    full = text()
     with open(args.log, "w") as f:
-        f.write(text)
+        f.write(full)
 
-    m = DONE_RE.search(text)
-    if m:
-        blocks_rep, ms, us, crngt, vn, autocorr, odd, timeout = m.groups()
-        print(
-            f"device: {blocks_rep} blocks in {ms} ms (~{us} us/block); "
-            f"crngt={crngt} vn={vn} autocorr={autocorr} odd={odd} timeout={timeout}"
-        )
-        if args.stress and (int(crngt) + int(vn) + int(autocorr) == 0):
-            print("NOTE: stress mode produced no retries (checks did not fail); "
-                  "try more blocks or check the sample-count override")
-    elif FAILED_RE.search(text):
-        print("device reported FAILED:")
-        for line in text.split("\r\n"):
-            if "[trng]" in line:
-                print("  " + line.strip())
-    else:
-        print("no [trng] done line seen (log: " + args.log + ")")
+    for l in done_lines[-4:]:
+        print("device:", l)
 
-    blocks = BLOCK_HEX_RE.findall(text)
-    data = bytes.fromhex("".join(blocks))
-    n = len(data)
-    print(f"blocks received: {len(blocks)} ({n} bytes)")
+    data = bytes.fromhex("".join(all_blocks))
+    nbytes = len(data)
+    print(f"blocks received: {len(all_blocks)}/{args.count} ({nbytes} bytes)")
 
     results = []
 
@@ -166,25 +196,29 @@ def main():
         results.append(ok)
         print(("PASS " if ok else "FAIL ") + name + (("  :: " + detail) if detail else ""))
 
-    if n < 256:
-        check("enough data for analysis (>=256 bytes)", False, f"got {n}")
+    if nbytes < 1024 or failed:
+        check(f"received all {args.count} requested blocks", len(all_blocks) == args.count,
+              f"got {len(all_blocks)}")
     else:
-        check(f"received all {args.count} requested blocks", len(blocks) == args.count,
-              f"got {len(blocks)}")
-        dup = len(blocks) - len(set(blocks))
+        check(f"received all {args.count} requested blocks", len(all_blocks) == args.count,
+              f"got {len(all_blocks)}")
+        dup = len(all_blocks) - len(set(all_blocks))
         check("no duplicate 24-byte blocks", dup == 0, f"{dup} duplicates")
+        zeros = sum(1 for b in all_blocks if b == "0" * BLOCK_HEX_LEN)
+        check("no all-zero blocks", zeros == 0, f"{zeros} zeros")
 
         bits = [(b >> i) & 1 for b in data for i in range(8)]
         z = monobit_z(bits)
         check("monobit |z| <= 4", abs(z) <= 4, f"z = {z:.2f}")
 
-        chi2, df = chi2_bytes(data)
+        chi2 = chi2_bytes(data)
+        df = 255
         lo, hi = df - 4 * math.sqrt(2 * df), df + 4 * math.sqrt(2 * df)
-        check(f"byte chi2 within [lo={lo:.0f}, hi={hi:.0f}]", lo <= chi2 <= hi,
+        check(f"byte chi2 within [{lo:.0f}, {hi:.0f}]", lo <= chi2 <= hi,
               f"chi2 = {chi2:.1f} (df={df})")
 
         r = serial_corr(data)
-        thr = 4 / math.sqrt(n)
+        thr = 4 / math.sqrt(nbytes)
         check("serial correlation |r| <= 4/sqrt(n)", abs(r) <= thr,
               f"r = {r:.5f} (threshold {thr:.5f})")
 
