@@ -23,13 +23,13 @@ const WATCH_PATHS: &[&str] = &[
     ".git/logs/HEAD", // commits/checkouts: keeps the hash itself current
     "build.rs",
     "Cargo.toml",
-    "forms",                     // the core crate source tree
-    "vendor",                    // vendored crates (patched in tree)
-    "flux/pico2/src",            // Rust-native appearance
+    "forms",          // the core crate source tree
+    "vendor",         // vendored crates (patched in tree)
+    "flux/pico2/src", // Rust-native appearance
     "flux/pico2/Cargo.toml",
     "flux/pico2/build.rs",
-    "flux/forgebox/staticlib",   // C-host staticlib shim
-    "flux/host-sim/staticlib",   // POSIX simulator shim
+    "flux/forgebox/staticlib", // C-host staticlib shim
+    "flux/host-sim/staticlib", // POSIX simulator shim
 ];
 
 fn main() {
