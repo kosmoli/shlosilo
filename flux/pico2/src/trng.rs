@@ -10,19 +10,31 @@
 //! same policy as embassy's *async* path (reinitialize and restart on
 //! failure) in blocking form, with counters and a `Result`.
 //!
-//! Design (datasheet 12.12):
+//! Design (datasheet 12.12; hardware-verified behaviour in the bring-up
+//! notes below):
 //! - all three hardware entropy checks stay enabled (reset default); ROSC
-//!   inverter chain 1 and sample count 25 (12.12.2 recommends 0-1 / 20-25);
-//! - one accepted 192-bit EHR block (24 bytes) per `read_block` call;
-//! - CRNGT / Von-Neumann failures clear the status bit and retry;
-//!   autocorrelation failure is sticky ("Only RNG reset clears this bit") and
-//!   takes a full software reset + reconfiguration before the retry;
-//! - every wait is bounded and the retry budget is bounded: the reader can
-//!   return `Err`, it can never hang or abort;
-//! - each attempt explicitly restarts the block (RND_SRC_EN 0 -> 1) instead
-//!   of relying on undocumented auto-restart behavior after a failed run.
+//!   inverter chain / sample count configurable at runtime for
+//!   characterisation sweeps (defaults: chain 1, sample 25 - the 12.12.2
+//!   recommended range);
+//! - **source lifecycle is job-scoped**: the source starts on the first
+//!   `read_block` and keeps running across consecutive blocks. It is only
+//!   re-armed by a recovery, never per block. Mid-generation restart (a
+//!   v1 mistake, measured on hardware) drives the block into a stuck state
+//!   where it latches AUTOCORR_ERR and every subsequent attempt fails
+//!   instantly without generating;
+//! - one accepted 192-bit EHR block (24 B) per `read_block` call;
+//! - recovery order on autocorrelation failure (the sticky one - "only RNG
+//!   reset clears this bit"): stop the source, reset the autocorrelation
+//!   statistics counters ("any write to AUTOCORR_STATISTIC resets the
+//!   counter"), pulse the software reset, re-apply the configuration, clear
+//!   the clearable status flags, re-enable;
+//! - CRNGT / Von-Neumann failures are not terminal for the block (no
+//!   "ceases functioning" clause): clear the flag and keep waiting;
+//! - every wait and the per-block retry budget are bounded: `read_block`
+//!   returns `Err`, it can never hang or abort.
 
 use core::hint::spin_loop;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use embassy_rp::pac;
 use embassy_rp::pac::trng::Trng as TrngRegs;
@@ -33,9 +45,9 @@ pub const BLOCK_LEN: usize = 24;
 /// Datasheet 12.12.2 recommended operating point.
 pub const DEFAULT_SAMPLE_COUNT: u32 = 25;
 /// InverterChainLength::One (datasheet recommends 0 or 1).
-const INVERTER_CHAIN_LEN: u8 = 1;
+pub const DEFAULT_CHAIN_LEN: u8 = 1;
 
-/// Poll bounds in loop iterations (~10-20 cycles each at 150 MHz). A wedged
+/// Poll bounds in loop iterations (~10-30 cycles each at 150 MHz). A wedged
 /// block returns an Err instead of spinning forever; the fall bound is
 /// generous because 12.12.4 notes generation can occasionally take >100x the
 /// average.
@@ -43,7 +55,7 @@ const BUSY_SIGNAL_SPINS: u32 = 30_000_000;
 const BUSY_FALL_SPINS: u32 = 60_000_000;
 /// Status settle after BUSY falls (only guards a stale read).
 const SETTLE_SPINS: u32 = 2_000;
-/// Failed runs tolerated per block before giving up.
+/// Failed runs tolerated within one block before giving up.
 const MAX_FAILED_ATTEMPTS: u32 = 64;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,7 +66,7 @@ pub struct TrngStats {
     pub crngt_err: u32,
     /// Von-Neumann failures (32 consecutive equal bits; result discarded).
     pub vn_err: u32,
-    /// Autocorrelation failures (sticky run; full reset applied).
+    /// Autocorrelation failures (sticky run; full recovery applied).
     pub autocorr_err: u32,
     /// Runs that ended with no status at all (not a documented terminal state).
     pub odd_states: u32,
@@ -69,6 +81,13 @@ pub enum TrngError {
     /// One block exceeded the failed-run retry budget.
     RetriesExhausted,
 }
+
+// ── configuration (runtime-tunable for characterisation sweeps) ──
+
+static CONFIG_SAMPLE: AtomicU32 = AtomicU32::new(DEFAULT_SAMPLE_COUNT);
+static CONFIG_CHAIN: AtomicU8 = AtomicU8::new(DEFAULT_CHAIN_LEN);
+/// True while the entropy source is enabled (job-scoped; see module docs).
+static SOURCE_RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn regs() -> TrngRegs {
     pac::TRNG
@@ -87,6 +106,7 @@ pub fn init() {
     let regs = regs();
     write_config(&regs);
     regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
+    SOURCE_RUNNING.store(false, Ordering::Relaxed);
 }
 
 fn write_config(regs: &TrngRegs) {
@@ -97,28 +117,93 @@ fn write_config(regs: &TrngRegs) {
         w.set_vnc_bypass(false);
     });
     regs.trng_config()
-        .write(|w| w.set_rnd_src_sel(INVERTER_CHAIN_LEN));
-    regs.sample_cnt1().write(|w| *w = DEFAULT_SAMPLE_COUNT);
+        .write(|w| w.set_rnd_src_sel(CONFIG_CHAIN.load(Ordering::Relaxed)));
+    regs.sample_cnt1()
+        .write(|w| *w = CONFIG_SAMPLE.load(Ordering::Relaxed));
 }
 
-/// Sample-count override (bench stress testing: a low count makes entropy
-/// checks fail more often, exercising the retry paths). The caller must have
-/// stopped the source; restore with `set_sample_count(DEFAULT_SAMPLE_COUNT)`.
+/// Sample-count override (characterisation sweeps: low counts make entropy
+/// checks fail more often, high counts trade speed for fewer failures).
 pub fn set_sample_count(n: u32) {
+    CONFIG_SAMPLE.store(n, Ordering::Relaxed);
     regs().sample_cnt1().write(|w| *w = n);
 }
 
-/// Stop the entropy source (block idle, low power) and clear the bit counter.
+/// ROSC inverter-chain-length override (0..=4).
+pub fn set_chain_len(len: u8) {
+    let len = len.min(4);
+    CONFIG_CHAIN.store(len, Ordering::Relaxed);
+    regs().trng_config().write(|w| w.set_rnd_src_sel(len));
+}
+
+/// Restore the datasheet-recommended operating point.
+pub fn restore_default_config() {
+    set_sample_count(DEFAULT_SAMPLE_COUNT);
+    set_chain_len(DEFAULT_CHAIN_LEN);
+}
+
+/// RNG_VERSION register (IP revision).
+pub fn version() -> u32 {
+    regs().rng_version().read().0
+}
+
+/// AUTOCORR_STATISTIC register: (fails, trys) since the last write to it.
+/// Both counters stop once they reach their limit.
+pub fn autocorr_statistic() -> (u8, u16) {
+    let raw = regs().autocorr_statistic().read().0;
+    (((raw >> 14) & 0xff) as u8, (raw & 0x3fff) as u16)
+}
+
+fn start_source(regs: &TrngRegs) {
+    regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
+    let _ = regs.rnd_source_enable().read();
+    regs.rst_bits_counter()
+        .write(|w| w.set_rst_bits_counter(true));
+    let _ = regs.rnd_source_enable().read();
+    regs.rnd_source_enable().write(|w| w.set_rnd_src_en(true));
+    SOURCE_RUNNING.store(true, Ordering::Relaxed);
+}
+
+/// Stop the entropy source (block idle, low power). Called at job end.
 pub fn stop() {
     let regs = regs();
     regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
     regs.rst_bits_counter()
         .write(|w| w.set_rst_bits_counter(true));
+    SOURCE_RUNNING.store(false, Ordering::Relaxed);
+}
+
+/// Full recovery for the sticky autocorrelation failure: stop the source,
+/// clear the statistics counters, pulse the soft reset, re-apply the
+/// configuration, clear the clearable flags, re-enable.
+fn recover(regs: &TrngRegs) {
+    regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
+    let _ = regs.rnd_source_enable().read();
+    // "Any write to the register reset the counter" (AUTOCORR_STATISTIC).
+    regs.autocorr_statistic()
+        .write(|w| *w = pac::trng::regs::AutocorrStatistic(0));
+    // Internal RNG reset (the only thing that clears AUTOCORR_ERR); a fixed
+    // delay is required afterwards - the register reads are that delay.
+    regs.trng_sw_reset().write(|w| w.set_trng_sw_reset(true));
+    let _ = regs.trng_sw_reset().read();
+    let _ = regs.trng_sw_reset().read();
+    write_config(regs);
+    regs.rng_icr().write(|w| {
+        w.set_ehr_valid(true);
+        w.set_crngt_err(true);
+        w.set_vn_err(true);
+    });
+    start_source(regs);
 }
 
 /// Read one accepted 192-bit block; failed runs are retried (bounded).
 pub fn read_block(stats: &mut TrngStats) -> Result<[u8; BLOCK_LEN], TrngError> {
     let regs = regs();
+    // Job-scoped source lifecycle: start on first use, keep running across
+    // consecutive blocks (see module docs; per-block restarts were a bug).
+    if !SOURCE_RUNNING.load(Ordering::Relaxed) {
+        start_source(&regs);
+    }
     let mut failures = 0u32;
 
     loop {
@@ -126,11 +211,9 @@ pub fn read_block(stats: &mut TrngStats) -> Result<[u8; BLOCK_LEN], TrngError> {
             return Err(TrngError::RetriesExhausted);
         }
 
-        restart(&regs);
-
         // Phase 1: wait for the run to become visible — BUSY rising, or
-        // already-terminated status (a fast-failing run can conclude before
-        // the first poll).
+        // already-terminated status (a fast run can conclude before the first
+        // poll).
         let mut spins = 0u32;
         let mut running = false;
         loop {
@@ -179,7 +262,7 @@ pub fn read_block(stats: &mut TrngStats) -> Result<[u8; BLOCK_LEN], TrngError> {
         if isr.autocorr_err() {
             stats.autocorr_err += 1;
             failures += 1;
-            full_reset(&regs);
+            recover(&regs);
             continue;
         }
         if isr.crngt_err() || isr.vn_err() {
@@ -190,6 +273,7 @@ pub fn read_block(stats: &mut TrngStats) -> Result<[u8; BLOCK_LEN], TrngError> {
                 stats.vn_err += 1;
             }
             failures += 1;
+            // Not terminal for the block: clear and keep waiting.
             regs.rng_icr().write(|w| {
                 w.set_crngt_err(true);
                 w.set_vn_err(true);
@@ -197,36 +281,11 @@ pub fn read_block(stats: &mut TrngStats) -> Result<[u8; BLOCK_LEN], TrngError> {
             continue;
         }
         // No result, no error: not a documented terminal state; count it and
-        // retry (the counter makes it visible if this ever happens).
+        // recover defensively.
         stats.odd_states += 1;
         failures += 1;
+        recover(&regs);
     }
-}
-
-/// Explicit restart: a 0 -> 1 edge on RND_SRC_EN with the bit counter
-/// cleared, so each attempt starts from a defined state.
-fn restart(regs: &TrngRegs) {
-    regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
-    let _ = regs.rnd_source_enable().read(); // sync + settle
-    regs.rst_bits_counter()
-        .write(|w| w.set_rst_bits_counter(true));
-    let _ = regs.rnd_source_enable().read();
-    regs.rnd_source_enable().write(|w| w.set_rnd_src_en(true));
-}
-
-/// Full recovery for a sticky failure: internal soft reset (the only way to
-/// clear AUTOCORR_ERR), reconfiguration, and a clear of the clearable flags.
-fn full_reset(regs: &TrngRegs) {
-    regs.trng_sw_reset().write(|w| w.set_trng_sw_reset(true));
-    // A fixed delay is required after the soft reset; two reads of the
-    // register are the documented-sufficient delay (driver comment).
-    let _ = regs.trng_sw_reset().read();
-    let _ = regs.trng_sw_reset().read();
-    write_config(regs);
-    regs.rng_icr().write(|w| {
-        w.set_crngt_err(true);
-        w.set_vn_err(true);
-    });
 }
 
 /// Read the six EHR registers into `block`. Order matters: reading

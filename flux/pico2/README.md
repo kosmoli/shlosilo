@@ -67,10 +67,11 @@ The console is bidirectional: send ASCII lines (`\n` or `\r` terminates):
 - `ur:<type>/<body>` — a single-frame UR is decoded and signed immediately
 - `ur:<type>/<n>-<m>/<body>` — multipart fragments, fed in any order; the
   payload is signed once the session completes
-- `trng [stress] [n]` — read `n` hardware-TRNG blocks (24 B each, default
-  64, max 4096) and stream them as hex; ends with a stats line (retry
-  counters + per-block timing); `stress` switches to a failure-prone
-  sample count for the job, to exercise the retry paths on real silicon
+- `trng [stress] [sample=<n>] [chain=<0-4>] [nblocks]` — read `nblocks`
+  TRNG blocks (24 B each, default 64, max 4096) and stream them as hex;
+  ends with a stats line (retry counters, autocorr statistic, per-block
+  timing); `stress` = sample count 2, `sample=`/`chain=` override the
+  characterisation settings (all restored on job exit)
 
 Signing prints `[sign] <type> ok: <n> bytes sha256=<hex>`, plus
 `[sign] <type> hex: <hex>` when the output is ≤128 bytes (covers the ETH
@@ -136,9 +137,22 @@ autocorrelation failure (datasheet 12.12.3: a run stops on success *or* on a
 failed entropy check; 12.12.2: failed checks occur even at recommended
 settings). With panic = abort that would eventually kill the firmware. This
 module applies embassy's *async* policy (reinitialize + restart on failure)
-in blocking form: CRNGT/VN failures clear-and-retry, autocorrelation
-(sticky) takes a full software reset, every wait and the retry budget are
-bounded, and the outcome is a `Result` with counters.
+in blocking form: recovery is ordered (stop source, reset the
+autocorrelation statistics counters, pulse the software reset, re-apply the
+configuration, re-enable), CRNGT/VN failures clear-and-retry, every wait and
+the retry budget are bounded, and the outcome is a `Result` with counters.
+
+Two hardware-verified behaviours shape the design (bring-up measurements):
+
+- the entropy source is **job-scoped** - started on first use and kept
+  running across consecutive blocks. Restarting it per block (an earlier
+  version's behaviour) latched the block into a state where every attempt
+  failed instantly without generating (64 fast retries burning the budget
+  in ~40 ms), while the first block after a clean start always succeeded;
+- the hardware entropy checks do fail in normal operation, so the retry
+  paths above are the expected steady-state, not an error path. The
+  `sample=`/`chain=` sweep knobs exist to characterise this silicon and pick
+  an operating point with a low failure rate.
 
 On the bench channel, `trng <n>` streams raw accepted blocks for host-side
 analysis; `bench/trng_test.py` runs the quality checks (duplicate blocks,

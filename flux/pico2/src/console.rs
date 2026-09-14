@@ -108,6 +108,15 @@ impl ConsoleState {
             return None;
         }
 
+        // Bench instrumentation: echo what reached the command parser, so a
+        // silently-dropped input is attributable (never arrived vs. arrived
+        // but produced nothing).
+        {
+            let n = line.len().min(56);
+            let s = core::str::from_utf8(&line[..n]).unwrap_or("<bin>");
+            log::info!("[rx] {}B {:?}", line.len(), s);
+        }
+
         if line.starts_with(b"ur:") {
             self.handle_ur(line);
             return None;
@@ -145,13 +154,12 @@ impl ConsoleState {
         log::info!(
             "[help]                   order); signs on completion with the session mnemonic"
         );
+        log::info!("[help]   trng [stress] [sample=<n>] [chain=<0-4>] [nblocks]");
         log::info!(
-            "[help]   trng [stress] [n]  read n TRNG blocks (24 B each, default 64) as hex;"
+            "[help]                   read nblocks TRNG blocks (24 B each, default 64) as hex;"
         );
-        log::info!(
-            "[help]                   `stress` uses a failure-prone sample count to exercise"
-        );
-        log::info!("[help]                   the retry paths; ends with a stats line");
+        log::info!("[help]                   stress = sample 2; sample/chain override the config;");
+        log::info!("[help]                   ends with a stats line");
         log::info!("[help] lines end with \\n or \\r");
     }
 
@@ -380,39 +388,71 @@ impl ReceiverHandler for CommandHandler {
 #[derive(Clone, Copy)]
 struct TrngJob {
     stress: bool,
+    sample: Option<u32>,
+    chain: Option<u8>,
     count: u32,
 }
 
-/// Parse `trng [stress] [n]`; default 64 blocks, capped at 4096.
+/// Parse `trng [stress] [sample=<n>] [chain=<0-4>] [nblocks]`;
+/// default 64 blocks, capped at 4096.
 fn parse_trng_job(args: &[u8]) -> TrngJob {
     let mut stress = false;
+    let mut sample: Option<u32> = None;
+    let mut chain: Option<u8> = None;
     let mut count: u32 = 64;
     for word in args
         .split(|b| b.is_ascii_whitespace())
         .filter(|w| !w.is_empty())
     {
+        let s = core::str::from_utf8(word).unwrap_or("");
         if word == b"stress" {
             stress = true;
-        } else if let Ok(n) = core::str::from_utf8(word).unwrap_or("").parse::<u32>() {
+        } else if let Some(v) = s.strip_prefix("sample=") {
+            sample = v.parse::<u32>().ok().map(|n| n.min(0xffff));
+        } else if let Some(v) = s.strip_prefix("chain=") {
+            chain = v.parse::<u8>().ok().map(|n| n.min(4));
+        } else if let Ok(n) = s.parse::<u32>() {
             count = n.clamp(1, 4096);
         }
     }
-    TrngJob { stress, count }
+    TrngJob {
+        stress,
+        sample,
+        chain,
+        count,
+    }
 }
 
 /// Stream `count` TRNG blocks as hex lines, then a stats summary.
 ///
-/// `stress` reconfigures the block to a failure-prone sample count for the
-/// job's duration: datasheet 12.12.2 notes that low sample counts increase
-/// the chance of failed entropy checks — that is what exercises the CRNGT /
-/// VN clear-and-retry and the autocorr reset-and-retry paths on real silicon.
+/// Config precedence: `stress` (sample 2, failure-prone) > explicit
+/// `sample=`/`chain=` overrides > the datasheet-recommended defaults.
+/// The overrides exist for characterisation sweeps on the bench (find the
+/// config where the hardware entropy checks stop failing); the job restores
+/// the defaults on exit either way.
 async fn run_trng_stream(job: TrngJob) {
-    if job.stress {
-        trng::set_sample_count(2);
-        log::info!("[trng] stress: sample_cnt=2 (failure-prone; exercises the retry paths)");
+    let sample = if job.stress {
+        2
     } else {
-        trng::set_sample_count(trng::DEFAULT_SAMPLE_COUNT);
-    }
+        job.sample.unwrap_or(trng::DEFAULT_SAMPLE_COUNT)
+    };
+    let chain = job.chain.unwrap_or(trng::DEFAULT_CHAIN_LEN);
+    trng::set_sample_count(sample);
+    trng::set_chain_len(chain);
+    let (ver, ac_fails, ac_trys) = (
+        trng::version(),
+        trng::autocorr_statistic().0,
+        trng::autocorr_statistic().1,
+    );
+    log::info!(
+        "[trng] start: n={} sample={} chain={} ver=0x{:08x} acstat={}/{}",
+        job.count,
+        sample,
+        chain,
+        ver,
+        ac_fails,
+        ac_trys
+    );
 
     let t0 = Instant::now();
     let mut stats = TrngStats::default();
@@ -433,7 +473,7 @@ async fn run_trng_stream(job: TrngJob) {
         yield_now().await;
     }
     trng::stop();
-    trng::set_sample_count(trng::DEFAULT_SAMPLE_COUNT);
+    trng::restore_default_config();
 
     let ms = t0.elapsed().as_millis();
     let per_block_us = if stats.blocks > 0 {
@@ -441,9 +481,10 @@ async fn run_trng_stream(job: TrngJob) {
     } else {
         0
     };
+    let (ac_fails, ac_trys) = trng::autocorr_statistic();
     match error {
         None => log::info!(
-            "[trng] done: {} blocks in {} ms (~{} us/block); crngt={} vn={} autocorr={} odd={} timeout={}",
+            "[trng] done: {} blocks in {} ms (~{} us/block); crngt={} vn={} autocorr={} odd={} timeout={}; acstat={}/{}",
             stats.blocks,
             ms,
             per_block_us,
@@ -451,10 +492,12 @@ async fn run_trng_stream(job: TrngJob) {
             stats.vn_err,
             stats.autocorr_err,
             stats.odd_states,
-            stats.busy_timeouts
+            stats.busy_timeouts,
+            ac_fails,
+            ac_trys
         ),
         Some(e) => log::info!(
-            "[trng] FAILED after {} blocks in {} ms: {:?}; crngt={} vn={} autocorr={} odd={} timeout={}",
+            "[trng] FAILED after {} blocks in {} ms: {:?}; crngt={} vn={} autocorr={} odd={} timeout={}; acstat={}/{}",
             stats.blocks,
             ms,
             e,
@@ -462,7 +505,9 @@ async fn run_trng_stream(job: TrngJob) {
             stats.vn_err,
             stats.autocorr_err,
             stats.odd_states,
-            stats.busy_timeouts
+            stats.busy_timeouts,
+            ac_fails,
+            ac_trys
         ),
     }
 }
