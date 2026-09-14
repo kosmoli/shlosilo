@@ -156,6 +156,25 @@ the configuration, re-enable), bounded time budget, `Result` with counters.
   blocks, zero failures, **~1.05 ms/block**. These are now the firmware
   defaults (`DEFAULT_CHAIN_LEN` / `DEFAULT_SAMPLE_COUNT`); both remain
   runtime-tunable for other silicon via `sample=`/`chain=`.
+- The **raw stream carries a condition-dependent adjacent-bit correlation**
+  (bit pairs equal 50.0–52.0% instead of 50%; runs-test |z| up to ~14 on
+  24 KiB samples, while monobit / byte chi-square / serial correlation stay
+  clean). Position-resolved tests locate it: activations producing ≤8
+  blocks are fully clean, 12–16-block activations degrade in the tail,
+  longer uninterrupted reads carry it throughout. The effect size grows
+  with read length (segment z ≈ +3 at 17–20 blocks, ≈ +5 at 64) and is
+  bounded (p ≤ ~0.52). Extraction was independently validated against
+  synthetic drop/merge replays and the statistics calibrated on synthetic
+  samples. This matches the datasheet's own caveat that the TRNG's
+  conditioning logic has pitfalls, "most notably the von Neumann
+  decorrelator" — which the RP2350 bootrom avoids by hashing raw samples.
+
+**Conditioning** (`read_conditioned32`, the consumer path): SHA-256 over
+two consecutive accepted raw blocks (2 × 192 = 384 health-checked raw bits
+→ 256 output bits). The hardware health checks stay enabled as the source
+monitor; conditioning removes the residual structure from what consumers
+see — the datasheet-sanctioned fix and the standard source → conditioner
+pattern (NIST SP 800-90B).
 
 Design consequences baked in: the source lifecycle is job-scoped (a
 per-block restart drives the block into the sticky state); a fresh start
@@ -167,19 +186,24 @@ cycle is sub-millisecond, so attempt counts expire in tens of milliseconds
 while a stressed block may need seconds; the reader awaits between retry
 cycles so the executor (heartbeats, USB) keeps running.
 
-On the bench channel, `trng <n>` streams raw accepted blocks for host-side
-analysis; `bench/trng_test.py` runs the quality checks (duplicate blocks,
-all-zero blocks, monobit, byte chi-square, serial correlation, runs test,
-crude min-entropy) in chunks and prints the device-side retry counters:
+On the bench channel:
+
+- `trng <n>` — raw blocks (source diagnostics);
+- `trng cond <n>` — conditioned 32-byte outputs (consumer path).
+
+`bench/trng_test.py` runs the quality checks (duplicate units, all-zero
+units, monobit, byte chi-square, serial correlation, runs test, crude
+min-entropy) in chunks and prints the device-side counters:
 
 ```sh
-python3 flux/pico2/bench/trng_test.py            # 1024 blocks, normal config
+python3 flux/pico2/bench/trng_test.py            # raw blocks (diagnostics)
+python3 flux/pico2/bench/trng_test.py --cond     # conditioned consumer path
 python3 flux/pico2/bench/trng_test.py --stress   # failure-prone config, expect retries
 ```
 
 These are single-run sanity checks, not a certification — the hardware
 checks are the primary defense. The signing-path consumer (XMR randomness
-injection, §B.5 entropy parameter) lands with the next milestone.
+injection, §B.5 entropy parameter) uses `read_conditioned32`.
 
 ## Status
 
@@ -190,8 +214,8 @@ host oracle, and the serial bench channel signs host-fed fixtures — the
 ETH fixture (full hex match) and the 12.4 KiB Sparrow signet PSBT as 32
 multipart fragments (12447-byte signed output, sha256 match).
 
-The hardware TRNG is characterised and running on the checked path at its
-measured operating point (chain 4 / sample 200, see above).
+The hardware TRNG is characterised: checked operating point chain 4 /
+sample 200, conditioned consumer path verified (see above).
 
 Next steps: XMR randomness injection from the TRNG (the §B.5 entropy
 parameter), heap sizing for the XMR path, then QR (camera) input in place
