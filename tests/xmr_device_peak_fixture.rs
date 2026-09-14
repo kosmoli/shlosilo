@@ -162,6 +162,9 @@ fn idx12_xmr_ur_signs_and_fits_single_fragment() {
 
     std::fs::write("/tmp/xmr_smoke_ur.txt", ur.as_str()).expect("write ur");
     std::fs::write("/tmp/xmr_smoke_enc.bin", &encrypted).expect("write enc");
+    // The host recomputation with the same fixed entropy the A/B uses; the
+    // device blob (bench/xmr_sign.py) must match this byte-for-byte.
+    std::fs::write("/tmp/xmr_host_signed.bin", &out[..n]).expect("write host signed");
     eprintln!(
         "XMR smoke UR: encrypted={} uri={} signed={}",
         encrypted.len(),

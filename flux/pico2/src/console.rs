@@ -17,6 +17,8 @@
 use core::cell::RefCell;
 use core::fmt::Write as _;
 
+extern crate alloc;
+
 use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -42,6 +44,16 @@ const LINE_CAP: usize = 8192;
 /// Signing output buffer: the FFI ceiling (multipart payload + overhead).
 const SIGN_OUT_CAP: usize = 16384 + 512;
 
+/// XMR signed-blob storage: the smoke fixture's signed txset is 3458 B
+/// (measured on the host); 8 KiB leaves room for larger single-tx fixtures.
+const XMR_OUT_CAP: usize = 8 * 1024;
+
+/// Entropy handed to the XMR signing path: two conditioned 32-byte outputs
+/// (the §B.5 contract requires >=16 B; the signer hashes this into its
+/// purpose-separated RNG stream, so conditioning plus hashing absorbs any
+/// source bias).
+const XMR_ENTROPY_LEN: usize = 64;
+
 /// Session state for the command channel.
 struct ConsoleState {
     line: [u8; LINE_CAP],
@@ -61,6 +73,17 @@ struct ConsoleState {
     session: Option<([u16; 24], u8)>,
     /// In-flight multipart UR session.
     decoder: Option<UrMultipartDecoder>,
+    /// Pending XMR signing request: the decoded UR payload, owned on the
+    /// heap (16 KiB-class; above the PSRAM threshold it lands there).
+    xmr_pending: Option<alloc::vec::Vec<u8>>,
+    /// Fixed-entropy override for XMR (`xmrseed <hex>`): when set, the next
+    /// XMR job uses this instead of the TRNG, enabling a byte-exact A/B
+    /// against a host recomputation. Bench-only; the production path is
+    /// the TRNG.
+    xmr_seed: Option<([u8; 64], usize)>,
+    /// Last signed XMR blob, retrievable via `xmrout <hex_off> <hex_len>`.
+    xmr_out: [u8; XMR_OUT_CAP],
+    xmr_out_len: usize,
 }
 
 /// A partial line with no terminator for this long is stale (see
@@ -77,6 +100,10 @@ impl ConsoleState {
             line_overflow: false,
             session: None,
             decoder: None,
+            xmr_pending: None,
+            xmr_seed: None,
+            xmr_out: [0u8; XMR_OUT_CAP],
+            xmr_out_len: 0,
         }
     }
 
@@ -141,8 +168,7 @@ impl ConsoleState {
         }
 
         if line.starts_with(b"ur:") {
-            self.handle_ur(line);
-            return None;
+            return self.handle_ur(line);
         }
 
         let (cmd, args) = split_first_word(line);
@@ -157,6 +183,8 @@ impl ConsoleState {
             b"trngrst" => return Some(TrngJob::simple(JobMode::Rst)),
             b"trngprobe" => return Some(parse_trng_probe(args)),
             b"trngemb" => return Some(parse_trng_emb(args)),
+            b"xmrout" => self.cmd_xmrout(args),
+            b"xmrseed" => self.cmd_xmrseed(args),
             _ => {
                 let echo = core::str::from_utf8(cmd).unwrap_or("<non-utf8>");
                 log::info!("[err] unknown command: {echo} (try: help)");
@@ -195,6 +223,9 @@ impl ConsoleState {
         log::info!("[help]   trngrst         RESETS-block cycle for the TRNG, then a dump");
         log::info!("[help]   trngprobe [ms]  cold-start + trace every BUSY/ISR transition");
         log::info!("[help]   trngemb [n]     read n blocks via the upstream embassy driver");
+        log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
+        log::info!("[help]   ur:xmr-txunsigned/...  signs with TRNG entropy (deferred job;");
+        log::info!("[help]                   fetch the result with xmrout)");
         log::info!("[help] lines end with \\n or \\r");
     }
 
@@ -216,10 +247,70 @@ impl ConsoleState {
         if args == b"reset" {
             crate::heap_peak_reset();
             let (used, free, peak) = crate::heap_stats();
-            log::info!("[heap] peak reset; used {used} free {free} peak {peak}");
+            let (pu, pf, pp) = crate::psram_stats();
+            log::info!(
+                "[heap] peak reset; sram {used}/{free} peak {peak}; psram {pu}/{pf} peak {pp}"
+            );
         } else {
             let (used, free, peak) = crate::heap_stats();
-            log::info!("[heap] used {used} free {free} peak {peak}");
+            let (pu, pf, pp) = crate::psram_stats();
+            log::info!(
+                "[heap] sram used {used} free {free} peak {peak}; psram used {pu} free {pf} peak {pp}"
+            );
+        }
+    }
+
+    /// Fetch a segment of the last signed XMR blob as hex:
+    /// `xmrout <hex_off> <hex_len>` (both in hex characters; len capped at
+    /// 512 to stay within the log pipe). The summary line reports the total.
+    fn cmd_xmrout(&self, args: &[u8]) {
+        if self.xmr_out_len == 0 {
+            log::info!("[err] xmrout: no signed XMR blob stored yet");
+            return;
+        }
+        let mut off: Option<usize> = None;
+        let mut len: Option<usize> = None;
+        for w in args
+            .split(|b| b.is_ascii_whitespace())
+            .filter(|w| !w.is_empty())
+        {
+            let v = core::str::from_utf8(w)
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok());
+            if off.is_none() {
+                off = v;
+            } else if len.is_none() {
+                len = v;
+            }
+        }
+        let (Some(mut off), len) = (off, len.unwrap_or(512)) else {
+            log::info!("[err] xmrout: usage: xmrout <hex_off> <hex_len>");
+            return;
+        };
+        let total = self.xmr_out_len * 2;
+        // align down to byte boundaries and clamp
+        off &= !1;
+        if off >= total {
+            log::info!("[err] xmrout: offset {off} past end ({total})");
+            return;
+        }
+        let len = len.min(512).min(total - off) & !1;
+        let mut hex = [0u8; 512];
+        let s = sign_smoke::to_hex(&self.xmr_out[off / 2..(off + len) / 2], &mut hex);
+        log::info!("[xmrout] {off}+{len}/{total} {s}");
+    }
+
+    /// `xmrseed <hex>`: set fixed entropy for the next XMR job (A/B mode).
+    fn cmd_xmrseed(&mut self, args: &[u8]) {
+        let mut buf = [0u8; 64];
+        match parse_hex(args, &mut buf) {
+            Some(n) => {
+                log::info!(
+                    "[xmr] fixed entropy set ({n} B; next XMR job uses this instead of the TRNG - A/B mode)"
+                );
+                self.xmr_seed = Some((buf, n));
+            }
+            None => log::info!("[err] xmrseed: expected hex, 1..=64 bytes"),
         }
     }
 
@@ -253,12 +344,12 @@ impl ConsoleState {
         }
     }
 
-    fn handle_ur(&mut self, line: &[u8]) {
+    fn handle_ur(&mut self, line: &[u8]) -> Option<TrngJob> {
         let s = match core::str::from_utf8(line) {
             Ok(s) => s,
             Err(_) => {
                 log::info!("[err] ur: line is not utf8");
-                return;
+                return None;
             }
         };
 
@@ -270,8 +361,7 @@ impl ConsoleState {
                 tag.type_name(),
                 decoded.as_ref().len()
             );
-            self.sign_and_report(tag, decoded.as_ref());
-            return;
+            return self.sign_and_report(tag, decoded.as_ref());
         }
         // Not a single frame (or over its budget): try multipart below.
 
@@ -279,7 +369,7 @@ impl ConsoleState {
             Some(v) => v,
             None => {
                 log::info!("[err] ur: neither a valid single frame nor a multipart frame");
-                return;
+                return None;
             }
         };
 
@@ -313,7 +403,7 @@ impl ConsoleState {
                                 payload.len()
                             );
                             // Decoder consumed; the session ends here.
-                            self.sign_and_report(tag, &payload);
+                            return self.sign_and_report(tag, &payload);
                         }
                         Ok(None) => log::info!("[err] ur: complete but payload missing"),
                         Err(e) => log::info!("[err] ur payload: {:?}", e.kind),
@@ -327,15 +417,22 @@ impl ConsoleState {
                 // Session dropped (decoder not put back).
             }
         }
+        None
     }
 
-    fn sign_and_report(&mut self, tag: UrTypeTag, payload: &[u8]) {
+    /// Dispatch a decoded payload. BTC/ETH sign synchronously (RFC-6979,
+    /// fast); XMR returns a deferred job - its signing path takes TRNG
+    /// entropy and runs the CN scratchpad + BP+ prove chain, which is a
+    /// seconds-scale synchronous operation.
+    fn sign_and_report(&mut self, tag: UrTypeTag, payload: &[u8]) -> Option<TrngJob> {
         match tag {
-            UrTypeTag::XmrTxUnsigned | UrTypeTag::XmrTxSigned | UrTypeTag::CryptoMoneroTx => {
-                log::info!(
-                    "[err] sign: XMR paths need an entropy source (RP2350 TRNG) - not wired yet"
-                );
-                return;
+            UrTypeTag::XmrTxUnsigned => {
+                self.xmr_pending = Some(alloc::vec::Vec::from(payload));
+                return Some(TrngJob::simple(JobMode::SignXmr));
+            }
+            UrTypeTag::XmrTxSigned | UrTypeTag::CryptoMoneroTx => {
+                log::info!("[err] sign: unsupported XMR type ({})", tag.type_name());
+                return None;
             }
             _ => {}
         }
@@ -344,7 +441,7 @@ impl ConsoleState {
             Ok(m) => m,
             Err(e) => {
                 log::info!("[err] session mnemonic: {:?}", e.kind);
-                return;
+                return None;
             }
         };
         let input = SignInput::Mnemonic {
@@ -353,7 +450,7 @@ impl ConsoleState {
         };
 
         // BTC/ETH do not consume injected entropy (RFC-6979); empty slice per
-        // the §B.5 contract. XMR would take TRNG bytes here.
+        // the §B.5 contract. (XMR takes TRNG entropy in its deferred job.)
         let mut out = [0u8; SIGN_OUT_CAP];
         let tname = tag.type_name();
         match shlosilo::business::sign::sign_with_entropy(input, tag, payload, &[], &mut out) {
@@ -377,6 +474,7 @@ impl ConsoleState {
             }
             Err(e) => log::info!("[err] sign {tname}: {:?}", e.kind),
         }
+        None
     }
 
     fn session_mnemonic(&self) -> Result<Mnemonic, ShlosiloError> {
@@ -446,6 +544,8 @@ enum JobMode {
     Dump,
     /// RESETS-block cycle, then a dump.
     Rst,
+    /// Sign the pending XMR request (TRNG entropy + the full signing path).
+    SignXmr,
 }
 
 impl TrngJob {
@@ -557,6 +657,7 @@ async fn run_trng_job(job: TrngJob) {
             t.stop();
             log_snapshot(&t.snapshot());
         }
+        JobMode::SignXmr => run_sign_xmr().await,
     }
 }
 
@@ -576,6 +677,123 @@ fn log_snapshot(s: &trng::RawSnapshot) {
         s.sw_reset,
         s.version
     );
+}
+
+/// Sign the pending XMR request: fetch TRNG entropy, run the full signing
+/// path, store the encrypted signed blob for `xmrout` retrieval.
+///
+/// This runs inside the USB receiver future. The signing stretch itself is
+/// synchronous (CN scratchpad + BP+ prove; the host fixture takes ~100 ms
+/// on a desktop, seconds-to-minutes on this board with the scratchpad in
+/// PSRAM), so during it the executor makes no progress: no heartbeats, no
+/// USB servicing. The host-side runner must allow minutes and treat
+/// mid-sign silence as expected (bench/xmr_sign.py does). Moving the signer
+/// onto core1 would remove the stall; the first bring-up values simplicity,
+/// and the stall is bounded and observable.
+async fn run_sign_xmr() {
+    // Take the pending payload and the session mnemonic out of the console
+    // state under a short lock (the signing stretch must not hold it).
+    let (payload, mnemonic) = CONSOLE.lock(|cell| {
+        let mut s = cell.borrow_mut();
+        let payload = s.xmr_pending.take();
+        let mnemonic = s.session_mnemonic();
+        (payload, mnemonic)
+    });
+    let Some(payload) = payload else {
+        log::info!("[err] xmr: no pending request");
+        return;
+    };
+    let mnemonic = match mnemonic {
+        Ok(m) => m,
+        Err(e) => {
+            log::info!("[err] xmr session mnemonic: {:?}", e.kind);
+            return;
+        }
+    };
+
+    log::info!(
+        "[xmr] request: enc_len={} (entropy: {})",
+        payload.len(),
+        if CONSOLE.lock(|c| c.borrow().xmr_seed.is_some()) {
+            "fixed A/B"
+        } else {
+            "TRNG"
+        }
+    );
+    yield_now().await; // let the log pipe drain before the long stretch
+
+    // §B.5 entropy injection. Production path: conditioned TRNG outputs (the
+    // signer hashes them into its purpose-separated RNG stream). A/B path:
+    // `xmrseed` set a fixed byte string, so the output can be compared
+    // byte-for-byte against a host recomputation.
+    let fixed = CONSOLE.lock(|c| c.borrow_mut().xmr_seed.take());
+    let mut stats = TrngStats::default();
+    let mut entropy_buf = [0u8; XMR_ENTROPY_LEN];
+    let entropy_len;
+    if let Some((buf, n)) = fixed {
+        entropy_buf[..n].copy_from_slice(&buf[..n]);
+        entropy_len = n;
+    } else {
+        let mut ok = true;
+        {
+            let mut t = trng::instance().lock().await;
+            for chunk in entropy_buf.chunks_mut(32) {
+                match t
+                    .conditioned32(&mut stats, trng::DEFAULT_BLOCK_TIMEOUT_MS)
+                    .await
+                {
+                    Ok(out) => chunk.copy_from_slice(&out),
+                    Err(e) => {
+                        log::info!("[err] xmr entropy: {:?}", e);
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            t.stop();
+        }
+        if !ok {
+            return;
+        }
+        entropy_len = XMR_ENTROPY_LEN;
+    }
+    let entropy = &entropy_buf[..entropy_len];
+    log::info!(
+        "[xmr] entropy ready ({entropy_len} B); signing... (executor stalls for the duration)"
+    );
+    yield_now().await;
+
+    let input = SignInput::Mnemonic {
+        mnemonic,
+        passphrase: b"",
+    };
+    let mut out = [0u8; XMR_OUT_CAP];
+    let t0 = Instant::now();
+    match shlosilo::business::sign::sign_with_entropy(
+        input,
+        UrTypeTag::XmrTxUnsigned,
+        &payload,
+        entropy,
+        &mut out,
+    ) {
+        Ok(n) => {
+            let ms = t0.elapsed().as_millis();
+            CONSOLE.lock(|cell| {
+                let mut s = cell.borrow_mut();
+                s.xmr_out[..n].copy_from_slice(&out[..n]);
+                s.xmr_out_len = n;
+            });
+            match sha256::hash(&out[..n]) {
+                Ok(digest) => log::info!(
+                    "[xmr] signed ok: {n} bytes in {ms} ms sha256={} (fetch: xmrout <off> 512; total {} hex chars)",
+                    sign_smoke::to_hex(&digest, &mut [0u8; 64]),
+                    n * 2
+                ),
+                Err(e) => log::info!("[err] xmr sha256: {:?}", e.kind),
+            }
+        }
+        Err(e) => log::info!("[err] xmr sign: {:?}", e.kind),
+    }
 }
 
 /// Trace BUSY/ISR transitions after a cold start (bring-up diagnostic: shows
@@ -790,7 +1008,7 @@ fn parse_seq(s: &str) -> Option<(usize, usize)> {
 }
 
 /// Parse hex into `out`; returns the byte count on success.
-fn parse_hex(s: &[u8], out: &mut [u8; 32]) -> Option<usize> {
+fn parse_hex(s: &[u8], out: &mut [u8]) -> Option<usize> {
     let s = trim_ascii(s);
     if s.is_empty() || !s.len().is_multiple_of(2) || s.len() > out.len() * 2 {
         return None;

@@ -37,81 +37,125 @@ use embedded_alloc::LlffHeap;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-/// Heap sized for the current largest flow: a 12.4 KiB PSBT multipart decode
-/// plus signing. The `heap` console command prints used/free/peak so the
-/// number is measured, not guessed (the XMR path's ~256 KiB-class
-/// allocations are the next sizing item).
-const HEAP_SIZE: usize = 128 * 1024;
-static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
+/// Internal-SRAM heap sized for the small working sets: a 12.4 KiB PSBT
+/// multipart decode plus signing peaks at ~103 KiB (measured), and the
+/// BTC/ETH/console flows all live here. Large XMR allocations (CN's 2 MiB
+/// scratchpad, BP+ generators) go to the PSRAM region instead.
+const SRAM_HEAP_SIZE: usize = 128 * 1024;
+static mut SRAM_HEAP_MEM: [MaybeUninit<u8>; SRAM_HEAP_SIZE] =
+    [MaybeUninit::uninit(); SRAM_HEAP_SIZE];
 
-/// Global allocator: embedded-alloc's LLFF heap plus live/peak counters.
+/// Allocations at or above this size route to PSRAM (QSPI, slower); smaller
+/// ones stay in internal SRAM. The CN scratchpad (2 MiB) and BP+ generator
+/// tables (~256 KiB-class) are the consumers. Routing is by layout size
+/// ONLY, on both alloc and dealloc - a fallback to the other region would
+/// make free-time routing ambiguous.
+const PSRAM_THRESHOLD: usize = 64 * 1024;
+
+/// Global allocator: two embedded-alloc LLFF heaps plus live/peak counters.
+///
+/// - internal SRAM heap: SRAM_HEAP_SIZE, low-latency;
+/// - PSRAM heap: the whole QMI CS1 memory-mapped region (8 MiB on this
+///   board), initialised after the PSRAM driver brings the device up.
 ///
 /// The peak counter answers the sizing question with measured numbers:
-/// `Heap::used()` only shows the current level, so a flow that allocates and
-/// frees within one call (every signing flow does) would otherwise look like
-/// it needs nothing.
-struct TrackingHeap {
-    inner: LlffHeap,
+/// `used()` only shows the current level, so a flow that allocates and
+/// frees within one call (every signing flow does) would otherwise look
+/// like it needs nothing. PSRAM heap counters are separate so the `heap`
+/// command can report both regions.
+struct DualHeap {
+    sram: LlffHeap,
+    psram: LlffHeap,
     live: AtomicUsize,
     peak: AtomicUsize,
+    psram_live: AtomicUsize,
+    psram_peak: AtomicUsize,
 }
 
-impl TrackingHeap {
+impl DualHeap {
     const fn empty() -> Self {
         Self {
-            inner: LlffHeap::empty(),
+            sram: LlffHeap::empty(),
+            psram: LlffHeap::empty(),
             live: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
+            psram_live: AtomicUsize::new(0),
+            psram_peak: AtomicUsize::new(0),
+        }
+    }
+
+    fn bump_peak(counter: &AtomicUsize, live: usize) {
+        // CAS loop instead of load-then-store: an interrupt can allocate
+        // between the load and the store, and a plain max-store could lose
+        // that update.
+        let mut peak = counter.load(Ordering::Relaxed);
+        while live > peak {
+            match counter.compare_exchange_weak(peak, live, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(seen) => peak = seen,
+            }
         }
     }
 }
 
-unsafe impl GlobalAlloc for TrackingHeap {
+unsafe impl GlobalAlloc for DualHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { self.inner.alloc(layout) };
+        let to_psram = layout.size() >= PSRAM_THRESHOLD;
+        let ptr = if to_psram {
+            unsafe { self.psram.alloc(layout) }
+        } else {
+            unsafe { self.sram.alloc(layout) }
+        };
         if !ptr.is_null() {
-            let live = self.live.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-            // CAS loop instead of load-then-store: an interrupt can allocate
-            // between the load and the store, and a plain max-store could
-            // lose that update.
-            let mut peak = self.peak.load(Ordering::Relaxed);
-            while live > peak {
-                match self.peak.compare_exchange_weak(
-                    peak,
-                    live,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(seen) => peak = seen,
-                }
-            }
+            let (live_c, peak_c) = if to_psram {
+                (&self.psram_live, &self.psram_peak)
+            } else {
+                (&self.live, &self.peak)
+            };
+            let live = live_c.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
+            Self::bump_peak(peak_c, live);
         }
         ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.live.fetch_sub(layout.size(), Ordering::Relaxed);
-        unsafe { self.inner.dealloc(ptr, layout) };
+        if layout.size() >= PSRAM_THRESHOLD {
+            self.psram_live.fetch_sub(layout.size(), Ordering::Relaxed);
+            unsafe { self.psram.dealloc(ptr, layout) }
+        } else {
+            self.live.fetch_sub(layout.size(), Ordering::Relaxed);
+            unsafe { self.sram.dealloc(ptr, layout) }
+        }
     }
 }
 
 #[global_allocator]
-static HEAP: TrackingHeap = TrackingHeap::empty();
+static HEAP: DualHeap = DualHeap::empty();
 
-/// (used, free, peak) allocator snapshot.
+/// (sram_used, sram_free, sram_peak) allocator snapshot.
 pub(crate) fn heap_stats() -> (usize, usize, usize) {
     (
-        HEAP.inner.used(),
-        HEAP.inner.free(),
+        HEAP.sram.used(),
+        HEAP.sram.free(),
         HEAP.peak.load(Ordering::Relaxed),
     )
 }
 
-/// Re-arm the peak watermark at the current live level (for measuring one op).
+/// (psram_used, psram_free, psram_peak).
+pub(crate) fn psram_stats() -> (usize, usize, usize) {
+    (
+        HEAP.psram.used(),
+        HEAP.psram.free(),
+        HEAP.psram_peak.load(Ordering::Relaxed),
+    )
+}
+
+/// Re-arm the peak watermarks at the current live levels (one-op measurement).
 pub(crate) fn heap_peak_reset() {
     HEAP.peak
         .store(HEAP.live.load(Ordering::Relaxed), Ordering::Relaxed);
+    HEAP.psram_peak
+        .store(HEAP.psram_live.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
 bind_interrupts!(struct Irqs {
@@ -234,11 +278,69 @@ async fn console_report_task() {
 async fn main(spawner: Spawner) {
     // SAFETY: runs once at startup, before any allocation happens.
     unsafe {
-        HEAP.inner
-            .init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE)
+        HEAP.sram.init(
+            core::ptr::addr_of_mut!(SRAM_HEAP_MEM) as usize,
+            SRAM_HEAP_SIZE,
+        )
     }
 
     let p = embassy_rp::init(Default::default());
+
+    // PSRAM bring-up (QMI CS1, GPIO19 on this board - the pin the vendor's
+    // Linux bootloader uses): 8 MiB memory-mapped at 0x11000000, used for
+    // the large XMR allocations. A verification failure is logged and the
+    // firmware continues SRAM-only (BTC/ETH/console do not need PSRAM).
+    match embassy_rp::psram::Psram::new(
+        embassy_rp::qmi_cs1::QmiCs1::new(p.QMI_CS1, p.PIN_19),
+        // clock_hz drives the QSPI divisor computation; report the actual
+        // system clock.
+        embassy_rp::psram::Config::custom(
+            embassy_rp::clocks::clk_sys_freq(),
+            133_000_000,
+            8,
+            18,
+            1,
+            embassy_rp::psram::PageBreak::_1024,
+            10,
+            Some(0x35),
+            0xEB,
+            Some(0x38),
+            24,
+            embassy_rp::psram::FormatConfig {
+                prefix_width: embassy_rp::psram::Width::Quad,
+                addr_width: embassy_rp::psram::Width::Quad,
+                suffix_width: embassy_rp::psram::Width::Quad,
+                dummy_width: embassy_rp::psram::Width::Quad,
+                data_width: embassy_rp::psram::Width::Quad,
+                prefix_len: true,
+                suffix_len: false,
+            },
+            Some(embassy_rp::psram::FormatConfig {
+                prefix_width: embassy_rp::psram::Width::Quad,
+                addr_width: embassy_rp::psram::Width::Quad,
+                suffix_width: embassy_rp::psram::Width::Quad,
+                dummy_width: embassy_rp::psram::Width::Quad,
+                data_width: embassy_rp::psram::Width::Quad,
+                prefix_len: true,
+                suffix_len: false,
+            }),
+            8 * 1024 * 1024,
+            embassy_rp::psram::VerificationType::Aps6404l,
+            true,
+        ),
+    ) {
+        Ok(psram) => {
+            let base = psram.base_address() as usize;
+            let size = psram.size();
+            // SAFETY: the region is now memory-mapped and writable, and no
+            // allocator has handed out any of it yet.
+            unsafe { HEAP.psram.init(base, size) };
+            info!("psram: {} MiB ready at {=usize:#x}", size >> 20, base);
+        }
+        Err(e) => {
+            info!("psram: bring-up failed ({:?}); continuing SRAM-only", e);
+        }
+    }
 
     // Bring up the hardware TRNG through its singleton owner (see trng.rs;
     // all register access is serialized through this instance).
