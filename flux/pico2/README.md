@@ -268,6 +268,32 @@ sample 200, conditioned consumer path verified, single-owner access (see
 above). Entropy accounting (SP 800-90B assessment of the raw source) and
 multi-board/environment validation are open items.
 
-Next steps: XMR randomness injection from the TRNG (the §B.5 entropy
-parameter), heap sizing for the XMR path, then QR (camera) input in place
-of the bench channel.
+XMR signing runs end-to-end on-device: the console accepts an
+`xmr-txunsigned` UR, fetches conditioned TRNG entropy (the §B.5
+parameter) and produces the signed, encrypted txset, fetched via `xmrout`
+segments. Verified against a host recomputation byte-for-byte in the
+fixed-entropy A/B mode: 3458-byte blob, digest `5b57cb65...`.
+
+**XMR signing time (single-input fixture)**: **18.6 s** (was 26.2 s at
+first bring-up). The win came from BP+ table placement: the CT Straus
+multiexp tables are `n × 1280 B` and cost ~2× per term once they cross
+the 16 KiB PSRAM routing threshold (measured: SRAM tables ~11.7 ms +
+n×4.0 ms per chunk vs PSRAM ~7.6 ms + n×9.34 ms; see `bench/` and the
+`perfbench` console command). The chunk size is therefore a per-host
+runtime knob (`set_bp_multiexp_chunk_terms`): forgebox keeps 36 (46 KB
+tables in its 48 K SRAM pool), pico2 sets 12 (15,360 B -> SRAM heap,
+boot-time default). Remaining time is BP+ prove ~9.9 s (bp1 1.7 / A_hat
+0.8 / WIP 7.4 including 3.9 multiexp + 3.3 folding), CN ~5.2 s and CLSAG
+~2.3 s.
+
+Probe builds (`make pico2-perf-uf2`, features `perf-timing` +
+`perf-bench`; flavor shows as `build=bench+perf`): `xtiming` dumps the
+per-phase tables (tx / bp / cn) accumulated during the last sign;
+`perfbench [name] [iters]` times raw device primitives (fmul / select /
+madd / quad / chunked CT multiexp / vartime 2-term); `xmrchunk <n>`
+flips the chunk size at runtime for single-variable A/B runs.
+
+Next steps: entropy assurance for the TRNG (SP 800-90B; above), QR
+(camera) input in place of the bench channel, and further XMR tuning from
+the phase tables (bp6 folding and CN are at their measured floors; bp5's
+remaining gap is the open one).
