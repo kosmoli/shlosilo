@@ -41,6 +41,33 @@ fn smoke_view_key() -> [u8; 32] {
     shlosilo::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv())
 }
 
+/// The built-in dice fixture's view key (the production default wallet;
+/// mirrors flux/pico2/src/sign_smoke.rs::fixture_mnemonic).
+fn dice_view_key() -> [u8; 32] {
+    let mut rolls = [0u8; 64];
+    for (i, r) in rolls.iter_mut().enumerate() {
+        *r = (i % 6 + 1) as u8;
+    }
+    let mut mnemonic_buf = [0u8; 24];
+    shlosilo::business::create_account::create_account(
+        WordCount::Words12,
+        6,
+        &rolls,
+        b"",
+        &mut mnemonic_buf,
+    )
+    .expect("create_account");
+    let mut indices = [0u16; 12];
+    for (i, idx) in indices.iter_mut().enumerate() {
+        *idx = u16::from_le_bytes([mnemonic_buf[i * 2], mnemonic_buf[i * 2 + 1]]);
+    }
+    let m = Mnemonic::from_indices(&indices, WordCount::Words12).expect("mnemonic");
+    let mut seed = [0u8; 64];
+    shlosilo::business::restore_seed::restore_seed(&m, &[], &mut seed).expect("restore");
+    let kp = derive(&seed, &MoneroPath::mainnet(0)).expect("derive");
+    shlosilo::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv())
+}
+
 #[test]
 #[ignore = "hardware: needs the fetched device blob (bench/xmr_bringup.py)"]
 fn device_blob_decrypts() {
@@ -51,6 +78,25 @@ fn device_blob_decrypts() {
         decrypt_signed_txset(&device_blob, &view_sec).expect("decrypt device blob with view key");
     eprintln!(
         "device blob decrypts: {} bytes plaintext (blob {} bytes)",
+        plain.len(),
+        device_blob.len()
+    );
+    assert!(!plain.is_empty(), "empty plaintext");
+}
+
+/// Production-path structural check: the blob was signed by a production
+/// image, whose session wallet is the built-in dice fixture (no `entropy`
+/// command there). Fixture: xmr_device_peak_fixture::dice_xmr_ur_for_production_path.
+#[test]
+#[ignore = "hardware: needs a production-path device blob (dice-wallet fixture)"]
+fn device_blob_decrypts_dice() {
+    let device_blob =
+        std::fs::read("/tmp/xmr_device_signed.bin").expect("device blob (run xmr_prod_check)");
+    let view_sec = dice_view_key();
+    let plain = decrypt_signed_txset(&device_blob, &view_sec)
+        .expect("decrypt device blob with dice view key");
+    eprintln!(
+        "device blob decrypts (dice wallet): {} bytes plaintext (blob {} bytes)",
         plain.len(),
         device_blob.len()
     );

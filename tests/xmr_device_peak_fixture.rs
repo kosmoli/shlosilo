@@ -1,5 +1,13 @@
 //! P6.6: build a signable 1-input XMR UR from the smoke test's existing idx12 mnemonic.
 //! Measures BP+ peak heap on device; does not depend on env credentials.
+//!
+//! Also builds the DICE-wallet variant (`dice_xmr_ur_for_production_path`):
+//! production images have no `entropy` console command (bench-only, audit
+//! #17), so their session wallet is the built-in dice fixture
+//! (flux/pico2/src/sign_smoke.rs::fixture_mnemonic). The production path can
+//! only sign a fixture encrypted to THAT wallet - this test builds one,
+//! mirroring the device's derivation exactly (same rolls -> create_account ->
+//! from_indices -> restore_seed).
 
 use rand_chacha::rand_core::SeedableRng;
 use shlosilo::business::sign::{sign_with_entropy, SignInput};
@@ -77,28 +85,10 @@ fn owned_source_ring16(
     }
 }
 
-fn smoke_seed() -> [u8; 64] {
-    let m = Mnemonic::from_indices(&SMOKE_IDX12, WordCount::Words12).expect("idx12");
-    let mut seed = [0u8; 64];
-    shlosilo::business::restore_seed::restore_seed(&m, &[], &mut seed).expect("restore");
-    seed
-}
-
-fn dest(amount: u64, pt: [u8; 32]) -> TxDestinationEntry {
-    TxDestinationEntry {
-        original: vec![],
-        amount,
-        spend_public_key: pt,
-        view_public_key: pt,
-        is_subaddress: false,
-        is_integrated: false,
-    }
-}
-
-#[test]
-fn idx12_xmr_ur_signs_and_fits_single_fragment() {
-    let seed = smoke_seed();
-    let kp = derive(&seed, &MoneroPath::mainnet(0)).unwrap();
+/// Seed -> the encrypted unsigned txset + its UR, for the wallet `seed`.
+/// Shared by the idx12 test and the dice-wallet (production-path) test.
+fn build_fixture(seed: &[u8; 64]) -> (String, zeroize::Zeroizing<Vec<u8>>) {
+    let kp = derive(seed, &MoneroPath::mainnet(0)).unwrap();
     let spend_sec = shlosilo::curve_primitive::ed25519::scalar_to_bytes(kp.spend_priv());
     let view_sec = shlosilo::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv());
 
@@ -147,6 +137,59 @@ fn idx12_xmr_ur_signs_and_fits_single_fragment() {
         ur.as_str().len()
     );
     assert!(ur.as_str().starts_with("ur:xmr-txunsigned/"));
+    (ur.as_str().to_string(), encrypted)
+}
+
+fn seed_of(indices: &[u16; 12]) -> [u8; 64] {
+    let m = Mnemonic::from_indices(indices, WordCount::Words12).expect("mnemonic");
+    let mut seed = [0u8; 64];
+    shlosilo::business::restore_seed::restore_seed(&m, &[], &mut seed).expect("restore");
+    seed
+}
+
+fn smoke_seed() -> [u8; 64] {
+    seed_of(&SMOKE_IDX12)
+}
+
+/// The built-in dice fixture, mirroring flux/pico2/src/sign_smoke.rs
+/// (`fixture_rolls` + `fixture_mnemonic`): 64 x d6, [1..6] cycling.
+fn dice_seed() -> [u8; 64] {
+    let mut rolls = [0u8; 64];
+    for (i, r) in rolls.iter_mut().enumerate() {
+        *r = (i % 6 + 1) as u8;
+    }
+    let mut mnemonic_buf = [0u8; 24];
+    shlosilo::business::create_account::create_account(
+        WordCount::Words12,
+        6,
+        &rolls,
+        b"",
+        &mut mnemonic_buf,
+    )
+    .expect("create_account on the dice rolls");
+    let mut indices = [0u16; 12];
+    for (i, idx) in indices.iter_mut().enumerate() {
+        *idx = u16::from_le_bytes([mnemonic_buf[i * 2], mnemonic_buf[i * 2 + 1]]);
+    }
+    assert_eq!(indices[0], 1565, "device smoke report word0");
+    seed_of(&indices)
+}
+
+fn dest(amount: u64, pt: [u8; 32]) -> TxDestinationEntry {
+    TxDestinationEntry {
+        original: vec![],
+        amount,
+        spend_public_key: pt,
+        view_public_key: pt,
+        is_subaddress: false,
+        is_integrated: false,
+    }
+}
+
+#[test]
+fn idx12_xmr_ur_signs_and_fits_single_fragment() {
+    let seed = smoke_seed();
+    let (ur, encrypted) = build_fixture(&seed);
 
     let entropy = [0x77u8; 32];
     let mut out = vec![0u8; 16384];
@@ -160,7 +203,7 @@ fn idx12_xmr_ur_signs_and_fits_single_fragment() {
     .expect("sign idx12 xmr");
     assert!(n > 64, "signed blob too small: {n}");
 
-    std::fs::write("/tmp/xmr_smoke_ur.txt", ur.as_str()).expect("write ur");
+    std::fs::write("/tmp/xmr_smoke_ur.txt", &ur).expect("write ur");
     std::fs::write("/tmp/xmr_smoke_enc.bin", &encrypted).expect("write enc");
     // The host recomputation with the same fixed entropy the A/B uses; the
     // device blob (bench/xmr_sign.py) must match this byte-for-byte.
@@ -168,7 +211,39 @@ fn idx12_xmr_ur_signs_and_fits_single_fragment() {
     eprintln!(
         "XMR smoke UR: encrypted={} uri={} signed={}",
         encrypted.len(),
-        ur.as_str().len(),
+        ur.len(),
+        n
+    );
+}
+
+/// Production-path fixture: encrypted to the dice wallet, which is what a
+/// production image signs with (no `entropy` command there). Feed
+/// /tmp/xmr_dice_ur.txt to a production board and decrypt the fetched blob
+/// with the dice view key (xmr_device_blob_verify::device_blob_decrypts_dice).
+#[test]
+fn dice_xmr_ur_for_production_path() {
+    let seed = dice_seed();
+    let (ur, encrypted) = build_fixture(&seed);
+
+    // Sanity: the dice wallet must be able to sign its own fixture.
+    let entropy = [0x77u8; 32];
+    let mut out = vec![0u8; 16384];
+    let n = sign_with_entropy(
+        SignInput::Seed { seed: &seed },
+        UrTypeTag::XmrTxUnsigned,
+        &encrypted,
+        &entropy,
+        &mut out,
+    )
+    .expect("sign dice xmr");
+    assert!(n > 64, "signed blob too small: {n}");
+
+    std::fs::write("/tmp/xmr_dice_ur.txt", &ur).expect("write dice ur");
+    std::fs::write("/tmp/xmr_dice_enc.bin", &encrypted).expect("write dice enc");
+    eprintln!(
+        "dice XMR UR: encrypted={} uri={} host-signed={}",
+        encrypted.len(),
+        ur.len(),
         n
     );
 }
