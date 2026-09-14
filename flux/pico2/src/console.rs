@@ -46,6 +46,14 @@ const SIGN_OUT_CAP: usize = 16384 + 512;
 struct ConsoleState {
     line: [u8; LINE_CAP],
     line_len: usize,
+    /// Timestamp (ms, monotonic) of the last received byte. A partial line
+    /// older than STALE_LINE_MS is discarded before new data is appended:
+    /// on the bench, a host-side tty echo can send the device's own boot
+    /// banner back into its RX during the enumeration window (echo is on
+    /// until a host program sets the port to raw); the banner has no
+    /// terminator of its own, so without this the *first* command after
+    /// every boot merged with the leftover banner text and was rejected.
+    last_byte_ms: u64,
     /// A line arrived that did not fit; drop it and report once.
     line_overflow: bool,
     /// Session mnemonic override (indices + word count) set by `entropy`.
@@ -55,11 +63,17 @@ struct ConsoleState {
     decoder: Option<UrMultipartDecoder>,
 }
 
+/// A partial line with no terminator for this long is stale (see
+/// `last_byte_ms`); any command is delivered in one USB transfer, so this
+/// threshold cannot cut a legitimate command apart.
+const STALE_LINE_MS: u64 = 1_000;
+
 impl ConsoleState {
     const fn new() -> Self {
         Self {
             line: [0u8; LINE_CAP],
             line_len: 0,
+            last_byte_ms: 0,
             line_overflow: false,
             session: None,
             decoder: None,
@@ -70,6 +84,15 @@ impl ConsoleState {
     /// deferred job when the line requests one (TRNG streaming must run
     /// with awaits — see `handle_data`).
     fn feed(&mut self, data: &[u8]) -> Option<TrngJob> {
+        if !data.is_empty() {
+            let now = Instant::now().as_millis();
+            if self.line_len > 0 && now.saturating_sub(self.last_byte_ms) > STALE_LINE_MS {
+                // Discard the stale partial (see `last_byte_ms`).
+                self.line_len = 0;
+                self.line_overflow = false;
+            }
+            self.last_byte_ms = now;
+        }
         let mut job = None;
         for &b in data {
             match b {

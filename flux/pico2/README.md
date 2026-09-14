@@ -85,6 +85,11 @@ Host-side notes (Linux):
   /etc/udev/rules.d/ on the dev machine) marks the device
   `ID_MM_DEVICE_IGNORE` — ModemManager would otherwise auto-probe and drain
   the port — and grants the plugdev group access;
+- **first-command quirk**: until a host program sets the port to raw, the
+  tty has ECHO enabled — the device's boot banner is echoed back into its
+  own RX and, lacking a terminator, merges with the first command sent
+  later. The firmware now discards partial lines idle for >1 s, and the
+  bench scripts additionally flush the port before their first command;
 - defmt/RTT stays attached for probe-based debugging.
 
 ## On-device signing smoke

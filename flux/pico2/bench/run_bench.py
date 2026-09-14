@@ -23,6 +23,7 @@ import os
 import re
 import select
 import sys
+import termios
 import threading
 import time
 import tty
@@ -69,6 +70,15 @@ def main():
 
     fd = os.open(args.dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     tty.setraw(fd)
+    # Host-side queue + device-side partial-line flush (see trng_test.py:
+    # tty echo during the enumeration window can inject the device's own
+    # boot banner into its RX, which the first command would merge with).
+    try:
+        termios.tcflush(fd, termios.TCIFLUSH)
+    except termios.error:
+        pass
+    os.write(fd, b"\n")
+    time.sleep(0.3)
 
     buf = bytearray()
     stop = threading.Event()

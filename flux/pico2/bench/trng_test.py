@@ -38,6 +38,7 @@ import os
 import re
 import select
 import sys
+import termios
 import threading
 import time
 import tty
@@ -105,6 +106,17 @@ def main():
 
     fd = os.open(args.dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     tty.setraw(fd)
+    # Drop anything queued on the host side, then flush any partial line the
+    # device may be holding: until a host program sets the port to raw, the
+    # tty echo can send the device's own boot banner back to it (echo is on
+    # by default after enumeration), and the banner has no terminator - the
+    # first command would merge with it and be rejected as unknown.
+    try:
+        termios.tcflush(fd, termios.TCIFLUSH)
+    except termios.error:
+        pass
+    os.write(fd, b"\n")
+    time.sleep(0.3)
 
     buf = bytearray()
     stop = threading.Event()
