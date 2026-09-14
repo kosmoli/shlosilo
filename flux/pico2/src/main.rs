@@ -73,6 +73,30 @@ struct DualHeap {
     psram_peak: AtomicUsize,
 }
 
+/// Diagnostics for the crash recorder (set by the allocator itself, read by
+/// the panic/hard-fault handlers): the layout of the last FAILED allocation
+/// and the size of the last successful PSRAM-routed one. Without these a
+/// "memory allocation failed" panic is anonymous - which allocation, which
+/// region, how big.
+static ALLOC_FAIL_SIZE: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_FAIL_ALIGN: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_FAIL_REGION: AtomicUsize = AtomicUsize::new(0);
+static LAST_BIG_ALLOC: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn alloc_fail_size() -> usize {
+    ALLOC_FAIL_SIZE.load(Ordering::Relaxed)
+}
+pub(crate) fn alloc_fail_align() -> usize {
+    ALLOC_FAIL_ALIGN.load(Ordering::Relaxed)
+}
+/// 0 = SRAM heap, 1 = PSRAM heap.
+pub(crate) fn alloc_fail_region() -> usize {
+    ALLOC_FAIL_REGION.load(Ordering::Relaxed)
+}
+pub(crate) fn last_big_alloc() -> usize {
+    LAST_BIG_ALLOC.load(Ordering::Relaxed)
+}
+
 impl DualHeap {
     const fn empty() -> Self {
         Self {
@@ -107,7 +131,16 @@ unsafe impl GlobalAlloc for DualHeap {
         } else {
             unsafe { self.sram.alloc(layout) }
         };
-        if !ptr.is_null() {
+        if ptr.is_null() {
+            // Record the failed layout for the crash recorder: this is what
+            // makes an "allocation failed" panic diagnosable.
+            ALLOC_FAIL_SIZE.store(layout.size(), Ordering::Relaxed);
+            ALLOC_FAIL_ALIGN.store(layout.align(), Ordering::Relaxed);
+            ALLOC_FAIL_REGION.store(to_psram as usize, Ordering::Relaxed);
+        } else {
+            if to_psram {
+                LAST_BIG_ALLOC.store(layout.size(), Ordering::Relaxed);
+            }
             let (live_c, peak_c) = if to_psram {
                 (&self.psram_live, &self.psram_peak)
             } else {

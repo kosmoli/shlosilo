@@ -20,6 +20,7 @@ Then on the host:
 Usage: python3 xmr_bringup.py [--trng] [--dev /dev/ttyACM0] [--timeout 1500]
 """
 import argparse
+import glob
 import os
 import re
 import select
@@ -40,7 +41,7 @@ XMR_OUT_RE = re.compile(r"\[xmrout\] (\d+)\+(\d+)/(\d+) ([0-9a-f]+)")
 
 # lines worth echoing to stdout live, in order of arrival
 LIVE_RE = re.compile(
-    r"\[psramtest\]|\[psram\]|\[crash\]|\[entropy\]|\[xmr\]|\[xmrout\]|\[err\]|ALL OK"
+    r"\[psramtest\]|\[psram\]|\[alloctest\]|\[crash\]|\[entropy\]|\[xmr\]|\[xmrout\]|\[err\]|ALL OK"
 )
 
 
@@ -71,6 +72,9 @@ def main():
     except termios.error:
         pass
 
+    # Mutable holder: the reader swaps the node/fd on device resets.
+    state = {"fd": fd, "node": args.dev}
+
     transcript = open(TRANSCRIPT, "ab")
     buf = bytearray()
     stop = threading.Event()
@@ -79,12 +83,52 @@ def main():
     def reader():
         nonlocal seen
         while not stop.is_set():
-            r, _, _ = select.select([fd], [], [], 0.2)
+            # Node-follow: a device reset removes the tty node; select() on
+            # the orphaned fd stays silent (measured on this bench). Poll the
+            # path itself and reattach to whatever node comes back.
+            if not os.path.exists(state["node"]):
+                try:
+                    os.close(state["fd"])
+                except OSError:
+                    pass
+                note = (
+                    f"\n### NODE LOST ({state['node']}); rescanning for the "
+                    "rebooted device...\n"
+                )
+                print(note, flush=True)
+                transcript.write(note.encode())
+                transcript.flush()
+                t0 = time.time()
+                while time.time() - t0 < 60:
+                    nodes = sorted(glob.glob("/dev/ttyACM*"), key=os.path.getmtime)
+                    if nodes:
+                        try:
+                            nfd = os.open(
+                                nodes[-1], os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK
+                            )
+                            tty.setraw(nfd)
+                            state["node"] = nodes[-1]
+                            state["fd"] = nfd
+                            fresh = f"### reattached to {nodes[-1]} ###\n"
+                            print(fresh, flush=True)
+                            transcript.write(fresh.encode())
+                            transcript.flush()
+                            break
+                        except OSError:
+                            pass
+                    time.sleep(0.5)
+                continue
+            try:
+                r, _, _ = select.select([state["fd"]], [], [], 0.2)
+            except (OSError, ValueError):
+                state["node"] = "/dev/ttyACM_gone"
+                continue
             if r:
                 try:
-                    c = os.read(fd, 8192)
+                    c = os.read(state["fd"], 8192)
                 except OSError:
-                    break
+                    state["node"] = "/dev/ttyACM_gone"
+                    continue
                 if c:
                     buf.extend(c)
                     transcript.write(c)
@@ -107,7 +151,7 @@ def main():
         return buf.decode(errors="replace")
 
     def send(cmd):
-        n = os.write(fd, (cmd + "\n").encode())
+        n = os.write(state["fd"], (cmd + "\n").encode())
         print(f">>> {n}B: {cmd[:48]}{'...' if len(cmd) > 48 else ''}", flush=True)
 
     def wait_marker(marker, timeout, start=0):
@@ -144,6 +188,13 @@ def main():
         time.sleep(0.5)
     else:
         fail("psramtest (timeout: hung mid-op - see last line above)", before)
+
+    # ---- step 1b: allocator sweep (which sizes can the heaps serve?) ----
+    before = len(buf)
+    send("alloctest sweep")
+    if not wait_marker("[alloctest] sweep done", 120, before):
+        fail("alloctest sweep", before)
+    print("  alloctest sweep complete", flush=True)
 
     # ---- step 2: session wallet ----
     before = len(buf)

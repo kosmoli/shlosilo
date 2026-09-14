@@ -48,6 +48,20 @@ struct Record {
     e: u32,
     /// fault: stacked LR
     f: u32,
+    /// failed allocation: layout size (0 = none recorded)
+    g: u32,
+    /// failed allocation: layout align
+    h: u32,
+    /// failed allocation: region (0 = SRAM heap, 1 = PSRAM heap)
+    i: u32,
+    /// SRAM heap live bytes at panic time
+    j: u32,
+    /// PSRAM heap live bytes at panic time
+    k: u32,
+    /// size of the last successful PSRAM-routed allocation
+    l: u32,
+    /// rendered panic-message length in MSG_BUF (survives reset)
+    m: u32,
 }
 
 const EMPTY: Record = Record {
@@ -59,14 +73,28 @@ const EMPTY: Record = Record {
     d: 0,
     e: 0,
     f: 0,
+    g: 0,
+    h: 0,
+    i: 0,
+    j: 0,
+    k: 0,
+    l: 0,
+    m: 0,
 };
 
 /// Full record; survives a soft reset (see module docs).
 #[unsafe(link_section = ".uninit.crash")]
 static mut RECORD: MaybeUninit<Record> = MaybeUninit::uninit();
 
+/// Rendered panic message ("memory allocation of N bytes failed", ...);
+/// formatted at panic time (the args live in the panicking frame) and kept
+/// for the next boot. Without this, format-args panics lose their payload -
+/// and for an alloc failure the payload IS the number worth knowing.
+#[unsafe(link_section = ".uninit.crash")]
+static mut MSG_BUF: [u8; 160] = [0; 160];
+
 /// Rendered description of the pending record (filled by `init`).
-static mut DISPLAY: [u8; 224] = [0; 224];
+static mut DISPLAY: [u8; 320] = [0; 320];
 static mut DISPLAY_LEN: usize = 0;
 /// A record is pending display (cleared by `clear`).
 static HAVE_RECORD: AtomicBool = AtomicBool::new(false);
@@ -127,27 +155,44 @@ fn store_and_reset(rec: Record) -> ! {
     }
 }
 
-/// Panic handler: capture the location (+ message when it is a plain string)
-/// and reset.
+/// Panic handler: capture the location and the formatted message (into a
+/// reset-surviving buffer) and reset.
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     let (file_p, file_n, line) = match info.location() {
         Some(l) => (l.file().as_ptr() as u32, l.file().len() as u32, l.line()),
         None => (0, 0, 0),
     };
-    let (msg_p, msg_n) = match info.message().as_str() {
-        Some(s) => (s.as_ptr() as u32, s.len() as u32),
-        None => (0, 0),
-    };
+    // Render the message with Display: covers both `&'static str` and
+    // format-args panics (the alloc-failure message carries its size only
+    // as a formatted argument).
+    let mut mpos = 0usize;
+    unsafe {
+        let buf: &mut [u8] = &mut *ptr::addr_of_mut!(MSG_BUF);
+        let mut w = SliceWriter {
+            out: buf,
+            pos: &mut mpos,
+        };
+        let _ = write!(w, "{}", info.message());
+    }
+    let (sram_live, _, _) = crate::heap_stats();
+    let (psram_live, _, _) = crate::psram_stats();
     store_and_reset(Record {
         magic: MAGIC,
         kind: KIND_PANIC,
         a: file_p,
         b: file_n,
         c: line,
-        d: msg_p,
-        e: msg_n,
+        d: 0,
+        e: 0,
         f: 0,
+        g: crate::alloc_fail_size() as u32,
+        h: crate::alloc_fail_align() as u32,
+        i: crate::alloc_fail_region() as u32,
+        j: sram_live as u32,
+        k: psram_live as u32,
+        l: crate::last_big_alloc() as u32,
+        m: mpos as u32,
     })
 }
 
@@ -165,6 +210,13 @@ unsafe fn HardFault(frame: &cortex_m_rt::ExceptionFrame) -> ! {
         d: scb.mmfar.read(),
         e: frame.pc(),
         f: frame.lr(),
+        g: crate::alloc_fail_size() as u32,
+        h: crate::alloc_fail_align() as u32,
+        i: crate::alloc_fail_region() as u32,
+        j: 0,
+        k: 0,
+        l: crate::last_big_alloc() as u32,
+        m: 0,
     })
 }
 
@@ -188,24 +240,29 @@ fn push_str(out: &mut [u8], pos: &mut usize, p: u32, n: u32) {
     }
 }
 
-fn push_fmt(out: &mut [u8], pos: &mut usize, args: core::fmt::Arguments<'_>) {
-    struct W<'a> {
-        out: &'a mut [u8],
-        pos: &'a mut usize,
-    }
-    impl core::fmt::Write for W<'_> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            for &b in s.as_bytes() {
-                if *self.pos >= self.out.len() {
-                    return core::fmt::Result::Err(core::fmt::Error);
-                }
-                self.out[*self.pos] = b;
-                *self.pos += 1;
+/// Bounded writer over a fixed slice (no allocation; usable in the panic
+/// handler and on the next boot alike).
+struct SliceWriter<'a> {
+    out: &'a mut [u8],
+    pos: &'a mut usize,
+}
+
+impl core::fmt::Write for SliceWriter<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for &b in s.as_bytes() {
+            if *self.pos >= self.out.len() {
+                return core::fmt::Result::Err(core::fmt::Error);
             }
-            core::fmt::Result::Ok(())
+            self.out[*self.pos] = b;
+            *self.pos += 1;
         }
+        core::fmt::Result::Ok(())
     }
-    let _ = write!(W { out, pos }, "{args}");
+}
+
+fn push_fmt(out: &mut [u8], pos: &mut usize, args: core::fmt::Arguments<'_>) {
+    let mut w = SliceWriter { out, pos };
+    let _ = write!(w, "{args}");
 }
 
 /// Read the captured record (both channels), render it, and clear the
@@ -225,6 +282,13 @@ pub fn init() {
             d: scratch_read(5),
             e: 0,
             f: 0,
+            g: 0,
+            h: 0,
+            i: 0,
+            j: 0,
+            k: 0,
+            l: 0,
+            m: 0,
         }
     } else {
         EMPTY
@@ -233,14 +297,29 @@ pub fn init() {
         return;
     }
 
-    let mut out = [0u8; 224];
+    let mut out = [0u8; 320];
     let mut pos = 0usize;
     match rec.kind {
         KIND_PANIC => {
             push_fmt(&mut out, &mut pos, format_args!("[crash] panic at "));
             push_str(&mut out, &mut pos, rec.a, rec.b);
             push_fmt(&mut out, &mut pos, format_args!(":{}", rec.c));
-            if rec.d != 0 {
+            if rec.m > 0 {
+                // The rendered panic message (e.g. "memory allocation of
+                // 2097152 bytes failed") - the payload a format-args panic
+                // would otherwise lose.
+                let msg = unsafe { &*(ptr::addr_of!(MSG_BUF) as *const [u8; 160]) };
+                let n = (rec.m as usize).min(160);
+                push_fmt(&mut out, &mut pos, format_args!(": "));
+                if let Ok(s) = core::str::from_utf8(&msg[..n]) {
+                    for &b in s.as_bytes() {
+                        if pos < out.len() {
+                            out[pos] = b;
+                            pos += 1;
+                        }
+                    }
+                }
+            } else if rec.d != 0 {
                 push_fmt(&mut out, &mut pos, format_args!(": "));
                 push_str(&mut out, &mut pos, rec.d, rec.e);
             }
@@ -263,11 +342,29 @@ pub fn init() {
             );
         }
     }
+    if rec.g != 0 {
+        let region = if rec.i == 1 { "psram" } else { "sram" };
+        push_fmt(
+            &mut out,
+            &mut pos,
+            format_args!(
+                " | allocfail size={} align={} region={region}",
+                rec.g, rec.h
+            ),
+        );
+    }
+    if rec.kind == KIND_PANIC {
+        push_fmt(
+            &mut out,
+            &mut pos,
+            format_args!(" | live sram={} psram={} lastbig={}", rec.j, rec.k, rec.l),
+        );
+    }
 
     unsafe {
         let d = ptr::addr_of_mut!(DISPLAY) as *mut u8;
-        ptr::copy_nonoverlapping(out.as_ptr(), d, pos.min(224));
-        DISPLAY_LEN = pos.min(224);
+        ptr::copy_nonoverlapping(out.as_ptr(), d, pos.min(320));
+        DISPLAY_LEN = pos.min(320);
     }
     HAVE_RECORD.store(true, Ordering::Release);
     // Consume the record: both channels are cleared, the rendered text stays.

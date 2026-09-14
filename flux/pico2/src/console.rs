@@ -185,6 +185,7 @@ impl ConsoleState {
             b"trngemb" => return Some(parse_trng_emb(args)),
             b"xmrout" => self.cmd_xmrout(args),
             b"xmrseed" => self.cmd_xmrseed(args),
+            b"alloctest" => self.cmd_alloctest(args),
             b"psramtest" => return Some(TrngJob::simple(JobMode::PsramTest)),
             b"faultclr" => crate::fault::clear(),
             _ => {
@@ -230,6 +231,8 @@ impl ConsoleState {
         log::info!("[help]                   fetch the result with xmrout)");
         log::info!("[help]   psramtest       verify PSRAM r/w with patterns at 5 offsets;");
         log::info!("[help]                   maps the psram heap on success");
+        log::info!("[help]   alloctest <sz>  probe a single allocation (64k/256k/1m/2m...);");
+        log::info!("[help]                   'sweep' = standard ladder, 'free' = heap stats");
         log::info!("[help]   faultclr        clear the pending [crash] record");
         log::info!("[help] lines end with \\n or \\r");
     }
@@ -316,6 +319,70 @@ impl ConsoleState {
                 self.xmr_seed = Some((buf, n));
             }
             None => log::info!("[err] xmrseed: expected hex, 1..=64 bytes"),
+        }
+    }
+
+    /// `alloctest <size>[k|m] [align]` | `alloctest sweep` | `alloctest free`:
+    /// probe the global allocator directly via `alloc::alloc::alloc`, which
+    /// returns null instead of panicking on failure - the safe way to find
+    /// which sizes a heap can serve without crashing the session.
+    fn cmd_alloctest(&self, args: &[u8]) {
+        let args = trim_ascii(args);
+        if args == b"free" {
+            let (su, sf, sp) = crate::heap_stats();
+            let (pu, pf, pp) = crate::psram_stats();
+            log::info!(
+                "[alloctest] sram used={su} free={sf} peak={sp}; psram used={pu} free={pf} peak={pp}"
+            );
+            return;
+        }
+        if args == b"sweep" {
+            if !crate::psram_heap_ready() {
+                log::info!("[alloctest] psram heap not mapped (run psramtest first)");
+            }
+            for size in [
+                64 * 1024usize,
+                256 * 1024,
+                1024 * 1024,
+                2 * 1024 * 1024,
+                4 * 1024 * 1024,
+            ] {
+                probe_alloc(size, 8);
+            }
+            let (pu, pf, _) = crate::psram_stats();
+            let (su, sf, _) = crate::heap_stats();
+            log::info!(
+                "[alloctest] sweep done; sram free={sf} used={su}; psram free={pf} used={pu}"
+            );
+            return;
+        }
+        let mut size: Option<usize> = None;
+        let mut align: Option<usize> = None;
+        for w in args
+            .split(|b| b.is_ascii_whitespace())
+            .filter(|w| !w.is_empty())
+        {
+            let Ok(s) = core::str::from_utf8(w) else {
+                continue;
+            };
+            let v = if let Some(num) = s.strip_suffix(['k', 'K']) {
+                num.parse::<usize>().ok().map(|n| n * 1024)
+            } else if let Some(num) = s.strip_suffix(['m', 'M']) {
+                num.parse::<usize>().ok().map(|n| n * 1024 * 1024)
+            } else {
+                s.parse::<usize>().ok()
+            };
+            if size.is_none() {
+                size = v;
+            } else if align.is_none() {
+                align = v;
+            }
+        }
+        match size {
+            Some(size) => probe_alloc(size, align.unwrap_or(8)),
+            None => {
+                log::info!("[err] alloctest: usage: alloctest <size>[k|m] [align] | sweep | free")
+            }
         }
     }
 
@@ -867,6 +934,43 @@ async fn run_sign_xmr() {
         }
         Err(e) => log::info!("[err] xmr sign: {:?}", e.kind),
     }
+}
+
+/// Single-allocation probe via the raw allocator API (null on failure, no
+/// panic): writes a pattern at both ends, reads it back, reports region.
+fn probe_alloc(size: usize, align: usize) {
+    if size == 0 {
+        log::info!("[alloctest] size=0 skipped");
+        return;
+    }
+    let Ok(layout) = core::alloc::Layout::from_size_align(size, align.max(1)) else {
+        log::info!("[alloctest] size={size} align={align}: invalid layout");
+        return;
+    };
+    let p = unsafe { alloc::alloc::alloc(layout) };
+    if p.is_null() {
+        log::info!("[alloctest] size={size} align={align} -> FAILED (null returned)");
+        return;
+    }
+    let addr = p as usize;
+    let region = if (0x1100_0000..0x1100_0000 + 0x800000).contains(&addr) {
+        "psram"
+    } else {
+        "sram"
+    };
+    // touch both ends: catches an unmapped/aliased region and read-back faults
+    unsafe {
+        core::ptr::write_volatile(p, 0xA5);
+        core::ptr::write_volatile(p.add(size - 1), 0x5A);
+    }
+    let ok = unsafe {
+        core::ptr::read_volatile(p) == 0xA5 && core::ptr::read_volatile(p.add(size - 1)) == 0x5A
+    };
+    log::info!(
+        "[alloctest] size={size} align={align} -> ok ptr={addr:#010x} region={region} rw={}",
+        if ok { "ok" } else { "MISMATCH" }
+    );
+    unsafe { alloc::alloc::dealloc(p, layout) };
 }
 
 /// Trace BUSY/ISR transitions after a cold start (bring-up diagnostic: shows
