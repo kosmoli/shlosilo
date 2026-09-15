@@ -7,7 +7,8 @@
 //! - `utils/sign.rs::generate_signature` / `generate_ring_signature` (tx_key_images signatures)
 //!
 //! wire essentials (dual to the decryption side's read_*; both cross-verified against real P6.3 fixtures):
-//! - varint = LEB128; u64 fields = 8B LE
+//! - varint = LEB128; u64 fields = 8B LE — except `tx_destination_entry.amount`,
+//!   which monero serializes as VARINT_FIELD (see `write_destination_entry`)
 //! - tx_key position written as Scalar::ONE (keystone zeroes it out — r is not returned to the host)
 //! - key_images_str = `<hex> ` concatenated item by item (including the trailing space)
 //! - tx_key_images item = 0x02 ‖ output one-time address ‖ key image (Hs(shared_key)·Hp)
@@ -42,7 +43,13 @@ fn put_varint(out: &mut Vec<u8>, n: u64) {
 pub(crate) fn write_destination_entry(out: &mut Vec<u8>, e: &TxDestinationEntry) {
     put_varint(out, e.original.len() as u64);
     out.extend_from_slice(&e.original);
-    out.extend_from_slice(&e.amount.to_le_bytes());
+    // monero `tx_destination_entry`: VARINT_FIELD(amount) — the amount here is a
+    // varint, unlike `tx_source_entry.amount` which is a fixed u64 (both in
+    // cryptonote_tx_utils.h). Writing a fixed u64 shifted every following field
+    // by 7 bytes and made monero's `parse_tx_from_str` reject the whole file
+    // (`submit_transfer`: "Failed to deserialize signed transaction"); fixed
+    // 2026-09-15, broadcast re-verified.
+    put_varint(out, e.amount);
     out.extend_from_slice(&e.spend_public_key);
     out.extend_from_slice(&e.view_public_key);
     out.push(e.is_subaddress as u8);
@@ -165,9 +172,11 @@ impl SignedTxSet {
             res.push(ptx.dust_added_to_fee as u8);
             write_destination_entry(&mut res, &ptx.change_dts);
             put_varint(&mut res, ptx.selected_transfers.len() as u64);
-            // ptx top-level selected_transfers: byte per u8 (not varint)
+            // ptx top-level selected_transfers: monero reads std::vector<size_t>
+            // via use_container_varint → varint elements (identical bytes to the
+            // old u8 push for values < 128; correct for larger indices).
             for t in &ptx.selected_transfers {
-                res.push(*t);
+                put_varint(&mut res, *t as u64);
             }
             let ki = ptx.key_images_str.as_bytes();
             put_varint(&mut res, ki.len() as u64);
@@ -534,9 +543,9 @@ mod tests {
         off += 8;
         assert_eq!(bytes[off], 0);
         off += 1;
-        // change_dts: varint(8) + "4Ae44ncK" + amount(8) + pk(32)×2 + 2 flags
+        // change_dts: varint(8) + "4Ae44ncK" + amount varint(2) + pk(32)×2 + 2 flags
         assert_eq!(bytes[off], 8);
-        off += 1 + 8 + 8 + 32 + 32 + 2;
+        off += 1 + 8 + 2 + 32 + 32 + 2;
         // selected_transfers count=1, byte per u8
         assert_eq!(bytes[off], 1);
         off += 1;
@@ -556,14 +565,14 @@ mod tests {
         // dests count = 1 (ptx top level)
         assert_eq!(bytes[off], 1);
         off += 1;
-        off += 1 + 8 + 8 + 32 + 32 + 2; // dest entry
+        off += 1 + 8 + 2 + 32 + 32 + 2; // dest entry
                                         // construction_data: sources=0 → change_dts → splitted=1 → …
         assert_eq!(bytes[off], 0); // sources count
         off += 1;
-        off += 1 + 8 + 8 + 32 + 32 + 2; // change_dts
+        off += 1 + 8 + 2 + 32 + 32 + 2; // change_dts
         assert_eq!(bytes[off], 1); // splitted count
         off += 1;
-        off += 1 + 8 + 8 + 32 + 32 + 2; // splitted[0]
+        off += 1 + 8 + 2 + 32 + 32 + 2; // splitted[0]
         assert_eq!(bytes[off], 1); // selected_transfers count
         off += 1;
         assert_eq!(bytes[off], 0); // varint(0)

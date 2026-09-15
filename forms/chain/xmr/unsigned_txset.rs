@@ -535,7 +535,9 @@ fn put_varint(out: &mut Vec<u8>, n: u64) {
 }
 
 fn write_unsigned_destination(out: &mut Vec<u8>, e: &TxDestinationEntry) {
-    // on the unsigned side, amount is varint (read_destination_entry); on the signed side it is u64 LE.
+    // monero `tx_destination_entry`: amount is a varint on BOTH sides. (The old
+    // "signed side is u64 LE" note was wrong — that mistaken belief lived in
+    // signed_txset.rs and broke file-level interop until 2026-09-15.)
     put_varint(out, e.original.len() as u64);
     out.extend_from_slice(&e.original);
     put_varint(out, e.amount);

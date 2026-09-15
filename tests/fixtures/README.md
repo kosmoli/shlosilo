@@ -41,10 +41,11 @@
   overspend/sanity/low_mixin 全 false)→ 打包 **h=3763087**, tx
   `ebc663d6314c0814dec471b334d5cb4e494aabaad3ab3f6d8cc08806f8c9b6d1`
   (收款侧 p2in 0.00065 已确认)。广播脚本 `flux/pico2/bench/xmr_broadcast.py`。
-- **⚠️ 已知互操作缺口**: 本 blob 是标准 "Monero signed tx set\x05" 容器且**解密成功**,
-  但 monerod `submit_transfer`/`parse_tx_from_str` 的 `binary_archive<false>` 反序列化
-  失败("Failed to deserialize signed transaction")——疑点: `pending_tx.selected_transfers`
-  元素宽度(monero `vector<size_t>` 每元素固定 8B vs 我方 1B)与 construction_data 布局;
-  广播路径走 `send_raw_transaction`(提取 raw tx)已完全可用,文件格式修复另立课题。
+- **✅ 互操作缺口已修复（2026-09-15）**: 根因 = `tx_destination_entry.amount` 在 monero 里是
+  **VARINT**（`VARINT_FIELD(amount)`；与 `tx_source_entry.amount` 的固定 8B 不对称——经典坑）。
+  旧 writer 写成固定 u64 → 每个 destination entry 后错位 7 字节 → monero 拒绝整份文件。
+  修复后（commit 见 git log）`monero-wallet-cli submit_transfer` 全流程接受：
+  解析 → 确认 → key images 导入 → **提交成功**（tx `ebc663d6…`，与 raw-tx 路径广播的同一交易，
+  固定熵下签名确定性）。广播路径 `send_raw_transaction` 不受影响。
 
 
