@@ -50,4 +50,17 @@
     sha256 `cf724941…`，与 host 参考逐字节一致；设备输出格式 = 修复后格式）。
   - 固定熵下 txid `ebc663d6…` 与 raw-tx 路径广播的同一交易（修复只改容器不改语义）。
 
+## unsigned_txset_1in_fresh.bin / signed_txset_1in_fresh.bin
+
+- **来源**: 全新收官链（2026-09-15 深夜）——A' 充值 0.0009 → watch-only（key images 校正后）
+  `transfer 0.0006 → p2in` 生成 unsigned；设备（fce3d9d）签名产出 signed。
+- **unsigned**: 1,970 B；sha256 `f97b60ac…`；**单输入**（0.0009）/ 2 输出（0.0006 + 找零 0.00026942；
+  fee 30,580）。
+- **signed**: 3,986 B；sha256 `c89ba0fc…`；固定熵（0x77×32）A/B —— **设备输出与 host 参考逐字节一致**。
+- **链上记录**: `submit_transfer` 提交 → 打包 **h=3763123**，tx
+  `2d2c40d1c22d9a4cb140d46b46fd5114f389a864f1767d872e1a862f55ce5ca3`（收款方 p2in 0.0006 已确认；
+  发送方输入 spent=True、找零入账）。
+- **用途**: 单输入回归 vector + 设备固件输出对照（signed 文件是设备签名回归的期望值）。
+- **隐私**: 主网小额测试钱包数据，无真实资金。
+
 
