@@ -82,6 +82,9 @@
 //!   (heartbeats, USB) during a long wait;
 //! - `read_block` returns `Err` on timeout; it can never hang or abort.
 
+#[cfg(feature = "bench")]
+extern crate alloc;
+
 use core::hint::spin_loop;
 
 use embassy_futures::yield_now;
@@ -106,6 +109,13 @@ pub const DEFAULT_BLOCK_TIMEOUT_MS: u64 = 10_000;
 /// block returns an Err instead of spinning forever.
 const BUSY_SIGNAL_SPINS: u32 = 30_000_000;
 const BUSY_FALL_SPINS: u32 = 60_000_000;
+
+/// Spins allowed while waiting for BUSY to rise when synchronising on a raw
+/// capture block (`capture_raw`). The fill is a few hundred cycles; this is
+/// a wedge guard only, and a missed rise fails the capture rather than
+/// risking a partial block in the dataset.
+#[cfg(feature = "bench")]
+const RAW_RISE_SPINS: u32 = 2_000_000;
 /// Status settle after BUSY falls (only guards a stale read).
 const SETTLE_SPINS: u32 = 2_000;
 /// Absolute retry cap for one block (secondary to the time budget).
@@ -466,6 +476,104 @@ impl Trng {
         let regs = regs();
         self.write_config(&regs);
         self.start_source(&regs);
+    }
+    /// Capture raw ROSC samples with all internal checking and conditioning
+    /// bypassed (bench builds only; the SP 800-90B source-characterisation
+    /// path).
+    ///
+    /// Mirrors the bootrom / pico-sdk raw recipe (datasheet 12.12.4.1):
+    /// bypass the autocorrelation / CRNGT / von Neumann stages, sample once
+    /// per cycle (`sample_cnt1 = 0`), then read EHR blocks back-to-back.
+    /// Each block carries 192 consecutive raw samples (24 bytes); `out`
+    /// receives them verbatim (cleared first).
+    ///
+    /// The checked-path configuration is restored before returning, so the
+    /// other console commands and the signing path see the operating point
+    /// they expect.
+    #[cfg(feature = "bench")]
+    pub fn capture_raw(
+        &mut self,
+        blocks: usize,
+        chain: u8,
+        sample: u32,
+        out: &mut alloc::vec::Vec<u8>,
+    ) -> Result<u32, TrngError> {
+        let regs = regs();
+        // Stop whatever ran before; raw configuration below wants a clean
+        // start state.
+        regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
+        let _ = regs.rnd_source_enable().read();
+
+        // Raw mode: bypass all three checks and the Von Neumann balancer
+        // (datasheet 12.12.4.1; the bootrom and pico_rand do the same).
+        regs.trng_debug_control().write(|w| {
+            w.set_auto_correlate_bypass(true);
+            w.set_trng_crngt_bypass(true);
+            w.set_vnc_bypass(true);
+        });
+        regs.trng_config()
+            .write(|w| w.set_rnd_src_sel(chain.min(4)));
+        regs.sample_cnt1().write(|w| *w = sample);
+        // Drop stale status so nothing presents as a phantom first block.
+        regs.rng_icr().write(|w| {
+            w.set_ehr_valid(true);
+            w.set_crngt_err(true);
+            w.set_vn_err(true);
+        });
+        // Clean start: 0 -> 1 edge on the source enable (see start_source).
+        regs.rnd_source_enable().write(|w| w.set_rnd_src_en(false));
+        let _ = regs.rnd_source_enable().read();
+        regs.rst_bits_counter()
+            .write(|w| w.set_rst_bits_counter(true));
+        let _ = regs.rnd_source_enable().read();
+        regs.rnd_source_enable().write(|w| w.set_rnd_src_en(true));
+        self.source_running = true;
+
+        // Discard one block: the first read after a start can present a
+        // partially-filled EHR.
+        {
+            let mut flush = [0u8; BLOCK_LEN];
+            read_ehr(&regs, &mut flush);
+        }
+
+        out.clear();
+        let mut n = 0u32;
+        while (n as usize) < blocks {
+            // Block sync (bootrom: "Wait for 192 ROSC samples to fill EHR,
+            // this should take constant time"): the run becomes visible as
+            // BUSY rising and concludes when BUSY falls. A read that does
+            // not observe the rise would take a partial block, so a missed
+            // rise is an error, not something to paper over.
+            let mut spins = 0u32;
+            while !regs.trng_busy().read().trng_busy() {
+                core::hint::spin_loop();
+                spins += 1;
+                if spins > RAW_RISE_SPINS {
+                    self.stop();
+                    self.write_config(&regs);
+                    return Err(TrngError::BusyTimeout);
+                }
+            }
+            spins = 0;
+            while regs.trng_busy().read().trng_busy() {
+                core::hint::spin_loop();
+                spins += 1;
+                if spins > BUSY_FALL_SPINS {
+                    self.stop();
+                    self.write_config(&regs);
+                    return Err(TrngError::BusyTimeout);
+                }
+            }
+            let mut block = [0u8; BLOCK_LEN];
+            read_ehr(&regs, &mut block);
+            out.extend_from_slice(&block);
+            n += 1;
+        }
+
+        self.stop();
+        // Restore the checked-path operating point.
+        self.write_config(&regs);
+        Ok(n)
     }
 }
 

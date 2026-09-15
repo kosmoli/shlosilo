@@ -114,6 +114,11 @@ struct ConsoleState {
     /// Last signed XMR blob, retrievable via `xmrout <hex_off> <hex_len>`.
     xmr_out: [u8; XMR_OUT_CAP],
     xmr_out_len: usize,
+    /// Raw-ROSC capture (`trngraw`; bench builds): 192-bit raw blocks from
+    /// the fully-bypassed TRNG, held for `trngrawout` to stream. The
+    /// SP 800-90B source-characterisation buffer.
+    #[cfg(feature = "bench")]
+    raw_buf: Option<alloc::vec::Vec<u8>>,
 }
 
 /// A partial line with no terminator for this long is stale (see
@@ -135,6 +140,8 @@ impl ConsoleState {
             xmr_seed: None,
             xmr_out: [0u8; XMR_OUT_CAP],
             xmr_out_len: 0,
+            #[cfg(feature = "bench")]
+            raw_buf: None,
         }
     }
 
@@ -220,6 +227,10 @@ impl ConsoleState {
             b"trngprobe" => return Some(parse_trng_probe(args)),
             #[cfg(feature = "bench")]
             b"trngemb" => return Some(parse_trng_emb(args)),
+            #[cfg(feature = "bench")]
+            b"trngraw" => return Some(parse_trngraw(args)),
+            #[cfg(feature = "bench")]
+            b"trngrawout" => return Some(parse_trngrawout(args)),
             b"xmrout" => self.cmd_xmrout(args),
             #[cfg(feature = "perf-timing")]
             b"xtiming" => crate::perf_timing::log_phases(),
@@ -281,6 +292,12 @@ impl ConsoleState {
         log::info!("[help]   trngprobe [ms]  cold-start + trace every BUSY/ISR transition");
         #[cfg(feature = "bench")]
         log::info!("[help]   trngemb [n]     read n blocks via the upstream embassy driver");
+        #[cfg(feature = "bench")]
+        log::info!(
+            "[help]   trngraw <n> [chain] [sample]  raw-ROSC capture (all checks bypassed; SP 800-90B data)"
+        );
+        #[cfg(feature = "bench")]
+        log::info!("[help]   trngrawout [start] [pace_ms]  stream the last raw capture as hex");
         log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
         #[cfg(feature = "perf-timing")]
         log::info!("[help]   xtiming         dump the XMR phase-timing table (probe builds)");
@@ -880,8 +897,12 @@ struct TrngJob {
     #[cfg(feature = "bench")]
     timeout_ms: u64,
     /// Stream: block/output count. Probe: duration in ms. Emb: block count.
+    /// RawCapture: block count.
     #[cfg(feature = "bench")]
     count: u32,
+    /// RawDump: first block to stream. Unused elsewhere.
+    #[cfg(feature = "bench")]
+    off: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -901,6 +922,12 @@ enum JobMode {
     /// RESETS-block cycle, then a dump.
     #[cfg(feature = "bench")]
     Rst,
+    /// Raw-ROSC capture into the console buffer (SP 800-90B data collection).
+    #[cfg(feature = "bench")]
+    RawCapture,
+    /// Stream the stored raw capture out as paced hex lines.
+    #[cfg(feature = "bench")]
+    RawDump,
     /// Sign the pending XMR request (TRNG entropy + the full signing path).
     SignXmr,
     /// Verify the PSRAM memory-mapped data path; map the heap on success.
@@ -924,6 +951,8 @@ impl TrngJob {
             timeout_ms: 0,
             #[cfg(feature = "bench")]
             count: 0,
+            #[cfg(feature = "bench")]
+            off: 0,
         }
     }
 }
@@ -965,6 +994,7 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
         chain,
         timeout_ms,
         count,
+        off: 0,
     }
 }
 
@@ -985,6 +1015,7 @@ fn parse_trng_probe(args: &[u8]) -> TrngJob {
         chain: None,
         timeout_ms: 0,
         count: ms,
+        off: 0,
     }
 }
 
@@ -1005,6 +1036,7 @@ fn parse_trng_emb(args: &[u8]) -> TrngJob {
         chain: None,
         timeout_ms: 0,
         count: n,
+        off: 0,
     }
 }
 
@@ -1030,6 +1062,10 @@ async fn run_trng_job(job: TrngJob) {
             t.stop();
             log_snapshot(&t.snapshot());
         }
+        #[cfg(feature = "bench")]
+        JobMode::RawCapture => run_trngraw(job).await,
+        #[cfg(feature = "bench")]
+        JobMode::RawDump => run_trngrawout(job).await,
         JobMode::SignXmr => run_sign_xmr().await,
         JobMode::PsramTest => run_psram_test().await,
     }
@@ -1477,6 +1513,163 @@ async fn run_trng_stream(job: TrngJob) {
             ac_trys
         ),
     }
+}
+
+/// Largest raw capture accepted: 262,144 blocks x 24 B = 6 MiB (the PSRAM
+/// heap has 8 MiB; the generator vectors take ~320 KiB).
+#[cfg(feature = "bench")]
+const RAW_MAX_BLOCKS: u32 = 262_144;
+
+/// Blocks per dump line (4 x 192 bits = 96 B -> 192 hex chars + index).
+#[cfg(feature = "bench")]
+const RAW_DUMP_BLOCKS_PER_LINE: usize = 4;
+
+/// `trngraw <nblocks> [chain] [sample]`: capture n 192-bit blocks of raw
+/// ROSC samples (all internal checking and conditioning bypassed — the
+/// SP 800-90B source-characterisation path). Defaults: chain 4 (the
+/// checked-path operating point), sample 0 (one sample per cycle, the
+/// bootrom / pico-sdk raw value).
+#[cfg(feature = "bench")]
+fn parse_trngraw(args: &[u8]) -> TrngJob {
+    let mut n: u32 = 4096;
+    let mut chain: Option<u8> = None;
+    let mut sample: Option<u32> = None;
+    for (k, word) in args
+        .split(|b| b.is_ascii_whitespace())
+        .filter(|w| !w.is_empty())
+        .enumerate()
+    {
+        let s = core::str::from_utf8(word).unwrap_or("");
+        match k {
+            0 => n = s.parse::<u32>().unwrap_or(4096).clamp(1, RAW_MAX_BLOCKS),
+            1 => chain = s.parse::<u8>().ok().map(|v| v.min(4)),
+            2 => sample = s.parse::<u32>().ok().map(|v| v.min(0xffff)),
+            _ => {}
+        }
+    }
+    TrngJob {
+        mode: JobMode::RawCapture,
+        stress: false,
+        cond: false,
+        sample,
+        chain,
+        timeout_ms: 0,
+        count: n,
+        off: 0,
+    }
+}
+
+/// `trngrawout [start_block] [pace_ms]`: stream the buffered raw capture as
+/// `[traw] <block> <hex>` lines (4 blocks per line), paced (default 1 ms per
+/// line) so the USB log pipe cannot overflow. A dropped line would leave a
+/// gap in the hex; the host detects gaps by block number and re-dumps the
+/// affected range.
+#[cfg(feature = "bench")]
+fn parse_trngrawout(args: &[u8]) -> TrngJob {
+    let mut start: usize = 0;
+    let mut pace: u64 = 1;
+    for (k, word) in args
+        .split(|b| b.is_ascii_whitespace())
+        .filter(|w| !w.is_empty())
+        .enumerate()
+    {
+        let s = core::str::from_utf8(word).unwrap_or("");
+        match k {
+            0 => start = s.parse::<usize>().unwrap_or(0),
+            1 => pace = s.parse::<u64>().unwrap_or(1).clamp(1, 1000),
+            _ => {}
+        }
+    }
+    TrngJob {
+        mode: JobMode::RawDump,
+        stress: false,
+        cond: false,
+        sample: None,
+        chain: None,
+        timeout_ms: pace,
+        count: 0,
+        off: start,
+    }
+}
+
+/// Capture handler: fills the console's raw buffer (PSRAM-routed for any
+/// realistic size) and reports rate + rough sanity figures.
+#[cfg(feature = "bench")]
+async fn run_trngraw(job: TrngJob) {
+    let blocks = job.count as usize;
+    let chain = job.chain.unwrap_or(trng::DEFAULT_CHAIN_LEN);
+    let sample = job.sample.unwrap_or(0);
+    let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(blocks * trng::BLOCK_LEN);
+    let t0 = Instant::now();
+    let result = {
+        let mut t = trng::instance().lock().await;
+        t.capture_raw(blocks, chain, sample, &mut buf)
+    };
+    match result {
+        Ok(n) => {
+            let ms = t0.elapsed().as_millis().max(1);
+            let bits = u64::from(n) * 192;
+            let zero_blocks = buf
+                .chunks(trng::BLOCK_LEN)
+                .filter(|c| c.iter().all(|&b| b == 0))
+                .count();
+            let ones: u32 = buf.iter().map(|b| b.count_ones()).sum();
+            let ones_pm = (u64::from(ones) * 1000 / bits.max(1)) as u32;
+            log::info!(
+                "[traw] captured {n} blocks = {bits} raw bits in {ms} ms ({} kbit/s; ones~{ones_pm}e-3; zero-blocks={zero_blocks})",
+                bits / ms
+            );
+            CONSOLE.lock(|c| c.borrow_mut().raw_buf = Some(buf));
+        }
+        Err(e) => log::info!("[traw] capture failed: {e:?}"),
+    }
+}
+
+/// Dump handler: streams the stored capture as paced hex lines. The buffer
+/// is copied out chunk-wise under the console lock so nothing is borrowed
+/// across the awaits.
+#[cfg(feature = "bench")]
+async fn run_trngrawout(job: TrngJob) {
+    let total = CONSOLE.lock(|c| {
+        c.borrow()
+            .raw_buf
+            .as_ref()
+            .map(|b| b.len() / trng::BLOCK_LEN)
+            .unwrap_or(0)
+    });
+    if total == 0 {
+        log::info!("[err] trngrawout: no capture buffered (run `trngraw <n>` first)");
+        return;
+    }
+    let start = job.off.min(total);
+    let pace_ms = if job.timeout_ms == 0 {
+        1
+    } else {
+        job.timeout_ms.min(1000)
+    };
+    log::info!(
+        "[traw] dump {start}..{total} ({} blocks, pace {pace_ms} ms/line)",
+        total - start
+    );
+    let mut i = start;
+    while i < total {
+        let take = RAW_DUMP_BLOCKS_PER_LINE.min(total - i);
+        let mut raw = [0u8; trng::BLOCK_LEN * RAW_DUMP_BLOCKS_PER_LINE];
+        let nbytes = CONSOLE.lock(|c| {
+            let s = c.borrow();
+            let buf = s.raw_buf.as_ref().expect("buffer checked above");
+            let a = i * trng::BLOCK_LEN;
+            let n = take * trng::BLOCK_LEN;
+            raw[..n].copy_from_slice(&buf[a..a + n]);
+            n
+        });
+        let mut hex = [0u8; trng::BLOCK_LEN * RAW_DUMP_BLOCKS_PER_LINE * 2];
+        let s = sign_smoke::to_hex(&raw[..nbytes], &mut hex);
+        log::info!("[traw] {i} {s}");
+        i += take;
+        Timer::after_millis(pace_ms).await;
+    }
+    log::info!("[traw] done (buffer holds {total} blocks)");
 }
 
 /// Trim ASCII whitespace from both ends.
