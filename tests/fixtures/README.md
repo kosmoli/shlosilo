@@ -24,3 +24,15 @@
 - **用途**: `tests/p64_xmr_multi_input.rs` — 2-input 解密/解析/签名(host 侧多输入
   回归基线;设备密钥版 fixture 另行生成)
 - **隐私**: 主网小额测试钱包(多输入回归原料),无真实资金
+
+## unsigned_txset_2in_dev.bin
+
+- **来源**: 同上流程,但钱包 = **设备确定性钱包**(entropy → Keystone Monero 路径
+  m/44'/128'/0'/0/0 → spend/view;地址 4844Nk4X…;`sh_dev_correct` watch-only)
+- **网络**: Monero mainnet(2 输入 × 0.00035 / 2 输出;fee 44,380,000 原子单位)
+- **大小**: 3,450 bytes
+- **SHA-256**: `8c25c47fd3e6dc1d4c6144d7b96c41f71c24c7b20540c496cd4806864e374791`
+- **用途**: 设备端 2-input 签名回归输入(`entropy <dev entropy>` + multipart UR
+  分帧喂料 + `xmrseed 77×32` A/B;驱动 `flux/pico2/bench/xmr_2in_bringup.py`)
+- **隐私**: 主网小额测试钱包,无真实资金(加密于测试钱包 view key 之下)
+

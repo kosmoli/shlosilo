@@ -194,6 +194,47 @@ fn encode_ur_frames() {
     );
 }
 
+/// Host A/B blob: sign the dev fixture with the SAME fixed entropy the device
+/// uses (`xmrseed`), producing the expected blob for byte-exact comparison.
+///
+/// Run: P64_FIXTURE_PATH=... cargo test --release --test p64_xmr_multi_input
+///      -- --ignored --nocapture sign_with_fixed_entropy_for_ab
+#[test]
+#[ignore = "host A/B reference (task 4 device comparison)"]
+fn sign_with_fixed_entropy_for_ab() {
+    use shlosilo::business::sign::{sign_with_entropy, SignInput};
+    use shlosilo::ur::ur_encode::UrTypeTag;
+
+    let entropy_hex =
+        std::env::var("P64_ENTROPY_HEX").expect("set P64_ENTROPY_HEX (32 bytes = 24 words)");
+    let entropy: Vec<u8> = (0..entropy_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&entropy_hex[i..i + 2], 16).unwrap())
+        .collect();
+    let m = Mnemonic::from_entropy(&entropy).expect("mnemonic");
+
+    // Fixed signer entropy — must match the device's `xmrseed` value (32 x 0x77).
+    let fixed_entropy = [0x77u8; 32];
+
+    let enc = fixture_bytes();
+    let mut out = vec![0u8; 16384];
+    let n = sign_with_entropy(
+        SignInput::Mnemonic {
+            mnemonic: m,
+            passphrase: b"",
+        },
+        UrTypeTag::XmrTxUnsigned,
+        &enc,
+        &fixed_entropy,
+        &mut out,
+    )
+    .expect("sign with fixed entropy");
+    let out_path =
+        std::env::var("P64_AB_OUT").unwrap_or_else(|_| "/tmp/p64_host_ab.bin".to_string());
+    std::fs::write(&out_path, &out[..n]).expect("write A/B blob");
+    println!("host A/B blob: {n} bytes -> {out_path}");
+}
+
 /// Host signing + timing on the 2-input fixture (vs the 1-input baseline).
 #[test]
 #[ignore = "needs spend+view env keys; signs the real-funds fixture (host timing run)"]
