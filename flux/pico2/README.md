@@ -294,26 +294,30 @@ parameter) and produces the signed, encrypted txset, fetched via `xmrout`
 segments. Verified against a host recomputation byte-for-byte in the
 fixed-entropy A/B mode: 3458-byte blob, digest `5b57cb65...`.
 
-**XMR signing time (single-input fixture)**: **18.6 s** (was 26.2 s at
-first bring-up). The win came from BP+ table placement: the CT Straus
-multiexp tables are `n × 1280 B` and cost ~2× per term once they cross
-the 16 KiB PSRAM routing threshold (measured: SRAM tables ~11.7 ms +
-n×4.0 ms per chunk vs PSRAM ~7.6 ms + n×9.34 ms; see `bench/` and the
-`perfbench` console command). The chunk size is therefore a per-host
-runtime knob (`set_bp_multiexp_chunk_terms`): forgebox keeps 36 (46 KB
-tables in its 48 K SRAM pool), pico2 sets 12 (15,360 B -> SRAM heap,
-boot-time default). Remaining time is BP+ prove ~9.9 s (bp1 1.7 / A_hat
-0.8 / WIP 7.4 including 3.9 multiexp + 3.3 folding), CN ~5.2 s and CLSAG
-~2.3 s.
+**XMR signing time (single-input fixture)**: **~17 s** (16,920 ms in the
+latest 4+4 batch protocol; 18.6 s at the chunk-placement milestone, 26.2 s
+at first bring-up — cross-build drift of ±5-8% applies between firmware
+builds, so compare within one build). Two wins compose: BP+ table placement
+— the CT Straus multiexp tables are `n × 1280 B` and cost ~2× per term once
+they cross the 16 KiB PSRAM routing threshold (measured: SRAM tables
+~11.7 ms + n×4.0 ms per chunk vs PSRAM ~7.6 ms + n×9.34 ms; see `bench/`
+and the `perfbench` console command); the chunk size is a per-host runtime
+knob (`set_bp_multiexp_chunk_terms`): forgebox keeps 36 (46 KB tables in
+its 48 K SRAM pool), pico2 sets 12 (15,360 B -> SRAM heap, boot-time
+default) — and the `codegen-compact` out-of-line CT-Straus codegen
+(−197 ms net / −540 ms mechanism accounting on the batch protocol; part of
+the perf target's default features). Remaining time (batch readings):
+BP+ prove (bp1 1.3 / bp5 3.1 / bp6 3.0 s), CN ~5.1 s and CLSAG ~2.3 s.
 
-Probe builds (`make pico2-perf-uf2`, features `perf-timing` +
-`perf-bench`; flavor shows as `build=bench+perf`): `xtiming` dumps the
-per-phase tables (tx / bp / cn) accumulated during the last sign;
+Probe builds (`make pico2-perf-uf2`, features `perf-timing` + `perf-bench`
++ `codegen-compact`; flavor shows as `build=bench+perf`): `xtiming` dumps
+the per-phase tables (tx / bp / cn) accumulated during the last sign;
 `perfbench [name] [iters]` times raw device primitives (fmul / select /
-madd / quad / chunked CT multiexp / vartime 2-term); `xmrchunk <n>`
-flips the chunk size at runtime for single-variable A/B runs.
+madd / quad / chunked CT multiexp / vartime 2-term); `xmrchunk <n>` flips
+the chunk size at runtime for single-variable A/B runs.
 
-Next steps: entropy assurance for the TRNG (SP 800-90B; above), QR
-(camera) input in place of the bench channel, and further XMR tuning from
-the phase tables (bp6 folding and CN are at their measured floors; bp5's
-remaining gap is the open one).
+Next steps: QR (camera) input in place of the bench channel (the RP2350
+board now carries a touchscreen + camera), and further XMR tuning from the
+phase tables (bp6 folding and CN are at their measured floors; bp5's
+remaining gap is the open one). Entropy assurance is complete — see
+`docs/entropy-assurance.md`.
