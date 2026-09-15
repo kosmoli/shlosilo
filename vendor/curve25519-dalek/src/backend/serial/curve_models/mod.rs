@@ -335,6 +335,7 @@ impl ProjectivePoint {
     /// \\( \mathbb P\^3 \\) model.
     ///
     /// This costs \\(3 \mathrm M + 1 \mathrm S\\).
+    #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
     pub fn as_extended(&self) -> EdwardsPoint {
         EdwardsPoint {
             X: &self.X * &self.Z,
@@ -362,6 +363,7 @@ impl CompletedPoint {
     /// \\) model to the \\( \mathbb P\^3 \\) model.
     ///
     /// This costs \\(4 \mathrm M \\).
+    #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
     pub fn as_extended(&self) -> EdwardsPoint {
         EdwardsPoint {
             X: &self.X * &self.T,
@@ -378,6 +380,7 @@ impl CompletedPoint {
 
 impl ProjectivePoint {
     /// Double this point: return self + self
+    #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
     pub fn double(&self) -> CompletedPoint {
         // Double()
         let XX = self.X.square();
@@ -411,6 +414,7 @@ impl ProjectivePoint {
 impl<'a, 'b> Add<&'b ProjectiveNielsPoint> for &'a EdwardsPoint {
     type Output = CompletedPoint;
 
+    #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
     fn add(self, other: &'b ProjectiveNielsPoint) -> CompletedPoint {
         let Y_plus_X = &self.Y + &self.X;
         let Y_minus_X = &self.Y - &self.X;

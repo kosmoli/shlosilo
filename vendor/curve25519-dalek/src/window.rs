@@ -51,6 +51,7 @@ macro_rules! impl_lookup_table {
             T: Identity + ConditionallySelectable + ConditionallyNegatable,
         {
             /// Given \\(-8 \leq x \leq 8\\), return \\(xP\\) in constant time.
+            #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
             pub fn select(&self, x: i8) -> T {
                 debug_assert!(x >= $neg);
                 debug_assert!(x as i16 <= $size as i16); // XXX We have to convert to i16s here for the radix-256 case.. this is wrong.

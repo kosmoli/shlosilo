@@ -24,6 +24,11 @@ embassy-usb = "0.6"
 embassy-usb-logger = "0.6"
 log = "0.4"
 
+# Optional direct dependency for the `codegen-compact` experiment: lets
+# this host enable an out-of-line codegen feature on the patched dalek
+# (see the bp5 attribution). Inactive unless the feature is on.
+curve25519-dalek = { version = "4", default-features = false, optional = true }
+
 # runtime glue
 embedded-alloc = "0.7"
 # panic-probe removed: fault.rs owns the panic + hard-fault handlers so
@@ -57,3 +62,8 @@ perf-timing = [
 # Straus / vartime 2-term fold) exposed on the console as `perfbench`.
 # Diagnostic only; part of the perf-experiment firmware.
 perf-bench = ["shlosilo/perf-bench-ffi"]
+
+# bp5 wrapper-tax experiment: force the dalek CT-Straus core out-of-line
+# for this host. Feature sets are per-build; forgebox builds never
+# activate it (verify via the forgebox .a size when promoting).
+codegen-compact = ["dep:curve25519-dalek", "curve25519-dalek/straus-compact-codegen"]

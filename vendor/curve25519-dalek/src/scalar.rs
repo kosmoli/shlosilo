@@ -982,6 +982,7 @@ impl Scalar {
     /// The largest value that can be decomposed like this is just over \\(2^{255}\\). Thus, in
     /// order to not error, the top bit MUST NOT be set, i.e., `Self` MUST be less than
     /// \\(2^{255}\\).
+    #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
     pub(crate) fn as_radix_16(&self) -> [i8; 64] {
         debug_assert!(self[31] <= 127);
         let mut output = [0i8; 64];

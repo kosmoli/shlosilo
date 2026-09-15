@@ -132,6 +132,11 @@ version = "0.4.0"
 generator-cache = []
 # shlosilo vendor patch: device perf-bench entry points (see src/perf_bench.rs).
 perf-bench = []
+# shlosilo vendor patch: force the CT-Straus core out-of-line (per-site
+# inline(never); the bp5 attribution says the sign path's instantiation
+# over-inlines into ~10 KB / 3 KB stack vs the bench's compact ~2.5 KB
+# shape, which runs faster). Opt-in; forgebox never activates it.
+straus-compact-codegen = []
 alloc = ["zeroize?/alloc"]
 default = [
     "alloc",
