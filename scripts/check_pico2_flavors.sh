@@ -32,7 +32,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ELF=target/thumbv8m.main-none-eabihf/release/shlosilo-pico2
-CANARIES=(xmrseed trngdump trngrst trngprobe trngemb "fixed entropy set" "session key set")
+CANARIES=(xmrseed trngdump trngrst trngprobe trngemb "fixed entropy set" "session key set" \
+          trngraw trngrawout trngcheck trngtrace "[traw]" "[tchk]" "[ttr]" "[temp]")
 
 if ! command -v strings >/dev/null 2>&1; then
   echo "ERROR: strings (binutils) not found" >&2

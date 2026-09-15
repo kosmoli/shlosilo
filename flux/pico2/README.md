@@ -92,6 +92,17 @@ audit #17) - production builds compile them out:
 - `trngrawout [start_block] [pace_ms]` *(bench)* — stream the buffered raw
   capture back as paced `[traw] <index> <hex>` lines (4 blocks per line,
   1 ms/line default); the host detects a dropped line by block index
+- `trngcheck <nblocks> [timeout_ms]` *(bench)* — capture checked-path blocks
+  through the production reader (health checks + Von Neumann active,
+  chain 4 / sample 200) into the same buffer; retrieve with `trngrawout`
+  (the per-line log stream cannot carry dataset-sized captures - measured
+  ~95 % line loss at 2048 blocks)
+- `trngtrace [blocks] [chain] [sample] [window]` *(bench)* — DWT
+  cycle-stamped (BUSY, VALID) waveform around raw blocks (acquisition
+  mechanism forensics; default window 4096 cycles, raise to ~60000 for
+  sample=200)
+- `temp` *(bench)* — on-die temperature readout (RP2350 TS); also appended
+  to the `trngraw`/`trngcheck` capture lines
 
 Signing prints `[sign] <type> ok: <n> bytes sha256=<hex>`, plus
 `[sign] <type> hex: <hex>` when the output is ≤128 bytes (covers the ETH
