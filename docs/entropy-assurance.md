@@ -1,11 +1,13 @@
 # Entropy assurance — RP2350 TRNG source characterisation (SP 800-90B)
 
-Status: **draft v1 — single-board scope** (2026-09-15). This document records
-the entropy-source characterisation for the shlosilo pico2 (RP2350) TRNG:
-the raw-source assessment, the consumption-point assessment, the acquisition
-mechanics verified on hardware, and the operating-envelope coverage with
-explicit gaps. It is an **engineering assessment**, not a CAVP-style
-validation submission.
+Status: **final v1.0 — single-board scope, fixed USB supply** (2026-09-15).
+This document records the entropy-source characterisation for the shlosilo
+pico2 (RP2350) TRNG: the raw-source assessment, the consumption-point
+assessment, the acquisition mechanics verified on hardware, and the
+operating-envelope coverage. It is an **engineering assessment**, not a
+CAVP-style validation submission. The uncovered envelope axes (§5, §7) are
+**deferred by decision** — to be revisited once the full business logic has
+landed and the accessory hardware is procured.
 
 ## 1. Scope
 
@@ -19,9 +21,11 @@ Established by this assessment:
 - acquisition mechanics: BUSY/VALID handshake, per-block fill timing,
   read-triggered re-arm (DWT cycle-stamped traces).
 
-Not established (explicit gaps, §7): multi-board coverage, voltage
-variation, sustained-load interaction, cold-temperature coverage, a
-restart-test dataset in the exact `ea_restart` shape, and formal validation.
+Out of scope for v1.0 (deferred, §7): multi-board coverage, voltage
+variation, sustained-load interaction, temperature extremes, a restart-test
+dataset in the exact `ea_restart` shape, and formal validation. The assessed
+scope is the board and supply in hand; every closed dataset carries zero
+transport gaps and a recorded digest (Annex A).
 
 ## 2. Method
 
@@ -173,10 +177,10 @@ full-entropy 256-bit output with a large margin at the measured rate).
 | sampling interval | ✓ (2 points) | sample 0 and sample 200 (production) |
 | boot epochs | ✓ | ≥ 4 full reboots (flash cycles) + 4 in-session source-restart epochs |
 | source restarts | ✓ (soft) | each capture job starts/stops the source; raw repeat spread 8 % (0.118-0.128), checked-path epoch spread 10 % (0.729-0.808) |
-| die temperature | ✗ (gap) | self-heating (≈4 min sustained load) produced no measurable change; needs external thermal source |
-| boards | ✗ (gap) | single Pico 2 board |
-| voltage | ✗ (gap) | fixed USB supply only |
-| load interaction | ✗ (gap) | capture path runs synchronously (executor stalled); interaction with concurrent load not characterised |
+| die temperature | deferred | self-heating (≈4 min sustained load) produced no measurable change; needs an external thermal source (post business-logic) |
+| boards | deferred | single Pico 2 board; multi-board repeat deferred (post business-logic) |
+| voltage | deferred | fixed USB supply; VSYS sweep deferred (post business-logic; adjustable supply + data-only USB cable required) |
+| load interaction | deferred | capture path runs synchronously (executor stalled); concurrent-load capture needs an async collection mode |
 | sustained long-run | partial | multi-dataset coverage; no multi-hour soak |
 
 ## 6. Usage notes for the production path
@@ -192,10 +196,17 @@ full-entropy 256-bit output with a large margin at the measured rate).
 
 ## 7. Gaps and follow-ups
 
-1. multi-board repeat (2+ boards) — pending hardware availability;
-2. voltage variation — requires an adjustable supply on VSYS;
+Deferred by decision (revisit after the full business logic lands; no
+corrections implied for the closed scope above):
+
+1. multi-board repeat (2+ boards, same design: SpotPear Pico 2 Pro RP2350A
+   PSRAM-8MB);
+2. voltage variation — VSYS sweep with an adjustable supply and a
+   data-only USB cable (VBUS disconnected; the on-board regulator
+   attenuates external variation, so this axis asserts "stable over the
+   declared input range", the standard product-level framing);
 3. sustained-load capture (async `capture_raw` with executor yields);
-4. cold-soak and hot-soak datasets (elevated datapoint in progress);
+4. temperature extremes (needs an external thermal source);
 5. `ea_restart`-shaped dataset (1000 restarts × 1000 samples) — needs a
    restart-loop collector;
 6. formal validation trail: CAVP-style conditioning documentation for the
