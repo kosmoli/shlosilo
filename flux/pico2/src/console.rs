@@ -234,6 +234,8 @@ impl ConsoleState {
             #[cfg(feature = "bench")]
             b"trngtrace" => return Some(parse_trngtrace(args)),
             #[cfg(feature = "bench")]
+            b"trngcheck" => return Some(parse_trngcheck(args)),
+            #[cfg(feature = "bench")]
             b"temp" => match crate::read_die_temp_c() {
                 Some(v) => log::info!("[temp] {v:.1} C"),
                 None => log::info!("[temp] unavailable"),
@@ -308,6 +310,10 @@ impl ConsoleState {
         #[cfg(feature = "bench")]
         log::info!(
             "[help]   trngtrace [blocks] [chain] [sample] [window]  trace BUSY/VALID around raw blocks"
+        );
+        #[cfg(feature = "bench")]
+        log::info!(
+            "[help]   trngcheck [nblocks] [timeout_ms]  capture checked-path blocks (production reader; dump via trngrawout)"
         );
         #[cfg(feature = "bench")]
         log::info!("[help]   temp            read the on-die temperature sensor");
@@ -944,6 +950,10 @@ enum JobMode {
     /// Trace the BUSY/VALID waveform around raw blocks (mechanism forensics).
     #[cfg(feature = "bench")]
     RawTrace,
+    /// Capture checked-path blocks through the production reader into the
+    /// dump buffer (dataset collection without the lossy per-line log stream).
+    #[cfg(feature = "bench")]
+    CheckCapture,
     /// Sign the pending XMR request (TRNG entropy + the full signing path).
     SignXmr,
     /// Verify the PSRAM memory-mapped data path; map the heap on success.
@@ -1084,6 +1094,8 @@ async fn run_trng_job(job: TrngJob) {
         JobMode::RawDump => run_trngrawout(job).await,
         #[cfg(feature = "bench")]
         JobMode::RawTrace => run_trngtrace(job).await,
+        #[cfg(feature = "bench")]
+        JobMode::CheckCapture => run_trngcheck(job).await,
         JobMode::SignXmr => run_sign_xmr().await,
         JobMode::PsramTest => run_psram_test().await,
     }
@@ -1541,6 +1553,92 @@ const RAW_MAX_BLOCKS: u32 = 262_144;
 /// Blocks per dump line (4 x 192 bits = 96 B -> 192 hex chars + index).
 #[cfg(feature = "bench")]
 const RAW_DUMP_BLOCKS_PER_LINE: usize = 4;
+
+/// `trngcheck [nblocks] [timeout_ms]`: capture n blocks through the
+/// production reader (`read_block`: checked path, health checks + Von
+/// Neumann active, chain 4 / sample 200 defaults) into the dump buffer.
+/// Stream back with `trngrawout` (paced + indexed). Defaults: 16384 blocks.
+#[cfg(feature = "bench")]
+fn parse_trngcheck(args: &[u8]) -> TrngJob {
+    let mut n: u32 = 16384;
+    let mut timeout: u64 = 0;
+    for (k, word) in args
+        .split(|b| b.is_ascii_whitespace())
+        .filter(|w| !w.is_empty())
+        .enumerate()
+    {
+        let s = core::str::from_utf8(word).unwrap_or("");
+        match k {
+            0 => n = s.parse::<u32>().unwrap_or(16384).clamp(1, RAW_MAX_BLOCKS),
+            1 => timeout = s.parse::<u64>().unwrap_or(0),
+            _ => {}
+        }
+    }
+    TrngJob {
+        mode: JobMode::CheckCapture,
+        stress: false,
+        cond: false,
+        sample: None,
+        chain: None,
+        timeout_ms: timeout,
+        count: n,
+        off: 0,
+    }
+}
+
+/// Checked-path capture handler: fills the dump buffer via the production
+/// reader so the host can retrieve the dataset with the paced, indexed
+/// `trngrawout` dump (the per-line log stream cannot carry thousands of
+/// blocks without USB pipe drops).
+#[cfg(feature = "bench")]
+async fn run_trngcheck(job: TrngJob) {
+    let blocks = job.count as usize;
+    let timeout_ms = if job.timeout_ms == 0 {
+        trng::DEFAULT_BLOCK_TIMEOUT_MS
+    } else {
+        job.timeout_ms
+    };
+    let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(blocks * trng::BLOCK_LEN);
+    let mut stats = TrngStats::default();
+    let t0 = Instant::now();
+    let mut result: Result<(), trng::TrngError> = Ok(());
+    {
+        let mut t = trng::instance().lock().await;
+        for _ in 0..blocks {
+            match t.read_block(&mut stats, timeout_ms).await {
+                Ok(block) => buf.extend_from_slice(&block),
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
+        }
+        t.stop();
+    }
+    match result {
+        Ok(()) => {
+            let ms = t0.elapsed().as_millis().max(1);
+            let n = buf.len() / trng::BLOCK_LEN;
+            let bits = (n * 192) as u64;
+            let tstr = match crate::read_die_temp_c() {
+                Some(v) => alloc::format!("{v:.1}C"),
+                None => alloc::string::String::from("n/a"),
+            };
+            log::info!(
+                "[tchk] captured {n} checked-path blocks = {bits} bits in {ms} ms ({} us/block; crngt={} vn={} autocorr={} zero={} odd={} timeout={} temp={tstr})",
+                ms * 1000 / (n as u64).max(1),
+                stats.crngt_err,
+                stats.vn_err,
+                stats.autocorr_err,
+                stats.zero_blocks,
+                stats.odd_states,
+                stats.busy_timeouts,
+            );
+            CONSOLE.lock(|c| c.borrow_mut().raw_buf = Some(buf));
+        }
+        Err(e) => log::info!("[tchk] capture failed after {blocks} requested: {e:?}"),
+    }
+}
 
 /// `trngtrace [blocks] [chain] [sample] [window]`: trace the
 /// (TRNG_BUSY, TRNG_VALID) waveform around raw blocks. Defaults: 3 blocks,
