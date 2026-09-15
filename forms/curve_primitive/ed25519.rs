@@ -83,7 +83,15 @@ pub fn generator() -> Ed25519Point {
     Ed25519Point { inner: g }
 }
 
-/// Basepoint multiplication: result = s * G (use `verifying_key()` to get the public pk)
+/// Basepoint multiplication by **RFC 8032 seed semantics**, NOT raw-scalar math:
+/// returns `clamp(SHA-512(seed)[0..32]) * G` (the ed25519 *signature* public key
+/// for these bytes treated as a seed). It does **not** return `s * G` for the 32
+/// bytes read as a scalar — that older doc here was wrong.
+///
+/// Correct for seed-based chains (SOL/APTOS/etc.). For **Monero-style raw
+/// scalars**, use `curve25519_dalek` directly:
+/// `ED25519_BASEPOINT_TABLE * Scalar::from_bytes_mod_order(bytes)`
+/// (pattern: `tests/xmr_device_peak_fixture.rs`, `tests/p64_xmr_multi_input.rs`).
 pub fn base_mul(s: &Ed25519Scalar) -> Ed25519Point {
     let vk = s.inner.verifying_key();
     Ed25519Point { inner: vk }
