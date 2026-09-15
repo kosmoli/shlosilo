@@ -19,8 +19,9 @@
 # negated pipeline test then takes the wrong branch in the match case).
 #
 # Also builds the perf-timing flavor (bench+perf; the XMR phase-probe
-# firmware) so the perf combination stays compileable and its surface
-# marker (`xtiming`) is present.
+# firmware, including the codegen-compact dalek experiment) so the perf
+# combination stays compileable and its surface marker (`xtiming`) is
+# present.
 #
 # Run from anywhere; CI runs the same script (appearances job). Note: the
 # builds share the cargo output path, and cargo re-points it (uplift) to
@@ -60,8 +61,8 @@ for c in "${CANARIES[@]}"; do
 done
 echo "    ok: bench-only surface present in the bench image"
 
-echo "==> perf-timing build (bench,perf-timing,perf-bench)"
-(cd flux/pico2 && cargo build --release --features bench,perf-timing,perf-bench)
+echo "==> perf-timing build (bench,perf-timing,perf-bench,codegen-compact)"
+(cd flux/pico2 && cargo build --release --features bench,perf-timing,perf-bench,codegen-compact)
 PERF_STRINGS=$(strings "$ELF")
 for c in "${CANARIES[@]}" xtiming perfbench; do
   if [[ "$PERF_STRINGS" != *"$c"* ]]; then

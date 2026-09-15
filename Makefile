@@ -37,9 +37,11 @@ pico2-bench-uf2:
 	cd flux/pico2 && python3 pack_uf2.py
 
 # Perf-work build: bench console surface + XMR phase-timing probes +
-# device-primitive benchmarks (diagnostic; the firmware for perf runs).
+# device-primitive benchmarks + the out-of-line dalek codegen (diagnostic;
+# the firmware for perf runs). codegen-compact measured -192 ms/sign on
+# the 2026-09-15 A/B (bp1 -179, bp5 -365; byte-identical output).
 pico2-perf-uf2:
-	cd flux/pico2 && cargo build --release --features bench,perf-timing,perf-bench
+	cd flux/pico2 && cargo build --release --features bench,perf-timing,perf-bench,codegen-compact
 	cd flux/pico2 && python3 pack_uf2.py
 
 # Same script the CI appearances job runs (see scripts/check_pico2_flavors.sh).
