@@ -83,6 +83,15 @@ audit #17) - production builds compile them out:
   them as hex; ends with a stats line (retry counters, autocorr statistic,
   per-block timing); `stress` = sample count 2, `sample=`/`chain=`/`timeout=`
   override the characterisation settings (all restored on job exit)
+- `trngraw <nblocks> [chain] [sample]` *(bench)* — capture raw ROSC samples
+  with all internal checks and conditioning bypassed (the bootrom / SP
+  800-90B source-characterisation path; one sample per cycle by default);
+  holds up to 262,144 blocks (6 MiB ring in PSRAM, fixed chain length), then
+  reports the capture line + a wait statistic line (`[traw] waits=...`) so
+  the BUSY handshake can be audited
+- `trngrawout [start_block] [pace_ms]` *(bench)* — stream the buffered raw
+  capture back as paced `[traw] <index> <hex>` lines (4 blocks per line,
+  1 ms/line default); the host detects a dropped line by block index
 
 Signing prints `[sign] <type> ok: <n> bytes sha256=<hex>`, plus
 `[sign] <type> hex: <hex>` when the output is ≤128 bytes (covers the ETH
