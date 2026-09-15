@@ -110,6 +110,16 @@ pub const DEFAULT_BLOCK_TIMEOUT_MS: u64 = 10_000;
 const BUSY_SIGNAL_SPINS: u32 = 30_000_000;
 const BUSY_FALL_SPINS: u32 = 60_000_000;
 
+/// `trngraw` chain-selector sentinel: randomise the ROSC chain length per
+/// block (0..=3, the bootrom's injection-locking mitigation, as an
+/// assessment operating mode).
+#[cfg(feature = "bench")]
+pub const CHAIN_RANDOM: u8 = 255;
+
+/// Event cap per traced block (`trace_raw`).
+#[cfg(feature = "bench")]
+const TRACE_MAX_EVENTS: usize = 96;
+
 /// Status settle after BUSY falls (only guards a stale read).
 const SETTLE_SPINS: u32 = 2_000;
 /// Absolute retry cap for one block (secondary to the time budget).
@@ -515,12 +525,21 @@ impl Trng {
             w.set_trng_crngt_bypass(true);
             w.set_vnc_bypass(true);
         });
-        regs.trng_config()
-            .write(|w| w.set_rnd_src_sel(chain.min(4)));
+        let chain_rand = chain == CHAIN_RANDOM;
+        let base_chain = if chain_rand {
+            DEFAULT_CHAIN_LEN
+        } else {
+            chain.min(4)
+        };
+        regs.trng_config().write(|w| w.set_rnd_src_sel(base_chain));
         regs.sample_cnt1().write(|w| *w = sample);
         self.source_running = true;
 
-        log::info!("[traw] raw mode: chain={chain} sample={sample}");
+        if chain_rand {
+            log::info!("[traw] raw mode: chain=rand(0-3) sample={sample}");
+        } else {
+            log::info!("[traw] raw mode: chain={base_chain} sample={sample}");
+        }
 
         out.clear();
         let mut n = 0u32;
@@ -528,7 +547,17 @@ impl Trng {
         let mut spin_min = u32::MAX;
         let mut spin_max = 0u32;
         let mut ehr_invalid = 0u32;
+        // Deterministic chain schedule for `chain=rand` (assessment balance;
+        // the production mitigation would source this from collected state).
+        let mut lcg: u32 = 0x1234_5678;
         while (n as usize) < blocks {
+            // Randomised-chain mode: re-select the ROSC chain per block
+            // (the bootrom does the same with SHA-derived bits).
+            if chain_rand {
+                lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let sel = (lcg >> 16) as u8 & 3;
+                regs.trng_config().write(|w| w.set_rnd_src_sel(sel));
+            }
             // Per-block setup, mirrored from the bootrom's loop body.
             regs.trng_debug_control().write(|w| {
                 w.set_auto_correlate_bypass(true);
@@ -578,6 +607,183 @@ impl Trng {
         self.write_config(&regs);
         Ok(n)
     }
+
+    /// Trace the (TRNG_BUSY, TRNG_VALID) waveform around raw blocks: for
+    /// each of `blocks` blocks, run the standard raw sequence, then poll
+    /// the two status signals in a tight loop for `window` core cycles and
+    /// record every transition (with DWT cycle stamps and poll counts).
+    ///
+    /// This is the mechanism forensic for the SP 800-90B dataset: it shows
+    /// whether a read clears/re-arms the acquisition, when BUSY asserts,
+    /// how long a fill actually takes in cycles, and when EHR_VALID rises.
+    #[cfg(feature = "bench")]
+    pub fn trace_raw(
+        &mut self,
+        blocks: usize,
+        chain: u8,
+        sample: u32,
+        window: u32,
+        out: &mut alloc::vec::Vec<TraceBlock>,
+    ) -> Result<u32, TrngError> {
+        let regs = regs();
+        regs.trng_sw_reset().write(|w| w.set_trng_sw_reset(true));
+        let _ = regs.trng_sw_reset().read();
+        regs.trng_debug_control().write(|w| {
+            w.set_auto_correlate_bypass(true);
+            w.set_trng_crngt_bypass(true);
+            w.set_vnc_bypass(true);
+        });
+        regs.trng_config()
+            .write(|w| w.set_rnd_src_sel(chain.min(4)));
+        regs.sample_cnt1().write(|w| *w = sample);
+        self.source_running = true;
+        let _ = cyccnt_enable();
+        log::info!(
+            "[ttr] raw mode: chain={} sample={sample} window={window}",
+            chain.min(4)
+        );
+
+        out.clear();
+        let mut total = 0u32;
+        while (total as usize) < blocks {
+            regs.trng_debug_control().write(|w| {
+                w.set_auto_correlate_bypass(true);
+                w.set_trng_crngt_bypass(true);
+                w.set_vnc_bypass(true);
+            });
+            regs.rnd_source_enable().write(|w| w.set_rnd_src_en(true));
+            regs.rng_icr().write(|w| {
+                w.set_ehr_valid(true);
+                w.set_crngt_err(true);
+                w.set_vn_err(true);
+            });
+            let mut spins = 0u32;
+            while regs.trng_busy().read().trng_busy() {
+                core::hint::spin_loop();
+                spins += 1;
+                if spins > BUSY_FALL_SPINS {
+                    self.stop();
+                    self.write_config(&regs);
+                    return Err(TrngError::BusyTimeout);
+                }
+            }
+            let ehr_valid = regs.trng_valid().read().ehr_valid();
+            let mut block = [0u8; BLOCK_LEN];
+            // Reading the EHR (DATA5 last) clears it and - per the trace we
+            // are about to take - may re-arm sampling.
+            read_ehr(&regs, &mut block);
+
+            let mut tb = TraceBlock {
+                read_spins: spins,
+                ehr_valid,
+                ..TraceBlock::default()
+            };
+            let t0 = cyccnt();
+            let mut last = trace_state(&regs);
+            let mut polls: u32 = 0;
+            let mut last_event_at: u32 = 0;
+            tb.events.push(TraceEvent {
+                cycles: 0,
+                polls: 0,
+                busy: last.0,
+                valid: last.1,
+            });
+            loop {
+                let s = trace_state(&regs);
+                polls += 1;
+                let cyc = cyccnt().wrapping_sub(t0);
+                if s != last {
+                    if tb.events.len() >= TRACE_MAX_EVENTS {
+                        tb.truncated = true;
+                        break;
+                    }
+                    tb.events.push(TraceEvent {
+                        cycles: cyc,
+                        polls,
+                        busy: s.0,
+                        valid: s.1,
+                    });
+                    last = s;
+                    last_event_at = cyc;
+                }
+                if cyc >= window {
+                    break;
+                }
+                // Stop once the state has settled with data ready.
+                if last.1 && cyc.wrapping_sub(last_event_at) > 512 {
+                    break;
+                }
+            }
+            tb.window = cyccnt().wrapping_sub(t0);
+            out.push(tb);
+            total += 1;
+        }
+
+        log::info!("[ttr] traced {total} blocks");
+        self.stop();
+        self.write_config(&regs);
+        Ok(total)
+    }
+}
+
+/// One observed (busy, valid) transition during a raw-block trace.
+#[cfg(feature = "bench")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TraceEvent {
+    pub cycles: u32,
+    pub polls: u32,
+    pub busy: bool,
+    pub valid: bool,
+}
+
+/// Per-block trace result (`trace_raw`). `events[0]` is the state observed
+/// at trace start (immediately after the EHR read that ends the block).
+#[cfg(feature = "bench")]
+#[derive(Clone, Debug, Default)]
+pub struct TraceBlock {
+    pub events: alloc::vec::Vec<TraceEvent>,
+    /// Cycles the traced window actually ran.
+    pub window: u32,
+    /// Spins the standard busy-wait spent on this block (before the read).
+    pub read_spins: u32,
+    /// EHR_VALID at read time.
+    pub ehr_valid: bool,
+    /// The event cap was hit (waveform busier than expected).
+    pub truncated: bool,
+}
+
+/// Read the trace state pair (busy, valid).
+#[cfg(feature = "bench")]
+#[inline(always)]
+fn trace_state(regs: &TrngRegs) -> (bool, bool) {
+    (
+        regs.trng_busy().read().trng_busy(),
+        regs.trng_valid().read().ehr_valid(),
+    )
+}
+
+/// Enable the DWT cycle counter (M33 core; RP2350 has the full DWT unit).
+/// Returns the counter's value after enable, which also exposes whether the
+/// unit is live on this silicon (a dead unit reads 0 forever).
+#[cfg(feature = "bench")]
+fn cyccnt_enable() -> u32 {
+    const DEMCR: *mut u32 = 0xE000_EDFC as *mut u32;
+    const DWT_CTRL: *mut u32 = 0xE000_1000 as *mut u32;
+    const DWT_CYCCNT: *mut u32 = 0xE000_1004 as *mut u32;
+    unsafe {
+        // TRCENA first, then start the counter from zero.
+        DEMCR.write_volatile(DEMCR.read_volatile() | (1 << 24));
+        DWT_CYCCNT.write_volatile(0);
+        DWT_CTRL.write_volatile(DWT_CTRL.read_volatile() | 1);
+        DWT_CYCCNT.read_volatile()
+    }
+}
+
+/// DWT cycle counter (bench trace only).
+#[cfg(feature = "bench")]
+#[inline(always)]
+fn cyccnt() -> u32 {
+    unsafe { (0xE000_1004 as *const u32).read_volatile() }
 }
 
 /// Raw register snapshot (all values as read from hardware; bench builds

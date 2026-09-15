@@ -434,6 +434,34 @@ static EMB_TRNG: embassy_sync::blocking_mutex::Mutex<
     core::cell::RefCell<Option<embassy_rp::trng::Trng<'static, embassy_rp::peripherals::TRNG>>>,
 > = embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new(None));
 
+/// The stashed temperature-path driver: blocking ADC + temp channel.
+#[cfg(feature = "bench")]
+type TempAdc = (
+    embassy_rp::adc::Adc<'static, embassy_rp::adc::Blocking>,
+    embassy_rp::adc::Channel<'static>,
+);
+
+/// Bench-only die-temperature path: a blocking ADC driver plus the temp
+/// sensor channel, stashed at boot. Read via `read_die_temp_c`.
+#[cfg(feature = "bench")]
+static TEMP_ADC: embassy_sync::blocking_mutex::Mutex<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    core::cell::RefCell<Option<TempAdc>>,
+> = embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new(None));
+
+/// On-die temperature in Celsius (RP2350 TS: Vbe = 0.706 V at 27 C,
+/// -1.721 mV/C; see datasheet 12.4.6). Bench builds only.
+#[cfg(feature = "bench")]
+pub(crate) fn read_die_temp_c() -> Option<f32> {
+    TEMP_ADC.lock(|cell| {
+        let mut b = cell.borrow_mut();
+        let (adc, ch) = b.as_mut()?;
+        let raw = adc.blocking_read(ch).ok()?;
+        let v = f32::from(raw) * 3.3 / 4096.0;
+        Some(27.0 - (v - 0.706) / 0.001721)
+    })
+}
+
 /// Read `dest.len()` bytes via the upstream embassy driver (blocking).
 /// Panics inside embassy's wait path kill the firmware (panic = abort) -
 /// which is itself a test result for the bench session.
@@ -655,6 +683,14 @@ async fn main(spawner: Spawner) {
             TrngIrqs,
             embassy_rp::trng::Config::default(),
         ));
+    });
+
+    // Bench temperature path (see TEMP_ADC).
+    #[cfg(feature = "bench")]
+    TEMP_ADC.lock(|cell| {
+        let adc = embassy_rp::adc::Adc::new_blocking(p.ADC, embassy_rp::adc::Config::default());
+        let ch = embassy_rp::adc::Channel::new_temp_sensor(p.ADC_TEMP_SENSOR);
+        *cell.borrow_mut() = Some((adc, ch));
     });
 
     let driver = Driver::new(p.USB, Irqs);

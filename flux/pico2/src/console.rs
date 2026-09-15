@@ -231,6 +231,13 @@ impl ConsoleState {
             b"trngraw" => return Some(parse_trngraw(args)),
             #[cfg(feature = "bench")]
             b"trngrawout" => return Some(parse_trngrawout(args)),
+            #[cfg(feature = "bench")]
+            b"trngtrace" => return Some(parse_trngtrace(args)),
+            #[cfg(feature = "bench")]
+            b"temp" => match crate::read_die_temp_c() {
+                Some(v) => log::info!("[temp] {v:.1} C"),
+                None => log::info!("[temp] unavailable"),
+            },
             b"xmrout" => self.cmd_xmrout(args),
             #[cfg(feature = "perf-timing")]
             b"xtiming" => crate::perf_timing::log_phases(),
@@ -298,6 +305,12 @@ impl ConsoleState {
         );
         #[cfg(feature = "bench")]
         log::info!("[help]   trngrawout [start] [pace_ms]  stream the last raw capture as hex");
+        #[cfg(feature = "bench")]
+        log::info!(
+            "[help]   trngtrace [blocks] [chain] [sample] [window]  trace BUSY/VALID around raw blocks"
+        );
+        #[cfg(feature = "bench")]
+        log::info!("[help]   temp            read the on-die temperature sensor");
         log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
         #[cfg(feature = "perf-timing")]
         log::info!("[help]   xtiming         dump the XMR phase-timing table (probe builds)");
@@ -928,6 +941,9 @@ enum JobMode {
     /// Stream the stored raw capture out as paced hex lines.
     #[cfg(feature = "bench")]
     RawDump,
+    /// Trace the BUSY/VALID waveform around raw blocks (mechanism forensics).
+    #[cfg(feature = "bench")]
+    RawTrace,
     /// Sign the pending XMR request (TRNG entropy + the full signing path).
     SignXmr,
     /// Verify the PSRAM memory-mapped data path; map the heap on success.
@@ -983,7 +999,7 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
         } else if let Some(v) = s.strip_prefix("timeout=") {
             timeout_ms = v.parse::<u64>().unwrap_or(timeout_ms).clamp(100, 120_000);
         } else if let Ok(n) = s.parse::<u32>() {
-            count = n.clamp(1, 4096);
+            count = n.clamp(1, 16384);
         }
     }
     TrngJob {
@@ -1066,6 +1082,8 @@ async fn run_trng_job(job: TrngJob) {
         JobMode::RawCapture => run_trngraw(job).await,
         #[cfg(feature = "bench")]
         JobMode::RawDump => run_trngrawout(job).await,
+        #[cfg(feature = "bench")]
+        JobMode::RawTrace => run_trngtrace(job).await,
         JobMode::SignXmr => run_sign_xmr().await,
         JobMode::PsramTest => run_psram_test().await,
     }
@@ -1524,6 +1542,43 @@ const RAW_MAX_BLOCKS: u32 = 262_144;
 #[cfg(feature = "bench")]
 const RAW_DUMP_BLOCKS_PER_LINE: usize = 4;
 
+/// `trngtrace [blocks] [chain] [sample] [window]`: trace the
+/// (TRNG_BUSY, TRNG_VALID) waveform around raw blocks. Defaults: 3 blocks,
+/// chain 4, sample 0, window 4096 core cycles (raise the window to cover a
+/// slow fill, e.g. 60000 for sample=200).
+#[cfg(feature = "bench")]
+fn parse_trngtrace(args: &[u8]) -> TrngJob {
+    let mut blocks: u32 = 3;
+    let mut chain: Option<u8> = None;
+    let mut sample: Option<u32> = None;
+    let mut window: u64 = 4096;
+    for (k, word) in args
+        .split(|b| b.is_ascii_whitespace())
+        .filter(|w| !w.is_empty())
+        .enumerate()
+    {
+        let s = core::str::from_utf8(word).unwrap_or("");
+        match k {
+            0 => blocks = s.parse::<u32>().unwrap_or(3).clamp(1, 16),
+            1 => chain = s.parse::<u8>().ok().map(|v| v.min(4)),
+            2 => sample = s.parse::<u32>().ok().map(|v| v.min(0xffff)),
+            3 => window = s.parse::<u64>().unwrap_or(4096).clamp(256, 600_000),
+            _ => {}
+        }
+    }
+    TrngJob {
+        mode: JobMode::RawTrace,
+        stress: false,
+        cond: false,
+        sample,
+        chain,
+        // `timeout_ms` carries the trace window here.
+        timeout_ms: window,
+        count: blocks,
+        off: 0,
+    }
+}
+
 /// `trngraw <nblocks> [chain] [sample]`: capture n 192-bit blocks of raw
 /// ROSC samples (all internal checking and conditioning bypassed — the
 /// SP 800-90B source-characterisation path). Defaults: chain 4 (the
@@ -1542,7 +1597,12 @@ fn parse_trngraw(args: &[u8]) -> TrngJob {
         let s = core::str::from_utf8(word).unwrap_or("");
         match k {
             0 => n = s.parse::<u32>().unwrap_or(4096).clamp(1, RAW_MAX_BLOCKS),
-            1 => chain = s.parse::<u8>().ok().map(|v| v.min(4)),
+            1 => {
+                chain = match s {
+                    "rand" => Some(trng::CHAIN_RANDOM),
+                    _ => s.parse::<u8>().ok().map(|v| v.min(4)),
+                }
+            }
             2 => sample = s.parse::<u32>().ok().map(|v| v.min(0xffff)),
             _ => {}
         }
@@ -1615,8 +1675,12 @@ async fn run_trngraw(job: TrngJob) {
                 .count();
             let ones: u32 = buf.iter().map(|b| b.count_ones()).sum();
             let ones_pm = (u64::from(ones) * 1000 / bits.max(1)) as u32;
+            let tstr = match crate::read_die_temp_c() {
+                Some(v) => alloc::format!("{v:.1}C"),
+                None => alloc::string::String::from("n/a"),
+            };
             log::info!(
-                "[traw] captured {n} blocks = {bits} raw bits in {ms} ms ({} kbit/s; ones~{ones_pm}e-3; zero-blocks={zero_blocks})",
+                "[traw] captured {n} blocks = {bits} raw bits in {ms} ms ({} kbit/s; ones~{ones_pm}e-3; zero-blocks={zero_blocks} temp={tstr})",
                 bits / ms
             );
             CONSOLE.lock(|c| c.borrow_mut().raw_buf = Some(buf));
@@ -1670,6 +1734,56 @@ async fn run_trngrawout(job: TrngJob) {
         Timer::after_millis(pace_ms).await;
     }
     log::info!("[traw] done (buffer holds {total} blocks)");
+}
+
+/// Trace handler: runs the trace and dumps the recorded waveform as paced
+/// lines (`[ttr] b<blk> e<idx> cyc=<cycles> polls=<n> busy=<0|1> valid=<0|1>`).
+#[cfg(feature = "bench")]
+async fn run_trngtrace(job: TrngJob) {
+    let blocks = job.count as usize;
+    let chain = job.chain.unwrap_or(trng::DEFAULT_CHAIN_LEN);
+    let sample = job.sample.unwrap_or(0);
+    let window = if job.timeout_ms == 0 {
+        4096
+    } else {
+        job.timeout_ms
+    };
+    let mut out: alloc::vec::Vec<trng::TraceBlock> = alloc::vec::Vec::new();
+    let result = {
+        let mut t = trng::instance().lock().await;
+        t.trace_raw(blocks, chain, sample, window as u32, &mut out)
+    };
+    match result {
+        Ok(n) => {
+            let tstr = match crate::read_die_temp_c() {
+                Some(v) => alloc::format!("{v:.1}C"),
+                None => alloc::string::String::from("n/a"),
+            };
+            log::info!("[ttr] {n} blocks traced; temp={tstr}");
+            for (bi, tb) in out.iter().enumerate() {
+                log::info!(
+                    "[ttr] b{bi} read_spins={} valid_at_read={} window={} events={}{}",
+                    tb.read_spins,
+                    tb.ehr_valid as u8,
+                    tb.window,
+                    tb.events.len(),
+                    if tb.truncated { " TRUNCATED" } else { "" }
+                );
+                for (ei, ev) in tb.events.iter().enumerate() {
+                    log::info!(
+                        "[ttr] b{bi} e{ei} cyc={} polls={} busy={} valid={}",
+                        ev.cycles,
+                        ev.polls,
+                        ev.busy as u8,
+                        ev.valid as u8
+                    );
+                    Timer::after_millis(2).await;
+                }
+            }
+            log::info!("[ttr] done");
+        }
+        Err(e) => log::info!("[ttr] trace failed: {e:?}"),
+    }
 }
 
 /// Trim ASCII whitespace from both ends.
