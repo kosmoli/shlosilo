@@ -30,6 +30,15 @@ use shlosilo::network::Network;
 /// Fixture generated from the real wallet (2-input unsigned txset).
 const FIXTURE: &[u8] = include_bytes!("fixtures/unsigned_txset_2in.bin");
 
+/// Fixture under test: `P64_FIXTURE_PATH` overrides the embedded default
+/// (lets the same workflow check both the host-keys and device-keys variants).
+fn fixture_bytes() -> Vec<u8> {
+    match std::env::var("P64_FIXTURE_PATH") {
+        Ok(p) => std::fs::read(&p).expect("read P64_FIXTURE_PATH"),
+        Err(_) => FIXTURE.to_vec(),
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
@@ -103,21 +112,22 @@ fn decrypt_and_parse_fixture() {
         eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set");
         return;
     };
-    let plain = decrypt_unsigned_txset(FIXTURE, &view_sk).expect("decrypt 2-input fixture");
+    let plain =
+        decrypt_unsigned_txset(&fixture_bytes(), &view_sk).expect("decrypt 2-input fixture");
     let utx = deserialize_unsigned_tx(&plain).expect("deserialize");
     assert_eq!(utx.txes.len(), 1, "one tx");
     let tx = &utx.txes[0];
     assert_eq!(tx.sources.len(), 2, "TWO inputs (task 4 target)");
-    let src0 = &tx.sources[0];
-    assert_eq!(src0.outputs.len(), 16, "ring 16 (source 0)");
-    assert_eq!(src0.amount, 500_000_000, "input 0 = 0.0005 XMR");
-    let src1 = &tx.sources[1];
-    assert_eq!(src1.amount, 500_000_000, "input 1 = 0.0005 XMR");
-    assert!(src0.real_output < 16, "real index in range");
-    assert!(src1.real_output < 16, "real index in range");
+    // Both fixtures spend two equal UTXOs; do not hardcode which fixture.
+    assert_eq!(tx.sources[0].amount, tx.sources[1].amount, "equal inputs");
+    for (i, s) in tx.sources.iter().enumerate() {
+        assert_eq!(s.outputs.len(), 16, "ring 16 (source {i})");
+        assert!(s.real_output < 16, "real index in range (source {i})");
+    }
     let out_sum: u64 = tx.splitted_dsts.iter().map(|d| d.amount).sum();
     let in_sum: u64 = tx.sources.iter().map(|s| s.amount).sum();
     let fee = in_sum - out_sum;
+    assert!(in_sum > out_sum && fee < 1_000_000_000, "sane fee: {fee}");
     println!(
         "2-input fixture OK: sources={} dests={} in={} out={} fee={}",
         tx.sources.len(),
@@ -199,7 +209,7 @@ fn sign_and_time() {
         return;
     };
 
-    let plain = decrypt_unsigned_txset(FIXTURE, &view_sk).expect("decrypt");
+    let plain = decrypt_unsigned_txset(&fixture_bytes(), &view_sk).expect("decrypt");
     let utx = deserialize_unsigned_tx(&plain).expect("deserialize");
     let tx_data = &utx.txes[0];
     assert_eq!(tx_data.sources.len(), 2);
