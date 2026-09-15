@@ -44,8 +44,10 @@
 - **✅ 互操作缺口已修复（2026-09-15）**: 根因 = `tx_destination_entry.amount` 在 monero 里是
   **VARINT**（`VARINT_FIELD(amount)`；与 `tx_source_entry.amount` 的固定 8B 不对称——经典坑）。
   旧 writer 写成固定 u64 → 每个 destination entry 后错位 7 字节 → monero 拒绝整份文件。
-  修复后（commit 见 git log）`monero-wallet-cli submit_transfer` 全流程接受：
-  解析 → 确认 → key images 导入 → **提交成功**（tx `ebc663d6…`，与 raw-tx 路径广播的同一交易，
-  固定熵下签名确定性）。广播路径 `send_raw_transaction` 不受影响。
+  修复后（commit `e0fe4d1`）**两侧均验证**：
+  - host 签的文件 → `submit_transfer` 全流程接受（解析 → 确认 → key images → 提交）；
+  - **设备（fce3d9d 固件）签的文件** → 同样全流程接受（blob 6098 B，
+    sha256 `cf724941…`，与 host 参考逐字节一致；设备输出格式 = 修复后格式）。
+  - 固定熵下 txid `ebc663d6…` 与 raw-tx 路径广播的同一交易（修复只改容器不改语义）。
 
 
