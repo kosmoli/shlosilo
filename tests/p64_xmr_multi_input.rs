@@ -1,0 +1,221 @@
+//! P64: XMR multi-input fixture workflow (real-funds, device-loadable wallet).
+//!
+//! Task 4 of the pico2 handoff: multi-input XMR fixture + host timing before
+//! device work. The device can only rebuild wallet keys from an `entropy <hex>`
+//! command (BIP-39 → Keystone Monero path m/44'/128'/0'/0/0 → spend = Hs(raw),
+//! view = Hs(spend)), so a monero CLI random-seed wallet cannot be re-derived
+//! on-device. This workflow therefore uses a *deterministic* wallet whose spend
+//! key is imported into monero CLI (view key and address derive identically on
+//! both sides: view = Hs(spend)):
+//!
+//! 1. `gen_deterministic_wallet` (host tool) — entropy → spend key + address
+//! 2. monero CLI/RPC: import the spend key → `sh_dev` wallet (address must match)
+//! 3. fund the address (external)
+//! 4. watch-only clone + CLI transfer → `unsigned_monero_tx` (multi-input)
+//! 5. `decrypt_and_parse_fixture` — verify the fixture (expects 2 sources)
+//! 6. `sign_and_time` — host signing + timing (milestone estimate)
+//! 7. device: `entropy <hex>` + UR → signed txset → broadcast (final verdict)
+//!
+//! Run:
+//!   P64_ENTROPY_HEX=$(cat /tmp/p64_env | cut -d= -f2) cargo test --release \
+//!     --test p64_xmr_multi_input -- --ignored --nocapture
+
+use shlosilo::address::xmr::encode;
+use shlosilo::business::restore_seed::restore_seed;
+use shlosilo::curve_primitive::ed25519::{point_to_compressed, scalar_to_bytes};
+use shlosilo::derivation::monero_reduce_scalar::{derive, MoneroPath};
+use shlosilo::entropy::mnemonic::Mnemonic;
+use shlosilo::network::Network;
+
+/// Fixture generated from the real wallet (2-input unsigned txset).
+const FIXTURE: &[u8] = include_bytes!("fixtures/unsigned_txset_2in.bin");
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn env_hex(name: &str) -> Option<[u8; 32]> {
+    let Ok(s) = std::env::var(name) else {
+        return None;
+    };
+    let v: Vec<u8> = (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect::<Option<_>>()?;
+    v.try_into().ok()
+}
+
+/// Host tool: build the deterministic device wallet material from the entropy.
+/// Prints spend key + address; import the spend key into monero CLI next.
+#[test]
+#[ignore = "host tool for fixture setup (task 4)"]
+fn gen_deterministic_wallet() {
+    let entropy_hex =
+        std::env::var("P64_ENTROPY_HEX").expect("set P64_ENTROPY_HEX (64 hex chars = 32 bytes)");
+    let entropy: Vec<u8> = (0..entropy_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&entropy_hex[i..i + 2], 16).unwrap())
+        .collect();
+    assert_eq!(entropy.len(), 32, "need 32 bytes (24 words)");
+
+    let m = Mnemonic::from_entropy(&entropy).expect("mnemonic from entropy");
+    let mut seed = [0u8; 64];
+    restore_seed(&m, &[], &mut seed).expect("bip39 seed (empty passphrase)");
+    let kp = derive(&seed, &MoneroPath::mainnet(0)).expect("keystone monero derive");
+
+    // Monero semantics: pubkey = raw_scalar * G. NOT ed25519-dalek's RFC-8032
+    // seed-based `SigningKey::verifying_key()` (which curve_primitive::ed25519
+    // ::base_mul uses); that one computes clamp(SHA512(seed))*G and produces
+    // wrong keys for Monero-style raw scalars. Use curve25519_dalek directly
+    // (same pattern as tests/xmr_device_peak_fixture.rs).
+    let spend_pub = monero_pub(&scalar_to_bytes(kp.spend_priv()));
+    let view_pub = monero_pub(&scalar_to_bytes(kp.view_priv()));
+    let addr = encode(&spend_pub, &view_pub, Network::MoneroMainnet).expect("address encode");
+
+    println!("== deterministic device wallet ==");
+    println!("entropy_hex = {entropy_hex}");
+    println!("words       = {:?}", m.word_count());
+    println!("spend_priv  = {}", hex(&scalar_to_bytes(kp.spend_priv())));
+    println!("view_priv   = {}", hex(&scalar_to_bytes(kp.view_priv())));
+    println!("spend_pub   = {}", hex(&point_to_compressed(&spend_pub)));
+    println!("view_pub    = {}", hex(&point_to_compressed(&view_pub)));
+    println!("address     = {addr}");
+    println!("== import into monero: generate_from_keys(spendkey) and compare address ==");
+}
+
+/// Monero-correct pubkey: raw_scalar * G → Ed25519Point wrapper.
+fn monero_pub(sec: &[u8; 32]) -> shlosilo::curve_primitive::ed25519::Ed25519Point {
+    use shlosilo::curve_primitive::ed25519::point_from_compressed;
+    let s = curve25519_dalek::Scalar::from_bytes_mod_order(*sec);
+    let compressed = (curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &s)
+        .compress()
+        .to_bytes();
+    point_from_compressed(&compressed).expect("valid point")
+}
+
+/// Verify the real-wallet 2-input fixture: decrypt + parse + structural checks.
+#[test]
+#[ignore = "needs the fixture view key via env (SHLOSILO_TEST_XMR_VIEW_SK)"]
+fn decrypt_and_parse_fixture() {
+    use shlosilo::chain::xmr::unsigned_txset::{decrypt_unsigned_txset, deserialize_unsigned_tx};
+
+    let Some(view_sk) = env_hex("SHLOSILO_TEST_XMR_VIEW_SK") else {
+        eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set");
+        return;
+    };
+    let plain = decrypt_unsigned_txset(FIXTURE, &view_sk).expect("decrypt 2-input fixture");
+    let utx = deserialize_unsigned_tx(&plain).expect("deserialize");
+    assert_eq!(utx.txes.len(), 1, "one tx");
+    let tx = &utx.txes[0];
+    assert_eq!(tx.sources.len(), 2, "TWO inputs (task 4 target)");
+    let src0 = &tx.sources[0];
+    assert_eq!(src0.outputs.len(), 16, "ring 16 (source 0)");
+    assert_eq!(src0.amount, 500_000_000, "input 0 = 0.0005 XMR");
+    let src1 = &tx.sources[1];
+    assert_eq!(src1.amount, 500_000_000, "input 1 = 0.0005 XMR");
+    assert!(src0.real_output < 16, "real index in range");
+    assert!(src1.real_output < 16, "real index in range");
+    let out_sum: u64 = tx.splitted_dsts.iter().map(|d| d.amount).sum();
+    let in_sum: u64 = tx.sources.iter().map(|s| s.amount).sum();
+    let fee = in_sum - out_sum;
+    println!(
+        "2-input fixture OK: sources={} dests={} in={} out={} fee={}",
+        tx.sources.len(),
+        tx.splitted_dsts.len(),
+        in_sum,
+        out_sum,
+        fee
+    );
+    for (i, s) in tx.sources.iter().enumerate() {
+        println!(
+            "  src[{i}]: amount={} real_output={} ring={} tx_key={}",
+            s.amount,
+            s.real_output,
+            s.outputs.len(),
+            hex(&s.real_out_tx_key)
+        );
+    }
+    for (i, d) in tx.splitted_dsts.iter().enumerate() {
+        println!(
+            "  dst[{i}]: amount={} subaddr={} spend_pk={}",
+            d.amount,
+            d.is_subaddress,
+            hex(&d.spend_public_key)
+        );
+    }
+}
+
+/// Host tool: encode the encrypted fixture into multipart UR frames for the
+/// device (fountain frames; the device accepts any order and signs on
+/// completion). Writes one frame per line.
+///
+/// Input: P64_ENC_PATH (encrypted unsigned txset, e.g. the CLI's
+/// `unsigned_monero_tx`); output: P64_FRAMES_OUT (default /tmp/xmr_2in_frames.txt).
+#[test]
+#[ignore = "host tool: encodes the fixture into device-feedable UR frames"]
+fn encode_ur_frames() {
+    use shlosilo::ur::ur_multipart::UrMultipartEncoder;
+
+    let enc_path = std::env::var("P64_ENC_PATH").expect("set P64_ENC_PATH");
+    let out_path =
+        std::env::var("P64_FRAMES_OUT").unwrap_or_else(|_| "/tmp/xmr_2in_frames.txt".to_string());
+    let payload = std::fs::read(&enc_path).expect("read encrypted fixture");
+
+    let mut encer = UrMultipartEncoder::new("xmr-txunsigned", &payload, 200).expect("encoder");
+    let n = encer.fragment_count();
+    println!("payload {} bytes -> {n} fountain fragments", payload.len());
+
+    // Two rounds: the fountain decoder needs (close to) n independent parts;
+    // one extra round covers any drops and lets the device complete early.
+    let mut frames = Vec::new();
+    for _ in 0..(2 * n + 2) {
+        frames.push(encer.next_frame().expect("frame"));
+    }
+    let out = frames.join("\n");
+    std::fs::write(&out_path, &out).expect("write frames");
+    println!(
+        "{n} fragments/round, wrote {} frames -> {out_path}",
+        frames.len()
+    );
+    println!(
+        "first frame ({} chars): {}…",
+        frames[0].len(),
+        &frames[0][..60.min(frames[0].len())]
+    );
+}
+
+/// Host signing + timing on the 2-input fixture (vs the 1-input baseline).
+#[test]
+#[ignore = "needs spend+view env keys; signs the real-funds fixture (host timing run)"]
+fn sign_and_time() {
+    use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction;
+    use shlosilo::chain::xmr::unsigned_txset::{decrypt_unsigned_txset, deserialize_unsigned_tx};
+
+    let (Some(view_sk), Some(spend_sk)) = (
+        env_hex("SHLOSILO_TEST_XMR_VIEW_SK"),
+        env_hex("SHLOSILO_TEST_XMR_SPEND_SK"),
+    ) else {
+        eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK / SHLOSILO_TEST_XMR_SPEND_SK not set");
+        return;
+    };
+
+    let plain = decrypt_unsigned_txset(FIXTURE, &view_sk).expect("decrypt");
+    let utx = deserialize_unsigned_tx(&plain).expect("deserialize");
+    let tx_data = &utx.txes[0];
+    assert_eq!(tx_data.sources.len(), 2);
+
+    use rand_core::OsRng;
+    let mut rng = OsRng;
+    let t0 = std::time::Instant::now();
+    let bytes =
+        sign_tx_from_construction(tx_data, &spend_sk, &view_sk, &mut rng).expect("2-input sign");
+    let ms = t0.elapsed().as_millis();
+    println!("2-input host sign: {ms} ms, {} bytes", bytes.len());
+    assert_eq!(bytes[0], 2, "tx version 2");
+
+    // Export for the oracle (monerod send_raw_transaction / wallet-rpc submit)
+    if let Ok(path) = std::env::var("P64_SIGNED_OUT") {
+        std::fs::write(&path, hex(&bytes)).expect("write signed hex");
+        println!("wrote {path}");
+    }
+}
