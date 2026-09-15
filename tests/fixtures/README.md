@@ -35,4 +35,16 @@
 - **用途**: 设备端 2-input 签名回归输入(`entropy <dev entropy>` + multipart UR
   分帧喂料 + `xmrseed 77×32` A/B;驱动 `flux/pico2/bench/xmr_2in_bringup.py`)
 - **隐私**: 主网小额测试钱包,无真实资金(加密于测试钱包 view key 之下)
+- **✅ 已广播上链(2026-09-15 主网)**: 设备签名(2-input, 19.27 s, blob 6119 B,
+  与 host A/B 逐字节一致 `d504cf77…`）→ 解密提取 raw tx(2219 B, 与 host 测量一致)
+  → monerod `send_raw_transaction` **全项验证通过**(double_spend/invalid_input/
+  overspend/sanity/low_mixin 全 false)→ 打包 **h=3763087**, tx
+  `ebc663d6314c0814dec471b334d5cb4e494aabaad3ab3f6d8cc08806f8c9b6d1`
+  (收款侧 p2in 0.00065 已确认)。广播脚本 `flux/pico2/bench/xmr_broadcast.py`。
+- **⚠️ 已知互操作缺口**: 本 blob 是标准 "Monero signed tx set\x05" 容器且**解密成功**,
+  但 monerod `submit_transfer`/`parse_tx_from_str` 的 `binary_archive<false>` 反序列化
+  失败("Failed to deserialize signed transaction")——疑点: `pending_tx.selected_transfers`
+  元素宽度(monero `vector<size_t>` 每元素固定 8B vs 我方 1B)与 construction_data 布局;
+  广播路径走 `send_raw_transaction`(提取 raw tx)已完全可用,文件格式修复另立课题。
+
 

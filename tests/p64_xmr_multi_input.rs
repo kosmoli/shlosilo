@@ -235,6 +235,59 @@ fn sign_with_fixed_entropy_for_ab() {
     println!("host A/B blob: {n} bytes -> {out_path}");
 }
 
+/// Extract the raw transaction bytes from a signed-txset blob for broadcast.
+///
+/// The plaintext framing is ours (`00 | varint ptx_count | 01 | tx | dust |
+/// fee | ...`). Locate the tx boundary via the known fee value, verify the
+/// framing, and write the raw tx for `send_raw_transaction`.
+///
+/// Run: P64_BLOB_PATH=/tmp/xmr_2in_device.bin SHLOSILO_TEST_XMR_VIEW_SK=... \
+///      cargo test --release --test p64_xmr_multi_input -- --ignored --nocapture \
+///      extract_tx_for_broadcast
+#[test]
+#[ignore = "host extraction tool: device blob → raw tx bytes for broadcast"]
+fn extract_tx_for_broadcast() {
+    use shlosilo::chain::xmr::signed_txset::decrypt_signed_txset;
+
+    let Some(view_sk) = env_hex("SHLOSILO_TEST_XMR_VIEW_SK") else {
+        eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set");
+        return;
+    };
+    let blob_path =
+        std::env::var("P64_BLOB_PATH").unwrap_or_else(|_| "/tmp/xmr_2in_device.bin".to_string());
+    let blob = std::fs::read(&blob_path).expect("read blob");
+    let plain = decrypt_signed_txset(&blob, &view_sk).expect("decrypt device blob");
+    println!("plaintext: {} bytes", plain.len());
+    assert_eq!(plain[0], 0x00, "signed_tx_set version 0");
+    assert_eq!(plain[1], 0x01, "one ptx");
+    assert_eq!(plain[2], 0x01, "pending_tx version 1");
+    assert_eq!(plain[3], 0x02, "tx version 2 (ringct)");
+
+    // The fee for this fixture (from the parse test): 44,380,000.
+    let fee: u64 = 44_380_000;
+    let fee_le = fee.to_le_bytes();
+    let mut pat = [0u8; 16];
+    pat[8..16].copy_from_slice(&fee_le);
+    let pos = plain[3..]
+        .windows(16)
+        .position(|w| w == pat)
+        .expect("dust(0)+fee pattern after the tx")
+        + 3;
+    let tx = &plain[3..pos];
+    println!("raw tx: {} bytes", tx.len());
+    // Cross-check against the host-side measurement of the same tx shape.
+    if tx.len() != 2219 {
+        println!("NOTE: length {} != host-measured 2219", tx.len());
+    }
+    let out =
+        std::env::var("P64_TX_OUT").unwrap_or_else(|_| "/tmp/p64_tx_from_device.bin".to_string());
+    std::fs::write(&out, tx).expect("write raw tx");
+    use shlosilo::encoding::sha256;
+    let d = sha256::hash(tx).expect("sha256");
+    println!("raw tx sha256: {}", hex(&d));
+    println!("wrote {out}");
+}
+
 /// Host signing + timing on the 2-input fixture (vs the 1-input baseline).
 #[test]
 #[ignore = "needs spend+view env keys; signs the real-funds fixture (host timing run)"]
