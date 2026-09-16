@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Flash a UF2 over BOOTSEL and capture the console (parameterise UF2 path as needed).
 # (archived 2026-09-15 from the working /tmp scripts; paths inside may need review)
-"""Flash the pico2 (BOOTSEL) with the BP5-PROBE image and capture the console.
+"""Flash the pico2 (BOOTSEL) with the given UF2 image and capture the console.
 
 Audit #17 bench re-run: same flow as /tmp/pico2-flash-capture.py, but the
 UF2 is a stable copy (/tmp/shlosilo-pico2-check.uf2, sha
@@ -22,7 +22,9 @@ import sys
 import time
 import tty
 
-UF2 = "/tmp/shlosilo-pico2-check.uf2"
+# UF2 to flash: pass as argv[1] (a stable copy - the shared cargo
+# target path gets re-pointed by the next flavor build).
+UF2 = sys.argv[1] if len(sys.argv) > 1 else "/tmp/shlosilo-pico2-check.uf2"
 MSC = "/media/komo/RP2350"
 DEV = "/dev/ttyACM0"
 LOG = "/tmp/pico2-flash-check.log"
