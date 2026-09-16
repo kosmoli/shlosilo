@@ -45,11 +45,12 @@ pub struct Point {
 
 pub struct Cst816 {
     i2c: TouchI2c,
+    freq: u32,
 }
 
 impl Cst816 {
     pub fn new(i2c: TouchI2c) -> Self {
-        Self { i2c }
+        Self { i2c, freq: 400_000 }
     }
 
     fn read_reg(&mut self, reg: u8) -> Result<u8, I2cError> {
@@ -95,5 +96,61 @@ impl Cst816 {
             x,
             y,
         })
+    }
+
+    // ---- diagnostics (bring-up; see the `i2c` console command) ----
+
+    /// One electrical probe: write the register pointer 0 to `addr`; Ok
+    /// means the device ACKed its address.
+    pub fn probe_addr(&mut self, addr: u8) -> bool {
+        self.i2c.blocking_write(addr, &[0x00]).is_ok()
+    }
+
+    /// Raw register read at an arbitrary address.
+    pub fn read_reg_at(&mut self, addr: u8, reg: u8) -> Result<u8, I2cError> {
+        let mut b = [0u8; 1];
+        self.i2c.blocking_write_read(addr, &[reg], &mut b)?;
+        Ok(b[0])
+    }
+
+    /// Change the bus frequency (recreates the driver at the new speed).
+    pub fn set_frequency(&mut self, freq: u32) {
+        self.freq = freq;
+        self.rebuild();
+    }
+
+    /// Current bus frequency (Hz).
+    pub fn frequency(&self) -> u32 {
+        self.freq
+    }
+
+    /// Recreate the I2C driver at the stored frequency. Used after a probe
+    /// that repurposed the pins, and by `set_frequency`.
+    ///
+    /// SAFETY: the peripheral and both pins belong to this driver; a fresh
+    /// `Peripherals::steal()` handle is legitimate as long as only one live
+    /// driver exists, which the assignment below guarantees (the old driver
+    /// has no hardware side effects on drop - the new construction simply
+    /// re-applies the configuration).
+    pub fn rebuild(&mut self) {
+        let mut cfg = i2c_config();
+        cfg.frequency = self.freq;
+        let p = unsafe { embassy_rp::Peripherals::steal() };
+        self.i2c = I2c::new_blocking(p.I2C1, p.PIN_27, p.PIN_26, cfg);
+    }
+
+    /// Read SDA/SCL as plain inputs (internal pull-ups on), then restore
+    /// the bus. Both high = healthy idle; a stuck LOW line means a short,
+    /// a dead device holding the bus, or missing pull-ups against a driven
+    /// line. Returns (sda_high, scl_high).
+    pub fn read_line_levels(&mut self) -> (bool, bool) {
+        let p = unsafe { embassy_rp::Peripherals::steal() };
+        let sda = embassy_rp::gpio::Input::new(p.PIN_26, embassy_rp::gpio::Pull::Up);
+        let scl = embassy_rp::gpio::Input::new(p.PIN_27, embassy_rp::gpio::Pull::Up);
+        let levels = (sda.is_high(), scl.is_high());
+        drop(sda);
+        drop(scl);
+        self.rebuild(); // put the pins back on the I2C function
+        levels
     }
 }

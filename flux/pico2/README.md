@@ -78,6 +78,11 @@ audit #17) - production builds compile them out:
 - `touch [n]` — sample the CST816D (n ≤ 8, 100 ms apart): finger count,
   gesture, raw (x, y); coordinates are untransformed until the mapping is
   settled on hardware
+- `i2c freq <khz>` | `i2c scan` | `i2c scan0` | `i2c rd <addr> <reg>` |
+  `i2c lines` — bus bring-up diagnostics: change the touch bus speed,
+  scan I2C1 (GP26/27) or I2C0 (GP28/29, the camera SCCB pins) for ACKing
+  addresses, read a register at any address, and read the idle line
+  levels as GPIO (pull-up)
 - `heap [reset]` — allocator used/free/peak; `reset` re-arms the peak
   watermark for measuring one operation
 - `entropy <hex>` *(bench)* — set the session mnemonic from test-vector

@@ -217,6 +217,7 @@ impl ConsoleState {
             b"panel" => self.cmd_panel(),
             b"lcd" => self.cmd_lcd(args),
             b"touch" => self.cmd_touch(args),
+            b"i2c" => self.cmd_i2c(args),
             b"heap" => self.cmd_heap(args),
             #[cfg(feature = "bench")]
             b"entropy" => self.cmd_entropy(args),
@@ -274,6 +275,9 @@ impl ConsoleState {
         );
         log::info!("[help]   lcd pattern|fill <hex565>|bl <0|1>   ST7789V2 panel ops");
         log::info!("[help]   touch [n]       CST816D samples (raw x/y; n<=8, 100 ms apart)");
+        log::info!(
+            "[help]   i2c freq <khz> | scan | scan0 | rd <a> <r> | lines  (bus diagnostics)"
+        );
         log::info!("[help]   heap [reset]    allocator used/free/peak (reset re-arms peak)");
         #[cfg(feature = "bench")]
         log::info!("[help]   entropy <hex>   set session mnemonic from test-vector entropy");
@@ -405,6 +409,105 @@ impl ConsoleState {
                 }
             }
             _ => log::info!("[err] lcd: usage: lcd pattern | lcd fill <hex565> | lcd bl <0|1>"),
+        }
+    }
+
+    /// `i2c ...`: bus diagnostics for the panel bring-up.
+    ///   `i2c freq <khz>`           set the touch bus frequency
+    ///   `i2c scan`                 scan I2C1 (GP26/27) 0x08..0x77
+    ///   `i2c scan0`                scan I2C0 (GP28/29, the camera SCCB pins)
+    ///   `i2c rd <addr> <reg>`      raw register read on I2C1
+    ///   `i2c lines`                read SDA/SCL idle levels as GPIO
+    fn cmd_i2c(&self, args: &[u8]) {
+        let (sub, rest) = split_first_word(args);
+        match sub {
+            b"freq" => {
+                let khz = core::str::from_utf8(trim_ascii(rest))
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok());
+                match khz {
+                    Some(k) if (10..=1000).contains(&k) => {
+                        match crate::panel::with_panel(|p| p.touch.set_frequency(k * 1000)) {
+                            Some(()) => log::info!("[i2c] bus1 frequency = {k} kHz"),
+                            None => log::info!("[err] i2c: panel not installed"),
+                        }
+                    }
+                    _ => log::info!("[err] i2c: usage: i2c freq <khz> (10..=1000)"),
+                }
+            }
+            b"scan" => match crate::panel::with_panel(|p| {
+                let mut n = 0u32;
+                for addr in 0x08u8..=0x77 {
+                    if p.touch.probe_addr(addr) {
+                        n += 1;
+                        log::info!("[i2c] bus1 ACK 0x{addr:02x}");
+                    }
+                }
+                // Explicit verdicts for the known touch-controller candidates.
+                for (addr, name) in [(0x15u8, "CST816D"), (0x2E, "CST816S"), (0x38, "FT6236")] {
+                    let ok = p.touch.probe_addr(addr);
+                    log::info!(
+                        "[i2c] candidate {name} 0x{addr:02x}: {}",
+                        if ok { "ACK" } else { "NACK" }
+                    );
+                }
+                n
+            }) {
+                Some(n) => log::info!(
+                    "[i2c] bus1 scan done: {n} device(s), {} kHz",
+                    crate::panel::with_panel(|p| p.touch.frequency()).unwrap_or(0) / 1000
+                ),
+                None => log::info!("[err] i2c: panel not installed"),
+            },
+            b"scan0" => {
+                // The camera SCCB pins (GP28/29) are unowned at runtime, so a
+                // fresh handled set is legitimate; the bus is built for this
+                // scan only and dropped afterwards.
+                let p = unsafe { embassy_rp::Peripherals::steal() };
+                let mut cfg = embassy_rp::i2c::Config::default();
+                cfg.frequency = 100_000;
+                let mut bus = embassy_rp::i2c::I2c::new_blocking(p.I2C0, p.PIN_29, p.PIN_28, cfg);
+                let mut n = 0u32;
+                for addr in 0x08u8..=0x77 {
+                    if bus.blocking_write(addr, &[0x00]).is_ok() {
+                        n += 1;
+                        log::info!("[i2c] bus0 ACK 0x{addr:02x}");
+                    }
+                }
+                log::info!("[i2c] bus0 scan done: {n} device(s), 100 kHz");
+            }
+            b"rd" => {
+                let mut w = rest
+                    .split(|b: &u8| b.is_ascii_whitespace())
+                    .filter(|w| !w.is_empty());
+                let addr = w.next().and_then(parse_hex_u8);
+                let reg = w.next().and_then(parse_hex_u8);
+                match (addr, reg) {
+                    (Some(addr), Some(reg)) => {
+                        match crate::panel::with_panel(|p| p.touch.read_reg_at(addr, reg)) {
+                            Some(Ok(v)) => {
+                                log::info!("[i2c] rd 0x{addr:02x}[0x{reg:02x}] = 0x{v:02x}")
+                            }
+                            Some(Err(e)) => {
+                                log::info!("[i2c] rd 0x{addr:02x}[0x{reg:02x}] failed: {e:?}")
+                            }
+                            None => log::info!("[err] i2c: panel not installed"),
+                        }
+                    }
+                    _ => log::info!("[err] i2c: usage: i2c rd <addr_hex> <reg_hex>"),
+                }
+            }
+            b"lines" => match crate::panel::with_panel(|p| p.touch.read_line_levels()) {
+                Some((sda, scl)) => log::info!(
+                    "[i2c] bus1 idle levels (pull-up): SDA={} SCL={}",
+                    if sda { "high" } else { "LOW" },
+                    if scl { "high" } else { "LOW" }
+                ),
+                None => log::info!("[err] i2c: panel not installed"),
+            },
+            _ => log::info!(
+                "[err] i2c: usage: i2c freq <khz> | i2c scan | i2c scan0 | i2c rd <addr> <reg> | i2c lines"
+            ),
         }
     }
 
@@ -2007,7 +2110,7 @@ fn split_first_word(line: &[u8]) -> (&[u8], &[u8]) {
 /// Parse 1..=4 hex chars into a u16 (`lcd fill` colour entry). Not
 /// bench-gated: the panel commands are part of the base surface.
 fn parse_hex_u16(s: &[u8]) -> Option<u16> {
-    let s = trim_ascii(s);
+    let s = strip_0x(trim_ascii(s));
     if s.is_empty() || s.len() > 4 {
         return None;
     }
@@ -2022,6 +2125,34 @@ fn parse_hex_u16(s: &[u8]) -> Option<u16> {
         v = (v << 4) | u16::from(d);
     }
     Some(v)
+}
+
+/// Parse 1..=2 hex chars into a u8, with an optional 0x prefix (`i2c rd`).
+fn parse_hex_u8(s: &[u8]) -> Option<u8> {
+    let s = strip_0x(trim_ascii(s));
+    if s.is_empty() || s.len() > 2 {
+        return None;
+    }
+    let mut v: u8 = 0;
+    for &b in s {
+        let d = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => return None,
+        };
+        v = (v << 4) | d;
+    }
+    Some(v)
+}
+
+/// Drop a leading `0x`/`0X` from a trimmed byte string.
+fn strip_0x(s: &[u8]) -> &[u8] {
+    if s.len() >= 2 && s[0] == b'0' && (s[1] == b'x' || s[1] == b'X') {
+        &s[2..]
+    } else {
+        s
+    }
 }
 
 /// Parse the `seq-count` segment of a multipart frame URI
