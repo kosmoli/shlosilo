@@ -308,7 +308,7 @@ pub fn init() {
                 // The rendered panic message (e.g. "memory allocation of
                 // 2097152 bytes failed") - the payload a format-args panic
                 // would otherwise lose.
-                let msg = unsafe { &*(ptr::addr_of!(MSG_BUF) as *const [u8; 160]) };
+                let msg = unsafe { &*ptr::addr_of!(MSG_BUF) };
                 let n = (rec.m as usize).min(160);
                 push_fmt(&mut out, &mut pos, format_args!(": "));
                 if let Ok(s) = core::str::from_utf8(&msg[..n]) {

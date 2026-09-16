@@ -277,7 +277,7 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
                 }
             }
         }
-        let uri_slice = checked_slice(uri as *const u8, len, 4096, false)
+        let uri_slice = checked_slice(uri.cast::<u8>(), len, 4096, false)
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         let uri_str = core::str::from_utf8(uri_slice)
             .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -656,7 +656,7 @@ pub mod r3 {
                     }
                 }
             }
-            let tslice = checked_slice(type_name as *const u8, tlen, 64, false)?;
+            let tslice = checked_slice(type_name.cast::<u8>(), tlen, 64, false)?;
             let tname = core::str::from_utf8(tslice).ok()?;
             // P0-02 #2: payload is required — null is always rejected (even (NULL,0) is not allowed; encoding an empty payload is meaningless)
             let pslice = required_bytes_in(
@@ -817,7 +817,7 @@ pub mod r3 {
                 }
             }
             let fslice = checked_slice(
-                frame as *const u8,
+                frame.cast::<u8>(),
                 flen,
                 crate::ur::ur_multipart::MULTIPART_FRAME_MAX_LEN,
                 false,
@@ -1034,7 +1034,7 @@ pub mod r3 {
                 }
             }
             let t_slice =
-                checked_slice(type_name as *const u8, tlen, 64, false).ok_or_else(err_type_name)?;
+                checked_slice(type_name.cast::<u8>(), tlen, 64, false).ok_or_else(err_type_name)?;
             let t_str = core::str::from_utf8(t_slice)
                 .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
             let tag = crate::ur::ur_encode::UrTypeTag::from_name(t_str);
