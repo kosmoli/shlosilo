@@ -75,9 +75,9 @@ audit #17) - production builds compile them out:
   redrawn before the command returns)
 - `lcd pattern` | `lcd fill <hex565>` | `lcd bl <0|1>` — ST7789V2 ops:
   redraw the pattern, fill a colour, switch the backlight
-- `touch [n]` — sample the CST816D (n ≤ 8, 100 ms apart): finger count,
-  gesture, raw (x, y); coordinates are untransformed until the mapping is
-  settled on hardware
+- `touch [n]` — sample the fitted touch controller (n ≤ 8, 100 ms
+  apart): finger count, gesture, raw register values AND the calibrated
+  screen coordinates
 - `i2c freq <khz>` | `i2c scan` | `i2c scan0` | `i2c rd <addr> <reg>` |
   `i2c lines` | `i2c pulldown` | `i2c id <addr>` | `i2c wr <addr> <b0>…` |
   `i2c rstprobe <addr>` — bus bring-up diagnostics: change the touch bus
@@ -91,6 +91,11 @@ audit #17) - production builds compile them out:
 - `touchint [ms]` — monitor the touch controller's INT line (GP17) for
   edge activity during a window (default 15 s): an independent liveness
   proof that does not depend on the I2C path
+- `touchdraw [secs]` — visual mapping check: dark screen + four corner
+  reference blocks, then a green trail painted at the calibrated
+  position of the touch point (default 60 s). The trail must track the
+  finger; a rotated or mirrored trail means the calibration constants
+  in `touch.rs` are wrong
 - `bbscan` | `bbid` | `bbrd` | `bbwr` | `bbinit` | `bbtrace` — the
   bit-banged I2C fallback/forensics path on the same GP26/27 pins: raw
   GPIO toggling with no I2C peripheral and no driver in the loop, plus
@@ -170,6 +175,14 @@ out to be the Sitronix-family unlock + gamma chain the ST7796S accepts
 (the same sequence the vendor ships, at a different resolution). The SPI
 clock starts conservative (50 MHz) and can be raised once the rig is
 confirmed.
+
+**Touch calibration (2026-09-16, on hardware)**: the digitizer's raw
+space is rotated 90° relative to the display — screen x follows raw y
+(increasing) and screen y follows raw x (decreasing), with non-uniform
+scales. Coefficients in `touch.rs` (`to_screen`) were least-squares
+fitted over five ground-truth touches (four corner blocks + centre);
+max residual ~14 px, inside finger-tip precision. `touchdraw` is the
+visual check; recalibrate there if the trail ever drifts.
 
 **How the chip identity was established** (the vendor example's CST816D
 recipe NACKed on every access): bit-banged I2C scanning (`bbscan`, see

@@ -80,8 +80,34 @@ impl Chip {
     }
 }
 
-/// One sampled point: raw values, no coordinate transform (the screen
-/// mapping is settled on hardware during the bring-up).
+/// Raw-to-screen mapping for the fitted panel (FT6236, 320x480).
+///
+/// The digitizer's raw space is rotated 90 degrees relative to the
+/// display: screen x follows raw y (increasing) and screen y follows raw
+/// x (decreasing), with non-uniform scales. Coefficients were fitted by
+/// least squares over five ground-truth touches (the four corner blocks
+/// plus the screen centre, 2026-09-16 calibration run); max residual
+/// ~14 px, i.e. inside finger-tip precision. Integer milli-units keep the
+/// maths float-free (and cheap on the M33).
+///
+///   screen_x = (727 * raw_y - 13390) / 1000
+///   screen_y = (-1829 * raw_x + 524182) / 1000
+const CAL_SX_A: i32 = 727;
+const CAL_SX_B: i32 = -13390;
+const CAL_SY_A: i32 = -1829;
+const CAL_SY_B: i32 = 524182;
+
+/// Map a raw touch sample onto screen pixels (clamped to the panel).
+pub fn to_screen(raw_x: u16, raw_y: u16) -> (u16, u16) {
+    let sx = (CAL_SX_A * i32::from(raw_y) + CAL_SX_B) / 1000;
+    let sy = (CAL_SY_A * i32::from(raw_x) + CAL_SY_B) / 1000;
+    (
+        sx.clamp(0, crate::lcd::WIDTH as i32 - 1) as u16,
+        sy.clamp(0, crate::lcd::HEIGHT as i32 - 1) as u16,
+    )
+}
+
+/// One sampled point: raw values, no coordinate transform.
 pub struct Point {
     /// Contact count.
     pub fingers: u8,

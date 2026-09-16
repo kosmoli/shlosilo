@@ -218,6 +218,7 @@ impl ConsoleState {
             b"lcd" => self.cmd_lcd(args),
             b"touch" => self.cmd_touch(args),
             b"touchint" => return Some(parse_touchint(args)),
+            b"touchdraw" => return Some(parse_touchdraw(args)),
             b"i2c" => self.cmd_i2c(args),
             b"bbscan" => self.cmd_bbscan(args),
             b"bbid" => self.cmd_bbid(args),
@@ -286,6 +287,9 @@ impl ConsoleState {
         log::info!("[help]        | lines | pulldown | recover | rstprobe <a>  (bus diagnostics)");
         log::info!(
             "[help]   touchint [ms]   monitor TP_INT (GP17) for edge activity (touch the panel)"
+        );
+        log::info!(
+            "[help]   touchdraw [secs]  paint a trail at the mapped touch position (drag finger)"
         );
         log::info!("[help]   bbscan|bbid|bbrd|bbwr|bbinit|bbtrace  bit-banged I2C on GP26/27");
         log::info!("[help]                   (swap, d=<cycles>, numbers hex; bring-up forensics)");
@@ -894,8 +898,8 @@ impl ConsoleState {
     }
 
     /// `touch [n]`: sample the fitted touch controller, n max 8,
-    /// 100 ms apart; raw coordinates (the axis mapping is settled on
-    /// hardware).
+    /// 100 ms apart; prints raw register values and the calibrated
+    /// screen coordinates.
     fn cmd_touch(&self, args: &[u8]) {
         let a = trim_ascii(args);
         let n = if a.is_empty() {
@@ -915,13 +919,18 @@ impl ConsoleState {
         let r = crate::panel::with_panel(|p| {
             for i in 0..n {
                 match p.touch.read_point() {
-                    Ok(pt) => log::info!(
-                        "[touch] #{i} fingers={} gesture=0x{:02x} raw=({}, {})",
-                        pt.fingers,
-                        pt.gesture,
-                        pt.x,
-                        pt.y
-                    ),
+                    Ok(pt) => {
+                        let (sx, sy) = crate::touch::to_screen(pt.x, pt.y);
+                        log::info!(
+                            "[touch] #{i} fingers={} gesture=0x{:02x} raw=({}, {}) screen=({}, {})",
+                            pt.fingers,
+                            pt.gesture,
+                            pt.x,
+                            pt.y,
+                            sx,
+                            sy
+                        )
+                    }
                     Err(e) => {
                         log::info!("[touch] #{i} i2c error: {e:?}");
                         break;
@@ -1546,6 +1555,9 @@ enum JobMode {
     /// Monitor the touch INT line (GP17) for edge activity during a
     /// bring-up window - independent liveness proof for the controller.
     TouchInt,
+    /// Visual touch-mapping check: paint a trail at the calibrated touch
+    /// position while the finger moves.
+    TouchDraw,
     /// Sign the pending XMR request (TRNG entropy + the full signing path).
     SignXmr,
     /// Verify the PSRAM memory-mapped data path; map the heap on success.
@@ -1633,6 +1645,22 @@ fn parse_touchint(args: &[u8]) -> TrngJob {
     job
 }
 
+/// `touchdraw [secs]`: visual touch-mapping check. Fills the screen dark,
+/// draws the four corner reference blocks, then paints a green trail at
+/// the calibrated screen position of the touch point for the duration
+/// (default 60 s, cap 120 s). The trail should track the finger; a
+/// rotated or mirrored trail means the calibration in touch.rs is wrong.
+fn parse_touchdraw(args: &[u8]) -> TrngJob {
+    let secs = core::str::from_utf8(trim_ascii(args))
+        .unwrap_or("")
+        .parse::<u32>()
+        .unwrap_or(60)
+        .clamp(5, 120);
+    let mut job = TrngJob::simple(JobMode::TouchDraw);
+    job.arg = secs;
+    job
+}
+
 /// Parse `trngprobe [ms]` (default 60 ms): cold-start the block and trace
 /// every BUSY/ISR transition.
 #[cfg(feature = "bench")]
@@ -1708,6 +1736,7 @@ async fn run_trng_job(job: TrngJob) {
         #[cfg(feature = "bench")]
         JobMode::CheckCapture => run_trngcheck(job).await,
         JobMode::TouchInt => run_touchint(job.arg).await,
+        JobMode::TouchDraw => run_touchdraw(job.arg).await,
         JobMode::SignXmr => run_sign_xmr().await,
         JobMode::PsramTest => run_psram_test().await,
     }
@@ -1972,6 +2001,52 @@ fn probe_alloc(size: usize, align: usize) {
         if ok { "ok" } else { "MISMATCH" }
     );
     unsafe { alloc::alloc::dealloc(p, layout) };
+}
+
+/// Touch-trail painter: every 40 ms, read the touch controller, convert to
+/// screen coordinates, and (when a finger is down) paint a 3x3 dot at that
+/// position. Old dots are left in place - the accumulating trail makes the
+/// mapping visually checkable at a glance. Runs as a deferred job; the
+/// periodic Timer await keeps the USB console and heartbeats responsive.
+async fn run_touchdraw(secs: u32) {
+    // Prep: dark background + the four corner blocks for reference.
+    crate::panel::with_panel(|p| {
+        p.lcd.fill(0x1082); // near-black
+        let s = 16u16;
+        let w = crate::lcd::WIDTH;
+        let h = crate::lcd::HEIGHT;
+        for (x, y) in [
+            (2, 2),
+            (w - s - 2, 2),
+            (2, h - s - 2),
+            (w - s - 2, h - s - 2),
+        ] {
+            p.lcd.fill_rect(x, y, s, s, 0xFFFF);
+        }
+    });
+    log::info!("[tdraw] {secs}s: drag a finger on the screen; dots should track it exactly");
+    let t0 = Instant::now();
+    let mut dots: u32 = 0;
+    let mut last: Option<(u16, u16)> = None;
+    while (Instant::now() - t0).as_secs() < u64::from(secs) {
+        let pt = crate::panel::with_panel(|p| p.touch.read_point());
+        if let Some(Ok(pt)) = pt
+            && pt.fingers > 0
+        {
+            let (sx, sy) = crate::touch::to_screen(pt.x, pt.y);
+            // Skip duplicate positions (finger resting).
+            if last != Some((sx, sy)) {
+                crate::panel::with_panel(|p| {
+                    p.lcd
+                        .fill_rect(sx.saturating_sub(1), sy.saturating_sub(1), 3, 3, 0x07E0);
+                });
+                last = Some((sx, sy));
+                dots += 1;
+            }
+        }
+        Timer::after_millis(40).await;
+    }
+    log::info!("[tdraw] done: {dots} dot(s) painted");
 }
 
 /// Monitor the touch INT line (GP17) for edge activity. Tight polling with
