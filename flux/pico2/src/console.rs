@@ -220,6 +220,7 @@ impl ConsoleState {
             b"touchint" => return Some(parse_touchint(args)),
             b"touchdraw" => return Some(parse_touchdraw(args)),
             b"sd" => self.cmd_sd(args),
+            b"ui" => return self.cmd_ui(args),
             b"i2c" => self.cmd_i2c(args),
             b"bbscan" => self.cmd_bbscan(args),
             b"bbid" => self.cmd_bbid(args),
@@ -293,6 +294,7 @@ impl ConsoleState {
             "[help]   touchdraw [secs]  paint a trail at the mapped touch position (drag finger)"
         );
         log::info!("[help]   sd probe | sd read <blk>  TF-slot SD card (SPI0, read-only probe)");
+        log::info!("[help]   ui draw <welcome|detail|qr> | ui run [secs] | ui qr <text>");
         log::info!("[help]   bbscan|bbid|bbrd|bbwr|bbinit|bbtrace  bit-banged I2C on GP26/27");
         log::info!("[help]                   (swap, d=<cycles>, numbers hex; bring-up forensics)");
         log::info!("[help]   heap [reset]    allocator used/free/peak (reset re-arms peak)");
@@ -897,6 +899,54 @@ impl ConsoleState {
         if r.is_none() {
             log::info!("[err] bb: panel not installed");
         }
+    }
+
+    /// `ui draw <welcome|detail|qr>` | `ui run [secs]` | `ui qr <text>`:
+    /// the mono UI (1bpp canvas + 8x16 ASCII text + QR + O/X zones).
+    /// `draw` renders one page statically, `run` starts the interactive
+    /// demo (touch-driven page switching, bounded window), `qr` renders
+    /// an arbitrary string as a QR page.
+    fn cmd_ui(&self, args: &[u8]) -> Option<TrngJob> {
+        let (sub, rest) = split_first_word(args);
+        match sub {
+            b"draw" => {
+                let name = trim_ascii(rest);
+                let page = match name {
+                    b"" | b"welcome" => crate::ui::Page::Welcome,
+                    b"detail" => crate::ui::Page::Detail,
+                    b"qr" => crate::ui::Page::Qr,
+                    _ => {
+                        log::info!("[err] ui: usage: ui draw <welcome|detail|qr>");
+                        return None;
+                    }
+                };
+                match crate::ui::show(page, None) {
+                    Ok(()) => log::info!("[ui] page drawn"),
+                    Err(()) => log::info!("[err] ui: QR encode failed"),
+                }
+            }
+            b"run" => return Some(parse_ui_run(rest)),
+            b"qr" => {
+                let s = match core::str::from_utf8(trim_ascii(rest)) {
+                    Ok(s) if !s.is_empty() => s,
+                    _ => {
+                        log::info!("[err] ui: usage: ui qr <text>");
+                        return None;
+                    }
+                };
+                // The text lives in the console line buffer; copy to a
+                // static so the job can use it after this call returns.
+                let n = s.len().min(QR_TEXT_MAX);
+                let slot = unsafe { &mut *core::ptr::addr_of_mut!(QR_TEXT) };
+                slot[..n].copy_from_slice(&s.as_bytes()[..n]);
+                QR_TEXT_LEN.store(n, core::sync::atomic::Ordering::Relaxed);
+                return Some(TrngJob::simple(JobMode::UiQr));
+            }
+            _ => log::info!(
+                "[err] ui: usage: ui draw <welcome|detail|qr> | ui run [secs] | ui qr <text>"
+            ),
+        }
+        None
     }
 
     /// `sd probe` | `sd read <block_hex>`: the board's TF slot on SPI0
@@ -1557,6 +1607,16 @@ impl ConsoleState {
 static CONSOLE: Mutex<CriticalSectionRawMutex, RefCell<ConsoleState>> =
     Mutex::new(RefCell::new(ConsoleState::new()));
 
+/// Maximum length of the `ui qr` payload (QR version-40 byte capacity is
+/// 2953 at ECC-L; leave headroom).
+const QR_TEXT_MAX: usize = 2048;
+
+/// `ui qr <text>` staging: the console line buffer is transient, so the
+/// payload is copied here for the deferred job. Single consumer (console
+/// jobs are serialized).
+static mut QR_TEXT: [u8; QR_TEXT_MAX] = [0u8; QR_TEXT_MAX];
+static QR_TEXT_LEN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 /// The USB receive handler: assembles lines and drives the command channel.
 pub struct CommandHandler;
 
@@ -1646,6 +1706,10 @@ enum JobMode {
     /// Visual touch-mapping check: paint a trail at the calibrated touch
     /// position while the finger moves.
     TouchDraw,
+    /// Interactive mono-UI demo (pages + O/X zones) for `secs`.
+    UiRun,
+    /// Render the staged `ui qr <text>` payload as a QR page.
+    UiQr,
     /// Sign the pending XMR request (TRNG entropy + the full signing path).
     SignXmr,
     /// Verify the PSRAM memory-mapped data path; map the heap on success.
@@ -1731,6 +1795,23 @@ fn parse_touchint(args: &[u8]) -> TrngJob {
     let mut job = TrngJob::simple(JobMode::TouchInt);
     job.arg = ms;
     job
+}
+
+/// `ui run [secs]`: interactive mono-UI demo (deferred job).
+fn parse_ui_run(args: &[u8]) -> TrngJob {
+    let secs = core::str::from_utf8(trim_ascii(args))
+        .unwrap_or("")
+        .parse::<u32>()
+        .unwrap_or(120)
+        .clamp(5, 600);
+    let mut job = TrngJob::simple(JobMode::UiRun);
+    job.arg = secs;
+    job
+}
+
+/// Interactive UI job wrapper (see `ui::run`).
+async fn run_ui(secs: u32) {
+    crate::ui::run(secs).await;
 }
 
 /// `touchdraw [secs]`: visual touch-mapping check. Fills the screen dark,
@@ -1825,6 +1906,16 @@ async fn run_trng_job(job: TrngJob) {
         JobMode::CheckCapture => run_trngcheck(job).await,
         JobMode::TouchInt => run_touchint(job.arg).await,
         JobMode::TouchDraw => run_touchdraw(job.arg).await,
+        JobMode::UiRun => run_ui(job.arg).await,
+        JobMode::UiQr => {
+            let n = QR_TEXT_LEN.load(core::sync::atomic::Ordering::Relaxed);
+            let slot = unsafe { &*core::ptr::addr_of!(QR_TEXT) };
+            let text = core::str::from_utf8(&slot[..n]).unwrap_or("");
+            match crate::ui::show(crate::ui::Page::Qr, Some(text)) {
+                Ok(()) => log::info!("[ui] qr drawn ({n} bytes)"),
+                Err(()) => log::info!("[err] ui: QR encode failed (payload too long?)"),
+            }
+        }
         JobMode::SignXmr => run_sign_xmr().await,
         JobMode::PsramTest => run_psram_test().await,
     }

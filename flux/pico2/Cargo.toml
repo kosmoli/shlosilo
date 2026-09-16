@@ -29,6 +29,9 @@ log = "0.4"
 # (see the bp5 attribution). Inactive unless the feature is on.
 curve25519-dalek = { version = "4", default-features = false, optional = true }
 
+# QR encoder for the UI (Nayuki's library, no-heap fork, MIT, no_std).
+qrcodegen-no-heap = "1.8.1"
+
 # runtime glue
 embedded-alloc = "0.7"
 # panic-probe removed: fault.rs owns the panic + hard-fault handlers so

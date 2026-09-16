@@ -135,6 +135,41 @@ impl St7796 {
         self.fill_rect(0, 0, WIDTH, HEIGHT, color);
     }
 
+    /// Blit a 1bpp framebuffer to the full panel: row-major, MSB = leftmost
+    /// pixel, `stride` bytes per row, `rows` rows of `w` pixels. Set bits
+    /// render as `on` (RGB565), clear bits as black. Rows are expanded to
+    /// RGB565 in a stack buffer and streamed; a full 320x480 frame is
+    /// ~307 KB of SPI traffic (~50 ms at 50 MHz).
+    pub fn blit_1bpp(&mut self, fb: &[u8], stride: usize, rows: usize, w: usize, on: u16) {
+        debug_assert!(stride * 8 >= w);
+        self.begin_frame(0, 0, (w - 1) as u16, (rows - 1) as u16);
+        let hi = (on >> 8) as u8;
+        let lo = on as u8;
+        const MAX_W: usize = 320;
+        let mut row_buf = [0u8; MAX_W * 2];
+        for y in 0..rows {
+            let src = &fb[y * stride..y * stride + stride];
+            for (i, &byte) in src.iter().enumerate() {
+                for bit in 0..8usize {
+                    let px_idx = i * 8 + bit;
+                    if px_idx >= w {
+                        break;
+                    }
+                    let o = px_idx * 2;
+                    if byte & (0x80 >> bit) != 0 {
+                        row_buf[o] = hi;
+                        row_buf[o + 1] = lo;
+                    } else {
+                        row_buf[o] = 0;
+                        row_buf[o + 1] = 0;
+                    }
+                }
+            }
+            let _ = self.spi.blocking_write(&row_buf[..w * 2]);
+        }
+        self.cs.set_high();
+    }
+
     /// Bring-up pattern: four horizontal bands (red/green/blue/white,
     /// top to bottom) plus a black marker block in ALL FOUR corners.
     /// Band order verifies the scan direction, hue verifies RGB/BGR,

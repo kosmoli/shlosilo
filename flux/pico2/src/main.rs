@@ -18,6 +18,7 @@
 mod bitbang;
 mod console;
 mod fault;
+mod font;
 mod lcd;
 mod panel;
 #[cfg(feature = "perf-timing")]
@@ -26,6 +27,7 @@ mod sd;
 mod sign_smoke;
 mod touch;
 mod trng;
+mod ui;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::MaybeUninit;
