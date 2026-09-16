@@ -17,9 +17,12 @@
 
 mod console;
 mod fault;
+mod lcd;
+mod panel;
 #[cfg(feature = "perf-timing")]
 mod perf_timing;
 mod sign_smoke;
+mod touch;
 mod trng;
 
 use core::alloc::{GlobalAlloc, Layout};
@@ -562,6 +565,12 @@ async fn console_report_task() {
             psram_status_line(&mut w);
             log::info!("{}", w.as_str());
         }
+        {
+            let mut buf = [0u8; 128];
+            let mut w = sign_smoke::BufWriter::new(&mut buf);
+            panel::status_line(&mut w);
+            log::info!("{}", w.as_str());
+        }
         if let Some(line) = fault::report() {
             log::info!("{line}");
         }
@@ -692,6 +701,34 @@ async fn main(spawner: Spawner) {
         let ch = embassy_rp::adc::Channel::new_temp_sensor(p.ADC_TEMP_SENSOR);
         *cell.borrow_mut() = Some((adc, ch));
     });
+
+    // ---- panel bring-up (P0/P1): LCD + touch ----
+    // ST7789V2 on SPI1 (vendor init sequence port; see lcd.rs) and CST816D
+    // on I2C1, with one shared reset line (GP16). Boot runs the full
+    // bring-up so a fresh flash shows the test pattern with no console
+    // interaction; the `panel` command re-runs it. Pin map: the verified
+    // one in docs/pico2-hardware-pinmap.md.
+    panel::install(panel::Panel {
+        lcd: lcd::St7789::new(
+            embassy_rp::spi::Spi::new_blocking_txonly(
+                p.SPI1,
+                p.PIN_14,
+                p.PIN_15,
+                lcd::spi_config(),
+            ),
+            Output::new(p.PIN_12, Level::Low),  // D/C
+            Output::new(p.PIN_13, Level::High), // CS (idle high)
+            Output::new(p.PIN_18, Level::High), // backlight on
+        ),
+        touch: touch::Cst816::new(embassy_rp::i2c::I2c::new_blocking(
+            p.I2C1,
+            p.PIN_27, // SCL
+            p.PIN_26, // SDA
+            touch::i2c_config(),
+        )),
+        rst: Output::new(p.PIN_16, Level::High),
+    });
+    panel::reinit();
 
     let driver = Driver::new(p.USB, Irqs);
     // Each task pool holds one slot, so these first spawns cannot fail.

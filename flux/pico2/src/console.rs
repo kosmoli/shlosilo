@@ -30,7 +30,7 @@ extern crate alloc;
 use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_time::{Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, block_for};
 use embassy_usb_logger::ReceiverHandler;
 
 use shlosilo::business::sign::SignInput;
@@ -214,6 +214,9 @@ impl ConsoleState {
             b"help" => self.cmd_help(),
             b"version" => self.cmd_version(),
             b"smoke" => self.cmd_smoke(),
+            b"panel" => self.cmd_panel(),
+            b"lcd" => self.cmd_lcd(args),
+            b"touch" => self.cmd_touch(args),
             b"heap" => self.cmd_heap(args),
             #[cfg(feature = "bench")]
             b"entropy" => self.cmd_entropy(args),
@@ -266,6 +269,11 @@ impl ConsoleState {
         log::info!("[help]   help            this text");
         log::info!("[help]   version         version + C-ABI version");
         log::info!("[help]   smoke           boot signing-smoke report (also replayed every 20 s)");
+        log::info!(
+            "[help]   panel           panel bring-up: reset + touch + LCD init + test pattern"
+        );
+        log::info!("[help]   lcd pattern|fill <hex565>|bl <0|1>   ST7789V2 panel ops");
+        log::info!("[help]   touch [n]       CST816D samples (raw x/y; n<=8, 100 ms apart)");
         log::info!("[help]   heap [reset]    allocator used/free/peak (reset re-arms peak)");
         #[cfg(feature = "bench")]
         log::info!("[help]   entropy <hex>   set session mnemonic from test-vector entropy");
@@ -349,6 +357,97 @@ impl ConsoleState {
         match sign_smoke::report() {
             Some(r) => log::info!("{r}"),
             None => log::info!("[smoke] report not ready yet"),
+        }
+    }
+
+    /// `panel`: re-run the full panel bring-up (shared reset pulse, touch
+    /// probe + configure, LCD init, test pattern).
+    fn cmd_panel(&self) {
+        if !crate::panel::reinit() {
+            log::info!("[err] panel: not installed");
+        }
+    }
+
+    /// `lcd pattern` | `lcd fill <rgb565 hex>` | `lcd bl <0|1>` - bring-up
+    /// operations for the ST7789V2 panel (see flux/pico2/src/lcd.rs).
+    fn cmd_lcd(&self, args: &[u8]) {
+        let (sub, rest) = split_first_word(args);
+        if sub.is_empty() || sub == b"pattern" {
+            match crate::panel::with_panel(|p| p.lcd.test_pattern()) {
+                Some(()) => log::info!("[lcd] test pattern drawn (bands r/g/b/w + origin chip)"),
+                None => log::info!("[err] lcd: panel not installed"),
+            }
+            return;
+        }
+        match sub {
+            b"fill" => {
+                let Some(color) = parse_hex_u16(rest) else {
+                    log::info!("[err] lcd: usage: lcd fill <rgb565 hex, e.g. f800>");
+                    return;
+                };
+                match crate::panel::with_panel(|p| p.lcd.fill(color)) {
+                    Some(()) => log::info!("[lcd] filled 240x320 with 0x{color:04x}"),
+                    None => log::info!("[err] lcd: panel not installed"),
+                }
+            }
+            b"bl" => {
+                let on = match trim_ascii(rest) {
+                    b"1" | b"on" => Some(true),
+                    b"0" | b"off" => Some(false),
+                    _ => None,
+                };
+                match on {
+                    Some(on) => match crate::panel::with_panel(|p| p.lcd.backlight(on)) {
+                        Some(()) => log::info!("[lcd] backlight {}", if on { "on" } else { "off" }),
+                        None => log::info!("[err] lcd: panel not installed"),
+                    },
+                    None => log::info!("[err] lcd: usage: lcd bl <0|1>"),
+                }
+            }
+            _ => log::info!("[err] lcd: usage: lcd pattern | lcd fill <hex565> | lcd bl <0|1>"),
+        }
+    }
+
+    /// `touch [n]`: sample the CST816D, n max 8, 100 ms apart; raw
+    /// coordinates (the axis mapping is settled on hardware).
+    fn cmd_touch(&self, args: &[u8]) {
+        let a = trim_ascii(args);
+        let n = if a.is_empty() {
+            1
+        } else {
+            match core::str::from_utf8(a)
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+            {
+                Some(v) => v.clamp(1, 8),
+                None => {
+                    log::info!("[err] touch: usage: touch [n] (n <= 8)");
+                    return;
+                }
+            }
+        };
+        let r = crate::panel::with_panel(|p| {
+            for i in 0..n {
+                match p.touch.read_point() {
+                    Ok(pt) => log::info!(
+                        "[touch] #{i} fingers={} gesture=0x{:02x} raw=({}, {})",
+                        pt.fingers,
+                        pt.gesture,
+                        pt.x,
+                        pt.y
+                    ),
+                    Err(e) => {
+                        log::info!("[touch] #{i} i2c error: {e:?}");
+                        break;
+                    }
+                }
+                if i + 1 < n {
+                    block_for(Duration::from_millis(100));
+                }
+            }
+        });
+        if r.is_none() {
+            log::info!("[err] touch: panel not installed");
         }
     }
 
@@ -1903,6 +2002,26 @@ fn split_first_word(line: &[u8]) -> (&[u8], &[u8]) {
         Some(i) => (&line[..i], trim_ascii(&line[i + 1..])),
         None => (line, &[]),
     }
+}
+
+/// Parse 1..=4 hex chars into a u16 (`lcd fill` colour entry). Not
+/// bench-gated: the panel commands are part of the base surface.
+fn parse_hex_u16(s: &[u8]) -> Option<u16> {
+    let s = trim_ascii(s);
+    if s.is_empty() || s.len() > 4 {
+        return None;
+    }
+    let mut v: u16 = 0;
+    for &b in s {
+        let d = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => return None,
+        };
+        v = (v << 4) | u16::from(d);
+    }
+    Some(v)
 }
 
 /// Parse the `seq-count` segment of a multipart frame URI

@@ -70,6 +70,14 @@ audit #17) - production builds compile them out:
 - `help` — command list
 - `version` — version + C-ABI version
 - `smoke` — print the boot signing-smoke report (same as the 20 s replay)
+- `panel` — re-run the full panel bring-up (shared reset, touch probe,
+  LCD init, test pattern; the reset pulse blanks the display, which is
+  redrawn before the command returns)
+- `lcd pattern` | `lcd fill <hex565>` | `lcd bl <0|1>` — ST7789V2 ops:
+  redraw the pattern, fill a colour, switch the backlight
+- `touch [n]` — sample the CST816D (n ≤ 8, 100 ms apart): finger count,
+  gesture, raw (x, y); coordinates are untransformed until the mapping is
+  settled on hardware
 - `heap [reset]` — allocator used/free/peak; `reset` re-arms the peak
   watermark for measuring one operation
 - `entropy <hex>` *(bench)* — set the session mnemonic from test-vector
@@ -123,6 +131,26 @@ Host-side notes (Linux):
   later. The firmware now discards partial lines idle for >1 s, and the
   bench scripts additionally flush the port before their first command;
 - defmt/RTT stays attached for probe-based debugging.
+
+## Panel (LCD + touch) bring-up
+
+The 2" IPS panel (ST7789V2, 240x320, SPI1) and its capacitive touch
+(CST816D, I2C1) are wired per the verified pin map
+(`docs/pico2-hardware-pinmap.md`): SCK=GP14, MOSI=GP15 (MISO not
+connected), D/C=GP12, CS=GP13, RST=GP16 (shared with the touch
+controller), BL=GP18; touch SDA=GP26, SCL=GP27, INT=GP17 (not used yet -
+reads go over I2C). The init sequence is a port of the vendor C reference
+(`C/01-LCD/lib/LCD/LCD_2in.c`, the 0xF0 command-set unlock chain); the
+SPI clock starts conservative (50 MHz) and can be raised once the rig is
+confirmed.
+
+Boot runs the full bring-up (shared reset pulse, touch probe + configure,
+LCD init, test pattern), so a fresh flash shows the pattern with no
+console interaction: four horizontal bands (red/green/blue/white, top to
+bottom) plus a black marker chip at the top-left corner - band order
+verifies the scan direction, hue verifies RGB/BGR, and the marker
+verifies the origin corner. `lcd bl <0|1>` exists to confirm the
+backlight polarity on hardware.
 
 ## On-device signing smoke
 
@@ -315,6 +343,10 @@ the per-phase tables (tx / bp / cn) accumulated during the last sign;
 `perfbench [name] [iters]` times raw device primitives (fmul / select /
 madd / quad / chunked CT multiexp / vartime 2-term); `xmrchunk <n>` flips
 the chunk size at runtime for single-variable A/B runs.
+
+LCD + touch bring-up has landed (2026-09-16): ST7789V2 over SPI1 and
+CST816D over I2C1 with the boot test pattern; on-board verification of
+this code is the immediate next step.
 
 Next steps: QR (camera) input in place of the bench channel (the RP2350
 board now carries a touchscreen + camera), and further XMR tuning from the
