@@ -219,6 +219,12 @@ impl ConsoleState {
             b"touch" => self.cmd_touch(args),
             b"touchint" => return Some(parse_touchint(args)),
             b"i2c" => self.cmd_i2c(args),
+            b"bbscan" => self.cmd_bbscan(args),
+            b"bbid" => self.cmd_bbid(args),
+            b"bbrd" => self.cmd_bbrd(args),
+            b"bbwr" => self.cmd_bbwr(args),
+            b"bbinit" => self.cmd_bbinit(args),
+            b"bbtrace" => self.cmd_bbtrace(args),
             b"heap" => self.cmd_heap(args),
             #[cfg(feature = "bench")]
             b"entropy" => self.cmd_entropy(args),
@@ -281,6 +287,8 @@ impl ConsoleState {
         log::info!(
             "[help]   touchint [ms]   monitor TP_INT (GP17) for edge activity (touch the panel)"
         );
+        log::info!("[help]   bbscan|bbid|bbrd|bbwr|bbinit|bbtrace  bit-banged I2C on GP26/27");
+        log::info!("[help]                   (swap, d=<cycles>, numbers hex; bring-up forensics)");
         log::info!("[help]   heap [reset]    allocator used/free/peak (reset re-arms peak)");
         #[cfg(feature = "bench")]
         log::info!("[help]   entropy <hex>   set session mnemonic from test-vector entropy");
@@ -622,6 +630,218 @@ impl ConsoleState {
                 "[err] i2c: usage: i2c freq <khz> | scan | scan0 | id <a> | rd <a> <r> | wr <a> <b..> | lines | pulldown | rstprobe <a>"
             ),
         }
+    }
+
+    /// Restore I2C1 routing after a bit-bang session: the `Flex` pins
+    /// were moved to SIO, and the touch driver re-claims them here.
+    fn bb_finish(&self) {
+        crate::panel::with_panel(|p| p.touch.rebuild());
+    }
+
+    /// `bbscan [swap] [consec] [d=<cycles>]`: bit-banged scan of
+    /// 0x08..0x77 (numbers hex; `consec` = required consecutive ACKs,
+    /// default 2; `d=` = half-bit delay in CPU cycles). Reports every
+    /// address that ACKs, its consecutive run, and for addresses that
+    /// reach the bar a register-0 read. Immune to the controller-level
+    /// spurious ACKs: consecutive probes filter them out.
+    fn cmd_bbscan(&self, args: &[u8]) {
+        let a = parse_bb_args(args);
+        let consec = a.nums[0].map(|v| v.clamp(1, 5)).unwrap_or(2);
+        let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
+        let mut bb = crate::bitbang::Bb::new(a.swap, half);
+        log::info!(
+            "[bb] scan 0x08..0x77 (swap={}, half={half} cyc, {consec} consecutive ACKs required)",
+            a.swap
+        );
+        let mut found = 0u32;
+        let mut flakes = 0u32;
+        for addr in 0x08u8..=0x77 {
+            let mut acks = 0u32;
+            for _ in 0..consec {
+                if bb.probe(addr) {
+                    acks += 1;
+                } else {
+                    break;
+                }
+            }
+            if acks == consec {
+                found += 1;
+                match bb.read_reg(addr, 0x00) {
+                    Some(v) => {
+                        log::info!("[bb]  0x{addr:02x}: {acks}/{consec} ACKs, reg00=0x{v:02x}")
+                    }
+                    None => {
+                        log::info!("[bb]  0x{addr:02x}: {acks}/{consec} ACKs, reg00 read FAILED")
+                    }
+                }
+            } else if acks > 0 {
+                flakes += 1;
+                log::info!("[bb]  0x{addr:02x}: flake ({acks}/{consec})");
+            }
+        }
+        log::info!("[bb] scan done: {found} candidate(s), {flakes} flake(s)");
+        self.bb_finish();
+    }
+
+    /// `bbid [swap] [addr] [d=<cycles>]`: assess one address over
+    /// bit-bang - five probes, a wire trace of the address byte (which
+    /// bits were seen on SDA, and whether the ACK slot was pulled low),
+    /// then register reads (0xA7 chip id + 0x00..0x06 status) in both
+    /// transaction shapes.
+    fn cmd_bbid(&self, args: &[u8]) {
+        let a = parse_bb_args(args);
+        let addr = a.nums[0].map(|v| v as u8).unwrap_or(0x15);
+        let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
+        let mut bb = crate::bitbang::Bb::new(a.swap, half);
+        let mut acks = 0u32;
+        for _ in 0..5 {
+            if bb.probe(addr) {
+                acks += 1;
+            }
+        }
+        log::info!("[bb] id 0x{addr:02x}: probes 5 -> {acks} ACK");
+        let t = bb.trace_probe(addr);
+        log::info!(
+            "[bb] id 0x{addr:02x}: trace sent=0b{:08b} sampled=0b{:08b} ack_slot={}",
+            t.sent,
+            t.sampled,
+            if t.ack_low {
+                "LOW (ACK)"
+            } else {
+                "high (NACK)"
+            }
+        );
+        for reg in [0xA7u8, 0x00, 0x01, 0x02, 0x03, 0x06] {
+            match bb.read_reg(addr, reg) {
+                Some(v) => log::info!("[bb] id 0x{addr:02x}: rd {reg:#04x} = {v:#04x}"),
+                None => log::info!("[bb] id 0x{addr:02x}: rd {reg:#04x} NACK"),
+            }
+        }
+        match bb.read_reg_stop(addr, 0xA7) {
+            Some(v) => log::info!("[bb] id 0x{addr:02x}: rd 0xa7 (stop-sep) = {v:#04x}"),
+            None => log::info!("[bb] id 0x{addr:02x}: rd 0xa7 (stop-sep) NACK"),
+        }
+        self.bb_finish();
+    }
+
+    /// `bbrd [swap] <addr> <reg> [n] [d=<cycles>]`: bit-banged multi-byte
+    /// register read (repeated start), n capped at 32.
+    fn cmd_bbrd(&self, args: &[u8]) {
+        let a = parse_bb_args(args);
+        let (Some(addr), Some(reg)) = (a.nums[0], a.nums[1]) else {
+            log::info!("[err] bb: usage: bbrd [swap] <addr> <reg> [n] [d=<cycles>]  (numbers hex)");
+            return;
+        };
+        let n = a.nums[2].map(|v| v.clamp(1, 32)).unwrap_or(1) as usize;
+        let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
+        let mut bb = crate::bitbang::Bb::new(a.swap, half);
+        let mut buf = [0u8; 32];
+        if bb.read_regs(addr as u8, reg as u8, &mut buf[..n]) {
+            let mut hex = [0u8; 64];
+            let s = sign_smoke::to_hex(&buf[..n], &mut hex);
+            log::info!("[bb] rd 0x{addr:02x}[0x{reg:02x}..{n}]: {s}");
+        } else {
+            log::info!("[bb] rd 0x{addr:02x}[0x{reg:02x}]: NACK");
+        }
+        self.bb_finish();
+    }
+
+    /// `bbwr [swap] <addr> <reg> <val> [val2] [d=<cycles>]`: bit-banged
+    /// write of one or two register values.
+    fn cmd_bbwr(&self, args: &[u8]) {
+        let a = parse_bb_args(args);
+        let (Some(addr), Some(reg), Some(val)) = (a.nums[0], a.nums[1], a.nums[2]) else {
+            log::info!(
+                "[err] bb: usage: bbwr [swap] <addr> <reg> <val> [val2] [d=]  (numbers hex)"
+            );
+            return;
+        };
+        let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
+        let mut bb = crate::bitbang::Bb::new(a.swap, half);
+        let ok = match a.nums[3] {
+            Some(val2) => bb.write_regs(addr as u8, reg as u8, &[val as u8, val2 as u8]),
+            None => bb.write_reg(addr as u8, reg as u8, val as u8),
+        };
+        log::info!(
+            "[bb] wr 0x{addr:02x} {reg:#04x}=0x{val:02x}: {}",
+            if ok { "ACK" } else { "NACK" }
+        );
+        self.bb_finish();
+    }
+
+    /// `bbinit [swap] [addr] [d=<cycles>]`: reset pulse (GP16), then the
+    /// vendor init writes over bit-bang (DisAutoSleep + scan/IRQ
+    /// defaults), then a chip-id read; redraws the display at the end
+    /// (the shared reset blanks it).
+    fn cmd_bbinit(&self, args: &[u8]) {
+        let a = parse_bb_args(args);
+        let addr = a.nums[0].map(|v| v as u8).unwrap_or(0x15);
+        let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
+        crate::panel::with_panel(|p| {
+            p.rst.set_low();
+            block_for(Duration::from_millis(10));
+            p.rst.set_high();
+        });
+        block_for(Duration::from_millis(300));
+        let mut bb = crate::bitbang::Bb::new(a.swap, half);
+        log::info!(
+            "[bb] init 0x{addr:02x}: post-reset probe = {}",
+            if bb.probe(addr) { "ACK" } else { "NACK" }
+        );
+        for (reg, val, name) in [
+            (0xFEu8, 0x01u8, "DisAutoSleep"),
+            (0xED, 0x01, "IrqPulseWidth"),
+            (0xEE, 0x01, "NorScanPer"),
+            (0xFA, 0x41, "IrqCtl(point)"),
+        ] {
+            let ok = bb.write_reg(addr, reg, val);
+            log::info!(
+                "[bb] init: {name} <- 0x{val:02x}: {}",
+                if ok { "ACK" } else { "NACK" }
+            );
+        }
+        match bb.read_reg(addr, 0xA7) {
+            Some(v) => log::info!("[bb] init: chip id 0xa7 = 0x{v:02x} (CST816D = 0xb6)"),
+            None => log::info!("[bb] init: chip id read NACK"),
+        }
+        self.bb_finish();
+        crate::panel::with_panel(|p| {
+            p.lcd.init();
+            p.lcd.test_pattern();
+        });
+        log::info!("[bb] init done; display redrawn");
+    }
+
+    /// `bbtrace [swap] [addr] [d=<cycles>]`: three traced address probes
+    /// - the raw wire view (sent vs sampled SDA bits, ACK slot level).
+    fn cmd_bbtrace(&self, args: &[u8]) {
+        let a = parse_bb_args(args);
+        let addr = a.nums[0].map(|v| v as u8).unwrap_or(0x15);
+        let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
+        let mut bb = crate::bitbang::Bb::new(a.swap, half);
+        log::info!("[bb] trace 0x{addr:02x} (swap={}, half={half} cyc)", a.swap);
+        for i in 0..3 {
+            let t = bb.trace_probe(addr);
+            log::info!(
+                "[bb] #{i} sent=0b{:08b} sampled=0b{:08b} ack_slot={}",
+                t.sent,
+                t.sampled,
+                if t.ack_low {
+                    "LOW (ACK)"
+                } else {
+                    "high (NACK)"
+                }
+            );
+        }
+        log::info!(
+            "[bb] SDA idle after traces: {}",
+            if bb.sda_level() {
+                "high"
+            } else {
+                "LOW (stuck)"
+            }
+        );
+        self.bb_finish();
     }
 
     /// `touch [n]`: sample the CST816D, n max 8, 100 ms apart; raw
@@ -2320,6 +2540,52 @@ fn parse_hex_u8(s: &[u8]) -> Option<u8> {
         v = (v << 4) | d;
     }
     Some(v)
+}
+
+/// Parsed bb-command arguments: `swap`, `d=<half-cycles>` and up to four
+/// bare numbers (interpreted as hex, `0x` prefix optional).
+struct BbArgs {
+    swap: bool,
+    half: Option<u32>,
+    nums: [Option<u32>; 4],
+}
+
+fn parse_bb_args(args: &[u8]) -> BbArgs {
+    let mut out = BbArgs {
+        swap: false,
+        half: None,
+        nums: [None; 4],
+    };
+    let mut n = 0usize;
+    for w in args
+        .split(|b: &u8| b.is_ascii_whitespace())
+        .filter(|w| !w.is_empty())
+    {
+        if w == b"swap" {
+            out.swap = true;
+            continue;
+        }
+        let Ok(s) = core::str::from_utf8(w) else {
+            continue;
+        };
+        if let Some(v) = s.strip_prefix("d=") {
+            if let Ok(v) = v.parse::<u32>() {
+                out.half = Some(v.clamp(100, 100_000));
+            }
+            continue;
+        }
+        let t = s
+            .strip_prefix("0x")
+            .or_else(|| s.strip_prefix("0X"))
+            .unwrap_or(s);
+        if let Ok(v) = u32::from_str_radix(t, 16)
+            && n < out.nums.len()
+        {
+            out.nums[n] = Some(v);
+            n += 1;
+        }
+    }
+    out
 }
 
 /// Drop a leading `0x`/`0X` from a trimmed byte string.

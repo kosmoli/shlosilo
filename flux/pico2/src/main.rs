@@ -15,6 +15,7 @@
 #![no_std]
 #![no_main]
 
+mod bitbang;
 mod console;
 mod fault;
 mod lcd;

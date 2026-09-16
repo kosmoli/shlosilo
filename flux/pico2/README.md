@@ -91,6 +91,13 @@ audit #17) - production builds compile them out:
 - `touchint [ms]` — monitor the touch controller's INT line (GP17) for
   edge activity during a window (default 15 s): an independent liveness
   proof that does not depend on the I2C path
+- `bbscan` | `bbid` | `bbrd` | `bbwr` | `bbinit` | `bbtrace` — the
+  bit-banged I2C fallback/forensics path on the same GP26/27 pins: raw
+  GPIO toggling with no I2C peripheral and no driver in the loop, plus
+  wire-level sampling (`bbtrace` reports the SDA levels seen during the
+  address byte and whether the ACK slot was pulled low — turning a
+  driver-level NACK into an observed waveform). `swap` flips the pin
+  roles; `d=<cycles>` sets the half-bit delay; numbers are hex
 - `heap [reset]` — allocator used/free/peak; `reset` re-arms the peak
   watermark for measuring one operation
 - `entropy <hex>` *(bench)* — set the session mnemonic from test-vector
