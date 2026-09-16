@@ -243,6 +243,39 @@ impl Page {
 /// Demo payload for the QR page (a UR-shaped string).
 const DEMO_UR: &str = "ur:xmr-txunsigned/hdclaxisyagdbdhsvarersbykegssnhesonthdetkokklomsprldoseymnpansbnwynyioaahdcxaorptnpmcmdibgcevegaetftloemsfhphdcflkswfsgmdyidchkndyprswsnfewpaycysssefxgwamtaaddyoeadlecsdwykaeykaeykaewkaewkaxahaemnvsmn";
 
+/// Orientation reference pattern (bring-up tool). Renders the four edge
+/// labels UP / DOWN / LEFT / RIGHT plus an asymmetric "L" marker at the
+/// top-left corner and a centre crosshair.
+///
+/// Purpose: the person holding the panel must be able to *read off* which
+/// physical edge is which, so that instructions like "swipe from the LEFT
+/// label to the RIGHT label" are unambiguous regardless of how the board
+/// is held - and so that any display mirror/flip is immediately visible
+/// (mirrored lettering reads backwards; a 180-degree flip puts DOWN at
+/// the top). Directions for touch calibration are always given in terms
+/// of these labels, never in terms of an assumed physical frame.
+pub fn orientation_pattern() {
+    clear(false);
+    // Border frame.
+    rect(0, 0, FB_W as i32, FB_H as i32, true, false);
+    // Edge labels.
+    text_center(10, "UP", 1, true);
+    text_center(FB_H as i32 - 26, "DOWN", 1, true);
+    text(10, FB_H as i32 / 2 - 8, "LEFT", 1, true);
+    let rw = text_w("RIGHT", 1);
+    text(FB_W as i32 - rw - 10, FB_H as i32 / 2 - 8, "RIGHT", 1, true);
+    // Asymmetric "L" marker at the top-left: block + bar to the right +
+    // bar downward. Mirrored or flipped lettering also mirrors/flips it,
+    // which is a second, independent orientation check.
+    rect(24, 44, 16, 16, true, true);
+    rect(42, 48, 40, 8, true, true);
+    rect(28, 62, 8, 40, true, true);
+    // Centre crosshair.
+    rect(FB_W as i32 / 2 - 14, FB_H as i32 / 2, 29, 1, true, true);
+    rect(FB_W as i32 / 2, FB_H as i32 / 2 - 14, 1, 29, true, true);
+    flush();
+}
+
 /// Status line shared by all pages (top-left, small).
 fn draw_status() {
     text(4, 4, "shlosilo", 1, true);

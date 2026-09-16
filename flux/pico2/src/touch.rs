@@ -82,37 +82,41 @@ impl Chip {
 
 /// Raw-to-screen mapping for the fitted panel (FT6236, 320x480).
 ///
-/// The digitizer is axis-aligned with the display - screen x follows
-/// raw x and screen y follows raw y - but the x axis is MIRRORED
-/// (raw x grows to the screen's left) and y is direct (raw y grows
-/// downward). Both scales are near 1:1 with small offsets.
+/// The digitizer sits 90 degrees off the display's axes: **raw_x is the
+/// VERTICAL axis** (finger at the screen top reads ~276-315, at the
+/// bottom ~1-32) and **raw_y is the HORIZONTAL axis** (left ~0-40,
+/// right ~443-475). Screen x therefore follows raw y (increasing) and
+/// screen y follows raw x (decreasing), with scales ~0.73 and ~1.83
+/// respectively.
 ///
-/// Calibration history, kept because the first attempt got it wrong:
-/// a five-point run (four corner blocks + centre) could not separate the
-/// true orientation from its 90-degree-rotated alternative - the raw
-/// corner set is the same rectangle either way and only the press ORDER
-/// disambiguates, which was ambiguous in that run. The deciding evidence
-/// was a controlled drag test: vertical finger drags sweep raw y
-/// (0 -> ~475 going top-to-bottom) and horizontal drags sweep raw x
-/// (~315 -> 1 going left-to-right). The mirrored - not swapped - x axis
-/// is what produced the "axes are swapped" trail in the first place.
+/// Established by two independent datasets that agree exactly:
+/// - five corner-block presses (raw corner pairs separate cleanly on the
+///   *other* axis each time), fitted by least squares;
+/// - a controlled drag test: horizontal finger drags sweep raw_y
+///   (0 -> ~472 left-to-right) and vertical drags sweep raw_x
+///   (~315 -> 1 top-to-bottom), reproduced twice each.
 ///
-/// Coefficients: x anchored at the centre touch (centre press: raw
-/// (149, 240) -> screen (160, 240)) with the scale from the drag
-/// endpoints; y fitted over the drag sweep plus the corner and centre
-/// presses. Integer milli-units keep the maths float-free.
+/// History, kept because two attempts got this wrong: an intermediate
+/// revision mapped sx from raw_x / sy from raw_y (a plausible-looking
+/// "mirrored x" story) - it was wrong and scrambled the touch while
+/// masking the real defect, which was a **display-side horizontal
+/// mirror** (fixed in lcd.rs by the MADCTL MX bit). With the display
+/// mirrored, a correct touch trail looked horizontally reversed, and
+/// that artifact is what prompted both wrong revisions.
 ///
-///   screen_x = (321000 - 1085 * raw_x) / 1000
-///   screen_y = (1058 * raw_y - 11600) / 1000
-const CAL_SX_A: i32 = 321_000;
-const CAL_SX_B: i32 = -1085;
-const CAL_SY_A: i32 = 1058;
-const CAL_SY_B: i32 = -11_600;
+///   screen_x = (727 * raw_y - 13390) / 1000
+///   screen_y = (-1829 * raw_x + 524182) / 1000
+/// (Corner-press residuals <= 12 px; scale slightly over-unity, so the
+/// extremes clamp cleanly to the panel edges.)
+const CAL_SX_A: i32 = 727;
+const CAL_SX_B: i32 = -13_390;
+const CAL_SY_A: i32 = -1829;
+const CAL_SY_B: i32 = 524_182;
 
 /// Map a raw touch sample onto screen pixels (clamped to the panel).
 pub fn to_screen(raw_x: u16, raw_y: u16) -> (u16, u16) {
-    let sx = (CAL_SX_A + CAL_SX_B * i32::from(raw_x)) / 1000;
-    let sy = (CAL_SY_A * i32::from(raw_y) + CAL_SY_B) / 1000;
+    let sx = (CAL_SX_A * i32::from(raw_y) + CAL_SX_B) / 1000;
+    let sy = (CAL_SY_A * i32::from(raw_x) + CAL_SY_B) / 1000;
     (
         sx.clamp(0, crate::lcd::WIDTH as i32 - 1) as u16,
         sy.clamp(0, crate::lcd::HEIGHT as i32 - 1) as u16,

@@ -294,7 +294,7 @@ impl ConsoleState {
             "[help]   touchdraw [secs]  paint a trail at the mapped touch position (drag finger)"
         );
         log::info!("[help]   sd probe | sd read <blk>  TF-slot SD card (SPI0, read-only probe)");
-        log::info!("[help]   ui draw <welcome|detail|qr> | ui run [secs] | ui qr <text>");
+        log::info!("[help]   ui orient | draw <welcome|detail|qr> | run [secs] | qr <text>");
         log::info!("[help]   bbscan|bbid|bbrd|bbwr|bbinit|bbtrace  bit-banged I2C on GP26/27");
         log::info!("[help]                   (swap, d=<cycles>, numbers hex; bring-up forensics)");
         log::info!("[help]   heap [reset]    allocator used/free/peak (reset re-arms peak)");
@@ -909,6 +909,12 @@ impl ConsoleState {
     fn cmd_ui(&self, args: &[u8]) -> Option<TrngJob> {
         let (sub, rest) = split_first_word(args);
         match sub {
+            b"orient" => {
+                crate::ui::orientation_pattern();
+                log::info!(
+                    "[ui] orientation pattern drawn (edge labels UP/DOWN/LEFT/RIGHT + L marker)"
+                );
+            }
             b"draw" => {
                 let name = trim_ascii(rest);
                 let page = match name {
@@ -943,7 +949,7 @@ impl ConsoleState {
                 return Some(TrngJob::simple(JobMode::UiQr));
             }
             _ => log::info!(
-                "[err] ui: usage: ui draw <welcome|detail|qr> | ui run [secs] | ui qr <text>"
+                "[err] ui: usage: ui orient | ui draw <welcome|detail|qr> | ui run [secs] | ui qr <text>"
             ),
         }
         None

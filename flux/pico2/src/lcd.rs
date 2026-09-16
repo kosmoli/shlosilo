@@ -24,8 +24,16 @@ use embassy_time::{Duration, block_for};
 pub const WIDTH: u16 = 320;
 pub const HEIGHT: u16 = 480;
 
-/// Portrait scan direction: MADCTL = BGR only (no MX/MY flips).
-const MADCTL_PORTRAIT: u8 = 0x08;
+/// Portrait scan direction: MADCTL = MX | BGR (0x48).
+///
+/// The MX bit is REQUIRED on this panel: with BGR only (0x08) the whole
+/// image came out horizontally mirrored - undetected through the whole
+/// bring-up because the band pattern is horizontally uniform and the
+/// corner blocks are mirror-symmetric (the asymmetric "L" marker in the
+/// test pattern exists precisely to catch this). It surfaced when text
+/// rendered: the user saw mirrored lettering. 0x48 is also the standard
+/// rotation-0 MADCTL for ST7796S boards.
+const MADCTL_PORTRAIT: u8 = 0x48;
 
 type LcdSpi = Spi<'static, SPI1, Blocking>;
 
@@ -171,19 +179,29 @@ impl St7796 {
     }
 
     /// Bring-up pattern: four horizontal bands (red/green/blue/white,
-    /// top to bottom) plus a black marker block in ALL FOUR corners.
-    /// Band order verifies the scan direction, hue verifies RGB/BGR,
-    /// and the four corner blocks prove the configured resolution
-    /// actually covers the glass (a block outside the addressable area
-    /// is silently dropped by the panel window logic).
+    /// top to bottom) plus an ASYMMETRIC "L" marker at the top-left
+    /// corner (block + a bar pointing right + a bar pointing down).
+    ///
+    /// Band order verifies the vertical scan direction and hue verifies
+    /// RGB/BGR, but bands are horizontally uniform and corner blocks are
+    /// mirror-symmetric - neither can detect a horizontal flip (that
+    /// failure made it to the UI once). The L marker is asymmetric on
+    /// BOTH axes: if the long bar points left instead of right, the
+    /// panel is horizontally mirrored; if it points up, vertically
+    /// flipped.
     pub fn test_pattern(&mut self) {
         let colors = [0xF800u16, 0x07E0, 0x001F, 0xFFFF];
         let band = HEIGHT / 4;
         for (i, &c) in colors.iter().enumerate() {
             self.fill_rect(0, i as u16 * band, WIDTH, band, c);
         }
+        // Asymmetric orientation marker at the top-left.
+        self.fill_rect(2, 2, 16, 16, 0x0000); // block
+        self.fill_rect(20, 6, 56, 8, 0x0000); // bar pointing RIGHT
+        self.fill_rect(6, 20, 8, 56, 0x0000); // bar pointing DOWN
+        // Corner coverage blocks (kept: they prove the addressable
+        // window reaches all four corners).
         let s = 16u16;
-        self.fill_rect(2, 2, s, s, 0x0000); // top-left
         self.fill_rect(WIDTH - s - 2, 2, s, s, 0x0000); // top-right
         self.fill_rect(2, HEIGHT - s - 2, s, s, 0x0000); // bottom-left
         self.fill_rect(WIDTH - s - 2, HEIGHT - s - 2, s, s, 0x0000); // bottom-right
