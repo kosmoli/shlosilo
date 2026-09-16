@@ -74,6 +74,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          components: clippy
           targets: thumbv7em-none-eabihf,thumbv8m.main-none-eabihf
       - uses: Swatinem/rust-cache@v2
       # Audit #16 P1-01: workspace default-members is the root package only,
@@ -100,6 +101,19 @@ jobs:
           ./flux/host-sim/sim_l3 | tee /tmp/sim_l3.log
           grep -q "signed tx (111 bytes)" /tmp/sim_l3.log
           grep -q "=== all steps completed ===" /tmp/sim_l3.log
+      # Lint the appearance crates on their real targets. They are workspace
+      # members but NOT default members (the workspace root is itself a
+      # package, so default-members = the root alone), which kept them out of
+      # the `test` job's clippy gates; and the embedded targets have their
+      # own lint surface (c_char is u8 on both ARM targets, so cross-target
+      # pointer casts lint differently than on the host - the first run of
+      # this gate found exactly that class in forms/ffi/c_abi.rs). pico2 is
+      # linted with --all-features to cover the bench/perf surface.
+      - name: "Appearance crates: clippy (embedded + host targets, warnings denied)"
+        run: |
+          cargo clippy -p shlosilo-pico2 --release --target thumbv8m.main-none-eabihf --all-features -- -D warnings
+          cargo clippy -p shlosilo-forgebox --release --target thumbv7em-none-eabihf -- -D warnings
+          cargo clippy -p shlosilo-host-sim --release -- -D warnings
       - name: pico2 image + UF2 pack (thumbv8m)
         run: |
           # elf2uf2-rs pulls in libudev-sys for USB autodetect; the runner
