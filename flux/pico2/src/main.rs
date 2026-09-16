@@ -704,13 +704,13 @@ async fn main(spawner: Spawner) {
     });
 
     // ---- panel bring-up (P0/P1): LCD + touch ----
-    // ST7789V2 on SPI1 (vendor init sequence port; see lcd.rs) and CST816D
-    // on I2C1, with one shared reset line (GP16). Boot runs the full
-    // bring-up so a fresh flash shows the test pattern with no console
-    // interaction; the `panel` command re-runs it. Pin map: the verified
-    // one in docs/pico2-hardware-pinmap.md.
+    // ST7796S on SPI1 (vendor init sequence port; see lcd.rs) and FT6236
+    // touch on I2C1 (auto-detected; see touch.rs), with one shared
+    // reset line (GP16). Boot runs the full bring-up so a fresh flash
+    // shows the test pattern with no console interaction; the `panel`
+    // command re-runs it. Pin map: docs/pico2-hardware-pinmap.md.
     panel::install(panel::Panel {
-        lcd: lcd::St7789::new(
+        lcd: lcd::St7796::new(
             embassy_rp::spi::Spi::new_blocking_txonly(
                 p.SPI1,
                 p.PIN_14,
@@ -721,7 +721,7 @@ async fn main(spawner: Spawner) {
             Output::new(p.PIN_13, Level::High), // CS (idle high)
             Output::new(p.PIN_18, Level::High), // backlight on
         ),
-        touch: touch::Cst816::new(embassy_rp::i2c::I2c::new_blocking(
+        touch: touch::Touch::new(embassy_rp::i2c::I2c::new_blocking(
             p.I2C1,
             p.PIN_27, // SCL
             p.PIN_26, // SDA

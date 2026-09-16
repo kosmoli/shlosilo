@@ -1,13 +1,14 @@
 //! Bit-banged I2C on the touch bus (GP26/GP27): bring-up forensics.
 //!
-//! The controller path (the RP2350's DW_apb I2C block as driven by
-//! embassy-rp) cannot get the CST816D to answer: address probes NACK
-//! (with rare non-reproducible ACKs that fail every follow-up read),
-//! across 400/100/10 kHz and both transaction shapes. INT-line
-//! monitoring proves the controller is alive and scanning, so the
-//! failure lives in the I2C conversation itself - but the driver-level
-//! error `Abort(NoAcknowledge)` cannot separate "chip not listening"
-//! from "controller-side problem", because both produce the same error.
+//! History: this path found the fitted controller. Every CST816D-shaped
+//! access (the vendor example's 0x15 recipe) NACKed - the panel had been
+//! swapped for a larger one carrying an FT6236 at 0x38 - while the
+//! driver-level error `Abort(NoAcknowledge)` could not separate "chip
+//! not listening" from "controller-side problem". Bit-banging 0x08..0x77
+//! with consecutive-ACK filtering surfaced 0x38 (5/5 ACKs, registers
+//! readable), and the FT6236 driver path (touch.rs) now talks to it
+//! directly. This module stays as the wire-level forensics instrument
+//! and as the fallback for bus states the controller path cannot handle.
 //!
 //! This module talks to the bus with raw GPIO toggling: no I2C
 //! peripheral, no driver, no interrupt logic - and it can *sample the

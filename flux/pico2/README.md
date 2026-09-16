@@ -154,15 +154,28 @@ Host-side notes (Linux):
 
 ## Panel (LCD + touch) bring-up
 
-The 2" IPS panel (ST7789V2, 240x320, SPI1) and its capacitive touch
-(CST816D, I2C1) are wired per the verified pin map
-(`docs/pico2-hardware-pinmap.md`): SCK=GP14, MOSI=GP15 (MISO not
-connected), D/C=GP12, CS=GP13, RST=GP16 (shared with the touch
-controller), BL=GP18; touch SDA=GP26, SCL=GP27, INT=GP17 (not used yet -
-reads go over I2C). The init sequence is a port of the vendor C reference
-(`C/01-LCD/lib/LCD/LCD_2in.c`, the 0xF0 command-set unlock chain); the
-SPI clock starts conservative (50 MHz) and can be raised once the rig is
+**The fitted panel is an ST7796S (320x480) + FocalTech FT6236 touch** -
+the user swapped the kit's original 2" 240x320 ST7789V2 + CST816D panel
+for a larger one so QR codes render legibly. Both controllers are
+supported: `touch.rs` auto-detects (FT6236 at 0x38, chip id 0xA8=0x11,
+first; then CST816D at 0x15) and dispatches all operations on what it
+found.
+
+Pins, per the verified pin map (`docs/pico2-hardware-pinmap.md`):
+SCK=GP14, MOSI=GP15 (MISO not connected), D/C=GP12, CS=GP13, RST=GP16
+(shared with the touch controller), BL=GP18; touch SDA=GP26, SCL=GP27,
+INT=GP17 (not used yet - reads go over I2C). The display init sequence is
+a port of the vendor C reference (`C/01-LCD/lib/LCD/LCD_2in.c`); it turns
+out to be the Sitronix-family unlock + gamma chain the ST7796S accepts
+(the same sequence the vendor ships, at a different resolution). The SPI
+clock starts conservative (50 MHz) and can be raised once the rig is
 confirmed.
+
+**How the chip identity was established** (the vendor example's CST816D
+recipe NACKed on every access): bit-banged I2C scanning (`bbscan`, see
+the console commands) found the FT6236 at 0x38 with consecutive-ACK
+filtering, and register 0xA8 reads 0x11. The FT6236 driver then talks to
+it over the normal controller path (5/5 probes ACK, registers readable).
 
 **The kit ships unassembled.** The display module, the white FPC ribbon
 and the camera are separate parts: the ribbon must be inserted into the
@@ -179,10 +192,11 @@ this.
 Boot runs the full bring-up (shared reset pulse, touch probe + configure,
 LCD init, test pattern), so a fresh flash shows the pattern with no
 console interaction: four horizontal bands (red/green/blue/white, top to
-bottom) plus a black marker chip at the top-left corner - band order
-verifies the scan direction, hue verifies RGB/BGR, and the marker
-verifies the origin corner. `lcd bl <0|1>` exists to confirm the
-backlight polarity on hardware.
+bottom) plus a black marker block in **all four corners** - band order
+verifies the scan direction, hue verifies RGB/BGR, and the corner blocks
+prove the configured resolution (320x480) covers the glass (a block
+outside the addressable window is silently dropped). `lcd bl <0|1>`
+exists to confirm the backlight polarity on hardware.
 
 ## On-device signing smoke
 

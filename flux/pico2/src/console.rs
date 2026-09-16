@@ -280,8 +280,8 @@ impl ConsoleState {
         log::info!(
             "[help]   panel           panel bring-up: reset + touch + LCD init + test pattern"
         );
-        log::info!("[help]   lcd pattern|fill <hex565>|bl <0|1>   ST7789V2 panel ops");
-        log::info!("[help]   touch [n]       CST816D samples (raw x/y; n<=8, 100 ms apart)");
+        log::info!("[help]   lcd pattern|fill <hex565>|bl <0|1>   ST7796S panel ops");
+        log::info!("[help]   touch [n]       touch samples (raw x/y; n<=8, 100 ms apart)");
         log::info!("[help]   i2c freq <khz> | scan | scan0 | id <a> | rd <a> <r> | wr <a> <b..>");
         log::info!("[help]        | lines | pulldown | rstprobe <a>   (bus diagnostics)");
         log::info!(
@@ -384,7 +384,7 @@ impl ConsoleState {
     }
 
     /// `lcd pattern` | `lcd fill <rgb565 hex>` | `lcd bl <0|1>` - bring-up
-    /// operations for the ST7789V2 panel (see flux/pico2/src/lcd.rs).
+    /// operations for the ST7796S panel (see flux/pico2/src/lcd.rs).
     fn cmd_lcd(&self, args: &[u8]) {
         let (sub, rest) = split_first_word(args);
         if sub.is_empty() || sub == b"pattern" {
@@ -844,8 +844,9 @@ impl ConsoleState {
         self.bb_finish();
     }
 
-    /// `touch [n]`: sample the CST816D, n max 8, 100 ms apart; raw
-    /// coordinates (the axis mapping is settled on hardware).
+    /// `touch [n]`: sample the fitted touch controller, n max 8,
+    /// 100 ms apart; raw coordinates (the axis mapping is settled on
+    /// hardware).
     fn cmd_touch(&self, args: &[u8]) {
         let a = trim_ascii(args);
         let n = if a.is_empty() {

@@ -1,31 +1,36 @@
-//! ST7789V2 panel driver for the pico2 bring-up rig (P0/P1).
+//! ST7796S panel driver for the pico2 bring-up rig.
 //!
-//! Pins (verified against the vendor schematic + C reference; see
-//! `docs/pico2-hardware-pinmap.md`): SPI1 SCK=GP14, MOSI=GP15 (MISO is not
-//! connected on this board), D/C=GP12, CS=GP13, RST=GP16 (shared with the
-//! touch controller), BL=GP18. The init sequence is a faithful port of the
-//! vendor's `C/01-LCD/lib/LCD/LCD_2in.c` (the 0xF0 "command set control"
-//! unlock chain); the panel is 240x320, portrait (MADCTL 0x08, BGR).
+//! **The fitted panel is an ST7796S (320x480)**: the user swapped the
+//! kit's original 2" 240x320 panel for a larger one so QR codes render
+//! legibly. The vendor's `C/01-LCD` sequence (which this driver ports)
+//! is in fact the Sitronix-family unlock + gamma chain that the ST7796S
+//! accepts - the same command set with a different resolution.
 //!
-//! Scope: bring-up only - solid fills and the test pattern. The 1bpp
-//! canvas + text/QR rendering (P2 UI) builds on the same window-write path.
+//! Pins (verified against the vendor schematic; see
+//! `docs/pico2-hardware-pinmap.md`): SPI1 SCK=GP14, MOSI=GP15 (MISO is
+//! not connected on this board), D/C=GP12, CS=GP13, RST=GP16 (shared
+//! with the touch controller), BL=GP18.
+//!
+//! Scope: bring-up - solid fills and the corner-marked test pattern.
+//! The 1bpp canvas + text/QR rendering (P2 UI) builds on the same
+//! window-write path.
 
 use embassy_rp::gpio::Output;
 use embassy_rp::peripherals::SPI1;
 use embassy_rp::spi::{Blocking, Config as SpiConfig, Phase, Polarity, Spi};
 use embassy_time::{Duration, block_for};
 
-pub const WIDTH: u16 = 240;
-pub const HEIGHT: u16 = 320;
+/// Panel resolution: ST7796S standard, landscape-off portrait.
+pub const WIDTH: u16 = 320;
+pub const HEIGHT: u16 = 480;
 
-/// Portrait scan direction: MADCTL = BGR only (no MX/MY flips). The vendor
-/// reference writes 0x08 for this orientation (0x28 = landscape).
+/// Portrait scan direction: MADCTL = BGR only (no MX/MY flips).
 const MADCTL_PORTRAIT: u8 = 0x08;
 
 type LcdSpi = Spi<'static, SPI1, Blocking>;
 
-/// SPI configuration: mode 0, 50 MHz to start (the vendor drives the same
-/// panel far faster on the SDK; raise once the bring-up confirms the rig).
+/// SPI configuration: mode 0, 50 MHz to start (the vendor drives the
+/// same panel far faster; raise once the rig is confirmed).
 pub fn spi_config() -> SpiConfig {
     let mut cfg = SpiConfig::default();
     cfg.frequency = 50_000_000;
@@ -34,21 +39,20 @@ pub fn spi_config() -> SpiConfig {
     cfg
 }
 
-pub struct St7789 {
+pub struct St7796 {
     spi: LcdSpi,
     dc: Output<'static>,
     cs: Output<'static>,
     bl: Output<'static>,
 }
 
-impl St7789 {
+impl St7796 {
     pub fn new(spi: LcdSpi, dc: Output<'static>, cs: Output<'static>, bl: Output<'static>) -> Self {
         Self { spi, dc, cs, bl }
     }
 
-    /// Backlight (GP18). High = on is the working assumption for the vendor
-    /// board; `lcd bl` on the console exists to confirm the polarity on
-    /// hardware.
+    /// Backlight (GP18). High = on is the working assumption; `lcd bl`
+    /// on the console exists to confirm the polarity on hardware.
     pub fn backlight(&mut self, on: bool) {
         if on {
             self.bl.set_high();
@@ -78,9 +82,9 @@ impl St7789 {
         self.cs.set_high();
     }
 
-    /// Full init: the vendor register list, delays included. The hardware
-    /// reset pulse is owned by `panel` (the line is shared with the touch
-    /// controller and must be pulsed once for both).
+    /// Full init: the vendor register list, delays included. The
+    /// hardware reset pulse is owned by `panel` (the line is shared
+    /// with the touch controller and must be pulsed once for both).
     pub fn init(&mut self) {
         for &(c, d, delay_ms) in INIT_SEQ {
             self.cmd_data(c, d);
@@ -101,12 +105,14 @@ impl St7789 {
         self.cmd(0x2C);
     }
 
-    /// Fill a rectangle with one RGB565 colour (bounds checked by the
-    /// panel itself; the window is inclusive on both ends).
+    /// Fill a rectangle with one RGB565 colour (the window is inclusive
+    /// on both ends; coordinates are clamped to the panel).
     pub fn fill_rect(&mut self, x: u16, y: u16, w: u16, h: u16, color: u16) {
-        if w == 0 || h == 0 {
+        if w == 0 || h == 0 || x >= WIDTH || y >= HEIGHT {
             return;
         }
+        let w = w.min(WIDTH - x);
+        let h = h.min(HEIGHT - y);
         self.begin_frame(x, y, x + w - 1, y + h - 1);
         let hi = (color >> 8) as u8;
         let lo = color as u8;
@@ -129,22 +135,29 @@ impl St7789 {
         self.fill_rect(0, 0, WIDTH, HEIGHT, color);
     }
 
-    /// Bring-up pattern: four horizontal bands (red/green/blue/white, top
-    /// to bottom) plus a black marker chip at the top-left corner. Band
-    /// order verifies the scan direction, hue verifies RGB/BGR, the marker
-    /// verifies the origin corner.
+    /// Bring-up pattern: four horizontal bands (red/green/blue/white,
+    /// top to bottom) plus a black marker block in ALL FOUR corners.
+    /// Band order verifies the scan direction, hue verifies RGB/BGR,
+    /// and the four corner blocks prove the configured resolution
+    /// actually covers the glass (a block outside the addressable area
+    /// is silently dropped by the panel window logic).
     pub fn test_pattern(&mut self) {
         let colors = [0xF800u16, 0x07E0, 0x001F, 0xFFFF];
         let band = HEIGHT / 4;
         for (i, &c) in colors.iter().enumerate() {
             self.fill_rect(0, i as u16 * band, WIDTH, band, c);
         }
-        self.fill_rect(2, 2, 16, 16, 0x0000);
+        let s = 16u16;
+        self.fill_rect(2, 2, s, s, 0x0000); // top-left
+        self.fill_rect(WIDTH - s - 2, 2, s, s, 0x0000); // top-right
+        self.fill_rect(2, HEIGHT - s - 2, s, s, 0x0000); // bottom-left
+        self.fill_rect(WIDTH - s - 2, HEIGHT - s - 2, s, s, 0x0000); // bottom-right
     }
 }
 
 /// Register sequence: (command, data, delay after). Ported 1:1 from the
-/// vendor's LCD_2IN_SetAttributes + LCD_2IN_InitReg.
+/// vendor's LCD_2IN_SetAttributes + LCD_2IN_InitReg (the Sitronix-family
+/// unlock + gamma chain the ST7796S accepts).
 const INIT_SEQ: &[(u8, &[u8], u64)] = &[
     (0x11, &[], 120), // SLPOUT
     (0x36, &[MADCTL_PORTRAIT], 0),

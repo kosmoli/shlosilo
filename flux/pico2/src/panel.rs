@@ -1,9 +1,13 @@
-//! Panel bring-up orchestration: shared reset + ST7789V2 + CST816D.
+//! Panel bring-up orchestration: shared reset + ST7796S + FT6236.
 //!
 //! The LCD and the touch controller share their reset line (GP16, via
 //! separate 0R straps), so a full bring-up pulses it once and then inits
 //! both - and the display is (re-)initialised and redrawn last, because
 //! the shared pulse blanks it.
+//!
+//! The fitted panel: ST7796S display + FocalTech FT6236 touch (the
+//! swapped-in larger panel; the vendor example targets the original 2"
+//! panel with an ST7789V2 + CST816D - see lcd.rs / touch.rs notes).
 //!
 //! The panel is stored in a take-out slot (see `with_panel`): blocking I/O
 //! runs with the driver taken OUT of the mutex, so interrupts stay enabled
@@ -18,13 +22,13 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, block_for};
 
-use crate::lcd::{self, St7789};
-use crate::touch::{CHIP_ID, Cst816};
+use crate::lcd::{self, St7796};
+use crate::touch::{Chip, Touch};
 
 /// Everything the panel bring-up owns: both drivers plus the shared reset.
 pub struct Panel {
-    pub lcd: St7789,
-    pub touch: Cst816,
+    pub lcd: St7796,
+    pub touch: Touch,
     pub rst: Output<'static>,
 }
 
@@ -34,7 +38,8 @@ static PANEL: Mutex<CriticalSectionRawMutex, RefCell<Option<Panel>>> =
 static LCD_READY: AtomicBool = AtomicBool::new(false);
 /// Chip id read at the last probe; 0x100 = not probed yet.
 static TOUCH_ID: AtomicUsize = AtomicUsize::new(0x100);
-static TOUCH_FW: AtomicUsize = AtomicUsize::new(0);
+/// 0 = unknown, 1 = FT6236, 2 = CST816D.
+static TOUCH_CHIP: AtomicUsize = AtomicUsize::new(0);
 static TOUCH_FAILED: AtomicBool = AtomicBool::new(false);
 
 pub fn install(panel: Panel) {
@@ -62,18 +67,17 @@ pub fn reinit() -> bool {
         block_for(Duration::from_millis(100));
 
         match p.touch.probe() {
-            Ok((id, fw)) => {
+            Ok((chip, id)) => {
                 TOUCH_ID.store(id as usize, Ordering::Relaxed);
-                TOUCH_FW.store(fw as usize, Ordering::Relaxed);
-                TOUCH_FAILED.store(false, Ordering::Relaxed);
-                log::info!(
-                    "[panel] touch id=0x{id:02x} fw=0x{fw:02x}{}",
-                    if id == CHIP_ID {
-                        ""
-                    } else {
-                        " (unexpected id!)"
-                    }
+                TOUCH_CHIP.store(
+                    match chip {
+                        Chip::Ft6236 => 1,
+                        Chip::Cst816 => 2,
+                    },
+                    Ordering::Relaxed,
                 );
+                TOUCH_FAILED.store(false, Ordering::Relaxed);
+                log::info!("[panel] touch {} detected (id=0x{id:02x})", chip.name());
                 if let Err(e) = p.touch.configure() {
                     log::info!("[panel] touch configure failed: {e:?}");
                 }
@@ -114,7 +118,11 @@ pub fn status_line(w: &mut impl Write) {
     } else if id > 0xFF {
         let _ = write!(w, " touch=n/a");
     } else {
-        let fw = TOUCH_FW.load(Ordering::Relaxed);
-        let _ = write!(w, " touch=0x{id:02x}/fw{fw}");
+        let name = match TOUCH_CHIP.load(Ordering::Relaxed) {
+            1 => "FT6236",
+            2 => "CST816D",
+            _ => "?",
+        };
+        let _ = write!(w, " touch={name}@0x{id:02x}");
     }
 }
