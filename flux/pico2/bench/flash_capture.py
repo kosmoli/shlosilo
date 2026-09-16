@@ -65,26 +65,41 @@ def main():
     log("phase2 done: BOOTSEL drive present")
 
     time.sleep(1.0)
-    flashed = False
-    for attempt in range(1, 4):
-        try:
-            shutil.copyfile(UF2, os.path.join(MSC, os.path.basename(UF2)))
-            os.sync()
-            flashed = True
-            log(f"phase3: UF2 copied (attempt {attempt}); waiting for reboot")
-            break
-        except Exception as e:  # noqa: BLE001
-            log(f"phase3: copy attempt {attempt} failed: {e}")
-            time.sleep(1.0)
-    if not flashed:
-        log("FLASH FAILED")
-        sys.exit(1)
 
-    try:
-        wait_until(lambda: not os.path.exists(MSC), 30, "drive to disappear (reboot)")
-        log("phase3 done: drive gone, board rebooting")
-    except SystemExit:
-        log("drive still present; continuing anyway")
+    def copy_once(name):
+        for attempt in range(1, 4):
+            try:
+                shutil.copyfile(UF2, os.path.join(MSC, name))
+                os.sync()
+                return True
+            except Exception as e:  # noqa: BLE001
+                log(f"phase3: copy {name} attempt {attempt} failed: {e}")
+                time.sleep(1.0)
+        return False
+
+    # The bootrom processes a UF2 as it lands on the drive. Measured failure
+    # mode (2026-09-16): the copy lands while the device's USB is in a reset
+    # storm (dmesg shows -71 errors), the file sits on the FAT image intact
+    # (sha256 verified) but the bootrom never starts processing it - the
+    # drive stays present indefinitely. Re-copying the same bytes under a
+    # FRESH name re-triggers processing reliably. So: copy, wait for the
+    # drive to vanish, and on timeout copy again under a new name.
+    flashed = False
+    for round_no in range(1, 4):
+        name = os.path.basename(UF2) if round_no == 1 else f"FW_RETRY{round_no}.UF2"
+        if not copy_once(name):
+            continue
+        log(f"phase3: UF2 copied as {name} (round {round_no}); waiting for reboot")
+        try:
+            wait_until(lambda: not os.path.exists(MSC), 30, "drive to disappear (reboot)")
+            log("phase3 done: drive gone, board rebooting")
+            flashed = True
+            break
+        except SystemExit:
+            log(f"phase3: drive still present after round {round_no}; re-copying under a fresh name")
+    if not flashed:
+        log("FLASH FAILED: the drive never consumed the UF2 after 3 rounds")
+        sys.exit(1)
 
     log("phase4: waiting for the USB console to reappear")
     wait_until(lambda: os.path.exists(DEV), 120, "console re-enumeration")

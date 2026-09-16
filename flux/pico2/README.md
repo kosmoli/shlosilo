@@ -149,6 +149,18 @@ reads go over I2C). The init sequence is a port of the vendor C reference
 SPI clock starts conservative (50 MHz) and can be raised once the rig is
 confirmed.
 
+**The kit ships unassembled.** The display module, the white FPC ribbon
+and the camera are separate parts: the ribbon must be inserted into the
+board's `Disp 1P` FPC connector (18-pin FPC-SMD_F0503-ZV-18-20T-R;
+camera on `Cam 1P`) AND into the display module's own socket. Because the
+LCD bus is write-only (MISO is not connected on this board), a successful
+`lcd init` in firmware proves nothing electrically - the connectivity
+signals are the backlight glowing and the touch controller ACKing on
+I2C1. If the screen is dark and `i2c scan` finds zero devices, the panel
+is not connected (seating, latch, or ribbon orientation), not a firmware
+fault. `i2c freq/scan/scan0/rd/lines` are the console diagnostics for
+this.
+
 Boot runs the full bring-up (shared reset pulse, touch probe + configure,
 LCD init, test pattern), so a fresh flash shows the pattern with no
 console interaction: four horizontal bands (red/green/blue/white, top to
