@@ -82,25 +82,37 @@ impl Chip {
 
 /// Raw-to-screen mapping for the fitted panel (FT6236, 320x480).
 ///
-/// The digitizer's raw space is rotated 90 degrees relative to the
-/// display: screen x follows raw y (increasing) and screen y follows raw
-/// x (decreasing), with non-uniform scales. Coefficients were fitted by
-/// least squares over five ground-truth touches (the four corner blocks
-/// plus the screen centre, 2026-09-16 calibration run); max residual
-/// ~14 px, i.e. inside finger-tip precision. Integer milli-units keep the
-/// maths float-free (and cheap on the M33).
+/// The digitizer is axis-aligned with the display - screen x follows
+/// raw x and screen y follows raw y - but the x axis is MIRRORED
+/// (raw x grows to the screen's left) and y is direct (raw y grows
+/// downward). Both scales are near 1:1 with small offsets.
 ///
-///   screen_x = (727 * raw_y - 13390) / 1000
-///   screen_y = (-1829 * raw_x + 524182) / 1000
-const CAL_SX_A: i32 = 727;
-const CAL_SX_B: i32 = -13390;
-const CAL_SY_A: i32 = -1829;
-const CAL_SY_B: i32 = 524182;
+/// Calibration history, kept because the first attempt got it wrong:
+/// a five-point run (four corner blocks + centre) could not separate the
+/// true orientation from its 90-degree-rotated alternative - the raw
+/// corner set is the same rectangle either way and only the press ORDER
+/// disambiguates, which was ambiguous in that run. The deciding evidence
+/// was a controlled drag test: vertical finger drags sweep raw y
+/// (0 -> ~475 going top-to-bottom) and horizontal drags sweep raw x
+/// (~315 -> 1 going left-to-right). The mirrored - not swapped - x axis
+/// is what produced the "axes are swapped" trail in the first place.
+///
+/// Coefficients: x anchored at the centre touch (centre press: raw
+/// (149, 240) -> screen (160, 240)) with the scale from the drag
+/// endpoints; y fitted over the drag sweep plus the corner and centre
+/// presses. Integer milli-units keep the maths float-free.
+///
+///   screen_x = (321000 - 1085 * raw_x) / 1000
+///   screen_y = (1058 * raw_y - 11600) / 1000
+const CAL_SX_A: i32 = 321_000;
+const CAL_SX_B: i32 = -1085;
+const CAL_SY_A: i32 = 1058;
+const CAL_SY_B: i32 = -11_600;
 
 /// Map a raw touch sample onto screen pixels (clamped to the panel).
 pub fn to_screen(raw_x: u16, raw_y: u16) -> (u16, u16) {
-    let sx = (CAL_SX_A * i32::from(raw_y) + CAL_SX_B) / 1000;
-    let sy = (CAL_SY_A * i32::from(raw_x) + CAL_SY_B) / 1000;
+    let sx = (CAL_SX_A + CAL_SX_B * i32::from(raw_x)) / 1000;
+    let sy = (CAL_SY_A * i32::from(raw_y) + CAL_SY_B) / 1000;
     (
         sx.clamp(0, crate::lcd::WIDTH as i32 - 1) as u16,
         sy.clamp(0, crate::lcd::HEIGHT as i32 - 1) as u16,

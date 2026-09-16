@@ -176,13 +176,18 @@ out to be the Sitronix-family unlock + gamma chain the ST7796S accepts
 clock starts conservative (50 MHz) and can be raised once the rig is
 confirmed.
 
-**Touch calibration (2026-09-16, on hardware)**: the digitizer's raw
-space is rotated 90° relative to the display — screen x follows raw y
-(increasing) and screen y follows raw x (decreasing), with non-uniform
-scales. Coefficients in `touch.rs` (`to_screen`) were least-squares
-fitted over five ground-truth touches (four corner blocks + centre);
-max residual ~14 px, inside finger-tip precision. `touchdraw` is the
-visual check; recalibrate there if the trail ever drifts.
+**Touch calibration (2026-09-16, on hardware)**: the digitizer is
+axis-aligned with the display, but the x axis is MIRRORED (raw x grows
+to the screen's left) and y is direct (raw y grows downward); scales
+near 1:1. Coefficients in `touch.rs` (`to_screen`) come from a
+controlled drag test (vertical drags sweep raw y 0→~475 top-to-bottom,
+horizontal drags sweep raw x ~315→1 left-to-right) anchored at the
+centre touch; corner presses confirm the orientation (residuals ≤24 px,
+dominated by the bezel preventing presses exactly at the glass edge).
+`touchdraw` is the visual check. Calibration history: a first five-point
+run looked like a 90° rotation and produced a swapped-axis trail —
+corner presses alone cannot separate a rotation from a mirror, only the
+drag directions can.
 
 **How the chip identity was established** (the vendor example's CST816D
 recipe NACKed on every access): bit-banged I2C scanning (`bbscan`, see
