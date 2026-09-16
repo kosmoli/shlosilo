@@ -1,26 +1,36 @@
-//! Touch driver (I2C1) for the pico2 bring-up rig.
+//! Touch driver for the pico2 bring-up rig.
 //!
-//! **The panel currently fitted carries a FocalTech FT6236** at 0x38
-//! (chip id 0xA8 = 0x11): the vendor's example targets the *original* 2"
-//! panel with a CST816D at 0x15, but this board has the swapped-in
-//! larger panel (ST7796S display + FT6236 touch). The FT6236 was found
-//! by bit-banged scanning after the controller path NACKed every
-//! address and every CST816D-shaped access failed; the I2C controller
-//! can now talk to it directly (5/5 probes ACK, registers readable).
+//! **Fitted panel: ST7796S display + FocalTech FT6236 touch at 0x38**
+//! (chip id 0xA8 = 0x11) - the user swapped the kit's original 2" panel
+//! (ST7789V2 + CST816D at 0x15) for a larger one. Both touch controllers
+//! are supported; `probe` identifies which is present and the rest
+//! dispatches on it.
 //!
-//! Both controllers are supported: `probe` identifies which one is
-//! present (FT6236 first, then CST816D) and the rest dispatches on it.
-//! - FT6236 registers per the FocalTech datasheet / Linux ft6236
-//!   driver: 0x02 touch count, 0x03..0x06 point-1 (event in XH bits
-//!   7..6, X/Y in 12-bit 4+8 form);
-//! - CST816D registers per the vendor example (0xA7 id = 0xB6,
-//!   0x01 gesture, 0x02 fingers, 0x03..0x06 X/Y).
+//! **Transport: bit-banged GPIO (see `bitbang.rs`), not the I2C
+//! controller.** Two measured reasons:
+//!
+//! 1. the RP2350's DW I2C block, as driven by embassy-rp's blocking API,
+//!    has no timeout on its status waits - a bus state it does not like
+//!    (observed right after the shared reset pulse, and once during a
+//!    full-address scan) hangs the whole firmware in a spin loop;
+//! 2. the bit-bang path has fixed timing and cannot hang: the worst case
+//!    is reading a wrong bit, and the caller retries.
+//!
+//! Touch polling needs a few hundred microseconds per sample, far below
+//! what a fixed-timing bit-bang at ~100 kHz provides, so there is no
+//! performance argument for the controller path here.
 //!
 //! Pins: SDA=GP26, SCL=GP27, INT=GP17 (reads are polled over I2C),
 //! RST=GP16 (shared with the LCD; the pulse is owned by `panel`).
+//!
+//! FT6236 registers (FocalTech datasheet / Linux ft6236 driver):
+//! 0x00 device mode, 0x02 touch count, 0x03..0x06 point 1 (XH carries
+//! the event flag in bits 7..6 and x bits 11..8 in 3..0).
+//! CST816D registers (vendor example): 0xA7 id = 0xB6, 0x01 gesture,
+//! 0x02 fingers, 0x03..0x06 X/Y.
 
-use embassy_rp::i2c::{AbortReason, Blocking, Error as I2cError, I2c};
-use embassy_rp::peripherals::I2C1;
+use crate::bitbang::Bb;
+use embassy_rp::gpio::Pull;
 
 /// FocalTech FT6236 (the fitted panel's controller).
 pub const FT6236_ADDR: u8 = 0x38;
@@ -48,15 +58,11 @@ const CST816_REG_NOR_SCAN_PER: u8 = 0xEE;
 const CST816_REG_IRQ_CTL: u8 = 0xFA;
 const CST816_REG_DIS_AUTO_SLEEP: u8 = 0xFE;
 
-/// I2C configuration for the touch bus (400 kHz, the FT6236's rated
-/// fast-mode speed; the bit-bang path runs slower).
-pub fn i2c_config() -> embassy_rp::i2c::Config {
-    let mut cfg = embassy_rp::i2c::Config::default();
-    cfg.frequency = 400_000;
-    cfg
-}
-
-type TouchI2c = I2c<'static, I2C1, Blocking>;
+/// Default bus speed: half-bit delay in CPU cycles. The core runs at
+/// 150 MHz, so 500 cycles ~= 3.3 us per half-bit ~= 100 kHz equivalent
+/// (comfortably inside the FT6236's rating, and ~4x faster than the
+/// forensics default).
+pub const DEFAULT_HALF_CYCLES: u32 = 500;
 
 /// Which controller is fitted (detected by `probe`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,38 +93,54 @@ pub struct Point {
 }
 
 pub struct Touch {
-    i2c: TouchI2c,
-    freq: u32,
+    bb: Bb,
     chip: Option<Chip>,
 }
 
-fn nack() -> I2cError {
-    I2cError::Abort(AbortReason::NoAcknowledge)
-}
-
 impl Touch {
-    pub fn new(i2c: TouchI2c) -> Self {
+    pub fn new() -> Self {
         Self {
-            i2c,
-            freq: 400_000,
+            bb: Bb::new(false, DEFAULT_HALF_CYCLES),
             chip: None,
         }
     }
 
-    fn read_reg(&mut self, addr: u8, reg: u8) -> Result<u8, I2cError> {
-        let mut b = [0u8; 1];
-        self.i2c.blocking_write_read(addr, &[reg], &mut b)?;
-        Ok(b[0])
+    /// The bit-bang engine (shared with the forensics console commands).
+    pub fn bb(&mut self) -> &mut Bb {
+        &mut self.bb
     }
 
-    fn write_reg(&mut self, addr: u8, reg: u8, val: u8) -> Result<(), I2cError> {
-        self.i2c.blocking_write(addr, &[reg, val])
+    /// Replace the bit-bang engine (swap/pacing changes from the console).
+    pub fn rebuild_bb(&mut self, swap: bool, half_cycles: u32) {
+        self.bb = Bb::new(swap, half_cycles);
+    }
+
+    /// Restore the default engine (documented pin roles, standard speed).
+    pub fn restore_bb(&mut self) {
+        self.rebuild_bb(false, DEFAULT_HALF_CYCLES);
+    }
+
+    /// Current half-bit delay in CPU cycles.
+    pub fn half_cycles(&self) -> u32 {
+        self.bb.half_cycles()
+    }
+
+    fn read_reg(&mut self, addr: u8, reg: u8) -> Result<u8, ()> {
+        self.bb.read_reg(addr, reg).ok_or(())
+    }
+
+    fn write_reg(&mut self, addr: u8, reg: u8, val: u8) -> Result<(), ()> {
+        if self.bb.write_reg(addr, reg, val) {
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 
     /// Identify the fitted controller: FT6236 (0x38, id 0xA8 = 0x11)
     /// first, then CST816D (0x15, id 0xA7 = 0xB6). Returns the chip and
     /// its chip-id byte.
-    pub fn probe(&mut self) -> Result<(Chip, u8), I2cError> {
+    pub fn probe(&mut self) -> Result<(Chip, u8), ()> {
         if let Ok(id) = self.read_reg(FT6236_ADDR, FT6236_REG_CHIP_ID)
             && id == FT6236_CHIP_ID
         {
@@ -132,34 +154,31 @@ impl Touch {
             return Ok((Chip::Cst816, id));
         }
         self.chip = None;
-        Err(nack())
+        Err(())
     }
 
     /// Post-reset configuration for the detected controller.
-    pub fn configure(&mut self) -> Result<(), I2cError> {
+    pub fn configure(&mut self) -> Result<(), ()> {
         match self.chip {
             Some(Chip::Ft6236) => {
-                // Device mode 0x00 = normal active (polling) operation.
-                // The FT6236 wakes in this mode after reset; writing it
-                // is an explicit anchor and matches the Linux driver's
-                // power-on sequence.
+                // Device mode 0x00 = normal active (polling) mode, the
+                // power-on default; wrote it as an explicit anchor.
                 self.write_reg(FT6236_ADDR, FT6236_REG_DEV_MODE, 0x00)
             }
             Some(Chip::Cst816) => {
-                // Vendor init: stay awake, point-event mode, scan
-                // defaults.
+                // Vendor init: stay awake, point-event mode, scan defaults.
                 self.write_reg(CST816_ADDR, CST816_REG_DIS_AUTO_SLEEP, 0x01)?;
                 self.write_reg(CST816_ADDR, CST816_REG_IRQ_PULSE_WIDTH, 0x01)?;
                 self.write_reg(CST816_ADDR, CST816_REG_NOR_SCAN_PER, 0x01)?;
                 self.write_reg(CST816_ADDR, CST816_REG_IRQ_CTL, 0x41)
             }
-            None => Err(nack()),
+            None => Err(()),
         }
     }
 
     /// One point sample for the detected controller. `fingers == 0`
     /// means no contact.
-    pub fn read_point(&mut self) -> Result<Point, I2cError> {
+    pub fn read_point(&mut self) -> Result<Point, ()> {
         match self.chip {
             Some(Chip::Ft6236) => {
                 let status = self.read_reg(FT6236_ADDR, FT6236_REG_TD_STATUS)?;
@@ -189,82 +208,25 @@ impl Touch {
                     y: (u16::from(yh & 0x0F) << 8) | u16::from(yl),
                 })
             }
-            None => Err(nack()),
+            None => Err(()),
         }
     }
 
     // ---- diagnostics (bring-up; see the `i2c` console command) ----
 
-    /// One electrical probe: write the register pointer 0 to `addr`; Ok
-    /// means the device ACKed its address.
+    /// One electrical probe: send the address with no data; true means
+    /// the device ACKed its address.
     pub fn probe_addr(&mut self, addr: u8) -> bool {
-        self.i2c.blocking_write(addr, &[0x00]).is_ok()
+        self.bb.probe(addr)
     }
 
     /// Raw register read at an arbitrary address.
-    pub fn read_reg_at(&mut self, addr: u8, reg: u8) -> Result<u8, I2cError> {
+    pub fn read_reg_at(&mut self, addr: u8, reg: u8) -> Result<u8, ()> {
         self.read_reg(addr, reg)
     }
 
-    /// Change the bus frequency (recreates the driver at the new speed).
-    pub fn set_frequency(&mut self, freq: u32) {
-        self.freq = freq;
-        self.rebuild();
-    }
-
-    /// Current bus frequency (Hz).
-    pub fn frequency(&self) -> u32 {
-        self.freq
-    }
-
-    /// Recreate the I2C driver at the stored frequency. Used after a
-    /// probe that repurposed the pins, and by `set_frequency`.
-    ///
-    /// SAFETY: the peripheral and both pins belong to this driver; a
-    /// fresh `Peripherals::steal()` handle is legitimate as long as
-    /// only one live driver exists, which the assignment below
-    /// guarantees (the old driver has no hardware side effects on drop
-    /// - the new construction simply re-applies the configuration).
-    pub fn rebuild(&mut self) {
-        let mut cfg = i2c_config();
-        cfg.frequency = self.freq;
-        let p = unsafe { embassy_rp::Peripherals::steal() };
-        self.i2c = I2c::new_blocking(p.I2C1, p.PIN_27, p.PIN_26, cfg);
-    }
-
-    /// Read SDA/SCL as plain inputs (internal pull-ups on), then
-    /// restore the bus. Both high = healthy idle; a stuck LOW line
-    /// means a short, a device holding the bus, or missing pull-ups
-    /// against a driven line. Returns (sda_high, scl_high).
-    pub fn read_line_levels(&mut self) -> (bool, bool) {
-        let p = unsafe { embassy_rp::Peripherals::steal() };
-        let sda = embassy_rp::gpio::Input::new(p.PIN_26, embassy_rp::gpio::Pull::Up);
-        let scl = embassy_rp::gpio::Input::new(p.PIN_27, embassy_rp::gpio::Pull::Up);
-        let levels = (sda.is_high(), scl.is_high());
-        drop(sda);
-        drop(scl);
-        self.rebuild(); // put the pins back on the I2C function
-        levels
-    }
-
-    /// Read SDA/SCL with the internal PULL-DOWNs engaged: a connected
-    /// module's pull-up network keeps the line high against the weaker
-    /// internal pull-down, while a floating line is dragged low.
-    /// Distinguishes "module side connected" from "floating line".
-    pub fn read_line_pulldowns(&mut self) -> (bool, bool) {
-        let p = unsafe { embassy_rp::Peripherals::steal() };
-        let sda = embassy_rp::gpio::Input::new(p.PIN_26, embassy_rp::gpio::Pull::Down);
-        let scl = embassy_rp::gpio::Input::new(p.PIN_27, embassy_rp::gpio::Pull::Down);
-        let levels = (sda.is_high(), scl.is_high());
-        drop(sda);
-        drop(scl);
-        self.rebuild();
-        levels
-    }
-
     /// Probe one address `n` times; returns the ACK count. A single ACK
-    /// can be a bus artifact (observed on this bench); a real device
-    /// answers every time.
+    /// can be a bus artifact; a real device answers every time.
     pub fn probe_addr_stats(&mut self, addr: u8, n: u32) -> u32 {
         let mut acks = 0u32;
         for _ in 0..n {
@@ -275,18 +237,40 @@ impl Touch {
         acks
     }
 
-    /// STOP-separated register read: write the register pointer with a
-    /// STOP, then read in a fresh transaction (compatibility shape for
-    /// controllers that NACK a repeated start).
-    pub fn read_reg_stop(&mut self, addr: u8, reg: u8) -> Result<u8, I2cError> {
-        self.i2c.blocking_write(addr, &[reg])?;
-        let mut b = [0u8; 1];
-        self.i2c.blocking_read(addr, &mut b)?;
-        Ok(b[0])
+    /// STOP-separated register read: pointer write with a STOP, then a
+    /// fresh read transaction.
+    pub fn read_reg_stop(&mut self, addr: u8, reg: u8) -> Result<u8, ()> {
+        self.bb.read_reg_stop(addr, reg).ok_or(())
     }
 
-    /// Multi-byte write (byte-level ACK behaviour probe).
-    pub fn write_bytes(&mut self, addr: u8, bytes: &[u8]) -> Result<(), I2cError> {
-        self.i2c.blocking_write(addr, bytes)
+    /// Multi-byte write.
+    pub fn write_bytes(&mut self, addr: u8, bytes: &[u8]) -> Result<(), ()> {
+        if bytes.is_empty() {
+            return Err(());
+        }
+        let reg = bytes[0];
+        if self.bb.write_regs(addr, reg, &bytes[1..]) {
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
+    /// Read SDA/SCL as plain inputs with the internal pull-ups on: both
+    /// high = healthy idle; a stuck LOW line points at a short or a
+    /// device holding the bus. Returns (sda_high, scl_high).
+    pub fn read_line_levels(&mut self) -> (bool, bool) {
+        self.bb.set_pulls(Pull::Up);
+        (self.bb.sda_is_high(), self.bb.scl_is_high())
+    }
+
+    /// Read SDA/SCL against the internal pull-downs: a connected
+    /// module's pull-up network keeps the lines high, a floating line
+    /// is dragged low. Returns (sda_high, scl_high).
+    pub fn read_line_pulldowns(&mut self) -> (bool, bool) {
+        self.bb.set_pulls(Pull::Down);
+        let levels = (self.bb.sda_is_high(), self.bb.scl_is_high());
+        self.bb.set_pulls(Pull::Up);
+        levels
     }
 }

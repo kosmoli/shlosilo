@@ -438,8 +438,13 @@ impl ConsoleState {
                     .and_then(|s| s.parse::<u32>().ok());
                 match khz {
                     Some(k) if (10..=1000).contains(&k) => {
-                        match crate::panel::with_panel(|p| p.touch.set_frequency(k * 1000)) {
-                            Some(()) => log::info!("[i2c] bus1 frequency = {k} kHz"),
+                        // Bit-bang pacing: half = 50e6 / f_hz CPU cycles
+                        // (150 MHz core / (3 halves per bit)).
+                        let half = (50_000_000u32 / (k * 1000)).clamp(40, 200_000);
+                        match crate::panel::with_panel(|p| p.touch.bb().set_half_cycles(half)) {
+                            Some(()) => {
+                                log::info!("[i2c] bit-bang pace = {k} kHz (half {half} cycles)")
+                            }
                             None => log::info!("[err] i2c: panel not installed"),
                         }
                     }
@@ -466,7 +471,9 @@ impl ConsoleState {
             }) {
                 Some(n) => log::info!(
                     "[i2c] bus1 scan done: {n} device(s), {} kHz",
-                    crate::panel::with_panel(|p| p.touch.frequency()).unwrap_or(0) / 1000
+                    crate::panel::with_panel(|p| 50_000_000u32 / p.touch.half_cycles())
+                        .unwrap_or(0)
+                        / 1000
                 ),
                 None => log::info!("[err] i2c: panel not installed"),
             },
@@ -632,10 +639,22 @@ impl ConsoleState {
         }
     }
 
-    /// Restore I2C1 routing after a bit-bang session: the `Flex` pins
-    /// were moved to SIO, and the touch driver re-claims them here.
-    fn bb_finish(&self) {
-        crate::panel::with_panel(|p| p.touch.rebuild());
+    /// Run `f` with a temporary bit-bang engine installed on the touch
+    /// bus (pin roles and pacing per the command arguments). The default
+    /// engine is restored afterwards. The engine is borrowed from the
+    /// touch driver - it owns GP26/27, so all bus users share one owner.
+    fn with_bb<R>(
+        &self,
+        swap: bool,
+        half: u32,
+        f: impl FnOnce(&mut crate::bitbang::Bb) -> R,
+    ) -> Option<R> {
+        crate::panel::with_panel(|p| {
+            p.touch.rebuild_bb(swap, half);
+            let r = f(p.touch.bb());
+            p.touch.restore_bb();
+            r
+        })
     }
 
     /// `bbscan [swap] [consec] [d=<cycles>]`: bit-banged scan of
@@ -648,39 +667,42 @@ impl ConsoleState {
         let a = parse_bb_args(args);
         let consec = a.nums[0].map(|v| v.clamp(1, 5)).unwrap_or(2);
         let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
-        let mut bb = crate::bitbang::Bb::new(a.swap, half);
-        log::info!(
-            "[bb] scan 0x08..0x77 (swap={}, half={half} cyc, {consec} consecutive ACKs required)",
-            a.swap
-        );
-        let mut found = 0u32;
-        let mut flakes = 0u32;
-        for addr in 0x08u8..=0x77 {
-            let mut acks = 0u32;
-            for _ in 0..consec {
-                if bb.probe(addr) {
-                    acks += 1;
-                } else {
-                    break;
-                }
-            }
-            if acks == consec {
-                found += 1;
-                match bb.read_reg(addr, 0x00) {
-                    Some(v) => {
-                        log::info!("[bb]  0x{addr:02x}: {acks}/{consec} ACKs, reg00=0x{v:02x}")
-                    }
-                    None => {
-                        log::info!("[bb]  0x{addr:02x}: {acks}/{consec} ACKs, reg00 read FAILED")
+        let r = self.with_bb(a.swap, half, |bb| {
+            log::info!(
+                "[bb] scan 0x08..0x77 (swap={}, half={half} cyc, {consec} consecutive ACKs required)",
+                a.swap
+            );
+            let mut found = 0u32;
+            let mut flakes = 0u32;
+            for addr in 0x08u8..=0x77 {
+                let mut acks = 0u32;
+                for _ in 0..consec {
+                    if bb.probe(addr) {
+                        acks += 1;
+                    } else {
+                        break;
                     }
                 }
-            } else if acks > 0 {
-                flakes += 1;
-                log::info!("[bb]  0x{addr:02x}: flake ({acks}/{consec})");
+                if acks == consec {
+                    found += 1;
+                    match bb.read_reg(addr, 0x00) {
+                        Some(v) => {
+                            log::info!("[bb]  0x{addr:02x}: {acks}/{consec} ACKs, reg00=0x{v:02x}")
+                        }
+                        None => {
+                            log::info!("[bb]  0x{addr:02x}: {acks}/{consec} ACKs, reg00 read FAILED")
+                        }
+                    }
+                } else if acks > 0 {
+                    flakes += 1;
+                    log::info!("[bb]  0x{addr:02x}: flake ({acks}/{consec})");
+                }
             }
+            log::info!("[bb] scan done: {found} candidate(s), {flakes} flake(s)");
+        });
+        if r.is_none() {
+            log::info!("[err] bb: panel not installed");
         }
-        log::info!("[bb] scan done: {found} candidate(s), {flakes} flake(s)");
-        self.bb_finish();
     }
 
     /// `bbid [swap] [addr] [d=<cycles>]`: assess one address over
@@ -692,36 +714,39 @@ impl ConsoleState {
         let a = parse_bb_args(args);
         let addr = a.nums[0].map(|v| v as u8).unwrap_or(0x15);
         let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
-        let mut bb = crate::bitbang::Bb::new(a.swap, half);
-        let mut acks = 0u32;
-        for _ in 0..5 {
-            if bb.probe(addr) {
-                acks += 1;
+        let r = self.with_bb(a.swap, half, |bb| {
+            let mut acks = 0u32;
+            for _ in 0..5 {
+                if bb.probe(addr) {
+                    acks += 1;
+                }
             }
-        }
-        log::info!("[bb] id 0x{addr:02x}: probes 5 -> {acks} ACK");
-        let t = bb.trace_probe(addr);
-        log::info!(
-            "[bb] id 0x{addr:02x}: trace sent=0b{:08b} sampled=0b{:08b} ack_slot={}",
-            t.sent,
-            t.sampled,
-            if t.ack_low {
-                "LOW (ACK)"
-            } else {
-                "high (NACK)"
+            log::info!("[bb] id 0x{addr:02x}: probes 5 -> {acks} ACK");
+            let t = bb.trace_probe(addr);
+            log::info!(
+                "[bb] id 0x{addr:02x}: trace sent=0b{:08b} sampled=0b{:08b} ack_slot={}",
+                t.sent,
+                t.sampled,
+                if t.ack_low {
+                    "LOW (ACK)"
+                } else {
+                    "high (NACK)"
+                }
+            );
+            for reg in [0xA7u8, 0x00, 0x01, 0x02, 0x03, 0x06] {
+                match bb.read_reg(addr, reg) {
+                    Some(v) => log::info!("[bb] id 0x{addr:02x}: rd {reg:#04x} = {v:#04x}"),
+                    None => log::info!("[bb] id 0x{addr:02x}: rd {reg:#04x} NACK"),
+                }
             }
-        );
-        for reg in [0xA7u8, 0x00, 0x01, 0x02, 0x03, 0x06] {
-            match bb.read_reg(addr, reg) {
-                Some(v) => log::info!("[bb] id 0x{addr:02x}: rd {reg:#04x} = {v:#04x}"),
-                None => log::info!("[bb] id 0x{addr:02x}: rd {reg:#04x} NACK"),
+            match bb.read_reg_stop(addr, 0xA7) {
+                Some(v) => log::info!("[bb] id 0x{addr:02x}: rd 0xa7 (stop-sep) = {v:#04x}"),
+                None => log::info!("[bb] id 0x{addr:02x}: rd 0xa7 (stop-sep) NACK"),
             }
+        });
+        if r.is_none() {
+            log::info!("[err] bb: panel not installed");
         }
-        match bb.read_reg_stop(addr, 0xA7) {
-            Some(v) => log::info!("[bb] id 0x{addr:02x}: rd 0xa7 (stop-sep) = {v:#04x}"),
-            None => log::info!("[bb] id 0x{addr:02x}: rd 0xa7 (stop-sep) NACK"),
-        }
-        self.bb_finish();
     }
 
     /// `bbrd [swap] <addr> <reg> [n] [d=<cycles>]`: bit-banged multi-byte
@@ -734,16 +759,19 @@ impl ConsoleState {
         };
         let n = a.nums[2].map(|v| v.clamp(1, 32)).unwrap_or(1) as usize;
         let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
-        let mut bb = crate::bitbang::Bb::new(a.swap, half);
-        let mut buf = [0u8; 32];
-        if bb.read_regs(addr as u8, reg as u8, &mut buf[..n]) {
-            let mut hex = [0u8; 64];
-            let s = sign_smoke::to_hex(&buf[..n], &mut hex);
-            log::info!("[bb] rd 0x{addr:02x}[0x{reg:02x}..{n}]: {s}");
-        } else {
-            log::info!("[bb] rd 0x{addr:02x}[0x{reg:02x}]: NACK");
+        let r = self.with_bb(a.swap, half, |bb| {
+            let mut buf = [0u8; 32];
+            if bb.read_regs(addr as u8, reg as u8, &mut buf[..n]) {
+                let mut hex = [0u8; 64];
+                let s = sign_smoke::to_hex(&buf[..n], &mut hex);
+                log::info!("[bb] rd 0x{addr:02x}[0x{reg:02x}..{n}]: {s}");
+            } else {
+                log::info!("[bb] rd 0x{addr:02x}[0x{reg:02x}]: NACK");
+            }
+        });
+        if r.is_none() {
+            log::info!("[err] bb: panel not installed");
         }
-        self.bb_finish();
     }
 
     /// `bbwr [swap] <addr> <reg> <val> [val2] [d=<cycles>]`: bit-banged
@@ -757,16 +785,19 @@ impl ConsoleState {
             return;
         };
         let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
-        let mut bb = crate::bitbang::Bb::new(a.swap, half);
-        let ok = match a.nums[3] {
-            Some(val2) => bb.write_regs(addr as u8, reg as u8, &[val as u8, val2 as u8]),
-            None => bb.write_reg(addr as u8, reg as u8, val as u8),
-        };
-        log::info!(
-            "[bb] wr 0x{addr:02x} {reg:#04x}=0x{val:02x}: {}",
-            if ok { "ACK" } else { "NACK" }
-        );
-        self.bb_finish();
+        let r = self.with_bb(a.swap, half, |bb| {
+            let ok = match a.nums[3] {
+                Some(val2) => bb.write_regs(addr as u8, reg as u8, &[val as u8, val2 as u8]),
+                None => bb.write_reg(addr as u8, reg as u8, val as u8),
+            };
+            log::info!(
+                "[bb] wr 0x{addr:02x} {reg:#04x}=0x{val:02x}: {}",
+                if ok { "ACK" } else { "NACK" }
+            );
+        });
+        if r.is_none() {
+            log::info!("[err] bb: panel not installed");
+        }
     }
 
     /// `bbinit [swap] [addr] [d=<cycles>]`: reset pulse (GP16), then the
@@ -783,28 +814,31 @@ impl ConsoleState {
             p.rst.set_high();
         });
         block_for(Duration::from_millis(300));
-        let mut bb = crate::bitbang::Bb::new(a.swap, half);
-        log::info!(
-            "[bb] init 0x{addr:02x}: post-reset probe = {}",
-            if bb.probe(addr) { "ACK" } else { "NACK" }
-        );
-        for (reg, val, name) in [
-            (0xFEu8, 0x01u8, "DisAutoSleep"),
-            (0xED, 0x01, "IrqPulseWidth"),
-            (0xEE, 0x01, "NorScanPer"),
-            (0xFA, 0x41, "IrqCtl(point)"),
-        ] {
-            let ok = bb.write_reg(addr, reg, val);
+        let r = self.with_bb(a.swap, half, |bb| {
             log::info!(
-                "[bb] init: {name} <- 0x{val:02x}: {}",
-                if ok { "ACK" } else { "NACK" }
+                "[bb] init 0x{addr:02x}: post-reset probe = {}",
+                if bb.probe(addr) { "ACK" } else { "NACK" }
             );
+            for (reg, val, name) in [
+                (0xFEu8, 0x01u8, "DisAutoSleep"),
+                (0xED, 0x01, "IrqPulseWidth"),
+                (0xEE, 0x01, "NorScanPer"),
+                (0xFA, 0x41, "IrqCtl(point)"),
+            ] {
+                let ok = bb.write_reg(addr, reg, val);
+                log::info!(
+                    "[bb] init: {name} <- 0x{val:02x}: {}",
+                    if ok { "ACK" } else { "NACK" }
+                );
+            }
+            match bb.read_reg(addr, 0xA7) {
+                Some(v) => log::info!("[bb] init: chip id 0xa7 = 0x{v:02x} (CST816D = 0xb6)"),
+                None => log::info!("[bb] init: chip id read NACK"),
+            }
+        });
+        if r.is_none() {
+            log::info!("[err] bb: panel not installed");
         }
-        match bb.read_reg(addr, 0xA7) {
-            Some(v) => log::info!("[bb] init: chip id 0xa7 = 0x{v:02x} (CST816D = 0xb6)"),
-            None => log::info!("[bb] init: chip id read NACK"),
-        }
-        self.bb_finish();
         crate::panel::with_panel(|p| {
             p.lcd.init();
             p.lcd.test_pattern();
@@ -818,30 +852,33 @@ impl ConsoleState {
         let a = parse_bb_args(args);
         let addr = a.nums[0].map(|v| v as u8).unwrap_or(0x15);
         let half = a.half.unwrap_or(crate::bitbang::DEFAULT_HALF_CYCLES);
-        let mut bb = crate::bitbang::Bb::new(a.swap, half);
-        log::info!("[bb] trace 0x{addr:02x} (swap={}, half={half} cyc)", a.swap);
-        for i in 0..3 {
-            let t = bb.trace_probe(addr);
+        let r = self.with_bb(a.swap, half, |bb| {
+            log::info!("[bb] trace 0x{addr:02x} (swap={}, half={half} cyc)", a.swap);
+            for i in 0..3 {
+                let t = bb.trace_probe(addr);
+                log::info!(
+                    "[bb] #{i} sent=0b{:08b} sampled=0b{:08b} ack_slot={}",
+                    t.sent,
+                    t.sampled,
+                    if t.ack_low {
+                        "LOW (ACK)"
+                    } else {
+                        "high (NACK)"
+                    }
+                );
+            }
             log::info!(
-                "[bb] #{i} sent=0b{:08b} sampled=0b{:08b} ack_slot={}",
-                t.sent,
-                t.sampled,
-                if t.ack_low {
-                    "LOW (ACK)"
+                "[bb] SDA idle after traces: {}",
+                if bb.sda_level() {
+                    "high"
                 } else {
-                    "high (NACK)"
+                    "LOW (stuck)"
                 }
             );
+        });
+        if r.is_none() {
+            log::info!("[err] bb: panel not installed");
         }
-        log::info!(
-            "[bb] SDA idle after traces: {}",
-            if bb.sda_level() {
-                "high"
-            } else {
-                "LOW (stuck)"
-            }
-        );
-        self.bb_finish();
     }
 
     /// `touch [n]`: sample the fitted touch controller, n max 8,

@@ -174,8 +174,20 @@ confirmed.
 **How the chip identity was established** (the vendor example's CST816D
 recipe NACKed on every access): bit-banged I2C scanning (`bbscan`, see
 the console commands) found the FT6236 at 0x38 with consecutive-ACK
-filtering, and register 0xA8 reads 0x11. The FT6236 driver then talks to
-it over the normal controller path (5/5 probes ACK, registers readable).
+filtering, and register 0xA8 reads 0x11.
+
+**The touch transport is the bit-bang engine, not the I2C controller.**
+Measured on this bench: the RP2350's DW I2C block, as driven by
+embassy-rp's blocking API, has no timeout on its status waits, and a bus
+state it does not like - seen right after the shared reset pulse, and
+once during a full-address scan - hangs the firmware in a spin loop
+(recovery: unplug/replug). The bit-bang path has fixed timing and cannot
+hang: the worst case is reading a wrong bit, which the caller retries.
+Touch polling needs a few hundred microseconds per sample, well within
+what a ~100 kHz fixed-timing bit-bang provides. The `i2c` console
+commands therefore also drive the bit-bang engine (`i2c freq` maps to
+its pacing); the `bb*` commands remain the forensics surface (swap /
+`d=` pacing / wire traces).
 
 **The kit ships unassembled.** The display module, the white FPC ribbon
 and the camera are separate parts: the ribbon must be inserted into the
@@ -190,8 +202,10 @@ fault. `i2c freq/scan/scan0/rd/lines` are the console diagnostics for
 this.
 
 Boot runs the full bring-up (shared reset pulse, touch probe + configure,
-LCD init, test pattern), so a fresh flash shows the pattern with no
-console interaction: four horizontal bands (red/green/blue/white, top to
+LCD init, test pattern). The touch probe is retried (50 ms steps, up to
+~400 ms) because the FT6236 needs time after the reset release before it
+answers; each retry is a cheap bit-bang probe. A fresh flash shows the
+pattern with no console interaction: four horizontal bands (red/green/blue/white, top to
 bottom) plus a black marker block in **all four corners** - band order
 verifies the scan direction, hue verifies RGB/BGR, and the corner blocks
 prove the configured resolution (320x480) covers the glass (a block

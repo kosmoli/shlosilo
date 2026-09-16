@@ -75,6 +75,23 @@ impl Bb {
         }
     }
 
+    /// Half-bit delay in CPU cycles (the bus-speed knob).
+    pub fn half_cycles(&self) -> u32 {
+        self.half_cycles
+    }
+
+    /// Set the half-bit delay (takes effect on the next bit).
+    pub fn set_half_cycles(&mut self, half: u32) {
+        self.half_cycles = half;
+    }
+
+    /// Set the SDA/SCL pull mode (pull-down probing; restore with
+    /// `Pull::Up` when done).
+    pub fn set_pulls(&mut self, pull: embassy_rp::gpio::Pull) {
+        self.sda.set_pull(pull);
+        self.scl.set_pull(pull);
+    }
+
     #[inline]
     fn half(&self) {
         spin_cycles(self.half_cycles);
@@ -103,6 +120,18 @@ impl Bb {
     pub fn sda_level(&mut self) -> bool {
         self.sda_release();
         self.sda.is_high()
+    }
+
+    /// SDA level as a plain input (releases the line first).
+    pub fn sda_is_high(&mut self) -> bool {
+        self.sda.set_as_input();
+        self.sda.is_high()
+    }
+
+    /// SCL level as a plain input (releases the line first).
+    pub fn scl_is_high(&mut self) -> bool {
+        self.scl.set_as_input();
+        self.scl.is_high()
     }
 
     fn start(&mut self) {

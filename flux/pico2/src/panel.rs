@@ -64,9 +64,20 @@ pub fn reinit() -> bool {
         p.rst.set_low();
         block_for(Duration::from_millis(100));
         p.rst.set_high();
-        block_for(Duration::from_millis(100));
-
-        match p.touch.probe() {
+        // Post-reset settling: measured on this bench, probing the touch
+        // controller immediately after the reset release does not work
+        // (the FT6236 needs time to start answering I2C). Poll instead
+        // of trusting one fixed delay - each retry is a cheap bit-bang
+        // probe and cannot hang.
+        let mut probed = p.touch.probe();
+        for _ in 0..8 {
+            if probed.is_ok() {
+                break;
+            }
+            block_for(Duration::from_millis(50));
+            probed = p.touch.probe();
+        }
+        match probed {
             Ok((chip, id)) => {
                 TOUCH_ID.store(id as usize, Ordering::Relaxed);
                 TOUCH_CHIP.store(
@@ -82,9 +93,9 @@ pub fn reinit() -> bool {
                     log::info!("[panel] touch configure failed: {e:?}");
                 }
             }
-            Err(e) => {
+            Err(()) => {
                 TOUCH_FAILED.store(true, Ordering::Relaxed);
-                log::info!("[panel] touch probe failed: {e:?}");
+                log::info!("[panel] touch probe failed (no controller answered)");
             }
         }
 

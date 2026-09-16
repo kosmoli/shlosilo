@@ -721,12 +721,10 @@ async fn main(spawner: Spawner) {
             Output::new(p.PIN_13, Level::High), // CS (idle high)
             Output::new(p.PIN_18, Level::High), // backlight on
         ),
-        touch: touch::Touch::new(embassy_rp::i2c::I2c::new_blocking(
-            p.I2C1,
-            p.PIN_27, // SCL
-            p.PIN_26, // SDA
-            touch::i2c_config(),
-        )),
+        // The touch transport is bit-banged (see touch.rs for why the
+        // I2C controller path was abandoned: unbounded waits hang the
+        // firmware on bus states it does not like).
+        touch: touch::Touch::new(),
         rst: Output::new(p.PIN_16, Level::High),
     });
     panel::reinit();
