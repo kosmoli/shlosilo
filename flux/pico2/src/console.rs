@@ -217,6 +217,7 @@ impl ConsoleState {
             b"panel" => self.cmd_panel(),
             b"lcd" => self.cmd_lcd(args),
             b"touch" => self.cmd_touch(args),
+            b"touchint" => return Some(parse_touchint(args)),
             b"i2c" => self.cmd_i2c(args),
             b"heap" => self.cmd_heap(args),
             #[cfg(feature = "bench")]
@@ -275,8 +276,10 @@ impl ConsoleState {
         );
         log::info!("[help]   lcd pattern|fill <hex565>|bl <0|1>   ST7789V2 panel ops");
         log::info!("[help]   touch [n]       CST816D samples (raw x/y; n<=8, 100 ms apart)");
+        log::info!("[help]   i2c freq <khz> | scan | scan0 | id <a> | rd <a> <r> | wr <a> <b..>");
+        log::info!("[help]        | lines | pulldown | rstprobe <a>   (bus diagnostics)");
         log::info!(
-            "[help]   i2c freq <khz> | scan | scan0 | rd <a> <r> | lines  (bus diagnostics)"
+            "[help]   touchint [ms]   monitor TP_INT (GP17) for edge activity (touch the panel)"
         );
         log::info!("[help]   heap [reset]    allocator used/free/peak (reset re-arms peak)");
         #[cfg(feature = "bench")]
@@ -505,8 +508,118 @@ impl ConsoleState {
                 ),
                 None => log::info!("[err] i2c: panel not installed"),
             },
+            b"id" => {
+                let addr = trim_ascii(rest)
+                    .split(|b: &u8| b.is_ascii_whitespace())
+                    .next()
+                    .and_then(parse_hex_u8);
+                match addr {
+                    Some(addr) => {
+                        let r = crate::panel::with_panel(|p| {
+                            let acks = p.touch.probe_addr_stats(addr, 5);
+                            log::info!("[i2c] id {addr:#04x}: write probes 5 -> {acks} ACK");
+                            for reg in [0x00u8, 0xa7u8] {
+                                match p.touch.read_reg_stop(addr, reg) {
+                                    Ok(v) => log::info!(
+                                        "[i2c] id {addr:#04x}: rd1 {reg:#04x} (stop-sep) = {v:#04x}"
+                                    ),
+                                    Err(e) => log::info!(
+                                        "[i2c] id {addr:#04x}: rd1 {reg:#04x} (stop-sep) failed: {e:?}"
+                                    ),
+                                }
+                                match p.touch.read_reg_at(addr, reg) {
+                                    Ok(v) => log::info!(
+                                        "[i2c] id {addr:#04x}: rd {reg:#04x} (restart) = {v:#04x}"
+                                    ),
+                                    Err(e) => log::info!(
+                                        "[i2c] id {addr:#04x}: rd {reg:#04x} (restart) failed: {e:?}"
+                                    ),
+                                }
+                            }
+                        });
+                        if r.is_none() {
+                            log::info!("[err] i2c: panel not installed");
+                        }
+                    }
+                    None => log::info!("[err] i2c: usage: i2c id <addr_hex>"),
+                }
+            }
+            b"wr" => {
+                let mut w = rest
+                    .split(|b: &u8| b.is_ascii_whitespace())
+                    .filter(|w| !w.is_empty());
+                let addr = w.next().and_then(parse_hex_u8);
+                let mut buf = [0u8; 4];
+                let mut n = 0usize;
+                while n < buf.len() {
+                    match w.next().and_then(parse_hex_u8) {
+                        Some(v) => {
+                            buf[n] = v;
+                            n += 1;
+                        }
+                        None => break,
+                    }
+                }
+                match addr {
+                    Some(addr) if n > 0 => {
+                        let bytes = &buf[..n];
+                        match crate::panel::with_panel(|p| p.touch.write_bytes(addr, bytes)) {
+                            Some(Ok(())) => {
+                                log::info!("[i2c] wr {addr:#04x}: {n} byte(s) all ACKed")
+                            }
+                            Some(Err(e)) => {
+                                log::info!("[i2c] wr {addr:#04x}: failed at byte: {e:?}")
+                            }
+                            None => log::info!("[err] i2c: panel not installed"),
+                        }
+                    }
+                    _ => log::info!("[err] i2c: usage: i2c wr <addr_hex> <b0> [b1] [b2] [b3]"),
+                }
+            }
+            b"rstprobe" => {
+                let addr = trim_ascii(rest)
+                    .split(|b: &u8| b.is_ascii_whitespace())
+                    .next()
+                    .and_then(parse_hex_u8);
+                match addr {
+                    Some(addr) => {
+                        let r = crate::panel::with_panel(|p| {
+                            log::info!(
+                                "[i2c] rstprobe {addr:#04x}: pulsed shared reset (GP16); the LCD blanks - run `panel` afterwards"
+                            );
+                            p.rst.set_low();
+                            block_for(Duration::from_millis(10));
+                            p.rst.set_high();
+                            let mut waited: u64 = 0;
+                            for target in [0u64, 50, 100, 200, 500] {
+                                if target > waited {
+                                    block_for(Duration::from_millis(target - waited));
+                                    waited = target;
+                                }
+                                let ok = p.touch.probe_addr(addr);
+                                log::info!(
+                                    "[i2c] rstprobe +{target} ms: {}",
+                                    if ok { "ACK" } else { "NACK" }
+                                );
+                            }
+                        });
+                        if r.is_none() {
+                            log::info!("[err] i2c: panel not installed");
+                        }
+                    }
+                    None => log::info!("[err] i2c: usage: i2c rstprobe <addr_hex>"),
+                }
+            }
+            b"pulldown" => match crate::panel::with_panel(|p| p.touch.read_line_pulldowns()) {
+                Some((sda, scl)) => log::info!(
+                    "[i2c] bus1 with pull-downs: SDA={} SCL={} (high = external pull-ups present)",
+                    if sda { "high" } else { "LOW" },
+                    if scl { "high" } else { "LOW" }
+                ),
+                None => log::info!("[err] i2c: panel not installed"),
+            },
             _ => log::info!(
-                "[err] i2c: usage: i2c freq <khz> | i2c scan | i2c scan0 | i2c rd <addr> <reg> | i2c lines"
+                "[err] i2c: usage: i2c freq <khz> | scan | scan0 | id <a> | rd <a> <r> | wr <a> <b..> | lines | pulldown | rstprobe <a>"
             ),
         }
     }
@@ -1104,6 +1217,10 @@ impl ReceiverHandler for CommandHandler {
 #[derive(Clone, Copy)]
 struct TrngJob {
     mode: JobMode,
+    /// Generic numeric parameter for base-surface deferred jobs (TouchInt:
+    /// the monitoring window in ms). Not gated: these jobs run in
+    /// production builds.
+    arg: u32,
     /// Parameters of the bench-only TRNG diagnostic jobs (`bench` feature).
     #[cfg(feature = "bench")]
     stress: bool,
@@ -1156,6 +1273,9 @@ enum JobMode {
     /// dump buffer (dataset collection without the lossy per-line log stream).
     #[cfg(feature = "bench")]
     CheckCapture,
+    /// Monitor the touch INT line (GP17) for edge activity during a
+    /// bring-up window - independent liveness proof for the controller.
+    TouchInt,
     /// Sign the pending XMR request (TRNG entropy + the full signing path).
     SignXmr,
     /// Verify the PSRAM memory-mapped data path; map the heap on success.
@@ -1167,6 +1287,7 @@ impl TrngJob {
     const fn simple(mode: JobMode) -> Self {
         Self {
             mode,
+            arg: 0,
             #[cfg(feature = "bench")]
             stress: false,
             #[cfg(feature = "bench")]
@@ -1216,6 +1337,7 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
     }
     TrngJob {
         mode: JobMode::Stream,
+        arg: 0,
         stress,
         cond,
         sample,
@@ -1224,6 +1346,21 @@ fn parse_trng_job(args: &[u8]) -> TrngJob {
         count,
         off: 0,
     }
+}
+
+/// `touchint [ms]`: monitor GP17 (touch INT) for edge activity during a
+/// window (default 15 s, cap 120 s). An independent liveness proof for the
+/// controller: a scanning chip pulses INT on touch even when its I2C is
+/// broken or misaddressed.
+fn parse_touchint(args: &[u8]) -> TrngJob {
+    let ms = core::str::from_utf8(trim_ascii(args))
+        .unwrap_or("")
+        .parse::<u32>()
+        .unwrap_or(15_000)
+        .clamp(500, 120_000);
+    let mut job = TrngJob::simple(JobMode::TouchInt);
+    job.arg = ms;
+    job
 }
 
 /// Parse `trngprobe [ms]` (default 60 ms): cold-start the block and trace
@@ -1237,6 +1374,7 @@ fn parse_trng_probe(args: &[u8]) -> TrngJob {
         .clamp(1, 5000);
     TrngJob {
         mode: JobMode::Probe,
+        arg: 0,
         stress: false,
         cond: false,
         sample: None,
@@ -1258,6 +1396,7 @@ fn parse_trng_emb(args: &[u8]) -> TrngJob {
         .clamp(1, 256);
     TrngJob {
         mode: JobMode::Emb,
+        arg: 0,
         stress: false,
         cond: false,
         sample: None,
@@ -1298,6 +1437,7 @@ async fn run_trng_job(job: TrngJob) {
         JobMode::RawTrace => run_trngtrace(job).await,
         #[cfg(feature = "bench")]
         JobMode::CheckCapture => run_trngcheck(job).await,
+        JobMode::TouchInt => run_touchint(job.arg).await,
         JobMode::SignXmr => run_sign_xmr().await,
         JobMode::PsramTest => run_psram_test().await,
     }
@@ -1564,6 +1704,38 @@ fn probe_alloc(size: usize, align: usize) {
     unsafe { alloc::alloc::dealloc(p, layout) };
 }
 
+/// Monitor the touch INT line (GP17) for edge activity. Tight polling with
+/// periodic yields keeps the executor (USB, heartbeats) alive for the whole
+/// window.
+async fn run_touchint(ms: u32) {
+    let p = unsafe { embassy_rp::Peripherals::steal() };
+    let pin = embassy_rp::gpio::Input::new(p.PIN_17, embassy_rp::gpio::Pull::Up);
+    log::info!("[tint] monitoring TP_INT (GP17) for {ms} ms - touch the panel now");
+    let t0 = Instant::now();
+    let mut last = pin.is_high();
+    let mut edges: u32 = 0;
+    let mut low: u32 = 0;
+    let mut samples: u32 = 0;
+    while (Instant::now() - t0).as_millis() < u64::from(ms) {
+        let cur = pin.is_high();
+        if cur != last {
+            edges += 1;
+            last = cur;
+        }
+        if !cur {
+            low += 1;
+        }
+        samples += 1;
+        if samples.is_multiple_of(512) {
+            yield_now().await;
+        }
+    }
+    log::info!(
+        "[tint] done: samples={samples} edges={edges} low_samples={low} final_level={}",
+        if last { "high" } else { "low" }
+    );
+}
+
 /// Trace BUSY/ISR transitions after a cold start (bring-up diagnostic: shows
 /// exactly when the state machine latches, and whether it ever generates).
 #[cfg(feature = "bench")]
@@ -1778,6 +1950,7 @@ fn parse_trngcheck(args: &[u8]) -> TrngJob {
     }
     TrngJob {
         mode: JobMode::CheckCapture,
+        arg: 0,
         stress: false,
         cond: false,
         sample: None,
@@ -1868,6 +2041,7 @@ fn parse_trngtrace(args: &[u8]) -> TrngJob {
     }
     TrngJob {
         mode: JobMode::RawTrace,
+        arg: 0,
         stress: false,
         cond: false,
         sample,
@@ -1909,6 +2083,7 @@ fn parse_trngraw(args: &[u8]) -> TrngJob {
     }
     TrngJob {
         mode: JobMode::RawCapture,
+        arg: 0,
         stress: false,
         cond: false,
         sample,
@@ -1942,6 +2117,7 @@ fn parse_trngrawout(args: &[u8]) -> TrngJob {
     }
     TrngJob {
         mode: JobMode::RawDump,
+        arg: 0,
         stress: false,
         cond: false,
         sample: None,

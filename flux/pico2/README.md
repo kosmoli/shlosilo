@@ -79,10 +79,18 @@ audit #17) - production builds compile them out:
   gesture, raw (x, y); coordinates are untransformed until the mapping is
   settled on hardware
 - `i2c freq <khz>` | `i2c scan` | `i2c scan0` | `i2c rd <addr> <reg>` |
-  `i2c lines` — bus bring-up diagnostics: change the touch bus speed,
-  scan I2C1 (GP26/27) or I2C0 (GP28/29, the camera SCCB pins) for ACKing
-  addresses, read a register at any address, and read the idle line
-  levels as GPIO (pull-up)
+  `i2c lines` | `i2c pulldown` | `i2c id <addr>` | `i2c wr <addr> <b0>…` |
+  `i2c rstprobe <addr>` — bus bring-up diagnostics: change the touch bus
+  speed, scan I2C1 (GP26/27) or I2C0 (GP28/29, the camera SCCB pins) for
+  ACKing addresses, read a register at any address (both repeated-start
+  and STOP-separated shapes), read the idle line levels as GPIO
+  (pull-up), read them against internal pull-downs (external pull-ups
+  present?), identify one address (repeat probes + chip-id register
+  attempts), write 1-4 bytes, and pulse the shared reset then probe at
+  increasing delays
+- `touchint [ms]` — monitor the touch controller's INT line (GP17) for
+  edge activity during a window (default 15 s): an independent liveness
+  proof that does not depend on the I2C path
 - `heap [reset]` — allocator used/free/peak; `reset` re-arms the peak
   watermark for measuring one operation
 - `entropy <hex>` *(bench)* — set the session mnemonic from test-vector

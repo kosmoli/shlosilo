@@ -153,4 +153,50 @@ impl Cst816 {
         self.rebuild(); // put the pins back on the I2C function
         levels
     }
+
+    /// Read SDA/SCL with the internal PULL-DOWNs engaged: a connected
+    /// module's pull-up network (typically 4.7k-10k) keeps the line high
+    /// against the weaker internal pull-down, while a disconnected line
+    /// with no external pull-up is dragged low. Distinguishes "module side
+    /// connected" from "floating line". Returns (sda_high, scl_high).
+    pub fn read_line_pulldowns(&mut self) -> (bool, bool) {
+        let p = unsafe { embassy_rp::Peripherals::steal() };
+        let sda = embassy_rp::gpio::Input::new(p.PIN_26, embassy_rp::gpio::Pull::Down);
+        let scl = embassy_rp::gpio::Input::new(p.PIN_27, embassy_rp::gpio::Pull::Down);
+        let levels = (sda.is_high(), scl.is_high());
+        drop(sda);
+        drop(scl);
+        self.rebuild();
+        levels
+    }
+
+    /// Probe one address `n` times; returns the ACK count. A single ACK
+    /// can be a bus artifact (observed on this bench); a real device
+    /// answers every time.
+    pub fn probe_addr_stats(&mut self, addr: u8, n: u32) -> u32 {
+        let mut acks = 0u32;
+        for _ in 0..n {
+            if self.probe_addr(addr) {
+                acks += 1;
+            }
+        }
+        acks
+    }
+
+    /// STOP-separated register read: write the register pointer with a
+    /// STOP, then read in a fresh transaction. Controllers that NACK a
+    /// repeated-start sequence answer to this shape (the vendor driver
+    /// uses repeated start, so this is a compatibility probe, not the
+    /// primary path).
+    pub fn read_reg_stop(&mut self, addr: u8, reg: u8) -> Result<u8, I2cError> {
+        self.i2c.blocking_write(addr, &[reg])?;
+        let mut b = [0u8; 1];
+        self.i2c.blocking_read(addr, &mut b)?;
+        Ok(b[0])
+    }
+
+    /// Multi-byte write (byte-level ACK behaviour probe).
+    pub fn write_bytes(&mut self, addr: u8, bytes: &[u8]) -> Result<(), I2cError> {
+        self.i2c.blocking_write(addr, bytes)
+    }
 }
