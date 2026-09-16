@@ -219,6 +219,7 @@ impl ConsoleState {
             b"touch" => self.cmd_touch(args),
             b"touchint" => return Some(parse_touchint(args)),
             b"touchdraw" => return Some(parse_touchdraw(args)),
+            b"sd" => self.cmd_sd(args),
             b"i2c" => self.cmd_i2c(args),
             b"bbscan" => self.cmd_bbscan(args),
             b"bbid" => self.cmd_bbid(args),
@@ -291,6 +292,7 @@ impl ConsoleState {
         log::info!(
             "[help]   touchdraw [secs]  paint a trail at the mapped touch position (drag finger)"
         );
+        log::info!("[help]   sd probe | sd read <blk>  TF-slot SD card (SPI0, read-only probe)");
         log::info!("[help]   bbscan|bbid|bbrd|bbwr|bbinit|bbtrace  bit-banged I2C on GP26/27");
         log::info!("[help]                   (swap, d=<cycles>, numbers hex; bring-up forensics)");
         log::info!("[help]   heap [reset]    allocator used/free/peak (reset re-arms peak)");
@@ -894,6 +896,92 @@ impl ConsoleState {
         });
         if r.is_none() {
             log::info!("[err] bb: panel not installed");
+        }
+    }
+
+    /// `sd probe` | `sd read <block_hex>`: the board's TF slot on SPI0
+    /// (MISO=GP20, CS=GP21, CLK=GP22, MOSI=GP23). `probe` runs the SPI
+    /// init handshake (CMD0 -> CMD8 -> ACMD41 -> CMD58) and reports each
+    /// stage; `read` initialises and reads one 512-byte block. Read-only:
+    /// this module performs no writes or erases.
+    ///
+    /// This is also the empirical half of the SD_CS question: the net
+    /// runs to the display connector's pin 10 via R4 (0R), so a clean
+    /// card handshake proves nothing there interferes.
+    fn cmd_sd(&self, args: &[u8]) {
+        let (sub, rest) = split_first_word(args);
+        match sub {
+            b"probe" | b"" => {
+                let mut sd = crate::sd::Sd::new();
+                let r = sd.probe();
+                log::info!(
+                    "[sd] CMD0 -> 0x{:02x} (0x01 = card idle, 0xff = no response)",
+                    r.cmd0
+                );
+                if let Some(e) = r.cmd8 {
+                    log::info!(
+                        "[sd] CMD8 echo = {:02x} {:02x} {:02x} {:02x} (expect 00 00 01 aa)",
+                        e[0],
+                        e[1],
+                        e[2],
+                        e[3]
+                    );
+                }
+                log::info!(
+                    "[sd] ACMD41: {} tries, final R1 0x{:02x}",
+                    r.acmd41_tries,
+                    r.acmd41_final
+                );
+                if let Some(ocr) = r.ocr {
+                    log::info!(
+                        "[sd] OCR = 0x{ocr:08x} CCS={} ({})",
+                        r.sdhc() as u8,
+                        if r.sdhc() { "SDHC/SDXC" } else { "SDSC" }
+                    );
+                }
+                if r.acmd41_final == 0x00 {
+                    log::info!("[sd] card ready; try `sd read 0`");
+                } else if r.cmd0 == 0x01 {
+                    log::info!("[err] sd: card responded but never left idle (ACMD41)");
+                } else {
+                    log::info!("[err] sd: no card in the TF slot (or the bus is open)");
+                }
+            }
+            b"read" => {
+                let Some(block) = parse_hex_u32(rest) else {
+                    log::info!("[err] sd: usage: sd read <block_hex, e.g. 0>");
+                    return;
+                };
+                let mut sd = crate::sd::Sd::new();
+                let r = sd.probe();
+                if r.acmd41_final != 0x00 {
+                    log::info!("[err] sd: card not ready (run `sd probe`; is the card inserted?)");
+                    return;
+                }
+                let mut buf = [0u8; 512];
+                match sd.read_block(block, &mut buf) {
+                    Ok(()) => {
+                        let mut hex = [0u8; 40];
+                        let s = sign_smoke::to_hex(&buf[..16], &mut hex);
+                        log::info!("[sd] block {block} read ok; bytes 0..16: {s}");
+                        let mbr = buf[510] == 0x55 && buf[511] == 0xAA;
+                        log::info!(
+                            "[sd] bytes 510..512 = {:02x} {:02x} ({})",
+                            buf[510],
+                            buf[511],
+                            if block == 0 && mbr {
+                                "MBR signature ok"
+                            } else if block == 0 {
+                                "no 0x55aa (not an MBR?)"
+                            } else {
+                                "block read"
+                            }
+                        );
+                    }
+                    Err(e) => log::info!("[err] sd read block {block}: {e}"),
+                }
+            }
+            _ => log::info!("[err] sd: usage: sd probe | sd read <block_hex>"),
         }
     }
 
@@ -2711,6 +2799,26 @@ fn parse_bb_args(args: &[u8]) -> BbArgs {
         }
     }
     out
+}
+
+/// Parse 1..=8 hex chars into a u32, with an optional 0x prefix
+/// (`sd read`). Not bench-gated: the SD commands are base surface.
+fn parse_hex_u32(s: &[u8]) -> Option<u32> {
+    let s = strip_0x(trim_ascii(s));
+    if s.is_empty() || s.len() > 8 {
+        return None;
+    }
+    let mut v: u32 = 0;
+    for &b in s {
+        let d = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => return None,
+        };
+        v = (v << 4) | u32::from(d);
+    }
+    Some(v)
 }
 
 /// Drop a leading `0x`/`0X` from a trimmed byte string.

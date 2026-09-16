@@ -31,14 +31,14 @@
 | | RST | — | 仅 RC（10K 上拉），无 GPIO 直连 |
 | | SCCB SDA | GP28 | I2C0（例程头名写 `I2C1_*`，按硬件映射即 I2C0） |
 | | SCCB SCL | GP29 | I2C0；R44/R45 1K 上拉至 CSI_3V3 |
-| TF/SD（SPI0） | MISO | GP20 | R38–R41 10K 上拉 |
+- TF/SD（SPI0） | MISO | GP20 | R38–R41 10K 上拉（四条 SD 信号线均挂 3V3） |
 | | CS | GP21 | |
 | | CLK | GP22 | |
 | | MOSI | GP23 | |
 | 按键 | K1 | — | BOOT（BOOTSEL） |
 | | K2 | — | RUN（复位） |
-| LED | LED2 | GP25 | 470R 限流 |
-| | LED3 | 待核实 | 疑电源/充电指示 |
+| LED | LED2 | GP25 | 470R 限流；GND→LED2→R11(470R)→GP25（高电平点亮） |
+| | LED3 | **无 GPIO** | 电源指示：VBUS→R26(1k)→LED3→GND，**常亮（插 USB 即亮），固件不可控**（2026-09-16 原理图文本层取证定案） |
 
 ## 连接器（供接线核对）
 
@@ -55,9 +55,16 @@
 
 ## 待验证点（P0 上板清单）
 
-1. **TP_RST**：按 GP16 初始化（与 LCD_RST 共享）——若触摸不应答再排查（勿动 GP19=PSRAM CS）。
-2. **LED3** 的实际 GPIO（疑非 GPIO，为电源指示）。
-3. **SD_CS 走线**：TF 侧 CS=GP21，且该网络经 R4（0R）续至 "SD_CS-1"→P2.10（schematic 原样记录；功能影响待上板确认）。
+1. ~~**TP_RST**：按 GP16 初始化~~ ✅ 已闭环（2026-09-16）：共享 GP16，触摸正常工作。
+2. ~~**LED3** 的实际 GPIO~~ ✅ 已闭环（2026-09-16，原理图文本层）：**LED3 无 GPIO**——VBUS→R26(1k)→LED3→GND 的电源指示灯，常亮，固件不可控。（LED2=GP25，经 R11 470R，高电平点亮，即心跳灯。）
+3. ~~**SD_CS 走线**：TF 侧 CS=GP21，经 R4（0R）续至 "SD_CS-1"→P2.10~~ ✅ 已闭环（2026-09-16）：拓扑确认 = **GP21 → TF 卡座 CS + R38–R41 10K 上拉；同一网络经 R4(0R) → P2.10（"SD_CS-1"）**。上板实证待做：`sd probe`/`sd read <0>` 全链路握手通过即证明 P2 侧（显示模组）无干扰——**待插卡实测**。
+
+## SD 卡（TF 座，SPI0）
+
+- 引脚：MISO=GP20 / **CS=GP21（手动 GPIO）** / CLK=GP22 / MOSI=GP23；卡供电 3V3 常供。
+- 固件：`src/sd.rs`（SPI 模式初始化 CMD0→CMD8→ACMD41→CMD58 + 单块读 CMD17，400 kHz，只读）。
+- 命令：`sd probe`（逐阶段握手报告）、`sd read <block_hex>`（读一块并校验块 0 的 MBR 签名）。
+- 上板实测：**待做**（插卡后跑 `sd probe` + `sd read 0`，预期 card ready / 块 0 读出 / MBR 签名 0x55AA）。
 
 ## 取证过程要点（防复踩）
 

@@ -96,6 +96,13 @@ audit #17) - production builds compile them out:
   position of the touch point (default 60 s). The trail must track the
   finger; a rotated or mirrored trail means the calibration constants
   in `touch.rs` are wrong
+- `sd probe` | `sd read <block_hex>` — the board's TF slot on SPI0
+  (MISO=GP20, CS=GP21, CLK=GP22, MOSI=GP23): full SPI-mode init
+  handshake (CMD0/CMD8/ACMD41/CMD58) with a stage-by-stage report, and
+  a single-block read (block 0 carries the MBR signature check).
+  Read-only; also the empirical half of the SD_CS question (the CS net
+  also runs to the display connector via R4, so a clean handshake
+  proves the display side does not interfere)
 - `bbscan` | `bbid` | `bbrd` | `bbwr` | `bbinit` | `bbtrace` — the
   bit-banged I2C fallback/forensics path on the same GP26/27 pins: raw
   GPIO toggling with no I2C peripheral and no driver in the loop, plus

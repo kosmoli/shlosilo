@@ -22,6 +22,7 @@ mod lcd;
 mod panel;
 #[cfg(feature = "perf-timing")]
 mod perf_timing;
+mod sd;
 mod sign_smoke;
 mod touch;
 mod trng;
