@@ -237,6 +237,34 @@ impl Bb {
         ok
     }
 
+    /// I2C bus recovery: release both lines, clock SCL up to 9 times so a
+    /// slave stuck mid-transaction (holding SDA low waiting for clocks)
+    /// can finish its byte, then issue a STOP. Harmless on a healthy bus
+    /// (both lines idle high; the pulses change nothing the slave cares
+    /// about, and the STOP is a no-op boundary).
+    pub fn bus_recover(&mut self) {
+        self.sda_release();
+        self.scl_release();
+        self.half();
+        for _ in 0..9 {
+            self.scl_low();
+            self.half();
+            self.scl_release();
+            self.half();
+            // If SDA has been released by the slave, stop early.
+            if self.sda.is_high() {
+                break;
+            }
+        }
+        // STOP: SDA low while SCL is high, then release SDA.
+        self.sda_low();
+        self.half();
+        self.scl_release();
+        self.half();
+        self.sda_release();
+        self.half();
+    }
+
     /// Write register pointer + one value.
     pub fn write_reg(&mut self, addr: u8, reg: u8, val: u8) -> bool {
         self.write_regs(addr, reg, &[val])

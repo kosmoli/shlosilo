@@ -283,7 +283,7 @@ impl ConsoleState {
         log::info!("[help]   lcd pattern|fill <hex565>|bl <0|1>   ST7796S panel ops");
         log::info!("[help]   touch [n]       touch samples (raw x/y; n<=8, 100 ms apart)");
         log::info!("[help]   i2c freq <khz> | scan | scan0 | id <a> | rd <a> <r> | wr <a> <b..>");
-        log::info!("[help]        | lines | pulldown | rstprobe <a>   (bus diagnostics)");
+        log::info!("[help]        | lines | pulldown | recover | rstprobe <a>  (bus diagnostics)");
         log::info!(
             "[help]   touchint [ms]   monitor TP_INT (GP17) for edge activity (touch the panel)"
         );
@@ -625,6 +625,18 @@ impl ConsoleState {
                     None => log::info!("[err] i2c: usage: i2c rstprobe <addr_hex>"),
                 }
             }
+            b"recover" => match crate::panel::with_panel(|p| {
+                p.touch.bus_recover();
+                let after = p.touch.read_line_levels();
+                (after.0, after.1)
+            }) {
+                Some((sda, scl)) => log::info!(
+                    "[i2c] bus recovery (9 clocks + STOP); after: SDA={} SCL={}",
+                    if sda { "high" } else { "LOW (still stuck!)" },
+                    if scl { "high" } else { "LOW" }
+                ),
+                None => log::info!("[err] i2c: panel not installed"),
+            },
             b"pulldown" => match crate::panel::with_panel(|p| p.touch.read_line_pulldowns()) {
                 Some((sda, scl)) => log::info!(
                     "[i2c] bus1 with pull-downs: SDA={} SCL={} (high = external pull-ups present)",
@@ -634,7 +646,7 @@ impl ConsoleState {
                 None => log::info!("[err] i2c: panel not installed"),
             },
             _ => log::info!(
-                "[err] i2c: usage: i2c freq <khz> | scan | scan0 | id <a> | rd <a> <r> | wr <a> <b..> | lines | pulldown | rstprobe <a>"
+                "[err] i2c: usage: freq <khz> | scan | scan0 | id <a> | rd <a> <r> | wr <a> <b..> | lines | pulldown | recover | rstprobe <a>"
             ),
         }
     }

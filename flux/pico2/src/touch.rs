@@ -214,6 +214,12 @@ impl Touch {
 
     // ---- diagnostics (bring-up; see the `i2c` console command) ----
 
+    /// I2C bus recovery (9 clocks + STOP): releases a slave that is
+    /// holding SDA low after a half-completed transaction.
+    pub fn bus_recover(&mut self) {
+        self.bb.bus_recover();
+    }
+
     /// One electrical probe: send the address with no data; true means
     /// the device ACKed its address.
     pub fn probe_addr(&mut self, addr: u8) -> bool {

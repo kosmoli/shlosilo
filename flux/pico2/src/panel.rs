@@ -64,17 +64,26 @@ pub fn reinit() -> bool {
         p.rst.set_low();
         block_for(Duration::from_millis(100));
         p.rst.set_high();
-        // Post-reset settling: measured on this bench, probing the touch
-        // controller immediately after the reset release does not work
-        // (the FT6236 needs time to start answering I2C). Poll instead
-        // of trusting one fixed delay - each retry is a cheap bit-bang
-        // probe and cannot hang.
+        // Post-reset settling (measured the hard way): probing the FT6236
+        // during its boot window latches it into a bad state where it
+        // holds SDA low (every address then "ACKs" and the bus is stuck).
+        // So: wait out the boot window FIRST, run the LCD init next (it
+        // takes ~250 ms of SPI traffic and keeps the bus idle while the
+        // controller finishes booting), recover the bus, and only then
+        // probe - with retries.
+        block_for(Duration::from_millis(300));
+        p.lcd.init();
+        p.lcd.test_pattern();
+        LCD_READY.store(true, Ordering::Relaxed);
+        p.touch.bus_recover();
+        block_for(Duration::from_millis(20));
         let mut probed = p.touch.probe();
-        for _ in 0..8 {
+        for _ in 0..6 {
             if probed.is_ok() {
                 break;
             }
-            block_for(Duration::from_millis(50));
+            p.touch.bus_recover();
+            block_for(Duration::from_millis(100));
             probed = p.touch.probe();
         }
         match probed {
@@ -99,11 +108,8 @@ pub fn reinit() -> bool {
             }
         }
 
-        p.lcd.init();
-        p.lcd.test_pattern();
-        LCD_READY.store(true, Ordering::Relaxed);
         log::info!(
-            "[panel] lcd init done; test pattern {}x{} (bands r/g/b/w + origin chip)",
+            "[panel] lcd init done; test pattern {}x{} (bands r/g/b/w + 4 corner marks)",
             lcd::WIDTH,
             lcd::HEIGHT
         );
