@@ -82,45 +82,53 @@ impl Chip {
 
 /// Raw-to-screen mapping for the fitted panel (FT6236, 320x480).
 ///
-/// The digitizer sits 90 degrees off the display's axes: **raw_x is the
-/// VERTICAL axis** (screen top ~276-315, bottom ~1-32) and **raw_y is
-/// the HORIZONTAL axis** (physical left ~443-475, physical right ~0-40).
-/// Screen x therefore follows raw y DECREASING and screen y follows raw
-/// x DECREASING.
+/// The digitizer is AXIS-ALIGNED with the display and both axes run the
+/// same way as screen space (x to the right, y downward); the scales are
+/// ~1.015 with small offsets - essentially the identity, as expected of
+/// an FT6236 at native 320x480 resolution.
 ///
-/// The per-axis signs were settled by triangulating three independent
-/// observations (each alone is ambiguous):
-/// 1. corner-block presses (five points) fix the two axes and both
-///    scales by least squares;
-/// 2. controlled drags confirm which raw axis is which (a horizontal
-///    drag sweeps raw_y 0..~472; a vertical drag sweeps raw_x
-///    ~315..1);
-/// 3. the on-screen zone behaviour after the display mirror was fixed
-///    fixes the remaining sign: taps on the physical LOWER-LEFT had been
-///    acting as the right-hand (confirm) button, so physical left must
-///    map to screen-left.
+///   screen_x = (1015 * raw_x + 2380) / 1000
+///   screen_y = (1015 * raw_y - 1166) / 1000
 ///
-/// **Why two earlier revisions got this wrong** (kept as a warning):
-/// with the display horizontally mirrored (MADCTL missing MX), a touch
-/// mapping that was *itself* x-mirrored produced a trail that visually
-/// tracked the finger - the two mirrors cancelled. Fixing the display
-/// then required flipping sx too, and this comment block exists because
-/// that was missed the first time. Corner-press ORDER was also captured
-/// on the mirrored screen, which silently swapped left/right in the
-/// fit - the reason observation (3) was needed to break the tie.
+/// Calibration basis: the edge-to-edge drag sweeps (a full-width
+/// horizontal drag moved raw_x 1..315; a full-height vertical drag moved
+/// raw_y 0..472) fix each axis AND its scale, with the centre press as a
+/// third anchor. The five corner-block presses corroborate the axes; the
+/// ~25 px they deviate from the block centres is the bezel limiting how
+/// close a fingertip can land to the glass corner, not a mapping error.
 ///
-///   screen_x = (333400 - 727 * raw_y) / 1000
-///   screen_y = (524182 - 1829 * raw_x) / 1000
-/// (Residuals <= 12 px on the corner set; small clamps at the edges.)
-const CAL_SX_A: i32 = -727;
-const CAL_SX_B: i32 = 333_400;
-const CAL_SY_A: i32 = -1829;
-const CAL_SY_B: i32 = 524_182;
+/// **Read this before "fixing" the axes again** - two earlier revisions
+/// got it wrong, and both mistakes came from data captured before the
+/// display orientation was settled (the panel had a horizontal display
+/// mirror, MADCTL missing MX, and there were no on-screen labels):
+///
+/// 1. The corner-press sequence was labelled by the operator "top-left
+///    first" while reading a mirrored screen - left/right were silently
+///    swapped in that labelling, which produced a plausible-looking
+///    "rotated 90 degrees" fit.
+/// 2. The drag-capture segments were then mis-attributed (the first
+///    sweep was assumed vertical; it was the horizontal one), which
+///    "confirmed" the rotation.
+///
+/// The decisive evidence came only after both were cured (display MX
+/// fixed, `ui orient` edge labels on screen): the on-screen button zones
+/// report which physical corner triggers them, and that pins the frame
+/// unambiguously. Labelled frame => physical lower-left maps to screen
+/// lower-left (X zone), lower-right to lower-right (O zone).
+///
+/// Rule for the future: settle and verify the DISPLAY orientation with
+/// the asymmetric pattern first, give the operator on-screen labels, and
+/// only then collect calibration data - any directional capture from
+/// before that point is void.
+const CAL_SX_A: i32 = 1015;
+const CAL_SX_B: i32 = 2380;
+const CAL_SY_A: i32 = 1015;
+const CAL_SY_B: i32 = -1166;
 
 /// Map a raw touch sample onto screen pixels (clamped to the panel).
 pub fn to_screen(raw_x: u16, raw_y: u16) -> (u16, u16) {
-    let sx = (CAL_SX_A * i32::from(raw_y) + CAL_SX_B) / 1000;
-    let sy = (CAL_SY_A * i32::from(raw_x) + CAL_SY_B) / 1000;
+    let sx = (CAL_SX_A * i32::from(raw_x) + CAL_SX_B) / 1000;
+    let sy = (CAL_SY_A * i32::from(raw_y) + CAL_SY_B) / 1000;
     (
         sx.clamp(0, crate::lcd::WIDTH as i32 - 1) as u16,
         sy.clamp(0, crate::lcd::HEIGHT as i32 - 1) as u16,
