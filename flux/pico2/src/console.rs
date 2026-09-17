@@ -352,7 +352,13 @@ impl ConsoleState {
         #[cfg(feature = "bench")]
         log::info!("[help]   temp            read the on-die temperature sensor");
         #[cfg(feature = "bench")]
-        log::info!("[help]   cam id | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]");
+        log::info!(
+            "[help]   cam id | rx [ms] | pins [n] | pwdn <z|0|1> | grab [n] | dump [stride] [byte]"
+        );
+        #[cfg(feature = "bench")]
+        log::info!(
+            "[help]        | reg <hexreg> [hexval]   OV5640 bring-up: SCCB, FIFO and pad probes"
+        );
         #[cfg(feature = "bench")]
         log::info!("[help]                   OV5640 bring-up: SCCB id, frame stats, hex PGM dump");
         log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
@@ -1015,6 +1021,51 @@ impl ConsoleState {
                 let mut job = TrngJob::simple(JobMode::CamGrab);
                 job.arg = dec(split_first_word(rest).0).unwrap_or(1);
                 Some(job)
+            }
+            b"rx" => {
+                let mut job = TrngJob::simple(JobMode::CamRx);
+                job.arg = dec(split_first_word(rest).0).unwrap_or(1000);
+                Some(job)
+            }
+            b"pwdn" => {
+                let mode = match split_first_word(rest).0 {
+                    b"0" => 0u8,
+                    b"1" => 1u8,
+                    _ => 2u8, // anything else = high-Z
+                };
+                match crate::camera::with_camera(|c| c.set_pwdn(mode)) {
+                    Some(()) => log::info!(
+                        "[cam] PWDN <- {}",
+                        if mode == 0 {
+                            "low (driven)"
+                        } else if mode == 1 {
+                            "high (driven)"
+                        } else {
+                            "high-Z (input, vendor default)"
+                        }
+                    ),
+                    None => log::info!("[err] cam: not initialised"),
+                }
+                None
+            }
+            b"pins" => {
+                let n = dec(split_first_word(rest).0)
+                    .unwrap_or(20_000)
+                    .clamp(1, 200_000);
+                let h = crate::camera::sample_pins(n);
+                log::info!(
+                    "[cam] pad samples ({n}): VSYNC(GP8) {}/{} high, HREF(GP9) {}/{}, \
+                     PCLK(GP10) {}/{}, XCLK(GP11) {}/{} (0 = stuck low, n = stuck high)",
+                    h[0],
+                    n,
+                    h[1],
+                    n,
+                    h[2],
+                    n,
+                    h[3],
+                    n
+                );
+                None
             }
             b"dump" => {
                 let (a, rest2) = split_first_word(rest);
@@ -1827,6 +1878,9 @@ enum JobMode {
     /// Capture one camera frame; stream one byte plane as paced hex lines.
     #[cfg(feature = "bench")]
     CamDump,
+    /// Drain the camera PIO RX FIFO for `arg` ms (no DMA) and report.
+    #[cfg(feature = "bench")]
+    CamRx,
 }
 
 impl TrngJob {
@@ -2077,25 +2131,58 @@ fn cam_byte_stats(buf: &[u16], high: bool) -> (u8, u8, u32) {
     (min, max, (sum / buf.len() as u64) as u32)
 }
 
-/// `cam grab [n]`: capture n frames, log per-frame statistics and timing.
+/// \`cam grab [n]\`: capture n frames, log per-frame statistics and timing.
 #[cfg(feature = "bench")]
 async fn run_cam_grab(n: u32) {
+    use crate::camera::CaptureResult;
     let n = n.clamp(1, 64);
     let mut buf = alloc::vec![0u16; crate::camera::FRAME_WORDS];
     for i in 0..n {
         let t0 = Instant::now();
-        if crate::camera::capture_frame(&mut buf).await.is_none() {
-            log::info!("[err] cam: not initialised");
-            return;
+        let res = match crate::camera::capture_frame(&mut buf).await {
+            Some(r) => r,
+            None => {
+                log::info!("[err] cam: not initialised");
+                return;
+            }
+        };
+        match res {
+            CaptureResult::Ok => {
+                let (mn0, mx0, av0) = cam_byte_stats(&buf, true);
+                let (mn1, mx1, av1) = cam_byte_stats(&buf, false);
+                log::info!(
+                    "[cam] frame {i} ({} ms): b0 {mn0}..{mx0} avg {av0} | b1 {mn1}..{mx1} avg {av1}",
+                    t0.elapsed().as_millis()
+                );
+            }
+            CaptureResult::Timeout { words } => {
+                log::info!(
+                    "[cam] frame {i}: TIMEOUT after {} ms; {words}/{} words transferred \
+                     (0 = PIO produced nothing - check the readback line and wiring)",
+                    t0.elapsed().as_millis(),
+                    crate::camera::FRAME_WORDS
+                );
+                return;
+            }
         }
-        let (mn0, mx0, av0) = cam_byte_stats(&buf, true);
-        let (mn1, mx1, av1) = cam_byte_stats(&buf, false);
-        log::info!(
-            "[cam] frame {i} ({} ms): b0 {mn0}..{mx0} avg {av0} | b1 {mn1}..{mx1} avg {av1}",
-            t0.elapsed().as_millis()
-        );
     }
     log::info!("[cam] {n} frame(s) captured");
+}
+
+/// \`cam rx [ms]\`: drain the PIO RX FIFO for `ms` (no DMA) and report the
+/// word count. This is the ground truth for "is the capture program
+/// producing anything at all" - it needs no DMA, no interrupts and no
+/// alignment.
+#[cfg(feature = "bench")]
+async fn run_cam_rx(ms: u32) {
+    let ms = ms.clamp(10, 10_000);
+    match crate::camera::probe_rx(ms).await {
+        Some((words, nonzero)) => log::info!(
+            "[cam] rx probe {ms} ms: {words} words drained, {nonzero} non-zero \
+             (a silent FIFO = the PIO is sitting in a wait: no DVP data)"
+        ),
+        None => log::info!("[err] cam: not initialised"),
+    }
 }
 
 /// `cam dump [stride] [byte]`: capture a frame and stream one byte plane as
@@ -2115,10 +2202,20 @@ async fn run_cam_dump(stride: u32, byte: u32) {
     // Two captures: between jobs the state machine stalls on a full FIFO,
     // so the first transfer can start mid-group; the second is continuous
     // (see the camera module docs).
-    for _ in 0..2 {
-        if crate::camera::capture_frame(&mut buf).await.is_none() {
-            log::info!("[err] cam: not initialised");
-            return;
+    for round in 0..2 {
+        match crate::camera::capture_frame(&mut buf).await {
+            None => {
+                log::info!("[err] cam: not initialised");
+                return;
+            }
+            Some(crate::camera::CaptureResult::Ok) => {}
+            Some(crate::camera::CaptureResult::Timeout { words }) => {
+                log::info!(
+                    "[cam] dump: capture {round} timed out ({words}/{} words) - aborting",
+                    FRAME_WORDS
+                );
+                return;
+            }
         }
     }
     let cols = FRAME_W / stride;
@@ -2187,6 +2284,8 @@ async fn run_trng_job(job: TrngJob) {
         JobMode::CamGrab => run_cam_grab(job.arg).await,
         #[cfg(feature = "bench")]
         JobMode::CamDump => run_cam_dump(job.arg, job.off as u32).await,
+        #[cfg(feature = "bench")]
+        JobMode::CamRx => run_cam_rx(job.arg).await,
     }
 }
 

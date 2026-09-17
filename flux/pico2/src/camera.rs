@@ -22,6 +22,12 @@
 //! word: YUV422 packs two bytes per pixel). A DMA of exactly FRAME_WORDS u16
 //! words is therefore one frame minus its very last pixel - harmless for
 //! both bring-up inspection and QR decoding.
+//!
+//! Bring-up diagnostics (added after the first hardware run wedged in the
+//! DMA await): `capture` carries a 3 s timeout and reports how far the
+//! transfer got; `rx_probe` drains the PIO RX FIFO without DMA (the ground
+//! truth for "is anything being produced"); `init` reads back the key
+//! configuration registers so a silently-dropped SCCB write is visible.
 
 use core::cell::RefCell;
 
@@ -29,7 +35,7 @@ use embassy_rp::Peri;
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks;
 use embassy_rp::dma::Channel;
-use embassy_rp::gpio::{Level, Output};
+use embassy_rp::gpio::Flex;
 use embassy_rp::i2c::{Blocking as I2cBlocking, Config as I2cConfig, I2c};
 use embassy_rp::peripherals::{
     DMA_CH0, I2C0, PIN_0, PIN_1, PIN_2, PIN_3, PIN_4, PIN_5, PIN_6, PIN_7, PIN_8, PIN_9, PIN_10,
@@ -41,7 +47,7 @@ use embassy_rp::pio::{
 use embassy_rp::pwm::{Config as PwmConfig, Pwm};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer, with_timeout};
 
 bind_interrupts!(struct CamIrqs {
     PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO0>;
@@ -237,6 +243,13 @@ pub struct Camera {
     dma: Channel<'static>,
     /// Kept so the PWM slice handle stays alive; XCLK keeps running regardless.
     _xclk: Pwm<'static>,
+    /// PWDN (GP24). Held as a Flex so the boot state can be high-Z - the
+    /// vendor demo never touches this pin, and this board's net semantics
+    /// are not fully known (the schematic says PWDN; polarity unverified) -
+    /// and so the console can sweep z / 0 / 1 at runtime (`cam pwdn`) while
+    /// watching `cam rx`: a decisive experiment for the "sensor silent but
+    /// SCCB alive" symptom.
+    pwdn: Flex<'static>,
     /// Sensor id read over SCCB (0x5640 for the OV5640).
     pub sensor_id: u16,
     /// Completed capture transfers.
@@ -261,27 +274,101 @@ pub fn with_camera<R>(f: impl FnOnce(&mut Camera) -> R) -> Option<R> {
 /// Capture one frame into `buf` (must be at least FRAME_WORDS long). The
 /// camera is taken out of its slot across the await; console jobs are
 /// serialized, so there is exactly one consumer.
-pub async fn capture_frame(buf: &mut [u16]) -> Option<()> {
+pub async fn capture_frame(buf: &mut [u16]) -> Option<CaptureResult> {
     assert!(buf.len() >= FRAME_WORDS, "frame buffer too small");
     let mut slot = CAMERA.lock(|c| c.borrow_mut().take());
     let r = match slot.as_mut() {
-        Some(cam) => {
-            cam.capture(buf).await;
-            Some(())
-        }
+        Some(cam) => Some(cam.capture(buf).await),
         None => None,
     };
     CAMERA.lock(|c| *c.borrow_mut() = slot);
     r
 }
 
+/// RX-FIFO probe (see `Camera::rx_probe`).
+pub async fn probe_rx(ms: u32) -> Option<(u32, u32)> {
+    let mut slot = CAMERA.lock(|c| c.borrow_mut().take());
+    let r = match slot.as_mut() {
+        Some(cam) => Some(cam.rx_probe(ms).await),
+        None => None,
+    };
+    CAMERA.lock(|c| *c.borrow_mut() = slot);
+    r
+}
+
+/// Outcome of one capture attempt.
+pub enum CaptureResult {
+    /// The frame group completed: `buf` holds FRAME_WORDS valid words.
+    Ok,
+    /// Timed out; `words` words had been transferred when the transfer was
+    /// aborted (0 = the PIO produced nothing at all - the sensor is not
+    /// outputting, its signals are not reaching the pins, or the config
+    /// writes did not land; see the readback line in `init`).
+    Timeout {
+        /// Words transferred before the abort.
+        words: usize,
+    },
+}
+
 impl Camera {
-    /// One DMA run = one capture group = one frame (see the module docs).
-    pub async fn capture(&mut self, buf: &mut [u16]) {
+    /// Drive PWDN: 0 = low, 1 = high, anything else = high-Z (input).
+    pub fn set_pwdn(&mut self, mode: u8) {
+        match mode {
+            0 => {
+                self.pwdn.set_as_output();
+                self.pwdn.set_low();
+            }
+            1 => {
+                self.pwdn.set_as_output();
+                self.pwdn.set_high();
+            }
+            _ => self.pwdn.set_as_input(),
+        }
+    }
+
+    /// One DMA run = one capture group = one frame (see the module docs),
+    /// with a hard timeout so a silent capture can never wedge the console
+    /// (observed on the first hardware run: the DMA await blocked forever
+    /// while the PIO sat in its VSYNC wait). The DMA write pointer tells us
+    /// how far the transfer got before the abort, which separates "no data
+    /// at all" (0 words) from "some data, then stall".
+    pub async fn capture(&mut self, buf: &mut [u16]) -> CaptureResult {
+        let base = buf.as_ptr() as usize;
         let rx = self.sm.rx();
         let transfer = rx.dma_pull(&mut self.dma, buf, false);
-        transfer.await;
-        self.frames = self.frames.wrapping_add(1);
+        match with_timeout(Duration::from_secs(3), transfer).await {
+            Ok(()) => {
+                self.frames = self.frames.wrapping_add(1);
+                CaptureResult::Ok
+            }
+            Err(_) => {
+                // The transfer was dropped (aborting the channel); the write
+                // address register still holds the last written pointer.
+                let end = self.dma.write_addr() as usize;
+                CaptureResult::Timeout {
+                    words: end.wrapping_sub(base).div_ceil(2).min(buf.len()),
+                }
+            }
+        }
+    }
+
+    /// Drain the PIO RX FIFO for `ms` without DMA and report (words,
+    /// non-zero words). This is the ground truth for "is the capture
+    /// program producing anything": a live DVP stream fills the FIFO with
+    /// varied pixel data; a program stuck on a `wait` leaves it empty.
+    pub async fn rx_probe(&mut self, ms: u32) -> (u32, u32) {
+        let mut words = 0u32;
+        let mut nonzero = 0u32;
+        for _ in 0..(ms / 10).max(1) {
+            while let Some(w) = self.sm.rx().try_pull() {
+                words += 1;
+                if w != 0 {
+                    nonzero += 1;
+                }
+            }
+            Timer::after_millis(10).await;
+        }
+        (words, nonzero)
     }
 
     /// SCCB register write.
@@ -304,6 +391,25 @@ impl Camera {
         let lo = self.rd(0x300B) as u16;
         (hi << 8) | lo
     }
+}
+
+/// Sample the raw pad levels of the DVP lines (VSYNC GP8, HREF GP9,
+/// PCLK GP10, XCLK GP11) `n` times back-to-back and report, per line, how
+/// many samples read high: 0 = stuck low, n = stuck high, anything in
+/// between = the line moved. `SIO.gpio_in` reflects the pad input
+/// regardless of which peripheral owns the pin's function, so this works
+/// while PIO drives the capture pins and PWM drives XCLK.
+pub fn sample_pins(n: u32) -> [u32; 4] {
+    let mut hits = [0u32; 4];
+    for _ in 0..n {
+        let v = embassy_rp::pac::SIO.gpio_in(0).read();
+        for (i, pin) in [8usize, 9, 10, 11].iter().enumerate() {
+            if (v >> pin) & 1 != 0 {
+                hits[i] += 1;
+            }
+        }
+    }
+    hits
 }
 
 /// XCLK PWM config, replicating the vendor formula: top = clk_khz/f - 1 and
@@ -333,10 +439,9 @@ fn wr4(i2c: &mut I2c<'static, I2C0, I2cBlocking>, reg: u16, d1: u16, d2: u16) {
 /// configuration), then the PIO capture program and its DMA channel.
 /// Async because the vendor table carries millisecond delays.
 pub async fn init(p: Pins) -> Camera {
-    // PWDN low = powered. The vendor demo never touches this pin; driving
-    // it keeps the state defined (their hardware works with it floating,
-    // so a low drive cannot regress it).
-    let _pwdn = Output::new(p.pwdn, Level::Low);
+    // PWDN starts high-Z (Flex::new = input), i.e. exactly what the vendor
+    // demo leaves it as. The console can drive it later (`cam pwdn`).
+    let pwdn = Flex::new(p.pwdn);
 
     // XCLK first: the sensor's SCCB block expects a running clock.
     let xclk = Pwm::new_output_b(p.xclk_slice, p.xclk, xclk_config());
@@ -437,6 +542,31 @@ pub async fn init(p: Pins) -> Camera {
     }
     Timer::after_millis(50).await;
 
+    // Read back key configuration registers. A silently dropped SCCB write
+    // would leave the sensor unconfigured and the DVP bus idle, which the
+    // capture path cannot tell apart from a wiring fault - this line is the
+    // discriminator. Expected: 0x3008=0x02 (powered, streaming), 0x3035=0x11
+    // (PLL divider), 0x3808/0x3809 = 0x00 0xF0 (240 px), 0x4300=0x61
+    // (YUV422), 0x4740=0x21 (clock polarities).
+    let mut probe = [0u8; 6];
+    for (i, reg) in [0x3008u16, 0x3035, 0x3808, 0x3809, 0x4300, 0x4740]
+        .iter()
+        .enumerate()
+    {
+        let mut v = [0u8; 1];
+        let _ = i2c.blocking_write_read(SCCB_ADDR, &[(reg >> 8) as u8, *reg as u8], &mut v);
+        probe[i] = v[0];
+    }
+    log::info!(
+        "[cam] readback 0x3008={:#04x} 0x3035={:#04x} w=0x{:02x}{:02x} 0x4300={:#04x} 0x4740={:#04x}",
+        probe[0],
+        probe[1],
+        probe[2],
+        probe[3],
+        probe[4],
+        probe[5]
+    );
+
     // ---- PIO capture program (vendor `picampinos`, 1:1) ----
     let mut pio = Pio::new(p.pio, CamIrqs);
     let prg = pio::pio_asm!(
@@ -519,12 +649,31 @@ pub async fn init(p: Pins) -> Camera {
         FRAME_WORDS
     );
 
-    Camera {
+    let mut cam = Camera {
         i2c,
         sm,
         dma: Channel::new(p.dma, CamIrqs),
         _xclk: xclk,
+        pwdn,
         sensor_id,
         frames: 0,
-    }
+    };
+
+    // Boot diagnostics: pad levels and a short RX-FIFO probe. Together with
+    // the readback line these three separate the failure modes: writes not
+    // landing / no DVP signals at the pads / signals present but the capture
+    // program not consuming them.
+    let hits = sample_pins(20_000);
+    log::info!(
+        "[cam] pad samples (20k): VSYNC(GP8) {}/20000 high, HREF(GP9) {}/20000, \
+         PCLK(GP10) {}/20000, XCLK(GP11) {}/20000 (0 = stuck low, 20000 = stuck high)",
+        hits[0],
+        hits[1],
+        hits[2],
+        hits[3]
+    );
+    let (words, nonzero) = cam.rx_probe(200).await;
+    log::info!("[cam] boot rx probe 200 ms: {words} words, {nonzero} non-zero");
+
+    cam
 }
