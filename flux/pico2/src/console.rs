@@ -353,7 +353,7 @@ impl ConsoleState {
         log::info!("[help]   temp            read the on-die temperature sensor");
         #[cfg(feature = "bench")]
         log::info!(
-            "[help]   cam id | rx [ms] | pins [n] | edges [ms] | pwdn <z|0|1> | reinit | sm | selftest [ms]"
+            "[help]   cam id | rx [ms] | pins [n] | edges [ms] | pwdn <z|0|1> | reinit | sm | selftest [ms] | piosample [n]"
         );
         #[cfg(feature = "bench")]
         log::info!("[help]        | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]");
@@ -1038,20 +1038,21 @@ impl ConsoleState {
                 let ms = dec(split_first_word(rest).0).unwrap_or(200).clamp(10, 5000);
                 let e = crate::camera::count_edges(ms);
                 log::info!(
-                    "[cam] edges over {ms} ms: VSYNC(GP8) {}+/{}-, HREF(GP9) {}+/{}-, PCLK(GP10) {}+/{}- \
-                     (saturated counters = the line is running far above the CPU sampling rate)",
+                    "[cam] edges over {ms} ms: VSYNC(GP8) {}+/{}-, HREF(GP9) {}+/{}-, PCLK(GP10) {}+/{}-, \
+                     D0-7 changes {} (counters saturate: the lines run far above the CPU sampling rate)",
                     e[0].0,
                     e[0].1,
                     e[1].0,
                     e[1].1,
                     e[2].0,
-                    e[2].1
+                    e[2].1,
+                    e[3].0,
                 );
                 None
             }
             b"selftest" => {
                 let ms = dec(split_first_word(rest).0).unwrap_or(20).clamp(1, 500);
-                match crate::camera::with_camera(|c| c.selftest(ms)) {
+                match crate::camera::selftest(ms) {
                     Some(n) => log::info!(
                         "[cam] SM1 self-test: {n} words in {ms} ms {}",
                         if n > 0 {
@@ -1060,6 +1061,34 @@ impl ConsoleState {
                             "(NO words - SM/FIFO plumbing problem!)"
                         }
                     ),
+                    None => log::info!("[err] cam: not initialised"),
+                }
+                None
+            }
+            b"piosample" => {
+                let n = dec(split_first_word(rest).0).unwrap_or(16).clamp(1, 64) as usize;
+                match crate::camera::piosample(n) {
+                    Some(words) => {
+                        log::info!(
+                            "[cam] PIO pin samples ({n} at clk_sys; bit0=GP0 .. bit11=GP11):"
+                        );
+                        let mut ever_hi = 0u32;
+                        let mut always_hi = u32::MAX;
+                        for (i, w) in words.iter().enumerate() {
+                            ever_hi |= *w;
+                            always_hi &= *w;
+                            log::info!("[cam]   {i:02}: {w:08x}");
+                        }
+                        log::info!(
+                            "[cam]   OR={ever_hi:08x} AND={always_hi:08x} -> VSYNC(8)={} HREF(9)={} \
+                             PCLK(10)={} XCLK(11)={} (OR view; D0-7 move: {})",
+                            (ever_hi >> 8) & 1,
+                            (ever_hi >> 9) & 1,
+                            (ever_hi >> 10) & 1,
+                            (ever_hi >> 11) & 1,
+                            (ever_hi & 0xff) != 0 && (ever_hi & 0xff) != 0xff,
+                        );
+                    }
                     None => log::info!("[err] cam: not initialised"),
                 }
                 None
@@ -1101,6 +1130,11 @@ impl ConsoleState {
                     n,
                     h[3],
                     n
+                );
+                let d = crate::camera::sample_data_pins(n);
+                log::info!(
+                    "[cam] data pads D7..D0 high: {:?} (of {n})",
+                    d.iter().rev().collect::<alloc::vec::Vec<_>>()
                 );
                 None
             }

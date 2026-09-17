@@ -29,6 +29,8 @@
 //! truth for "is anything being produced"); `init` reads back the key
 //! configuration registers so a silently-dropped SCCB write is visible.
 
+extern crate alloc;
+
 use core::cell::RefCell;
 
 use embassy_rp::Peri;
@@ -240,10 +242,11 @@ pub struct Pins {
 pub struct Camera {
     i2c: I2c<'static, I2C0, I2cBlocking>,
     sm: StateMachine<'static, PIO0, 0>,
-    /// SM1 carries the PIO plumbing self-test program (`cam selftest`):
-    /// a free-running `push` loop. Words appearing there prove the SM /
-    /// FIFO / drain path work, which separates "plumbing broken" from
-    /// "the capture program's waits are never satisfied".
+    /// SM1 runs the pin-sampling program (`cam piosample` / `cam selftest`):
+    /// `mov isr, pins; push block` in a tight loop. Words appearing there
+    /// prove the SM / FIFO / drain path work AND carry the PIO's own view of
+    /// the 32 GPIOs - the decisive probe when the CPU-side pad reads and the
+    /// capture program disagree.
     sm1: StateMachine<'static, PIO0, 1>,
     dma: Channel<'static>,
     /// Kept so the PWM slice handle stays alive; XCLK keeps running regardless.
@@ -286,6 +289,23 @@ pub async fn capture_frame(buf: &mut [u16]) -> Option<CaptureResult> {
         Some(cam) => Some(cam.capture(buf).await),
         None => None,
     };
+    CAMERA.lock(|c| *c.borrow_mut() = slot);
+    r
+}
+
+/// SM1 pin-sample capture, run with the camera taken out of its slot (so no
+/// critical section is held while draining).
+pub fn piosample(n: usize) -> Option<alloc::vec::Vec<u32>> {
+    let mut slot = CAMERA.lock(|c| c.borrow_mut().take());
+    let r = slot.as_mut().map(|cam| cam.piosample(n));
+    CAMERA.lock(|c| *c.borrow_mut() = slot);
+    r
+}
+
+/// SM1 self-test, run outside the critical section (see `Camera::selftest`).
+pub fn selftest(ms: u32) -> Option<u32> {
+    let mut slot = CAMERA.lock(|c| c.borrow_mut().take());
+    let r = slot.as_mut().map(|cam| cam.selftest(ms));
     CAMERA.lock(|c| *c.borrow_mut() = slot);
     r
 }
@@ -365,10 +385,17 @@ impl Camera {
         let mut words = 0u32;
         let mut nonzero = 0u32;
         for _ in 0..(ms / 10).max(1) {
-            while let Some(w) = self.sm.rx().try_pull() {
-                words += 1;
-                if w != 0 {
-                    nonzero += 1;
+            // Bounded per pass: a producer that outruns the CPU must not
+            // trap this loop (see the selftest note).
+            for _ in 0..4096 {
+                match self.sm.rx().try_pull() {
+                    Some(w) => {
+                        words = words.wrapping_add(1);
+                        if w != 0 {
+                            nonzero = nonzero.wrapping_add(1);
+                        }
+                    }
+                    None => break,
                 }
             }
             Timer::after_millis(10).await;
@@ -397,21 +424,45 @@ impl Camera {
         (hi << 8) | lo
     }
 
-    /// PIO plumbing self-test (see the `sm1` field): run SM1's push loop
-    /// for `ms` and return the number of words drained. Nonzero proves the
-    /// state machine, FIFOs and drain path all work.
+    /// PIO plumbing self-test (see the `sm1` field): run SM1's sampling
+    /// loop for `ms` and return the number of words drained. Nonzero proves
+    /// the state machine, FIFOs and drain path all work.
+    ///
+    /// The drain is ONE word per time check. An unbounded inner
+    /// `while try_pull().is_some()` loop starves forever when the producer
+    /// outruns the CPU (a free-running PIO pushes every ~2 cycles), and the
+    /// first version of this function hung the whole firmware that way
+    /// (it also ran inside the camera's critical section, so interrupts
+    /// were off). Keep it bounded.
     pub fn selftest(&mut self, ms: u32) -> u32 {
         self.sm1.clear_fifos();
         self.sm1.set_enable(true);
         let t0 = Instant::now();
         let mut n = 0u32;
         while t0.elapsed().as_millis() < ms as u64 {
-            while self.sm1.rx().try_pull().is_some() {
+            if self.sm1.rx().try_pull().is_some() {
                 n = n.wrapping_add(1);
             }
         }
         self.sm1.set_enable(false);
         n
+    }
+
+    /// Capture `n` samples of the PIO's own view of the 32 GPIOs (SM1 runs
+    /// `mov isr, pins`, so each word is one snapshot at full clk_sys rate -
+    /// ~1 sample every few cycles). Bounded drain, same as `selftest`.
+    pub fn piosample(&mut self, n: usize) -> alloc::vec::Vec<u32> {
+        let mut out = alloc::vec::Vec::with_capacity(n);
+        self.sm1.clear_fifos();
+        self.sm1.set_enable(true);
+        let t0 = Instant::now();
+        while out.len() < n && t0.elapsed().as_millis() < 250 {
+            if let Some(w) = self.sm1.rx().try_pull() {
+                out.push(w);
+            }
+        }
+        self.sm1.set_enable(false);
+        out
     }
 
     /// Re-run the SCCB configuration sequence (see `sccb_configure` for
@@ -436,32 +487,55 @@ pub async fn reinit() -> Option<u16> {
 }
 
 /// Dump the state of PIO0's first two state machines and the FIFO flags -
-/// the decisive "where is the SM actually stuck" view. Register names mirror
-/// the RP2350 PIO chapter (addr = program counter).
+/// the decisive "where is the SM actually stuck" view. Register fields are
+/// decoded through the same pac accessors embassy uses, so the printed
+/// values cannot drift from the hardware's own field layout. Key reads:
+/// `stalled` (an SM waiting on a WAIT/OUT is stalled), `pc` (program
+/// counter), `wrap` (the program's loop region).
 pub fn log_sm_state() {
     use embassy_rp::pac::PIO0;
+    let fd = PIO0.fdebug().read();
     log::info!(
-        "[cam] PIO0 gpiobase={} ctrl=0x{:08x} fdebug=0x{:08x} (rxstall/txstall/rxempty/txempty per SM)",
+        "[cam] PIO0 gpiobase={} ctrl=0x{:08x}",
         PIO0.gpiobase().read().gpiobase() as u8,
         PIO0.ctrl().read().0,
-        PIO0.fdebug().read().0,
+    );
+    log::info!(
+        "[cam] fdebug=0x{:08x}: rxstall=0x{:x} txstall=0x{:x} rxunder=0x{:x} txover=0x{:x} (bit0 = SM0)",
+        fd.0,
+        fd.rxstall(),
+        fd.txstall(),
+        fd.rxunder(),
+        fd.txover(),
     );
     for sm in 0..2usize {
         let s = PIO0.sm(sm);
-        let addr = s.addr().read().0 & 0x1f;
+        let a = s.addr().read();
         let cd = s.clkdiv().read();
         let ec = s.execctrl().read();
         let sc = s.shiftctrl().read();
         let pc = s.pinctrl().read();
         log::info!(
-            "[cam] SM{sm}: pc={addr} clkdiv={}.{} execctrl=0x{:08x} shiftctrl=0x{:08x} \
-             pinctrl=0x{:08x} (in_base={} out_base={} set_base={} sideset_base={})",
+            "[cam] SM{sm}: pc={} stalled={} wrap={}..{} clkdiv={}.{} \
+             shiftctrl: autopush={} autopull={} push_thresh={} pull_thresh={} in_lshift={} out_lshift={}",
+            a.addr(),
+            ec.exec_stalled(),
+            ec.wrap_top(),
+            ec.wrap_bottom(),
             cd.int(),
             cd.frac(),
-            ec.0,
-            sc.0,
+            sc.autopush(),
+            sc.autopull(),
+            sc.push_thresh(),
+            sc.pull_thresh(),
+            !sc.in_shiftdir(),
+            !sc.out_shiftdir(),
+        );
+        log::info!(
+            "[cam] SM{sm}: pinctrl=0x{:08x} in_base={} count={} out_base={} set_base={} sideset_base={}",
             pc.0,
             pc.in_base(),
+            sc.in_count(),
             pc.out_base(),
             pc.set_base(),
             pc.sideset_base(),
@@ -475,14 +549,18 @@ pub fn log_sm_state() {
 /// signals (HREF/PCLK) saturate - saturation itself is the finding ("the
 /// line is running"). This measures over seconds what `cam pins` can only
 /// see in its ~2 ms snapshot.
-pub fn count_edges(ms: u32) -> [(u32, u32); 3] {
+pub fn count_edges(ms: u32) -> [(u32, u32); 4] {
     let mut last = [0u8; 3];
-    let mut rise = [0u32; 3];
+    let mut rise = [0u32; 4];
     let mut fall = [0u32; 3];
     let v = embassy_rp::pac::SIO.gpio_in(0).read();
     for (i, pin) in [8usize, 9, 10].iter().enumerate() {
         last[i] = ((v >> pin) & 1) as u8;
     }
+    // Index 3 counts byte changes on D0..D7 collectively (per-pin counters
+    // would cost 8 more for little extra signal: "the data bus moves at all"
+    // is what separates a dead bus from a live one).
+    let mut d_last = v & 0xff;
     let t0 = Instant::now();
     loop {
         for _ in 0..65536u32 {
@@ -498,12 +576,22 @@ pub fn count_edges(ms: u32) -> [(u32, u32); 3] {
                     last[i] = b;
                 }
             }
+            let d = v & 0xff;
+            if d != d_last {
+                rise[3] = rise[3].wrapping_add(1);
+                d_last = d;
+            }
         }
         if t0.elapsed().as_millis() >= ms as u64 {
             break;
         }
     }
-    [(rise[0], fall[0]), (rise[1], fall[1]), (rise[2], fall[2])]
+    [
+        (rise[0], fall[0]),
+        (rise[1], fall[1]),
+        (rise[2], fall[2]),
+        (rise[3], 0),
+    ]
 }
 
 /// Sample the raw pad levels of the DVP lines (VSYNC GP8, HREF GP9,
@@ -517,6 +605,21 @@ pub fn sample_pins(n: u32) -> [u32; 4] {
     for _ in 0..n {
         let v = embassy_rp::pac::SIO.gpio_in(0).read();
         for (i, pin) in [8usize, 9, 10, 11].iter().enumerate() {
+            if (v >> pin) & 1 != 0 {
+                hits[i] += 1;
+            }
+        }
+    }
+    hits
+}
+
+/// Sample the DVP data pads (GP0..GP7) `n` times and return each line's
+/// high count - "is the data bus carrying anything" on the CPU side.
+pub fn sample_data_pins(n: u32) -> [u32; 8] {
+    let mut hits = [0u32; 8];
+    for _ in 0..n {
+        let v = embassy_rp::pac::SIO.gpio_in(0).read();
+        for (i, pin) in (0usize..8).enumerate() {
             if (v >> pin) & 1 != 0 {
                 hits[i] += 1;
             }
@@ -792,14 +895,17 @@ pub async fn init(p: Pins) -> Camera {
         FRAME_WORDS
     );
 
-    // Self-test program for SM1: a tight push loop. Configured (but left
-    // disabled) here; `cam selftest` enables it briefly and counts words.
-    let test_prg = pio::pio_asm!(".wrap_target", "push block", ".wrap");
-    let test_loaded = pio.common.load_program(&test_prg.program);
+    // SM1's program: sample all 32 GPIOs into the ISR and push - repeated
+    // forever. Used by `cam piosample` (raw pin view) and `cam selftest`
+    // (plumbing + throughput). Configured (but left disabled) here.
+    let sample_prg = pio::pio_asm!(".wrap_target", "mov isr, pins", "push block", ".wrap");
+    let loaded_sample = pio.common.load_program(&sample_prg.program);
     let mut sm1 = pio.sm1;
     {
         let mut cfg1 = PioConfig::default();
-        cfg1.use_program(&test_loaded, &[]);
+        cfg1.use_program(&loaded_sample, &[]);
+        // in_base 0: the ISR carries GP0..GP31 as the PIO sees them.
+        cfg1.set_in_pins(&in_pins);
         sm1.set_config(&cfg1);
     }
 
