@@ -356,6 +356,10 @@ impl ConsoleState {
             "[help]   cam id | rx [ms] | pins [n] | edges [ms] | pwdn <z|0|1> | reinit | sm | selftest [ms] | piosample [n]"
         );
         #[cfg(feature = "bench")]
+        log::info!(
+            "[help]        | pads [n] | in8 [n] | xclk <khz>   registers; IN-PINS GP8-15; runtime XCLK"
+        );
+        #[cfg(feature = "bench")]
         log::info!("[help]        | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]");
         #[cfg(feature = "bench")]
         log::info!(
@@ -1032,6 +1036,39 @@ impl ConsoleState {
             b"reinit" => Some(TrngJob::simple(JobMode::CamReinit)),
             b"sm" => {
                 crate::camera::log_sm_state();
+                None
+            }
+            b"in8" => {
+                let n = dec(split_first_word(rest).0).unwrap_or(16).clamp(1, 64) as usize;
+                match crate::camera::sample_in8(n) {
+                    Some(words) => {
+                        log::info!(
+                            "[cam] IN-PINS GP8-15 samples ({n}; one fresh byte per word, \
+                             low byte = left-shift / high byte = right-shift):"
+                        );
+                        let mut or = 0u32;
+                        for (i, w) in words.iter().enumerate() {
+                            or |= *w;
+                            log::info!("[cam]   {i:02}: {w:08x}");
+                        }
+                        log::info!("[cam]   OR={or:08x} (0 = GP8-15 all zero at the PIO)");
+                    }
+                    None => log::info!("[err] cam: not initialised"),
+                }
+                None
+            }
+            b"pads" => {
+                let n = dec(split_first_word(rest).0).unwrap_or(12).clamp(1, 16) as usize;
+                crate::camera::dump_pads(n);
+                None
+            }
+            b"xclk" => {
+                let khz = dec(split_first_word(rest).0).unwrap_or(37_000);
+                if crate::camera::set_xclk_khz(khz) {
+                    log::info!("[cam] XCLK -> {khz} kHz");
+                } else {
+                    log::info!("[err] cam: not initialised");
+                }
                 None
             }
             b"edges" => {

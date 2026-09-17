@@ -248,6 +248,10 @@ pub struct Camera {
     /// the 32 GPIOs - the decisive probe when the CPU-side pad reads and the
     /// capture program disagree.
     sm1: StateMachine<'static, PIO0, 1>,
+    /// SM1's program origin (for `cam in8`, which swaps instructions in
+    /// place to sample GP8-15 through the same `in pins` path the capture
+    /// program uses).
+    sm1_origin: u8,
     dma: Channel<'static>,
     /// Kept so the PWM slice handle stays alive; XCLK keeps running regardless.
     _xclk: Pwm<'static>,
@@ -291,6 +295,25 @@ pub async fn capture_frame(buf: &mut [u16]) -> Option<CaptureResult> {
     };
     CAMERA.lock(|c| *c.borrow_mut() = slot);
     r
+}
+
+/// Pad/IO register dump (see `Camera::dump_pads`).
+pub fn dump_pads(n: usize) {
+    // Read-only; safe to run under the slot.
+    with_camera(|c| c.dump_pads(n));
+}
+
+/// IN-PINS sampler (see `Camera::sample_in8`).
+pub fn sample_in8(n: usize) -> Option<alloc::vec::Vec<u32>> {
+    let mut slot = CAMERA.lock(|c| c.borrow_mut().take());
+    let r = slot.as_mut().map(|cam| cam.sample_in8(n));
+    CAMERA.lock(|c| *c.borrow_mut() = slot);
+    r
+}
+
+/// Runtime XCLK reconfiguration.
+pub fn set_xclk_khz(khz: u32) -> bool {
+    with_camera(|c| c.set_xclk_khz(khz)).is_some()
 }
 
 /// SM1 pin-sample capture, run with the camera taken out of its slot (so no
@@ -463,6 +486,93 @@ impl Camera {
         }
         self.sm1.set_enable(false);
         out
+    }
+
+    /// Dump the pad + IO config of GP0..GP(n-1) and PIO0's input sync
+    /// bypass. This is the ground truth for "why can't the PIO see a pin":
+    /// IE (input enable), ISO (isolation), FUNCSEL and INOVER decide it.
+    pub fn dump_pads(&self, n: usize) {
+        use embassy_rp::pac::{IO_BANK0, PADS_BANK0, PIO0};
+        log::info!(
+            "[cam] PIO0 input_sync_bypass=0x{:08x} ctrl=0x{:08x}",
+            PIO0.input_sync_bypass().read(),
+            PIO0.ctrl().read().0,
+        );
+        for i in 0..n.min(16) {
+            let d = PADS_BANK0.gpio(i).read();
+            let io = IO_BANK0.gpio(i).ctrl().read();
+            log::info!(
+                "[cam] GP{i:02}: pad ie={} iso={} od={} schmitt={} pue={} pde={:?} | io funcsel={} inover={:?} oeover={:?}",
+                d.ie() as u8,
+                d.iso() as u8,
+                d.od() as u8,
+                d.schmitt() as u8,
+                d.pue() as u8,
+                d.pde() as u8,
+                io.funcsel(),
+                io.inover() as u8,
+                io.oeover() as u8,
+            );
+        }
+    }
+
+    /// Sample GP8..GP15 through the `in pins` path (the same path the
+    /// capture program's data reads use) by temporarily swapping SM1's
+    /// program for `in pins, 8; push block` with IN_BASE=8. This separates
+    /// "the PIO genuinely cannot see GP8-11" from "the `mov isr, pins`
+    /// sampler misreports bits above IN_COUNT".
+    ///
+    /// Each pushed word: after `push`, the shift counter resets, so exactly
+    /// one fresh 8-bit sample sits in the word (low byte with left shift,
+    /// high byte with right shift - the console prints the whole word).
+    pub fn sample_in8(&mut self, n: usize) -> alloc::vec::Vec<u32> {
+        use embassy_rp::pac::PIO0;
+        let o = self.sm1_origin as usize;
+        self.sm1.set_enable(false);
+        self.sm1.clear_fifos();
+        let saved = [PIO0.instr_mem(o).read().0, PIO0.instr_mem(o + 1).read().0];
+        // `in pins, 8` = 0x4008, `push block` = 0x8020 (from the vendor
+        // listing: their pc=8 / pc=13).
+        PIO0.instr_mem(o).write(|w| w.set_instr_mem(0x4008));
+        PIO0.instr_mem(o + 1).write(|w| w.set_instr_mem(0x8020));
+        PIO0.sm(1).pinctrl().modify(|w| w.set_in_base(8));
+
+        let mut out = alloc::vec::Vec::with_capacity(n);
+        self.sm1.set_enable(true);
+        let t0 = Instant::now();
+        while out.len() < n && t0.elapsed().as_millis() < 250 {
+            if let Some(w) = self.sm1.rx().try_pull() {
+                out.push(w);
+            }
+        }
+        self.sm1.set_enable(false);
+
+        // Restore.
+        PIO0.instr_mem(o)
+            .write(|w| w.set_instr_mem(saved[0] as u16));
+        PIO0.instr_mem(o + 1)
+            .write(|w| w.set_instr_mem(saved[1] as u16));
+        PIO0.sm(1).pinctrl().modify(|w| w.set_in_base(0));
+        out
+    }
+
+    /// Reconfigure XCLK at runtime (`cam xclk <khz>`): used to drive GP11
+    /// with a slow, aliasing-free signal when testing what the PIO can see.
+    pub fn set_xclk_khz(&mut self, khz: u32) {
+        let clk_khz = clocks::clk_sys_freq() / 1000;
+        let khz = khz.clamp(1, 50_000);
+        // Pick an integer divider so `top` stays within u16.
+        let mut div = 1u32;
+        while clk_khz / (khz * div) > 65_535 {
+            div += 1;
+        }
+        let top = (clk_khz / (khz * div)).saturating_sub(1).max(1) as u16;
+        let mut cfg = PwmConfig::default();
+        cfg.top = top;
+        cfg.divider = (div as u8).into();
+        cfg.compare_b = (top as u32 * 50 / 100) as u16;
+        cfg.enable = true;
+        self._xclk.set_config(&cfg);
     }
 
     /// Re-run the SCCB configuration sequence (see `sccb_configure` for
@@ -900,6 +1010,7 @@ pub async fn init(p: Pins) -> Camera {
     // (plumbing + throughput). Configured (but left disabled) here.
     let sample_prg = pio::pio_asm!(".wrap_target", "mov isr, pins", "push block", ".wrap");
     let loaded_sample = pio.common.load_program(&sample_prg.program);
+    let sm1_origin = loaded_sample.origin;
     let mut sm1 = pio.sm1;
     {
         let mut cfg1 = PioConfig::default();
@@ -913,6 +1024,7 @@ pub async fn init(p: Pins) -> Camera {
         i2c,
         sm,
         sm1,
+        sm1_origin,
         dma: Channel::new(p.dma, CamIrqs),
         _xclk: xclk,
         pwdn,
