@@ -47,7 +47,7 @@ use embassy_rp::pio::{
 use embassy_rp::pwm::{Config as PwmConfig, Pwm};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 
 bind_interrupts!(struct CamIrqs {
     PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO0>;
@@ -240,6 +240,11 @@ pub struct Pins {
 pub struct Camera {
     i2c: I2c<'static, I2C0, I2cBlocking>,
     sm: StateMachine<'static, PIO0, 0>,
+    /// SM1 carries the PIO plumbing self-test program (`cam selftest`):
+    /// a free-running `push` loop. Words appearing there prove the SM /
+    /// FIFO / drain path work, which separates "plumbing broken" from
+    /// "the capture program's waits are never satisfied".
+    sm1: StateMachine<'static, PIO0, 1>,
     dma: Channel<'static>,
     /// Kept so the PWM slice handle stays alive; XCLK keeps running regardless.
     _xclk: Pwm<'static>,
@@ -391,6 +396,114 @@ impl Camera {
         let lo = self.rd(0x300B) as u16;
         (hi << 8) | lo
     }
+
+    /// PIO plumbing self-test (see the `sm1` field): run SM1's push loop
+    /// for `ms` and return the number of words drained. Nonzero proves the
+    /// state machine, FIFOs and drain path all work.
+    pub fn selftest(&mut self, ms: u32) -> u32 {
+        self.sm1.clear_fifos();
+        self.sm1.set_enable(true);
+        let t0 = Instant::now();
+        let mut n = 0u32;
+        while t0.elapsed().as_millis() < ms as u64 {
+            while self.sm1.rx().try_pull().is_some() {
+                n = n.wrapping_add(1);
+            }
+        }
+        self.sm1.set_enable(false);
+        n
+    }
+
+    /// Re-run the SCCB configuration sequence (see `sccb_configure` for
+    /// why this exists at runtime).
+    pub async fn reinit(&mut self) -> u16 {
+        let (id, _rb) = sccb_configure(&mut self.i2c).await;
+        self.sensor_id = id;
+        id
+    }
+}
+
+/// Runtime `cam reinit`: take the camera out of its slot across the await
+/// (console jobs are serialized, so there is exactly one consumer).
+pub async fn reinit() -> Option<u16> {
+    let mut slot = CAMERA.lock(|c| c.borrow_mut().take());
+    let r = match slot.as_mut() {
+        Some(cam) => Some(cam.reinit().await),
+        None => None,
+    };
+    CAMERA.lock(|c| *c.borrow_mut() = slot);
+    r
+}
+
+/// Dump the state of PIO0's first two state machines and the FIFO flags -
+/// the decisive "where is the SM actually stuck" view. Register names mirror
+/// the RP2350 PIO chapter (addr = program counter).
+pub fn log_sm_state() {
+    use embassy_rp::pac::PIO0;
+    log::info!(
+        "[cam] PIO0 gpiobase={} ctrl=0x{:08x} fdebug=0x{:08x} (rxstall/txstall/rxempty/txempty per SM)",
+        PIO0.gpiobase().read().gpiobase() as u8,
+        PIO0.ctrl().read().0,
+        PIO0.fdebug().read().0,
+    );
+    for sm in 0..2usize {
+        let s = PIO0.sm(sm);
+        let addr = s.addr().read().0 & 0x1f;
+        let cd = s.clkdiv().read();
+        let ec = s.execctrl().read();
+        let sc = s.shiftctrl().read();
+        let pc = s.pinctrl().read();
+        log::info!(
+            "[cam] SM{sm}: pc={addr} clkdiv={}.{} execctrl=0x{:08x} shiftctrl=0x{:08x} \
+             pinctrl=0x{:08x} (in_base={} out_base={} set_base={} sideset_base={})",
+            cd.int(),
+            cd.frac(),
+            ec.0,
+            sc.0,
+            pc.0,
+            pc.in_base(),
+            pc.out_base(),
+            pc.set_base(),
+            pc.sideset_base(),
+        );
+    }
+}
+
+/// Count level transitions on GP8/GP9/GP10 over `ms` in one tight pass.
+/// Returns (rising, falling) per line. The CPU sampling rate is a few MHz,
+/// so frame-rate signals (VSYNC) are counted faithfully while line-rate
+/// signals (HREF/PCLK) saturate - saturation itself is the finding ("the
+/// line is running"). This measures over seconds what `cam pins` can only
+/// see in its ~2 ms snapshot.
+pub fn count_edges(ms: u32) -> [(u32, u32); 3] {
+    let mut last = [0u8; 3];
+    let mut rise = [0u32; 3];
+    let mut fall = [0u32; 3];
+    let v = embassy_rp::pac::SIO.gpio_in(0).read();
+    for (i, pin) in [8usize, 9, 10].iter().enumerate() {
+        last[i] = ((v >> pin) & 1) as u8;
+    }
+    let t0 = Instant::now();
+    loop {
+        for _ in 0..65536u32 {
+            let v = embassy_rp::pac::SIO.gpio_in(0).read();
+            for (i, pin) in [8usize, 9, 10].iter().enumerate() {
+                let b = ((v >> pin) & 1) as u8;
+                if b != last[i] {
+                    if b == 1 {
+                        rise[i] = rise[i].wrapping_add(1);
+                    } else {
+                        fall[i] = fall[i].wrapping_add(1);
+                    }
+                    last[i] = b;
+                }
+            }
+        }
+        if t0.elapsed().as_millis() >= ms as u64 {
+            break;
+        }
+    }
+    [(rise[0], fall[0]), (rise[1], fall[1]), (rise[2], fall[2])]
 }
 
 /// Sample the raw pad levels of the DVP lines (VSYNC GP8, HREF GP9,
@@ -435,33 +548,12 @@ fn wr4(i2c: &mut I2c<'static, I2C0, I2cBlocking>, reg: u16, d1: u16, d2: u16) {
     }
 }
 
-/// Full bring-up: PWDN, XCLK, SCCB init (vendor tables + QVGA/YUV422
-/// configuration), then the PIO capture program and its DMA channel.
-/// Async because the vendor table carries millisecond delays.
-pub async fn init(p: Pins) -> Camera {
-    // PWDN starts high-Z (Flex::new = input), i.e. exactly what the vendor
-    // demo leaves it as. The console can drive it later (`cam pwdn`).
-    let pwdn = Flex::new(p.pwdn);
-
-    // XCLK first: the sensor's SCCB block expects a running clock.
-    let xclk = Pwm::new_output_b(p.xclk_slice, p.xclk, xclk_config());
-    let clk_khz = clocks::clk_sys_freq() / 1000;
-    let top = (clk_khz / XCLK_TARGET_KHZ).saturating_sub(1).max(1);
-    log::info!(
-        "[cam] XCLK: clk_sys {} kHz, top {} -> {} kHz (vendor formula)",
-        clk_khz,
-        top,
-        clk_khz / (top + 1)
-    );
-
-    let mut i2c_cfg = I2cConfig::default();
-    i2c_cfg.frequency = 100_000;
-    // The board carries 1K external pullups (R44/R45).
-    i2c_cfg.sda_pullup = false;
-    i2c_cfg.scl_pullup = false;
-    let mut i2c = I2c::new_blocking(p.i2c, p.scl, p.sda, i2c_cfg);
-    Timer::after_millis(50).await; // XCLK settle (vendor: sleep_ms(50))
-
+/// Run the full SCCB configuration sequence (vendor init table + QVGA /
+/// YUV422 setup) and return (sensor id, six-register readback). Used by
+/// `init` and by the runtime `cam reinit` command - the latter exists
+/// because a sensor that was configured while in a marginal power state can
+/// need the sequence re-run after PWDN is driven properly.
+async fn sccb_configure(i2c: &mut I2c<'static, I2C0, I2cBlocking>) -> (u16, [u8; 6]) {
     // Sensor id before anything else: proves XCLK + SCCB + the module.
     let hi = {
         let mut v = [0u8; 1];
@@ -474,7 +566,6 @@ pub async fn init(p: Pins) -> Camera {
         v[0]
     };
     let sensor_id = ((hi as u16) << 8) | lo as u16;
-    log::info!("[cam] sensor id {sensor_id:#06x} (OV5640 = 0x5640)");
 
     // Vendor init table, with its delays honoured (see INIT_TABLE docs).
     for &(reg, val) in INIT_TABLE {
@@ -488,11 +579,11 @@ pub async fn init(p: Pins) -> Camera {
     Timer::after_millis(50).await;
 
     // set_size_and_colorspace: 240x320 window, 1:1 increments (vendor 1:1).
-    wr4(&mut i2c, 0x3800, 352, 26); // X/Y start
-    wr4(&mut i2c, 0x3804, 1792, 1946); // X/Y end
-    wr4(&mut i2c, 0x3808, 240, 320); // output size
-    wr4(&mut i2c, 0x380C, 2592, 1944); // total size
-    wr4(&mut i2c, 0x3810, 16, 14); // ISP offsets
+    wr4(i2c, 0x3800, 352, 26); // X/Y start
+    wr4(i2c, 0x3804, 1792, 1946); // X/Y end
+    wr4(i2c, 0x3808, 240, 320); // output size
+    wr4(i2c, 0x380C, 2592, 1944); // total size
+    wr4(i2c, 0x3810, 16, 14); // ISP offsets
     {
         // ISP control 01 |= 0x20 (vendor read-modify-write).
         let mut v = [0u8; 1];
@@ -558,7 +649,8 @@ pub async fn init(p: Pins) -> Camera {
         probe[i] = v[0];
     }
     log::info!(
-        "[cam] readback 0x3008={:#04x} 0x3035={:#04x} w=0x{:02x}{:02x} 0x4300={:#04x} 0x4740={:#04x}",
+        "[cam] sensor id {sensor_id:#06x} (OV5640 = 0x5640); readback 0x3008={:#04x} \
+         0x3035={:#04x} w=0x{:02x}{:02x} 0x4300={:#04x} 0x4740={:#04x}",
         probe[0],
         probe[1],
         probe[2],
@@ -566,6 +658,57 @@ pub async fn init(p: Pins) -> Camera {
         probe[4],
         probe[5]
     );
+
+    (sensor_id, probe)
+}
+
+/// Full bring-up: PWDN, XCLK, SCCB init (vendor tables + QVGA/YUV422
+/// configuration), then the PIO capture program and its DMA channel.
+/// Async because the vendor table carries millisecond delays.
+pub async fn init(p: Pins) -> Camera {
+    // PWDN (GP24). The vendor demo never touches this pin, but on this board
+    // that is NOT good enough: measured behaviour is
+    //   driven high  -> all four DVP lines dead (power-down/reset state),
+    //   high-Z       -> PCLK runs but no frames (marginal, indeterminate),
+    //   driven low   -> lines active (frames).
+    // So power-up asserts it: brief high (force a known off state), then
+    // low, then let the sensor settle before the SCCB init. The pin is kept
+    // as a Flex so the console can still sweep z / 0 / 1 at runtime.
+    let mut pwdn = Flex::new(p.pwdn);
+
+    // XCLK first: the sensor must see a running clock when it powers up.
+    let xclk = Pwm::new_output_b(p.xclk_slice, p.xclk, xclk_config());
+    let clk_khz = clocks::clk_sys_freq() / 1000;
+    let top = (clk_khz / XCLK_TARGET_KHZ).saturating_sub(1).max(1);
+    log::info!(
+        "[cam] XCLK: clk_sys {} kHz, top {} -> {} kHz (vendor formula)",
+        clk_khz,
+        top,
+        clk_khz / (top + 1)
+    );
+
+    // GP11 is a PWM output; its pad input buffer is off by default, which
+    // makes every XCLK reading in `cam pins` a bogus 0. Turn it on so the
+    // pad sample is a real measurement.
+    embassy_rp::pac::PADS_BANK0
+        .gpio(11)
+        .modify(|w| w.set_ie(true));
+
+    pwdn.set_as_output();
+    pwdn.set_high();
+    Timer::after_millis(10).await; // force a known power-down state
+    pwdn.set_low();
+    Timer::after_millis(50).await; // power-up settle
+
+    let mut i2c_cfg = I2cConfig::default();
+    i2c_cfg.frequency = 100_000;
+    // The board carries 1K external pullups (R44/R45).
+    i2c_cfg.sda_pullup = false;
+    i2c_cfg.scl_pullup = false;
+    let mut i2c = I2c::new_blocking(p.i2c, p.scl, p.sda, i2c_cfg);
+    Timer::after_millis(50).await; // XCLK settle (vendor: sleep_ms(50))
+
+    let (sensor_id, _rb) = sccb_configure(&mut i2c).await;
 
     // ---- PIO capture program (vendor `picampinos`, 1:1) ----
     let mut pio = Pio::new(p.pio, CamIrqs);
@@ -649,9 +792,21 @@ pub async fn init(p: Pins) -> Camera {
         FRAME_WORDS
     );
 
+    // Self-test program for SM1: a tight push loop. Configured (but left
+    // disabled) here; `cam selftest` enables it briefly and counts words.
+    let test_prg = pio::pio_asm!(".wrap_target", "push block", ".wrap");
+    let test_loaded = pio.common.load_program(&test_prg.program);
+    let mut sm1 = pio.sm1;
+    {
+        let mut cfg1 = PioConfig::default();
+        cfg1.use_program(&test_loaded, &[]);
+        sm1.set_config(&cfg1);
+    }
+
     let mut cam = Camera {
         i2c,
         sm,
+        sm1,
         dma: Channel::new(p.dma, CamIrqs),
         _xclk: xclk,
         pwdn,

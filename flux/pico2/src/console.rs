@@ -353,8 +353,10 @@ impl ConsoleState {
         log::info!("[help]   temp            read the on-die temperature sensor");
         #[cfg(feature = "bench")]
         log::info!(
-            "[help]   cam id | rx [ms] | pins [n] | pwdn <z|0|1> | grab [n] | dump [stride] [byte]"
+            "[help]   cam id | rx [ms] | pins [n] | edges [ms] | pwdn <z|0|1> | reinit | sm | selftest [ms]"
         );
+        #[cfg(feature = "bench")]
+        log::info!("[help]        | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]");
         #[cfg(feature = "bench")]
         log::info!(
             "[help]        | reg <hexreg> [hexval]   OV5640 bring-up: SCCB, FIFO and pad probes"
@@ -1026,6 +1028,41 @@ impl ConsoleState {
                 let mut job = TrngJob::simple(JobMode::CamRx);
                 job.arg = dec(split_first_word(rest).0).unwrap_or(1000);
                 Some(job)
+            }
+            b"reinit" => Some(TrngJob::simple(JobMode::CamReinit)),
+            b"sm" => {
+                crate::camera::log_sm_state();
+                None
+            }
+            b"edges" => {
+                let ms = dec(split_first_word(rest).0).unwrap_or(200).clamp(10, 5000);
+                let e = crate::camera::count_edges(ms);
+                log::info!(
+                    "[cam] edges over {ms} ms: VSYNC(GP8) {}+/{}-, HREF(GP9) {}+/{}-, PCLK(GP10) {}+/{}- \
+                     (saturated counters = the line is running far above the CPU sampling rate)",
+                    e[0].0,
+                    e[0].1,
+                    e[1].0,
+                    e[1].1,
+                    e[2].0,
+                    e[2].1
+                );
+                None
+            }
+            b"selftest" => {
+                let ms = dec(split_first_word(rest).0).unwrap_or(20).clamp(1, 500);
+                match crate::camera::with_camera(|c| c.selftest(ms)) {
+                    Some(n) => log::info!(
+                        "[cam] SM1 self-test: {n} words in {ms} ms {}",
+                        if n > 0 {
+                            "(plumbing OK)"
+                        } else {
+                            "(NO words - SM/FIFO plumbing problem!)"
+                        }
+                    ),
+                    None => log::info!("[err] cam: not initialised"),
+                }
+                None
             }
             b"pwdn" => {
                 let mode = match split_first_word(rest).0 {
@@ -1881,6 +1918,9 @@ enum JobMode {
     /// Drain the camera PIO RX FIFO for `arg` ms (no DMA) and report.
     #[cfg(feature = "bench")]
     CamRx,
+    /// Re-run the camera SCCB configuration sequence at runtime.
+    #[cfg(feature = "bench")]
+    CamReinit,
 }
 
 impl TrngJob {
@@ -2286,6 +2326,11 @@ async fn run_trng_job(job: TrngJob) {
         JobMode::CamDump => run_cam_dump(job.arg, job.off as u32).await,
         #[cfg(feature = "bench")]
         JobMode::CamRx => run_cam_rx(job.arg).await,
+        #[cfg(feature = "bench")]
+        JobMode::CamReinit => match crate::camera::reinit().await {
+            Some(id) => log::info!("[cam] reinit done (id {id:#06x})"),
+            None => log::info!("[err] cam: not initialised"),
+        },
     }
 }
 
