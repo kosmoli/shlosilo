@@ -25,6 +25,8 @@ mod lcd;
 mod panel;
 #[cfg(feature = "perf-timing")]
 mod perf_timing;
+#[cfg(feature = "bench")]
+mod qr;
 mod sd;
 mod sign_smoke;
 mod touch;

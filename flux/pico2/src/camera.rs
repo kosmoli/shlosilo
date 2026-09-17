@@ -761,6 +761,23 @@ pub fn count_edges(ms: u32) -> [(u32, u32); 4] {
     ]
 }
 
+/// Extract the luma plane from the raw DVP words: for the configured
+/// YUV422 output the HIGH byte of every 16-bit sample is luma and the low
+/// byte hovers near 128 (chroma) - measured on hardware. Writes
+/// FRAME_W*FRAME_H bytes into `out`; the buffer holds one sample short of a
+/// full frame (see FRAME_WORDS), so the last pixel repeats its predecessor.
+pub fn luma_from_words(buf: &[u16], out: &mut [u8]) {
+    let n = FRAME_W * FRAME_H;
+    let m = buf.len().min(n);
+    for (o, w) in out[..m].iter_mut().zip(&buf[..m]) {
+        *o = (w >> 8) as u8;
+    }
+    let last = if m > 0 { out[m - 1] } else { 0 };
+    for o in out[m..n].iter_mut() {
+        *o = last;
+    }
+}
+
 /// Sample the raw pad levels of the DVP lines (VSYNC GP8, HREF GP9,
 /// PCLK GP10, XCLK GP11) `n` times back-to-back and report, per line, how
 /// many samples read high: 0 = stuck low, n = stuck high, anything in

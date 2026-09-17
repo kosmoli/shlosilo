@@ -360,6 +360,10 @@ impl ConsoleState {
             "[help]        | pads [n] | in8 [n] | xclk <khz> | incount [n]   regs; IN-PINS GP8-15; XCLK; IN window"
         );
         #[cfg(feature = "bench")]
+        log::info!(
+            "[help]        | preview [secs] | scan [n]   live camera view on the LCD; on-device QR decode"
+        );
+        #[cfg(feature = "bench")]
         log::info!("[help]        | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]");
         #[cfg(feature = "bench")]
         log::info!(
@@ -1056,6 +1060,16 @@ impl ConsoleState {
                     None => log::info!("[err] cam: not initialised"),
                 }
                 None
+            }
+            b"preview" => {
+                let mut job = TrngJob::simple(JobMode::CamPreview);
+                job.arg = dec(split_first_word(rest).0).unwrap_or(30);
+                Some(job)
+            }
+            b"scan" => {
+                let mut job = TrngJob::simple(JobMode::CamScan);
+                job.arg = dec(split_first_word(rest).0).unwrap_or(3);
+                Some(job)
             }
             b"incount" => {
                 let n = match split_first_word(rest).0 {
@@ -2011,6 +2025,12 @@ enum JobMode {
     /// Drain the camera PIO RX FIFO for `arg` ms (no DMA) and report.
     #[cfg(feature = "bench")]
     CamRx,
+    /// Live camera view on the LCD for `arg` seconds (tap to exit).
+    #[cfg(feature = "bench")]
+    CamPreview,
+    /// Capture `arg` frames, show the binarized view and decode on-device.
+    #[cfg(feature = "bench")]
+    CamScan,
     /// Re-run the camera SCCB configuration sequence at runtime.
     #[cfg(feature = "bench")]
     CamReinit,
@@ -2370,6 +2390,129 @@ async fn run_cam_dump(stride: u32, byte: u32) {
     log::info!("[cam] end");
 }
 
+/// 8x8 ordered-dither matrix (Bayer). Values 0..63; scaled x4 they become
+/// an 8-bit threshold pattern, which renders a convincing grayscale image
+/// on the 1bpp framebuffer.
+#[cfg(feature = "bench")]
+const BAYER8: [u8; 64] = [
+    0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26, 12, 44, 4, 36, 14, 46, 6, 38, 60,
+    28, 52, 20, 62, 30, 54, 22, 3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25, 15,
+    47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
+];
+
+/// Camera luma (240x320) scaled x4/3 onto the 320x480 framebuffer and
+/// flushed. `mode_binarize` picks the rendering: false = ordered dither
+/// (photo-like view for aiming/focus), true = the QR pipeline's adaptive
+/// binarization (what the decoder actually sees).
+#[cfg(feature = "bench")]
+fn cam_paint(luma: &[u8], mode_binarize: bool) {
+    use crate::camera::{FRAME_H, FRAME_W};
+    use crate::ui::{self, FB_H, FB_W};
+    let bits = if mode_binarize {
+        Some(crate::qr::binarize_adaptive(FRAME_W, FRAME_H, luma))
+    } else {
+        None
+    };
+    ui::clear(false);
+    for y in 0..FB_H {
+        let sy = y * 2 / 3; // 480 -> 320
+        for x in 0..FB_W {
+            let sx = x * 3 / 4; // 320 -> 240
+            let l = luma[sy * FRAME_W + sx];
+            let ink = match &bits {
+                Some(b) => b[sy * FRAME_W + sx],
+                None => l as u32 > BAYER8[(y & 7) * 8 + (x & 7)] as u32 * 4,
+            };
+            ui::px(x as i32, y as i32, ink);
+        }
+    }
+    ui::flush();
+}
+
+/// `cam preview [secs]`: live view on the LCD until the deadline or any tap.
+#[cfg(feature = "bench")]
+async fn run_cam_preview(secs: u32) {
+    use crate::camera::{CaptureResult, FRAME_H, FRAME_W, FRAME_WORDS};
+    let secs = secs.clamp(1, 600);
+    let mut buf = alloc::vec![0u16; FRAME_WORDS];
+    let mut luma = alloc::vec![0u8; FRAME_W * FRAME_H];
+    log::info!("[cam] preview: {secs}s live view (tap the screen to exit)");
+    let t0 = Instant::now();
+    let mut frames = 0u32;
+    while (Instant::now() - t0).as_secs() < u64::from(secs) {
+        match crate::camera::capture_frame(&mut buf).await {
+            Some(CaptureResult::Ok) => {}
+            Some(CaptureResult::Timeout { words }) => {
+                log::info!("[cam] preview: capture timed out ({words} words) - stopping");
+                break;
+            }
+            None => {
+                log::info!("[err] cam: not initialised");
+                return;
+            }
+        }
+        crate::camera::luma_from_words(&buf, &mut luma);
+        cam_paint(&luma, false);
+        frames += 1;
+        // Any new touch ends the preview (the operator can always bail out).
+        let down = crate::panel::with_panel(|p| p.touch.read_point())
+            .map(|r| matches!(r, Ok(pt) if pt.fingers > 0))
+            .unwrap_or(false);
+        if down {
+            log::info!("[cam] preview: tap -> exit");
+            break;
+        }
+    }
+    let _ = crate::ui::show(crate::ui::Page::Welcome, None);
+    log::info!("[cam] preview done ({frames} frames in {secs}s)");
+}
+
+/// `cam scan [n]`: capture, show the binarized view, decode on-device with
+/// rqrr and log every payload.
+#[cfg(feature = "bench")]
+async fn run_cam_scan(n: u32) {
+    use crate::camera::{CaptureResult, FRAME_H, FRAME_W, FRAME_WORDS};
+    let n = n.clamp(1, 32);
+    let mut buf = alloc::vec![0u16; FRAME_WORDS];
+    let mut luma = alloc::vec![0u8; FRAME_W * FRAME_H];
+    for i in 0..n {
+        // The first transfer after an idle gap starts mid-group (see the
+        // camera module docs): discard one warm-up frame per iteration.
+        for _ in 0..2 {
+            match crate::camera::capture_frame(&mut buf).await {
+                Some(CaptureResult::Ok) => {}
+                Some(CaptureResult::Timeout { words }) => {
+                    log::info!("[cam] scan: capture timed out ({words} words) - stopping");
+                    return;
+                }
+                None => {
+                    log::info!("[err] cam: not initialised");
+                    return;
+                }
+            }
+        }
+        crate::camera::luma_from_words(&buf, &mut luma);
+        cam_paint(&luma, true);
+        let out = crate::qr::decode_bits(
+            FRAME_W,
+            FRAME_H,
+            &crate::qr::binarize_adaptive(FRAME_W, FRAME_H, &luma),
+        );
+        if out.payloads.is_empty() {
+            log::info!(
+                "[cam] scan {i}: no decode (grids={}, err={:?})",
+                out.grids,
+                out.error
+            );
+        } else {
+            for p in &out.payloads {
+                log::info!("[cam] scan {i}: DECODED ({} chars): {p}", p.len());
+            }
+        }
+    }
+    log::info!("[cam] scan done ({n} frames)");
+}
+
 async fn run_trng_job(job: TrngJob) {
     match job.mode {
         #[cfg(feature = "bench")]
@@ -2419,6 +2562,10 @@ async fn run_trng_job(job: TrngJob) {
         JobMode::CamDump => run_cam_dump(job.arg, job.off as u32).await,
         #[cfg(feature = "bench")]
         JobMode::CamRx => run_cam_rx(job.arg).await,
+        #[cfg(feature = "bench")]
+        JobMode::CamPreview => run_cam_preview(job.arg).await,
+        #[cfg(feature = "bench")]
+        JobMode::CamScan => run_cam_scan(job.arg).await,
         #[cfg(feature = "bench")]
         JobMode::CamReinit => match crate::camera::reinit().await {
             Some(id) => log::info!("[cam] reinit done (id {id:#06x})"),
