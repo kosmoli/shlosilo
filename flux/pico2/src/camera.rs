@@ -23,6 +23,15 @@
 //! words is therefore one frame minus its very last pixel - harmless for
 //! both bring-up inspection and QR decoding.
 //!
+//! Two hardware findings from the first bring-up runs (2026-09-17), both
+//! required before any frame was usable:
+//!   1. PWDN (GP24) must be driven low - high-Z leaves the sensor in a
+//!      marginal state (PCLK runs, no frames); see `init`.
+//!   2. XCLK must stay ~10 MHz with this capture program: 12 MHz+ overruns
+//!      the PIO loop and every frame is noise (see XCLK_TARGET_KHZ).
+//!   3. The SM's IN window must cover every pin the program reads by number
+//!      (GP0..GP10), not just the data bus (see the note in `init`).
+//!
 //! Bring-up diagnostics (added after the first hardware run wedged in the
 //! DMA await): `capture` carries a 3 s timeout and reports how far the
 //! transfer got; `rx_probe` drains the PIO RX FIFO without DMA (the ground
@@ -65,10 +74,17 @@ pub const FRAME_WORDS: usize = FRAME_W * FRAME_H - 1;
 
 /// SCCB (I2C) slave address of the sensor (7-bit).
 const SCCB_ADDR: u16 = 0x3C;
-/// XCLK target the vendor's register table was tuned with. The PWM
-/// formula below replicates the vendor code path exactly (integer divide
-/// of clk_sys by this value), which at 150 MHz lands on 37.5 MHz.
-const XCLK_TARGET_KHZ: u32 = 37_000;
+/// XCLK target (kHz). NOT the vendor's 37 MHz: measured on this pipeline
+/// (2026-09-17), XCLK at 37.5 MHz drives the sensor's PCLK so fast (PCLK
+/// scales with XCLK through the sensor PLL, roughly 2.5-3x) that the
+/// capture loop cannot keep up - the PIO program needs ~9 clk_sys cycles
+/// per 16-bit sample (two PCLK periods), i.e. PCLK must stay under ~30 MHz
+/// at clk_sys = 150 MHz. Above that the sampler reads mid-transition and
+/// every frame is noise. Measured cliff at runtime (`cam xclk`): 10 MHz
+/// gives a clean, readable image, 12 MHz already tears, 14+ is noise, and
+/// the vendor's 37.5 MHz is pure noise. 10 MHz is the operating point
+/// (PCLK ~27 MHz); `cam xclk <khz>` re-tunes at runtime.
+const XCLK_TARGET_KHZ: u32 = 10_000;
 
 /// Vendor OV5640 init table (`sensor_default_regs` from the Waveshare
 /// RP2350 demo, transcribed 1:1). `0xFFFF` marks a millisecond delay: the

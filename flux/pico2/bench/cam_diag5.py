@@ -16,7 +16,16 @@ import sys
 import time
 import tty
 
-DEV = "/dev/ttyACM0"
+# Auto-detect: the console can re-enumerate as ttyACM0/ACM1/... (e.g. after
+# a board reset), and hardcoding the node breaks the script silently.
+def _find_dev():
+    import glob as _glob
+    for d in sorted(_glob.glob("/dev/ttyACM*")) + sorted(_glob.glob("/dev/ttyUSB*")):
+        return d
+    raise SystemExit("no serial console found (/dev/ttyACM*)")
+
+
+DEV = _find_dev()
 
 
 def main() -> int:
