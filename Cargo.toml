@@ -38,6 +38,9 @@ exclude = [
     "vendor/curve25519-dalek",
     "vendor/cryptonight",
     "vendor/monero-bulletproofs",
+    "vendor/rqrr",
+    "vendor/g2p",
+    "vendor/g2poly",
 ]
 resolver = "2"
 
@@ -87,6 +90,10 @@ rand_core = { version = "0.6", default-features = false }  # CLSAG signing RNG (
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }  # PBKDF2-HMAC-SHA512
 
 [dev-dependencies]
+# QR pipeline host validation (pico2 camera path): encoder + decoder used
+# together, feeding the decoder synthetic camera-like frames.
+qrcodegen-no-heap = "1.8.1"
+rqrr = { version = "0.11", default-features = false }
 # property-based tests (Phase 3)
 proptest = "1.4"
 # P1-03 compile-fail: assert_not_impl_any! const assertion (zero-process equivalent of trybuild)
@@ -166,3 +173,10 @@ overflow-checks = true
 # (14-17s -> ~0.2s on device). No crypto semantics touched; see vendor/curve25519-dalek/src/edwards.rs.
 [patch.crates-io]
 curve25519-dalek = { path = "vendor/curve25519-dalek" }
+# QR decoding for the pico2 camera path: rqrr + its GF(2^p) helper are
+# std-only upstream; vendored with a minimal no_std patch (no logic
+# changes). Exit condition: drop both when upstream ships no_std (see
+# patches/rqrr-g2p-no-std.patch).
+rqrr = { path = "vendor/rqrr" }
+g2p = { path = "vendor/g2p" }
+g2poly = { path = "vendor/g2poly" }

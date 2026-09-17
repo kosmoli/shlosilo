@@ -1,0 +1,62 @@
+# shlosilo vendor patch: rqrr + g2p + g2poly + libm (no_std QR decoding)
+#
+# Vendored crates (from crates.io, source copied into vendor/):
+#   rqrr   0.11.0  (MIT OR Apache-2.0 AND ISC)  - QR detection + decoding
+#   g2p    1.2.2   (MIT/Apache-2.0)             - GF(2^p) arithmetic generator
+#   g2poly 1.2.2   (MIT/Apache-2.0)             - GF(2) polynomial arithmetic
+# Dependencies added in the vendored builds:
+#   libm   0.2     (MIT)                        - f64::{round,floor} for no_std
+#   (lru 0.18 already ships no_std via its default hashbrown feature; not
+#    vendored. g2gen is a proc-macro, host-only; not vendored.)
+#
+# WHY: the pico2 camera path needs on-device QR decoding. rqrr is the
+# maintained pure-Rust decoder (upstream: github.com/WanzenBug/rqrr);
+# the alternative (quirc) is C/FFI, which would drag a C toolchain into
+# the pure-Rust pico2 host. Upstream rqrr is std-only; the changes below
+# are mechanical no_std enablement with NO logic changes.
+#
+# EXIT CONDITION (vendor policy 2026-09-03): drop all three vendored
+# crates + the [patch.crates-io] entries the day upstream rqrr compiles
+# for a no_std target with `default-features = false` (watch
+# github.com/WanzenBug/rqrr - a no_std feature/PR is the signal).
+#
+# Reapply after upgrade: re-vendor the new versions, apply the edits
+# below, run tests/qr_decode_host.rs (all cases) and the on-device
+# camera acceptance.
+#
+# ---- rqrr changes ----
+# lib.rs:
+#   + #![no_std] / extern crate alloc
+#   + use alloc::{string::String, vec, vec::Vec};
+#   + pub trait Write { fn write_all(&mut self, &[u8]) -> Result<(), ()>; }
+#     with impls for Vec<u8> and &mut T (replaces the std::io::Write bound;
+#     only write_all is used by this crate)
+#   - use std::error::Error  -> use core::error::Error
+#   - ::std::string::FromUtf8Error -> alloc::string::FromUtf8Error
+#   - ::std::fmt::Display / Formatter -> core::fmt::*
+# decode.rs:
+#   - use std::io::Write -> use crate::Write
+#   - use std::mem -> use core::mem
+#   - ::std::cmp::min -> core::cmp::min
+#   + use alloc::{string::String, vec::Vec}; (Vec already used; String re-export)
+# identify/grid.rs:
+#   - use std::{cmp, mem} -> use core::{cmp, mem}
+# prepare.rs:
+#   - use std::{cmp, num::NonZeroUsize} -> use core::{cmp, num::NonZeroUsize}
+#   + use alloc::boxed::Box; use alloc::{vec, vec::Vec};
+# identify/match_capstones.rs, detect.rs:
+#   + use alloc::vec::Vec;
+# geometry.rs:
+#   - x.round() / y.round() -> libm::round(x/y)
+# identify/grid.rs:
+#   - (size as f64 - 15.0).floor() -> libm::floor(size as f64 - 15.0)
+#
+# ---- g2p changes ----
+# lib.rs:
+#   + #![no_std]
+#   - ::std::mem::size_of -> ::core::mem::size_of
+#
+# ---- g2poly changes ----
+# lib.rs:
+#   + #![no_std]   (no other std references; assert! etc. come from core)
+#

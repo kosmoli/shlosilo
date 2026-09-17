@@ -32,6 +32,11 @@ curve25519-dalek = { version = "4", default-features = false, optional = true }
 # QR encoder for the UI (Nayuki's library, no-heap fork, MIT, no_std).
 qrcodegen-no-heap = "1.8.1"
 
+# QR decoder for the camera path (rqrr, MIT/ISC). Upstream is std-only;
+# the workspace [patch.crates-io] redirects it (plus g2p/g2poly) to the
+# vendored no_std build - see patches/rqrr-g2p-no-std.patch.
+rqrr = { version = "0.11", default-features = false }
+
 # runtime glue
 embedded-alloc = "0.7"
 # panic-probe removed: fault.rs owns the panic + hard-fault handlers so
