@@ -32,8 +32,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ELF=target/thumbv8m.main-none-eabihf/release/shlosilo-pico2
+# Camera bring-up surface (P3, `bench`-gated). Distinctive log tags, not the
+# bare word `cam` (which collides with unrelated substrings and would fail
+# the production check with a false positive).
 CANARIES=(xmrseed trngdump trngrst trngprobe trngemb "fixed entropy set" "session key set" \
-          trngraw trngrawout trngcheck trngtrace "[traw]" "[tchk]" "[ttr]" "[temp]")
+          trngraw trngrawout trngcheck trngtrace "[traw]" "[tchk]" "[ttr]" "[temp]" \
+          "[cam] XCLK" "[cam] sensor id" "[cam] focus: " "[cam] scanzoom: zoom x" \
+          "[cam] preview: " "[cam] PGM " "[cam] IN-PINS")
 
 if ! command -v strings >/dev/null 2>&1; then
   echo "ERROR: strings (binutils) not found" >&2
