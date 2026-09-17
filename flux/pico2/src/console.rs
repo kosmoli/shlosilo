@@ -357,7 +357,7 @@ impl ConsoleState {
         );
         #[cfg(feature = "bench")]
         log::info!(
-            "[help]        | pads [n] | in8 [n] | xclk <khz> | incount [n]   regs; IN-PINS GP8-15; XCLK; IN window"
+            "[help]        | pads [n] | in8 [n] | xclk <khz> | incount [n] | zoom <1-4>   regs; IN-PINS; XCLK; IN window; crop zoom"
         );
         #[cfg(feature = "bench")]
         log::info!(
@@ -1070,6 +1070,15 @@ impl ConsoleState {
                 let mut job = TrngJob::simple(JobMode::CamScan);
                 job.arg = dec(split_first_word(rest).0).unwrap_or(3);
                 Some(job)
+            }
+            b"zoom" => {
+                let z = dec(split_first_word(rest).0).unwrap_or(1).clamp(1, 4);
+                if crate::camera::set_zoom(z) {
+                    log::info!("[cam] zoom set to x{z} (window crop; AEC re-settles ~2 s)");
+                } else {
+                    log::info!("[err] cam: not initialised");
+                }
+                None
             }
             b"incount" => {
                 let n = match split_first_word(rest).0 {
@@ -2430,15 +2439,23 @@ fn cam_paint(luma: &[u8], mode_binarize: bool) {
 }
 
 /// `cam preview [secs]`: live view on the LCD until the deadline or any tap.
+///
+/// Every frame also logs a focus score (Tenengrad over the central 60% of
+/// the luma plane). The operator maximises that number by moving the board
+/// and/or turning the lens; the host watches the same log, so aiming and
+/// focusing become a two-person loop with immediate feedback instead of a
+/// 30-second dump-per-attempt.
 #[cfg(feature = "bench")]
 async fn run_cam_preview(secs: u32) {
     use crate::camera::{CaptureResult, FRAME_H, FRAME_W, FRAME_WORDS};
     let secs = secs.clamp(1, 600);
     let mut buf = alloc::vec![0u16; FRAME_WORDS];
     let mut luma = alloc::vec![0u8; FRAME_W * FRAME_H];
-    log::info!("[cam] preview: {secs}s live view (tap the screen to exit)");
+    log::info!("[cam] preview: {secs}s live view (tap the screen to exit); focus score per frame");
     let t0 = Instant::now();
     let mut frames = 0u32;
+    let mut acc = 0u32;
+    let mut nacc = 0u32;
     while (Instant::now() - t0).as_secs() < u64::from(secs) {
         match crate::camera::capture_frame(&mut buf).await {
             Some(CaptureResult::Ok) => {}
@@ -2454,6 +2471,16 @@ async fn run_cam_preview(secs: u32) {
         crate::camera::luma_from_words(&buf, &mut luma);
         cam_paint(&luma, false);
         frames += 1;
+        let s = crate::camera::sharpness(&luma, 6, 10);
+        acc = acc.saturating_add(s);
+        nacc += 1;
+        // Log one line per second (a per-frame stream would flood USB during
+        // a long preview, and 1 Hz is fast enough for a human-in-the-loop).
+        if nacc >= 2 {
+            log::info!("[cam] focus: {} (1 s avg of {nacc})", acc / nacc);
+            acc = 0;
+            nacc = 0;
+        }
         // Any new touch ends the preview (the operator can always bail out).
         let down = crate::panel::with_panel(|p| p.touch.read_point())
             .map(|r| matches!(r, Ok(pt) if pt.fingers > 0))

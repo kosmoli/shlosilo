@@ -344,6 +344,11 @@ pub fn sample_in8(n: usize) -> Option<alloc::vec::Vec<u32>> {
     r
 }
 
+/// Runtime digital zoom (see `Camera::set_zoom`).
+pub fn set_zoom(zoom: u32) -> bool {
+    with_camera(|c| c.set_zoom(zoom)).is_some()
+}
+
 /// Runtime IN-window change on SM0 (see `Camera::set_in_count`).
 pub fn set_in_count(n: u8) -> Option<(u8, u8)> {
     with_camera(|c| {
@@ -605,6 +610,54 @@ impl Camera {
         out
     }
 
+    /// Digital zoom by crop-window: reprogram the OV5640's X/Y start/end so
+    /// a smaller region of the sensor array is read out, still at 240x320.
+    /// This is how a fixed-focus lens can still fill the frame with a target
+    /// that is farther away than its focus distance allows at full FOV.
+    ///
+    /// The vendor window is X 352..1792, Y 26..1946 (1440x1920, 3:4, scaled
+    /// 6x down to 240x320). We keep it centred and shrink both axes by the
+    /// same factor so the aspect ratio and the subsample settings stay as
+    /// the vendor's (empirically validated) values.
+    pub fn set_zoom(&mut self, zoom: u32) {
+        let zoom = zoom.clamp(1, 4);
+        // Vendor window (all in sensor pixels).
+        const X0: u32 = 352;
+        const X1: u32 = 1792;
+        const Y0: u32 = 26;
+        const Y1: u32 = 1946;
+        let w = (X1 - X0) / zoom;
+        let h = (Y1 - Y0) / zoom;
+        // Keep both dimensions even (the ISP needs even sizes).
+        let w = w & !1;
+        let h = h & !1;
+        let x0 = X0 + ((X1 - X0) - w) / 2;
+        let y0 = Y0 + ((Y1 - Y0) - h) / 2;
+        let x1 = x0 + w;
+        let y1 = y0 + h;
+
+        // The registers must be written in this order (start -> end ->
+        // output size -> offsets) and 0xFFFF-delimited writing is not
+        // required; each is a plain 2-byte pair.
+        let writes: [(u16, u16); 8] = [
+            (0x3800, (x0 >> 8) as u16),
+            (0x3801, (x0 & 0xFF) as u16),
+            (0x3802, (y0 >> 8) as u16),
+            (0x3803, (y0 & 0xFF) as u16),
+            (0x3804, (x1 >> 8) as u16),
+            (0x3805, (x1 & 0xFF) as u16),
+            (0x3806, (y1 >> 8) as u16),
+            (0x3807, (y1 & 0xFF) as u16),
+        ];
+        for (reg, val) in writes {
+            let msg = [(reg >> 8) as u8, reg as u8, val as u8];
+            let _ = self.i2c.blocking_write(SCCB_ADDR, &msg);
+        }
+        log::info!(
+            "[cam] zoom x{zoom}: window X {x0}..{x1} ({w}) Y {y0}..{y1} ({h}), output 240x320"
+        );
+    }
+
     /// Set SM0's IN window count and re-arm the capture group
     /// (`cam incount <n>`): the live A/B for the IN_COUNT root cause. 0
     /// means 32 (the vendor's reset value). Restarts SM0 at the program
@@ -793,6 +846,32 @@ pub fn luma_from_words(buf: &[u16], out: &mut [u8]) {
     for o in out[m..n].iter_mut() {
         *o = last;
     }
+}
+
+/// Focus metric (Tenengrad) over the central `frac` of the luma plane:
+/// mean of gx^2 + gy^2, where gx/gy are neighbouring-pixel differences.
+/// This is the standard sharpness score - it peaks at best focus and falls
+/// off symmetrically on both sides, which makes it usable as a live aiming
+/// aid (the operator maximises the number the firmware prints).
+pub fn sharpness(luma: &[u8], frac_num: usize, frac_den: usize) -> u32 {
+    let h = FRAME_H;
+    let w = FRAME_W;
+    let ch = h * frac_num / frac_den;
+    let cw = w * frac_num / frac_den;
+    let y0 = (h - ch) / 2;
+    let x0 = (w - cw) / 2;
+    let mut acc: u64 = 0;
+    let mut n: u64 = 0;
+    for y in y0..y0 + ch - 1 {
+        for x in x0..x0 + cw - 1 {
+            let p = luma[y * w + x] as i32;
+            let gx = luma[y * w + x + 1] as i32 - p;
+            let gy = luma[(y + 1) * w + x] as i32 - p;
+            acc += (gx * gx + gy * gy) as u64;
+            n += 1;
+        }
+    }
+    (acc.checked_div(n).unwrap_or(0)) as u32
 }
 
 /// Sample the raw pad levels of the DVP lines (VSYNC GP8, HREF GP9,
