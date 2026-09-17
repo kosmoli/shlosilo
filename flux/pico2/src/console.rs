@@ -266,6 +266,8 @@ impl ConsoleState {
             b"alloctest" => self.cmd_alloctest(args),
             b"alloctrace" => self.cmd_alloctrace(),
             b"psramtest" => return Some(TrngJob::simple(JobMode::PsramTest)),
+            #[cfg(feature = "bench")]
+            b"cam" => return self.cmd_cam(args),
             b"faultclr" => crate::fault::clear(),
             _ => {
                 let echo = core::str::from_utf8(cmd).unwrap_or("<non-utf8>");
@@ -349,6 +351,10 @@ impl ConsoleState {
         );
         #[cfg(feature = "bench")]
         log::info!("[help]   temp            read the on-die temperature sensor");
+        #[cfg(feature = "bench")]
+        log::info!("[help]   cam id | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]");
+        #[cfg(feature = "bench")]
+        log::info!("[help]                   OV5640 bring-up: SCCB id, frame stats, hex PGM dump");
         log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
         #[cfg(feature = "perf-timing")]
         log::info!("[help]   xtiming         dump the XMR phase-timing table (probe builds)");
@@ -981,6 +987,69 @@ impl ConsoleState {
     /// This is also the empirical half of the SD_CS question: the net
     /// runs to the display connector's pin 10 via R4 (0R), so a clean
     /// card handshake proves nothing there interferes.
+    /// `cam id | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]`:
+    /// the OV5640 bring-up surface (bench-only - the camera is the P3 scan
+    /// input). `id` re-reads the sensor id over SCCB; `grab`/`dump` queue
+    /// deferred capture jobs (frames stream over the console).
+    #[cfg(feature = "bench")]
+    fn cmd_cam(&self, args: &[u8]) -> Option<TrngJob> {
+        fn dec(s: &[u8]) -> Option<u32> {
+            core::str::from_utf8(s)
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+        }
+        let (sub, rest) = split_first_word(args);
+        match sub {
+            b"id" => {
+                match crate::camera::with_camera(|c| {
+                    let id = c.read_id();
+                    c.sensor_id = id;
+                    id
+                }) {
+                    Some(id) => log::info!("[cam] sensor id {id:#06x} (OV5640 = 0x5640)"),
+                    None => log::info!("[err] cam: not initialised"),
+                }
+                None
+            }
+            b"grab" => {
+                let mut job = TrngJob::simple(JobMode::CamGrab);
+                job.arg = dec(split_first_word(rest).0).unwrap_or(1);
+                Some(job)
+            }
+            b"dump" => {
+                let (a, rest2) = split_first_word(rest);
+                let mut job = TrngJob::simple(JobMode::CamDump);
+                job.arg = dec(a).unwrap_or(2); // stride
+                job.off = dec(split_first_word(rest2).0).unwrap_or(0) as usize;
+                Some(job)
+            }
+            b"reg" => {
+                let (a, rest2) = split_first_word(rest);
+                match (parse_hex_u16(a), rest2.is_empty()) {
+                    (Some(r), true) => match crate::camera::with_camera(|c| c.rd(r)) {
+                        Some(v) => log::info!("[cam] reg {r:#06x} = {v:#04x}"),
+                        None => log::info!("[err] cam: not initialised"),
+                    },
+                    (Some(r), false) => match parse_hex_u8(split_first_word(rest2).0) {
+                        Some(v) => match crate::camera::with_camera(|c| c.wr(r, v)) {
+                            Some(()) => log::info!("[cam] reg {r:#06x} <- {v:#04x}"),
+                            None => log::info!("[err] cam: not initialised"),
+                        },
+                        None => log::info!("[err] cam reg: bad value"),
+                    },
+                    _ => log::info!("[err] cam reg <hexreg> [hexval]"),
+                }
+                None
+            }
+            _ => {
+                log::info!(
+                    "[err] cam: id | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]"
+                );
+                None
+            }
+        }
+    }
+
     fn cmd_sd(&self, args: &[u8]) {
         let (sub, rest) = split_first_word(args);
         match sub {
@@ -1700,7 +1769,8 @@ struct TrngJob {
     /// RawCapture: block count.
     #[cfg(feature = "bench")]
     count: u32,
-    /// RawDump: first block to stream. Unused elsewhere.
+    /// RawDump: first block to stream. CamDump: which byte of each DVP
+    /// word to stream (0 = the first sample of the pair). Unused elsewhere.
     #[cfg(feature = "bench")]
     off: usize,
 }
@@ -1751,6 +1821,12 @@ enum JobMode {
     SignXmr,
     /// Verify the PSRAM memory-mapped data path; map the heap on success.
     PsramTest,
+    /// Capture N camera frames; log per-frame byte statistics.
+    #[cfg(feature = "bench")]
+    CamGrab,
+    /// Capture one camera frame; stream one byte plane as paced hex lines.
+    #[cfg(feature = "bench")]
+    CamDump,
 }
 
 impl TrngJob {
@@ -1984,6 +2060,86 @@ fn parse_trng_emb(args: &[u8]) -> TrngJob {
 
 /// Dispatch a deferred TRNG job. All register access happens under the
 /// single trng::instance() lock (see trng.rs "Ownership").
+/// Per-frame byte statistics: min/max/mean over one byte of each DVP word.
+/// Reporting both bytes is how the bring-up establishes which one carries
+/// luma (the other is chroma and hovers near 128).
+#[cfg(feature = "bench")]
+fn cam_byte_stats(buf: &[u16], high: bool) -> (u8, u8, u32) {
+    let mut min = 0xFFu8;
+    let mut max = 0u8;
+    let mut sum = 0u64;
+    for &w in buf {
+        let v = if high { (w >> 8) as u8 } else { w as u8 };
+        min = min.min(v);
+        max = max.max(v);
+        sum += v as u64;
+    }
+    (min, max, (sum / buf.len() as u64) as u32)
+}
+
+/// `cam grab [n]`: capture n frames, log per-frame statistics and timing.
+#[cfg(feature = "bench")]
+async fn run_cam_grab(n: u32) {
+    let n = n.clamp(1, 64);
+    let mut buf = alloc::vec![0u16; crate::camera::FRAME_WORDS];
+    for i in 0..n {
+        let t0 = Instant::now();
+        if crate::camera::capture_frame(&mut buf).await.is_none() {
+            log::info!("[err] cam: not initialised");
+            return;
+        }
+        let (mn0, mx0, av0) = cam_byte_stats(&buf, true);
+        let (mn1, mx1, av1) = cam_byte_stats(&buf, false);
+        log::info!(
+            "[cam] frame {i} ({} ms): b0 {mn0}..{mx0} avg {av0} | b1 {mn1}..{mx1} avg {av1}",
+            t0.elapsed().as_millis()
+        );
+    }
+    log::info!("[cam] {n} frame(s) captured");
+}
+
+/// `cam dump [stride] [byte]`: capture a frame and stream one byte plane as
+/// paced hex lines, one PGM row per line - the host script reassembles the
+/// image. `stride` decimates x and y (default 2 -> 120x160; 1 -> 240x320);
+/// `byte` picks the DVP word byte (0 = the first sample of each pair).
+#[cfg(feature = "bench")]
+async fn run_cam_dump(stride: u32, byte: u32) {
+    use crate::camera::{FRAME_H, FRAME_W, FRAME_WORDS};
+    let stride = match stride {
+        1 => 1,
+        4 => 4,
+        _ => 2,
+    };
+    let high = byte == 0;
+    let mut buf = alloc::vec![0u16; FRAME_WORDS];
+    // Two captures: between jobs the state machine stalls on a full FIFO,
+    // so the first transfer can start mid-group; the second is continuous
+    // (see the camera module docs).
+    for _ in 0..2 {
+        if crate::camera::capture_frame(&mut buf).await.is_none() {
+            log::info!("[err] cam: not initialised");
+            return;
+        }
+    }
+    let cols = FRAME_W / stride;
+    log::info!(
+        "[cam] PGM {cols} {} stride {stride} byte {byte}",
+        FRAME_H / stride
+    );
+    let mut row = alloc::vec![0u8; cols];
+    let mut hex = alloc::vec![0u8; cols * 2];
+    for y in (0..FRAME_H).step_by(stride) {
+        for (n, x) in (0..FRAME_W).step_by(stride).enumerate() {
+            let w = buf[y * FRAME_W + x];
+            row[n] = if high { (w >> 8) as u8 } else { w as u8 };
+        }
+        let s = sign_smoke::to_hex(&row, &mut hex);
+        log::info!("[cam] {y} {s}");
+        Timer::after_millis(2).await;
+    }
+    log::info!("[cam] end");
+}
+
 async fn run_trng_job(job: TrngJob) {
     match job.mode {
         #[cfg(feature = "bench")]
@@ -2027,6 +2183,10 @@ async fn run_trng_job(job: TrngJob) {
         }
         JobMode::SignXmr => run_sign_xmr().await,
         JobMode::PsramTest => run_psram_test().await,
+        #[cfg(feature = "bench")]
+        JobMode::CamGrab => run_cam_grab(job.arg).await,
+        #[cfg(feature = "bench")]
+        JobMode::CamDump => run_cam_dump(job.arg, job.off as u32).await,
     }
 }
 

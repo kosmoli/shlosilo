@@ -16,6 +16,8 @@
 #![no_main]
 
 mod bitbang;
+#[cfg(feature = "bench")]
+mod camera;
 mod console;
 mod fault;
 mod font;
@@ -741,6 +743,36 @@ async fn main(spawner: Spawner) {
         "pico2 alive; shlosilo {}",
         shlosilo::ffi::version::SHLOSILO_VERSION_STRING.trim_end_matches('\0')
     );
+
+    // ---- camera bring-up (P3; bench-only until the scan flow lands) ----
+    // Runs after the console tasks are up, so the ~0.6 s of vendor-table
+    // delays cannot delay the first console bytes.
+    #[cfg(feature = "bench")]
+    {
+        let cam = camera::init(camera::Pins {
+            d0: p.PIN_0,
+            d1: p.PIN_1,
+            d2: p.PIN_2,
+            d3: p.PIN_3,
+            d4: p.PIN_4,
+            d5: p.PIN_5,
+            d6: p.PIN_6,
+            d7: p.PIN_7,
+            vsync: p.PIN_8,
+            href: p.PIN_9,
+            pclk: p.PIN_10,
+            xclk: p.PIN_11,
+            xclk_slice: p.PWM_SLICE5,
+            pwdn: p.PIN_24,
+            sda: p.PIN_28,
+            scl: p.PIN_29,
+            pio: p.PIO0,
+            i2c: p.I2C0,
+            dma: p.DMA_CH0,
+        })
+        .await;
+        camera::install(cam);
+    }
 
     // Pico 2 (non-wireless): LED on GPIO25.
     let mut led = Output::new(p.PIN_25, Level::Low);

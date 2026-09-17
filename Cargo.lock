@@ -2399,6 +2399,7 @@ dependencies = [
  "embassy-usb-logger",
  "embedded-alloc",
  "log",
+ "pio",
  "qrcodegen-no-heap",
  "rqrr",
  "shlosilo",
