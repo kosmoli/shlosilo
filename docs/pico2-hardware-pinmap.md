@@ -42,7 +42,7 @@
 
 ## 连接器（供接线核对）
 
-- **P1 摄像头 24-pin FPC**：22=D2、21=D1、20=D3、19=D0、18=D4、17=PCLK、16=D5、14=D6、13=XCLK、12=D7、9=HSYNC、8=PWDN、7=VSYNC、6=CAM_RST、5=SCL(TWI_SCK)、3=SDA(TWI_SDA)、1=STROBE/NC；其余 = 电源/GND（CSI_3V3/2V8/1V2 分配详见原理图）。
+- **P1 摄像头 24-pin FPC（间距 = 0.5mm，2026-09-17 核验）**：22=D2、21=D1、20=D3、19=D0、18=D4、17=PCLK、16=D5、14=D6、13=XCLK、12=D7、9=HSYNC、8=PWDN、7=VSYNC、6=CAM_RST、5=SCL(TWI_SCK)、3=SDA(TWI_SDA)、1=STROBE/NC。**电源针（WS 原版 × SpotPear 双版逐脚核对定稿）**：2=AGND、15=DGND（GND）；4=AVDD(CSI_2V8)、11=DOVDD(CSI_2V8)、10=DVDD(CSI_1V2)；23/24=3.3V 预留（经 R440/R441「1K/NC」到 CSI_3V3，默认不焊）；25/26=连接器屏蔽脚（线缆无）。⚠️ **座内无 3.3V 直供**——MT9V034（3.3V 器件，2.8V 低于 datasheet 下限）VCC 需从板载 3V3 飞线（H2 排针 3V3 脚 = Pico 兼容 pin36，若已焊；否则 C400/C402/C403 或 ME6217 VOUT 焊点）。间距证据 = Waveshare 原版原理图「0.5-24pin-cam」（本板即其 RP2350-Touch-LCD-2 设计）+ 配套 OV5640 模块官方 FAQ「0.5-24pin 2.0H」；⚠️ SpotPear 版原理图此字段误写「0.25mm-24P」，不要采信——采购转接件/排线一律按 0.5mm（1.0mm 款插不进）。
 - **P2 显示+触摸 18-pin FPC**：2=BL、4=SCK、5=MOSI、6=MISO、7=D/C、8=RST、9=CS、10=SD_CS-1（经 R4 0R 接 SD_CS 网络）、12=TP_RST、13=TP_SCL、14=TP_SDA、15=TP_INT；1/3/11/16/17/18 = 电源/GND（未逐一追）。
 
 ## 板级其他
