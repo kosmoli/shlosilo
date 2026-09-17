@@ -41,6 +41,13 @@ rqrr = { version = "0.11", default-features = false }
 # `pio_asm!` macro. embassy-rp depends on the same crate.
 pio = "0.3"
 
+# QR decoding, quirc port (pure Rust) - the decoder the reference
+# implementation (KOSMO's sim_qr_reader) uses. Takes the grayscale plane
+# directly and does its own thresholding: measurably more robust on real
+# camera frames than rqrr. Upstream is std-only; the workspace
+# [patch.crates-io] redirects it to the vendored no_std build.
+quircs = "0.10"
+
 # runtime glue
 embedded-alloc = "0.7"
 # panic-probe removed: fault.rs owns the panic + hard-fault handlers so

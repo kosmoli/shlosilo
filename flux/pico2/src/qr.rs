@@ -62,6 +62,65 @@ pub fn binarize_adaptive(w: usize, h: usize, gray: &[u8]) -> Vec<bool> {
     out
 }
 
+/// quirc-based decoding (port of quirc - the decoder the reference
+/// implementation uses). It takes the grayscale luma plane directly: quirc
+/// does its own Otsu thresholding plus component-based grid detection, which
+/// is measurably more robust on real camera frames than rqrr's detector
+/// (host-verified against the synthetic degradation ladder: quircs decodes a
+/// blur+noise case that rqrr rejects).
+///
+/// One instance should be reused across frames: `identify` keeps its
+/// working buffers (a 240x320 frame needs ~154 KB for the pixel map).
+pub struct QuircDecoder {
+    inner: quircs::Quirc,
+}
+
+impl Default for QuircDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl QuircDecoder {
+    pub fn new() -> Self {
+        Self {
+            inner: quircs::Quirc::default(),
+        }
+    }
+
+    /// Decode from the luma plane. Returns the same `ScanOutcome` shape as
+    /// `decode_bits` so the console can report the two uniformly.
+    pub fn decode(&mut self, w: usize, h: usize, gray: &[u8]) -> ScanOutcome {
+        let codes = self.inner.identify(w, h, gray);
+        let mut grids = 0usize;
+        let mut payloads = Vec::new();
+        let mut error = None;
+        for code in codes {
+            grids += 1;
+            match code {
+                Ok(c) => match c.decode() {
+                    Ok(d) => payloads.push(String::from_utf8_lossy(&d.payload).into_owned()),
+                    Err(e) => {
+                        if error.is_none() {
+                            error = Some(format!("{e}"));
+                        }
+                    }
+                },
+                Err(e) => {
+                    if error.is_none() {
+                        error = Some(format!("{e}"));
+                    }
+                }
+            }
+        }
+        ScanOutcome {
+            grids,
+            payloads,
+            error,
+        }
+    }
+}
+
 /// Outcome of one decode attempt over a binarized frame.
 pub struct ScanOutcome {
     /// Number of QR grids the detector found.

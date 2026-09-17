@@ -361,7 +361,7 @@ impl ConsoleState {
         );
         #[cfg(feature = "bench")]
         log::info!(
-            "[help]        | preview [secs] | scan [n]   live camera view on the LCD; on-device QR decode"
+            "[help]        | preview [secs] | scan [n] | scanzoom [n]   LCD view; on-device QR decode; zoom sweep"
         );
         #[cfg(feature = "bench")]
         log::info!("[help]        | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]");
@@ -1069,6 +1069,11 @@ impl ConsoleState {
             b"scan" => {
                 let mut job = TrngJob::simple(JobMode::CamScan);
                 job.arg = dec(split_first_word(rest).0).unwrap_or(3);
+                Some(job)
+            }
+            b"scanzoom" => {
+                let mut job = TrngJob::simple(JobMode::CamScanZoom);
+                job.arg = dec(split_first_word(rest).0).unwrap_or(6);
                 Some(job)
             }
             b"zoom" => {
@@ -2040,6 +2045,9 @@ enum JobMode {
     /// Capture `arg` frames, show the binarized view and decode on-device.
     #[cfg(feature = "bench")]
     CamScan,
+    /// Zoom sweep (x1/x2/x3) with on-device decode at each level.
+    #[cfg(feature = "bench")]
+    CamScanZoom,
     /// Re-run the camera SCCB configuration sequence at runtime.
     #[cfg(feature = "bench")]
     CamReinit,
@@ -2494,14 +2502,16 @@ async fn run_cam_preview(secs: u32) {
     log::info!("[cam] preview done ({frames} frames in {secs}s)");
 }
 
-/// `cam scan [n]`: capture, show the binarized view, decode on-device with
-/// rqrr and log every payload.
+/// `cam scan [n]`: capture, show the binarized view, decode on-device and
+/// log every payload. Two decoders run per frame: quirc (gray path, primary)
+/// and rqrr (adaptive-bitmap path, fallback).
 #[cfg(feature = "bench")]
 async fn run_cam_scan(n: u32) {
     use crate::camera::{CaptureResult, FRAME_H, FRAME_W, FRAME_WORDS};
     let n = n.clamp(1, 32);
     let mut buf = alloc::vec![0u16; FRAME_WORDS];
     let mut luma = alloc::vec![0u8; FRAME_W * FRAME_H];
+    let mut qdec = crate::qr::QuircDecoder::new();
     for i in 0..n {
         // The first transfer after an idle gap starts mid-group (see the
         // camera module docs): discard one warm-up frame per iteration.
@@ -2520,24 +2530,105 @@ async fn run_cam_scan(n: u32) {
         }
         crate::camera::luma_from_words(&buf, &mut luma);
         cam_paint(&luma, true);
-        let out = crate::qr::decode_bits(
-            FRAME_W,
-            FRAME_H,
-            &crate::qr::binarize_adaptive(FRAME_W, FRAME_H, &luma),
-        );
-        if out.payloads.is_empty() {
-            log::info!(
-                "[cam] scan {i}: no decode (grids={}, err={:?})",
-                out.grids,
-                out.error
-            );
-        } else {
-            for p in &out.payloads {
-                log::info!("[cam] scan {i}: DECODED ({} chars): {p}", p.len());
-            }
+        if scan_frame_logged(i, &luma, &mut qdec) {
+            // keep going: more frames give more chances and confirmation
         }
     }
     log::info!("[cam] scan done ({n} frames)");
+}
+
+/// One decode attempt: quirc first (gray, most robust), then rqrr on the
+/// adaptive bitmap. Logs one line. Returns true when something decoded.
+#[cfg(feature = "bench")]
+fn scan_frame_logged(i: u32, luma: &[u8], qdec: &mut crate::qr::QuircDecoder) -> bool {
+    use crate::camera::{FRAME_H, FRAME_W};
+    let q = qdec.decode(FRAME_W, FRAME_H, luma);
+    if !q.payloads.is_empty() {
+        for p in &q.payloads {
+            log::info!("[cam] scan {i}: DECODED by quirc ({} chars): {p}", p.len());
+        }
+        return true;
+    }
+    let bits = crate::qr::binarize_adaptive(FRAME_W, FRAME_H, luma);
+    let r = crate::qr::decode_bits(FRAME_W, FRAME_H, &bits);
+    if !r.payloads.is_empty() {
+        for p in &r.payloads {
+            log::info!("[cam] scan {i}: DECODED by rqrr ({} chars): {p}", p.len());
+        }
+        return true;
+    }
+    log::info!(
+        "[cam] scan {i}: no decode (quirc: grids={} err={:?}; rqrr: grids={} err={:?})",
+        q.grids,
+        q.error,
+        r.grids,
+        r.error
+    );
+    false
+}
+
+/// `cam scanzoom [n]`: sweep the digital zoom (x1 -> x2 -> x3) with `n`
+/// decode attempts at each level, from ONE operator pose - the crop window
+/// is centred, so whatever the operator framed at x1 stays framed (magnified)
+/// at x2/x3. This is the scanner-classic fix for a lens whose focus distance
+/// is farther than the working distance allows at full field of view.
+#[cfg(feature = "bench")]
+async fn run_cam_scanzoom(n: u32) {
+    use crate::camera::{CaptureResult, FRAME_H, FRAME_W, FRAME_WORDS};
+    let n = n.clamp(2, 12);
+    let mut buf = alloc::vec![0u16; FRAME_WORDS];
+    let mut luma = alloc::vec![0u8; FRAME_W * FRAME_H];
+    let mut qdec = crate::qr::QuircDecoder::new();
+    log::info!(
+        "[cam] scanzoom: {n} frames per zoom (x1, x2, x3); hold the board still and centred"
+    );
+    let mut got = false;
+    for z in [1u32, 2, 3] {
+        crate::camera::set_zoom(z);
+        // Warm-up + settle: the crop change needs a few frames before the
+        // AEC re-converges (and the first transfer after an idle gap is
+        // partial - see the camera module docs).
+        for _ in 0..3 {
+            match crate::camera::capture_frame(&mut buf).await {
+                Some(CaptureResult::Ok) => {}
+                Some(CaptureResult::Timeout { words }) => {
+                    log::info!("[cam] scanzoom: capture timed out ({words} words) - stopping");
+                    crate::camera::set_zoom(1);
+                    return;
+                }
+                None => {
+                    log::info!("[err] cam: not initialised");
+                    return;
+                }
+            }
+        }
+        log::info!("[cam] scanzoom: zoom x{z}, scanning {n} frames");
+        for i in 0..n {
+            match crate::camera::capture_frame(&mut buf).await {
+                Some(CaptureResult::Ok) => {}
+                Some(CaptureResult::Timeout { words }) => {
+                    log::info!("[cam] scanzoom: capture timed out ({words} words) - stopping");
+                    crate::camera::set_zoom(1);
+                    return;
+                }
+                None => {
+                    log::info!("[err] cam: not initialised");
+                    return;
+                }
+            }
+            crate::camera::luma_from_words(&buf, &mut luma);
+            cam_paint(&luma, true);
+            if scan_frame_logged(i, &luma, &mut qdec) {
+                log::info!("[cam] scanzoom: hit at zoom x{z} frame {i}");
+                got = true;
+            }
+        }
+    }
+    crate::camera::set_zoom(1);
+    log::info!(
+        "[cam] scanzoom done ({} hit(s))",
+        if got { "with" } else { "no" }
+    );
 }
 
 async fn run_trng_job(job: TrngJob) {
@@ -2593,6 +2684,8 @@ async fn run_trng_job(job: TrngJob) {
         JobMode::CamPreview => run_cam_preview(job.arg).await,
         #[cfg(feature = "bench")]
         JobMode::CamScan => run_cam_scan(job.arg).await,
+        #[cfg(feature = "bench")]
+        JobMode::CamScanZoom => run_cam_scanzoom(job.arg).await,
         #[cfg(feature = "bench")]
         JobMode::CamReinit => match crate::camera::reinit().await {
             Some(id) => log::info!("[cam] reinit done (id {id:#06x})"),

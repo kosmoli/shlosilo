@@ -1,0 +1,63 @@
+# shlosilo vendor patch: quircs (pure-Rust quirc) no_std enablement
+#
+# Vendored crate (from crates.io, source copied into vendor/):
+#   quircs 0.10.2  (MIT)  - QR detection + decoding, a faithful port of
+#                           dlbeer/quirc into Rust. Upstream declares itself
+#                           "Pure Rust" but is std-only.
+# Dependency changes in the vendored build:
+#   thiserror removed (std-only); the two error enums implement Display and
+#   core::error::Error by hand (identical strings).
+#   num-traits -> default-features = false (no_std).
+#   libm 0.2 added (f64::round for no_std).
+#   crate-type "staticlib" removed: it forces a standalone link check that
+#   demands a global allocator + panic handler which only the final firmware
+#   provides; the crate is consumed as an ordinary rlib dependency.
+#
+# WHY: the device's QR decoding needs a decoder that tolerates real camera
+# frames (blur, rotation, low module counts). Host measurements on the
+# synthetic degradation ladder put quircs one robustness tier above rqrr:
+# it decodes the blur+noise case (3 px/module, blur radius 1 + ~19% noise,
+# no rotation) that rqrr's detector rejects, and it is the decoder the
+# reference implementation uses (KOSMO: rust/sim_qr_reader, quircs 0.10).
+# quirc also takes the grayscale plane directly (own Otsu thresholding +
+# component-based grid detection) rather than needing a pre-binarized bitmap.
+#
+# EXIT CONDITION (vendor policy 2026-09-03): drop the vendor + the
+# [patch.crates-io] entry the day upstream quircs compiles for a no_std
+# target (watch github.com/dignifiedquire/quircs - a no_std feature/PR is
+# the signal).
+#
+# Reapply after upgrade: re-vendor the new version, apply the edits below,
+# run the host equivalence check (the synthetic ladder in
+# tests/qr_decode_host.rs plus the /tmp/qr_case_* frames) and the on-device
+# scan acceptance.
+#
+# ---- change set ----
+# src/lib.rs:
+#   + #![no_std] and `extern crate alloc;` (before #![deny(clippy::all)] so
+#     all inner attributes stay at the file top)
+# src/error.rs:
+#   - thiserror derive removed; manual fmt::Display for DecodeError and
+#     ExtractError with byte-identical message strings, plus
+#     impl core::error::Error
+# src/quirc.rs:
+#   + use alloc::{string::String, vec::Vec};
+#   - std::fmt::{Display, Formatter, Result} -> core::fmt::*
+#   - version() -> String::from(env!("CARGO_PKG_VERSION")) (was .to_string())
+# src/identify.rs:
+#   + use alloc::vec; use alloc::vec::Vec;
+#   - std::convert::TryFrom -> core::convert::TryFrom
+#   - std::mem::swap -> core::mem::swap (2 sites)
+#   - f64::round() -> libm::round() (2 sites, in the interpolation helper)
+# src/decode.rs:
+#   - std::convert::TryFrom -> core::convert::TryFrom
+# Cargo.toml:
+#   - [dependencies.thiserror] removed
+#   - [dependencies.num-traits] default-features = false
+#   + [dependencies.libm] version = "0.2"
+#   - [lib] crate-type: ["staticlib", "rlib"] -> ["rlib"]
+#
+# ---- host equivalence check (2026-09-17, patched vs unpatched) ----
+# Identical results on the synthetic ladder:
+#   clean scale2/3/4, blur1+noise scale3, rot5 clean scale3 -> decode OK
+#   blur1 scale3 -> grid found, DataEcc; blur2 heavy -> no decode

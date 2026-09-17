@@ -41,6 +41,7 @@ exclude = [
     "vendor/rqrr",
     "vendor/g2p",
     "vendor/g2poly",
+    "vendor/quircs",
 ]
 resolver = "2"
 
@@ -180,3 +181,9 @@ curve25519-dalek = { path = "vendor/curve25519-dalek" }
 rqrr = { path = "vendor/rqrr" }
 g2p = { path = "vendor/g2p" }
 g2poly = { path = "vendor/g2poly" }
+# quircs (pure-Rust quirc port): the QR decoder that matches the reference
+# implementation (KOSMO's sim_qr_reader uses quircs 0.10). Upstream is
+# std-only; vendored with a mechanical no_std patch - see
+# patches/quircs-no-std.patch. Exit condition: drop both when upstream
+# ships no_std (watch github.com/dignifiedquire/quircs).
+quircs = { path = "vendor/quircs" }

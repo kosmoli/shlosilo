@@ -30,6 +30,32 @@ def _find_dev():
 
 
 DEV = _find_dev()
+
+def _rd(fd, n=8192):
+    """Read with EAGAIN tolerance: the CDC endpoint can transiently refuse
+    both directions (device busy, or a control-transfer window)."""
+    import errno as _errno
+    try:
+        return os.read(fd, n)
+    except BlockingIOError:
+        return b""
+    except OSError as e:
+        if e.errno in (_errno.EAGAIN, _errno.EWOULDBLOCK):
+            return b""
+        raise
+
+
+def _wr(fd, data, tries=60):
+    """Write with retry: EAGAIN on a full device-side buffer is normal."""
+    for _ in range(tries):
+        try:
+            os.write(fd, data)
+            return True
+        except BlockingIOError:
+            time.sleep(0.05)
+    return False
+
+
 STRIDE = sys.argv[1] if len(sys.argv) > 1 else "2"
 BYTE = sys.argv[2] if len(sys.argv) > 2 else "0"
 OUT = sys.argv[3] if len(sys.argv) > 3 else "/tmp/cam.pgm"
@@ -46,7 +72,7 @@ def main() -> int:
                 r, _, _ = select.select([fd], [], [], t)
                 if not r:
                     break
-                d = os.read(fd, 8192)
+                d = _rd(fd)
                 if not d:
                     break
                 out += d
@@ -54,33 +80,36 @@ def main() -> int:
             pass
         return out
 
+    def w(data):
+        return _wr(fd, data)
+
     drain(0.4)
-    os.write(fd, b"\n")
+    w(b"\n")
     time.sleep(0.25)
     drain(0.2)
 
     # Stats first (cheap liveness + which byte carries luma), then the dump.
-    os.write(fd, b"cam grab 1\n")
+    w(b"cam grab 1\n")
     deadline = time.time() + 20
     buf = b""
     while time.time() < deadline:
         r, _, _ = select.select([fd], [], [], 0.5)
         if r:
-            buf += os.read(fd, 8192)
+            buf += _rd(fd)
         if b"[cam] 1 frame(s) captured" in buf or b"[err]" in buf:
             break
     for line in buf.decode("utf-8", "replace").splitlines():
         if "[cam]" in line:
             print(line)
 
-    os.write(fd, f"cam dump {STRIDE} {BYTE}\n".encode())
+    w(f"cam dump {STRIDE} {BYTE}\n".encode())
     deadline = time.time() + 120
     buf = b""
     done = False
     while time.time() < deadline and not done:
         r, _, _ = select.select([fd], [], [], 0.5)
         if r:
-            d = os.read(fd, 8192)
+            d = _rd(fd)
             if d:
                 buf += d
                 if b"[cam] end" in d:
