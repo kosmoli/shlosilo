@@ -73,8 +73,10 @@ audit #17) - production builds compile them out:
 - `panel` — re-run the full panel bring-up (shared reset, touch probe,
   LCD init, test pattern; the reset pulse blanks the display, which is
   redrawn before the command returns)
-- `lcd pattern` | `lcd fill <hex565>` | `lcd bl <0|1>` — ST7789V2 ops:
-  redraw the pattern, fill a colour, switch the backlight
+- `lcd pattern` | `lcd fill <hex565>` | `lcd bl <0|1>` — ST7796S ops
+  (the fitted panel; the vendor init sequence is the Sitronix-family
+  unlock chain both ST77xx parts accept): redraw the pattern, fill a
+  colour, switch the backlight
 - `touch [n]` — sample the fitted touch controller (n ≤ 8, 100 ms
   apart): finger count, gesture, raw register values AND the calibrated
   screen coordinates
@@ -154,6 +156,36 @@ audit #17) - production builds compile them out:
   sample=200)
 - `temp` *(bench)* — on-die temperature readout (RP2350 TS); also appended
   to the `trngraw`/`trngcheck` capture lines
+- `cam id` | `cam reg <reg> [val]` | `cam reinit` | `cam pwdn <z|0|1>` |
+  `cam xclk <khz>` | `cam incount [n]` | `cam zoom <1-4>` *(bench)* —
+  OV5640 bring-up: read the sensor id over SCCB, read/write any sensor
+  register, re-run the full SCCB configuration sequence, drive the PWDN
+  pin, set the XCLK rate (the capture loop caps PCLK, so the working
+  point is 6-8 MHz — the vendor's 37.5 MHz shears every frame), set the
+  state machine's IN window, and digital-zoom by cropping the sensor
+  window (the fixed-focus lens cannot be adjusted mechanically)
+- `cam preview [secs]` *(bench)* — live camera view on the LCD: the
+  240x320 luma plane rendered as pseudo-greyscale with an 8x8 Bayer
+  dither, full screen, ~1.2 fps; it also logs a per-second focus score
+  (Tenengrad over the central 60%) for aiming/focus feedback. Tap exits
+- `cam scan [n]` | `cam scanzoom [n]` *(bench)* — on-device QR decoding:
+  capture n frames (scanzoom sweeps zoom x1->x2->x3 with n frames each,
+  one operator pose) and decode each with two decoders - quirc (gray
+  path, primary) then rqrr (adaptive bitmap, fallback) - logging grids,
+  payloads and the first error per frame. The LCD shows the binarized
+  frame (what the decoder actually sees; the phone-scannable inverted
+  look). First successful on-device decode of a monitor-displayed QR:
+  2026-09-17 (77-char payload, XCLK 8 MHz, ~40 cm)
+- `cam grab [n]` | `cam dump [stride] [byte]` *(bench)* — capture frames
+  and report per-frame byte statistics, or stream one byte plane as
+  paced hex rows for host-side reassembly into a PGM (`bench/cam_dump.py`)
+- `cam rx [ms]` | `cam pins [n]` | `cam edges [ms]` | `cam sm` |
+  `cam selftest [ms]` | `cam piosample [n]` | `cam in8 [n]` |
+  `cam pads [n]` *(bench)* — the capture-path diagnostics ladder: drain
+  the PIO FIFO without DMA, sample the DVP pad levels (raw or as GPIO
+  transitions over seconds), dump the state-machine registers (including
+  the program counter), run a self-test program on the idle SM, sample
+  the PIO's own pin view, and dump the pad/IO configuration registers
 
 Signing prints `[sign] <type> ok: <n> bytes sha256=<hex>`, plus
 `[sign] <type> hex: <hex>` when the output is ≤128 bytes (covers the ETH
@@ -440,12 +472,21 @@ the per-phase tables (tx / bp / cn) accumulated during the last sign;
 madd / quad / chunked CT multiexp / vartime 2-term); `xmrchunk <n>` flips
 the chunk size at runtime for single-variable A/B runs.
 
-LCD + touch bring-up has landed (2026-09-16): ST7789V2 over SPI1 and
-CST816D over I2C1 with the boot test pattern; on-board verification of
-this code is the immediate next step.
+The fitted panel (ST7796S + FT6236) and the mono UI are done and verified
+on hardware: the P2 UI base (1bpp canvas, Terminus ASCII font, QR page,
+O/X zones) and the UR carousel for payloads past the single-frame QR
+ceiling; touch calibration is the identity mapping (see the calibration
+notes above).
 
-Next steps: QR (camera) input in place of the bench channel (the RP2350
-board now carries a touchscreen + camera), and further XMR tuning from the
-phase tables (bp6 folding and CN are at their measured floors; bp5's
-remaining gap is the open one). Entropy assurance is complete — see
+P3 (camera + QR decode) is closed on hardware (2026-09-17): the OV5640
+capture chain (PIO + DMA, XCLK <= 8 MHz, PWDN driven low at power-up, the
+SM's IN window covering every pin the program reads) delivers frames, and
+the firmware decoded a monitor-displayed QR on-device. Camera commands are
+bench-gated (`cam ...`, see the command list).
+
+Next steps: P4 — the full interaction flow (scan -> UR parse -> detail ->
+O/X -> sign with TRNG -> result QR, phone wallet to pico2 with no PC in
+the loop) — and further XMR tuning from the phase tables (bp6 folding and
+CN are at their measured floors; bp5's remaining gap is the open one).
+Entropy assurance is complete — see
 `docs/entropy-assurance.md`.
