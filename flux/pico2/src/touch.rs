@@ -83,33 +83,37 @@ impl Chip {
 /// Raw-to-screen mapping for the fitted panel (FT6236, 320x480).
 ///
 /// The digitizer sits 90 degrees off the display's axes: **raw_x is the
-/// VERTICAL axis** (finger at the screen top reads ~276-315, at the
-/// bottom ~1-32) and **raw_y is the HORIZONTAL axis** (left ~0-40,
-/// right ~443-475). Screen x therefore follows raw y (increasing) and
-/// screen y follows raw x (decreasing), with scales ~0.73 and ~1.83
-/// respectively.
+/// VERTICAL axis** (screen top ~276-315, bottom ~1-32) and **raw_y is
+/// the HORIZONTAL axis** (physical left ~443-475, physical right ~0-40).
+/// Screen x therefore follows raw y DECREASING and screen y follows raw
+/// x DECREASING.
 ///
-/// Established by two independent datasets that agree exactly:
-/// - five corner-block presses (raw corner pairs separate cleanly on the
-///   *other* axis each time), fitted by least squares;
-/// - a controlled drag test: horizontal finger drags sweep raw_y
-///   (0 -> ~472 left-to-right) and vertical drags sweep raw_x
-///   (~315 -> 1 top-to-bottom), reproduced twice each.
+/// The per-axis signs were settled by triangulating three independent
+/// observations (each alone is ambiguous):
+/// 1. corner-block presses (five points) fix the two axes and both
+///    scales by least squares;
+/// 2. controlled drags confirm which raw axis is which (a horizontal
+///    drag sweeps raw_y 0..~472; a vertical drag sweeps raw_x
+///    ~315..1);
+/// 3. the on-screen zone behaviour after the display mirror was fixed
+///    fixes the remaining sign: taps on the physical LOWER-LEFT had been
+///    acting as the right-hand (confirm) button, so physical left must
+///    map to screen-left.
 ///
-/// History, kept because two attempts got this wrong: an intermediate
-/// revision mapped sx from raw_x / sy from raw_y (a plausible-looking
-/// "mirrored x" story) - it was wrong and scrambled the touch while
-/// masking the real defect, which was a **display-side horizontal
-/// mirror** (fixed in lcd.rs by the MADCTL MX bit). With the display
-/// mirrored, a correct touch trail looked horizontally reversed, and
-/// that artifact is what prompted both wrong revisions.
+/// **Why two earlier revisions got this wrong** (kept as a warning):
+/// with the display horizontally mirrored (MADCTL missing MX), a touch
+/// mapping that was *itself* x-mirrored produced a trail that visually
+/// tracked the finger - the two mirrors cancelled. Fixing the display
+/// then required flipping sx too, and this comment block exists because
+/// that was missed the first time. Corner-press ORDER was also captured
+/// on the mirrored screen, which silently swapped left/right in the
+/// fit - the reason observation (3) was needed to break the tie.
 ///
-///   screen_x = (727 * raw_y - 13390) / 1000
-///   screen_y = (-1829 * raw_x + 524182) / 1000
-/// (Corner-press residuals <= 12 px; scale slightly over-unity, so the
-/// extremes clamp cleanly to the panel edges.)
-const CAL_SX_A: i32 = 727;
-const CAL_SX_B: i32 = -13_390;
+///   screen_x = (333400 - 727 * raw_y) / 1000
+///   screen_y = (524182 - 1829 * raw_x) / 1000
+/// (Residuals <= 12 px on the corner set; small clamps at the edges.)
+const CAL_SX_A: i32 = -727;
+const CAL_SX_B: i32 = 333_400;
 const CAL_SY_A: i32 = -1829;
 const CAL_SY_B: i32 = 524_182;
 
