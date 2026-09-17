@@ -38,7 +38,8 @@
 #   - use std::io::Write -> use crate::Write
 #   - use std::mem -> use core::mem
 #   - ::std::cmp::min -> core::cmp::min
-#   + use alloc::{string::String, vec::Vec}; (Vec already used; String re-export)
+#   + #[cfg(test)] use alloc::{vec, vec::Vec}; (only the crate's own tests
+#     use them; the library path needs neither)
 # identify/grid.rs:
 #   - use std::{cmp, mem} -> use core::{cmp, mem}
 # prepare.rs:

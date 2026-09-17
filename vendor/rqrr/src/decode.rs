@@ -1,4 +1,5 @@
-use alloc::{string::String, vec::Vec};
+#[cfg(test)]
+use alloc::{vec, vec::Vec};
 use crate::Write;
 use core::mem;
 
