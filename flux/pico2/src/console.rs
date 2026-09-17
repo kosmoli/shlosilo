@@ -357,7 +357,7 @@ impl ConsoleState {
         );
         #[cfg(feature = "bench")]
         log::info!(
-            "[help]        | pads [n] | in8 [n] | xclk <khz>   registers; IN-PINS GP8-15; runtime XCLK"
+            "[help]        | pads [n] | in8 [n] | xclk <khz> | incount [n]   regs; IN-PINS GP8-15; XCLK; IN window"
         );
         #[cfg(feature = "bench")]
         log::info!("[help]        | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]");
@@ -1054,6 +1054,28 @@ impl ConsoleState {
                         log::info!("[cam]   OR={or:08x} (0 = GP8-15 all zero at the PIO)");
                     }
                     None => log::info!("[err] cam: not initialised"),
+                }
+                None
+            }
+            b"incount" => {
+                let n = match split_first_word(rest).0 {
+                    b"" => None,
+                    s => dec(s).map(|v| v as u8),
+                };
+                match n {
+                    Some(v) => match crate::camera::set_in_count(v) {
+                        Some((base, count)) => log::info!(
+                            "[cam] SM0 IN window re-armed: base={base} count={count} (0 = 32); \
+                             capture re-armed - try `cam rx 300` / `cam grab 1`"
+                        ),
+                        None => log::info!("[err] cam: not initialised"),
+                    },
+                    None => match crate::camera::in_window() {
+                        Some((base, count)) => {
+                            log::info!("[cam] SM0 IN window: base={base} count={count} (0 = 32)")
+                        }
+                        None => log::info!("[err] cam: not initialised"),
+                    },
                 }
                 None
             }

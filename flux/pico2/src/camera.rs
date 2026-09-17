@@ -311,6 +311,19 @@ pub fn sample_in8(n: usize) -> Option<alloc::vec::Vec<u32>> {
     r
 }
 
+/// Runtime IN-window change on SM0 (see `Camera::set_in_count`).
+pub fn set_in_count(n: u8) -> Option<(u8, u8)> {
+    with_camera(|c| {
+        c.set_in_count(n);
+        c.in_window()
+    })
+}
+
+/// Current SM0 IN window.
+pub fn in_window() -> Option<(u8, u8)> {
+    with_camera(|c| c.in_window())
+}
+
 /// Runtime XCLK reconfiguration.
 pub fn set_xclk_khz(khz: u32) -> bool {
     with_camera(|c| c.set_xclk_khz(khz)).is_some()
@@ -530,11 +543,12 @@ impl Camera {
         let o = self.sm1_origin as usize;
         self.sm1.set_enable(false);
         self.sm1.clear_fifos();
-        let saved = [PIO0.instr_mem(o).read().0, PIO0.instr_mem(o + 1).read().0];
         // `in pins, 8` = 0x4008, `push block` = 0x8020 (from the vendor
         // listing: their pc=8 / pc=13).
         PIO0.instr_mem(o).write(|w| w.set_instr_mem(0x4008));
         PIO0.instr_mem(o + 1).write(|w| w.set_instr_mem(0x8020));
+        // Window = GP8..GP15 for the duration of this sample (in_base 8 with
+        // the 8-pin count); every pin in question falls inside it.
         PIO0.sm(1).pinctrl().modify(|w| w.set_in_base(8));
 
         let mut out = alloc::vec::Vec::with_capacity(n);
@@ -547,13 +561,40 @@ impl Camera {
         }
         self.sm1.set_enable(false);
 
-        // Restore.
-        PIO0.instr_mem(o)
-            .write(|w| w.set_instr_mem(saved[0] as u16));
-        PIO0.instr_mem(o + 1)
-            .write(|w| w.set_instr_mem(saved[1] as u16));
+        // Restore to the mirror program by KNOWN constants. Reading
+        // INSTR_MEM back is not reliable (the 2026-09-17 round wrote back a
+        // zero word, turning SM1's program into `jmp 0`, which silently
+        // wedged it inside the camera program's TX wait), so never
+        // round-trip through a readback here.
+        PIO0.instr_mem(o).write(|w| w.set_instr_mem(0xA0C0)); // mov isr, pins
+        PIO0.instr_mem(o + 1).write(|w| w.set_instr_mem(0x8020)); // push block
         PIO0.sm(1).pinctrl().modify(|w| w.set_in_base(0));
         out
+    }
+
+    /// Set SM0's IN window count and re-arm the capture group
+    /// (`cam incount <n>`): the live A/B for the IN_COUNT root cause. 0
+    /// means 32 (the vendor's reset value). Restarts SM0 at the program
+    /// top and re-pushes its X/Y constants.
+    pub fn set_in_count(&mut self, n: u8) {
+        use embassy_rp::pac::PIO0;
+        self.sm.set_enable(false);
+        self.sm.clear_fifos();
+        PIO0.sm(0).shiftctrl().modify(|w| w.set_in_count(n));
+        // Restart from the program top: clears the PC to wrap_bottom and
+        // resets the shift counters, so the X/Y `out` instructions re-run.
+        PIO0.ctrl().modify(|w| w.set_sm_restart(1));
+        self.sm.set_enable(true);
+        self.sm.tx().push(0); // X: reserved
+        self.sm.tx().push((FRAME_WORDS - 1) as u32); // Y: samples per group
+    }
+
+    /// Current SM0 IN window (IN_BASE/IN_COUNT as configured).
+    pub fn in_window(&self) -> (u8, u8) {
+        use embassy_rp::pac::PIO0;
+        let p = PIO0.sm(0).pinctrl().read();
+        let s = PIO0.sm(0).shiftctrl().read();
+        (p.in_base(), s.in_count())
     }
 
     /// Reconfigure XCLK at runtime (`cam xclk <khz>`): used to drive GP11
@@ -969,11 +1010,20 @@ pub async fn init(p: Pins) -> Camera {
         pio.common.make_pio_pin(p.pclk),
     ];
 
-    let in_pins: [&Pin<'static, PIO0>; 8] = core::array::from_fn(|i| &pins[i]);
+    // IN window = GP0..GP10 - ALL of them, not just the data bus. embassy's
+    // `set_in_pins` sets IN_COUNT = pins.len(), and the capture program's
+    // `wait ... pin 8/9/10` instructions address pins above the data bus: with
+    // a window that stops at GP7 those reads return 0, so `wait 0 pin 8`
+    // passes on a false low while `wait 1 pin 8` never passes and the SM
+    // wedges at pc=3 without pushing a single word (the actual hardware
+    // failure, root-caused 2026-09-17). The vendor SDK only sets IN_BASE and
+    // leaves IN_COUNT at its reset value (32) - that is why their identical
+    // program works and ours did not.
+    let in_pins: [&Pin<'static, PIO0>; 11] = core::array::from_fn(|i| &pins[i]);
 
     let mut cfg = PioConfig::default();
     cfg.use_program(&loaded, &[]);
-    cfg.set_in_pins(&in_pins); // IN base = GP0 (D0..D7)
+    cfg.set_in_pins(&in_pins); // IN window = GP0..GP10 (data bus + sync pins)
     // Vendor: sm_config_set_in_shift(shift_left, autopush=false, 32) and
     // sm_config_set_out_shift(shift_left, autopull=true, 32).
     cfg.shift_in = ShiftConfig {
@@ -1015,7 +1065,8 @@ pub async fn init(p: Pins) -> Camera {
     {
         let mut cfg1 = PioConfig::default();
         cfg1.use_program(&loaded_sample, &[]);
-        // in_base 0: the ISR carries GP0..GP31 as the PIO sees them.
+        // Same 11-pin window as SM0 (see the note above): `mov isr, pins`
+        // reads the IN window, so a narrower window silently truncates it.
         cfg1.set_in_pins(&in_pins);
         sm1.set_config(&cfg1);
     }
