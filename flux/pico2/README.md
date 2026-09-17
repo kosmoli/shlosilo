@@ -91,6 +91,17 @@ audit #17) - production builds compile them out:
 - `touchint [ms]` — monitor the touch controller's INT line (GP17) for
   edge activity during a window (default 15 s): an independent liveness
   proof that does not depend on the I2C path
+- `ui orient` | `ui draw <welcome|detail|qr>` | `ui run [secs]` |
+  `ui qr <text>` | `ui ur <hex>` — the mono UI surface: the orientation
+  reference pattern (edge labels + asymmetric marker), static pages, the
+  interactive demo, an arbitrary QR page, and the **UR carousel** (a
+  multipart UR split into 200-byte fountain frames and cycled as QR
+  codes — the delivery path for signed outputs past the ~2953-byte
+  single-frame ceiling; X exits). Host-verified end to end: a real
+  3986-byte device-signed txset encodes to 20 frames (v14, 73×73), one
+  cycle reassembles byte-exact through the core decoder, and every frame
+  scans back byte-identical through an independent QR reader
+  (`tests/pico2_ur_carousel_host.rs` + `bench/ur_frames_check.py`)
 - `touchdraw [secs]` — visual mapping check: dark screen + four corner
   reference blocks, then a green trail painted at the calibrated
   position of the touch point (default 60 s). The trail must track the

@@ -39,7 +39,7 @@ use shlosilo::entropy::mnemonic::{Mnemonic, WordCount};
 use shlosilo::error::{ShlosiloError, ShlosiloErrorKind};
 use shlosilo::ur::ur_decode;
 use shlosilo::ur::ur_encode::UrTypeTag;
-use shlosilo::ur::ur_multipart::UrMultipartDecoder;
+use shlosilo::ur::ur_multipart::{UrMultipartDecoder, UrMultipartEncoder};
 
 use crate::sign_smoke;
 #[cfg(feature = "bench")]
@@ -295,6 +295,7 @@ impl ConsoleState {
         );
         log::info!("[help]   sd probe | sd read <blk>  TF-slot SD card (SPI0, read-only probe)");
         log::info!("[help]   ui orient | draw <welcome|detail|qr> | run [secs] | qr <text>");
+        log::info!("[help]   ui ur <hex>   UR carousel: cycle fountain frames as QR (X exits)");
         log::info!("[help]   bbscan|bbid|bbrd|bbwr|bbinit|bbtrace  bit-banged I2C on GP26/27");
         log::info!("[help]                   (swap, d=<cycles>, numbers hex; bring-up forensics)");
         log::info!("[help]   heap [reset]    allocator used/free/peak (reset re-arms peak)");
@@ -932,6 +933,22 @@ impl ConsoleState {
                 }
             }
             b"run" => return Some(parse_ui_run(rest)),
+            b"ur" => {
+                let hex = trim_ascii(rest);
+                let mut buf = [0u8; UR_PAYLOAD_MAX];
+                match parse_hex(hex, &mut buf) {
+                    Some(n) if n > 0 => {
+                        let slot = unsafe { &mut *core::ptr::addr_of_mut!(UR_PAYLOAD) };
+                        slot[..n].copy_from_slice(&buf[..n]);
+                        UR_PAYLOAD_LEN.store(n, core::sync::atomic::Ordering::Relaxed);
+                        log::info!("[ui] UR carousel payload staged ({n} B)");
+                        return Some(parse_ui_ur());
+                    }
+                    _ => log::info!(
+                        "[err] ui: usage: ui ur <hex payload, <= {UR_PAYLOAD_MAX} bytes>"
+                    ),
+                }
+            }
             b"qr" => {
                 let s = match core::str::from_utf8(trim_ascii(rest)) {
                     Ok(s) if !s.is_empty() => s,
@@ -1623,6 +1640,18 @@ const QR_TEXT_MAX: usize = 2048;
 static mut QR_TEXT: [u8; QR_TEXT_MAX] = [0u8; QR_TEXT_MAX];
 static QR_TEXT_LEN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+/// `ui ur <hex>` staging: the UR carousel payload. One console line caps
+/// the hex at LINE_CAP characters, hence 4096 bytes (a 3458-byte XMR
+/// signature fits; larger payloads need a fragment-feeding extension).
+const UR_PAYLOAD_MAX: usize = 4096;
+static mut UR_PAYLOAD: [u8; UR_PAYLOAD_MAX] = [0u8; UR_PAYLOAD_MAX];
+static UR_PAYLOAD_LEN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// UR carousel cadence: milliseconds per frame. A ~450-char frame encodes
+/// in tens of milliseconds on this core and the flush is ~50 ms, so this
+/// leaves comfortable scanning dwell time per frame.
+const UR_FRAME_MS: u64 = 450;
+
 /// The USB receive handler: assembles lines and drives the command channel.
 pub struct CommandHandler;
 
@@ -1716,6 +1745,8 @@ enum JobMode {
     UiRun,
     /// Render the staged `ui qr <text>` payload as a QR page.
     UiQr,
+    /// UR multipart carousel: cycle fountain frames of the staged payload.
+    UiUr,
     /// Sign the pending XMR request (TRNG entropy + the full signing path).
     SignXmr,
     /// Verify the PSRAM memory-mapped data path; map the heap on success.
@@ -1820,6 +1851,77 @@ async fn run_ui(secs: u32) {
     crate::ui::run(secs).await;
 }
 
+/// `ui ur <hex>` job parameters: fixed window (X stops it early).
+fn parse_ui_ur() -> TrngJob {
+    let mut job = TrngJob::simple(JobMode::UiUr);
+    job.arg = 120;
+    job
+}
+
+/// UR carousel: split the staged payload into fountain frames (200-byte
+/// fragments, `ur:xmr-txunsigned/...`) and cycle them as QR codes. This
+/// is the delivery path for signed outputs that exceed a single QR: a
+/// 3458-byte XMR signature is ~18 frames here, ~8 s per cycle at the
+/// default cadence. X on the left zone stops it; O is inert.
+async fn run_ui_ur(secs: u32) {
+    let len = UR_PAYLOAD_LEN.load(core::sync::atomic::Ordering::Relaxed);
+    if len == 0 {
+        log::info!("[err] ui ur: no payload staged");
+        return;
+    }
+    let payload: &[u8] = unsafe { &(&*core::ptr::addr_of!(UR_PAYLOAD))[..len] };
+    let mut enc = match UrMultipartEncoder::new("xmr-txunsigned", payload, 200) {
+        Ok(e) => e,
+        Err(e) => {
+            log::info!("[err] ui ur: encoder: {:?}", e.kind);
+            return;
+        }
+    };
+    let total = enc.fragment_count();
+    let cycle_ms = total as u64 * UR_FRAME_MS;
+    log::info!(
+        "[ui] UR carousel: {len} B payload, {total} frames ({UR_FRAME_MS} ms/frame, ~{} s/cycle)",
+        cycle_ms / 1000
+    );
+    let t0 = Instant::now();
+    let mut shown: u32 = 0;
+    let mut seq: usize;
+    while (Instant::now() - t0).as_secs() < u64::from(secs) {
+        let frame = match enc.next_cyclic_frame() {
+            Ok(f) => f,
+            Err(e) => {
+                log::info!("[err] ui ur: frame: {:?}", e.kind);
+                break;
+            }
+        };
+        // The frame string carries the real sequence id; the display
+        // counter is 1-based for humans.
+        seq = (shown as usize % total) + 1;
+        if crate::ui::qr_carousel_frame(&frame, seq, total).is_err() {
+            log::info!("[err] ui ur: frame too large to render");
+            break;
+        }
+        shown += 1;
+        if shown.is_multiple_of(8) {
+            log::info!("[ui] ur frames shown: {shown}");
+        }
+        Timer::after_millis(UR_FRAME_MS).await;
+        // X (left half of the button band) stops the carousel.
+        let pt = crate::panel::with_panel(|p| p.touch.read_point());
+        if let Some(Ok(pt)) = pt
+            && pt.fingers > 0
+        {
+            let (sx, sy) = crate::touch::to_screen(pt.x, pt.y);
+            if sy as i32 >= crate::ui::ZONE_Y && (sx as i32) < crate::ui::ZONE_SPLIT_X {
+                log::info!("[ui] carousel stopped by tap at ({sx},{sy})");
+                break;
+            }
+        }
+    }
+    log::info!("[ui] UR carousel done: {shown} frames shown");
+    let _ = crate::ui::show(crate::ui::Page::Welcome, None);
+}
+
 /// `touchdraw [secs]`: visual touch-mapping check. Fills the screen dark,
 /// draws the four corner reference blocks, then paints a green trail at
 /// the calibrated screen position of the touch point for the duration
@@ -1913,6 +2015,7 @@ async fn run_trng_job(job: TrngJob) {
         JobMode::TouchInt => run_touchint(job.arg).await,
         JobMode::TouchDraw => run_touchdraw(job.arg).await,
         JobMode::UiRun => run_ui(job.arg).await,
+        JobMode::UiUr => run_ui_ur(job.arg).await,
         JobMode::UiQr => {
             let n = QR_TEXT_LEN.load(core::sync::atomic::Ordering::Relaxed);
             let slot = unsafe { &*core::ptr::addr_of!(QR_TEXT) };
@@ -2937,9 +3040,9 @@ fn parse_seq(s: &str) -> Option<(usize, usize)> {
     Some((seq.parse().ok()?, count.parse().ok()?))
 }
 
-/// Parse hex into `out`; returns the byte count on success. Bench builds
-/// only (its only consumers are `xmrseed` / `entropy`).
-#[cfg(feature = "bench")]
+/// Parse a hex string into `out`; returns the byte count on success.
+/// Base surface: used by `ui ur` (payload staging) and by the bench-only
+/// commands (`xmrseed` / `entropy`).
 fn parse_hex(s: &[u8], out: &mut [u8]) -> Option<usize> {
     let s = trim_ascii(s);
     if s.is_empty() || !s.len().is_multiple_of(2) || s.len() > out.len() * 2 {
@@ -2951,7 +3054,6 @@ fn parse_hex(s: &[u8], out: &mut [u8]) -> Option<usize> {
     Some(s.len() / 2)
 }
 
-#[cfg(feature = "bench")]
 fn hex_val(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),

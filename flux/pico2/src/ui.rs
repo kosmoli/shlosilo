@@ -22,6 +22,7 @@
 //! The interactive loop is a deferred job (`ui run [secs]`); a bounded
 //! window keeps the console usable between sessions.
 
+use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_time::{Instant, Timer};
@@ -297,6 +298,30 @@ fn draw_zones(ok_label: &str, back_label: &str) {
     text(lx, ZONE_Y + 62, back_label, 1, true);
     let ox = ZONE_SPLIT_X + (ZONE_SPLIT_X - text_w(ok_label, 1)) / 2;
     text(ox, ZONE_Y + 62, ok_label, 1, true);
+}
+
+/// UR carousel: render ONE animation frame. Same geometry as the QR page
+/// plus a frame-counter line; the X zone stops the carousel, the O zone
+/// is inert (label left blank).
+///
+/// Used by the `ui ur` job: the payload is split by the core's
+/// `UrMultipartEncoder` (fountain frames, 200 B fragments) and each frame
+/// is drawn briefly, cycling - which is how anything larger than a single
+/// QR can be handed to a scanning wallet (a 3458-byte XMR signature is
+/// well past the ~2953-byte single-frame v40/ECC-L ceiling).
+pub fn qr_carousel_frame(content: &str, seq: usize, total: usize) -> Result<(), ()> {
+    clear(false);
+    draw_status();
+    {
+        let mut buf = [0u8; 32];
+        let mut w = crate::sign_smoke::BufWriter::new(&mut buf);
+        let _ = write!(w, "UR frame {seq}/{total}");
+        text_center(40, w.as_str(), 1, true);
+    }
+    qr(content)?;
+    draw_zones("", "exit");
+    flush();
+    Ok(())
 }
 
 /// Draw a page into the framebuffer (no flush).
