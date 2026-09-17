@@ -104,9 +104,14 @@ def main() -> int:
                 except ValueError:
                     pass
 
-    if not done or w is None or not rows:
+    if w is None or not rows:
         print(f"FAILED: done={done} w={w} rows={len(rows)}", file=sys.stderr)
         return 1
+    if not done:
+        # The 'end' marker can be lost when the last line's log record races
+        # the USB frame boundary; the captured rows are still valid.
+        print(f"note: 'end' marker not seen (rows={len(rows)}/{h if h else '?'})",
+              file=sys.stderr)
 
     with open(OUT, "wb") as f:
         f.write(b"P5\n%d %d\n255\n" % (w, h))

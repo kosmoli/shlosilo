@@ -74,17 +74,34 @@ pub const FRAME_WORDS: usize = FRAME_W * FRAME_H - 1;
 
 /// SCCB (I2C) slave address of the sensor (7-bit).
 const SCCB_ADDR: u16 = 0x3C;
-/// XCLK target (kHz). NOT the vendor's 37 MHz: measured on this pipeline
-/// (2026-09-17), XCLK at 37.5 MHz drives the sensor's PCLK so fast (PCLK
-/// scales with XCLK through the sensor PLL, roughly 2.5-3x) that the
-/// capture loop cannot keep up - the PIO program needs ~9 clk_sys cycles
-/// per 16-bit sample (two PCLK periods), i.e. PCLK must stay under ~30 MHz
-/// at clk_sys = 150 MHz. Above that the sampler reads mid-transition and
-/// every frame is noise. Measured cliff at runtime (`cam xclk`): 10 MHz
-/// gives a clean, readable image, 12 MHz already tears, 14+ is noise, and
-/// the vendor's 37.5 MHz is pure noise. 10 MHz is the operating point
-/// (PCLK ~27 MHz); `cam xclk <khz>` re-tunes at runtime.
-const XCLK_TARGET_KHZ: u32 = 10_000;
+/// XCLK target (kHz). NOT the vendor's 37 MHz.
+///
+/// Measured with the sensor's OWN internal color-bar test pattern
+/// (`cam reg 0x503d 0x80`; scene- and lens-independent ground truth) plus a
+/// row-shear measurement (mean per-row horizontal drift within one bar
+/// period, `/tmp/shear_sweep.py` on the host):
+///
+///   XCLK   3 MHz: 0.000 px/row   clean
+///   XCLK   6 MHz: 0.000 px/row   clean
+///   XCLK   8 MHz: -0.019 px/row  clean
+///   XCLK  10 MHz: -0.849 px/row  every row slips -> whole frame sheared
+///   XCLK  12 MHz: -3.774 px/row  unusable
+///   XCLK 37.5 MHz (vendor): pure noise
+///
+/// Root cause: the capture program needs ~9 clk_sys cycles per 16-bit
+/// sample (two PCLK periods each, plus the wait/loop overhead). At
+/// clk_sys = 150 MHz that caps PCLK near 16-17 MHz; PCLK scales with XCLK
+/// through the sensor PLL (~2.7x at the vendor's PLL settings), so XCLK
+/// must stay <= ~8 MHz. Above it the PIO misses PCLK edges: every missed
+/// edge shifts the rest of that line (and everything after) by one sample,
+/// which is what turned the color bars into diagonal stripes - the symptom
+/// that defeated the earlier "noise" interpretation.
+///
+/// 6 MHz is the operating point (PCLK ~16 MHz, ~250 ms/frame at 240x320);
+/// `cam xclk <khz>` re-tunes at runtime. Raising this further needs a
+/// faster capture loop first (e.g. 32-bit `in` of two pixels at once), not
+/// a different clock.
+const XCLK_TARGET_KHZ: u32 = 6_000;
 
 /// Vendor OV5640 init table (`sensor_default_regs` from the Waveshare
 /// RP2350 demo, transcribed 1:1). `0xFFFF` marks a millisecond delay: the
