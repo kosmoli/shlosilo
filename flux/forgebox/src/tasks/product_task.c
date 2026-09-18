@@ -214,14 +214,23 @@ static void scan_step(void)
     }
 
     if ((g_scan_frames % SCAN_INFO_EVERY_FRAMES) == 0) {
-        snprintf(l1, sizeof(l1), "frames=%u inj=%u flip=%u",
-                 (unsigned)g_scan_frames, (unsigned)QrDecodeGetSelftestStamps(),
-                 (unsigned)g_flip);
-        snprintf(l2, sizeof(l2), "cam %u dec %u vR %u vW %u ms",
-                 (unsigned)cam, (unsigned)dec, (unsigned)vR, (unsigned)vW);
-        snprintf(l3, sizeof(l3), "focus %u res %d",
-                 (unsigned)UiScanGetFocus(), (int)n);
-        UiScanInfo("scanning...", l1, l2, l3);
+        if (g_scan_frames < 40) {
+            /* OTP gate probe (library authorization words + check result). */
+            snprintf(l1, sizeof(l1), "otp ck=%d", (int)QrDecodeOtpOk());
+            snprintf(l2, sizeof(l2), "A=%08X B=%08X",
+                     (unsigned)QrDecodeOtpWordA(), (unsigned)QrDecodeOtpWordB());
+            snprintf(l3, sizeof(l3), "inj=%u", (unsigned)QrDecodeGetSelftestStamps());
+            UiScanInfo("otp probe", l1, l2, l3);
+        } else {
+            snprintf(l1, sizeof(l1), "frames=%u inj=%u flip=%u",
+                     (unsigned)g_scan_frames, (unsigned)QrDecodeGetSelftestStamps(),
+                     (unsigned)g_flip);
+            snprintf(l2, sizeof(l2), "cam %u dec %u vR %u vW %u ms",
+                     (unsigned)cam, (unsigned)dec, (unsigned)vR, (unsigned)vW);
+            snprintf(l3, sizeof(l3), "focus %u res %d",
+                     (unsigned)UiScanGetFocus(), (int)n);
+            UiScanInfo("scanning...", l1, l2, l3);
+        }
     }
 }
 

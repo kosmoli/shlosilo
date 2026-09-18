@@ -46,15 +46,26 @@ static uint32_t g_viewWaitTick = 0;
 static uint32_t g_decodeTick = 0;
 
 /* Capture->decode self-test: stamp a synthetic QR (qr_selftest.h) into the
- * completed capture buffer of every QR_SELFTEST_PERIOD-th frame; two
- * consecutive frames are stamped so both double-buffers carry the pattern.
- * A decode of this pattern proves the pipeline works end to end. Stamping
- * stops for good once the self-test has decoded once. */
+ * completed capture buffer while the diagnostic window is open. Two module
+ * sizes alternate on consecutive injected frames (10 px and 16 px per
+ * module, whole-frame white background) so a detection-layer size dependency
+ * shows up as an A/B difference. A decode of the pattern proves the pipeline
+ * works end to end; injecting stops on success or when the window closes.
+ *
+ * OTP probe: the library gates functionality on two OTP words ("MH19" and
+ * "03QR"); MhbarCheckOtpChar() is the library's own check and its raw inputs
+ * are readable for diagnosis. */
 #define QR_SELFTEST_PERIOD  8
-#define QR_SELFTEST_BURST   2
+#define QR_SELFTEST_WINDOW  120        /* frames of diagnostic injection */
+extern int32_t MhbarCheckOtpChar(void);
+#define QR_OTP_WORD_A_ADDR  0x400081CCu
+#define QR_OTP_WORD_B_ADDR  0x400081DCu
 static uint32_t g_selftestCount = 0;
 static uint32_t g_selftestStamps = 0;
 static bool g_selftestDone = false;
+static int32_t g_otpOk = -1;
+static uint32_t g_otpA = 0;
+static uint32_t g_otpB = 0;
 
 static uint8_t *g_memPool = NULL;
 DecodeConfigTypeDef g_decodeCfg = {0};
@@ -72,6 +83,13 @@ int32_t QrDecodeInit(uint8_t *pool)
 
     SYSCTRL_AHBPeriphClockCmd(SYSCTRL_AHBPeriph_OTP, ENABLE);
     SYSCTRL_AHBPeriphResetCmd(SYSCTRL_AHBPeriph_OTP, ENABLE);
+
+    /* Read the two OTP gate words and run the library's own check. */
+    g_otpA = *(volatile uint32_t *)QR_OTP_WORD_A_ADDR;
+    g_otpB = *(volatile uint32_t *)QR_OTP_WORD_B_ADDR;
+    g_otpOk = MhbarCheckOtpChar();
+    printf("scan: otpA=0x%08X otpB=0x%08X otpCheck=%d\n",
+           (unsigned)g_otpA, (unsigned)g_otpB, (int)g_otpOk);
 
     g_memPool = pool;
     CameraI2CGPIOConfig();
@@ -147,6 +165,21 @@ uint32_t QrDecodeGetSelftestStamps(void)
     return g_selftestStamps;
 }
 
+int32_t QrDecodeOtpOk(void)
+{
+    return g_otpOk;
+}
+
+uint32_t QrDecodeOtpWordA(void)
+{
+    return g_otpA;
+}
+
+uint32_t QrDecodeOtpWordB(void)
+{
+    return g_otpB;
+}
+
 uint32_t QrDecodeGetDecodeTick(void)
 {
     uint32_t tick = g_decodeTick;
@@ -183,15 +216,25 @@ int32_t QrDecodeProcess(char *result, uint32_t maxLen, uint8_t progress)
     g_camTick += osKernelGetTickCount() - tick;
 
     /* Self-test stamp: right after the capture completes, so the preview
-     * below also shows the stamped pattern. */
+     * below also shows the stamped pattern. Consecutive burst frames carry
+     * the two size variants (small on even offsets, large on odd). */
     g_selftestCount++;
-    if (!g_selftestDone &&
-            (g_selftestCount <= QR_SELFTEST_BURST ||
-             (g_selftestCount % QR_SELFTEST_PERIOD) < QR_SELFTEST_BURST)) {
-        char *img = GetImageBuffAddr();
-        if (img != NULL) {
-            QrSelfTestStamp((uint8_t *)img, 640, 480);
-            g_selftestStamps++;
+    if (!g_selftestDone && g_selftestCount <= QR_SELFTEST_WINDOW) {
+        uint32_t phase = g_selftestCount % QR_SELFTEST_PERIOD;
+        int module_px = 0;
+
+        if ((g_selftestCount % QR_SELFTEST_PERIOD) == 0) {
+            module_px = QR_SELFTEST_MODULE_PX_SMALL;
+        } else if ((g_selftestCount % QR_SELFTEST_PERIOD) == 1) {
+            module_px = QR_SELFTEST_MODULE_PX_LARGE;
+        }
+        (void)phase;
+        if (module_px > 0) {
+            char *img = GetImageBuffAddr();
+            if (img != NULL) {
+                QrSelfTestStamp((uint8_t *)img, 640, 480, module_px);
+                g_selftestStamps++;
+            }
         }
     }
 

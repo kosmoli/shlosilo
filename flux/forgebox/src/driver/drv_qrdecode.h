@@ -15,6 +15,9 @@ uint32_t QrDecodeGetViewRenderTick(void);
 uint32_t QrDecodeGetViewWaitTick(void);
 uint32_t QrDecodeGetDecodeTick(void);
 uint32_t QrDecodeGetSelftestStamps(void);
+int32_t QrDecodeOtpOk(void);
+uint32_t QrDecodeOtpWordA(void);
+uint32_t QrDecodeOtpWordB(void);
 
 int32_t QrDecodeProcess(char *result, uint32_t maxLen, uint8_t progress);
 
