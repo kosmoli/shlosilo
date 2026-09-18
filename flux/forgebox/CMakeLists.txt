@@ -10,6 +10,11 @@ include(firmware.cmake)
 
 project(mh1903)
 
+# ====== screen ownership switch (product UI vs smoke diagnostics) ======
+# OFF (default): boot into the product UI (direct-write renderer; no LVGL).
+# ON:  boot into the LVGL smoke diagnostics screen (build.sh smoke).
+option(SMOKE_SCREEN "boot into the LVGL smoke diagnostics screen" OFF)
+
 set(COMMON_DEFINITIONS
     USE_STDPERIPH_DRIVER
     USE_FULL_ASSERT
@@ -44,6 +49,7 @@ set(SRC_INCLUDE_PATH
     src/config
     src/tasks
     src/driver
+    src/ui
     src/ram
     src/utils
 )
@@ -68,16 +74,20 @@ else()
     message(WARNING "shlosilo: libshlosilo.a not found at ${SHLOSILO_PATH}, skipping integration")
 endif()
 
-# LVGL source files
-file(GLOB_RECURSE LVGL
-    "external/lvgl/src/core/*.c"
-    "external/lvgl/src/draw/*.c"
-    "external/lvgl/src/hal/*.c"
-    "external/lvgl/src/misc/*.c"
-    "external/lvgl/src/widgets/*.c"
-    "external/lvgl/src/extra/*.c"
-    "external/lvgl/src/font/*.c"
-)
+# LVGL source files (smoke diagnostics only; the product UI does not use LVGL)
+if(SMOKE_SCREEN)
+    file(GLOB_RECURSE LVGL
+        "external/lvgl/src/core/*.c"
+        "external/lvgl/src/draw/*.c"
+        "external/lvgl/src/hal/*.c"
+        "external/lvgl/src/misc/*.c"
+        "external/lvgl/src/widgets/*.c"
+        "external/lvgl/src/extra/*.c"
+        "external/lvgl/src/font/*.c"
+    )
+else()
+    set(LVGL "")
+endif()
 
 # FreeRTOS source files
 file(GLOB_RECURSE FREERTOS
@@ -104,9 +114,6 @@ set_source_files_properties(external/mh1903_lib/MHSCPU_Driver/src/mhscpu_qspi.c
 
 set(APP_SRC
     src/main.c
-    src/tasks/helloworld_task.c
-
-    src/tasks/shlosilo_smoke_task.c
     shlosilo/embedded_alloc_glue.c
 
     src/driver/drv_sys.c
@@ -140,10 +147,44 @@ set(APP_SRC
     src/driver/low_power.c
     src/flash/xmr_gen_cache_flash.c
     external/mh1903_lib/ctaes/ctaes.c
-    src/ui/imgDevLogo.c
-    src/ui/openSansEnTitle.c
-    src/ui/openSansEnText.c
 )
+
+# Screen ownership: exactly one renderer per build owns the panel.
+if(SMOKE_SCREEN)
+    list(APPEND APP_SRC
+        src/tasks/helloworld_task.c
+        src/tasks/shlosilo_smoke_task.c
+        src/ui/imgDevLogo.c
+        src/ui/openSansEnTitle.c
+        src/ui/openSansEnText.c
+    )
+else()
+    list(APPEND APP_SRC
+        src/tasks/product_task.c
+        src/ui/shlosilo_ui.c
+        src/ui/ui_font.c
+    )
+endif()
+
+# ====== firmware identity (shown on the product UI footer) ======
+# git short hash at configure time; an uncommitted tree gets a -dirty suffix.
+set(FW_GIT_HASH "nogit")
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short=7 HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE FW_GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND ${GIT_EXECUTABLE} status --porcelain
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../..
+        OUTPUT_VARIABLE FW_GIT_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(FW_GIT_DIRTY)
+        set(FW_GIT_HASH "${FW_GIT_HASH}-dirty")
+    endif()
+endif()
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/fw_identity.h
+    "#define FIRMWARE_GIT_HASH \"${FW_GIT_HASH}\"\n")
+list(APPEND INCLUDE_DIR ${CMAKE_CURRENT_BINARY_DIR})
+message(STATUS "forgebox firmware identity: ${FW_GIT_HASH}")
 
 set(objsrc
     ${MH1903_DRIVER}
@@ -159,6 +200,9 @@ if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
 endif()
 
 add_executable(${PROJECT_NAME}.elf ${objsrc})
+if(SMOKE_SCREEN)
+    list(APPEND COMMON_DEFINITIONS SMOKE_SCREEN=1)
+endif()
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ${COMMON_DEFINITIONS})
 target_include_directories(${PROJECT_NAME}.elf PRIVATE ${INCLUDE_DIR})
 

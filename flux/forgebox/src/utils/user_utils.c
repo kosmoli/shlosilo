@@ -1,6 +1,5 @@
 #include "user_utils.h"
 #include "define.h"
-#include "lvgl.h"
 #include "user_memory.h"
 
 uint32_t StrToHex(uint8_t *pbDest, const char *pbSrc)
@@ -122,6 +121,22 @@ int WordsListSlice(char *words, char wordsList[][10], uint8_t wordsCount)
     return j;
 }
 
+/* Local xorshift RNG - the same algorithm and seed as LVGL's lv_rand(),
+ * replicated so the smoke and product flavors behave identically now that
+ * this file no longer depends on LVGL. */
+static uint32_t UtilsRand(uint32_t min, uint32_t max)
+{
+    static uint32_t a = 0x1234ABCD;
+    uint32_t x = a;
+
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    a = x;
+
+    return (a % (max - min + 1)) + min;
+}
+
 void ArrayRandom(char *words, char *out, int count)
 {
 #ifndef BUILD_PRODUCTION
@@ -138,7 +153,7 @@ void ArrayRandom(char *words, char *out, int count)
     }
 
     for (int i = 0; i < count - 1; ++i) {
-        int num = i + lv_rand(0, 2048) % (count - i);
+        int num = i + UtilsRand(0, 2048) % (count - i);
         char *temp = pointerList[i];
         pointerList[i] = pointerList[num];
         pointerList[num] = temp;

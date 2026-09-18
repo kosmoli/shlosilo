@@ -8,7 +8,11 @@
 #include "hal_lcd.h"
 #include "cmsis_os.h"
 #include "mhscpu_wdt.h"
+#ifdef SMOKE_SCREEN
 #include "helloworld_task.h"
+#else
+#include "product_task.h"
+#endif
 #include "cmsis_os.h"
 
 #define TEST_CMD_MAX_LENGTH     3072
@@ -70,7 +74,11 @@ int main(void)
     printf("Starting Hello World Application\r\n");
     
     osKernelInitialize();
+#ifdef SMOKE_SCREEN
     CreateHelloWorldTask();
+#else
+    CreateProductTask();
+#endif
     WdtInit();
 
     printf("start FreeRTOS scheduler\r\n");

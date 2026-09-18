@@ -1,0 +1,74 @@
+/* ui_layout.h - product UI layout constants (D1).
+ *
+ * Single source of truth shared by the firmware (src/ui/shlosilo_ui.c) and the
+ * host preview (flux/forgebox/scripts/preview_ui.py parses this header, plus
+ * ui_font.c). Edit here, re-run the preview, then flash.
+ *
+ * All coordinates are inclusive pixel coordinates on the 480x800 portrait
+ * panel. Ink layout only: one colour, text + rects + (later) QR.
+ */
+#ifndef SHLOSILO_UI_LAYOUT_H
+#define SHLOSILO_UI_LAYOUT_H
+
+/* Framebuffer geometry (1bpp) */
+#define UI_FB_W              480
+#define UI_FB_H              800
+
+/* Colours (RGB565) */
+#define UI_INK_RGB565        0x07E0
+#define UI_BG_RGB565         0x0000
+
+/* Button band (bottom, text labels; back left / continue right) */
+#define UI_BTN_Y0            700
+#define UI_BTN_Y1            787
+#define UI_BTN_L_X0          16
+#define UI_BTN_L_X1          231
+#define UI_BTN_R_X0          248
+#define UI_BTN_R_X1          463
+#define UI_BTN_T             2
+#define UI_BTN_LABEL_SCALE   2
+#define UI_BTN_LABEL_LEFT    "back"
+#define UI_BTN_LABEL_RIGHT   "continue"
+
+/* Footer: three diagnostic lines above the button band */
+#define UI_FOOTER_X          16
+#define UI_FOOTER_L1_Y       588
+#define UI_FOOTER_L2_Y       608
+#define UI_FOOTER_L3_Y       628
+
+/* Separator line above the button band */
+#define UI_LINE_Y            676
+#define UI_LINE_X0           16
+#define UI_LINE_X1           463
+
+/* Welcome page */
+#define UI_W_TITLE_Y         64
+#define UI_W_TITLE_SCALE     4
+#define UI_W_SUB_Y           152
+#define UI_W_SUB_SCALE       2
+#define UI_W_BIG_Y           300
+#define UI_W_BIG_SCALE       3
+#define UI_W_HINT_Y          380
+#define UI_W_HINT_SCALE      2
+#define UI_TXT_TITLE         "shlosilo"
+#define UI_TXT_SUB           "forgebox signer"
+#define UI_TXT_BIG           "welcome"
+#define UI_TXT_HINT          "tap continue to begin"
+
+/* Scan page (placeholder until F5 lands the camera flow) */
+#define UI_S_TITLE_Y         64
+#define UI_S_TITLE_SCALE     4
+#define UI_S_SUB_Y           152
+#define UI_S_SUB_SCALE       2
+#define UI_S_BOX_X0          60
+#define UI_S_BOX_Y0          210
+#define UI_S_BOX_X1          420
+#define UI_S_BOX_Y1          560
+#define UI_S_BOX_T           2
+#define UI_S_NOTE_Y          370
+#define UI_S_NOTE_SCALE      2
+#define UI_TXT_SCAN          "scan"
+#define UI_TXT_SCAN_SUB      "camera (F5)"
+#define UI_TXT_SCAN_NOTE     "not wired yet"
+
+#endif

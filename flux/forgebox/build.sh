@@ -59,6 +59,7 @@ declare -A build_options=(
     ["language"]=false
     ["clean"]=false
     ["no_sign"]=false
+    ["smoke"]=false
 )
 
 for arg in "$@"; do
@@ -135,6 +136,9 @@ execute_build() {
     fi
     if [[ "${build_options[screen]}" == true ]]; then
         cmake_parm="${cmake_parm} -DENABLE_SCREEN_SHOT=true"
+    fi
+    if [[ "${build_options[smoke]}" == true ]]; then
+        cmake_parm="${cmake_parm} -DSMOKE_SCREEN=true"
     fi
     if [[ "${build_options[debug]}" == true ]]; then
         cmake_parm="${cmake_parm} -DDEBUG_MEMORY=true"
