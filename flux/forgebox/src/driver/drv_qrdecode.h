@@ -11,8 +11,10 @@ int32_t QrDecodeInit(uint8_t *pool);
 void QrDecodeDeinit(void);
 
 uint32_t QrDecodeGetCamTick(void);
-uint32_t QrDecodeGetViewTick(void);
+uint32_t QrDecodeGetViewRenderTick(void);
+uint32_t QrDecodeGetViewWaitTick(void);
 uint32_t QrDecodeGetDecodeTick(void);
+uint32_t QrDecodeGetSelftestStamps(void);
 
 int32_t QrDecodeProcess(char *result, uint32_t maxLen, uint8_t progress);
 

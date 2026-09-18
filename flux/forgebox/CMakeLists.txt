@@ -165,6 +165,7 @@ else()
         src/ui/ui_wrap.c
         src/ui/ui_font.c
         src/driver/drv_qrdecode.c
+        src/driver/qr_selftest.c
     )
 endif()
 

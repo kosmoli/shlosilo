@@ -27,6 +27,7 @@
 #include "user_memory.h"
 #include "hal_touch.h"
 #include "shlosilo_ui.h"
+#include "ui_layout.h"
 
 #define UI_POLL_MS                40
 #define WDT_FEED_INTERVAL_MS      100
@@ -63,6 +64,7 @@ static char g_qr_result[QR_RESULT_MAX];
 static ScanState g_scan = SCAN_IDLE;
 static uint32_t g_scan_frames = 0;
 static int g_scan_touch_prev = 0;
+static uint8_t g_flip = 0;      /* sensor image flip probe (tap preview to cycle) */
 
 void CreateProductTask(void)
 {
@@ -162,13 +164,14 @@ static void scan_enter(void)
 static void scan_step(void)
 {
     char l1[40], l2[40], l3[40];
-    uint32_t cam, view, dec;
+    uint32_t cam, vR, vW, dec;
     int32_t n;
 
     WDT_ReloadCounter();
     n = QrDecodeProcess(g_qr_result, QR_RESULT_MAX - 1, 0);
     cam = QrDecodeGetCamTick();
-    view = QrDecodeGetViewTick();
+    vR = QrDecodeGetViewRenderTick();
+    vW = QrDecodeGetViewWaitTick();
     dec = QrDecodeGetDecodeTick();
     g_scan_frames++;
 
@@ -183,26 +186,39 @@ static void scan_step(void)
         return;
     }
 
-    /* Touch poll between frames: back aborts the scan. */
+    /* Touch poll between frames: back aborts the scan; tapping the preview
+     * cycles the sensor image flip (orientation probe). */
     TouchStatus_t st;
     if (TouchGetStatus(&st) == 0) {
         int down = st.touch ? 1 : 0;
-        if (down && !g_scan_touch_prev && UiIsBackButton((int)st.x, (int)st.y)) {
-            char msg[48];
-            scan_exit();
-            snprintf(msg, sizeof(msg), "abort -> welcome (%d,%d)",
-                     (int)st.x, (int)st.y);
-            UiSetLast(msg);
-            UiGotoPage(UI_PAGE_WELCOME);
-            return;
+        if (down && !g_scan_touch_prev) {
+            int tx = (int)st.x;
+            int ty = (int)st.y;
+
+            if (UiIsBackButton(tx, ty)) {
+                char msg[48];
+                scan_exit();
+                snprintf(msg, sizeof(msg), "abort -> welcome (%d,%d)", tx, ty);
+                UiSetLast(msg);
+                UiGotoPage(UI_PAGE_WELCOME);
+                return;
+            }
+            if (tx >= UI_S_PV_X0 && tx <= UI_S_PV_X0 + UI_S_PV_W &&
+                ty >= UI_S_PV_Y0 && ty <= UI_S_PV_Y0 + UI_S_PV_H) {
+                g_flip = (uint8_t)((g_flip + 1) & 3);
+                SetSensorImageFlip((SensorImageFlipType)g_flip);
+                printf("scan: sensor flip -> %u\r\n", (unsigned)g_flip);
+            }
         }
         g_scan_touch_prev = down;
     }
 
     if ((g_scan_frames % SCAN_INFO_EVERY_FRAMES) == 0) {
-        snprintf(l1, sizeof(l1), "frames=%u", (unsigned)g_scan_frames);
-        snprintf(l2, sizeof(l2), "cam %u dec %u view %u ms",
-                 (unsigned)cam, (unsigned)dec, (unsigned)view);
+        snprintf(l1, sizeof(l1), "frames=%u inj=%u flip=%u",
+                 (unsigned)g_scan_frames, (unsigned)QrDecodeGetSelftestStamps(),
+                 (unsigned)g_flip);
+        snprintf(l2, sizeof(l2), "cam %u dec %u vR %u vW %u ms",
+                 (unsigned)cam, (unsigned)dec, (unsigned)vR, (unsigned)vW);
         snprintf(l3, sizeof(l3), "focus %u res %d",
                  (unsigned)UiScanGetFocus(), (int)n);
         UiScanInfo("scanning...", l1, l2, l3);

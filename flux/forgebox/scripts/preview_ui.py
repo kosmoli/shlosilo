@@ -31,7 +31,8 @@ BG = (0x00, 0x00, 0x00)
 # Sample content for the scan page live lines (mirrors real firmware values).
 SCAN_SAMPLE = {
     "status": "scanning...",
-    "info": ["frames=128", "cam 310 dec 45 view 18 ms", "focus 1234 res 0"],
+    "info": ["frames=128 inj=4 flip=0", "cam 49 dec 87 vR 12 vW 100 ms",
+             "focus 51 res 0"],
 }
 
 # Payload sample: exercises word wrap, a hard-break token and a newline.

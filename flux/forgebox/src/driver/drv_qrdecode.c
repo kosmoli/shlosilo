@@ -3,8 +3,10 @@
 #include "decodelib.h"
 #include "user_memory.h"
 #include "cmsis_os.h"
+#include <string.h>
 #include "hal_lcd.h"
 #include "shlosilo_ui.h"
+#include "qr_selftest.h"
 
 /* D2.1: the aiming preview (binarized) is rendered by shlosilo_ui; see the
  * UiScanPreview call in QrDecodeProcess below. The legacy LVGL-based
@@ -39,8 +41,20 @@ static void ViewImageOnLcd(void);
 #endif
 
 static uint32_t g_camTick = 0;
-static uint32_t g_viewTick = 0;
+static uint32_t g_viewRenderTick = 0;
+static uint32_t g_viewWaitTick = 0;
 static uint32_t g_decodeTick = 0;
+
+/* Capture->decode self-test: stamp a synthetic QR (qr_selftest.h) into the
+ * completed capture buffer of every QR_SELFTEST_PERIOD-th frame; two
+ * consecutive frames are stamped so both double-buffers carry the pattern.
+ * A decode of this pattern proves the pipeline works end to end. Stamping
+ * stops for good once the self-test has decoded once. */
+#define QR_SELFTEST_PERIOD  8
+#define QR_SELFTEST_BURST   2
+static uint32_t g_selftestCount = 0;
+static uint32_t g_selftestStamps = 0;
+static bool g_selftestDone = false;
 
 static uint8_t *g_memPool = NULL;
 DecodeConfigTypeDef g_decodeCfg = {0};
@@ -74,6 +88,23 @@ int32_t QrDecodeInit(uint8_t *pool)
     DecodeInitStruct.SensorCfgSize = 0;
     ret = DecodeInit(&DecodeInitStruct);
     DecodeConfigInit(&g_decodeCfg);
+    /* Scan QR codes only. The library default additionally enables eight
+     * one-dimensional symbologies (CODE128/39/93, EAN13/8, UPC-A/E0/E1);
+     * scanning every frame for all of them costs ~500 ms on this hardware
+     * (measured: dec ~567 ms per frame), which caps the loop at ~1.3 fps.
+     * QR keeps its default tuning: 0xb = enable + missing-corner + curve. */
+    g_decodeCfg.cfgCODE128 = 0;
+    g_decodeCfg.cfgCODE39 = 0;
+    g_decodeCfg.cfgCODE93 = 0;
+    g_decodeCfg.cfgEAN13 = 0;
+    g_decodeCfg.cfgEAN8 = 0;
+    g_decodeCfg.cfgUPC_A = 0;
+    g_decodeCfg.cfgUPC_E0 = 0;
+    g_decodeCfg.cfgUPC_E1 = 0;
+    g_decodeCfg.cfgISBN13 = 0;
+    g_decodeCfg.cfgInterleaved2of5 = 0;
+    g_decodeCfg.cfgPDF417 = 0;
+    g_decodeCfg.cfgDataMatrix = 0;
     DCMI_NVICConfig();
 
     return ret;
@@ -97,11 +128,23 @@ uint32_t QrDecodeGetCamTick(void)
     return tick;
 }
 
-uint32_t QrDecodeGetViewTick(void)
+uint32_t QrDecodeGetViewRenderTick(void)
 {
-    uint32_t tick = g_viewTick;
-    g_viewTick = 0;
+    uint32_t tick = g_viewRenderTick;
+    g_viewRenderTick = 0;
     return tick;
+}
+
+uint32_t QrDecodeGetViewWaitTick(void)
+{
+    uint32_t tick = g_viewWaitTick;
+    g_viewWaitTick = 0;
+    return tick;
+}
+
+uint32_t QrDecodeGetSelftestStamps(void)
+{
+    return g_selftestStamps;
 }
 
 uint32_t QrDecodeGetDecodeTick(void)
@@ -138,24 +181,44 @@ int32_t QrDecodeProcess(char *result, uint32_t maxLen, uint8_t progress)
         osDelay(1);
     }
     g_camTick += osKernelGetTickCount() - tick;
+
+    /* Self-test stamp: right after the capture completes, so the preview
+     * below also shows the stamped pattern. */
+    g_selftestCount++;
+    if (!g_selftestDone &&
+            (g_selftestCount <= QR_SELFTEST_BURST ||
+             (g_selftestCount % QR_SELFTEST_PERIOD) < QR_SELFTEST_BURST)) {
+        char *img = GetImageBuffAddr();
+        if (img != NULL) {
+            QrSelfTestStamp((uint8_t *)img, 640, 480);
+            g_selftestStamps++;
+        }
+    }
+
     tick = osKernelGetTickCount();
     /* Binarized aiming preview (shlosilo_ui): the captured frame is valid
-     * here - after the capture completed and before DecodeStart consumes it.
-     * The UI flush time is included in the view tick. */
+     * here - after the capture completed and before DecodeStart consumes it. */
     {
         char *imgAddr = GetImageBuffAddr();
         if (imgAddr != NULL) {
             UiScanPreview((const uint8_t *)imgAddr, 640, 480);
         }
     }
+    g_viewRenderTick += osKernelGetTickCount() - tick;
+    tick = osKernelGetTickCount();
     while (!DecodeDcmiFinish()) {
         osDelay(1);
     }
-    g_viewTick += osKernelGetTickCount() - tick;
+    g_viewWaitTick += osKernelGetTickCount() - tick;
     tick = osKernelGetTickCount();
     resnum = DecodeStart(&g_decodeCfg, &res);
     if (resnum > 0) {
-        // printf("ID:%d\tAIMID:%s\n", res.id, res.AIM);
+        /* Self-test decoded: capture->decode path proven; stop stamping so
+         * the scanner stays clean for real scans. */
+        if (!g_selftestDone && resnum == 11 &&
+                memcmp(res.result, "SELFTEST-OK", 11) == 0) {
+            g_selftestDone = true;
+        }
         CleanDecodeBuffFlag();
     }
     g_decodeTick += osKernelGetTickCount() - tick;
