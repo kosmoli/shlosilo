@@ -119,6 +119,18 @@ def check(cond: bool, msg: str) -> None:
         raise SystemExit(f"LAYOUT ERROR: {msg}")
 
 
+def git_hash() -> str:
+    """Current commit, with the same -dirty suffix rule as the firmware."""
+    try:
+        h = subprocess.run(["git", "rev-parse", "--short=7", "HEAD"],
+                           cwd=REPO, capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"],
+                               cwd=REPO, capture_output=True, text=True, check=True).stdout.strip()
+        return f"{h}-dirty" if dirty else h
+    except Exception:
+        return "nogit"
+
+
 def label_xy(bx0: int, bx1: int, by0: int, by1: int, s: str, scale: int):
     w = Canvas.text_w(s, scale)
     h = 16 * scale
@@ -142,8 +154,10 @@ def draw_common(c: Canvas, L: dict) -> None:
     c.fill_rect(L["UI_LINE_X0"], L["UI_LINE_Y"], L["UI_LINE_X1"], L["UI_LINE_Y"])
 
     # Footer: 3 diagnostic lines (sample content; runtime strings in firmware).
+    # Sample content mirrors the firmware footer; the hash comes from git so
+    # the preview stays truthful (same -dirty rule as the firmware identity).
     foot = [
-        (L["UI_FOOTER_L1_Y"], "fw v1.0.0 build 5296ec5"),
+        (L["UI_FOOTER_L1_Y"], f"fw v1.0.0 {git_hash()}"),
         (L["UI_FOOTER_L2_Y"], "touch 0x38 ok=1"),
         (L["UI_FOOTER_L3_Y"], "last: continue -> scan (240,744)"),
     ]
