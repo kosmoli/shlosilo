@@ -118,6 +118,12 @@ static void ui_flush(void)
     for (int y0 = 0; y0 < UI_FB_H; y0 += UI_BAND_ROWS) {
         uint8_t *p = g_band;
 
+        /* The DMA reads g_band directly: never refill the buffer while a
+         * transfer is still in flight (band-tearing otherwise). */
+        while (LcdBusy()) {
+            osDelay(1);
+        }
+
         for (int y = y0; y < y0 + UI_BAND_ROWS; y++) {
             const uint8_t *row = &g_fb[y * FB_STRIDE];
             for (int bx = 0; bx < FB_STRIDE; bx++) {
@@ -130,9 +136,6 @@ static void ui_flush(void)
             }
         }
 
-        while (LcdBusy()) {
-            osDelay(1);
-        }
         LcdDraw(0, y0, UI_FB_W - 1, y0 + UI_BAND_ROWS - 1, (uint16_t *)g_band);
     }
     while (LcdBusy()) {
