@@ -30,4 +30,9 @@ void UiTouchReset(void);
 bool UiIsBackButton(int x, int y);
 bool UiIsContinueButton(int x, int y);
 
+/* Binarized aiming preview: render one camera gray frame (640x480) into the
+ * scan page. Called by the camera driver while a captured frame is valid. */
+void UiScanPreview(const uint8_t *gray, int w, int h);
+uint32_t UiScanGetFocus(void);
+
 #endif

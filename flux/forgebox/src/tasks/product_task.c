@@ -162,12 +162,13 @@ static void scan_enter(void)
 static void scan_step(void)
 {
     char l1[40], l2[40], l3[40];
-    uint32_t cam, dec;
+    uint32_t cam, view, dec;
     int32_t n;
 
     WDT_ReloadCounter();
     n = QrDecodeProcess(g_qr_result, QR_RESULT_MAX - 1, 0);
     cam = QrDecodeGetCamTick();
+    view = QrDecodeGetViewTick();
     dec = QrDecodeGetDecodeTick();
     g_scan_frames++;
 
@@ -200,8 +201,10 @@ static void scan_step(void)
 
     if ((g_scan_frames % SCAN_INFO_EVERY_FRAMES) == 0) {
         snprintf(l1, sizeof(l1), "frames=%u", (unsigned)g_scan_frames);
-        snprintf(l2, sizeof(l2), "cam %ums dec %ums", (unsigned)cam, (unsigned)dec);
-        snprintf(l3, sizeof(l3), "res=%d", (int)n);
+        snprintf(l2, sizeof(l2), "cam %u dec %u view %u ms",
+                 (unsigned)cam, (unsigned)dec, (unsigned)view);
+        snprintf(l3, sizeof(l3), "focus %u res %d",
+                 (unsigned)UiScanGetFocus(), (int)n);
         UiScanInfo("scanning...", l1, l2, l3);
     }
 }

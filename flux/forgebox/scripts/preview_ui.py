@@ -30,10 +30,8 @@ BG = (0x00, 0x00, 0x00)
 
 # Sample content for the scan page live lines (mirrors real firmware values).
 SCAN_SAMPLE = {
-    "l1": "scanning...",
-    "l2": "frames=128",
-    "l3": "cam 310ms dec 45ms",
-    "l4": "res=0",
+    "status": "scanning...",
+    "info": ["frames=128", "cam 310 dec 45 view 18 ms", "focus 1234 res 0"],
 }
 
 # Payload sample: exercises word wrap, a hard-break token and a newline.
@@ -104,6 +102,15 @@ class Canvas:
             self.buf[i] = INK[0]
             self.buf[i + 1] = INK[1]
             self.buf[i + 2] = INK[2]
+
+    def toggle(self, x: int, y: int):
+        """XOR a pixel (the firmware's toggle_px)."""
+        if 0 <= x < self.w and 0 <= y < self.h:
+            i = (y * self.w + x) * 3
+            if self.buf[i] or self.buf[i + 1] or self.buf[i + 2]:
+                self.buf[i] = self.buf[i + 1] = self.buf[i + 2] = 0
+            else:
+                self.buf[i], self.buf[i + 1], self.buf[i + 2] = INK
 
     def fill_rect(self, x0: int, y0: int, x1: int, y1: int):
         for y in range(y0, y1 + 1):
@@ -190,15 +197,80 @@ def page_welcome(c: Canvas, L: dict) -> None:
     c.text_center(L["UI_W_HINT_Y"], L["UI_TXT_HINT"], L["UI_W_HINT_SCALE"])
 
 
+def fake_qr_matrix(n: int = 21):
+    """A deterministic 21x21 QR-like matrix (finder patterns + noise fill)."""
+    m = [[False] * n for _ in range(n)]
+    seed = 20260918
+
+    def rnd():
+        nonlocal seed
+        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+        return seed
+
+    for r in range(n):
+        for c in range(n):
+            if rnd() % 2 == 0:
+                m[r][c] = True
+
+    def finder(r0, c0):
+        for r in range(7):
+            for c in range(7):
+                ring = r in (0, 6) or c in (0, 6)
+                core = 2 <= r <= 4 and 2 <= c <= 4
+                m[r0 + r][c0 + c] = ring or core
+
+    finder(0, 0)
+    finder(0, n - 7)
+    finder(n - 7, 0)
+    return m
+
+
 def page_scan(c: Canvas, L: dict) -> None:
     c.text_center(L["UI_S_TITLE_Y"], L["UI_TXT_SCAN"], L["UI_S_TITLE_SCALE"])
     c.text_center(L["UI_S_SUB_Y"], L["UI_TXT_SCAN_SUB"], L["UI_S_SUB_SCALE"])
     c.rect_outline(L["UI_S_BOX_X0"], L["UI_S_BOX_Y0"], L["UI_S_BOX_X1"], L["UI_S_BOX_Y1"],
                    L["UI_S_BOX_T"])
-    c.text_center(L["UI_S_STATUS_Y"], SCAN_SAMPLE["l1"], L["UI_S_STATUS_SCALE"])
-    for y_key, sample in (("UI_S_INFO1_Y", "l2"), ("UI_S_INFO2_Y", "l3"),
-                          ("UI_S_INFO3_Y", "l4")):
-        c.text(L["UI_S_INFO_X"], L[y_key], SCAN_SAMPLE[sample], 1)
+
+    # Mock binarized camera frame inside the preview area (what the device
+    # shows: sensor speckle + a QR that is being aimed at).
+    x0, y0 = L["UI_S_PV_X0"], L["UI_S_PV_Y0"]
+    w, h = L["UI_S_PV_W"], L["UI_S_PV_H"]
+    seed = 987654321
+    for yy in range(h):
+        for xx in range(w):
+            seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+            if seed % 100 < 2:                      # ~2% speckle (sensor noise)
+                c._blit(x0 + xx, y0 + yy)
+
+    m = fake_qr_matrix()
+    scale = 8
+    qs = 21 * scale
+    qx = x0 + (w - qs) // 2
+    qy = y0 + (h - qs) // 2
+    for r in range(21):
+        for col in range(21):
+            if m[r][col]:
+                c.fill_rect(qx + col * scale, qy + r * scale,
+                            qx + col * scale + scale - 1, qy + r * scale + scale - 1)
+
+    # Centering reticle (XOR dashes, same as the firmware: visible on both
+    # dark background and lit modules; long arms reach the dark area around
+    # a close-up QR).
+    cx, cy = x0 + w // 2, y0 + h // 2
+    for d in range(4, 29):
+        c.toggle(cx - d, cy)
+        c.toggle(cx + d, cy)
+        c.toggle(cx, cy - d)
+        c.toggle(cx, cy + d)
+
+    # 1px frame marking the camera view area.
+    c.rect_outline(x0 - 1, y0 - 1, x0 + w, y0 + h, 1)
+
+    c.text_center(L["UI_S_STATUS_Y"], SCAN_SAMPLE["status"], L["UI_S_STATUS_SCALE"])
+    for y_key, line in zip(("UI_S_INFO1_Y", "UI_S_INFO2_Y", "UI_S_INFO3_Y"),
+                           SCAN_SAMPLE["info"]):
+        if line:
+            c.text(L["UI_S_INFO_X"], L[y_key], line, 1)
 
 
 def wrap_payload(text: str, chars: int, max_lines: int):

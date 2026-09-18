@@ -188,8 +188,12 @@ static void ui_flush_range(int y0, int y1)
 
 static void scan_live_rect_clear(void)
 {
-    clear_rect(UI_S_LIVE_X0, UI_S_STATUS_Y - 8, UI_S_LIVE_X1 - UI_S_LIVE_X0,
-               (UI_S_INFO3_Y + 24) - (UI_S_STATUS_Y - 8));
+    int x0 = UI_S_BOX_X0 + UI_S_BOX_T;
+    int x1 = UI_S_BOX_X1 - UI_S_BOX_T;
+    int y0 = UI_S_STATUS_Y - 4;
+    int y1 = UI_S_INFO3_Y + UI_FONT_GLYPH_H - 1;
+
+    clear_rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
 }
 
 static void draw_scan_live(void)
@@ -214,7 +218,125 @@ static void scan_live_update(void)
     }
     scan_live_rect_clear();
     draw_scan_live();
-    ui_flush_range(UI_S_LIVE_FLUSH_Y0, UI_S_LIVE_FLUSH_Y1);
+    ui_flush_range(UI_S_STATUS_Y - 4, UI_S_INFO3_Y + UI_FONT_GLYPH_H - 1);
+}
+
+/* ---------------- scan preview: binarized camera view (D2.1) ---------------- */
+
+#define PV_SRC_W   640
+#define PV_SRC_H   480
+#define PV_BLK     8
+#define PV_BW      (PV_SRC_W / PV_BLK)      /* 80 block columns */
+#define PV_BH      (PV_SRC_H / PV_BLK)      /* 60 block rows */
+#define PV_MARGIN  6                        /* luma levels */
+
+#if ((UI_S_PV_X0 % 8) != 0) || ((UI_S_PV_W % 8) != 0)
+#error "scan preview region must be byte-aligned on the 1bpp canvas"
+#endif
+
+static uint16_t s_pv_block[PV_BW * PV_BH];  /* per-block local means, 9.6 KiB */
+static uint32_t s_pv_focus;                 /* sharpness score of the last frame */
+
+static void toggle_px(int x, int y)
+{
+    if ((unsigned)x < UI_FB_W && (unsigned)y < UI_FB_H) {
+        g_fb[y * FB_STRIDE + (x >> 3)] ^= (uint8_t)(0x80u >> (x & 7));
+    }
+}
+
+static void draw_scan_reticle(void)
+{
+    int cx = UI_S_PV_X0 + UI_S_PV_W / 2;
+    int cy = UI_S_PV_Y0 + UI_S_PV_H / 2;
+
+    /* XOR so the cross stays visible on both dark background and lit modules.
+     * Long arms: when the QR is close (filling the view) the arm still
+     * reaches the dark background around it. */
+    for (int d = 4; d <= 28; d++) {
+        toggle_px(cx - d, cy);
+        toggle_px(cx + d, cy);
+        toggle_px(cx, cy - d);
+        toggle_px(cx, cy + d);
+    }
+}
+
+/* Central-region gradient energy (sampled): rises as the image sharpens -
+ * use it to pick the working distance (same idea as the pico2 focus score). */
+static uint32_t scan_focus_score(const uint8_t *gray)
+{
+    uint32_t sum = 0, cnt = 0;
+
+    for (int y = 120; y <= 355; y += 4) {
+        const uint8_t *row = gray + y * PV_SRC_W;
+        for (int x = 160; x <= 472; x += 4) {
+            int gx = (int)row[x + 4] - (int)row[x];
+            int gy = (int)row[x] - (int)row[x + 4 * PV_SRC_W];
+            sum += (uint32_t)((gx < 0 ? -gx : gx) + (gy < 0 ? -gy : gy));
+            cnt++;
+        }
+    }
+    return cnt ? (sum / cnt) : 0;
+}
+
+void UiScanPreview(const uint8_t *gray, int w, int h)
+{
+    if (g_page != UI_PAGE_SCAN || g_fb == NULL || g_band == NULL) {
+        return;
+    }
+    if (gray == NULL || w != PV_SRC_W || h != PV_SRC_H) {
+        return;
+    }
+
+    /* Pass 1: per-block local means (8x8 source pixels -> 80x60 grid). */
+    for (int by = 0; by < PV_BH; by++) {
+        for (int bx = 0; bx < PV_BW; bx++) {
+            uint32_t sum = 0;
+            for (int yy = 0; yy < PV_BLK; yy++) {
+                const uint8_t *p = gray + (by * PV_BLK + yy) * PV_SRC_W + bx * PV_BLK;
+                for (int xx = 0; xx < PV_BLK; xx++) {
+                    sum += p[xx];
+                }
+            }
+            s_pv_block[by * PV_BW + bx] = (uint16_t)(sum >> 6);
+        }
+    }
+
+    /* Pass 2: 2x2 downsample + local threshold -> 1bpp, one byte per 8 px.
+     * Lit = darker than the local mean: QR modules show lit on black, the
+     * same convention the pico2 host's binarized view uses. */
+    for (int py = 0; py < UI_S_PV_H; py++) {
+        const uint8_t *r0 = gray + (py * 2) * PV_SRC_W;
+        const uint8_t *r1 = r0 + PV_SRC_W;
+        const uint16_t *bm = s_pv_block + (py >> 2) * PV_BW;
+        uint8_t *dst = g_fb + (UI_S_PV_Y0 + py) * FB_STRIDE + (UI_S_PV_X0 >> 3);
+        int px = 0;
+
+        for (int bi = 0; bi < UI_S_PV_W / 8; bi++) {
+            uint8_t bits = 0;
+            for (int k = 0; k < 8; k++, px++) {
+                const uint8_t *p0 = r0 + px * 2;
+                const uint8_t *p1 = r1 + px * 2;
+                int avg = ((int)p0[0] + p0[1] + p1[0] + p1[1]) >> 2;
+                int mean = (int)bm[px >> 2];
+                if (avg + PV_MARGIN < mean) {
+                    bits |= (uint8_t)(0x80u >> k);
+                }
+            }
+            *dst++ = bits;
+        }
+    }
+
+    s_pv_focus = scan_focus_score(gray);
+    draw_scan_reticle();
+    /* 1px frame marking the camera view area (the preview has no natural edge). */
+    rect_outline(UI_S_PV_X0 - 1, UI_S_PV_Y0 - 1,
+                 UI_S_PV_X0 + UI_S_PV_W, UI_S_PV_Y0 + UI_S_PV_H, 1);
+    ui_flush_range(UI_S_PV_Y0, UI_S_PV_Y0 + UI_S_PV_H - 1);
+}
+
+uint32_t UiScanGetFocus(void)
+{
+    return s_pv_focus;
 }
 
 /* ---------------- payload page ---------------- */

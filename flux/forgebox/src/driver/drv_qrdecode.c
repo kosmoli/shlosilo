@@ -6,9 +6,9 @@
 #include "hal_lcd.h"
 #include "shlosilo_ui.h"
 
-/* v1 (D2): aiming preview disabled - the scan page shows text status only.
- * Re-enable in the next iteration once the page hosts a live preview box.
- * (The ViewImageOnLcd code below is kept for reference.) */
+/* D2.1: the aiming preview (binarized) is rendered by shlosilo_ui; see the
+ * UiScanPreview call in QrDecodeProcess below. The legacy LVGL-based
+ * ViewImageOnLcd path stays disabled (kept for reference only). */
 /* #define VIEW_IMAGE_ENABLE */
 
 /*camera XCK set*/
@@ -135,18 +135,19 @@ int32_t QrDecodeProcess(char *result, uint32_t maxLen, uint8_t progress)
     tick = osKernelGetTickCount();
     DecodeDcmiStart();
     while (!DecodeDcmiFinish()) {           //Finish waiting by DCMI_CallBackFrame()
-#ifdef VIEW_IMAGE_ENABLE
-        if (GetQrDecodeImageAddr() != NULL) {
-            //break;            //break before cam finish.
-        }
-#endif
         osDelay(1);
     }
     g_camTick += osKernelGetTickCount() - tick;
     tick = osKernelGetTickCount();
-#ifdef VIEW_IMAGE_ENABLE
-    ViewImageOnLcd();
-#endif
+    /* Binarized aiming preview (shlosilo_ui): the captured frame is valid
+     * here - after the capture completed and before DecodeStart consumes it.
+     * The UI flush time is included in the view tick. */
+    {
+        char *imgAddr = GetImageBuffAddr();
+        if (imgAddr != NULL) {
+            UiScanPreview((const uint8_t *)imgAddr, 640, 480);
+        }
+    }
     while (!DecodeDcmiFinish()) {
         osDelay(1);
     }

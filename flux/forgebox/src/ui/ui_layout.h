@@ -55,7 +55,7 @@
 #define UI_TXT_BIG           "welcome"
 #define UI_TXT_HINT          "tap continue to begin"
 
-/* Scan page */
+/* Scan page (D2.1: binarized aiming preview inside the box, status below) */
 #define UI_S_TITLE_Y         64
 #define UI_S_TITLE_SCALE     4
 #define UI_S_SUB_Y           152
@@ -65,16 +65,16 @@
 #define UI_S_BOX_X1          420
 #define UI_S_BOX_Y1          560
 #define UI_S_BOX_T           2
-#define UI_S_STATUS_Y        230
+#define UI_S_PV_X0           80
+#define UI_S_PV_Y0           214
+#define UI_S_PV_W            320
+#define UI_S_PV_H            240
+#define UI_S_STATUS_Y        460
 #define UI_S_STATUS_SCALE    2
 #define UI_S_INFO_X          96
-#define UI_S_INFO1_Y         300
-#define UI_S_INFO2_Y         320
-#define UI_S_INFO3_Y         340
-#define UI_S_LIVE_X0         64
-#define UI_S_LIVE_X1         416
-#define UI_S_LIVE_FLUSH_Y0   200
-#define UI_S_LIVE_FLUSH_Y1   400
+#define UI_S_INFO1_Y         498
+#define UI_S_INFO2_Y         516
+#define UI_S_INFO3_Y         534
 #define UI_TXT_SCAN          "scan"
 #define UI_TXT_SCAN_SUB      "qr scanner"
 
