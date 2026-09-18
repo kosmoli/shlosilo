@@ -39,6 +39,7 @@ set(EXTERNAL_INCLUDE_PATH
     external/lvgl/src/hal
     external/lvgl/src/misc
     external/lvgl/src/widgets
+    external/qrcodegen
     external/mh1903_lib/MHSCPU_Driver/inc
     external/mh1903_lib/Device/MegaHunt/mhscpu/Include
     external/mh1903_lib/CMSIS/Include
@@ -163,9 +164,11 @@ else()
         src/tasks/product_task.c
         src/ui/shlosilo_ui.c
         src/ui/ui_wrap.c
+        src/ui/ui_qr.c
         src/ui/ui_font.c
         src/driver/drv_qrdecode.c
         src/driver/qr_selftest.c
+        external/qrcodegen/qrcodegen.c
     )
 endif()
 

@@ -140,6 +140,26 @@ unsigned int shlosilo_sram_pool_block_count(void)
     return n;
 }
 
+/* Product-line SRAM window handoff (2026-09-18). The QR decode pool
+ * (0x20084000..0x200EA800, see product_task.c) overlaps this pool's NOLOAD
+ * section; the window is time-shared - the scanner and the Rust allocator
+ * never use it at the same moment (single task, exclusive UI flows).
+ * shlosilo_sram_pool_reset() drops this allocator's bookkeeping after the
+ * decoder has written over the region, so the next malloc re-initializes the
+ * pool from scratch. Precondition: zero live bytes (all Rust allocations
+ * freed) - callers check via shlosilo_sram_pool_live_bytes(). */
+size_t shlosilo_sram_pool_live_bytes(void)
+{
+    return g_pool_live_bytes;
+}
+
+void shlosilo_sram_pool_reset(void)
+{
+    g_pool_initialized = 0;
+    g_pool_live_bytes = 0;
+    g_pool_live_blocks = 0;
+}
+
 size_t shlosilo_sram_pool_peak_live(void)
 {
     return g_pool_peak_live;

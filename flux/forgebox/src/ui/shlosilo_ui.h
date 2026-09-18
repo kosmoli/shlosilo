@@ -14,6 +14,7 @@ typedef enum {
     UI_PAGE_WELCOME = 0,
     UI_PAGE_SCAN,
     UI_PAGE_PAYLOAD,
+    UI_PAGE_QR,         /* UR carousel: animated QR frames for a wallet */
 } UiPage;
 
 void UiInit(void);
@@ -34,5 +35,13 @@ bool UiIsContinueButton(int x, int y);
  * scan page. Called by the camera driver while a captured frame is valid. */
 void UiScanPreview(const uint8_t *gray, int w, int h);
 uint32_t UiScanGetFocus(void);
+
+/* UR carousel frame (F3 output side): render one UR frame string as a QR on
+ * the QR page. index is zero-based; total is the cycle's frame count. */
+void UiShowQrFrame(const char *text, uint32_t index, uint32_t total);
+
+/* Panic screen: show an L3 panic message (called from shlosilo_panic_hook;
+ * the caller keeps the WDT fed afterwards). No-op before UiInit. */
+void UiPanic(const char *msg);
 
 #endif

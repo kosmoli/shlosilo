@@ -28,6 +28,7 @@
 #include "ui_layout.h"
 #include "ui_font.h"
 #include "ui_wrap.h"
+#include "ui_qr.h"
 #include "hal_lcd.h"
 #include "hal_touch.h"
 #include "user_memory.h"
@@ -70,6 +71,10 @@ static uint8_t g_scan_progress;
 #define PAYLOAD_MAX 2048
 static char g_payload[PAYLOAD_MAX];
 static uint32_t g_payload_len;
+
+/* UR carousel page: qrcodegen scratch + result buffers (lazy, SRAM heap). */
+static uint8_t *g_qr_temp;
+static uint8_t *g_qr_code;
 
 /* ---------------- canvas primitives (inclusive coordinates) ---------------- */
 
@@ -433,6 +438,12 @@ static void draw_page(void)
         break;
     }
 
+    case UI_PAGE_QR:
+        /* Placeholder until the first carousel frame arrives. */
+        draw_text_center(UI_Q_TITLE_Y, UI_Q_TXT_TITLE, UI_Q_TITLE_SCALE);
+        draw_text_center(UI_Q_AREA_Y0 + UI_Q_AREA_H / 2, "preparing...", 2);
+        break;
+
     default:
         break;
     }
@@ -445,6 +456,86 @@ static void draw_page(void)
     draw_button_label(UI_BTN_R_X0, UI_BTN_R_X1, UI_BTN_LABEL_RIGHT);
 
     draw_footer();
+}
+
+void UiShowQrFrame(const char *text, uint32_t index, uint32_t total)
+{
+    char cap[48];
+    int modules = 0;
+    UiQrLayout layout;
+
+    if (g_fb == NULL || g_band == NULL || text == NULL) {
+        return;
+    }
+    if (g_qr_temp == NULL) {
+        g_qr_temp = SramMalloc(UI_QR_BUF_BYTES);
+        g_qr_code = SramMalloc(UI_QR_BUF_BYTES);
+        if (g_qr_temp == NULL || g_qr_code == NULL) {
+            printf("ui: qr buffers alloc failed\r\n");
+        }
+    }
+
+    memset(g_fb, 0, FB_BYTES);
+
+    if (g_qr_temp == NULL || g_qr_code == NULL ||
+            !ui_qr_encode(text, g_qr_temp, g_qr_code, &modules) ||
+            !ui_qr_layout(modules, UI_Q_AREA_X0, UI_Q_AREA_Y0,
+                          UI_Q_AREA_W, UI_Q_AREA_H, &layout)) {
+        draw_text_center(UI_Q_AREA_Y0 + UI_Q_AREA_H / 2, "qr encode FAIL", 2);
+    } else {
+        ui_qr_draw(g_qr_code, &layout, g_fb, UI_FB_W, UI_FB_H);
+        draw_text_center(UI_Q_TITLE_Y, UI_Q_TXT_TITLE, UI_Q_TITLE_SCALE);
+        snprintf(cap, sizeof(cap), "ur frame %u/%u",
+                 (unsigned)index + 1, (unsigned)total);
+        draw_text_center(UI_Q_CAP_Y, cap, 1);
+    }
+
+    fill_rect(UI_LINE_X0, UI_LINE_Y, UI_LINE_X1 - UI_LINE_X0 + 1, 1);
+    rect_outline(UI_BTN_L_X0, UI_BTN_Y0, UI_BTN_L_X1, UI_BTN_Y1, UI_BTN_T);
+    rect_outline(UI_BTN_R_X0, UI_BTN_Y0, UI_BTN_R_X1, UI_BTN_Y1, UI_BTN_T);
+    draw_button_label(UI_BTN_L_X0, UI_BTN_L_X1, UI_BTN_LABEL_LEFT);
+    draw_button_label(UI_BTN_R_X0, UI_BTN_R_X1, UI_BTN_LABEL_RIGHT);
+    draw_footer();
+
+    ui_flush_range(0, UI_FB_H - 1);
+}
+
+/* ---------------- panic ---------------- */
+
+void UiPanic(const char *msg)
+{
+    UiWrapLine lines[12];
+    bool truncated = false;
+    uint32_t len;
+    int count;
+    int y = 200;
+
+    if (g_fb == NULL || g_band == NULL || msg == NULL) {
+        return;
+    }
+    memset(g_fb, 0, FB_BYTES);
+    draw_text_center(72, "PANIC", 3);
+
+    len = (uint32_t)strlen(msg);
+    count = ui_wrap_text(msg, len, 56, 12, lines, &truncated);
+    for (int i = 0; i < count; i++) {
+        char buf[57];
+        uint32_t n = lines[i].len;
+
+        if (n > 56) {
+            n = 56;
+        }
+        memcpy(buf, &msg[lines[i].start], n);
+        buf[n] = '\0';
+        draw_text(16, y, buf, 1);
+        y += 18;
+    }
+    if (truncated) {
+        draw_text(16, y, "...", 1);
+    }
+
+    draw_footer();
+    ui_flush_range(0, UI_FB_H - 1);
 }
 
 /* ---------------- input ---------------- */
@@ -472,7 +563,9 @@ static void handle_press(int x, int y)
 
     if (UiIsBackButton(x, y)) {
         if (g_page == UI_PAGE_WELCOME) {
-            snprintf(msg, sizeof(msg), "back (noop) (%d,%d)", x, y);
+            /* Dev entry (F3 output side): welcome back -> UR carousel demo. */
+            snprintf(msg, sizeof(msg), "back -> ur demo (%d,%d)", x, y);
+            g_page = UI_PAGE_QR;
         } else {
             snprintf(msg, sizeof(msg), "back -> welcome (%d,%d)", x, y);
             g_page = UI_PAGE_WELCOME;

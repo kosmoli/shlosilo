@@ -89,4 +89,14 @@
 #define UI_P_CHARS_PER_LINE  56
 #define UI_TXT_RESULT        "result"
 
+/* QR carousel page (F3 output side: UR frames for a wallet to scan) */
+#define UI_Q_TITLE_Y         36
+#define UI_Q_TITLE_SCALE     2
+#define UI_Q_TXT_TITLE       "scan with wallet"
+#define UI_Q_AREA_X0         16
+#define UI_Q_AREA_Y0         80
+#define UI_Q_AREA_W          448
+#define UI_Q_AREA_H          476
+#define UI_Q_CAP_Y           566
+
 #endif

@@ -28,6 +28,13 @@
 #include "hal_touch.h"
 #include "shlosilo_ui.h"
 #include "ui_layout.h"
+#include "shlosilo.h"
+#include "demo_payload.h"
+
+/* SRAM window handoff (shared with the K2-D Rust pool; implemented in
+ * shlosilo/embedded_alloc_glue.c - not part of the FFI surface). */
+size_t shlosilo_sram_pool_live_bytes(void);
+void shlosilo_sram_pool_reset(void);
 
 #define UI_POLL_MS                40
 #define WDT_FEED_INTERVAL_MS      100
@@ -42,6 +49,10 @@
 #define QR_RESULT_MAX             4096
 #define SCAN_INFO_EVERY_FRAMES    4
 
+/* UR carousel session (F3 output side) */
+#define CAROUSEL_FRAME_MS         450
+#define CAROUSEL_FRAME_MAX        576
+
 typedef enum {
     SCAN_IDLE = 0,      /* not on the scan page (or exited) */
     SCAN_ACTIVE,        /* camera initialized, scanning frames */
@@ -52,6 +63,9 @@ static void ProductTask(void *argument);
 static void scan_enter(void);
 static void scan_step(void);
 static void scan_exit(void);
+static void carousel_enter(void);
+static void carousel_step(void);
+static void carousel_exit(void);
 static void power_button_init(void);
 static void power_button_check(void);
 
@@ -65,6 +79,20 @@ static ScanState g_scan = SCAN_IDLE;
 static uint32_t g_scan_frames = 0;
 static int g_scan_touch_prev = 0;
 static uint8_t g_flip = 0;      /* sensor image flip probe (tap preview to cycle) */
+
+/* Carousel session state (F3 output side) */
+typedef enum {
+    CAROUSEL_IDLE = 0,
+    CAROUSEL_ACTIVE,        /* encoding + animating UR frames */
+    CAROUSEL_FAILED,        /* on the QR page but the session could not run */
+} CarouselState;
+
+static CarouselState g_carousel = CAROUSEL_IDLE;
+static struct UrMultipartEncoder *g_ur_enc = NULL;
+static char g_ur_frame[CAROUSEL_FRAME_MAX];
+static uint32_t g_ur_shown = 0;
+static uint32_t g_ur_total = 0;
+static int g_ur_touch_prev = 0;
 
 void CreateProductTask(void)
 {
@@ -103,13 +131,21 @@ static void ProductTask(void *argument)
             WDT_ReloadCounter();
             scan_step();
             osDelay(5);
+        } else if (g_carousel == CAROUSEL_ACTIVE) {
+            carousel_step();
         } else {
             UiTick();
 
             if (UiGetPage() == UI_PAGE_SCAN && g_scan == SCAN_IDLE) {
                 scan_enter();
-            } else if (UiGetPage() != UI_PAGE_SCAN && g_scan == SCAN_FAILED) {
+            } else if (UiGetPage() == UI_PAGE_QR && g_carousel == CAROUSEL_IDLE) {
+                carousel_enter();
+            }
+            if (UiGetPage() != UI_PAGE_SCAN && g_scan == SCAN_FAILED) {
                 g_scan = SCAN_IDLE;     /* left the scan page; allow a retry */
+            }
+            if (UiGetPage() != UI_PAGE_QR && g_carousel == CAROUSEL_FAILED) {
+                g_carousel = CAROUSEL_IDLE;     /* left the QR page; allow retry */
             }
 
             osDelay(UI_POLL_MS);
@@ -179,6 +215,20 @@ static void scan_enter(void)
 #endif
     }
 
+#if QR_POOL_IN_SRAM
+    /* SRAM window handoff: the K2-D Rust pool lives inside the decode
+     * pool's address range (the two are time-shared; see
+     * shlosilo/embedded_alloc_glue.c). Never start the decoder while Rust
+     * allocations are live in the window. */
+    if (shlosilo_sram_pool_live_bytes() != 0) {
+        printf("scan: sram pool busy (%u live bytes)\r\n",
+               (unsigned)shlosilo_sram_pool_live_bytes());
+        UiScanInfo("sram busy", "rust allocs live", "", "");
+        g_scan = SCAN_FAILED;
+        return;
+    }
+#endif
+
     UiScanInfo("camera init...", "", "", "");
     WDT_ReloadCounter();
     int32_t ret = QrDecodeInit(g_qr_pool);
@@ -186,6 +236,9 @@ static void scan_enter(void)
         printf("scan: QrDecodeInit ret=%d\r\n", (int)ret);
         snprintf(l1, sizeof(l1), "init FAIL ret=%d", (int)ret);
         UiScanInfo(l1, "check camera hw", "", "");
+#if QR_POOL_IN_SRAM
+        shlosilo_sram_pool_reset();     /* decoder may have written the window */
+#endif
         g_scan = SCAN_FAILED;
         return;
     }
@@ -265,10 +318,95 @@ static void scan_exit(void)
     QrDecodeDeinit();
     g_scan = SCAN_IDLE;
 
+#if QR_POOL_IN_SRAM
+    /* The decoder wrote over the shared SRAM window: drop the Rust pool
+     * bookkeeping so the next Rust allocation rebuilds it from scratch
+     * (the Rust side is unused while scanning; see embedded_alloc_glue.c). */
+    shlosilo_sram_pool_reset();
+#endif
+
     /* Camera teardown shares I2C0 (PB0/PB1) with the touch IC: restore the
      * known-good bus configuration before the next touch read. */
     I2cInit();
     UiTouchReset();
+}
+
+/* ---------------- UR carousel session (F3 output side) ---------------- */
+
+static void carousel_enter(void)
+{
+    if (shlosilo_sram_pool_live_bytes() != 0) {
+        printf("carousel: sram pool busy\r\n");
+        UiSetLast("ur: sram busy");
+        g_carousel = CAROUSEL_FAILED;
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
+    }
+    /* The decode pool may hold scanner leftovers; hand the window back. */
+    shlosilo_sram_pool_reset();
+
+    g_ur_enc = shlosilo_ur_encode_begin(DEMO_PAYLOAD_TYPE, g_demo_payload,
+                                        DEMO_PAYLOAD_LEN, 200);
+    if (g_ur_enc == NULL) {
+        printf("carousel: encoder begin failed\r\n");
+        UiSetLast("ur: encoder fail");
+        g_carousel = CAROUSEL_FAILED;
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
+    }
+    g_ur_total = (DEMO_PAYLOAD_LEN + 199) / 200;
+    g_ur_shown = 0;
+    g_ur_touch_prev = 0;
+    g_carousel = CAROUSEL_ACTIVE;
+    printf("carousel: begin %s, %u frames\r\n", DEMO_PAYLOAD_TYPE,
+           (unsigned)g_ur_total);
+}
+
+static void carousel_exit(void)
+{
+    if (g_ur_enc != NULL) {
+        shlosilo_ur_encode_free(g_ur_enc);
+        g_ur_enc = NULL;
+    }
+    g_carousel = CAROUSEL_IDLE;
+    UiTouchReset();
+}
+
+static void carousel_step(void)
+{
+    unsigned int flen = 0;
+    int rc;
+    TouchStatus_t st;
+
+    WDT_ReloadCounter();
+
+    rc = shlosilo_ur_encode_next_cyclic(g_ur_enc, (uint8_t *)g_ur_frame,
+                                        sizeof(g_ur_frame), &flen);
+    if (rc != 0 || flen == 0 || flen >= sizeof(g_ur_frame)) {
+        printf("carousel: frame error rc=%d len=%u\r\n", rc, flen);
+        carousel_exit();
+        UiSetLast("ur: frame error");
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
+    }
+    g_ur_frame[flen] = '\0';
+
+    UiShowQrFrame(g_ur_frame, g_ur_shown, g_ur_total);
+    g_ur_shown++;
+
+    /* Touch between frames: back exits the carousel. */
+    if (TouchGetStatus(&st) == 0) {
+        int down = st.touch ? 1 : 0;
+        if (down && !g_ur_touch_prev && UiIsBackButton((int)st.x, (int)st.y)) {
+            carousel_exit();
+            UiSetLast("carousel -> welcome");
+            UiGotoPage(UI_PAGE_WELCOME);
+            return;
+        }
+        g_ur_touch_prev = down;
+    }
+
+    osDelay(CAROUSEL_FRAME_MS);
 }
 
 /* ---------------- power button ---------------- */
@@ -301,5 +439,31 @@ static void power_button_check(void)
     if (now - g_button_press_start >= BUTTON_LONG_PRESS_MS) {
         printf("power button long press: restarting\r\n");
         NVIC_SystemReset();
+    }
+}
+
+/* ---------------- L3 panic display ---------------- */
+
+/* shlosilo_panic_hook - called by the staticlib's panic handler (the Rust
+ * `no_std` side has no I/O; see flux/forgebox/staticlib/src/lib.rs). The
+ * signature is declared "-> !" on the Rust side, so this never returns:
+ * show the message on the panel and keep feeding the watchdog so the screen
+ * stays readable (same contract as the smoke host's hook). */
+void shlosilo_panic_hook(const uint8_t *msg, size_t len)
+{
+    char tmp[192];
+    size_t n = len < sizeof(tmp) - 1 ? len : sizeof(tmp) - 1;
+
+    __asm__ volatile("cpsie i");    /* panic may sit inside a critical section */
+
+    memcpy(tmp, msg, n);
+    tmp[n] = '\0';
+
+    printf("PANIC: %s\r\n", tmp);
+    UiPanic(tmp);
+
+    while (1) {
+        WDT_ReloadCounter();
+        osDelay(100);
     }
 }
