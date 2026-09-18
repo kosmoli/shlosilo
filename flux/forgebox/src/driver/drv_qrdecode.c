@@ -55,6 +55,14 @@ static uint32_t g_decodeTick = 0;
  * OTP probe: the library gates functionality on two OTP words ("MH19" and
  * "03QR"); MhbarCheckOtpChar() is the library's own check and its raw inputs
  * are readable for diagnosis. */
+/* Diagnostic switch: the capture->decode self-test injection (D2.3/D2.4
+ * bring-up instrument) is disabled in the product build. Set to 1 to
+ * re-enable: stamps a synthetic QR into the completed capture buffer every
+ * 8th frame for QR_SELFTEST_WINDOW frames, and stops for good on the first
+ * decode (the pattern is the give-away "SELFTEST-OK"). */
+#ifndef QR_DIAG_SELFTEST
+#define QR_DIAG_SELFTEST 0
+#endif
 #define QR_SELFTEST_PERIOD  8
 #define QR_SELFTEST_WINDOW  120        /* frames of diagnostic injection */
 extern int32_t MhbarCheckOtpChar(void);
@@ -215,10 +223,12 @@ int32_t QrDecodeProcess(char *result, uint32_t maxLen, uint8_t progress)
     }
     g_camTick += osKernelGetTickCount() - tick;
 
-    /* Self-test stamp: right after the capture completes, so the preview
-     * below also shows the stamped pattern. Consecutive burst frames carry
-     * the two size variants (small on even offsets, large on odd). */
+    /* Self-test stamp (diagnostic builds only; see QR_DIAG_SELFTEST).
+     * Right after the capture completes, so the preview below also shows
+     * the stamped pattern. Consecutive burst frames carry the two size
+     * variants (small on even offsets, large on odd). */
     g_selftestCount++;
+#if QR_DIAG_SELFTEST
     if (!g_selftestDone && g_selftestCount <= QR_SELFTEST_WINDOW) {
         uint32_t phase = g_selftestCount % QR_SELFTEST_PERIOD;
         int module_px = 0;
@@ -237,6 +247,7 @@ int32_t QrDecodeProcess(char *result, uint32_t maxLen, uint8_t progress)
             }
         }
     }
+#endif
 
     tick = osKernelGetTickCount();
     /* Binarized aiming preview (shlosilo_ui): the captured frame is valid
