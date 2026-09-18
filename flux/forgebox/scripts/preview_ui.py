@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Host preview for the forgebox product UI (D1) — render before you flash.
+"""Host preview for the forgebox product UI - render before you flash.
 
-Renders the welcome/scan pages at the EXACT firmware coordinates, using the
-same font blob as the firmware (parsed from src/ui/ui_font.c) and the same
-layout constants (parsed from src/ui/ui_layout.h). Layout errors are caught on
-the host with zero flash cycles (precedent: the pico2 preview caught two real
-layout bugs in one pass).
+Renders the welcome / scan / payload pages at the EXACT firmware coordinates,
+using the same font blob as the firmware (parsed from src/ui/ui_font.c) and the
+same layout constants (parsed from src/ui/ui_layout.h). Layout errors are
+caught on the host with zero flash cycles (precedent: the pico2 preview caught
+two real layout bugs in one pass).
 
-Output: one PNG with both pages side by side (default /tmp/forgebox_ui_preview.png).
-Falls back to ffmpeg for PNG conversion, then to leaving a PPM behind.
+Output: one PNG with all three pages side by side (default
+/tmp/forgebox_ui_preview.png). Falls back to ffmpeg, then to a PPM.
 
 Usage:
     python3 flux/forgebox/scripts/preview_ui.py [out.png]
@@ -27,6 +27,23 @@ LAYOUT_H = UI_DIR / "ui_layout.h"
 
 INK = (0x00, 0xFF, 0x00)
 BG = (0x00, 0x00, 0x00)
+
+# Sample content for the scan page live lines (mirrors real firmware values).
+SCAN_SAMPLE = {
+    "l1": "scanning...",
+    "l2": "frames=128",
+    "l3": "cam 310ms dec 45ms",
+    "l4": "res=0",
+}
+
+# Payload sample: exercises word wrap, a hard-break token and a newline.
+PAYLOAD_SAMPLE = (
+    ("SHLOSILO-FORGEBOX-OK-2026 " * 6)
+    + "\n"
+    + "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmay"
+    + "mwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxad"
+    + "aaadrpceaadt"
+)
 
 
 def parse_font(path: Path) -> dict:
@@ -64,6 +81,18 @@ def parse_layout(path: Path) -> dict:
     return layout
 
 
+def git_hash() -> str:
+    """Current commit, with the same -dirty suffix rule as the firmware."""
+    try:
+        h = subprocess.run(["git", "rev-parse", "--short=7", "HEAD"],
+                           cwd=REPO, capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"],
+                               cwd=REPO, capture_output=True, text=True, check=True).stdout.strip()
+        return f"{h}-dirty" if dirty else h
+    except Exception:
+        return "nogit"
+
+
 class Canvas:
     def __init__(self, w: int, h: int):
         self.w, self.h = w, h
@@ -92,7 +121,8 @@ class Canvas:
 
     def text(self, x: int, y: int, s: str, scale: int) -> int:
         for ch in s:
-            g = FONT.get(ord(ch)) or FONT[ord("?")]
+            o = ord(ch)
+            g = FONT.get(o if 0x20 <= o <= 0x7E else ord("?")) or FONT[ord("?")]
             for row in range(16):
                 bits = g[row]
                 for col in range(8):
@@ -119,18 +149,6 @@ def check(cond: bool, msg: str) -> None:
         raise SystemExit(f"LAYOUT ERROR: {msg}")
 
 
-def git_hash() -> str:
-    """Current commit, with the same -dirty suffix rule as the firmware."""
-    try:
-        h = subprocess.run(["git", "rev-parse", "--short=7", "HEAD"],
-                           cwd=REPO, capture_output=True, text=True, check=True).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain"],
-                               cwd=REPO, capture_output=True, text=True, check=True).stdout.strip()
-        return f"{h}-dirty" if dirty else h
-    except Exception:
-        return "nogit"
-
-
 def label_xy(bx0: int, bx1: int, by0: int, by1: int, s: str, scale: int):
     w = Canvas.text_w(s, scale)
     h = 16 * scale
@@ -154,8 +172,6 @@ def draw_common(c: Canvas, L: dict) -> None:
     c.fill_rect(L["UI_LINE_X0"], L["UI_LINE_Y"], L["UI_LINE_X1"], L["UI_LINE_Y"])
 
     # Footer: 3 diagnostic lines (sample content; runtime strings in firmware).
-    # Sample content mirrors the firmware footer; the hash comes from git so
-    # the preview stays truthful (same -dirty rule as the firmware identity).
     foot = [
         (L["UI_FOOTER_L1_Y"], f"fw v1.0.0 {git_hash()}"),
         (L["UI_FOOTER_L2_Y"], "touch 0x38 ok=1"),
@@ -179,7 +195,62 @@ def page_scan(c: Canvas, L: dict) -> None:
     c.text_center(L["UI_S_SUB_Y"], L["UI_TXT_SCAN_SUB"], L["UI_S_SUB_SCALE"])
     c.rect_outline(L["UI_S_BOX_X0"], L["UI_S_BOX_Y0"], L["UI_S_BOX_X1"], L["UI_S_BOX_Y1"],
                    L["UI_S_BOX_T"])
-    c.text_center(L["UI_S_NOTE_Y"], L["UI_TXT_SCAN_NOTE"], L["UI_S_NOTE_SCALE"])
+    c.text_center(L["UI_S_STATUS_Y"], SCAN_SAMPLE["l1"], L["UI_S_STATUS_SCALE"])
+    for y_key, sample in (("UI_S_INFO1_Y", "l2"), ("UI_S_INFO2_Y", "l3"),
+                          ("UI_S_INFO3_Y", "l4")):
+        c.text(L["UI_S_INFO_X"], L[y_key], SCAN_SAMPLE[sample], 1)
+
+
+def wrap_payload(text: str, chars: int, max_lines: int):
+    """Mirror of the firmware wrap (src/ui/ui_wrap.c::ui_wrap_text).
+
+    Keep this in lockstep with the C implementation and cross-check with
+    scripts/test_wrap.py (C vs Python diff) before flashing.
+    """
+    lines = []
+    pos = 0
+    n = len(text)
+    while pos < n and len(lines) < max_lines:
+        end = pos
+        last_space = 0
+        limit = pos + chars
+        nl = False
+        while end < n and end < limit:
+            ch = text[end]
+            if ch in "\n\r":
+                nl = True
+                break
+            end += 1
+            if ch == " ":
+                last_space = end
+        if nl:
+            lines.append(text[pos:end])
+            pos = end + 1
+            while pos < n and text[pos] in "\n\r":
+                pos += 1
+        else:
+            emit_end = end
+            if end < n and last_space > pos:
+                emit_end = last_space
+            lines.append(text[pos:emit_end])
+            pos = emit_end
+    truncated = pos < n
+    return lines, truncated
+
+
+def page_payload(c: Canvas, L: dict) -> None:
+    c.text_center(L["UI_P_TITLE_Y"], L["UI_TXT_RESULT"], L["UI_P_TITLE_SCALE"])
+    c.text_center(L["UI_P_INFO_Y"], f"{len(PAYLOAD_SAMPLE)} chars", 1)
+
+    lines, truncated = wrap_payload(PAYLOAD_SAMPLE, L["UI_P_CHARS_PER_LINE"],
+                                    L["UI_P_MAX_LINES"])
+    y = L["UI_P_TEXT_Y0"]
+    for line in lines:
+        c.text(L["UI_P_TEXT_X"], y, line, 1)
+        y += L["UI_P_LINE_H"]
+    if truncated:
+        c.text(L["UI_P_TEXT_X"], y, "...", 1)
+    print(f"payload wrap: {len(lines)} lines, truncated={truncated}")
 
 
 def save_png(c: Canvas, out_path: Path) -> None:
@@ -208,21 +279,24 @@ def main() -> None:
     FONT = parse_font(FONT_C)
     L = parse_layout(LAYOUT_H)
 
-    req = ["UI_FB_W", "UI_FB_H", "UI_BTN_Y0", "UI_TXT_TITLE", "UI_TXT_SCAN"]
+    req = ["UI_FB_W", "UI_FB_H", "UI_BTN_Y0", "UI_TXT_TITLE", "UI_TXT_SCAN",
+           "UI_S_STATUS_Y", "UI_S_INFO_X", "UI_S_INFO1_Y", "UI_P_TEXT_X",
+           "UI_P_TEXT_Y0", "UI_P_CHARS_PER_LINE"]
     missing = [k for k in req if k not in L]
     if missing:
         raise SystemExit(f"layout header missing constants: {missing}")
 
     pages = []
-    for fn in (page_welcome, page_scan):
+    for fn in (page_welcome, page_scan, page_payload):
         c = Canvas(L["UI_FB_W"], L["UI_FB_H"])
         fn(c, L)
         draw_common(c, L)
         pages.append(c)
 
-    out = Canvas(2 * L["UI_FB_W"] + 20, L["UI_FB_H"])
+    gap = 20
+    out = Canvas(len(pages) * L["UI_FB_W"] + (len(pages) - 1) * gap, L["UI_FB_H"])
     for i, c in enumerate(pages):
-        ox = i * (L["UI_FB_W"] + 20)
+        ox = i * (L["UI_FB_W"] + gap)
         row_bytes = L["UI_FB_W"] * 3
         for y in range(L["UI_FB_H"]):
             src = c.buf[y * row_bytes:(y + 1) * row_bytes]
@@ -231,9 +305,9 @@ def main() -> None:
 
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/forgebox_ui_preview.png")
     save_png(out, out_path)
-    print(f"pages: welcome@{0}..{L['UI_FB_W']}  scan@{L['UI_FB_W'] + 20}..")
-    print(f"buttons: L({L['UI_BTN_L_X0']},{L['UI_BTN_Y0']})-({L['UI_BTN_L_X1']},{L['UI_BTN_Y1']})"
-          f"  R({L['UI_BTN_R_X0']},{L['UI_BTN_Y0']})-({L['UI_BTN_R_X1']},{L['UI_BTN_Y1']})")
+    print(f"pages: welcome / scan / payload, buttons L({L['UI_BTN_L_X0']},{L['UI_BTN_Y0']})"
+          f"-({L['UI_BTN_L_X1']},{L['UI_BTN_Y1']}) R({L['UI_BTN_R_X0']},{L['UI_BTN_Y0']})"
+          f"-({L['UI_BTN_R_X1']},{L['UI_BTN_Y1']})")
 
 
 if __name__ == "__main__":

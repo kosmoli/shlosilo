@@ -162,7 +162,9 @@ else()
     list(APPEND APP_SRC
         src/tasks/product_task.c
         src/ui/shlosilo_ui.c
+        src/ui/ui_wrap.c
         src/ui/ui_font.c
+        src/driver/drv_qrdecode.c
     )
 endif()
 
@@ -209,6 +211,12 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE ${INCLUDE_DIR})
 # Link shlosilo static library (must come AFTER target creation so link order is correct)
 if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
     target_link_libraries(${PROJECT_NAME}.elf "${SHLOSILO_PATH}/libshlosilo.a")
+endif()
+
+# QR decode library (product flavor only: camera + closed-source decode lib)
+if(NOT SMOKE_SCREEN)
+    target_link_libraries(${PROJECT_NAME}.elf
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/mh1903_lib/MHSCPU_Driver/lib/MH1903_QRDecodeLib.a")
 endif()
 
 target_link_libraries(${PROJECT_NAME}.elf m)

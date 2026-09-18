@@ -1,4 +1,4 @@
-/* ui_layout.h - product UI layout constants (D1).
+/* ui_layout.h - product UI layout constants (D1 base + D2 scan/payload).
  *
  * Single source of truth shared by the firmware (src/ui/shlosilo_ui.c) and the
  * host preview (flux/forgebox/scripts/preview_ui.py parses this header, plus
@@ -55,7 +55,7 @@
 #define UI_TXT_BIG           "welcome"
 #define UI_TXT_HINT          "tap continue to begin"
 
-/* Scan page (placeholder until F5 lands the camera flow) */
+/* Scan page */
 #define UI_S_TITLE_Y         64
 #define UI_S_TITLE_SCALE     4
 #define UI_S_SUB_Y           152
@@ -65,10 +65,28 @@
 #define UI_S_BOX_X1          420
 #define UI_S_BOX_Y1          560
 #define UI_S_BOX_T           2
-#define UI_S_NOTE_Y          370
-#define UI_S_NOTE_SCALE      2
+#define UI_S_STATUS_Y        230
+#define UI_S_STATUS_SCALE    2
+#define UI_S_INFO_X          96
+#define UI_S_INFO1_Y         300
+#define UI_S_INFO2_Y         320
+#define UI_S_INFO3_Y         340
+#define UI_S_LIVE_X0         64
+#define UI_S_LIVE_X1         416
+#define UI_S_LIVE_FLUSH_Y0   200
+#define UI_S_LIVE_FLUSH_Y1   400
 #define UI_TXT_SCAN          "scan"
-#define UI_TXT_SCAN_SUB      "camera (F5)"
-#define UI_TXT_SCAN_NOTE     "not wired yet"
+#define UI_TXT_SCAN_SUB      "qr scanner"
+
+/* Payload page */
+#define UI_P_TITLE_Y         32
+#define UI_P_TITLE_SCALE     3
+#define UI_P_INFO_Y          88
+#define UI_P_TEXT_X          16
+#define UI_P_TEXT_Y0         110
+#define UI_P_LINE_H          18
+#define UI_P_MAX_LINES       25
+#define UI_P_CHARS_PER_LINE  56
+#define UI_TXT_RESULT        "result"
 
 #endif

@@ -4,9 +4,12 @@
 #include "user_memory.h"
 #include "cmsis_os.h"
 #include "hal_lcd.h"
-#include "draw_on_lcd.h"
+#include "shlosilo_ui.h"
 
-#define VIEW_IMAGE_ENABLE
+/* v1 (D2): aiming preview disabled - the scan page shows text status only.
+ * Re-enable in the next iteration once the page hosts a live preview box.
+ * (The ViewImageOnLcd code below is kept for reference.) */
+/* #define VIEW_IMAGE_ENABLE */
 
 /*camera XCK set*/
 #define CAM_XCK_GPIO                GPIOA
@@ -42,8 +45,7 @@ static uint32_t g_decodeTick = 0;
 static uint8_t *g_memPool = NULL;
 DecodeConfigTypeDef g_decodeCfg = {0};
 
-LV_FONT_DECLARE(openSans_20);
-LV_FONT_DECLARE(openSans_24);
+/* Progress rendering goes through shlosilo_ui (no LVGL fonts in this build). */
 
 /**
  * @brief       QR decode init, malloc QRDECODE_BUFF_SIZE byte mem.
@@ -123,13 +125,10 @@ int32_t QrDecodeProcess(char *result, uint32_t maxLen, uint8_t progress)
     DecodeResultTypeDef res = {.result = (uint8_t *)result, .maxn = maxLen};
     uint32_t tick;
     static uint8_t progressNum = 100;
-    char progressStr[16];
 
     if (progressNum != progress) {
         if (progress > 0) {
-            snprintf_s(progressStr, sizeof(progressStr), "%d%%  ", progress);
-            DrawStringOnLcd(215, 638, progressStr, 0xFFFF, &openSans_24);
-            DrawProgressBarOnLcd(80, 594, 320, 9, progress, 0x21F4);
+            UiScanProgress(progress);
         }
         progressNum = progress;
     }

@@ -1,24 +1,33 @@
 /* shlosilo_ui.c - product UI: direct-write 1bpp renderer + touch buttons.
  *
- * The forgebox product line (D1) owns the panel with this module - no LVGL.
+ * The forgebox product line owns the panel with this module - no LVGL.
  * LVGL stays as the bring-up diagnostics renderer behind the SMOKE_SCREEN
  * build switch (exactly one renderer owns the screen per build).
  *
  * Model: a 1bpp canvas (480x800 = 46.9 KiB, SRAM heap) holds the current
- * frame; ui_flush() expands it to RGB565 rows in a band buffer and streams
- * each band through LcdDraw() (8080-parallel DMA). Text uses the Terminus
- * 8x16 blob (ui_font.c), byte-identical to the pico2 host's font. Layout
- * constants live in ui_layout.h (shared with the host preview script).
+ * frame; ui_flush_range() expands it to RGB565 rows in a band buffer and
+ * streams each band through LcdDraw() (8080-parallel DMA). Text uses the
+ * Terminus 8x16 blob (ui_font.c), byte-identical to the pico2 host's font.
+ * Layout constants live in ui_layout.h (shared with the host preview script).
  *
- * Touch: FT6336 polled via TouchGetStatus() (~40 ms), press-edge detection,
- * two text buttons (`back` left / `continue` right). Every press echoes on
- * the footer line:  last: <event> (x,y). The footer also carries the build
- * identity (git hash) and the touch probe state - the on-screen diagnostic
- * channel that replaces a console.
+ * Pages:
+ *  - welcome: title + hint, back/continue buttons.
+ *  - scan:    camera QR scan status; the product task owns the scan loop and
+ *             pushes live lines in through UiScanInfo()/UiScanProgress()
+ *             (partial flush of the live region only, so scanning keeps its
+ *             frame rate).
+ *  - payload: a decoded QR payload rendered with word wrap.
+ *
+ * Touch: FT6336 polled via TouchGetStatus(), press-edge detection, two text
+ * buttons (`back` left / `continue` right). Every press echoes on the footer
+ * line and in the printf log. The footer also carries the build identity
+ * (git hash) and the touch probe state - the on-screen diagnostic channel
+ * that replaces a console.
  */
 #include "shlosilo_ui.h"
 #include "ui_layout.h"
 #include "ui_font.h"
+#include "ui_wrap.h"
 #include "hal_lcd.h"
 #include "hal_touch.h"
 #include "user_memory.h"
@@ -42,15 +51,25 @@
 #define UI_BAND_ROWS  40
 #define UI_BAND_BYTES (UI_FB_W * UI_BAND_ROWS * 2)
 
-typedef enum {
-    PAGE_WELCOME = 0,
-    PAGE_SCAN,
-} UiPage;
+#define LIVE_LINE_BYTES 40
 
 static uint8_t *g_fb;
 static uint8_t *g_band;
-static UiPage g_page = PAGE_WELCOME;
-static char g_last[48] = "last: -";
+static UiPage g_page = UI_PAGE_WELCOME;
+static char g_last[64] = "last: -";
+static int g_touch_prev_down;
+
+/* Scan page live lines (status + three small lines), pushed by the caller. */
+static char g_scan_l1[LIVE_LINE_BYTES] = "";
+static char g_scan_l2[LIVE_LINE_BYTES] = "";
+static char g_scan_l3[LIVE_LINE_BYTES] = "";
+static char g_scan_l4[LIVE_LINE_BYTES] = "";
+static uint8_t g_scan_progress;
+
+/* Payload page text (copied from the caller's buffer). */
+#define PAYLOAD_MAX 2048
+static char g_payload[PAYLOAD_MAX];
+static uint32_t g_payload_len;
 
 /* ---------------- canvas primitives (inclusive coordinates) ---------------- */
 
@@ -66,6 +85,17 @@ static void fill_rect(int x, int y, int w, int h)
     for (int yy = y; yy < y + h; yy++) {
         for (int xx = x; xx < x + w; xx++) {
             put_px(xx, yy);
+        }
+    }
+}
+
+static void clear_rect(int x, int y, int w, int h)
+{
+    for (int yy = y; yy < y + h; yy++) {
+        for (int xx = x; xx < x + w; xx++) {
+            if ((unsigned)xx < UI_FB_W && (unsigned)yy < UI_FB_H) {
+                g_fb[yy * FB_STRIDE + (xx >> 3)] &= (uint8_t)~(0x80u >> (xx & 7));
+            }
         }
     }
 }
@@ -113,9 +143,20 @@ static void draw_text_center(int y, const char *s, int scale)
 
 /* ---------------- flush: 1bpp -> RGB565 bands -> LcdDraw ---------------- */
 
-static void ui_flush(void)
+static void ui_flush_range(int y0, int y1)
 {
-    for (int y0 = 0; y0 < UI_FB_H; y0 += UI_BAND_ROWS) {
+    if (g_fb == NULL || g_band == NULL || y1 < y0) {
+        return;
+    }
+
+    /* Snap to band boundaries (UI_FB_H is a multiple of UI_BAND_ROWS). */
+    y0 -= y0 % UI_BAND_ROWS;
+    y1 = (y1 / UI_BAND_ROWS + 1) * UI_BAND_ROWS - 1;
+    if (y1 >= UI_FB_H) {
+        y1 = UI_FB_H - 1;
+    }
+
+    for (int ys = y0; ys <= y1; ys += UI_BAND_ROWS) {
         uint8_t *p = g_band;
 
         /* The DMA reads g_band directly: never refill the buffer while a
@@ -124,7 +165,7 @@ static void ui_flush(void)
             osDelay(1);
         }
 
-        for (int y = y0; y < y0 + UI_BAND_ROWS; y++) {
+        for (int y = ys; y < ys + UI_BAND_ROWS; y++) {
             const uint8_t *row = &g_fb[y * FB_STRIDE];
             for (int bx = 0; bx < FB_STRIDE; bx++) {
                 uint8_t bits = row[bx];
@@ -136,10 +177,71 @@ static void ui_flush(void)
             }
         }
 
-        LcdDraw(0, y0, UI_FB_W - 1, y0 + UI_BAND_ROWS - 1, (uint16_t *)g_band);
+        LcdDraw(0, ys, UI_FB_W - 1, ys + UI_BAND_ROWS - 1, (uint16_t *)g_band);
     }
     while (LcdBusy()) {
         osDelay(1);
+    }
+}
+
+/* ---------------- scan page live region ---------------- */
+
+static void scan_live_rect_clear(void)
+{
+    clear_rect(UI_S_LIVE_X0, UI_S_STATUS_Y - 8, UI_S_LIVE_X1 - UI_S_LIVE_X0,
+               (UI_S_INFO3_Y + 24) - (UI_S_STATUS_Y - 8));
+}
+
+static void draw_scan_live(void)
+{
+    char status[LIVE_LINE_BYTES];
+
+    if (g_scan_progress > 0) {
+        snprintf(status, sizeof(status), "scanning %u%%", (unsigned)g_scan_progress);
+    } else {
+        snprintf(status, sizeof(status), "%s", g_scan_l1);
+    }
+    draw_text_center(UI_S_STATUS_Y, status, UI_S_STATUS_SCALE);
+    draw_text(UI_S_INFO_X, UI_S_INFO1_Y, g_scan_l2, 1);
+    draw_text(UI_S_INFO_X, UI_S_INFO2_Y, g_scan_l3, 1);
+    draw_text(UI_S_INFO_X, UI_S_INFO3_Y, g_scan_l4, 1);
+}
+
+static void scan_live_update(void)
+{
+    if (g_page != UI_PAGE_SCAN || g_fb == NULL || g_band == NULL) {
+        return;
+    }
+    scan_live_rect_clear();
+    draw_scan_live();
+    ui_flush_range(UI_S_LIVE_FLUSH_Y0, UI_S_LIVE_FLUSH_Y1);
+}
+
+/* ---------------- payload page ---------------- */
+
+static void draw_payload_text(void)
+{
+    UiWrapLine lines[UI_P_MAX_LINES];
+    bool truncated = false;
+    int count = ui_wrap_text(g_payload, g_payload_len, UI_P_CHARS_PER_LINE,
+                             UI_P_MAX_LINES, lines, &truncated);
+    int y = UI_P_TEXT_Y0;
+
+    for (int i = 0; i < count; i++) {
+        char buf[UI_P_CHARS_PER_LINE + 1];
+        uint32_t len = lines[i].len;
+
+        if (len > UI_P_CHARS_PER_LINE) {
+            len = UI_P_CHARS_PER_LINE;
+        }
+        memcpy(buf, &g_payload[lines[i].start], len);
+        buf[len] = '\0';
+        draw_text(UI_P_TEXT_X, y, buf, 1);
+        y += UI_P_LINE_H;
+    }
+
+    if (truncated) {
+        draw_text(UI_P_TEXT_X, y, "...", 1);
     }
 }
 
@@ -184,16 +286,33 @@ static void draw_page(void)
 {
     memset(g_fb, 0, FB_BYTES);
 
-    if (g_page == PAGE_WELCOME) {
+    switch (g_page) {
+    case UI_PAGE_WELCOME:
         draw_text_center(UI_W_TITLE_Y, UI_TXT_TITLE, UI_W_TITLE_SCALE);
         draw_text_center(UI_W_SUB_Y, UI_TXT_SUB, UI_W_SUB_SCALE);
         draw_text_center(UI_W_BIG_Y, UI_TXT_BIG, UI_W_BIG_SCALE);
         draw_text_center(UI_W_HINT_Y, UI_TXT_HINT, UI_W_HINT_SCALE);
-    } else {
+        break;
+
+    case UI_PAGE_SCAN:
         draw_text_center(UI_S_TITLE_Y, UI_TXT_SCAN, UI_S_TITLE_SCALE);
         draw_text_center(UI_S_SUB_Y, UI_TXT_SCAN_SUB, UI_S_SUB_SCALE);
         rect_outline(UI_S_BOX_X0, UI_S_BOX_Y0, UI_S_BOX_X1, UI_S_BOX_Y1, UI_S_BOX_T);
-        draw_text_center(UI_S_NOTE_Y, UI_TXT_SCAN_NOTE, UI_S_NOTE_SCALE);
+        scan_live_rect_clear();
+        draw_scan_live();
+        break;
+
+    case UI_PAGE_PAYLOAD: {
+        char info[48];
+        draw_text_center(UI_P_TITLE_Y, UI_TXT_RESULT, UI_P_TITLE_SCALE);
+        snprintf(info, sizeof(info), "%u chars", (unsigned)g_payload_len);
+        draw_text_center(UI_P_INFO_Y, info, 1);
+        draw_payload_text();
+        break;
+    }
+
+    default:
+        break;
     }
 
     fill_rect(UI_LINE_X0, UI_LINE_Y, UI_LINE_X1 - UI_LINE_X0 + 1, 1);
@@ -208,34 +327,49 @@ static void draw_page(void)
 
 /* ---------------- input ---------------- */
 
+bool UiIsBackButton(int x, int y)
+{
+    return (y >= UI_BTN_Y0 && y <= UI_BTN_Y1 &&
+            x >= UI_BTN_L_X0 && x <= UI_BTN_L_X1);
+}
+
+bool UiIsContinueButton(int x, int y)
+{
+    return (y >= UI_BTN_Y0 && y <= UI_BTN_Y1 &&
+            x >= UI_BTN_R_X0 && x <= UI_BTN_R_X1);
+}
+
+void UiSetLast(const char *text)
+{
+    snprintf(g_last, sizeof(g_last), "last: %.50s", text ? text : "-");
+}
+
 static void handle_press(int x, int y)
 {
-    int on_back = (y >= UI_BTN_Y0 && y <= UI_BTN_Y1 &&
-                   x >= UI_BTN_L_X0 && x <= UI_BTN_L_X1);
-    int on_cont = (y >= UI_BTN_Y0 && y <= UI_BTN_Y1 &&
-                   x >= UI_BTN_R_X0 && x <= UI_BTN_R_X1);
+    char msg[56];
 
-    if (on_back) {
-        if (g_page == PAGE_SCAN) {
-            g_page = PAGE_WELCOME;
-            snprintf(g_last, sizeof(g_last), "last: back -> welcome (%d,%d)", x, y);
+    if (UiIsBackButton(x, y)) {
+        if (g_page == UI_PAGE_WELCOME) {
+            snprintf(msg, sizeof(msg), "back (noop) (%d,%d)", x, y);
         } else {
-            snprintf(g_last, sizeof(g_last), "last: back (noop) (%d,%d)", x, y);
+            snprintf(msg, sizeof(msg), "back -> welcome (%d,%d)", x, y);
+            g_page = UI_PAGE_WELCOME;
         }
-    } else if (on_cont) {
-        if (g_page == PAGE_WELCOME) {
-            g_page = PAGE_SCAN;
-            snprintf(g_last, sizeof(g_last), "last: continue -> scan (%d,%d)", x, y);
+    } else if (UiIsContinueButton(x, y)) {
+        if (g_page == UI_PAGE_WELCOME || g_page == UI_PAGE_PAYLOAD) {
+            snprintf(msg, sizeof(msg), "continue -> scan (%d,%d)", x, y);
+            g_page = UI_PAGE_SCAN;
         } else {
-            snprintf(g_last, sizeof(g_last), "last: continue (scan stub) (%d,%d)", x, y);
+            snprintf(msg, sizeof(msg), "continue (scan) (%d,%d)", x, y);
         }
     } else {
-        snprintf(g_last, sizeof(g_last), "last: tap (%d,%d)", x, y);
+        snprintf(msg, sizeof(msg), "tap (%d,%d)", x, y);
     }
 
+    UiSetLast(msg);
     printf("ui: %s\r\n", g_last);
     draw_page();
-    ui_flush();
+    ui_flush_range(0, UI_FB_H - 1);
 }
 
 /* ---------------- public API ---------------- */
@@ -260,25 +394,77 @@ void UiShow(void)
         return;
     }
     draw_page();
-    ui_flush();
+    ui_flush_range(0, UI_FB_H - 1);
 }
 
 void UiTick(void)
 {
-    static int prev_down = 0;
     TouchStatus_t st;
 
     if (g_fb == NULL) {
         return;
     }
     if (TouchGetStatus(&st) != 0) {
-        prev_down = 0;
+        g_touch_prev_down = 0;
         return;
     }
 
     int down = st.touch ? 1 : 0;
-    if (down && !prev_down) {
+    if (down && !g_touch_prev_down) {
         handle_press((int)st.x, (int)st.y);
     }
-    prev_down = down;
+    g_touch_prev_down = down;
+}
+
+UiPage UiGetPage(void)
+{
+    return g_page;
+}
+
+void UiGotoPage(UiPage page)
+{
+    g_page = page;
+    if (g_fb == NULL || g_band == NULL) {
+        return;
+    }
+    draw_page();
+    ui_flush_range(0, UI_FB_H - 1);
+}
+
+void UiSetPayload(const char *text, uint32_t len)
+{
+    uint32_t n = len;
+
+    if (n > sizeof(g_payload) - 1) {
+        n = sizeof(g_payload) - 1;
+    }
+    if (text != NULL && n > 0) {
+        memcpy(g_payload, text, n);
+    }
+    g_payload[n] = '\0';
+    g_payload_len = n;
+
+    UiGotoPage(UI_PAGE_PAYLOAD);
+}
+
+void UiScanInfo(const char *line1, const char *line2, const char *line3, const char *line4)
+{
+    snprintf(g_scan_l1, sizeof(g_scan_l1), "%s", line1 ? line1 : "");
+    snprintf(g_scan_l2, sizeof(g_scan_l2), "%s", line2 ? line2 : "");
+    snprintf(g_scan_l3, sizeof(g_scan_l3), "%s", line3 ? line3 : "");
+    snprintf(g_scan_l4, sizeof(g_scan_l4), "%s", line4 ? line4 : "");
+    scan_live_update();
+}
+
+void UiScanProgress(uint8_t percent)
+{
+    g_scan_progress = percent;
+    scan_live_update();
+}
+
+void UiTouchReset(void)
+{
+    /* Treat the current contact as already seen: no action until the finger
+     * is lifted and pressed again. */
+    g_touch_prev_down = 1;
 }
