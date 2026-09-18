@@ -22,12 +22,24 @@ struct Addr(*const ());
 unsafe impl Sync for Addr {}
 
 // The simulator exercises the create_account / export_readonly / sign-UR flow
-// plus the version and ABI probes.
+// plus the version and ABI probes. The R3 multipart UR codec entries are kept
+// for scripts/test_carousel_ffi.py (the forgebox carousel's host regression:
+// encoder -> frame stream -> decoder round-trip at the firmware's buffer
+// size, plus the FRAME_BUF_MAX_LEN contract check).
 #[used]
-static KEEP_FFI: [Addr; 5] = [
+static KEEP_FFI: [Addr; 14] = [
     Addr(shlosilo::ffi::c_abi::shlosilo_create_account_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_export_readonly_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_sign_ur_ffi as *const ()),
     Addr(shlosilo::ffi::version::shlosilo_version as *const ()),
     Addr(shlosilo::ffi::version::shlosilo_cabi_check as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_begin as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_next as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_next_cyclic as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_free as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_new as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_feed as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_complete as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_payload as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_free as *const ()),
 ];

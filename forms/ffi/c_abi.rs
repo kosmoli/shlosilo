@@ -675,6 +675,9 @@ pub mod r3 {
 
     /// R3: get the next frame URI string (written to frame_buf, NUL-terminated).
     /// Returns 0 = Ok; negative = error code. Repeated calls produce the fountain redundancy frame stream.
+    ///
+    /// frame_buf_len must be at least 1024 (FRAME_BUF_MAX_LEN); shorter buffers are
+    /// rejected with BufferTooSmall even though a 200-byte-fragment frame is ~460 chars.
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub extern "C" fn shlosilo_ur_encode_next(
@@ -723,6 +726,9 @@ pub mod r3 {
     }
 
     /// R3: XMR cyclic catch-up frames (seq wraps back to 1 at the top, looping forever so software wallets can catch up)
+    ///
+    /// frame_buf_len must be at least 1024 (FRAME_BUF_MAX_LEN); shorter buffers are
+    /// rejected with BufferTooSmall even though a 200-byte-fragment frame is ~460 chars.
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub extern "C" fn shlosilo_ur_encode_next_cyclic(

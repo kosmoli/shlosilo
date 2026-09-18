@@ -518,6 +518,9 @@ struct UrMultipartEncoder *shlosilo_ur_encode_begin(const char *type_name,
 /**
  * R3: get the next frame URI string (written to frame_buf, NUL-terminated).
  * Returns 0 = Ok; negative = error code. Repeated calls produce the fountain redundancy frame stream.
+ *
+ * frame_buf_len must be at least 1024 (FRAME_BUF_MAX_LEN); shorter buffers are
+ * rejected with BufferTooSmall even though a 200-byte-fragment frame is ~460 chars.
  */
 int shlosilo_ur_encode_next(struct UrMultipartEncoder *handle,
                             uint8_t *frame_buf,
@@ -526,6 +529,9 @@ int shlosilo_ur_encode_next(struct UrMultipartEncoder *handle,
 
 /**
  * R3: XMR cyclic catch-up frames (seq wraps back to 1 at the top, looping forever so software wallets can catch up)
+ *
+ * frame_buf_len must be at least 1024 (FRAME_BUF_MAX_LEN); shorter buffers are
+ * rejected with BufferTooSmall even though a 200-byte-fragment frame is ~460 chars.
  */
 int shlosilo_ur_encode_next_cyclic(struct UrMultipartEncoder *handle,
                                    uint8_t *frame_buf,

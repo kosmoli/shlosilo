@@ -51,7 +51,13 @@ void shlosilo_sram_pool_reset(void);
 
 /* UR carousel session (F3 output side) */
 #define CAROUSEL_FRAME_MS         450
-#define CAROUSEL_FRAME_MAX        576
+/* Frame buffer: the FFI contract (c_abi.rs FRAME_BUF_MAX_LEN=1024) REJECTS
+ * frame buffers shorter than 1024 even though a 200B-fragment frame is only
+ * ~460 chars. The first carousel build used 576 here and bounced straight
+ * back to the welcome page (ERR_BUFFER_TOO_SMALL on the first frame); keep
+ * this >= the FFI minimum - scripts/test_carousel_ffi.py cross-checks the
+ * two constants and round-trips the real payload at this exact size. */
+#define CAROUSEL_FRAME_MAX        1024
 
 typedef enum {
     SCAN_IDLE = 0,      /* not on the scan page (or exited) */
