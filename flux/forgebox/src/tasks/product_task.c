@@ -129,11 +129,45 @@ static void ProductTask(void *argument)
 
 /* ---------------- scan session ---------------- */
 
+/* D2.4 experiment (2026-09-18): DECODE POOL IN SRAM.
+ *
+ * The official firmware hands the decode library the LVGL gram buffer in
+ * SRAM (480x450x2B = 432,000 B); our integration used a PSRAM pool. With the
+ * PSRAM pool the library runs ~11x slower (measured: dec 568 ms/frame vs the
+ * official 49 ms on the same device) and never decodes a code - every pass
+ * of the analyser (binarization, region labelling, pattern search) is a
+ * random-access-heavy workload, and QSPI PSRAM latency makes that crawl.
+ * Same library, same camera, same board: the pool memory is the difference.
+ *
+ * This build replicates the official memory situation: the 410 KiB pool is
+ * placed in the free SRAM window after .bss. The K2-D Rust pool section
+ * (0x20099000..0x200FC000) is unused in the product flavor (no FFI calls
+ * reach the Rust allocator), so the window is genuinely free *for this
+ * build*; the start address is guarded against .bss growth at runtime.
+ *
+ * Set to 0 to fall back to the PSRAM pool (A/B switch). */
+#define QR_POOL_IN_SRAM     1
+#define QR_POOL_SRAM_ADDR   0x20084000u   /* after .bss, ends 0x200EA800 < data_parser */
+
 static void scan_enter(void)
 {
     char l1[40];
 
     if (g_qr_pool == NULL) {
+#if QR_POOL_IN_SRAM
+        extern uint8_t _ebss;
+        if ((uint32_t)&_ebss > QR_POOL_SRAM_ADDR) {
+            /* .bss grew into the reserved window: pool placement is stale. */
+            printf("scan: sram pool guard hit (ebss=%08X)\r\n",
+                   (unsigned)(uint32_t)&_ebss);
+            UiScanInfo("sram pool guard", "bss overlap", "", "");
+            g_scan = SCAN_FAILED;
+            return;
+        }
+        g_qr_pool = (uint8_t *)QR_POOL_SRAM_ADDR;
+        printf("scan: pool @ %08X (SRAM experiment)\r\n",
+               (unsigned)(uint32_t)g_qr_pool);
+#else
         g_qr_pool = ExtMalloc(QR_POOL_BYTES);
         if (g_qr_pool == NULL) {
             printf("scan: pool alloc failed\r\n");
@@ -141,6 +175,8 @@ static void scan_enter(void)
             g_scan = SCAN_FAILED;
             return;
         }
+        printf("scan: pool @ %08X (PSRAM)\r\n", (unsigned)(uint32_t)g_qr_pool);
+#endif
     }
 
     UiScanInfo("camera init...", "", "", "");
@@ -215,11 +251,12 @@ static void scan_step(void)
 
     if ((g_scan_frames % SCAN_INFO_EVERY_FRAMES) == 0) {
         if (g_scan_frames < 40) {
-            /* OTP gate probe (library authorization words + check result). */
+            /* OTP gate probe (library authorization words + check result)
+             * plus the decode pool address for verification. */
             snprintf(l1, sizeof(l1), "otp ck=%d", (int)QrDecodeOtpOk());
             snprintf(l2, sizeof(l2), "A=%08X B=%08X",
                      (unsigned)QrDecodeOtpWordA(), (unsigned)QrDecodeOtpWordB());
-            snprintf(l3, sizeof(l3), "inj=%u", (unsigned)QrDecodeGetSelftestStamps());
+            snprintf(l3, sizeof(l3), "pool %08X", (unsigned)(uint32_t)g_qr_pool);
             UiScanInfo("otp probe", l1, l2, l3);
         } else {
             snprintf(l1, sizeof(l1), "frames=%u inj=%u flip=%u",
