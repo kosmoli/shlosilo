@@ -297,22 +297,70 @@ uint32_t GetBatteryInterval(void)
 }
 
 /// @brief Get the saved battery level percentage.
-/// @return BATTERY_INVALID_PERCENT_VALUE until the first
-///         BatteryIntervalHandler() call measures and adopts a value.
+/// @return Battery level percentage.
 static uint8_t LoadBatteryPercent(void)
 {
-    /* Product build: the official battery history lives in SPI flash
-     * (Gd25 read/erase/write at SPI_FLASH_ADDR_BATTERY_INFO). That block
-     * is not wired in this tree - the previous version parsed a freshly
-     * malloc'd, UNINITIALISED buffer as if it were flash history, so
-     * every boot started from a garbage byte (device report 2026-09-19:
-     * "battery shows 1% after every boot, then crawls up").
-     * Return the invalid marker instead: the first BatteryIntervalHandler()
-     * call adopts a fresh measurement (the official empty-flash path),
-     * so the corner starts at the true level. One ADC read is done here
-     * as a warm-up and discarded. */
-    (void)GetBatteryMilliVolt();
-    return BATTERY_INVALID_PERCENT_VALUE;
+    uint8_t *data;
+    uint32_t i, milliVolt;
+    uint8_t percent, measurePercent;
+    bool resetValue, checkErased, needErase;
+    UsbPowerState usbPowerState;
+
+    usbPowerState = GetUsbPowerState();
+    milliVolt = GetBatteryMilliVolt();
+    measurePercent = GetBatteryPercentByMilliVolt(milliVolt, usbPowerState == USB_POWER_STATE_DISCONNECT);
+    printf("load batt,usbPowerState=%d,milliVolt=%d,measurePercent=%d\n", usbPowerState, milliVolt, measurePercent);
+
+    data = SRAM_MALLOC(SPI_FLASH_SIZE_BATTERY_INFO);
+    Gd25FlashReadBuffer(SPI_FLASH_ADDR_BATTERY_INFO, data, SPI_FLASH_SIZE_BATTERY_INFO);
+    resetValue = false;
+    checkErased = false;
+    needErase = false;
+    for (i = 0; i < SPI_FLASH_SIZE_BATTERY_INFO; i++) {
+        if (checkErased == false && data[i] == 0xFF) {
+            //first FF data found.
+            if (i == 0) {
+                //no battery history data
+                resetValue = true;
+            } else {
+                if (data[i - 1] > 100) {
+                    printf("battery history invalid data[%d]=%d\r\n", i, data[i]);
+                    resetValue = true;
+                    needErase = true;
+                } else {
+                    percent = data[i - 1];
+                    g_batteryFlashAddress = SPI_FLASH_ADDR_BATTERY_INFO + i - 1;
+                    printf("the latest battery history percent=%d,addr=0x%08X\r\n", percent, g_batteryFlashAddress);
+                    if (usbPowerState == USB_POWER_STATE_DISCONNECT && \
+                            percent > measurePercent && \
+                            (percent - measurePercent > BATTERY_DIFF_THRESHOLD || measurePercent <= 20)) {
+                        printf("set battery percent to measurement value.\n");
+                        percent = measurePercent;
+                    }
+                }
+            }
+            checkErased = true;
+        } else if (checkErased == true && data[i] != 0xFF) {
+            //check if erased
+            printf("data[%d]=%d, not erased\r\n", i, data[i]);
+            resetValue = true;
+            needErase = true;
+            break;
+        }
+    }
+    if (needErase || !checkErased) {
+        BATTERY_PRINTF("battery erase\r\n");
+        Gd25FlashSectorErase(SPI_FLASH_ADDR_BATTERY_INFO);
+    }
+    if (resetValue) {
+        printf("battery data resetValue\r\n");
+        percent = BATTERY_INVALID_PERCENT_VALUE;
+        g_batteryFlashAddress = SPI_FLASH_ADDR_BATTERY_INFO;
+        Gd25FlashWriteBuffer(g_batteryFlashAddress, &percent, 1);
+    }
+
+    SRAM_FREE(data);
+    return percent;
 }
 
 /// @brief Save the battery level percentage.
@@ -322,8 +370,10 @@ static void SaveBatteryPercent(uint8_t percent)
     ASSERT(g_batteryFlashAddress >= SPI_FLASH_ADDR_BATTERY_INFO && g_batteryFlashAddress < SPI_FLASH_ADDR_BATTERY_INFO + SPI_FLASH_SIZE_BATTERY_INFO);
     g_batteryFlashAddress++;
     if (g_batteryFlashAddress >= SPI_FLASH_ADDR_BATTERY_INFO + SPI_FLASH_SIZE_BATTERY_INFO) {
+        Gd25FlashSectorErase(SPI_FLASH_ADDR_BATTERY_INFO);
         g_batteryFlashAddress = SPI_FLASH_ADDR_BATTERY_INFO;
     }
+    Gd25FlashWriteBuffer(g_batteryFlashAddress, &percent, 1);
     BATTERY_PRINTF("save battery percent, addr=%d\r\n", g_batteryFlashAddress);
 }
 

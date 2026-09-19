@@ -4,6 +4,10 @@
 #include "drv_sys.h"
 #include "drv_uart.h"
 #include "drv_psram.h"
+#include "drv_gd25qxx.h"
+#include "drv_power.h"
+#include "drv_battery.h"
+#include "drv_aw32001.h"
 #include "drv_lcd_bright.h"
 #include "hal_lcd.h"
 #include "cmsis_os.h"
@@ -67,6 +71,10 @@ int main(void)
     LcdInit();
     NvicInit();
     PsramInit();
+    /* SPI data flash (GD25Q128 on SPIM2): the battery percent history lives
+     * in this chip and BatteryInit reads it below - official boot order
+     * (keystone3 main.c: Gd25FlashInit before BatteryInit). */
+    Gd25FlashInit();
     BatteryInit();
     Aw32001Init();
     SetLcdBright(100);

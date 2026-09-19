@@ -127,6 +127,8 @@ set(APP_SRC
     src/driver/hal_lcd.c
     src/driver/drv_aw32001.c
     src/driver/drv_battery.c
+    src/driver/drv_spi.c
+    src/driver/drv_gd25qxx.c
     src/driver/drv_i2c_io.c
     src/ram/psram_heap_4.c
     src/ram/user_memory.c
