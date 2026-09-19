@@ -522,6 +522,7 @@ static void carousel_step(void)
 static void product_status_tick(void)
 {
     static uint32_t last_batt;
+    static uint32_t last_batt_pct;
     static uint32_t last_diag;
     static bool batt_first = true;
     static bool diag_first = true;
@@ -529,18 +530,28 @@ static void product_status_tick(void)
     static uint32_t abn_obs_secs = 0;
     uint32_t now = osKernelGetTickCount();
 
-    /* Battery: charger state + ADC percent every 5 s, pushed to the UI (it
-     * repaints only when the value changes). The handler owns its hysteresis,
-     * so the slow percent movement is unchanged; plug/unplug shows within one
-     * tick. "c" = the charger IC reports charging (pre/charge/done). */
-    if (batt_first || now - last_batt >= 5000) {
-        batt_first = false;
-        last_batt = now;
+    /* Battery percent algorithm on the official cadence (GetBatteryInterval,
+     * 80 s): the first call runs right at boot and adopts a fresh measurement
+     * (LoadBatteryPercent yields the invalid marker until then), so the
+     * corner starts at the true level instead of a garbage byte. Runs before
+     * the display push below, so the first paint is already the real value. */
+    if (batt_first || now - last_batt_pct >= GetBatteryInterval()) {
+        last_batt_pct = now;
         Aw32001RefreshState();
         BatteryIntervalHandler();
         UiSetBattery(GetBatterPercent(),
                      GetChargeState() != CHARGE_STATE_NOT_CHARGING);
     }
+
+    /* Charger state + corner readout: refreshed every 5 s ("c" follows
+     * plug/unplug within one tick; UiSetBattery repaints only on change). */
+    if (batt_first || now - last_batt >= 5000) {
+        last_batt = now;
+        Aw32001RefreshState();
+        UiSetBattery(GetBatterPercent(),
+                     GetChargeState() != CHARGE_STATE_NOT_CHARGING);
+    }
+    batt_first = false;
 
     /* Boot diag window: live FT6336 state on the footer L2 line, 1 Hz.
      * Skipped while the scan page is up (that strip belongs to the scan
