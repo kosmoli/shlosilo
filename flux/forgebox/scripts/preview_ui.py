@@ -31,8 +31,7 @@ BG = (0x00, 0x00, 0x00)
 # Sample content for the scan page live lines (mirrors real firmware values).
 SCAN_SAMPLE = {
     "status": "scanning...",
-    "info": ["frames=128 inj=4 flip=0", "cam 49 dec 87 vR 12 vW 100 ms",
-             "focus 51 res 0"],
+    "info": ["frames=123", "cam 43 dec 45 vR 53 vW 0 ms", "focus 51 res 0"],
 }
 
 # Payload sample: exercises word wrap, a hard-break token and a newline.
@@ -163,7 +162,7 @@ def label_xy(bx0: int, bx1: int, by0: int, by1: int, s: str, scale: int):
     return bx0 + (bx1 - bx0 + 1 - w) // 2, by0 + (by1 - by0 + 1 - h) // 2
 
 
-def draw_common(c: Canvas, L: dict) -> None:
+def draw_common(c: Canvas, L: dict, with_footer: bool = True) -> None:
     # Buttons: outlined rect + centered text label.
     for x0, x1, label in (
         (L["UI_BTN_L_X0"], L["UI_BTN_L_X1"], L["UI_BTN_LABEL_LEFT"]),
@@ -178,6 +177,9 @@ def draw_common(c: Canvas, L: dict) -> None:
 
     # Separator above the button band.
     c.fill_rect(L["UI_LINE_X0"], L["UI_LINE_Y"], L["UI_LINE_X1"], L["UI_LINE_Y"])
+
+    if not with_footer:
+        return  # the scan page uses this strip for its status/info lines
 
     # Footer: 3 diagnostic lines (sample content; runtime strings in firmware).
     foot = [
@@ -232,8 +234,8 @@ def page_scan(c: Canvas, L: dict) -> None:
     c.rect_outline(L["UI_S_BOX_X0"], L["UI_S_BOX_Y0"], L["UI_S_BOX_X1"], L["UI_S_BOX_Y1"],
                    L["UI_S_BOX_T"])
 
-    # Mock binarized camera frame inside the preview area (what the device
-    # shows: sensor speckle + a QR that is being aimed at).
+    # Mock binarized camera frame: the firmware rotates the sensor frame 90
+    # deg CCW into a PORTRAIT area (240x320), then stamps speckle + QR + reticle.
     x0, y0 = L["UI_S_PV_X0"], L["UI_S_PV_Y0"]
     w, h = L["UI_S_PV_W"], L["UI_S_PV_H"]
     seed = 987654321
@@ -254,9 +256,7 @@ def page_scan(c: Canvas, L: dict) -> None:
                 c.fill_rect(qx + col * scale, qy + r * scale,
                             qx + col * scale + scale - 1, qy + r * scale + scale - 1)
 
-    # Centering reticle (XOR dashes, same as the firmware: visible on both
-    # dark background and lit modules; long arms reach the dark area around
-    # a close-up QR).
+    # Centering reticle (XOR dashes, same as the firmware).
     cx, cy = x0 + w // 2, y0 + h // 2
     for d in range(4, 29):
         c.toggle(cx - d, cy)
@@ -267,11 +267,13 @@ def page_scan(c: Canvas, L: dict) -> None:
     # 1px frame marking the camera view area.
     c.rect_outline(x0 - 1, y0 - 1, x0 + w, y0 + h, 1)
 
+    # Status + info strip BELOW the box (the footer yields this area on this
+    # page, mirroring the firmware).
     c.text_center(L["UI_S_STATUS_Y"], SCAN_SAMPLE["status"], L["UI_S_STATUS_SCALE"])
     for y_key, line in zip(("UI_S_INFO1_Y", "UI_S_INFO2_Y", "UI_S_INFO3_Y"),
                            SCAN_SAMPLE["info"]):
         if line:
-            c.text(L["UI_S_INFO_X"], L[y_key], line, 1)
+            c.text_center(L[y_key], line, 1)
 
 
 def wrap_payload(text: str, chars: int, max_lines: int):
@@ -353,7 +355,7 @@ def main() -> None:
     L = parse_layout(LAYOUT_H)
 
     req = ["UI_FB_W", "UI_FB_H", "UI_BTN_Y0", "UI_TXT_TITLE", "UI_TXT_SCAN",
-           "UI_S_STATUS_Y", "UI_S_INFO_X", "UI_S_INFO1_Y", "UI_P_TEXT_X",
+           "UI_S_STATUS_Y", "UI_S_INFO1_Y", "UI_P_TEXT_X",
            "UI_P_TEXT_Y0", "UI_P_CHARS_PER_LINE"]
     missing = [k for k in req if k not in L]
     if missing:
@@ -363,7 +365,7 @@ def main() -> None:
     for fn in (page_welcome, page_scan, page_payload):
         c = Canvas(L["UI_FB_W"], L["UI_FB_H"])
         fn(c, L)
-        draw_common(c, L)
+        draw_common(c, L, with_footer=(fn is not page_scan))
         pages.append(c)
 
     gap = 20

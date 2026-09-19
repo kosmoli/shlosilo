@@ -214,12 +214,12 @@ static void ui_flush_range(int y0, int y1)
 
 static void scan_live_rect_clear(void)
 {
-    int x0 = UI_S_BOX_X0 + UI_S_BOX_T;
-    int x1 = UI_S_BOX_X1 - UI_S_BOX_T;
     int y0 = UI_S_STATUS_Y - 4;
-    int y1 = UI_S_INFO3_Y + UI_FONT_GLYPH_H - 1;
+    int y1 = UI_S_INFO3_Y + UI_FONT_GLYPH_H + 1;
 
-    clear_rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    /* Full-width strip below the camera box (the footer yields this area on
+     * the scan page). */
+    clear_rect(16, y0, UI_FB_W - 32, y1 - y0 + 1);
 }
 
 static void draw_scan_live(void)
@@ -232,9 +232,9 @@ static void draw_scan_live(void)
         snprintf(status, sizeof(status), "%s", g_scan_l1);
     }
     draw_text_center(UI_S_STATUS_Y, status, UI_S_STATUS_SCALE);
-    draw_text(UI_S_INFO_X, UI_S_INFO1_Y, g_scan_l2, 1);
-    draw_text(UI_S_INFO_X, UI_S_INFO2_Y, g_scan_l3, 1);
-    draw_text(UI_S_INFO_X, UI_S_INFO3_Y, g_scan_l4, 1);
+    draw_text_center(UI_S_INFO1_Y, g_scan_l2, 1);
+    draw_text_center(UI_S_INFO2_Y, g_scan_l3, 1);
+    draw_text_center(UI_S_INFO3_Y, g_scan_l4, 1);
 }
 
 static void scan_live_update(void)
@@ -244,7 +244,7 @@ static void scan_live_update(void)
     }
     scan_live_rect_clear();
     draw_scan_live();
-    ui_flush_range(UI_S_STATUS_Y - 4, UI_S_INFO3_Y + UI_FONT_GLYPH_H - 1);
+    ui_flush_range(UI_S_STATUS_Y - 4, UI_S_INFO3_Y + UI_FONT_GLYPH_H + 1);
 }
 
 /* ---------------- scan preview: binarized camera view (D2.1) ---------------- */
@@ -327,23 +327,26 @@ void UiScanPreview(const uint8_t *gray, int w, int h)
         }
     }
 
-    /* Pass 2: 2x2 downsample + local threshold -> 1bpp, one byte per 8 px.
+    /* Pass 2: 2x2 downsample + local threshold -> 1bpp, one byte per 8 px,
+     * with the frame rotated 90 deg CCW (the sensor is mounted landscape on
+     * a portrait device; user-requested orientation, 2026-09-19).
+     * Mapping: dest(x, y) samples source columns (SRC_W-1-2y, SRC_W-2-2y)
+     * and rows (2x, 2x+1) - the CCW rotation of the unrotated downsample.
      * Lit = darker than the local mean: QR modules show lit on black, the
      * same convention the pico2 host's binarized view uses. */
     for (int py = 0; py < UI_S_PV_H; py++) {
-        const uint8_t *r0 = gray + (py * 2) * PV_SRC_W;
-        const uint8_t *r1 = r0 + PV_SRC_W;
-        const uint16_t *bm = s_pv_block + (py >> 2) * PV_BW;
+        const int scx = PV_SRC_W - 2 - 2 * py;      /* source columns (this row) */
+        const int bx = scx >> 3;                    /* block column */
         uint8_t *dst = g_fb + (UI_S_PV_Y0 + py) * FB_STRIDE + (UI_S_PV_X0 >> 3);
         int px = 0;
 
         for (int bi = 0; bi < UI_S_PV_W / 8; bi++) {
             uint8_t bits = 0;
             for (int k = 0; k < 8; k++, px++) {
-                const uint8_t *p0 = r0 + px * 2;
-                const uint8_t *p1 = r1 + px * 2;
+                const uint8_t *p0 = gray + (2 * px) * PV_SRC_W + scx;
+                const uint8_t *p1 = p0 + PV_SRC_W;
                 int avg = ((int)p0[0] + p0[1] + p1[0] + p1[1]) >> 2;
-                int mean = (int)bm[px >> 2];
+                int mean = (int)s_pv_block[(px >> 2) * PV_BW + bx];
                 if (avg + PV_MARGIN < mean) {
                     bits |= (uint8_t)(0x80u >> k);
                 }
@@ -476,7 +479,10 @@ static void draw_page(void)
     draw_button_label(UI_BTN_L_X0, UI_BTN_L_X1, UI_BTN_LABEL_LEFT);
     draw_button_label(UI_BTN_R_X0, UI_BTN_R_X1, UI_BTN_LABEL_RIGHT);
 
-    draw_footer();
+    /* The scan page uses the footer strip for its status/info lines. */
+    if (g_page != UI_PAGE_SCAN) {
+        draw_footer();
+    }
 }
 
 void UiShowQrFrame(const char *text, uint32_t index, uint32_t total)
