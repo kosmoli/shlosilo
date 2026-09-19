@@ -83,12 +83,20 @@ static void carousel_exit(void);
 static void power_button_init(void);
 static void power_button_check(void);
 static void product_status_tick(void);
+static void product_charger_evt(void);
 
 static uint32_t g_button_press_start = 0;
 static bool g_button_pressed = false;
 static uint32_t g_boot_diag_end = 0;        /* touch diag footer window end */
 static uint32_t g_boot_mark = 0;            /* tick the diag window opened */
 static bool g_boot_diag_restored = false;
+
+/* Charger insert/remove event latch: the PF15 EXTI (both edges, see
+ * drv_exti.c) calls product_charger_evt in ISR context, which only sets a
+ * flag; product_status_tick consumes it. Previously NOTHING consumed this
+ * event (the callback was never registered), so "c" tracking relied on the
+ * 5 s battery poll alone - up to 5 s late on plug/unplug. */
+static volatile uint8_t g_charger_evt;
 
 /* Scan session state */
 static uint8_t *g_qr_pool = NULL;
@@ -166,6 +174,9 @@ static void ProductTask(void *argument)
     WDT_ReloadCounter();
 
     ExtInterruptInit();
+    /* PF15 (charger insert/remove) EXTI -> immediate "c" refresh; see
+     * product_charger_evt / product_status_tick. */
+    RegisterChangerInsertCallback(product_charger_evt);
     /* One patient init (official-boot parity): TouchInit does reset ->
      * 300 ms settle -> probe -> configure, with a write-and-verify config.
      * The extra TouchOpen() that used to run here added a second reset with
@@ -517,6 +528,12 @@ static void carousel_step(void)
 
 /* ---------------- battery / boot-diag housekeeping ---------------- */
 
+/* PF15 charger EXTI callback (ISR context): latch only. */
+static void product_charger_evt(void)
+{
+    g_charger_evt = 1;
+}
+
 /* Runs at the top of every loop pass (scan/carousel included): battery +
  * charger refresh for the corner readout, and the boot touch-diag footer. */
 static void product_status_tick(void)
@@ -524,6 +541,8 @@ static void product_status_tick(void)
     static uint32_t last_batt;
     static uint32_t last_batt_pct;
     static uint32_t last_diag;
+    static uint8_t charger_shots;
+    static uint32_t charger_shot_at;
     static bool batt_first = true;
     static bool diag_first = true;
     static bool abn_obs_done = false;
@@ -552,6 +571,24 @@ static void product_status_tick(void)
                      GetChargeState() != CHARGE_STATE_NOT_CHARGING);
     }
     batt_first = false;
+
+    /* Charger event (EXTI-latched, both edges): two refresh shots - one
+     * after a 250 ms settle (the AW32001 STATR needs a moment after a VBUS
+     * edge; official waits 200 ms), one ~1 s later for slow chargers - so
+     * "c" appears/disappears in well under a second. The 5 s periodic above
+     * stays as the backstop. */
+    if (g_charger_evt != 0) {
+        g_charger_evt = 0;
+        charger_shots = 2;
+        charger_shot_at = now + 250;
+    }
+    if (charger_shots != 0 && (uint32_t)(now - charger_shot_at) < 0x80000000u) {
+        charger_shots--;
+        charger_shot_at = now + 1000;
+        Aw32001RefreshState();
+        UiSetBattery(GetBatterPercent(),
+                     GetChargeState() != CHARGE_STATE_NOT_CHARGING);
+    }
 
     /* Boot diag window: live FT6336 state on the footer L2 line, 1 Hz.
      * Skipped while the scan page is up (that strip belongs to the scan
