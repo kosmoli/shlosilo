@@ -54,6 +54,22 @@
 
 #define LIVE_LINE_BYTES 40
 
+/* Input poll hook (see shlosilo_ui.h): invoked from every synchronous wait
+ * so the product task keeps sampling touch while the UI is blocked. */
+static UiInputPollFn s_input_poll;
+
+void UiSetInputPoll(UiInputPollFn fn)
+{
+    s_input_poll = fn;
+}
+
+void UiInputPoll(void)
+{
+    if (s_input_poll != NULL) {
+        s_input_poll();
+    }
+}
+
 static uint8_t *g_fb;
 static uint8_t *g_band;
 static UiPage g_page = UI_PAGE_WELCOME;
@@ -165,10 +181,14 @@ static void ui_flush_range(int y0, int y1)
         uint8_t *p = g_band;
 
         /* The DMA reads g_band directly: never refill the buffer while a
-         * transfer is still in flight (band-tearing otherwise). */
+         * transfer is still in flight (band-tearing otherwise). Input stays
+         * live through the flush: poll in the wait loop (~1 ms cadence) and
+         * once per band. */
         while (LcdBusy()) {
+            UiInputPoll();
             osDelay(1);
         }
+        UiInputPoll();
 
         for (int y = ys; y < ys + UI_BAND_ROWS; y++) {
             const uint8_t *row = &g_fb[y * FB_STRIDE];
@@ -185,6 +205,7 @@ static void ui_flush_range(int y0, int y1)
         LcdDraw(0, ys, UI_FB_W - 1, ys + UI_BAND_ROWS - 1, (uint16_t *)g_band);
     }
     while (LcdBusy()) {
+        UiInputPoll();
         osDelay(1);
     }
 }
@@ -489,6 +510,10 @@ void UiShowQrFrame(const char *text, uint32_t index, uint32_t total)
                  (unsigned)index + 1, (unsigned)total);
         draw_text_center(UI_Q_CAP_Y, cap, 1);
     }
+
+    /* One poll between the encode/draw work and the flush: the flush itself
+     * polls too (UiInputPoll in ui_flush_range). */
+    UiInputPoll();
 
     fill_rect(UI_LINE_X0, UI_LINE_Y, UI_LINE_X1 - UI_LINE_X0 + 1, 1);
     rect_outline(UI_BTN_L_X0, UI_BTN_Y0, UI_BTN_L_X1, UI_BTN_Y1, UI_BTN_T);

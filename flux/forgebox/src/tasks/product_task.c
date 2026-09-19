@@ -88,8 +88,6 @@ static uint8_t *g_qr_pool = NULL;
 static char g_qr_result[QR_RESULT_MAX];
 static ScanState g_scan = SCAN_IDLE;
 static uint32_t g_scan_frames = 0;
-static int g_scan_touch_prev = 0;
-static uint8_t g_flip = 0;      /* sensor image flip probe (tap preview to cycle) */
 
 /* Carousel session state (F3 output side) */
 typedef enum {
@@ -103,7 +101,45 @@ static struct UrMultipartEncoder *g_ur_enc = NULL;
 static char g_ur_frame[CAROUSEL_FRAME_MAX];
 static uint32_t g_ur_shown = 0;
 static uint32_t g_ur_total = 0;
-static int g_ur_touch_prev = 0;
+
+/* Shared input state: ONE press-edge tracker for every sampler (dwell
+ * slices, band-flush waits, capture waits - the last two via the UiInputPoll
+ * hook). Flags are consumed by the page loops. Sampling a press only from
+ * the frame loop left ~200 ms blind windows per cycle (render + full flush),
+ * which read as "touch intermittently dead" on device. */
+static int g_touch_prev;
+static int g_scan_abort_req;
+static int g_ur_exit_req;
+static int g_back_press_x;
+static int g_back_press_y;
+
+/* Sample touch once; record a fresh press on `back` for whichever session is
+ * active. Safe to call at any point (task context only - the touch read is a
+ * ~0.2 ms I2C0 transaction, and nothing else on the bus runs concurrently). */
+static void product_touch_poll(void)
+{
+    TouchStatus_t st;
+    int down;
+
+    if (g_scan != SCAN_ACTIVE && g_carousel != CAROUSEL_ACTIVE) {
+        return;
+    }
+    if (TouchGetStatus(&st) != 0) {
+        return;
+    }
+    down = st.touch ? 1 : 0;
+    if (down && !g_touch_prev && UiIsBackButton((int)st.x, (int)st.y)) {
+        g_back_press_x = (int)st.x;
+        g_back_press_y = (int)st.y;
+        if (g_scan == SCAN_ACTIVE) {
+            g_scan_abort_req = 1;
+        }
+        if (g_carousel == CAROUSEL_ACTIVE) {
+            g_ur_exit_req = 1;
+        }
+    }
+    g_touch_prev = down;
+}
 
 void CreateProductTask(void)
 {
@@ -131,6 +167,7 @@ static void ProductTask(void *argument)
     power_button_init();
 
     UiInit();
+    UiSetInputPoll(product_touch_poll);
     UiShow();
     printf("ui: welcome page shown\r\n");
 
@@ -256,7 +293,9 @@ static void scan_enter(void)
 
     printf("scan: camera up\r\n");
     g_scan_frames = 0;
-    g_scan_touch_prev = 0;
+    /* The entry tap's contact may still be resting: treat as already seen. */
+    g_touch_prev = 1;
+    g_scan_abort_req = 0;
     g_scan = SCAN_ACTIVE;
     UiScanInfo("scanning...", "point camera at QR", "", "");
 }
@@ -286,36 +325,23 @@ static void scan_step(void)
         return;
     }
 
-    /* Touch poll between frames: back aborts the scan; tapping the preview
-     * cycles the sensor image flip (orientation probe). */
-    TouchStatus_t st;
-    if (TouchGetStatus(&st) == 0) {
-        int down = st.touch ? 1 : 0;
-        if (down && !g_scan_touch_prev) {
-            int tx = (int)st.x;
-            int ty = (int)st.y;
-
-            if (UiIsBackButton(tx, ty)) {
-                char msg[48];
-                scan_exit();
-                snprintf(msg, sizeof(msg), "abort -> welcome (%d,%d)", tx, ty);
-                UiSetLast(msg);
-                UiGotoPage(UI_PAGE_WELCOME);
-                return;
-            }
-            if (tx >= UI_S_PV_X0 && tx <= UI_S_PV_X0 + UI_S_PV_W &&
-                ty >= UI_S_PV_Y0 && ty <= UI_S_PV_Y0 + UI_S_PV_H) {
-                g_flip = (uint8_t)((g_flip + 1) & 3);
-                SetSensorImageFlip((SensorImageFlipType)g_flip);
-                printf("scan: sensor flip -> %u\r\n", (unsigned)g_flip);
-            }
-        }
-        g_scan_touch_prev = down;
+    /* Back aborts the scan. The press is sampled continuously - frame loop,
+     * band flushes and capture waits all feed product_touch_poll - so a tap
+     * lands even mid-frame. */
+    product_touch_poll();
+    if (g_scan_abort_req) {
+        char msg[48];
+        g_scan_abort_req = 0;
+        scan_exit();
+        snprintf(msg, sizeof(msg), "abort -> welcome (%d,%d)",
+                 g_back_press_x, g_back_press_y);
+        UiSetLast(msg);
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
     }
 
     if ((g_scan_frames % SCAN_INFO_EVERY_FRAMES) == 0) {
-        snprintf(l1, sizeof(l1), "frames=%u flip=%u",
-                 (unsigned)g_scan_frames, (unsigned)g_flip);
+        snprintf(l1, sizeof(l1), "frames=%u", (unsigned)g_scan_frames);
         snprintf(l2, sizeof(l2), "cam %u dec %u vR %u vW %u ms",
                  (unsigned)cam, (unsigned)dec, (unsigned)vR, (unsigned)vW);
         snprintf(l3, sizeof(l3), "focus %u res %d",
@@ -369,7 +395,8 @@ static void carousel_enter(void)
     g_ur_shown = 0;
     /* The entry tap may still be resting on `back`: treat the contact as
      * already seen so exiting needs a fresh press. */
-    g_ur_touch_prev = 1;
+    g_touch_prev = 1;
+    g_ur_exit_req = 0;
     g_carousel = CAROUSEL_ACTIVE;
     printf("carousel: begin %s, %u frames\r\n", DEMO_PAYLOAD_TYPE,
            (unsigned)g_ur_total);
@@ -385,17 +412,14 @@ static void carousel_exit(void)
     UiTouchReset();
 }
 
-/* One touch sample; returns 1 when a fresh press on `back` asks to exit. */
-static int carousel_back_pressed(void)
+/* A fresh back press (sampled anywhere - dwell slices, band flush waits,
+ * capture waits) asks to leave the carousel. */
+static int carousel_exit_requested(void)
 {
-    TouchStatus_t st;
-
-    if (TouchGetStatus(&st) == 0) {
-        int down = st.touch ? 1 : 0;
-        if (down && !g_ur_touch_prev && UiIsBackButton((int)st.x, (int)st.y)) {
-            return 1;
-        }
-        g_ur_touch_prev = down;
+    product_touch_poll();
+    if (g_ur_exit_req) {
+        g_ur_exit_req = 0;
+        return 1;
     }
     return 0;
 }
@@ -407,7 +431,7 @@ static void carousel_step(void)
 
     WDT_ReloadCounter();
 
-    if (carousel_back_pressed()) {
+    if (carousel_exit_requested()) {
         carousel_exit();
         UiSetLast("carousel -> welcome");
         UiGotoPage(UI_PAGE_WELCOME);
@@ -432,9 +456,10 @@ static void carousel_step(void)
     g_ur_shown++;
 
     /* Dwell in slices with a touch sample each: a single poll per cycle
-     * missed most taps ("touch intermittently dead" on device). */
+     * missed most taps ("touch intermittently dead" on device). The render
+     * and flush windows are covered by the UiInputPoll hook. */
     for (uint32_t t = 0; t < CAROUSEL_FRAME_MS; t += CAROUSEL_TOUCH_SLICE_MS) {
-        if (carousel_back_pressed()) {
+        if (carousel_exit_requested()) {
             carousel_exit();
             UiSetLast("carousel -> welcome");
             UiGotoPage(UI_PAGE_WELCOME);

@@ -44,4 +44,13 @@ void UiShowQrFrame(const char *text, uint32_t index, uint32_t total);
  * the caller keeps the WDT fed afterwards). No-op before UiInit. */
 void UiPanic(const char *msg);
 
+/* Input poll hook: the UI runs synchronous waits (band flushes here, capture
+ * waits in drv_qrdecode.c) during which a page loop cannot sample input -
+ * on device this read as "touch intermittently dead" on the carousel page.
+ * The product task installs its touch sampler here; wait loops call
+ * UiInputPoll() so a press is seen within ~1 ms even mid-flush. */
+typedef void (*UiInputPollFn)(void);
+void UiSetInputPoll(UiInputPollFn fn);
+void UiInputPoll(void);
+
 #endif

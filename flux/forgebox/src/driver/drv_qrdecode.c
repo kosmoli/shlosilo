@@ -219,6 +219,7 @@ int32_t QrDecodeProcess(char *result, uint32_t maxLen, uint8_t progress)
     tick = osKernelGetTickCount();
     DecodeDcmiStart();
     while (!DecodeDcmiFinish()) {           //Finish waiting by DCMI_CallBackFrame()
+        UiInputPoll();                      // keep sampling input while the capture runs
         osDelay(1);
     }
     g_camTick += osKernelGetTickCount() - tick;
@@ -261,6 +262,7 @@ int32_t QrDecodeProcess(char *result, uint32_t maxLen, uint8_t progress)
     g_viewRenderTick += osKernelGetTickCount() - tick;
     tick = osKernelGetTickCount();
     while (!DecodeDcmiFinish()) {
+        UiInputPoll();                      // second-finish wait: same input coverage
         osDelay(1);
     }
     g_viewWaitTick += osKernelGetTickCount() - tick;
