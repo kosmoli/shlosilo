@@ -20,26 +20,64 @@
 #define FT6336_REG_DEVICE_MODE 0x00
 #define FT6336_REG_CTRL        0x86
 
+/* Last TD_STATUS byte + event bits seen by Ft6336GetStatus (on-screen diag). */
+volatile uint8_t g_touch_last_status = 0;
+volatile uint8_t g_touch_last_event = 0;
+
 static void Ft6336Configure(void)
 {
     uint8_t buf[2];
     uint8_t reg = FT6336_REG_CTRL;
     uint8_t val = 0xFF;
-    int tries;
+    int attempt;
 
-    buf[0] = FT6336_REG_DEVICE_MODE;
-    buf[1] = 0x00;              /* WORKING mode */
-    I2cSendData(FT6336_I2C_ADDR, buf, 2);
+    /* Write-and-verify with retries: a single write inside the chip's
+     * post-reset init window can be lost (the chip may not be listening yet).
+     * Re-writing until CTRL reads back 0 closes that hole. */
+    for (attempt = 1; attempt <= 3; attempt++) {
+        buf[0] = FT6336_REG_DEVICE_MODE;
+        buf[1] = 0x00;              /* WORKING mode */
+        I2cSendData(FT6336_I2C_ADDR, buf, 2);
 
-    buf[0] = FT6336_REG_CTRL;
-    buf[1] = 0x00;              /* never auto-enter Monitor */
-    I2cSendData(FT6336_I2C_ADDR, buf, 2);
+        buf[0] = FT6336_REG_CTRL;
+        buf[1] = 0x00;              /* never auto-enter Monitor */
+        I2cSendData(FT6336_I2C_ADDR, buf, 2);
 
-    /* Best-effort verify: CTRL must read back 0. */
-    for (tries = 0; tries < 3 && val != 0x00; tries++) {
         I2cSendAndReceiveData(FT6336_I2C_ADDR, &reg, 1, &val, 1);
+        if (val == 0x00) {
+            break;
+        }
+        UserDelay(10);
     }
-    printf("touch: ctrl(0x86)=0x%02X\r\n", (unsigned)val);
+    printf("touch: ctrl(0x86)=0x%02X (attempt %d)\r\n", (unsigned)val, attempt);
+}
+
+/// @brief Read one FT6336 register, best effort (0xFF when there is no answer).
+int Ft6336PeekReg(uint8_t reg, uint8_t *out)
+{
+    if (out == NULL) {
+        return -1;
+    }
+    *out = 0xFF;
+    I2cSendAndReceiveData(FT6336_I2C_ADDR, &reg, 1, out, 1);
+    return 0;
+}
+
+/// @brief Boot check (~1 s after reset, chip fully settled): the Active-mode
+/// configuration must survive the chip's own init - re-apply and verify when
+/// CTRL does not read back 0x00 (a write that lost the race with the chip's
+/// init would otherwise leave the auto-Monitor default armed).
+void Ft6336BootVerify(void)
+{
+    uint8_t ctrl = 0xFF;
+
+    Ft6336PeekReg(FT6336_REG_CTRL, &ctrl);
+    if (ctrl == 0x00) {
+        printf("touch: boot check ctrl ok\r\n");
+        return;
+    }
+    printf("touch: boot check ctrl=0x%02X -> reconfigure\r\n", (unsigned)ctrl);
+    Ft6336Configure();
 }
 
 /// @brief FT6336 touch pad init.

@@ -44,6 +44,12 @@ void TouchInit(TouchPadIntCallbackFunc_t func)
     UserDelay(100);
     GPIO_SetBits(TOUCH_RST_PORT, TOUCH_RST_PIN);
 
+    /* Settle before touching the bus (2026-09-19): the datasheet asks for
+     * Trsi >= 300 ms between reset release and reporting, and the pico2 line
+     * proved that I2C traffic inside that window can leave the FT6x36 in a
+     * scarred state. One patient init: reset -> 300 ms -> probe -> configure. */
+    UserDelay(300);
+
     I2CIO_Init(&i2cioConfig, GPIOB, GPIO_Pin_0, GPIOB, GPIO_Pin_1);
     addr = I2CIO_SearchDevices(&i2cioConfig);
     g_touch_probe_addr = addr;
@@ -100,7 +106,11 @@ void TouchOpen(void)
     GPIO_ResetBits(TOUCH_RST_PORT, TOUCH_RST_PIN);
     UserDelay(20);
     GPIO_SetBits(TOUCH_RST_PORT, TOUCH_RST_PIN);
-    UserDelay(20);
+    /* Same settle rule as TouchInit: no I2C traffic for ~300 ms after a
+     * reset release (the old 20 ms sat inside the chip's init window; the
+     * pico2 line showed that poking the bus there scars the FT6x36). This
+     * path is the wake-from-low-power re-open; boot uses TouchInit only. */
+    UserDelay(300);
     if (g_halTouchOpt.Open) {
         g_halTouchOpt.Open();
         g_touchOpen = true;

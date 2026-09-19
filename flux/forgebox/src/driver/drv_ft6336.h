@@ -19,4 +19,16 @@ void Ft6336Open(void);
 /// @param status TouchStatus struct addr.
 int32_t Ft6336GetStatus(TouchStatus_t *status);
 
+/// @brief Read one FT6336 register, best effort (0xFF when there is no answer).
+int Ft6336PeekReg(uint8_t reg, uint8_t *out);
+
+/// @brief Boot-time config check: re-apply the Active-mode configuration when
+/// register 0x86 does not read back 0x00 (the chip's own post-reset init can
+/// lose an early write). Called ~1 s after reset.
+void Ft6336BootVerify(void);
+
+/* Last TD_STATUS byte / event bits seen by Ft6336GetStatus (on-screen diag). */
+extern volatile uint8_t g_touch_last_status;
+extern volatile uint8_t g_touch_last_event;
+
 #endif
