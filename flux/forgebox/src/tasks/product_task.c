@@ -24,6 +24,9 @@
 #include "drv_exti.h"
 #include "drv_i2c.h"
 #include "drv_qrdecode.h"
+#include "drv_ft6336.h"
+#include "drv_battery.h"
+#include "drv_aw32001.h"
 #include "user_memory.h"
 #include "hal_touch.h"
 #include "shlosilo_ui.h"
@@ -79,9 +82,12 @@ static void carousel_step(void);
 static void carousel_exit(void);
 static void power_button_init(void);
 static void power_button_check(void);
+static void product_status_tick(void);
 
 static uint32_t g_button_press_start = 0;
 static bool g_button_pressed = false;
+static uint32_t g_boot_diag_end = 0;        /* touch diag footer window end */
+static bool g_boot_diag_restored = false;
 
 /* Scan session state */
 static uint8_t *g_qr_pool = NULL;
@@ -159,8 +165,13 @@ static void ProductTask(void *argument)
     WDT_ReloadCounter();
 
     ExtInterruptInit();
+    /* One patient init (official-boot parity): TouchInit does reset ->
+     * 300 ms settle -> probe -> configure, with a write-and-verify config.
+     * The extra TouchOpen() that used to run here added a second reset with
+     * an immediate I2C config - inside the chip's post-reset init window -
+     * matching the "first tap after boot is swallowed" report. TouchOpen is
+     * the wake-path re-open (low_power.c upstream); boot needs one clean init. */
     TouchInit(NULL);
-    TouchOpen();
     printf("touch probe: addr=0x%02X ok=%d\r\n",
            g_touch_probe_addr, g_touch_probe_ok);
 
@@ -171,10 +182,23 @@ static void ProductTask(void *argument)
     UiShow();
     printf("ui: welcome page shown\r\n");
 
+    /* ~1 s after reset the chip is fully settled: last chance to catch a
+     * config that lost the race with the chip's own init (re-applies and
+     * verifies; see drv_ft6336.c). */
+    Ft6336BootVerify();
+
+    /* Boot diagnostics window (60 s): product_status_tick keeps the welcome
+     * footer L2 line updated with live FT6336 state (ctrl / pwr mode / last
+     * status / event) as the on-screen channel for the "first tap after
+     * boot" work. Temporary; the line reverts to the touch text afterwards. */
+    g_boot_diag_end = osKernelGetTickCount() + 60000;
+
     uint32_t last_wdt = osKernelGetTickCount();
     uint32_t last_btn = osKernelGetTickCount();
 
     while (1) {
+        product_status_tick();
+
         if (g_scan == SCAN_ACTIVE) {
             WDT_ReloadCounter();
             scan_step();
@@ -466,6 +490,60 @@ static void carousel_step(void)
             return;
         }
         osDelay(CAROUSEL_TOUCH_SLICE_MS);
+    }
+}
+
+/* ---------------- battery / boot-diag housekeeping ---------------- */
+
+/* Runs at the top of every loop pass (scan/carousel included): battery +
+ * charger refresh for the corner readout, and the boot touch-diag footer. */
+static void product_status_tick(void)
+{
+    static uint32_t last_batt;
+    static uint32_t last_diag;
+    static bool batt_first = true;
+    static bool diag_first = true;
+    uint32_t now = osKernelGetTickCount();
+
+    /* Battery: charger state + ADC percent every 5 s, pushed to the UI (it
+     * repaints only when the value changes). The handler owns its hysteresis,
+     * so the slow percent movement is unchanged; plug/unplug shows within one
+     * tick. "c" = the charger IC reports charging (pre/charge/done). */
+    if (batt_first || now - last_batt >= 5000) {
+        batt_first = false;
+        last_batt = now;
+        Aw32001RefreshState();
+        BatteryIntervalHandler();
+        UiSetBattery(GetBatterPercent(),
+                     GetChargeState() != CHARGE_STATE_NOT_CHARGING);
+    }
+
+    /* Boot diag window: live FT6336 state on the footer L2 line, 1 Hz.
+     * Skipped while the scan page is up (that strip belongs to the scan
+     * info there; UiRefreshFooterLine2 guards it as well). */
+    if (g_boot_diag_end != 0 && now < g_boot_diag_end) {
+        if ((diag_first || now - last_diag >= 1000) &&
+                UiGetPage() != UI_PAGE_SCAN) {
+            char line[48];
+            uint8_t ctrl = 0xFF;
+            uint8_t pm = 0xFF;
+
+            diag_first = false;
+            last_diag = now;
+            Ft6336PeekReg(0x86, &ctrl);
+            Ft6336PeekReg(0xA5, &pm);
+            snprintf(line, sizeof(line),
+                     "touch 0x%02X ok=%d c=%02X pm=%02X r=%02X e=%d",
+                     (unsigned)g_touch_probe_addr, (int)g_touch_probe_ok,
+                     (unsigned)ctrl, (unsigned)pm,
+                     (unsigned)g_touch_last_status, (int)g_touch_last_event);
+            UiSetFooterLine2(line);
+            UiRefreshFooterLine2();
+        }
+    } else if (g_boot_diag_end != 0 && !g_boot_diag_restored) {
+        g_boot_diag_restored = true;
+        UiSetFooterLine2(NULL);
+        UiRefreshFooterLine2();
     }
 }
 

@@ -408,6 +408,90 @@ static void draw_button_label(int x0, int x1, const char *s)
     draw_text(x, y, s, UI_BTN_LABEL_SCALE);
 }
 
+/* ---------------- status readouts: battery + footer L2 override ---------- */
+
+static uint8_t g_batt_percent;
+static bool g_batt_charging;
+static bool g_batt_valid;
+static char g_footer_l2[48];        /* "" = the default touch line */
+
+/* L2 line text: the boot-diag override when set, else the touch state. */
+static void footer_l2_text(char *line, uint32_t cap)
+{
+    if (g_footer_l2[0] != '\0') {
+        snprintf(line, cap, "%s", g_footer_l2);
+        return;
+    }
+    if (g_touch_probe_addr == 0xFF) {
+        snprintf(line, cap, "touch: not probed");
+    } else if (g_touch_probe_ok) {
+        snprintf(line, cap, "touch 0x%02X ok=1", g_touch_probe_addr);
+    } else {
+        snprintf(line, cap, "touch none 0x%02X", g_touch_probe_addr);
+    }
+}
+
+void UiSetFooterLine2(const char *text)
+{
+    if (text == NULL) {
+        g_footer_l2[0] = '\0';
+    } else {
+        snprintf(g_footer_l2, sizeof(g_footer_l2), "%s", text);
+    }
+}
+
+/* Repaint just the L2 line (used by the boot-diag 1 Hz refresh). */
+void UiRefreshFooterLine2(void)
+{
+    char line[64];
+
+    if (g_fb == NULL || g_band == NULL || g_page == UI_PAGE_SCAN) {
+        return;                     /* the scan page owns this strip */
+    }
+    clear_rect(UI_FOOTER_X, UI_FOOTER_L2_Y,
+               UI_FB_W - 2 * UI_FOOTER_X, UI_FONT_GLYPH_H);
+    footer_l2_text(line, sizeof(line));
+    draw_text(UI_FOOTER_X, UI_FOOTER_L2_Y, line, 1);
+    ui_flush_range(UI_FOOTER_L2_Y, UI_FOOTER_L2_Y + UI_FONT_GLYPH_H - 1);
+}
+
+/* Battery readout, top-right: "NN%" ("NN%c" while charging). Redrawn when
+ * the value changes; full repaints draw it too (draw_page/UiShowQrFrame). */
+static void ui_draw_battery(void)
+{
+    char txt[8];
+    int x;
+
+    if (!g_batt_valid) {
+        return;
+    }
+    snprintf(txt, sizeof(txt), "%u%%%s",
+             (unsigned)g_batt_percent, g_batt_charging ? "c" : "");
+    x = UI_BATT_RIGHT - (int)strlen(txt) * UI_FONT_GLYPH_W * UI_BATT_SCALE;
+    clear_rect(UI_BATT_CLEAR_X, UI_BATT_Y,
+               UI_BATT_RIGHT - UI_BATT_CLEAR_X + 1,
+               UI_FONT_GLYPH_H * UI_BATT_SCALE);
+    draw_text(x, UI_BATT_Y, txt, UI_BATT_SCALE);
+}
+
+void UiSetBattery(uint8_t percent, bool charging)
+{
+    if (percent > 100) {
+        percent = 100;
+    }
+    if (g_batt_valid && percent == g_batt_percent && charging == g_batt_charging) {
+        return;
+    }
+    g_batt_valid = true;
+    g_batt_percent = percent;
+    g_batt_charging = charging;
+    if (g_fb == NULL || g_band == NULL) {
+        return;
+    }
+    ui_draw_battery();
+    ui_flush_range(UI_BATT_Y, UI_BATT_Y + UI_FONT_GLYPH_H * UI_BATT_SCALE - 1);
+}
+
 static void draw_footer(void)
 {
     char line[64];
@@ -483,6 +567,7 @@ static void draw_page(void)
     if (g_page != UI_PAGE_SCAN) {
         draw_footer();
     }
+    ui_draw_battery();
 }
 
 void UiShowQrFrame(const char *text, uint32_t index, uint32_t total)
@@ -527,6 +612,7 @@ void UiShowQrFrame(const char *text, uint32_t index, uint32_t total)
     draw_button_label(UI_BTN_L_X0, UI_BTN_L_X1, UI_BTN_LABEL_LEFT);
     draw_button_label(UI_BTN_R_X0, UI_BTN_R_X1, UI_BTN_LABEL_RIGHT);
     draw_footer();
+    ui_draw_battery();
 
     ui_flush_range(0, UI_FB_H - 1);
 }

@@ -40,6 +40,13 @@ uint32_t UiScanGetFocus(void);
  * the QR page. index is zero-based; total is the cycle's frame count. */
 void UiShowQrFrame(const char *text, uint32_t index, uint32_t total);
 
+/* Status readouts driven by the product task: the battery corner ("NN%" /
+ * "NN%c") and the boot-diag footer override (NULL restores the default line).
+ * The refresh repaints just that line; no-op while the scan page is up. */
+void UiSetBattery(uint8_t percent, bool charging);
+void UiSetFooterLine2(const char *text);
+void UiRefreshFooterLine2(void);
+
 /* Panic screen: show an L3 panic message (called from shlosilo_panic_hook;
  * the caller keeps the WDT fed afterwards). No-op before UiInit. */
 void UiPanic(const char *msg);

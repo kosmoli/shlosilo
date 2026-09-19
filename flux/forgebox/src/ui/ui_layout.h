@@ -36,6 +36,14 @@
 #define UI_FOOTER_L2_Y       608
 #define UI_FOOTER_L3_Y       628
 
+/* Battery readout (top-right; text right-aligned at UI_BATT_RIGHT):
+ * "NN%" normally, "NN%c" while charging. The repaint box covers the widest
+ * string ("100%c") so shrink-repaints leave no residue. */
+#define UI_BATT_Y            6
+#define UI_BATT_RIGHT        468
+#define UI_BATT_SCALE        2
+#define UI_BATT_CLEAR_X      376
+
 /* Separator line above the button band */
 #define UI_LINE_Y            676
 #define UI_LINE_X0           16

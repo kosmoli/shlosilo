@@ -178,6 +178,11 @@ def draw_common(c: Canvas, L: dict, with_footer: bool = True) -> None:
     # Separator above the button band.
     c.fill_rect(L["UI_LINE_X0"], L["UI_LINE_Y"], L["UI_LINE_X1"], L["UI_LINE_Y"])
 
+    # Battery readout (firmware draws it top-right on every page).
+    batt = "82%c"  # sample value (charging)
+    c.text(L["UI_BATT_RIGHT"] - Canvas.text_w(batt, L["UI_BATT_SCALE"]),
+           L["UI_BATT_Y"], batt, L["UI_BATT_SCALE"])
+
     if not with_footer:
         return  # the scan page uses this strip for its status/info lines
 
@@ -356,7 +361,8 @@ def main() -> None:
 
     req = ["UI_FB_W", "UI_FB_H", "UI_BTN_Y0", "UI_TXT_TITLE", "UI_TXT_SCAN",
            "UI_S_STATUS_Y", "UI_S_INFO1_Y", "UI_P_TEXT_X",
-           "UI_P_TEXT_Y0", "UI_P_CHARS_PER_LINE"]
+           "UI_P_TEXT_Y0", "UI_P_CHARS_PER_LINE",
+           "UI_BATT_Y", "UI_BATT_RIGHT", "UI_BATT_SCALE"]
     missing = [k for k in req if k not in L]
     if missing:
         raise SystemExit(f"layout header missing constants: {missing}")
