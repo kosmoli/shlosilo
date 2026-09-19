@@ -87,6 +87,7 @@ static void product_status_tick(void);
 static uint32_t g_button_press_start = 0;
 static bool g_button_pressed = false;
 static uint32_t g_boot_diag_end = 0;        /* touch diag footer window end */
+static uint32_t g_boot_mark = 0;            /* tick the diag window opened */
 static bool g_boot_diag_restored = false;
 
 /* Scan session state */
@@ -177,6 +178,26 @@ static void ProductTask(void *argument)
 
     power_button_init();
 
+    /* Boot drain: sample the chip for ~0.4 s before the UI starts. Device
+     * evidence (2026-09-19): the first tap after boot arrived with invalid
+     * coordinates (touch reported, 4095/4095). The drain records whether junk
+     * samples are present already at boot (ABN/TORN counters on the diag
+     * line) and gets the reporting state flushed before anything can touch. */
+    {
+        TouchStatus_t probe;
+        uint8_t abn0 = g_touch_abn_count;
+        uint8_t torn0 = g_touch_torn_count;
+
+        for (int i = 0; i < 8; i++) {
+            TouchGetStatus(&probe);
+            osDelay(50);
+        }
+        printf("touch: boot drain abn+%u torn+%u (total %u/%u)\n",
+               (unsigned)(g_touch_abn_count - abn0),
+               (unsigned)(g_touch_torn_count - torn0),
+               (unsigned)g_touch_abn_count, (unsigned)g_touch_torn_count);
+    }
+
     UiInit();
     UiSetInputPoll(product_touch_poll);
     UiShow();
@@ -188,10 +209,11 @@ static void ProductTask(void *argument)
     Ft6336BootVerify();
 
     /* Boot diagnostics window (60 s): product_status_tick keeps the welcome
-     * footer L2 line updated with live FT6336 state (ctrl / pwr mode / last
-     * status / event) as the on-screen channel for the "first tap after
-     * boot" work. Temporary; the line reverts to the touch text afterwards. */
-    g_boot_diag_end = osKernelGetTickCount() + 60000;
+     * footer L2 line updated with the live FT6336 registers plus the touch
+     * forensics counters (see product_status_tick). Temporary; afterwards the
+     * line reverts to the plain touch text. */
+    g_boot_mark = osKernelGetTickCount();
+    g_boot_diag_end = g_boot_mark + 60000;
 
     uint32_t last_wdt = osKernelGetTickCount();
     uint32_t last_btn = osKernelGetTickCount();
@@ -503,6 +525,8 @@ static void product_status_tick(void)
     static uint32_t last_diag;
     static bool batt_first = true;
     static bool diag_first = true;
+    static bool abn_obs_done = false;
+    static uint32_t abn_obs_secs = 0;
     uint32_t now = osKernelGetTickCount();
 
     /* Battery: charger state + ADC percent every 5 s, pushed to the UI (it
@@ -524,7 +548,8 @@ static void product_status_tick(void)
     if (g_boot_diag_end != 0 && now < g_boot_diag_end) {
         if ((diag_first || now - last_diag >= 1000) &&
                 UiGetPage() != UI_PAGE_SCAN) {
-            char line[48];
+            char line[64];
+            char extra[32] = "";
             uint8_t ctrl = 0xFF;
             uint8_t pm = 0xFF;
 
@@ -532,11 +557,22 @@ static void product_status_tick(void)
             last_diag = now;
             Ft6336PeekReg(0x86, &ctrl);
             Ft6336PeekReg(0xA5, &pm);
+            if (g_touch_abn_seen != 0) {
+                if (!abn_obs_done) {
+                    abn_obs_done = true;
+                    abn_obs_secs = (now - g_boot_mark) / 1000;
+                }
+                snprintf(extra, sizeof(extra), " tr=%u@%us %02X %02X %02X %02X %02X",
+                         (unsigned)g_touch_torn_count, (unsigned)abn_obs_secs,
+                         (unsigned)g_touch_abn_pkt[0], (unsigned)g_touch_abn_pkt[1],
+                         (unsigned)g_touch_abn_pkt[2], (unsigned)g_touch_abn_pkt[3],
+                         (unsigned)g_touch_abn_pkt[4]);
+            }
             snprintf(line, sizeof(line),
-                     "touch 0x%02X ok=%d c=%02X pm=%02X r=%02X e=%d",
-                     (unsigned)g_touch_probe_addr, (int)g_touch_probe_ok,
-                     (unsigned)ctrl, (unsigned)pm,
-                     (unsigned)g_touch_last_status, (int)g_touch_last_event);
+                     "0x%02X c=%02X pm=%02X r=%02X e=%u abn=%u%s",
+                     (unsigned)g_touch_probe_addr, (unsigned)ctrl, (unsigned)pm,
+                     (unsigned)g_touch_last_status, (unsigned)g_touch_last_event,
+                     (unsigned)g_touch_abn_count, extra);
             UiSetFooterLine2(line);
             UiRefreshFooterLine2();
         }

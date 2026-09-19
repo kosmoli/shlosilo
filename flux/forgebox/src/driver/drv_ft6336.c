@@ -19,10 +19,25 @@
  * Disable the auto-switch: keep the chip in WORKING + Active. */
 #define FT6336_REG_DEVICE_MODE 0x00
 #define FT6336_REG_CTRL        0x86
+#define FT6336_REG_TD_STATUS   0x02
 
-/* Last TD_STATUS byte + event bits seen by Ft6336GetStatus (on-screen diag). */
+/* Live + forensic touch state for the on-screen diag (product_task reads
+ * these via drv_ft6336.h; printf has no console on this device):
+ *  - last_status/last_event: raw TD_STATUS byte and P1_XH event bits [7:6]
+ *    of the most recent read.
+ *  - abn_count: samples where the chip reported a point whose coordinates
+ *    were invalid (all-ones 4095). Device evidence (2026-09-19): the first
+ *    tap after boot produced a "touch" with (4095,4095) - such a sample must
+ *    never reach the edge tracker, or it swallows the first real tap.
+ *  - torn_count: abnormal on the first read, valid on the immediate re-read
+ *    (a read racing the chip's register update; the re-read saves it).
+ *  - abn_pkt/abn_seen: raw 5-byte packet of the first abnormal sample. */
 volatile uint8_t g_touch_last_status = 0;
 volatile uint8_t g_touch_last_event = 0;
+volatile uint8_t g_touch_abn_count = 0;
+volatile uint8_t g_touch_torn_count = 0;
+volatile uint8_t g_touch_abn_pkt[5];
+volatile uint8_t g_touch_abn_seen = 0;
 
 static void Ft6336Configure(void)
 {
@@ -95,25 +110,93 @@ void Ft6336Open(void)
     Ft6336Configure();
 }
 
+/* One 5-byte register burst (TD_STATUS..P1_YL). Pre-filled with 0xFF so a
+ * failed transfer reads as junk rather than as "no touch". */
+static void Ft6336ReadPacket(uint8_t *b)
+{
+    uint8_t reg = FT6336_REG_TD_STATUS;
+
+    b[0] = 0xFF; b[1] = 0xFF; b[2] = 0xFF; b[3] = 0xFF; b[4] = 0xFF;
+    I2cSendAndReceiveData(FT6336_I2C_ADDR, &reg, 1, b, 5);
+}
+
+/* 0 = no touch, 1 = valid touch, 2 = point reported with invalid coords.
+ * datasheet: TD_STATUS[3:0] counts points (only 1-2 are valid); coordinates
+ * live in Pn_XH[3:0]:Pn_XL (12 bit). All-ones coordinates (4095) with a
+ * nonzero count is the "reported but not valid" state seen on device. */
+static int Ft6336Classify(const uint8_t *b)
+{
+    uint8_t count = (uint8_t)(b[0] & 0x0F);
+
+    if (count < 1 || count > 2) {
+        return 0;
+    }
+    if ((((uint16_t)(b[1] & 0x0F) << 8) | b[2]) >= TOUCH_PAD_RES_X) {
+        return 2;
+    }
+    if ((((uint16_t)(b[3] & 0x0F) << 8) | b[4]) >= TOUCH_PAD_RES_Y) {
+        return 2;
+    }
+    return 1;
+}
+
 /// @brief Get touch status, including touch state, X/Y coordinate.
 /// @param status TouchStatus struct addr.
 int32_t Ft6336GetStatus(TouchStatus_t *status)
 {
-    uint8_t sendByte, readBuff[5] = {0};
+    uint8_t pkt[5], rb[5];
+    int cls;
 
-    sendByte = 0x02;
-    I2cSendAndReceiveData(FT6336_I2C_ADDR, &sendByte, 1, readBuff, 5);
+    Ft6336ReadPacket(pkt);
+    g_touch_last_status = pkt[0];
+    g_touch_last_event = (uint8_t)(pkt[1] >> 6);
+    cls = Ft6336Classify(pkt);
 
-    //PrintArray("read touch", readBuff, 5);
-    status->touch = readBuff[0] > 0 ? true : false;
-    status->x = ((readBuff[1] & 0x0F) << 8) + readBuff[2];
+    if (cls == 2) {
+        /* The chip reported a point with junk coordinates. Re-read once: a
+         * read that raced the chip's register update settles on the second
+         * try and the sample is saved (torn_count). If it is STILL junk the
+         * sample is dropped and counted - a bogus press must never move the
+         * edge tracker (that is how the first tap after boot got eaten). */
+        Ft6336ReadPacket(rb);
+        g_touch_last_status = rb[0];
+        g_touch_last_event = (uint8_t)(rb[1] >> 6);
+        if (Ft6336Classify(rb) == 1) {
+            g_touch_torn_count++;
+            for (int i = 0; i < 5; i++) {
+                pkt[i] = rb[i];
+            }
+            cls = 1;
+        } else {
+            g_touch_abn_count++;
+            if (!g_touch_abn_seen) {
+                g_touch_abn_seen = 1;
+                for (int i = 0; i < 5; i++) {
+                    g_touch_abn_pkt[i] = pkt[i];
+                }
+            }
+            cls = 0;
+        }
+    }
+
+    if (cls == 1) {
+        uint16_t x = (uint16_t)(((pkt[1] & 0x0F) << 8) | pkt[2]);
+        uint16_t y = (uint16_t)(((pkt[3] & 0x0F) << 8) | pkt[4]);
+
+        status->touch = true;
 #if (FT6336_REVERSE_X)
-    status->x = TOUCH_PAD_RES_X - status->x - 1;
+        x = TOUCH_PAD_RES_X - x - 1;
 #endif
-    status->y = ((readBuff[3] & 0x0F) << 8) + readBuff[4];
 #if (FT6336_REVERSE_Y)
-    status->y = TOUCH_PAD_RES_Y - status->y - 1;
+        y = TOUCH_PAD_RES_Y - y - 1;
 #endif
+        status->x = x;
+        status->y = y;
+    } else {
+        status->touch = false;
+        status->x = 0;
+        status->y = 0;
+    }
 
     return SUCCESS_CODE;
 }
