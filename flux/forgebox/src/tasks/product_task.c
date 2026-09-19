@@ -59,6 +59,11 @@ void shlosilo_sram_pool_reset(void);
  * two constants and round-trips the real payload at this exact size. */
 #define CAROUSEL_FRAME_MAX        1024
 
+/* Touch sampling slice: the carousel dwell is split into slices with a touch
+ * poll each. A single poll per ~600 ms cycle missed most taps on device
+ * (reported as "touch intermittently dead, no pattern"). */
+#define CAROUSEL_TOUCH_SLICE_MS   20
+
 typedef enum {
     SCAN_IDLE = 0,      /* not on the scan page (or exited) */
     SCAN_ACTIVE,        /* camera initialized, scanning frames */
@@ -362,7 +367,9 @@ static void carousel_enter(void)
     }
     g_ur_total = (DEMO_PAYLOAD_LEN + 199) / 200;
     g_ur_shown = 0;
-    g_ur_touch_prev = 0;
+    /* The entry tap may still be resting on `back`: treat the contact as
+     * already seen so exiting needs a fresh press. */
+    g_ur_touch_prev = 1;
     g_carousel = CAROUSEL_ACTIVE;
     printf("carousel: begin %s, %u frames\r\n", DEMO_PAYLOAD_TYPE,
            (unsigned)g_ur_total);
@@ -378,13 +385,34 @@ static void carousel_exit(void)
     UiTouchReset();
 }
 
+/* One touch sample; returns 1 when a fresh press on `back` asks to exit. */
+static int carousel_back_pressed(void)
+{
+    TouchStatus_t st;
+
+    if (TouchGetStatus(&st) == 0) {
+        int down = st.touch ? 1 : 0;
+        if (down && !g_ur_touch_prev && UiIsBackButton((int)st.x, (int)st.y)) {
+            return 1;
+        }
+        g_ur_touch_prev = down;
+    }
+    return 0;
+}
+
 static void carousel_step(void)
 {
     unsigned int flen = 0;
     int rc;
-    TouchStatus_t st;
 
     WDT_ReloadCounter();
+
+    if (carousel_back_pressed()) {
+        carousel_exit();
+        UiSetLast("carousel -> welcome");
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
+    }
 
     rc = shlosilo_ur_encode_next_cyclic(g_ur_enc, (uint8_t *)g_ur_frame,
                                         sizeof(g_ur_frame), &flen);
@@ -397,22 +425,23 @@ static void carousel_step(void)
     }
     g_ur_frame[flen] = '\0';
 
-    UiShowQrFrame(g_ur_frame, g_ur_shown, g_ur_total);
+    /* The frame stream is cyclic (a wallet joining mid-cycle catches every
+     * part on the next wrap): show the position WITHIN the cycle, wrapping
+     * 1..N with it, instead of a counter that grows forever. */
+    UiShowQrFrame(g_ur_frame, g_ur_shown % g_ur_total, g_ur_total);
     g_ur_shown++;
 
-    /* Touch between frames: back exits the carousel. */
-    if (TouchGetStatus(&st) == 0) {
-        int down = st.touch ? 1 : 0;
-        if (down && !g_ur_touch_prev && UiIsBackButton((int)st.x, (int)st.y)) {
+    /* Dwell in slices with a touch sample each: a single poll per cycle
+     * missed most taps ("touch intermittently dead" on device). */
+    for (uint32_t t = 0; t < CAROUSEL_FRAME_MS; t += CAROUSEL_TOUCH_SLICE_MS) {
+        if (carousel_back_pressed()) {
             carousel_exit();
             UiSetLast("carousel -> welcome");
             UiGotoPage(UI_PAGE_WELCOME);
             return;
         }
-        g_ur_touch_prev = down;
+        osDelay(CAROUSEL_TOUCH_SLICE_MS);
     }
-
-    osDelay(CAROUSEL_FRAME_MS);
 }
 
 /* ---------------- power button ---------------- */
