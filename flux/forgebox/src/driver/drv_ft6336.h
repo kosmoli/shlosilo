@@ -27,12 +27,4 @@ int Ft6336PeekReg(uint8_t reg, uint8_t *out);
 /// lose an early write). Called ~1 s after reset.
 void Ft6336BootVerify(void);
 
-/* Live + forensic state read by the on-screen diag (see drv_ft6336.c). */
-extern volatile uint8_t g_touch_last_status;
-extern volatile uint8_t g_touch_last_event;
-extern volatile uint8_t g_touch_abn_count;      /* invalid-coordinate samples */
-extern volatile uint8_t g_touch_torn_count;     /* saved by the re-read */
-extern volatile uint8_t g_touch_abn_pkt[5];     /* first abnormal raw packet */
-extern volatile uint8_t g_touch_abn_seen;
-
 #endif

@@ -21,24 +21,6 @@
 #define FT6336_REG_CTRL        0x86
 #define FT6336_REG_TD_STATUS   0x02
 
-/* Live + forensic touch state for the on-screen diag (product_task reads
- * these via drv_ft6336.h; printf has no console on this device):
- *  - last_status/last_event: raw TD_STATUS byte and P1_XH event bits [7:6]
- *    of the most recent read.
- *  - abn_count: samples where the chip reported a point whose coordinates
- *    were invalid (all-ones 4095). Device evidence (2026-09-19): the first
- *    tap after boot produced a "touch" with (4095,4095) - such a sample must
- *    never reach the edge tracker, or it swallows the first real tap.
- *  - torn_count: abnormal on the first read, valid on the immediate re-read
- *    (a read racing the chip's register update; the re-read saves it).
- *  - abn_pkt/abn_seen: raw 5-byte packet of the first abnormal sample. */
-volatile uint8_t g_touch_last_status = 0;
-volatile uint8_t g_touch_last_event = 0;
-volatile uint8_t g_touch_abn_count = 0;
-volatile uint8_t g_touch_torn_count = 0;
-volatile uint8_t g_touch_abn_pkt[5];
-volatile uint8_t g_touch_abn_seen = 0;
-
 static void Ft6336Configure(void)
 {
     uint8_t buf[2];
@@ -148,33 +130,21 @@ int32_t Ft6336GetStatus(TouchStatus_t *status)
     int cls;
 
     Ft6336ReadPacket(pkt);
-    g_touch_last_status = pkt[0];
-    g_touch_last_event = (uint8_t)(pkt[1] >> 6);
     cls = Ft6336Classify(pkt);
 
     if (cls == 2) {
         /* The chip reported a point with junk coordinates. Re-read once: a
          * read that raced the chip's register update settles on the second
-         * try and the sample is saved (torn_count). If it is STILL junk the
-         * sample is dropped and counted - a bogus press must never move the
-         * edge tracker (that is how the first tap after boot got eaten). */
+         * try and the sample is saved. If it is STILL junk the sample is
+         * dropped - a bogus press must never move the edge tracker (that is
+         * how the first tap after boot got eaten). */
         Ft6336ReadPacket(rb);
-        g_touch_last_status = rb[0];
-        g_touch_last_event = (uint8_t)(rb[1] >> 6);
         if (Ft6336Classify(rb) == 1) {
-            g_touch_torn_count++;
             for (int i = 0; i < 5; i++) {
                 pkt[i] = rb[i];
             }
             cls = 1;
         } else {
-            g_touch_abn_count++;
-            if (!g_touch_abn_seen) {
-                g_touch_abn_seen = 1;
-                for (int i = 0; i < 5; i++) {
-                    g_touch_abn_pkt[i] = pkt[i];
-                }
-            }
             cls = 0;
         }
     }
