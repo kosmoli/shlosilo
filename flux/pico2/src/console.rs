@@ -353,7 +353,7 @@ impl ConsoleState {
         log::info!("[help]   temp            read the on-die temperature sensor");
         #[cfg(feature = "bench")]
         log::info!(
-            "[help]   cam id | rx [ms] | pins [n] | edges [ms] | pwdn <z|0|1> | reinit | sm | selftest [ms] | piosample [n]"
+            "[help]   cam sensor [ov|mt] | id | rx [ms] | pins [n] | edges [ms] | pwdn <z|0|1> | reinit | sm | selftest [ms] | piosample [n]"
         );
         #[cfg(feature = "bench")]
         log::info!(
@@ -367,10 +367,12 @@ impl ConsoleState {
         log::info!("[help]        | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]");
         #[cfg(feature = "bench")]
         log::info!(
-            "[help]        | reg <hexreg> [hexval]   OV5640 bring-up: SCCB, FIFO and pad probes"
+            "[help]        | reg <hexreg> [hexval]   bring-up: SCCB, FIFO and pad probes; reg framing follows the sensor"
         );
         #[cfg(feature = "bench")]
-        log::info!("[help]                   OV5640 bring-up: SCCB id, frame stats, hex PGM dump");
+        log::info!(
+            "[help]                   bring-up: SCCB id, frame stats, hex PGM dump (sensor ov|mt)"
+        );
         log::info!("[help]   xmrout <off> <n> fetch a hex segment of the last signed XMR blob");
         #[cfg(feature = "perf-timing")]
         log::info!("[help]   xtiming         dump the XMR phase-timing table (probe builds)");
@@ -1020,10 +1022,45 @@ impl ConsoleState {
                 match crate::camera::with_camera(|c| {
                     let id = c.read_id();
                     c.sensor_id = id;
-                    id
+                    (id, c.sensor)
                 }) {
-                    Some(id) => log::info!("[cam] sensor id {id:#06x} (OV5640 = 0x5640)"),
+                    Some((id, crate::camera::Sensor::Ov5640)) => {
+                        log::info!("[cam] sensor id {id:#06x} (OV5640 = 0x5640)")
+                    }
+                    Some((id, crate::camera::Sensor::Mt9v034)) => log::info!(
+                        "[cam] MT9V034 chip version {id:#06x} (expected {:#06x})",
+                        crate::camera::MT_CHIP_VERSION
+                    ),
                     None => log::info!("[err] cam: not initialised"),
+                }
+                None
+            }
+            b"sensor" => {
+                use crate::camera::Sensor;
+                match split_first_word(rest).0 {
+                    b"" => match crate::camera::sensor() {
+                        Some(s) => {
+                            log::info!("[cam] sensor = {} (`cam reinit` configures it)", s.label())
+                        }
+                        None => log::info!("[err] cam: not initialised"),
+                    },
+                    b"ov" | b"ov5640" => {
+                        if crate::camera::set_sensor(Sensor::Ov5640) {
+                            log::info!("[cam] note: OV5640 - `cam reinit` runs the vendor table");
+                        } else {
+                            log::info!("[err] cam: not initialised");
+                        }
+                    }
+                    b"mt" | b"mt9v034" => {
+                        if crate::camera::set_sensor(Sensor::Mt9v034) {
+                            log::info!(
+                                "[cam] note: MT9V034 - `cam reinit` configures it; `cam reg` now takes a 1-byte index + 16-bit value"
+                            );
+                        } else {
+                            log::info!("[err] cam: not initialised");
+                        }
+                    }
+                    _ => log::info!("[err] cam sensor <ov|mt>"),
                 }
                 None
             }
@@ -1077,6 +1114,15 @@ impl ConsoleState {
                 Some(job)
             }
             b"zoom" => {
+                if matches!(
+                    crate::camera::sensor(),
+                    Some(crate::camera::Sensor::Mt9v034)
+                ) {
+                    log::info!(
+                        "[err] cam zoom: OV5640 crop-window zoom only (no mt9v034 equivalent yet)"
+                    );
+                    return None;
+                }
                 let z = dec(split_first_word(rest).0).unwrap_or(1).clamp(1, 4);
                 if crate::camera::set_zoom(z) {
                     log::info!("[cam] zoom set to x{z} (window crop; AEC re-settles ~2 s)");
@@ -1234,25 +1280,50 @@ impl ConsoleState {
             }
             b"reg" => {
                 let (a, rest2) = split_first_word(rest);
-                match (parse_hex_u16(a), rest2.is_empty()) {
-                    (Some(r), true) => match crate::camera::with_camera(|c| c.rd(r)) {
-                        Some(v) => log::info!("[cam] reg {r:#06x} = {v:#04x}"),
-                        None => log::info!("[err] cam: not initialised"),
-                    },
-                    (Some(r), false) => match parse_hex_u8(split_first_word(rest2).0) {
-                        Some(v) => match crate::camera::with_camera(|c| c.wr(r, v)) {
-                            Some(()) => log::info!("[cam] reg {r:#06x} <- {v:#04x}"),
-                            None => log::info!("[err] cam: not initialised"),
-                        },
-                        None => log::info!("[err] cam reg: bad value"),
-                    },
-                    _ => log::info!("[err] cam reg <hexreg> [hexval]"),
+                // Framing follows the selected sensor: the OV5640 takes a
+                // 16-bit register index + 8-bit data; the MT9V034 a 1-byte
+                // index + 16-bit data (MSB first). The log lines name the
+                // framing (`reg` vs `reg16`) so transcripts stay readable.
+                match crate::camera::sensor() {
+                    Some(crate::camera::Sensor::Ov5640) => {
+                        match (parse_hex_u16(a), rest2.is_empty()) {
+                            (Some(r), true) => match crate::camera::with_camera(|c| c.rd(r)) {
+                                Some(v) => log::info!("[cam] reg {r:#06x} = {v:#04x}"),
+                                None => log::info!("[err] cam: not initialised"),
+                            },
+                            (Some(r), false) => match parse_hex_u8(split_first_word(rest2).0) {
+                                Some(v) => match crate::camera::with_camera(|c| c.wr(r, v)) {
+                                    Some(()) => log::info!("[cam] reg {r:#06x} <- {v:#04x}"),
+                                    None => log::info!("[err] cam: not initialised"),
+                                },
+                                None => log::info!("[err] cam reg: bad value"),
+                            },
+                            _ => log::info!("[err] cam reg <hexreg> [hexval]"),
+                        }
+                    }
+                    Some(crate::camera::Sensor::Mt9v034) => {
+                        match (parse_hex_u8(a), rest2.is_empty()) {
+                            (Some(r), true) => match crate::camera::with_camera(|c| c.rd16(r)) {
+                                Some(v) => log::info!("[cam] reg16 {r:#04x} = {v:#06x}"),
+                                None => log::info!("[err] cam: not initialised"),
+                            },
+                            (Some(r), false) => match parse_hex_u16(split_first_word(rest2).0) {
+                                Some(v) => match crate::camera::with_camera(|c| c.wr16(r, v)) {
+                                    Some(()) => log::info!("[cam] reg16 {r:#04x} <- {v:#06x}"),
+                                    None => log::info!("[err] cam: not initialised"),
+                                },
+                                None => log::info!("[err] cam reg: bad value (16-bit hex)"),
+                            },
+                            _ => log::info!("[err] cam reg <hexreg8> [hexval16] (mt9v034)"),
+                        }
+                    }
+                    None => log::info!("[err] cam: not initialised"),
                 }
                 None
             }
             _ => {
                 log::info!(
-                    "[err] cam: id | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]"
+                    "[err] cam: sensor [ov|mt] | id | grab [n] | dump [stride] [byte] | reg <hexreg> [hexval]"
                 );
                 None
             }
@@ -2306,7 +2377,8 @@ fn cam_byte_stats(buf: &[u16], high: bool) -> (u8, u8, u32) {
 async fn run_cam_grab(n: u32) {
     use crate::camera::CaptureResult;
     let n = n.clamp(1, 64);
-    let mut buf = alloc::vec![0u16; crate::camera::FRAME_WORDS];
+    let words = crate::camera::frame_words().unwrap_or(crate::camera::FRAME_WORDS);
+    let mut buf = alloc::vec![0u16; words];
     for i in 0..n {
         let t0 = Instant::now();
         let res = match crate::camera::capture_frame(&mut buf).await {
@@ -2325,12 +2397,11 @@ async fn run_cam_grab(n: u32) {
                     t0.elapsed().as_millis()
                 );
             }
-            CaptureResult::Timeout { words } => {
+            CaptureResult::Timeout { words: got } => {
                 log::info!(
-                    "[cam] frame {i}: TIMEOUT after {} ms; {words}/{} words transferred \
+                    "[cam] frame {i}: TIMEOUT after {} ms; {got}/{words} words transferred \
                      (0 = PIO produced nothing - check the readback line and wiring)",
                     t0.elapsed().as_millis(),
-                    crate::camera::FRAME_WORDS
                 );
                 return;
             }
@@ -2357,16 +2428,60 @@ async fn run_cam_rx(ms: u32) {
 
 /// `cam dump [stride] [byte]`: capture a frame and stream one byte plane as
 /// paced hex lines, one PGM row per line - the host script reassembles the
-/// image. `stride` decimates x and y (default 2 -> 120x160; 1 -> 240x320);
-/// `byte` picks the DVP word byte (0 = the first sample of each pair).
+/// image. `stride` decimates x and y (default 2); `byte` picks the OV5640
+/// DVP word byte (0 = first of the pair; the MT9V034 plane is already
+/// 1 byte per pixel, so `byte` is ignored there).
 #[cfg(feature = "bench")]
 async fn run_cam_dump(stride: u32, byte: u32) {
-    use crate::camera::{FRAME_H, FRAME_W, FRAME_WORDS};
     let stride = match stride {
         1 => 1,
         4 => 4,
         _ => 2,
     };
+    if matches!(
+        crate::camera::sensor(),
+        Some(crate::camera::Sensor::Mt9v034)
+    ) {
+        use crate::camera::{MT_FRAME_H, MT_FRAME_W, MT_FRAME_WORDS};
+        let mut buf = alloc::vec![0u16; MT_FRAME_WORDS];
+        let mut plane = alloc::vec![0u8; MT_FRAME_W * MT_FRAME_H];
+        // Two captures, same reason as the OV path below: the first
+        // transfer can start mid-group; the second is continuous.
+        for round in 0..2 {
+            match crate::camera::capture_frame(&mut buf).await {
+                None => {
+                    log::info!("[err] cam: not initialised");
+                    return;
+                }
+                Some(crate::camera::CaptureResult::Ok) => {}
+                Some(crate::camera::CaptureResult::Timeout { words }) => {
+                    log::info!(
+                        "[cam] dump: capture {round} timed out ({words}/{MT_FRAME_WORDS} words) - aborting"
+                    );
+                    return;
+                }
+            }
+        }
+        crate::camera::mt9v034_plane(&buf, &mut plane);
+        let cols = MT_FRAME_W / stride;
+        log::info!(
+            "[cam] PGM {cols} {} stride {stride} byte {byte}",
+            MT_FRAME_H / stride
+        );
+        let mut row = alloc::vec![0u8; cols];
+        let mut hex = alloc::vec![0u8; cols * 2];
+        for y in (0..MT_FRAME_H).step_by(stride) {
+            for (n, x) in (0..MT_FRAME_W).step_by(stride).enumerate() {
+                row[n] = plane[y * MT_FRAME_W + x];
+            }
+            let s = sign_smoke::to_hex(&row, &mut hex);
+            log::info!("[cam] {y} {s}");
+            Timer::after_millis(2).await;
+        }
+        log::info!("[cam] end");
+        return;
+    }
+    use crate::camera::{FRAME_H, FRAME_W, FRAME_WORDS};
     let high = byte == 0;
     let mut buf = alloc::vec![0u16; FRAME_WORDS];
     // Two captures: between jobs the state machine stalls on a full FIFO,
@@ -2456,6 +2571,15 @@ fn cam_paint(luma: &[u8], mode_binarize: bool) {
 #[cfg(feature = "bench")]
 async fn run_cam_preview(secs: u32) {
     use crate::camera::{CaptureResult, FRAME_H, FRAME_W, FRAME_WORDS};
+    if matches!(
+        crate::camera::sensor(),
+        Some(crate::camera::Sensor::Mt9v034)
+    ) {
+        log::info!(
+            "[err] cam preview: not wired for mt9v034 yet (stage 2) - use `cam dump` / `cam grab`"
+        );
+        return;
+    }
     let secs = secs.clamp(1, 600);
     let mut buf = alloc::vec![0u16; FRAME_WORDS];
     let mut luma = alloc::vec![0u8; FRAME_W * FRAME_H];
@@ -2508,6 +2632,15 @@ async fn run_cam_preview(secs: u32) {
 #[cfg(feature = "bench")]
 async fn run_cam_scan(n: u32) {
     use crate::camera::{CaptureResult, FRAME_H, FRAME_W, FRAME_WORDS};
+    if matches!(
+        crate::camera::sensor(),
+        Some(crate::camera::Sensor::Mt9v034)
+    ) {
+        log::info!(
+            "[err] cam scan: not wired for mt9v034 yet (stage 2) - use `cam dump` / `cam grab`"
+        );
+        return;
+    }
     let n = n.clamp(1, 32);
     let mut buf = alloc::vec![0u16; FRAME_WORDS];
     let mut luma = alloc::vec![0u8; FRAME_W * FRAME_H];
@@ -2575,6 +2708,15 @@ fn scan_frame_logged(i: u32, luma: &[u8], qdec: &mut crate::qr::QuircDecoder) ->
 #[cfg(feature = "bench")]
 async fn run_cam_scanzoom(n: u32) {
     use crate::camera::{CaptureResult, FRAME_H, FRAME_W, FRAME_WORDS};
+    if matches!(
+        crate::camera::sensor(),
+        Some(crate::camera::Sensor::Mt9v034)
+    ) {
+        log::info!(
+            "[err] cam scanzoom: not wired for mt9v034 yet (stage 2) - use `cam dump` / `cam grab`"
+        );
+        return;
+    }
     let n = n.clamp(2, 12);
     let mut buf = alloc::vec![0u16; FRAME_WORDS];
     let mut luma = alloc::vec![0u8; FRAME_W * FRAME_H];

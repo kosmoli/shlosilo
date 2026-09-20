@@ -4,8 +4,10 @@ streamed hex rows into a PGM, then print quick statistics.
 
 Usage: cam_dump.py [stride] [byte] [out.pgm]
 
-  stride  1|2|4  pixel decimation (default 2 -> 120x160, fast over console)
-  byte    0|1    which byte of each DVP word (default 0 = first sample)
+  stride  1|2|4  pixel decimation (default 2 -> 120x160, fast over console;
+                 mt9v034: 1 -> the full 640x480)
+  byte    0|1    which byte of each DVP word (default 0 = first sample;
+                 ignored on mt9v034 - its plane is already 1 B/pixel)
   out     output path (default /tmp/cam.pgm)
 
 The firmware prints:

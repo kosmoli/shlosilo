@@ -156,14 +156,20 @@ audit #17) - production builds compile them out:
   sample=200)
 - `temp` *(bench)* — on-die temperature readout (RP2350 TS); also appended
   to the `trngraw`/`trngcheck` capture lines
-- `cam id` | `cam reg <reg> [val]` | `cam reinit` | `cam pwdn <z|0|1>` |
-  `cam xclk <khz>` | `cam incount [n]` | `cam zoom <1-4>` *(bench)* —
-  OV5640 bring-up: read the sensor id over SCCB, read/write any sensor
-  register, re-run the full SCCB configuration sequence, drive the PWDN
-  pin, set the XCLK rate (the capture loop caps PCLK, so the working
-  point is 6-8 MHz — the vendor's 37.5 MHz shears every frame), set the
-  state machine's IN window, and digital-zoom by cropping the sensor
-  window (the fixed-focus lens cannot be adjusted mechanically)
+- `cam sensor [ov|mt]` | `cam id` | `cam reg <reg> [val]` | `cam reinit` |
+  `cam pwdn <z|0|1>` | `cam xclk <khz>` | `cam incount [n]` |
+  `cam zoom <1-4>` *(bench)* — camera bring-up: select the sensor
+  (OV5640 or the mono global-shutter MT9V034; the SCCB address and the
+  `cam reg` framing follow it — OV5640: 16-bit index + 8-bit data
+  (`reg`); MT9V034: 1-byte index + 16-bit data, logged as `reg16`),
+  read the sensor id, read/write any sensor register, re-run the
+  configuration sequence (`cam reinit`: the OV5640 vendor table, or the
+  MT9V034 chip-version read + two-write window), drive the PWDN pin,
+  set the XCLK rate (OV5640 only — the MT9V034 is self-clocked at
+  24 MHz; the OV5640 capture loop caps PCLK, so its working point is
+  6-8 MHz, the vendor's 37.5 MHz shears every frame), set the state
+  machine's IN window, and digital-zoom by cropping the OV5640 window
+  (the fixed-focus lens cannot be adjusted mechanically)
 - `cam preview [secs]` *(bench)* — live camera view on the LCD: the
   240x320 luma plane rendered as pseudo-greyscale with an 8x8 Bayer
   dither, full screen, ~1.2 fps; it also logs a per-second focus score
@@ -179,6 +185,14 @@ audit #17) - production builds compile them out:
 - `cam grab [n]` | `cam dump [stride] [byte]` *(bench)* — capture frames
   and report per-frame byte statistics, or stream one byte plane as
   paced hex rows for host-side reassembly into a PGM (`bench/cam_dump.py`)
+- MT9V034 mode *(bench, 2026-09-20)* — the mono 1 B/pixel sensor shares
+  the DVP + SCCB harness; `cam grab`/`cam dump` follow the selection
+  (640x480 full frame, `cam dump 1` = full resolution; the test pattern
+  is reachable via `cam reg 0x7f`). First-pass sequence automated:
+  `bench/cam_mt_bringup.py` (select, chip-version check 0x1324, init,
+  vertical-shade test pattern, dump + row-shear measurement).
+  Preview/scan/zoom stay OV5640-only until the full-speed-vs-binning
+  frame-rate question is answered on hardware (it decides the geometry)
 - `cam rx [ms]` | `cam pins [n]` | `cam edges [ms]` | `cam sm` |
   `cam selftest [ms]` | `cam piosample [n]` | `cam in8 [n]` |
   `cam pads [n]` *(bench)* — the capture-path diagnostics ladder: drain
@@ -482,7 +496,9 @@ P3 (camera + QR decode) is closed on hardware (2026-09-17): the OV5640
 capture chain (PIO + DMA, XCLK <= 8 MHz, PWDN driven low at power-up, the
 SM's IN window covering every pin the program reads) delivers frames, and
 the firmware decoded a monitor-displayed QR on-device. Camera commands are
-bench-gated (`cam ...`, see the command list).
+bench-gated (`cam ...`, see the command list). The MT9V034 (mono global
+shutter, the dynamic-QR scanning candidate) shares the same harness
+behind `cam sensor mt` — bring-up in progress (2026-09-20).
 
 Next steps: P4 — the full interaction flow (scan -> UR parse -> detail ->
 O/X -> sign with TRNG -> result QR, phone wallet to pico2 with no PC in

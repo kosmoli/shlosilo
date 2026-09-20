@@ -37,6 +37,18 @@
 //! transfer got; `rx_probe` drains the PIO RX FIFO without DMA (the ground
 //! truth for "is anything being produced"); `init` reads back the key
 //! configuration registers so a silently-dropped SCCB write is visible.
+//!
+//! Sensor modes (2026-09-20): a runtime switch (`cam sensor ov|mt`) keeps
+//! both bring-up paths on one firmware. `ov5640` is everything described
+//! above. `mt9v034` (mono, global shutter) differs in exactly three
+//! places: SCCB address 0x48 with 1-byte register indices and 16-bit
+//! data, a two-write init (R0x03/R0x04 window; everything else on
+//! power-on defaults - the alientek FPGA reference's entire
+//! configuration), and a different group length: the shared capture
+//! program reads two bytes per sample, which for the 1 B/pixel MT9V034
+//! is two consecutive pixels. No XCLK wiring - the module carries its
+//! own 24 MHz oscillator; PIXCLK runs continuously (even during
+//! blanking) and DOUT is valid on its rising edges.
 
 extern crate alloc;
 
@@ -102,6 +114,26 @@ const SCCB_ADDR: u16 = 0x3C;
 /// faster capture loop first (e.g. 32-bit `in` of two pixels at once), not
 /// a different clock.
 const XCLK_TARGET_KHZ: u32 = 6_000;
+
+/// SCCB (I2C) slave address of the MT9V034 (7-bit; ADR jumper default,
+/// 8-bit 0x90). The OV5640's is 0x3C.
+const MT_SCCB_ADDR: u16 = 0x48;
+
+/// Expected MT9V034 chip-version readback (R0x00, read-only; RR register
+/// map iteration 1: 0x1324).
+pub const MT_CHIP_VERSION: u16 = 0x1324;
+
+/// MT9V034 geometry: the alientek FPGA reference's 640x480 window (their
+/// ROW_NUM/COL_NUM - its entire register configuration is R0x03=480 and
+/// R0x04=640, everything else runs on power-on defaults). Mono, 1 byte
+/// per pixel; the shared capture program reads two bytes per sample,
+/// which here is two consecutive pixels, so the frame is 640*480/2
+/// samples and a group is one sample short of it (the same re-arm trick
+/// as FRAME_WORDS: expiry lands in the last line and the next group
+/// starts on the following frame's first HREF).
+pub const MT_FRAME_W: usize = 640;
+pub const MT_FRAME_H: usize = 480;
+pub const MT_FRAME_WORDS: usize = MT_FRAME_W * MT_FRAME_H / 2 - 1;
 
 /// Vendor OV5640 init table (`sensor_default_regs` from the Waveshare
 /// RP2350 demo, transcribed 1:1). `0xFFFF` marks a millisecond delay: the
@@ -249,6 +281,26 @@ const INIT_TABLE: &[(u16, u16)] = &[
     (0x0000, 0x00),
 ];
 
+/// Which sensor the shared DVP + SCCB harness is talking to. Selected
+/// at runtime (`cam sensor ov|mt`): one firmware carries both bring-up
+/// paths, A/B stays reflash-free, and the OV5640 (the P3 reference that
+/// decoded the first QR) remains available as the fallback.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Sensor {
+    Ov5640,
+    Mt9v034,
+}
+
+impl Sensor {
+    /// Console-visible name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Sensor::Ov5640 => "ov5640",
+            Sensor::Mt9v034 => "mt9v034",
+        }
+    }
+}
+
 /// Peripherals the camera owns (grouped so `main` stays readable).
 pub struct Pins {
     pub d0: Peri<'static, PIN_0>,
@@ -295,8 +347,12 @@ pub struct Camera {
     /// watching `cam rx`: a decisive experiment for the "sensor silent but
     /// SCCB alive" symptom.
     pwdn: Flex<'static>,
-    /// Sensor id read over SCCB (0x5640 for the OV5640).
+    /// Sensor id read over SCCB (0x5640 for the OV5640, 0x1324 for the
+    /// MT9V034).
     pub sensor_id: u16,
+    /// Selected sensor (see `Sensor`); `init` boots on the OV5640 and
+    /// `cam sensor` switches at runtime.
+    pub sensor: Sensor,
     /// Completed capture transfers.
     pub frames: u32,
 }
@@ -316,11 +372,11 @@ pub fn with_camera<R>(f: impl FnOnce(&mut Camera) -> R) -> Option<R> {
     r
 }
 
-/// Capture one frame into `buf` (must be at least FRAME_WORDS long). The
+/// Capture one frame into `buf` (at least `frame_words()` words for the
+/// selected sensor; the size assert lives on `Camera::capture`). The
 /// camera is taken out of its slot across the await; console jobs are
 /// serialized, so there is exactly one consumer.
 pub async fn capture_frame(buf: &mut [u16]) -> Option<CaptureResult> {
-    assert!(buf.len() >= FRAME_WORDS, "frame buffer too small");
     let mut slot = CAMERA.lock(|c| c.borrow_mut().take());
     let r = match slot.as_mut() {
         Some(cam) => Some(cam.capture(buf).await),
@@ -360,6 +416,21 @@ pub fn set_in_count(n: u8) -> Option<(u8, u8)> {
 /// Current SM0 IN window.
 pub fn in_window() -> Option<(u8, u8)> {
     with_camera(|c| c.in_window())
+}
+
+/// Sensor selection (see `Camera::set_sensor`).
+pub fn set_sensor(sensor: Sensor) -> bool {
+    with_camera(|c| c.set_sensor(sensor)).is_some()
+}
+
+/// The selected sensor (None when the camera is not installed).
+pub fn sensor() -> Option<Sensor> {
+    with_camera(|c| c.sensor)
+}
+
+/// Capture-group length of the selected sensor.
+pub fn frame_words() -> Option<usize> {
+    with_camera(|c| c.frame_words())
 }
 
 /// Runtime XCLK reconfiguration.
@@ -432,6 +503,10 @@ impl Camera {
     /// how far the transfer got before the abort, which separates "no data
     /// at all" (0 words) from "some data, then stall".
     pub async fn capture(&mut self, buf: &mut [u16]) -> CaptureResult {
+        assert!(
+            buf.len() >= self.frame_words(),
+            "frame buffer too small for the selected sensor"
+        );
         let base = buf.as_ptr() as usize;
         let rx = self.sm.rx();
         let transfer = rx.dma_pull(&mut self.dma, buf, false);
@@ -477,25 +552,65 @@ impl Camera {
         (words, nonzero)
     }
 
-    /// SCCB register write.
-    pub fn wr(&mut self, reg: u16, val: u8) {
-        let msg = [(reg >> 8) as u8, reg as u8, val];
-        let _ = self.i2c.blocking_write(SCCB_ADDR, &msg);
+    /// SCCB address of the selected sensor.
+    fn sccb_addr(&self) -> u16 {
+        match self.sensor {
+            Sensor::Ov5640 => SCCB_ADDR,
+            Sensor::Mt9v034 => MT_SCCB_ADDR,
+        }
     }
 
-    /// SCCB register read.
+    /// u16 samples per capture group for the selected sensor.
+    pub fn frame_words(&self) -> usize {
+        match self.sensor {
+            Sensor::Ov5640 => FRAME_WORDS,
+            Sensor::Mt9v034 => MT_FRAME_WORDS,
+        }
+    }
+
+    /// OV5640-framed SCCB register write (16-bit register index, 8-bit
+    /// data). The console dispatches on the selected sensor, so this is
+    /// only ever called while the OV5640 is selected.
+    pub fn wr(&mut self, reg: u16, val: u8) {
+        let msg = [(reg >> 8) as u8, reg as u8, val];
+        let _ = self.i2c.blocking_write(self.sccb_addr(), &msg);
+    }
+
+    /// OV5640-framed SCCB register read.
     pub fn rd(&mut self, reg: u16) -> u8 {
         let mut v = [0u8; 1];
         let msg = [(reg >> 8) as u8, reg as u8];
-        let _ = self.i2c.blocking_write_read(SCCB_ADDR, &msg, &mut v);
+        let _ = self.i2c.blocking_write_read(self.sccb_addr(), &msg, &mut v);
         v[0]
     }
 
-    /// Read the 16-bit sensor id (regs 0x300A/0x300B).
+    /// MT9V034-framed register write (1-byte register index, 16-bit data,
+    /// MSB first).
+    pub fn wr16(&mut self, reg: u8, val: u16) {
+        let msg = [reg, (val >> 8) as u8, val as u8];
+        let _ = self.i2c.blocking_write(self.sccb_addr(), &msg);
+    }
+
+    /// MT9V034-framed register read.
+    pub fn rd16(&mut self, reg: u8) -> u16 {
+        let mut v = [0u8; 2];
+        let _ = self
+            .i2c
+            .blocking_write_read(self.sccb_addr(), &[reg], &mut v);
+        ((v[0] as u16) << 8) | v[1] as u16
+    }
+
+    /// Read the sensor id: OV5640 = regs 0x300A/0x300B (0x5640); MT9V034
+    /// = R0x00 chip version (expected 0x1324).
     pub fn read_id(&mut self) -> u16 {
-        let hi = self.rd(0x300A) as u16;
-        let lo = self.rd(0x300B) as u16;
-        (hi << 8) | lo
+        match self.sensor {
+            Sensor::Ov5640 => {
+                let hi = self.rd(0x300A) as u16;
+                let lo = self.rd(0x300B) as u16;
+                (hi << 8) | lo
+            }
+            Sensor::Mt9v034 => self.rd16(0x00),
+        }
     }
 
     /// PIO plumbing self-test (see the `sm1` field): run SM1's sampling
@@ -658,21 +773,45 @@ impl Camera {
         );
     }
 
-    /// Set SM0's IN window count and re-arm the capture group
-    /// (`cam incount <n>`): the live A/B for the IN_COUNT root cause. 0
-    /// means 32 (the vendor's reset value). Restarts SM0 at the program
-    /// top and re-pushes its X/Y constants.
-    pub fn set_in_count(&mut self, n: u8) {
+    /// Restart SM0 and reload its X/Y constants so the capture group is
+    /// exactly `samples` long. The restart re-runs the program's two
+    /// `out` instructions, so a sensor switch retargets the group length
+    /// without touching the loaded program.
+    fn rearm_group(&mut self, samples: usize) {
         use embassy_rp::pac::PIO0;
         self.sm.set_enable(false);
         self.sm.clear_fifos();
-        PIO0.sm(0).shiftctrl().modify(|w| w.set_in_count(n));
         // Restart from the program top: clears the PC to wrap_bottom and
         // resets the shift counters, so the X/Y `out` instructions re-run.
         PIO0.ctrl().modify(|w| w.set_sm_restart(1));
         self.sm.set_enable(true);
         self.sm.tx().push(0); // X: reserved
-        self.sm.tx().push((FRAME_WORDS - 1) as u32); // Y: samples per group
+        self.sm.tx().push((samples - 1) as u32); // Y: samples per group
+    }
+
+    /// Set SM0's IN window count and re-arm the capture group
+    /// (`cam incount <n>`): the live A/B for the IN_COUNT root cause. 0
+    /// means 32 (the vendor's reset value).
+    pub fn set_in_count(&mut self, n: u8) {
+        use embassy_rp::pac::PIO0;
+        self.sm.set_enable(false);
+        PIO0.sm(0).shiftctrl().modify(|w| w.set_in_count(n));
+        self.rearm_group(self.frame_words());
+    }
+
+    /// Select the sensor under test (`cam sensor ov|mt`): switches the
+    /// SCCB address + framing expectations and re-arms the capture group
+    /// for the sensor's frame size. SCCB itself is untouched here - run
+    /// `cam reinit` (or `cam reg`) afterwards.
+    pub fn set_sensor(&mut self, sensor: Sensor) {
+        self.sensor = sensor;
+        self.rearm_group(self.frame_words());
+        log::info!(
+            "[cam] sensor = {} (SCCB {:#04x}); capture re-armed, {} samples/group",
+            sensor.label(),
+            self.sccb_addr(),
+            self.frame_words()
+        );
     }
 
     /// Current SM0 IN window (IN_BASE/IN_COUNT as configured).
@@ -702,10 +841,27 @@ impl Camera {
         self._xclk.set_config(&cfg);
     }
 
-    /// Re-run the SCCB configuration sequence (see `sccb_configure` for
-    /// why this exists at runtime).
+    /// Re-run the SCCB configuration sequence (see `sccb_configure` /
+    /// `mt9v034_configure` for why this exists at runtime). Dispatches on
+    /// the selected sensor.
     pub async fn reinit(&mut self) -> u16 {
-        let (id, _rb) = sccb_configure(&mut self.i2c).await;
+        let id = match self.sensor {
+            Sensor::Ov5640 => sccb_configure(&mut self.i2c).await.0,
+            Sensor::Mt9v034 => {
+                let (id, rb) = mt9v034_configure(&mut self.i2c).await;
+                log::info!(
+                    "[cam] MT9V034 readback: version {:#06x} (expected {:#06x}) | window h {:#06x} w {:#06x} | read mode {:#06x} | chip ctrl {:#06x} | aec/agc {:#06x}",
+                    rb[0],
+                    MT_CHIP_VERSION,
+                    rb[1],
+                    rb[2],
+                    rb[3],
+                    rb[4],
+                    rb[5]
+                );
+                id
+            }
+        };
         self.sensor_id = id;
         id
     }
@@ -841,6 +997,30 @@ pub fn luma_from_words(buf: &[u16], out: &mut [u8]) {
     let m = buf.len().min(n);
     for (o, w) in out[..m].iter_mut().zip(&buf[..m]) {
         *o = (w >> 8) as u8;
+    }
+    let last = if m > 0 { out[m - 1] } else { 0 };
+    for o in out[m..n].iter_mut() {
+        *o = last;
+    }
+}
+
+/// Expand an MT9V034 capture into the 1-byte-per-pixel luma plane: one
+/// DVP word holds two consecutive pixels, the first in the high byte
+/// (same byte order as the OV5640 words - the first `in` lands in the
+/// high half after the left-shifting second one). The buffer is one
+/// (2-pixel) sample short of the frame; the last pixel repeats its
+/// predecessor.
+pub fn mt9v034_plane(buf: &[u16], out: &mut [u8]) {
+    let n = MT_FRAME_W * MT_FRAME_H;
+    let m = (buf.len() * 2).min(n);
+    for (i, &w) in buf.iter().enumerate() {
+        let a = 2 * i;
+        if a < m {
+            out[a] = (w >> 8) as u8;
+        }
+        if a + 1 < m {
+            out[a + 1] = w as u8;
+        }
     }
     let last = if m > 0 { out[m - 1] } else { 0 };
     for o in out[m..n].iter_mut() {
@@ -1045,6 +1225,37 @@ async fn sccb_configure(i2c: &mut I2c<'static, I2C0, I2cBlocking>) -> (u16, [u8;
     (sensor_id, probe)
 }
 
+/// MT9V034 configuration: the chip-version read (the SCCB aliveness
+/// proof) plus the alientek FPGA reference's entire register setup -
+/// R0x03 window height (their ROW_NUM of 480), R0x04 window width (their
+/// COL_NUM of 640). Everything else runs on power-on defaults; their
+/// example writes nothing else and streams valid frames. Returns (chip
+/// version, readback of 0x00/0x03/0x04/0x0D/0x07/0xAF).
+async fn mt9v034_configure(i2c: &mut I2c<'static, I2C0, I2cBlocking>) -> (u16, [u16; 6]) {
+    let rd = |i2c: &mut I2c<'static, I2C0, I2cBlocking>, reg: u8| -> u16 {
+        let mut v = [0u8; 2];
+        let _ = i2c.blocking_write_read(MT_SCCB_ADDR, &[reg], &mut v);
+        ((v[0] as u16) << 8) | v[1] as u16
+    };
+    let wr = |i2c: &mut I2c<'static, I2C0, I2cBlocking>, reg: u8, val: u16| {
+        let msg = [reg, (val >> 8) as u8, val as u8];
+        let _ = i2c.blocking_write(MT_SCCB_ADDR, &msg);
+    };
+    let id = rd(i2c, 0x00);
+    wr(i2c, 0x03, MT_FRAME_H as u16); // window height (480; the default)
+    wr(i2c, 0x04, MT_FRAME_W as u16); // window width (640; default 752)
+    Timer::after_millis(10).await;
+    let rb = [
+        rd(i2c, 0x00),
+        rd(i2c, 0x03),
+        rd(i2c, 0x04),
+        rd(i2c, 0x0D),
+        rd(i2c, 0x07),
+        rd(i2c, 0xAF),
+    ];
+    (id, rb)
+}
+
 /// Full bring-up: PWDN, XCLK, SCCB init (vendor tables + QVGA/YUV422
 /// configuration), then the PIO capture program and its DMA channel.
 /// Async because the vendor table carries millisecond delays.
@@ -1209,6 +1420,7 @@ pub async fn init(p: Pins) -> Camera {
         _xclk: xclk,
         pwdn,
         sensor_id,
+        sensor: Sensor::Ov5640,
         frames: 0,
     };
 

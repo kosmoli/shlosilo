@@ -38,7 +38,8 @@ ELF=target/thumbv8m.main-none-eabihf/release/shlosilo-pico2
 CANARIES=(xmrseed trngdump trngrst trngprobe trngemb "fixed entropy set" "session key set" \
           trngraw trngrawout trngcheck trngtrace "[traw]" "[tchk]" "[ttr]" "[temp]" \
           "[cam] XCLK" "[cam] sensor id" "[cam] focus: " "[cam] scanzoom: zoom x" \
-          "[cam] preview: " "[cam] PGM " "[cam] IN-PINS")
+          "[cam] preview: " "[cam] PGM " "[cam] IN-PINS" \
+          "[cam] sensor = " "[cam] MT9V034")
 
 if ! command -v strings >/dev/null 2>&1; then
   echo "ERROR: strings (binutils) not found" >&2
