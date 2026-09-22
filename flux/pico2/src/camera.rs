@@ -1307,6 +1307,23 @@ pub async fn init(p: Pins) -> Camera {
 
     // ---- PIO capture program (vendor `picampinos`, 1:1) ----
     let mut pio = Pio::new(p.pio, CamIrqs);
+
+    // Disable the PIO input synchronizer for all 11 camera pins (GP0..GP10).
+    // `wait pin` sees synchronized pin state by default, which adds a 2-cycle
+    // (13.3 ns at 150 MHz) detection latency. The MT9V034 drives HREF high on
+    // the same SYSCLK edge as the first valid pixel, and the first PCLK rising
+    // edge follows just ~7 ns later - less than the synchronizer latency. So
+    // `wait 1 pin 9` (HREF) detects the edge late and `wait 1 pin 10` (PCLK)
+    // misses the first pixel's clock edge entirely, shifting every line start
+    // by a random number of pixels (observed 2026-09-21 on the MT9V034 at
+    // 12 MB/s: adjacent-row correlation -0.28, row-match MAD 91, drift
+    // hitting search boundaries). With bypass, `wait pin` reads the raw pad
+    // with zero latency. Safe for these signals: HREF/VSYNC/PCLK are slow
+    // relative to clk_sys and each `in pins, 8` is gated by an explicit PCLK
+    // edge wait, so there is no asynchronous sampling window.
+    embassy_rp::pac::PIO0
+        .input_sync_bypass()
+        .write(|w| *w = 0x07FF); // GP0..GP10
     let prg = pio::pio_asm!(
         ".wrap_target",
         "out x, 32",
