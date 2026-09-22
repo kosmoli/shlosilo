@@ -123,15 +123,12 @@ const MT_SCCB_ADDR: u16 = 0x48;
 /// map iteration 1: 0x1324).
 pub const MT_CHIP_VERSION: u16 = 0x1324;
 
-/// MT9V034 geometry: the alientek FPGA reference's 640x480 window (their
-/// ROW_NUM/COL_NUM - its entire register configuration is R0x03=480 and
-/// R0x04=640, everything else runs on power-on defaults). Mono, 1 byte
-/// per pixel; the shared capture program reads two bytes per sample,
-/// which here is two consecutive pixels, so the frame is 640*480/2
-/// samples and a group is one sample short of it (the same re-arm trick
-/// as FRAME_WORDS: expiry lands in the last line and the next group
-/// starts on the following frame's first HREF).
-pub const MT_FRAME_W: usize = 640;
+/// MT9V034 geometry with column binning x2: sensor window 640x480,
+/// output 320x480 (12 MB/s - the PIO safe zone; full 24 MB/s shears).
+/// Mono, 1 byte per pixel; the shared capture program reads two bytes per
+/// sample = two consecutive pixels, so the frame is 320*480/2 samples and
+/// a group is one sample short of it (same re-arm trick as FRAME_WORDS).
+pub const MT_FRAME_W: usize = 320; // column binning x2 (12 MB/s safe zone)
 pub const MT_FRAME_H: usize = 480;
 pub const MT_FRAME_WORDS: usize = MT_FRAME_W * MT_FRAME_H / 2 - 1;
 
@@ -1243,7 +1240,11 @@ async fn mt9v034_configure(i2c: &mut I2c<'static, I2C0, I2cBlocking>) -> (u16, [
     };
     let id = rd(i2c, 0x00);
     wr(i2c, 0x03, MT_FRAME_H as u16); // window height (480; the default)
-    wr(i2c, 0x04, MT_FRAME_W as u16); // window width (640; default 752)
+    wr(i2c, 0x04, 640); // window width (640; default 752)
+    // Column binning x2: halves output width to 320 and PIXCLK data rate to
+    // 12 MB/s (the PIO safe zone). Full 24 MB/s shears -3 px/row on hardware
+    // (2026-09-21 measurement). R0x0D bit2 = COL_BIN_2.
+    wr(i2c, 0x0D, 0x0304); // read mode: default (0x0300) | COL_BIN_2
     Timer::after_millis(10).await;
     let rb = [
         rd(i2c, 0x00),
