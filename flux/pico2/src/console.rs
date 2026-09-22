@@ -2538,21 +2538,21 @@ const BAYER8: [u8; 64] = [
 /// binarization (what the decoder actually sees).
 #[cfg(feature = "bench")]
 fn cam_paint(luma: &[u8], mode_binarize: bool) {
-    use crate::camera::{FRAME_H, FRAME_W};
+    let (fw, fh) = crate::camera::frame_dims();
     use crate::ui::{self, FB_H, FB_W};
     let bits = if mode_binarize {
-        Some(crate::qr::binarize_adaptive(FRAME_W, FRAME_H, luma))
+        Some(crate::qr::binarize_adaptive(fw, fh, luma))
     } else {
         None
     };
     ui::clear(false);
     for y in 0..FB_H {
-        let sy = y * 2 / 3; // 480 -> 320
+        let sy = y * fh / FB_H; // scale to sensor height
         for x in 0..FB_W {
-            let sx = x * 3 / 4; // 320 -> 240
-            let l = luma[sy * FRAME_W + sx];
+            let sx = x * fw / FB_W; // scale to sensor width
+            let l = luma[sy * fw + sx];
             let ink = match &bits {
-                Some(b) => b[sy * FRAME_W + sx],
+                Some(b) => b[sy * fw + sx],
                 None => l as u32 > BAYER8[(y & 7) * 8 + (x & 7)] as u32 * 4,
             };
             ui::px(x as i32, y as i32, ink);
@@ -2570,19 +2570,12 @@ fn cam_paint(luma: &[u8], mode_binarize: bool) {
 /// 30-second dump-per-attempt.
 #[cfg(feature = "bench")]
 async fn run_cam_preview(secs: u32) {
-    use crate::camera::{CaptureResult, FRAME_H, FRAME_W, FRAME_WORDS};
-    if matches!(
-        crate::camera::sensor(),
-        Some(crate::camera::Sensor::Mt9v034)
-    ) {
-        log::info!(
-            "[err] cam preview: not wired for mt9v034 yet (stage 2) - use `cam dump` / `cam grab`"
-        );
-        return;
-    }
+    use crate::camera::CaptureResult;
     let secs = secs.clamp(1, 600);
-    let mut buf = alloc::vec![0u16; FRAME_WORDS];
-    let mut luma = alloc::vec![0u8; FRAME_W * FRAME_H];
+    let (fw, fh) = crate::camera::frame_dims();
+    let words = crate::camera::frame_words().unwrap_or(crate::camera::FRAME_WORDS);
+    let mut buf = alloc::vec![0u16; words];
+    let mut luma = alloc::vec![0u8; fw * fh];
     log::info!("[cam] preview: {secs}s live view (tap the screen to exit); focus score per frame");
     let t0 = Instant::now();
     let mut frames = 0u32;
@@ -2600,7 +2593,12 @@ async fn run_cam_preview(secs: u32) {
                 return;
             }
         }
-        crate::camera::luma_from_words(&buf, &mut luma);
+        match crate::camera::sensor() {
+            Some(crate::camera::Sensor::Mt9v034) => {
+                crate::camera::mt9v034_plane(&buf, &mut luma);
+            }
+            _ => crate::camera::luma_from_words(&buf, &mut luma),
+        }
         cam_paint(&luma, false);
         frames += 1;
         let s = crate::camera::sharpness(&luma, 6, 10);

@@ -430,6 +430,14 @@ pub fn frame_words() -> Option<usize> {
     with_camera(|c| c.frame_words())
 }
 
+/// Image dimensions (width, height) of the selected sensor.
+pub fn frame_dims() -> (usize, usize) {
+    match sensor() {
+        Some(Sensor::Mt9v034) => (MT_FRAME_W, MT_FRAME_H),
+        _ => (FRAME_W, FRAME_H),
+    }
+}
+
 /// Runtime XCLK reconfiguration.
 pub fn set_xclk_khz(khz: u32) -> bool {
     with_camera(|c| c.set_xclk_khz(khz)).is_some()
