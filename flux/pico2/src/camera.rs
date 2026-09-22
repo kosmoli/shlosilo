@@ -1354,11 +1354,12 @@ pub async fn init(p: Pins) -> Camera {
         "line:",
         "wait 0 pin 9", // HREF low (blanking before first line)
         "pixel:",
-        // NO `wait 1 pin 9` here - saves 1 cycle/pair (was the shear cause)
-        // NO `wait 1 pin 10` either - HREF-to-first-PCLK gap is ~7 ns < 2
-        // wait instructions (13.3 ns). `mov y, y` delays the sample to
-        // 13.3 ns, inside the first pixel's data-valid window.
-        "mov y, y", // true no-op (PIO `nop` is `jmp 0` = wrap restart)
+        // NO `wait 1 pin 9` here - saves 1 cycle/pair (was the shear cause).
+        // `wait 1 pin 10` paces sampling on PCLK edges directly. With the
+        // input_sync_bypass (0 ns detection latency) the first edge at
+        // ~7 ns after HREF is caught; `in pins, 8` lands at 13.7 ns,
+        // inside the data-valid window.
+        "wait 1 pin 10", // PCLK rising: first byte
         "in pins, 8",
         "wait 0 pin 10", // PCLK falling
         "wait 1 pin 10", // PCLK rising: second byte
