@@ -1336,7 +1336,14 @@ pub async fn init(p: Pins) -> Camera {
         "wait 0 pin 9", // HREF
         "pixel:",
         "wait 1 pin 9",
-        "wait 1 pin 10", // PCLK rising: first byte
+        // No `wait 1 pin 10` here: the HREF-to-first-PCLK-edge gap is only
+        // ~7 ns (MT9V034 drives HREF high on the same SYSCLK edge as the
+        // first pixel; PCLK rising follows one tPLHP later). Two back-to-back
+        // `wait pin` instructions cost 2 PIO cycles (13.3 ns at 150 MHz) so
+        // the PCLK wait would always miss the first edge of every line. One
+        // `nop` after the HREF wait puts the sample at 13.3 ns - inside the
+        // first pixel's data-valid window (7..48.7 ns at 12 MHz PIXCLK).
+        "mov y, y", // true no-op (PIO `nop` is `jmp 0` = wrap restart!)
         "in pins, 8",
         "wait 0 pin 10", // PCLK falling
         "wait 1 pin 10", // PCLK rising: second byte
