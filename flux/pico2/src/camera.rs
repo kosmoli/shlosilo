@@ -787,9 +787,22 @@ impl Camera {
             Sensor::Mt9v034 => (MT_FRAME_H, MT_FRAME_W / 2), // mono: 2 px/sample
         };
         let _ = samples; // superseded by per-line geometry
-        self.sm.tx().push((lines - 1) as u32); // Y: line counter
+        // Non-blocking push with retry: the TX FIFO is 4 words deep and the
+        // PIO blocks on `out x, 32` while waiting for VSYNC/HREF, so a
+        // blocking push would deadlock before the first frame. Push with
+        // try_push and yield between retries.
+        let mut push_val = |v: u32| {
+            for _ in 0..100_000 {
+                if self.sm.tx().try_push(v) {
+                    return true;
+                }
+                core::hint::spin_loop();
+            }
+            false
+        };
+        push_val((lines - 1) as u32); // Y: line counter
         for _ in 0..lines {
-            self.sm.tx().push((per_line - 1) as u32); // X: samples per line
+            push_val((per_line - 1) as u32); // X: samples per line
         }
     }
 
@@ -1422,9 +1435,18 @@ pub async fn init(p: Pins) -> Camera {
     // default geometry at init; `rearm_group` reloads on sensor switch.
     {
         let (lines, per_line) = (FRAME_H, FRAME_W / 2); // OV5640 YUV422
-        sm.tx().push((lines - 1) as u32); // Y: line counter
+        let mut push_val = |v: u32| {
+            for _ in 0..100_000 {
+                if sm.tx().try_push(v) {
+                    return true;
+                }
+                core::hint::spin_loop();
+            }
+            false
+        };
+        push_val((lines - 1) as u32); // Y: line counter
         for _ in 0..lines {
-            sm.tx().push((per_line - 1) as u32); // X: samples per line
+            push_val((per_line - 1) as u32); // X: samples per line
         }
     }
 
