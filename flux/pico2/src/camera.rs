@@ -782,28 +782,10 @@ impl Camera {
         self.sm.clear_fifos();
         PIO0.ctrl().modify(|w| w.set_sm_restart(1));
         self.sm.set_enable(true);
-        let (lines, per_line) = match self.sensor {
-            Sensor::Ov5640 => (FRAME_H, FRAME_W / 2), // YUV422: 2 bytes/pixel
-            Sensor::Mt9v034 => (MT_FRAME_H, MT_FRAME_W / 2), // mono: 2 px/sample
-        };
-        let _ = samples; // superseded by per-line geometry
-        // Non-blocking push with retry: the TX FIFO is 4 words deep and the
-        // PIO blocks on `out x, 32` while waiting for VSYNC/HREF, so a
-        // blocking push would deadlock before the first frame. Push with
-        // try_push and yield between retries.
-        let mut push_val = |v: u32| {
-            for _ in 0..100_000 {
-                if self.sm.tx().try_push(v) {
-                    return true;
-                }
-                core::hint::spin_loop();
-            }
-            false
-        };
-        push_val((lines - 1) as u32); // Y: line counter
-        for _ in 0..lines {
-            push_val((per_line - 1) as u32); // X: samples per line
-        }
+        let _ = samples; // superseded by frame_words()
+        let fw = self.frame_words();
+        self.sm.tx().push(0); // X: reserved
+        self.sm.tx().push((fw - 1) as u32); // Y: samples per group
     }
 
     /// Set SM0's IN window count and re-arm the capture group
@@ -1354,20 +1336,29 @@ pub async fn init(p: Pins) -> Camera {
     // TX FIFO protocol: `out y, 32` once (line counter = MT_FRAME_H - 1),
     // then `out x, 32` at the top of each line (samples-per-line - 1).
     // The firmware pushes 1 + H values (see `rearm_group`).
+    // Simple total-sample-count program (2026-09-21): `wait 1 pin 9` is
+    // GONE from the pixel loop - the old per-pair HREF check cost 1 PIO
+    // cycle (6.67 ns) per sample pair and caused systematic shear. The
+    // `line: wait 0 pin 9` before the loop synchronises to the first line;
+    // within the loop, PCLK edges alone pace sampling. Samples taken during
+    // HREF-low blanking are harmless: the DMA transfers exactly
+    // FRAME_WORDS samples and the unpack maps them linearly to pixels.
     let prg = pio::pio_asm!(
         ".wrap_target",
-        "out y, 32",    // Y = lines per frame - 1
+        "out x, 32",
+        "out y, 32",
         "wait 0 pin 8", // VSYNC
         "wait 1 pin 8",
         "frame:",
-        "out x, 32",    // X = samples per line - 1 (from TX FIFO)
-        "wait 0 pin 9", // HREF low (blanking before line)
-        "wait 1 pin 9", // HREF high (active data start) - ONCE per line
-        // No `wait 1 pin 10`: HREF-to-first-PCLK gap is ~7 ns < 2 wait
-        // instructions (13.3 ns). `mov y, y` delays the sample to 13.3 ns,
-        // inside the first pixel's data-valid window.
-        "mov y, y", // true no-op (PIO `nop` is `jmp 0` = wrap restart)
+        "mov x, y", // X = total samples per group
+        "line:",
+        "wait 0 pin 9", // HREF low (blanking before first line)
         "pixel:",
+        // NO `wait 1 pin 9` here - saves 1 cycle/pair (was the shear cause)
+        // NO `wait 1 pin 10` either - HREF-to-first-PCLK gap is ~7 ns < 2
+        // wait instructions (13.3 ns). `mov y, y` delays the sample to
+        // 13.3 ns, inside the first pixel's data-valid window.
+        "mov y, y", // true no-op (PIO `nop` is `jmp 0` = wrap restart)
         "in pins, 8",
         "wait 0 pin 10", // PCLK falling
         "wait 1 pin 10", // PCLK rising: second byte
@@ -1375,9 +1366,9 @@ pub async fn init(p: Pins) -> Camera {
         "wait 0 pin 10",
         "push block",
         "jmp x-- pixel",
-        // after line
-        "wait 0 pin 9",  // HREF low (end of line)
-        "jmp y-- frame", // next line (decrement Y)
+        "wait 0 pin 9",
+        "jmp frame",
+        "jmp 2",
         ".wrap",
     );
     let loaded = pio.common.load_program(&prg.program);
@@ -1430,32 +1421,14 @@ pub async fn init(p: Pins) -> Camera {
     sm.set_pin_dirs(Direction::In, &all_pins);
     sm.clear_fifos();
     sm.set_enable(true);
-    // Per-line TX FIFO protocol: `out y, 32` once (line counter), then
-    // `out x, 32` at the top of each line (samples-per-line - 1). OV5640
-    // default geometry at init; `rearm_group` reloads on sensor switch.
-    {
-        let (lines, per_line) = (FRAME_H, FRAME_W / 2); // OV5640 YUV422
-        let mut push_val = |v: u32| {
-            for _ in 0..100_000 {
-                if sm.tx().try_push(v) {
-                    return true;
-                }
-                core::hint::spin_loop();
-            }
-            false
-        };
-        push_val((lines - 1) as u32); // Y: line counter
-        for _ in 0..lines {
-            push_val((per_line - 1) as u32); // X: samples per line
-        }
-    }
+    sm.tx().push(0); // X: reserved
+    sm.tx().push((FRAME_WORDS - 1) as u32); // Y: samples per group
 
     log::info!(
-        "[cam] capture armed: {}x{}, {} words/frame, PIO0 SM0 + DMA (per-line {})",
+        "[cam] capture armed: {}x{}, {} words/frame, PIO0 SM0 + DMA",
         FRAME_W,
         FRAME_H,
-        FRAME_WORDS,
-        FRAME_W / 2
+        FRAME_WORDS
     );
 
     // SM1's program: sample all 32 GPIOs into the ISR and push - repeated
