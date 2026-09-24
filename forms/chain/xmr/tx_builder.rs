@@ -48,8 +48,8 @@ use crate::chain::xmr::rct_sig::{
 };
 use crate::chain::xmr::reduce_scalar::reduce_scalar;
 use crate::chain::xmr::transaction::{
-    bytes_to_monerod_scalar, encode_varint, Transaction, TransactionPrefix, TxExtra, TxInput,
-    TxOutput,
+    bytes_to_monerod_scalar, monero_encode_varint, Transaction, TransactionPrefix, TxExtra,
+    TxInput, TxOutput,
 };
 use crate::chain::xmr::view_tag::{
     derive_view_tag, eight_ra, encrypt_payment_id, payment_id_xor, stealth_address,
@@ -256,7 +256,10 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
                 let eight = eight_ra(tx_keys.secret.expose(), &view)?;
                 let mut buf = Vec::with_capacity(33);
                 buf.extend_from_slice(&eight);
-                encode_varint(&mut buf, i as u64);
+                // Z2.4d-2: shared_key = Hs(8Ra || Monero-LEB128(i)) — same formula as the
+                // production signer (tx_signer.rs), which was always LEB128. The old
+                // CompactSize helper diverged at i >= 128.
+                monero_encode_varint(&mut buf, i as u64);
                 crate::chain::xmr::subaddress::hash_to_scalar(&buf)?
             }
             None => derive_simplified_shared_key(&tx_keys.public, i as u64),
@@ -1158,7 +1161,7 @@ mod tests {
         let eight = eight_ra(signed.tx_secret.expose(), &dest_view.public).unwrap();
         let mut buf = Vec::new();
         buf.extend_from_slice(&eight);
-        encode_varint(&mut buf, 0);
+        monero_encode_varint(&mut buf, 0); // Z2.4d-2: same dialect as the assembly path
         let expected_shared = hash_to_scalar(&buf).unwrap();
 
         let enc_amount = signed.rct_sig.prunable.encrypted_amounts[0];

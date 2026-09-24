@@ -6,15 +6,20 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 /// First byte of Hs("view_tag" || 8Ra || varint(o))
 pub fn derive_view_tag(eight_ra: &[u8; 32], output_index: u64) -> u8 {
-    // Z2.2 A-class (2026-09-24): 49B stack buffer (was a heap Vec) —
-    // hash input = "view_tag" || 8Ra || varint(o), byte layout unchanged.
-    let mut buf = [0u8; 8 + 32 + 9];
+    // Z2.2 A-class (2026-09-24): stack buffer (was a heap Vec) —
+    // hash input = "view_tag" || 8Ra || varint(o).
+    // Z2.4d-2: varint is Monero LEB128 (keystone derive_view_tag -> write_varinteger);
+    // it was the BTC-style CompactSize helper — identical below 0x80, divergent at
+    // output_index >= 128 (wrong view tag = wallet cannot see the output).
+    let mut buf = [0u8; 8 + 32 + 10];
     let mut pos = 0usize;
     buf[pos..pos + 8].copy_from_slice(b"view_tag");
     pos += 8;
     buf[pos..pos + 32].copy_from_slice(eight_ra);
     pos += 32;
-    if crate::chain::xmr::transaction::encode_varint_at(&mut buf, &mut pos, output_index).is_err() {
+    if crate::chain::xmr::transaction::monero_encode_varint_at(&mut buf, &mut pos, output_index)
+        .is_err()
+    {
         return 0;
     }
     crate::encoding::keccak256::hash(&buf[..pos])
@@ -66,12 +71,13 @@ pub fn stealth_address(
     use curve25519_dalek::Scalar as DScalar;
     use monero_ed25519::CompressedPoint;
 
-    // Z2.2 A-class (2026-09-24): 41B stack buffer (was a heap Vec).
-    let mut buf = [0u8; 32 + 9];
+    // Z2.2 A-class (2026-09-24): stack buffer (was a heap Vec).
+    // Z2.4d-2: varint is Monero LEB128 (same oracle as derive_view_tag).
+    let mut buf = [0u8; 32 + 10];
     let mut pos = 0usize;
     buf[pos..pos + 32].copy_from_slice(eight_ra);
     pos += 32;
-    crate::chain::xmr::transaction::encode_varint_at(&mut buf, &mut pos, output_index)?;
+    crate::chain::xmr::transaction::monero_encode_varint_at(&mut buf, &mut pos, output_index)?;
     let hs = crate::chain::xmr::subaddress::hash_to_scalar(&buf[..pos])?;
     let hs_d = DScalar::from_bytes_mod_order(hs);
     let hs_g: curve25519_dalek::EdwardsPoint = ED25519_BASEPOINT_TABLE * &hs_d;
@@ -144,6 +150,66 @@ mod tests {
     use crate::encoding::keccak256;
     use crate::types::SecretBytes;
     use alloc::vec::Vec;
+
+    /// Z2.4d-2 oracle regression: derivation hash inputs use Monero LEB128
+    /// (keystone derive_view_tag -> write_varinteger; oracle checked in
+    /// keystone3-firmware rust/apps/monero/src/utils/varinteger.rs). The old BTC-style
+    /// CompactSize helper is byte-identical below 0x80 and diverges at output_index
+    /// at output_index 128 and above (wrong view tag / stealth address = wallet cannot see the output).
+    /// Expected values are built with an INDEPENDENT LEB128 implementation (same
+    /// cross-validation pattern as output_export tests).
+    fn encode_varint_leb(mut v: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let b = (v & 0x7F) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(b);
+                break;
+            }
+            out.push(b | 0x80);
+        }
+        out
+    }
+
+    #[test]
+    fn derive_view_tag_leb128_domain() {
+        let eight_ra = [0x42u8; 32];
+        for &idx in &[0u64, 1, 127, 128, 253, 300, 70_000] {
+            let mut data = Vec::from(&b"view_tag"[..]);
+            data.extend_from_slice(&eight_ra);
+            data.extend_from_slice(&encode_varint_leb(idx));
+            let h = keccak256::hash(&data).unwrap();
+            assert_eq!(derive_view_tag(&eight_ra, idx), h[0], "idx={idx}");
+        }
+        // the divergence claim itself: LEB128(128) = [0x80, 0x01] != CompactSize [0x80]
+        assert_eq!(encode_varint_leb(128), alloc::vec![0x80u8, 0x01u8]);
+    }
+
+    #[test]
+    fn stealth_address_leb128_domain() {
+        let eight = [0x24u8; 32];
+        let dest_spend = TxKeyPair::from_secret(SecretBytes::new([0x77u8; 32])).unwrap();
+        for &idx in &[0u64, 127, 128, 253, 70_000] {
+            // expected = Hs(8Ra || LEB128(idx))·G + B (same formula, independent varint)
+            let mut data = Vec::from(eight.as_slice());
+            data.extend_from_slice(&encode_varint_leb(idx));
+            let hs = crate::chain::xmr::subaddress::hash_to_scalar(&data).unwrap();
+            let hs_d = curve25519_dalek::Scalar::from_bytes_mod_order(hs);
+            let b = monero_ed25519::CompressedPoint::from(dest_spend.public)
+                .decompress()
+                .unwrap();
+            let b_ed: curve25519_dalek::EdwardsPoint = b.into();
+            let expected = (b_ed + curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &hs_d)
+                .compress()
+                .to_bytes();
+            assert_eq!(
+                stealth_address(&eight, idx, &dest_spend.public).unwrap(),
+                expected,
+                "idx={idx}"
+            );
+        }
+    }
 
     #[test]
     fn view_tag_is_first_keccak_byte() {

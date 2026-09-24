@@ -380,7 +380,9 @@ pub fn calc_output_key_offset(
     // 2. Hs(recv || varint(index))
     let mut data = Vec::with_capacity(32 + 8);
     data.extend_from_slice(&recv_bytes);
-    crate::chain::xmr::transaction::encode_varint(&mut data, internal_output_index);
+    // Z2.4d-2: varint is Monero LEB128 (identical to CompactSize below 0x80 only —
+    // internal_output_index >= 128 previously derived a wrong key offset).
+    crate::chain::xmr::transaction::monero_encode_varint(&mut data, internal_output_index);
     let mut key_offset = hash_to_scalar(&data)?;
 
     // 3. Add subaddress m(major,minor)
