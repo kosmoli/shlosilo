@@ -696,7 +696,7 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         }
     }
 
-    let tx = from_rlp::parse_eip1559_raw(&req.sign_data)?;
+    let tx = from_rlp::parse_eip1559_raw(req.sign_data)?;
     // P1-02 (ETH part): when eth-sign-request carries its own chain_id, verify it matches the tx
     if let Some(req_chain) = req.chain_id {
         if req_chain != tx.chain_id as i128 {
@@ -779,7 +779,7 @@ pub(crate) fn check_network(
                     return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
                 }
             }
-            let tx = crate::chain::eth::from_rlp::parse_eip1559_raw(&req.sign_data)?;
+            let tx = crate::chain::eth::from_rlp::parse_eip1559_raw(req.sign_data)?;
             if tx.chain_id != expected_chain_id {
                 return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
             }

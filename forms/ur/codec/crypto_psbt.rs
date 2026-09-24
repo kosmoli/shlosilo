@@ -19,16 +19,34 @@ pub fn encode(psbt: &[u8]) -> Result<UrEncoded> {
     ur_encode::encode(UrTypeTag::CryptoPsbt, &cbor)
 }
 
-/// Parse PSBT raw bytes out of `ur:crypto-psbt/...`
-pub fn decode(uri: &str) -> Result<alloc::vec::Vec<u8>> {
+/// Parse PSBT raw bytes into a caller buffer (Z2.4c-4); returns the length written.
+pub fn decode_into(uri: &str, out: &mut [u8]) -> Result<usize> {
     let d = ur_decode::decode(uri)?;
     if d.type_tag() != UrTypeTag::CryptoPsbt {
         return Err(err());
     }
     match cbor::decode(d.as_ref())? {
-        cbor::Cbor::Bytes(b) => Ok(b.to_vec()),
+        cbor::Cbor::Bytes(b) => {
+            if b.len() > out.len() {
+                return Err(ShlosiloError::new(
+                    ShlosiloErrorKind::EncodingBufferOverflow,
+                ));
+            }
+            out[..b.len()].copy_from_slice(b);
+            Ok(b.len())
+        }
         _ => Err(err()),
     }
+}
+
+/// Parse PSBT raw bytes out of `ur:crypto-psbt/...`
+///
+/// Test/legacy convenience (allocates). Production paths use `decode_into`.
+pub fn decode(uri: &str) -> Result<alloc::vec::Vec<u8>> {
+    let mut out = alloc::vec![0u8; crate::ur::ur_encode::UR_PAYLOAD_MAX_LEN];
+    let n = decode_into(uri, &mut out)?;
+    out.truncate(n);
+    Ok(out)
 }
 
 #[cfg(test)]

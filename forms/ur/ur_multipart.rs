@@ -34,6 +34,8 @@ pub const MULTIPART_PAYLOAD_MAX_LEN: usize = 16384;
 pub const MULTIPART_FRAME_MAX_LEN: usize = 40960;
 /// Single-frame payload limit (the single-frame large-QR channel goes through ur_encode::encode; only fragmentation here)
 pub const DEFAULT_FRAGMENT_LEN: usize = 200;
+/// Z2.4c-4: part-CBOR decode scratch (fragment payload + CBOR wrapper headroom)
+pub(crate) const PART_CBOR_SCRATCH_MAX: usize = crate::encoding::fountain::PART_DATA_MAX + 64;
 
 // ─── Encoder ───────────────────────────────────────────────────────
 
@@ -136,7 +138,7 @@ impl<'a> UrMultipartEncoder<'a> {
 
 /// Parse one frame URI → (type, seq, seq_count, part CBOR bytes)
 /// Shape: `ur:<type>/<seq>-<count>/<body>`; single frame (no seq segment) returns Err(NotMultipart)
-pub(crate) fn parse_frame(uri: &str) -> Result<Frame<'_>> {
+pub(crate) fn parse_frame<'a>(uri: &'a str, scratch: &'a mut [u8]) -> Result<Frame<'a>> {
     let rest = uri
         .strip_prefix("ur:")
         .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
@@ -172,12 +174,12 @@ pub(crate) fn parse_frame(uri: &str) -> Result<Frame<'_>> {
             if seq == 0 || count == 0 || count > MAX_SEQUENCE_COUNT || seq > MAX_SEQUENCE_COUNT {
                 return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
             }
-            let part_cbor = bytewords::decode_minimal(body)?;
+            let n = bytewords::decode_minimal_into(body, scratch)?;
             Ok(Frame {
                 type_name,
                 sequence: seq,
                 sequence_count: count,
-                part_cbor,
+                part_cbor: &scratch[..n],
             })
         }
     }
@@ -188,7 +190,7 @@ pub(crate) struct Frame<'a> {
     pub type_name: &'a str,
     pub sequence: usize,
     pub sequence_count: usize,
-    pub part_cbor: alloc::vec::Vec<u8>,
+    pub part_cbor: &'a [u8],
 }
 
 /// Part CBOR decoding (aligned with the to_cbor shape; reuses the X1-hardened cbor decoder)
@@ -315,8 +317,10 @@ impl<'a> UrMultipartDecoder<'a> {
 
     /// Receive one frame URI. Ok(true) = new information, Ok(false) = duplicate/no new information.
     /// Type consistency check: mixed frames across types are rejected.
-    pub fn receive_frame(&mut self, uri: &str) -> Result<bool> {
-        let frame = parse_frame(uri)?;
+    /// Receive one frame URI into caller scratch (Z2.4c-4 C-class: `scratch` holds the
+    /// intermediate part CBOR, ≥ PART_CBOR_SCRATCH_MAX).
+    pub fn receive_frame_with(&mut self, uri: &str, scratch: &mut [u8]) -> Result<bool> {
+        let frame = parse_frame(uri, scratch)?;
         match &self.type_name {
             None => {
                 let mut tn = heapless::String::new();
@@ -329,7 +333,7 @@ impl<'a> UrMultipartDecoder<'a> {
             }
             _ => {}
         }
-        let part = part_from_cbor(&frame.part_cbor)?;
+        let part = part_from_cbor(frame.part_cbor)?;
         // seq metadata consistency (fountain also validates internally; blocking here earlier gives more precise error semantics)
         if part.sequence_count != frame.sequence_count || part.sequence != frame.sequence {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -356,6 +360,14 @@ impl<'a> UrMultipartDecoder<'a> {
             }
             Err(_) => Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
         }
+    }
+
+    /// Receive one frame URI.
+    ///
+    /// Test/legacy convenience (allocates). Production paths use `receive_frame_with`.
+    pub fn receive_frame(&mut self, uri: &str) -> Result<bool> {
+        let mut scratch = alloc::vec![0u8; PART_CBOR_SCRATCH_MAX];
+        self.receive_frame_with(uri, &mut scratch)
     }
 
     pub fn progress(&self) -> u8 {
@@ -400,6 +412,13 @@ impl Default for UrMultipartDecoder<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// Test helper: parse into a leaked scratch (tests may retain the Frame).
+    fn parse_frame_t<'a>(uri: &'a str) -> Result<Frame<'a>> {
+        let scratch: &'static mut [u8] =
+            alloc::boxed::Box::leak(alloc::vec![0u8; PART_CBOR_SCRATCH_MAX].into_boxed_slice());
+        parse_frame(uri, scratch)
+    }
+
     use super::*;
     use alloc::vec::Vec;
 
@@ -627,20 +646,20 @@ mod tests {
 
         // seq > count: standard fountain redundancy frame → Ok (P0-B semantics; the pre-fix false-positive test asserted the opposite)
         let uri_redundant = format!("ur:bytes/3-2/{}", body);
-        let frame = parse_frame(&uri_redundant)
+        let frame = parse_frame_t(&uri_redundant)
             .expect("seq>count with valid body must parse (fountain redundant frame)");
         assert_eq!(frame.sequence, 3);
         assert_eq!(frame.sequence_count, 2);
 
         // seq=0 → Err (genuinely illegal domain)
-        assert!(parse_frame(&format!("ur:bytes/0-2/{}", body)).is_err());
+        assert!(parse_frame_t(&format!("ur:bytes/0-2/{}", body)).is_err());
         // count over limit (> MAX_SEQUENCE_COUNT=256) → Err
-        assert!(parse_frame(&format!("ur:bytes/1-999/{}", body)).is_err());
+        assert!(parse_frame_t(&format!("ur:bytes/1-999/{}", body)).is_err());
         // Invalid bytewords body (the real failure cause of the original test) → Err, but a body error, not a seq error
-        assert!(parse_frame("ur:bytes/3-2/aaaa").is_err());
+        assert!(parse_frame_t("ur:bytes/3-2/aaaa").is_err());
         // Single-frame shape (no seq segment) → Err (single frames should go through ur_decode::decode)
-        assert!(parse_frame("ur:bytes/aaaa").is_err());
-        assert!(parse_frame("not-a-ur").is_err());
+        assert!(parse_frame_t("ur:bytes/aaaa").is_err());
+        assert!(parse_frame_t("not-a-ur").is_err());
     }
 
     /// Payload over budget rejected (16 KiB + 1)

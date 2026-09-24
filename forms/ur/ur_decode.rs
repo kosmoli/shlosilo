@@ -52,16 +52,22 @@ pub fn decode(uri: &str) -> Result<UrDecoded> {
     if body.contains('/') {
         return Err(err());
     }
-    let payload = bytewords::decode_minimal(body)?;
-    if payload.len() > UR_PAYLOAD_MAX_LEN {
+    // Z2.4c-4: decode straight into the result buffer (was a Vec intermediate + copy);
+    // total = body.len()/2 covers payload + CRC32, over-capacity rejects explicitly.
+    let total = body.len() / 2;
+    let mut bytes = heapless::Vec::new();
+    for _ in 0..total {
+        bytes
+            .push(0u8)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+    }
+    let n = bytewords::decode_minimal_into(body, &mut bytes)?;
+    bytes.truncate(n);
+    if bytes.len() > UR_PAYLOAD_MAX_LEN {
         return Err(ShlosiloError::new(
             ShlosiloErrorKind::EncodingBufferOverflow,
         ));
     }
-    let mut bytes = heapless::Vec::new();
-    bytes
-        .extend_from_slice(&payload)
-        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
     Ok(UrDecoded {
         bytes,
         type_tag: UrTypeTag::from_name(type_name),

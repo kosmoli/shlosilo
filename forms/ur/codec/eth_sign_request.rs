@@ -49,9 +49,9 @@ impl EthSignDataType {
 
 /// eth-sign-request parse result (only the fields needed for signing)
 #[derive(Debug)]
-pub struct EthSignRequest {
+pub struct EthSignRequest<'a> {
     /// Raw sign_data (for Transaction / TypedTransaction = raw tx bytes)
-    pub sign_data: alloc::vec::Vec<u8>,
+    pub sign_data: &'a [u8],
     pub data_type: EthSignDataType,
     pub chain_id: Option<i128>,
     /// derivation_path (key 5, tag 304 crypto-keypath, optional)
@@ -60,7 +60,7 @@ pub struct EthSignRequest {
 }
 
 /// Parse an eth-sign-request CBOR payload → EthSignRequest
-pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
+pub fn parse_eth_sign_request<'a>(payload: &'a [u8]) -> Result<EthSignRequest<'a>> {
     let cbor = crate::encoding::cbor::decode(payload)?;
     let map = match cbor {
         Cbor::Map(_) => &cbor,
@@ -69,7 +69,7 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
 
     // sign_data (key 2, required)
     let sign_data = match map.map_get_uint(2)? {
-        Some(v) => v.as_bytes()?.to_vec(),
+        Some(v) => v.as_bytes()?,
         None => return Err(err()),
     };
 
