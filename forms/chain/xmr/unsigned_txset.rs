@@ -593,88 +593,111 @@ fn read_tx_construction_data<'a>(
     })
 }
 
-fn put_varint(out: &mut Vec<u8>, n: u64) {
-    crate::chain::xmr::transaction::monero_encode_varint(out, n);
+// Z2.4d-2: writers generic over `Sink` (cursor = zero-heap, Vec = staging).
+use crate::types::push::Sink;
+
+fn put_varint<S: Sink>(out: &mut S, n: u64) -> Result<()> {
+    let mut tmp = [0u8; 10];
+    let mut pos = 0usize;
+    crate::chain::xmr::transaction::monero_encode_varint_at(&mut tmp, &mut pos, n)?;
+    out.put(&tmp[..pos])
 }
 
-fn write_unsigned_destination(out: &mut Vec<u8>, e: &TxDestinationEntry) {
+fn write_unsigned_destination<S: Sink>(out: &mut S, e: &TxDestinationEntry) -> Result<()> {
     // monero `tx_destination_entry`: amount is a varint on BOTH sides. (The old
     // "signed side is u64 LE" note was wrong — that mistaken belief lived in
     // signed_txset.rs and broke file-level interop until 2026-09-15.)
-    put_varint(out, e.original.len() as u64);
-    out.extend_from_slice(&e.original);
-    put_varint(out, e.amount);
-    out.extend_from_slice(&e.spend_public_key);
-    out.extend_from_slice(&e.view_public_key);
-    out.push(e.is_subaddress as u8);
-    out.push(e.is_integrated as u8);
+    put_varint(out, e.original.len() as u64)?;
+    out.put(&e.original)?;
+    put_varint(out, e.amount)?;
+    out.put(&e.spend_public_key)?;
+    out.put(&e.view_public_key)?;
+    out.put_u8(e.is_subaddress as u8)?;
+    out.put_u8(e.is_integrated as u8)
 }
 
-fn write_unsigned_source(out: &mut Vec<u8>, s: &TxSourceEntry) {
-    put_varint(out, s.outputs.len() as u64);
+fn write_unsigned_source<S: Sink>(out: &mut S, s: &TxSourceEntry) -> Result<()> {
+    put_varint(out, s.outputs.len() as u64)?;
     for o in s.outputs.iter() {
-        out.push(2); // std::pair field-count prefix, isomorphic to read_output_entry's varint 2
-        put_varint(out, o.index);
-        out.extend_from_slice(&o.dest);
-        out.extend_from_slice(&o.mask);
+        // std::pair field-count prefix, isomorphic to read_output_entry's varint 2
+        out.put_u8(2)?;
+        put_varint(out, o.index)?;
+        out.put(&o.dest)?;
+        out.put(&o.mask)?;
     }
-    out.extend_from_slice(&s.real_output.to_le_bytes());
-    out.extend_from_slice(s.real_out_tx_key.as_slice());
-    put_varint(out, s.real_out_additional_tx_keys.len() as u64);
+    out.put(&s.real_output.to_le_bytes())?;
+    out.put(s.real_out_tx_key.as_slice())?;
+    put_varint(out, s.real_out_additional_tx_keys.len() as u64)?;
     for k in s.real_out_additional_tx_keys.iter() {
-        out.extend_from_slice(&**k);
+        out.put(&**k)?;
     }
-    out.extend_from_slice(&s.real_output_in_tx_index.to_le_bytes());
-    out.extend_from_slice(&s.amount.to_le_bytes());
-    out.push(s.rct as u8);
-    out.extend_from_slice(s.mask.expose());
-    out.extend_from_slice(&s.multisig_kLRki.k);
-    out.extend_from_slice(&s.multisig_kLRki.l);
-    out.extend_from_slice(&s.multisig_kLRki.r);
-    out.extend_from_slice(&s.multisig_kLRki.ki);
+    out.put(&s.real_output_in_tx_index.to_le_bytes())?;
+    out.put(&s.amount.to_le_bytes())?;
+    out.put_u8(s.rct as u8)?;
+    out.put(s.mask.expose())?;
+    out.put(&s.multisig_kLRki.k)?;
+    out.put(&s.multisig_kLRki.l)?;
+    out.put(&s.multisig_kLRki.r)?;
+    out.put(&s.multisig_kLRki.ki)
 }
 
-fn write_unsigned_construction(out: &mut Vec<u8>, d: &TxConstructionData<'_>) {
-    put_varint(out, d.sources.len() as u64);
+fn write_unsigned_construction<S: Sink>(out: &mut S, d: &TxConstructionData<'_>) -> Result<()> {
+    put_varint(out, d.sources.len() as u64)?;
     for s in d.sources.iter().flatten() {
-        write_unsigned_source(out, s);
+        write_unsigned_source(out, s)?;
     }
-    write_unsigned_destination(out, &d.change_dts);
-    put_varint(out, d.splitted_dsts.len() as u64);
+    write_unsigned_destination(out, &d.change_dts)?;
+    put_varint(out, d.splitted_dsts.len() as u64)?;
     for dst in d.splitted_dsts.iter() {
-        write_unsigned_destination(out, dst);
+        write_unsigned_destination(out, dst)?;
     }
-    put_varint(out, d.selected_transfers.len() as u64);
+    put_varint(out, d.selected_transfers.len() as u64)?;
     for t in d.selected_transfers.iter() {
-        put_varint(out, *t as u64);
+        put_varint(out, *t as u64)?;
     }
-    put_varint(out, d.extra.len() as u64);
-    out.extend_from_slice(&d.extra[..]);
-    out.extend_from_slice(&d.unlock_time.to_le_bytes());
-    out.push(d.use_rct);
-    put_varint(out, d.rct_config.version);
-    put_varint(out, d.rct_config.range_proof_type);
-    put_varint(out, d.rct_config.bp_version);
-    put_varint(out, d.dests.len() as u64);
+    put_varint(out, d.extra.len() as u64)?;
+    out.put(&d.extra[..])?;
+    out.put(&d.unlock_time.to_le_bytes())?;
+    out.put_u8(d.use_rct)?;
+    put_varint(out, d.rct_config.version)?;
+    put_varint(out, d.rct_config.range_proof_type)?;
+    put_varint(out, d.rct_config.bp_version)?;
+    put_varint(out, d.dests.len() as u64)?;
     for dest in d.dests.iter() {
-        write_unsigned_destination(out, dest);
+        write_unsigned_destination(out, dest)?;
     }
-    out.extend_from_slice(&d.subaddr_account.to_le_bytes());
-    put_varint(out, d.subaddr_indices.len() as u64);
+    out.put(&d.subaddr_account.to_le_bytes())?;
+    put_varint(out, d.subaddr_indices.len() as u64)?;
     for i in d.subaddr_indices.iter() {
-        put_varint(out, *i as u64);
+        put_varint(out, *i as u64)?;
     }
+    Ok(())
+}
+
+/// Core writer (Z2.4d-2): epee wire form of the txes segment, any `Sink`.
+fn write_unsigned_tx<S: Sink>(tx: &UnsignedTx<'_>, out: &mut S) -> Result<()> {
+    put_varint(out, 2)?;
+    put_varint(out, tx.txes.len() as u64)?;
+    for d in tx.txes.iter().flatten() {
+        write_unsigned_construction(out, d)?;
+    }
+    Ok(())
+}
+
+/// Serialize into a caller buffer (Z2.4d-2 C-class face); returns bytes written.
+/// The stream contains the mask/kLRki secrets — the caller MUST zeroize `out` after use.
+pub fn serialize_unsigned_tx_into(tx: &UnsignedTx<'_>, out: &mut [u8]) -> Result<usize> {
+    let mut w = crate::types::push::SinkCursor::new(out);
+    write_unsigned_tx(tx, &mut w)?;
+    Ok(w.pos())
 }
 
 /// epee serialize (dual of `deserialize_unsigned_tx`; excludes the trailing transfers segment).
 /// Audit #12 P1-02: the output contains the mask/kLRki secret fields; returns a Zeroizing owner.
+/// Staging convenience (allocates). Production paths use `serialize_unsigned_tx_into`.
 pub fn serialize_unsigned_tx(tx: &UnsignedTx<'_>) -> zeroize::Zeroizing<Vec<u8>> {
     let mut out = Vec::new();
-    put_varint(&mut out, 2);
-    put_varint(&mut out, tx.txes.len() as u64);
-    for d in tx.txes.iter().flatten() {
-        write_unsigned_construction(&mut out, d);
-    }
+    write_unsigned_tx(tx, &mut out).expect("Vec sink is infallible by construction");
     zeroize::Zeroizing::new(out)
 }
 
@@ -934,6 +957,14 @@ mod tests {
             .unwrap();
         let tx = UnsignedTx { txes: u_txd_f };
         let bytes = serialize_unsigned_tx(&tx);
+        // Z2.4d-2 twin: into-core byte-identical to the staging convenience
+        let mut twin = alloc::vec![0u8; 4096];
+        let twin_n = serialize_unsigned_tx_into(&tx, &mut twin).unwrap();
+        assert_eq!(
+            &twin[..twin_n],
+            &bytes[..],
+            "serialize_unsigned_tx_into twin"
+        );
         let mut bp_txes: [Option<TxConstructionData<'_>>; 1] = core::array::from_fn(|_| None);
         let mut bp_src: [Option<TxSourceEntry>; 1] = core::array::from_fn(|_| None);
         let mut bp_sd =
