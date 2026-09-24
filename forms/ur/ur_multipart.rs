@@ -10,7 +10,9 @@
 extern crate alloc;
 
 use crate::encoding::bytewords;
-use crate::encoding::fountain::{FountainDecoder, FountainEncoder, Part, MAX_SEQUENCE_COUNT};
+use crate::encoding::fountain::{
+    FountainDecoder, FountainEncoder, FountainWs, Part, MAX_SEQUENCE_COUNT,
+};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 fn err(kind: ShlosiloErrorKind) -> ShlosiloError {
@@ -277,17 +279,27 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
 /// The payload itself is <= 16 KiB; a 2× margin covers fountain elimination intermediate states.
 pub const MULTIPART_SESSION_RETAINED_MAX: usize = MULTIPART_PAYLOAD_MAX_LEN * 2;
 
-pub struct UrMultipartDecoder {
-    inner: FountainDecoder,
-    type_name: Option<alloc::string::String>,
+pub struct UrMultipartDecoder<'a> {
+    inner: FountainDecoder<'a>,
+    type_name: Option<heapless::String<32>>,
     /// Audit #5: cumulative retained bytes (accumulated data length per frame)
     retained_bytes: usize,
 }
 
-impl UrMultipartDecoder {
+impl<'a> UrMultipartDecoder<'a> {
+    /// Staging convenience: pools allocated + leaked on purpose (ffi staging / tests only).
     pub fn new() -> Self {
+        Self::with_ws_of(FountainDecoder::new())
+    }
+
+    /// Zero-heap construction over caller-provided pools (Z2.4c-3 flux surface).
+    pub fn with_ws(ws: FountainWs<'a>) -> Self {
+        Self::with_ws_of(FountainDecoder::with_ws(ws))
+    }
+
+    fn with_ws_of(inner: FountainDecoder<'a>) -> Self {
         Self {
-            inner: FountainDecoder::new(),
+            inner,
             type_name: None,
             retained_bytes: 0,
         }
@@ -296,7 +308,7 @@ impl UrMultipartDecoder {
     /// Audit #5 P1-01: over-budget reset — clears all session state (type memory discarded as well),
     /// an attack session cannot occupy memory long-term. The caller must re-scan from the start.
     fn reset(&mut self) {
-        self.inner = FountainDecoder::new();
+        self.inner.clear();
         self.type_name = None;
         self.retained_bytes = 0;
     }
@@ -307,7 +319,10 @@ impl UrMultipartDecoder {
         let frame = parse_frame(uri)?;
         match &self.type_name {
             None => {
-                self.type_name = Some(alloc::string::String::from(frame.type_name));
+                let mut tn = heapless::String::new();
+                tn.push_str(frame.type_name)
+                    .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+                self.type_name = Some(tn);
             }
             Some(t) if t != frame.type_name => {
                 return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -357,7 +372,17 @@ impl UrMultipartDecoder {
         self.type_name.as_deref()
     }
 
+    /// Payload after completion into a caller buffer (Z2.4c-3 C-class); `out` must hold
+    /// fragment_length × sequence_count bytes; returns Some(message_length) when complete.
+    pub fn payload_into(&self, out: &mut [u8]) -> Result<Option<usize>> {
+        self.inner
+            .message_into(out)
+            .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))
+    }
+
     /// Payload after completion (None = incomplete)
+    ///
+    /// Test/legacy convenience (allocates). Production paths use `payload_into`.
     pub fn payload(&self) -> Result<Option<alloc::vec::Vec<u8>>> {
         self.inner
             .message()
@@ -365,7 +390,7 @@ impl UrMultipartDecoder {
     }
 }
 
-impl Default for UrMultipartDecoder {
+impl Default for UrMultipartDecoder<'_> {
     fn default() -> Self {
         Self::new()
     }

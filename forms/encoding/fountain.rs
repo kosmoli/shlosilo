@@ -22,7 +22,6 @@
 extern crate alloc;
 
 use crate::encoding::sha256;
-use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::vec::Vec;
 
 // ─── Xoshiro256** ───────────────────────────────────────────────────
@@ -204,7 +203,7 @@ pub(crate) const PART_DATA_MAX: usize = 2048;
 /// Fountain fragment. Wire shape (aligned with keystone-ur Part::to_cbor):
 /// CBOR array(5) = [sequence, sequence_count, message_length, checksum, data]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Part {
+pub struct Part {
     pub sequence: usize,
     pub sequence_count: usize,
     pub message_length: usize,
@@ -260,6 +259,8 @@ impl Part {
         (raw, n)
     }
 
+    /// Test-only helper (production paths branch on the degree directly).
+    #[cfg(test)]
     pub fn is_simple(&self) -> bool {
         self.indexes_raw().1 == 1
     }
@@ -416,19 +417,55 @@ pub(crate) enum FountainError {
     InconsistentPart,
     InvalidPadding,
     ExpectedItem,
+    /// Caller output buffer too small (Z2.4c-3)
+    OutputTooSmall,
     /// Budget exceeded (added in R3 remediation — keystone-ur has no such cap; a shlosilo discipline tightening)
     BudgetExceeded,
 }
 
 // ─── Decoder ───────────────────────────────────────────────────────
 
-/// Fountain decoder: set-cover greedy reassembly (aligned with keystone-ur Decoder semantics)
-#[derive(Default)]
-pub(crate) struct FountainDecoder {
-    received: BTreeSet<Vec<usize>>,
-    decoded: BTreeMap<usize, Part>,
-    buffer: BTreeMap<Vec<usize>, Part>,
-    queue: VecDeque<(usize, Part)>,
+/// Decoder-side budget (same discipline origin as X1): cap = fragment count cap.
+/// TxTemplate 16 KiB / minimum frame 200B → at most ~82 fragments; 256 leaves ample margin.
+pub(crate) const MAX_SEQUENCE_COUNT: usize = 256;
+
+/// Gate4 #4 (re-reviewed 2026-09-01): total received-frame budget per session.
+/// BC-UR allows unlimited redundant frames, but decoder resources must be finite: received (buffer/queue share the
+/// are all gated on the received set; sessions beyond this cap are treated as abnormal/attacks and fail with a sta
+pub(crate) const MAX_TOTAL_FRAMES: usize = 4096;
+
+/// Audit #5 P1-01 (open-02): elimination work budget — cumulative XOR byte cap.
+/// Normal reassembly work is O(count × fragment) ≈ 256 × 200B = 51KB;
+/// the 16MiB cap ≈ 300× normal work; a malicious XOR amplification attack (mass mixed
+/// equations, repeated elimination) hits this wall before exhausting CPU.
+pub(crate) const MAX_XOR_WORK_BYTES: usize = 16 * 1024 * 1024;
+
+/// Equation key: fragment index set (u8 domain — fragment_count ≤ MAX_SEQUENCE_COUNT = 256).
+pub type IdxSet = heapless::Vec<u8, { MAX_SEQUENCE_COUNT }>;
+
+/// Caller-provided workspace for the fountain decoder (Z2.4c-3 C-class policy).
+/// Sizing guidance: `decoded` ≥ sequence_count; `buffer`/`queue`/`received` cover the
+/// session frame budget in the worst case (flux-specific). Pool exhaustion surfaces as
+/// BudgetExceeded (session-abnormal semantics, matching the budget family).
+pub struct FountainWs<'a> {
+    pub decoded: &'a mut [Option<(usize, Part)>],
+    pub buffer: &'a mut [Option<(IdxSet, Part)>],
+    pub queue: &'a mut [Option<(usize, Part)>],
+    pub received: &'a mut [Option<IdxSet>],
+}
+
+/// Fountain decoder: set-cover greedy reassembly (aligned with keystone-ur Decoder semantics).
+/// Z2.4c-3: retained state lives in caller-provided pool slices (was BTreeMap/BTreeSet/VecDeque);
+/// pool-slot scans replace the transient key collects. Cascade order is pool-slot order rather
+/// than strict FIFO — GF(2) elimination is commutative, so reassembly, dedup, progress and all
+/// budget totals are unaffected.
+pub(crate) struct FountainDecoder<'a> {
+    decoded: &'a mut [Option<(usize, Part)>],
+    buffer: &'a mut [Option<(IdxSet, Part)>],
+    queue: &'a mut [Option<(usize, Part)>],
+    received: &'a mut [Option<IdxSet>],
+    decoded_count: usize,
+    received_count: usize,
     sequence_count: usize,
     message_length: usize,
     checksum: u32,
@@ -438,28 +475,83 @@ pub(crate) struct FountainDecoder {
     work_used: usize,
 }
 
-/// Decoder-side budget (same discipline origin as X1): cap = fragment count cap.
-/// TxTemplate 16 KiB / minimum frame 200B → at most ~82 fragments; 256 leaves ample margin.
-pub(crate) const MAX_SEQUENCE_COUNT: usize = 256;
+impl<'a> FountainDecoder<'a> {
+    /// Staging convenience: allocates and LEAKS pool backing on purpose (ffi staging /
+    /// tests only — the handle owns it for its lifetime). Production flux builds `with_ws`
+    /// over its own pools (zero-heap).
+    pub fn new() -> FountainDecoder<'static> {
+        let decoded: &'static mut [Option<(usize, Part)>] =
+            alloc::boxed::Box::leak(alloc::vec![None; 256].into_boxed_slice());
+        let buffer: &'static mut [Option<(IdxSet, Part)>] =
+            alloc::boxed::Box::leak(alloc::vec![None; 256].into_boxed_slice());
+        let queue: &'static mut [Option<(usize, Part)>] =
+            alloc::boxed::Box::leak(alloc::vec![None; 256].into_boxed_slice());
+        let received: &'static mut [Option<IdxSet>] =
+            alloc::boxed::Box::leak(alloc::vec![None; MAX_TOTAL_FRAMES].into_boxed_slice());
+        FountainDecoder::with_ws(FountainWs {
+            decoded,
+            buffer,
+            queue,
+            received,
+        })
+    }
 
-/// Gate4 #4 (re-reviewed 2026-09-01): total received-frame budget per session.
-/// BC-UR allows unlimited redundant frames, but decoder resources must be finite: received (buffer/queue share the same origin)
-/// are all gated on the received set; sessions beyond this cap are treated as abnormal/attacks and fail with a stable error.
-pub(crate) const MAX_TOTAL_FRAMES: usize = 4096;
+    /// Build over caller-provided pools (all slots cleared on entry — reset hygiene).
+    pub fn with_ws(ws: FountainWs<'a>) -> Self {
+        for slot in ws.decoded.iter_mut() {
+            *slot = None;
+        }
+        for slot in ws.buffer.iter_mut() {
+            *slot = None;
+        }
+        for slot in ws.queue.iter_mut() {
+            *slot = None;
+        }
+        for slot in ws.received.iter_mut() {
+            *slot = None;
+        }
+        Self {
+            decoded: ws.decoded,
+            buffer: ws.buffer,
+            queue: ws.queue,
+            received: ws.received,
+            decoded_count: 0,
+            received_count: 0,
+            sequence_count: 0,
+            message_length: 0,
+            checksum: 0,
+            fragment_length: 0,
+            processed_parts_count: 0,
+            work_used: 0,
+        }
+    }
 
-/// Audit #5 P1-01 (open-02): elimination work budget — cumulative XOR byte cap.
-/// Normal reassembly work is O(count × fragment) ≈ 256 × 200B = 51KB;
-/// the 16MiB cap ≈ 300× normal work; a malicious XOR amplification attack (mass mixed
-/// equations, repeated elimination) hits this wall before exhausting CPU.
-pub(crate) const MAX_XOR_WORK_BYTES: usize = 16 * 1024 * 1024;
-
-impl FountainDecoder {
-    pub fn new() -> Self {
-        Self::default()
+    /// Session reset (Audit #5 P1-01 over-budget discipline): clear pools + counters in place.
+    pub fn clear(&mut self) {
+        for slot in self.decoded.iter_mut() {
+            *slot = None;
+        }
+        for slot in self.buffer.iter_mut() {
+            *slot = None;
+        }
+        for slot in self.queue.iter_mut() {
+            *slot = None;
+        }
+        for slot in self.received.iter_mut() {
+            *slot = None;
+        }
+        self.decoded_count = 0;
+        self.received_count = 0;
+        self.sequence_count = 0;
+        self.message_length = 0;
+        self.checksum = 0;
+        self.fragment_length = 0;
+        self.processed_parts_count = 0;
+        self.work_used = 0;
     }
 
     pub fn complete(&self) -> bool {
-        self.message_length != 0 && self.decoded.len() == self.sequence_count
+        self.message_length != 0 && self.decoded_count == self.sequence_count
     }
 
     pub fn progress(&self) -> u8 {
@@ -484,7 +576,7 @@ impl FountainDecoder {
             return Err(FountainError::BudgetExceeded);
         }
 
-        if self.received.is_empty() {
+        if self.received_count == 0 {
             self.sequence_count = part.sequence_count;
             self.message_length = part.message_length;
             self.checksum = part.checksum;
@@ -493,29 +585,36 @@ impl FountainDecoder {
             return Err(FountainError::InconsistentPart);
         }
 
-        // Z2.4c-2 bridge: u8 index set -> Vec<usize> keys (BTree reshape is Z2.4c-3)
-        let (raw, n) = part.indexes_raw();
-        let indexes: Vec<usize> = raw[..n].iter().map(|&i| i as usize).collect();
-        if self.received.contains(&indexes) {
+        let (raw, rn) = part.indexes_raw();
+        let mut key = IdxSet::new();
+        key.extend_from_slice(&raw[..rn])
+            .map_err(|_| FountainError::BudgetExceeded)?;
+        if self.received.iter().flatten().any(|k| k == &key) {
             return Ok(false);
         }
         // Gate4 #4: session frame budget — duplicates don't count (idempotent), new frames do
-        if self.received.len() >= MAX_TOTAL_FRAMES {
+        if self.received_count >= MAX_TOTAL_FRAMES {
             return Err(FountainError::BudgetExceeded);
         }
-        self.received.insert(indexes);
+        let slot = self
+            .received
+            .iter_mut()
+            .find(|s| s.is_none())
+            .ok_or(FountainError::BudgetExceeded)?;
+        *slot = Some(key);
+        self.received_count += 1;
 
-        if part.is_simple() {
+        if rn == 1 {
             self.process_simple(part)?;
         } else {
-            self.process_complex(part)?;
+            self.process_complex(part, &raw[..rn])?;
         }
         self.processed_parts_count += 1;
         Ok(true)
     }
 
     pub fn validate(&self, part: &Part) -> bool {
-        !self.received.is_empty()
+        self.received_count != 0
             && part.sequence_count == self.sequence_count
             && part.message_length == self.message_length
             && part.checksum == self.checksum
@@ -523,74 +622,111 @@ impl FountainDecoder {
     }
 
     fn process_simple(&mut self, part: Part) -> Result<(), FountainError> {
-        let (raw, n) = part.indexes_raw();
-        let index = if n > 0 {
-            raw[0] as usize
-        } else {
-            return Err(FountainError::ExpectedItem);
-        };
-        self.decoded.insert(index, part.clone());
-        self.queue.push_back((index, part));
+        let (raw, _) = part.indexes_raw();
+        let index = raw[0] as usize;
+        let slot = self
+            .decoded
+            .iter_mut()
+            .find(|s| s.is_none())
+            .ok_or(FountainError::BudgetExceeded)?;
+        *slot = Some((index, part.clone()));
+        self.decoded_count += 1;
+        let q = self
+            .queue
+            .iter_mut()
+            .find(|s| s.is_none())
+            .ok_or(FountainError::BudgetExceeded)?;
+        *q = Some((index, part));
         self.process_queue()?;
         Ok(())
     }
 
     fn process_queue(&mut self) -> Result<(), FountainError> {
-        while let Some((index, simple)) = self.queue.pop_front() {
-            let to_process: Vec<Vec<usize>> = self
-                .buffer
-                .keys()
-                .filter(|idxs| idxs.contains(&index))
-                .cloned()
-                .collect();
-            for indexes in to_process {
-                let mut part = self
-                    .buffer
-                    .remove(&indexes)
+        while let Some(qpos) = self.queue.iter().position(|s| s.is_some()) {
+            let (index, simple) = self.queue[qpos].take().ok_or(FountainError::ExpectedItem)?;
+            let index_u8 = index as u8;
+            for bpos in 0..self.buffer.len() {
+                let hit = matches!(&self.buffer[bpos], Some((key, _)) if key.contains(&index_u8));
+                if !hit {
+                    continue;
+                }
+                let (key, mut part) = self.buffer[bpos]
+                    .take()
                     .ok_or(FountainError::ExpectedItem)?;
-                let mut new_indexes = indexes.clone();
-                let to_remove = indexes
-                    .iter()
-                    .position(|&x| x == index)
-                    .ok_or(FountainError::ExpectedItem)?;
-                new_indexes.remove(to_remove);
+                let mut new_key = IdxSet::new();
+                for &i in key.iter() {
+                    if i != index_u8 {
+                        new_key.push(i).map_err(|_| FountainError::BudgetExceeded)?;
+                    }
+                }
                 self.work_used += part.data.len();
                 if self.work_used > MAX_XOR_WORK_BYTES {
                     return Err(FountainError::BudgetExceeded);
                 }
                 xor_into(&mut part.data, &simple.data);
-                if new_indexes.len() == 1 {
-                    let only = *new_indexes.first().ok_or(FountainError::ExpectedItem)?;
-                    self.decoded.insert(only, part.clone());
-                    self.queue.push_back((only, part));
+                if new_key.len() == 1 {
+                    let only = new_key[0] as usize;
+                    let slot = self
+                        .decoded
+                        .iter_mut()
+                        .find(|s| s.is_none())
+                        .ok_or(FountainError::BudgetExceeded)?;
+                    *slot = Some((only, part.clone()));
+                    self.decoded_count += 1;
+                    let q = self
+                        .queue
+                        .iter_mut()
+                        .find(|s| s.is_none())
+                        .ok_or(FountainError::BudgetExceeded)?;
+                    *q = Some((only, part));
                 } else {
-                    self.buffer.insert(new_indexes, part);
+                    self.buffer[bpos] = Some((new_key, part));
                 }
             }
         }
         Ok(())
     }
 
-    fn process_complex(&mut self, mut part: Part) -> Result<(), FountainError> {
-        let (raw, rn) = part.indexes_raw();
-        let mut indexes: Vec<usize> = raw[..rn].iter().map(|&i| i as usize).collect();
-        let to_remove: Vec<usize> = indexes
-            .iter()
-            .copied()
-            .filter(|idx| self.decoded.contains_key(idx))
-            .collect();
+    fn process_complex(&mut self, mut part: Part, raw: &[u8]) -> Result<(), FountainError> {
+        let mut indexes = IdxSet::new();
+        indexes
+            .extend_from_slice(raw)
+            .map_err(|_| FountainError::BudgetExceeded)?;
+        // Pass 1: which indexes are already decoded (in derivation order — the XOR order below
+        // matches the original Vec-based to_remove loop exactly). All-decoded is a no-op BEFORE
+        // any work accounting (preserved from the original control flow).
+        let mut to_remove = IdxSet::new();
+        for &x in indexes.iter() {
+            if self
+                .decoded
+                .iter()
+                .flatten()
+                .any(|(idx, _)| *idx == x as usize)
+            {
+                to_remove
+                    .push(x)
+                    .map_err(|_| FountainError::BudgetExceeded)?;
+            }
+        }
         if indexes.len() == to_remove.len() {
             return Ok(());
         }
-        for remove in to_remove {
+        for &remove in to_remove.iter() {
+            // order-preserving removal from the key set (Vec::remove semantics)
             let pos = indexes
                 .iter()
                 .position(|&x| x == remove)
                 .ok_or(FountainError::ExpectedItem)?;
-            indexes.remove(pos);
+            for j in pos..indexes.len() - 1 {
+                indexes[j] = indexes[j + 1];
+            }
+            indexes.pop();
             let decoded_part = self
                 .decoded
-                .get(&remove)
+                .iter()
+                .flatten()
+                .find(|(idx, _)| *idx == remove as usize)
+                .map(|(_, p)| p)
                 .ok_or(FountainError::ExpectedItem)?;
             self.work_used += part.data.len();
             if self.work_used > MAX_XOR_WORK_BYTES {
@@ -599,23 +735,74 @@ impl FountainDecoder {
             xor_into(&mut part.data, &decoded_part.data);
         }
         if indexes.len() == 1 {
-            let only = *indexes.first().ok_or(FountainError::ExpectedItem)?;
-            self.decoded.insert(only, part.clone());
-            self.queue.push_back((only, part));
+            let only = indexes[0] as usize;
+            let slot = self
+                .decoded
+                .iter_mut()
+                .find(|s| s.is_none())
+                .ok_or(FountainError::BudgetExceeded)?;
+            *slot = Some((only, part.clone()));
+            self.decoded_count += 1;
+            let q = self
+                .queue
+                .iter_mut()
+                .find(|s| s.is_none())
+                .ok_or(FountainError::BudgetExceeded)?;
+            *q = Some((only, part));
         } else {
-            self.buffer.insert(indexes, part);
+            let slot = self
+                .buffer
+                .iter_mut()
+                .find(|s| s.is_none())
+                .ok_or(FountainError::BudgetExceeded)?;
+            *slot = Some((indexes, part));
         }
         Ok(())
     }
 
-    /// Returns the reassembled message on completion (validates padding zero bytes + message_length truncation)
+    /// Reassembled message into a caller buffer (Z2.4c-3 C-class). `out` must hold
+    /// fragment_length × sequence_count bytes (combined incl. zero pad); the payload is
+    /// out[..message_length]. Returns Ok(None) while incomplete (same as the old Option).
+    pub fn message_into(&self, out: &mut [u8]) -> Result<Option<usize>, FountainError> {
+        if !self.complete() {
+            return Ok(None);
+        }
+        let total = self.fragment_length * self.sequence_count;
+        if out.len() < total {
+            return Err(FountainError::OutputTooSmall);
+        }
+        for idx in 0..self.sequence_count {
+            let part = self
+                .decoded
+                .iter()
+                .flatten()
+                .find(|(i, _)| *i == idx)
+                .map(|(_, p)| p)
+                .ok_or(FountainError::ExpectedItem)?;
+            out[idx * self.fragment_length..(idx + 1) * self.fragment_length]
+                .copy_from_slice(&part.data);
+        }
+        let pad = &out[self.message_length..total];
+        if pad.iter().any(|&x| x != 0) {
+            return Err(FountainError::InvalidPadding);
+        }
+        Ok(Some(self.message_length))
+    }
+
+    /// Test/legacy convenience (allocates). Production reassembly uses `message_into`.
     pub fn message(&self) -> Result<Option<Vec<u8>>, FountainError> {
         if !self.complete() {
             return Ok(None);
         }
         let mut combined = Vec::with_capacity(self.fragment_length * self.sequence_count);
         for idx in 0..self.sequence_count {
-            let part = self.decoded.get(&idx).ok_or(FountainError::ExpectedItem)?;
+            let part = self
+                .decoded
+                .iter()
+                .flatten()
+                .find(|(i, _)| *i == idx)
+                .map(|(_, p)| p)
+                .ok_or(FountainError::ExpectedItem)?;
             combined.extend_from_slice(&part.data);
         }
         let pad = &combined
@@ -824,9 +1011,14 @@ mod tests {
             let part = enc.make_part(seq).unwrap();
             let (raw, rn) = part.indexes_raw();
             let clean = raw[..rn].contains(&2)
-                && raw[..rn]
-                    .iter()
-                    .all(|&i| i == 2 || !dec.decoded.contains_key(&(i as usize)));
+                && raw[..rn].iter().all(|&i| {
+                    i == 2
+                        || !dec
+                            .decoded
+                            .iter()
+                            .flatten()
+                            .any(|(idx, _)| *idx == i as usize)
+                });
             if rn >= 2 && clean {
                 assert!(dec.receive(part).unwrap());
                 buffered2 = true;

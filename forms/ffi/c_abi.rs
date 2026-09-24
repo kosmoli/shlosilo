@@ -779,7 +779,7 @@ pub mod r3 {
 
     /// R3: create a multipart decoder. Returns a handle on success, null on failure.
     #[no_mangle]
-    pub extern "C" fn shlosilo_ur_decode_new() -> *mut UrMultipartDecoder {
+    pub extern "C" fn shlosilo_ur_decode_new() -> *mut UrMultipartDecoder<'static> {
         let result = ffi_catch_unwind!(|| -> *mut UrMultipartDecoder {
             Box::into_raw(Box::new(UrMultipartDecoder::new()))
         });
@@ -794,7 +794,7 @@ pub mod r3 {
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub extern "C" fn shlosilo_ur_decode_feed(
-        handle: *mut UrMultipartDecoder,
+        handle: *mut UrMultipartDecoder<'static>,
         frame: *const c_char,
         accepted_out: *mut c_uint,
     ) -> c_int {
@@ -872,7 +872,7 @@ pub mod r3 {
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub extern "C" fn shlosilo_ur_decode_payload(
-        handle: *mut UrMultipartDecoder,
+        handle: *mut UrMultipartDecoder<'static>,
         payload_buf: *mut u8,
         payload_buf_len: c_uint,
         actual_len: *mut c_uint,
@@ -935,7 +935,7 @@ pub mod r3 {
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub extern "C" fn shlosilo_ur_decode_type(
-        handle: *mut UrMultipartDecoder,
+        handle: *mut UrMultipartDecoder<'static>,
         type_buf: *mut u8,
         type_buf_len: c_uint,
         actual_len: *mut c_uint,
@@ -1106,7 +1106,7 @@ pub mod r3 {
     /// R3: release the decoder handle. Null-safe (idempotent).
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: visible to clippy once mod r3 becomes pub; free contract: single-owner
-    pub extern "C" fn shlosilo_ur_decode_free(handle: *mut UrMultipartDecoder) {
+    pub extern "C" fn shlosilo_ur_decode_free(handle: *mut UrMultipartDecoder<'static>) {
         if !handle.is_null() {
             unsafe { drop(Box::from_raw(handle)) };
         }
