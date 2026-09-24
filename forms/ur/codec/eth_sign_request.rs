@@ -107,7 +107,7 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
             if comps.len() % 2 != 0 {
                 return Err(err());
             }
-            let mut flat = alloc::vec::Vec::with_capacity(comps.len() / 2);
+            let mut flat = heapless::Vec::<u32, 16>::new(); // Z2.4b-2: bounded component list (BIP-32 paths cap at CAPS_PATH_COMPONENTS=16)
             let mut ci = comps.iter();
             while let Some(idx_item) = ci.next() {
                 let idx = idx_item?.as_uint()?;
@@ -127,12 +127,14 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
                     return Err(err());
                 }
                 let raw = if hardened { idx | 0x8000_0000 } else { idx };
-                flat.push(raw);
+                flat.push(raw).map_err(|_| err())?;
             }
             // Gate4 #5 note: key 2 (depth) is not validated — in the official ur-registry test vector
             // (test_encode) the depth is a placeholder value 0x12345678; neither the registry spec nor upstream
             // implementations (keystone/ur-registry) give depth constraining semantics; depth is informational.
-            Some(crate::derivation::path::DerivationPath::from_flat(flat)?)
+            Some(crate::derivation::path::DerivationPath::from_flat(
+                flat.iter().copied(),
+            )?)
         }
         None => None,
     };

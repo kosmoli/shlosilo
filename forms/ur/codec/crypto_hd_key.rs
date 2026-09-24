@@ -27,47 +27,48 @@ fn err() -> ShlosiloError {
 }
 
 /// Public key HDKey encoding (never exports the private key)
+///
+/// Z2.4b-2: structural write into a caller-sized stack buffer (was Vec fragment pairs) —
+/// the UR registry map is head-first, entries stream in order.
 pub fn encode(xpub: &Bip32XPub, path: Option<&DerivationPath>) -> Result<UrEncoded> {
+    use crate::encoding::cbor::CborWriter;
+
     let key = &xpub[45..78];
     let chain = &xpub[13..45];
     let parent_fp = u32::from_be_bytes(xpub[5..9].try_into().unwrap());
 
-    let mut pairs: alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> = alloc::vec![
-        (cbor::encode_uint(KEY_DATA), cbor::encode_bytes(key)),
-        (cbor::encode_uint(CHAIN_CODE), cbor::encode_bytes(chain)),
-        (
-            cbor::encode_uint(PARENT_FINGERPRINT),
-            cbor::encode_uint(parent_fp as u64)
-        ),
-    ];
-
-    if let Some(path) = path {
-        pairs.push((
-            cbor::encode_uint(ORIGIN),
-            cbor::encode_tag(TAG_CRYPTO_KEYPATH, &encode_keypath(path)),
-        ));
-    }
-
-    let cbor = cbor::encode_map(&pairs);
-    ur_encode::encode(UrTypeTag::CryptoHdKey, &cbor)
+    // bounded: map head + key/chain/fp entries (~85B) + origin keypath tag+map (~130B max)
+    let mut buf = [0u8; 256];
+    let n = {
+        let mut w = CborWriter::new(&mut buf);
+        w.map_head(if path.is_some() { 4 } else { 3 })?;
+        w.uint(KEY_DATA)?;
+        w.bytes(key)?;
+        w.uint(CHAIN_CODE)?;
+        w.bytes(chain)?;
+        w.uint(PARENT_FINGERPRINT)?;
+        w.uint(u64::from(parent_fp))?;
+        if let Some(path) = path {
+            w.uint(ORIGIN)?;
+            w.tag(TAG_CRYPTO_KEYPATH)?;
+            encode_keypath(&mut w, path)?;
+        }
+        w.pos()
+    };
+    ur_encode::encode(UrTypeTag::CryptoHdKey, &buf[..n])
 }
 
-fn encode_keypath(path: &DerivationPath) -> alloc::vec::Vec<u8> {
-    let mut comps = alloc::vec::Vec::new();
+/// crypto-keypath map: {1: [idx0, hard0, idx1, hard1, ...], 2: depth}
+fn encode_keypath(w: &mut cbor::CborWriter<'_>, path: &DerivationPath) -> Result<()> {
+    w.map_head(2)?;
+    w.uint(KEYPATH_COMPONENTS)?;
+    w.array_head(2 * path.len())?;
     for idx in path.as_slice() {
-        comps.push(cbor::encode_uint(idx.value() as u64));
-        comps.push(cbor::encode_bool(idx.is_hardened()));
+        w.uint(u64::from(idx.value()))?;
+        w.bool(idx.is_hardened())?;
     }
-    cbor::encode_map(&[
-        (
-            cbor::encode_uint(KEYPATH_COMPONENTS),
-            cbor::encode_array(&comps),
-        ),
-        (
-            cbor::encode_uint(KEYPATH_DEPTH),
-            cbor::encode_uint(path.len() as u64),
-        ),
-    ])
+    w.uint(KEYPATH_DEPTH)?;
+    w.uint(path.len() as u64) // depth is informational (Gate4 #5)
 }
 
 /// Decode crypto-hdkey: returns (key 33B, chain_code 32B, parent_fp)

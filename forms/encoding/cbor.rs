@@ -110,6 +110,108 @@ pub fn encode_tag(tag: u64, inner: &[u8]) -> Vec<u8> {
     out
 }
 
+// ─── Structural writer (Z2.4b-2) ──────────────────────────────────────
+
+/// Structural CBOR writer over a caller buffer — the zero-heap encode path.
+///
+/// Maps/arrays are written head-first with the element count known up front and
+/// entries stream in order, so no intermediate fragment buffers are needed (the
+/// `encode_map(&[(Vec<u8>, Vec<u8>)])` pattern allocates a fragment pair per entry;
+/// this writer removes those). Overflow raises BufferTooSmall — never silent truncation.
+///
+/// The `encode_* -> Vec<u8>` family above is test/legacy convenience API (integration
+/// tests + fixture generators) and is NOT reachable from the signing path — production
+/// encoders write structurally through `CborWriter`.
+pub struct CborWriter<'b> {
+    buf: &'b mut [u8],
+    pos: usize,
+}
+
+impl<'b> CborWriter<'b> {
+    pub fn new(buf: &'b mut [u8]) -> Self {
+        CborWriter { buf, pos: 0 }
+    }
+
+    /// Bytes written so far.
+    pub fn written(&self) -> &[u8] {
+        &self.buf[..self.pos]
+    }
+
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+
+    fn put(&mut self, bytes: &[u8]) -> Result<()> {
+        crate::types::push::push_slice(self.buf, &mut self.pos, bytes)
+    }
+
+    fn len_arg(n: usize) -> Result<u64> {
+        u64::try_from(n).map_err(|_| err())
+    }
+
+    fn head(&mut self, major: u8, arg: u64) -> Result<()> {
+        // major type in the high 3 bits; argument in the low 5 (RFC 8949 §3)
+        if arg < 24 {
+            self.put(&[(major << 5) | arg as u8])
+        } else if arg <= u8::MAX as u64 {
+            self.put(&[(major << 5) | 24, arg as u8])
+        } else if arg <= u16::MAX as u64 {
+            self.put(&[(major << 5) | 25])?;
+            self.put(&arg.to_be_bytes()[6..])
+        } else if arg <= u32::MAX as u64 {
+            self.put(&[(major << 5) | 26])?;
+            self.put(&arg.to_be_bytes()[4..])
+        } else {
+            self.put(&[(major << 5) | 27])?;
+            self.put(&arg.to_be_bytes())
+        }
+    }
+
+    pub fn uint(&mut self, n: u64) -> Result<()> {
+        self.head(0, n)
+    }
+
+    pub fn neg(&mut self, n: u64) -> Result<()> {
+        self.head(1, n)
+    }
+
+    pub fn bytes(&mut self, b: &[u8]) -> Result<()> {
+        self.head(2, Self::len_arg(b.len())?)?;
+        self.put(b)
+    }
+
+    pub fn text(&mut self, s: &str) -> Result<()> {
+        self.head(3, Self::len_arg(s.len())?)?;
+        self.put(s.as_bytes())
+    }
+
+    pub fn bool(&mut self, b: bool) -> Result<()> {
+        self.put(&[if b { 0xf5 } else { 0xf4 }])
+    }
+
+    pub fn null(&mut self) -> Result<()> {
+        self.put(&[0xf6])
+    }
+
+    pub fn array_head(&mut self, count: usize) -> Result<()> {
+        self.head(4, Self::len_arg(count)?)
+    }
+
+    pub fn map_head(&mut self, count: usize) -> Result<()> {
+        self.head(5, Self::len_arg(count)?)
+    }
+
+    /// Tag head only — write the inner item next.
+    pub fn tag(&mut self, tag: u64) -> Result<()> {
+        self.head(6, tag)
+    }
+
+    /// Append a pre-encoded item verbatim (legacy bridge).
+    pub fn raw(&mut self, item: &[u8]) -> Result<()> {
+        self.put(item)
+    }
+}
+
 // ─── Decoding ──────────────────────────────────────────────────────────
 
 /// A decoded CBOR item.
