@@ -115,7 +115,7 @@ mod tests {
     static_assertions::assert_not_impl_any!(TxKeyPair: Clone, Copy);
     static_assertions::assert_not_impl_any!(TxInputSpec: Clone, Copy);
     static_assertions::assert_not_impl_any!(TxOutputSpec: Clone, Copy);
-    static_assertions::assert_not_impl_any!(SignedTx: Clone, Copy);
+    static_assertions::assert_not_impl_any!(SignedTx<'static>: Clone, Copy);
     static_assertions::assert_not_impl_any!(PsbtSignInput: Clone, Copy);
     static_assertions::assert_not_impl_any!(PsbtP2PKHSignInput: Clone, Copy);
     static_assertions::assert_not_impl_any!(PsbtP2SHP2WPKHSignInput: Clone, Copy);

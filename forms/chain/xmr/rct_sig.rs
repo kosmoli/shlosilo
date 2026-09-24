@@ -42,6 +42,7 @@ use monero_ed25519::{Commitment as MoneroCommitment, CompressedPoint, Scalar};
 use rand_core::{CryptoRng, RngCore};
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::types::SliceVec;
 
 /// RingCTType (BIP-compatible with XMR consensus)
 pub mod rct_type {
@@ -55,9 +56,21 @@ pub mod rct_type {
     pub const BULLETPROOFS_PLUS: u8 = 3;
 }
 
+/// Z2.3 C3b-2: caller storage bundle for the RCT collections (consumed by value).
+/// `commitment_points` holds the masked openings for BP+ proving (secret-adjacent);
+/// the wire bytes live in the separate `commitments` pool.
+pub struct RctPools<'a> {
+    pub pseudo_outs: &'a mut [[u8; 32]],
+    pub commitment_points: &'a mut [Option<MoneroCommitment>],
+    pub commitments: &'a mut [[u8; 32]],
+    pub encrypted_amounts: &'a mut [[u8; 8]],
+    pub bulletproofs: &'a mut [Option<Bulletproof>],
+    pub clsag_sigs: &'a mut [ClsagProof],
+}
+
 /// RctSigBase — the fixed part (independent of ring members; serializable early)
-#[derive(Clone, Debug)]
-pub struct RctSigBase {
+/// Z2.3 C3b-2 (2026-09-24, option 2): `pseudo_outs` is a caller-storage SliceVec.
+pub struct RctSigBase<'a> {
     /// RingCT type (only 2 or 3 supported in shlosilo)
     pub rct_type: u8,
     /// tx fee (public)
@@ -65,12 +78,12 @@ pub struct RctSigBase {
     /// pseudo output commitments (one per input, 32 bytes)
     /// pseudo_outs[i] = Commitment(pseudo_mask_i, 0).commit()
     /// (Bull 0 range + 0 amount — makes sum_input_commitments = sum_output_commitments + fee*G)
-    pub pseudo_outs: Vec<[u8; 32]>,
+    pub pseudo_outs: SliceVec<'a, [u8; 32]>,
 }
 
-impl RctSigBase {
-    pub fn new(rct_type: u8, fee: u64, pseudo_outs: Vec<[u8; 32]>) -> Self {
-        Self {
+impl<'a> RctSigBase<'a> {
+    pub fn new(rct_type: u8, fee: u64, pseudo_outs: SliceVec<'a, [u8; 32]>) -> Self {
+        RctSigBase {
             rct_type,
             fee,
             pseudo_outs,
@@ -85,7 +98,7 @@ impl RctSigBase {
         crate::chain::xmr::transaction::encode_varint(&mut out, self.fee);
         // pseudo_outs_count (varint)
         crate::chain::xmr::transaction::encode_varint(&mut out, self.pseudo_outs.len() as u64);
-        for p in &self.pseudo_outs {
+        for p in self.pseudo_outs.iter() {
             out.extend_from_slice(p);
         }
         out
@@ -93,27 +106,29 @@ impl RctSigBase {
 }
 
 /// RctSigPrunable — the prunable part (depends on ring members, large, trimmable)
-#[derive(Clone, Debug)]
-pub struct RctSigPrunable {
+/// Z2.3 C3b-2 (2026-09-24, option 2): all four lists are caller-storage SliceVecs.
+/// `bulletproofs` slots are `Option` because the vendored `Bulletproof` type has no
+/// `Default` placeholder (None = empty slot).
+pub struct RctSigPrunable<'a> {
     /// output commitments (one per output, 32-byte Ed25519 point)
     /// commitments[i] = Commitment(mask_i, amount_i).commit()
-    pub commitments: Vec<[u8; 32]>,
+    pub commitments: SliceVec<'a, [u8; 32]>,
     /// encrypted amounts per output (8 bytes ecdh-encrypted amount)
-    pub encrypted_amounts: Vec<[u8; 8]>,
+    pub encrypted_amounts: SliceVec<'a, [u8; 8]>,
     /// Bulletproofs (type=2: one BP per output; type=3: one aggregated BP)
-    pub bulletproofs: Vec<Bulletproof>,
+    pub bulletproofs: SliceVec<'a, Option<Bulletproof>>,
     /// CLSAG signatures per input
-    pub clsag_sigs: Vec<ClsagProof>,
+    pub clsag_sigs: SliceVec<'a, ClsagProof>,
 }
 
-impl RctSigPrunable {
+impl<'a> RctSigPrunable<'a> {
     pub fn new(
-        commitments: Vec<[u8; 32]>,
-        encrypted_amounts: Vec<[u8; 8]>,
-        bulletproofs: Vec<Bulletproof>,
-        clsag_sigs: Vec<ClsagProof>,
+        commitments: SliceVec<'a, [u8; 32]>,
+        encrypted_amounts: SliceVec<'a, [u8; 8]>,
+        bulletproofs: SliceVec<'a, Option<Bulletproof>>,
+        clsag_sigs: SliceVec<'a, ClsagProof>,
     ) -> Self {
-        Self {
+        RctSigPrunable {
             commitments,
             encrypted_amounts,
             bulletproofs,
@@ -128,7 +143,7 @@ impl RctSigPrunable {
         let mut out = Vec::new();
         // commitments
         crate::chain::xmr::transaction::encode_varint(&mut out, self.commitments.len() as u64);
-        for c in &self.commitments {
+        for c in self.commitments.iter() {
             out.extend_from_slice(c);
         }
         // encrypted_amounts
@@ -136,12 +151,12 @@ impl RctSigPrunable {
             &mut out,
             self.encrypted_amounts.len() as u64,
         );
-        for a in &self.encrypted_amounts {
+        for a in self.encrypted_amounts.iter() {
             out.extend_from_slice(a);
         }
         // bulletproofs (variable size, written via Write trait)
         let mut bp_buf = Vec::new();
-        for bp in &self.bulletproofs {
+        for bp in self.bulletproofs.iter().flatten() {
             let mut single = Vec::new();
             bp.write(&mut single)
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -151,25 +166,26 @@ impl RctSigPrunable {
         out.extend_from_slice(&bp_buf);
         // clsag_sigs
         crate::chain::xmr::transaction::encode_varint(&mut out, self.clsag_sigs.len() as u64);
-        for clsag in &self.clsag_sigs {
-            let bytes = clsag.to_bytes().to_vec();
+        for clsag in self.clsag_sigs.iter() {
+            // Z2.3 C3b-2: borrow the proof bytes directly (was a to_vec() copy)
+            let bytes = clsag.to_bytes();
             crate::chain::xmr::transaction::encode_varint(&mut out, bytes.len() as u64);
-            out.extend_from_slice(&bytes);
+            out.extend_from_slice(bytes);
         }
         Ok(out)
     }
 }
 
 /// Complete RctSig (Base + Prunable)
-#[derive(Clone, Debug)]
-pub struct RctSig {
-    pub base: RctSigBase,
-    pub prunable: RctSigPrunable,
+/// Z2.3 C3b-2 (2026-09-24, option 2): carries the caller-storage lifetimes.
+pub struct RctSig<'a> {
+    pub base: RctSigBase<'a>,
+    pub prunable: RctSigPrunable<'a>,
 }
 
-impl RctSig {
-    pub fn new(base: RctSigBase, prunable: RctSigPrunable) -> Self {
-        Self { base, prunable }
+impl<'a> RctSig<'a> {
+    pub fn new(base: RctSigBase<'a>, prunable: RctSigPrunable<'a>) -> Self {
+        RctSig { base, prunable }
     }
 
     /// Serialize the complete RctSig
@@ -271,11 +287,14 @@ mod tests {
     /// RctSigBase serialization
     #[test]
     fn rct_sig_base_serialize() {
-        let base = RctSigBase::new(
+        let mut po = [[0u8; 32]; 2];
+        let mut base = RctSigBase::new(
             rct_type::BULLETPROOFS_PLUS,
             100_000_000, // 0.0001 XMR
-            vec![[0xab; 32], [0xcd; 32]],
+            SliceVec::new(&mut po),
         );
+        base.pseudo_outs.push([0xab; 32]).unwrap();
+        base.pseudo_outs.push([0xcd; 32]).unwrap();
         let bytes = base.serialize();
         // type=3, varint(fee), varint(2 pseudo_outs), 2x32 bytes
         assert_eq!(bytes[0], rct_type::BULLETPROOFS_PLUS);
@@ -408,7 +427,9 @@ mod tests {
     /// RctSigBase full round-trip
     #[test]
     fn rct_sig_base_round_trip() {
-        let base = RctSigBase::new(rct_type::BULLETPROOFS_PLUS, 100, vec![[0x42; 32]]);
+        let mut po = [[0u8; 32]; 1];
+        let mut base = RctSigBase::new(rct_type::BULLETPROOFS_PLUS, 100, SliceVec::new(&mut po));
+        base.pseudo_outs.push([0x42; 32]).unwrap();
         let bytes = base.serialize();
         assert_eq!(bytes[0], rct_type::BULLETPROOFS_PLUS);
         // then decode — simplified: verify the byte structure
@@ -495,14 +516,23 @@ mod tests {
         assert!(clsag_bytes.len() >= 32 + 64);
 
         // 5. RctSigPrunable wrapper (no BP+, single-input CLSAG)
-        let commitments_prunable: Vec<[u8; 32]> = vec![real_commit.commit().compress().to_bytes()];
-        let encrypted_amounts_prunable: Vec<[u8; 8]> = vec![[0u8; 8]];
-        let prunable = RctSigPrunable::new(
-            commitments_prunable,
-            encrypted_amounts_prunable,
-            vec![], // no BP+ — CLSAG demo only
-            vec![clsag_proof],
+        let mut cm = [[0u8; 32]; 2];
+        let mut ea = [[0u8; 8]; 2];
+        let mut bp_slots: [Option<Bulletproof>; 2] = core::array::from_fn(|_| None);
+        let mut cs = core::array::from_fn::<ClsagProof, 2, _>(|_| ClsagProof::default());
+        let mut prunable = RctSigPrunable::new(
+            SliceVec::new(&mut cm),
+            SliceVec::new(&mut ea),
+            SliceVec::new(&mut bp_slots),
+            SliceVec::new(&mut cs),
         );
+        prunable
+            .commitments
+            .push(real_commit.commit().compress().to_bytes())
+            .unwrap();
+        prunable.encrypted_amounts.push([0u8; 8]).unwrap();
+        // no BP+ — CLSAG demo only
+        prunable.clsag_sigs.push(clsag_proof).unwrap();
         let prunable_bytes = prunable.serialize().unwrap();
         assert!(prunable_bytes.len() > 32);
 
@@ -517,8 +547,21 @@ mod tests {
     /// RctSig full serialization (Base + Prunable) — minimal
     #[test]
     fn rct_sig_serialize_minimal() {
-        let base = RctSigBase::new(rct_type::BULLETPROOFS_PLUS, 100, vec![[0x11; 32]]);
-        let prunable = RctSigPrunable::new(vec![[0x22; 32]], vec![[0x33; 8]], vec![], vec![]);
+        let mut po = [[0u8; 32]; 1];
+        let mut base = RctSigBase::new(rct_type::BULLETPROOFS_PLUS, 100, SliceVec::new(&mut po));
+        base.pseudo_outs.push([0x11; 32]).unwrap();
+        let mut cm = [[0u8; 32]; 1];
+        let mut ea = [[0u8; 8]; 1];
+        let mut bp_slots: [Option<Bulletproof>; 1] = core::array::from_fn(|_| None);
+        let mut cs = core::array::from_fn::<ClsagProof, 1, _>(|_| ClsagProof::default());
+        let mut prunable = RctSigPrunable::new(
+            SliceVec::new(&mut cm),
+            SliceVec::new(&mut ea),
+            SliceVec::new(&mut bp_slots),
+            SliceVec::new(&mut cs),
+        );
+        prunable.commitments.push([0x22; 32]).unwrap();
+        prunable.encrypted_amounts.push([0x33; 8]).unwrap();
         let sig = RctSig::new(base, prunable);
         let bytes = sig.serialize().unwrap();
         eprintln!("RctSig ({} bytes): {}", bytes.len(), hex_encode(&bytes));

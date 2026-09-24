@@ -47,7 +47,7 @@ pub const KEY_IMAGE_LEN: usize = 32;
 ///
 /// The monero-clsag `Clsag` serializes to `s[ring] ‖ c1 ‖ D`; sign() prepends pseudo_out (32).
 /// Z2.3 C3a (2026-09-24, option 2): leaf cap CLSAG_PROOF_MAX = 32*(RING_MAX+3).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ClsagProof {
     bytes: heapless::Vec<u8, { crate::types::caps::CLSAG_PROOF_MAX }>,
 }

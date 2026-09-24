@@ -34,6 +34,8 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::types::SliceVec;
+
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::Scalar as DScalar;
 use monero_ed25519::{Commitment as MoneroCommitment, CompressedPoint};
@@ -206,14 +208,14 @@ fn resolve_tx_output(tx_secret: &[u8; 32], index: u64, spec: &TxOutputSpec) -> R
 /// End-to-end tx builder result
 ///
 /// P1-03: `tx_secret` (the r of a payment proof) uses `SecretBytes<32>` — no Clone or Debug.
-pub struct SignedTx {
+/// Z2.3 C3b-2 (2026-09-24, option 2): rct collections live in caller storage; the former
+/// duplicate `encrypted_amounts` field is gone (single home: `rct_sig.prunable`).
+pub struct SignedTx<'a> {
     pub transaction: Transaction,
     pub tx_pub_key: [u8; 32],
     /// Per-tx secret r (payment proof export)
     pub tx_secret: SecretBytes<32>,
-    pub rct_sig: RctSig,
-    /// outputs' encrypted amounts (separate from RctSig for hash)
-    pub encrypted_amounts: Vec<[u8; 8]>,
+    pub rct_sig: RctSig<'a>,
 }
 
 /// Construct + sign a complete Monero tx (single input, multiple outputs)
@@ -227,18 +229,28 @@ pub struct SignedTx {
 /// 6. Sign CLSAG per input (using real spend key + ring members)
 /// 7. Compose RctSig (Base + Prunable)
 /// 8. Build Transaction (prefix + rct_signatures)
-pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
+pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
     inputs: &[TxInputSpec],
     outputs: &[TxOutputSpec],
     fee: u64,
+    pools: crate::chain::xmr::rct_sig::RctPools<'a>,
     rng: &mut R,
-) -> Result<SignedTx> {
+) -> Result<SignedTx<'a>> {
+    let crate::chain::xmr::rct_sig::RctPools {
+        pseudo_outs: pseudo_pool,
+        commitment_points: commit_point_pool,
+        commitments: commit_pool,
+        encrypted_amounts: enc_pool,
+        bulletproofs: bp_pool,
+        clsag_sigs: clsag_pool,
+    } = pools;
     // 1. Per-tx key pair
     let tx_keys = TxKeyPair::generate(rng)?;
 
     // 2. Encrypt amounts per output (official: shared = Hs(8·rA || varint(i)))
-    let mut encrypted_amounts = Vec::with_capacity(outputs.len());
-    let mut commitments = Vec::with_capacity(outputs.len());
+    // Z2.3 C3b-2: collections into caller pools (push overflow = explicit Err).
+    let mut encrypted_amounts = SliceVec::new(enc_pool);
+    let mut commitments = SliceVec::new(commit_point_pool);
     for (i, output) in outputs.iter().enumerate() {
         let shared_key = match output.dest_view_pub {
             Some(view) => {
@@ -251,22 +263,36 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
             None => derive_simplified_shared_key(&tx_keys.public, i as u64),
         };
         let encrypted = encrypt_amount(output.amount, &shared_key);
-        encrypted_amounts.push(encrypted);
+        encrypted_amounts
+            .push(encrypted)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
 
         let mask = bytes_to_monerod_scalar(output.mask.expose());
         let c = MoneroCommitment::new(mask, output.amount);
-        commitments.push(c);
+        commitments
+            .push(Some(c))
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
     }
 
     // 3. Pseudo outs per input
-    let mut pseudo_outs = Vec::with_capacity(inputs.len());
+    let mut pseudo_outs = SliceVec::new(pseudo_pool);
     for input in inputs {
         let pm = bytes_to_monerod_scalar(input.pseudo_mask.expose());
-        pseudo_outs.push(pseudo_out_commitment(&pm));
+        pseudo_outs
+            .push(pseudo_out_commitment(&pm))
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
     }
 
     // 4. Bulletproofs+ for output commitments
-    let bp = prove_bulletproofs_plus(rng, commitments.clone())?;
+    // Z2.3 C3b-2: vendor `prove_plus` takes Vec<Commitment> (Z5 boundary — the alloc
+    // lives at the vendor edge like clsag's `vec![...]` until the surgery).
+    let bp = prove_bulletproofs_plus(
+        rng,
+        commitments
+            .iter()
+            .map(|c| c.as_ref().cloned().unwrap())
+            .collect::<alloc::vec::Vec<_>>(),
+    )?;
 
     // 5. Build outputs + extra first (key images don't depend on msg_hash,
     //    so the full prefix can be hashed for the real CLSAG message)
@@ -299,7 +325,7 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
     let msg_hash = crate::encoding::keccak256::hash(&prefix.serialize())?;
 
     // 6. CLSAG sign per input
-    let mut clsag_sigs = Vec::with_capacity(inputs.len());
+    let mut clsag_sigs = SliceVec::new(clsag_pool);
     let mut pseudo_outs_bytes = Vec::with_capacity(inputs.len());
 
     for input in inputs {
@@ -329,21 +355,29 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
             rng,
         )?;
 
-        clsag_sigs.push(clsag_proof);
+        clsag_sigs
+            .push(clsag_proof)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         pseudo_outs_bytes.push(pseudo_out_bytes);
     }
 
-    // 6. Compose RctSig
-    let commitments_bytes: Vec<[u8; 32]> = commitments
-        .iter()
-        .map(|c| c.commit().compress().to_bytes())
-        .collect();
+    // 6. Compose RctSig (Z2.3 C3b-2: lists into caller pools)
+    let mut commitments_bytes = SliceVec::new(commit_pool);
+    for c in commitments.iter() {
+        commitments_bytes
+            .push(c.as_ref().unwrap().commit().compress().to_bytes())
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+    }
 
     let base = RctSigBase::new(rct_sig_type(), fee, pseudo_outs);
+    let mut bulletproofs = SliceVec::new(bp_pool);
+    bulletproofs
+        .push(Some(bp))
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
     let prunable = RctSigPrunable::new(
         commitments_bytes,
-        encrypted_amounts.clone(),
-        vec![bp],
+        encrypted_amounts,
+        bulletproofs,
         clsag_sigs,
     );
     let rct_sig = RctSig::new(base, prunable);
@@ -360,7 +394,6 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
         tx_pub_key: tx_keys.public,
         tx_secret: tx_keys.secret,
         rct_sig,
-        encrypted_amounts,
     })
 }
 
@@ -382,7 +415,7 @@ fn rct_sig_type() -> u8 {
 ///
 /// **Output**: Ok(()) if all CLSAG + BP+ are valid
 pub fn verify_signed_tx<R: RngCore + CryptoRng>(
-    signed: &SignedTx,
+    signed: &SignedTx<'_>,
     inputs: &[TxInputSpec],
     outputs: &[TxOutputSpec],
     fee: u64,
@@ -392,14 +425,17 @@ pub fn verify_signed_tx<R: RngCore + CryptoRng>(
     let mut rng = OsRngFallback::new();
 
     let mut commitments_points = Vec::new();
-    for c in &signed.rct_sig.prunable.commitments {
+    for c in signed.rct_sig.prunable.commitments.iter() {
         commitments_points.push(CompressedPoint::from(*c));
     }
 
     if signed.rct_sig.prunable.bulletproofs.is_empty() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    let bp = &signed.rct_sig.prunable.bulletproofs[0];
+    // Z2.3 C3b-2: bulletproof slots are Option (vendor type has no Default placeholder)
+    let bp = signed.rct_sig.prunable.bulletproofs[0]
+        .as_ref()
+        .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     if !verify_bulletproofs_plus(&mut rng, bp, &commitments_points) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -651,8 +687,30 @@ mod tests {
         };
 
         // 8. Sign
-        let signed =
-            build_and_sign_tx(&[mk_input_spec()], &[mk_output_spec()], fee, &mut rng).unwrap();
+        let mut po = [[0u8; 32]; 4];
+        let mut cp: [Option<MoneroCommitment>; 4] = core::array::from_fn(|_| None);
+        let mut cm = [[0u8; 32]; 4];
+        let mut ea = [[0u8; 8]; 4];
+        let mut bp_slots: [Option<monero_bulletproofs::Bulletproof>; 2] =
+            core::array::from_fn(|_| None);
+        let mut cs = core::array::from_fn::<crate::chain::xmr::clsag::ClsagProof, 4, _>(|_| {
+            crate::chain::xmr::clsag::ClsagProof::default()
+        });
+        let signed = build_and_sign_tx(
+            &[mk_input_spec()],
+            &[mk_output_spec()],
+            fee,
+            crate::chain::xmr::rct_sig::RctPools {
+                pseudo_outs: &mut po,
+                commitment_points: &mut cp,
+                commitments: &mut cm,
+                encrypted_amounts: &mut ea,
+                bulletproofs: &mut bp_slots,
+                clsag_sigs: &mut cs,
+            },
+            &mut rng,
+        )
+        .unwrap();
 
         eprintln!(
             "Tx: {} bytes, tx_pub_key: {}",
@@ -721,7 +779,30 @@ mod tests {
             is_subaddress: false,
         };
 
-        let signed = build_and_sign_tx(&[input_spec], &[output_spec], 100, &mut rng).unwrap();
+        let mut po = [[0u8; 32]; 4];
+        let mut cp: [Option<MoneroCommitment>; 4] = core::array::from_fn(|_| None);
+        let mut cm = [[0u8; 32]; 4];
+        let mut ea = [[0u8; 8]; 4];
+        let mut bp_slots: [Option<monero_bulletproofs::Bulletproof>; 2] =
+            core::array::from_fn(|_| None);
+        let mut cs = core::array::from_fn::<crate::chain::xmr::clsag::ClsagProof, 4, _>(|_| {
+            crate::chain::xmr::clsag::ClsagProof::default()
+        });
+        let signed = build_and_sign_tx(
+            &[input_spec],
+            &[output_spec],
+            100,
+            crate::chain::xmr::rct_sig::RctPools {
+                pseudo_outs: &mut po,
+                commitment_points: &mut cp,
+                commitments: &mut cm,
+                encrypted_amounts: &mut ea,
+                bulletproofs: &mut bp_slots,
+                clsag_sigs: &mut cs,
+            },
+            &mut rng,
+        )
+        .unwrap();
         let tx_bytes = signed.transaction.serialize();
         let mut pos = 0;
         let parsed = Transaction::deserialize(&tx_bytes, &mut pos).unwrap();
@@ -791,7 +872,30 @@ mod tests {
             is_subaddress: false,
         };
 
-        let signed = build_and_sign_tx(&[input_spec], &[out1, out2], 100, &mut rng).unwrap();
+        let mut po = [[0u8; 32]; 4];
+        let mut cp: [Option<MoneroCommitment>; 4] = core::array::from_fn(|_| None);
+        let mut cm = [[0u8; 32]; 4];
+        let mut ea = [[0u8; 8]; 4];
+        let mut bp_slots: [Option<monero_bulletproofs::Bulletproof>; 2] =
+            core::array::from_fn(|_| None);
+        let mut cs = core::array::from_fn::<crate::chain::xmr::clsag::ClsagProof, 4, _>(|_| {
+            crate::chain::xmr::clsag::ClsagProof::default()
+        });
+        let signed = build_and_sign_tx(
+            &[input_spec],
+            &[out1, out2],
+            100,
+            crate::chain::xmr::rct_sig::RctPools {
+                pseudo_outs: &mut po,
+                commitment_points: &mut cp,
+                commitments: &mut cm,
+                encrypted_amounts: &mut ea,
+                bulletproofs: &mut bp_slots,
+                clsag_sigs: &mut cs,
+            },
+            &mut rng,
+        )
+        .unwrap();
 
         // BP+ aggregated 2 commitments
         assert_eq!(signed.rct_sig.prunable.bulletproofs.len(), 1);
@@ -834,6 +938,15 @@ mod tests {
         let dest_view = TxKeyPair::from_secret(SecretBytes::new([9u8; 32])).unwrap();
         let dest_spend = TxKeyPair::from_secret(SecretBytes::new([11u8; 32])).unwrap();
         let pid = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let mut po = [[0u8; 32]; 4];
+        let mut cp: [Option<MoneroCommitment>; 4] = core::array::from_fn(|_| None);
+        let mut cm = [[0u8; 32]; 4];
+        let mut ea = [[0u8; 8]; 4];
+        let mut bp_slots: [Option<monero_bulletproofs::Bulletproof>; 2] =
+            core::array::from_fn(|_| None);
+        let mut cs = core::array::from_fn::<crate::chain::xmr::clsag::ClsagProof, 4, _>(|_| {
+            crate::chain::xmr::clsag::ClsagProof::default()
+        });
         let signed = build_and_sign_tx(
             &[TxInputSpec {
                 key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
@@ -854,6 +967,14 @@ mod tests {
                 is_subaddress: false,
             }],
             100,
+            crate::chain::xmr::rct_sig::RctPools {
+                pseudo_outs: &mut po,
+                commitment_points: &mut cp,
+                commitments: &mut cm,
+                encrypted_amounts: &mut ea,
+                bulletproofs: &mut bp_slots,
+                clsag_sigs: &mut cs,
+            },
             &mut rng,
         )
         .unwrap();
@@ -909,6 +1030,15 @@ mod tests {
             1000,
         );
         let dest_view = TxKeyPair::from_secret(SecretBytes::new([9u8; 32])).unwrap();
+        let mut po = [[0u8; 32]; 4];
+        let mut cp: [Option<MoneroCommitment>; 4] = core::array::from_fn(|_| None);
+        let mut cm = [[0u8; 32]; 4];
+        let mut ea = [[0u8; 8]; 4];
+        let mut bp_slots: [Option<monero_bulletproofs::Bulletproof>; 2] =
+            core::array::from_fn(|_| None);
+        let mut cs = core::array::from_fn::<crate::chain::xmr::clsag::ClsagProof, 4, _>(|_| {
+            crate::chain::xmr::clsag::ClsagProof::default()
+        });
         let signed = build_and_sign_tx(
             &[TxInputSpec {
                 key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
@@ -933,6 +1063,14 @@ mod tests {
                 is_subaddress: false,
             }],
             100,
+            crate::chain::xmr::rct_sig::RctPools {
+                pseudo_outs: &mut po,
+                commitment_points: &mut cp,
+                commitments: &mut cm,
+                encrypted_amounts: &mut ea,
+                bulletproofs: &mut bp_slots,
+                clsag_sigs: &mut cs,
+            },
             &mut rng,
         )
         .unwrap();
@@ -975,6 +1113,15 @@ mod tests {
         );
         let dest_view = TxKeyPair::from_secret(SecretBytes::new([9u8; 32])).unwrap();
         let dest_spend = TxKeyPair::from_secret(SecretBytes::new([11u8; 32])).unwrap();
+        let mut po = [[0u8; 32]; 4];
+        let mut cp: [Option<MoneroCommitment>; 4] = core::array::from_fn(|_| None);
+        let mut cm = [[0u8; 32]; 4];
+        let mut ea = [[0u8; 8]; 4];
+        let mut bp_slots: [Option<monero_bulletproofs::Bulletproof>; 2] =
+            core::array::from_fn(|_| None);
+        let mut cs = core::array::from_fn::<crate::chain::xmr::clsag::ClsagProof, 4, _>(|_| {
+            crate::chain::xmr::clsag::ClsagProof::default()
+        });
         let signed = build_and_sign_tx(
             &[TxInputSpec {
                 key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
@@ -995,6 +1142,14 @@ mod tests {
                 is_subaddress: false,
             }],
             100,
+            crate::chain::xmr::rct_sig::RctPools {
+                pseudo_outs: &mut po,
+                commitment_points: &mut cp,
+                commitments: &mut cm,
+                encrypted_amounts: &mut ea,
+                bulletproofs: &mut bp_slots,
+                clsag_sigs: &mut cs,
+            },
             &mut rng,
         )
         .unwrap();
@@ -1042,6 +1197,15 @@ mod tests {
         // Subaddress = main address + m·G; an independent key pair simulates the subaddress (A_s, B_s) here
         let dest_view = TxKeyPair::from_secret(SecretBytes::new([21u8; 32])).unwrap();
         let dest_spend = TxKeyPair::from_secret(SecretBytes::new([23u8; 32])).unwrap();
+        let mut po = [[0u8; 32]; 4];
+        let mut cp: [Option<MoneroCommitment>; 4] = core::array::from_fn(|_| None);
+        let mut cm = [[0u8; 32]; 4];
+        let mut ea = [[0u8; 8]; 4];
+        let mut bp_slots: [Option<monero_bulletproofs::Bulletproof>; 2] =
+            core::array::from_fn(|_| None);
+        let mut cs = core::array::from_fn::<crate::chain::xmr::clsag::ClsagProof, 4, _>(|_| {
+            crate::chain::xmr::clsag::ClsagProof::default()
+        });
         let signed = build_and_sign_tx(
             &[TxInputSpec {
                 key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
@@ -1062,6 +1226,14 @@ mod tests {
                 is_subaddress: true,
             }],
             100,
+            crate::chain::xmr::rct_sig::RctPools {
+                pseudo_outs: &mut po,
+                commitment_points: &mut cp,
+                commitments: &mut cm,
+                encrypted_amounts: &mut ea,
+                bulletproofs: &mut bp_slots,
+                clsag_sigs: &mut cs,
+            },
             &mut rng,
         )
         .unwrap();

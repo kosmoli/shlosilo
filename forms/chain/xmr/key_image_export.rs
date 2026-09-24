@@ -78,7 +78,7 @@ pub fn decrypt_export_payload(
         chacha20::ChaCha20Legacy::new_from_slices(key.as_slice(), nonce).map_err(|_| err())?;
     // Z2.1 S6 (2026-09-24): decrypted plaintext — zeroized on drop.
     let mut plain = zeroize::Zeroizing::new(raw_data[NONCE_LEN..].to_vec());
-    cipher.apply_keystream(&mut *plain);
+    cipher.apply_keystream(&mut plain);
 
     // 3. key-image magic has a leading u32 LE 0; both export magics carry pk1||pk2
     let start = if magic == KEY_IMAGE_EXPORT_MAGIC {
