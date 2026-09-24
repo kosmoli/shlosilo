@@ -641,7 +641,7 @@ pub mod r3 {
         payload: *const u8,
         payload_len: c_uint,
         max_fragment_len: c_uint,
-    ) -> *mut UrMultipartEncoder {
+    ) -> *mut UrMultipartEncoder<'static> {
         let result = ffi_catch_unwind!(|| -> Option<*mut UrMultipartEncoder> {
             if type_name.is_null() || payload.is_null() {
                 return None;
@@ -681,7 +681,7 @@ pub mod r3 {
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub extern "C" fn shlosilo_ur_encode_next(
-        handle: *mut UrMultipartEncoder,
+        handle: *mut UrMultipartEncoder<'static>,
         frame_buf: *mut u8,
         frame_buf_len: c_uint,
         actual_len: *mut c_uint,
@@ -728,7 +728,7 @@ pub mod r3 {
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub extern "C" fn shlosilo_ur_encode_next_cyclic(
-        handle: *mut UrMultipartEncoder,
+        handle: *mut UrMultipartEncoder<'static>,
         frame_buf: *mut u8,
         frame_buf_len: c_uint,
         actual_len: *mut c_uint,

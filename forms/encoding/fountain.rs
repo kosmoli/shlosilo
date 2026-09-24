@@ -70,20 +70,30 @@ impl Xoshiro256 {
         (self.next_double() * ((high - low + 1) as f64)) as u64 + low
     }
 
-    fn shuffled(&mut self, items: Vec<usize>) -> Vec<usize> {
-        let mut items = items;
-        let mut out = Vec::with_capacity(items.len());
-        while !items.is_empty() {
-            let index = self.next_int(0, (items.len() - 1) as u64) as usize;
-            out.push(items.remove(index));
+    /// keystone-ur `shuffled()` semantics: repeatedly draw an index into the REMAINING
+    /// items, remove it and append to the output. (This is NOT Fisher-Yates — the same
+    /// draws map to a different permutation — so the remove-and-append shape is kept
+    /// bit-exact; Z2.4c-2 runs it on fixed arrays instead of Vec.) `out` receives the
+    /// permutation of 0..count.
+    fn shuffled_into(&mut self, count: usize, out: &mut [u8]) {
+        let mut items = [0u8; 256];
+        for (i, slot) in items[..count].iter_mut().enumerate() {
+            *slot = i as u8;
         }
-        out
+        let mut remaining = count;
+        for slot in out[..count].iter_mut() {
+            let index = self.next_int(0, (remaining - 1) as u64) as usize;
+            let v = items[index];
+            items.copy_within(index + 1..remaining, index);
+            remaining -= 1;
+            *slot = v;
+        }
     }
 
-    /// Degree sampling: weight 1/i (i = 1..=count), Vose's alias method, returns 1..=count
-    fn choose_degree(&mut self, count: usize) -> usize {
-        let weights: Vec<f64> = (1..=count).map(|x| 1.0 / x as f64).collect();
-        let mut sampler = Weighted::new(&weights);
+    /// Degree sampling via Vose's alias table, returns 1..=count. The sampler is a pure
+    /// function of the fragment count and consumes no RNG — owners hoist one per session
+    /// (Z2.4c-2), and draws stay bit-identical to the old per-call construction.
+    fn choose_degree(&mut self, sampler: &Weighted) -> usize {
         sampler.next(self) + 1
     }
 }
@@ -91,76 +101,105 @@ impl Xoshiro256 {
 // ─── Weighted alias sampler ────────────────────────────────────────
 
 /// Vose's alias method (aligned with keystone-ur sampler.rs, including the f64 path).
-struct Weighted {
-    aliases: Vec<usize>,
-    probs: Vec<f64>,
+/// Z2.4c-2: fixed inline tables (was Vec); count ≤ MAX_SEQUENCE_COUNT = 256 so the
+/// alias index domain is u8 (0..=255).
+pub(crate) struct Weighted {
+    aliases: [u8; 256],
+    probs: [f64; 256],
+    len: usize,
 }
 
 impl Weighted {
-    fn new(weights: &[f64]) -> Self {
+    /// Sampler for the degree distribution w_i = 1/i (i = 1..=count) — the only
+    /// distribution the fountain uses.
+    pub(crate) fn new_inverse(count: usize) -> Self {
+        let mut w = [0f64; 256];
+        for (i, x) in w[..count].iter_mut().enumerate() {
+            *x = 1.0 / (i + 1) as f64;
+        }
+        Self::from_weights(&w[..count])
+    }
+
+    pub(crate) fn from_weights(weights: &[f64]) -> Self {
         debug_assert!(!weights.is_empty());
         let count = weights.len();
         let summed: f64 = weights.iter().sum();
         debug_assert!(summed > 0.0);
-        let mut w = weights.to_vec();
-        for x in &mut w {
-            *x *= count as f64 / summed;
+        let mut w = [0f64; 256];
+        for (dst, &src) in w[..count].iter_mut().zip(weights.iter()) {
+            *dst = src * count as f64 / summed;
         }
 
         // partition: small/large
-        let mut small: Vec<usize> = Vec::new();
-        let mut large: Vec<usize> = Vec::new();
+        let mut small = [0u8; 256];
+        let mut small_len = 0usize;
+        let mut large = [0u8; 256];
+        let mut large_len = 0usize;
         // keystone-ur order: j from 1..=count, count-j; partition predicate w[j] < 1.0 → small
         // Equivalent implementation: for j in (0..count).rev() — keeps the same fill order as upstream
         for j in (0..count).rev() {
             if w[j] < 1.0 {
-                small.push(j);
+                small[small_len] = j as u8;
+                small_len += 1;
             } else {
-                large.push(j);
+                large[large_len] = j as u8;
+                large_len += 1;
             }
         }
         // Upstream: (1..=count).map(|j| count - j) = [count-1, count-2, .., 0] reversed;
         // after partition s/l keep that reversed order. The for j in (0..count).rev() above produces the same order.
 
-        let mut probs = alloc::vec![0.0; count];
-        let mut aliases = alloc::vec![0usize; count];
+        let mut probs = [0f64; 256];
+        let mut aliases = [0u8; 256];
 
-        while !small.is_empty() && !large.is_empty() {
-            let a = small.remove(small.len() - 1);
-            let g = large.remove(large.len() - 1);
+        while small_len > 0 && large_len > 0 {
+            let a = small[small_len - 1] as usize;
+            small_len -= 1;
+            let g = large[large_len - 1] as usize;
+            large_len -= 1;
             probs[a] = w[a];
-            aliases[a] = g;
+            aliases[a] = g as u8;
             w[g] += w[a] - 1.0;
             if w[g] < 1.0 {
-                small.push(g);
+                small[small_len] = g as u8;
+                small_len += 1;
             } else {
-                large.push(g);
+                large[large_len] = g as u8;
+                large_len += 1;
             }
         }
-        for g in large.drain(..) {
-            probs[g] = 1.0;
+        for k in 0..large_len {
+            probs[large[k] as usize] = 1.0;
         }
-        for a in small.drain(..) {
-            probs[a] = 1.0;
+        for k in 0..small_len {
+            probs[small[k] as usize] = 1.0;
         }
 
-        Self { aliases, probs }
+        Self {
+            aliases,
+            probs,
+            len: count,
+        }
     }
 
-    fn next(&mut self, rng: &mut Xoshiro256) -> usize {
+    fn next(&self, rng: &mut Xoshiro256) -> usize {
         let r1 = rng.next_double();
         let r2 = rng.next_double();
-        let n = self.probs.len();
+        let n = self.len;
         let i = (n as f64 * r1) as usize;
         if r2 < self.probs[i] {
             i
         } else {
-            self.aliases[i]
+            self.aliases[i] as usize
         }
     }
 }
 
 // ─── Part ──────────────────────────────────────────────────────────
+
+/// Fragment payload cap (Z2.4c-2 semantic limit): max_fragment_length must fit —
+/// over-cap raises InvalidFragmentLen at encoder construction.
+pub(crate) const PART_DATA_MAX: usize = 2048;
 
 /// Fountain fragment. Wire shape (aligned with keystone-ur Part::to_cbor):
 /// CBOR array(5) = [sequence, sequence_count, message_length, checksum, data]
@@ -170,7 +209,7 @@ pub(crate) struct Part {
     pub sequence_count: usize,
     pub message_length: usize,
     pub checksum: u32,
-    pub data: Vec<u8>,
+    pub data: heapless::Vec<u8, PART_DATA_MAX>,
 }
 
 impl Part {
@@ -204,15 +243,29 @@ impl Part {
         out
     }
 
-    /// Fragment covered indexes (keystone-ur Part::indexes semantics)
-    pub fn indexes(&self) -> Vec<usize> {
-        choose_fragments(self.sequence, self.sequence_count, self.checksum)
+    /// Fragment covered indexes (keystone-ur Part::indexes semantics).
+    /// Z2.4c-2: zero-heap — returns (index set as u8 array, degree). fragment_count ≤
+    /// MAX_SEQUENCE_COUNT = 256 so the u8 domain 0..=255 is exact. Infallible by
+    /// construction (degree ≤ sequence_count ≤ 256 = array length).
+    pub fn indexes_raw(&self) -> ([u8; MAX_SEQUENCE_COUNT], usize) {
+        let sampler = Weighted::new_inverse(self.sequence_count.max(1));
+        let mut raw = [0u8; MAX_SEQUENCE_COUNT];
+        let n = choose_fragments_into(
+            self.sequence,
+            self.sequence_count,
+            self.checksum,
+            &sampler,
+            &mut raw,
+        );
+        (raw, n)
     }
 
     pub fn is_simple(&self) -> bool {
-        self.indexes().len() == 1
+        self.indexes_raw().1 == 1
     }
 }
+
+static ZEROES: [u8; PART_DATA_MAX] = [0u8; PART_DATA_MAX];
 
 fn xor_into(dst: &mut [u8], src: &[u8]) {
     debug_assert_eq!(dst.len(), src.len());
@@ -223,22 +276,27 @@ fn xor_into(dst: &mut [u8], src: &[u8]) {
 
 /// keystone-ur choose_fragments: when seq ≤ count, output the single original part;
 /// otherwise seed = [seq BE u32][checksum BE u32] → SHA256 → xoshiro sampling.
-pub(crate) fn choose_fragments(
+/// Z2.4c-2: writes the u8 index set into `out`, returns the degree.
+pub(crate) fn choose_fragments_into(
     sequence: usize,
     fragment_count: usize,
     checksum: u32,
-) -> Vec<usize> {
+    sampler: &Weighted,
+    out: &mut [u8],
+) -> usize {
     if sequence <= fragment_count {
-        return alloc::vec![sequence - 1];
+        out[0] = (sequence - 1) as u8;
+        return 1;
     }
     let mut seed = [0u8; 8];
     seed[0..4].copy_from_slice(&(sequence as u32).to_be_bytes());
     seed[4..8].copy_from_slice(&checksum.to_be_bytes());
     let mut xoshiro = Xoshiro256::from_seed_bytes(&seed);
-    let degree = xoshiro.choose_degree(fragment_count);
-    let mut shuffled = xoshiro.shuffled((0..fragment_count).collect());
-    shuffled.truncate(degree);
-    shuffled
+    let degree = xoshiro.choose_degree(sampler);
+    let mut shuffled = [0u8; 256];
+    xoshiro.shuffled_into(fragment_count, &mut shuffled[..fragment_count]);
+    out[..degree].copy_from_slice(&shuffled[..degree]);
+    degree
 }
 
 // ─── Encoder ───────────────────────────────────────────────────────
@@ -253,24 +311,22 @@ fn fragment_length(data_length: usize, max_fragment_length: usize) -> usize {
     div_ceil(data_length, fragment_count)
 }
 
-fn partition(data: &[u8], fragment_length: usize) -> Vec<Vec<u8>> {
-    let pad = (fragment_length - (data.len() % fragment_length)) % fragment_length;
-    let mut padded = Vec::with_capacity(data.len() + pad);
-    padded.extend_from_slice(data);
-    padded.resize(padded.len() + pad, 0u8);
-    padded.chunks(fragment_length).map(<[u8]>::to_vec).collect()
-}
-
-/// Fountain encoder (no side effects: all state is closed over self, output is a value)
-pub(crate) struct FountainEncoder {
-    parts: Vec<Vec<u8>>,
+/// Fountain encoder (no side effects: all state is closed over self, output is a value).
+/// Z2.4c-2: borrows the message (no fragment copy — fragments are sliced on demand;
+/// the old `partition` materialized the whole padded message as Vec<Vec<u8>>) and hoists
+/// the degree sampler (pure function of the fragment count).
+pub(crate) struct FountainEncoder<'a> {
+    message: &'a [u8],
+    fragment_length: usize,
+    fragment_count: usize,
     message_length: usize,
     checksum: u32,
     current_sequence: usize,
+    sampler: Weighted,
 }
 
-impl FountainEncoder {
-    pub fn new(message: &[u8], max_fragment_length: usize) -> Result<Self, FountainError> {
+impl<'a> FountainEncoder<'a> {
+    pub fn new(message: &'a [u8], max_fragment_length: usize) -> Result<Self, FountainError> {
         if message.is_empty() {
             return Err(FountainError::EmptyMessage);
         }
@@ -278,41 +334,71 @@ impl FountainEncoder {
             return Err(FountainError::InvalidFragmentLen);
         }
         let fl = fragment_length(message.len(), max_fragment_length);
+        // Z2.4c-2 semantic caps: fragment payload fits Part::data, fragment count fits
+        // the decoder budget and the u8 index domain.
+        if fl > PART_DATA_MAX {
+            return Err(FountainError::InvalidFragmentLen);
+        }
+        let fragment_count = div_ceil(message.len(), fl);
+        if fragment_count > MAX_SEQUENCE_COUNT {
+            return Err(FountainError::InvalidFragmentLen);
+        }
         Ok(Self {
-            parts: partition(message, fl),
+            message,
+            fragment_length: fl,
+            fragment_count,
             message_length: message.len(),
             checksum: crate::encoding::bytewords::crc32(message),
             current_sequence: 0,
+            sampler: Weighted::new_inverse(fragment_count),
         })
     }
 
     pub fn fragment_count(&self) -> usize {
-        self.parts.len()
+        self.fragment_count
     }
 
-    fn make_part(&self, sequence: usize) -> Part {
-        let indexes = choose_fragments(sequence, self.parts.len(), self.checksum);
-        let mut mixed = alloc::vec![0u8; self.parts[0].len()];
-        for item in indexes {
-            xor_into(&mut mixed, &self.parts[item]);
-        }
-        Part {
+    /// Fragment i of the virtual zero-padded message: the real (non-pad) slice only —
+    /// XOR with the implicit zero pad tail is the identity, so mixing the real prefix
+    /// reproduces the padded result byte-for-byte.
+    fn fragment(&self, i: usize) -> &[u8] {
+        let start = i * self.fragment_length;
+        let end = core::cmp::min(start + self.fragment_length, self.message.len());
+        &self.message[start..end]
+    }
+
+    fn make_part(&self, sequence: usize) -> Result<Part, FountainError> {
+        let mut idx = [0u8; MAX_SEQUENCE_COUNT];
+        let n = choose_fragments_into(
             sequence,
-            sequence_count: self.parts.len(),
+            self.fragment_count,
+            self.checksum,
+            &self.sampler,
+            &mut idx,
+        );
+        let mut data = heapless::Vec::from_slice(&ZEROES[..self.fragment_length])
+            .map_err(|_| FountainError::InvalidFragmentLen)?;
+        for &item in &idx[..n] {
+            let frag = self.fragment(item as usize);
+            xor_into(&mut data[..frag.len()], frag);
+        }
+        Ok(Part {
+            sequence,
+            sequence_count: self.fragment_count,
             message_length: self.message_length,
             checksum: self.checksum,
-            data: mixed,
-        }
+            data,
+        })
     }
 
-    pub fn next_part(&mut self) -> Part {
+    pub fn next_part(&mut self) -> Result<Part, FountainError> {
         self.current_sequence += 1;
         self.make_part(self.current_sequence)
     }
 
-    /// XMR cyclic mode (aligned with keystone: after seq reaches count it loops back to 1, so software wallets can catch up)
-    pub fn next_cyclic_part(&mut self) -> Part {
-        if self.current_sequence == self.parts.len() {
+    /// XMR cyclic mode (aligned with keystone: after seq reaches count it loops back to 1, so software wallets can ca
+    pub fn next_cyclic_part(&mut self) -> Result<Part, FountainError> {
+        if self.current_sequence == self.fragment_count {
             self.current_sequence = 1;
         } else {
             self.current_sequence += 1;
@@ -407,7 +493,9 @@ impl FountainDecoder {
             return Err(FountainError::InconsistentPart);
         }
 
-        let indexes = part.indexes();
+        // Z2.4c-2 bridge: u8 index set -> Vec<usize> keys (BTree reshape is Z2.4c-3)
+        let (raw, n) = part.indexes_raw();
+        let indexes: Vec<usize> = raw[..n].iter().map(|&i| i as usize).collect();
         if self.received.contains(&indexes) {
             return Ok(false);
         }
@@ -435,7 +523,12 @@ impl FountainDecoder {
     }
 
     fn process_simple(&mut self, part: Part) -> Result<(), FountainError> {
-        let index = *part.indexes().first().ok_or(FountainError::ExpectedItem)?;
+        let (raw, n) = part.indexes_raw();
+        let index = if n > 0 {
+            raw[0] as usize
+        } else {
+            return Err(FountainError::ExpectedItem);
+        };
         self.decoded.insert(index, part.clone());
         self.queue.push_back((index, part));
         self.process_queue()?;
@@ -479,7 +572,8 @@ impl FountainDecoder {
     }
 
     fn process_complex(&mut self, mut part: Part) -> Result<(), FountainError> {
-        let mut indexes = part.indexes();
+        let (raw, rn) = part.indexes_raw();
+        let mut indexes: Vec<usize> = raw[..rn].iter().map(|&i| i as usize).collect();
         let to_remove: Vec<usize> = indexes
             .iter()
             .copied()
@@ -556,17 +650,17 @@ mod tests {
     fn keystone_doctest_ten_chars() {
         let data = b"Ten chars!";
         let mut enc = FountainEncoder::new(data, 4).unwrap();
-        let p1 = enc.next_part();
-        assert_eq!(p1.data, b"Ten ");
-        let p2 = enc.next_part();
-        assert_eq!(p2.data, b"char");
+        let p1 = enc.next_part().unwrap();
+        assert_eq!(p1.data.as_slice(), b"Ten ");
+        let p2 = enc.next_part().unwrap();
+        assert_eq!(p2.data.as_slice(), b"char");
         // Drop p3
-        let _p3 = enc.next_part();
+        let _p3 = enc.next_part().unwrap();
         // The first frame after the RNG takes over is still p3
-        let p3_again = enc.next_part();
-        assert_eq!(p3_again.data, b"s!\0\0");
+        let p3_again = enc.next_part().unwrap();
+        assert_eq!(p3_again.data.as_slice(), b"s!\0\0");
         // The next frame = p1 ^ p2 ^ p3
-        let mixed = enc.next_part();
+        let mixed = enc.next_part().unwrap();
         let xor3 = {
             let mut x = p1.data.clone();
             xor_into(&mut x, &p2.data);
@@ -592,7 +686,7 @@ mod tests {
     fn keystone_sampler_wolf_vector() {
         let weights = vec![1.0, 2.0, 4.0, 8.0];
         let mut xoshiro = Xoshiro256::from_seed_bytes(b"Wolf");
-        let mut sampler = Weighted::new(&weights);
+        let sampler = Weighted::from_weights(&weights);
 
         let expected = [
             3, 3, 3, 3, 3, 3, 3, 0, 2, 3, 3, 3, 3, 1, 2, 2, 1, 3, 3, 2, 3, 3, 1, 1, 2, 1, 1, 3, 1,
@@ -620,11 +714,11 @@ mod tests {
         let mut simple_count = 0usize;
         let mut idx_sum = 0usize;
         for _ in 0..100 {
-            let p = enc.next_part();
+            let p = enc.next_part().unwrap();
             if p.is_simple() {
                 simple_count += 1;
             }
-            idx_sum += p.indexes().len();
+            idx_sum += p.indexes_raw().1;
         }
         assert_eq!(simple_count, 39, "simple part ratio drift");
         assert_eq!(idx_sum, 333, "average degree drift");
@@ -642,7 +736,7 @@ mod tests {
             if dec.complete() {
                 break;
             }
-            let p = enc.next_part();
+            let p = enc.next_part().unwrap();
             let keep = i % 5 != 0; // drop 20% of frames
             if keep {
                 dec.receive(p).unwrap();
@@ -664,7 +758,7 @@ mod tests {
             sequence_count: MAX_SEQUENCE_COUNT + 1,
             message_length: 16,
             checksum: 0xdeadbeef,
-            data: alloc::vec![0u8; 16],
+            data: heapless::Vec::from_slice(&[0u8; 16]).unwrap(),
         };
         assert_eq!(dec.receive(part), Err(FountainError::BudgetExceeded));
     }
@@ -677,7 +771,7 @@ mod tests {
             sequence_count: 3,
             message_length: 10,
             checksum: 0x01020304,
-            data: alloc::vec![0xab_u8; 4],
+            data: heapless::Vec::from_slice(&[0xab_u8; 4]).unwrap(),
         };
         let cbor = part.to_cbor();
         // 82 array(5), 01 uint1, 03 uint3, 0a uint10, 1a01020304 uint32bit, 44abcd... bytes(4)
@@ -689,48 +783,61 @@ mod tests {
         );
     }
     /// Audit #6 re-review P2-03 method 1: behavioral test of the fountain-layer XOR work budget.
-    /// This module has been narrowed to pub(crate) (not a stable support surface); this test is crate-internal verification.
-    /// Construction keys: keep 2 undecoded idx (62,63); the mixed part must contain 62 and not 63,
-    /// the session never completes; each elimination removes = degree-1 decoded copies,
-    /// and work_used accumulates until 16MiB triggers BudgetExceeded.
+    /// Z2.4c-2 adaptation: wire fragments are capped at PART_DATA_MAX (2 KiB), so a natural
+    /// construction can no longer accumulate 16 MiB of XOR work inside the frame budget.
+    /// Enforcement semantics are asserted white-box: a real elimination accumulates work
+    /// (natural path), and a session pre-loaded just under the cap trips BudgetExceeded at
+    /// the enforcement point on the next elimination.
     #[test]
     fn xor_work_budget_enforced() {
-        let frag = 1024 * 1024;
-        let count = 64;
+        let frag = 2048;
+        let count = 8;
         let message = vec![0xABu8; frag * count];
-        let mut enc = FountainEncoder::new(&message, frag).unwrap();
+        let enc = FountainEncoder::new(&message, frag).unwrap();
         let mut dec = FountainDecoder::new();
-        // receive 62 simple parts (idx 0..=61 decoded; 62,63 undecoded)
-        for _ in 0..count - 2 {
-            dec.receive(enc.next_part()).unwrap();
-        }
-        assert_eq!(dec.decoded.len(), count - 2);
-        let mut hit = false;
-        let mut frames = 0usize;
+
+        // Buffer a mixed part covering idx 0 plus only-undecoded others (nothing decoded yet).
+        let mut buffered = false;
         for seq in count + 1..=MAX_SEQUENCE_COUNT {
-            let part = enc.make_part(seq);
-            let idxs = part.indexes();
-            if idxs.len() < 3 || !idxs.contains(&(count - 2)) || idxs.contains(&(count - 1)) {
-                continue;
+            let part = enc.make_part(seq).unwrap();
+            let (raw, rn) = part.indexes_raw();
+            if rn >= 2 && raw[..rn].contains(&0) && !raw[..rn].contains(&2) {
+                assert!(dec.receive(part).unwrap());
+                buffered = true;
+                break;
             }
-            match dec.receive(part) {
-                Err(FountainError::BudgetExceeded) => {
-                    hit = true;
-                    break;
-                }
-                Ok(_) => frames += 1,
-                Err(e) => panic!("unexpected error: {e:?}"),
-            }
-            assert!(
-                dec.work_used <= MAX_XOR_WORK_BYTES,
-                "work_used={} exceeded without BudgetExceeded",
-                dec.work_used
-            );
         }
-        assert!(
-            hit,
-            "XOR work budget must trigger (frames={frames}, work_used={})",
-            dec.work_used
+        assert!(buffered, "no mixed part over idx 0 found");
+
+        // Natural accumulation: decoding simple idx 0 eliminates through the buffer once.
+        dec.receive(enc.make_part(1).unwrap()).unwrap();
+        assert_eq!(
+            dec.work_used, frag,
+            "one elimination must account one fragment of work"
+        );
+
+        // White-box enforcement: preload just under the cap, buffer {2,3}, decode 2 -> the
+        // elimination adds `frag` bytes and must trip BudgetExceeded at the > check.
+        dec.work_used = MAX_XOR_WORK_BYTES - (frag / 2);
+        let mut buffered2 = false;
+        for seq in count + 1..=MAX_SEQUENCE_COUNT {
+            let part = enc.make_part(seq).unwrap();
+            let (raw, rn) = part.indexes_raw();
+            let clean = raw[..rn].contains(&2)
+                && raw[..rn]
+                    .iter()
+                    .all(|&i| i == 2 || !dec.decoded.contains_key(&(i as usize)));
+            if rn >= 2 && clean {
+                assert!(dec.receive(part).unwrap());
+                buffered2 = true;
+                break;
+            }
+        }
+        assert!(buffered2, "no clean mixed part over idx 2 found");
+        assert_eq!(
+            dec.receive(enc.make_part(3).unwrap()),
+            Err(FountainError::BudgetExceeded),
+            "work budget must trip at the enforcement point"
         );
     }
 }

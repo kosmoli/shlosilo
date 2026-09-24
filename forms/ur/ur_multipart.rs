@@ -37,14 +37,14 @@ pub const DEFAULT_FRAGMENT_LEN: usize = 200;
 
 /// Stateful multipart encoder. `next_frame_into()` produces URI frame text into a
 /// caller buffer; XMR re-scan scenarios use `next_cyclic_frame_into()`.
-pub struct UrMultipartEncoder {
-    inner: FountainEncoder,
+pub struct UrMultipartEncoder<'a> {
+    inner: FountainEncoder<'a>,
     /// Z2.4c: fixed-cap (registry type tokens are short ascii-alnum/hyphen strings)
     type_name: heapless::String<32>,
 }
 
-impl UrMultipartEncoder {
-    pub fn new(type_name: &str, payload: &[u8], max_fragment_len: usize) -> Result<Self> {
+impl<'a> UrMultipartEncoder<'a> {
+    pub fn new(type_name: &str, payload: &'a [u8], max_fragment_len: usize) -> Result<Self> {
         if payload.len() > MULTIPART_PAYLOAD_MAX_LEN {
             return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
         }
@@ -74,13 +74,19 @@ impl UrMultipartEncoder {
     /// C-class policy); returns the length written. `scratch` holds the intermediate part
     /// CBOR (caller-sized ≥ part wire size); overflow anywhere raises an explicit error.
     pub fn next_frame_into(&mut self, scratch: &mut [u8], out: &mut [u8]) -> Result<usize> {
-        let part = self.inner.next_part();
+        let part = self
+            .inner
+            .next_part()
+            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
         self.frame_of_into(&part, scratch, out)
     }
 
     /// XMR cyclic re-scan frame (seq wraps back to 1 at the top)
     pub fn next_cyclic_frame_into(&mut self, scratch: &mut [u8], out: &mut [u8]) -> Result<usize> {
-        let part = self.inner.next_cyclic_part();
+        let part = self
+            .inner
+            .next_cyclic_part()
+            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
         self.frame_of_into(&part, scratch, out)
     }
 
@@ -257,7 +263,8 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
         sequence_count,
         message_length,
         checksum,
-        data: alloc::vec::Vec::from(data),
+        data: heapless::Vec::from_slice(data)
+            .map_err(|_| err(ShlosiloErrorKind::UrPayloadTooLarge))?,
     })
 }
 
