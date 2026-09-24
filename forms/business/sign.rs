@@ -15,7 +15,12 @@ use crate::types::SecretBytes;
 
 extern crate alloc;
 
-use alloc::string::String;
+/// Z2.3 C3b-3: one-byte SliceVec push with the standard overflow error shape.
+fn pushb(v: &mut crate::types::SliceVec<u8>, b: u8) -> Result<()> {
+    v.push(b).map_err(|_| {
+        crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::BufferTooSmall)
+    })
+}
 
 fn err(kind: ShlosiloErrorKind) -> ShlosiloError {
     ShlosiloError::new(kind)
@@ -194,14 +199,64 @@ fn sign_xmr(
         rand_chacha::ChaCha20Rng::from_seed(*seed_bytes)
     };
 
-    let mut ptxs = alloc::vec::Vec::with_capacity(unsigned_tx.txes.len());
-    let mut key_images_outer: alloc::vec::Vec<[u8; 32]> = alloc::vec::Vec::new();
-    let mut tx_key_images: alloc::vec::Vec<TxKeyImageEntry> = alloc::vec::Vec::new();
+    // Z2.3 C3b-3 (2026-09-24): signed-side collections live in caller-style pools.
+    // TRANSITIONAL ROOT: Vec-backed pool storage allocated here — the only remaining
+    // alloc cluster of this flow besides the C-class serialize/tx_bytes buffers.
+    // Marked for Z2.4/Z3: provisioning moves to the caller workspace.
+    let total_sources: usize = unsigned_tx.txes.iter().map(|t| t.sources.len()).sum();
+    let total_dsts: usize = unsigned_tx.txes.iter().map(|t| t.splitted_dsts.len()).sum();
+    let total_sel: usize = unsigned_tx
+        .txes
+        .iter()
+        .map(|t| t.selected_transfers.len())
+        .sum();
+    let total_dests: usize = unsigned_tx.txes.iter().map(|t| t.dests.len()).sum();
+    let mut ptx_backing: alloc::vec::Vec<Option<PendingTx<'_>>> =
+        (0..unsigned_tx.txes.len()).map(|_| None).collect();
+    let mut ki_backing = alloc::vec::Vec::new();
+    ki_backing.resize(total_sources, [0u8; 32]);
+    let mut tki_backing = alloc::vec::Vec::new();
+    tki_backing.resize(total_dsts, TxKeyImageEntry::default());
+    let mut sel_backing = alloc::vec![0u8; total_sel];
+    let mut kstr_backing = alloc::vec![0u8; 67 * total_sources]; // `<` + 64 hex + `>` + ` ` per key image
+    let mut dests_backing = alloc::vec::Vec::new();
+    dests_backing.resize(
+        total_dests,
+        crate::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+    );
+    let mut ptx_sv = crate::types::SliceVec::new(&mut ptx_backing[..]);
+    let mut ki_sv = crate::types::SliceVec::new(&mut ki_backing[..]);
+    let mut tki_sv = crate::types::SliceVec::new(&mut tki_backing[..]);
+    let mut sel_rest: &mut [u8] = &mut sel_backing[..];
+    let mut kstr_rest: &mut [u8] = &mut kstr_backing[..];
+    let mut dests_rest: &mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry] =
+        &mut dests_backing[..];
 
     // P1-03: into_iter takes ownership — construction_data is moved into PendingTx (previously
     // the deep-copying tx_data.clone(); once TxSourceEntry is not Clone, move is the only path,
     // also the audit-required "secret copies must not proliferate")
     for tx_data in unsigned_tx.txes {
+        // Z2.3 C3b-3: carve this tx's slices out of the flat pools (split_at_mut —
+        // disjoint &mut chunks, safe-Rust, counts known from tx_data)
+        let (sel_chunk, r) = sel_rest.split_at_mut(tx_data.selected_transfers.len());
+        sel_rest = r;
+        let mut selected_transfers = crate::types::SliceVec::new(sel_chunk);
+        for &t in &tx_data.selected_transfers {
+            selected_transfers.push(t as u8).map_err(|_| {
+                crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::BufferTooSmall)
+            })?;
+        }
+        let (kstr_chunk, r) = kstr_rest.split_at_mut(67 * tx_data.sources.len());
+        kstr_rest = r;
+        let mut key_images_str = crate::types::SliceVec::new(kstr_chunk);
+        let (dests_chunk, r) = dests_rest.split_at_mut(tx_data.dests.len());
+        dests_rest = r;
+        let mut dests = crate::types::SliceVec::new(dests_chunk);
+        for d in tx_data.dests.iter() {
+            dests.push(d.clone()).map_err(|_| {
+                crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::BufferTooSmall)
+            })?;
+        }
         // per-tx context digest
         // Audit #9 P1-04: ctx_src is folded into the source mask plaintext — Zeroizing owner
         // (erased on Drop whether the hash completes or an early ? returns)
@@ -249,8 +304,7 @@ fn sign_xmr(
 
         #[cfg(feature = "tx-phase-timing-ffi")]
         let mut px6 = PhaseProbe::start(6);
-        // key images: already present in the signed wire; rebuild the string + outer list here
-        let mut ki_str = String::new();
+        // key images: already present in the signed wire; rebuild the `<hex> ` string + outer list here
         for src in &tx_data.sources {
             let (ki, _off) = crate::chain::xmr::subaddress::derive_input_from_source(
                 &view_sec,
@@ -259,13 +313,18 @@ fn sign_xmr(
                 tx_data.subaddr_account,
                 &tx_data.subaddr_indices,
             )?;
-            ki_str.push('<');
+            // Z2.3 C3b-3: `<hex> ` bytes built straight into the carved slice
+            // (was String + alloc::format!) — byte layout unchanged
+            pushb(&mut key_images_str, b'<')?;
             for b in ki {
-                ki_str.push_str(&alloc::format!("{:02x}", b));
+                pushb(&mut key_images_str, b"0123456789abcdef"[(b >> 4) as usize])?;
+                pushb(&mut key_images_str, b"0123456789abcdef"[(b & 0xf) as usize])?;
             }
-            ki_str.push('>');
-            ki_str.push(' ');
-            key_images_outer.push(ki);
+            pushb(&mut key_images_str, b'>')?;
+            pushb(&mut key_images_str, b' ')?;
+            ki_sv.push(ki).map_err(|_| {
+                crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::BufferTooSmall)
+            })?;
         }
 
         // tx_key_images: output one-time address + Hs(shared_key)·Hp(stealth)
@@ -325,10 +384,16 @@ fn sign_xmr(
                     crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
                 )
             })?;
-            tx_key_images.push(TxKeyImageEntry {
-                output_pubkey: stealth,
-                key_image: image,
-            });
+            tki_sv
+                .push(TxKeyImageEntry {
+                    output_pubkey: stealth,
+                    key_image: image,
+                })
+                .map_err(|_| {
+                    crate::error::ShlosiloError::new(
+                        crate::error::ShlosiloErrorKind::BufferTooSmall,
+                    )
+                })?;
         }
 
         #[cfg(feature = "tx-phase-timing-ffi")]
@@ -336,29 +401,29 @@ fn sign_xmr(
             p.end();
         }
 
-        ptxs.push(PendingTx {
-            tx_bytes,
-            dust: 0,
-            fee,
-            dust_added_to_fee: false,
-            change_dts: tx_data.change_dts.clone(),
-            selected_transfers: tx_data
-                .selected_transfers
-                .iter()
-                .map(|&t| t as u8)
-                .collect(),
-            key_images_str: ki_str,
-            additional_tx_keys: zeroize::Zeroizing::new(alloc::vec::Vec::new()),
-            dests: tx_data.dests.clone(),
-            // P1-03: move instead of clone — secrets (mask/kLRki) no longer produce new copies
-            construction_data: tx_data,
-        });
+        ptx_sv
+            .push(Some(PendingTx {
+                tx_bytes,
+                dust: 0,
+                fee,
+                dust_added_to_fee: false,
+                change_dts: tx_data.change_dts.clone(),
+                selected_transfers,
+                key_images_str,
+                additional_tx_keys: heapless::Vec::new(),
+                dests,
+                // P1-03: move instead of clone — secrets (mask/kLRki) no longer produce new copies
+                construction_data: tx_data,
+            }))
+            .map_err(|_| {
+                crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::BufferTooSmall)
+            })?;
     }
 
     let set = SignedTxSet {
-        ptx: ptxs,
-        key_images: key_images_outer,
-        tx_key_images,
+        ptx: ptx_sv,
+        key_images: ki_sv,
+        tx_key_images: tki_sv,
     };
     let plain_signed = set.serialize();
 

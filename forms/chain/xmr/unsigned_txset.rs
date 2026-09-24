@@ -220,7 +220,7 @@ impl core::fmt::Debug for TxSourceEntry {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TxDestinationEntry {
     pub original: Vec<u8>,
     pub amount: u64,

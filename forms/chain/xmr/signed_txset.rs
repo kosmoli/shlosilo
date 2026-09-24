@@ -22,7 +22,7 @@ use crate::chain::xmr::subaddress::hash_to_scalar;
 use crate::chain::xmr::unsigned_txset::{TxConstructionData, TxDestinationEntry};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 
 /// magic symmetric with the decryption side
 pub const SIGNED_TX_PREFIX: &[u8] = b"Monero signed tx set\x05";
@@ -121,8 +121,12 @@ pub(crate) fn write_construction_data(out: &mut Vec<u8>, d: &TxConstructionData)
 
 // ============ PendingTx / SignedTxSet ============
 
+use crate::types::SliceVec;
+
 /// A signed transaction and its metadata (aligned with keystone PendingTx)
-pub struct PendingTx {
+/// Z2.3 C3b-3 (2026-09-24, option 2): flat lists are caller-storage SliceVecs;
+/// `construction_data` (nested aggregates) lands in C3c, `tx_bytes` in Z2.4.
+pub struct PendingTx<'a> {
     /// Full tx wire bytes (including rct signatures)
     pub tx_bytes: Vec<u8>,
     pub dust: u64,
@@ -130,17 +134,19 @@ pub struct PendingTx {
     pub dust_added_to_fee: bool,
     pub change_dts: TxDestinationEntry,
     /// ptx top level: byte per u8 (not varint)
-    pub selected_transfers: Vec<u8>,
-    /// Key image list joined as `<hex> `
-    pub key_images_str: String,
+    pub selected_transfers: SliceVec<'a, u8>,
+    /// Key image list joined as `<hex> ` (pre-built string bytes; serialized verbatim)
+    pub key_images_str: SliceVec<'a, u8>,
     /// tx_key (forced to ONE before writing to the wire — r is not returned to the host; see module docs)
-    /// Z2.1 S4 (2026-09-24): tx secret keys — zeroized on drop.
-    pub additional_tx_keys: zeroize::Zeroizing<Vec<[u8; 32]>>,
-    pub dests: Vec<TxDestinationEntry>,
+    /// Z2.1 S4 (2026-09-24): tx secret keys — zeroized on drop. Z2.3: element-zeroized heapless leaf.
+    pub additional_tx_keys:
+        heapless::Vec<zeroize::Zeroizing<[u8; 32]>, { crate::types::caps::EXTRA_KEYS_MAX }>,
+    pub dests: SliceVec<'a, TxDestinationEntry>,
     pub construction_data: TxConstructionData,
 }
 
 /// Output one-time address → key image (aligned with keystone tx_key_images)
+#[derive(Clone, Copy, Debug, Default)]
 pub struct TxKeyImageEntry {
     /// The output's one-time address (stealth address)
     pub output_pubkey: [u8; 32],
@@ -148,14 +154,16 @@ pub struct TxKeyImageEntry {
     pub key_image: [u8; 32],
 }
 
-pub struct SignedTxSet {
-    pub ptx: Vec<PendingTx>,
+/// Z2.3 C3b-3: `ptx` slots are `Option` (PendingTx holds SliceVecs and has no
+/// Default placeholder; None = empty slot).
+pub struct SignedTxSet<'a> {
+    pub ptx: SliceVec<'a, Option<PendingTx<'a>>>,
     /// One key image per transfer (outer layer, 32B each)
-    pub key_images: Vec<[u8; 32]>,
-    pub tx_key_images: Vec<TxKeyImageEntry>,
+    pub key_images: SliceVec<'a, [u8; 32]>,
+    pub tx_key_images: SliceVec<'a, TxKeyImageEntry>,
 }
 
-impl SignedTxSet {
+impl SignedTxSet<'_> {
     /// Aligned with keystone `SignedTxSet::serialize` (byte-for-byte identical).
     /// Audit #12 P1-02: the output contains construction_data (mask/kLRki) secret fields,
     /// Returns a Zeroizing owner.
@@ -164,7 +172,7 @@ impl SignedTxSet {
         // signed_tx_set version 00
         res.push(0u8);
         put_varint(&mut res, self.ptx.len() as u64);
-        for ptx in &self.ptx {
+        for ptx in self.ptx.iter().flatten() {
             // ptx version 1
             res.push(1u8);
             res.extend_from_slice(&ptx.tx_bytes);
@@ -176,10 +184,12 @@ impl SignedTxSet {
             // ptx top-level selected_transfers: monero reads std::vector<size_t>
             // via use_container_varint → varint elements (identical bytes to the
             // old u8 push for values < 128; correct for larger indices).
-            for t in &ptx.selected_transfers {
+            for t in ptx.selected_transfers.iter() {
                 put_varint(&mut res, *t as u64);
             }
-            let ki = ptx.key_images_str.as_bytes();
+            // Z2.3 C3b-3: pre-built `<hex> ` string bytes, verbatim (byte-compatible
+            // with the former String field including synthetic fixtures)
+            let ki: &[u8] = &ptx.key_images_str;
             put_varint(&mut res, ki.len() as u64);
             if !ki.is_empty() {
                 res.extend_from_slice(ki);
@@ -188,10 +198,10 @@ impl SignedTxSet {
             res.extend_from_slice(&Scalar::ONE.to_bytes());
             put_varint(&mut res, ptx.additional_tx_keys.len() as u64);
             for k in ptx.additional_tx_keys.iter() {
-                res.extend_from_slice(k);
+                res.extend_from_slice(&**k);
             }
             put_varint(&mut res, ptx.dests.len() as u64);
-            for dest in &ptx.dests {
+            for dest in ptx.dests.iter() {
                 write_destination_entry(&mut res, dest);
             }
             write_construction_data(&mut res, &ptx.construction_data);
@@ -201,11 +211,11 @@ impl SignedTxSet {
             res.extend_from_slice(&[0u8; 32]);
         }
         put_varint(&mut res, self.key_images.len() as u64);
-        for ki in &self.key_images {
+        for ki in self.key_images.iter() {
             res.extend_from_slice(ki);
         }
         put_varint(&mut res, self.tx_key_images.len() as u64);
-        for e in &self.tx_key_images {
+        for e in self.tx_key_images.iter() {
             res.push(2u8);
             res.extend_from_slice(&e.output_pubkey);
             res.extend_from_slice(&e.key_image);
@@ -404,7 +414,7 @@ pub fn decrypt_signed_txset(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::{string::ToString, vec, vec::Vec};
+    use alloc::{vec, vec::Vec};
     use rand_chacha::rand_core::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -491,16 +501,28 @@ mod tests {
             is_subaddress: false,
             is_integrated: false,
         };
+        let mut st_backing = [0u8; 1];
+        let mut ks_backing = [0u8; 67];
+        let mut dst_backing =
+            core::array::from_fn::<TxDestinationEntry, 1, _>(|_| TxDestinationEntry::default());
+        let mut selected_transfers = SliceVec::new(&mut st_backing);
+        selected_transfers.push(0u8).unwrap();
+        let mut key_images_str = SliceVec::new(&mut ks_backing);
+        for b in b"<aabb> " {
+            key_images_str.push(*b).unwrap();
+        }
+        let mut dests = SliceVec::new(&mut dst_backing);
+        dests.push(dest.clone()).unwrap();
         let ptx = PendingTx {
             tx_bytes: vec![0xABu8; 5],
             dust: 0,
             fee: 30640000,
             dust_added_to_fee: false,
             change_dts: dest.clone(),
-            selected_transfers: vec![0u8],
-            key_images_str: "<aabb> ".to_string(),
-            additional_tx_keys: zeroize::Zeroizing::new(vec![]),
-            dests: vec![dest.clone()],
+            selected_transfers,
+            key_images_str,
+            additional_tx_keys: heapless::Vec::new(),
+            dests,
             construction_data: TxConstructionData {
                 sources: vec![],
                 change_dts: dest.clone(),
@@ -515,13 +537,25 @@ mod tests {
                 subaddr_indices: vec![1],
             },
         };
-        let set = SignedTxSet {
-            ptx: vec![ptx],
-            key_images: vec![[3u8; 32]],
-            tx_key_images: vec![TxKeyImageEntry {
+        let mut ptx_slot: [Option<PendingTx<'_>>; 1] = core::array::from_fn(|_| None);
+        let mut ki_backing = core::array::from_fn::<[u8; 32], 1, _>(|_| [0u8; 32]);
+        let mut tki_backing =
+            core::array::from_fn::<TxKeyImageEntry, 1, _>(|_| TxKeyImageEntry::default());
+        let mut ptx_sv = SliceVec::new(&mut ptx_slot);
+        ptx_sv.push(Some(ptx)).unwrap();
+        let mut key_images = SliceVec::new(&mut ki_backing);
+        key_images.push([3u8; 32]).unwrap();
+        let mut tx_key_images = SliceVec::new(&mut tki_backing);
+        tx_key_images
+            .push(TxKeyImageEntry {
                 output_pubkey: [4u8; 32],
                 key_image: [5u8; 32],
-            }],
+            })
+            .unwrap();
+        let set = SignedTxSet {
+            ptx: ptx_sv,
+            key_images,
+            tx_key_images,
         };
         let bytes = set.serialize();
         let mut off = 0usize;
