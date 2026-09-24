@@ -118,11 +118,11 @@ impl<'a> RctSigBase<'a> {
 
     /// Serialize base into a caller buffer (Z2.4d C-class). Byte-identical to `serialize`.
     pub fn serialize_into(&self, out: &mut [u8], n: &mut usize) -> Result<()> {
-        use crate::chain::xmr::transaction::encode_varint_at;
+        use crate::chain::xmr::transaction::monero_encode_varint_at;
         use crate::types::push::{push_byte, push_slice};
         push_byte(out, n, self.rct_type)?;
-        encode_varint_at(out, n, self.fee)?;
-        encode_varint_at(out, n, self.pseudo_outs.len() as u64)?;
+        monero_encode_varint_at(out, n, self.fee)?;
+        monero_encode_varint_at(out, n, self.pseudo_outs.len() as u64)?;
         for p in self.pseudo_outs.iter() {
             push_slice(out, n, p)?;
         }
@@ -134,9 +134,12 @@ impl<'a> RctSigBase<'a> {
         let mut out = Vec::new();
         out.push(self.rct_type);
         // fee (varint)
-        crate::chain::xmr::transaction::encode_varint(&mut out, self.fee);
+        crate::chain::xmr::transaction::monero_encode_varint(&mut out, self.fee);
         // pseudo_outs_count (varint)
-        crate::chain::xmr::transaction::encode_varint(&mut out, self.pseudo_outs.len() as u64);
+        crate::chain::xmr::transaction::monero_encode_varint(
+            &mut out,
+            self.pseudo_outs.len() as u64,
+        );
         for p in self.pseudo_outs.iter() {
             out.extend_from_slice(p);
         }
@@ -182,15 +185,15 @@ impl<'a> RctSigPrunable<'a> {
     /// The vendor BP block is written in two passes (length counter, then in place)
     /// so no intermediate buffer exists. Byte-identical to `serialize`.
     pub fn serialize_into(&self, out: &mut [u8], n: &mut usize) -> Result<()> {
-        use crate::chain::xmr::transaction::encode_varint_at;
+        use crate::chain::xmr::transaction::monero_encode_varint_at;
         use crate::types::push::push_slice;
         // commitments
-        encode_varint_at(out, n, self.commitments.len() as u64)?;
+        monero_encode_varint_at(out, n, self.commitments.len() as u64)?;
         for c in self.commitments.iter() {
             push_slice(out, n, c)?;
         }
         // encrypted_amounts
-        encode_varint_at(out, n, self.encrypted_amounts.len() as u64)?;
+        monero_encode_varint_at(out, n, self.encrypted_amounts.len() as u64)?;
         for a in self.encrypted_amounts.iter() {
             push_slice(out, n, a)?;
         }
@@ -200,16 +203,16 @@ impl<'a> RctSigPrunable<'a> {
             bp.write(&mut lc)
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         }
-        encode_varint_at(out, n, lc.0 as u64)?;
+        monero_encode_varint_at(out, n, lc.0 as u64)?;
         for bp in self.bulletproofs.iter().flatten() {
             bp.write(&mut SliceWriter { out, n: &mut *n })
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         }
         // clsag_sigs
-        encode_varint_at(out, n, self.clsag_sigs.len() as u64)?;
+        monero_encode_varint_at(out, n, self.clsag_sigs.len() as u64)?;
         for clsag in self.clsag_sigs.iter() {
             let bytes = clsag.to_bytes();
-            encode_varint_at(out, n, bytes.len() as u64)?;
+            monero_encode_varint_at(out, n, bytes.len() as u64)?;
             push_slice(out, n, bytes)?;
         }
         Ok(())
@@ -219,12 +222,15 @@ impl<'a> RctSigPrunable<'a> {
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         // commitments
-        crate::chain::xmr::transaction::encode_varint(&mut out, self.commitments.len() as u64);
+        crate::chain::xmr::transaction::monero_encode_varint(
+            &mut out,
+            self.commitments.len() as u64,
+        );
         for c in self.commitments.iter() {
             out.extend_from_slice(c);
         }
         // encrypted_amounts
-        crate::chain::xmr::transaction::encode_varint(
+        crate::chain::xmr::transaction::monero_encode_varint(
             &mut out,
             self.encrypted_amounts.len() as u64,
         );
@@ -239,14 +245,17 @@ impl<'a> RctSigPrunable<'a> {
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
             bp_buf.extend_from_slice(&single);
         }
-        crate::chain::xmr::transaction::encode_varint(&mut out, bp_buf.len() as u64);
+        crate::chain::xmr::transaction::monero_encode_varint(&mut out, bp_buf.len() as u64);
         out.extend_from_slice(&bp_buf);
         // clsag_sigs
-        crate::chain::xmr::transaction::encode_varint(&mut out, self.clsag_sigs.len() as u64);
+        crate::chain::xmr::transaction::monero_encode_varint(
+            &mut out,
+            self.clsag_sigs.len() as u64,
+        );
         for clsag in self.clsag_sigs.iter() {
             // Z2.3 C3b-2: borrow the proof bytes directly (was a to_vec() copy)
             let bytes = clsag.to_bytes();
-            crate::chain::xmr::transaction::encode_varint(&mut out, bytes.len() as u64);
+            crate::chain::xmr::transaction::monero_encode_varint(&mut out, bytes.len() as u64);
             out.extend_from_slice(bytes);
         }
         Ok(out)
@@ -288,7 +297,7 @@ pub fn make_commitment(mask: &Scalar, amount: u64) -> MoneroCommitment {
 /// Construct commitment points (VarInt count + 32 bytes each) — XMR wire format
 pub fn serialize_commitments(commitments: &[MoneroCommitment]) -> Vec<u8> {
     let mut out = Vec::new();
-    crate::chain::xmr::transaction::encode_varint(&mut out, commitments.len() as u64);
+    crate::chain::xmr::transaction::monero_encode_varint(&mut out, commitments.len() as u64);
     for c in commitments {
         // Commitment::commit() returns Point (monero-ed25519::Point)
         let point = c.commit();

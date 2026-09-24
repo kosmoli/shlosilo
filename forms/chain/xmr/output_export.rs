@@ -30,7 +30,6 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use crate::chain::xmr::transaction::encode_varint;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::SliceVec;
 
@@ -239,10 +238,12 @@ pub fn deserialize_key_images(data: &[u8]) -> Vec<([u8; 32], [u8; 64])> {
     out
 }
 
-/// Re-export encode_varint for the export side to build packets (isomorphic to keystone write_varinteger).
+/// Export-side varint writer — isomorphic to keystone `write_varinteger` = Monero LEB128
+/// (Z2.4d-1 follow-up: it previously delegated to the BTC-style CompactSize `encode_varint`,
+/// contradicting its own doc; parse side `read_varint` was always LEB128).
 pub fn write_varint(value: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(10);
-    encode_varint(&mut out, value);
+    crate::chain::xmr::transaction::monero_encode_varint(&mut out, value);
     out
 }
 
