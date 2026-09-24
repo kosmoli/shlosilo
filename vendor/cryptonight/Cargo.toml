@@ -8,9 +8,16 @@ authors = ["dimalinux", "Boog900", "The Monero Project"]
 repository = "https://github.com/Cuprate/cuprate/tree/main/cryptonight"
 
 # Vendored from Cuprate/cuprate main (dbd4c2c; cryptonight/ identical to upstream main).
-# shlosilo patch: no_std-only V0 build following KeystoneHQ/cuprate fork's approach —
+# shlosilo patch 1: no_std-only V0 build following KeystoneHQ/cuprate fork's approach -
 # V1/V2/R variants and their v2/v4 hash modules removed (wallet-layer key derivation
-# only needs cryptonight_hash_v0). Upstream PR pending; drop this vendor when merged.
+# only needs cryptonight_hash_v0).
+# shlosilo patch 2: CN slow-hash phase timing probe hooks (feature `cn-timing`,
+# src/cn_timing_hook.rs).
+# Downstream specialization by design - NOT upstreamed (no PR filed; verified
+# 2026-09-24 - an earlier "Upstream PR pending" note recorded an unfulfilled
+# intent, not a fact). The V0-only trimming is wallet-side demand.
+# Exit condition (watch): drop this vendor if upstream ships a no_std build -
+# watch https://github.com/Cuprate/cuprate/commits/main/cryptonight
 
 [dependencies]
 sha3 = { version = "0.10.8", default-features = false, features = ["oid"] }
