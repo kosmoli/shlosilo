@@ -195,6 +195,14 @@ const MAX_DEPTH: usize = 64;
 /// it prevents depth × width combined constructions (e.g. 64 levels × large arrays per level) from amplifying stack/heap beyond caller expectations.
 const MAX_NODES: usize = 16384;
 
+/// P1-02 discipline (2026-09-24 T-01): wire u64 -> usize fallible conversion —
+/// lengths that do not fit the target usize are rejected outright instead of being
+/// silently truncated by `as usize` (which on 32-bit targets desyncs the parser
+/// with a wrong-but-in-bounds take()).
+fn wire_len(n: u64) -> Result<usize> {
+    usize::try_from(n).map_err(|_| err())
+}
+
 struct Decoder<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -252,16 +260,16 @@ impl<'a> Decoder<'a> {
             0 => Ok(Cbor::Uint(self.read_arg(info)?)),
             1 => Ok(Cbor::NegInt(self.read_arg(info)?)),
             2 => {
-                let len = self.read_arg(info)? as usize;
+                let len = wire_len(self.read_arg(info)?)?;
                 Ok(Cbor::Bytes(self.take(len)?))
             }
             3 => {
-                let len = self.read_arg(info)? as usize;
+                let len = wire_len(self.read_arg(info)?)?;
                 let s = core::str::from_utf8(self.take(len)?).map_err(|_| err())?;
                 Ok(Cbor::Text(s))
             }
             4 => {
-                let count = self.read_arg(info)? as usize;
+                let count = wire_len(self.read_arg(info)?)?;
                 let mut items = Vec::with_capacity(count.min(256));
                 for _ in 0..count {
                     items.push(self.read_item()?);
@@ -269,7 +277,7 @@ impl<'a> Decoder<'a> {
                 Ok(Cbor::Array(items))
             }
             5 => {
-                let count = self.read_arg(info)? as usize;
+                let count = wire_len(self.read_arg(info)?)?;
                 let mut pairs = Vec::with_capacity(count.min(128));
                 for _ in 0..count {
                     let k = self.read_item()?;
@@ -463,5 +471,17 @@ mod tests {
             Cbor::Tag(304, boxed) => assert_eq!(*boxed, Cbor::Bool(true)),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// T-01 (2026-09-24): wire lengths go through fallible `wire_len` (u64 -> usize).
+    /// A declaration that does not fit the target usize must be rejected outright on
+    /// every width (32-bit: try_from fails; 64-bit: take()/item reads fail) — never
+    /// silently truncated into a wrong-but-in-bounds read.
+    #[test]
+    fn oversized_len_rejected_all_widths() {
+        // bytes(0x5b) declaring an 8-byte length 0x00000001_00000001 (would truncate to 1 on 32-bit)
+        assert!(decode(&hex("5b0000000100000001")).is_err());
+        // array(0x9b) declaring an 8-byte count 0x00000001_00000001
+        assert!(decode(&hex("9b0000000100000001")).is_err());
     }
 }

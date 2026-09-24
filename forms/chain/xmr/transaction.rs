@@ -52,6 +52,13 @@ use monero_ed25519::{CompressedPoint, Scalar};
 /// XMR tx version: 2 = RingCT (post-fork, only valid in mainnet)
 pub const TX_VERSION: u8 = 2;
 
+/// P1-02 discipline (2026-09-24 T-01): wire u64 -> usize fallible conversion —
+/// silently truncating `as usize` on 32-bit targets would desync the parser.
+fn wire_len(n: u64) -> Result<usize> {
+    usize::try_from(n)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
+}
+
 /// Monero tx input (ring member + key image)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxInput {
@@ -287,13 +294,30 @@ impl TxExtra {
                 *pos += 32;
                 continue;
             }
-            let len = monero_decode_varint(bytes, pos)?;
-            if *pos + len as usize > bytes.len() {
+            // P0-01-class hardening (2026-09-24 T-01): fallible u64 -> usize +
+            // checked_add — a wire u64::MAX must yield Err, never an
+            // addition-overflow panic (panic=abort on device = DoS) or a wrapped
+            // bounds check followed by a slice panic. `len` is a byte length for
+            // every tag except 0x04 (key count, bounded precisely in that arm).
+            let len = wire_len(monero_decode_varint(bytes, pos)?)?;
+            if (*pos).checked_add(len).ok_or_else(|| {
+                ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
+            })? > bytes.len()
+            {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
             }
             match tag {
                 0x04 => {
                     // additional_pub_keys: len is the **key count** (FIELD(vector)'s count), not a byte count
+                    let keys_bytes = len.checked_mul(32).ok_or_else(|| {
+                        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
+                    })?;
+                    if (*pos).checked_add(keys_bytes).ok_or_else(|| {
+                        ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
+                    })? > bytes.len()
+                    {
+                        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+                    }
                     for _ in 0..len {
                         let mut pk = [0u8; 32];
                         pk.copy_from_slice(&bytes[*pos..*pos + 32]);
@@ -317,13 +341,13 @@ impl TxExtra {
                     }
                 }
                 0x05 => {
-                    let data = bytes[*pos..*pos + len as usize].to_vec();
+                    let data = bytes[*pos..*pos + len].to_vec();
                     extra.nonce = Some(data);
-                    *pos += len as usize;
+                    *pos += len;
                 }
                 // unknown tag — skip
                 _ => {
-                    *pos += len as usize;
+                    *pos += len;
                 }
             }
         }
@@ -393,22 +417,38 @@ impl TransactionPrefix {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
         let unlock_time = monero_decode_varint(bytes, pos)?;
+        // P0-01-class hardening (2026-09-24 T-01): bound the count by wire
+        // feasibility before preallocation (min serialized input = varint
+        // offsets count + one offset varint + 32B key image = 34B) — a malicious
+        // count must Err, never reach with_capacity (capacity-overflow abort).
         let n_inputs = monero_decode_varint(bytes, pos)?;
-        let mut inputs = Vec::with_capacity(n_inputs as usize);
+        if n_inputs > (bytes.len().saturating_sub(*pos) / 34) as u64 {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        let mut inputs = Vec::with_capacity(wire_len(n_inputs)?);
         for _ in 0..n_inputs {
             inputs.push(TxInput::deserialize(bytes, pos)?);
         }
+        // Same feasibility bound as inputs (min serialized output = varint amount
+        // + type byte + 32B stealth address = 34B).
         let n_outputs = monero_decode_varint(bytes, pos)?;
-        let mut outputs = Vec::with_capacity(n_outputs as usize);
+        if n_outputs > (bytes.len().saturating_sub(*pos) / 34) as u64 {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        let mut outputs = Vec::with_capacity(wire_len(n_outputs)?);
         for _ in 0..n_outputs {
             outputs.push(TxOutput::deserialize(bytes, pos)?);
         }
-        let extra_len = monero_decode_varint(bytes, pos)?;
-        if *pos + extra_len as usize > bytes.len() {
+        // P0-01-class hardening (2026-09-24 T-01): fallible u64 -> usize + checked_add.
+        let extra_len = wire_len(monero_decode_varint(bytes, pos)?)?;
+        let extra_end = (*pos).checked_add(extra_len).ok_or_else(|| {
+            ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
+        })?;
+        if extra_end > bytes.len() {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        let extra = TxExtra::deserialize(&bytes[*pos..*pos + extra_len as usize], &mut 0)?;
-        *pos += extra_len as usize;
+        let extra = TxExtra::deserialize(&bytes[*pos..extra_end], &mut 0)?;
+        *pos = extra_end;
         Ok(Self {
             version,
             unlock_time,
@@ -456,16 +496,65 @@ impl Transaction {
 
     pub fn deserialize(bytes: &[u8], pos: &mut usize) -> Result<Self> {
         let prefix = TransactionPrefix::deserialize(bytes, pos)?;
-        let rct_len = monero_decode_varint(bytes, pos)?;
-        if *pos + rct_len as usize > bytes.len() {
+        // P0-01-class hardening (2026-09-24 T-01): fallible u64 -> usize + checked_add.
+        let rct_len = wire_len(monero_decode_varint(bytes, pos)?)?;
+        let rct_end = (*pos).checked_add(rct_len).ok_or_else(|| {
+            ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
+        })?;
+        if rct_end > bytes.len() {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        let rct_signatures = bytes[*pos..*pos + rct_len as usize].to_vec();
-        *pos += rct_len as usize;
+        let rct_signatures = bytes[*pos..rct_end].to_vec();
+        *pos = rct_end;
         Ok(Self {
             prefix,
             rct_signatures,
         })
+    }
+}
+
+/// T-01 (2026-09-24) regression: malicious wire lengths must yield Err — never an
+/// addition-overflow / slice panic (panic=abort DoS) or a capacity-overflow abort.
+#[cfg(test)]
+mod wire_hardening_tests {
+    use super::*;
+
+    /// extra tag 0x05 (nonce) declaring u64::MAX length
+    #[test]
+    fn extra_huge_len_rejected() {
+        let mut extra = alloc::vec![0x05u8];
+        monero_encode_varint(&mut extra, u64::MAX);
+        extra.extend_from_slice(&[0u8; 8]);
+        assert!(TxExtra::deserialize(&extra, &mut 0).is_err());
+    }
+
+    /// extra tag 0x04 declaring a u64::MAX key COUNT (len is count, not bytes)
+    #[test]
+    fn extra_huge_key_count_rejected() {
+        let mut extra = alloc::vec![0x04u8];
+        monero_encode_varint(&mut extra, u64::MAX);
+        extra.extend_from_slice(&[0u8; 40]);
+        assert!(TxExtra::deserialize(&extra, &mut 0).is_err());
+    }
+
+    /// prefix with a huge input count must Err before any preallocation
+    #[test]
+    fn prefix_huge_input_count_rejected() {
+        let mut p = alloc::vec![TX_VERSION];
+        monero_encode_varint(&mut p, 0); // unlock_time
+        monero_encode_varint(&mut p, u64::MAX); // n_inputs
+        assert!(TransactionPrefix::deserialize(&p, &mut 0).is_err());
+    }
+
+    /// prefix with a huge extra_size must Err (no overflow/slice panic)
+    #[test]
+    fn prefix_huge_extra_len_rejected() {
+        let mut p = alloc::vec![TX_VERSION];
+        monero_encode_varint(&mut p, 0); // unlock_time
+        monero_encode_varint(&mut p, 0); // n_inputs
+        monero_encode_varint(&mut p, 0); // n_outputs
+        monero_encode_varint(&mut p, u64::MAX); // extra_size
+        assert!(TransactionPrefix::deserialize(&p, &mut 0).is_err());
     }
 }
 
