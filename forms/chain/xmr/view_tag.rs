@@ -2,18 +2,22 @@
 //!
 //! L1 pure functions. Benchmarked against keystone `derive_view_tag` + monero-oxide `SharedKeyDerivations`.
 
-extern crate alloc;
-use alloc::vec::Vec;
-
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 /// First byte of Hs("view_tag" || 8Ra || varint(o))
 pub fn derive_view_tag(eight_ra: &[u8; 32], output_index: u64) -> u8 {
-    let mut buf = Vec::with_capacity(8 + 32 + 9);
-    buf.extend_from_slice(b"view_tag");
-    buf.extend_from_slice(eight_ra);
-    crate::chain::xmr::transaction::encode_varint(&mut buf, output_index);
-    crate::encoding::keccak256::hash(&buf)
+    // Z2.2 A-class (2026-09-24): 49B stack buffer (was a heap Vec) —
+    // hash input = "view_tag" || 8Ra || varint(o), byte layout unchanged.
+    let mut buf = [0u8; 8 + 32 + 9];
+    let mut pos = 0usize;
+    buf[pos..pos + 8].copy_from_slice(b"view_tag");
+    pos += 8;
+    buf[pos..pos + 32].copy_from_slice(eight_ra);
+    pos += 32;
+    if crate::chain::xmr::transaction::encode_varint_at(&mut buf, &mut pos, output_index).is_err() {
+        return 0;
+    }
+    crate::encoding::keccak256::hash(&buf[..pos])
         .map(|h| h[0])
         .unwrap_or(0)
 }
@@ -34,9 +38,10 @@ pub fn eight_ra(tx_secret: &[u8; 32], dest_view_pub: &[u8; 32]) -> Result<[u8; 3
 
 /// keccak256(8Ra || 0x8d)[..8]
 pub fn payment_id_xor(eight_ra: &[u8; 32]) -> [u8; 8] {
-    let mut buf = Vec::with_capacity(33);
-    buf.extend_from_slice(eight_ra);
-    buf.push(0x8d);
+    // Z2.2 A-class (2026-09-24): 33B stack buffer (was a heap Vec).
+    let mut buf = [0u8; 33];
+    buf[..32].copy_from_slice(eight_ra);
+    buf[32] = 0x8d;
     let h = crate::encoding::keccak256::hash(&buf).unwrap_or([0u8; 32]);
     let mut out = [0u8; 8];
     out.copy_from_slice(&h[..8]);
@@ -61,10 +66,13 @@ pub fn stealth_address(
     use curve25519_dalek::Scalar as DScalar;
     use monero_ed25519::CompressedPoint;
 
-    let mut buf = Vec::with_capacity(32 + 9);
-    buf.extend_from_slice(eight_ra);
-    crate::chain::xmr::transaction::encode_varint(&mut buf, output_index);
-    let hs = crate::chain::xmr::subaddress::hash_to_scalar(&buf)?;
+    // Z2.2 A-class (2026-09-24): 41B stack buffer (was a heap Vec).
+    let mut buf = [0u8; 32 + 9];
+    let mut pos = 0usize;
+    buf[pos..pos + 32].copy_from_slice(eight_ra);
+    pos += 32;
+    crate::chain::xmr::transaction::encode_varint_at(&mut buf, &mut pos, output_index)?;
+    let hs = crate::chain::xmr::subaddress::hash_to_scalar(&buf[..pos])?;
     let hs_d = DScalar::from_bytes_mod_order(hs);
     let hs_g: curve25519_dalek::EdwardsPoint = ED25519_BASEPOINT_TABLE * &hs_d;
     let b = CompressedPoint::from(*dest_spend_pub)
@@ -135,6 +143,7 @@ mod tests {
     use crate::chain::xmr::tx_builder::TxKeyPair;
     use crate::encoding::keccak256;
     use crate::types::SecretBytes;
+    use alloc::vec::Vec;
 
     #[test]
     fn view_tag_is_first_keccak_byte() {

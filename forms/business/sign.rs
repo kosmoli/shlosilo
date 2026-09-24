@@ -451,7 +451,9 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
         }
         let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path_used)?;
-        let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
+        // Z2.2 (2026-09-24): key-material stack copy zeroized on drop.
+        let sk_bytes =
+            zeroize::Zeroizing::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk));
 
         // R4 ownership binding: the derived public key must match the pubkey carried by the PSBT BIP32_DERIVATION.
         // without this equality assertion, a malicious/crafted PSBT could get the device to sign inputs that "succeed but are unusable"
@@ -539,7 +541,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             &mut psbt,
             &psbt_mod::PsbtSignInput {
                 input_index: idx,
-                private_key: SecretBytes::new(sk_bytes),
+                private_key: SecretBytes::new(*sk_bytes),
                 pubkey_hash,
                 amount,
             },
@@ -592,12 +594,13 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     let t_derive = crate::device_timing::Mark::start(crate::device_timing::STAGE_BIP32);
     let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path)?;
     t_derive.end();
-    let sk_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
+    // Z2.2 (2026-09-24): key-material stack copy zeroized on drop.
+    let sk_bytes = zeroize::Zeroizing::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk));
 
     let t_sign = crate::device_timing::Mark::start(crate::device_timing::STAGE_ECDSA);
     let signed = eip1559::sign_eip1559(&eip1559::Eip1559SignInput {
         tx,
-        private_key: SecretBytes::new(sk_bytes),
+        private_key: SecretBytes::new(*sk_bytes),
     })?;
     t_sign.end();
     if output_buf.len() < signed.tx_bytes.len() {

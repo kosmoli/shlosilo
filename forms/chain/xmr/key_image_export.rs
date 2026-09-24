@@ -72,8 +72,10 @@ pub fn decrypt_export_payload(
     }
 
     // 2. ChaCha20-Legacy decryption
-    let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
-    let mut cipher = chacha20::ChaCha20Legacy::new_from_slices(&key, nonce).map_err(|_| err())?;
+    // Z2.2 (2026-09-24): ChaCha key material zeroized on drop.
+    let key = zeroize::Zeroizing::new(cuprate_cryptonight::cryptonight_hash_v0(view_sk));
+    let mut cipher =
+        chacha20::ChaCha20Legacy::new_from_slices(key.as_slice(), nonce).map_err(|_| err())?;
     // Z2.1 S6 (2026-09-24): decrypted plaintext — zeroized on drop.
     let mut plain = zeroize::Zeroizing::new(raw_data[NONCE_LEN..].to_vec());
     cipher.apply_keystream(&mut *plain);
@@ -104,10 +106,11 @@ fn encrypt_export_payload<R: RngCore + CryptoRng>(
     data: &[u8],
     rng: &mut R,
 ) -> Result<Vec<u8>> {
-    let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
+    // Z2.2 (2026-09-24): ChaCha key material zeroized on drop.
+    let key = zeroize::Zeroizing::new(cuprate_cryptonight::cryptonight_hash_v0(view_sk));
     let nonce_num = rng.next_u64().to_be_bytes();
     let mut cipher =
-        chacha20::ChaCha20Legacy::new_from_slices(&key, &nonce_num).map_err(|_| err())?;
+        chacha20::ChaCha20Legacy::new_from_slices(key.as_slice(), &nonce_num).map_err(|_| err())?;
 
     // Plaintext sections: key-image magic has a leading u32 LE 0; export magic carries pk1||pk2
     let mut buffer = Vec::with_capacity(4 + 64 + data.len());

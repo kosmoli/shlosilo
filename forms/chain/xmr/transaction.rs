@@ -556,6 +556,29 @@ mod wire_hardening_tests {
         monero_encode_varint(&mut p, u64::MAX); // extra_size
         assert!(TransactionPrefix::deserialize(&p, &mut 0).is_err());
     }
+
+    /// Z2.2: the Vec shape and the slice-cursor core must be byte-identical.
+    #[test]
+    fn encode_varint_shapes_identical() {
+        for n in [
+            0u64,
+            1,
+            0xfc,
+            0xfd,
+            0xffff,
+            0x1_0000,
+            0xffff_ffff,
+            0x1_0000_0000,
+            u64::MAX,
+        ] {
+            let mut v = alloc::vec::Vec::new();
+            encode_varint(&mut v, n);
+            let mut buf = [0u8; 9];
+            let mut pos = 0usize;
+            encode_varint_at(&mut buf, &mut pos, n).unwrap();
+            assert_eq!(v.as_slice(), &buf[..pos], "n = {n}");
+        }
+    }
 }
 
 /// Construct key image from a 32-byte spend private key (32 bytes)
@@ -606,18 +629,43 @@ pub fn monerod_scalar_to_bytes(s: &Scalar) -> [u8; 32] {
 }
 
 /// Monero protocol varint encoding (BTC compact size style)
+///
+/// Z2.2 (2026-09-24): delegates to `encode_varint_at` — the Vec and slice-cursor call
+/// shapes share one core and are byte-identical by construction
+/// (see `encode_varint_shapes_identical`).
 pub fn encode_varint(out: &mut Vec<u8>, n: u64) {
+    let mut tmp = [0u8; 9];
+    let mut pos = 0usize;
+    // 9 bytes is the exact CompactSize maximum (0xff + u64 LE); infallible here.
+    let _ = encode_varint_at(&mut tmp, &mut pos, n);
+    out.extend_from_slice(&tmp[..pos]);
+}
+
+/// Bounded slice-cursor core for the BTC-style CompactSize varint (Z2.2 A-class,
+/// zero-heap call shape for stack buffers).
+pub fn encode_varint_at(out: &mut [u8], pos: &mut usize, n: u64) -> Result<()> {
+    fn put(out: &mut [u8], pos: &mut usize, bytes: &[u8]) -> Result<()> {
+        let end = (*pos)
+            .checked_add(bytes.len())
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        if end > out.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        out[*pos..end].copy_from_slice(bytes);
+        *pos = end;
+        Ok(())
+    }
     if n < 0xfd {
-        out.push(n as u8);
+        put(out, pos, &[n as u8])
     } else if n <= 0xffff {
-        out.push(0xfd);
-        out.extend_from_slice(&(n as u16).to_le_bytes());
+        put(out, pos, &[0xfd])?;
+        put(out, pos, &(n as u16).to_le_bytes())
     } else if n <= 0xffff_ffff {
-        out.push(0xfe);
-        out.extend_from_slice(&(n as u32).to_le_bytes());
+        put(out, pos, &[0xfe])?;
+        put(out, pos, &(n as u32).to_le_bytes())
     } else {
-        out.push(0xff);
-        out.extend_from_slice(&n.to_le_bytes());
+        put(out, pos, &[0xff])?;
+        put(out, pos, &n.to_le_bytes())
     }
 }
 

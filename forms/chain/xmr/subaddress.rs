@@ -78,12 +78,14 @@ pub fn hash_to_scalar(data: &[u8]) -> Result<[u8; 32]> {
 /// **Output**: 32-byte derivation scalar m (reduced)
 pub fn calc_subaddress_m(view_sec: &[u8; 32], account: u32, minor: u32) -> Result<[u8; 32]> {
     // data = "SubAddr" || 0x00 || view_sec || major_LE || minor_LE
-    let mut data = Vec::with_capacity(7 + 1 + 32 + 4 + 4);
-    data.extend_from_slice(b"SubAddr");
-    data.push(0u8);
-    data.extend_from_slice(view_sec);
-    data.extend_from_slice(&account.to_le_bytes());
-    data.extend_from_slice(&minor.to_le_bytes());
+    // Z2.2 A-class (2026-09-24): 48B stack buffer (was a heap Vec) —
+    // byte layout unchanged: "SubAddr" || 0x00 || view_sec || major_LE || minor_LE.
+    let mut data = [0u8; 7 + 1 + 32 + 4 + 4];
+    data[..7].copy_from_slice(b"SubAddr");
+    // data[7] stays 0x00
+    data[8..40].copy_from_slice(view_sec);
+    data[40..44].copy_from_slice(&account.to_le_bytes());
+    data[44..48].copy_from_slice(&minor.to_le_bytes());
     hash_to_scalar(&data)
 }
 
