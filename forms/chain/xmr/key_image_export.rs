@@ -49,7 +49,7 @@ pub fn decrypt_export_payload(
     data: &[u8],
     magic: &[u8],
     view_sk: &[u8; 32],
-) -> Result<([u8; 32], [u8; 32], Vec<u8>)> {
+) -> Result<([u8; 32], [u8; 32], zeroize::Zeroizing<Vec<u8>>)> {
     if data.len() < magic.len() + NONCE_LEN + SIG_LEN {
         return Err(err());
     }
@@ -74,8 +74,9 @@ pub fn decrypt_export_payload(
     // 2. ChaCha20-Legacy decryption
     let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
     let mut cipher = chacha20::ChaCha20Legacy::new_from_slices(&key, nonce).map_err(|_| err())?;
-    let mut plain = raw_data[NONCE_LEN..].to_vec();
-    cipher.apply_keystream(&mut plain);
+    // Z2.1 S6 (2026-09-24): decrypted plaintext — zeroized on drop.
+    let mut plain = zeroize::Zeroizing::new(raw_data[NONCE_LEN..].to_vec());
+    cipher.apply_keystream(&mut *plain);
 
     // 3. key-image magic has a leading u32 LE 0; both export magics carry pk1||pk2
     let start = if magic == KEY_IMAGE_EXPORT_MAGIC {
@@ -90,7 +91,7 @@ pub fn decrypt_export_payload(
     let mut pk2 = [0u8; 32];
     pk1.copy_from_slice(&plain[start..start + PUBKEY_LEN]);
     pk2.copy_from_slice(&plain[start + PUBKEY_LEN..start + PUBKEY_LEN * 2]);
-    let payload = plain[start + PUBKEY_LEN * 2..].to_vec();
+    let payload = zeroize::Zeroizing::new(plain[start + PUBKEY_LEN * 2..].to_vec());
     Ok((pk1, pk2, payload))
 }
 
@@ -346,7 +347,7 @@ mod tests {
             decrypt_export_payload(&enc, OUTPUT_EXPORT_MAGIC, &view_sk).unwrap();
         assert_eq!(pk1, spend_pub);
         assert_eq!(pk2, view_pub);
-        assert_eq!(plain, data.to_vec());
+        assert_eq!(*plain, data.to_vec());
     }
 
     #[test]

@@ -454,7 +454,7 @@ pub fn derive_input_from_source(
             .or_else(|| source.real_out_additional_tx_keys.first())
             .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?
     } else {
-        source.real_out_tx_key
+        *source.real_out_tx_key
     };
 
     // iterate subaddr minors, verifying output_pubkey

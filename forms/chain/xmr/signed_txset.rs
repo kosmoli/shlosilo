@@ -70,9 +70,9 @@ fn write_source_entry(out: &mut Vec<u8>, s: &crate::chain::xmr::unsigned_txset::
         write_output_entry(out, o.index, &o.dest, &o.mask);
     }
     out.extend_from_slice(&s.real_output.to_le_bytes());
-    out.extend_from_slice(&s.real_out_tx_key);
+    out.extend_from_slice(s.real_out_tx_key.as_slice());
     put_varint(out, s.real_out_additional_tx_keys.len() as u64);
-    for k in &s.real_out_additional_tx_keys {
+    for k in s.real_out_additional_tx_keys.iter() {
         out.extend_from_slice(k);
     }
     out.extend_from_slice(&s.real_output_in_tx_index.to_le_bytes());
@@ -134,7 +134,8 @@ pub struct PendingTx {
     /// Key image list joined as `<hex> `
     pub key_images_str: String,
     /// tx_key (forced to ONE before writing to the wire — r is not returned to the host; see module docs)
-    pub additional_tx_keys: Vec<[u8; 32]>,
+    /// Z2.1 S4 (2026-09-24): tx secret keys — zeroized on drop.
+    pub additional_tx_keys: zeroize::Zeroizing<Vec<[u8; 32]>>,
     pub dests: Vec<TxDestinationEntry>,
     pub construction_data: TxConstructionData,
 }
@@ -186,7 +187,7 @@ impl SignedTxSet {
             // tx_key ZERO: keystone uses Scalar::ONE as a placeholder (r is not returned)
             res.extend_from_slice(&Scalar::ONE.to_bytes());
             put_varint(&mut res, ptx.additional_tx_keys.len() as u64);
-            for k in &ptx.additional_tx_keys {
+            for k in ptx.additional_tx_keys.iter() {
                 res.extend_from_slice(k);
             }
             put_varint(&mut res, ptx.dests.len() as u64);
@@ -498,7 +499,7 @@ mod tests {
             change_dts: dest.clone(),
             selected_transfers: vec![0u8],
             key_images_str: "<aabb> ".to_string(),
-            additional_tx_keys: vec![],
+            additional_tx_keys: zeroize::Zeroizing::new(vec![]),
             dests: vec![dest.clone()],
             construction_data: TxConstructionData {
                 sources: vec![],

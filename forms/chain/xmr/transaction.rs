@@ -55,8 +55,7 @@ pub const TX_VERSION: u8 = 2;
 /// P1-02 discipline (2026-09-24 T-01): wire u64 -> usize fallible conversion —
 /// silently truncating `as usize` on 32-bit targets would desync the parser.
 fn wire_len(n: u64) -> Result<usize> {
-    usize::try_from(n)
-        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
+    usize::try_from(n).map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
 }
 
 /// Monero tx input (ring member + key image)
@@ -300,9 +299,10 @@ impl TxExtra {
             // bounds check followed by a slice panic. `len` is a byte length for
             // every tag except 0x04 (key count, bounded precisely in that arm).
             let len = wire_len(monero_decode_varint(bytes, pos)?)?;
-            if (*pos).checked_add(len).ok_or_else(|| {
-                ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-            })? > bytes.len()
+            if (*pos)
+                .checked_add(len)
+                .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?
+                > bytes.len()
             {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
             }
@@ -441,9 +441,9 @@ impl TransactionPrefix {
         }
         // P0-01-class hardening (2026-09-24 T-01): fallible u64 -> usize + checked_add.
         let extra_len = wire_len(monero_decode_varint(bytes, pos)?)?;
-        let extra_end = (*pos).checked_add(extra_len).ok_or_else(|| {
-            ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-        })?;
+        let extra_end = (*pos)
+            .checked_add(extra_len)
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         if extra_end > bytes.len() {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
@@ -498,9 +498,9 @@ impl Transaction {
         let prefix = TransactionPrefix::deserialize(bytes, pos)?;
         // P0-01-class hardening (2026-09-24 T-01): fallible u64 -> usize + checked_add.
         let rct_len = wire_len(monero_decode_varint(bytes, pos)?)?;
-        let rct_end = (*pos).checked_add(rct_len).ok_or_else(|| {
-            ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
-        })?;
+        let rct_end = (*pos)
+            .checked_add(rct_len)
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         if rct_end > bytes.len() {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }

@@ -142,7 +142,7 @@ fn decrypt_and_parse_fixture() {
             s.amount,
             s.real_output,
             s.outputs.len(),
-            hex(&s.real_out_tx_key)
+            hex(s.real_out_tx_key.as_slice())
         );
     }
     for (i, d) in tx.splitted_dsts.iter().enumerate() {

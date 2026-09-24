@@ -70,8 +70,8 @@ fn owned_source_ring16(
     TxSourceEntry {
         outputs,
         real_output: 0,
-        real_out_tx_key: tx_pub,
-        real_out_additional_tx_keys: vec![],
+        real_out_tx_key: tx_pub.into(),
+        real_out_additional_tx_keys: vec![].into(),
         real_output_in_tx_index: 0,
         amount,
         rct: true,

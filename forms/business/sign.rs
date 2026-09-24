@@ -181,14 +181,17 @@ fn sign_xmr(
     //    context = keccak digest of the tx construction data (domain separation, not counted as entropy)
     let mut rng = {
         use rand_chacha::rand_core::SeedableRng;
-        let mut merged = alloc::vec::Vec::with_capacity(entropy.len() + 32);
+        // Z2.1 S1 (2026-09-24): entropy material — zeroized on drop (was a bare Vec).
+        let mut merged =
+            zeroize::Zeroizing::new(alloc::vec::Vec::with_capacity(entropy.len() + 32));
         merged.extend_from_slice(entropy);
         // BP+/CLSAG ephemeral randomness is tx-independent (does not reuse the r stream); unified stream: TxKey subdomain
         let mut seed_rng = purpose_rng(&merged, RngPurpose::TxKey, &[0u8; 32])?;
-        let mut seed_bytes = [0u8; 32];
+        // Z2.1 S1+ (2026-09-24): derived stream seed — zeroized on drop.
+        let mut seed_bytes = zeroize::Zeroizing::new([0u8; 32]);
         use rand_chacha::rand_core::RngCore as _;
-        seed_rng.fill_bytes(&mut seed_bytes);
-        rand_chacha::ChaCha20Rng::from_seed(seed_bytes)
+        seed_rng.fill_bytes(&mut *seed_bytes);
+        rand_chacha::ChaCha20Rng::from_seed(*seed_bytes)
     };
 
     let mut ptxs = alloc::vec::Vec::with_capacity(unsigned_tx.txes.len());
@@ -206,7 +209,7 @@ fn sign_xmr(
         ctx_src.extend_from_slice(&tx_data.unlock_time.to_le_bytes());
         ctx_src.extend_from_slice(&tx_data.extra);
         for s in &tx_data.sources {
-            ctx_src.extend_from_slice(&s.real_out_tx_key);
+            ctx_src.extend_from_slice(s.real_out_tx_key.as_slice());
             // P1-03: mask plaintext access funneled through expose() (context digest is a read-only hash)
             ctx_src.extend_from_slice(s.mask.expose());
         }
@@ -345,7 +348,7 @@ fn sign_xmr(
                 .map(|&t| t as u8)
                 .collect(),
             key_images_str: ki_str,
-            additional_tx_keys: alloc::vec::Vec::new(),
+            additional_tx_keys: zeroize::Zeroizing::new(alloc::vec::Vec::new()),
             dests: tx_data.dests.clone(),
             // P1-03: move instead of clone — secrets (mask/kLRki) no longer produce new copies
             construction_data: tx_data,
@@ -465,6 +468,9 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             .inputs
             .get(idx)
             .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        // NOTE (Z2.1 S2 re-review, 2026-09-24): `kv.key[1..34]` is the BIP32_DERIVATION
+        // compressed PUBLIC key (verified against derived pubkeys below) — public data,
+        // deliberately NOT zeroize-wrapped. (Initially mis-audited as key material.)
         let mut records: Vec<([u8; 4], DerivationPath, Vec<u8>)> = Vec::new();
         for kv in input_map.iter() {
             if kv.key.first() != Some(&psbt_mod::input_type::BIP32_DERIVATION) {

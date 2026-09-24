@@ -34,7 +34,7 @@ use crate::chain::xmr::transaction::encode_varint;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 /// A single transfer detail (aligned with keystone `ExportedTransferDetail`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExportedTransferDetail {
     pub pubkey: [u8; 32],
     pub internal_output_index: u64,
@@ -42,9 +42,29 @@ pub struct ExportedTransferDetail {
     pub tx_pubkey: [u8; 32],
     pub flags: u8,
     pub amount: u64,
-    pub additional_tx_keys: Vec<[u8; 32]>,
+    /// v2-security §2 (module docs) marks this sensitive; wire-adjacent usage reads like
+    /// tx pubkeys — zeroize-wrapped defensively either way (Z2.1 S3, 2026-09-24).
+    pub additional_tx_keys: zeroize::Zeroizing<Vec<[u8; 32]>>,
     pub major: u32,
     pub minor: u32,
+}
+
+/// Z2.1 S3 (2026-09-24): manual Debug — `Zeroizing` has no Debug impl; the sensitive
+/// `additional_tx_keys` field is redacted (R1-style, cf. TxSourceEntry).
+impl core::fmt::Debug for ExportedTransferDetail {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ExportedTransferDetail")
+            .field("pubkey", &self.pubkey)
+            .field("internal_output_index", &self.internal_output_index)
+            .field("global_output_index", &self.global_output_index)
+            .field("tx_pubkey", &self.tx_pubkey)
+            .field("flags", &self.flags)
+            .field("amount", &self.amount)
+            .field("additional_tx_keys", &"[REDACTED]")
+            .field("major", &self.major)
+            .field("minor", &self.minor)
+            .finish()
+    }
 }
 
 impl ExportedTransferDetail {
@@ -142,7 +162,8 @@ impl ExportedTransferDetails {
             off += 1;
             let amount = read_varint(bytes, &mut off)?;
             let keys_num = read_varint(bytes, &mut off)? as usize;
-            let mut additional_tx_keys = Vec::with_capacity(keys_num.min(16));
+            let mut additional_tx_keys =
+                zeroize::Zeroizing::new(Vec::with_capacity(keys_num.min(16)));
             for _ in 0..keys_num {
                 additional_tx_keys.push(read_u8_32(bytes, &mut off)?);
             }

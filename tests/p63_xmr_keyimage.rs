@@ -48,7 +48,7 @@ fn derive_key_image_from_real_fixture() {
     eprintln!(
         "real_output={} real_out_tx_key={}.. real_output_in_tx_index={} amount={} subaddr_indices={:?}",
         src.real_output,
-        hex4(&src.real_out_tx_key),
+        hex4(src.real_out_tx_key.as_slice()),
         src.real_output_in_tx_index,
         src.amount,
         tx.subaddr_indices

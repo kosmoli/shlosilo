@@ -187,8 +187,10 @@ impl core::fmt::Debug for MultisigKLRki {
 pub struct TxSourceEntry {
     pub outputs: Vec<OutputEntry>,
     pub real_output: u64,
-    pub real_out_tx_key: [u8; 32],
-    pub real_out_additional_tx_keys: Vec<[u8; 32]>,
+    /// Z2.1 S5b (2026-09-24): R1-sensitive (redacted in Debug) — zeroized on drop (was bare).
+    pub real_out_tx_key: zeroize::Zeroizing<[u8; 32]>,
+    /// Z2.1 S5 (2026-09-24): R1-sensitive family — zeroized on drop (was bare).
+    pub real_out_additional_tx_keys: zeroize::Zeroizing<Vec<[u8; 32]>>,
     pub real_output_in_tx_index: u64,
     pub amount: u64,
     pub rct: bool,
@@ -435,10 +437,11 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
         outputs.push(read_output_entry(data, off)?);
     }
     let real_output = read_u64(data, off)?;
-    let real_out_tx_key = read_u8_32(data, off)?;
+    let real_out_tx_key = zeroize::Zeroizing::new(read_u8_32(data, off)?);
     // additional tx key wire minimum = 32B
     let additional_len = read_count(data, off, 32)?;
-    let mut real_out_additional_tx_keys = Vec::with_capacity(additional_len);
+    let mut real_out_additional_tx_keys =
+        zeroize::Zeroizing::new(Vec::with_capacity(additional_len));
     for _ in 0..additional_len {
         real_out_additional_tx_keys.push(read_u8_32(data, off)?);
     }
@@ -556,9 +559,9 @@ fn write_unsigned_source(out: &mut Vec<u8>, s: &TxSourceEntry) {
         out.extend_from_slice(&o.mask);
     }
     out.extend_from_slice(&s.real_output.to_le_bytes());
-    out.extend_from_slice(&s.real_out_tx_key);
+    out.extend_from_slice(s.real_out_tx_key.as_slice());
     put_varint(out, s.real_out_additional_tx_keys.len() as u64);
-    for k in &s.real_out_additional_tx_keys {
+    for k in s.real_out_additional_tx_keys.iter() {
         out.extend_from_slice(k);
     }
     out.extend_from_slice(&s.real_output_in_tx_index.to_le_bytes());
@@ -742,8 +745,8 @@ mod tests {
                 mask: [0x22u8; 32],
             }],
             real_output: 0,
-            real_out_tx_key: [0x33u8; 32],
-            real_out_additional_tx_keys: alloc::vec![],
+            real_out_tx_key: zeroize::Zeroizing::new([0x33u8; 32]),
+            real_out_additional_tx_keys: zeroize::Zeroizing::new(alloc::vec![]),
             real_output_in_tx_index: 0,
             amount: 1000,
             rct: true,
