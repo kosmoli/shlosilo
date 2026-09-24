@@ -81,6 +81,32 @@ pub struct RctSigBase<'a> {
     pub pseudo_outs: SliceVec<'a, [u8; 32]>,
 }
 
+// ─── Z2.4d serialize_into adapters (vendor `Bulletproof::write(impl io::Write)`) ──
+
+/// Counts bytes without storing them (length pre-pass for the BP block).
+struct LenCounter(usize);
+
+impl std_shims::io::Write for LenCounter {
+    fn write(&mut self, buf: &[u8]) -> std_shims::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+}
+
+/// Writes into a caller buffer at a cursor position.
+struct SliceWriter<'b> {
+    out: &'b mut [u8],
+    n: &'b mut usize,
+}
+
+impl<'b> std_shims::io::Write for SliceWriter<'b> {
+    fn write(&mut self, buf: &[u8]) -> std_shims::io::Result<usize> {
+        crate::types::push::push_slice(self.out, self.n, buf)
+            .map_err(|_| std_shims::io::Error::other("serialize buffer too small"))?;
+        Ok(buf.len())
+    }
+}
+
 impl<'a> RctSigBase<'a> {
     pub fn new(rct_type: u8, fee: u64, pseudo_outs: SliceVec<'a, [u8; 32]>) -> Self {
         RctSigBase {
@@ -90,7 +116,20 @@ impl<'a> RctSigBase<'a> {
         }
     }
 
-    /// Serialize base (BIP-compatible with XMR wire format)
+    /// Serialize base into a caller buffer (Z2.4d C-class). Byte-identical to `serialize`.
+    pub fn serialize_into(&self, out: &mut [u8], n: &mut usize) -> Result<()> {
+        use crate::chain::xmr::transaction::encode_varint_at;
+        use crate::types::push::{push_byte, push_slice};
+        push_byte(out, n, self.rct_type)?;
+        encode_varint_at(out, n, self.fee)?;
+        encode_varint_at(out, n, self.pseudo_outs.len() as u64)?;
+        for p in self.pseudo_outs.iter() {
+            push_slice(out, n, p)?;
+        }
+        Ok(())
+    }
+
+    /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(self.rct_type);
@@ -139,6 +178,44 @@ impl<'a> RctSigPrunable<'a> {
     /// Serialize the prunable part (BIP-compatible with the XMR wire format)
     /// Format: varint commitments_count + commitments + varint encrypted_amounts_count + encrypted + varint clsag_sigs_count + clsag
     /// bulletproofs go last (per-output BP for type=2, or a single aggregated BP for type=3)
+    /// Serialize the prunable part into a caller buffer (Z2.4d C-class).
+    /// The vendor BP block is written in two passes (length counter, then in place)
+    /// so no intermediate buffer exists. Byte-identical to `serialize`.
+    pub fn serialize_into(&self, out: &mut [u8], n: &mut usize) -> Result<()> {
+        use crate::chain::xmr::transaction::encode_varint_at;
+        use crate::types::push::push_slice;
+        // commitments
+        encode_varint_at(out, n, self.commitments.len() as u64)?;
+        for c in self.commitments.iter() {
+            push_slice(out, n, c)?;
+        }
+        // encrypted_amounts
+        encode_varint_at(out, n, self.encrypted_amounts.len() as u64)?;
+        for a in self.encrypted_amounts.iter() {
+            push_slice(out, n, a)?;
+        }
+        // bulletproofs: length pass, then write at the right offset
+        let mut lc = LenCounter(0);
+        for bp in self.bulletproofs.iter().flatten() {
+            bp.write(&mut lc)
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        }
+        encode_varint_at(out, n, lc.0 as u64)?;
+        for bp in self.bulletproofs.iter().flatten() {
+            bp.write(&mut SliceWriter { out, n: &mut *n })
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        }
+        // clsag_sigs
+        encode_varint_at(out, n, self.clsag_sigs.len() as u64)?;
+        for clsag in self.clsag_sigs.iter() {
+            let bytes = clsag.to_bytes();
+            encode_varint_at(out, n, bytes.len() as u64)?;
+            push_slice(out, n, bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         // commitments
@@ -188,7 +265,13 @@ impl<'a> RctSig<'a> {
         RctSig { base, prunable }
     }
 
-    /// Serialize the complete RctSig
+    /// Serialize the complete RctSig into a caller buffer (Z2.4d C-class).
+    pub fn serialize_into(&self, out: &mut [u8], n: &mut usize) -> Result<()> {
+        self.base.serialize_into(out, n)?;
+        self.prunable.serialize_into(out, n)
+    }
+
+    /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut out = self.base.serialize();
         let prunable_bytes = self.prunable.serialize()?;
@@ -565,5 +648,51 @@ mod tests {
         let sig = RctSig::new(base, prunable);
         let bytes = sig.serialize().unwrap();
         eprintln!("RctSig ({} bytes): {}", bytes.len(), hex_encode(&bytes));
+    }
+
+    /// Z2.4d: serialize_into must be byte-identical to the alloc convenience — with a
+    /// REAL Bulletproof+ (exercises the LenCounter length-pass + SliceWriter adapters).
+    #[test]
+    fn serialize_into_matches_convenience_with_bp() {
+        let mut po = [[0u8; 32]; 1];
+        let mut base = RctSigBase::new(rct_type::BULLETPROOFS_PLUS, 100, SliceVec::new(&mut po));
+        base.pseudo_outs.push([0x11; 32]).unwrap();
+
+        let mut rng = OsRng;
+        let scalar_bytes = reduce_scalar(&[0x33u8; 32]).unwrap();
+        let mask = {
+            let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
+            let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
+            Scalar::read(&mut cursor).expect("reduced scalar")
+        };
+        let bp = prove_bulletproofs_plus(
+            &mut rng,
+            alloc::vec![MoneroCommitment::new(mask, 100_000_000)],
+        )
+        .unwrap();
+
+        let mut cm = [[0u8; 32]; 1];
+        let mut ea = [[0u8; 8]; 1];
+        let mut bp_slots: [Option<Bulletproof>; 1] = core::array::from_fn(|_| None);
+        let mut cs = core::array::from_fn::<ClsagProof, 1, _>(|_| ClsagProof::default());
+        let mut prunable = RctSigPrunable::new(
+            SliceVec::new(&mut cm),
+            SliceVec::new(&mut ea),
+            SliceVec::new(&mut bp_slots),
+            SliceVec::new(&mut cs),
+        );
+        prunable.commitments.push([0x22; 32]).unwrap();
+        prunable.encrypted_amounts.push([0x33; 8]).unwrap();
+        prunable.bulletproofs.push(Some(bp)).unwrap();
+
+        let sig = RctSig::new(base, prunable);
+        let mut buf = alloc::vec![0u8; 4096];
+        let mut n = 0;
+        sig.serialize_into(&mut buf, &mut n).unwrap();
+        assert_eq!(
+            &buf[..n],
+            sig.serialize().unwrap().as_slice(),
+            "RctSig with BP+"
+        );
     }
 }

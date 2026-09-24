@@ -78,12 +78,38 @@ impl TxInput {
         }
     }
 
+    /// Exact serialized length (pairs with `serialize_into`).
+    pub fn serialized_len(&self) -> usize {
+        2 + monero_varint_len(self.key_offsets.len() as u64)
+            + self
+                .key_offsets
+                .iter()
+                .map(|o| monero_varint_len(*o))
+                .sum::<usize>()
+            + 32
+    }
+
+    /// Serialize into a caller buffer (Z2.4d C-class). Byte-identical to `serialize`.
+    pub fn serialize_into(&self, out: &mut [u8], n: &mut usize) -> Result<()> {
+        use crate::types::push::push_slice;
+        push_slice(out, n, &[0x02])?; // txin_to_key variant tag
+        monero_encode_varint_at(out, n, 0)?; // RingCT input amount
+        monero_encode_varint_at(out, n, self.key_offsets.len() as u64)?;
+        for offset in &self.key_offsets {
+            monero_encode_varint_at(out, n, *offset)?;
+        }
+        push_slice(out, n, &self.key_image)
+    }
+
     /// Serialize a `txin_to_key` input as it appears in a transaction prefix.
+    ///
     /// - variant tag `0x02`
     /// - varint amount (`0` for RingCT v2 transactions)
     /// - varint key_offsets.len
     /// - varint key_offsets[i]
     /// - 32 bytes key_image
+    ///
+    /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(0x02); // txin_to_key variant tag
@@ -171,8 +197,31 @@ impl TxOutput {
         }
     }
 
+    /// Exact serialized length (pairs with `serialize_into`).
+    pub fn serialized_len(&self) -> usize {
+        monero_varint_len(self.amount)
+            + 1
+            + 32
+            + usize::from(self.output_type == out_type::TX_OUT_TO_TAGGED_KEY)
+    }
+
+    /// Serialize into a caller buffer (Z2.4d C-class). Byte-identical to `serialize`.
+    pub fn serialize_into(&self, out: &mut [u8], n: &mut usize) -> Result<()> {
+        use crate::types::push::{push_byte, push_slice};
+        monero_encode_varint_at(out, n, self.amount)?;
+        push_byte(out, n, self.output_type)?;
+        push_slice(out, n, &self.stealth_address)?;
+        if self.output_type == out_type::TX_OUT_TO_TAGGED_KEY {
+            push_byte(out, n, self.view_tag.unwrap_or(0))?;
+        }
+        Ok(())
+    }
+
     /// Serialize the output (official binary_archive: amount is a VARINT, not 8B LE)
+    ///
     /// - varint(amount) + type + stealth_address [+ view_tag]
+    ///
+    /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         monero_encode_varint(&mut out, self.amount);
@@ -249,7 +298,58 @@ impl TxExtra {
         self
     }
 
-    /// Serialize extra (BIP format: tag + varint len + data)*
+    /// Exact serialized length (pairs with `serialize_into`).
+    pub fn serialized_len(&self) -> usize {
+        let mut len = 0usize;
+        if self.tx_pub_key.is_some() {
+            len += 1 + 32;
+        }
+        if !self.additional_pub_keys.is_empty() {
+            len += 1
+                + monero_varint_len(self.additional_pub_keys.len() as u64)
+                + 32 * self.additional_pub_keys.len();
+        }
+        if self.encrypted_payment_id.is_some() {
+            len += 3 + 8;
+        } else if self.payment_id.is_some() {
+            len += 2 + 8;
+        }
+        if let Some(n) = &self.nonce {
+            len += 1 + monero_varint_len(n.len() as u64) + n.len();
+        }
+        len
+    }
+
+    /// Serialize into a caller buffer (Z2.4d C-class). Byte-identical to `serialize`.
+    pub fn serialize_into(&self, out: &mut [u8], n: &mut usize) -> Result<()> {
+        use crate::types::push::{push_byte, push_slice};
+        if let Some(pk) = &self.tx_pub_key {
+            push_byte(out, n, 0x01)?;
+            push_slice(out, n, pk)?;
+        }
+        if !self.additional_pub_keys.is_empty() {
+            push_byte(out, n, 0x04)?;
+            monero_encode_varint_at(out, n, self.additional_pub_keys.len() as u64)?;
+            for pk in &self.additional_pub_keys {
+                push_slice(out, n, pk)?;
+            }
+        }
+        if let Some(enc) = &self.encrypted_payment_id {
+            push_slice(out, n, &[0x02, 9, 0x01])?;
+            push_slice(out, n, enc)?;
+        } else if let Some(pid) = &self.payment_id {
+            push_slice(out, n, &[0x02, 8])?;
+            push_slice(out, n, pid)?;
+        }
+        if let Some(nb) = &self.nonce {
+            push_byte(out, n, 0x05)?;
+            monero_encode_varint_at(out, n, nb.len() as u64)?;
+            push_slice(out, n, nb)?;
+        }
+        Ok(())
+    }
+
+    /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         // tx_pub_key: tag 0x01 + 32B raw (official tx_extra_pub_key has no length field)
@@ -400,7 +500,44 @@ impl TransactionPrefix {
         }
     }
 
-    /// Serialize prefix
+    /// Exact serialized length (pairs with `serialize_into`).
+    pub fn serialized_len(&self) -> usize {
+        1 + monero_varint_len(self.unlock_time)
+            + monero_varint_len(self.inputs.len() as u64)
+            + self
+                .inputs
+                .iter()
+                .map(|i| i.serialized_len())
+                .sum::<usize>()
+            + monero_varint_len(self.outputs.len() as u64)
+            + self
+                .outputs
+                .iter()
+                .map(|o| o.serialized_len())
+                .sum::<usize>()
+            + monero_varint_len(self.extra.serialized_len() as u64)
+            + self.extra.serialized_len()
+    }
+
+    /// Serialize into a caller buffer (Z2.4d C-class). Byte-identical to `serialize`.
+    pub fn serialize_into(&self, out: &mut [u8], n: &mut usize) -> Result<()> {
+        use crate::types::push::push_byte;
+        push_byte(out, n, self.version)?;
+        monero_encode_varint_at(out, n, self.unlock_time)?;
+        monero_encode_varint_at(out, n, self.inputs.len() as u64)?;
+        for input in &self.inputs {
+            input.serialize_into(out, n)?;
+        }
+        monero_encode_varint_at(out, n, self.outputs.len() as u64)?;
+        for output in &self.outputs {
+            output.serialize_into(out, n)?;
+        }
+        monero_encode_varint_at(out, n, self.extra.serialized_len() as u64)?;
+        self.extra.serialize_into(out, n)?;
+        Ok(())
+    }
+
+    /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(self.version);
@@ -686,6 +823,38 @@ pub fn encode_varint_at(out: &mut [u8], pos: &mut usize, n: u64) -> Result<()> {
 /// Monero (LEB128) varint: 7-bit groups, low byte first, the high bit = continuation flag.
 /// Note this differs semantically from `encode_varint` (Bitcoin-style prefix + fixed-width LE, BTC module only);
 /// do not mix them — confirmed empirically by the P1-06 oracle.
+/// Monero LEB128 varint length in bytes (exact, pairs with `monero_encode_varint_at`).
+pub fn monero_varint_len(mut n: u64) -> usize {
+    let mut len = 1;
+    while n >= 0x80 {
+        n >>= 7;
+        len += 1;
+    }
+    len
+}
+
+/// Bounded slice-cursor core for the Monero LEB128 varint (Z2.4d, zero-heap call shape).
+pub fn monero_encode_varint_at(out: &mut [u8], pos: &mut usize, mut n: u64) -> Result<()> {
+    loop {
+        let b = (n & 0x7f) as u8;
+        n >>= 7;
+        let end = (*pos)
+            .checked_add(1)
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        if end > out.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        if n == 0 {
+            out[*pos] = b;
+            *pos = end;
+            return Ok(());
+        }
+        out[*pos] = b | 0x80;
+        *pos = end;
+    }
+}
+
+/// Vec-delegating convenience (test/legacy); production writes through `monero_encode_varint_at`.
 pub fn monero_encode_varint(out: &mut Vec<u8>, mut n: u64) {
     loop {
         let b = (n & 0x7f) as u8;
@@ -953,5 +1122,40 @@ mod tests {
         // byte 4: varint(extra_size) = 0
         assert_eq!(bytes[4], 0);
         assert_eq!(bytes.len(), 5);
+    }
+
+    /// Z2.4d: `serialize_into` must be byte-identical to the alloc convenience.
+    #[test]
+    fn serialize_into_matches_convenience() {
+        let mut offs = heapless::Vec::new();
+        offs.push(0).unwrap();
+        offs.push(300).unwrap();
+        let input = TxInput::new(offs, [7u8; 32]);
+        let output = TxOutput::new_tagged(12345, [9u8; 32], 0xab);
+        let extra = TxExtra::new().with_encrypted_payment_id([5u8; 8]);
+        let prefix = TransactionPrefix::new(
+            7,
+            alloc::vec![input.clone()],
+            alloc::vec![output.clone()],
+            extra.clone(),
+        );
+
+        let mut buf = [0u8; 1024];
+        let mut n = 0;
+        input.serialize_into(&mut buf, &mut n).unwrap();
+        assert_eq!(&buf[..n], input.serialize().as_slice(), "TxInput");
+        n = 0;
+        output.serialize_into(&mut buf, &mut n).unwrap();
+        assert_eq!(&buf[..n], output.serialize().as_slice(), "TxOutput");
+        n = 0;
+        extra.serialize_into(&mut buf, &mut n).unwrap();
+        assert_eq!(&buf[..n], extra.serialize().as_slice(), "TxExtra");
+        n = 0;
+        prefix.serialize_into(&mut buf, &mut n).unwrap();
+        assert_eq!(
+            &buf[..n],
+            prefix.serialize().as_slice(),
+            "TransactionPrefix"
+        );
     }
 }
