@@ -18,7 +18,11 @@
 
 #![no_std]
 
-// alloc needed only in test (mod tests uses alloc::vec / alloc::string)
+// TEST-ONLY at the crate root (mod tests uses alloc::vec / alloc::string).
+// NOTE (2026-09-24 zero-heap decision): production modules still carry their own
+// `extern crate alloc` (49 files) — a transitional compromise from the SRAM-scarce
+// era, against the v2 §3.5 zero-heap goal; the Z-series removes those uses. Until
+// then the global allocator is supplied by the consuming appearance (flux).
 #[cfg(test)]
 extern crate alloc;
 
