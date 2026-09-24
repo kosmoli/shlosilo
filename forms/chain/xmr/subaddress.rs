@@ -450,10 +450,11 @@ pub fn derive_input_from_source(
     // tx pubkey: with additional keys, use additional[internal_output_index]
     let tx_pubkey = if !source.real_out_additional_tx_keys.is_empty() {
         let idx = source.real_output_in_tx_index as usize;
-        *source
+        source
             .real_out_additional_tx_keys
             .get(idx)
             .or_else(|| source.real_out_additional_tx_keys.first())
+            .map(|z| **z)
             .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?
     } else {
         *source.real_out_tx_key

@@ -30,7 +30,7 @@ impl<'a, T: Default> SliceVec<'a, T> {
     /// Wrap a caller buffer. All slots are reset to `T::default()` placeholders.
     pub fn new(buf: &'a mut [T]) -> Self {
         for slot in buf.iter_mut() {
-            *slot = T::default();
+            let _ = core::mem::take(slot);
         }
         Self { buf, len: 0 }
     }
@@ -60,7 +60,7 @@ impl<'a, T: Default> SliceVec<'a, T> {
     /// Drop all elements (secrets zeroize on drop) and reset slots to placeholders.
     pub fn clear(&mut self) {
         for slot in self.buf.iter_mut() {
-            *slot = T::default();
+            let _ = core::mem::take(slot);
         }
         self.len = 0;
     }

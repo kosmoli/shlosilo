@@ -496,7 +496,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // Audit #7 Gate1 #4: key_offset is a secret used to build the one-time spend key —
     // never lands in a Vec; input_sk is derived immediately inside the loop into a ZeroizingGuard (owner holds it to the end)
     let mut input_sks = ZeroizingMaskGuard::new("input_sk");
-    for src in &tx_data.sources {
+    for src in tx_data.sources.iter().flatten() {
         // key offsets: absolute→relative (monero absolute_output_offsets_to_relative, ascending differences)
         // Z2.3 (2026-09-24, option 2): leaf cap RING_MAX (protocol-hard ring size).
         let mut offs: heapless::Vec<u64, { crate::types::caps::RING_MAX }> = heapless::Vec::new();
@@ -660,7 +660,13 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     let mut clsag_wire: Vec<Vec<u8>> = Vec::with_capacity(tx_data.sources.len());
     let mut pseudo_outs_arr: Vec<[u8; 32]> = Vec::with_capacity(tx_data.sources.len());
 
-    for (i, (src, ring)) in tx_data.sources.iter().zip(rings.iter()).enumerate() {
+    for (i, (src, ring)) in tx_data
+        .sources
+        .iter()
+        .flatten()
+        .zip(rings.iter())
+        .enumerate()
+    {
         // Audit #7 Gate1 #5: pseudo_mask is a blinding scalar — owner holds it to the end
         let pseudo_mask_bytes: &[u8; 32] = pseudo_masks.get(i).ok_or_else(err)?;
         // Gate1 #2: read-only borrow; no plain stack copies created
@@ -722,8 +728,8 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
 }
 
 /// fee = inputs − splitted outputs (change already included in splitted)
-fn compute_fee(tx_data: &TxConstructionData) -> u64 {
-    let input_sum: u64 = tx_data.sources.iter().map(|s| s.amount).sum();
+fn compute_fee(tx_data: &TxConstructionData<'_>) -> u64 {
+    let input_sum: u64 = tx_data.sources.iter().flatten().map(|s| s.amount).sum();
     let out_sum: u64 = tx_data.splitted_dsts.iter().map(|d| d.amount).sum();
     input_sum.saturating_sub(out_sum)
 }
@@ -921,14 +927,15 @@ mod guard_tests {
         let view_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv());
 
         let source = TxSourceEntry {
-            outputs: alloc::vec![OutputEntry {
+            outputs: heapless::Vec::from_slice(&[OutputEntry {
                 index: 0,
                 dest: [0x33u8; 32],
                 mask: [0x33u8; 32],
-            }],
+            }])
+            .unwrap(),
             real_output: 0,
             real_out_tx_key: zeroize::Zeroizing::new([0; 32]),
-            real_out_additional_tx_keys: zeroize::Zeroizing::new(alloc::vec![]),
+            real_out_additional_tx_keys: heapless::Vec::new(),
             real_output_in_tx_index: 0,
             amount: 1000,
             rct: true,
@@ -949,18 +956,31 @@ mod guard_tests {
             is_subaddress: false,
             is_integrated: false,
         };
+        let mut t_src = [None; 1];
+        let mut t_src_f = crate::types::SliceVec::new(&mut t_src);
+        t_src_f.push(Some(source)).unwrap();
+        let mut t_sd =
+            core::array::from_fn::<TxDestinationEntry, 1, _>(|_| TxDestinationEntry::default());
+        let mut t_sd_f = crate::types::SliceVec::new(&mut t_sd);
+        t_sd_f.push(dest.clone()).unwrap();
+        let mut t_sel = [0usize; 1];
+        let mut t_sel_f = crate::types::SliceVec::new(&mut t_sel);
+        t_sel_f.push(0usize).unwrap();
+        let mut t_extra: [u8; 0] = [];
+        let mut t_dests: [TxDestinationEntry; 0] = [];
+        let mut t_sub: [u32; 0] = [];
         let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
-            sources: alloc::vec![source],
+            sources: t_src_f,
             change_dts: dest.clone(),
-            splitted_dsts: alloc::vec![dest],
-            selected_transfers: alloc::vec![0],
-            extra: alloc::vec![],
+            splitted_dsts: t_sd_f,
+            selected_transfers: t_sel_f,
+            extra: crate::types::SliceVec::new(&mut t_extra),
             unlock_time: 0,
             use_rct: 1,
             rct_config: RctConfig::default(),
-            dests: alloc::vec![],
+            dests: crate::types::SliceVec::new(&mut t_dests),
             subaddr_account: 0,
-            subaddr_indices: alloc::vec![],
+            subaddr_indices: crate::types::SliceVec::new(&mut t_sub),
         };
 
         use rand_chacha::rand_core::SeedableRng;
@@ -1042,7 +1062,7 @@ fn owned_source(
         .compress()
         .to_bytes();
     TxSourceEntry {
-        outputs: alloc::vec![
+        outputs: heapless::Vec::from_slice(&[
             OutputEntry {
                 index: 0,
                 dest: wallet_dest,
@@ -1053,10 +1073,11 @@ fn owned_source(
                 dest: point_of(decoy_k),
                 mask: point_of(decoy_k + 10),
             },
-        ],
+        ])
+        .unwrap(),
         real_output: 0,
         real_out_tx_key: zeroize::Zeroizing::new(tx_pub),
-        real_out_additional_tx_keys: zeroize::Zeroizing::new(alloc::vec![]),
+        real_out_additional_tx_keys: heapless::Vec::new(),
         real_output_in_tx_index: 0,
         amount,
         rct: true,
@@ -1128,21 +1149,53 @@ fn multi_input_signer_succeeds_and_balances() {
     let dest_pt = point_of(1);
     let dest = test_dest(2500, dest_pt, false);
     let change = test_dest(400, dest_pt, false);
+    let mut t_src: [Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>; 2] =
+        core::array::from_fn(|_| None);
+    let mut t_src_f = crate::types::SliceVec::new(&mut t_src);
+    t_src_f
+        .push(Some(owned_source(
+            &spend_sec,
+            &view_sec,
+            1000,
+            mask_of(0x66),
+            point_of(5),
+            2,
+        )))
+        .unwrap();
+    t_src_f
+        .push(Some(owned_source(
+            &spend_sec,
+            &view_sec,
+            2000,
+            mask_of(0x77),
+            point_of(6),
+            3,
+        )))
+        .unwrap();
+    let mut t_sd =
+        core::array::from_fn::<TxDestinationEntry, 2, _>(|_| TxDestinationEntry::default());
+    let mut t_sd_f = crate::types::SliceVec::new(&mut t_sd);
+    t_sd_f.push(change.clone()).unwrap();
+    t_sd_f.push(dest.clone()).unwrap();
+    let mut t_sel = [0usize; 2];
+    let mut t_sel_f = crate::types::SliceVec::new(&mut t_sel);
+    t_sel_f.push(0usize).unwrap();
+    t_sel_f.push(1usize).unwrap();
+    let mut t_extra: [u8; 0] = [];
+    let mut t_dests: [TxDestinationEntry; 0] = [];
+    let mut t_sub: [u32; 0] = [];
     let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
-        sources: alloc::vec![
-            owned_source(&spend_sec, &view_sec, 1000, mask_of(0x66), point_of(5), 2),
-            owned_source(&spend_sec, &view_sec, 2000, mask_of(0x77), point_of(6), 3),
-        ],
+        sources: t_src_f,
         change_dts: change.clone(),
-        splitted_dsts: alloc::vec![change, dest],
-        selected_transfers: alloc::vec![0, 1],
-        extra: alloc::vec![],
+        splitted_dsts: t_sd_f,
+        selected_transfers: t_sel_f,
+        extra: crate::types::SliceVec::new(&mut t_extra),
         unlock_time: 0,
         use_rct: 1,
         rct_config: crate::chain::xmr::unsigned_txset::RctConfig::default(),
-        dests: alloc::vec![],
+        dests: crate::types::SliceVec::new(&mut t_dests),
         subaddr_account: 0,
-        subaddr_indices: alloc::vec![],
+        subaddr_indices: crate::types::SliceVec::new(&mut t_sub),
     };
 
     use rand_chacha::rand_core::SeedableRng;
@@ -1273,13 +1326,14 @@ fn signer_clsag_failure_populates_then_drops_owner() {
     };
 
     let source = TxSourceEntry {
-        outputs: alloc::vec![
+        outputs: heapless::Vec::from_slice(&[
             mk_output(0, pt_bytes, wallet_dest), // real: passes ownership validation
             mk_output(1, bad_c, pt_bytes),       // decoy: invalid C point → clsag fails
-        ],
+        ])
+        .unwrap(),
         real_output: 0, // real is legal (derive_input_from_source passes)
         real_out_tx_key: zeroize::Zeroizing::new(tx_pub_bytes),
-        real_out_additional_tx_keys: zeroize::Zeroizing::new(alloc::vec![]),
+        real_out_additional_tx_keys: heapless::Vec::new(),
         real_output_in_tx_index: 0,
         amount: 1000,
         rct: true,
@@ -1309,18 +1363,31 @@ fn signer_clsag_failure_populates_then_drops_owner() {
         is_subaddress: false,
         is_integrated: false,
     };
+    let mut t_src = [None; 1];
+    let mut t_src_f = crate::types::SliceVec::new(&mut t_src);
+    t_src_f.push(Some(source)).unwrap();
+    let mut t_sd =
+        core::array::from_fn::<TxDestinationEntry, 1, _>(|_| TxDestinationEntry::default());
+    let mut t_sd_f = crate::types::SliceVec::new(&mut t_sd);
+    t_sd_f.push(dest.clone()).unwrap();
+    let mut t_sel = [0usize; 1];
+    let mut t_sel_f = crate::types::SliceVec::new(&mut t_sel);
+    t_sel_f.push(0usize).unwrap();
+    let mut t_extra: [u8; 0] = [];
+    let mut t_dests: [TxDestinationEntry; 0] = [];
+    let mut t_sub: [u32; 0] = [];
     let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
-        sources: alloc::vec![source],
+        sources: t_src_f,
         change_dts: change_dest,
-        splitted_dsts: alloc::vec![dest],
-        selected_transfers: alloc::vec![0],
-        extra: alloc::vec![],
+        splitted_dsts: t_sd_f,
+        selected_transfers: t_sel_f,
+        extra: crate::types::SliceVec::new(&mut t_extra),
         unlock_time: 0,
         use_rct: 1,
         rct_config: RctConfig::default(),
-        dests: alloc::vec![],
+        dests: crate::types::SliceVec::new(&mut t_dests),
         subaddr_account: 0,
-        subaddr_indices: alloc::vec![],
+        subaddr_indices: crate::types::SliceVec::new(&mut t_sub),
     };
 
     use rand_chacha::rand_core::SeedableRng;
@@ -1393,7 +1460,7 @@ fn multi_input_clsag_failure_drops_all_owners() {
         .compress()
         .to_bytes();
     let bad = TxSourceEntry {
-        outputs: alloc::vec![
+        outputs: heapless::Vec::from_slice(&[
             OutputEntry {
                 index: 0,
                 dest: wallet_dest,
@@ -1404,10 +1471,11 @@ fn multi_input_clsag_failure_drops_all_owners() {
                 dest: point_of(3),
                 mask: [0x99u8; 32], // undecompressible → clsag fails
             },
-        ],
+        ])
+        .unwrap(),
         real_output: 0,
         real_out_tx_key: zeroize::Zeroizing::new(tx_pub),
-        real_out_additional_tx_keys: zeroize::Zeroizing::new(alloc::vec![]),
+        real_out_additional_tx_keys: heapless::Vec::new(),
         real_output_in_tx_index: 0,
         amount: 2000,
         rct: true,
@@ -1419,18 +1487,34 @@ fn multi_input_clsag_failure_drops_all_owners() {
             ki: [0; 32],
         },
     };
+    let mut t_src: [Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>; 2] =
+        core::array::from_fn(|_| None);
+    let mut t_src_f = crate::types::SliceVec::new(&mut t_src);
+    t_src_f.push(Some(good)).unwrap();
+    t_src_f.push(Some(bad)).unwrap();
+    let mut t_sd =
+        core::array::from_fn::<TxDestinationEntry, 1, _>(|_| TxDestinationEntry::default());
+    let mut t_sd_f = crate::types::SliceVec::new(&mut t_sd);
+    t_sd_f.push(dest.clone()).unwrap();
+    let mut t_sel = [0usize; 2];
+    let mut t_sel_f = crate::types::SliceVec::new(&mut t_sel);
+    t_sel_f.push(0usize).unwrap();
+    t_sel_f.push(1usize).unwrap();
+    let mut t_extra: [u8; 0] = [];
+    let mut t_dests: [TxDestinationEntry; 0] = [];
+    let mut t_sub: [u32; 0] = [];
     let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
-        sources: alloc::vec![good, bad],
+        sources: t_src_f,
         change_dts: dest.clone(),
-        splitted_dsts: alloc::vec![dest],
-        selected_transfers: alloc::vec![0, 1],
-        extra: alloc::vec![],
+        splitted_dsts: t_sd_f,
+        selected_transfers: t_sel_f,
+        extra: crate::types::SliceVec::new(&mut t_extra),
         unlock_time: 0,
         use_rct: 1,
         rct_config: RctConfig::default(),
-        dests: alloc::vec![],
+        dests: crate::types::SliceVec::new(&mut t_dests),
         subaddr_account: 0,
-        subaddr_indices: alloc::vec![],
+        subaddr_indices: crate::types::SliceVec::new(&mut t_sub),
     };
     use rand_chacha::rand_core::SeedableRng;
     let rng = rand_chacha::ChaCha20Rng::from_seed([0x77u8; 32]);
@@ -1469,25 +1553,41 @@ fn change_output_derivation_kat() {
     let change_pt = point_of(4);
     let dest = test_dest(900, dest_pt, false);
     let change = test_dest(100, change_pt, false);
-    let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
-        sources: alloc::vec![owned_source(
+    let mut t_src: [Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>; 1] = [None; 1];
+    let mut t_src_f = crate::types::SliceVec::new(&mut t_src);
+    t_src_f
+        .push(Some(owned_source(
             &spend_sec,
             &view_sec,
             1100,
             mask_of(0x66),
             point_of(5),
-            2
-        )],
+            2,
+        )))
+        .unwrap();
+    let mut t_sd =
+        core::array::from_fn::<TxDestinationEntry, 2, _>(|_| TxDestinationEntry::default());
+    let mut t_sd_f = crate::types::SliceVec::new(&mut t_sd);
+    t_sd_f.push(change.clone()).unwrap();
+    t_sd_f.push(dest.clone()).unwrap();
+    let mut t_sel = [0usize; 1];
+    let mut t_sel_f = crate::types::SliceVec::new(&mut t_sel);
+    t_sel_f.push(0usize).unwrap();
+    let mut t_extra: [u8; 0] = [];
+    let mut t_dests: [TxDestinationEntry; 0] = [];
+    let mut t_sub: [u32; 0] = [];
+    let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
+        sources: t_src_f,
         change_dts: change.clone(),
-        splitted_dsts: alloc::vec![change.clone(), dest],
-        selected_transfers: alloc::vec![0],
-        extra: alloc::vec![],
+        splitted_dsts: t_sd_f,
+        selected_transfers: t_sel_f,
+        extra: crate::types::SliceVec::new(&mut t_extra),
         unlock_time: 0,
         use_rct: 1,
         rct_config: crate::chain::xmr::unsigned_txset::RctConfig::default(),
-        dests: alloc::vec![],
+        dests: crate::types::SliceVec::new(&mut t_dests),
         subaddr_account: 0,
-        subaddr_indices: alloc::vec![],
+        subaddr_indices: crate::types::SliceVec::new(&mut t_sub),
     };
     use rand_chacha::rand_core::SeedableRng;
     let rng = rand_chacha::ChaCha20Rng::from_seed([0x55u8; 32]);

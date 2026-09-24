@@ -38,9 +38,42 @@ fn sign_real_fixture_end_to_end() {
     };
 
     // Parse the fixture → single-tx construction data
-    let utx = deserialize_unsigned_tx(PLAIN).expect("deserialize");
+
+    let mut p_txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        8,
+        _,
+    >(|_| None);
+    let mut p_src =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 32, _>(
+            |_| None,
+        );
+    let mut p_sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_sel = [0usize; 256];
+    let mut p_ex = [0u8; 8192];
+    let mut p_de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_su = [0u32; 256];
+    let utx = deserialize_unsigned_tx(
+        PLAIN,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut p_txes,
+            sources: &mut p_src,
+            splitted_dsts: &mut p_sd,
+            selected_transfers: &mut p_sel,
+            extra: &mut p_ex,
+            dests: &mut p_de,
+            subaddr_indices: &mut p_su,
+        },
+    )
+    .expect("deserialize");
     assert_eq!(utx.txes.len(), 1);
-    let tx_data = &utx.txes[0];
+    let tx_data = utx.txes.iter().flatten().next().unwrap();
 
     // RNG: OsRng on host; TRNG on real hardware (L3 injection point)
     use rand_core::OsRng;
@@ -49,10 +82,26 @@ fn sign_real_fixture_end_to_end() {
     eprintln!(
         "DBG sources={} real_out={} src_outputs={}",
         tx_data.sources.len(),
-        tx_data.sources[0].real_output,
-        tx_data.sources[0].outputs.len()
+        tx_data.sources.iter().flatten().next().unwrap().real_output,
+        tx_data
+            .sources
+            .iter()
+            .flatten()
+            .next()
+            .unwrap()
+            .outputs
+            .len()
     );
-    for (idx, oo) in tx_data.sources[0].outputs.iter().enumerate() {
+    for (idx, oo) in tx_data
+        .sources
+        .iter()
+        .flatten()
+        .next()
+        .unwrap()
+        .outputs
+        .iter()
+        .enumerate()
+    {
         eprintln!(
             "  out[{}] idx={} dest[:6]={:?}",
             idx,
@@ -87,7 +136,7 @@ fn sign_real_fixture_end_to_end() {
     assert_eq!(tx_data.splitted_dsts.len(), 2);
 
     // ---- Check 4: fee matches the construction data ----
-    let input_sum: u64 = tx_data.sources.iter().map(|s| s.amount).sum();
+    let input_sum: u64 = tx_data.sources.iter().flatten().map(|s| s.amount).sum();
     let out_sum: u64 = tx_data.splitted_dsts.iter().map(|d| d.amount).sum();
     assert_eq!(input_sum - out_sum, 30_640_000, "fee matches P6.3");
 

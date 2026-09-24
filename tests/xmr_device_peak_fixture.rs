@@ -54,24 +54,28 @@ fn owned_source_ring16(
         .commit()
         .compress()
         .to_bytes();
-    let mut outputs = Vec::with_capacity(16);
-    outputs.push(OutputEntry {
-        index: 0,
-        dest: wallet_dest,
-        mask: c_real,
-    });
+    let mut outputs = heapless::Vec::new();
+    outputs
+        .push(OutputEntry {
+            index: 0,
+            dest: wallet_dest,
+            mask: c_real,
+        })
+        .unwrap();
     for i in 1u64..16 {
-        outputs.push(OutputEntry {
-            index: i * 17,
-            dest: point_of(100 + i),
-            mask: point_of(200 + i),
-        });
+        outputs
+            .push(OutputEntry {
+                index: i * 17,
+                dest: point_of(100 + i),
+                mask: point_of(200 + i),
+            })
+            .unwrap();
     }
     TxSourceEntry {
         outputs,
         real_output: 0,
         real_out_tx_key: tx_pub.into(),
-        real_out_additional_tx_keys: vec![].into(),
+        real_out_additional_tx_keys: heapless::Vec::new(),
         real_output_in_tx_index: 0,
         amount,
         rct: true,
@@ -95,32 +99,50 @@ fn build_fixture(seed: &[u8; 64]) -> (String, zeroize::Zeroizing<Vec<u8>>) {
     let dest_pt = point_of(1);
     let change = dest(400, dest_pt);
     let pay = dest(500, dest_pt);
-    let tx_data = TxConstructionData {
-        sources: vec![owned_source_ring16(
+    let mut f_src = [None; 1];
+    let mut f_src_f = shlosilo::types::SliceVec::new(&mut f_src);
+    f_src_f
+        .push(Some(owned_source_ring16(
             &spend_sec,
             &view_sec,
             1000,
             [0x66u8; 32],
             point_of(5),
-        )],
-        change_dts: change.clone(),
-        splitted_dsts: vec![change, pay],
-        selected_transfers: vec![0],
-        extra: vec![],
-        unlock_time: 0,
-        use_rct: 1,
-        rct_config: RctConfig {
-            version: 0,
-            range_proof_type: 0,
-            bp_version: 4,
-        },
-        dests: vec![],
-        subaddr_account: 0,
-        subaddr_indices: vec![],
-    };
-    let unsigned = UnsignedTx {
-        txes: vec![tx_data],
-    };
+        )))
+        .unwrap();
+    let mut f_sd =
+        core::array::from_fn::<TxDestinationEntry, 2, _>(|_| TxDestinationEntry::default());
+    let mut f_sd_f = shlosilo::types::SliceVec::new(&mut f_sd);
+    f_sd_f.push(change.clone()).unwrap();
+    f_sd_f.push(pay.clone()).unwrap();
+    let mut f_sel = [0usize; 1];
+    let mut f_sel_f = shlosilo::types::SliceVec::new(&mut f_sel);
+    f_sel_f.push(0usize).unwrap();
+    let mut f_extra: [u8; 0] = [];
+    let mut f_dests: [TxDestinationEntry; 0] = [];
+    let mut f_sub: [u32; 0] = [];
+    let mut f_txd = [None; 1];
+    let mut f_txd_f = shlosilo::types::SliceVec::new(&mut f_txd);
+    f_txd_f
+        .push(Some(TxConstructionData {
+            sources: f_src_f,
+            change_dts: change.clone(),
+            splitted_dsts: f_sd_f,
+            selected_transfers: f_sel_f,
+            extra: shlosilo::types::SliceVec::new(&mut f_extra),
+            unlock_time: 0,
+            use_rct: 1,
+            rct_config: RctConfig {
+                version: 0,
+                range_proof_type: 0,
+                bp_version: 4,
+            },
+            dests: shlosilo::types::SliceVec::new(&mut f_dests),
+            subaddr_account: 0,
+            subaddr_indices: shlosilo::types::SliceVec::new(&mut f_sub),
+        }))
+        .unwrap();
+    let unsigned = UnsignedTx { txes: f_txd_f };
     let plain = serialize_unsigned_tx(&unsigned);
     let mut enc_rng = rand_chacha::ChaCha20Rng::from_seed([0xABu8; 32]);
     let encrypted = encrypt_unsigned_txset(plain, &view_sec, &mut enc_rng).expect("encrypt");

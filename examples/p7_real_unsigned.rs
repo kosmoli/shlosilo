@@ -24,9 +24,41 @@ fn main() {
         "✓ decrypt: {} bytes plaintext (Schnorr sig + ChaCha20-Legacy OK)",
         plain.len()
     );
-    let utx = deserialize_unsigned_tx(&plain).expect("deserialize");
+    let mut txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        8,
+        _,
+    >(|_| None);
+    let mut sources =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 32, _>(
+            |_| None,
+        );
+    let mut sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut sel = [0usize; 256];
+    let mut ex = vec![0u8; plain.len()];
+    let mut de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut su = [0u32; 256];
+    let utx = deserialize_unsigned_tx(
+        &plain,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut txes,
+            sources: &mut sources,
+            splitted_dsts: &mut sd,
+            selected_transfers: &mut sel,
+            extra: &mut ex,
+            dests: &mut de,
+            subaddr_indices: &mut su,
+        },
+    )
+    .expect("deserialize");
     println!("✓ deserialize: {} tx construction data", utx.txes.len());
-    for (i, tx) in utx.txes.iter().enumerate() {
+    for (i, tx) in utx.txes.iter().flatten().enumerate() {
         println!(
             "tx[{}]: {} sources, use_rct={}, unlock_time={}",
             i,
@@ -34,7 +66,7 @@ fn main() {
             tx.use_rct,
             tx.unlock_time
         );
-        for (j, s) in tx.sources.iter().enumerate() {
+        for (j, s) in tx.sources.iter().flatten().enumerate() {
             println!(
                 "  source[{}]: amount={} ring={} real_output={}",
                 j,
@@ -44,7 +76,7 @@ fn main() {
             );
         }
         println!("  change: amount={}", tx.change_dts.amount);
-        for d in &tx.splitted_dsts {
+        for d in tx.splitted_dsts.iter() {
             println!("  dest: amount={}", d.amount);
         }
         println!("  selected_transfers: {:?}", tx.selected_transfers);

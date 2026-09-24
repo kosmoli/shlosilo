@@ -114,18 +114,55 @@ fn decrypt_and_parse_fixture() {
     };
     let plain =
         decrypt_unsigned_txset(&fixture_bytes(), &view_sk).expect("decrypt 2-input fixture");
-    let utx = deserialize_unsigned_tx(&plain).expect("deserialize");
+
+    let mut p_txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        8,
+        _,
+    >(|_| None);
+    let mut p_src =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 32, _>(
+            |_| None,
+        );
+    let mut p_sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_sel = [0usize; 256];
+    let mut p_ex = [0u8; 8192];
+    let mut p_de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_su = [0u32; 256];
+    let utx = deserialize_unsigned_tx(
+        &plain,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut p_txes,
+            sources: &mut p_src,
+            splitted_dsts: &mut p_sd,
+            selected_transfers: &mut p_sel,
+            extra: &mut p_ex,
+            dests: &mut p_de,
+            subaddr_indices: &mut p_su,
+        },
+    )
+    .expect("deserialize");
     assert_eq!(utx.txes.len(), 1, "one tx");
-    let tx = &utx.txes[0];
+    let tx = utx.txes.iter().flatten().next().unwrap();
     assert_eq!(tx.sources.len(), 2, "TWO inputs (task 4 target)");
     // Both fixtures spend two equal UTXOs; do not hardcode which fixture.
-    assert_eq!(tx.sources[0].amount, tx.sources[1].amount, "equal inputs");
-    for (i, s) in tx.sources.iter().enumerate() {
+    assert_eq!(
+        tx.sources.iter().flatten().next().unwrap().amount,
+        tx.sources.iter().flatten().nth(1).unwrap().amount,
+        "equal inputs"
+    );
+    for (i, s) in tx.sources.iter().flatten().enumerate() {
         assert_eq!(s.outputs.len(), 16, "ring 16 (source {i})");
         assert!(s.real_output < 16, "real index in range (source {i})");
     }
     let out_sum: u64 = tx.splitted_dsts.iter().map(|d| d.amount).sum();
-    let in_sum: u64 = tx.sources.iter().map(|s| s.amount).sum();
+    let in_sum: u64 = tx.sources.iter().flatten().map(|s| s.amount).sum();
     let fee = in_sum - out_sum;
     assert!(in_sum > out_sum && fee < 1_000_000_000, "sane fee: {fee}");
     println!(
@@ -136,7 +173,7 @@ fn decrypt_and_parse_fixture() {
         out_sum,
         fee
     );
-    for (i, s) in tx.sources.iter().enumerate() {
+    for (i, s) in tx.sources.iter().flatten().enumerate() {
         println!(
             "  src[{i}]: amount={} real_output={} ring={} tx_key={}",
             s.amount,
@@ -304,8 +341,41 @@ fn sign_and_time() {
     };
 
     let plain = decrypt_unsigned_txset(&fixture_bytes(), &view_sk).expect("decrypt");
-    let utx = deserialize_unsigned_tx(&plain).expect("deserialize");
-    let tx_data = &utx.txes[0];
+
+    let mut p_txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        8,
+        _,
+    >(|_| None);
+    let mut p_src =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 32, _>(
+            |_| None,
+        );
+    let mut p_sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_sel = [0usize; 256];
+    let mut p_ex = [0u8; 8192];
+    let mut p_de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_su = [0u32; 256];
+    let utx = deserialize_unsigned_tx(
+        &plain,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut p_txes,
+            sources: &mut p_src,
+            splitted_dsts: &mut p_sd,
+            selected_transfers: &mut p_sel,
+            extra: &mut p_ex,
+            dests: &mut p_de,
+            subaddr_indices: &mut p_su,
+        },
+    )
+    .expect("deserialize");
+    let tx_data = utx.txes.iter().flatten().next().unwrap();
     assert_eq!(tx_data.sources.len(), 2);
 
     use rand_core::OsRng;

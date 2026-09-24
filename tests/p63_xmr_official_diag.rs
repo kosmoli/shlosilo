@@ -12,8 +12,50 @@ fn hexs(b: &[u8]) -> String {
 #[test]
 #[ignore]
 fn diag_ring_full() {
-    let cd = deserialize_unsigned_tx(PLAIN).unwrap();
-    let src = &cd.txes[0].sources[0];
+    let mut txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        2,
+        _,
+    >(|_| None);
+    let mut sources =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 4, _>(
+            |_| None,
+        );
+    let mut splitted_dsts =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 8, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut selected_transfers = [0usize; 16];
+    let mut extra = [0u8; 4096];
+    let mut dests =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 8, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut subaddr_indices = [0u32; 16];
+    let cd = deserialize_unsigned_tx(
+        PLAIN,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut txes,
+            sources: &mut sources,
+            splitted_dsts: &mut splitted_dsts,
+            selected_transfers: &mut selected_transfers,
+            extra: &mut extra,
+            dests: &mut dests,
+            subaddr_indices: &mut subaddr_indices,
+        },
+    )
+    .unwrap();
+    let src = cd
+        .txes
+        .iter()
+        .flatten()
+        .next()
+        .unwrap()
+        .sources
+        .iter()
+        .flatten()
+        .next()
+        .unwrap();
     {
         let m: String = src
             .mask

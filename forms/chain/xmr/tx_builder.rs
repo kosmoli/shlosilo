@@ -31,7 +31,6 @@
 //! **Reference**: <https://github.com/monero-project/monero/blob/master/src/device/device.cpp>
 
 extern crate alloc;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::types::SliceVec;
@@ -542,6 +541,7 @@ mod tests {
     use super::*;
     use crate::chain::xmr::reduce_scalar::reduce_scalar as rs;
     use alloc::string::String;
+    use alloc::vec;
     use rand_core::OsRng;
     use std::eprintln;
 

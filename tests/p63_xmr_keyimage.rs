@@ -41,9 +41,41 @@ fn derive_key_image_from_real_fixture() {
     };
 
     // Parse the fixture (plaintext, already verified in P6.3)
-    let utx = deserialize_unsigned_tx(PLAIN).expect("deserialize");
-    let tx = &utx.txes[0];
-    let src = &tx.sources[0];
+    let mut txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        2,
+        _,
+    >(|_| None);
+    let mut sources =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 4, _>(
+            |_| None,
+        );
+    let mut sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 8, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut sel = [0usize; 16];
+    let mut ex = [0u8; 4096];
+    let mut de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 8, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut su = [0u32; 16];
+    let utx = deserialize_unsigned_tx(
+        PLAIN,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut txes,
+            sources: &mut sources,
+            splitted_dsts: &mut sd,
+            selected_transfers: &mut sel,
+            extra: &mut ex,
+            dests: &mut de,
+            subaddr_indices: &mut su,
+        },
+    )
+    .expect("deserialize");
+    let tx = utx.txes.iter().flatten().next().unwrap();
+    let src = tx.sources.iter().flatten().next().unwrap();
 
     eprintln!(
         "real_output={} real_out_tx_key={}.. real_output_in_tx_index={} amount={} subaddr_indices={:?}",

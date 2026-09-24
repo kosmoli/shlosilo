@@ -25,11 +25,43 @@ fn diag_step_by_step() {
     let view_sk = env_hex("SHLOSILO_TEST_XMR_VIEW_SK").expect("VIEW_SK");
     let spend_sk = env_hex("SHLOSILO_TEST_XMR_SPEND_SK").expect("SPEND_SK");
 
-    let utx = deserialize_unsigned_tx(PLAIN).expect("deserialize");
-    let tx_data = &utx.txes[0];
+    let mut txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        2,
+        _,
+    >(|_| None);
+    let mut sources =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 4, _>(
+            |_| None,
+        );
+    let mut sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 8, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut sel = [0usize; 16];
+    let mut ex = [0u8; 4096];
+    let mut de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 8, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut su = [0u32; 16];
+    let utx = deserialize_unsigned_tx(
+        PLAIN,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut txes,
+            sources: &mut sources,
+            splitted_dsts: &mut sd,
+            selected_transfers: &mut sel,
+            extra: &mut ex,
+            dests: &mut de,
+            subaddr_indices: &mut su,
+        },
+    )
+    .expect("deserialize");
+    let tx_data = utx.txes.iter().flatten().next().unwrap();
 
     // step A: derive_input_from_source(key image)
-    let src = &tx_data.sources[0];
+    let src = tx_data.sources.iter().flatten().next().unwrap();
     let ki = shlosilo::chain::xmr::subaddress::derive_input_from_source(
         &view_sk,
         &spend_sk,
@@ -58,9 +90,41 @@ fn diag_clsag_with_fixture_ring() {
     let view_sk = env_hex("SHLOSILO_TEST_XMR_VIEW_SK").expect("VIEW_SK");
     let spend_sk = env_hex("SHLOSILO_TEST_XMR_SPEND_SK").expect("SPEND_SK");
 
-    let utx = deserialize_unsigned_tx(PLAIN).expect("deserialize");
-    let tx_data = &utx.txes[0];
-    let src = &tx_data.sources[0];
+    let mut txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        2,
+        _,
+    >(|_| None);
+    let mut sources =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 4, _>(
+            |_| None,
+        );
+    let mut sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 8, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut sel = [0usize; 16];
+    let mut ex = [0u8; 4096];
+    let mut de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 8, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut su = [0u32; 16];
+    let utx = deserialize_unsigned_tx(
+        PLAIN,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut txes,
+            sources: &mut sources,
+            splitted_dsts: &mut sd,
+            selected_transfers: &mut sel,
+            extra: &mut ex,
+            dests: &mut de,
+            subaddr_indices: &mut su,
+        },
+    )
+    .expect("deserialize");
+    let tx_data = utx.txes.iter().flatten().next().unwrap();
+    let src = tx_data.sources.iter().flatten().next().unwrap();
 
     // one-time input sk(spend + key_offset)
     let (_, key_offset) = shlosilo::chain::xmr::subaddress::derive_input_from_source(

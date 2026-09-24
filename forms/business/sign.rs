@@ -176,7 +176,38 @@ fn sign_xmr(
         &view_sec,
         &cn_key,
     )?;
-    let unsigned_tx = deserialize_unsigned_tx(&plain)?;
+    // Z2.3 C3c transitional root (2026-09-24): unsigned-model pools sized by generous
+    // root caps (deployment sizing moves to the caller workspace at Z2.4/Z3; over-cap
+    // is explicit Err — no truncation).
+    let mut txes_pool: alloc::vec::Vec<
+        Option<crate::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+    > = (0..8).map(|_| None).collect();
+    let mut sources_pool: alloc::vec::Vec<
+        Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>,
+    > = (0..32).map(|_| None).collect();
+    let mut sd_pool = alloc::vec![
+        crate::chain::xmr::unsigned_txset::TxDestinationEntry::default();
+        64
+    ];
+    let mut sel_pool = alloc::vec![0usize; 256];
+    let mut extra_pool = alloc::vec![0u8; plain.len()];
+    let mut dests_pool = alloc::vec![
+        crate::chain::xmr::unsigned_txset::TxDestinationEntry::default();
+        64
+    ];
+    let mut subidx_pool = alloc::vec![0u32; 256];
+    let mut unsigned_tx = deserialize_unsigned_tx(
+        &plain,
+        crate::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut txes_pool,
+            sources: &mut sources_pool,
+            splitted_dsts: &mut sd_pool,
+            selected_transfers: &mut sel_pool,
+            extra: &mut extra_pool,
+            dests: &mut dests_pool,
+            subaddr_indices: &mut subidx_pool,
+        },
+    )?;
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px1.as_mut() {
         p.end();
@@ -203,14 +234,30 @@ fn sign_xmr(
     // TRANSITIONAL ROOT: Vec-backed pool storage allocated here — the only remaining
     // alloc cluster of this flow besides the C-class serialize/tx_bytes buffers.
     // Marked for Z2.4/Z3: provisioning moves to the caller workspace.
-    let total_sources: usize = unsigned_tx.txes.iter().map(|t| t.sources.len()).sum();
-    let total_dsts: usize = unsigned_tx.txes.iter().map(|t| t.splitted_dsts.len()).sum();
+    let total_sources: usize = unsigned_tx
+        .txes
+        .iter()
+        .flatten()
+        .map(|t| t.sources.len())
+        .sum();
+    let total_dsts: usize = unsigned_tx
+        .txes
+        .iter()
+        .flatten()
+        .map(|t| t.splitted_dsts.len())
+        .sum();
     let total_sel: usize = unsigned_tx
         .txes
         .iter()
+        .flatten()
         .map(|t| t.selected_transfers.len())
         .sum();
-    let total_dests: usize = unsigned_tx.txes.iter().map(|t| t.dests.len()).sum();
+    let total_dests: usize = unsigned_tx
+        .txes
+        .iter()
+        .flatten()
+        .map(|t| t.dests.len())
+        .sum();
     let mut ptx_backing: alloc::vec::Vec<Option<PendingTx<'_>>> =
         (0..unsigned_tx.txes.len()).map(|_| None).collect();
     let mut ki_backing = alloc::vec::Vec::new();
@@ -235,13 +282,18 @@ fn sign_xmr(
     // P1-03: into_iter takes ownership — construction_data is moved into PendingTx (previously
     // the deep-copying tx_data.clone(); once TxSourceEntry is not Clone, move is the only path,
     // also the audit-required "secret copies must not proliferate")
-    for tx_data in unsigned_tx.txes {
+    for slot in unsigned_tx.txes.iter_mut() {
+        // Z2.3 C3c + P1-03: Option::take moves the construction data out of the pool
+        // slot (ownership transfer to PendingTx; no secret copies proliferate).
+        let tx_data = slot.take().ok_or_else(|| {
+            crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::EncodingInvalidFormat)
+        })?;
         // Z2.3 C3b-3: carve this tx's slices out of the flat pools (split_at_mut —
         // disjoint &mut chunks, safe-Rust, counts known from tx_data)
         let (sel_chunk, r) = sel_rest.split_at_mut(tx_data.selected_transfers.len());
         sel_rest = r;
         let mut selected_transfers = crate::types::SliceVec::new(sel_chunk);
-        for &t in &tx_data.selected_transfers {
+        for &t in tx_data.selected_transfers.iter() {
             selected_transfers.push(t as u8).map_err(|_| {
                 crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::BufferTooSmall)
             })?;
@@ -263,12 +315,12 @@ fn sign_xmr(
         let mut ctx_src = zeroize::Zeroizing::new(alloc::vec::Vec::new());
         ctx_src.extend_from_slice(&tx_data.unlock_time.to_le_bytes());
         ctx_src.extend_from_slice(&tx_data.extra);
-        for s in &tx_data.sources {
+        for s in tx_data.sources.iter().flatten() {
             ctx_src.extend_from_slice(s.real_out_tx_key.as_slice());
             // P1-03: mask plaintext access funneled through expose() (context digest is a read-only hash)
             ctx_src.extend_from_slice(s.mask.expose());
         }
-        for d in &tx_data.splitted_dsts {
+        for d in tx_data.splitted_dsts.iter() {
             ctx_src.extend_from_slice(&d.spend_public_key);
             ctx_src.extend_from_slice(&d.view_public_key);
         }
@@ -298,14 +350,14 @@ fn sign_xmr(
         )?;
 
         // fee(= inputs − splitted outputs)
-        let input_sum: u64 = tx_data.sources.iter().map(|s| s.amount).sum();
+        let input_sum: u64 = tx_data.sources.iter().flatten().map(|s| s.amount).sum();
         let out_sum: u64 = tx_data.splitted_dsts.iter().map(|d| d.amount).sum();
         let fee = input_sum.saturating_sub(out_sum);
 
         #[cfg(feature = "tx-phase-timing-ffi")]
         let mut px6 = PhaseProbe::start(6);
         // key images: already present in the signed wire; rebuild the `<hex> ` string + outer list here
-        for src in &tx_data.sources {
+        for src in tx_data.sources.iter().flatten() {
             let (ki, _off) = crate::chain::xmr::subaddress::derive_input_from_source(
                 &view_sec,
                 &spend_sec,

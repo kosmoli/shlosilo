@@ -73,7 +73,7 @@ fn write_source_entry(out: &mut Vec<u8>, s: &crate::chain::xmr::unsigned_txset::
     out.extend_from_slice(s.real_out_tx_key.as_slice());
     put_varint(out, s.real_out_additional_tx_keys.len() as u64);
     for k in s.real_out_additional_tx_keys.iter() {
-        out.extend_from_slice(k);
+        out.extend_from_slice(&**k);
     }
     out.extend_from_slice(&s.real_output_in_tx_index.to_le_bytes());
     out.extend_from_slice(&s.amount.to_le_bytes());
@@ -86,35 +86,35 @@ fn write_source_entry(out: &mut Vec<u8>, s: &crate::chain::xmr::unsigned_txset::
     out.extend_from_slice(&s.multisig_kLRki.ki);
 }
 
-pub(crate) fn write_construction_data(out: &mut Vec<u8>, d: &TxConstructionData) {
+pub(crate) fn write_construction_data(out: &mut Vec<u8>, d: &TxConstructionData<'_>) {
     put_varint(out, d.sources.len() as u64);
-    for s in &d.sources {
+    for s in d.sources.iter().flatten() {
         write_source_entry(out, s);
     }
     write_destination_entry(out, &d.change_dts);
     put_varint(out, d.splitted_dsts.len() as u64);
-    for dst in &d.splitted_dsts {
+    for dst in d.splitted_dsts.iter() {
         write_destination_entry(out, dst);
     }
     put_varint(out, d.selected_transfers.len() as u64);
     // in construction_data, selected_transfers is varint (unlike the byte-per-u8 at the ptx top level!)
-    for t in &d.selected_transfers {
+    for t in d.selected_transfers.iter() {
         put_varint(out, *t as u64);
     }
     put_varint(out, d.extra.len() as u64);
-    out.extend_from_slice(&d.extra);
+    out.extend_from_slice(&d.extra[..]);
     out.extend_from_slice(&d.unlock_time.to_le_bytes());
     out.push(d.use_rct);
     put_varint(out, d.rct_config.version);
     put_varint(out, d.rct_config.range_proof_type);
     put_varint(out, d.rct_config.bp_version);
     put_varint(out, d.dests.len() as u64);
-    for dest in &d.dests {
+    for dest in d.dests.iter() {
         write_destination_entry(out, dest);
     }
     out.extend_from_slice(&d.subaddr_account.to_le_bytes());
     put_varint(out, d.subaddr_indices.len() as u64);
-    for i in &d.subaddr_indices {
+    for i in d.subaddr_indices.iter() {
         put_varint(out, *i as u64);
     }
 }
@@ -142,7 +142,7 @@ pub struct PendingTx<'a> {
     pub additional_tx_keys:
         heapless::Vec<zeroize::Zeroizing<[u8; 32]>, { crate::types::caps::EXTRA_KEYS_MAX }>,
     pub dests: SliceVec<'a, TxDestinationEntry>,
-    pub construction_data: TxConstructionData,
+    pub construction_data: TxConstructionData<'a>,
 }
 
 /// Output one-time address → key image (aligned with keystone tx_key_images)
@@ -414,6 +414,7 @@ pub fn decrypt_signed_txset(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chain::xmr::unsigned_txset::TxSourceEntry;
     use alloc::{vec, vec::Vec};
     use rand_chacha::rand_core::SeedableRng;
     use rand_chacha::ChaCha20Rng;
@@ -501,6 +502,19 @@ mod tests {
             is_subaddress: false,
             is_integrated: false,
         };
+        let mut e_src: [Option<TxSourceEntry>; 0] = [];
+        let mut e_sd =
+            core::array::from_fn::<TxDestinationEntry, 1, _>(|_| TxDestinationEntry::default());
+        let mut e_sd_f = SliceVec::new(&mut e_sd);
+        e_sd_f.push(dest.clone()).unwrap();
+        let mut e_sel = [0usize; 1];
+        let mut e_sel_f = SliceVec::new(&mut e_sel);
+        e_sel_f.push(0usize).unwrap();
+        let mut e_extra: [u8; 0] = [];
+        let mut e_dests: [TxDestinationEntry; 0] = [];
+        let mut e_sub = [0u32; 1];
+        let mut e_sub_f = SliceVec::new(&mut e_sub);
+        e_sub_f.push(1u32).unwrap();
         let mut st_backing = [0u8; 1];
         let mut ks_backing = [0u8; 67];
         let mut dst_backing =
@@ -524,17 +538,17 @@ mod tests {
             additional_tx_keys: heapless::Vec::new(),
             dests,
             construction_data: TxConstructionData {
-                sources: vec![],
+                sources: SliceVec::new(&mut e_src),
                 change_dts: dest.clone(),
-                splitted_dsts: vec![dest],
-                selected_transfers: vec![0usize],
-                extra: vec![],
+                splitted_dsts: e_sd_f,
+                selected_transfers: e_sel_f,
+                extra: SliceVec::new(&mut e_extra),
                 unlock_time: 0,
                 use_rct: 1,
                 rct_config: RctConfig::default(),
-                dests: vec![],
+                dests: SliceVec::new(&mut e_dests),
                 subaddr_account: 0,
-                subaddr_indices: vec![1],
+                subaddr_indices: e_sub_f,
             },
         };
         let mut ptx_slot: [Option<PendingTx<'_>>; 1] = core::array::from_fn(|_| None);

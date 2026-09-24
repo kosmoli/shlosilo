@@ -72,8 +72,9 @@ const UNSIGNED_TXSET_MAX_PLAIN_LEN: usize = crate::ur::ur_multipart::MULTIPART_P
 /// treated as 1 (divide-by-zero guard; lesson from audit #7 P2-01).
 fn read_count(data: &[u8], off: &mut usize, min_elem_bytes: usize) -> Result<usize> {
     let v = read_varint(data, off)?;
-    let count = usize::try_from(v).map_err(|_| err())?;
+    let count = v;
     let remaining = data.len().saturating_sub(*off);
+    let count = usize::try_from(count).map_err(|_| err())?;
     if count > remaining / min_elem_bytes.max(1) {
         return Err(err());
     }
@@ -185,12 +186,14 @@ impl core::fmt::Debug for MultisigKLRki {
 
 #[allow(non_snake_case)] // multisig_kLRki field name aligned with official Monero wire naming
 pub struct TxSourceEntry {
-    pub outputs: Vec<OutputEntry>,
+    /// ring members (protocol-hard RING_MAX; Z2.3 C3c: heapless leaf)
+    pub outputs: heapless::Vec<OutputEntry, { crate::types::caps::RING_MAX }>,
     pub real_output: u64,
     /// Z2.1 S5b (2026-09-24): R1-sensitive (redacted in Debug) — zeroized on drop (was bare).
     pub real_out_tx_key: zeroize::Zeroizing<[u8; 32]>,
-    /// Z2.1 S5 (2026-09-24): R1-sensitive family — zeroized on drop (was bare).
-    pub real_out_additional_tx_keys: zeroize::Zeroizing<Vec<[u8; 32]>>,
+    /// Z2.1 S5 (2026-09-24): R1-sensitive family — element-zeroized heapless leaf (Z2.3 C3c).
+    pub real_out_additional_tx_keys:
+        heapless::Vec<zeroize::Zeroizing<[u8; 32]>, { crate::types::caps::EXTRA_KEYS_MAX }>,
     pub real_output_in_tx_index: u64,
     pub amount: u64,
     pub rct: bool,
@@ -239,25 +242,39 @@ pub struct RctConfig {
 
 /// P1-03: TxSourceEntry holds a non-Clone secret (mask) → this struct no longer derives Clone.
 /// wire serialization goes by reference (write_construction_data); the sign path moves.
+/// Z2.3 C3c (2026-09-24, option 2): all six lists are caller-storage SliceVecs.
 #[derive(Debug)]
-pub struct TxConstructionData {
-    pub sources: Vec<TxSourceEntry>,
+pub struct TxConstructionData<'a> {
+    pub sources: crate::types::SliceVec<'a, Option<TxSourceEntry>>,
     pub change_dts: TxDestinationEntry,
-    pub splitted_dsts: Vec<TxDestinationEntry>,
-    pub selected_transfers: Vec<usize>,
-    pub extra: Vec<u8>,
+    pub splitted_dsts: crate::types::SliceVec<'a, TxDestinationEntry>,
+    pub selected_transfers: crate::types::SliceVec<'a, usize>,
+    pub extra: crate::types::SliceVec<'a, u8>,
     pub unlock_time: u64,
     pub use_rct: u8,
     pub rct_config: RctConfig,
-    pub dests: Vec<TxDestinationEntry>,
+    pub dests: crate::types::SliceVec<'a, TxDestinationEntry>,
     pub subaddr_account: u32,
-    pub subaddr_indices: Vec<u32>,
+    pub subaddr_indices: crate::types::SliceVec<'a, u32>,
 }
 
 /// P1-03: contains TxConstructionData (not Clone) → this struct no longer derives Clone
+/// Z2.3 C3c: `txes` slots are `Option` (TxConstructionData holds SliceVecs, no Default).
 #[derive(Debug)]
-pub struct UnsignedTx {
-    pub txes: Vec<TxConstructionData>,
+pub struct UnsignedTx<'a> {
+    pub txes: crate::types::SliceVec<'a, Option<TxConstructionData<'a>>>,
+}
+
+/// Z2.3 C3c: caller storage bundle for the unsigned-txset model (consumed by value).
+/// One flat pool per list; per-tx chunks are carved with `split_at_mut` during parsing.
+pub struct UnsignedTxPools<'a> {
+    pub txes: &'a mut [Option<TxConstructionData<'a>>],
+    pub sources: &'a mut [Option<TxSourceEntry>],
+    pub splitted_dsts: &'a mut [TxDestinationEntry],
+    pub selected_transfers: &'a mut [usize],
+    pub extra: &'a mut [u8],
+    pub dests: &'a mut [TxDestinationEntry],
+    pub subaddr_indices: &'a mut [u32],
 }
 
 // ============ Decryption ============
@@ -432,18 +449,25 @@ fn read_output_entry(data: &[u8], off: &mut usize) -> Result<OutputEntry> {
 fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
     // OutputEntry wire minimum = varint pair_tag(1) + varint index(1) + 64B = 66
     let outputs_len = read_count(data, off, 66)?;
-    let mut outputs = Vec::with_capacity(outputs_len);
+    // Z2.3 C3c: protocol-hard ring cap (explicit Err, never truncates)
+    if outputs_len > crate::types::caps::RING_MAX {
+        return Err(err());
+    }
+    let mut outputs = heapless::Vec::new();
     for _ in 0..outputs_len {
-        outputs.push(read_output_entry(data, off)?);
+        outputs
+            .push(read_output_entry(data, off)?)
+            .map_err(|_| err())?;
     }
     let real_output = read_u64(data, off)?;
     let real_out_tx_key = zeroize::Zeroizing::new(read_u8_32(data, off)?);
     // additional tx key wire minimum = 32B
     let additional_len = read_count(data, off, 32)?;
-    let mut real_out_additional_tx_keys =
-        zeroize::Zeroizing::new(Vec::with_capacity(additional_len));
+    let mut real_out_additional_tx_keys = heapless::Vec::new();
     for _ in 0..additional_len {
-        real_out_additional_tx_keys.push(read_u8_32(data, off)?);
+        real_out_additional_tx_keys
+            .push(zeroize::Zeroizing::new(read_u8_32(data, off)?))
+            .map_err(|_| err())?;
     }
     let real_output_in_tx_index = read_u64(data, off)?;
     let amount = read_u64(data, off)?; // FIELD(uint64) = 8B LE
@@ -473,46 +497,82 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
 /// Any remaining bytes below this value cannot hold 1 legal transaction (count upper bound = remaining / 90).
 const MIN_TX_CONSTRUCTION_DATA_WIRE: usize = 90;
 
-fn read_tx_construction_data(data: &[u8], off: &mut usize) -> Result<TxConstructionData> {
+/// Z2.3 C3c: parse-into — carve-as-you-read (each count is known when its field is
+/// reached; `split_at_mut` hands out disjoint caller-pool chunks, safe-Rust).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn read_tx_construction_data<'a>(
+    data: &[u8],
+    off: &mut usize,
+    sources_rest: &mut &'a mut [Option<TxSourceEntry>],
+    splitted_rest: &mut &'a mut [TxDestinationEntry],
+    sel_rest: &mut &'a mut [usize],
+    extra_rest: &mut &'a mut [u8],
+    dests_rest: &mut &'a mut [TxDestinationEntry],
+    subidx_rest: &mut &'a mut [u32],
+) -> Result<TxConstructionData<'a>> {
     // TxSourceEntry wire minimum = outputs_len(1) + outputs(66) + 8+32+1 (keys len + key + ...)
     // conservatively 100; in practice any malicious value is rejected by subsequent field reads
     // (sources_len=0 is legal: count=0 always passes the 0 > remaining/100 check, no false rejection)
     let sources_len = read_count(data, off, 100)?;
-    let mut sources = Vec::with_capacity(sources_len);
+    let (chunk, rest) = core::mem::take(&mut *sources_rest).split_at_mut(sources_len);
+    *sources_rest = rest;
+    let mut sources = crate::types::SliceVec::new(chunk);
     for _ in 0..sources_len {
-        sources.push(read_source_entry(data, off)?);
+        sources
+            .push(Some(read_source_entry(data, off)?))
+            .map_err(|_| err())?;
     }
     let change_dts = read_destination_entry(data, off)?;
     // TxDestinationEntry wire minimum = original_len(1) + varint amount(1) + 64 + 2 ≈ 68
     let splitted_dsts_len = read_count(data, off, 68)?;
-    let mut splitted_dsts = Vec::with_capacity(splitted_dsts_len);
+    let (chunk, rest) = core::mem::take(&mut *splitted_rest).split_at_mut(splitted_dsts_len);
+    *splitted_rest = rest;
+    let mut splitted_dsts = crate::types::SliceVec::new(chunk);
     for _ in 0..splitted_dsts_len {
-        splitted_dsts.push(read_destination_entry(data, off)?);
+        splitted_dsts
+            .push(read_destination_entry(data, off)?)
+            .map_err(|_| err())?;
     }
     let selected_len = read_count(data, off, 1)?;
-    let mut selected_transfers = Vec::with_capacity(selected_len);
+    let (chunk, rest) = core::mem::take(&mut *sel_rest).split_at_mut(selected_len);
+    *sel_rest = rest;
+    let mut selected_transfers = crate::types::SliceVec::new(chunk);
     for _ in 0..selected_len {
         // u64 → usize fallible (rejects narrowing wraps on 32-bit)
-        selected_transfers.push(usize::try_from(read_varint(data, off)?).map_err(|_| err())?);
+        selected_transfers
+            .push(usize::try_from(read_varint(data, off)?).map_err(|_| err())?)
+            .map_err(|_| err())?;
     }
     let extra_len = usize::try_from(read_varint(data, off)?).map_err(|_| err())?;
-    let extra = read_bytes(data, off, extra_len)?;
+    let (chunk, rest) = core::mem::take(&mut *extra_rest).split_at_mut(extra_len);
+    *extra_rest = rest;
+    chunk.copy_from_slice(&data[*off..*off + extra_len]);
+    *off += extra_len;
+    let extra = crate::types::SliceVec::new(chunk);
     let unlock_time = read_u64(data, off)?;
     let use_rct = read_u8(data, off)?;
     let version = read_varint(data, off)?;
     let range_proof_type = read_varint(data, off)?;
     let bp_version = read_varint(data, off)?;
     let dests_len = read_count(data, off, 68)?;
-    let mut dests = Vec::with_capacity(dests_len);
+    let (chunk, rest) = core::mem::take(&mut *dests_rest).split_at_mut(dests_len);
+    *dests_rest = rest;
+    let mut dests = crate::types::SliceVec::new(chunk);
     for _ in 0..dests_len {
-        dests.push(read_destination_entry(data, off)?);
+        dests
+            .push(read_destination_entry(data, off)?)
+            .map_err(|_| err())?;
     }
     let subaddr_account = read_u32(data, off)?;
     let subaddr_indices_len = read_count(data, off, 1)?;
-    let mut subaddr_indices = Vec::with_capacity(subaddr_indices_len);
+    let (chunk, rest) = core::mem::take(&mut *subidx_rest).split_at_mut(subaddr_indices_len);
+    *subidx_rest = rest;
+    let mut subaddr_indices = crate::types::SliceVec::new(chunk);
     for _ in 0..subaddr_indices_len {
         // u64 → u32 fallible (rejects high-bit truncation wraps like 256→0)
-        subaddr_indices.push(u32::try_from(read_varint(data, off)?).map_err(|_| err())?);
+        subaddr_indices
+            .push(u32::try_from(read_varint(data, off)?).map_err(|_| err())?)
+            .map_err(|_| err())?;
     }
     Ok(TxConstructionData {
         sources,
@@ -552,7 +612,7 @@ fn write_unsigned_destination(out: &mut Vec<u8>, e: &TxDestinationEntry) {
 
 fn write_unsigned_source(out: &mut Vec<u8>, s: &TxSourceEntry) {
     put_varint(out, s.outputs.len() as u64);
-    for o in &s.outputs {
+    for o in s.outputs.iter() {
         out.push(2); // std::pair field-count prefix, isomorphic to read_output_entry's varint 2
         put_varint(out, o.index);
         out.extend_from_slice(&o.dest);
@@ -562,7 +622,7 @@ fn write_unsigned_source(out: &mut Vec<u8>, s: &TxSourceEntry) {
     out.extend_from_slice(s.real_out_tx_key.as_slice());
     put_varint(out, s.real_out_additional_tx_keys.len() as u64);
     for k in s.real_out_additional_tx_keys.iter() {
-        out.extend_from_slice(k);
+        out.extend_from_slice(&**k);
     }
     out.extend_from_slice(&s.real_output_in_tx_index.to_le_bytes());
     out.extend_from_slice(&s.amount.to_le_bytes());
@@ -574,45 +634,45 @@ fn write_unsigned_source(out: &mut Vec<u8>, s: &TxSourceEntry) {
     out.extend_from_slice(&s.multisig_kLRki.ki);
 }
 
-fn write_unsigned_construction(out: &mut Vec<u8>, d: &TxConstructionData) {
+fn write_unsigned_construction(out: &mut Vec<u8>, d: &TxConstructionData<'_>) {
     put_varint(out, d.sources.len() as u64);
-    for s in &d.sources {
+    for s in d.sources.iter().flatten() {
         write_unsigned_source(out, s);
     }
     write_unsigned_destination(out, &d.change_dts);
     put_varint(out, d.splitted_dsts.len() as u64);
-    for dst in &d.splitted_dsts {
+    for dst in d.splitted_dsts.iter() {
         write_unsigned_destination(out, dst);
     }
     put_varint(out, d.selected_transfers.len() as u64);
-    for t in &d.selected_transfers {
+    for t in d.selected_transfers.iter() {
         put_varint(out, *t as u64);
     }
     put_varint(out, d.extra.len() as u64);
-    out.extend_from_slice(&d.extra);
+    out.extend_from_slice(&d.extra[..]);
     out.extend_from_slice(&d.unlock_time.to_le_bytes());
     out.push(d.use_rct);
     put_varint(out, d.rct_config.version);
     put_varint(out, d.rct_config.range_proof_type);
     put_varint(out, d.rct_config.bp_version);
     put_varint(out, d.dests.len() as u64);
-    for dest in &d.dests {
+    for dest in d.dests.iter() {
         write_unsigned_destination(out, dest);
     }
     out.extend_from_slice(&d.subaddr_account.to_le_bytes());
     put_varint(out, d.subaddr_indices.len() as u64);
-    for i in &d.subaddr_indices {
+    for i in d.subaddr_indices.iter() {
         put_varint(out, *i as u64);
     }
 }
 
 /// epee serialize (dual of `deserialize_unsigned_tx`; excludes the trailing transfers segment).
 /// Audit #12 P1-02: the output contains the mask/kLRki secret fields; returns a Zeroizing owner.
-pub fn serialize_unsigned_tx(tx: &UnsignedTx) -> zeroize::Zeroizing<Vec<u8>> {
+pub fn serialize_unsigned_tx(tx: &UnsignedTx<'_>) -> zeroize::Zeroizing<Vec<u8>> {
     let mut out = Vec::new();
     put_varint(&mut out, 2);
     put_varint(&mut out, tx.txes.len() as u64);
-    for d in &tx.txes {
+    for d in tx.txes.iter().flatten() {
         write_unsigned_construction(&mut out, d);
     }
     zeroize::Zeroizing::new(out)
@@ -621,7 +681,13 @@ pub fn serialize_unsigned_tx(tx: &UnsignedTx) -> zeroize::Zeroizing<Vec<u8>> {
 /// epee deserialize (aligned with keystone UnsignedTx::deserialize).
 /// Audit #12 P1-03: three layers of entry resource budgeting — total length budget (before allocation) → txes count
 /// physical feasibility → field-by-field checked reads; malicious but signature-valid requests reliably return Err.
-pub fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<UnsignedTx> {
+/// Z2.3 C3c (2026-09-24, option 2): parse-into — the model lives in caller pools
+/// (`UnsignedTxPools`), per-tx chunks carved with `split_at_mut` (capacity is a
+/// deployment parameter; over-cap is explicit Err).
+pub fn deserialize_unsigned_tx<'a>(
+    bytes: &[u8],
+    pools: UnsignedTxPools<'a>,
+) -> Result<UnsignedTx<'a>> {
     if bytes.len() > UNSIGNED_TXSET_MAX_PLAIN_LEN {
         return Err(err());
     }
@@ -634,12 +700,31 @@ pub fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<UnsignedTx> {
     //   sources_len 1 + change_dts 68 + splitted_dsts_len 1 + selected_len 1
     //   + extra_len 1 + unlock_time 8 + use_rct 1 + version 1 + range_proof_type 1
     //   + bp_version 1 + dests_len 1 + subaddr_account 4 + subaddr_indices_len 1
-    // the old value of 100 (bd7cf3b) rejected legitimate zero-input txs (92B top-level wire); a regression introduced by remediation.
+    // the old value of 100 (bd7cf3b) rejected legitimate zero-input txs (92B top-level wire); a regression introduced by remedi
     // maliciously large counts are still rejected before with_capacity.
+    let UnsignedTxPools {
+        txes: txes_pool,
+        mut sources,
+        mut splitted_dsts,
+        mut selected_transfers,
+        mut extra,
+        mut dests,
+        mut subaddr_indices,
+    } = pools;
+    let mut txes = crate::types::SliceVec::new(txes_pool);
     let txes_len = read_count(bytes, &mut off, MIN_TX_CONSTRUCTION_DATA_WIRE)?;
-    let mut txes = Vec::with_capacity(txes_len);
     for _ in 0..txes_len {
-        txes.push(read_tx_construction_data(bytes, &mut off)?);
+        let d = read_tx_construction_data(
+            bytes,
+            &mut off,
+            &mut sources,
+            &mut splitted_dsts,
+            &mut selected_transfers,
+            &mut extra,
+            &mut dests,
+            &mut subaddr_indices,
+        )?;
+        txes.push(Some(d)).map_err(|_| err())?;
     }
     // remainder = transfers segment (not needed by the display layer)
     Ok(UnsignedTx { txes })
@@ -657,6 +742,43 @@ mod tests {
         // verified via the read_destination_entry unit test + known offsets (see the test below)
         // full fixture parsing lives in the integration test tests/p63_xmr_unsigned.rs (include_bytes)
         let _ = UNSIGNED_TX_PREFIX;
+    }
+
+    /// Z2.3 C3c: outcome-only parser helpers for the robustness tests (pools are
+    /// macro-local; the parsed model never escapes the statement).
+    macro_rules! deser_outcome {
+        ($bytes:expr, $pat:pat => $ret:expr) => {{
+            let mut p_txes: [Option<TxConstructionData<'_>>; 4] = core::array::from_fn(|_| None);
+            let mut p_src: [Option<TxSourceEntry>; 8] = core::array::from_fn(|_| None);
+            let mut p_sd =
+                core::array::from_fn::<TxDestinationEntry, 8, _>(|_| TxDestinationEntry::default());
+            let mut p_sel = [0usize; 16];
+            let mut p_ex = [0u8; 4096];
+            let mut p_de =
+                core::array::from_fn::<TxDestinationEntry, 8, _>(|_| TxDestinationEntry::default());
+            let mut p_su = [0u32; 16];
+            match deserialize_unsigned_tx(
+                $bytes,
+                UnsignedTxPools {
+                    txes: &mut p_txes,
+                    sources: &mut p_src,
+                    splitted_dsts: &mut p_sd,
+                    selected_transfers: &mut p_sel,
+                    extra: &mut p_ex,
+                    dests: &mut p_de,
+                    subaddr_indices: &mut p_su,
+                },
+            ) {
+                $pat => $ret,
+                _ => !$ret,
+            }
+        }};
+    }
+    macro_rules! deser_ok {
+        ($bytes:expr) => { deser_outcome!($bytes, Ok(_) => true) };
+    }
+    macro_rules! deser_err {
+        ($bytes:expr) => { deser_outcome!($bytes, Err(_) => true) };
     }
 
     /// Reader: varint, standard LEB128
@@ -723,8 +845,8 @@ mod tests {
     fn p103_tx_source_entry_not_clone() {
         static_assertions::assert_not_impl_any!(TxSourceEntry: Clone, Copy);
         // host-side structs likewise not Clone — secrets cannot spread through the struct tree
-        static_assertions::assert_not_impl_any!(TxConstructionData: Clone);
-        static_assertions::assert_not_impl_any!(UnsignedTx: Clone);
+        static_assertions::assert_not_impl_any!(TxConstructionData<'static>: Clone);
+        static_assertions::assert_not_impl_any!(UnsignedTx<'static>: Clone);
     }
 
     /// MultisigKLRki has Drop (erases k/l/r) and is not Clone (audit #5 P1-02:
@@ -739,14 +861,15 @@ mod tests {
     #[test]
     fn serialize_deserialize_roundtrip_minimal() {
         let src = TxSourceEntry {
-            outputs: alloc::vec![OutputEntry {
+            outputs: heapless::Vec::from_slice(&[OutputEntry {
                 index: 7,
                 dest: [0x11u8; 32],
                 mask: [0x22u8; 32],
-            }],
+            }])
+            .unwrap(),
             real_output: 0,
             real_out_tx_key: zeroize::Zeroizing::new([0x33u8; 32]),
-            real_out_additional_tx_keys: zeroize::Zeroizing::new(alloc::vec![]),
+            real_out_additional_tx_keys: heapless::Vec::new(),
             real_output_in_tx_index: 0,
             amount: 1000,
             rct: true,
@@ -774,13 +897,29 @@ mod tests {
             is_subaddress: false,
             is_integrated: false,
         };
-        let tx = UnsignedTx {
-            txes: alloc::vec![TxConstructionData {
-                sources: alloc::vec![src],
+        let mut u_src = [None; 1];
+        let mut u_src_f = crate::types::SliceVec::new(&mut u_src);
+        u_src_f.push(Some(src)).unwrap();
+        let mut u_sd =
+            core::array::from_fn::<TxDestinationEntry, 2, _>(|_| TxDestinationEntry::default());
+        let mut u_sd_f = crate::types::SliceVec::new(&mut u_sd);
+        u_sd_f.push(change.clone()).unwrap();
+        u_sd_f.push(dest.clone()).unwrap();
+        let mut u_sel = [0usize; 1];
+        let mut u_sel_f = crate::types::SliceVec::new(&mut u_sel);
+        u_sel_f.push(0usize).unwrap();
+        let mut u_extra: [u8; 0] = [];
+        let mut u_dests: [TxDestinationEntry; 0] = [];
+        let mut u_sub: [u32; 0] = [];
+        let mut u_txd = [None; 1];
+        let mut u_txd_f = crate::types::SliceVec::new(&mut u_txd);
+        u_txd_f
+            .push(Some(TxConstructionData {
+                sources: u_src_f,
                 change_dts: change.clone(),
-                splitted_dsts: alloc::vec![change.clone(), dest.clone()],
-                selected_transfers: alloc::vec![0],
-                extra: alloc::vec![],
+                splitted_dsts: u_sd_f,
+                selected_transfers: u_sel_f,
+                extra: crate::types::SliceVec::new(&mut u_extra),
                 unlock_time: 0,
                 use_rct: 1,
                 rct_config: RctConfig {
@@ -788,18 +927,40 @@ mod tests {
                     range_proof_type: 0,
                     bp_version: 4,
                 },
-                dests: alloc::vec![],
+                dests: crate::types::SliceVec::new(&mut u_dests),
                 subaddr_account: 0,
-                subaddr_indices: alloc::vec![],
-            }],
-        };
+                subaddr_indices: crate::types::SliceVec::new(&mut u_sub),
+            }))
+            .unwrap();
+        let tx = UnsignedTx { txes: u_txd_f };
         let bytes = serialize_unsigned_tx(&tx);
-        let back = deserialize_unsigned_tx(&bytes).expect("deserialize");
+        let mut bp_txes: [Option<TxConstructionData<'_>>; 1] = core::array::from_fn(|_| None);
+        let mut bp_src: [Option<TxSourceEntry>; 1] = core::array::from_fn(|_| None);
+        let mut bp_sd =
+            core::array::from_fn::<TxDestinationEntry, 2, _>(|_| TxDestinationEntry::default());
+        let mut bp_sel = [0usize; 1];
+        let mut bp_extra: [u8; 512] = [0u8; 512];
+        let mut bp_dests: [TxDestinationEntry; 0] = [];
+        let mut bp_sub: [u32; 0] = [];
+        let back = deserialize_unsigned_tx(
+            &bytes,
+            UnsignedTxPools {
+                txes: &mut bp_txes,
+                sources: &mut bp_src,
+                splitted_dsts: &mut bp_sd,
+                selected_transfers: &mut bp_sel,
+                extra: &mut bp_extra,
+                dests: &mut bp_dests,
+                subaddr_indices: &mut bp_sub,
+            },
+        )
+        .expect("deserialize");
         assert_eq!(back.txes.len(), 1);
-        let d = &back.txes[0];
+        let d = back.txes.iter().flatten().next().unwrap();
         assert_eq!(d.sources.len(), 1);
-        assert_eq!(d.sources[0].amount, 1000);
-        assert_eq!(d.sources[0].outputs[0].index, 7);
+        let s0 = d.sources.iter().flatten().next().unwrap();
+        assert_eq!(s0.amount, 1000);
+        assert_eq!(s0.outputs[0].index, 7);
         assert_eq!(d.change_dts.amount, 50);
         assert_eq!(d.splitted_dsts[1].amount, 900);
         assert_eq!(d.rct_config.bp_version, 4);
@@ -811,8 +972,9 @@ mod tests {
     #[test]
     fn encrypt_decrypt_unsigned_roundtrip() {
         use rand_chacha::rand_core::SeedableRng;
+        let mut e_txd: [Option<TxConstructionData<'_>>; 0] = [];
         let plain = serialize_unsigned_tx(&UnsignedTx {
-            txes: alloc::vec![],
+            txes: crate::types::SliceVec::new(&mut e_txd),
         });
         let view = [0xABu8; 32];
         let mut rng = rand_chacha::ChaCha20Rng::from_seed([0x11u8; 32]);
@@ -862,10 +1024,10 @@ mod tests {
     #[test]
     fn entry_total_budget_rejects_oversize() {
         let big = alloc::vec![0u8; UNSIGNED_TXSET_MAX_PLAIN_LEN + 1];
-        assert!(deserialize_unsigned_tx(&big).is_err());
+        assert!(deser_err!(&big));
         // in-bounds shapes (empty txset is legal) must not be wrongly rejected
         let ok = alloc::vec![2u8, 0];
-        assert!(deserialize_unsigned_tx(&ok).is_ok());
+        assert!(deser_ok!(&ok));
     }
 
     /// Entry total budget lower-bound positive case (audit #14 §4.1): exactly MAX=16384B is acceptable.
@@ -876,10 +1038,7 @@ mod tests {
         let mut w = alloc::vec![2u8, 0]; // version=2 + txes_len=0
         w.resize(UNSIGNED_TXSET_MAX_PLAIN_LEN, 0x41);
         assert_eq!(w.len(), UNSIGNED_TXSET_MAX_PLAIN_LEN);
-        assert!(
-            deserialize_unsigned_tx(&w).is_ok(),
-            "MAX exact must be accepted"
-        );
+        assert!(deser_ok!(&w), "MAX exact must be accepted");
     }
 
     /// Malicious corpus: legal version=2 + huge txes count → physical feasibility
@@ -889,12 +1048,12 @@ mod tests {
         // version=2(1B) + txes_len = u64::MAX LEB128(10B)
         let mut wire = alloc::vec![2u8];
         wire.extend_from_slice(&[0xffu8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]);
-        assert!(deserialize_unsigned_tx(&wire).is_err());
+        assert!(deser_err!(&wire));
         // secondary extreme: within budget but physically infeasible (60000 × 100B >> 16KiB budget)
         let mut wire2 = alloc::vec![2u8];
         // LEB128 of 60000 = 0xF0 0xD4 0x03
         wire2.extend_from_slice(&[0xf0, 0xd4, 0x03]);
-        assert!(deserialize_unsigned_tx(&wire2).is_err());
+        assert!(deser_err!(&wire2));
     }
 
     // ── P1-01 (audit #13): legal minimum wire bounds (bd7cf3b regression-fix acceptance) ──
@@ -937,10 +1096,32 @@ mod tests {
     fn a13_min_legal_wire_accepted() {
         let wire = top_wire(1, &min_tx_construction_data_wire()); // 92B
         assert_eq!(wire.len(), 92);
-        let tx = deserialize_unsigned_tx(&wire).expect("legal minimal wire must parse");
+        let mut p_txes: [Option<TxConstructionData<'_>>; 4] = core::array::from_fn(|_| None);
+        let mut p_src: [Option<TxSourceEntry>; 4] = core::array::from_fn(|_| None);
+        let mut p_sd =
+            core::array::from_fn::<TxDestinationEntry, 4, _>(|_| TxDestinationEntry::default());
+        let mut p_sel = [0usize; 4];
+        let mut p_ex = [0u8; 256];
+        let mut p_de =
+            core::array::from_fn::<TxDestinationEntry, 4, _>(|_| TxDestinationEntry::default());
+        let mut p_su = [0u32; 4];
+        let tx = deserialize_unsigned_tx(
+            &wire,
+            UnsignedTxPools {
+                txes: &mut p_txes,
+                sources: &mut p_src,
+                splitted_dsts: &mut p_sd,
+                selected_transfers: &mut p_sel,
+                extra: &mut p_ex,
+                dests: &mut p_de,
+                subaddr_indices: &mut p_su,
+            },
+        )
+        .expect("legal minimal wire must parse");
         assert_eq!(tx.txes.len(), 1);
-        assert!(tx.txes[0].sources.is_empty());
-        assert!(tx.txes[0].dests.is_empty());
+        let t0 = tx.txes.iter().flatten().next().unwrap();
+        assert!(t0.sources.is_empty());
+        assert!(t0.dests.is_empty());
     }
 
     /// 89B remaining (< the 90 lower bound) with count=1 must be rejected — the lower bound still applies.
@@ -949,7 +1130,7 @@ mod tests {
         let body = min_tx_construction_data_wire();
         let truncated = &body[..body.len() - 1]; // 89B
         let wire = top_wire(1, truncated);
-        assert!(deserialize_unsigned_tx(&wire).is_err());
+        assert!(deser_err!(&wire));
     }
 
     /// count=2 but only 92B remain < 2×90=180 → physically infeasible, rejected (the count upper bound still applies).
@@ -957,7 +1138,7 @@ mod tests {
     fn a13_count2_infeasible_rejected() {
         let body = min_tx_construction_data_wire();
         let wire = top_wire(2, &body); // 90B remain, 2 > 90/90=1 → reject
-        assert!(deserialize_unsigned_tx(&wire).is_err());
+        assert!(deser_err!(&wire));
     }
 
     /// Two minimal legal transactions (180B remaining at top level) must be accepted — the multi-tx boundary.
@@ -967,7 +1148,28 @@ mod tests {
         let mut both = body.clone();
         both.extend_from_slice(&body);
         let wire = top_wire(2, &both); // 180B remain, 2 ≤ 180/90=2 → OK
-        let tx = deserialize_unsigned_tx(&wire).expect("two minimal txes must parse");
+        let mut p_txes: [Option<TxConstructionData<'_>>; 4] = core::array::from_fn(|_| None);
+        let mut p_src: [Option<TxSourceEntry>; 4] = core::array::from_fn(|_| None);
+        let mut p_sd =
+            core::array::from_fn::<TxDestinationEntry, 4, _>(|_| TxDestinationEntry::default());
+        let mut p_sel = [0usize; 4];
+        let mut p_ex = [0u8; 512];
+        let mut p_de =
+            core::array::from_fn::<TxDestinationEntry, 4, _>(|_| TxDestinationEntry::default());
+        let mut p_su = [0u32; 4];
+        let tx = deserialize_unsigned_tx(
+            &wire,
+            UnsignedTxPools {
+                txes: &mut p_txes,
+                sources: &mut p_src,
+                splitted_dsts: &mut p_sd,
+                selected_transfers: &mut p_sel,
+                extra: &mut p_ex,
+                dests: &mut p_de,
+                subaddr_indices: &mut p_su,
+            },
+        )
+        .expect("two minimal txes must parse");
         assert_eq!(tx.txes.len(), 2);
     }
 }

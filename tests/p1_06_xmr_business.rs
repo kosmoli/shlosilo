@@ -149,7 +149,38 @@ fn sign_xmr_business_end_to_end() {
     assert_eq!(*dec, plain_txset);
 
     let _ = (&mut plain_txset, SIGNED_TX_PREFIX, decrypt_signed_txset);
-    let _ = deserialize_unsigned_tx(&dec);
+    let mut p_txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        8,
+        _,
+    >(|_| None);
+    let mut p_src =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 32, _>(
+            |_| None,
+        );
+    let mut p_sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_sel = [0usize; 256];
+    let mut p_ex = [0u8; 8192];
+    let mut p_de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_su = [0u32; 256];
+    let _ = deserialize_unsigned_tx(
+        &dec,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut p_txes,
+            sources: &mut p_src,
+            splitted_dsts: &mut p_sd,
+            selected_transfers: &mut p_sel,
+            extra: &mut p_ex,
+            dests: &mut p_de,
+            subaddr_indices: &mut p_su,
+        },
+    );
 }
 
 /// Fixture plaintext (tests/fixtures/txset_plain.bin)

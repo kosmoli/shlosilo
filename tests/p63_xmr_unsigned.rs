@@ -35,16 +35,49 @@ fn decrypt_with_external_view_key() {
     };
     let plain = decrypt_unsigned_txset(ENCRYPTED, &view_sk).expect("decrypt with real view key");
     assert_eq!(*plain, PLAIN, "plaintext must match P6.3 python result");
-    let utx = deserialize_unsigned_tx(&plain).expect("deserialize");
+
+    let mut p_txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        8,
+        _,
+    >(|_| None);
+    let mut p_src =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 32, _>(
+            |_| None,
+        );
+    let mut p_sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_sel = [0usize; 256];
+    let mut p_ex = [0u8; 8192];
+    let mut p_de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_su = [0u32; 256];
+    let utx = deserialize_unsigned_tx(
+        &plain,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut p_txes,
+            sources: &mut p_src,
+            splitted_dsts: &mut p_sd,
+            selected_transfers: &mut p_sel,
+            extra: &mut p_ex,
+            dests: &mut p_de,
+            subaddr_indices: &mut p_su,
+        },
+    )
+    .expect("deserialize");
     assert!(!utx.txes.is_empty(), "at least one tx");
-    let tx = &utx.txes[0];
-    let src = &tx.sources[0];
+    let tx = utx.txes.iter().flatten().next().unwrap();
+    let src = tx.sources.iter().flatten().next().unwrap();
     assert_eq!(src.outputs.len(), 16, "ring size 16 (P6.3)");
     assert_eq!(src.real_output, 13, "real output index 13 (P6.3)");
     assert_eq!(src.amount, 2_000_000_000, "input 0.002 XMR (P6.3)");
     let out_sum: u64 = tx.splitted_dsts.iter().map(|d| d.amount).sum();
     assert_eq!(out_sum + 30_640_000, src.amount, "fee = 30640000 (P6.3)");
-    let dest = &tx.splitted_dsts[1];
+    let dest = tx.splitted_dsts.get(1).unwrap();
     assert_eq!(dest.amount, 100_000_000, "DEST1 1 XMR (P6.3)");
     assert!(dest.is_subaddress, "DEST1 is subaddress (P6.3)");
     let change = &tx.change_dts;
@@ -54,10 +87,42 @@ fn decrypt_with_external_view_key() {
 /// P1-06: P6.3 already-decrypted plaintext → epee deserialize → structural comparison
 #[test]
 fn deserialize_p63_plain() {
-    let utx = deserialize_unsigned_tx(PLAIN).expect("deserialize P6.3 plaintext");
-    let tx = &utx.txes[0];
+    let mut p_txes = core::array::from_fn::<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+        8,
+        _,
+    >(|_| None);
+    let mut p_src =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 32, _>(
+            |_| None,
+        );
+    let mut p_sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_sel = [0usize; 256];
+    let mut p_ex = [0u8; 8192];
+    let mut p_de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
+            |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
+        );
+    let mut p_su = [0u32; 256];
+    let utx = deserialize_unsigned_tx(
+        PLAIN,
+        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+            txes: &mut p_txes,
+            sources: &mut p_src,
+            splitted_dsts: &mut p_sd,
+            selected_transfers: &mut p_sel,
+            extra: &mut p_ex,
+            dests: &mut p_de,
+            subaddr_indices: &mut p_su,
+        },
+    )
+    .expect("deserialize P6.3 plaintext");
+    let tx = utx.txes.iter().flatten().next().unwrap();
     assert_eq!(tx.sources.len(), 1);
-    let src = &tx.sources[0];
+    let src = tx.sources.iter().flatten().next().unwrap();
     assert_eq!(src.outputs.len(), 16);
     assert_eq!(src.real_output, 13);
     assert_eq!(src.amount, 2_000_000_000);
@@ -66,19 +131,20 @@ fn deserialize_p63_plain() {
     // outputs：splitted_dsts = [change(1869360000, main), dest(100000000, subaddress)]
     assert_eq!(tx.splitted_dsts.len(), 2, "change + dest (P6.3)");
     assert_eq!(
-        tx.splitted_dsts[0].amount, 1_869_360_000,
+        tx.splitted_dsts.first().unwrap().amount,
+        1_869_360_000,
         "splitted[0]=change"
     );
-    assert!(!tx.splitted_dsts[0].is_subaddress);
-    assert_eq!(tx.splitted_dsts[1].amount, 100_000_000);
-    assert!(tx.splitted_dsts[1].is_subaddress);
+    assert!(!tx.splitted_dsts.first().unwrap().is_subaddress);
+    assert_eq!(tx.splitted_dsts.get(1).unwrap().amount, 100_000_000);
+    assert!(tx.splitted_dsts.get(1).unwrap().is_subaddress);
     assert_eq!(
         tx.change_dts.amount, 1_869_360_000,
         "change 1869360000 (P6.3)"
     );
     assert_eq!(
         tx.change_dts.spend_public_key,
-        tx.splitted_dsts[0].spend_public_key
+        tx.splitted_dsts.first().unwrap().spend_public_key
     );
     // RCTConfig (real fixture value, consistent with keystone\'s line-by-line parse):
     // version=0, range_proof_type=3(Bulletproof), bp_version=4(RCTTypeBulletproof2)
@@ -88,8 +154,12 @@ fn deserialize_p63_plain() {
         "RangeProofType::Bulletproof"
     );
     assert_eq!(tx.rct_config.bp_version, 4, "RCTTypeBulletproof2 (fixture)");
-    assert_eq!(tx.subaddr_indices, vec![1], "subaddress index 1 (P6.3)");
+    assert_eq!(
+        &tx.subaddr_indices[..],
+        &[1u32][..],
+        "subaddress index 1 (P6.3)"
+    );
     // fee check: input − change(change_dts) − dest(splitted[1]) = fee
-    let fee = src.amount - tx.change_dts.amount - tx.splitted_dsts[1].amount;
+    let fee = src.amount - tx.change_dts.amount - tx.splitted_dsts.get(1).unwrap().amount;
     assert_eq!(fee, 30_640_000, "fee 30640000 (P6.3)");
 }
