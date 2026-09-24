@@ -14,6 +14,13 @@
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
+/// Z2.3 C3b-1 (2026-09-24): Debug shows the live elements only.
+impl<T: core::fmt::Debug> core::fmt::Debug for SliceVec<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries((**self).iter()).finish()
+    }
+}
+
 pub struct SliceVec<'a, T> {
     buf: &'a mut [T],
     len: usize,

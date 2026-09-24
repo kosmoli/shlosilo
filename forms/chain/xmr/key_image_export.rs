@@ -225,6 +225,7 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     view_sk: &[u8; 32],
     spend_sk: &[u8; 32],
     request_payload: &[u8],
+    details_out: &mut [ExportedTransferDetail],
     rng: &mut R,
 ) -> Result<Vec<u8>> {
     // 1. Decrypt the OUTPUT_EXPORT payload, validate pk1/pk2 ownership
@@ -242,14 +243,14 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
         return Err(err());
     }
 
-    // 2. Parse the outputs
-    let details = ExportedTransferDetails::from_bytes(&plain)?;
+    // 2. Parse the outputs (Z2.3 C3b-1: details list into caller storage)
+    let details = ExportedTransferDetails::from_bytes(&plain, details_out)?;
 
     // 3. Compute key image + accompanying signature per output
     let spend_sk_z = Zeroizing::new(*spend_sk);
     let _ = spend_sk_z; // Zeroizing lifetime pinned to end of function
     let mut records = Vec::with_capacity(details.details.len() * KEY_IMAGE_RECORD_LEN);
-    for detail in &details.details {
+    for detail in details.details.iter() {
         let rec = compute_key_image_with_signature(view_sk, &spend_sk_scalar, detail, rng)?;
         records.push(rec);
     }
@@ -276,10 +277,10 @@ fn compute_key_image_with_signature<R: RngCore + CryptoRng>(
     // additional key semantics: subaddress outputs use the per-output additional tx key
     let key_to_use: [u8; 32] = if detail.major != 0 || detail.minor != 0 {
         match detail.additional_tx_keys.len() {
-            1 => detail.additional_tx_keys[0],
+            1 => *detail.additional_tx_keys[0],
             n if n > 1 => {
                 let idx = detail.internal_output_index as usize;
-                *detail.additional_tx_keys.get(idx).ok_or_else(err)?
+                **detail.additional_tx_keys.get(idx).ok_or_else(err)?
             }
             _ => detail.tx_pubkey,
         }
@@ -445,7 +446,10 @@ mod tests {
         .unwrap();
 
         // Device-side full flow
-        let enc_resp = generate_key_image_export(&view_sk, &spend_sk, &enc_req, &mut rng).unwrap();
+        let mut pool: [ExportedTransferDetail; 4] =
+            core::array::from_fn(|_| ExportedTransferDetail::default());
+        let enc_resp =
+            generate_key_image_export(&view_sk, &spend_sk, &enc_req, &mut pool, &mut rng).unwrap();
 
         // Hot-side decryption (verified via the monero decryption path)
         let (_, _, resp_plain) =
@@ -515,8 +519,14 @@ mod tests {
         let view_pub = (ED25519_BASEPOINT_TABLE * &v).compress().to_bytes();
         assert_eq!(pk2, view_pub);
 
-        let details = crate::chain::xmr::output_export::ExportedTransferDetails::from_bytes(&plain)
-            .expect("plaintext must parse as ExportedTransferDetails");
+        let mut pool: [crate::chain::xmr::output_export::ExportedTransferDetail; 16] =
+            core::array::from_fn(|_| {
+                crate::chain::xmr::output_export::ExportedTransferDetail::default()
+            });
+        let details = crate::chain::xmr::output_export::ExportedTransferDetails::from_bytes(
+            &plain, &mut pool,
+        )
+        .expect("plaintext must parse as ExportedTransferDetails");
         assert!(!details.details.is_empty());
         assert!(details.details.len() <= 8);
         // The first output is a key_image_request with a known amount (characteristic of real wallet data)

@@ -53,7 +53,11 @@ fn generate_shlosilo_keyimage_fixture_for_keystone() {
     plain.extend_from_slice(&[0x00, 0x00, 0x00]); // no add keys, major=0, minor=0
 
     // Self-check: shlosilo can parse it itself
-    let details = ExportedTransferDetails::from_bytes(&plain).unwrap();
+    let mut pool: [shlosilo::chain::xmr::output_export::ExportedTransferDetail; 8] =
+        core::array::from_fn(|_| {
+            shlosilo::chain::xmr::output_export::ExportedTransferDetail::default()
+        });
+    let details = ExportedTransferDetails::from_bytes(&plain, &mut pool).unwrap();
     assert_eq!(details.details.len(), 1);
     assert!(details.details[0].is_key_image_request());
 
@@ -67,7 +71,12 @@ fn generate_shlosilo_keyimage_fixture_for_keystone() {
     let enc_req = shlosilo_encrypt_export_for_test(&plain, &spend_pub, &view_pub, &mut rng);
 
     // shlosilo end-to-end → KEY_IMAGE_EXPORT encrypted artifact
-    let enc_resp = generate_key_image_export(&VIEW_SK, &SPEND_SK, &enc_req, &mut rng).unwrap();
+    let mut pool: [shlosilo::chain::xmr::output_export::ExportedTransferDetail; 8] =
+        core::array::from_fn(|_| {
+            shlosilo::chain::xmr::output_export::ExportedTransferDetail::default()
+        });
+    let enc_resp =
+        generate_key_image_export(&VIEW_SK, &SPEND_SK, &enc_req, &mut pool, &mut rng).unwrap();
 
     // Self-check: shlosilo decrypts its own round loop
     let (_, _, resp_plain) = decrypt_export_payload(

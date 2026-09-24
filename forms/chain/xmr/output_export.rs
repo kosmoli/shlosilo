@@ -32,9 +32,10 @@ use alloc::vec::Vec;
 
 use crate::chain::xmr::transaction::encode_varint;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::types::SliceVec;
 
 /// A single transfer detail (aligned with keystone `ExportedTransferDetail`).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ExportedTransferDetail {
     pub pubkey: [u8; 32],
     pub internal_output_index: u64,
@@ -44,7 +45,10 @@ pub struct ExportedTransferDetail {
     pub amount: u64,
     /// v2-security §2 (module docs) marks this sensitive; wire-adjacent usage reads like
     /// tx pubkeys — zeroize-wrapped defensively either way (Z2.1 S3, 2026-09-24).
-    pub additional_tx_keys: zeroize::Zeroizing<Vec<[u8; 32]>>,
+    /// Z2.3 C3b-1: element-level `Zeroizing` over a capped heapless leaf (drop zeroizes
+    /// every key; no collection-level Zeroize impl exists for heapless).
+    pub additional_tx_keys:
+        heapless::Vec<zeroize::Zeroizing<[u8; 32]>, { crate::types::caps::EXTRA_KEYS_MAX }>,
     pub major: u32,
     pub minor: u32,
 }
@@ -90,11 +94,12 @@ impl ExportedTransferDetail {
 }
 
 /// The parsed full export (aligned with keystone `ExportedTransferDetails`).
-#[derive(Debug, Clone, Default)]
-pub struct ExportedTransferDetails {
+/// Z2.3 C3b-1 (2026-09-24, option 2): `details` is a caller-storage SliceVec.
+#[derive(Debug)]
+pub struct ExportedTransferDetails<'a> {
     pub offset: u64,
     pub size: u64,
-    pub details: Vec<ExportedTransferDetail>,
+    pub details: SliceVec<'a, ExportedTransferDetail>,
 }
 
 /// `flags & 0b0001_0000` — compute and export only for outputs that need a key image.
@@ -134,13 +139,22 @@ fn read_u8_32(data: &[u8], off: &mut usize) -> Result<[u8; 32]> {
     Ok(out)
 }
 
-impl ExportedTransferDetails {
+impl ExportedTransferDetails<'_> {
     /// Aligned with keystone `ExportedTransferDetails::from_bytes`.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    /// Z2.3 C3b-1 (2026-09-24, option 2): parse-into — the details list lives in a
+    /// caller-provided slice (capacity is a deployment parameter, over-cap is explicit Err).
+    pub fn from_bytes<'a>(
+        bytes: &[u8],
+        details_out: &'a mut [ExportedTransferDetail],
+    ) -> Result<ExportedTransferDetails<'a>> {
         let mut off = 0usize;
         let has_transfers = read_varint(bytes, &mut off)?;
         if has_transfers == 0 {
-            return Ok(Self::default());
+            return Ok(ExportedTransferDetails {
+                offset: 0,
+                size: 0,
+                details: SliceVec::new(details_out),
+            });
         }
         let offset = read_varint(bytes, &mut off)?;
         // transfers.size()
@@ -148,7 +162,7 @@ impl ExportedTransferDetails {
         // details blob size — keystone reads it without consuming; kept isomorphic
         let _value_size = read_varint(bytes, &mut off)?;
 
-        let mut details = Vec::new();
+        let mut details = SliceVec::new(details_out);
         for _ in 0.._value_offset {
             // version field ignored
             let _version = read_varint(bytes, &mut off)?;
@@ -161,11 +175,16 @@ impl ExportedTransferDetails {
                 .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
             off += 1;
             let amount = read_varint(bytes, &mut off)?;
-            let keys_num = read_varint(bytes, &mut off)? as usize;
-            let mut additional_tx_keys =
-                zeroize::Zeroizing::new(Vec::with_capacity(keys_num.min(16)));
+            // Z2.3 C3b-1: fallible count + element-zeroized leaf cap (no `as usize` truncation).
+            let keys_num = read_varint(bytes, &mut off)?;
+            if keys_num > crate::types::caps::EXTRA_KEYS_MAX as u64 {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+            }
+            let mut additional_tx_keys = heapless::Vec::new();
             for _ in 0..keys_num {
-                additional_tx_keys.push(read_u8_32(bytes, &mut off)?);
+                additional_tx_keys
+                    .push(zeroize::Zeroizing::new(read_u8_32(bytes, &mut off)?))
+                    .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
             }
             let major = read_varint(bytes, &mut off)? as u32;
             let minor = read_varint(bytes, &mut off)? as u32;
@@ -180,10 +199,10 @@ impl ExportedTransferDetails {
                 additional_tx_keys,
                 major,
                 minor,
-            });
+            })?;
         }
 
-        Ok(Self {
+        Ok(ExportedTransferDetails {
             offset,
             size: _value_offset,
             details,
@@ -278,7 +297,9 @@ mod tests {
         bytes.extend_from_slice(&encode_varint_leb(999)); // blob size (ignored)
         bytes.extend_from_slice(&make_detail_bytes(0, false));
 
-        let parsed = ExportedTransferDetails::from_bytes(&bytes).unwrap();
+        let mut pool: [ExportedTransferDetail; 4] =
+            core::array::from_fn(|_| ExportedTransferDetail::default());
+        let parsed = ExportedTransferDetails::from_bytes(&bytes, &mut pool).unwrap();
         assert_eq!(parsed.details.len(), 1);
         let d = &parsed.details[0];
         assert_eq!(d.pubkey, [0x11u8; 32]);
@@ -291,7 +312,7 @@ mod tests {
         assert_eq!(d.major, 1);
         assert_eq!(d.minor, 2);
         assert_eq!(d.additional_tx_keys.len(), 1);
-        assert_eq!(d.additional_tx_keys[0], [0x33u8; 32]);
+        assert_eq!(*d.additional_tx_keys[0], [0x33u8; 32]);
     }
 
     #[test]
@@ -305,7 +326,9 @@ mod tests {
         bytes.extend_from_slice(&make_detail_bytes(1, true));
         bytes.extend_from_slice(&make_detail_bytes(2, false));
 
-        let parsed = ExportedTransferDetails::from_bytes(&bytes).unwrap();
+        let mut pool: [ExportedTransferDetail; 4] =
+            core::array::from_fn(|_| ExportedTransferDetail::default());
+        let parsed = ExportedTransferDetails::from_bytes(&bytes, &mut pool).unwrap();
         assert_eq!(parsed.offset, 42);
         assert_eq!(parsed.details.len(), 3);
         assert!(parsed.details[0].is_key_image_request());
@@ -315,7 +338,9 @@ mod tests {
 
     #[test]
     fn no_transfers_short_form() {
-        let parsed = ExportedTransferDetails::from_bytes(&[0x00]).unwrap();
+        let mut pool: [ExportedTransferDetail; 4] =
+            core::array::from_fn(|_| ExportedTransferDetail::default());
+        let parsed = ExportedTransferDetails::from_bytes(&[0x00], &mut pool).unwrap();
         assert!(parsed.details.is_empty());
     }
 
@@ -329,7 +354,9 @@ mod tests {
         bytes.extend_from_slice(&make_detail_bytes(0, false));
         // Truncated pubkey
         bytes.truncate(bytes.len() - 10);
-        assert!(ExportedTransferDetails::from_bytes(&bytes).is_err());
+        let mut pool: [ExportedTransferDetail; 4] =
+            core::array::from_fn(|_| ExportedTransferDetail::default());
+        assert!(ExportedTransferDetails::from_bytes(&bytes, &mut pool).is_err());
     }
 
     #[test]

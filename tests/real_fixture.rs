@@ -33,7 +33,11 @@ fn real_wallet_output_export_e2e() {
     // (1) Standalone decryption checks (signature/ownership/parsing)
     let (_pk1, _pk2, plain) =
         decrypt_export_payload(&payload, OUTPUT_EXPORT_MAGIC, &view_sk).expect("decrypt failed");
-    let details = ExportedTransferDetails::from_bytes(&plain).expect("parse failed");
+    let mut pool: [shlosilo::chain::xmr::output_export::ExportedTransferDetail; 8] =
+        core::array::from_fn(|_| {
+            shlosilo::chain::xmr::output_export::ExportedTransferDetail::default()
+        });
+    let details = ExportedTransferDetails::from_bytes(&plain, &mut pool).expect("parse failed");
     assert_eq!(details.details.len(), 1, "expected exactly 1 output");
     let d0 = &details.details[0];
     // The full-featured CLI wallet computes key images itself and the request bit is 0 — recorded as fact, not asserted
@@ -45,7 +49,11 @@ fn real_wallet_output_export_e2e() {
     // (2) Full pipeline (includes pk1 ownership check + input_sk·G == output_pubkey)
     use rand_chacha::rand_core::SeedableRng as _;
     let mut rng = rand_chacha::ChaCha20Rng::from_seed([7u8; 32]);
-    let encrypted = generate_key_image_export(&view_sk, &spend_sk, &payload, &mut rng)
+    let mut pool: [shlosilo::chain::xmr::output_export::ExportedTransferDetail; 8] =
+        core::array::from_fn(|_| {
+            shlosilo::chain::xmr::output_export::ExportedTransferDetail::default()
+        });
+    let encrypted = generate_key_image_export(&view_sk, &spend_sk, &payload, &mut pool, &mut rng)
         .expect("generate_key_image_export failed");
     std::fs::write("/tmp/test0830_keyimages", &encrypted).unwrap();
 
