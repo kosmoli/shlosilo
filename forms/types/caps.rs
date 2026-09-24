@@ -20,5 +20,6 @@ pub const TX_EXTRA_NONCE_MAX: usize = 32;
 /// Soft: `tx_extra` additional pubkeys (subaddress sends; one per output).
 pub const TX_EXTRA_PUBKEYS_MAX: usize = 16;
 
-/// ClsagProof serialized cap: pseudo_out (32) + c1 (32) + s[RING_MAX] (32*16).
-pub const CLSAG_PROOF_MAX: usize = 32 + 32 + 32 * RING_MAX;
+/// ClsagProof serialized cap: pseudo_out (32) + s[RING_MAX] (32*16) + c1 (32) + D (32).
+/// Layout per clsag.rs sign(): `pseudo_out(32) ‖ s[mixin+1] ‖ c1 ‖ D`.
+pub const CLSAG_PROOF_MAX: usize = 32 * (RING_MAX + 3);

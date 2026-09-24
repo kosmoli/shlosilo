@@ -45,11 +45,11 @@ pub const KEY_IMAGE_LEN: usize = 32;
 
 /// XMR CLSAG proof wrapper
 ///
-/// The monero-clsag `Clsag` contains a c1 scalar + s[] vector, length = 32 + ring_len * 32
-/// Stored here as a simplified `Vec<u8>` (serialized form)
+/// The monero-clsag `Clsag` serializes to `s[ring] ‖ c1 ‖ D`; sign() prepends pseudo_out (32).
+/// Z2.3 C3a (2026-09-24, option 2): leaf cap CLSAG_PROOF_MAX = 32*(RING_MAX+3).
 #[derive(Clone, Debug)]
 pub struct ClsagProof {
-    bytes: Vec<u8>,
+    bytes: heapless::Vec<u8, { crate::types::caps::CLSAG_PROOF_MAX }>,
 }
 
 /// XMR key image (public material, double-spend prevention)
@@ -67,6 +67,24 @@ impl KeyImage {
 impl AsRef<[u8]> for KeyImage {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
+    }
+}
+
+/// Z2.3 C3a (2026-09-24): std-shims `io::Write` sink into a bounded heapless buffer
+/// for `Clsag::write` (vendor boundary keeps `impl io::Write` until the Z5 surgery).
+/// Overflow cannot occur by construction (CLSAG_PROOF_MAX is sized for the checked
+/// ring cap) — the error path exists for the trait contract only. NOTE: std-shims
+/// errors box their payload; this error path rides T-06/Z5 (std-shims removal).
+struct HeaplessWriter<'a>(&'a mut heapless::Vec<u8, { crate::types::caps::CLSAG_PROOF_MAX }>);
+
+impl std_shims::io::Write for HeaplessWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std_shims::io::Result<usize> {
+        for b in buf {
+            self.0
+                .push(*b)
+                .map_err(|_| std_shims::io::Error::other("clsag proof overflow"))?;
+        }
+        Ok(buf.len())
     }
 }
 
@@ -118,6 +136,11 @@ pub fn sign<R: RngCore + CryptoRng>(
     rng: &mut R,
 ) -> Result<(ClsagProof, KeyImage, [u8; 32])> {
     if ring.is_empty() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    // Z2.3 C3a (2026-09-24): protocol-hard ring cap (mainnet fixed ring) — also keeps
+    // the ClsagProof serialization within CLSAG_PROOF_MAX by construction.
+    if ring.len() > crate::types::caps::RING_MAX {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     if real_index as usize >= ring.len() {
@@ -196,15 +219,19 @@ pub fn sign<R: RngCore + CryptoRng>(
     let key_image_bytes = key_image_point.compress().to_bytes();
 
     // 8. Serialize the Clsag (pseudo_out bytes + Clsag internal bytes)
+    // Z2.3 C3a (2026-09-24): bounded heapless output + Write adapter.
     let pseudo_out_bytes = pseudo_out.compress().to_bytes();
-    let mut bytes = Vec::with_capacity(32 + 64);
-    bytes.extend_from_slice(&pseudo_out_bytes);
+    let mut bytes: heapless::Vec<u8, { crate::types::caps::CLSAG_PROOF_MAX }> =
+        heapless::Vec::new();
+    // in-bounds by construction (ring cap checked above + empty vec)
+    let _ = bytes.extend_from_slice(&pseudo_out_bytes);
     // The Clsag struct has no public Serialize; we use write_to into a buffer
-    let mut clsag_buf = Vec::new();
-    clsag
-        .write(&mut clsag_buf)
-        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-    bytes.extend_from_slice(&clsag_buf);
+    {
+        let mut clsag_buf = HeaplessWriter(&mut bytes);
+        clsag
+            .write(&mut clsag_buf)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    }
 
     Ok((
         ClsagProof { bytes },
