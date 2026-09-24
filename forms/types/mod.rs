@@ -4,8 +4,11 @@
 //!   - curve.rs (Curve enum: identifies the curve family)
 //!   - other shared types
 
+pub mod caps;
 pub mod chain_kind;
 pub mod secret_bytes;
 pub mod secret_scalar;
+pub mod slice_vec;
 
 pub use secret_bytes::SecretBytes;
+pub use slice_vec::SliceVec;
