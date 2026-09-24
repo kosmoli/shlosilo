@@ -112,20 +112,96 @@ pub fn encode_tag(tag: u64, inner: &[u8]) -> Vec<u8> {
 
 // ─── Decoding ──────────────────────────────────────────────────────────
 
-/// A decoded CBOR item
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A decoded CBOR item.
+///
+/// Z2.4b (2026-09-24): fully borrowed lazy view (was Array/Map `Vec` trees + `Box` tag).
+/// Containers hold the raw byte span of their children plus the declared count; children
+/// are parsed on iteration/get. `decode()` still performs a full validating walk up front
+/// (depth/node budgets, well-formedness, trailing-garbage rejection), so the tree semantics
+/// of `decode` are unchanged — only the storage moved out of the heap and into the input
+/// buffer itself. `Cbor` is now `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cbor<'a> {
     Uint(u64),
     NegInt(u64), // value = -1 - n
     Bytes(&'a [u8]),
     Text(&'a str),
-    Array(Vec<Cbor<'a>>),
+    Array(CborSeq<'a>),
     /// Map keeps the original pair order (UR registry keys are all uint; sequential lookup suffices)
-    Map(Vec<(Cbor<'a>, Cbor<'a>)>),
-    /// tag + inner (the UR registry uses 303/304 etc.)
-    Tag(u64, alloc::boxed::Box<Cbor<'a>>),
+    Map(CborSeq<'a>),
+    /// tag + raw inner item bytes (parsed on demand via `inner()`)
+    Tag(u64, &'a [u8]),
     Bool(bool),
     Null,
+}
+
+/// Lazy child span of an Array/Map: the raw bytes of the children + declared count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CborSeq<'a> {
+    rest: &'a [u8],
+    count: usize,
+}
+
+impl<'a> CborSeq<'a> {
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Lazy iterator over the children. Items are `Result` because a `Cbor` value
+    /// obtained through means other than `decode()` (e.g. hand-built in tests) is not
+    /// validation-backed; iteration stops at the first parse error (returned as `Err`).
+    pub fn iter(&self) -> CborSeqIter<'a> {
+        CborSeqIter {
+            dec: Decoder {
+                bytes: self.rest,
+                pos: 0,
+                depth: 0,
+                nodes: 0,
+            },
+            remaining: self.count,
+        }
+    }
+
+    /// Parse the i-th child (0-based), skipping the previous ones.
+    pub fn get(&self, i: usize) -> Option<Result<Cbor<'a>>> {
+        if i >= self.count {
+            return None;
+        }
+        let mut it = self.iter();
+        it.nth(i)
+    }
+}
+
+/// Iterator over `CborSeq` children (see `CborSeq::iter`).
+pub struct CborSeqIter<'a> {
+    dec: Decoder<'a>,
+    remaining: usize,
+}
+
+impl<'a> Iterator for CborSeqIter<'a> {
+    type Item = Result<Cbor<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        match self.dec.read_item() {
+            Ok(item) => Some(Ok(item)),
+            Err(e) => {
+                self.remaining = 0; // stop at the first parse error
+                Some(Err(e))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
 }
 
 impl<'a> Cbor<'a> {
@@ -152,20 +228,30 @@ impl<'a> Cbor<'a> {
         }
     }
 
-    pub fn as_array(&self) -> Result<&[Cbor<'a>]> {
+    pub fn as_array(&self) -> Result<CborSeq<'a>> {
         match self {
-            Cbor::Array(a) => Ok(a),
+            Cbor::Array(a) => Ok(*a),
             _ => Err(err()),
         }
     }
 
     /// Look up a map value by integer key (UR registry map keys are all uint)
-    pub fn map_get_uint(&self, key: u64) -> Result<Option<&Cbor<'a>>> {
+    pub fn map_get_uint(&self, key: u64) -> Result<Option<Cbor<'a>>> {
         match self {
-            Cbor::Map(pairs) => Ok(pairs
-                .iter()
-                .find(|(k, _)| matches!(k, Cbor::Uint(n) if *n == key))
-                .map(|(_, v)| v)),
+            Cbor::Map(pairs) => {
+                let mut it = pairs.iter();
+                while let Some(entry) = it.next() {
+                    let k = entry?;
+                    let v = match it.next() {
+                        Some(v) => v?,
+                        None => return Err(err()), // odd entry count
+                    };
+                    if matches!(k, Cbor::Uint(n) if n == key) {
+                        return Ok(Some(v));
+                    }
+                }
+                Ok(None)
+            }
             _ => Err(err()),
         }
     }
@@ -177,11 +263,31 @@ impl<'a> Cbor<'a> {
         }
     }
 
-    /// Strip one layer of tag; return as-is when there is no tag
-    pub fn unwrap_tag(&self) -> &Cbor<'a> {
+    /// Parsed inner item of a Tag (errors for non-tag variants).
+    pub fn inner(&self) -> Result<Cbor<'a>> {
         match self {
-            Cbor::Tag(_, inner) => inner,
-            other => other,
+            Cbor::Tag(_, raw) => {
+                let mut d = Decoder {
+                    bytes: raw,
+                    pos: 0,
+                    depth: 0,
+                    nodes: 0,
+                };
+                let item = d.read_item()?;
+                if d.pos != raw.len() {
+                    return Err(err());
+                }
+                Ok(item)
+            }
+            _ => Err(err()),
+        }
+    }
+
+    /// Strip one layer of tag; return as-is when there is no tag
+    pub fn unwrap_tag(&self) -> Result<Cbor<'a>> {
+        match self {
+            Cbor::Tag(_, _) => self.inner(),
+            other => Ok(*other),
         }
     }
 }
@@ -270,26 +376,33 @@ impl<'a> Decoder<'a> {
             }
             4 => {
                 let count = wire_len(self.read_arg(info)?)?;
-                let mut items = Vec::with_capacity(count.min(256));
+                // Z2.4b: lazy span — walk the children now (validation), capture their raw span
+                let start = self.pos;
                 for _ in 0..count {
-                    items.push(self.read_item()?);
+                    self.read_item()?;
                 }
-                Ok(Cbor::Array(items))
+                Ok(Cbor::Array(CborSeq {
+                    rest: &self.bytes[start..self.pos],
+                    count,
+                }))
             }
             5 => {
                 let count = wire_len(self.read_arg(info)?)?;
-                let mut pairs = Vec::with_capacity(count.min(128));
+                let start = self.pos;
                 for _ in 0..count {
-                    let k = self.read_item()?;
-                    let v = self.read_item()?;
-                    pairs.push((k, v));
+                    self.read_item()?;
+                    self.read_item()?;
                 }
-                Ok(Cbor::Map(pairs))
+                Ok(Cbor::Map(CborSeq {
+                    rest: &self.bytes[start..self.pos],
+                    count: count * 2,
+                }))
             }
             6 => {
                 let tag = self.read_arg(info)?;
-                let inner = self.read_item()?;
-                Ok(Cbor::Tag(tag, alloc::boxed::Box::new(inner)))
+                let start = self.pos;
+                self.read_item()?;
+                Ok(Cbor::Tag(tag, &self.bytes[start..self.pos]))
             }
             7 => match info {
                 20 => Ok(Cbor::Bool(false)),
@@ -399,8 +512,20 @@ mod tests {
         match decode(&item).unwrap() {
             Cbor::Array(a) => {
                 assert_eq!(a.len(), 3);
-                assert_eq!(a[0].as_uint().unwrap(), 1);
-                assert_eq!(a[1].as_array().unwrap()[1].as_uint().unwrap(), 3);
+                assert_eq!(a.get(0).unwrap().unwrap().as_uint().unwrap(), 1);
+                assert_eq!(
+                    a.get(1)
+                        .unwrap()
+                        .unwrap()
+                        .as_array()
+                        .unwrap()
+                        .get(1)
+                        .unwrap()
+                        .unwrap()
+                        .as_uint()
+                        .unwrap(),
+                    3
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -468,7 +593,7 @@ mod tests {
         let inner = encode_bool(true);
         let enc = encode_tag(304, &inner);
         match decode(&enc).unwrap() {
-            Cbor::Tag(304, boxed) => assert_eq!(*boxed, Cbor::Bool(true)),
+            it @ Cbor::Tag(304, _) => assert_eq!(it.inner().unwrap(), Cbor::Bool(true)),
             other => panic!("{other:?}"),
         }
     }

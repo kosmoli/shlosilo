@@ -98,7 +98,7 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
     let derivation_path = match map.map_get_uint(5)? {
         Some(v) => {
             let inner = match v {
-                Cbor::Tag(TAG_CRYPTO_KEYPATH, boxed) => boxed.as_ref(),
+                Cbor::Tag(TAG_CRYPTO_KEYPATH, _) => v.inner()?,
                 _ => return Err(err()),
             };
             // components (key 1): flattened [idx0, hardened0, idx1, hardened1, ...]
@@ -108,15 +108,15 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
                 return Err(err());
             }
             let mut flat = alloc::vec::Vec::with_capacity(comps.len() / 2);
-            let mut i = 0;
-            while i + 1 < comps.len() {
-                let idx = comps[i].as_uint()?;
+            let mut ci = comps.iter();
+            while let Some(idx_item) = ci.next() {
+                let idx = idx_item?.as_uint()?;
                 // X2: the BIP-32 index domain is u32 — over-domain rejected, no silent truncation
                 if idx > u32::MAX as u64 {
                     return Err(err());
                 }
                 let idx = idx as u32;
-                let hardened = match comps[i + 1] {
+                let hardened = match ci.next().ok_or_else(err)?? {
                     Cbor::Bool(b) => b,
                     _ => return Err(err()),
                 };
@@ -128,7 +128,6 @@ pub fn parse_eth_sign_request(payload: &[u8]) -> Result<EthSignRequest> {
                 }
                 let raw = if hardened { idx | 0x8000_0000 } else { idx };
                 flat.push(raw);
-                i += 2;
             }
             // Gate4 #5 note: key 2 (depth) is not validated — in the official ur-registry test vector
             // (test_encode) the depth is a placeholder value 0x12345678; neither the registry spec nor upstream

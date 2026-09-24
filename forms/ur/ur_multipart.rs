@@ -169,27 +169,33 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
     // P1-02 (audit #4): wire u64 → usize/u32 all fallible, silent narrowing forbidden
     // (dangerous truncation semantics on 32-bit Thumb); message_length is bounded by the payload budget
     let sequence = wire_len(
-        arr[0]
+        arr.get(0)
+            .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadInvalidCbor))??
             .as_uint()
             .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?,
     )?;
     let sequence_count = wire_len(
-        arr[1]
+        arr.get(1)
+            .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadInvalidCbor))??
             .as_uint()
             .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?,
     )?;
     let message_length = wire_len(
-        arr[2]
+        arr.get(2)
+            .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadInvalidCbor))??
             .as_uint()
             .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?,
     )?;
     let checksum = u32::try_from(
-        arr[3]
+        arr.get(3)
+            .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadInvalidCbor))??
             .as_uint()
             .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?,
     )
     .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
-    let data = arr[4]
+    let data = arr
+        .get(4)
+        .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadInvalidCbor))??
         .as_bytes()
         .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
     // P0-B: allow sequence > sequence_count (fountain mixed redundancy frames); limit same as parse_frame
