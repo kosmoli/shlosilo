@@ -6,6 +6,7 @@
 
 pub mod caps;
 pub mod chain_kind;
+pub mod push;
 pub mod secret_bytes;
 pub mod secret_scalar;
 pub mod slice_vec;

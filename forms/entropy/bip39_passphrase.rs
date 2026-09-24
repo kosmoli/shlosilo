@@ -4,8 +4,6 @@
 
 extern crate alloc;
 
-use alloc::string::String;
-
 use crate::entropy::bip39_words;
 use crate::entropy::mnemonic::Mnemonic;
 use crate::entropy::pbkdf2_fast::pbkdf2_hmac_sha512;
@@ -40,17 +38,22 @@ impl core::fmt::Debug for Bip39Seed {
 }
 
 /// mnemonic + passphrase → 64-byte seed
+/// Z2.4a (2026-09-24): sentence + salt built into stack buffers (was String) and
+/// zeroized explicitly on exit — stack arrays have no Drop to lean on.
 pub fn mnemonic_to_seed(mnemonic: &Mnemonic, passphrase: &[u8]) -> Result<Bip39Seed> {
-    let mut sentence = String::new();
+    use crate::types::push::{push_byte, push_slice};
+
+    // max mnemonic = 24 words × 8 chars + 23 spaces = 215B
+    let mut sentence = [0u8; 256];
+    let mut n = 0usize;
     for (i, &idx) in mnemonic.indices().iter().enumerate() {
         let w = bip39_words::get_word_by_index(idx)
             .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::MnemonicInvalidWord))?;
         if i > 0 {
-            sentence.push(' ');
+            push_byte(&mut sentence, &mut n, b' ')?;
         }
-        sentence.push_str(w);
+        push_slice(&mut sentence, &mut n, w.as_bytes())?;
     }
-    let mut salt = String::from("mnemonic");
     // The BIP-39 passphrase is a UTF-8 string and the standard requires NFKD normalization.
     // Firmware (no_std) does not implement NFKD — P1-05 audit remediation (2026-08-26):
     // explicitly support ASCII passphrases only; non-UTF-8 / non-ASCII is always rejected,
@@ -60,11 +63,21 @@ pub fn mnemonic_to_seed(mnemonic: &Mnemonic, passphrase: &[u8]) -> Result<Bip39S
     if !p.is_ascii() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    salt.push_str(p);
+    // salt = "mnemonic" ‖ passphrase (Z2.4a: stack buffer; passphrase cap explicit Err)
+    const PASSPHRASE_MAX: usize = 512;
+    if passphrase.len() > PASSPHRASE_MAX {
+        return Err(crate::error::ShlosiloError::new(
+            crate::error::ShlosiloErrorKind::UrPayloadTooLarge,
+        ));
+    }
+    let mut salt = [0u8; 8 + PASSPHRASE_MAX];
+    salt[..8].copy_from_slice(b"mnemonic");
+    salt[8..8 + passphrase.len()].copy_from_slice(passphrase);
+    let salt_len = 8 + passphrase.len();
     let mut bytes = [0u8; BIP39_SEED_LEN];
     // PBKDF2-HMAC-SHA512 via the u32-pair fast path (bit-identical to the pbkdf2 crate;
     // see entropy::pbkdf2_fast — the u64 sha2 backend costs ~40k cycles/block on CM4).
-    pbkdf2_hmac_sha512(sentence.as_bytes(), salt.as_bytes(), 2048, &mut bytes);
+    pbkdf2_hmac_sha512(&sentence[..n], &salt[..salt_len], 2048, &mut bytes);
     sentence.zeroize();
     salt.zeroize();
     Ok(Bip39Seed { bytes })

@@ -110,7 +110,7 @@ pub fn sign_with_entropy(
     if template.payload.is_empty() {
         return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor));
     }
-    let payload = template.payload.as_slice();
+    let payload = template.payload;
 
     match chain_kind {
         crate::types::chain_kind::ChainKind::Btc => {

@@ -12,17 +12,14 @@ extern crate alloc;
 /// Transaction template (chain-agnostic)
 ///
 /// After the business module gets a TxTemplate, it dispatches by ChainKind to the matching chain handler
+/// Z2.4a (2026-09-24): `payload` borrows the caller's input buffer (C-class policy —
+/// the P6.3 HardFault lesson stands: never on the stack; the caller's buffer is the
+/// single home, zero copies).
 #[derive(Clone, Debug)]
-pub struct TxTemplate {
+pub struct TxTemplate<'a> {
     pub chain_kind: ChainKind,
     /// raw payload (chain-specific parsing by the business modules)
-    ///
-    /// **Heap allocation** (PSRAM heap_4): real PSBTs are often 2-12KB (Sparrow multi-input fixture measured 12KB),
-    /// cannot live on the stack — the P6.3 on-device regression found that a heapless inline capacity of 16384 blew the smoke task's 32KB stack
-    /// blew it (HardFault → WDT reset → sign hang-and-reboot loop). Only the Vec header (24B) stays on the stack.
-    /// P6.3 fix (2026-08-26): previously 2048, and an extend failure was swallowed by `let _ =` → silent truncation,
-    /// real PSBT signing would always fail. Now switched to heap allocation + an explicit capacity cap (silent truncation forbidden).
-    pub payload: alloc::vec::Vec<u8>,
+    pub payload: &'a [u8],
     /// Derivation path (used by business modules to dispatch; distinguishes mainnet/testnet + account)
     pub derivation_path: crate::derivation::path::DerivationPath,
 }
@@ -35,7 +32,7 @@ const PAYLOAD_MAX: usize = 16384;
 /// **P1-01 (2026-08-26)**: ChainKind is no longer inferred from the payload's first byte — the type tag
 /// Carried by the UR decode layer (`ur:<type>/`); the business layer calls the matching codec by type.
 /// The legacy `UrTypeTag::from_bytes` first-byte private tag protocol is deprecated.
-pub fn to_template(type_tag: UrTypeTag, payload: &[u8]) -> Result<TxTemplate> {
+pub fn to_template<'a>(type_tag: UrTypeTag, payload: &'a [u8]) -> Result<TxTemplate<'a>> {
     let chain_kind = match type_tag {
         UrTypeTag::CryptoPsbt => ChainKind::Btc,
         UrTypeTag::EthSignRequest => ChainKind::Eth,
@@ -65,7 +62,6 @@ pub fn to_template(type_tag: UrTypeTag, payload: &[u8]) -> Result<TxTemplate> {
             crate::error::ShlosiloErrorKind::UrPayloadTooLarge,
         ));
     }
-    let payload = payload.to_vec();
     Ok(TxTemplate {
         chain_kind,
         payload,
@@ -113,7 +109,7 @@ mod tests {
     fn to_template_payload_preserved() {
         let payload = [0xa2u8, 0x01, 0x02, 0x03];
         let t = to_template(UrTypeTag::EthSignRequest, &payload).unwrap();
-        assert_eq!(t.payload.as_slice(), &payload[..]);
+        assert_eq!(t.payload, &payload[..]);
     }
 
     #[test]

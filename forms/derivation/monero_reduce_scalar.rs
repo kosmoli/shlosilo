@@ -71,12 +71,22 @@ impl core::fmt::Debug for MoneroKeyPair {
 /// This is keystone\'s standard path for generating a Monero keypair from a BIP-39 seed (P6.3 already
 /// cross-verified with base58-monero address encoding: DEST1 matches meta.json).
 pub fn derive(seed: &[u8], path: &MoneroPath) -> Result<MoneroKeyPair> {
-    extern crate alloc;
-    use alloc::format;
+    // Z2.4a (2026-09-24): path string built into a stack buffer (was alloc::format!)
+    use crate::types::push::{push_dec, push_slice};
 
     // 1. BIP-32 secp256k1 m/44'/128'/{account}'/0/0
-    let path_str = format!("m/44'/128'/{}'/0/0", path.account);
-    let dp = crate::derivation::path::DerivationPath::parse(&path_str)?;
+    let mut path_buf = [0u8; 48];
+    let mut n = 0usize;
+    push_slice(&mut path_buf, &mut n, b"m/44'/128'/")?;
+    push_dec(&mut path_buf, &mut n, u64::from(path.account))?;
+    push_slice(&mut path_buf, &mut n, b"'/0/0")?;
+    let dp = crate::derivation::path::DerivationPath::parse(
+        core::str::from_utf8(&path_buf[..n]).map_err(|_| {
+            crate::error::ShlosiloError::new(
+                crate::error::ShlosiloErrorKind::DerivationPathInvalidSyntax,
+            )
+        })?,
+    )?;
     let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &dp)?;
     let raw = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
 
