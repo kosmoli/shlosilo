@@ -135,7 +135,8 @@ pub fn decrypt_amount(encrypted: &[u8; 8], shared_key: &[u8; 32]) -> u64 {
 /// P1-03: spend_key / real_mask / pseudo_mask use `SecretBytes<32>` — no Clone or Debug.
 pub struct TxInputSpec {
     /// key offsets (ring members' relative offsets)
-    pub key_offsets: Vec<u64>,
+    /// Z2.3 (2026-09-24, option 2): leaf collection, protocol-hard cap RING_MAX.
+    pub key_offsets: heapless::Vec<u64, { crate::types::caps::RING_MAX }>,
     /// real index in ring (which member is the real spend)
     pub real_index: u8,
     /// real spend key (32 bytes reduced scalar)
@@ -279,7 +280,7 @@ pub fn build_and_sign_tx<R: RngCore + CryptoRng>(
             }
         }
         if let Some(pk) = add_key {
-            extra = extra.with_additional_pub_key(pk);
+            extra = extra.with_additional_pub_key(pk)?;
         }
         tx_outputs.push(out);
     }
@@ -541,7 +542,7 @@ mod tests {
             100_000_000_000,
         );
         TxInputSpec {
-            key_offsets: vec![1, 2],
+            key_offsets: heapless::Vec::from_slice(&[1, 2]).unwrap(),
             real_index: 0,
             spend_key: SecretBytes::new(spend_key),
             real_mask: SecretBytes::new(real_mask),
@@ -629,7 +630,7 @@ mod tests {
 
         // 6. TxInputSpec
         let _input_spec = TxInputSpec {
-            key_offsets: vec![1, 2],
+            key_offsets: heapless::Vec::from_slice(&[1, 2]).unwrap(),
             real_index: 0,
             spend_key: SecretBytes::new(spend_key),
             real_mask: SecretBytes::new(real_mask),
@@ -701,7 +702,7 @@ mod tests {
         let decoy_commit = MoneroCommitment::new(decoy_mask_scalar, 1000);
 
         let input_spec = TxInputSpec {
-            key_offsets: vec![1],
+            key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
             real_index: 0,
             spend_key: SecretBytes::new(spend_key),
             real_mask: SecretBytes::new(real_mask),
@@ -762,7 +763,7 @@ mod tests {
         let decoy_commit = MoneroCommitment::new(decoy_mask_scalar, 2000);
 
         let input_spec = TxInputSpec {
-            key_offsets: vec![1],
+            key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
             real_index: 0,
             spend_key: SecretBytes::new(spend_key),
             real_mask: SecretBytes::new(real_mask),
@@ -835,7 +836,7 @@ mod tests {
         let pid = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
         let signed = build_and_sign_tx(
             &[TxInputSpec {
-                key_offsets: vec![1],
+                key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
                 real_index: 0,
                 spend_key: SecretBytes::new(spend_key),
                 real_mask: SecretBytes::new(real_mask),
@@ -910,7 +911,7 @@ mod tests {
         let dest_view = TxKeyPair::from_secret(SecretBytes::new([9u8; 32])).unwrap();
         let signed = build_and_sign_tx(
             &[TxInputSpec {
-                key_offsets: vec![1],
+                key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
                 real_index: 0,
                 spend_key: SecretBytes::new(spend_key),
                 real_mask: SecretBytes::new(real_mask),
@@ -976,7 +977,7 @@ mod tests {
         let dest_spend = TxKeyPair::from_secret(SecretBytes::new([11u8; 32])).unwrap();
         let signed = build_and_sign_tx(
             &[TxInputSpec {
-                key_offsets: vec![1],
+                key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
                 real_index: 0,
                 spend_key: SecretBytes::new(spend_key),
                 real_mask: SecretBytes::new(real_mask),
@@ -1043,7 +1044,7 @@ mod tests {
         let dest_spend = TxKeyPair::from_secret(SecretBytes::new([23u8; 32])).unwrap();
         let signed = build_and_sign_tx(
             &[TxInputSpec {
-                key_offsets: vec![1],
+                key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
                 real_index: 0,
                 spend_key: SecretBytes::new(spend_key),
                 real_mask: SecretBytes::new(real_mask),

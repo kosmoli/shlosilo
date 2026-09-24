@@ -47,6 +47,7 @@ use alloc::vec::Vec;
 use crate::chain::xmr::clsag::derive_key_image;
 use crate::curve_primitive::ed25519::{scalar_to_bytes, Ed25519Scalar as ShlosiloScalar};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::types::caps::{RING_MAX, TX_EXTRA_NONCE_MAX, TX_EXTRA_PUBKEYS_MAX};
 use monero_ed25519::{CompressedPoint, Scalar};
 
 /// XMR tx version: 2 = RingCT (post-fork, only valid in mainnet)
@@ -62,14 +63,15 @@ fn wire_len(n: u64) -> Result<usize> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxInput {
     /// ring members' offsets (relative to actual spend)
-    pub key_offsets: Vec<u64>,
+    /// Z2.3 (2026-09-24, option 2): leaf collection, protocol-hard cap RING_MAX.
+    pub key_offsets: heapless::Vec<u64, RING_MAX>,
     /// key image (32 bytes, Ed25519 compressed point)
     pub key_image: [u8; 32],
 }
 
 impl TxInput {
     /// Construct a RingCT `txin_to_key` input.
-    pub fn new(key_offsets: Vec<u64>, key_image: [u8; 32]) -> Self {
+    pub fn new(key_offsets: heapless::Vec<u64, RING_MAX>, key_image: [u8; 32]) -> Self {
         Self {
             key_offsets,
             key_image,
@@ -104,9 +106,13 @@ impl TxInput {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
         let n = monero_decode_varint(bytes, pos)?;
-        let mut key_offsets = Vec::with_capacity(n as usize);
+        // Z2.3 (2026-09-24, option 2): leaf cap RING_MAX (protocol-hard) — over-cap
+        // ring offsets are consensus-invalid; explicit Err, never truncation.
+        let mut key_offsets: heapless::Vec<u64, RING_MAX> = heapless::Vec::new();
         for _ in 0..n {
-            key_offsets.push(monero_decode_varint(bytes, pos)?);
+            key_offsets
+                .push(monero_decode_varint(bytes, pos)?)
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         }
         if *pos + 32 > bytes.len() {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -210,13 +216,15 @@ pub struct TxExtra {
     /// tx public key (transaction extra field tag 0x01, length 32)
     pub tx_pub_key: Option<[u8; 32]>,
     /// additional public keys (tag 0x04, each varint length + 32 bytes)
-    pub additional_pub_keys: Vec<[u8; 32]>,
+    /// Z2.3 (2026-09-24, option 2): leaf cap TX_EXTRA_PUBKEYS_MAX (soft, Err on overflow).
+    pub additional_pub_keys: heapless::Vec<[u8; 32], TX_EXTRA_PUBKEYS_MAX>,
     /// payment ID (tag 0x02 or 0x07 for encrypted/integrated)
     pub payment_id: Option<[u8; 8]>,
     /// Encrypted payment ID (extra nonce: tag 0x02, 9 bytes = 0x01 || enc[8])
     pub encrypted_payment_id: Option<[u8; 8]>,
     /// nonce (raw bytes, optional field)
-    pub nonce: Option<Vec<u8>>,
+    /// Z2.3 (2026-09-24, option 2): leaf cap TX_EXTRA_NONCE_MAX (soft, Err on overflow).
+    pub nonce: Option<heapless::Vec<u8, TX_EXTRA_NONCE_MAX>>,
 }
 
 impl TxExtra {
@@ -229,9 +237,11 @@ impl TxExtra {
         self
     }
 
-    pub fn with_additional_pub_key(mut self, pk: [u8; 32]) -> Self {
-        self.additional_pub_keys.push(pk);
-        self
+    pub fn with_additional_pub_key(mut self, pk: [u8; 32]) -> Result<Self> {
+        self.additional_pub_keys
+            .push(pk)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+        Ok(self)
     }
 
     pub fn with_encrypted_payment_id(mut self, enc: [u8; 8]) -> Self {
@@ -321,7 +331,10 @@ impl TxExtra {
                     for _ in 0..len {
                         let mut pk = [0u8; 32];
                         pk.copy_from_slice(&bytes[*pos..*pos + 32]);
-                        extra.additional_pub_keys.push(pk);
+                        extra
+                            .additional_pub_keys
+                            .push(pk)
+                            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
                         *pos += 32;
                     }
                 }
@@ -341,7 +354,8 @@ impl TxExtra {
                     }
                 }
                 0x05 => {
-                    let data = bytes[*pos..*pos + len].to_vec();
+                    let data = heapless::Vec::from_slice(&bytes[*pos..*pos + len])
+                        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
                     extra.nonce = Some(data);
                     *pos += len;
                 }
@@ -749,7 +763,7 @@ mod tests {
     #[test]
     fn tx_input_round_trip() {
         let input = TxInput {
-            key_offsets: vec![10, 25, 100, 250],
+            key_offsets: heapless::Vec::from_slice(&[10, 25, 100, 250]).unwrap(),
             key_image: [0x42; 32],
         };
         let bytes = input.serialize();
@@ -767,7 +781,10 @@ mod tests {
     fn tx_prefix_includes_full_txin_to_key_encoding() {
         let prefix = TransactionPrefix::new(
             0,
-            vec![TxInput::new(vec![5, 7], [0x11; 32])],
+            vec![TxInput::new(
+                heapless::Vec::from_slice(&[5, 7]).unwrap(),
+                [0x11; 32],
+            )],
             vec![],
             TxExtra::new(),
         );
@@ -811,7 +828,8 @@ mod tests {
         let extra = TxExtra::new()
             .with_tx_pub_key([0xab; 32])
             .with_additional_pub_key([0xcd; 32])
-            .with_additional_pub_key([0xef; 32]);
+            .and_then(|e| e.with_additional_pub_key([0xef; 32]))
+            .unwrap();
         let bytes = extra.serialize();
         let mut pos = 0;
         let parsed = TxExtra::deserialize(&bytes, &mut pos).unwrap();
@@ -838,11 +856,11 @@ mod tests {
             100, // unlock_time = block 100
             vec![
                 TxInput {
-                    key_offsets: vec![1, 2, 3],
+                    key_offsets: heapless::Vec::from_slice(&[1, 2, 3]).unwrap(),
                     key_image: [0x11; 32],
                 },
                 TxInput {
-                    key_offsets: vec![4, 5, 6],
+                    key_offsets: heapless::Vec::from_slice(&[4, 5, 6]).unwrap(),
                     key_image: [0x22; 32],
                 },
             ],
@@ -865,7 +883,7 @@ mod tests {
         let prefix = TransactionPrefix::new(
             0,
             vec![TxInput {
-                key_offsets: vec![1],
+                key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
                 key_image: [0x42; 32],
             }],
             vec![TxOutput::new(1000, [0xab; 32])],

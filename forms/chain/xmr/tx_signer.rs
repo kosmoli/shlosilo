@@ -453,7 +453,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     for o in &outs {
         if !o.is_change {
             if let Some(add) = o.deriv.additional_tx_key {
-                extra = extra.with_additional_pub_key(add);
+                extra = extra.with_additional_pub_key(add)?;
             }
         }
     }
@@ -498,7 +498,12 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     let mut input_sks = ZeroizingMaskGuard::new("input_sk");
     for src in &tx_data.sources {
         // key offsets: absolute→relative (monero absolute_output_offsets_to_relative, ascending differences)
-        let mut offs: Vec<u64> = src.outputs.iter().map(|o| o.index).collect();
+        // Z2.3 (2026-09-24, option 2): leaf cap RING_MAX (protocol-hard ring size).
+        let mut offs: heapless::Vec<u64, { crate::types::caps::RING_MAX }> = heapless::Vec::new();
+        for o in src.outputs.iter() {
+            offs.push(o.index)
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+        }
         offs.sort_unstable();
         for i in (1..offs.len()).rev() {
             offs[i] -= offs[i - 1];
