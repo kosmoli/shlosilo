@@ -127,10 +127,7 @@ pub fn encode(type_tag: UrTypeTag, payload: &[u8]) -> Result<UrEncoded> {
     push_str(&mut uri, "ur:")?;
     push_str(&mut uri, type_tag.type_name())?;
     push_str(&mut uri, "/")?;
-    for c in bytewords::encode_minimal(payload).chars() {
-        uri.push(c)
-            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
-    }
+    bytewords::encode_minimal_into_str(payload, &mut uri)?;
     Ok(UrEncoded { uri })
 }
 

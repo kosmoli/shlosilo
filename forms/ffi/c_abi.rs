@@ -698,16 +698,12 @@ pub mod r3 {
         }
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
             let enc = unsafe { &mut *handle };
-            let frame = enc.next_frame()?;
-            let bytes = frame.as_bytes();
-            if bytes.len() + 1 > frame_buf_len as usize {
-                return Err(err(ShlosiloErrorKind::EncodingBufferOverflow));
-            }
-            unsafe {
-                core::ptr::copy_nonoverlapping(bytes.as_ptr(), frame_buf, bytes.len());
-                *frame_buf.add(bytes.len()) = 0;
-            }
-            Ok(bytes.len())
+            // Z2.4c: build the frame directly into the caller buffer (was String + copy)
+            let mut scratch = [0u8; 1024]; // part CBOR intermediate (A-class; oversized parts error explicitly)
+            let out = unsafe { core::slice::from_raw_parts_mut(frame_buf, frame_buf_len as usize) };
+            let n = enc.next_frame_into(&mut scratch, &mut out[..frame_buf_len as usize - 1])?;
+            out[n] = 0;
+            Ok(n)
         });
         match result {
             Ok(Ok(n)) => {
@@ -748,16 +744,13 @@ pub mod r3 {
         }
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
             let enc = unsafe { &mut *handle };
-            let frame = enc.next_cyclic_frame()?;
-            let bytes = frame.as_bytes();
-            if bytes.len() + 1 > frame_buf_len as usize {
-                return Err(err(ShlosiloErrorKind::EncodingBufferOverflow));
-            }
-            unsafe {
-                core::ptr::copy_nonoverlapping(bytes.as_ptr(), frame_buf, bytes.len());
-                *frame_buf.add(bytes.len()) = 0;
-            }
-            Ok(bytes.len())
+            // Z2.4c: build the frame directly into the caller buffer (was String + copy)
+            let mut scratch = [0u8; 1024]; // part CBOR intermediate (A-class; oversized parts error explicitly)
+            let out = unsafe { core::slice::from_raw_parts_mut(frame_buf, frame_buf_len as usize) };
+            let n =
+                enc.next_cyclic_frame_into(&mut scratch, &mut out[..frame_buf_len as usize - 1])?;
+            out[n] = 0;
+            Ok(n)
         });
         match result {
             Ok(Ok(n)) => {

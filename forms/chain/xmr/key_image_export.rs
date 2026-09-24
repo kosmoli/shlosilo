@@ -41,6 +41,9 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
+/// Decrypted export payload: (pk1, pk2, zeroizing plaintext).
+pub type ExportPayload = ([u8; 32], [u8; 32], zeroize::Zeroizing<Vec<u8>>);
+
 /// Decrypt an export-class payload (OUTPUT/KEY_IMAGE magic share a structure).
 ///
 /// Returns `(pk1, pk2, plaintext)`; pk1/pk2 exist only for OUTPUT/KEY_IMAGE magic
@@ -49,7 +52,7 @@ pub fn decrypt_export_payload(
     data: &[u8],
     magic: &[u8],
     view_sk: &[u8; 32],
-) -> Result<([u8; 32], [u8; 32], zeroize::Zeroizing<Vec<u8>>)> {
+) -> Result<ExportPayload> {
     if data.len() < magic.len() + NONCE_LEN + SIG_LEN {
         return Err(err());
     }

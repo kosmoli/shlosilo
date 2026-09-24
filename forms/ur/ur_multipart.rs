@@ -35,11 +35,12 @@ pub const DEFAULT_FRAGMENT_LEN: usize = 200;
 
 // ─── Encoder ───────────────────────────────────────────────────────
 
-/// Stateful multipart encoder. `next_frame()` produces URI frame strings;
-/// XMR re-scan scenarios use `next_cyclic_frame()`.
+/// Stateful multipart encoder. `next_frame_into()` produces URI frame text into a
+/// caller buffer; XMR re-scan scenarios use `next_cyclic_frame_into()`.
 pub struct UrMultipartEncoder {
     inner: FountainEncoder,
-    type_name: alloc::string::String,
+    /// Z2.4c: fixed-cap (registry type tokens are short ascii-alnum/hyphen strings)
+    type_name: heapless::String<32>,
 }
 
 impl UrMultipartEncoder {
@@ -54,10 +55,14 @@ impl UrMultipartEncoder {
         if !type_ok {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
+        let mut type_name_buf = heapless::String::new();
+        type_name_buf
+            .push_str(type_name)
+            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
         Ok(Self {
             inner: FountainEncoder::new(payload, max_fragment_len)
                 .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?,
-            type_name: alloc::string::String::from(type_name),
+            type_name: type_name_buf,
         })
     }
 
@@ -65,35 +70,57 @@ impl UrMultipartEncoder {
         self.inner.fragment_count()
     }
 
-    /// Next frame URI (`ur:<type>/<seq>-<count>/<bytewords>`)
-    pub fn next_frame(&mut self) -> Result<alloc::string::String> {
+    /// Next frame URI (`ur:<type>/<seq>-<count>/<bytewords>`) into a caller buffer (Z2.4c
+    /// C-class policy); returns the length written. `scratch` holds the intermediate part
+    /// CBOR (caller-sized ≥ part wire size); overflow anywhere raises an explicit error.
+    pub fn next_frame_into(&mut self, scratch: &mut [u8], out: &mut [u8]) -> Result<usize> {
         let part = self.inner.next_part();
-        self.frame_of(&part)
+        self.frame_of_into(&part, scratch, out)
     }
 
     /// XMR cyclic re-scan frame (seq wraps back to 1 at the top)
-    pub fn next_cyclic_frame(&mut self) -> Result<alloc::string::String> {
+    pub fn next_cyclic_frame_into(&mut self, scratch: &mut [u8], out: &mut [u8]) -> Result<usize> {
         let part = self.inner.next_cyclic_part();
-        self.frame_of(&part)
+        self.frame_of_into(&part, scratch, out)
     }
 
-    fn frame_of(&self, part: &Part) -> Result<alloc::string::String> {
-        let body_bytes = part.to_cbor();
-        let body = bytewords::encode_minimal(&body_bytes);
-        let mut frame = alloc::string::String::with_capacity(body.len() + 40);
-        use core::fmt::Write;
-        core::write!(
-            frame,
-            "ur:{}/{}/{}",
-            self.type_name,
-            part.sequence_id(),
-            body
-        )
-        .map_err(|_| err(ShlosiloErrorKind::EncodingBufferOverflow))?;
-        if frame.len() > MULTIPART_FRAME_MAX_LEN {
+    fn frame_of_into(&self, part: &Part, scratch: &mut [u8], out: &mut [u8]) -> Result<usize> {
+        let mut cn = 0usize;
+        part.to_cbor_into(scratch, &mut cn)?;
+        let mut n = 0usize;
+        {
+            use crate::types::push::{push_byte, push_dec, push_slice};
+            push_slice(out, &mut n, b"ur:")?;
+            push_slice(out, &mut n, self.type_name.as_bytes())?;
+            push_byte(out, &mut n, b'/')?;
+            push_dec(out, &mut n, part.sequence as u64)?;
+            push_byte(out, &mut n, b'-')?;
+            push_dec(out, &mut n, part.sequence_count as u64)?;
+            push_byte(out, &mut n, b'/')?;
+        }
+        bytewords::encode_minimal_into(&scratch[..cn], out, &mut n)?;
+        if n > MULTIPART_FRAME_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingBufferOverflow));
         }
-        Ok(frame)
+        Ok(n)
+    }
+
+    /// Test/legacy convenience (allocates). Production paths use `next_frame_into`.
+    pub fn next_frame(&mut self) -> Result<alloc::string::String> {
+        let mut scratch = alloc::vec![0u8; MULTIPART_PAYLOAD_MAX_LEN + 32];
+        let mut out = alloc::vec![0u8; MULTIPART_FRAME_MAX_LEN];
+        let n = self.next_frame_into(&mut scratch, &mut out)?;
+        alloc::string::String::from_utf8(out[..n].to_vec())
+            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))
+    }
+
+    /// Test/legacy convenience (allocates). Production paths use `next_cyclic_frame_into`.
+    pub fn next_cyclic_frame(&mut self) -> Result<alloc::string::String> {
+        let mut scratch = alloc::vec![0u8; MULTIPART_PAYLOAD_MAX_LEN + 32];
+        let mut out = alloc::vec![0u8; MULTIPART_FRAME_MAX_LEN];
+        let n = self.next_cyclic_frame_into(&mut scratch, &mut out)?;
+        alloc::string::String::from_utf8(out[..n].to_vec())
+            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))
     }
 }
 

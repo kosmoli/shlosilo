@@ -176,6 +176,22 @@ pub(crate) struct Part {
 impl Part {
     /// CBOR encoding (uses shlosilo's own cbor.rs; shape byte-identical to minicbor:
     /// 82: array(5); the four uints use the shortest arg encoding for their u32 range; data is a byte string)
+    /// Wire CBOR into a caller buffer (Z2.4c): structural write, no intermediate fragments.
+    pub fn to_cbor_into(&self, out: &mut [u8], n: &mut usize) -> crate::error::Result<()> {
+        use crate::encoding::cbor::CborWriter;
+        let mut w = CborWriter::new(out);
+        w.array_head(5)?;
+        w.uint(self.sequence as u64)?;
+        w.uint(self.sequence_count as u64)?;
+        w.uint(self.message_length as u64)?;
+        w.uint(u64::from(self.checksum))?;
+        w.bytes(&self.data)?;
+        *n = w.pos();
+        Ok(())
+    }
+
+    /// Test-only convenience (allocates). Production frame building uses `to_cbor_into`.
+    #[cfg(test)]
     pub fn to_cbor(&self) -> Vec<u8> {
         use crate::encoding::cbor as c;
         let mut out = Vec::new();
@@ -195,11 +211,6 @@ impl Part {
 
     pub fn is_simple(&self) -> bool {
         self.indexes().len() == 1
-    }
-
-    /// "seq-count" string (URI segment)
-    pub fn sequence_id(&self) -> alloc::string::String {
-        alloc::format!("{}-{}", self.sequence, self.sequence_count)
     }
 }
 

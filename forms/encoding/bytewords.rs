@@ -134,6 +134,9 @@ pub fn crc32(data: &[u8]) -> u32 {
 }
 
 /// minimal style encoding: payload + CRC32 BE (4 bytes) → two letters per byte concatenated
+///
+/// Test/legacy convenience (allocates). Production encoders stream through
+/// `encode_minimal_into` / `encode_minimal_into_str` — no intermediate buffer.
 pub fn encode_minimal(data: &[u8]) -> String {
     let checksum = crc32(data).to_be_bytes();
     let mut out = String::with_capacity((data.len() + 4) * 2);
@@ -143,14 +146,48 @@ pub fn encode_minimal(data: &[u8]) -> String {
     out
 }
 
-/// minimal style decoding: reverse lookup per two-letter pair + CRC32 verification
-pub fn decode_minimal(encoded: &str) -> Result<Vec<u8>> {
+/// The two-letter minimal token for one byte (the streaming building block).
+pub fn minimal_pair(b: u8) -> &'static str {
+    MINIMALS[b as usize]
+}
+
+/// Streaming encoder into a caller byte buffer (Z2.4c): payload + CRC32 BE pairs,
+/// appended at `*n`. Overflow raises BufferTooSmall — never silent truncation.
+pub fn encode_minimal_into(data: &[u8], out: &mut [u8], n: &mut usize) -> Result<()> {
+    let checksum = crc32(data).to_be_bytes();
+    for &b in data.iter().chain(checksum.iter()) {
+        crate::types::push::push_slice(out, n, MINIMALS[b as usize].as_bytes())?;
+    }
+    Ok(())
+}
+
+/// Streaming encoder into a `heapless::String` (UR text builders).
+pub fn encode_minimal_into_str<const N: usize>(
+    data: &[u8],
+    out: &mut heapless::String<N>,
+) -> Result<()> {
+    let checksum = crc32(data).to_be_bytes();
+    for &b in data.iter().chain(checksum.iter()) {
+        out.push_str(MINIMALS[b as usize])
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+    }
+    Ok(())
+}
+
+/// minimal style decoding into a caller byte buffer (Z2.4c): reverse lookup per
+/// two-letter pair + CRC32 verification; returns the payload length (checksum stripped).
+pub fn decode_minimal_into(encoded: &str, out: &mut [u8]) -> Result<usize> {
     let bytes = encoded.as_bytes();
     if !encoded.len().is_multiple_of(2) || !encoded.is_ascii() {
         return Err(err());
     }
-    let mut data = Vec::with_capacity(encoded.len() / 2);
-    for pair in bytes.as_chunks::<2>().0 {
+    let total = encoded.len() / 2; // payload + 4 checksum bytes
+    if total > out.len() {
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::EncodingBufferOverflow,
+        ));
+    }
+    for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
         let c0 = (pair[0] as char).to_ascii_lowercase() as u8;
         let c1 = (pair[1] as char).to_ascii_lowercase() as u8;
         if !c0.is_ascii_lowercase() || !c1.is_ascii_lowercase() {
@@ -161,17 +198,27 @@ pub fn decode_minimal(encoded: &str) -> Result<Vec<u8>> {
         if v == 0 {
             return Err(err());
         }
-        data.push((v - 1) as u8);
+        out[i] = (v - 1) as u8;
     }
-    if data.len() < 5 {
+    if total < 5 {
         return Err(err()); // at least 1 payload byte + 4 checksum bytes
     }
-    let (payload, checksum) = data.split_at(data.len() - 4);
+    let (payload, checksum) = out[..total].split_at(total - 4);
     if crc32(payload).to_be_bytes() == checksum {
-        Ok(payload.to_vec())
+        Ok(payload.len())
     } else {
         Err(err())
     }
+}
+
+/// minimal style decoding: reverse lookup per two-letter pair + CRC32 verification
+///
+/// Test/legacy convenience (allocates). Production decoders use `decode_minimal_into`.
+pub fn decode_minimal(encoded: &str) -> Result<Vec<u8>> {
+    let mut data = alloc::vec![0u8; encoded.len() / 2 + 2];
+    let n = decode_minimal_into(encoded, &mut data)?;
+    data.truncate(n);
+    Ok(data)
 }
 
 #[cfg(test)]
