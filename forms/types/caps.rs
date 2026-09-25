@@ -20,6 +20,11 @@ pub const TX_EXTRA_NONCE_MAX: usize = 32;
 /// Soft: `tx_extra` additional pubkeys (subaddress sends; one per output).
 pub const TX_EXTRA_PUBKEYS_MAX: usize = 16;
 
+/// Soft: `original` address-string bytes (Monero base58 addresses: standard 95,
+/// integrated 106 chars — real traffic never exceeds 106). Over-cap is an
+/// explicit EncodingInvalidFormat Err (Z3.1 leaf: the container Vec is gone).
+pub const DEST_ORIGINAL_MAX: usize = 106;
+
 /// ClsagProof serialized cap: pseudo_out (32) + s[RING_MAX] (32*16) + c1 (32) + D (32).
 /// Layout per clsag.rs sign(): `pseudo_out(32) ‖ s[mixin+1] ‖ c1 ‖ D`.
 pub const CLSAG_PROOF_MAX: usize = 32 * (RING_MAX + 3);

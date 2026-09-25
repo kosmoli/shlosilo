@@ -47,6 +47,7 @@ use chacha20::cipher::{KeyIvInit, StreamCipher};
 use chacha20::ChaCha20Legacy;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::types::caps::DEST_ORIGINAL_MAX;
 
 fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
@@ -121,13 +122,15 @@ fn read_u64(data: &[u8], off: &mut usize) -> Result<u64> {
     Ok(u64::from_le_bytes(s.try_into().unwrap()))
 }
 
-fn read_bytes(data: &[u8], off: &mut usize, len: usize) -> Result<Vec<u8>> {
+fn read_bytes<'a>(data: &'a [u8], off: &mut usize, len: usize) -> Result<&'a [u8]> {
     // Audit #12 P1-03: offset+len via checked_add (both 32-bit truncation and 64-bit overflow
     // a real issue), values fetched with get (single out-of-bounds check); failure performs no allocation.
+    // Z3.1: returns a borrow of the input span (was to_vec) — callers copy into
+    // their own fixed-cap destinations.
     let end = off.checked_add(len).ok_or_else(err)?;
     let s = data.get(*off..end).ok_or_else(err)?;
     *off = end;
-    Ok(s.to_vec())
+    Ok(s)
 }
 
 fn read_u8_32(data: &[u8], off: &mut usize) -> Result<[u8; 32]> {
@@ -225,9 +228,10 @@ impl core::fmt::Debug for TxSourceEntry {
 
 #[derive(Clone, Debug, Default)]
 pub struct TxDestinationEntry {
-    /// Z2.5 ledger: CONTAINER LEAF (address string, ≤106B) — pending C2-style
-    /// leaf cap (heapless) or Z3 caller-string storage.
-    pub original: Vec<u8>,
+    /// Z3.1 leaf: fixed-cap address string (was container `Vec<u8>`).
+    /// Real Monero addresses are ≤106B; over-cap is an explicit parse Err
+    /// (soft cap per the caps table policy — never truncation).
+    pub original: heapless::Vec<u8, DEST_ORIGINAL_MAX>,
     pub amount: u64,
     pub spend_public_key: [u8; 32],
     pub view_public_key: [u8; 32],
@@ -423,7 +427,16 @@ pub(crate) fn decrypt_unsigned_txset_with_chacha_key(
 
 fn read_destination_entry(data: &[u8], off: &mut usize) -> Result<TxDestinationEntry> {
     let original_len = usize::try_from(read_varint(data, off)?).map_err(|_| err())?;
-    let original = read_bytes(data, off, original_len)?;
+    // Z3.1: leaf cap — over-cap address strings are invalid format (real Monero
+    // addresses ≤ DEST_ORIGINAL_MAX), explicit Err before the read.
+    if original_len > DEST_ORIGINAL_MAX {
+        return Err(err());
+    }
+    let original_src = read_bytes(data, off, original_len)?;
+    let mut original = heapless::Vec::new();
+    original
+        .extend_from_slice(original_src)
+        .map_err(|_| err())?;
     let amount = read_varint(data, off)?;
     let spend_public_key = read_u8_32(data, off)?;
     let view_public_key = read_u8_32(data, off)?;
@@ -998,7 +1011,7 @@ mod tests {
             },
         };
         let dest = TxDestinationEntry {
-            original: alloc::vec![],
+            original: heapless::Vec::new(),
             amount: 900,
             spend_public_key: [0x44u8; 32],
             view_public_key: [0x55u8; 32],
@@ -1006,7 +1019,7 @@ mod tests {
             is_integrated: false,
         };
         let change = TxDestinationEntry {
-            original: alloc::vec![],
+            original: heapless::Vec::new(),
             amount: 50,
             spend_public_key: [0x44u8; 32],
             view_public_key: [0x55u8; 32],

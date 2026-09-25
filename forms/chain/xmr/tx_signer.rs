@@ -952,7 +952,7 @@ mod guard_tests {
         };
         // hostile destination: view_public_key = [0x02;32] (re-review PoC encoding)
         let dest = TxDestinationEntry {
-            original: Vec::new(),
+            original: heapless::Vec::new(),
             amount: 900,
             spend_public_key: [0x02u8; 32],
             view_public_key: [0x02u8; 32],
@@ -1031,7 +1031,7 @@ fn mask_of(b: u8) -> [u8; 32] {
 #[cfg(test)]
 fn test_dest(amount: u64, pt: [u8; 32], is_subaddress: bool) -> TxDestinationEntry {
     TxDestinationEntry {
-        original: Vec::new(),
+        original: heapless::Vec::new(),
         amount,
         spend_public_key: pt,
         view_public_key: pt,
@@ -1227,7 +1227,7 @@ fn output_derivation_kat() {
     // fixed inputs: r = 0x11.., dest view/spend = 0x22/0x33.., amount = 12345
     let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order([0x11u8; 32]);
     let dest = TxDestinationEntry {
-        original: Vec::new(),
+        original: heapless::Vec::new(),
         amount: 12_345,
         spend_public_key: [0x33u8; 32],
         view_public_key: [0x22u8; 32],
@@ -1349,7 +1349,7 @@ fn signer_clsag_failure_populates_then_drops_owner() {
         },
     };
     let dest = TxDestinationEntry {
-        original: Vec::new(),
+        original: heapless::Vec::new(),
         amount: 900,
         spend_public_key: pt_bytes,
         view_public_key: pt_bytes,
@@ -1359,7 +1359,7 @@ fn signer_clsag_failure_populates_then_drops_owner() {
     // change uses different amount/keys — the is_change check won't misfire, outputs take the non-change
     // branch (on the same correct path before CLSAG as inputs/guard)
     let change_dest = TxDestinationEntry {
-        original: Vec::new(),
+        original: heapless::Vec::new(),
         amount: 1,
         spend_public_key: [0x77u8; 32],
         view_public_key: [0x77u8; 32],
@@ -1641,7 +1641,7 @@ fn change_output_derivation_kat() {
 fn subaddress_output_derivation_kat() {
     let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order([0x11u8; 32]);
     let dest = TxDestinationEntry {
-        original: Vec::new(),
+        original: heapless::Vec::new(),
         amount: 12_345,
         spend_public_key: [0x33u8; 32],
         view_public_key: [0x22u8; 32],

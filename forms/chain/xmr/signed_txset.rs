@@ -605,7 +605,7 @@ mod tests {
     fn serialize_layout_anchors() {
         use crate::chain::xmr::unsigned_txset::RctConfig;
         let dest = TxDestinationEntry {
-            original: b"4Ae44ncK".to_vec(),
+            original: heapless::Vec::from_slice(b"4Ae44ncK").unwrap(),
             amount: 1000,
             spend_public_key: [1u8; 32],
             view_public_key: [2u8; 32],

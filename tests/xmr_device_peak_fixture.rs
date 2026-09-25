@@ -199,7 +199,7 @@ fn dice_seed() -> [u8; 64] {
 
 fn dest(amount: u64, pt: [u8; 32]) -> TxDestinationEntry {
     TxDestinationEntry {
-        original: vec![],
+        original: heapless::Vec::new(),
         amount,
         spend_public_key: pt,
         view_public_key: pt,
