@@ -13,7 +13,7 @@ jobs:
     name: Test + Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -64,7 +64,7 @@ jobs:
     name: Fuzz smoke (4 targets x 30s)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
       - uses: Swatinem/rust-cache@v2
@@ -79,7 +79,7 @@ jobs:
     name: Flux (clean-checkout shims + hosts + gates)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

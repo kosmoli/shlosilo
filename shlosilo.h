@@ -345,6 +345,32 @@
 #define TX_PHASES 11
 
 /**
+ * Protocol-hard: Monero fixed ring size (post-v13 CLSAG). Never tunable.
+ */
+#define RING_MAX 16
+
+/**
+ * Soft: additional tx keys per source/output (real traffic 1-2).
+ */
+#define EXTRA_KEYS_MAX 8
+
+/**
+ * Soft: `tx_extra` nonce payload bytes (payment IDs are 8/9B).
+ */
+#define TX_EXTRA_NONCE_MAX 32
+
+/**
+ * Soft: `tx_extra` additional pubkeys (subaddress sends; one per output).
+ */
+#define TX_EXTRA_PUBKEYS_MAX 16
+
+/**
+ * ClsagProof serialized cap: pseudo_out (32) + s[RING_MAX] (32*16) + c1 (32) + D (32).
+ * Layout per clsag.rs sign(): `pseudo_out(32) ‖ s[mixin+1] ‖ c1 ‖ D`.
+ */
+#define CLSAG_PROOF_MAX (32 * (RING_MAX + 3))
+
+/**
  * JSON-encoded view key string (Feather Wallet compatible, max ~256 characters)
  */
 #define JSON_MONERO_VIEWKEY_MAX_LEN 512
@@ -386,8 +412,8 @@
 typedef struct UrMultipartDecoder UrMultipartDecoder;
 
 /**
- * Stateful multipart encoder. `next_frame()` produces URI frame strings;
- * XMR re-scan scenarios use `next_cyclic_frame()`.
+ * Stateful multipart encoder. `next_frame_into()` produces URI frame text into a
+ * caller buffer; XMR re-scan scenarios use `next_cyclic_frame_into()`.
  */
 typedef struct UrMultipartEncoder UrMultipartEncoder;
 
