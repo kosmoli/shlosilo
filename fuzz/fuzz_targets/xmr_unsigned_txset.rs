@@ -14,17 +14,17 @@ use shlosilo::chain::xmr::unsigned_txset::{
 
 fuzz_target!(|data: &[u8]| {
     // result doesn't matter; only that there is no panic/abort and no over-budget allocation
-    let mut txes: [Option<TxConstructionData<'_>>; 4] = core::array::from_fn(|_| None);
-    let mut sources: [Option<TxSourceEntry>; 16] = core::array::from_fn(|_| None);
-    let mut sd = core::array::from_fn::<TxDestinationEntry, 16, _>(|_| {
+    let mut txes: [Option<TxConstructionData<'_>>; 2] = core::array::from_fn(|_| None);
+    let mut sources: [Option<TxSourceEntry>; 4] = core::array::from_fn(|_| None);
+    let mut sd = core::array::from_fn::<TxDestinationEntry, 4, _>(|_| {
         TxDestinationEntry::default()
     });
-    let mut sel = [0usize; 64];
-    let mut extra = [0u8; 4096];
-    let mut dests = core::array::from_fn::<TxDestinationEntry, 16, _>(|_| {
+    let mut sel = [0usize; 8];
+    let mut extra = [0u8; 512];
+    let mut dests = core::array::from_fn::<TxDestinationEntry, 4, _>(|_| {
         TxDestinationEntry::default()
     });
-    let mut sub = [0u32; 64];
+    let mut sub = [0u32; 8];
     let _ = deserialize_unsigned_tx(
         data,
         UnsignedTxPools {

@@ -516,6 +516,11 @@ fn read_tx_construction_data<'a>(
     // conservatively 100; in practice any malicious value is rejected by subsequent field reads
     // (sources_len=0 is legal: count=0 always passes the 0 > remaining/100 check, no false rejection)
     let sources_len = read_count(data, off, 100)?;
+    // Pool side: an input-feasible demand larger than the remaining pool is
+    // explicit overload Err, never a split_at_mut panic (fuzz 2026-09-25).
+    if sources_len > sources_rest.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
     let (chunk, rest) = core::mem::take(&mut *sources_rest).split_at_mut(sources_len);
     *sources_rest = rest;
     let mut sources = crate::types::SliceVec::new(chunk);
@@ -527,6 +532,11 @@ fn read_tx_construction_data<'a>(
     let change_dts = read_destination_entry(data, off)?;
     // TxDestinationEntry wire minimum = original_len(1) + varint amount(1) + 64 + 2 ≈ 68
     let splitted_dsts_len = read_count(data, off, 68)?;
+    // Pool side: an input-feasible demand larger than the remaining pool is
+    // explicit overload Err, never a split_at_mut panic (fuzz 2026-09-25).
+    if splitted_dsts_len > splitted_rest.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
     let (chunk, rest) = core::mem::take(&mut *splitted_rest).split_at_mut(splitted_dsts_len);
     *splitted_rest = rest;
     let mut splitted_dsts = crate::types::SliceVec::new(chunk);
@@ -536,6 +546,11 @@ fn read_tx_construction_data<'a>(
             .map_err(|_| err())?;
     }
     let selected_len = read_count(data, off, 1)?;
+    // Pool side: an input-feasible demand larger than the remaining pool is
+    // explicit overload Err, never a split_at_mut panic (fuzz 2026-09-25).
+    if selected_len > sel_rest.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
     let (chunk, rest) = core::mem::take(&mut *sel_rest).split_at_mut(selected_len);
     *sel_rest = rest;
     let mut selected_transfers = crate::types::SliceVec::new(chunk);
@@ -550,6 +565,11 @@ fn read_tx_construction_data<'a>(
     // exceed the remaining input — slicing must be Err, never a range panic).
     let extra_end = (*off).checked_add(extra_len).ok_or_else(err)?;
     let extra_src = data.get(*off..extra_end).ok_or_else(err)?;
+    // Pool side: an input-feasible demand larger than the remaining pool is
+    // explicit overload Err, never a split_at_mut panic (fuzz 2026-09-25).
+    if extra_len > extra_rest.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
     let (chunk, rest) = core::mem::take(&mut *extra_rest).split_at_mut(extra_len);
     *extra_rest = rest;
     chunk.copy_from_slice(extra_src);
@@ -561,6 +581,11 @@ fn read_tx_construction_data<'a>(
     let range_proof_type = read_varint(data, off)?;
     let bp_version = read_varint(data, off)?;
     let dests_len = read_count(data, off, 68)?;
+    // Pool side: an input-feasible demand larger than the remaining pool is
+    // explicit overload Err, never a split_at_mut panic (fuzz 2026-09-25).
+    if dests_len > dests_rest.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
     let (chunk, rest) = core::mem::take(&mut *dests_rest).split_at_mut(dests_len);
     *dests_rest = rest;
     let mut dests = crate::types::SliceVec::new(chunk);
@@ -571,6 +596,11 @@ fn read_tx_construction_data<'a>(
     }
     let subaddr_account = read_u32(data, off)?;
     let subaddr_indices_len = read_count(data, off, 1)?;
+    // Pool side: an input-feasible demand larger than the remaining pool is
+    // explicit overload Err, never a split_at_mut panic (fuzz 2026-09-25).
+    if subaddr_indices_len > subidx_rest.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
     let (chunk, rest) = core::mem::take(&mut *subidx_rest).split_at_mut(subaddr_indices_len);
     *subidx_rest = rest;
     let mut subaddr_indices = crate::types::SliceVec::new(chunk);
@@ -1274,6 +1304,40 @@ mod tests {
         for cut in 0..=wire.len() {
             let _ = deser_outcome!(&wire[..cut], Ok(_) => true);
         }
+    }
+
+    /// Pool-side overload contract (fuzz 2026-09-25): an input-feasible demand
+    /// larger than the remaining POOL must yield Err(BufferTooSmall) — never a
+    /// split_at_mut panic. subaddr_indices_len sits at body offset 89 here.
+    #[test]
+    fn a13_pool_over_demand_is_err() {
+        let mut body = min_tx_construction_data_wire();
+        body[89] = 1; // one subaddr index
+        body.push(0); // its varint
+        let wire = top_wire(1, &body);
+        let mut p_txes: [Option<TxConstructionData<'_>>; 1] = core::array::from_fn(|_| None);
+        let mut p_src: [Option<TxSourceEntry>; 0] = [];
+        let mut p_sd: [TxDestinationEntry; 0] = [];
+        let mut p_sel = [0usize; 0];
+        let mut p_ex = [0u8; 0];
+        let mut p_de: [TxDestinationEntry; 0] = [];
+        let mut p_su = [0u32; 0]; // demand is 1, pool is 0
+        let r = deserialize_unsigned_tx(
+            &wire,
+            UnsignedTxPools {
+                txes: &mut p_txes,
+                sources: &mut p_src,
+                splitted_dsts: &mut p_sd,
+                selected_transfers: &mut p_sel,
+                extra: &mut p_ex,
+                dests: &mut p_de,
+                subaddr_indices: &mut p_su,
+            },
+        );
+        assert!(matches!(
+            r,
+            Err(e) if e.kind == crate::error::ShlosiloErrorKind::BufferTooSmall
+        ));
     }
 
     /// 89B remaining (< the 90 lower bound) with count=1 must be rejected — the lower bound still applies.
