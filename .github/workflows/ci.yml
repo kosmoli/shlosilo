@@ -95,6 +95,10 @@ jobs:
       # error instead of a cryptic critical-section feature collision.
       # Audit #16 P2-02: this job *is* the clean-checkout rebuild - ignored
       # build products from a developer tree can never reach it.
+      # Z3.3b/c (2026-09-25): the C-ABI workspace refactor touched the FORGEBOX
+      # C side (smoke_task.c / product_task.c provision ws buffers). The staticlib
+      # check below never compiled that C code, so the full image build now runs
+      # here too - the C callers are CI-covered like sim_l3.c already was.
       - name: C-ABI keep table gate
         run: python3 scripts/gen_ffi_keep.py --check
       - name: C header sync gate (pinned cbindgen)
@@ -103,6 +107,12 @@ jobs:
           bash scripts/check_header.sh
       - name: forgebox staticlib (embedded, thumbv7em)
         run: cargo check -p shlosilo-forgebox --release --target thumbv7em-none-eabihf
+      - name: forgebox full image (MH1903 C host, smoke/product callers)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-none-eabi
+          make forgebox
+          ls -la flux/forgebox/build/forgebox.bin
       - name: host-sim (POSIX) staticlib + keep gate + link + run
         run: |
           make host-sim
