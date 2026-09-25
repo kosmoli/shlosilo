@@ -92,6 +92,7 @@ mod tests {
 // hex helper for the keccak256 tests (independent module)
 #[cfg(test)]
 mod hex {
+    #[cfg(test)] // Z3.5 collection: test-only convenience
     pub fn encode_to_string(bytes: &[u8]) -> alloc::string::String {
         const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
         let mut s = alloc::string::String::with_capacity(bytes.len() * 2);

@@ -62,7 +62,7 @@ impl core::fmt::Debug for Base58String {
 /// 3. Leading 0x00 bytes → leading '1' characters
 ///
 /// **v0.4.0 implementation**: modeled on bitcoinjs-lib / bitcoin core
-pub fn encode(data: &[u8]) -> Result<Base58String> {
+pub(crate) fn encode(data: &[u8]) -> Result<Base58String> {
     // 1. Count the number of leading 0x00 bytes
     let mut leading_zeros = 0;
     for &b in data.iter() {
@@ -136,7 +136,7 @@ pub fn encode(data: &[u8]) -> Result<Base58String> {
 /// base58check encode (with sha256d checksum)
 ///
 /// `base58(data || sha256(sha256(data))[:4])`
-pub fn encode_check(data: &[u8]) -> Result<Base58String> {
+pub(crate) fn encode_check(data: &[u8]) -> Result<Base58String> {
     let double_hash = sha256::hash_twice(data)?;
     let checksum = &double_hash[..4];
 

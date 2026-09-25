@@ -150,7 +150,7 @@ pub fn convertbits(
 
 /// bech32 encoding (segwit v0, spec=1)
 /// data is already 5-bit groups (each byte is a 5-bit value 0-31)
-pub fn encode(hrp: &str, data: &[u8]) -> Result<Bech32String> {
+pub(crate) fn encode(hrp: &str, data: &[u8]) -> Result<Bech32String> {
     if hrp.is_empty() || hrp.len() > 90 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -174,7 +174,7 @@ pub fn encode(hrp: &str, data: &[u8]) -> Result<Bech32String> {
 
 /// bech32m encoding (segwit v1+, spec=BECH32M_CONST)
 /// data is already 5-bit groups
-pub fn encode_m(hrp: &str, data: &[u8]) -> Result<Bech32String> {
+pub(crate) fn encode_m(hrp: &str, data: &[u8]) -> Result<Bech32String> {
     if hrp.is_empty() || hrp.len() > 90 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }

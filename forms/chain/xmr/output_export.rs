@@ -28,6 +28,7 @@
 
 extern crate alloc;
 
+#[cfg(test)] // Z3.5: only the test conveniences need Vec now
 use alloc::vec::Vec;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -237,6 +238,7 @@ pub fn serialize_key_images_into(images: &[([u8; 32], [u8; 64])], out: &mut [u8]
 
 /// Staging convenience (allocates). Production paths use `serialize_key_images_into`
 /// or the streaming `write_key_images`.
+#[cfg(test)] // Z3.5 collection: test-only convenience (into-core is the production face)
 pub fn serialize_key_images(images: &[([u8; 32], [u8; 64])]) -> Vec<u8> {
     let mut data = Vec::with_capacity(images.len() * KEY_IMAGE_RECORD_LEN);
     for (image, sig) in images {
@@ -271,6 +273,7 @@ pub fn deserialize_key_images_into(data: &[u8], out: &mut [([u8; 32], [u8; 64])]
 }
 
 /// Staging convenience (allocates). Production paths use `deserialize_key_images_into`.
+#[cfg(test)] // Z3.5 collection: test-only convenience
 pub fn deserialize_key_images(data: &[u8]) -> Vec<([u8; 32], [u8; 64])> {
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -282,15 +285,6 @@ pub fn deserialize_key_images(data: &[u8]) -> Vec<([u8; 32], [u8; 64])> {
         out.push((image, sig));
         i += KEY_IMAGE_RECORD_LEN;
     }
-    out
-}
-
-/// Export-side varint writer — isomorphic to keystone `write_varinteger` = Monero LEB128
-/// (Z2.4d-1 follow-up: it previously delegated to the BTC-style CompactSize `encode_varint`,
-/// contradicting its own doc; parse side `read_varint` was always LEB128).
-pub fn write_varint(value: u64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(10);
-    crate::chain::xmr::transaction::monero_encode_varint(&mut out, value);
     out
 }
 

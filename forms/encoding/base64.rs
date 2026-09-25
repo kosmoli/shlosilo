@@ -42,9 +42,11 @@ const BASE64_STD_TABLE: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// base64url character table (A-Z a-z 0-9 - _)
+#[cfg(test)] // Z3.5: only the test conveniences use the url-safe table
 const BASE64_URL_TABLE: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
+#[cfg(test)] // Z3.5: shared only by the test conveniences
 fn encode_table(data: &[u8], table: &[u8; 64]) -> heapless::String<BASE64_MAX_LEN> {
     let mut out = heapless::String::<BASE64_MAX_LEN>::new();
     let mut i = 0;
@@ -123,12 +125,14 @@ fn decode_table(s: &str, table: &[u8; 64]) -> Result<heapless::Vec<u8, 192>> {
 }
 
 /// base64 standard encoding (with padding)
+#[cfg(test)] // Z3.5 collection: test-only convenience
 pub fn encode_std(data: &[u8]) -> Result<Base64String> {
     let s = encode_table(data, BASE64_STD_TABLE);
     Ok(Base64String { bytes: s })
 }
 
 /// base64url encoding (no padding, `-` `_` replacing `+` `/`)
+#[cfg(test)] // Z3.5 collection: test-only convenience
 pub fn encode_url_safe(data: &[u8]) -> Result<Base64String> {
     let s = encode_table(data, BASE64_URL_TABLE);
     Ok(Base64String { bytes: s })

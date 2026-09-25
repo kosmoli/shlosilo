@@ -5,7 +5,9 @@
 //! checksum = CRC32 (IEEE, reflected) appended big-endian as 4 bytes.
 
 extern crate alloc;
+#[cfg(test)] // Z3.5: only the test conveniences return String/Vec now
 use alloc::string::String;
+#[cfg(test)]
 use alloc::vec::Vec;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -137,6 +139,7 @@ pub fn crc32(data: &[u8]) -> u32 {
 ///
 /// Test/legacy convenience (allocates). Production encoders stream through
 /// `encode_minimal_into` / `encode_minimal_into_str` — no intermediate buffer.
+#[cfg(test)] // Z3.5 collection: test-only convenience (into variants are the production face)
 pub fn encode_minimal(data: &[u8]) -> String {
     let checksum = crc32(data).to_be_bytes();
     let mut out = String::with_capacity((data.len() + 4) * 2);
@@ -214,6 +217,7 @@ pub fn decode_minimal_into(encoded: &str, out: &mut [u8]) -> Result<usize> {
 /// minimal style decoding: reverse lookup per two-letter pair + CRC32 verification
 ///
 /// Test/legacy convenience (allocates). Production decoders use `decode_minimal_into`.
+#[cfg(test)] // Z3.5 collection: test-only convenience
 pub fn decode_minimal(encoded: &str) -> Result<Vec<u8>> {
     let mut data = alloc::vec![0u8; encoded.len() / 2 + 2];
     let n = decode_minimal_into(encoded, &mut data)?;

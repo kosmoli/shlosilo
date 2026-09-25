@@ -62,6 +62,7 @@ pub fn encode_bytes(b: &[u8]) -> Vec<u8> {
 }
 
 /// Encode a text string
+#[cfg(test)] // Z3.5 collection: test-only convenience
 pub fn encode_text(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(9 + s.len());
     push_head(&mut out, 3, s.len() as u64);
@@ -91,6 +92,7 @@ pub fn encode_map(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
 }
 
 /// Encode a negative int (-1 - n)
+#[cfg(test)] // Z3.5 collection: test-only convenience
 pub fn encode_neg(n: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(9);
     push_head(&mut out, 1, n);

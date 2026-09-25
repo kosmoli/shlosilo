@@ -230,6 +230,7 @@ impl Part {
 
     /// Test-only convenience (allocates). Production frame building uses `to_cbor_into`.
     #[cfg(test)]
+    #[cfg(test)] // Z3.5 collection: test-only convenience
     pub fn to_cbor(&self) -> Vec<u8> {
         use crate::encoding::cbor as c;
         let mut out = Vec::new();

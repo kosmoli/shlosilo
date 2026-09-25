@@ -42,6 +42,7 @@ pub fn decode_into(uri: &str, out: &mut [u8]) -> Result<usize> {
 /// Parse PSBT raw bytes out of `ur:crypto-psbt/...`
 ///
 /// Test/legacy convenience (allocates). Production paths use `decode_into`.
+#[cfg(test)] // Z3.5 collection: test-only convenience (decode_into is the production face)
 pub fn decode(uri: &str) -> Result<alloc::vec::Vec<u8>> {
     let mut out = alloc::vec![0u8; crate::ur::ur_encode::UR_PAYLOAD_MAX_LEN];
     let n = decode_into(uri, &mut out)?;
