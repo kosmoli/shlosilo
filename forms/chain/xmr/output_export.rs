@@ -214,6 +214,29 @@ impl ExportedTransferDetails<'_> {
 pub const KEY_IMAGE_RECORD_LEN: usize = 96;
 
 /// Serialize `[(image, sig)]` — isomorphic to keystone `KeyImages::to_bytes`.
+/// Z2.4d-5: streaming record writer (any `Sink`) — production streams the records
+/// straight into the export keystream with no wire buffer at all.
+pub fn write_key_images<S: crate::types::push::Sink>(
+    images: &[([u8; 32], [u8; 64])],
+    out: &mut S,
+) -> Result<()> {
+    for (image, sig) in images {
+        out.put(image)?;
+        out.put(sig)?;
+    }
+    Ok(())
+}
+
+/// Serialize into a caller buffer; returns bytes written (Z2.4d-5 core).
+pub fn serialize_key_images_into(images: &[([u8; 32], [u8; 64])], out: &mut [u8]) -> Result<usize> {
+    use crate::types::push::SinkCursor;
+    let mut w = SinkCursor::new(out);
+    write_key_images(images, &mut w)?;
+    Ok(w.pos())
+}
+
+/// Staging convenience (allocates). Production paths use `serialize_key_images_into`
+/// or the streaming `write_key_images`.
 pub fn serialize_key_images(images: &[([u8; 32], [u8; 64])]) -> Vec<u8> {
     let mut data = Vec::with_capacity(images.len() * KEY_IMAGE_RECORD_LEN);
     for (image, sig) in images {
@@ -224,6 +247,30 @@ pub fn serialize_key_images(images: &[([u8; 32], [u8; 64])]) -> Vec<u8> {
 }
 
 /// Deserialize a stream of 96B records (aligned with keystone `From<&Vec<u8>>`: a trailing segment shorter than 96B is dropped).
+/// Parse 96B records into caller storage (Z2.4d-5 core); returns record count.
+/// Trailing remnant shorter than one record is dropped (keystone `From<&Vec<u8>>`
+/// semantics, unchanged).
+pub fn deserialize_key_images_into(data: &[u8], out: &mut [([u8; 32], [u8; 64])]) -> Result<usize> {
+    let mut n = 0usize;
+    let mut i = 0usize;
+    while (data.len() - i) >= KEY_IMAGE_RECORD_LEN {
+        if n >= out.len() {
+            return Err(crate::error::ShlosiloError::new(
+                crate::error::ShlosiloErrorKind::BufferTooSmall,
+            ));
+        }
+        let mut image = [0u8; 32];
+        let mut sig = [0u8; 64];
+        image.copy_from_slice(&data[i..i + 32]);
+        sig.copy_from_slice(&data[i + 32..i + KEY_IMAGE_RECORD_LEN]);
+        out[n] = (image, sig);
+        n += 1;
+        i += KEY_IMAGE_RECORD_LEN;
+    }
+    Ok(n)
+}
+
+/// Staging convenience (allocates). Production paths use `deserialize_key_images_into`.
 pub fn deserialize_key_images(data: &[u8]) -> Vec<([u8; 32], [u8; 64])> {
     let mut out = Vec::new();
     let mut i = 0usize;

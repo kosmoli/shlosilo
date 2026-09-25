@@ -24,9 +24,7 @@ use monero_ed25519::Point;
 use rand_core::{CryptoRng, RngCore};
 use zeroize::Zeroizing;
 
-use crate::chain::xmr::output_export::{
-    serialize_key_images, ExportedTransferDetail, ExportedTransferDetails, KEY_IMAGE_RECORD_LEN,
-};
+use crate::chain::xmr::output_export::{ExportedTransferDetail, ExportedTransferDetails};
 use crate::chain::xmr::unsigned_txset::check_monero_signature;
 use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -53,6 +51,22 @@ pub fn decrypt_export_payload(
     magic: &[u8],
     view_sk: &[u8; 32],
 ) -> Result<ExportPayload> {
+    // Z2.4d-5 staging convenience (allocates); core is `decrypt_export_payload_into`.
+    let mut scratch = zeroize::Zeroizing::new(alloc::vec![0u8; data.len()]);
+    let (pk1, pk2, n) = decrypt_export_payload_into(data, magic, view_sk, &mut scratch)?;
+    Ok((pk1, pk2, zeroize::Zeroizing::new(scratch[..n].to_vec())))
+}
+
+/// Fused core (Z2.4d-5): decrypts into caller storage. `scratch[..n]` is the payload
+/// (request details — same secrecy class as `details_out`, not secret); the scratch
+/// TAIL is wiped by forms before return. Signature verified first (anti-tamper).
+pub fn decrypt_export_payload_into(
+    data: &[u8],
+    magic: &[u8],
+    view_sk: &[u8; 32],
+    scratch: &mut [u8],
+) -> Result<([u8; 32], [u8; 32], usize)> {
+    use zeroize::Zeroize;
     if data.len() < magic.len() + NONCE_LEN + SIG_LEN {
         return Err(err());
     }
@@ -74,14 +88,20 @@ pub fn decrypt_export_payload(
         return Err(err());
     }
 
-    // 2. ChaCha20-Legacy decryption
+    // 2. ChaCha20-Legacy decryption into the caller scratch
     // Z2.2 (2026-09-24): ChaCha key material zeroized on drop.
     let key = zeroize::Zeroizing::new(cuprate_cryptonight::cryptonight_hash_v0(view_sk));
     let mut cipher =
         chacha20::ChaCha20Legacy::new_from_slices(key.as_slice(), nonce).map_err(|_| err())?;
-    // Z2.1 S6 (2026-09-24): decrypted plaintext — zeroized on drop.
-    let mut plain = zeroize::Zeroizing::new(raw_data[NONCE_LEN..].to_vec());
-    cipher.apply_keystream(&mut plain);
+    let ct = &raw_data[NONCE_LEN..];
+    if scratch.len() < ct.len() {
+        return Err(crate::error::ShlosiloError::new(
+            crate::error::ShlosiloErrorKind::BufferTooSmall,
+        ));
+    }
+    let plain: &mut [u8] = &mut scratch[..ct.len()];
+    plain.copy_from_slice(ct);
+    cipher.apply_keystream(plain);
 
     // 3. key-image magic has a leading u32 LE 0; both export magics carry pk1||pk2
     let start = if magic == KEY_IMAGE_EXPORT_MAGIC {
@@ -90,17 +110,25 @@ pub fn decrypt_export_payload(
         0
     };
     if plain.len() < start + PUBKEY_LEN * 2 {
+        scratch[..ct.len()].zeroize();
         return Err(err());
     }
     let mut pk1 = [0u8; 32];
     let mut pk2 = [0u8; 32];
     pk1.copy_from_slice(&plain[start..start + PUBKEY_LEN]);
     pk2.copy_from_slice(&plain[start + PUBKEY_LEN..start + PUBKEY_LEN * 2]);
-    let payload = zeroize::Zeroizing::new(plain[start + PUBKEY_LEN * 2..].to_vec());
-    Ok((pk1, pk2, payload))
+    let payload_start = start + PUBKEY_LEN * 2;
+    let payload_len = plain.len() - payload_start;
+    scratch.copy_within(payload_start..payload_start + payload_len, 0);
+    // forms-internal duty: everything beyond the payload is wiped before return.
+    scratch[payload_len..].zeroize();
+    Ok((pk1, pk2, payload_len))
 }
 
 /// Encrypt an export-class payload (aligned with keystone `encrypt_data_with_pvk`).
+/// Z2.4d-5: staging convenience over `encrypt_export_payload_into`; test-only —
+/// the production path calls the into-core directly.
+#[cfg(test)]
 fn encrypt_export_payload<R: RngCore + CryptoRng>(
     magic: &[u8],
     view_sk: &[u8; 32],
@@ -109,39 +137,58 @@ fn encrypt_export_payload<R: RngCore + CryptoRng>(
     data: &[u8],
     rng: &mut R,
 ) -> Result<Vec<u8>> {
+    // Z2.4d-5 staging convenience (allocates); core is `encrypt_export_payload_into`.
+    let mut out = alloc::vec![0u8; magic.len() + NONCE_LEN + 4 + 64 + data.len() + SIG_LEN];
+    let n = encrypt_export_payload_into(magic, view_sk, spend_pub, view_pub, data, rng, &mut out)?;
+    out.truncate(n);
+    Ok(out)
+}
+
+/// Fused core (Z2.4d-5): writes `magic ‖ nonce ‖ ChaCha(sections) ‖ sig` straight
+/// into `out` — the plaintext sections stream through the keystream and never
+/// materialize (same shape as `SignedTxSet::encrypt_signed_txset_into`). Byte-identical
+/// to the former buffer-based body under the same RNG (nonce draw first, then the
+/// signature k). The output is ciphertext (not sensitive).
+pub fn encrypt_export_payload_into<R: RngCore + CryptoRng>(
+    magic: &[u8],
+    view_sk: &[u8; 32],
+    spend_pub: &[u8; 32],
+    view_pub: &[u8; 32],
+    data: &[u8],
+    rng: &mut R,
+    out: &mut [u8],
+) -> Result<usize> {
+    use crate::types::push::{push_slice, EncryptingSink, Sink as _, SinkCursor};
     // Z2.2 (2026-09-24): ChaCha key material zeroized on drop.
     let key = zeroize::Zeroizing::new(cuprate_cryptonight::cryptonight_hash_v0(view_sk));
     let nonce_num = rng.next_u64().to_be_bytes();
-    let mut cipher =
+    let cipher =
         chacha20::ChaCha20Legacy::new_from_slices(key.as_slice(), &nonce_num).map_err(|_| err())?;
-
-    // Plaintext sections: key-image magic has a leading u32 LE 0; export magic carries pk1||pk2
-    let mut buffer = Vec::with_capacity(4 + 64 + data.len());
-    if magic == KEY_IMAGE_EXPORT_MAGIC {
-        buffer.extend_from_slice(&0u32.to_le_bytes());
-    }
-    buffer.extend_from_slice(spend_pub);
-    buffer.extend_from_slice(view_pub);
-    buffer.extend_from_slice(data);
-    cipher.apply_keystream(&mut buffer);
 
     // Signature: Monero Schnorr over keccak256(nonce || ciphertext), key = view_sk
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
-    let v_point = ED25519_BASEPOINT_TABLE * &v_scalar;
-    debug_assert_eq!(v_point.compress().to_bytes(), *view_pub);
 
-    let mut signed = Vec::with_capacity(NONCE_LEN + buffer.len());
-    signed.extend_from_slice(&nonce_num);
-    signed.extend_from_slice(&buffer);
-    let msg_hash = keccak256::hash(&signed)?;
+    // stage 1: magic ‖ nonce ‖ ciphertext — sections stream through the keystream
+    let ct_end = {
+        let mut w = SinkCursor::new(out);
+        w.put(magic)?;
+        w.put(&nonce_num)?;
+        let mut enc = EncryptingSink::new(w, cipher);
+        // Plaintext sections: key-image magic has a leading u32 LE 0; export magic carries pk1||pk2
+        if magic == KEY_IMAGE_EXPORT_MAGIC {
+            enc.put(&0u32.to_le_bytes())?;
+        }
+        enc.put(spend_pub)?;
+        enc.put(view_pub)?;
+        enc.put(data)?;
+        enc.pos()
+    };
+    // stage 2: sig over keccak256(nonce ‖ ciphertext) — contiguous in `out` after the magic
+    let msg_hash = keccak256::hash(&out[magic.len()..ct_end])?;
     let sig = generate_monero_signature(&msg_hash, &v_scalar, rng)?;
-    let _ = v_point; // view_pub consistency is guaranteed by the caller
-
-    let mut out = Vec::with_capacity(magic.len() + signed.len() + SIG_LEN);
-    out.extend_from_slice(magic);
-    out.extend_from_slice(&signed);
-    out.extend_from_slice(&sig);
-    Ok(out)
+    let mut n = 0usize;
+    push_slice(&mut out[ct_end..], &mut n, &sig)?;
+    Ok(ct_end + n)
 }
 
 /// Monero Schnorr generation side (aligned with keystone `generate_signature`):
@@ -160,10 +207,11 @@ pub fn generate_monero_signature<R: RngCore + CryptoRng>(
         let kb = (ED25519_BASEPOINT_TABLE * &k).compress().to_bytes();
         let pub_b = (ED25519_BASEPOINT_TABLE * sec).compress().to_bytes();
 
-        let mut data = Vec::with_capacity(32 + 32 + 32);
-        data.extend_from_slice(hash);
-        data.extend_from_slice(&pub_b);
-        data.extend_from_slice(&kb);
+        // Z2.4d-5: stack buffer (was a 96B Vec on the signing path)
+        let mut data = [0u8; 96];
+        data[..32].copy_from_slice(hash);
+        data[32..64].copy_from_slice(&pub_b);
+        data[64..].copy_from_slice(&kb);
         let c_bytes = crate::chain::xmr::subaddress::hash_to_scalar(&data)?;
         let c = Scalar::from_bytes_mod_order(c_bytes);
         if c == Scalar::ZERO {
@@ -204,10 +252,11 @@ fn generate_key_image_signature<R: RngCore + CryptoRng>(
     let kb = (ED25519_BASEPOINT_TABLE * &k).compress().to_bytes();
     let khp = (k * i_point).compress().to_bytes();
 
-    let mut buff = Vec::with_capacity(32 + 64);
-    buff.extend_from_slice(prefix_hash);
-    buff.extend_from_slice(&kb);
-    buff.extend_from_slice(&khp);
+    // Z2.4d-5: stack buffer (was a 96B Vec on the signing path)
+    let mut buff = [0u8; 96];
+    buff[..32].copy_from_slice(prefix_hash);
+    buff[32..64].copy_from_slice(&kb);
+    buff[64..].copy_from_slice(&khp);
     let h_bytes = crate::chain::xmr::subaddress::hash_to_scalar(&buff)?;
     let h = Scalar::from_bytes_mod_order(h_bytes);
     let c = h;
@@ -231,8 +280,46 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     details_out: &mut [ExportedTransferDetail],
     rng: &mut R,
 ) -> Result<Vec<u8>> {
-    // 1. Decrypt the OUTPUT_EXPORT payload, validate pk1/pk2 ownership
-    let (pk1, pk2, plain) = decrypt_export_payload(request_payload, OUTPUT_EXPORT_MAGIC, view_sk)?;
+    // Z2.4d-5 staging convenience (allocates); core is `generate_key_image_export_into`.
+    let mut scratch = alloc::vec![0u8; request_payload.len().max(1024)];
+    let mut records_out: alloc::vec::Vec<([u8; 32], [u8; 64])> = alloc::vec::Vec::new();
+    records_out.resize(details_out.len().max(1), ([0u8; 32], [0u8; 64]));
+    let mut out = alloc::vec![0u8; 8192];
+    let n = generate_key_image_export_into(
+        view_sk,
+        spend_sk,
+        request_payload,
+        &mut scratch,
+        details_out,
+        &mut records_out,
+        &mut out,
+        rng,
+    )?;
+    out.truncate(n);
+    Ok(out)
+}
+
+/// Fused core (Z2.4d-5): request decrypt→parse→key images→response encrypt in one
+/// pass. `scratch` is storage only — the request plaintext transient is wiped by
+/// forms before return (same contract as `decrypt_and_parse_unsigned_tx`), then
+/// reused to stage the response records (public data) for the keystream sections.
+/// `records_out` holds the computed (image, sig) pairs; `out` receives ciphertext.
+#[allow(clippy::too_many_arguments)]
+pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
+    view_sk: &[u8; 32],
+    spend_sk: &[u8; 32],
+    request_payload: &[u8],
+    scratch: &mut [u8],
+    details_out: &mut [ExportedTransferDetail],
+    records_out: &mut [([u8; 32], [u8; 64])],
+    out: &mut [u8],
+    rng: &mut R,
+) -> Result<usize> {
+    use crate::types::push::SinkCursor;
+    use zeroize::Zeroize;
+    // 1. Decrypt the OUTPUT_EXPORT payload into the scratch, validate pk1/pk2 ownership
+    let (pk1, pk2, req_len) =
+        decrypt_export_payload_into(request_payload, OUTPUT_EXPORT_MAGIC, view_sk, scratch)?;
 
     let spend_sk_scalar = Scalar::from_bytes_mod_order(*spend_sk);
     let spend_pub = (ED25519_BASEPOINT_TABLE * &spend_sk_scalar)
@@ -247,26 +334,37 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     }
 
     // 2. Parse the outputs (Z2.3 C3b-1: details list into caller storage)
-    let details = ExportedTransferDetails::from_bytes(&plain, details_out)?;
+    let details = ExportedTransferDetails::from_bytes(&scratch[..req_len], details_out)?;
+    // request plaintext transient done with — wiped before anything else happens
+    scratch.zeroize();
 
-    // 3. Compute key image + accompanying signature per output
+    // 3. Compute key image + accompanying signature per output into the caller slot
     let spend_sk_z = Zeroizing::new(*spend_sk);
     let _ = spend_sk_z; // Zeroizing lifetime pinned to end of function
-    let mut records = Vec::with_capacity(details.details.len() * KEY_IMAGE_RECORD_LEN);
-    for detail in details.details.iter() {
+    let count = details.details.len();
+    if count > records_out.len() {
+        return Err(crate::error::ShlosiloError::new(
+            crate::error::ShlosiloErrorKind::BufferTooSmall,
+        ));
+    }
+    for (i, detail) in details.details.iter().enumerate() {
         let rec = compute_key_image_with_signature(view_sk, &spend_sk_scalar, detail, rng)?;
-        records.push(rec);
+        records_out[i] = rec;
     }
 
-    // 4. KEY_IMAGE_EXPORT_MAGIC encryption
-    let wire = serialize_key_images(&records);
-    encrypt_export_payload(
+    // 4. KEY_IMAGE_EXPORT_MAGIC encryption — records stream through the keystream
+    //    (wire staged in the same scratch; it holds public data only).
+    let mut w = SinkCursor::new(scratch);
+    crate::chain::xmr::output_export::write_key_images(&records_out[..count], &mut w)?;
+    let wire_len = w.pos();
+    encrypt_export_payload_into(
         KEY_IMAGE_EXPORT_MAGIC,
         view_sk,
         &spend_pub,
         &view_pub,
-        &wire,
+        &scratch[..wire_len],
         rng,
+        out,
     )
 }
 
@@ -458,6 +556,39 @@ mod tests {
         let (_, _, resp_plain) =
             decrypt_export_payload(&enc_resp, KEY_IMAGE_EXPORT_MAGIC, &view_sk).unwrap();
         let records = deserialize_key_images(&resp_plain);
+
+        // Z2.4d-5 twin: into-core == convenience under the SAME rng seed (self-contained)
+        let mut det_c: [ExportedTransferDetail; 4] =
+            core::array::from_fn(|_| ExportedTransferDetail::default());
+        let mut rng_c = rng_from(0xC0);
+        let conv = generate_key_image_export(&view_sk, &spend_sk, &enc_req, &mut det_c, &mut rng_c)
+            .unwrap();
+        {
+            let mut scratch2 = alloc::vec![0u8; enc_req.len() + 1024];
+            let mut details2: [ExportedTransferDetail; 4] =
+                core::array::from_fn(|_| ExportedTransferDetail::default());
+            let mut recs2: alloc::vec::Vec<([u8; 32], [u8; 64])> =
+                alloc::vec![( [0u8; 32], [0u8; 64] ); 4];
+            let mut rng2 = rng_from(0xC0);
+            let mut out2 = alloc::vec![0u8; 8192];
+            let n2 = generate_key_image_export_into(
+                &view_sk,
+                &spend_sk,
+                &enc_req,
+                &mut scratch2,
+                &mut details2,
+                &mut recs2,
+                &mut out2,
+                &mut rng2,
+            )
+            .unwrap();
+            // the e2e above used a seeded rng as well — same seed, same bytes
+            assert_eq!(
+                &out2[..n2],
+                &conv[..],
+                "generate_key_image_export_into != convenience"
+            );
+        }
         assert_eq!(records.len(), 1);
 
         // Independent key image recomputation cross-check
@@ -548,5 +679,64 @@ mod tests {
         (0..h.len() / 2)
             .map(|i| u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).unwrap())
             .collect()
+    }
+
+    /// Z2.4d-5 twins: into-cores must be byte-identical to the conveniences, and the
+    /// decrypt core must wipe the scratch tail (sentinel).
+    #[test]
+    fn export_cores_match_conveniences() {
+        let view_sk = [0x11u8; 32];
+        let spend_pub = [0x22u8; 32];
+        let view_pub = {
+            use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+            use curve25519_dalek::scalar::Scalar;
+            (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(view_sk))
+                .compress()
+                .to_bytes()
+        };
+        let data = [0xABu8; 40];
+
+        // encrypt twin
+        let mut r1 = rng_from(0x51);
+        let conv = encrypt_export_payload(
+            KEY_IMAGE_EXPORT_MAGIC,
+            &view_sk,
+            &spend_pub,
+            &view_pub,
+            &data,
+            &mut r1,
+        )
+        .unwrap();
+        let mut r2 = rng_from(0x51);
+        let mut buf = alloc::vec![0u8; 4096];
+        let n = encrypt_export_payload_into(
+            KEY_IMAGE_EXPORT_MAGIC,
+            &view_sk,
+            &spend_pub,
+            &view_pub,
+            &data,
+            &mut r2,
+            &mut buf,
+        )
+        .unwrap();
+        assert_eq!(&buf[..n], &conv[..], "encrypt into != convenience");
+
+        // decrypt twin + tail wipe
+        let mut scratch = alloc::vec![0xEEu8; 1024];
+        let (pk1, pk2, plen) =
+            decrypt_export_payload_into(&conv, KEY_IMAGE_EXPORT_MAGIC, &view_sk, &mut scratch)
+                .unwrap();
+        assert_eq!(pk1, spend_pub);
+        assert_eq!(pk2, view_pub);
+        assert_eq!(&scratch[..plen], &data[..]);
+        assert!(
+            scratch[plen..].iter().all(|&b| b == 0),
+            "decrypt core must wipe the scratch tail (forms-internal zeroization duty)"
+        );
+        let (cpk1, cpk2, cplain) =
+            decrypt_export_payload(&conv, KEY_IMAGE_EXPORT_MAGIC, &view_sk).unwrap();
+        assert_eq!(cpk1, pk1);
+        assert_eq!(cpk2, pk2);
+        assert_eq!(&cplain[..], &data[..], "decrypt into != convenience");
     }
 }

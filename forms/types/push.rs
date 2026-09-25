@@ -85,6 +85,38 @@ impl Sink for SinkCursor<'_> {
     }
 }
 
+/// Z2.4d-3 encrypting sink: each `put` XORs through the ChaCha20-Legacy keystream
+/// before forwarding, so the serialized plaintext NEVER materializes as a buffer —
+/// the secret bytes live only inside the model's own owners (SecretBytes/Zeroizing)
+/// plus a per-chunk stack scratch that is itself Zeroizing.
+pub struct EncryptingSink<'a> {
+    inner: SinkCursor<'a>,
+    cipher: chacha20::ChaCha20Legacy,
+}
+
+impl<'a> EncryptingSink<'a> {
+    pub fn new(inner: SinkCursor<'a>, cipher: chacha20::ChaCha20Legacy) -> Self {
+        Self { inner, cipher }
+    }
+
+    pub fn pos(&self) -> usize {
+        self.inner.pos()
+    }
+}
+
+impl Sink for EncryptingSink<'_> {
+    fn put(&mut self, bytes: &[u8]) -> Result<()> {
+        use chacha20::cipher::StreamCipher;
+        let mut scratch = zeroize::Zeroizing::new([0u8; 64]);
+        for chunk in bytes.chunks(64) {
+            scratch[..chunk.len()].copy_from_slice(chunk);
+            self.cipher.apply_keystream(&mut scratch[..chunk.len()]);
+            self.inner.put(&scratch[..chunk.len()])?;
+        }
+        Ok(())
+    }
+}
+
 /// Byte-counting sink (Z2.4d-3 length pre-pass): counts without storing,
 /// infallible. Lets callers size buffers exactly without materializing the stream.
 pub struct CountSink(pub usize);

@@ -36,7 +36,7 @@ fn err() -> ShlosiloError {
 
 // Z2.4d-2: writers are generic over `Sink` — one implementation feeds the
 // zero-heap cursor backend (caller buffer) or the Vec staging backend.
-use crate::types::push::Sink;
+use crate::types::push::{EncryptingSink, Sink};
 
 fn put_varint<S: Sink>(out: &mut S, n: u64) -> Result<()> {
     let mut tmp = [0u8; 10];
@@ -347,38 +347,6 @@ pub fn monero_sign(
 }
 
 // ============ Encrypted output ============
-
-/// Z2.4d-3 encrypting sink: each `put` XORs through the ChaCha20-Legacy keystream
-/// before forwarding, so the serialized plaintext NEVER materializes as a buffer —
-/// the secret bytes live only inside the model's own owners (SecretBytes/Zeroizing)
-/// plus a per-chunk stack scratch that is itself Zeroizing.
-struct EncryptingSink<'a> {
-    inner: crate::types::push::SinkCursor<'a>,
-    cipher: chacha20::ChaCha20Legacy,
-}
-
-impl<'a> EncryptingSink<'a> {
-    fn new(inner: crate::types::push::SinkCursor<'a>, cipher: chacha20::ChaCha20Legacy) -> Self {
-        Self { inner, cipher }
-    }
-
-    fn pos(&self) -> usize {
-        self.inner.pos()
-    }
-}
-
-impl crate::types::push::Sink for EncryptingSink<'_> {
-    fn put(&mut self, bytes: &[u8]) -> Result<()> {
-        use chacha20::cipher::StreamCipher;
-        let mut scratch = zeroize::Zeroizing::new([0u8; 64]);
-        for chunk in bytes.chunks(64) {
-            scratch[..chunk.len()].copy_from_slice(chunk);
-            self.cipher.apply_keystream(&mut scratch[..chunk.len()]);
-            self.inner.put(&scratch[..chunk.len()])?;
-        }
-        Ok(())
-    }
-}
 
 impl SignedTxSet<'_> {
     /// Fused serialize+encrypt (Z2.4d-3): writes
