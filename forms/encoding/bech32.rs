@@ -197,7 +197,31 @@ pub fn encode_m(hrp: &str, data: &[u8]) -> Result<Bech32String> {
 }
 
 /// bech32 / bech32m generic decoding (accepts either variant)
-pub fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8, 128>)> {
+/// Z3.4 (T-05 frozen shape): bech32 decode into caller buffers
+/// (hrp + witness program). Returns (hrp_len, data_len); over-cap raises
+/// EncodingBufferOverflow (never truncation).
+pub fn decode_into(s: &str, hrp_out: &mut [u8], data_out: &mut [u8]) -> Result<(usize, usize)> {
+    let (hrp, data) = decode(s)?;
+    if hrp_out.len() < hrp.len() || data_out.len() < data.len() {
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::EncodingBufferOverflow,
+        ));
+    }
+    hrp_out[..hrp.len()].copy_from_slice(hrp.as_bytes());
+    data_out[..data.len()].copy_from_slice(&data);
+    Ok((hrp.len(), data.len()))
+}
+
+/// Z3.4 shape pin.
+#[cfg(test)]
+mod t05_shape {
+    use super::*;
+    type DecodeInto = fn(&str, &mut [u8], &mut [u8]) -> Result<(usize, usize)>;
+    const _: DecodeInto = decode_into;
+}
+
+/// Internal/test shape — the frozen PUBLIC shape is [`decode_into`].
+pub(crate) fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8, 128>)> {
     if s.is_empty() || s.len() > 90 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }

@@ -135,7 +135,20 @@ pub fn encode_url_safe(data: &[u8]) -> Result<Base64String> {
 }
 
 /// base64 decoding
-pub fn decode_std(s: &str) -> Result<heapless::Vec<u8, 192>> {
+/// Z3.4 (T-05 frozen shape): standard-base64 decode into a caller buffer.
+pub fn decode_std_into(s: &str, out: &mut [u8]) -> Result<usize> {
+    let decoded = decode_std(s)?;
+    if out.len() < decoded.len() {
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::EncodingBufferOverflow,
+        ));
+    }
+    out[..decoded.len()].copy_from_slice(&decoded);
+    Ok(decoded.len())
+}
+
+/// Internal/test shape — the frozen PUBLIC shape is [`decode_std_into`].
+pub(crate) fn decode_std(s: &str) -> Result<heapless::Vec<u8, 192>> {
     decode_table(s, BASE64_STD_TABLE)
 }
 

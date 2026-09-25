@@ -107,7 +107,29 @@ pub fn from_der(der: &[u8]) -> Result<EcdsaSignature> {
 ///
 /// DER encoding format: 0x30 || total_len || 0x02 || r_len || r || 0x02 || s_len || s
 /// Length 70-72 bytes (r/s variable)
-pub fn to_der(sig: &EcdsaSignature) -> Result<heapless::Vec<u8, 72>> {
+/// Z3.4 (T-05 frozen shape): DER-encode the signature into a caller buffer
+/// (72B cap covers the 70-72B DER range). Over-cap raises
+/// EncodingBufferOverflow (never truncation).
+pub fn to_der_into(sig: &EcdsaSignature, out: &mut [u8]) -> Result<usize> {
+    let der = to_der(sig)?;
+    if out.len() < der.len() {
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::EncodingBufferOverflow,
+        ));
+    }
+    out[..der.len()].copy_from_slice(&der);
+    Ok(der.len())
+}
+
+/// Z3.4 shape pin.
+#[cfg(test)]
+mod t05_shape {
+    use super::*;
+    const _: fn(&EcdsaSignature, &mut [u8]) -> Result<usize> = to_der_into;
+}
+
+/// Internal/test shape — the frozen PUBLIC shape is [`to_der_into`].
+pub(crate) fn to_der(sig: &EcdsaSignature) -> Result<heapless::Vec<u8, 72>> {
     // reassemble the internal 64 bytes (r || s) into a k256::Signature
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(sig.bytes.as_ref());

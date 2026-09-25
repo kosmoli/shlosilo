@@ -154,7 +154,31 @@ pub fn encode_check(data: &[u8]) -> Result<Base58String> {
 /// base58 decode
 ///
 /// Algorithm: treat the string as a base58 number, working (low byte first) = working * 58 + n
-pub fn decode(s: &str) -> Result<heapless::Vec<u8, 192>> {
+/// Z3.4 (T-05 frozen shape): base58 decode into a caller buffer.
+/// Over-cap output raises EncodingBufferOverflow (never truncation).
+pub fn decode_into(s: &str, out: &mut [u8]) -> Result<usize> {
+    let decoded = decode(s)?;
+    if out.len() < decoded.len() {
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::EncodingBufferOverflow,
+        ));
+    }
+    out[..decoded.len()].copy_from_slice(&decoded);
+    Ok(decoded.len())
+}
+
+/// T-05 shape pins (Z3.4): the public forms are `*_into`; these pins freeze
+/// the signatures against drift.
+#[cfg(test)]
+mod t05_shape {
+    use super::*;
+    const _: fn(&str, &mut [u8]) -> Result<usize> = decode_into;
+    const _: fn(&str, &mut [u8]) -> Result<usize> = decode_check_into;
+}
+
+/// Internal/test shape (heapless working buffer — allowed internally per the
+/// T-05 disposition; the frozen PUBLIC shape is [`decode_into`]).
+pub(crate) fn decode(s: &str) -> Result<heapless::Vec<u8, 192>> {
     let inv = base58_inverse();
 
     let mut leading_ones = 0;
@@ -204,7 +228,20 @@ pub fn decode(s: &str) -> Result<heapless::Vec<u8, 192>> {
 }
 
 /// base58check decode (verifies the checksum)
-pub fn decode_check(s: &str) -> Result<heapless::Vec<u8, 128>> {
+/// Z3.4 (T-05 frozen shape): base58 decode+checksum into a caller buffer.
+pub fn decode_check_into(s: &str, out: &mut [u8]) -> Result<usize> {
+    let decoded = decode_check(s)?;
+    if out.len() < decoded.len() {
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::EncodingBufferOverflow,
+        ));
+    }
+    out[..decoded.len()].copy_from_slice(&decoded);
+    Ok(decoded.len())
+}
+
+/// Internal/test shape — the frozen PUBLIC shape is [`decode_check_into`].
+pub(crate) fn decode_check(s: &str) -> Result<heapless::Vec<u8, 128>> {
     let decoded = decode(s)?;
     if decoded.len() < 4 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
