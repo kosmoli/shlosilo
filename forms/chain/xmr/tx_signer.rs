@@ -309,6 +309,10 @@ fn payment_id_xor(ecdh_view_times_tx_pub: &[u8; 32]) -> [u8; 8] {
 /// - rng: randomness source (L3 injected; on device = TRNG)
 ///
 /// **Output**: fully signed Transaction (wire format ready to use)
+/// Z3.2b: per-tx wire slot cap (matches business `TX_BYTES_SLOT_MAX`; the
+/// real monerod wire is ~2KiB single-input, cap 16KiB covers multi-input).
+pub const TX_WIRE_SLOT_MAX: usize = 16 * 1024;
+
 pub fn sign_tx_from_construction<R: RngCore + CryptoRng + Clone>(
     tx_data: &TxConstructionData,
     spend_sec: &[u8; 32],
@@ -329,6 +333,9 @@ pub fn sign_tx_from_construction<R: RngCore + CryptoRng + Clone>(
 /// Core signing (§B.5 decision): tx_key r is injected by the caller (purpose subdomain derivation),
 /// bp_rng feeds Bulletproof+, clsag_rng feeds CLSAG (per-input subdomains split by the caller;
 /// for v1 single input, pass a Clsag(0)-derived stream).
+/// Z3.2b legacy convenience (tests): returns the wire as an owned Vec. The
+/// production path writes straight into the caller workspace via the `_into`
+/// core; this shell is slated for Z3.5 shell collection (test-only surface).
 pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + CryptoRng>(
     tx_data: &TxConstructionData,
     spend_sec: &[u8; 32],
@@ -337,6 +344,35 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     bp_rng: &mut B,
     clsag_rng: &mut C,
 ) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(4096);
+    // The caller-workspace core sizes by what it writes; here the Vec backend
+    // grows infallibly — a fixed staging slice keeps the same core shape.
+    let mut staging = alloc::vec![0u8; TX_WIRE_SLOT_MAX];
+    let n = sign_tx_from_construction_with_rngs_into(
+        tx_data,
+        spend_sec,
+        view_sec,
+        r_bytes,
+        bp_rng,
+        clsag_rng,
+        &mut staging,
+    )?;
+    out.extend_from_slice(&staging[..n]);
+    Ok(out)
+}
+
+/// Core signing into a caller-workspace slot (Z3.2b). `out` receives the
+/// official monerod wire directly; over-slot raises explicit BufferTooSmall
+/// (RequiredLength), never truncation.
+pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCore + CryptoRng>(
+    tx_data: &TxConstructionData,
+    spend_sec: &[u8; 32],
+    view_sec: &[u8; 32],
+    r_bytes: &zeroize::Zeroizing<[u8; 32]>,
+    bp_rng: &mut B,
+    clsag_rng: &mut C,
+    out: &mut [u8],
+) -> Result<usize> {
     // Audit #9 P1-02: r is a transaction secret key — SecretScalar owner
     // (dalek Scalar is Copy with no Drop; plain bindings on `?` paths would never be zeroized);
     // consumption goes through with_scalar borrows; no plain Scalar bindings at the outer layer
@@ -716,7 +752,9 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         b
     };
-    let wire = build_official_wire(
+    let mut sink = crate::types::push::SinkCursor::new(out);
+    let r = build_official_wire(
+        &mut sink,
         &prefix_bytes,
         &rct_base_bytes,
         &bp_buf,
@@ -727,7 +765,8 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     if let Some(p) = px5.as_mut() {
         p.end();
     }
-    wire
+    r?;
+    Ok(sink.pos())
 }
 
 /// fee = inputs − splitted outputs (change already included in splitted)
@@ -749,33 +788,35 @@ struct OutInfo {
 /// Layout: `prefix ‖ rct_base ‖ prunable`, no total-length prefix; ecdhInfo/outPk/CLSAGs/pseudoOuts
 /// arrays are all **count-free** (binary_archive's no-arg `begin_array()` overload); vin has a variant
 /// tag 0x02 and a VARINT amount; vout amount uses VARINT.
-fn build_official_wire(
+fn build_official_wire<S: crate::types::push::Sink>(
+    out: &mut S,
     prefix_bytes: &[u8],
     rct_base_bytes: &[u8],
     bp_buf: &[u8],
     clsag_wire: &[Vec<u8>],
     pseudo_outs: &[[u8; 32]],
-) -> Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(4096);
+) -> Result<()> {
+    // Z3.2b: Sink-generic assembly (byte layout unchanged) — the caller's
+    // workspace slot receives the wire directly (was: Vec + copy).
     // ---- prefix ----
     // These are the same bytes used above to compute prefix_hash.
-    out.extend_from_slice(prefix_bytes);
+    out.put(prefix_bytes)?;
     // ---- rct base ----
     // These are likewise the exact bytes hashed into rct_base_hash.
-    out.extend_from_slice(rct_base_bytes);
+    out.put(rct_base_bytes)?;
     // ---- prunable ----
     // BP+: nbp(varint) + raw proof bytes
-    monero_encode_varint(&mut out, 1); // single aggregated BP+
-    out.extend_from_slice(bp_buf);
+    out.put(&[1u8])?; // nbp varint = 1 (single aggregated BP+)
+    out.put(bp_buf)?;
     // CLSAGs (no count; element count inferred from mixin+1): s[16]‖c1‖D
     for w in clsag_wire {
-        out.extend_from_slice(w);
+        out.put(w)?;
     }
     // pseudoOuts (no count)
     for po in pseudo_outs {
-        out.extend_from_slice(po);
+        out.put(po)?;
     }
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]

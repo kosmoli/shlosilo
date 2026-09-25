@@ -151,6 +151,17 @@ pub struct SignWs<'a> {
     pub extra: &'a mut [u8],
     pub dests: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
     pub subaddr_indices: &'a mut [u32],
+    // Z3.2b: sign-face backings (the SignedTxSet model + per-tx carve pools).
+    pub ptx: &'a mut [Option<crate::chain::xmr::signed_txset::PendingTx<'a>>],
+    /// Contiguous signed-tx wire slots (C-class: `TX_BYTES_SLOT_MAX` per tx,
+    /// carved per iteration — the signer writes straight into the slot).
+    pub tx_bytes: &'a mut [u8],
+    pub ki: &'a mut [[u8; 32]],
+    pub tki: &'a mut [crate::chain::xmr::signed_txset::TxKeyImageEntry],
+    pub sel: &'a mut [u8],
+    pub kstr: &'a mut [u8],
+    /// Records-face dests (per-tx clones carved into the PendingTx records).
+    pub record_dests: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
 }
 
 /// XMR: xmr-txunsigned encrypted blob → decrypt → sign tx by tx → SignedTxSet → encrypted output
@@ -265,47 +276,52 @@ fn sign_xmr_with_ws<'a>(
         .flatten()
         .map(|t| t.dests.len())
         .sum();
-    let mut ptx_backing: alloc::vec::Vec<Option<PendingTx<'_>>> =
-        (0..unsigned_tx.txes.len()).map(|_| None).collect();
-    // Z2.4d-4 transitional root: signed-tx bytes workspace (16KiB-class C data per
-    // tx, cap explicit). One contiguous backing split into disjoint &mut [u8] slots
-    // (C3c split discipline) so each PendingTx borrow is independent. Z3 moves the
-    // signer's output straight into these caller-workspace slices — the copy below
-    // then disappears.
+    // Z3.2b: sign-face backings come from the caller workspace. Every carve and
+    // push site is capacity-checked up front (explicit RequiredLength Err — the
+    // T-14 pool-side discipline: an over-cap demand must Err, never a panic).
     const TX_BYTES_SLOT_MAX: usize = 16 * 1024;
-    let mut tx_bytes_backing = alloc::vec![0u8; TX_BYTES_SLOT_MAX * unsigned_tx.txes.len().max(1)];
-    let mut tx_bytes_slots: alloc::vec::Vec<&mut [u8]> = alloc::vec::Vec::new();
-    {
-        let mut rest: &mut [u8] = &mut tx_bytes_backing[..];
-        for _ in 0..unsigned_tx.txes.len().max(1) {
-            let (slot, r) = rest.split_at_mut(TX_BYTES_SLOT_MAX);
-            tx_bytes_slots.push(slot);
-            rest = r;
-        }
+    let n_tx = unsigned_tx.txes.len();
+    let cap_err = |need: usize| {
+        ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(need),
+        )
+    };
+    if ws.ptx.len() < n_tx {
+        return Err(cap_err(n_tx));
     }
-    let mut ki_backing = alloc::vec::Vec::new();
-    ki_backing.resize(total_sources, [0u8; 32]);
-    let mut tki_backing = alloc::vec::Vec::new();
-    tki_backing.resize(total_dsts, TxKeyImageEntry::default());
-    let mut sel_backing = alloc::vec![0u8; total_sel];
-    let mut kstr_backing = alloc::vec![0u8; 67 * total_sources]; // `<` + 64 hex + `>` + ` ` per key image
-    let mut dests_backing = alloc::vec::Vec::new();
-    dests_backing.resize(
-        total_dests,
-        crate::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
-    );
-    let mut ptx_sv = crate::types::SliceVec::new(&mut ptx_backing[..]);
-    let mut ki_sv = crate::types::SliceVec::new(&mut ki_backing[..]);
-    let mut tki_sv = crate::types::SliceVec::new(&mut tki_backing[..]);
-    let mut sel_rest: &mut [u8] = &mut sel_backing[..];
-    let mut kstr_rest: &mut [u8] = &mut kstr_backing[..];
+    if ws.ki.len() < total_sources {
+        return Err(cap_err(total_sources));
+    }
+    if ws.tki.len() < total_dsts {
+        return Err(cap_err(total_dsts));
+    }
+    if ws.sel.len() < total_sel {
+        return Err(cap_err(total_sel));
+    }
+    if ws.kstr.len() < 67 * total_sources {
+        return Err(cap_err(67 * total_sources));
+    }
+    if ws.record_dests.len() < total_dests {
+        return Err(cap_err(total_dests));
+    }
+    let tx_bytes_need = TX_BYTES_SLOT_MAX * n_tx.max(1);
+    if ws.tx_bytes.len() < tx_bytes_need {
+        return Err(cap_err(tx_bytes_need));
+    }
+    let mut ptx_sv = crate::types::SliceVec::new(core::mem::take(&mut ws.ptx));
+    let mut ki_sv = crate::types::SliceVec::new(core::mem::take(&mut ws.ki));
+    let mut tki_sv = crate::types::SliceVec::new(core::mem::take(&mut ws.tki));
+    let mut sel_rest: &mut [u8] = core::mem::take(&mut ws.sel);
+    let mut kstr_rest: &mut [u8] = core::mem::take(&mut ws.kstr);
     let mut dests_rest: &mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry] =
-        &mut dests_backing[..];
+        core::mem::take(&mut ws.record_dests);
+    let mut tx_bytes_rest: &mut [u8] = core::mem::take(&mut ws.tx_bytes);
 
     // P1-03: into_iter takes ownership — construction_data is moved into PendingTx (previously
     // the deep-copying tx_data.clone(); once TxSourceEntry is not Clone, move is the only path,
     // also the audit-required "secret copies must not proliferate")
-    for (tx_i, slot) in unsigned_tx.txes.iter_mut().enumerate() {
+    for slot in unsigned_tx.txes.iter_mut() {
         // Z2.3 C3c + P1-03: Option::take moves the construction data out of the pool
         // slot (ownership transfer to PendingTx; no secret copies proliferate).
         let tx_data = slot.take().ok_or_else(|| {
@@ -363,27 +379,21 @@ fn sign_xmr_with_ws<'a>(
             .map_err(crate::error::ShlosiloError::from)?;
         // CLSAG: per-input subdomain (consumed in source order inside sign_tx_from_construction)
 
-        let tx_bytes = crate::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs(
+        // Z3.2b: carve this tx's wire slot out of the contiguous caller
+        // workspace (total pre-checked above; mem::take-split keeps the full
+        // 'a) and let the signer write straight into it — the Vec return and
+        // the staging copy are gone.
+        let (tx_slot, r) = core::mem::take(&mut tx_bytes_rest).split_at_mut(TX_BYTES_SLOT_MAX);
+        tx_bytes_rest = r;
+        let tx_bytes_len = crate::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into(
             &tx_data,
             &spend_sec,
             &view_sec,
             &r_bytes,
             &mut bp_rng,
             &mut rng,
+            tx_slot,
         )?;
-        // Z2.4d-4: stage the wire bytes into the caller-workspace slot (explicit
-        // over-cap Err, never truncation) and borrow the slot into the model.
-        // mem::take MOVES the slot borrow out (no live borrow of the slots Vec across
-        // iterations — the classic split_at_mut-loop aggregation problem).
-        let tx_slot: &mut [u8] = core::mem::take(&mut tx_bytes_slots[tx_i]);
-        if tx_bytes.len() > tx_slot.len() {
-            return Err(ShlosiloError::with_context(
-                ShlosiloErrorKind::BufferTooSmall,
-                crate::error::ErrorContext::RequiredLength(tx_bytes.len()),
-            ));
-        }
-        tx_slot[..tx_bytes.len()].copy_from_slice(&tx_bytes);
-        let tx_bytes_len = tx_bytes.len();
         let tx_bytes_borrow: &[u8] = &tx_slot[..tx_bytes_len]; // reborrows the full 'a (tx_slot is never used again)
 
         // fee(= inputs − splitted outputs)
@@ -575,6 +585,17 @@ fn sign_xmr(
     let mut extra_pool = alloc::vec![0u8; encrypted_unsigned.len()];
     let mut dests_pool = alloc::vec![TxDestinationEntry::default(); 64];
     let mut subidx_pool = alloc::vec![0u32; 256];
+    // Z3.2b sign-face backings (generous caps = the parse-face caps' reach:
+    // totals are bounded by the parse pools, so these never bind in shell mode).
+    let mut ptx_backing: alloc::vec::Vec<Option<crate::chain::xmr::signed_txset::PendingTx<'_>>> =
+        (0..8).map(|_| None).collect();
+    let mut tx_bytes_backing = alloc::vec![0u8; 16 * 1024 * 8];
+    let mut ki_backing = alloc::vec![[0u8; 32]; 32];
+    let mut tki_backing =
+        alloc::vec![crate::chain::xmr::signed_txset::TxKeyImageEntry::default(); 128];
+    let mut sel_backing = alloc::vec![0u8; 256];
+    let mut kstr_backing = alloc::vec![0u8; 67 * 32];
+    let mut record_dests_backing = alloc::vec![TxDestinationEntry::default(); 64];
     let mut ws = SignWs {
         plain: &mut plain,
         txes: &mut txes_pool,
@@ -584,6 +605,13 @@ fn sign_xmr(
         extra: &mut extra_pool,
         dests: &mut dests_pool,
         subaddr_indices: &mut subidx_pool,
+        ptx: &mut ptx_backing,
+        tx_bytes: &mut tx_bytes_backing,
+        ki: &mut ki_backing,
+        tki: &mut tki_backing,
+        sel: &mut sel_backing,
+        kstr: &mut kstr_backing,
+        record_dests: &mut record_dests_backing,
     };
     sign_xmr_with_ws(&mut ws, seed, encrypted_unsigned, entropy, output_buf)
 }

@@ -175,6 +175,20 @@
 #define TX_OUT_TO_TAGGED_KEY 3
 
 /**
+ * Construct and sign a full transaction from TxConstructionData (P1-06 core entry point)
+ *
+ * **Input**:
+ * - tx_data: parsed unsigned tx construction data (one tx)
+ * - spend_sec / view_sec: derived wallet keys
+ * - rng: randomness source (L3 injected; on device = TRNG)
+ *
+ * **Output**: fully signed Transaction (wire format ready to use)
+ * Z3.2b: per-tx wire slot cap (matches business `TX_BYTES_SLOT_MAX`; the
+ * real monerod wire is ~2KiB single-input, cap 16KiB covers multi-input).
+ */
+#define TX_WIRE_SLOT_MAX (16 * 1024)
+
+/**
  * RSA-4096 maximum signature length (512 bytes for a 4096-bit key + PSS overhead)
  */
 #define RSA_SIGNATURE_MAX_LEN 512
