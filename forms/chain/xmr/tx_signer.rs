@@ -23,6 +23,9 @@ use zeroize::Zeroize;
 /// (audit #6 re-review P1-01: into_inner used to unwrap before the CLSAG section, letting the last
 /// error-path segment skip zeroization — eliminated per re-review recommendation).
 struct ZeroizingMaskGuard {
+    /// Z2.5 ledger: SECRET-OWNER container (audit #6/#8/#9 semantics — take-over
+    /// copies + Drop zeroize + shadow attribution). Not plain storage: Z3 may swap
+    /// the backing for a caller slab without changing the owner semantics.
     masks: Vec<[u8; 32]>,
     /// Audit #9 P2-01: owner identity tag — shadow records carry kind so tests can attribute precisely
     /// (closes the attribution gap where "the global latest slot cannot distinguish input_sk/real_mask")

@@ -225,6 +225,8 @@ impl core::fmt::Debug for TxSourceEntry {
 
 #[derive(Clone, Debug, Default)]
 pub struct TxDestinationEntry {
+    /// Z2.5 ledger: CONTAINER LEAF (address string, ≤106B) — pending C2-style
+    /// leaf cap (heapless) or Z3 caller-string storage.
     pub original: Vec<u8>,
     pub amount: u64,
     pub spend_public_key: [u8; 32],
