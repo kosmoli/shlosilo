@@ -147,11 +147,8 @@ fn sign_xmr(
     entropy: &[u8],
     output_buf: &mut [u8],
 ) -> Result<usize> {
-    use crate::chain::xmr::signed_txset::{
-        encrypt_signed_txset_with_chacha_key, PendingTx, SignedTxSet, TxKeyImageEntry,
-    };
+    use crate::chain::xmr::signed_txset::{PendingTx, SignedTxSet, TxKeyImageEntry};
     use crate::chain::xmr::signing_rng::{purpose_rng, RngPurpose};
-    use crate::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
 
     // 1. seed → Monero keypair (v2 §2.7: MoneroPath is not BIP-32; account 0 = main wallet)
     let path = crate::derivation::monero_reduce_scalar::MoneroPath::mainnet(0);
@@ -171,11 +168,10 @@ fn sign_xmr(
     // Audit #6 P1-01: decrypted plaintext txset goes through Zeroizing (no plaintext residue needed after parsing)
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px1 = PhaseProbe::start(1);
-    let plain = crate::chain::xmr::unsigned_txset::decrypt_unsigned_txset_with_chacha_key(
-        encrypted_unsigned,
-        &view_sec,
-        &cn_key,
-    )?;
+    // Z2.4d-3: fused decrypt+parse — the plaintext container is a forms-internal
+    // transient (zeroized inside before return on every path); `plain_scratch` is
+    // storage only — this root never holds live secrets.
+    let mut plain_scratch = alloc::vec![0u8; encrypted_unsigned.len()];
     // Z2.3 C3c transitional root (2026-09-24): unsigned-model pools sized by generous
     // root caps (deployment sizing moves to the caller workspace at Z2.4/Z3; over-cap
     // is explicit Err — no truncation).
@@ -190,14 +186,17 @@ fn sign_xmr(
         64
     ];
     let mut sel_pool = alloc::vec![0usize; 256];
-    let mut extra_pool = alloc::vec![0u8; plain.len()];
+    let mut extra_pool = alloc::vec![0u8; encrypted_unsigned.len()];
     let mut dests_pool = alloc::vec![
         crate::chain::xmr::unsigned_txset::TxDestinationEntry::default();
         64
     ];
     let mut subidx_pool = alloc::vec![0u32; 256];
-    let mut unsigned_tx = deserialize_unsigned_tx(
-        &plain,
+    let mut unsigned_tx = crate::chain::xmr::unsigned_txset::decrypt_and_parse_unsigned_tx(
+        encrypted_unsigned,
+        &view_sec,
+        &cn_key,
+        &mut plain_scratch,
         crate::chain::xmr::unsigned_txset::UnsignedTxPools {
             txes: &mut txes_pool,
             sources: &mut sources_pool,
@@ -477,28 +476,30 @@ fn sign_xmr(
         key_images: ki_sv,
         tx_key_images: tki_sv,
     };
-    let plain_signed = set.serialize();
-
-    // 4. Encrypted output (nonce + Schnorr k also on the entropy-derived stream)
+    // 4. Encrypted output (nonce + Schnorr k also on the entropy-derived stream).
+    // Z2.4d-3: fused serialize+encrypt straight into the output buffer — the plaintext
+    // container streams through the ChaCha keystream and never materializes; `output_buf`
+    // receives ciphertext only (not sensitive).
     let mut enc_rng = purpose_rng(entropy, RngPurpose::BulletproofPlus, &[1u8; 32])
         .map_err(crate::error::ShlosiloError::from)?;
+    let required = crate::chain::xmr::signed_txset::SIGNED_TX_PREFIX.len()
+        + crate::chain::xmr::signed_txset::NONCE_LEN
+        + set.serialized_len()
+        + crate::chain::xmr::signed_txset::SIG_LEN;
+    if output_buf.len() < required {
+        return Err(ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(required),
+        ));
+    }
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px7 = PhaseProbe::start(7);
-    let encrypted =
-        encrypt_signed_txset_with_chacha_key(plain_signed, &view_sec, &cn_key, &mut enc_rng)?;
+    let n = set.encrypt_signed_txset_into(&view_sec, &cn_key, &mut enc_rng, output_buf)?;
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px7.as_mut() {
         p.end();
     }
-
-    if output_buf.len() < encrypted.len() {
-        return Err(ShlosiloError::with_context(
-            ShlosiloErrorKind::BufferTooSmall,
-            crate::error::ErrorContext::RequiredLength(encrypted.len()),
-        ));
-    }
-    output_buf[..encrypted.len()].copy_from_slice(&encrypted);
-    Ok(encrypted.len())
+    Ok(n)
 }
 
 /// Parse the master fingerprint + derivation path from a BIP32_DERIVATION value

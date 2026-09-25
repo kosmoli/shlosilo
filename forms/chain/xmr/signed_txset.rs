@@ -27,8 +27,8 @@ use alloc::vec::Vec;
 /// magic symmetric with the decryption side
 pub const SIGNED_TX_PREFIX: &[u8] = b"Monero signed tx set\x05";
 
-const NONCE_LEN: usize = 8;
-const SIG_LEN: usize = 64;
+pub(crate) const NONCE_LEN: usize = 8;
+pub(crate) const SIG_LEN: usize = 64;
 
 fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
@@ -186,8 +186,9 @@ impl SignedTxSet<'_> {
     /// Audit #12 P1-02: the output contains construction_data (mask/kLRki) secret fields,
     /// Returns a Zeroizing owner.
     /// Core writer (Z2.4d-2): feeds any `Sink` — cursor (zero-heap) or Vec (staging).
-    /// Audit #12 P1-02: the stream contains construction_data (mask/kLRki) secret fields;
-    /// when the backend is a caller buffer, the caller owns zeroization of that buffer.
+    /// Audit #12 P1-02: the stream contains construction_data (mask/kLRki) secret fields.
+    /// Z2.4d-3: in production this only ever feeds `EncryptingSink` (ciphertext leaves,
+    /// no plaintext buffer) or the self-zeroizing `serialize()` owner.
     fn write_all<S: crate::types::push::Sink>(&self, out: &mut S) -> Result<()> {
         // signed_tx_set version 00
         out.put_u8(0u8)?;
@@ -243,18 +244,29 @@ impl SignedTxSet<'_> {
         Ok(())
     }
 
-    /// Serialize into a caller buffer (Z2.4d-2 C-class face); returns bytes written.
-    /// The stream contains secrets — the caller MUST zeroize `out` after use.
+    /// Test-only: materializes the secret-bearing plaintext into `out`.
+    /// Z2.4d-3: production never calls this — `encrypt_signed_txset_into` streams the
+    /// plaintext through the keystream so it never exists as a buffer, and `serialize`
+    /// returns a self-zeroizing owner. Any user of this face owns zeroization of `out`.
+    #[cfg(test)]
     pub fn serialize_into(&self, out: &mut [u8]) -> Result<usize> {
         let mut w = crate::types::push::SinkCursor::new(out);
         self.write_all(&mut w)?;
         Ok(w.pos())
     }
 
+    /// Exact serialized length (CountSink pre-pass; nothing is materialized).
+    pub fn serialized_len(&self) -> usize {
+        let mut c = crate::types::push::CountSink(0);
+        let _ = self.write_all(&mut c); // CountSink is infallible by construction
+        c.0
+    }
+
     /// Aligned with keystone `SignedTxSet::serialize` (byte-for-byte identical).
     /// Audit #12 P1-02: the output contains construction_data (mask/kLRki) secret fields,
-    /// Returns a Zeroizing owner.
-    /// Staging convenience (allocates). Production paths use `serialize_into`.
+    /// Returns a Zeroizing owner (self-zeroizing; forms-internal secret duty).
+    /// Staging/test convenience (allocates). Production paths use
+    /// `encrypt_signed_txset_into` (fused — the plaintext never materializes).
     pub fn serialize(&self) -> zeroize::Zeroizing<Vec<u8>> {
         let mut res = Vec::new();
         self.write_all(&mut res)
@@ -299,10 +311,11 @@ pub fn monero_sign(
         let k = Zeroizing::new(Scalar::from_bytes_mod_order(*k_bytes));
         let k_pub = (ED25519_BASEPOINT_TABLE * &*k).compress().to_bytes();
 
-        let mut data = Vec::with_capacity(96);
-        data.extend_from_slice(hash);
-        data.extend_from_slice(&p_bytes);
-        data.extend_from_slice(&k_pub);
+        // Z2.4d-3: stack buffer (was a 96B Vec on the sign path)
+        let mut data = [0u8; 96];
+        data[..32].copy_from_slice(hash);
+        data[32..64].copy_from_slice(&p_bytes);
+        data[64..].copy_from_slice(&k_pub);
         let c_bytes = hash_to_scalar(&data)?;
         c = Scalar::from_bytes_mod_order(c_bytes);
         if c == Scalar::ZERO {
@@ -318,6 +331,80 @@ pub fn monero_sign(
 }
 
 // ============ Encrypted output ============
+
+/// Z2.4d-3 encrypting sink: each `put` XORs through the ChaCha20-Legacy keystream
+/// before forwarding, so the serialized plaintext NEVER materializes as a buffer —
+/// the secret bytes live only inside the model's own owners (SecretBytes/Zeroizing)
+/// plus a per-chunk stack scratch that is itself Zeroizing.
+struct EncryptingSink<'a> {
+    inner: crate::types::push::SinkCursor<'a>,
+    cipher: chacha20::ChaCha20Legacy,
+}
+
+impl<'a> EncryptingSink<'a> {
+    fn new(inner: crate::types::push::SinkCursor<'a>, cipher: chacha20::ChaCha20Legacy) -> Self {
+        Self { inner, cipher }
+    }
+
+    fn pos(&self) -> usize {
+        self.inner.pos()
+    }
+}
+
+impl crate::types::push::Sink for EncryptingSink<'_> {
+    fn put(&mut self, bytes: &[u8]) -> Result<()> {
+        use chacha20::cipher::StreamCipher;
+        let mut scratch = zeroize::Zeroizing::new([0u8; 64]);
+        for chunk in bytes.chunks(64) {
+            scratch[..chunk.len()].copy_from_slice(chunk);
+            self.cipher.apply_keystream(&mut scratch[..chunk.len()]);
+            self.inner.put(&scratch[..chunk.len()])?;
+        }
+        Ok(())
+    }
+}
+
+impl SignedTxSet<'_> {
+    /// Fused serialize+encrypt (Z2.4d-3): writes
+    /// `magic ‖ nonce ‖ ChaCha20Legacy(key,nonce)(write_all(self)) ‖ sig` straight into `out`.
+    /// The plaintext container is streamed through the keystream and never exists as a
+    /// buffer; `out` receives ciphertext only (not sensitive). Byte-identical to
+    /// `encrypt_signed_txset_with_chacha_key(self.serialize(), ...)` under the same RNG.
+    /// rng usage order preserved: nonce (next_u64) then signing k.
+    pub fn encrypt_signed_txset_into(
+        &self,
+        view_sk: &[u8; 32],
+        chacha_key: &zeroize::Zeroizing<[u8; 32]>,
+        rng: &mut impl rand_core::RngCore,
+        out: &mut [u8],
+    ) -> Result<usize> {
+        use crate::types::push::{push_slice, Sink as _, SinkCursor};
+        use chacha20::cipher::KeyIvInit;
+        let nonce_num = rng.next_u64();
+        let nonce_bytes = nonce_num.to_be_bytes();
+
+        // stage 1: magic ‖ nonce ‖ ciphertext
+        let ct_end = {
+            let mut w = SinkCursor::new(out);
+            w.put(SIGNED_TX_PREFIX)?;
+            w.put(&nonce_bytes)?;
+            let nonce: chacha20::LegacyNonce = nonce_bytes.into();
+            let cipher = chacha20::ChaCha20Legacy::new_from_slices(&**chacha_key, &nonce)
+                .map_err(|_| err())?;
+            let mut enc = EncryptingSink::new(w, cipher);
+            self.write_all(&mut enc)?;
+            enc.pos()
+        };
+        // stage 2: sig = Monero Schnorr over keccak256(nonce ‖ ciphertext);
+        // nonce and ciphertext are contiguous in `out` after the magic.
+        let msg_hash = crate::encoding::keccak256::hash(&out[SIGNED_TX_PREFIX.len()..ct_end])?;
+        let [c, r] = monero_sign(&msg_hash, view_sk, rng)?;
+        let mut n = 0usize;
+        push_slice(&mut out[ct_end..], &mut n, &c)?;
+        push_slice(&mut out[ct_end..], &mut n, &r)?;
+        Ok(ct_end + n)
+    }
+}
 
 /// Encrypt a signed txset (aligned with keystone `encrypt_data_with_pvk`, SIGNED_TX_PREFIX path):
 ///
@@ -615,6 +702,18 @@ mod tests {
         let mut twin = alloc::vec![0u8; 4096];
         let twin_n = set.serialize_into(&mut twin).unwrap();
         assert_eq!(&twin[..twin_n], &bytes[..], "serialize_into twin");
+        // Z2.4d-3 twin: fused serialize+encrypt == classical pipeline, same RNG stream
+        let sk = test_view_sk();
+        let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&sk);
+        let mut r1 = ChaCha20Rng::from_seed([0x5Au8; 32]);
+        let classical =
+            encrypt_signed_txset_with_chacha_key(set.serialize(), &sk, &key, &mut r1).unwrap();
+        let mut r2 = ChaCha20Rng::from_seed([0x5Au8; 32]);
+        let mut fused_buf = alloc::vec![0u8; 8192];
+        let fused_n = set
+            .encrypt_signed_txset_into(&sk, &key, &mut r2, &mut fused_buf)
+            .unwrap();
+        assert_eq!(&fused_buf[..fused_n], &classical[..], "fused != classical");
         let mut off = 0usize;
         // version
         assert_eq!(bytes[off], 0x00);

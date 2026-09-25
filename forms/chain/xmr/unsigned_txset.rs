@@ -684,8 +684,11 @@ fn write_unsigned_tx<S: Sink>(tx: &UnsignedTx<'_>, out: &mut S) -> Result<()> {
     Ok(())
 }
 
-/// Serialize into a caller buffer (Z2.4d-2 C-class face); returns bytes written.
-/// The stream contains the mask/kLRki secrets — the caller MUST zeroize `out` after use.
+/// Serialize into a caller buffer; returns bytes written.
+/// Z2.4d-3: test-only face — production keeps the secret-bearing container as a
+/// self-zeroizing owner (`serialize_unsigned_tx`). Any user of this face owns
+/// zeroization of `out`.
+#[cfg(test)]
 pub fn serialize_unsigned_tx_into(tx: &UnsignedTx<'_>, out: &mut [u8]) -> Result<usize> {
     let mut w = crate::types::push::SinkCursor::new(out);
     write_unsigned_tx(tx, &mut w)?;
@@ -699,6 +702,60 @@ pub fn serialize_unsigned_tx(tx: &UnsignedTx<'_>) -> zeroize::Zeroizing<Vec<u8>>
     let mut out = Vec::new();
     write_unsigned_tx(tx, &mut out).expect("Vec sink is infallible by construction");
     zeroize::Zeroizing::new(out)
+}
+
+/// Fused decrypt+parse (Z2.4d-3): the decrypted container is a forms-internal
+/// transient — decrypted into `scratch` (storage provided by the caller; zeroization is
+/// forms' duty, done here before return on every path), parsed into `pools`. The caller
+/// provides storage only and never holds live secrets.
+pub fn decrypt_and_parse_unsigned_tx<'a>(
+    data: &[u8],
+    view_sk: &[u8; 32],
+    chacha_key: &zeroize::Zeroizing<[u8; 32]>,
+    scratch: &mut [u8],
+    pools: UnsignedTxPools<'a>,
+) -> Result<UnsignedTx<'a>> {
+    use chacha20::cipher::{KeyIvInit, StreamCipher};
+    use chacha20::ChaCha20Legacy;
+    use zeroize::Zeroize;
+
+    if data.len() < MAGIC_LEN + NONCE_LEN + SIG_LEN {
+        return Err(err());
+    }
+    if &data[..MAGIC_LEN] != UNSIGNED_TX_PREFIX {
+        return Err(err());
+    }
+    // raw_data = nonce || ciphertext (the range covered by the signature)
+    let raw_data = &data[MAGIC_LEN..data.len() - SIG_LEN];
+    let nonce = &raw_data[..NONCE_LEN];
+    let sig_bytes = &data[data.len() - SIG_LEN..];
+
+    // Schnorr verification first (anti-tamper), same as the split path
+    use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+    use curve25519_dalek::scalar::Scalar;
+    let v_scalar = zeroize::Zeroizing::new(Scalar::from_bytes_mod_order(*view_sk));
+    let view_pub = (ED25519_BASEPOINT_TABLE * &*v_scalar).compress().to_bytes();
+    let msg_hash = crate::encoding::keccak256::hash(raw_data)?;
+    if !check_monero_signature(&msg_hash, &view_pub, sig_bytes)? {
+        return Err(err());
+    }
+
+    let ct = &raw_data[NONCE_LEN..];
+    if scratch.len() < ct.len() {
+        return Err(crate::error::ShlosiloError::new(
+            crate::error::ShlosiloErrorKind::BufferTooSmall,
+        ));
+    }
+    let plain: &mut [u8] = &mut scratch[..ct.len()];
+    plain.copy_from_slice(ct);
+    let mut cipher = ChaCha20Legacy::new_from_slices(&**chacha_key, nonce).map_err(|_| err())?;
+    cipher.apply_keystream(plain);
+    let result = deserialize_unsigned_tx(plain, pools);
+    // forms-internal secret duty: the whole plaintext scratch is wiped before return,
+    // on every path (Ok and Err alike) — not just the ct region the caller never
+    // asked to police.
+    scratch.zeroize();
+    result
 }
 
 /// epee deserialize (aligned with keystone UnsignedTx::deserialize).
@@ -1014,6 +1071,41 @@ mod tests {
                 .expect("encrypt");
         let dec = decrypt_unsigned_txset(&enc, &view).expect("decrypt");
         assert_eq!(*dec, *plain);
+        // Z2.4d-3: fused decrypt+parse == split path, and the plaintext scratch is wiped
+        {
+            let key = chacha_key_from_view_sk(&view);
+            let mut scratch = alloc::vec![0u8; enc.len()];
+            scratch.fill(0xEE); // sentinel: wiped region must not retain it
+            let mut u_t = [None; 1];
+            let mut u_src = [None; 1];
+            let mut u_sd =
+                core::array::from_fn::<TxDestinationEntry, 2, _>(|_| TxDestinationEntry::default());
+            let mut u_sel = [0usize; 1];
+            let mut u_extra = [0u8; 64];
+            let mut u_dests: [TxDestinationEntry; 0] = [];
+            let mut u_sub: [u32; 0] = [];
+            let fused = decrypt_and_parse_unsigned_tx(
+                &enc,
+                &view,
+                &key,
+                &mut scratch,
+                UnsignedTxPools {
+                    txes: &mut u_t,
+                    sources: &mut u_src,
+                    splitted_dsts: &mut u_sd,
+                    selected_transfers: &mut u_sel,
+                    extra: &mut u_extra,
+                    dests: &mut u_dests,
+                    subaddr_indices: &mut u_sub,
+                },
+            )
+            .expect("fused decrypt_and_parse");
+            assert_eq!(fused.txes.len(), 0); // same empty-txes shape as `plain`
+            assert!(
+                scratch.iter().all(|&b| b == 0),
+                "plaintext scratch not wiped"
+            );
+        }
     }
 
     /// Audit #12 P1-02 API gate: the owner types for plaintext/ciphertext/CN key must carry

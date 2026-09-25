@@ -85,6 +85,17 @@ impl Sink for SinkCursor<'_> {
     }
 }
 
+/// Byte-counting sink (Z2.4d-3 length pre-pass): counts without storing,
+/// infallible. Lets callers size buffers exactly without materializing the stream.
+pub struct CountSink(pub usize);
+
+impl Sink for CountSink {
+    fn put(&mut self, bytes: &[u8]) -> Result<()> {
+        self.0 += bytes.len();
+        Ok(())
+    }
+}
+
 /// Staging backend (documented convenience; infallible by construction).
 impl Sink for alloc::vec::Vec<u8> {
     fn put(&mut self, bytes: &[u8]) -> Result<()> {
