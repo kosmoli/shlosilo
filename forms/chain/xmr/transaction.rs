@@ -235,8 +235,17 @@ impl TxOutput {
 
     pub fn deserialize(bytes: &[u8], pos: &mut usize) -> Result<Self> {
         let amount = monero_decode_varint(bytes, pos)?;
+        // T-01-class hardening (found by fuzz smoke 2026-09-25): every field read
+        // is bounds-checked before indexing/slicing — a truncated wire must Err,
+        // never a range panic (panic=abort on device = DoS).
+        if *pos >= bytes.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
         let output_type = bytes[*pos];
         *pos += 1;
+        if *pos + 32 > bytes.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
         let mut stealth_address = [0u8; 32];
         stealth_address.copy_from_slice(&bytes[*pos..*pos + 32]);
         *pos += 32;
@@ -669,6 +678,25 @@ impl Transaction {
 #[cfg(test)]
 mod wire_hardening_tests {
     use super::*;
+
+    /// Fuzz smoke regression (2026-09-25): output-entry field reads were
+    /// unguarded — a truncated wire must Err at each cut, never panic.
+    #[test]
+    fn output_entry_truncated_rejected() {
+        // amount(0) + type(0x02) + 32B stealth — every strict prefix must Err.
+        let mut wire = alloc::vec![0x00u8, 0x02];
+        wire.extend_from_slice(&[0x42u8; 32]);
+        for cut in 0..wire.len() {
+            let mut pos = 0usize;
+            assert!(
+                TxOutput::deserialize(&wire[..cut], &mut pos).is_err(),
+                "cut {cut} must Err"
+            );
+        }
+        // complete wire parses
+        let mut pos = 0usize;
+        assert!(TxOutput::deserialize(&wire, &mut pos).is_ok());
+    }
 
     /// extra tag 0x05 (nonce) declaring u64::MAX length
     #[test]

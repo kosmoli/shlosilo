@@ -546,10 +546,14 @@ fn read_tx_construction_data<'a>(
             .map_err(|_| err())?;
     }
     let extra_len = usize::try_from(read_varint(data, off)?).map_err(|_| err())?;
+    // Input-side bounds first (fuzz crash-91cc406b class: a claimed length may
+    // exceed the remaining input — slicing must be Err, never a range panic).
+    let extra_end = (*off).checked_add(extra_len).ok_or_else(err)?;
+    let extra_src = data.get(*off..extra_end).ok_or_else(err)?;
     let (chunk, rest) = core::mem::take(&mut *extra_rest).split_at_mut(extra_len);
     *extra_rest = rest;
-    chunk.copy_from_slice(&data[*off..*off + extra_len]);
-    *off += extra_len;
+    chunk.copy_from_slice(extra_src);
+    *off = extra_end;
     let extra = crate::types::SliceVec::new(chunk);
     let unlock_time = read_u64(data, off)?;
     let use_rct = read_u8(data, off)?;
@@ -1247,6 +1251,29 @@ mod tests {
         let t0 = tx.txes.iter().flatten().next().unwrap();
         assert!(t0.sources.is_empty());
         assert!(t0.dests.is_empty());
+    }
+
+    /// Fuzz smoke regression (2026-09-25, crash-91cc406b class): the extra_len
+    /// claim must be bounds-checked against the INPUT before slicing — a claim
+    /// larger than the remaining wire must Err, never a range panic. (The pre-fix
+    /// code checked the claim against the pool and then sliced the input
+    /// unchecked.) extra_len sits at body offset 71 in the minimal wire.
+    #[test]
+    fn a13_inflated_extra_len_rejected() {
+        let mut body = min_tx_construction_data_wire();
+        body[71] = 200; // claims 200B of tx extra; only 18B remain
+        let wire = top_wire(1, &body);
+        assert!(deser_err!(&wire));
+    }
+
+    /// Parser total-function invariant (fuzz smoke class): every prefix of a
+    /// legal wire must yield Ok/Err — never a panic at any cut.
+    #[test]
+    fn a13_prefix_totality_no_panic() {
+        let wire = top_wire(1, &min_tx_construction_data_wire());
+        for cut in 0..=wire.len() {
+            let _ = deser_outcome!(&wire[..cut], Ok(_) => true);
+        }
     }
 
     /// 89B remaining (< the 90 lower bound) with count=1 must be rejected — the lower bound still applies.

@@ -100,8 +100,11 @@ struct ConsoleState {
     /// Session mnemonic override (indices + word count) set by `entropy`.
     /// `None` = the built-in dice fixture (the same wallet as the boot smoke).
     session: Option<([u16; 24], u8)>,
-    /// In-flight multipart UR session.
-    decoder: Option<UrMultipartDecoder>,
+    /// In-flight multipart UR session (Z2.4c: the decoder borrows its caller
+    /// pools; the `new()` staging constructor leak-serves `'static`, same
+    /// transitional policy as the FFI handles — flux migrates to `with_ws`
+    /// static pools at Z3).
+    decoder: Option<UrMultipartDecoder<'static>>,
     /// Pending XMR signing request: the decoded UR payload, owned on the
     /// heap (16 KiB-class; above the PSRAM threshold it lands there).
     xmr_pending: Option<alloc::vec::Vec<u8>>,
