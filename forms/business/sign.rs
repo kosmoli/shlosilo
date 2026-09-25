@@ -235,12 +235,12 @@ fn sign_xmr_with_ws<'a>(
     //    context = keccak digest of the tx construction data (domain separation, not counted as entropy)
     let mut rng = {
         use rand_chacha::rand_core::SeedableRng;
-        // Z2.1 S1 (2026-09-24): entropy material — zeroized on drop (was a bare Vec).
-        let mut merged =
-            zeroize::Zeroizing::new(alloc::vec::Vec::with_capacity(entropy.len() + 32));
-        merged.extend_from_slice(entropy);
-        // BP+/CLSAG ephemeral randomness is tx-independent (does not reuse the r stream); unified stream: TxKey subdomain
-        let mut seed_rng = purpose_rng(&merged, RngPurpose::TxKey, &[0u8; 32])?;
+        // Z3.2c: the `merged` entropy copy is gone (it was byte-identical to
+        // `entropy` — the +32 capacity was never filled) — the derived stream
+        // seed comes straight from the caller's entropy slice, no secret
+        // duplication. BP+/CLSAG ephemeral randomness is tx-independent (does
+        // not reuse the r stream); unified stream: TxKey subdomain.
+        let mut seed_rng = purpose_rng(entropy, RngPurpose::TxKey, &[0u8; 32])?;
         // Z2.1 S1+ (2026-09-24): derived stream seed — zeroized on drop.
         let mut seed_bytes = zeroize::Zeroizing::new([0u8; 32]);
         use rand_chacha::rand_core::RngCore as _;
@@ -248,10 +248,8 @@ fn sign_xmr_with_ws<'a>(
         rand_chacha::ChaCha20Rng::from_seed(*seed_bytes)
     };
 
-    // Z2.3 C3b-3 (2026-09-24): signed-side collections live in caller-style pools.
-    // TRANSITIONAL ROOT: Vec-backed pool storage allocated here — the only remaining
-    // alloc cluster of this flow besides the C-class serialize/tx_bytes buffers.
-    // Marked for Z2.4/Z3: provisioning moves to the caller workspace.
+    // Z2.3 C3b-3 / Z3.2b: signed-side collections live in the caller workspace
+    // (`SignWs` sign-face fields, capacity pre-checked above).
     let total_sources: usize = unsigned_tx
         .txes
         .iter()
@@ -348,22 +346,24 @@ fn sign_xmr_with_ws<'a>(
                 crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::BufferTooSmall)
             })?;
         }
-        // per-tx context digest
-        // Audit #9 P1-04: ctx_src is folded into the source mask plaintext — Zeroizing owner
-        // (erased on Drop whether the hash completes or an early ? returns)
-        let mut ctx_src = zeroize::Zeroizing::new(alloc::vec::Vec::new());
-        ctx_src.extend_from_slice(&tx_data.unlock_time.to_le_bytes());
-        ctx_src.extend_from_slice(&tx_data.extra);
+        // Per-tx context digest — Z3.2c: streamed straight into the sponge
+        // (was a Zeroizing Vec materializing the whole input, masks included).
+        // Absorb order is byte-identical to the old concatenation, so the
+        // digest is unchanged; the secret material (masks) now transits the
+        // sponge without ever landing in a buffer.
+        let mut ctx_sink = crate::encoding::keccak256::KeccakSink::new();
+        ctx_sink.absorb(&tx_data.unlock_time.to_le_bytes());
+        ctx_sink.absorb(&tx_data.extra);
         for s in tx_data.sources.iter().flatten() {
-            ctx_src.extend_from_slice(s.real_out_tx_key.as_slice());
+            ctx_sink.absorb(s.real_out_tx_key.as_slice());
             // P1-03: mask plaintext access funneled through expose() (context digest is a read-only hash)
-            ctx_src.extend_from_slice(s.mask.expose());
+            ctx_sink.absorb(s.mask.expose());
         }
         for d in tx_data.splitted_dsts.iter() {
-            ctx_src.extend_from_slice(&d.spend_public_key);
-            ctx_src.extend_from_slice(&d.view_public_key);
+            ctx_sink.absorb(&d.spend_public_key);
+            ctx_sink.absorb(&d.view_public_key);
         }
-        let context = crate::encoding::keccak256::hash(&ctx_src)?;
+        let context = ctx_sink.finalize();
 
         // tx_key r: independent TxKey subdomain stream (§B.5)
         let mut tx_key_rng = purpose_rng(entropy, RngPurpose::TxKey, &context)
@@ -454,11 +454,19 @@ fn sign_xmr_with_ws<'a>(
                     crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
                 )
             })?);
-            let mut od = zeroize::Zeroizing::new(alloc::vec::Vec::with_capacity(33));
-            od.extend_from_slice(shared.as_ref());
-            crate::chain::xmr::transaction::monero_encode_varint(&mut od, i as u64);
-            let shared_key =
-                zeroize::Zeroizing::new(crate::chain::xmr::subaddress::hash_to_scalar(&od)?);
+            // Z3.2c: stack-fixed od (32B shared ‖ varint(i) ≤ 10B) — Zeroizing
+            // owner on the stack, explicit wipe via Drop as before.
+            let mut od = zeroize::Zeroizing::new([0u8; 42]);
+            let mut od_n = 0usize;
+            crate::types::push::push_slice(&mut od[..], &mut od_n, shared.as_ref())?;
+            crate::chain::xmr::transaction::monero_encode_varint_at(
+                &mut od[..],
+                &mut od_n,
+                i as u64,
+            )?;
+            let shared_key = zeroize::Zeroizing::new(
+                crate::chain::xmr::subaddress::hash_to_scalar(&od[..od_n])?,
+            );
             // hs(SecretScalar): key-image = Hp(stealth) · hs — held by an owner,
             // zeroed on Drop at end of scope
             let hs = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*shared_key);
