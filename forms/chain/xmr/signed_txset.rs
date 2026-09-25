@@ -1003,4 +1003,140 @@ mod tests {
         swapped2[..SIGNED_TX_PREFIX.len()].copy_from_slice(&um[..SIGNED_TX_PREFIX.len()]);
         assert!(decrypt_signed_txset(&swapped2, &sk).is_err());
     }
+
+    /// Test fixture macro: a minimal SignedTxSet whose tx_bytes carry `$txbyte`
+    /// (statement form — bindings live in the caller scope with macro hygiene).
+    macro_rules! mk_export_set {
+        ($name:ident, $txbyte:expr) => {
+            let mut e_src: [Option<TxSourceEntry>; 0] = [];
+            let mut e_sd: [crate::chain::xmr::unsigned_txset::TxDestinationEntry; 0] = [];
+            let mut e_sel = [0usize; 1];
+            let mut e_sel_b = [0u8; 1];
+            let mut e_extra = [0x01u8, 0x02];
+            let mut e_dests: [crate::chain::xmr::unsigned_txset::TxDestinationEntry; 0] = [];
+            let mut e_sub: [u32; 0] = [];
+            let mut ks = [0u8; 67];
+            let mut dsts = core::array::from_fn::<
+                crate::chain::xmr::unsigned_txset::TxDestinationEntry,
+                1,
+                _,
+            >(|_| crate::chain::xmr::unsigned_txset::TxDestinationEntry::default());
+            let mut ptx_slot: [Option<PendingTx<'_>>; 1] = core::array::from_fn(|_| None);
+            let mut ki_backing = core::array::from_fn::<[u8; 32], 1, _>(|_| [0u8; 32]);
+            let mut tki_backing =
+                core::array::from_fn::<TxKeyImageEntry, 1, _>(|_| TxKeyImageEntry::default());
+            let $name = {
+                use crate::chain::xmr::unsigned_txset::{RctConfig, TxDestinationEntry, TxConstructionData};
+                use crate::types::SliceVec;
+                let ptx = PendingTx {
+                    tx_bytes: alloc::vec![$txbyte; 700],
+                    dust: 0,
+                    fee: 30640000,
+                    dust_added_to_fee: false,
+                    change_dts: TxDestinationEntry::default(),
+                    selected_transfers: SliceVec::new(&mut e_sel_b),
+                    key_images_str: SliceVec::new(&mut ks),
+                    additional_tx_keys: heapless::Vec::new(),
+                    dests: SliceVec::new(&mut dsts),
+                    construction_data: TxConstructionData {
+                        sources: SliceVec::new(&mut e_src),
+                        change_dts: TxDestinationEntry::default(),
+                        splitted_dsts: SliceVec::new(&mut e_sd),
+                        selected_transfers: SliceVec::new(&mut e_sel),
+                        extra: SliceVec::new(&mut e_extra),
+                        unlock_time: 0,
+                        use_rct: 1,
+                        rct_config: RctConfig::default(),
+                        dests: SliceVec::new(&mut e_dests),
+                        subaddr_account: 0,
+                        subaddr_indices: SliceVec::new(&mut e_sub),
+                    },
+                };
+                let mut ptx_sv = SliceVec::new(&mut ptx_slot);
+                ptx_sv.push(Some(ptx)).unwrap();
+                SignedTxSet {
+                    ptx: ptx_sv,
+                    key_images: SliceVec::new(&mut ki_backing),
+                    tx_key_images: SliceVec::new(&mut tki_backing),
+                }
+            };
+        };
+    }
+
+    fn env_nonce(env: &[u8]) -> &[u8] {
+        &env[SIGNED_TX_PREFIX.len()..SIGNED_TX_PREFIX.len() + 8]
+    }
+
+    /// Property 1 (Z2.4d-3): same entropy + DIFFERENT transactions must produce
+    /// different ExportEncrypt nonces (and different contexts).
+    #[test]
+    fn export_nonce_separates_transactions() {
+        use crate::chain::xmr::signing_rng::export_encrypt_rng;
+        use crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk;
+        let sk = test_view_sk();
+        let key = chacha_key_from_view_sk(&sk);
+        let entropy = [0x42u8; 32];
+
+        mk_export_set!(set_a, 0xAAu8);
+        let ctx_a = set_a.export_encrypt_context().unwrap();
+        let mut out_a = alloc::vec![0u8; 8192];
+        let na = {
+            let mut r = export_encrypt_rng(&entropy, &ctx_a).unwrap();
+            set_a
+                .encrypt_signed_txset_into(&sk, &key, &mut r, &mut out_a)
+                .unwrap()
+        };
+
+        mk_export_set!(set_b, 0xBBu8); // only the tx_bytes differ
+        let ctx_b = set_b.export_encrypt_context().unwrap();
+        let mut out_b = alloc::vec![0u8; 8192];
+        let nb = {
+            let mut r = export_encrypt_rng(&entropy, &ctx_b).unwrap();
+            set_b
+                .encrypt_signed_txset_into(&sk, &key, &mut r, &mut out_b)
+                .unwrap()
+        };
+
+        assert_ne!(
+            ctx_a, ctx_b,
+            "different transactions must bind different contexts"
+        );
+        assert_ne!(
+            env_nonce(&out_a[..na]),
+            env_nonce(&out_b[..nb]),
+            "same entropy + different transactions must NOT share the export nonce"
+        );
+        assert_ne!(
+            &out_a[..na],
+            &out_b[..nb],
+            "different transactions must produce different envelopes"
+        );
+    }
+
+    /// Property 2 (Z2.4d-3): same entropy + SAME transaction must stay byte-identical
+    /// (deterministic retry property is preserved by the fix).
+    #[test]
+    fn export_retry_deterministic() {
+        use crate::chain::xmr::signing_rng::export_encrypt_rng;
+        use crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk;
+        let sk = test_view_sk();
+        let key = chacha_key_from_view_sk(&sk);
+        let entropy = [0x42u8; 32];
+
+        mk_export_set!(set_a, 0xAAu8);
+        let mut outs = [alloc::vec![0u8; 8192], alloc::vec![0u8; 8192]];
+        let mut lens = [0usize; 2];
+        for run in 0..2 {
+            let ctx = set_a.export_encrypt_context().unwrap();
+            let mut r = export_encrypt_rng(&entropy, &ctx).unwrap();
+            lens[run] = set_a
+                .encrypt_signed_txset_into(&sk, &key, &mut r, &mut outs[run])
+                .unwrap();
+        }
+        assert_eq!(
+            &outs[0][..lens[0]],
+            &outs[1][..lens[1]],
+            "same entropy + same transaction must reproduce byte-identically"
+        );
+    }
 }

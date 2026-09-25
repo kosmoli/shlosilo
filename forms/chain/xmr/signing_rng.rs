@@ -239,4 +239,37 @@ mod tests {
         ];
         assert_eq!(okm, expect);
     }
+
+    /// Z2.4d-3 permanent nail: EVERY RngPurpose owns a disjoint stream even under an
+    /// identical (entropy, context). The export stream once rode the BulletproofPlus
+    /// label — the collision that let one entropy signing two transactions reuse the
+    /// same ChaCha nonce AND Schnorr k. All-pairs comparison so any future purpose
+    /// joining this list is automatically covered.
+    #[test]
+    fn all_purpose_streams_disjoint_under_same_ctx() {
+        let e = [7u8; 32];
+        let ctx = [9u8; 32];
+        let purposes: [(RngPurpose, &str); 5] = [
+            (RngPurpose::TxKey, "TxKey"),
+            (RngPurpose::BulletproofPlus, "BulletproofPlus"),
+            (RngPurpose::Clsag(0), "Clsag(0)"),
+            (RngPurpose::Clsag(1), "Clsag(1)"),
+            (RngPurpose::ExportEncrypt, "ExportEncrypt"),
+        ];
+        let mut streams = [[0u8; 64]; 5];
+        for (i, (p, _)) in purposes.iter().enumerate() {
+            purpose_rng(&e, *p, &ctx)
+                .unwrap()
+                .fill_bytes(&mut streams[i]);
+        }
+        for i in 0..streams.len() {
+            for j in (i + 1)..streams.len() {
+                assert_ne!(
+                    streams[i], streams[j],
+                    "purpose stream collision: {} vs {} (same ctx)",
+                    purposes[i].1, purposes[j].1
+                );
+            }
+        }
+    }
 }
