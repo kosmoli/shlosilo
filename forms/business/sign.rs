@@ -99,6 +99,25 @@ pub fn sign_with_entropy(
     entropy: &[u8],
     output_buf: &mut [u8],
 ) -> Result<usize> {
+    sign_with_entropy_ws(sign_input, type_tag, ur_payload, entropy, None, output_buf)
+}
+
+/// Workspace-aware signing entry (Z3.3a).
+///
+/// `ws = Some(...)` provisions the XMR flow from caller memory — forms
+/// allocates nothing (the zero-heap path; flux owns its memory strategy).
+/// `ws = None` falls back to the **transitional shell** (forms-side alloc,
+/// policy-labeled C-ABI/legacy seam; removed when every caller provisions).
+/// BTC/ETH chain layers ignore `ws` (their provisioning lands in the
+/// chain-tile round).
+pub fn sign_with_entropy_ws(
+    sign_input: SignInput<'_>,
+    type_tag: crate::ur::ur_encode::UrTypeTag,
+    ur_payload: &[u8],
+    entropy: &[u8],
+    ws: Option<&mut SignWs<'_>>,
+    output_buf: &mut [u8],
+) -> Result<usize> {
     let t_total = crate::device_timing::Mark::start(crate::device_timing::STAGE_PBKDF2);
     let seed = resolve_seed(&sign_input)?;
     t_total.end();
@@ -121,10 +140,16 @@ pub fn sign_with_entropy(
             let n = sign_eth(seed.expose(), payload, output_buf)?;
             Ok(n)
         }
-        crate::types::chain_kind::ChainKind::Xmr => {
-            let n = sign_xmr(seed.expose(), payload, entropy, output_buf)?;
-            Ok(n)
-        }
+        crate::types::chain_kind::ChainKind::Xmr => match ws {
+            Some(ws) => {
+                let n = sign_xmr_with_ws(ws, seed.expose(), payload, entropy, output_buf)?;
+                Ok(n)
+            }
+            None => {
+                let n = sign_xmr(seed.expose(), payload, entropy, output_buf)?;
+                Ok(n)
+            }
+        },
         _ => Err(err(ShlosiloErrorKind::ChainKindUnsupported)),
     }
 }
@@ -569,12 +594,14 @@ fn sign_xmr_with_ws<'a>(
 /// value format (BIP-174): master_key_fingerprint(4B) || derivation_index(u32LE) × depth
 /// P1-02: fingerprint returned together with the path (the caller compares against our master fingerprint to prevent signing for the wrong chain)
 /// BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth)
-/// Z3.2a TRANSITIONAL SHELL — the sole remaining business-boundary alloc cluster on
-/// the XMR path (was 18 scattered roots before Z3.2): provisions the flow workspace
-/// over heap backing with the historical generous caps (8/32/64/256/extra/64/256 —
-/// behavior-identical to the pre-Z3.2 flow) and delegates to `sign_xmr_with_ws`.
-/// Vanishes at Z3.3 when the FFI/flux boundary passes a `SignWs` over its own
-/// memory (deployment-sized pools).
+/// Z3.2a TRANSITIONAL SHELL — the `ws = None` path of `sign_with_entropy_ws`:
+/// the sole remaining business-boundary alloc cluster on the XMR path (was 18
+/// scattered roots before Z3.2). Provisions the flow workspace over heap backing
+/// with the historical generous caps (behavior-identical to the pre-Z3.2 flow)
+/// and delegates to `sign_xmr_with_ws`. Policy-labeled seam for C-ABI/legacy
+/// callers; Rust flux hosts pass `Some(ws)` over their own memory instead and
+/// the shell leaves their path entirely. Removed when the C-ABI workspace lands
+/// (Z3.3b) — see the Z3 design doc for the proposed C shape.
 fn sign_xmr(
     seed: &[u8],
     encrypted_unsigned: &[u8],

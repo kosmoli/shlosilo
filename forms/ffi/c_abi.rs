@@ -777,6 +777,14 @@ pub mod r3 {
         }
     }
 
+    // Z3.3a LEDGER CORRECTION (2026-09-25): the "ffi staging 4 sites" count from the
+    // Z2.5 ledger conflated test conveniences with production staging. Production
+    // heap at this seam is exactly the two opaque handle Boxes below (encode handle
+    // + decode handle, paired with their _free) plus the decoder's leak-staging
+    // pools inside `UrMultipartDecoder::new()`. The Vec<String>/indices.to_vec
+    // sites are #[cfg(test)] fixtures. Handle memory moves to caller buffers at
+    // Z3.3c (Z6 no-allocator pressure); the sign shell moves with the C-ABI
+    // workspace at Z3.3b (proposed C shape in the Z3 design doc).
     /// R3: create a multipart decoder. Returns a handle on success, null on failure.
     #[no_mangle]
     pub extern "C" fn shlosilo_ur_decode_new() -> *mut UrMultipartDecoder<'static> {

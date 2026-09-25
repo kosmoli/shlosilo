@@ -3004,12 +3004,63 @@ async fn run_sign_xmr() {
         passphrase: b"",
     };
     let mut out = [0u8; XMR_OUT_CAP];
+    // Z3.3a: caller-provisioned workspace — flux owns its memory strategy (Vec
+    // pools today, static pools later without touching forms). Caps mirror the
+    // transitional shell (behavior-identical); forms allocates nothing here.
+    let mut ws_plain = alloc::vec![0u8; payload.len()];
+    let mut ws_txes: alloc::vec::Vec<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
+    > = (0..8).map(|_| None).collect();
+    let mut ws_sources: alloc::vec::Vec<
+        Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>,
+    > = (0..32).map(|_| None).collect();
+    let mut ws_sd = alloc::vec![
+        shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default();
+        64
+    ];
+    let mut ws_sel = alloc::vec![0usize; 256];
+    let mut ws_extra = alloc::vec![0u8; payload.len()];
+    let mut ws_dests = alloc::vec![
+        shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default();
+        64
+    ];
+    let mut ws_subidx = alloc::vec![0u32; 256];
+    let mut ws_ptx: alloc::vec::Vec<Option<shlosilo::chain::xmr::signed_txset::PendingTx<'_>>> =
+        (0..8).map(|_| None).collect();
+    let mut ws_tx_bytes = alloc::vec![0u8; 16 * 1024 * 8];
+    let mut ws_ki = alloc::vec![[0u8; 32]; 32];
+    let mut ws_tki =
+        alloc::vec![shlosilo::chain::xmr::signed_txset::TxKeyImageEntry::default(); 128];
+    let mut ws_sel_out = alloc::vec![0u8; 256];
+    let mut ws_kstr = alloc::vec![0u8; 67 * 32];
+    let mut ws_record_dests = alloc::vec![
+        shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default();
+        64
+    ];
+    let mut ws = shlosilo::business::sign::SignWs {
+        plain: &mut ws_plain,
+        txes: &mut ws_txes,
+        sources: &mut ws_sources,
+        splitted_dsts: &mut ws_sd,
+        selected_transfers: &mut ws_sel,
+        extra: &mut ws_extra,
+        dests: &mut ws_dests,
+        subaddr_indices: &mut ws_subidx,
+        ptx: &mut ws_ptx,
+        tx_bytes: &mut ws_tx_bytes,
+        ki: &mut ws_ki,
+        tki: &mut ws_tki,
+        sel: &mut ws_sel_out,
+        kstr: &mut ws_kstr,
+        record_dests: &mut ws_record_dests,
+    };
     let t0 = Instant::now();
-    match shlosilo::business::sign::sign_with_entropy(
+    match shlosilo::business::sign::sign_with_entropy_ws(
         input,
         UrTypeTag::XmrTxUnsigned,
         &payload,
         entropy,
+        Some(&mut ws),
         &mut out,
     ) {
         Ok(n) => {
