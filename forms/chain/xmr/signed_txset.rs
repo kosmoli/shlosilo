@@ -255,6 +255,20 @@ impl SignedTxSet<'_> {
         Ok(w.pos())
     }
 
+    /// Z2.4d-3 per-export RNG context: `Keccak(EXPORT_CTX_DOMAIN ‖ serialized container)`,
+    /// absorbed through the sponge — the plaintext streams from the model into the hash
+    /// and is never materialized (pass 1 of the two-pass export encryption; pass 2 is
+    /// `encrypt_signed_txset_into` under the derived stream). Binding the full container
+    /// (not any single tx's digest) keeps multi-transaction sets separated: two sets
+    /// sharing one member cannot collide on the export stream.
+    pub fn export_encrypt_context(&self) -> Result<[u8; 32]> {
+        use crate::types::push::Sink as _;
+        let mut h = crate::encoding::keccak256::KeccakSink::new();
+        h.put(crate::chain::xmr::signing_rng::EXPORT_CTX_DOMAIN)?;
+        self.write_all(&mut h)?;
+        Ok(h.finalize())
+    }
+
     /// Exact serialized length (CountSink pre-pass; nothing is materialized).
     pub fn serialized_len(&self) -> usize {
         let mut c = crate::types::push::CountSink(0);
@@ -801,5 +815,192 @@ mod tests {
         assert_eq!(&bytes[off..off + 32], &[5u8; 32]);
         off += 32;
         assert_eq!(off, bytes.len());
+    }
+
+    /// Z2.4d-3 (GPT review, strengthened): forced mid-stream failure must leave the
+    /// already-written prefix byte-identical to the normal encryption's ciphertext
+    /// prefix (no plaintext fallback anywhere), and the tail must be untouched
+    /// (SinkCursor writes are all-or-nothing).
+    #[test]
+    fn fused_encrypt_failure_prefix_is_ciphertext() {
+        use crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk;
+        use crate::chain::xmr::unsigned_txset::RctConfig;
+        use crate::chain::xmr::unsigned_txset::{TxConstructionData, TxDestinationEntry};
+        use crate::types::SliceVec;
+        let mut e_src: [Option<TxSourceEntry>; 0] = [];
+        let mut e_sd: [TxDestinationEntry; 0] = [];
+        let mut e_sel = [0usize; 1];
+        let mut e_sel_b = [0u8; 1];
+        let mut e_extra = [0x01u8, 0x02];
+        let mut e_dests: [TxDestinationEntry; 0] = [];
+        let mut e_sub: [u32; 0] = [];
+        let mut ks = [0u8; 67];
+        let mut dsts =
+            core::array::from_fn::<TxDestinationEntry, 1, _>(|_| TxDestinationEntry::default());
+        let ptx = PendingTx {
+            tx_bytes: alloc::vec![0xABu8; 700], // long enough to span many chunks
+            dust: 0,
+            fee: 30640000,
+            dust_added_to_fee: false,
+            change_dts: TxDestinationEntry::default(),
+            selected_transfers: SliceVec::new(&mut e_sel_b),
+            key_images_str: SliceVec::new(&mut ks),
+            additional_tx_keys: heapless::Vec::new(),
+            dests: SliceVec::new(&mut dsts),
+            construction_data: TxConstructionData {
+                sources: SliceVec::new(&mut e_src),
+                change_dts: TxDestinationEntry::default(),
+                splitted_dsts: SliceVec::new(&mut e_sd),
+                selected_transfers: SliceVec::new(&mut e_sel),
+                extra: SliceVec::new(&mut e_extra),
+                unlock_time: 0,
+                use_rct: 1,
+                rct_config: RctConfig::default(),
+                dests: SliceVec::new(&mut e_dests),
+                subaddr_account: 0,
+                subaddr_indices: SliceVec::new(&mut e_sub),
+            },
+        };
+        let mut ptx_slot: [Option<PendingTx<'_>>; 1] = core::array::from_fn(|_| None);
+        let mut ptx_sv = SliceVec::new(&mut ptx_slot);
+        ptx_sv.push(Some(ptx)).unwrap();
+        let mut ki_backing = core::array::from_fn::<[u8; 32], 1, _>(|_| [0u8; 32]);
+        let mut tki_backing =
+            core::array::from_fn::<TxKeyImageEntry, 1, _>(|_| TxKeyImageEntry::default());
+        let set = SignedTxSet {
+            ptx: ptx_sv,
+            key_images: SliceVec::new(&mut ki_backing),
+            tx_key_images: SliceVec::new(&mut tki_backing),
+        };
+        let sk = test_view_sk();
+        let key = chacha_key_from_view_sk(&sk);
+
+        let mut full = alloc::vec![0u8; 8192];
+        let mut r1 = ChaCha20Rng::from_seed([0xC3u8; 32]);
+        let n = set
+            .encrypt_signed_txset_into(&sk, &key, &mut r1, &mut full)
+            .unwrap();
+        assert!(n > 700);
+
+        for &cut in &[1usize, 20, 28, 100, 400, 750] {
+            let mut small = alloc::vec![0xEEu8; cut]; // sentinel
+            let mut r2 = ChaCha20Rng::from_seed([0xC3u8; 32]);
+            let err = set
+                .encrypt_signed_txset_into(&sk, &key, &mut r2, &mut small)
+                .expect_err("forced overflow must error");
+            assert!(
+                matches!(
+                    err.kind,
+                    crate::error::ShlosiloErrorKind::BufferTooSmall
+                        | crate::error::ShlosiloErrorKind::EncodingInvalidFormat
+                ),
+                "cut={cut}"
+            );
+            let written = small.iter().rposition(|&b| b != 0xEE).map_or(0, |i| i + 1);
+            assert!(written <= cut, "cut={cut}"); // == happens when the buffer fills exactly
+            assert_eq!(
+                &small[..written],
+                &full[..written],
+                "cut={cut}: partial output must be the ciphertext prefix"
+            );
+            assert!(
+                small[written..].iter().all(|&b| b == 0xEE),
+                "cut={cut}: tail must be untouched (all-or-nothing writes)"
+            );
+        }
+    }
+
+    /// Z2.4d-3: export stream domain separation + deterministic retry property.
+    #[test]
+    fn export_stream_separates_domains_and_binds_ctx() {
+        use crate::chain::xmr::signing_rng::{export_encrypt_rng, purpose_rng, RngPurpose};
+        use rand_chacha::rand_core::RngCore as _;
+        let e = [0x42u8; 32];
+        let c1 = [0x01u8; 32];
+        let c2 = [0x02u8; 32];
+        let mut s1 = [0u8; 32];
+        let mut s2 = [0u8; 32];
+        let mut s3 = [0u8; 32];
+        let mut s4 = [0u8; 32];
+        export_encrypt_rng(&e, &c1).unwrap().fill_bytes(&mut s1);
+        purpose_rng(&e, RngPurpose::BulletproofPlus, &c1)
+            .unwrap()
+            .fill_bytes(&mut s2);
+        assert_ne!(
+            s1, s2,
+            "ExportEncrypt domain must differ from BulletproofPlus"
+        );
+        export_encrypt_rng(&e, &c1).unwrap().fill_bytes(&mut s3);
+        assert_eq!(s1, s3, "same (entropy, domain, ctx) must reproduce (retry)");
+        export_encrypt_rng(&e, &c2).unwrap().fill_bytes(&mut s4);
+        assert_ne!(s1, s4, "different ctx must give different streams");
+    }
+
+    /// Z2.4d-3: envelope type binding. Cryptographic authentication covers
+    /// nonce ‖ ciphertext ONLY (legacy keystone scheme; changing the hash input
+    /// would break wallet interop):
+    ///
+    /// ```text
+    /// Cryptographic authentication:    nonce || ciphertext
+    /// Semantic type authentication:   NOT PROVIDED BY LEGACY ENVELOPE
+    /// Type enforcement:               parser + inner version + UR type tag
+    /// ```
+    #[test]
+    fn envelope_type_swap_sig_survives_but_parser_rejects() {
+        use crate::chain::xmr::unsigned_txset::{
+            chacha_key_from_view_sk, decrypt_unsigned_txset, deserialize_unsigned_tx,
+            TxDestinationEntry, UnsignedTxPools,
+        };
+        let sk = test_view_sk();
+        let key = chacha_key_from_view_sk(&sk);
+        let mut rng = ChaCha20Rng::from_seed([0x77u8; 32]);
+        let enc = encrypt_signed_txset_with_chacha_key(
+            zeroize::Zeroizing::new(alloc::vec![0xAAu8; 40]),
+            &sk,
+            &key,
+            &mut rng,
+        )
+        .unwrap();
+
+        // type swap with length shift: UNSIGNED magic(23B) over the same raw+sig
+        let mut swapped = alloc::vec::Vec::new();
+        swapped.extend_from_slice(crate::chain::xmr::unsigned_txset::UNSIGNED_TX_PREFIX);
+        swapped.extend_from_slice(&enc[SIGNED_TX_PREFIX.len()..]);
+
+        // (1) signature verification SURVIVES the swap — the documented legacy gap
+        let dec = decrypt_unsigned_txset(&swapped, &sk)
+            .expect("sig survives magic swap (type is unauthenticated)");
+        // (2) wrong-type plaintext must fail parser checks (signed container starts
+        //     0x00; unsigned expects varint version 2)
+        let mut t = [None; 1];
+        let mut s = [None; 1];
+        let mut sd =
+            core::array::from_fn::<TxDestinationEntry, 1, _>(|_| TxDestinationEntry::default());
+        let mut sel = [0usize; 1];
+        let mut ex = [0u8; 32];
+        let mut de: [TxDestinationEntry; 0] = [];
+        let mut su: [u32; 0] = [];
+        let parse = deserialize_unsigned_tx(
+            &dec,
+            UnsignedTxPools {
+                txes: &mut t,
+                sources: &mut s,
+                splitted_dsts: &mut sd,
+                selected_transfers: &mut sel,
+                extra: &mut ex,
+                dests: &mut de,
+                subaddr_indices: &mut su,
+            },
+        );
+        assert!(
+            parse.is_err(),
+            "wrong-type plaintext must fail parser checks"
+        );
+
+        // (3) in-place magic replacement (no shift) breaks the framing/signature
+        let mut swapped2 = enc.clone();
+        let um = crate::chain::xmr::unsigned_txset::UNSIGNED_TX_PREFIX;
+        swapped2[..SIGNED_TX_PREFIX.len()].copy_from_slice(&um[..SIGNED_TX_PREFIX.len()]);
+        assert!(decrypt_signed_txset(&swapped2, &sk).is_err());
     }
 }

@@ -16,6 +16,12 @@
 //!
 //! Same entropy + same construction → same signature stream: a **feature** (deterministic retry
 //! property); r only serves this transaction's outputs, with no cross-transaction collision.
+//!
+//! **Defense in depth (Z2.4d-3)**: L2 derives every stream from a per-message context, so
+//! different transactions can never share a nonce/k EVEN IF the same entropy is fed twice
+//! (L3 mis-call, retry, state recovery). The L3 fresh-entropy-per-operation contract stays
+//! mandatory as the first wall — L1/L2 must never treat upstream uniqueness as the sole
+//! precondition for nonce safety (TRNG acquisition is decoupled from core logic by design).
 
 use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -37,6 +43,12 @@ pub enum RngPurpose {
     BulletproofPlus,
     /// CLSAG signatures, isolated per input index
     Clsag(usize),
+    /// Export-envelope encryption: ChaCha nonce + Monero Schnorr k (the signature
+    /// over keccak256(nonce‖ciphertext)). Z2.4d-3: dedicated domain — this stream
+    /// previously rode the BulletproofPlus label with a CONSTANT context, so two
+    /// different transactions signed under the same entropy reused the same nonce
+    /// AND the same k (two-time pad + Schnorr k-reuse → view_sk recovery).
+    ExportEncrypt,
 }
 
 impl RngPurpose {
@@ -47,8 +59,22 @@ impl RngPurpose {
             RngPurpose::BulletproofPlus => "shlosilo/xmr/bulletproof+",
             // the clsag index is encoded into the second half of info; see purpose_rng
             RngPurpose::Clsag(_) => "shlosilo/xmr/clsag",
+            RngPurpose::ExportEncrypt => "shlosilo/xmr/export-encrypt",
         }
     }
+}
+
+/// Per-export RNG context: Keccak(domain-tag ‖ plaintext stream), where the
+/// plaintext is absorbed through the sponge (never materialized). The domain tag
+/// carries a format version, so a future v2 container never shares a derivation
+/// domain with v1 even on bytewise-identical payloads.
+pub const EXPORT_CTX_DOMAIN: &[u8] = b"shlosilo/xmr/export-encrypt/ctx-v1";
+
+/// Z2.4d-3: the sanctioned derivation for export-envelope randomness. Use this
+/// (not a hand-rolled `purpose_rng` call) so the domain label and context binding
+/// cannot drift apart again.
+pub fn export_encrypt_rng(entropy: &[u8], ctx: &[u8; 32]) -> Result<ChaCha20Rng, RngSeedError> {
+    purpose_rng(entropy, RngPurpose::ExportEncrypt, ctx)
 }
 
 /// Entropy injection error.
@@ -90,6 +116,7 @@ pub fn purpose_rng(
         RngPurpose::TxKey => (0, 0),
         RngPurpose::BulletproofPlus => (1, 0),
         RngPurpose::Clsag(i) => (2, i as u32),
+        RngPurpose::ExportEncrypt => (3, 0),
     };
     // info = label ‖ context(32) ‖ purpose_index(4 LE) ‖ sub_index(4 LE)
     let mut info = [0u8; 80];

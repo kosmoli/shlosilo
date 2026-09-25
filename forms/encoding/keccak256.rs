@@ -10,6 +10,45 @@ pub const KECCAK256_OUTPUT_LEN: usize = 32;
 
 /// Keccak-256 hash
 ///
+/// Z2.4d-3: streaming Keccak-256 sink — absorbs a byte stream (e.g. the txset
+/// writer family) without materializing it; feeds `crate::types::push::Sink`
+/// consumers via `write_all`. The sponge transient follows the established
+/// `keccak256::hash` precedent (permutation state is not zeroized).
+pub struct KeccakSink {
+    inner: tiny_keccak::Keccak,
+}
+
+impl KeccakSink {
+    pub fn new() -> Self {
+        Self {
+            inner: tiny_keccak::Keccak::v256(),
+        }
+    }
+
+    pub fn absorb(&mut self, bytes: &[u8]) {
+        self.inner.update(bytes);
+    }
+
+    pub fn finalize(self) -> [u8; KECCAK256_OUTPUT_LEN] {
+        let mut output = [0u8; KECCAK256_OUTPUT_LEN];
+        self.inner.finalize(&mut output);
+        output
+    }
+}
+
+impl Default for KeccakSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl crate::types::push::Sink for KeccakSink {
+    fn put(&mut self, bytes: &[u8]) -> crate::error::Result<()> {
+        self.inner.update(bytes);
+        Ok(())
+    }
+}
+
 /// Phase 4 real implementation: `tiny_keccak::Keccak::v256()`
 ///
 /// **v2.4 security**: input borrowed, output owned (the hash carries no secret information)

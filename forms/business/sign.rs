@@ -480,7 +480,14 @@ fn sign_xmr(
     // Z2.4d-3: fused serialize+encrypt straight into the output buffer — the plaintext
     // container streams through the ChaCha keystream and never materializes; `output_buf`
     // receives ciphertext only (not sensitive).
-    let mut enc_rng = purpose_rng(entropy, RngPurpose::BulletproofPlus, &[1u8; 32])
+    // Z2.4d-3: export stream = ExportEncrypt domain over the plaintext digest
+    // (was: BulletproofPlus label + CONSTANT context — same entropy signing two
+    // different transactions reused the same nonce AND the same Schnorr k, giving
+    // two-time pad + view_sk recovery). Two-pass: the context is absorbed through
+    // the sponge first (no plaintext materialization), then the fused encrypt runs
+    // under the derived stream. Deterministic-retry property preserved.
+    let export_ctx = set.export_encrypt_context()?;
+    let mut enc_rng = crate::chain::xmr::signing_rng::export_encrypt_rng(entropy, &export_ctx)
         .map_err(crate::error::ShlosiloError::from)?;
     let required = crate::chain::xmr::signed_txset::SIGNED_TX_PREFIX.len()
         + crate::chain::xmr::signed_txset::NONCE_LEN
