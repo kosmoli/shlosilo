@@ -276,6 +276,21 @@ pub extern "C" fn shlosilo_sign_ws_len() -> c_uint {
     crate::business::sign::SignWsLayout::compute().total as c_uint
 }
 
+/// Z3.3c: encode-handle workspace capacity query (C-ABI workspace contract v1 —
+/// runtime query, never frozen into the ABI). Pure: no state, no side effects.
+#[no_mangle]
+pub extern "C" fn shlosilo_ur_encode_ws_len() -> c_uint {
+    crate::ur::ur_multipart::ur_encode_ws_len() as c_uint
+}
+
+/// Z3.3c: decode-handle workspace capacity query (pools + handle, alignment
+/// slop included). Pure: no state, no side effects. Same layout source as the
+/// placement carve (contract 3).
+#[no_mangle]
+pub extern "C" fn shlosilo_ur_decode_ws_len() -> c_uint {
+    crate::ur::ur_multipart::ur_decode_ws_len() as c_uint
+}
+
 /// shlosilo_sign_ur_ffi — full UR string + mnemonic → signature (P6.1d)
 ///
 /// L3 feeds `ur:crypto-psbt/...` / `ur:eth-sign-request/...` / `ur:xmr-txunsigned/...` directly;
@@ -688,7 +703,6 @@ pub mod r3 {
     use crate::ur::ur_multipart::{
         UrMultipartDecoder, UrMultipartEncoder, MULTIPART_FRAME_MAX_LEN,
     };
-    use alloc::boxed::Box;
 
     // --- R3: typed multipart FFI (finalized 2026-08-31 — replaces legacy first-byte type guessing) ---
     //
@@ -714,8 +728,16 @@ pub mod r3 {
         payload: *const u8,
         payload_len: c_uint,
         max_fragment_len: c_uint,
+        ws: *mut u8,
+        ws_len: c_uint,
     ) -> *mut UrMultipartEncoder<'static> {
         let result = ffi_catch_unwind!(|| -> Option<*mut UrMultipartEncoder> {
+            // Z3.3c: caller-workspace contract — the capacity is queried via
+            // shlosilo_ur_encode_ws_len (the pure probe); NULL ws or
+            // under-capacity fails before any state is created.
+            if ws.is_null() || (ws_len as usize) < crate::ur::ur_multipart::ur_encode_ws_len() {
+                return None;
+            }
             if type_name.is_null() || payload.is_null() {
                 return None;
             }
@@ -738,7 +760,12 @@ pub mod r3 {
                 crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
             )?;
             let enc = UrMultipartEncoder::new(tname, pslice, max_fragment_len as usize).ok()?;
-            Some(Box::into_raw(Box::new(enc)))
+            // SAFETY: ws_len >= ur_encode_ws_len() checked above; the workspace
+            // stays at a stable address until shlosilo_ur_encode_free.
+            let ws_slice = unsafe {
+                core::slice::from_raw_parts_mut(ws, crate::ur::ur_multipart::ur_encode_ws_len())
+            };
+            crate::ur::ur_multipart::ur_encode_place(ws_slice, enc)
         });
         match result {
             Ok(Some(h)) => h,
@@ -845,8 +872,11 @@ pub mod r3 {
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: visible to clippy once mod r3 becomes pub; free contract: single-owner
     pub extern "C" fn shlosilo_ur_encode_free(handle: *mut UrMultipartEncoder) {
+        // Z3.3c: the handle lives in caller workspace — free only drops the
+        // value in place (no deallocation; the memory returns to the caller).
+        // Single-owner free contract unchanged: exactly one free per handle.
         if !handle.is_null() {
-            unsafe { drop(Box::from_raw(handle)) };
+            unsafe { core::ptr::drop_in_place(handle) };
         }
     }
 
@@ -860,9 +890,27 @@ pub mod r3 {
     // workspace at Z3.3b (proposed C shape in the Z3 design doc).
     /// R3: create a multipart decoder. Returns a handle on success, null on failure.
     #[no_mangle]
-    pub extern "C" fn shlosilo_ur_decode_new() -> *mut UrMultipartDecoder<'static> {
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: ws_len is checked
+                                               // against shlosilo_ur_decode_ws_len() before from_raw_parts_mut; the
+                                               // caller guarantees ws points to ws_len valid bytes kept at a stable
+                                               // address until shlosilo_ur_decode_free (Z3.3c workspace contract).
+    pub extern "C" fn shlosilo_ur_decode_new(
+        ws: *mut u8,
+        ws_len: c_uint,
+    ) -> *mut UrMultipartDecoder<'static> {
         let result = ffi_catch_unwind!(|| -> *mut UrMultipartDecoder {
-            Box::into_raw(Box::new(UrMultipartDecoder::new()))
+            // Z3.3c: caller-workspace contract — capacity via
+            // shlosilo_ur_decode_ws_len (the pure probe); NULL ws or
+            // under-capacity returns null before anything is created.
+            if ws.is_null() {
+                return core::ptr::null_mut();
+            }
+            let need = crate::ur::ur_multipart::ur_decode_ws_len();
+            if (ws_len as usize) < need {
+                return core::ptr::null_mut();
+            }
+            let ws_slice = unsafe { core::slice::from_raw_parts_mut(ws, need) };
+            crate::ur::ur_multipart::ur_decode_ws_place(ws_slice).unwrap_or(core::ptr::null_mut())
         });
         match result {
             Ok(h) => h,
@@ -1222,8 +1270,10 @@ pub mod r3 {
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: visible to clippy once mod r3 becomes pub; free contract: single-owner
     pub extern "C" fn shlosilo_ur_decode_free(handle: *mut UrMultipartDecoder<'static>) {
+        // Z3.3c: caller-workspace handle — free drops the value in place (the
+        // pools and handle memory return to the caller). Single-owner contract.
         if !handle.is_null() {
-            unsafe { drop(Box::from_raw(handle)) };
+            unsafe { core::ptr::drop_in_place(handle) };
         }
     }
 
@@ -1239,8 +1289,15 @@ pub mod r3 {
             let payload: alloc::vec::Vec<u8> = (0..1024).map(|i| (i % 251) as u8).collect();
             let tname = c"xmr-txunsigned".as_ptr();
 
-            let enc =
-                shlosilo_ur_encode_begin(tname, payload.as_ptr(), payload.len() as c_uint, 200);
+            let mut enc_ws = alloc::vec![0u8; shlosilo_ur_encode_ws_len() as usize];
+            let enc = shlosilo_ur_encode_begin(
+                tname,
+                payload.as_ptr(),
+                payload.len() as c_uint,
+                200,
+                enc_ws.as_mut_ptr(),
+                shlosilo_ur_encode_ws_len(),
+            );
             assert!(!enc.is_null());
 
             let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
@@ -1266,7 +1323,8 @@ pub mod r3 {
             assert_eq!(frames.len(), 6);
             assert!(frames[0].starts_with("ur:xmr-txunsigned/1-6/"));
 
-            let dec = shlosilo_ur_decode_new();
+            let mut dec_ws = alloc::vec![0u8; shlosilo_ur_decode_ws_len() as usize];
+            let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
             assert!(!dec.is_null());
             for f in &frames {
                 let cf = alloc::ffi::CString::new(f.as_str()).unwrap();
@@ -1323,17 +1381,21 @@ pub mod r3 {
 
             // multipart encode
             let tname = c"crypto-psbt".as_ptr();
+            let mut enc_ws = alloc::vec![0u8; shlosilo_ur_encode_ws_len() as usize];
             let enc = shlosilo_ur_encode_begin(
                 tname,
                 ur_payload.as_ptr(),
                 ur_payload.len() as c_uint,
                 200,
+                enc_ws.as_mut_ptr(),
+                shlosilo_ur_encode_ws_len(),
             );
             assert!(!enc.is_null());
             let frag_count = ur_payload.len().div_ceil(200);
             let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
             let mut flen: c_uint = 0;
-            let dec = shlosilo_ur_decode_new();
+            let mut dec_ws = alloc::vec![0u8; shlosilo_ur_decode_ws_len() as usize];
+            let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
             for _ in 0..frag_count {
                 let rc = shlosilo_ur_encode_next(
                     enc,
@@ -1402,8 +1464,17 @@ pub mod r3 {
         fn p0c_type_buffer_too_small() {
             use alloc::ffi::CString;
             let payload = [7u8; 8];
-            let enc = shlosilo_ur_encode_begin(c"crypto-psbt".as_ptr(), payload.as_ptr(), 8, 8);
-            let dec = shlosilo_ur_decode_new();
+            let mut enc_ws = alloc::vec![0u8; shlosilo_ur_encode_ws_len() as usize];
+            let mut dec_ws = alloc::vec![0u8; shlosilo_ur_decode_ws_len() as usize];
+            let enc = shlosilo_ur_encode_begin(
+                c"crypto-psbt".as_ptr(),
+                payload.as_ptr(),
+                8,
+                8,
+                enc_ws.as_mut_ptr(),
+                shlosilo_ur_encode_ws_len(),
+            );
+            let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
             let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
             let mut flen: c_uint = 0;
             let rc = shlosilo_ur_encode_next(
@@ -1426,14 +1497,42 @@ pub mod r3 {
             shlosilo_ur_encode_free(enc);
             shlosilo_ur_decode_free(dec);
         }
+        /// Z3.3c contract: free() drops the handle IN PLACE — the caller's
+        /// workspace is reusable immediately (no deallocation involved).
+        #[test]
+        fn ffi_handle_ws_reusable_after_free() {
+            let mut dec_ws = alloc::vec![0u8; shlosilo_ur_decode_ws_len() as usize];
+            let d1 = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
+            assert!(!d1.is_null());
+            shlosilo_ur_decode_free(d1);
+            // same workspace, second life
+            let d2 = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
+            assert!(!d2.is_null(), "workspace must be reusable after free");
+            shlosilo_ur_decode_free(d2);
+            // under-capacity: the whole-shape failure contract
+            let tiny = shlosilo_ur_decode_ws_len() as usize - 1;
+            let mut small = alloc::vec![0u8; tiny];
+            assert!(shlosilo_ur_decode_new(small.as_mut_ptr(), tiny as c_uint).is_null());
+        }
+
         /// null handle/pointer guards
         #[test]
         fn ffi_multipart_null_guards() {
+            let mut enc_ws = alloc::vec![0u8; shlosilo_ur_encode_ws_len() as usize];
+            let mut dec_ws = alloc::vec![0u8; shlosilo_ur_decode_ws_len() as usize];
+            assert!(shlosilo_ur_encode_begin(
+                core::ptr::null(),
+                core::ptr::null(),
+                0,
+                200,
+                enc_ws.as_mut_ptr(),
+                shlosilo_ur_encode_ws_len(),
+            )
+            .is_null());
             assert!(
-                shlosilo_ur_encode_begin(core::ptr::null(), core::ptr::null(), 0, 200).is_null()
+                !shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len()).is_null()
             );
-            assert!(!shlosilo_ur_decode_new().is_null());
-            let dec = shlosilo_ur_decode_new();
+            let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
             assert_eq!(
                 shlosilo_ur_decode_feed(
                     core::ptr::null_mut(),

@@ -480,14 +480,15 @@ impl<'a> FountainDecoder<'a> {
     /// tests only — the handle owns it for its lifetime). Production flux builds `with_ws`
     /// over its own pools (zero-heap).
     pub fn new() -> FountainDecoder<'static> {
+        use crate::types::caps as c;
         let decoded: &'static mut [Option<(usize, Part)>] =
-            alloc::boxed::Box::leak(alloc::vec![None; 256].into_boxed_slice());
+            alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_DECODED_SLOTS].into_boxed_slice());
         let buffer: &'static mut [Option<(IdxSet, Part)>] =
-            alloc::boxed::Box::leak(alloc::vec![None; 256].into_boxed_slice());
+            alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_BUFFER_SLOTS].into_boxed_slice());
         let queue: &'static mut [Option<(usize, Part)>] =
-            alloc::boxed::Box::leak(alloc::vec![None; 256].into_boxed_slice());
+            alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_QUEUE_SLOTS].into_boxed_slice());
         let received: &'static mut [Option<IdxSet>] =
-            alloc::boxed::Box::leak(alloc::vec![None; MAX_TOTAL_FRAMES].into_boxed_slice());
+            alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_RECEIVED_SLOTS].into_boxed_slice());
         FountainDecoder::with_ws(FountainWs {
             decoded,
             buffer,

@@ -456,6 +456,27 @@
 #define SIGN_WS_KSTR (67 * 32)
 
 /**
+ * Workspace: UR decode — decoded-parts slots (FountainWs pool).
+ */
+#define UR_WS_DECODED_SLOTS 256
+
+/**
+ * Workspace: UR decode — work-buffer slots.
+ */
+#define UR_WS_BUFFER_SLOTS 256
+
+/**
+ * Workspace: UR decode — cascade queue slots.
+ */
+#define UR_WS_QUEUE_SLOTS 256
+
+/**
+ * Workspace: UR decode — received-sequence slots (the full fountain sequence
+ * space: MAX_TOTAL_FRAMES).
+ */
+#define UR_WS_RECEIVED_SLOTS 4096
+
+/**
  * Workspace: records-face destinations (flat).
  */
 #define SIGN_WS_RECORD_DESTS 64
@@ -565,6 +586,19 @@ int shlosilo_sign_ffi(const uint16_t *mnemonic_indices,
 unsigned int shlosilo_sign_ws_len(void);
 
 /**
+ * Z3.3c: encode-handle workspace capacity query (C-ABI workspace contract v1 —
+ * runtime query, never frozen into the ABI). Pure: no state, no side effects.
+ */
+unsigned int shlosilo_ur_encode_ws_len(void);
+
+/**
+ * Z3.3c: decode-handle workspace capacity query (pools + handle, alignment
+ * slop included). Pure: no state, no side effects. Same layout source as the
+ * placement carve (contract 3).
+ */
+unsigned int shlosilo_ur_decode_ws_len(void);
+
+/**
  * shlosilo_sign_ur_ffi — full UR string + mnemonic → signature (P6.1d)
  *
  * L3 feeds `ur:crypto-psbt/...` / `ur:eth-sign-request/...` / `ur:xmr-txunsigned/...` directly;
@@ -649,7 +683,9 @@ int shlosilo_supported_protocols_ffi(uint8_t *output_buf,
 struct UrMultipartEncoder *shlosilo_ur_encode_begin(const char *type_name,
                                                     const uint8_t *payload,
                                                     unsigned int payload_len,
-                                                    unsigned int max_fragment_len);
+                                                    unsigned int max_fragment_len,
+                                                    uint8_t *ws,
+                                                    unsigned int ws_len);
 
 /**
  * R3: get the next frame URI string (written to frame_buf, NUL-terminated).
@@ -682,7 +718,7 @@ void shlosilo_ur_encode_free(struct UrMultipartEncoder *handle);
 /**
  * R3: create a multipart decoder. Returns a handle on success, null on failure.
  */
-struct UrMultipartDecoder *shlosilo_ur_decode_new(void);
+struct UrMultipartDecoder *shlosilo_ur_decode_new(uint8_t *ws, unsigned int ws_len);
 
 /**
  * R3: feed one frame URI (NUL-terminated C string).

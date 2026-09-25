@@ -360,9 +360,22 @@ static int run_checks(void)
     {
         static uint8_t mp_payload[1024];
         for (int i = 0; i < 1024; i++) mp_payload[i] = (uint8_t)(i % 251);
+        /* Z3.3c: handle workspaces — runtime query, C-side provisioning */
+        unsigned enc_ws_need = shlosilo_ur_encode_ws_len();
+        unsigned dec_ws_need = shlosilo_ur_decode_ws_len();
+        uint8_t *enc_ws = (uint8_t *)malloc(enc_ws_need);
+        uint8_t *dec_ws = (uint8_t *)malloc(dec_ws_need);
+        if (enc_ws == NULL || dec_ws == NULL) {
+            log_line("mp: ws alloc fail (%u/%u)", enc_ws_need, dec_ws_need);
+            fail++;
+            free(enc_ws);
+            free(dec_ws);
+            return fail;
+        }
         UrMultipartEncoder *enc = shlosilo_ur_encode_begin(
-            "xmr-txunsigned", mp_payload, sizeof(mp_payload), 200);
-        UrMultipartDecoder *dec = shlosilo_ur_decode_new();
+            "xmr-txunsigned", mp_payload, sizeof(mp_payload), 200,
+            enc_ws, enc_ws_need);
+        UrMultipartDecoder *dec = shlosilo_ur_decode_new(dec_ws, dec_ws_need);
         static uint8_t frame[1024]; /* FRAME_BUF_MAX_LEN 对齐 poc4 c_abi */
         unsigned int flen = 0;
         int mp_fail = 0;
@@ -393,6 +406,8 @@ static int run_checks(void)
         }
         shlosilo_ur_encode_free(enc);
         shlosilo_ur_decode_free(dec);
+        free(enc_ws);
+        free(dec_ws);
         memset(mp_payload, 0, sizeof(mp_payload));
         memset(mp_out, 0, sizeof(mp_out));
         memset(frame, 0, sizeof(frame));

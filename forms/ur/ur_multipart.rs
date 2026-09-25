@@ -11,7 +11,7 @@ extern crate alloc;
 
 use crate::encoding::bytewords;
 use crate::encoding::fountain::{
-    FountainDecoder, FountainEncoder, FountainWs, Part, MAX_SEQUENCE_COUNT,
+    FountainDecoder, FountainEncoder, FountainWs, IdxSet, Part, MAX_SEQUENCE_COUNT,
 };
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
@@ -280,6 +280,169 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
 /// decoded/buffer/queue exceed this value = abnormal session, reset to clear (an attacker cannot hold memory long-term).
 /// The payload itself is <= 16 KiB; a 2× margin covers fountain elimination intermediate states.
 pub const MULTIPART_SESSION_RETAINED_MAX: usize = MULTIPART_PAYLOAD_MAX_LEN * 2;
+
+/// Z3.3c: UR handle workspace layouts — the single source of truth behind the
+/// `shlosilo_ur_*_ws_len()` queries and the in-place placement (the C-ABI
+/// workspace contract-3 pattern from Z3.3b). A workspace must stay at a stable
+/// address from placement until `*_free`, which only drops the value in place —
+/// the memory itself belongs to the caller (Z6: no allocator involved).
+pub struct UrDecodeWsLayout {
+    pub align: usize,
+    decoded: usize,
+    buffer: usize,
+    queue: usize,
+    received: usize,
+    handle: usize,
+    pub total: usize,
+}
+
+fn ur_next(off: &mut usize, align: usize, size: usize) -> usize {
+    let start = (*off + align - 1) & !(align - 1);
+    *off = start + size;
+    start
+}
+
+impl UrDecodeWsLayout {
+    pub fn compute() -> Self {
+        use crate::types::caps as c;
+        type EP = Option<(usize, Part)>;
+        type BP = Option<(IdxSet, Part)>;
+        type RS = Option<IdxSet>;
+        let align =
+            core::mem::align_of::<UrMultipartDecoder<'static>>().max(core::mem::align_of::<EP>());
+        let mut off = 0usize;
+        let decoded = ur_next(
+            &mut off,
+            core::mem::align_of::<EP>(),
+            core::mem::size_of::<EP>() * c::UR_WS_DECODED_SLOTS,
+        );
+        let buffer = ur_next(
+            &mut off,
+            core::mem::align_of::<BP>(),
+            core::mem::size_of::<BP>() * c::UR_WS_BUFFER_SLOTS,
+        );
+        let queue = ur_next(
+            &mut off,
+            core::mem::align_of::<EP>(),
+            core::mem::size_of::<EP>() * c::UR_WS_QUEUE_SLOTS,
+        );
+        let received = ur_next(
+            &mut off,
+            core::mem::align_of::<RS>(),
+            core::mem::size_of::<RS>() * c::UR_WS_RECEIVED_SLOTS,
+        );
+        let handle = ur_next(
+            &mut off,
+            core::mem::align_of::<UrMultipartDecoder<'static>>(),
+            core::mem::size_of::<UrMultipartDecoder<'static>>(),
+        );
+        let content = ur_next(&mut off, align, 0);
+        // slop so ANY base address satisfies the alignment (contract 3: the
+        // query's number covers the real carve for any pointer the caller has)
+        let total = content + align - 1;
+        UrDecodeWsLayout {
+            align,
+            decoded,
+            buffer,
+            queue,
+            received,
+            handle,
+            total,
+        }
+    }
+}
+
+/// Z3.3c: encode-handle workspace length (aligned encoder state).
+pub fn ur_encode_ws_len() -> usize {
+    let a = core::mem::align_of::<UrMultipartEncoder<'static>>();
+    core::mem::size_of::<UrMultipartEncoder<'static>>() + a - 1
+}
+
+/// Z3.3c: decode-handle workspace length (pools + handle, alignment slop
+/// included) — single source with `ur_decode_ws_place` (contract 3).
+pub fn ur_decode_ws_len() -> usize {
+    UrDecodeWsLayout::compute().total
+}
+
+/// Place an encoder into caller workspace (Z3.3c). `None` when `buf` is too
+/// small. Contract: the workspace must stay at a stable address until
+/// `shlosilo_ur_encode_free` (drops the value in place; no deallocation).
+pub fn ur_encode_place<'a>(
+    buf: &'a mut [u8],
+    enc: UrMultipartEncoder<'a>,
+) -> Option<*mut UrMultipartEncoder<'a>> {
+    if buf.len() < ur_encode_ws_len() {
+        return None;
+    }
+    let a = core::mem::align_of::<UrMultipartEncoder<'a>>();
+    let addr = (buf.as_mut_ptr() as usize + a - 1) & !(a - 1);
+    let slot = addr as *mut UrMultipartEncoder<'a>;
+    // SAFETY: slot lies inside buf (checked above + slop), properly aligned;
+    // the value moves into caller-owned memory per the Z3.3c contract.
+    unsafe { core::ptr::write(slot, enc) };
+    Some(slot)
+}
+
+/// Place a decoder (with its pools carved from the same workspace) into caller
+/// workspace (Z3.3c). `None` when `buf` is too small. Contract: the workspace
+/// must stay at a stable address until `shlosilo_ur_decode_free` — the handle
+/// borrows its own pools (self-referential; the stability is the caller's
+/// side of the contract).
+pub fn ur_decode_ws_place(buf: &mut [u8]) -> Option<*mut UrMultipartDecoder<'static>> {
+    use crate::types::caps as c;
+    let l = UrDecodeWsLayout::compute();
+    if buf.len() < l.total {
+        return None;
+    }
+    let base = ((buf.as_mut_ptr() as usize + l.align - 1) & !(l.align - 1)) as *mut u8;
+    // SAFETY: offsets come from UrDecodeWsLayout::compute (the same computation
+    // the ws_len query reports — contract 3); spans are disjoint by layout.
+    // Every Option slot is initialized to None through RAW writes BEFORE any
+    // typed reference exists (no reference to uninit memory is ever created).
+    // The 'static lifetimes are fabricated under the caller-stability
+    // contract documented above.
+    unsafe {
+        macro_rules! init_slots {
+            ($ptr:expr, $n:expr, $ty:ty) => {{
+                let p = $ptr as *mut $ty;
+                for i in 0..$n {
+                    core::ptr::write(p.add(i), None);
+                }
+                core::slice::from_raw_parts_mut(p, $n)
+            }};
+        }
+        let decoded = init_slots!(
+            base.add(l.decoded),
+            c::UR_WS_DECODED_SLOTS,
+            Option<(usize, Part)>
+        );
+        let buffer = init_slots!(
+            base.add(l.buffer),
+            c::UR_WS_BUFFER_SLOTS,
+            Option<(IdxSet, Part)>
+        );
+        let queue = init_slots!(
+            base.add(l.queue),
+            c::UR_WS_QUEUE_SLOTS,
+            Option<(usize, Part)>
+        );
+        let received = init_slots!(
+            base.add(l.received),
+            c::UR_WS_RECEIVED_SLOTS,
+            Option<IdxSet>
+        );
+        let ws = FountainWs {
+            decoded,
+            buffer,
+            queue,
+            received,
+        };
+        let dec = UrMultipartDecoder::with_ws(ws);
+        let hp = base.add(l.handle) as *mut UrMultipartDecoder<'static>;
+        core::ptr::write(hp, dec);
+        Some(hp)
+    }
+}
 
 pub struct UrMultipartDecoder<'a> {
     inner: FountainDecoder<'a>,

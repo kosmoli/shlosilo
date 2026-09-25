@@ -58,6 +58,16 @@ pub const SIGN_WS_TKI: usize = 128;
 pub const SIGN_WS_SEL_OUT: usize = 256;
 /// Workspace: key-image string bytes (67 per source).
 pub const SIGN_WS_KSTR: usize = 67 * 32;
+/// Workspace: UR decode — decoded-parts slots (FountainWs pool).
+pub const UR_WS_DECODED_SLOTS: usize = 256;
+/// Workspace: UR decode — work-buffer slots.
+pub const UR_WS_BUFFER_SLOTS: usize = 256;
+/// Workspace: UR decode — cascade queue slots.
+pub const UR_WS_QUEUE_SLOTS: usize = 256;
+/// Workspace: UR decode — received-sequence slots (the full fountain sequence
+/// space: MAX_TOTAL_FRAMES).
+pub const UR_WS_RECEIVED_SLOTS: usize = 4096;
+
 /// Workspace: records-face destinations (flat).
 pub const SIGN_WS_RECORD_DESTS: usize = 64;
 

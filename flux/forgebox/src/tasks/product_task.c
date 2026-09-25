@@ -110,6 +110,8 @@ typedef enum {
 
 static CarouselState g_carousel = CAROUSEL_IDLE;
 static struct UrMultipartEncoder *g_ur_enc = NULL;
+/* Z3.3c: encoder workspace (caller-owned; lives from begin to free) */
+static uint8_t *g_ur_enc_ws = NULL;
 static char g_ur_frame[CAROUSEL_FRAME_MAX];
 static uint32_t g_ur_shown = 0;
 static uint32_t g_ur_total = 0;
@@ -409,9 +411,21 @@ static void carousel_enter(void)
     /* The decode pool may hold scanner leftovers; hand the window back. */
     shlosilo_sram_pool_reset();
 
+    unsigned enc_ws_need = shlosilo_ur_encode_ws_len();
+    g_ur_enc_ws = (uint8_t *)malloc(enc_ws_need);
+    if (g_ur_enc_ws == NULL) {
+        printf("carousel: encoder ws alloc fail (%u)\r\n", enc_ws_need);
+        UiSetLast("ur: ws fail");
+        g_carousel = CAROUSEL_FAILED;
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
+    }
     g_ur_enc = shlosilo_ur_encode_begin(DEMO_PAYLOAD_TYPE, g_demo_payload,
-                                        DEMO_PAYLOAD_LEN, 200);
+                                        DEMO_PAYLOAD_LEN, 200,
+                                        g_ur_enc_ws, enc_ws_need);
     if (g_ur_enc == NULL) {
+        free(g_ur_enc_ws);
+        g_ur_enc_ws = NULL;
         printf("carousel: encoder begin failed\r\n");
         UiSetLast("ur: encoder fail");
         g_carousel = CAROUSEL_FAILED;
@@ -435,6 +449,8 @@ static void carousel_exit(void)
         shlosilo_ur_encode_free(g_ur_enc);
         g_ur_enc = NULL;
     }
+    free(g_ur_enc_ws);
+    g_ur_enc_ws = NULL;
     g_carousel = CAROUSEL_IDLE;
     UiTouchReset();
 }
