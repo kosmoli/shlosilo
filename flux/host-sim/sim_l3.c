@@ -193,6 +193,14 @@ int main(void) {
     /* ── Step 4: sign via UR（P6.1d：L3 直接喂 UR 字符串）── */
     uint8_t signed_out[4096];
     unsigned actual = 0;
+    /* Z3.3b: sign workspace — capacity stays a runtime query (never frozen
+       into the ABI); the host provisions the memory. */
+    static uint8_t sign_ws[512 * 1024];
+    unsigned ws_need = shlosilo_sign_ws_len();
+    if (ws_need > sizeof(sign_ws)) {
+        printf("sign workspace too small: need %u\n", ws_need);
+        return 1;
+    }
 
     /* 用 export_readonly 得到的 crypto-hdkey UR 当输入会走 Unknown 拒绝——
        这里直接用 Python/Rust 侧预生成的 crypto-psbt UR（fixture）演示 L3 形状。
@@ -201,7 +209,8 @@ int main(void) {
     /* 4a. 非 UR 输入 → 错误码 */
     const char *bad_uri = "not-a-ur";
     rc = shlosilo_sign_ur_ffi(bad_uri, indices, 12, NULL, 0, 0, NULL, 0,
-                              signed_out, sizeof(signed_out), &actual);
+                              signed_out, sizeof(signed_out), &actual,
+                              sign_ws, ws_need);
     printf("sign_ur(bad) rc=%d (expected != 0)\n", rc);
 
     /* 4b. 真实 UR：由 sim 内部构造 payload 后无法在 C 端做 bytewords 编码，
@@ -210,7 +219,8 @@ int main(void) {
     const char *fixture_uri =
         "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
     rc = shlosilo_sign_ur_ffi(fixture_uri, indices, 12, NULL, 0, 0, NULL, 0,
-                              signed_out, sizeof(signed_out), &actual);
+                              signed_out, sizeof(signed_out), &actual,
+                              sign_ws, ws_need);
     if (rc == 0) {
         hexdump("signed tx", signed_out, actual);
     } else {

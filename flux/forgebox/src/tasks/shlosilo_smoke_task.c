@@ -8,6 +8,7 @@
  */
 
 #include "shlosilo_smoke_task.h"
+#include <stdlib.h>
 #include "shlosilo.h"
 
 #include <stdio.h>
@@ -229,6 +230,15 @@ static int run_checks(void)
     unsigned int actual = 0;
     uint8_t out[256];
     uint8_t mnemonic_buf[24];
+    /* Z3.3b: sign workspace — C-side provisioning by runtime query (the
+     * capacity is never frozen into the ABI). One-shot diagnostic workspace,
+     * freed before return. */
+    unsigned ws_need = shlosilo_sign_ws_len();
+    uint8_t *sign_ws = (uint8_t *)malloc(ws_need);
+    if (sign_ws == NULL) {
+        log_line("sign ws: alloc fail (%u bytes)", ws_need);
+        return 1;
+    }
     /* P1-04（2026-08-29）：seed 不跨 FFI——restore 步骤删除，新增 export
      * (mnemonic 入口) 替代。测试项：version/cabi/create/export/sign/bad-uri */
     /* P1-05（2026-08-26）：restore/sign 现在校验 BIP-39 checksum——旧 idx12
@@ -296,7 +306,8 @@ static int run_checks(void)
     shlosilo_timing_set_clock_fn((unsigned int)smoke_tick_ms);
     uint32_t t0 = osKernelGetTickCount();
     int rc = shlosilo_sign_ur_ffi(FIXTURE_ETH_SIGN_REQUEST, idx12, 12,
-                                  NULL, 0, 0, NULL, 0, out, sizeof(out), &actual);
+                                  NULL, 0, 0, NULL, 0, out, sizeof(out), &actual,
+                                  sign_ws, ws_need);
     uint32_t dt = osKernelGetTickCount() - t0;
     if (rc == 0 && actual > 0 && out[0] == 0x02) {
         log_line("sign: PASS (%u bytes, type=0x%02x)", actual, out[0]);
@@ -315,7 +326,8 @@ static int run_checks(void)
         shlosilo_timing_reset();
         uint32_t t0b = osKernelGetTickCount();
         int rc2 = shlosilo_sign_ur_ffi(FIXTURE_ETH_SIGN_REQUEST, idx12, 12,
-                                       NULL, 0, 0, NULL, 0, out, sizeof(out), &actual);
+                                       NULL, 0, 0, NULL, 0, out, sizeof(out), &actual,
+                                       sign_ws, ws_need);
         uint32_t dt2 = osKernelGetTickCount() - t0b;
         if (rc2 == 0 && actual > 0) {
             log_line("run2: %u ms (t2 pbkdf2: %u)",
@@ -330,7 +342,8 @@ static int run_checks(void)
 
     /* 6. bad URI 拒绝 */
     if (shlosilo_sign_ur_ffi("not-a-ur", idx12, 12, NULL, 0, 0, NULL, 0,
-                             out, sizeof(out), &actual) != 0) {
+                             out, sizeof(out), &actual,
+                             sign_ws, ws_need) != 0) {
         log_line("bad-uri: PASS (rejected)");
     } else {
         fail++;
@@ -420,7 +433,8 @@ static int run_checks(void)
         uint32_t t0 = osKernelGetTickCount();
         int rc = shlosilo_sign_ur_ffi(FIXTURE_XMR_TX_UNSIGNED, idx12, 12,
                                       NULL, 0, 0, entropy, sizeof(entropy),
-                                      xmr_out, sizeof(xmr_out), &xmr_len);
+                                      xmr_out, sizeof(xmr_out), &xmr_len,
+                                      sign_ws, ws_need);
         uint32_t dt = osKernelGetTickCount() - t0;
         if (rc == 0 && xmr_len > 64) {
             log_line("xmr: PASS (%u bytes)", xmr_len);
@@ -474,6 +488,7 @@ static int run_checks(void)
         memset(entropy, 0, sizeof(entropy));
     }
 
+    free(sign_ws);
     return fail;
 }
 

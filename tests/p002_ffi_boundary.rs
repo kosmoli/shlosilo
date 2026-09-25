@@ -32,6 +32,7 @@ fn p002_negative_count_rejected_sign() {
     let mut out = [0u8; 64];
     let mut actual: u32 = 0;
     for bad in [-1i32, i32::MIN, -12, 0, 11, 13, 14, 16, 25, i32::MAX] {
+        let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
         let rc = shlosilo_sign_ffi(
             idx.as_ptr(),
             bad,
@@ -43,6 +44,8 @@ fn p002_negative_count_rejected_sign() {
             out.as_mut_ptr(),
             out.len() as u32,
             &mut actual,
+            ws_buf.as_mut_ptr(),
+            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
         );
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
         assert_eq!(actual, 0, "failure path must zero actual_len (count={bad})");
@@ -59,6 +62,7 @@ fn p002_negative_count_rejected_sign_ur() {
             .unwrap();
     let uri_c = alloc_cstring(uri.as_str());
     for bad in [-1i32, i32::MIN, 13, 0] {
+        let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
         let rc = shlosilo_sign_ur_ffi(
             uri_c.as_ptr(),
             idx.as_ptr(),
@@ -71,6 +75,8 @@ fn p002_negative_count_rejected_sign_ur() {
             out.as_mut_ptr(),
             out.len() as u32,
             &mut actual,
+            ws_buf.as_mut_ptr(),
+            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
         );
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
         assert_eq!(actual, 0);
@@ -109,6 +115,7 @@ fn p002_negative_count_rejected_sign_typed() {
     let mut actual: u32 = 0;
     let tname = c"crypto-psbt";
     for bad in [-1i32, i32::MIN, 13, 0] {
+        let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
         let rc = shlosilo_sign_typed_ffi(
             tname.as_ptr(),
             [0u8; 8].as_ptr(),
@@ -123,6 +130,8 @@ fn p002_negative_count_rejected_sign_typed() {
             out.as_mut_ptr(),
             out.len() as u32,
             &mut actual,
+            ws_buf.as_mut_ptr(),
+            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
         );
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
         assert_eq!(actual, 0);
@@ -196,6 +205,7 @@ fn p002_network_wraparound_rejected() {
     for &bad_net_u64 in &big_nets {
         // The FFI parameter is c_uint (32-bit); narrowing wraparound is reproducible within the 32-bit range (256 → 0)
         let bad_net = bad_net_u64 as u32;
+        let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
         let rc = shlosilo_sign_ffi(
             idx.as_ptr(),
             12,
@@ -207,6 +217,8 @@ fn p002_network_wraparound_rejected() {
             out.as_mut_ptr(),
             out.len() as u32,
             &mut actual,
+            ws_buf.as_mut_ptr(),
+            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
         );
         assert_ne!(
             rc,
@@ -248,6 +260,7 @@ fn p002_outparam_zeroed_on_null_early_return() {
     let mut actual: u32 = 0xDEAD_BEEF;
 
     // mnemonic_indices = NULL → ERR_NULL_POINTER, but actual_len must already be zeroed
+    let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
     let rc = shlosilo_sign_ffi(
         core::ptr::null(),
         12,
@@ -259,6 +272,8 @@ fn p002_outparam_zeroed_on_null_early_return() {
         out.as_mut_ptr(),
         out.len() as u32,
         &mut actual,
+        ws_buf.as_mut_ptr(),
+        shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
     );
     assert_eq!(rc, INVALID_ARG);
     assert_eq!(

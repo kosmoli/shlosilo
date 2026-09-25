@@ -189,6 +189,207 @@ pub struct SignWs<'a> {
     pub record_dests: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
 }
 
+/// Z3.3b: the sign-workspace layout — the SINGLE source of truth behind both
+/// the capacity query (`shlosilo_sign_ws_len`) and the actual carve
+/// (`carve_sign_ws`). C-ABI workspace contract 3: the reported capacity and the
+/// carved capacity come from this one computation; `sign_ws_layout_consistency`
+/// pins the pairing.
+pub struct SignWsLayout {
+    pub total: usize,
+    plain: usize,
+    txes: usize,
+    sources: usize,
+    splits: usize,
+    sel: usize,
+    extra: usize,
+    dests: usize,
+    subidx: usize,
+    ptx: usize,
+    tx_bytes: usize,
+    ki: usize,
+    tki: usize,
+    sel_out: usize,
+    kstr: usize,
+    record_dests: usize,
+}
+
+fn ws_next(off: &mut usize, align: usize, size: usize) -> usize {
+    let start = (*off + align - 1) & !(align - 1);
+    *off = start + size;
+    start
+}
+
+impl SignWsLayout {
+    pub fn compute() -> Self {
+        use crate::chain::xmr::signed_txset::{PendingTx, TxKeyImageEntry};
+        use crate::chain::xmr::unsigned_txset::{
+            TxConstructionData, TxDestinationEntry, TxSourceEntry,
+        };
+        use crate::types::caps as c;
+        let mut off = 0usize;
+        let plain = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_PLAIN);
+        let txes = ws_next(
+            &mut off,
+            core::mem::align_of::<Option<TxConstructionData<'static>>>(),
+            core::mem::size_of::<Option<TxConstructionData<'static>>>() * c::SIGN_WS_TXES,
+        );
+        let sources = ws_next(
+            &mut off,
+            core::mem::align_of::<Option<TxSourceEntry>>(),
+            core::mem::size_of::<Option<TxSourceEntry>>() * c::SIGN_WS_SOURCES,
+        );
+        let splits = ws_next(
+            &mut off,
+            core::mem::align_of::<TxDestinationEntry>(),
+            core::mem::size_of::<TxDestinationEntry>() * c::SIGN_WS_SPLITS,
+        );
+        let sel = ws_next(
+            &mut off,
+            core::mem::align_of::<usize>(),
+            core::mem::size_of::<usize>() * c::SIGN_WS_SEL,
+        );
+        let extra = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_EXTRA);
+        let dests = ws_next(
+            &mut off,
+            core::mem::align_of::<TxDestinationEntry>(),
+            core::mem::size_of::<TxDestinationEntry>() * c::SIGN_WS_DESTS,
+        );
+        let subidx = ws_next(
+            &mut off,
+            core::mem::align_of::<u32>(),
+            core::mem::size_of::<u32>() * c::SIGN_WS_SUBIDX,
+        );
+        let ptx = ws_next(
+            &mut off,
+            core::mem::align_of::<Option<PendingTx<'static>>>(),
+            core::mem::size_of::<Option<PendingTx<'static>>>() * c::SIGN_WS_PTX,
+        );
+        let tx_bytes = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_TX_BYTES);
+        let ki = ws_next(
+            &mut off,
+            core::mem::align_of::<[u8; 32]>(),
+            core::mem::size_of::<[u8; 32]>() * c::SIGN_WS_KI,
+        );
+        let tki = ws_next(
+            &mut off,
+            core::mem::align_of::<TxKeyImageEntry>(),
+            core::mem::size_of::<TxKeyImageEntry>() * c::SIGN_WS_TKI,
+        );
+        let sel_out = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_SEL_OUT);
+        let kstr = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_KSTR);
+        let record_dests = ws_next(
+            &mut off,
+            core::mem::align_of::<TxDestinationEntry>(),
+            core::mem::size_of::<TxDestinationEntry>() * c::SIGN_WS_RECORD_DESTS,
+        );
+        // trailing pad so the total itself satisfies the widest alignment
+        let total = ws_next(&mut off, core::mem::align_of::<usize>(), 0);
+        SignWsLayout {
+            total,
+            plain,
+            txes,
+            sources,
+            splits,
+            sel,
+            extra,
+            dests,
+            subidx,
+            ptx,
+            tx_bytes,
+            ki,
+            tki,
+            sel_out,
+            kstr,
+            record_dests,
+        }
+    }
+}
+
+/// Z3.3b: carve a `SignWs` out of a caller workspace buffer (the C-ABI and the
+/// transitional shell share this path). Returns `None` when `buf` is smaller
+/// than `SignWsLayout::compute().total` — the carve never partially succeeds.
+///
+/// # Safety contract (internal unsafe, ffi-seam pattern)
+/// The typed spans reinterpret caller bytes; every slot is explicitly
+/// initialized after carving (Option slots to `None`, Default-able leaves to
+/// `default()`, POD spans zeroed) so no uninit value is ever observable.
+pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
+    use crate::chain::xmr::signed_txset::{PendingTx, TxKeyImageEntry};
+    use crate::chain::xmr::unsigned_txset::{
+        TxConstructionData, TxDestinationEntry, TxSourceEntry,
+    };
+    use crate::types::caps as c;
+    let l = SignWsLayout::compute();
+    if buf.len() < l.total {
+        return None;
+    }
+    buf[..l.total].fill(0);
+    let base: *mut u8 = buf.as_mut_ptr();
+    // SAFETY: offsets come from SignWsLayout::compute (the same computation the
+    // capacity query reports — contract 3); each span is alignment-padded there
+    // and disjoint by construction; every element is initialized below before
+    // the slices are handed out. The spans all derive from one base pointer so
+    // the borrow checker sees disjoint raw derivations, not competing &muts.
+    unsafe fn at<'a, T>(base: *mut u8, off: usize, count: usize) -> &'a mut [T] {
+        core::slice::from_raw_parts_mut(base.add(off) as *mut T, count)
+    }
+    let txes: &mut [Option<TxConstructionData>] = unsafe { at(base, l.txes, c::SIGN_WS_TXES) };
+    for s in txes.iter_mut() {
+        unsafe { core::ptr::write(s, None) };
+    }
+    let sources: &mut [Option<TxSourceEntry>] = unsafe { at(base, l.sources, c::SIGN_WS_SOURCES) };
+    for s in sources.iter_mut() {
+        unsafe { core::ptr::write(s, None) };
+    }
+    let splits: &mut [TxDestinationEntry] = unsafe { at(base, l.splits, c::SIGN_WS_SPLITS) };
+    for s in splits.iter_mut() {
+        unsafe { core::ptr::write(s, TxDestinationEntry::default()) };
+    }
+    let dests: &mut [TxDestinationEntry] = unsafe { at(base, l.dests, c::SIGN_WS_DESTS) };
+    for s in dests.iter_mut() {
+        unsafe { core::ptr::write(s, TxDestinationEntry::default()) };
+    }
+    let record_dests: &mut [TxDestinationEntry] =
+        unsafe { at(base, l.record_dests, c::SIGN_WS_RECORD_DESTS) };
+    for s in record_dests.iter_mut() {
+        unsafe { core::ptr::write(s, TxDestinationEntry::default()) };
+    }
+    let ptx: &mut [Option<PendingTx>] = unsafe { at(base, l.ptx, c::SIGN_WS_PTX) };
+    for s in ptx.iter_mut() {
+        unsafe { core::ptr::write(s, None) };
+    }
+    let tki: &mut [TxKeyImageEntry] = unsafe { at(base, l.tki, c::SIGN_WS_TKI) };
+    for s in tki.iter_mut() {
+        unsafe { core::ptr::write(s, TxKeyImageEntry::default()) };
+    }
+    // POD spans: the fill(0) above is their initialization.
+    let plain: &mut [u8] = unsafe { at(base, l.plain, c::SIGN_WS_PLAIN) };
+    let sel: &mut [usize] = unsafe { at(base, l.sel, c::SIGN_WS_SEL) };
+    let extra: &mut [u8] = unsafe { at(base, l.extra, c::SIGN_WS_EXTRA) };
+    let subidx: &mut [u32] = unsafe { at(base, l.subidx, c::SIGN_WS_SUBIDX) };
+    let tx_bytes: &mut [u8] = unsafe { at(base, l.tx_bytes, c::SIGN_WS_TX_BYTES) };
+    let ki: &mut [[u8; 32]] = unsafe { at(base, l.ki, c::SIGN_WS_KI) };
+    let sel_out: &mut [u8] = unsafe { at(base, l.sel_out, c::SIGN_WS_SEL_OUT) };
+    let kstr: &mut [u8] = unsafe { at(base, l.kstr, c::SIGN_WS_KSTR) };
+    Some(SignWs {
+        plain,
+        txes,
+        sources,
+        splitted_dsts: splits,
+        selected_transfers: sel,
+        extra,
+        dests,
+        subaddr_indices: subidx,
+        ptx,
+        tx_bytes,
+        ki,
+        tki,
+        sel: sel_out,
+        kstr,
+        record_dests,
+    })
+}
+
 /// XMR: xmr-txunsigned encrypted blob → decrypt → sign tx by tx → SignedTxSet → encrypted output
 ///
 /// §B.5 finalized implementation (P1-06 wrap-up). Aligned with keystone `sign_tx`:
@@ -608,46 +809,17 @@ fn sign_xmr(
     entropy: &[u8],
     output_buf: &mut [u8],
 ) -> Result<usize> {
-    use crate::chain::xmr::unsigned_txset::{
-        TxConstructionData, TxDestinationEntry, TxSourceEntry,
-    };
-    let mut plain = alloc::vec![0u8; encrypted_unsigned.len()];
-    let mut txes_pool: alloc::vec::Vec<Option<TxConstructionData<'_>>> =
-        (0..8).map(|_| None).collect();
-    let mut sources_pool: alloc::vec::Vec<Option<TxSourceEntry>> = (0..32).map(|_| None).collect();
-    let mut sd_pool = alloc::vec![TxDestinationEntry::default(); 64];
-    let mut sel_pool = alloc::vec![0usize; 256];
-    let mut extra_pool = alloc::vec![0u8; encrypted_unsigned.len()];
-    let mut dests_pool = alloc::vec![TxDestinationEntry::default(); 64];
-    let mut subidx_pool = alloc::vec![0u32; 256];
-    // Z3.2b sign-face backings (generous caps = the parse-face caps' reach:
-    // totals are bounded by the parse pools, so these never bind in shell mode).
-    let mut ptx_backing: alloc::vec::Vec<Option<crate::chain::xmr::signed_txset::PendingTx<'_>>> =
-        (0..8).map(|_| None).collect();
-    let mut tx_bytes_backing = alloc::vec![0u8; 16 * 1024 * 8];
-    let mut ki_backing = alloc::vec![[0u8; 32]; 32];
-    let mut tki_backing =
-        alloc::vec![crate::chain::xmr::signed_txset::TxKeyImageEntry::default(); 128];
-    let mut sel_backing = alloc::vec![0u8; 256];
-    let mut kstr_backing = alloc::vec![0u8; 67 * 32];
-    let mut record_dests_backing = alloc::vec![TxDestinationEntry::default(); 64];
-    let mut ws = SignWs {
-        plain: &mut plain,
-        txes: &mut txes_pool,
-        sources: &mut sources_pool,
-        splitted_dsts: &mut sd_pool,
-        selected_transfers: &mut sel_pool,
-        extra: &mut extra_pool,
-        dests: &mut dests_pool,
-        subaddr_indices: &mut subidx_pool,
-        ptx: &mut ptx_backing,
-        tx_bytes: &mut tx_bytes_backing,
-        ki: &mut ki_backing,
-        tki: &mut tki_backing,
-        sel: &mut sel_backing,
-        kstr: &mut kstr_backing,
-        record_dests: &mut record_dests_backing,
-    };
+    // Z3.3b: ONE contiguous backing carved by the shared layout (the same
+    // computation `shlosilo_sign_ws_len` reports — contract 3). The pool-locals
+    // era is over; this alloc is the single remaining business-boundary root.
+    let need = SignWsLayout::compute().total;
+    let mut backing = alloc::vec![0u8; need];
+    let mut ws = carve_sign_ws(&mut backing).ok_or_else(|| {
+        ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(need),
+        )
+    })?;
     sign_xmr_with_ws(&mut ws, seed, encrypted_unsigned, entropy, output_buf)
 }
 

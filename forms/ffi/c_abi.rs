@@ -49,8 +49,8 @@ fn err(kind: ShlosiloErrorKind) -> ShlosiloError {
 const PASSPHRASE_MAX_LEN: usize = 256;
 /// dice rolls cap: 24 words = 256 bit entropy, a 6-sided die needs ≥ 99 rolls; 1024 already exceeds the margin
 const ROLLS_MAX_COUNT: usize = 1024;
-/// Legacy sign_ffi payload cap (aligned with UR_PAYLOAD_MAX_LEN)
-const LEGACY_PAYLOAD_MAX_LEN: usize = 2048;
+/// Legacy sign_ffi payload cap (aligned with UR_PSBT_MAX_LEN)
+const LEGACY_PSBT_MAX_LEN: usize = 2048;
 /// Audit #5 P0-03: output-side budget — signature output ≤ payload + 512 overhead (unified at the 16KiB scale)
 const SIGN_OUTPUT_BUF_MAX_LEN: usize = crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN + 512;
 /// export_readonly output upper bound (a CryptoHDKey UR is ≈ 500B; unified with sign output to guard against over-declared capacity)
@@ -160,8 +160,28 @@ pub extern "C" fn shlosilo_sign_ffi(
     output_buf: *mut u8,
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
+    ws: *mut u8,
+    ws_len: c_uint,
 ) -> c_int {
     write_actual_len(actual_len, 0); // P0-02 #4: prologue zeroes the out-param (also covers the null early-return)
+                                     // Z3.3b workspace contract (2026-09-25, Kosmo): ws == NULL is a PURE PROBE —
+                                     // reports the workspace requirement and returns before input parsing, key
+                                     // derivation, or any RNG use; no output side effects (output_buf untouched).
+    if ws.is_null() {
+        write_actual_len(actual_len, shlosilo_sign_ws_len() as usize);
+        return OK;
+    }
+    // Capacity is validated BEFORE execution; under-capacity reports the
+    // required length through actual_len (documented exception to the
+    // zero-on-failure rule — the caller needs the number to resize).
+    let ws_need = shlosilo_sign_ws_len() as usize;
+    if (ws_len as usize) < ws_need {
+        write_actual_len(actual_len, ws_need);
+        return to_ffi_code(&ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(ws_need),
+        ));
+    }
     if mnemonic_indices.is_null() || ur_payload.is_null() || output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
@@ -175,14 +195,14 @@ pub extern "C" fn shlosilo_sign_ffi(
         // P0-03: mnemonic goes through checked_slice (u16 elements, budget 24 = whitelist cap)
         let mnem_slice = checked_slice(mnemonic_indices, word_count as usize, 24, false)
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
-        if ur_payload_len as usize > LEGACY_PAYLOAD_MAX_LEN {
+        if ur_payload_len as usize > LEGACY_PSBT_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        // P0-03: payload goes through checked_slice (budget LEGACY_PAYLOAD_MAX_LEN=2048, validated before allocation)
+        // P0-03: payload goes through checked_slice (budget LEGACY_PSBT_MAX_LEN=2048, validated before allocation)
         let payload_slice = checked_slice(
             ur_payload,
             ur_payload_len as usize,
-            LEGACY_PAYLOAD_MAX_LEN,
+            LEGACY_PSBT_MAX_LEN,
             false,
         )
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -211,7 +231,21 @@ pub extern "C" fn shlosilo_sign_ffi(
         };
         // Legacy interface (no type tag): first-byte inference survives only in this FFI; new callers use shlosilo_sign_ur_ffi
         let legacy_tag = crate::ur::ur_encode::UrTypeTag::from_bytes(payload_slice);
-        business::sign::sign(input, legacy_tag, payload_slice, out_slice)
+        let ws_slice = unsafe { core::slice::from_raw_parts_mut(ws, ws_need) };
+        let mut ws = crate::business::sign::carve_sign_ws(ws_slice).ok_or_else(|| {
+            ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(ws_need),
+            )
+        })?;
+        business::sign::sign_with_entropy_ws(
+            input,
+            legacy_tag,
+            payload_slice,
+            &[],
+            Some(&mut ws),
+            out_slice,
+        )
     });
 
     match result {
@@ -229,6 +263,17 @@ pub extern "C" fn shlosilo_sign_ffi(
             ERR_PANIC
         }
     }
+}
+
+/// Z3.3b: sign workspace capacity query (C-ABI workspace contract v1 — the
+/// capacity stays a RUNTIME query, never frozen into the ABI).
+///
+/// Pure: no RNG consumption, no secret derivation, no output side effects.
+/// The value comes from `SignWsLayout::compute()` — the SAME computation the
+/// workspace carve uses (contract 3: one layout source of truth).
+#[no_mangle]
+pub extern "C" fn shlosilo_sign_ws_len() -> c_uint {
+    crate::business::sign::SignWsLayout::compute().total as c_uint
 }
 
 /// shlosilo_sign_ur_ffi — full UR string + mnemonic → signature (P6.1d)
@@ -255,8 +300,28 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
     output_buf: *mut u8,
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
+    ws: *mut u8,
+    ws_len: c_uint,
 ) -> c_int {
     write_actual_len(actual_len, 0); // P0-02 #4: prologue zeroes the out-param
+                                     // Z3.3b workspace contract (2026-09-25, Kosmo): ws == NULL is a PURE PROBE —
+                                     // reports the workspace requirement and returns before input parsing, key
+                                     // derivation, or any RNG use; no output side effects (output_buf untouched).
+    if ws.is_null() {
+        write_actual_len(actual_len, shlosilo_sign_ws_len() as usize);
+        return OK;
+    }
+    // Capacity is validated BEFORE execution; under-capacity reports the
+    // required length through actual_len (documented exception to the
+    // zero-on-failure rule — the caller needs the number to resize).
+    let ws_need = shlosilo_sign_ws_len() as usize;
+    if (ws_len as usize) < ws_need {
+        write_actual_len(actual_len, ws_need);
+        return to_ffi_code(&ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(ws_need),
+        ));
+    }
     if uri.is_null() || mnemonic_indices.is_null() || output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
@@ -326,11 +391,19 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
         business::sign::check_network(decoded.type_tag(), decoded.as_ref(), network_parsed)?;
         // P1-01: UR type tag threaded through to the business layer (no longer inferred from the payload's first byte)
         // §B.5: entropy passthrough (XMR REQUIRED / BTC-ETH NOT REQUIRED)
-        business::sign::sign_with_entropy(
+        let ws_slice = unsafe { core::slice::from_raw_parts_mut(ws, ws_need) };
+        let mut ws = crate::business::sign::carve_sign_ws(ws_slice).ok_or_else(|| {
+            ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(ws_need),
+            )
+        })?;
+        business::sign::sign_with_entropy_ws(
             input,
             decoded.type_tag(),
             decoded.as_ref(),
             entropy_slice,
+            Some(&mut ws),
             out_slice,
         )
     });
@@ -620,7 +693,7 @@ pub mod r3 {
     // --- R3: typed multipart FFI (finalized 2026-08-31 — replaces legacy first-byte type guessing) ---
     //
     // Dual-channel architecture (aligned with the keystone gui_model.c pattern):
-    //   single large QR frame = existing shlosilo_sign_ur_ffi / ur_encode::encode (payload ≤ UR_PAYLOAD_MAX_LEN)
+    //   single large QR frame = existing shlosilo_sign_ur_ffi / ur_encode::encode (payload ≤ UR_PSBT_MAX_LEN)
     //   animated multipart     = this group of three functions (payload ≤ 16 KiB, frame stream `ur:<type>/<seq>-<count>/<bw>`)
     //
     // Handle contract:
@@ -1013,8 +1086,28 @@ pub mod r3 {
         output_buf: *mut u8,
         output_buf_len: c_uint,
         actual_len: *mut c_uint,
+        ws: *mut u8,
+        ws_len: c_uint,
     ) -> c_int {
         write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+                                         // Z3.3b workspace contract (2026-09-25, Kosmo): ws == NULL is a PURE PROBE —
+                                         // reports the workspace requirement and returns before input parsing, key
+                                         // derivation, or any RNG use; no output side effects (output_buf untouched).
+        if ws.is_null() {
+            write_actual_len(actual_len, shlosilo_sign_ws_len() as usize);
+            return OK;
+        }
+        // Capacity is validated BEFORE execution; under-capacity reports the
+        // required length through actual_len (documented exception to the
+        // zero-on-failure rule — the caller needs the number to resize).
+        let ws_need = shlosilo_sign_ws_len() as usize;
+        if (ws_len as usize) < ws_need {
+            write_actual_len(actual_len, ws_need);
+            return to_ffi_code(&ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(ws_need),
+            ));
+        }
 
         if type_name.is_null()
             || payload.is_null()
@@ -1093,7 +1186,21 @@ pub mod r3 {
                 passphrase: pass_slice,
             };
             business::sign::check_network(tag, payload_slice, network_parsed)?;
-            business::sign::sign_with_entropy(input, tag, payload_slice, entropy_slice, out_slice)
+            let ws_slice = unsafe { core::slice::from_raw_parts_mut(ws, ws_need) };
+            let mut ws = crate::business::sign::carve_sign_ws(ws_slice).ok_or_else(|| {
+                ShlosiloError::with_context(
+                    ShlosiloErrorKind::BufferTooSmall,
+                    crate::error::ErrorContext::RequiredLength(ws_need),
+                )
+            })?;
+            business::sign::sign_with_entropy_ws(
+                input,
+                tag,
+                payload_slice,
+                entropy_slice,
+                Some(&mut ws),
+                out_slice,
+            )
         });
         match result {
             Ok(Ok(length)) => {
@@ -1263,6 +1370,7 @@ pub mod r3 {
             let tname_c = CString::new("crypto-psbt").unwrap();
             let mut out = [0u8; 16384 + 512];
             let mut olen: c_uint = 0;
+            let mut ws_buf = alloc::vec![0u8; shlosilo_sign_ws_len() as usize];
             let rc = shlosilo_sign_typed_ffi(
                 tname_c.as_ptr(),
                 pbuf.as_ptr(),
@@ -1277,6 +1385,8 @@ pub mod r3 {
                 out.as_mut_ptr(),
                 out.len() as c_uint,
                 &mut olen,
+                ws_buf.as_mut_ptr(),
+                shlosilo_sign_ws_len(),
             );
             assert_eq!(rc, OK, "typed sign rc={rc}");
             assert!(
@@ -1348,6 +1458,173 @@ mod tests {
     use alloc::vec::Vec;
     use core::ptr::{null, null_mut};
 
+    /// Z3.3b contract 1 (Kosmo 2026-09-25): ws == NULL is a PURE PROBE —
+    /// reports the workspace requirement and nothing else. Garbage in every
+    /// other parameter proves the probe precedes input validation, key
+    /// derivation, and any RNG use; the 0xAA sentinel proves output_buf is
+    /// untouched (no output side effects).
+    #[test]
+    fn ffi_ws_probe_is_pure() {
+        let mut out = [0xAAu8; 64];
+        let mut actual: c_uint = 0xDEAD_BEEF;
+        let rc = shlosilo_sign_ffi(
+            core::ptr::null(), // invalid: null mnemonic — must NOT be validated in probe mode
+            999,               // invalid word count
+            core::ptr::null(),
+            0,
+            core::ptr::null(),
+            0,
+            999_999, // invalid network
+            out.as_mut_ptr(),
+            out.len() as c_uint,
+            &mut actual,
+            core::ptr::null_mut(), // ws == NULL → probe
+            0,
+        );
+        assert_eq!(
+            rc, OK,
+            "probe returns OK regardless of the other parameters"
+        );
+        assert_eq!(
+            actual,
+            shlosilo_sign_ws_len(),
+            "probe reports the required length"
+        );
+        assert!(
+            out.iter().all(|&b| b == 0xAA),
+            "probe must not touch output_buf"
+        );
+    }
+
+    /// Z3.3b contract 2: capacity is validated BEFORE execution; under-capacity
+    /// reports the required length through actual_len and never runs the flow.
+    #[test]
+    fn ffi_ws_under_capacity_reports_required() {
+        let idx: [u16; 12] = [0; 12];
+        let mut out = [0xAAu8; 64];
+        let mut actual: c_uint = 0xDEAD_BEEF;
+        let need = shlosilo_sign_ws_len();
+        let mut ws_buf = alloc::vec![0u8; need as usize - 1];
+        let rc = shlosilo_sign_ffi(
+            idx.as_ptr(),
+            12,
+            core::ptr::null(),
+            0,
+            b"x".as_ptr(),
+            1,
+            0,
+            out.as_mut_ptr(),
+            out.len() as c_uint,
+            &mut actual,
+            ws_buf.as_mut_ptr(),
+            need - 1,
+        );
+        assert_ne!(rc, OK, "under-capacity must fail");
+        assert_eq!(actual, need, "required length must be reported");
+        assert!(
+            out.iter().all(|&b| b == 0xAA),
+            "under-capacity must not touch output_buf"
+        );
+    }
+
+    /// Z3.3b contract 3: the carve's requirement and the query's report come
+    /// from one layout source of truth — carve(total) must succeed with exactly
+    /// the declared capacities, and carve(total-1) must fail as a whole (never
+    /// a partial workspace).
+    #[test]
+    fn sign_ws_layout_consistency() {
+        use crate::business::sign::{carve_sign_ws, SignWsLayout};
+        use crate::types::caps as c;
+        let l = SignWsLayout::compute();
+        assert_eq!(
+            l.total as c_uint,
+            shlosilo_sign_ws_len(),
+            "query == layout (contract 3)"
+        );
+        let mut buf = alloc::vec![0u8; l.total];
+        let ws = carve_sign_ws(&mut buf).expect("carve at exactly total must succeed");
+        assert_eq!(ws.plain.len(), c::SIGN_WS_PLAIN);
+        assert_eq!(ws.txes.len(), c::SIGN_WS_TXES);
+        assert_eq!(ws.sources.len(), c::SIGN_WS_SOURCES);
+        assert_eq!(ws.splitted_dsts.len(), c::SIGN_WS_SPLITS);
+        assert_eq!(ws.selected_transfers.len(), c::SIGN_WS_SEL);
+        assert_eq!(ws.extra.len(), c::SIGN_WS_EXTRA);
+        assert_eq!(ws.dests.len(), c::SIGN_WS_DESTS);
+        assert_eq!(ws.subaddr_indices.len(), c::SIGN_WS_SUBIDX);
+        assert_eq!(ws.ptx.len(), c::SIGN_WS_PTX);
+        assert_eq!(ws.tx_bytes.len(), c::SIGN_WS_TX_BYTES);
+        assert_eq!(ws.ki.len(), c::SIGN_WS_KI);
+        assert_eq!(ws.tki.len(), c::SIGN_WS_TKI);
+        assert_eq!(ws.sel.len(), c::SIGN_WS_SEL_OUT);
+        assert_eq!(ws.kstr.len(), c::SIGN_WS_KSTR);
+        assert_eq!(ws.record_dests.len(), c::SIGN_WS_RECORD_DESTS);
+        let mut small = alloc::vec![0u8; l.total - 1];
+        assert!(
+            carve_sign_ws(&mut small).is_none(),
+            "carve(total-1) must fail as a whole"
+        );
+    }
+
+    /// End-to-end through the workspace path: the C entry with a carved ws must
+    /// produce byte-identical output to the ws-less shell path (the carve is
+    /// behavior-transparent).
+    #[test]
+    fn ffi_ws_path_matches_shell_path() {
+        const PSBT: &[u8] = include_bytes!("../../tests/fixtures/sparrow_signet_12k.psbt");
+        // the sign payload is the CBOR bytes-item wrapping the PSBT (P1-01: the
+        // payload is the complete CBOR) — same semantics as p0c_typed_sign.
+        let payload = crate::encoding::cbor::encode_bytes(PSBT);
+        // the fixture's BIP32 derivations pin the p63 mnemonic (entropy f284fb...)
+        let ent: [u8; 16] = [
+            0xf2, 0x84, 0xfb, 0x6c, 0xa9, 0xf4, 0xd5, 0x83, 0x54, 0x55, 0xbe, 0x65, 0xe4, 0xb2,
+            0x29, 0x16,
+        ];
+        let mnem = crate::entropy::mnemonic::Mnemonic::from_entropy(&ent).unwrap();
+        let idx: alloc::vec::Vec<u16> = mnem.indices().to_vec();
+        // legacy entry over the PSBT fixture keeps this independent of UR framing
+        let mut out_ws = [0u8; 16384 + 512];
+        let mut out_shell = [0u8; 16384 + 512];
+        let mut a1: c_uint = 0;
+        let need = shlosilo_sign_ws_len();
+        let mut ws_buf = alloc::vec![0u8; need as usize];
+        let tname = c"crypto-psbt";
+        let rc1 = super::r3::shlosilo_sign_typed_ffi(
+            tname.as_ptr(),
+            payload.as_ptr(),
+            payload.len() as c_uint,
+            idx.as_ptr(),
+            idx.len() as c_int,
+            core::ptr::null(),
+            0,
+            0,
+            core::ptr::null(),
+            0,
+            out_ws.as_mut_ptr(),
+            out_ws.len() as c_uint,
+            &mut a1,
+            ws_buf.as_mut_ptr(),
+            need,
+        );
+        assert_eq!(rc1, OK, "ws path must sign OK (rc1={rc1})");
+        // shell path: business::sign directly (the ws == None branch)
+        let n2 = crate::business::sign::sign(
+            crate::business::sign::SignInput::Mnemonic {
+                mnemonic: mnem,
+                passphrase: b"",
+            },
+            crate::ur::ur_encode::UrTypeTag::CryptoPsbt,
+            &payload,
+            &mut out_shell,
+        )
+        .unwrap();
+        assert_eq!(a1 as usize, n2);
+        assert_eq!(
+            &out_ws[..a1 as usize],
+            &out_shell[..n2],
+            "ws path == shell path"
+        );
+    }
+
     #[test]
     fn ffi_sign_signature_exists() {
         const _: extern "C" fn(
@@ -1361,6 +1638,8 @@ mod tests {
             *mut u8,
             c_uint,
             *mut c_uint,
+            *mut u8,
+            c_uint,
         ) -> c_int = shlosilo_sign_ffi;
     }
 
@@ -1556,6 +1835,7 @@ mod tests {
         let big_payload = [0u8; 2049];
         let mut out = [0u8; 4096];
         let mut actual: c_uint = 0;
+        let mut ws_buf = alloc::vec![0u8; shlosilo_sign_ws_len() as usize];
         let rc = shlosilo_sign_ffi(
             idx.as_ptr(),
             12,
@@ -1567,6 +1847,8 @@ mod tests {
             out.as_mut_ptr(),
             out.len() as c_uint,
             &mut actual,
+            ws_buf.as_mut_ptr(),
+            shlosilo_sign_ws_len(),
         );
         assert_eq!(rc, crate::error::ShlosiloErrorCode::EncodingError as i32);
     }
@@ -1594,6 +1876,8 @@ mod tests {
             *mut u8,
             c_uint,
             *mut c_uint,
+            *mut u8,
+            c_uint,
         ) -> c_int = shlosilo_sign_ur_ffi;
     }
 
@@ -1673,6 +1957,7 @@ mod tests {
         let uri_c = alloc::ffi::CString::new(uri).unwrap();
         let mut out = [0u8; 512];
         let mut actual: c_uint = 0;
+        let mut ws_buf = alloc::vec![0u8; shlosilo_sign_ws_len() as usize];
         let rc = shlosilo_sign_ur_ffi(
             uri_c.as_ptr(),
             idx.as_ptr(),
@@ -1685,6 +1970,8 @@ mod tests {
             out.as_mut_ptr(),
             out.len() as c_uint,
             &mut actual,
+            ws_buf.as_mut_ptr(),
+            shlosilo_sign_ws_len(),
         );
         assert_eq!(rc, OK, "rc={rc}");
         assert_eq!(actual as usize, expected.tx_bytes.len());
@@ -1698,6 +1985,7 @@ mod tests {
         let idx: [u16; 12] = [0; 12];
         let mut out = [0u8; 64];
         let mut actual: c_uint = 0;
+        let mut ws_buf = alloc::vec![0u8; shlosilo_sign_ws_len() as usize];
         let rc = shlosilo_sign_ur_ffi(
             uri_c.as_ptr(),
             idx.as_ptr(),
@@ -1710,6 +1998,8 @@ mod tests {
             out.as_mut_ptr(),
             out.len() as c_uint,
             &mut actual,
+            ws_buf.as_mut_ptr(),
+            shlosilo_sign_ws_len(),
         );
         assert_ne!(rc, OK);
     }
@@ -1719,6 +2009,7 @@ mod tests {
     fn ffi_sign_ur_null_rejected() {
         let idx: [u16; 12] = [0; 12];
         let mut out = [0u8; 64];
+        let mut ws_buf = alloc::vec![0u8; shlosilo_sign_ws_len() as usize];
         let rc = shlosilo_sign_ur_ffi(
             null(),
             idx.as_ptr(),
@@ -1731,6 +2022,8 @@ mod tests {
             out.as_mut_ptr(),
             out.len() as c_uint,
             null_mut(),
+            ws_buf.as_mut_ptr(),
+            shlosilo_sign_ws_len(),
         );
         assert_eq!(rc, ERR_NULL_POINTER);
     }

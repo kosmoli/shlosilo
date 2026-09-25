@@ -52,6 +52,7 @@ fn p102_typed_sign_over_budget_rejected() {
     let mut out = [0u8; 64];
     let mut actual: u32 = 0;
     let tname = c"crypto-psbt";
+    let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
     let rc = shlosilo_sign_typed_ffi(
         tname.as_ptr(),
         big.as_ptr(),
@@ -66,6 +67,8 @@ fn p102_typed_sign_over_budget_rejected() {
         out.as_mut_ptr(),
         out.len() as u32,
         &mut actual,
+        ws_buf.as_mut_ptr(),
+        shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
     );
     assert_ne!(rc, 0, "typed sign payload > budget must be rejected");
 }

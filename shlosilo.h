@@ -386,6 +386,81 @@
 #define DEST_ORIGINAL_MAX 106
 
 /**
+ * Workspace: plaintext scratch == max unsigned-txset plain budget.
+ */
+#define SIGN_WS_PLAIN 16384
+
+/**
+ * Workspace: unsigned-model tx slots.
+ */
+#define SIGN_WS_TXES 8
+
+/**
+ * Workspace: source entries (flat, all txes).
+ */
+#define SIGN_WS_SOURCES 32
+
+/**
+ * Workspace: splitted destinations (flat).
+ */
+#define SIGN_WS_SPLITS 64
+
+/**
+ * Workspace: selected-transfers bytes (flat).
+ */
+#define SIGN_WS_SEL 256
+
+/**
+ * Workspace: tx_extra bytes == max plain budget.
+ */
+#define SIGN_WS_EXTRA 16384
+
+/**
+ * Workspace: model destinations (flat).
+ */
+#define SIGN_WS_DESTS 64
+
+/**
+ * Workspace: subaddress indices (flat).
+ */
+#define SIGN_WS_SUBIDX 256
+
+/**
+ * Workspace: PendingTx slots.
+ */
+#define SIGN_WS_PTX 8
+
+/**
+ * Workspace: signed-tx wire bytes (TX_WIRE_SLOT_MAX per tx).
+ */
+#define SIGN_WS_TX_BYTES ((16 * 1024) * 8)
+
+/**
+ * Workspace: key images (flat).
+ */
+#define SIGN_WS_KI 32
+
+/**
+ * Workspace: tx key image records (flat).
+ */
+#define SIGN_WS_TKI 128
+
+/**
+ * Workspace: selected-transfers record bytes (flat).
+ */
+#define SIGN_WS_SEL_OUT 256
+
+/**
+ * Workspace: key-image string bytes (67 per source).
+ */
+#define SIGN_WS_KSTR (67 * 32)
+
+/**
+ * Workspace: records-face destinations (flat).
+ */
+#define SIGN_WS_RECORD_DESTS 64
+
+/**
  * ClsagProof serialized cap: pseudo_out (32) + s[RING_MAX] (32*16) + c1 (32) + D (32).
  * Layout per clsag.rs sign(): `pseudo_out(32) ‖ s[mixin+1] ‖ c1 ‖ D`.
  */
@@ -475,7 +550,19 @@ int shlosilo_sign_ffi(const uint16_t *mnemonic_indices,
                       unsigned int network,
                       uint8_t *output_buf,
                       unsigned int output_buf_len,
-                      unsigned int *actual_len);
+                      unsigned int *actual_len,
+                      uint8_t *ws,
+                      unsigned int ws_len);
+
+/**
+ * Z3.3b: sign workspace capacity query (C-ABI workspace contract v1 — the
+ * capacity stays a RUNTIME query, never frozen into the ABI).
+ *
+ * Pure: no RNG consumption, no secret derivation, no output side effects.
+ * The value comes from `SignWsLayout::compute()` — the SAME computation the
+ * workspace carve uses (contract 3: one layout source of truth).
+ */
+unsigned int shlosilo_sign_ws_len(void);
 
 /**
  * shlosilo_sign_ur_ffi — full UR string + mnemonic → signature (P6.1d)
@@ -499,7 +586,9 @@ int shlosilo_sign_ur_ffi(const char *uri,
                          unsigned int entropy_len,
                          uint8_t *output_buf,
                          unsigned int output_buf_len,
-                         unsigned int *actual_len);
+                         unsigned int *actual_len,
+                         uint8_t *ws,
+                         unsigned int ws_len);
 
 /**
  * shlosilo_export_readonly_ffi — mnemonic + path → read-only credential UR
@@ -648,7 +737,9 @@ int shlosilo_sign_typed_ffi(const char *type_name,
                             unsigned int entropy_len,
                             uint8_t *output_buf,
                             unsigned int output_buf_len,
-                            unsigned int *actual_len);
+                            unsigned int *actual_len,
+                            uint8_t *ws,
+                            unsigned int ws_len);
 
 /**
  * R3: release the decoder handle. Null-safe (idempotent).
