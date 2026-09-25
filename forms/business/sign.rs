@@ -129,6 +129,30 @@ pub fn sign_with_entropy(
     }
 }
 
+/// Z3.2 caller-provided workspace for the XMR sign flow (2026-09-25).
+///
+/// Frozen target shape (fields land per slice — Z3.2a parse face, Z3.2b
+/// sign-face backings, Z3.2c secret transients; see the Z3 design doc):
+/// capacity is a deployment parameter and every over-cap demand surfaces as an
+/// explicit `Err(BufferTooSmall)`, never truncation. One-shot semantics: the
+/// flow moves the pool handles out via `mem::take` (full `'a` preserved) — a
+/// caller that signs again rebuilds the `SignWs` over its buffers.
+pub struct SignWs<'a> {
+    /// Plaintext scratch for the fused decrypt+parse — sized to the ciphertext
+    /// (C-class: never on the stack). Forms keeps the wipe duty (Z2.4d-3
+    /// contract): the whole block is wiped before return on every path, now
+    /// over caller memory.
+    pub plain: &'a mut [u8],
+    /// The unsigned-tx model pools (same carve discipline as `UnsignedTxPools`).
+    pub txes: &'a mut [Option<crate::chain::xmr::unsigned_txset::TxConstructionData<'a>>],
+    pub sources: &'a mut [Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>],
+    pub splitted_dsts: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
+    pub selected_transfers: &'a mut [usize],
+    pub extra: &'a mut [u8],
+    pub dests: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
+    pub subaddr_indices: &'a mut [u32],
+}
+
 /// XMR: xmr-txunsigned encrypted blob → decrypt → sign tx by tx → SignedTxSet → encrypted output
 ///
 /// §B.5 finalized implementation (P1-06 wrap-up). Aligned with keystone `sign_tx`:
@@ -141,7 +165,8 @@ pub fn sign_with_entropy(
 #[cfg(feature = "tx-phase-timing-ffi")]
 use crate::tx_phase_hook::PhaseProbe;
 
-fn sign_xmr(
+fn sign_xmr_with_ws<'a>(
+    ws: &mut SignWs<'a>,
     seed: &[u8],
     encrypted_unsigned: &[u8],
     entropy: &[u8],
@@ -168,50 +193,26 @@ fn sign_xmr(
     // Audit #6 P1-01: decrypted plaintext txset goes through Zeroizing (no plaintext residue needed after parsing)
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px1 = PhaseProbe::start(1);
-    // Z2.4d-3: fused decrypt+parse — the plaintext container is a forms-internal
-    // transient (zeroized inside before return on every path); `plain_scratch` is
-    // storage only — this root never holds live secrets.
-    let mut plain_scratch = alloc::vec![0u8; encrypted_unsigned.len()];
-    // Z2.4d-4 TRANSITIONAL ROOT inventory (this flow): the unsigned-model pools below,
-    // the ptx/key-image/tx-bytes backings above, and the two serialize-plaintext
-    // conveniences are the forms-side alloc residue on the XMR path. All of it is
-    // storage provisioning at the business boundary — zero secret-lifetimes depend on
-    // it (secrets live in SecretBytes/Zeroizing owners); Z3 pushes provisioning to the
-    // caller workspace and the residue disappears. Production allocation outside this
-    // root: none on the XMR sign path.
-    // Z2.3 C3c transitional root (2026-09-24): unsigned-model pools sized by generous
-    // root caps (deployment sizing moves to the caller workspace at Z2.4/Z3; over-cap
-    // is explicit Err — no truncation).
-    let mut txes_pool: alloc::vec::Vec<
-        Option<crate::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
-    > = (0..8).map(|_| None).collect();
-    let mut sources_pool: alloc::vec::Vec<
-        Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>,
-    > = (0..32).map(|_| None).collect();
-    let mut sd_pool = alloc::vec![
-        crate::chain::xmr::unsigned_txset::TxDestinationEntry::default();
-        64
-    ];
-    let mut sel_pool = alloc::vec![0usize; 256];
-    let mut extra_pool = alloc::vec![0u8; encrypted_unsigned.len()];
-    let mut dests_pool = alloc::vec![
-        crate::chain::xmr::unsigned_txset::TxDestinationEntry::default();
-        64
-    ];
-    let mut subidx_pool = alloc::vec![0u32; 256];
+    // Z3.2a: caller-workspace plumbing — the plaintext scratch and the unsigned
+    // model pools come from `SignWs`. Handles move out via `mem::take` (full `'a`
+    // preserved for the model borrows; one-shot semantics). The fused
+    // decrypt+parse keeps the plaintext wipe duty (Z2.4d-3 contract): forms wipes
+    // the whole block before return on every path — now over caller memory.
+    // Zero secret-lifetimes depend on this workspace (secrets live in
+    // SecretBytes/Zeroizing owners).
     let mut unsigned_tx = crate::chain::xmr::unsigned_txset::decrypt_and_parse_unsigned_tx(
         encrypted_unsigned,
         &view_sec,
         &cn_key,
-        &mut plain_scratch,
+        core::mem::take(&mut ws.plain),
         crate::chain::xmr::unsigned_txset::UnsignedTxPools {
-            txes: &mut txes_pool,
-            sources: &mut sources_pool,
-            splitted_dsts: &mut sd_pool,
-            selected_transfers: &mut sel_pool,
-            extra: &mut extra_pool,
-            dests: &mut dests_pool,
-            subaddr_indices: &mut subidx_pool,
+            txes: core::mem::take(&mut ws.txes),
+            sources: core::mem::take(&mut ws.sources),
+            splitted_dsts: core::mem::take(&mut ws.splitted_dsts),
+            selected_transfers: core::mem::take(&mut ws.selected_transfers),
+            extra: core::mem::take(&mut ws.extra),
+            dests: core::mem::take(&mut ws.dests),
+            subaddr_indices: core::mem::take(&mut ws.subaddr_indices),
         },
     )?;
     #[cfg(feature = "tx-phase-timing-ffi")]
@@ -550,6 +551,43 @@ fn sign_xmr(
 /// value format (BIP-174): master_key_fingerprint(4B) || derivation_index(u32LE) × depth
 /// P1-02: fingerprint returned together with the path (the caller compares against our master fingerprint to prevent signing for the wrong chain)
 /// BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth)
+/// Z3.2a TRANSITIONAL SHELL — the sole remaining business-boundary alloc cluster on
+/// the XMR path (was 18 scattered roots before Z3.2): provisions the flow workspace
+/// over heap backing with the historical generous caps (8/32/64/256/extra/64/256 —
+/// behavior-identical to the pre-Z3.2 flow) and delegates to `sign_xmr_with_ws`.
+/// Vanishes at Z3.3 when the FFI/flux boundary passes a `SignWs` over its own
+/// memory (deployment-sized pools).
+fn sign_xmr(
+    seed: &[u8],
+    encrypted_unsigned: &[u8],
+    entropy: &[u8],
+    output_buf: &mut [u8],
+) -> Result<usize> {
+    use crate::chain::xmr::unsigned_txset::{
+        TxConstructionData, TxDestinationEntry, TxSourceEntry,
+    };
+    let mut plain = alloc::vec![0u8; encrypted_unsigned.len()];
+    let mut txes_pool: alloc::vec::Vec<Option<TxConstructionData<'_>>> =
+        (0..8).map(|_| None).collect();
+    let mut sources_pool: alloc::vec::Vec<Option<TxSourceEntry>> = (0..32).map(|_| None).collect();
+    let mut sd_pool = alloc::vec![TxDestinationEntry::default(); 64];
+    let mut sel_pool = alloc::vec![0usize; 256];
+    let mut extra_pool = alloc::vec![0u8; encrypted_unsigned.len()];
+    let mut dests_pool = alloc::vec![TxDestinationEntry::default(); 64];
+    let mut subidx_pool = alloc::vec![0u32; 256];
+    let mut ws = SignWs {
+        plain: &mut plain,
+        txes: &mut txes_pool,
+        sources: &mut sources_pool,
+        splitted_dsts: &mut sd_pool,
+        selected_transfers: &mut sel_pool,
+        extra: &mut extra_pool,
+        dests: &mut dests_pool,
+        subaddr_indices: &mut subidx_pool,
+    };
+    sign_xmr_with_ws(&mut ws, seed, encrypted_unsigned, entropy, output_buf)
+}
+
 fn parse_derivation_value(value: &[u8]) -> Option<([u8; 4], DerivationPath)> {
     if value.len() < 8 || !(value.len() - 4).is_multiple_of(4) {
         return None;
