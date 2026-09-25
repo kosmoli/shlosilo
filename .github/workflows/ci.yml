@@ -112,7 +112,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-arm-none-eabi
           make forgebox
-          ls -la flux/forgebox/build/forgebox.bin
+          # The signed forgebox.bin needs the local forgebox CLI + signing key
+          # (dev machine only); CI asserts the PRE-SIGN image instead - the C
+          # compile/link of the smoke/product callers is what this gate covers.
+          ls -la flux/forgebox/build/mh1903_full.bin
       - name: host-sim (POSIX) staticlib + keep gate + link + run
         run: |
           make host-sim
