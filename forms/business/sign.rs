@@ -172,6 +172,13 @@ fn sign_xmr(
     // transient (zeroized inside before return on every path); `plain_scratch` is
     // storage only — this root never holds live secrets.
     let mut plain_scratch = alloc::vec![0u8; encrypted_unsigned.len()];
+    // Z2.4d-4 TRANSITIONAL ROOT inventory (this flow): the unsigned-model pools below,
+    // the ptx/key-image/tx-bytes backings above, and the two serialize-plaintext
+    // conveniences are the forms-side alloc residue on the XMR path. All of it is
+    // storage provisioning at the business boundary — zero secret-lifetimes depend on
+    // it (secrets live in SecretBytes/Zeroizing owners); Z3 pushes provisioning to the
+    // caller workspace and the residue disappears. Production allocation outside this
+    // root: none on the XMR sign path.
     // Z2.3 C3c transitional root (2026-09-24): unsigned-model pools sized by generous
     // root caps (deployment sizing moves to the caller workspace at Z2.4/Z3; over-cap
     // is explicit Err — no truncation).
@@ -259,6 +266,22 @@ fn sign_xmr(
         .sum();
     let mut ptx_backing: alloc::vec::Vec<Option<PendingTx<'_>>> =
         (0..unsigned_tx.txes.len()).map(|_| None).collect();
+    // Z2.4d-4 transitional root: signed-tx bytes workspace (16KiB-class C data per
+    // tx, cap explicit). One contiguous backing split into disjoint &mut [u8] slots
+    // (C3c split discipline) so each PendingTx borrow is independent. Z3 moves the
+    // signer's output straight into these caller-workspace slices — the copy below
+    // then disappears.
+    const TX_BYTES_SLOT_MAX: usize = 16 * 1024;
+    let mut tx_bytes_backing = alloc::vec![0u8; TX_BYTES_SLOT_MAX * unsigned_tx.txes.len().max(1)];
+    let mut tx_bytes_slots: alloc::vec::Vec<&mut [u8]> = alloc::vec::Vec::new();
+    {
+        let mut rest: &mut [u8] = &mut tx_bytes_backing[..];
+        for _ in 0..unsigned_tx.txes.len().max(1) {
+            let (slot, r) = rest.split_at_mut(TX_BYTES_SLOT_MAX);
+            tx_bytes_slots.push(slot);
+            rest = r;
+        }
+    }
     let mut ki_backing = alloc::vec::Vec::new();
     ki_backing.resize(total_sources, [0u8; 32]);
     let mut tki_backing = alloc::vec::Vec::new();
@@ -281,7 +304,7 @@ fn sign_xmr(
     // P1-03: into_iter takes ownership — construction_data is moved into PendingTx (previously
     // the deep-copying tx_data.clone(); once TxSourceEntry is not Clone, move is the only path,
     // also the audit-required "secret copies must not proliferate")
-    for slot in unsigned_tx.txes.iter_mut() {
+    for (tx_i, slot) in unsigned_tx.txes.iter_mut().enumerate() {
         // Z2.3 C3c + P1-03: Option::take moves the construction data out of the pool
         // slot (ownership transfer to PendingTx; no secret copies proliferate).
         let tx_data = slot.take().ok_or_else(|| {
@@ -347,6 +370,20 @@ fn sign_xmr(
             &mut bp_rng,
             &mut rng,
         )?;
+        // Z2.4d-4: stage the wire bytes into the caller-workspace slot (explicit
+        // over-cap Err, never truncation) and borrow the slot into the model.
+        // mem::take MOVES the slot borrow out (no live borrow of the slots Vec across
+        // iterations — the classic split_at_mut-loop aggregation problem).
+        let tx_slot: &mut [u8] = core::mem::take(&mut tx_bytes_slots[tx_i]);
+        if tx_bytes.len() > tx_slot.len() {
+            return Err(ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(tx_bytes.len()),
+            ));
+        }
+        tx_slot[..tx_bytes.len()].copy_from_slice(&tx_bytes);
+        let tx_bytes_len = tx_bytes.len();
+        let tx_bytes_borrow: &[u8] = &tx_slot[..tx_bytes_len]; // reborrows the full 'a (tx_slot is never used again)
 
         // fee(= inputs − splitted outputs)
         let input_sum: u64 = tx_data.sources.iter().flatten().map(|s| s.amount).sum();
@@ -454,7 +491,7 @@ fn sign_xmr(
 
         ptx_sv
             .push(Some(PendingTx {
-                tx_bytes,
+                tx_bytes: tx_bytes_borrow,
                 dust: 0,
                 fee,
                 dust_added_to_fee: false,

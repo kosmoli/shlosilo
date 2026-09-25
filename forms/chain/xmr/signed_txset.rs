@@ -143,10 +143,12 @@ use crate::types::SliceVec;
 
 /// A signed transaction and its metadata (aligned with keystone PendingTx)
 /// Z2.3 C3b-3 (2026-09-24, option 2): flat lists are caller-storage SliceVecs;
-/// `construction_data` (nested aggregates) lands in C3c, `tx_bytes` in Z2.4.
+/// `construction_data` (nested aggregates) landed in C3c, `tx_bytes` in Z2.4d-4
+/// (now a borrow — the wire blob is PUBLIC data, no zeroize duty; storage belongs
+/// to the caller workspace like every other aggregate).
 pub struct PendingTx<'a> {
     /// Full tx wire bytes (including rct signatures)
-    pub tx_bytes: Vec<u8>,
+    pub tx_bytes: &'a [u8],
     pub dust: u64,
     pub fee: u64,
     pub dust_added_to_fee: bool,
@@ -196,7 +198,7 @@ impl SignedTxSet<'_> {
         for ptx in self.ptx.iter().flatten() {
             // ptx version 1
             out.put_u8(1u8)?;
-            out.put(&ptx.tx_bytes)?;
+            out.put(ptx.tx_bytes)?;
             out.put(&ptx.dust.to_le_bytes())?;
             out.put(&ptx.fee.to_le_bytes())?;
             out.put_u8(ptx.dust_added_to_fee as u8)?;
@@ -555,7 +557,7 @@ pub fn decrypt_signed_txset(
 mod tests {
     use super::*;
     use crate::chain::xmr::unsigned_txset::TxSourceEntry;
-    use alloc::{vec, vec::Vec};
+    use alloc::vec::Vec;
     use rand_chacha::rand_core::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -667,8 +669,9 @@ mod tests {
         }
         let mut dests = SliceVec::new(&mut dst_backing);
         dests.push(dest.clone()).unwrap();
+        let ptx_tx_bytes = [0xABu8; 5];
         let ptx = PendingTx {
-            tx_bytes: vec![0xABu8; 5],
+            tx_bytes: &ptx_tx_bytes,
             dust: 0,
             fee: 30640000,
             dust_added_to_fee: false,
@@ -837,8 +840,9 @@ mod tests {
         let mut ks = [0u8; 67];
         let mut dsts =
             core::array::from_fn::<TxDestinationEntry, 1, _>(|_| TxDestinationEntry::default());
+        let tb = [0xABu8; 700]; // long enough to span many chunks
         let ptx = PendingTx {
-            tx_bytes: alloc::vec![0xABu8; 700], // long enough to span many chunks
+            tx_bytes: &tb,
             dust: 0,
             fee: 30640000,
             dust_added_to_fee: false,
@@ -1020,16 +1024,21 @@ mod tests {
                 crate::chain::xmr::unsigned_txset::TxDestinationEntry,
                 1,
                 _,
-            >(|_| crate::chain::xmr::unsigned_txset::TxDestinationEntry::default());
+            >(|_| {
+                crate::chain::xmr::unsigned_txset::TxDestinationEntry::default()
+            });
             let mut ptx_slot: [Option<PendingTx<'_>>; 1] = core::array::from_fn(|_| None);
             let mut ki_backing = core::array::from_fn::<[u8; 32], 1, _>(|_| [0u8; 32]);
             let mut tki_backing =
                 core::array::from_fn::<TxKeyImageEntry, 1, _>(|_| TxKeyImageEntry::default());
+            let tb = [$txbyte; 700];
             let $name = {
-                use crate::chain::xmr::unsigned_txset::{RctConfig, TxDestinationEntry, TxConstructionData};
+                use crate::chain::xmr::unsigned_txset::{
+                    RctConfig, TxConstructionData, TxDestinationEntry,
+                };
                 use crate::types::SliceVec;
                 let ptx = PendingTx {
-                    tx_bytes: alloc::vec![$txbyte; 700],
+                    tx_bytes: &tb,
                     dust: 0,
                     fee: 30640000,
                     dust_added_to_fee: false,
