@@ -222,7 +222,24 @@ fn diag_bp_size_and_verify() {
             shlosilo::types::caps::SIGN_WS_BP_TERMS,
         )
         .expect("sized");
-        prove_bulletproofs_plus(&mut rng, &commitments, &mut diag_terms, &mut diag_straus)
+        let mut wip_storage = vec![
+            0u8;
+            monero_bulletproofs::WipScratch::storage_bytes(
+                shlosilo::types::caps::SIGN_WS_BP_TERMS
+            )
+        ];
+        let mut wip_scratch = monero_bulletproofs::WipScratch::new(
+            &mut wip_storage,
+            shlosilo::types::caps::SIGN_WS_BP_TERMS,
+        )
+        .expect("wip storage");
+        prove_bulletproofs_plus(
+            &mut rng,
+            &commitments,
+            &mut diag_terms,
+            &mut diag_straus,
+            &mut wip_scratch,
+        )
     }
     .expect("bp");
     let mut buf = Vec::new();

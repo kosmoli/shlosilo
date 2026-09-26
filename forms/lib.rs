@@ -54,6 +54,7 @@ pub use business::{
 /// scratch element types); no API surface beyond naming.
 pub use curve25519_dalek;
 pub use entropy::mnemonic::WordCount;
+pub use monero_bulletproofs;
 
 // Public Layer A types (Phase 2.1 stub — Phase 4 real algorithm integration)
 pub use crate::curve_primitive::{

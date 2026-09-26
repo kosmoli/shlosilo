@@ -373,6 +373,15 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         Ok(s) => s,
         Err(_) => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
     };
+    let mut wip_storage = alloc::vec![
+        0u8;
+        monero_bulletproofs::WipScratch::storage_bytes(crate::types::caps::SIGN_WS_BP_TERMS)
+    ];
+    let mut wip_scratch = monero_bulletproofs::WipScratch::new(
+        &mut wip_storage,
+        crate::types::caps::SIGN_WS_BP_TERMS,
+    )
+    .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let n = sign_tx_from_construction_with_rngs_into(
         tx_data,
         spend_sec,
@@ -383,6 +392,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         &mut staging,
         &mut multiexp_terms,
         &mut straus_scratch,
+        &mut wip_scratch,
     )?;
     out.extend_from_slice(&staging[..n]);
     Ok(out)
@@ -409,6 +419,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     out: &mut [u8],
     multiexp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
     straus: &mut curve25519_dalek::scratch::StrausScratch,
+    wip: &mut monero_bulletproofs::WipScratch,
 ) -> Result<usize> {
     // Audit #9 P1-02: r is a transaction secret key — SecretScalar owner
     // (dalek Scalar is Copy with no Drop; plain bindings on `?` paths would never be zeroized);
@@ -669,6 +680,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
         &commitments[..n_commitments],
         multiexp_terms,
         straus,
+        wip,
     )?;
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px9.as_mut() {

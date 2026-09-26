@@ -305,6 +305,7 @@ pub fn prove_bulletproofs_plus<R: RngCore + CryptoRng>(
     commitments: &[MoneroCommitment],
     multiexp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
     straus: &mut curve25519_dalek::scratch::StrausScratch,
+    wip: &mut monero_bulletproofs::WipScratch,
 ) -> Result<Bulletproof> {
     if commitments.is_empty() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -312,7 +313,7 @@ pub fn prove_bulletproofs_plus<R: RngCore + CryptoRng>(
     if commitments.len() > MAX_COMMITMENTS {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    Bulletproof::prove_plus(rng, commitments, multiexp_terms, straus)
+    Bulletproof::prove_plus(rng, commitments, multiexp_terms, straus, wip)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
 }
 
@@ -372,7 +373,16 @@ mod tests {
             crate::types::caps::SIGN_WS_BP_TERMS,
         )
         .expect("sized storage");
-        prove_bulletproofs_plus(rng, commitments, &mut terms, &mut straus)
+        let mut wip_storage = alloc::vec![
+            0u8;
+            monero_bulletproofs::WipScratch::storage_bytes(crate::types::caps::SIGN_WS_BP_TERMS)
+        ];
+        let mut wip = monero_bulletproofs::WipScratch::new(
+            &mut wip_storage,
+            crate::types::caps::SIGN_WS_BP_TERMS,
+        )
+        .expect("wip storage");
+        prove_bulletproofs_plus(rng, commitments, &mut terms, &mut straus, &mut wip)
     }
     use crate::chain::xmr::clsag as clsag_mod;
     use crate::chain::xmr::reduce_scalar::reduce_scalar;

@@ -73,6 +73,15 @@ pub fn prove_tiny_bp_plus() {
         crate::types::caps::SIGN_WS_BP_TERMS,
     )
     .expect("sized storage");
-    prove_bulletproofs_plus(&mut rng, &commitments, &mut terms, &mut straus)
+    let mut wip_storage = alloc::vec![
+        0u8;
+        monero_bulletproofs::WipScratch::storage_bytes(crate::types::caps::SIGN_WS_BP_TERMS)
+    ];
+    let mut wip = monero_bulletproofs::WipScratch::new(
+        &mut wip_storage,
+        crate::types::caps::SIGN_WS_BP_TERMS,
+    )
+    .expect("wip storage");
+    prove_bulletproofs_plus(&mut rng, &commitments, &mut terms, &mut straus, &mut wip)
         .expect("tiny bp+ prove");
 }

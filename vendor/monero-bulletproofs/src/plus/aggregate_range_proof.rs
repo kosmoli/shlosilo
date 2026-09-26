@@ -233,6 +233,7 @@ impl<'a> AggregateRangeStatement<'a> {
         witness: &AggregateRangeWitness,
         terms: &mut [(Scalar, EdwardsPoint)],
         straus: &mut curve25519_dalek::scratch::StrausScratch,
+        wip: &mut crate::plus::weighted_inner_product::WipScratch,
     ) -> Option<AggregateRangeProof> {
         // Check for consistency with the witness
         #[cfg(feature = "prove-timing")]
@@ -362,6 +363,7 @@ impl<'a> AggregateRangeStatement<'a> {
                         ),
                         terms,
                         straus,
+                        wip,
                     )
                     .expect("Bulletproof::Plus failed to prove the weighted inner-product");
                 _p3.end();

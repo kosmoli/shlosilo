@@ -3044,6 +3044,10 @@ async fn run_sign_xmr() {
         );
         shlosilo::types::caps::SIGN_WS_BP_TERMS
     ];
+    let mut ws_bp_wip = alloc::vec![
+        0u8;
+        shlosilo::types::caps::SIGN_WS_BP_WIP_BYTES
+    ];
     let mut ws_bp_straus = alloc::vec![
         0u8;
         shlosilo::curve25519_dalek::scratch::StrausScratch::storage_bytes(
@@ -3068,6 +3072,7 @@ async fn run_sign_xmr() {
         record_dests: &mut ws_record_dests,
         bp_terms: &mut ws_bp_terms,
         bp_straus: &mut ws_bp_straus,
+        bp_wip: &mut ws_bp_wip,
     };
     let t0 = Instant::now();
     match shlosilo::business::sign::sign_with_entropy_ws(

@@ -192,6 +192,7 @@ pub struct SignWs<'a> {
     /// Z5.3 D-cut: Straus scratch storage (raw bytes; the typed scratch is
     /// constructed from it at the call site).
     pub bp_straus: &'a mut [u8],
+    pub bp_wip: &'a mut [u8],
 }
 
 /// Z3.3b: the sign-workspace layout — the SINGLE source of truth behind both
@@ -218,6 +219,7 @@ pub struct SignWsLayout {
     record_dests: usize,
     pub bp_terms: usize,
     pub bp_straus: usize,
+    pub bp_wip: usize,
 }
 
 fn ws_next(off: &mut usize, align: usize, size: usize) -> usize {
@@ -300,6 +302,11 @@ impl SignWsLayout {
             core::mem::align_of::<u64>(),
             c::SIGN_WS_BP_STRAUS_BYTES,
         );
+        let bp_wip = ws_next(
+            &mut off,
+            core::mem::align_of::<u64>(),
+            c::SIGN_WS_BP_WIP_BYTES,
+        );
         // trailing pad so the total itself satisfies the widest alignment
         let total = ws_next(&mut off, core::mem::align_of::<usize>(), 0);
         SignWsLayout {
@@ -321,6 +328,7 @@ impl SignWsLayout {
             record_dests,
             bp_terms,
             bp_straus,
+            bp_wip,
         }
     }
 }
@@ -397,6 +405,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     let bp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)] =
         unsafe { at(base, l.bp_terms, c::SIGN_WS_BP_TERMS) };
     let bp_straus: &mut [u8] = unsafe { at(base, l.bp_straus, c::SIGN_WS_BP_STRAUS_BYTES) };
+    let bp_wip: &mut [u8] = unsafe { at(base, l.bp_wip, c::SIGN_WS_BP_WIP_BYTES) };
     Some(SignWs {
         plain,
         txes,
@@ -415,6 +424,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         record_dests,
         bp_terms,
         bp_straus,
+        bp_wip,
     })
 }
 
@@ -653,6 +663,18 @@ fn sign_xmr_with_ws<'a>(
                 ))
             }
         };
+        let ws_bp_wip = core::mem::take(&mut ws.bp_wip);
+        let mut bp_wip = match monero_bulletproofs::WipScratch::new(
+            ws_bp_wip,
+            crate::types::caps::SIGN_WS_BP_TERMS,
+        ) {
+            Some(s) => s,
+            None => {
+                return Err(crate::error::ShlosiloError::new(
+                    crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
+                ))
+            }
+        };
         let tx_bytes_len = crate::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into(
             &tx_data,
             &spend_sec,
@@ -663,6 +685,7 @@ fn sign_xmr_with_ws<'a>(
             tx_slot,
             bp_terms_slot,
             &mut bp_straus,
+            &mut bp_wip,
         )?;
         let tx_bytes_borrow: &[u8] = &tx_slot[..tx_bytes_len]; // reborrows the full 'a (tx_slot is never used again)
 

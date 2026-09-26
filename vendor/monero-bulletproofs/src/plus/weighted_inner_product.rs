@@ -27,14 +27,68 @@ use rand_core::{CryptoRng, RngCore};
 /// shlosilo vendor patch (Z5.3 C-cut): borrow-form weighted inner product —
 /// the consuming form clones its operands; this computes the identical
 /// `sum(a*b*y)` over borrows (field arithmetic is exact, outputs bit-equal).
-fn wip_ref(a: &ScalarVector, b: &ScalarVector, y: &ScalarVector) -> Scalar {
+fn wip_ref(a: &[Scalar], b: &[Scalar], y: &[Scalar]) -> Scalar {
     debug_assert_eq!(a.len(), b.len());
     debug_assert_eq!(a.len(), y.len());
     let mut acc = Scalar::ZERO;
-    for ((x, z), w) in a.0.iter().zip(b.0.iter()).zip(y.0.iter()) {
+    for ((x, z), w) in a.iter().zip(b.iter()).zip(y.iter()) {
         acc += (*x * *z) * *w;
     }
     acc
+}
+
+/// shlosilo vendor patch (Z5.3 C-cut B): caller-owned WIP round scratch —
+/// four ping-pong buffer pairs (a, b scalars; g, h points) over one byte
+/// region. The rounds shrink the vectors in place (split_at + write into the
+/// paired buffer), so the whole inner-product proof runs without allocating.
+/// Secret-class data (a/b/alpha-derived) lives here; the caller wipes the
+/// region per its policy (the prove chain zeroes `a`/`b` tails below).
+pub struct WipScratch<'a> {
+    pub(crate) a: &'a mut [Scalar],
+    pub(crate) b: &'a mut [Scalar],
+    pub(crate) g: &'a mut [EdwardsPoint],
+    pub(crate) h: &'a mut [EdwardsPoint],
+}
+
+impl<'a> WipScratch<'a> {
+    /// Sizing source of truth: two buffers of `terms_cap` for each of the
+    /// four vectors (scalars 32 B, points 160 B worst case).
+    pub const fn storage_bytes(terms_cap: usize) -> usize {
+        terms_cap * 2 * (32 + 32 + 160 + 160)
+    }
+
+    /// Build over caller storage (8-aligned; exact regions — `None` on
+    /// too-small or misaligned, loud and explicit per G1). Regions are laid
+    /// out a, b, g, h — each `2 * terms_cap`.
+    pub fn new(storage: &'a mut [u8], terms_cap: usize) -> Option<Self> {
+        if storage.len() < Self::storage_bytes(terms_cap) {
+            return None;
+        }
+        if (storage.as_ptr() as usize) % 8 != 0 {
+            return None;
+        }
+        fn cast_slice<T>(bytes: &mut [u8]) -> &mut [T] {
+            // SAFETY: the caller guarantees 8-alignment of the base and every
+            // region size is a whole number of elements (32/160 are multiples
+            // of 8); the round code writes before reading each element.
+            unsafe {
+                core::slice::from_raw_parts_mut(
+                    bytes.as_mut_ptr() as *mut T,
+                    bytes.len() / core::mem::size_of::<T>(),
+                )
+            }
+        }
+        let (a_bytes, rest) = storage.split_at_mut(terms_cap * 2 * 32);
+        let (b_bytes, rest) = rest.split_at_mut(terms_cap * 2 * 32);
+        let (g_bytes, rest) = rest.split_at_mut(terms_cap * 2 * 160);
+        let (h_bytes, _slack) = rest.split_at_mut(terms_cap * 2 * 160);
+        Some(WipScratch {
+            a: cast_slice(a_bytes),
+            b: cast_slice(b_bytes),
+            g: cast_slice(g_bytes),
+            h: cast_slice(h_bytes),
+        })
+    }
 }
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -141,6 +195,10 @@ impl WipStatement {
     // Returns each permutation of G/H since the prover needs to do operation on each permutation
     // P is dropped as it's unused in the prover's path
     #[allow(clippy::too_many_arguments)]
+    // Prover's variant of the shared code block to calculate G/H/P when n > 1
+    // Returns each permutation of G/H since the prover needs to do operation on each permutation
+    // P is dropped as it's unused in the prover's path
+    #[allow(clippy::too_many_arguments)]
     fn next_G_H(
         transcript: &mut Scalar,
         mut g_bold1: PointVector,
@@ -196,6 +254,7 @@ impl WipStatement {
         witness: &WipWitness,
         terms: &mut [(Scalar, EdwardsPoint)],
         straus: &mut curve25519_dalek::scratch::StrausScratch,
+        wip: &mut WipScratch,
     ) -> Option<WipProof> {
         let WipStatement {
             generators,
@@ -250,12 +309,37 @@ impl WipStatement {
             P_terms.zeroize();
         }
 
-        let mut a = witness.a.clone();
-        let mut b = witness.b.clone();
+        // Z5.3 C-cut B: the round state lives in the caller's WipScratch as
+        // four ping-pong buffer pairs. The math is unchanged — same element
+        // expressions, same order of operations per element (field ops are
+        // exact; the wire pins hold).
         let mut alpha = witness.alpha;
+        let n = witness.a.len();
+        if n == 0 || !n.is_power_of_two() || (n / 2) * 2 != n {
+            return None;
+        }
+        if wip.a.len() < n {
+            return None; // explicit over-cap (G1)
+        }
+        let (a0, a1) = wip.a.split_at_mut(n);
+        let (b0, b1) = wip.b.split_at_mut(n);
+        let (g0, g1) = wip.g.split_at_mut(n);
+        let (h0, h1) = wip.h.split_at_mut(n);
+        let mut cur_len = n; // logical round length (the ping-pong tails are
+                             // capacity leftovers, not round data)
+        a0[..n].copy_from_slice(&witness.a.0);
+        b0[..n].copy_from_slice(&witness.b.0);
+        g0[..n].copy_from_slice(&g_bold.0);
+        h0[..n].copy_from_slice(&h_bold.0);
 
-        // From here on, g_bold.len() is used as n
-        debug_assert_eq!(g_bold.len(), a.len());
+        let mut a_cur: &mut [Scalar] = a0;
+        let mut a_next: &mut [Scalar] = a1;
+        let mut b_cur: &mut [Scalar] = b0;
+        let mut b_next: &mut [Scalar] = b1;
+        let mut g_cur: &mut [EdwardsPoint] = g0;
+        let mut g_next: &mut [EdwardsPoint] = g1;
+        let mut h_cur: &mut [EdwardsPoint] = h0;
+        let mut h_next: &mut [EdwardsPoint] = h1;
 
         let mut L_vec = vec![];
         let mut R_vec = vec![];
@@ -265,26 +349,16 @@ impl WipStatement {
         #[cfg(feature = "prove-timing")]
         let mut wip_round: u8 = 0;
 
-        // else n > 1 case from figure 1
-        while g_bold.len() > 1 {
+        while cur_len > 1 {
             #[cfg(feature = "prove-timing")]
             {
                 wip_round += 1;
             }
-            let (a1, a2) = a.split();
-            let (b1, b2) = b.split();
-            let (g_bold1, g_bold2) = g_bold.split();
-            let (h_bold1, h_bold2) = h_bold.split();
-
-            let n_hat = g_bold1.len();
-            debug_assert_eq!(a1.len(), n_hat);
-            debug_assert_eq!(a2.len(), n_hat);
-            debug_assert_eq!(b1.len(), n_hat);
-            debug_assert_eq!(b2.len(), n_hat);
-            debug_assert_eq!(g_bold1.len(), n_hat);
-            debug_assert_eq!(g_bold2.len(), n_hat);
-            debug_assert_eq!(h_bold1.len(), n_hat);
-            debug_assert_eq!(h_bold2.len(), n_hat);
+            let n_hat = cur_len / 2;
+            let (g1s, g2s) = g_cur[..cur_len].split_at(n_hat);
+            let (h1s, h2s) = h_cur[..cur_len].split_at(n_hat);
+            let (a1s, a2s) = a_cur[..cur_len].split_at(n_hat);
+            let (b1s, b2s) = b_cur[..cur_len].split_at(n_hat);
 
             let y_n_hat = y[n_hat - 1];
             y.0.truncate(n_hat);
@@ -292,27 +366,26 @@ impl WipStatement {
             let d_l = monero_ed25519::Scalar::random(&mut *rng).into();
             let d_r = monero_ed25519::Scalar::random(&mut *rng).into();
 
-            let c_l = wip_ref(&a1, &b2, &y);
-            let c_r = y_n_hat * wip_ref(&a2, &b1, &y);
+            let c_l = wip_ref(a1s, b2s, &y.0);
+            let c_r = y_n_hat * wip_ref(a2s, b1s, &y.0);
 
             let y_inv_n_hat = y_inv
                 .pop()
                 .expect("couldn't pop y_inv despite y_inv being of same length as times iterated");
 
-            // Z5.3 pool cut: L terms fill the caller scratch (the `a1.clone()`
-            // dies with the collect — scaled values are written directly).
-            let l_len = (g_bold2.len() * 2) + 2;
+            // L terms fill the caller scratch (see the Z5.3 pool cut notes)
+            let l_len = (n_hat * 2) + 2;
             if terms.len() < l_len {
                 return None;
             }
             let L_terms = &mut terms[..l_len];
             let mut t = 0;
-            for (i, g2) in g_bold2.0.iter().enumerate() {
-                L_terms[t] = (a1.0[i] * y_inv_n_hat, *g2);
+            for (i, g2) in g2s.iter().enumerate() {
+                L_terms[t] = (a1s[i] * y_inv_n_hat, *g2);
                 t += 1;
             }
-            for (i, h1) in h_bold1.0.iter().enumerate() {
-                L_terms[t] = (b2.0[i], *h1);
+            for (i, h1) in h1s.iter().enumerate() {
+                L_terms[t] = (b2s[i], *h1);
                 t += 1;
             }
             L_terms[t] = (c_l, g);
@@ -332,19 +405,18 @@ impl WipStatement {
                 e.zeroize();
             }
 
-            // Z5.3 pool cut: R terms likewise (reuses the scratch).
-            let r_len = (g_bold1.len() * 2) + 2;
+            let r_len = (n_hat * 2) + 2;
             if terms.len() < r_len {
                 return None;
             }
             let R_terms = &mut terms[..r_len];
             let mut t = 0;
-            for (i, g1) in g_bold1.0.iter().enumerate() {
-                R_terms[t] = (a2.0[i] * y_n_hat, *g1);
+            for (i, g1) in g1s.iter().enumerate() {
+                R_terms[t] = (a2s[i] * y_n_hat, *g1);
                 t += 1;
             }
-            for (i, h2) in h_bold2.0.iter().enumerate() {
-                R_terms[t] = (b1.0[i], *h2);
+            for (i, h2) in h2s.iter().enumerate() {
+                R_terms[t] = (b1s[i], *h2);
                 t += 1;
             }
             R_terms[t] = (c_r, g);
@@ -364,34 +436,34 @@ impl WipStatement {
             }
             lr_probe.end();
 
-            let (e, inv_e, e_square, inv_e_square);
-            (e, inv_e, e_square, inv_e_square, g_bold, h_bold) = Self::next_G_H(
-                &mut transcript,
-                g_bold1,
-                g_bold2,
-                h_bold1,
-                h_bold2,
-                L,
-                R,
-                y_inv_n_hat,
-                straus,
-            );
+            let e = Self::transcript_L_R(&mut transcript, L, R);
+            let inv_e = e.invert();
+            let e_square = e * e;
+            let inv_e_square = inv_e * inv_e;
 
-            a = (a1 * e) + &(a2 * (y_n_hat * inv_e));
-            b = (b1 * inv_e) + &(b2 * e);
+            let _fold_probe = PhaseProbe::start(PHASE_WIP_FOLD);
+            // fold (public arguments — vartime, per the original commentary)
+            let e_y_inv = e * y_inv_n_hat;
+            for i in 0..n_hat {
+                g_next[i] = multiexp_vartime_small(&[(inv_e, g1s[i]), (e_y_inv, g2s[i])]);
+                h_next[i] = multiexp_vartime_small(&[(e, h1s[i]), (inv_e, h2s[i])]);
+                a_next[i] = (a1s[i] * e) + (a2s[i] * (y_n_hat * inv_e));
+                b_next[i] = (b1s[i] * inv_e) + (b2s[i] * e);
+            }
+            _fold_probe.end();
+
             alpha += (d_l * e_square) + (d_r * inv_e_square);
 
-            debug_assert_eq!(g_bold.len(), a.len());
-            debug_assert_eq!(g_bold.len(), h_bold.len());
-            debug_assert_eq!(g_bold.len(), b.len());
+            core::mem::swap(&mut a_cur, &mut a_next);
+            core::mem::swap(&mut b_cur, &mut b_next);
+            core::mem::swap(&mut g_cur, &mut g_next);
+            core::mem::swap(&mut h_cur, &mut h_next);
+            cur_len = n_hat;
         }
 
         // n == 1 case from figure 1
-        debug_assert_eq!(g_bold.len(), 1);
-        debug_assert_eq!(h_bold.len(), 1);
-
-        debug_assert_eq!(a.len(), 1);
-        debug_assert_eq!(b.len(), 1);
+        debug_assert_eq!(cur_len, 1);
+        // (cur_len covers all four buffers)
 
         let r = monero_ed25519::Scalar::random(&mut *rng).into();
         let s = monero_ed25519::Scalar::random(&mut *rng).into();
@@ -401,9 +473,9 @@ impl WipStatement {
         let ry = r * y[0];
 
         let mut A_terms = vec![
-            (r, g_bold[0]),
-            (s, h_bold[0]),
-            ((ry * b[0]) + (s * y[0] * a[0]), g),
+            (r, g_cur[0]),
+            (s, h_cur[0]),
+            ((ry * b_cur[0]) + (s * y[0] * a_cur[0]), g),
             (delta, h),
         ];
         let A = CompressedPoint::from(
@@ -423,8 +495,8 @@ impl WipStatement {
 
         let e = Self::transcript_A_B(&mut transcript, A, B);
 
-        let r_answer = r + (a[0] * e);
-        let s_answer = s + (b[0] * e);
+        let r_answer = r + (a_cur[0] * e);
+        let s_answer = s + (b_cur[0] * e);
         let delta_answer = eta + (delta * e) + (alpha * (e * e));
 
         Some(WipProof {

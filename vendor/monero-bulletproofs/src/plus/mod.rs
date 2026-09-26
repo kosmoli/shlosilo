@@ -7,7 +7,8 @@ use curve25519_dalek::{constants::ED25519_BASEPOINT_POINT, EdwardsPoint, Scalar}
 pub(crate) use crate::{point_vector::PointVector, scalar_vector::ScalarVector, MONERO_H};
 
 pub(crate) mod transcript;
-pub(crate) mod weighted_inner_product;
+pub mod weighted_inner_product;
+pub use weighted_inner_product::WipScratch;
 pub(crate) use weighted_inner_product::*;
 pub(crate) mod aggregate_range_proof;
 pub(crate) use aggregate_range_proof::*;

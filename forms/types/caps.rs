@@ -20,6 +20,10 @@ pub const SIGN_WS_BP_TERMS: usize = 2050;
 /// two agree — same source-of-truth discipline as the Z3.3b ws layout).
 pub const SIGN_WS_BP_STRAUS_BYTES: usize = (SIGN_WS_BP_TERMS * 2816) + 64;
 
+/// Z5.3 C-cut B: WIP round ping-pong scratch (a/b/g/h double buffers) —
+/// byte expression of `WipScratch::storage_bytes(SIGN_WS_BP_TERMS)`.
+pub const SIGN_WS_BP_WIP_BYTES: usize = SIGN_WS_BP_TERMS * 768;
+
 /// Z5.2b: decompressed generator point element size (curve25519-dalek
 /// `EdwardsPoint` repr: 4 x [u64; 5]). Pinned by a static assert in c_abi;
 /// the C side sizes table buffers as points * this constant.

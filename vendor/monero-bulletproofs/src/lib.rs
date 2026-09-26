@@ -52,7 +52,8 @@ use crate::original::{
     AggregateRangeWitness as OriginalWitness, IpProof,
 };
 
-pub(crate) mod plus;
+pub mod plus;
+pub use crate::plus::WipScratch;
 use crate::plus::{
     AggregateRangeProof as PlusProof, AggregateRangeStatement as PlusStatement,
     AggregateRangeWitness as PlusWitness, WipProof,
@@ -186,6 +187,7 @@ impl Bulletproof {
         outputs: &[Commitment],
         terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
         straus: &mut curve25519_dalek::scratch::StrausScratch,
+        wip: &mut plus::weighted_inner_product::WipScratch,
     ) -> Result<Bulletproof, BulletproofError> {
         if outputs.is_empty() {
             Err(BulletproofError::NoCommitments)?;
@@ -222,6 +224,7 @@ impl Bulletproof {
             .expect("failed to create witness despite checking amount of commitments"),
           terms,
           straus,
+          wip,
         )
         .expect("failed to prove Bulletproof::Plus despite ensuring statement/witness consistency"),
     ))

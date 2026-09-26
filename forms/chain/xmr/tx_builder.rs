@@ -307,6 +307,15 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
         crate::types::caps::SIGN_WS_BP_TERMS,
     )
     .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let mut wip_storage = alloc::vec![
+        0u8;
+        monero_bulletproofs::WipScratch::storage_bytes(crate::types::caps::SIGN_WS_BP_TERMS)
+    ];
+    let mut wip = monero_bulletproofs::WipScratch::new(
+        &mut wip_storage,
+        crate::types::caps::SIGN_WS_BP_TERMS,
+    )
+    .expect("wip storage");
     let bp = prove_bulletproofs_plus(
         rng,
         &commitments
@@ -315,6 +324,7 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
             .collect::<alloc::vec::Vec<_>>(),
         &mut bp_terms,
         &mut bp_straus,
+        &mut wip,
     )?;
 
     // 5. Build outputs + extra first (key images don't depend on msg_hash,
