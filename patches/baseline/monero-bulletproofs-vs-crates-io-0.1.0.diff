@@ -3911,8 +3911,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/weighted_inner_product.rs b/src/plus/weighted_inner_product.rs
 --- a/src/plus/weighted_inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/weighted_inner_product.rs	2026-09-27 01:21:08.359845712 +0800
-@@ -1,415 +1,560 @@
++++ b/src/plus/weighted_inner_product.rs	2026-09-27 02:05:37.741652284 +0800
+@@ -1,415 +1,573 @@
  use std_shims::{vec, vec::Vec};
  
 -use rand_core::{RngCore, CryptoRng};
@@ -3939,6 +3939,19 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +use timing_noop::{PhaseProbe, PHASE_WIP_FOLD, PHASE_WIP_L_R};
 +
 +use rand_core::{CryptoRng, RngCore};
++
++/// shlosilo vendor patch (Z5.3 C-cut): borrow-form weighted inner product —
++/// the consuming form clones its operands; this computes the identical
++/// `sum(a*b*y)` over borrows (field arithmetic is exact, outputs bit-equal).
++fn wip_ref(a: &ScalarVector, b: &ScalarVector, y: &ScalarVector) -> Scalar {
++    debug_assert_eq!(a.len(), b.len());
++    debug_assert_eq!(a.len(), y.len());
++    let mut acc = Scalar::ZERO;
++    for ((x, z), w) in a.0.iter().zip(b.0.iter()).zip(y.0.iter()) {
++        acc += (*x * *z) * *w;
++    }
++    acc
++}
  use zeroize::{Zeroize, ZeroizeOnDrop};
  
 -use curve25519_dalek::{Scalar, EdwardsPoint};
@@ -4043,30 +4056,22 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  impl WipStatement {
 -  pub(crate) fn new(generators: BpPlusGenerators, P: EdwardsPoint, y: Scalar) -> Self {
 -    debug_assert_eq!(generators.len(), padded_pow_of_2(generators.len()));
--
++    pub(crate) fn new(generators: BpPlusGenerators, P: EdwardsPoint, y: Scalar) -> Self {
++        debug_assert_eq!(generators.len(), padded_pow_of_2(generators.len()));
+ 
 -    // y ** n
 -    let mut y_vec = ScalarVector::new(generators.len());
 -    y_vec[0] = y;
 -    for i in 1 .. y_vec.len() {
 -      y_vec[i] = y_vec[i - 1] * y;
 -    }
-+    pub(crate) fn new(generators: BpPlusGenerators, P: EdwardsPoint, y: Scalar) -> Self {
-+        debug_assert_eq!(generators.len(), padded_pow_of_2(generators.len()));
- 
+-
 -    Self { generators, P, y: y_vec }
 -  }
 -
 -  fn transcript_L_R(transcript: &mut Scalar, L: CompressedPoint, R: CompressedPoint) -> Scalar {
 -    let e =
 -      monero_ed25519::Scalar::hash([transcript.to_bytes(), L.to_bytes(), R.to_bytes()].concat())
--        .into();
--    *transcript = e;
--    e
--  }
--
--  fn transcript_A_B(transcript: &mut Scalar, A: CompressedPoint, B: CompressedPoint) -> Scalar {
--    let e =
--      monero_ed25519::Scalar::hash([transcript.to_bytes(), A.to_bytes(), B.to_bytes()].concat())
 +        // y ** n
 +        let mut y_vec = ScalarVector::new(generators.len());
 +        y_vec[0] = y;
@@ -4086,6 +4091,14 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            [transcript.to_bytes(), L.to_bytes(), R.to_bytes()].concat(),
 +        )
          .into();
+-    *transcript = e;
+-    e
+-  }
+-
+-  fn transcript_A_B(transcript: &mut Scalar, A: CompressedPoint, B: CompressedPoint) -> Scalar {
+-    let e =
+-      monero_ed25519::Scalar::hash([transcript.to_bytes(), A.to_bytes(), B.to_bytes()].concat())
+-        .into();
 -    *transcript = e;
 -    e
 -  }
@@ -4121,10 +4134,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -    let mut new_h_bold = Vec::with_capacity(h_bold1.len());
 -    for h_bold in h_bold1.0.drain(..).zip(h_bold2.0.drain(..)) {
 -      new_h_bold.push(multiexp_vartime(&[(e, h_bold.0), (inv_e, h_bold.1)]));
-+        *transcript = e;
-+        e
-     }
- 
+-    }
+-
 -    let e_square = e * e;
 -    let inv_e_square = inv_e * inv_e;
 -
@@ -4180,8 +4191,10 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -      P_terms.push((witness.alpha, h));
 -      debug_assert_eq!(multiexp(&P_terms), P);
 -      P_terms.zeroize();
--    }
--
++        *transcript = e;
++        e
+     }
+ 
 -    let mut a = witness.a.clone();
 -    let mut b = witness.b.clone();
 -    let mut alpha = witness.alpha;
@@ -4461,8 +4474,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            {
 +                wip_round += 1;
 +            }
-+            let (a1, a2) = a.clone().split();
-+            let (b1, b2) = b.clone().split();
++            let (a1, a2) = a.split();
++            let (b1, b2) = b.split();
 +            let (g_bold1, g_bold2) = g_bold.split();
 +            let (h_bold1, h_bold2) = h_bold.split();
 +
@@ -4482,8 +4495,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            let d_l = monero_ed25519::Scalar::random(&mut *rng).into();
 +            let d_r = monero_ed25519::Scalar::random(&mut *rng).into();
 +
-+            let c_l = a1.clone().weighted_inner_product(&b2, &y);
-+            let c_r = (a2.clone() * y_n_hat).weighted_inner_product(&b1, &y);
++            let c_l = wip_ref(&a1, &b2, &y);
++            let c_r = y_n_hat * wip_ref(&a2, &b1, &y);
 +
 +            let y_inv_n_hat = y_inv
 +                .pop()
@@ -4633,10 +4646,10 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -    };
 -
 -    let neg_e_square = verifier_weight * -(e * e);
--
--    verifier.0.other.push((neg_e_square, P));
 +        A_terms.zeroize();
  
+-    verifier.0.other.push((neg_e_square, P));
+-
 -    let mut challenges = Vec::with_capacity(L.len());
 -    let product_cache = {
 -      let mut inv_e_is = e_is.clone();
@@ -4651,15 +4664,6 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -        debug_assert_eq!(e_i.invert(), inv_e_i);
 -
 -        challenges.push((e_i, inv_e_i));
--
--        let e_i_square = e_i * e_i;
--        let inv_e_i_square = inv_e_i * inv_e_i;
--        verifier.0.other.push((neg_e_square * e_i_square, *L));
--        verifier.0.other.push((neg_e_square * inv_e_i_square, *R));
--      }
--
--      challenge_products(&challenges)
--    };
 +        let mut B_terms = vec![(ry * s, g), (eta, h)];
 +        let B = CompressedPoint::from(
 +            (multiexp(&B_terms, straus).ok()? * INV_EIGHT.into())
@@ -4668,22 +4672,15 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        );
 +        B_terms.zeroize();
  
--    while verifier.0.g_bold.len() < generators.len() {
--      verifier.0.g_bold.push(Scalar::ZERO);
--    }
--    while verifier.0.h_bold.len() < generators.len() {
--      verifier.0.h_bold.push(Scalar::ZERO);
--    }
+-        let e_i_square = e_i * e_i;
+-        let inv_e_i_square = inv_e_i * inv_e_i;
+-        verifier.0.other.push((neg_e_square * e_i_square, *L));
+-        verifier.0.other.push((neg_e_square * inv_e_i_square, *R));
+-      }
 +        let e = Self::transcript_A_B(&mut transcript, A, B);
  
--    let re = r_answer * e;
--    for i in 0 .. generators.len() {
--      let mut scalar = product_cache[i] * re;
--      if i > 0 {
--        scalar *= inv_y[i - 1];
--      }
--      verifier.0.g_bold[i] += verifier_weight * scalar;
--    }
+-      challenge_products(&challenges)
+-    };
 +        let r_answer = r + (a[0] * e);
 +        let s_answer = s + (b[0] * e);
 +        let delta_answer = eta + (delta * e) + (alpha * (e * e));
@@ -4829,11 +4826,27 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        verifier.0.h += verifier_weight * delta_answer;
 +        verifier.0.other.push((-verifier_weight, B));
  
+-    while verifier.0.g_bold.len() < generators.len() {
+-      verifier.0.g_bold.push(Scalar::ZERO);
+-    }
+-    while verifier.0.h_bold.len() < generators.len() {
+-      verifier.0.h_bold.push(Scalar::ZERO);
++        true
+     }
+-
+-    let re = r_answer * e;
+-    for i in 0 .. generators.len() {
+-      let mut scalar = product_cache[i] * re;
+-      if i > 0 {
+-        scalar *= inv_y[i - 1];
+-      }
+-      verifier.0.g_bold[i] += verifier_weight * scalar;
+-    }
+-
 -    let se = s_answer * e;
 -    for i in 0 .. generators.len() {
 -      verifier.0.h_bold[i] += verifier_weight * (se * product_cache[product_cache.len() - 1 - i]);
-+        true
-     }
+-    }
 -
 -    verifier.0.other.push((verifier_weight * -e, A));
 -    verifier.0.g += verifier_weight * (r_answer * y[0] * s_answer);

@@ -23,6 +23,19 @@ mod timing_noop {
 use timing_noop::{PhaseProbe, PHASE_WIP_FOLD, PHASE_WIP_L_R};
 
 use rand_core::{CryptoRng, RngCore};
+
+/// shlosilo vendor patch (Z5.3 C-cut): borrow-form weighted inner product —
+/// the consuming form clones its operands; this computes the identical
+/// `sum(a*b*y)` over borrows (field arithmetic is exact, outputs bit-equal).
+fn wip_ref(a: &ScalarVector, b: &ScalarVector, y: &ScalarVector) -> Scalar {
+    debug_assert_eq!(a.len(), b.len());
+    debug_assert_eq!(a.len(), y.len());
+    let mut acc = Scalar::ZERO;
+    for ((x, z), w) in a.0.iter().zip(b.0.iter()).zip(y.0.iter()) {
+        acc += (*x * *z) * *w;
+    }
+    acc
+}
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use curve25519_dalek::{EdwardsPoint, Scalar};
@@ -258,8 +271,8 @@ impl WipStatement {
             {
                 wip_round += 1;
             }
-            let (a1, a2) = a.clone().split();
-            let (b1, b2) = b.clone().split();
+            let (a1, a2) = a.split();
+            let (b1, b2) = b.split();
             let (g_bold1, g_bold2) = g_bold.split();
             let (h_bold1, h_bold2) = h_bold.split();
 
@@ -279,8 +292,8 @@ impl WipStatement {
             let d_l = monero_ed25519::Scalar::random(&mut *rng).into();
             let d_r = monero_ed25519::Scalar::random(&mut *rng).into();
 
-            let c_l = a1.clone().weighted_inner_product(&b2, &y);
-            let c_r = (a2.clone() * y_n_hat).weighted_inner_product(&b1, &y);
+            let c_l = wip_ref(&a1, &b2, &y);
+            let c_r = y_n_hat * wip_ref(&a2, &b1, &y);
 
             let y_inv_n_hat = y_inv
                 .pop()
