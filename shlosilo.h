@@ -367,6 +367,14 @@
 
 /**
  * Protocol-hard: Monero fixed ring size (post-v13 CLSAG). Never tunable.
+ * Z5.3 pool cut: BP+ prove multiexp scratch, in (Scalar, EdwardsPoint)
+ * entries. Bound = `2 * padded_pow_of_2(MAX_COMMITMENTS * 64) + 2` = 2*1024+2
+ * (the A-terms worst case; WIP L/R need less). Over-cap in the prove chain
+ * is an explicit error before any proving starts.
+ */
+#define SIGN_WS_BP_TERMS 2050
+
+/**
  * Z5.2b: decompressed generator point element size (curve25519-dalek
  * `EdwardsPoint` repr: 4 x [u64; 5]). Pinned by a static assert in c_abi;
  * the C side sizes table buffers as points * this constant.
