@@ -55,5 +55,13 @@ pub fn prove_tiny_bp_plus() {
         MoneroCommitment::new(mask, 200_000_000),
     ]
     .into();
-    let _proof = prove_bulletproofs_plus(&mut rng, &commitments).expect("tiny bp+ prove");
+    let mut terms = alloc::vec![
+        (
+            curve25519_dalek::Scalar::ZERO,
+            curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
+        );
+        crate::types::caps::SIGN_WS_BP_TERMS
+    ];
+    let _proof =
+        prove_bulletproofs_plus(&mut rng, &commitments, &mut terms).expect("tiny bp+ prove");
 }

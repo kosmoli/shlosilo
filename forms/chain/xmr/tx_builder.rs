@@ -288,12 +288,21 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
     // 4. Bulletproofs+ for output commitments
     // Z2.3 C3b-2: vendor `prove_plus` takes Vec<Commitment> (Z5 boundary — the alloc
     // lives at the vendor edge like clsag's `vec![...]` until the surgery).
+    // Z5.3 transitional: self-provisioned BP+ prove scratch (tracked).
+    let mut bp_terms = alloc::vec![
+        (
+            curve25519_dalek::Scalar::ZERO,
+            curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
+        );
+        crate::types::caps::SIGN_WS_BP_TERMS
+    ];
     let bp = prove_bulletproofs_plus(
         rng,
         &commitments
             .iter()
             .map(|c| c.as_ref().cloned().unwrap())
             .collect::<alloc::vec::Vec<_>>(),
+        &mut bp_terms,
     )?;
 
     // 5. Build outputs + extra first (key images don't depend on msg_hash,

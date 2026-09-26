@@ -229,6 +229,14 @@ fn xmr_sign_zero_alloc() {
     let mut bp_rng = rand_chacha::ChaCha20Rng::from_seed([0xB1u8; 32]);
     let mut clsag_rng = rand_chacha::ChaCha20Rng::from_seed([0xC1u8; 32]);
     let mut out = vec![0u8; 65536];
+    let mut bp_terms = vec![
+        (
+            curve25519_dalek::Scalar::ZERO,
+            curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
+        );
+        shlosilo::types::caps::SIGN_WS_BP_TERMS
+    ];
+
     let n = sign_tx_from_construction_with_rngs_into(
         tx_data,
         &spend_sk,
@@ -237,6 +245,7 @@ fn xmr_sign_zero_alloc() {
         &mut bp_rng,
         &mut clsag_rng,
         &mut out,
+        &mut bp_terms,
     )
     .expect("warm-up sign");
     assert!(n > 0);
@@ -252,6 +261,7 @@ fn xmr_sign_zero_alloc() {
             &mut bp_rng,
             &mut clsag_rng,
             &mut out,
+            &mut bp_terms,
         )
         .expect("measured sign")
     });
@@ -312,6 +322,13 @@ fn alloc_site_histogram() {
     let mut bp_rng = rand_chacha::ChaCha20Rng::from_seed([0xB1u8; 32]);
     let mut clsag_rng = rand_chacha::ChaCha20Rng::from_seed([0xC1u8; 32]);
     let mut out = vec![0u8; 65536];
+    let mut bp_terms = vec![
+        (
+            curve25519_dalek::Scalar::ZERO,
+            curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
+        );
+        shlosilo::types::caps::SIGN_WS_BP_TERMS
+    ];
 
     CAPTURED.store(0, Ordering::Relaxed);
     CAPTURING.store(true, Ordering::Relaxed);
@@ -323,6 +340,7 @@ fn alloc_site_histogram() {
         &mut bp_rng,
         &mut clsag_rng,
         &mut out,
+        &mut bp_terms,
     )
     .expect("sign");
     CAPTURING.store(false, Ordering::Relaxed);

@@ -177,9 +177,14 @@ impl Bulletproof {
     /// This function runs in time variable to the validity of the arguments and the public data.
     // shlosilo vendor patch (Z5.1): slice API — callers keep ownership of the
     // commitment storage (wipe duty included). Memory-management only.
+    /// shlosilo vendor patch (Z5.3 pool cut): `terms` is the caller-owned
+    /// multiexp scratch (`>= 2 * padded_pow_of_2(outputs.len() * 64) + 2`
+    /// entries; over-cap is an explicit `BulletproofError`). The prove chain
+    /// writes its per-site term lists here instead of heap Vecs.
     pub fn prove_plus<R: RngCore + CryptoRng>(
         rng: &mut R,
         outputs: &[Commitment],
+        terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
     ) -> Result<Bulletproof, BulletproofError> {
         if outputs.is_empty() {
             Err(BulletproofError::NoCommitments)?;
@@ -214,6 +219,7 @@ impl Bulletproof {
           // Vec) is retired; wipe duty lives at the call site (forms owner).
           &witness_res
             .expect("failed to create witness despite checking amount of commitments"),
+          terms,
         )
         .expect("failed to prove Bulletproof::Plus despite ensuring statement/witness consistency"),
     ))

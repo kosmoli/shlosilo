@@ -898,7 +898,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-26 16:50:32.940890456 +0800
++++ b/src/lib.rs	2026-09-26 20:23:17.739459694 +0800
 @@ -4,40 +4,58 @@
  #![allow(non_snake_case)]
  
@@ -1133,7 +1133,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        OriginalStatement::new(&commitments)
          .expect("failed to create statement despite checking amount of commitments")
          .prove(
-@@ -145,201 +170,268 @@
+@@ -145,201 +170,274 @@
            "failed to prove Bulletproof::Original despite ensuring statement/witness consistency",
          ),
      ))
@@ -1162,9 +1162,14 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    /// This function runs in time variable to the validity of the arguments and the public data.
 +    // shlosilo vendor patch (Z5.1): slice API — callers keep ownership of the
 +    // commitment storage (wipe duty included). Memory-management only.
++    /// shlosilo vendor patch (Z5.3 pool cut): `terms` is the caller-owned
++    /// multiexp scratch (`>= 2 * padded_pow_of_2(outputs.len() * 64) + 2`
++    /// entries; over-cap is an explicit `BulletproofError`). The prove chain
++    /// writes its per-site term lists here instead of heap Vecs.
 +    pub fn prove_plus<R: RngCore + CryptoRng>(
 +        rng: &mut R,
 +        outputs: &[Commitment],
++        terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
 +    ) -> Result<Bulletproof, BulletproofError> {
 +        if outputs.is_empty() {
 +            Err(BulletproofError::NoCommitments)?;
@@ -1203,6 +1208,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +          // Vec) is retired; wipe duty lives at the call site (forms owner).
 +          &witness_res
 +            .expect("failed to create witness despite checking amount of commitments"),
++          terms,
          )
          .expect("failed to prove Bulletproof::Plus despite ensuring statement/witness consistency"),
      ))
@@ -2962,7 +2968,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.rs
 --- a/src/plus/aggregate_range_proof.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/aggregate_range_proof.rs	2026-09-26 20:09:17.196462171 +0800
++++ b/src/plus/aggregate_range_proof.rs	2026-09-26 20:42:35.514709261 +0800
 @@ -1,21 +1,47 @@
 -use std_shims::{vec, vec::Vec};
 +use std_shims::vec::Vec;
@@ -3024,7 +3030,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  };
  
  const INV_EIGHT: monero_ed25519::Scalar = monero_ed25519::Scalar::INV_EIGHT;
-@@ -23,249 +49,310 @@
+@@ -23,249 +49,342 @@
  // Figure 3 of the Bulletproofs+ Paper
  #[derive(Clone, Debug)]
  pub(crate) struct AggregateRangeStatement<'a> {
@@ -3201,6 +3207,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        generators: &BpPlusGenerators,
 +        transcript: &mut Scalar,
 +        A: CompressedPoint,
++        terms: &mut [(Scalar, EdwardsPoint)],
 +    ) -> Option<AHatComputation> {
 +        let (y, z) = Self::transcript_A(transcript, A);
 +
@@ -3265,16 +3272,26 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        }
 +
 +        let neg_z = -z;
-+        let mut A_terms = Vec::with_capacity((generators.len() * 2) + 2);
-+        for (i, d_y_z) in d_descending_y_plus_z.0.iter().enumerate() {
-+            A_terms.push((neg_z, generators.generator(GeneratorsList::GBold, i)));
-+            A_terms.push((*d_y_z, generators.generator(GeneratorsList::HBold, i)));
++        // Z5.3 pool cut: A_terms fills the caller scratch (explicit over-cap
++        // error instead of a Vec; same order of terms).
++        let a_terms_len = (d_descending_y_plus_z.len() * 2) + 2;
++        if terms.len() < a_terms_len {
++            return None;
 +        }
-+        A_terms.push((y_mn_plus_one, commitment_accum));
-+        A_terms.push((
++        let A_terms = &mut terms[..a_terms_len];
++        let mut t = 0;
++        for (i, d_y_z) in d_descending_y_plus_z.0.iter().enumerate() {
++            A_terms[t] = (neg_z, generators.generator(GeneratorsList::GBold, i));
++            t += 1;
++            A_terms[t] = (*d_y_z, generators.generator(GeneratorsList::HBold, i));
++            t += 1;
++        }
++        A_terms[t] = (y_mn_plus_one, commitment_accum);
++        t += 1;
++        A_terms[t] = (
 +            ((y_pows * z) - (d_sum * y_mn_plus_one * z) - (y_pows * (z * z))),
 +            BpPlusGenerators::g(),
-+        ));
++        );
 +
 +        Some(AHatComputation {
 +            y,
@@ -3282,7 +3299,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            y_mn_plus_one,
 +            z,
 +            z_pow: ScalarVector(z_pow[..V.len() + 1].to_vec()),
-+            A_hat: A + multiexp_vartime(&A_terms),
++            A_hat: {
++                let hat = A + multiexp_vartime(A_terms);
++                for e in A_terms.iter_mut() {
++                    e.zeroize();
++                }
++                hat
++            },
 +        })
 +    }
 +
@@ -3290,6 +3313,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        self,
 +        rng: &mut R,
 +        witness: &AggregateRangeWitness,
++        terms: &mut [(Scalar, EdwardsPoint)],
 +    ) -> Option<AggregateRangeProof> {
 +        // Check for consistency with the witness
 +        #[cfg(feature = "prove-timing")]
@@ -3375,7 +3399,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            z,
 +            z_pow,
 +            A_hat,
-+        } = Self::compute_A_hat(PointVector(V), &generators, &mut transcript, A)
++        } = Self::compute_A_hat(PointVector(V), &generators, &mut transcript, A, terms)
 +            .expect("A is a valid point as we just compressed it");
 +        _p2.end();
 +
@@ -3398,6 +3422,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                            WipWitness::new(a_l, a_r, alpha)
 +                                .expect("Bulletproofs::Plus created an invalid WipWitness"),
 +                        ),
++                        terms,
 +                    )
 +                    .expect("Bulletproof::Plus failed to prove the weighted inner-product");
 +                _p3.end();
@@ -3425,9 +3450,22 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +
 +        let generators = generators.reduce(V.len() * COMMITMENT_BITS);
 +
-+        let Some(AHatComputation { y, A_hat, .. }) =
-+            Self::compute_A_hat(PointVector(V), &generators, &mut transcript, proof.A)
-+        else {
++        // Z5.3 pool cut: verify self-provisions one staging Vec (the Z6
++        // zero-alloc claim covers the sign path; verify staging is tracked).
++        let a_hat_res = {
++            // (len matters: compute_A_hat checks `terms.len()`, so this must be
++            // a sized buffer, not `with_capacity`)
++            let mut verify_terms = Vec::new();
++            verify_terms.resize((2 * 1024) + 2, (Scalar::ZERO, EdwardsPoint::identity()));
++            Self::compute_A_hat(
++                PointVector(V),
++                &generators,
++                &mut transcript,
++                proof.A,
++                &mut verify_terms,
++            )
++        };
++        let Some(AHatComputation { y, A_hat, .. }) = a_hat_res else {
 +            return false;
 +        };
 +        WipStatement::new(generators, A_hat, y).verify(rng, verifier, transcript, proof.wip)
@@ -3743,8 +3781,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/weighted_inner_product.rs b/src/plus/weighted_inner_product.rs
 --- a/src/plus/weighted_inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/weighted_inner_product.rs	2026-09-15 01:18:59.942653065 +0800
-@@ -1,415 +1,526 @@
++++ b/src/plus/weighted_inner_product.rs	2026-09-26 20:42:35.517709283 +0800
+@@ -1,415 +1,548 @@
  use std_shims::{vec, vec::Vec};
  
 -use rand_core::{RngCore, CryptoRng};
@@ -4212,6 +4250,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        rng: &mut R,
 +        mut transcript: Scalar,
 +        witness: &WipWitness,
++        terms: &mut [(Scalar, EdwardsPoint)],
 +    ) -> Option<WipProof> {
 +        let WipStatement {
 +            generators,
@@ -4246,6 +4285,10 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        };
 +
 +        // Check P has the expected relationship
++        #[cfg(debug_assertions)]
++        // Z5.3 pool cut: this block exists only for the debug assertion —
++        // gating it removes its staging Vec from release builds (identical
++        // release behavior).
 +        #[cfg(debug_assertions)]
 +        {
 +            let mut P_terms = witness
@@ -4311,46 +4354,63 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                .pop()
 +                .expect("couldn't pop y_inv despite y_inv being of same length as times iterated");
 +
-+            let mut L_terms = (a1.clone() * y_inv_n_hat)
-+                .0
-+                .drain(..)
-+                .zip(g_bold2.0.iter().copied())
-+                .chain(b2.0.iter().copied().zip(h_bold1.0.iter().copied()))
-+                .collect::<Vec<_>>();
-+            L_terms.push((c_l, g));
-+            L_terms.push((d_l, h));
++            // Z5.3 pool cut: L terms fill the caller scratch (the `a1.clone()`
++            // dies with the collect — scaled values are written directly).
++            let l_len = (g_bold2.len() * 2) + 2;
++            if terms.len() < l_len {
++                return None;
++            }
++            let L_terms = &mut terms[..l_len];
++            let mut t = 0;
++            for (i, g2) in g_bold2.0.iter().enumerate() {
++                L_terms[t] = (a1.0[i] * y_inv_n_hat, *g2);
++                t += 1;
++            }
++            for (i, h1) in h_bold1.0.iter().enumerate() {
++                L_terms[t] = (b2.0[i], *h1);
++                t += 1;
++            }
++            L_terms[t] = (c_l, g);
++            L_terms[t + 1] = (d_l, h);
 +            let lr_probe = PhaseProbe::start(PHASE_WIP_L_R);
 +            #[cfg(feature = "prove-timing")]
 +            let round_l = PhaseProbe::start(PHASE_WIP_L_BASE + wip_round);
-+            let L = CompressedPoint::from(
-+                (multiexp(&L_terms) * INV_EIGHT.into())
-+                    .compress()
-+                    .to_bytes(),
-+            );
++            let L =
++                CompressedPoint::from((multiexp(L_terms) * INV_EIGHT.into()).compress().to_bytes());
 +            #[cfg(feature = "prove-timing")]
 +            round_l.end();
 +            L_vec.push(L);
-+            L_terms.zeroize();
++            for e in L_terms.iter_mut() {
++                e.zeroize();
++            }
 +
-+            let mut R_terms = (a2.clone() * y_n_hat)
-+                .0
-+                .drain(..)
-+                .zip(g_bold1.0.iter().copied())
-+                .chain(b1.0.iter().copied().zip(h_bold2.0.iter().copied()))
-+                .collect::<Vec<_>>();
-+            R_terms.push((c_r, g));
-+            R_terms.push((d_r, h));
++            // Z5.3 pool cut: R terms likewise (reuses the scratch).
++            let r_len = (g_bold1.len() * 2) + 2;
++            if terms.len() < r_len {
++                return None;
++            }
++            let R_terms = &mut terms[..r_len];
++            let mut t = 0;
++            for (i, g1) in g_bold1.0.iter().enumerate() {
++                R_terms[t] = (a2.0[i] * y_n_hat, *g1);
++                t += 1;
++            }
++            for (i, h2) in h_bold2.0.iter().enumerate() {
++                R_terms[t] = (b1.0[i], *h2);
++                t += 1;
++            }
++            R_terms[t] = (c_r, g);
++            R_terms[t + 1] = (d_r, h);
 +            #[cfg(feature = "prove-timing")]
 +            let round_r = PhaseProbe::start(PHASE_WIP_R_BASE + wip_round);
-+            let R = CompressedPoint::from(
-+                (multiexp(&R_terms) * INV_EIGHT.into())
-+                    .compress()
-+                    .to_bytes(),
-+            );
++            let R =
++                CompressedPoint::from((multiexp(R_terms) * INV_EIGHT.into()).compress().to_bytes());
 +            #[cfg(feature = "prove-timing")]
 +            round_r.end();
 +            R_vec.push(R);
-+            R_terms.zeroize();
++            for e in R_terms.iter_mut() {
++                e.zeroize();
++            }
 +            lr_probe.end();
 +
 +            let (e, inv_e, e_square, inv_e_square);

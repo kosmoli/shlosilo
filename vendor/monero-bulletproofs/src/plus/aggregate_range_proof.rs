@@ -124,6 +124,7 @@ impl<'a> AggregateRangeStatement<'a> {
         generators: &BpPlusGenerators,
         transcript: &mut Scalar,
         A: CompressedPoint,
+        terms: &mut [(Scalar, EdwardsPoint)],
     ) -> Option<AHatComputation> {
         let (y, z) = Self::transcript_A(transcript, A);
 
@@ -188,16 +189,26 @@ impl<'a> AggregateRangeStatement<'a> {
         }
 
         let neg_z = -z;
-        let mut A_terms = Vec::with_capacity((generators.len() * 2) + 2);
-        for (i, d_y_z) in d_descending_y_plus_z.0.iter().enumerate() {
-            A_terms.push((neg_z, generators.generator(GeneratorsList::GBold, i)));
-            A_terms.push((*d_y_z, generators.generator(GeneratorsList::HBold, i)));
+        // Z5.3 pool cut: A_terms fills the caller scratch (explicit over-cap
+        // error instead of a Vec; same order of terms).
+        let a_terms_len = (d_descending_y_plus_z.len() * 2) + 2;
+        if terms.len() < a_terms_len {
+            return None;
         }
-        A_terms.push((y_mn_plus_one, commitment_accum));
-        A_terms.push((
+        let A_terms = &mut terms[..a_terms_len];
+        let mut t = 0;
+        for (i, d_y_z) in d_descending_y_plus_z.0.iter().enumerate() {
+            A_terms[t] = (neg_z, generators.generator(GeneratorsList::GBold, i));
+            t += 1;
+            A_terms[t] = (*d_y_z, generators.generator(GeneratorsList::HBold, i));
+            t += 1;
+        }
+        A_terms[t] = (y_mn_plus_one, commitment_accum);
+        t += 1;
+        A_terms[t] = (
             ((y_pows * z) - (d_sum * y_mn_plus_one * z) - (y_pows * (z * z))),
             BpPlusGenerators::g(),
-        ));
+        );
 
         Some(AHatComputation {
             y,
@@ -205,7 +216,13 @@ impl<'a> AggregateRangeStatement<'a> {
             y_mn_plus_one,
             z,
             z_pow: ScalarVector(z_pow[..V.len() + 1].to_vec()),
-            A_hat: A + multiexp_vartime(&A_terms),
+            A_hat: {
+                let hat = A + multiexp_vartime(A_terms);
+                for e in A_terms.iter_mut() {
+                    e.zeroize();
+                }
+                hat
+            },
         })
     }
 
@@ -213,6 +230,7 @@ impl<'a> AggregateRangeStatement<'a> {
         self,
         rng: &mut R,
         witness: &AggregateRangeWitness,
+        terms: &mut [(Scalar, EdwardsPoint)],
     ) -> Option<AggregateRangeProof> {
         // Check for consistency with the witness
         #[cfg(feature = "prove-timing")]
@@ -298,7 +316,7 @@ impl<'a> AggregateRangeStatement<'a> {
             z,
             z_pow,
             A_hat,
-        } = Self::compute_A_hat(PointVector(V), &generators, &mut transcript, A)
+        } = Self::compute_A_hat(PointVector(V), &generators, &mut transcript, A, terms)
             .expect("A is a valid point as we just compressed it");
         _p2.end();
 
@@ -321,6 +339,7 @@ impl<'a> AggregateRangeStatement<'a> {
                             WipWitness::new(a_l, a_r, alpha)
                                 .expect("Bulletproofs::Plus created an invalid WipWitness"),
                         ),
+                        terms,
                     )
                     .expect("Bulletproof::Plus failed to prove the weighted inner-product");
                 _p3.end();
@@ -348,9 +367,22 @@ impl<'a> AggregateRangeStatement<'a> {
 
         let generators = generators.reduce(V.len() * COMMITMENT_BITS);
 
-        let Some(AHatComputation { y, A_hat, .. }) =
-            Self::compute_A_hat(PointVector(V), &generators, &mut transcript, proof.A)
-        else {
+        // Z5.3 pool cut: verify self-provisions one staging Vec (the Z6
+        // zero-alloc claim covers the sign path; verify staging is tracked).
+        let a_hat_res = {
+            // (len matters: compute_A_hat checks `terms.len()`, so this must be
+            // a sized buffer, not `with_capacity`)
+            let mut verify_terms = Vec::new();
+            verify_terms.resize((2 * 1024) + 2, (Scalar::ZERO, EdwardsPoint::identity()));
+            Self::compute_A_hat(
+                PointVector(V),
+                &generators,
+                &mut transcript,
+                proof.A,
+                &mut verify_terms,
+            )
+        };
+        let Some(AHatComputation { y, A_hat, .. }) = a_hat_res else {
             return false;
         };
         WipStatement::new(generators, A_hat, y).verify(rng, verifier, transcript, proof.wip)

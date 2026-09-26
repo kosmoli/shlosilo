@@ -187,6 +187,8 @@ pub struct SignWs<'a> {
     pub kstr: &'a mut [u8],
     /// Records-face dests (per-tx clones carved into the PendingTx records).
     pub record_dests: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
+    /// Z5.3 pool cut: BP+ prove multiexp scratch (caller memory, carved).
+    pub bp_terms: &'a mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
 }
 
 /// Z3.3b: the sign-workspace layout — the SINGLE source of truth behind both
@@ -211,6 +213,7 @@ pub struct SignWsLayout {
     sel_out: usize,
     kstr: usize,
     record_dests: usize,
+    pub bp_terms: usize,
 }
 
 fn ws_next(off: &mut usize, align: usize, size: usize) -> usize {
@@ -282,6 +285,12 @@ impl SignWsLayout {
             core::mem::align_of::<TxDestinationEntry>(),
             core::mem::size_of::<TxDestinationEntry>() * c::SIGN_WS_RECORD_DESTS,
         );
+        let bp_terms = ws_next(
+            &mut off,
+            core::mem::align_of::<(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)>(),
+            core::mem::size_of::<(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)>()
+                * c::SIGN_WS_BP_TERMS,
+        );
         // trailing pad so the total itself satisfies the widest alignment
         let total = ws_next(&mut off, core::mem::align_of::<usize>(), 0);
         SignWsLayout {
@@ -301,6 +310,7 @@ impl SignWsLayout {
             sel_out,
             kstr,
             record_dests,
+            bp_terms,
         }
     }
 }
@@ -371,6 +381,11 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     let ki: &mut [[u8; 32]] = unsafe { at(base, l.ki, c::SIGN_WS_KI) };
     let sel_out: &mut [u8] = unsafe { at(base, l.sel_out, c::SIGN_WS_SEL_OUT) };
     let kstr: &mut [u8] = unsafe { at(base, l.kstr, c::SIGN_WS_KSTR) };
+    // Z5.3 pool cut: BP+ prove scratch (POD span — the whole-carve zero fill
+    // is its documented initialization; the prove chain overwrites entries
+    // before reading them).
+    let bp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)] =
+        unsafe { at(base, l.bp_terms, c::SIGN_WS_BP_TERMS) };
     Some(SignWs {
         plain,
         txes,
@@ -387,6 +402,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         sel: sel_out,
         kstr,
         record_dests,
+        bp_terms,
     })
 }
 
@@ -611,6 +627,8 @@ fn sign_xmr_with_ws<'a>(
         // the staging copy are gone.
         let (tx_slot, r) = core::mem::take(&mut tx_bytes_rest).split_at_mut(TX_BYTES_SLOT_MAX);
         tx_bytes_rest = r;
+        let mut ws_bp_terms = core::mem::take(&mut ws.bp_terms);
+        let bp_terms_slot = &mut ws_bp_terms;
         let tx_bytes_len = crate::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into(
             &tx_data,
             &spend_sec,
@@ -619,6 +637,7 @@ fn sign_xmr_with_ws<'a>(
             &mut bp_rng,
             &mut rng,
             tx_slot,
+            bp_terms_slot,
         )?;
         let tx_bytes_borrow: &[u8] = &tx_slot[..tx_bytes_len]; // reborrows the full 'a (tx_slot is never used again)
 

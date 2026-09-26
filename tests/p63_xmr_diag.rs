@@ -203,7 +203,18 @@ fn diag_bp_size_and_verify() {
             monero_ed25519::Commitment::new(ms, 1_000_000)
         })
         .collect();
-    let bp = prove_bulletproofs_plus(&mut rng, &commitments).expect("bp");
+    let bp = prove_bulletproofs_plus(
+        &mut rng,
+        &commitments,
+        &mut vec![
+            (
+                curve25519_dalek::Scalar::ZERO,
+                curve25519_dalek::constants::ED25519_BASEPOINT_POINT
+            );
+            shlosilo::types::caps::SIGN_WS_BP_TERMS
+        ],
+    )
+    .expect("bp");
     let mut buf = Vec::new();
     bp.write(&mut buf).unwrap();
     eprintln!("D BP+ wire size = {}", buf.len());

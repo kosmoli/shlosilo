@@ -348,6 +348,16 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     // The caller-workspace core sizes by what it writes; here the Vec backend
     // grows infallibly — a fixed staging slice keeps the same core shape.
     let mut staging = alloc::vec![0u8; TX_WIRE_SLOT_MAX];
+    // Z5.3 transitional: the wrapper self-provisions one staging Vec for the
+    // BP+ prove scratch (the ws path passes a carved buffer; tracked).
+    let mut multiexp_terms = Vec::with_capacity(crate::types::caps::SIGN_WS_BP_TERMS);
+    multiexp_terms.resize(
+        crate::types::caps::SIGN_WS_BP_TERMS,
+        (
+            curve25519_dalek::Scalar::ZERO,
+            curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
+        ),
+    );
     let n = sign_tx_from_construction_with_rngs_into(
         tx_data,
         spend_sec,
@@ -356,6 +366,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         bp_rng,
         clsag_rng,
         &mut staging,
+        &mut multiexp_terms,
     )?;
     out.extend_from_slice(&staging[..n]);
     Ok(out)
@@ -364,6 +375,14 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
 /// Core signing into a caller-workspace slot (Z3.2b). `out` receives the
 /// official monerod wire directly; over-slot raises explicit BufferTooSmall
 /// (RequiredLength), never truncation.
+/// `multiexp_terms` is the caller-owned BP+ prove scratch (Z5.3 pool cut):
+/// At least `caps::SIGN_WS_BP_TERMS` entries; over-cap is an explicit Err
+/// before any proving starts. The ws path carves it from `SignWs`; wrappers
+/// self-provision one staging Vec (tracked transitional).
+// Every argument is an independent caller-owned concern (tx data, two key
+// halves, the tx secret, two purpose-subdomain RNGs, the wire out slot, and
+// the BP+ prove scratch); bundling them would obscure the ownership contracts.
+#[allow(clippy::too_many_arguments)]
 pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCore + CryptoRng>(
     tx_data: &TxConstructionData,
     spend_sec: &[u8; 32],
@@ -372,6 +391,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     bp_rng: &mut B,
     clsag_rng: &mut C,
     out: &mut [u8],
+    multiexp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
 ) -> Result<usize> {
     // Audit #9 P1-02: r is a transaction secret key — SecretScalar owner
     // (dalek Scalar is Copy with no Drop; plain bindings on `?` paths would never be zeroized);
@@ -620,7 +640,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     let mut px9 = PhaseProbe::start(9);
     // Audit #7 Gate1 #5: commitments are public on-chain data (Pedersen commitments are broadcast with the tx and contain
     // no mask plaintext); clone is not a secret-copy problem — but the value has no consumers after this, so move it to eliminate the copy
-    let bp = prove_bulletproofs_plus(bp_rng, &commitments[..n_commitments])?;
+    let bp = prove_bulletproofs_plus(bp_rng, &commitments[..n_commitments], multiexp_terms)?;
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px9.as_mut() {
         p.end();

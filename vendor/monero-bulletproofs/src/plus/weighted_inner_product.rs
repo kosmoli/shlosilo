@@ -177,6 +177,7 @@ impl WipStatement {
         rng: &mut R,
         mut transcript: Scalar,
         witness: &WipWitness,
+        terms: &mut [(Scalar, EdwardsPoint)],
     ) -> Option<WipProof> {
         let WipStatement {
             generators,
@@ -211,6 +212,10 @@ impl WipStatement {
         };
 
         // Check P has the expected relationship
+        #[cfg(debug_assertions)]
+        // Z5.3 pool cut: this block exists only for the debug assertion —
+        // gating it removes its staging Vec from release builds (identical
+        // release behavior).
         #[cfg(debug_assertions)]
         {
             let mut P_terms = witness
@@ -276,46 +281,63 @@ impl WipStatement {
                 .pop()
                 .expect("couldn't pop y_inv despite y_inv being of same length as times iterated");
 
-            let mut L_terms = (a1.clone() * y_inv_n_hat)
-                .0
-                .drain(..)
-                .zip(g_bold2.0.iter().copied())
-                .chain(b2.0.iter().copied().zip(h_bold1.0.iter().copied()))
-                .collect::<Vec<_>>();
-            L_terms.push((c_l, g));
-            L_terms.push((d_l, h));
+            // Z5.3 pool cut: L terms fill the caller scratch (the `a1.clone()`
+            // dies with the collect — scaled values are written directly).
+            let l_len = (g_bold2.len() * 2) + 2;
+            if terms.len() < l_len {
+                return None;
+            }
+            let L_terms = &mut terms[..l_len];
+            let mut t = 0;
+            for (i, g2) in g_bold2.0.iter().enumerate() {
+                L_terms[t] = (a1.0[i] * y_inv_n_hat, *g2);
+                t += 1;
+            }
+            for (i, h1) in h_bold1.0.iter().enumerate() {
+                L_terms[t] = (b2.0[i], *h1);
+                t += 1;
+            }
+            L_terms[t] = (c_l, g);
+            L_terms[t + 1] = (d_l, h);
             let lr_probe = PhaseProbe::start(PHASE_WIP_L_R);
             #[cfg(feature = "prove-timing")]
             let round_l = PhaseProbe::start(PHASE_WIP_L_BASE + wip_round);
-            let L = CompressedPoint::from(
-                (multiexp(&L_terms) * INV_EIGHT.into())
-                    .compress()
-                    .to_bytes(),
-            );
+            let L =
+                CompressedPoint::from((multiexp(L_terms) * INV_EIGHT.into()).compress().to_bytes());
             #[cfg(feature = "prove-timing")]
             round_l.end();
             L_vec.push(L);
-            L_terms.zeroize();
+            for e in L_terms.iter_mut() {
+                e.zeroize();
+            }
 
-            let mut R_terms = (a2.clone() * y_n_hat)
-                .0
-                .drain(..)
-                .zip(g_bold1.0.iter().copied())
-                .chain(b1.0.iter().copied().zip(h_bold2.0.iter().copied()))
-                .collect::<Vec<_>>();
-            R_terms.push((c_r, g));
-            R_terms.push((d_r, h));
+            // Z5.3 pool cut: R terms likewise (reuses the scratch).
+            let r_len = (g_bold1.len() * 2) + 2;
+            if terms.len() < r_len {
+                return None;
+            }
+            let R_terms = &mut terms[..r_len];
+            let mut t = 0;
+            for (i, g1) in g_bold1.0.iter().enumerate() {
+                R_terms[t] = (a2.0[i] * y_n_hat, *g1);
+                t += 1;
+            }
+            for (i, h2) in h_bold2.0.iter().enumerate() {
+                R_terms[t] = (b1.0[i], *h2);
+                t += 1;
+            }
+            R_terms[t] = (c_r, g);
+            R_terms[t + 1] = (d_r, h);
             #[cfg(feature = "prove-timing")]
             let round_r = PhaseProbe::start(PHASE_WIP_R_BASE + wip_round);
-            let R = CompressedPoint::from(
-                (multiexp(&R_terms) * INV_EIGHT.into())
-                    .compress()
-                    .to_bytes(),
-            );
+            let R =
+                CompressedPoint::from((multiexp(R_terms) * INV_EIGHT.into()).compress().to_bytes());
             #[cfg(feature = "prove-timing")]
             round_r.end();
             R_vec.push(R);
-            R_terms.zeroize();
+            for e in R_terms.iter_mut() {
+                e.zeroize();
+            }
             lr_probe.end();
 
             let (e, inv_e, e_square, inv_e_square);
