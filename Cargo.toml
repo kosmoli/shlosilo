@@ -35,6 +35,8 @@ edition = "2021"
 members = ["flux/pico2", "flux/forgebox/staticlib", "flux/host-sim/staticlib"]
 exclude = [
     "fuzz",
+    "probes/noalloc",
+    "vendor/monero-clsag",
     "vendor/curve25519-dalek",
     "vendor/cryptonight",
     "vendor/monero-bulletproofs",

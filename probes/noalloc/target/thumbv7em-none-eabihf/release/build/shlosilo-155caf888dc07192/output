@@ -1,0 +1,11 @@
+cargo:rustc-env=SHLOSILO_BUILD_GIT=fe1fa41-dirty
+cargo:rerun-if-changed=.git/logs/HEAD
+cargo:rerun-if-changed=build.rs
+cargo:rerun-if-changed=Cargo.toml
+cargo:rerun-if-changed=forms
+cargo:rerun-if-changed=vendor
+cargo:rerun-if-changed=flux/pico2/src
+cargo:rerun-if-changed=flux/pico2/Cargo.toml
+cargo:rerun-if-changed=flux/pico2/build.rs
+cargo:rerun-if-changed=flux/forgebox/staticlib
+cargo:rerun-if-changed=flux/host-sim/staticlib

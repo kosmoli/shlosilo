@@ -1,0 +1,14 @@
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/deps/thiserror-ca1c7bb7fe29bb35.d: /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/lib.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/aserror.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/display.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/var.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/private.rs /home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/build/thiserror-3845a8c54404965f/out/private.rs
+
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/deps/libthiserror-ca1c7bb7fe29bb35.rlib: /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/lib.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/aserror.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/display.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/var.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/private.rs /home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/build/thiserror-3845a8c54404965f/out/private.rs
+
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/deps/libthiserror-ca1c7bb7fe29bb35.rmeta: /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/lib.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/aserror.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/display.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/var.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/private.rs /home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/build/thiserror-3845a8c54404965f/out/private.rs
+
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/lib.rs:
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/aserror.rs:
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/display.rs:
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/var.rs:
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.21/src/private.rs:
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/build/thiserror-3845a8c54404965f/out/private.rs:
+
+# env-dep:OUT_DIR=/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/build/thiserror-3845a8c54404965f/out

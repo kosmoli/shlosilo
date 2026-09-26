@@ -1,0 +1,12 @@
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/deps/spin-52a2107eb4abc478.d: /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/lib.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/lazy.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/mutex.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/mutex/ticket.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/once.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/relax.rs
+
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/deps/libspin-52a2107eb4abc478.rlib: /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/lib.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/lazy.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/mutex.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/mutex/ticket.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/once.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/relax.rs
+
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/deps/libspin-52a2107eb4abc478.rmeta: /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/lib.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/lazy.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/mutex.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/mutex/ticket.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/once.rs /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/relax.rs
+
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/lib.rs:
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/lazy.rs:
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/mutex.rs:
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/mutex/ticket.rs:
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/once.rs:
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.10.1/src/relax.rs:
