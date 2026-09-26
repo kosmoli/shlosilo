@@ -57,6 +57,10 @@ pub extern "C" fn z6_probe_run() {
         let r_bytes = zeroize::Zeroizing::new([0u8; 32]);
         let mut bp_rng = DummyRng;
         let mut clsag_rng = DummyRng;
+        static mut TERMS: [(shlosilo::curve25519_dalek::Scalar, shlosilo::curve25519_dalek::EdwardsPoint); 2050] = [(
+            shlosilo::curve25519_dalek::Scalar::ZERO,
+            shlosilo::curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
+        ); 2050];
         let _ = shlosilo::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into(
             txd,
             &spend,
@@ -65,6 +69,7 @@ pub extern "C" fn z6_probe_run() {
             &mut bp_rng,
             &mut clsag_rng,
             &mut OUT,
+            &mut TERMS,
         );
     }
 }

@@ -133,4 +133,4 @@
 /home/komo/works/shlosilo-poc4/forms/ur/ur_encode.rs:
 /home/komo/works/shlosilo-poc4/forms/ur/ur_multipart.rs:
 
-# env-dep:SHLOSILO_BUILD_GIT=8948f69-dirty
+# env-dep:SHLOSILO_BUILD_GIT=8244833-dirty

@@ -3037,6 +3037,13 @@ async fn run_sign_xmr() {
         shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default();
         64
     ];
+    let mut ws_bp_terms = alloc::vec![
+        (
+            shlosilo::curve25519_dalek::Scalar::ZERO,
+            shlosilo::curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
+        );
+        shlosilo::types::caps::SIGN_WS_BP_TERMS
+    ];
     let mut ws = shlosilo::business::sign::SignWs {
         plain: &mut ws_plain,
         txes: &mut ws_txes,
@@ -3053,6 +3060,7 @@ async fn run_sign_xmr() {
         sel: &mut ws_sel_out,
         kstr: &mut ws_kstr,
         record_dests: &mut ws_record_dests,
+        bp_terms: &mut ws_bp_terms,
     };
     let t0 = Instant::now();
     match shlosilo::business::sign::sign_with_entropy_ws(

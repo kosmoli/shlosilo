@@ -50,6 +50,9 @@ pub use business::{
     restore_seed::restore_seed,
     sign::{sign, SignInput},
 };
+/// Type-name re-export for caller-side workspace constructors (the SignWs BP+
+/// scratch element types); no API surface beyond naming.
+pub use curve25519_dalek;
 pub use entropy::mnemonic::WordCount;
 
 // Public Layer A types (Phase 2.1 stub — Phase 4 real algorithm integration)
