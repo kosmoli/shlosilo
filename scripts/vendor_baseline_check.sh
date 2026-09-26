@@ -30,7 +30,15 @@ for row in "${CHECKS[@]}"; do
   d="$WORK/$tree"
   mkdir -p "$d/up"
   up="$d/up"
-  curl -sSL --max-time 300 -o "$d/src" "$url"
+  # anchor cache: the crates.io download is flaky here — cache the tarball so
+  # a transient failure cannot masquerade as a baseline regression (repeated
+  # false reds in 2026-09).
+  cache="$HOME/.cache/shlosilo-vendor-anchors/$(basename "$url")"
+  mkdir -p "$HOME/.cache/shlosilo-vendor-anchors"
+  if [ ! -s "$cache" ]; then
+    curl -sSL --max-time 300 -o "$cache.tmp" "$url" && [ -s "$cache.tmp" ] && mv "$cache.tmp" "$cache"
+  fi
+  cp "$cache" "$d/src" 2>/dev/null || curl -sSL --max-time 300 -o "$d/src" "$url"
   case "$url" in
     *.crate) tar xzf "$d/src" -C "$d/up" --strip-components=1 ;;
     *)       tar xzf "$d/src" -C "$d/up" --strip-components=1
