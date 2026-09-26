@@ -105,6 +105,8 @@ jobs:
         run: |
           cargo install cbindgen --version 0.27.0 --locked
           bash scripts/check_header.sh
+      - name: vendor baseline replay gate (T-12 zero-residue)
+        run: bash scripts/vendor_baseline_check.sh
       - name: forgebox staticlib (embedded, thumbv7em)
         run: cargo check -p shlosilo-forgebox --release --target thumbv7em-none-eabihf
       - name: forgebox full image (MH1903 C host, smoke/product callers)
