@@ -606,7 +606,10 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px3 = PhaseProbe::start(3);
     // ---- 6. prefix hash (CLSAG message additionally needs rct base + BP elements; see step 8) ----
-    let prefix = TransactionPrefix::new(0, tx_inputs.clone(), tx_outputs.clone(), extra.clone());
+    // Z5.3 tail: the clones are moves — `tx_inputs`/`tx_outputs`/`extra` are
+    // dead after this point (the wire reuses `prefix_bytes`, per the
+    // consensus-critical serialize-once invariant below).
+    let prefix = TransactionPrefix::new(0, tx_inputs, tx_outputs, extra);
     // Serialize once and reuse these exact bytes for both the CLSAG message and
     // final wire. This invariant is consensus-critical: even a valid field
     // omitted only from the hash-side serializer makes the signature unverifiable.
@@ -690,12 +693,15 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     }
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px10 = PhaseProbe::start(10);
-    let mut bp_sig_bytes = Vec::new();
-    bp.signature_write(&mut bp_sig_bytes)
+    // Z5.3 tail: fixed buffer (the signature form is under 768 B for any
+    // supported proof) instead of a Vec.
+    let mut bp_sig_bytes = [0u8; 768];
+    let bp_sig_len = bp
+        .signature_serialize_into(&mut bp_sig_bytes)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     // get_pre_mlsag_hash hashes the flattened BP+ fields first, then hashes
     // exactly three 32-byte keys: prefix hash, base hash, and BP+ fields hash.
-    let bp_sig_hash = crate::encoding::keccak256::hash(&bp_sig_bytes)?;
+    let bp_sig_hash = crate::encoding::keccak256::hash(&bp_sig_bytes[..bp_sig_len])?;
     let mut full_msg_in = Vec::with_capacity(96);
     full_msg_in.extend_from_slice(&prefix_hash);
     full_msg_in.extend_from_slice(&rct_base_hash);

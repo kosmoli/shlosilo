@@ -269,39 +269,51 @@ impl<'a> AggregateRangeStatement<'a> {
 
         let generators = generators.reduce(V.len() * COMMITMENT_BITS);
 
-        let mut d_js = Vec::with_capacity(V.len());
-        let mut a_l = ScalarVector(Vec::with_capacity(V.len() * COMMITMENT_BITS));
+        // Z5.3 tail: `d_js` was built and never read (dead collection — the
+        // per-j `d_j` temporaries died with it); the amount decomposition now
+        // writes straight into `a_l` (missing commitments decompose to zero,
+        // matching the old `unwrap_or(&0)` path bit for bit).
+        let mn = V.len() * COMMITMENT_BITS;
+        let mut a_l = ScalarVector::new(mn);
         for j in 1..=V.len() {
-            d_js.push(Self::d_j(j, V.len()));
-            #[allow(clippy::map_unwrap_or)]
-            a_l.0.append(
-                &mut u64_decompose(
-                    *witness
-                        .0
-                        .get(j - 1)
-                        .map(|commitment| &commitment.amount)
-                        .unwrap_or(&0),
-                )
-                .0,
-            );
+            let amount = *witness
+                .0
+                .get(j - 1)
+                .map(|commitment| &commitment.amount)
+                .unwrap_or(&0);
+            let base = (j - 1) * COMMITMENT_BITS;
+            for bit in 0..64 {
+                a_l.0[base + bit] = Scalar::from((amount >> bit) & 1);
+            }
         }
 
         let a_r = a_l.clone() - Scalar::ONE;
 
         let alpha = monero_ed25519::Scalar::random(&mut *rng).into();
 
-        let mut A_terms = Vec::with_capacity((generators.len() * 2) + 1);
+        // Z5.3 pool cut: A-terms fill the caller scratch (sequential with the
+        // compute_A_hat use below).
+        let a_terms_len = (a_l.len() * 2) + 1;
+        if terms.len() < a_terms_len {
+            return None;
+        }
+        let A_terms = &mut terms[..a_terms_len];
+        let mut t = 0;
         for (i, a_l) in a_l.0.iter().enumerate() {
-            A_terms.push((*a_l, generators.generator(GeneratorsList::GBold, i)));
+            A_terms[t] = (*a_l, generators.generator(GeneratorsList::GBold, i));
+            t += 1;
         }
         for (i, a_r) in a_r.0.iter().enumerate() {
-            A_terms.push((*a_r, generators.generator(GeneratorsList::HBold, i)));
+            A_terms[t] = (*a_r, generators.generator(GeneratorsList::HBold, i));
+            t += 1;
         }
-        A_terms.push((alpha, BpPlusGenerators::h()));
+        A_terms[t] = (alpha, BpPlusGenerators::h());
         let _p1 = PhaseProbe::start(PHASE_INITIAL_MULTISEXP);
-        let mut A = multiexp(&A_terms);
+        let mut A = multiexp(A_terms);
         _p1.end();
-        A_terms.zeroize();
+        for e in A_terms.iter_mut() {
+            e.zeroize();
+        }
 
         // Multiply by INV_EIGHT per earlier commentary
         A *= INV_EIGHT.into();

@@ -398,6 +398,32 @@ impl Bulletproof {
         Ok(w.pos)
     }
 
+    /// shlosilo vendor patch (Z5.3 tail): the `signature_write` form into a
+    /// caller buffer (same bytes; explicit overflow error).
+    pub fn signature_serialize_into(&self, out: &mut [u8]) -> io::Result<usize> {
+        struct SliceWriter<'a> {
+            buf: &'a mut [u8],
+            pos: usize,
+        }
+        impl<'a> Write for SliceWriter<'a> {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                let end = self
+                    .pos
+                    .checked_add(data.len())
+                    .ok_or_else(|| io::Error::other("overflow"))?;
+                if end > self.buf.len() {
+                    return Err(io::Error::other("signature serialize buffer too small"));
+                }
+                self.buf[self.pos..end].copy_from_slice(data);
+                self.pos = end;
+                Ok(data.len())
+            }
+        }
+        let mut w = SliceWriter { buf: out, pos: 0 };
+        self.signature_write(&mut w)?;
+        Ok(w.pos)
+    }
+
     /// Serialize a Bulletproof(+) to a `Vec<u8>`.
     pub fn serialize(&self) -> Vec<u8> {
         let mut serialized = Vec::with_capacity(512);
