@@ -142,24 +142,31 @@ pub fn sign<R: RngCore + CryptoRng>(
     // 2. Construct Decoys
     //    ring: Vec<[Point; 2]>  where  [0] = spend_pub, [1] = on-chain commitment point (C)
     //    The ring's 2nd element is already compressed C point bytes, decompress directly, **no Commitment recomputation**
-    let ring_points: Vec<[Point; 2]> = ring
-        .iter()
-        .map(|(pubk, commit_c)| {
-            let pub_bytes: [u8; 32] = pubk.to_bytes();
-            let pub_edwards = curve25519_dalek::edwards::CompressedEdwardsY(pub_bytes)
-                .decompress()
-                .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-            let pub_point = Point::from(pub_edwards);
-            let c_bytes: [u8; 32] = commit_c.to_bytes();
-            let c_edwards = curve25519_dalek::edwards::CompressedEdwardsY(c_bytes)
-                .decompress()
-                .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-            let commit_point = Point::from(c_edwards);
-            Ok::<[Point; 2], ShlosiloError>([pub_point, commit_point])
-        })
-        .collect::<Result<Vec<_>>>()?;
+    // Z5.3 tail: fixed-capacity ring/offset buffers (caps::RING_MAX) with
+    // explicit over-cap errors — the unbounded Vecs are gone.
+    let mut ring_points = heapless::Vec::<[Point; 2], { crate::types::caps::RING_MAX }>::new();
+    for (pubk, commit_c) in ring.iter() {
+        let pub_bytes: [u8; 32] = pubk.to_bytes();
+        let pub_edwards = curve25519_dalek::edwards::CompressedEdwardsY(pub_bytes)
+            .decompress()
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        let pub_point = Point::from(pub_edwards);
+        let c_bytes: [u8; 32] = commit_c.to_bytes();
+        let c_edwards = curve25519_dalek::edwards::CompressedEdwardsY(c_bytes)
+            .decompress()
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        let commit_point = Point::from(c_edwards);
+        ring_points
+            .push([pub_point, commit_point])
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    }
 
-    let offsets: Vec<u64> = (1..=ring.len() as u64).collect();
+    let mut offsets = heapless::Vec::<u64, { crate::types::caps::RING_MAX }>::new();
+    for i in 1..=ring.len() as u64 {
+        offsets
+            .push(i)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    }
     let decoys = Decoys::new(&offsets, real_index, &ring_points)
         .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 

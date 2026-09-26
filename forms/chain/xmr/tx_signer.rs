@@ -613,8 +613,12 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // Serialize once and reuse these exact bytes for both the CLSAG message and
     // final wire. This invariant is consensus-critical: even a valid field
     // omitted only from the hash-side serializer makes the signature unverifiable.
-    let prefix_bytes = prefix.serialize();
-    let prefix_hash = crate::encoding::keccak256::hash(&prefix_bytes)?;
+    // Z5.3: prefix serializes into its FINAL wire position — the hashed
+    // bytes are literally the wire bytes (the serialize-once invariant gets
+    // stronger). `off` is the wire cursor from here to the end.
+    let mut off = 0usize;
+    prefix.serialize_into(out, &mut off)?;
+    let prefix_hash = crate::encoding::keccak256::hash(&out[..off])?;
 
     // ---- 7. BP+ over output commitments ----
     // x8/x9/x10: rct_base drill-down sub-probes (bb3aa58 follow-up)
@@ -670,23 +674,26 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // ---- 8. full_message = H(prefix_hash ‖ H(rct_base) ‖ H(BP+ fields)) ----
     // The official get_pre_mlsag_hash first concatenates and hashes BP+ fields A,A1,B,r1,s1,d1,L*,R*,
     // then does a final cn_fast_hash over the three 32B hashes; signature_write provides the field string without count.
-    let rct_base_bytes = {
-        let mut b = Vec::new();
-        b.push(rct_type);
-        monero_encode_varint(&mut b, compute_fee(tx_data));
+    let base_start = off;
+    {
+        crate::types::push::push_slice(out, &mut off, &[rct_type])?;
+        crate::chain::xmr::transaction::monero_encode_varint_at(
+            out,
+            &mut off,
+            compute_fee(tx_data),
+        )?;
         for o in &outs {
-            b.extend_from_slice(&o.deriv.encrypted_amount);
+            crate::types::push::push_slice(out, &mut off, &o.deriv.encrypted_amount)?;
         }
         for o in &outs {
             let c = MonCommitment::new(
                 bytes_to_monerod_scalar(o.deriv.commitment_mask.expose()),
                 o.dest.amount,
             );
-            b.extend_from_slice(&c.commit().compress().to_bytes());
+            crate::types::push::push_slice(out, &mut off, &c.commit().compress().to_bytes())?;
         }
-        b
-    };
-    let rct_base_hash = crate::encoding::keccak256::hash(&rct_base_bytes)?;
+    }
+    let rct_base_hash = crate::encoding::keccak256::hash(&out[base_start..off])?;
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px11.as_mut() {
         p.end();
@@ -702,10 +709,10 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // get_pre_mlsag_hash hashes the flattened BP+ fields first, then hashes
     // exactly three 32-byte keys: prefix hash, base hash, and BP+ fields hash.
     let bp_sig_hash = crate::encoding::keccak256::hash(&bp_sig_bytes[..bp_sig_len])?;
-    let mut full_msg_in = Vec::with_capacity(96);
-    full_msg_in.extend_from_slice(&prefix_hash);
-    full_msg_in.extend_from_slice(&rct_base_hash);
-    full_msg_in.extend_from_slice(&bp_sig_hash);
+    let mut full_msg_in = [0u8; 96];
+    full_msg_in[..32].copy_from_slice(&prefix_hash);
+    full_msg_in[32..64].copy_from_slice(&rct_base_hash);
+    full_msg_in[64..].copy_from_slice(&bp_sig_hash);
     let msg_hash = crate::encoding::keccak256::hash(&full_msg_in)?;
 
     // Audit #6 re-review Gate1 #1: the guard is never unwrapped and holds the Vec until the function exits —
@@ -778,27 +785,21 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px5 = PhaseProbe::start(5);
     // ---- 10. official monerod wire serialization ----
-    let bp_buf = {
-        let mut b = Vec::new();
-        bp.write(&mut b)
-            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-        b
-    };
-    let mut sink = crate::types::push::SinkCursor::new(out);
-    let r = build_official_wire(
-        &mut sink,
-        &prefix_bytes,
-        &rct_base_bytes,
-        &bp_buf,
-        &clsag_wire,
-        &pseudo_outs_arr,
-    );
+    // Z5.3: nbp + the BP+ proof land in place as well; the tail assembler
+    // only appends CLSAGs and pseudoOuts over the remaining slot.
+    crate::types::push::push_slice(out, &mut off, &[1u8])?; // nbp varint = 1
+    let bp_wire_len = bp
+        .serialize_into(&mut out[off..])
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    off += bp_wire_len;
+    let mut sink = crate::types::push::SinkCursor::new(&mut out[off..]);
+    let r = build_official_wire(&mut sink, &clsag_wire, &pseudo_outs_arr);
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px5.as_mut() {
         p.end();
     }
     r?;
-    Ok(sink.pos())
+    Ok(off + sink.pos())
 }
 
 /// fee = inputs − splitted outputs (change already included in splitted)
@@ -822,29 +823,17 @@ struct OutInfo {
 /// tag 0x02 and a VARINT amount; vout amount uses VARINT.
 fn build_official_wire<S: crate::types::push::Sink>(
     out: &mut S,
-    prefix_bytes: &[u8],
-    rct_base_bytes: &[u8],
-    bp_buf: &[u8],
     clsag_wire: &[Vec<u8>],
     pseudo_outs: &[[u8; 32]],
 ) -> Result<()> {
-    // Z3.2b: Sink-generic assembly (byte layout unchanged) — the caller's
-    // workspace slot receives the wire directly (was: Vec + copy).
-    // ---- prefix ----
-    // These are the same bytes used above to compute prefix_hash.
-    out.put(prefix_bytes)?;
-    // ---- rct base ----
-    // These are likewise the exact bytes hashed into rct_base_hash.
-    out.put(rct_base_bytes)?;
-    // ---- prunable ----
-    // BP+: nbp(varint) + raw proof bytes
-    out.put(&[1u8])?; // nbp varint = 1 (single aggregated BP+)
-    out.put(bp_buf)?;
-    // CLSAGs (no count; element count inferred from mixin+1): s[16]‖c1‖D
+    // Z3.2b: Sink-generic assembly. Z5.3: prefix, rct base, nbp and the BP+
+    // proof are already at their final wire positions (serialize-once: those
+    // are the very bytes hashed above); this tail appends the rest in order:
+    // CLSAGs (no count; element count inferred from mixin+1): s[ring]‖c1‖D,
+    // then pseudoOuts (no count). Byte layout unchanged.
     for w in clsag_wire {
         out.put(w)?;
     }
-    // pseudoOuts (no count)
     for po in pseudo_outs {
         out.put(po)?;
     }
