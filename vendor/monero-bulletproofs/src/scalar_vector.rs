@@ -84,22 +84,8 @@ impl Mul<&ScalarVector> for ScalarVector {
     }
 }
 
-impl Mul<&[EdwardsPoint]> for &ScalarVector {
-    type Output = EdwardsPoint;
-    fn mul(self, b: &[EdwardsPoint]) -> EdwardsPoint {
-        debug_assert_eq!(self.len(), b.len());
-        let mut multiexp_args = self
-            .0
-            .iter()
-            .copied()
-            .zip(b.iter().copied())
-            .collect::<Vec<_>>();
-        let res = multiexp(&multiexp_args);
-        multiexp_args.zeroize();
-        res
-    }
-}
-
+// Z5.3 D-cut: the allocating `Mul<&[EdwardsPoint]>` operator is retired —
+// large multiexps run over the caller's StrausScratch (see core.rs).
 impl ScalarVector {
     pub(crate) fn new(len: usize) -> Self {
         ScalarVector(vec![Scalar::ZERO; len])

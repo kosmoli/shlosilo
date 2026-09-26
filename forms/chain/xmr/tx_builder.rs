@@ -296,6 +296,17 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
         );
         crate::types::caps::SIGN_WS_BP_TERMS
     ];
+    let mut bp_straus_storage = alloc::vec![
+        0u8;
+        curve25519_dalek::scratch::StrausScratch::storage_bytes(
+            crate::types::caps::SIGN_WS_BP_TERMS
+        )
+    ];
+    let mut bp_straus = curve25519_dalek::scratch::StrausScratch::new(
+        &mut bp_straus_storage,
+        crate::types::caps::SIGN_WS_BP_TERMS,
+    )
+    .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let bp = prove_bulletproofs_plus(
         rng,
         &commitments
@@ -303,6 +314,7 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
             .map(|c| c.as_ref().cloned().unwrap())
             .collect::<alloc::vec::Vec<_>>(),
         &mut bp_terms,
+        &mut bp_straus,
     )?;
 
     // 5. Build outputs + extra first (key images don't depend on msg_hash,

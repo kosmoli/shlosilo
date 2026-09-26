@@ -358,6 +358,21 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
             curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
         ),
     );
+    // Z5.3 D-cut transitional: the wrapper self-provisions the straus
+    // scratch storage alongside the terms buffer (tracked).
+    let mut straus_storage = alloc::vec![
+        0u8;
+        curve25519_dalek::scratch::StrausScratch::storage_bytes(
+            crate::types::caps::SIGN_WS_BP_TERMS
+        )
+    ];
+    let mut straus_scratch = match curve25519_dalek::scratch::StrausScratch::new(
+        &mut straus_storage,
+        crate::types::caps::SIGN_WS_BP_TERMS,
+    ) {
+        Ok(s) => s,
+        Err(_) => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
+    };
     let n = sign_tx_from_construction_with_rngs_into(
         tx_data,
         spend_sec,
@@ -367,6 +382,7 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         clsag_rng,
         &mut staging,
         &mut multiexp_terms,
+        &mut straus_scratch,
     )?;
     out.extend_from_slice(&staging[..n]);
     Ok(out)
@@ -392,6 +408,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     clsag_rng: &mut C,
     out: &mut [u8],
     multiexp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
+    straus: &mut curve25519_dalek::scratch::StrausScratch,
 ) -> Result<usize> {
     // Audit #9 P1-02: r is a transaction secret key — SecretScalar owner
     // (dalek Scalar is Copy with no Drop; plain bindings on `?` paths would never be zeroized);
@@ -647,7 +664,12 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     let mut px9 = PhaseProbe::start(9);
     // Audit #7 Gate1 #5: commitments are public on-chain data (Pedersen commitments are broadcast with the tx and contain
     // no mask plaintext); clone is not a secret-copy problem — but the value has no consumers after this, so move it to eliminate the copy
-    let bp = prove_bulletproofs_plus(bp_rng, &commitments[..n_commitments], multiexp_terms)?;
+    let bp = prove_bulletproofs_plus(
+        bp_rng,
+        &commitments[..n_commitments],
+        multiexp_terms,
+        straus,
+    )?;
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px9.as_mut() {
         p.end();

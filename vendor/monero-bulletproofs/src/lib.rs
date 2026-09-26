@@ -185,6 +185,7 @@ impl Bulletproof {
         rng: &mut R,
         outputs: &[Commitment],
         terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
+        straus: &mut curve25519_dalek::scratch::StrausScratch,
     ) -> Result<Bulletproof, BulletproofError> {
         if outputs.is_empty() {
             Err(BulletproofError::NoCommitments)?;
@@ -220,6 +221,7 @@ impl Bulletproof {
           &witness_res
             .expect("failed to create witness despite checking amount of commitments"),
           terms,
+          straus,
         )
         .expect("failed to prove Bulletproof::Plus despite ensuring statement/witness consistency"),
     ))

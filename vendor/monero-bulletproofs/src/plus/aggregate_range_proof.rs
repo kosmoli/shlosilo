@@ -1,4 +1,4 @@
-use std_shims::vec::Vec;
+use std_shims::{vec, vec::Vec};
 
 // shlosilo vendor patch: prove-phase timing (device perf decomposition).
 // No-op stubs keep call sites unconditional; real impl is feature-gated.
@@ -125,6 +125,7 @@ impl<'a> AggregateRangeStatement<'a> {
         transcript: &mut Scalar,
         A: CompressedPoint,
         terms: &mut [(Scalar, EdwardsPoint)],
+        straus: &mut curve25519_dalek::scratch::StrausScratch,
     ) -> Option<AHatComputation> {
         let (y, z) = Self::transcript_A(transcript, A);
 
@@ -217,7 +218,7 @@ impl<'a> AggregateRangeStatement<'a> {
             z,
             z_pow: ScalarVector(z_pow[..V.len() + 1].to_vec()),
             A_hat: {
-                let hat = A + multiexp_vartime(A_terms);
+                let hat = A + multiexp_vartime(A_terms, straus).ok()?;
                 for e in A_terms.iter_mut() {
                     e.zeroize();
                 }
@@ -231,6 +232,7 @@ impl<'a> AggregateRangeStatement<'a> {
         rng: &mut R,
         witness: &AggregateRangeWitness,
         terms: &mut [(Scalar, EdwardsPoint)],
+        straus: &mut curve25519_dalek::scratch::StrausScratch,
     ) -> Option<AggregateRangeProof> {
         // Check for consistency with the witness
         #[cfg(feature = "prove-timing")]
@@ -309,7 +311,7 @@ impl<'a> AggregateRangeStatement<'a> {
         }
         A_terms[t] = (alpha, BpPlusGenerators::h());
         let _p1 = PhaseProbe::start(PHASE_INITIAL_MULTISEXP);
-        let mut A = multiexp(A_terms);
+        let mut A = multiexp(A_terms, straus).ok()?;
         _p1.end();
         for e in A_terms.iter_mut() {
             e.zeroize();
@@ -328,8 +330,15 @@ impl<'a> AggregateRangeStatement<'a> {
             z,
             z_pow,
             A_hat,
-        } = Self::compute_A_hat(PointVector(V), &generators, &mut transcript, A, terms)
-            .expect("A is a valid point as we just compressed it");
+        } = Self::compute_A_hat(
+            PointVector(V),
+            &generators,
+            &mut transcript,
+            A,
+            terms,
+            straus,
+        )
+        .expect("A is a valid point as we just compressed it");
         _p2.end();
 
         let a_l = a_l - z;
@@ -352,6 +361,7 @@ impl<'a> AggregateRangeStatement<'a> {
                                 .expect("Bulletproofs::Plus created an invalid WipWitness"),
                         ),
                         terms,
+                        straus,
                     )
                     .expect("Bulletproof::Plus failed to prove the weighted inner-product");
                 _p3.end();
@@ -382,16 +392,25 @@ impl<'a> AggregateRangeStatement<'a> {
         // Z5.3 pool cut: verify self-provisions one staging Vec (the Z6
         // zero-alloc claim covers the sign path; verify staging is tracked).
         let a_hat_res = {
-            // (len matters: compute_A_hat checks `terms.len()`, so this must be
-            // a sized buffer, not `with_capacity`)
-            let mut verify_terms = Vec::new();
-            verify_terms.resize((2 * 1024) + 2, (Scalar::ZERO, EdwardsPoint::identity()));
+            // Z5.3 D-cut: verify self-provisions both scratch buffers (the
+            // Z6 zero-alloc claim covers the sign path; verify staging is
+            // tracked). `terms.len()` is checked, so the buffer is sized.
+            let mut verify_terms = vec![(Scalar::ZERO, EdwardsPoint::identity()); (2 * 1024) + 2];
+            let mut verify_straus_storage =
+                vec![0u8; curve25519_dalek::scratch::StrausScratch::storage_bytes((2 * 1024) + 2)];
+            let Ok(mut verify_straus) = curve25519_dalek::scratch::StrausScratch::new(
+                &mut verify_straus_storage,
+                (2 * 1024) + 2,
+            ) else {
+                return false;
+            };
             Self::compute_A_hat(
                 PointVector(V),
                 &generators,
                 &mut transcript,
                 proof.A,
                 &mut verify_terms,
+                &mut verify_straus,
             )
         };
         let Some(AHatComputation { y, A_hat, .. }) = a_hat_res else {

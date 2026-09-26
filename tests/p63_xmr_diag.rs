@@ -203,17 +203,27 @@ fn diag_bp_size_and_verify() {
             monero_ed25519::Commitment::new(ms, 1_000_000)
         })
         .collect();
-    let bp = prove_bulletproofs_plus(
-        &mut rng,
-        &commitments,
-        &mut vec![
+    let bp = {
+        let mut diag_terms = vec![
             (
                 curve25519_dalek::Scalar::ZERO,
                 curve25519_dalek::constants::ED25519_BASEPOINT_POINT
             );
             shlosilo::types::caps::SIGN_WS_BP_TERMS
-        ],
-    )
+        ];
+        let mut diag_storage = vec![
+            0u8;
+            curve25519_dalek::scratch::StrausScratch::storage_bytes(
+                shlosilo::types::caps::SIGN_WS_BP_TERMS
+            )
+        ];
+        let mut diag_straus = curve25519_dalek::scratch::StrausScratch::new(
+            &mut diag_storage,
+            shlosilo::types::caps::SIGN_WS_BP_TERMS,
+        )
+        .expect("sized");
+        prove_bulletproofs_plus(&mut rng, &commitments, &mut diag_terms, &mut diag_straus)
+    }
     .expect("bp");
     let mut buf = Vec::new();
     bp.write(&mut buf).unwrap();

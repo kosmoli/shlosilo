@@ -3,7 +3,7 @@ use std_shims::{vec, vec::Vec};
 use zeroize::Zeroize;
 
 use crate::{
-    core::{challenge_products, multiexp_vartime},
+    core::{challenge_products, multiexp_vartime_alloc},
     point_vector::PointVector,
     scalar_vector::ScalarVector,
     BulletproofsBatchVerifier, MONERO_H,
@@ -167,7 +167,7 @@ impl IpStatement {
                   inputs to this proof are NOT secret, and we do not have to be concerned about revealing
                   them via timing analysis.
                 */
-                multiexp_vartime(&L_terms)
+                multiexp_vartime_alloc(&L_terms)
             };
             L_vec.push(CompressedPoint::from(
                 (L * INV_EIGHT.into()).compress().to_bytes(),
@@ -182,7 +182,7 @@ impl IpStatement {
                     R_terms.push((*b, *h));
                 }
                 R_terms.push((cr, u));
-                multiexp_vartime(&R_terms)
+                multiexp_vartime_alloc(&R_terms)
             };
             R_vec.push(CompressedPoint::from(
                 (R * INV_EIGHT.into()).compress().to_bytes(),
@@ -204,11 +204,11 @@ impl IpStatement {
             // The prover and verifier now calculate the following (28-31)
             g_bold = PointVector(Vec::with_capacity(g_bold1.len()));
             for (a, b) in g_bold1.0.into_iter().zip(g_bold2.0) {
-                g_bold.0.push(multiexp_vartime(&[(x_inv, a), (x, b)]));
+                g_bold.0.push(multiexp_vartime_alloc(&[(x_inv, a), (x, b)]));
             }
             h_bold = PointVector(Vec::with_capacity(h_bold1.len()));
             for (a, b) in h_bold1.0.into_iter().zip(h_bold2.0) {
-                h_bold.0.push(multiexp_vartime(&[(x, a), (x_inv, b)]));
+                h_bold.0.push(multiexp_vartime_alloc(&[(x, a), (x_inv, b)]));
             }
 
             // 32-34

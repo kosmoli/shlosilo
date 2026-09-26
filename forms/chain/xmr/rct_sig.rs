@@ -304,6 +304,7 @@ pub fn prove_bulletproofs_plus<R: RngCore + CryptoRng>(
     rng: &mut R,
     commitments: &[MoneroCommitment],
     multiexp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
+    straus: &mut curve25519_dalek::scratch::StrausScratch,
 ) -> Result<Bulletproof> {
     if commitments.is_empty() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -311,7 +312,7 @@ pub fn prove_bulletproofs_plus<R: RngCore + CryptoRng>(
     if commitments.len() > MAX_COMMITMENTS {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    Bulletproof::prove_plus(rng, commitments, multiexp_terms)
+    Bulletproof::prove_plus(rng, commitments, multiexp_terms, straus)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
 }
 
@@ -346,6 +347,33 @@ pub fn pseudo_out_commitment(pseudo_mask: &Scalar) -> [u8; 32] {
 mod tests {
     extern crate std;
     use super::*;
+
+    /// Z5.3 D-cut: one self-provisioning helper for the BP+ test call sites
+    /// (terms + straus scratch, sized from the caps constants).
+    fn prove_bp_test<R: rand_core::CryptoRng + rand_core::RngCore>(
+        rng: &mut R,
+        commitments: &[MoneroCommitment],
+    ) -> Result<Bulletproof> {
+        let mut terms = alloc::vec![
+            (
+                curve25519_dalek::Scalar::ZERO,
+                curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
+            );
+            crate::types::caps::SIGN_WS_BP_TERMS
+        ];
+        let mut storage = alloc::vec![
+            0u8;
+            curve25519_dalek::scratch::StrausScratch::storage_bytes(
+                crate::types::caps::SIGN_WS_BP_TERMS
+            )
+        ];
+        let mut straus = curve25519_dalek::scratch::StrausScratch::new(
+            &mut storage,
+            crate::types::caps::SIGN_WS_BP_TERMS,
+        )
+        .expect("sized storage");
+        prove_bulletproofs_plus(rng, commitments, &mut terms, &mut straus)
+    }
     use crate::chain::xmr::clsag as clsag_mod;
     use crate::chain::xmr::reduce_scalar::reduce_scalar;
     use alloc::string::String;
@@ -421,14 +449,7 @@ mod tests {
             crate::chain::xmr::transaction::bytes_to_monerod_scalar(&bytes)
         };
         let commitments = vec![MoneroCommitment::new(mask, 100_000_000)];
-        let mut bp_terms = alloc::vec![
-            (
-                curve25519_dalek::Scalar::ZERO,
-                curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
-            );
-            crate::types::caps::SIGN_WS_BP_TERMS
-        ];
-        let bp = prove_bulletproofs_plus(&mut rng, &commitments, &mut bp_terms).unwrap();
+        let bp = prove_bp_test(&mut rng, &commitments).unwrap();
 
         // Verify with commitments
         let verify_mask_bytes = reduce_scalar(&[0x33u8; 32]).unwrap();
@@ -464,14 +485,7 @@ mod tests {
             commitments.push(MoneroCommitment::new(mask, (i + 1) * 1000));
         }
 
-        let mut bp_terms = alloc::vec![
-            (
-                curve25519_dalek::Scalar::ZERO,
-                curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
-            );
-            crate::types::caps::SIGN_WS_BP_TERMS
-        ];
-        let bp = prove_bulletproofs_plus(&mut rng, &commitments, &mut bp_terms).unwrap();
+        let bp = prove_bp_test(&mut rng, &commitments).unwrap();
 
         // Verify
         let mut compressed_pts = Vec::new();
@@ -488,11 +502,7 @@ mod tests {
     #[test]
     fn bulletproof_plus_empty() {
         let mut rng = OsRng;
-        let result = prove_bulletproofs_plus(
-            &mut rng,
-            &[],
-            &mut alloc::vec![(curve25519_dalek::Scalar::ZERO, curve25519_dalek::constants::ED25519_BASEPOINT_POINT); crate::types::caps::SIGN_WS_BP_TERMS],
-        );
+        let result = prove_bp_test(&mut rng, &[]);
         assert!(result.is_err());
     }
 
@@ -510,11 +520,7 @@ mod tests {
             };
             commitments.push(MoneroCommitment::new(mask, i));
         }
-        let result = prove_bulletproofs_plus(
-            &mut rng,
-            &commitments,
-            &mut alloc::vec![(curve25519_dalek::Scalar::ZERO, curve25519_dalek::constants::ED25519_BASEPOINT_POINT); crate::types::caps::SIGN_WS_BP_TERMS],
-        );
+        let result = prove_bp_test(&mut rng, &commitments);
         assert!(result.is_err());
     }
 
@@ -675,8 +681,7 @@ mod tests {
             let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
             crate::chain::xmr::transaction::bytes_to_monerod_scalar(&bytes)
         };
-        let bp =
-            prove_bulletproofs_plus(&mut rng, &[MoneroCommitment::new(mask, 100_000_000)], &mut alloc::vec![(curve25519_dalek::Scalar::ZERO, curve25519_dalek::constants::ED25519_BASEPOINT_POINT); crate::types::caps::SIGN_WS_BP_TERMS]).unwrap();
+        let bp = prove_bp_test(&mut rng, &[MoneroCommitment::new(mask, 100_000_000)]).unwrap();
 
         let mut cm = [[0u8; 32]; 1];
         let mut ea = [[0u8; 8]; 1];

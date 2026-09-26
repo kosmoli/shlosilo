@@ -61,6 +61,12 @@ pub extern "C" fn z6_probe_run() {
             shlosilo::curve25519_dalek::Scalar::ZERO,
             shlosilo::curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
         ); 2050];
+        static mut STRAUS_STORAGE: [u8; 5772864] = [0u8; 5772864];
+        let mut straus = shlosilo::curve25519_dalek::scratch::StrausScratch::new(
+            &mut STRAUS_STORAGE,
+            2050,
+        )
+        .expect("static storage");
         let _ = shlosilo::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into(
             txd,
             &spend,
@@ -70,6 +76,7 @@ pub extern "C" fn z6_probe_run() {
             &mut clsag_rng,
             &mut OUT,
             &mut TERMS,
+            &mut straus,
         );
     }
 }

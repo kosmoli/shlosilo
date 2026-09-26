@@ -189,6 +189,9 @@ pub struct SignWs<'a> {
     pub record_dests: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
     /// Z5.3 pool cut: BP+ prove multiexp scratch (caller memory, carved).
     pub bp_terms: &'a mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
+    /// Z5.3 D-cut: Straus scratch storage (raw bytes; the typed scratch is
+    /// constructed from it at the call site).
+    pub bp_straus: &'a mut [u8],
 }
 
 /// Z3.3b: the sign-workspace layout — the SINGLE source of truth behind both
@@ -214,6 +217,7 @@ pub struct SignWsLayout {
     kstr: usize,
     record_dests: usize,
     pub bp_terms: usize,
+    pub bp_straus: usize,
 }
 
 fn ws_next(off: &mut usize, align: usize, size: usize) -> usize {
@@ -291,6 +295,11 @@ impl SignWsLayout {
             core::mem::size_of::<(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)>()
                 * c::SIGN_WS_BP_TERMS,
         );
+        let bp_straus = ws_next(
+            &mut off,
+            core::mem::align_of::<u64>(),
+            c::SIGN_WS_BP_STRAUS_BYTES,
+        );
         // trailing pad so the total itself satisfies the widest alignment
         let total = ws_next(&mut off, core::mem::align_of::<usize>(), 0);
         SignWsLayout {
@@ -311,6 +320,7 @@ impl SignWsLayout {
             kstr,
             record_dests,
             bp_terms,
+            bp_straus,
         }
     }
 }
@@ -386,6 +396,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     // before reading them).
     let bp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)] =
         unsafe { at(base, l.bp_terms, c::SIGN_WS_BP_TERMS) };
+    let bp_straus: &mut [u8] = unsafe { at(base, l.bp_straus, c::SIGN_WS_BP_STRAUS_BYTES) };
     Some(SignWs {
         plain,
         txes,
@@ -403,6 +414,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         kstr,
         record_dests,
         bp_terms,
+        bp_straus,
     })
 }
 
@@ -629,6 +641,18 @@ fn sign_xmr_with_ws<'a>(
         tx_bytes_rest = r;
         let mut ws_bp_terms = core::mem::take(&mut ws.bp_terms);
         let bp_terms_slot = &mut ws_bp_terms;
+        let ws_bp_straus = core::mem::take(&mut ws.bp_straus);
+        let mut bp_straus = match curve25519_dalek::scratch::StrausScratch::new(
+            ws_bp_straus,
+            crate::types::caps::SIGN_WS_BP_TERMS,
+        ) {
+            Ok(s) => s,
+            Err(_) => {
+                return Err(crate::error::ShlosiloError::new(
+                    crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
+                ))
+            }
+        };
         let tx_bytes_len = crate::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into(
             &tx_data,
             &spend_sec,
@@ -638,6 +662,7 @@ fn sign_xmr_with_ws<'a>(
             &mut rng,
             tx_slot,
             bp_terms_slot,
+            &mut bp_straus,
         )?;
         let tx_bytes_borrow: &[u8] = &tx_slot[..tx_bytes_len]; // reborrows the full 'a (tx_slot is never used again)
 

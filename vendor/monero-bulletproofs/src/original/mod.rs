@@ -173,7 +173,7 @@ impl AggregateRangeStatement<'_> {
                 for (aR, H) in aR.0.iter().zip(generators.H.iter()) {
                     terms.push((*aR, *H));
                 }
-                let res = multiexp(&terms) * INV_EIGHT.into();
+                let res = crate::core::multiexp_vartime_alloc(&terms) * INV_EIGHT.into();
                 terms.zeroize();
                 res
             }
@@ -199,7 +199,7 @@ impl AggregateRangeStatement<'_> {
                 for (sR, H) in sR.0.iter().zip(generators.H.iter()) {
                     terms.push((*sR, *H));
                 }
-                let res = multiexp(&terms) * INV_EIGHT.into();
+                let res = crate::core::multiexp_vartime_alloc(&terms) * INV_EIGHT.into();
                 terms.zeroize();
                 res
             }
@@ -233,7 +233,7 @@ impl AggregateRangeStatement<'_> {
                 for term in &mut T1_terms {
                     term.0 *= INV_EIGHT.into();
                 }
-                let T1 = multiexp(&T1_terms);
+                let T1 = crate::core::multiexp_alloc(&T1_terms);
                 T1_terms.zeroize();
                 T1
             }
@@ -247,7 +247,7 @@ impl AggregateRangeStatement<'_> {
                 for term in &mut T2_terms {
                     term.0 *= INV_EIGHT.into();
                 }
-                let T2 = multiexp(&T2_terms);
+                let T2 = crate::core::multiexp_alloc(&T2_terms);
                 T2_terms.zeroize();
                 T2
             }

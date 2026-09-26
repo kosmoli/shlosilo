@@ -193,6 +193,68 @@ where
     }
 }
 
+/// shlosilo vendor patch (Z5.3 D-cut): scratch-backed dispatch — identical
+/// math to `straus_multiscalar_mul`, storage provided by the caller.
+pub fn straus_multiscalar_mul_scratch<I, J>(
+    scalars: I,
+    points: J,
+    scratch: &mut crate::scratch::StrausScratch,
+) -> Result<EdwardsPoint, crate::scratch::ScratchError>
+where
+    I: IntoIterator,
+    I::Item: core::borrow::Borrow<Scalar>,
+    J: IntoIterator,
+    J::Item: core::borrow::Borrow<EdwardsPoint>,
+{
+    match get_selected_backend() {
+        #[cfg(curve25519_dalek_backend = "simd")]
+        BackendKind::Avx2 => vector::scalar_mul::straus::spec_avx2::Straus::multiscalar_mul_scratch::<
+            I,
+            J,
+        >(scalars, points, scratch),
+        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
+        BackendKind::Avx512 => {
+            let _ = (scalars, points, scratch);
+            Err(crate::scratch::ScratchError::UnsupportedBackend)
+        }
+        BackendKind::Serial => {
+            serial::scalar_mul::straus::Straus::multiscalar_mul_scratch::<I, J>(
+                scalars, points, scratch,
+            )
+        }
+    }
+}
+
+/// shlosilo vendor patch (Z5.3 D-cut): scratch-backed vartime dispatch.
+pub fn straus_optional_multiscalar_mul_scratch<I, J>(
+    scalars: I,
+    points: J,
+    scratch: &mut crate::scratch::StrausScratch,
+) -> Result<Option<EdwardsPoint>, crate::scratch::ScratchError>
+where
+    I: IntoIterator,
+    I::Item: core::borrow::Borrow<Scalar>,
+    J: IntoIterator<Item = core::option::Option<EdwardsPoint>>,
+{
+    match get_selected_backend() {
+        #[cfg(curve25519_dalek_backend = "simd")]
+        BackendKind::Avx2 => vector::scalar_mul::straus::spec_avx2::Straus::optional_multiscalar_mul_scratch::<
+            I,
+            J,
+        >(scalars, points, scratch),
+        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
+        BackendKind::Avx512 => {
+            let _ = (scalars, points, scratch);
+            Err(crate::scratch::ScratchError::UnsupportedBackend)
+        }
+        BackendKind::Serial => {
+            serial::scalar_mul::straus::Straus::optional_multiscalar_mul_scratch::<I, J>(
+                scalars, points, scratch,
+            )
+        }
+    }
+}
+
 #[allow(missing_docs)]
 #[cfg(feature = "alloc")]
 pub fn straus_optional_multiscalar_mul<I, J>(scalars: I, points: J) -> Option<EdwardsPoint>

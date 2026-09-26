@@ -62,6 +62,17 @@ pub fn prove_tiny_bp_plus() {
         );
         crate::types::caps::SIGN_WS_BP_TERMS
     ];
-    let _proof =
-        prove_bulletproofs_plus(&mut rng, &commitments, &mut terms).expect("tiny bp+ prove");
+    let mut straus_storage = alloc::vec![
+        0u8;
+        curve25519_dalek::scratch::StrausScratch::storage_bytes(
+            crate::types::caps::SIGN_WS_BP_TERMS
+        )
+    ];
+    let mut straus = curve25519_dalek::scratch::StrausScratch::new(
+        &mut straus_storage,
+        crate::types::caps::SIGN_WS_BP_TERMS,
+    )
+    .expect("sized storage");
+    prove_bulletproofs_plus(&mut rng, &commitments, &mut terms, &mut straus)
+        .expect("tiny bp+ prove");
 }

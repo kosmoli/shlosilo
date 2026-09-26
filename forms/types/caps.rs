@@ -15,6 +15,11 @@
 /// is an explicit error before any proving starts.
 pub const SIGN_WS_BP_TERMS: usize = 2050;
 
+/// Z5.3 D-cut: the Straus scratch byte pool (mirrors the vendor's
+/// `StrausScratch::storage_bytes(SIGN_WS_BP_TERMS)`; a pin test asserts the
+/// two agree — same source-of-truth discipline as the Z3.3b ws layout).
+pub const SIGN_WS_BP_STRAUS_BYTES: usize = (SIGN_WS_BP_TERMS * 2816) + 64;
+
 /// Z5.2b: decompressed generator point element size (curve25519-dalek
 /// `EdwardsPoint` repr: 4 x [u64; 5]). Pinned by a static assert in c_abi;
 /// the C side sizes table buffers as points * this constant.

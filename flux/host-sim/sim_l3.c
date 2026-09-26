@@ -211,7 +211,7 @@ int main(void) {
     /* Z5.3: the ws grew with the BP+ prove scratch pool (~384 KB) — sized
        with headroom; the runtime `shlosilo_sign_ws_len()` remains the single
        source of truth for the actual requirement. */
-    static uint8_t sign_ws[1024 * 1024];
+    static uint8_t sign_ws[8 * 1024 * 1024];
     unsigned ws_need = shlosilo_sign_ws_len();
     if (ws_need > sizeof(sign_ws)) {
         printf("sign workspace too small: need %u\n", ws_need);

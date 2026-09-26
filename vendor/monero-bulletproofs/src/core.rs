@@ -60,19 +60,44 @@ pub fn multiexp_chunk_terms() -> usize {
     MULTIEXP_CHUNK_TERMS.load(Ordering::Relaxed)
 }
 
-pub(crate) fn multiexp(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
+/// shlosilo vendor patch (Z5.3 D-cut): the large-term path runs over the
+/// caller's `StrausScratch` (the small path is inline, allocation-free). The
+/// chunked accumulation is unchanged (same chunks, same order).
+pub(crate) fn multiexp(
+    pairs: &[(Scalar, EdwardsPoint)],
+    scratch: &mut curve25519_dalek::scratch::StrausScratch,
+) -> Result<EdwardsPoint, curve25519_dalek::scratch::ScratchError> {
     let chunk = multiexp_chunk_terms();
     if pairs.len() <= chunk {
-        return multiexp_terms(pairs);
+        return multiexp_chunk_scratch(pairs, scratch);
     }
     let mut acc = EdwardsPoint::identity();
     let mut remaining = pairs;
     while !remaining.is_empty() {
         let take = remaining.len().min(chunk);
-        acc += multiexp_terms(&remaining[..take]);
+        acc += multiexp_chunk_scratch(&remaining[..take], scratch)?;
         remaining = &remaining[take..];
     }
-    acc
+    Ok(acc)
+}
+
+fn multiexp_chunk_scratch(
+    pairs: &[(Scalar, EdwardsPoint)],
+    scratch: &mut curve25519_dalek::scratch::StrausScratch,
+) -> Result<EdwardsPoint, curve25519_dalek::scratch::ScratchError> {
+    if pairs.len() <= 4 {
+        // inline small path (no scratch, no allocation) — same as
+        // `multiexp_terms`' Borrow-iterator feed.
+        return Ok(EdwardsPoint::multiscalar_mul(
+            pairs.iter().map(|(scalar, _)| scalar),
+            pairs.iter().map(|(_, point)| point),
+        ));
+    }
+    curve25519_dalek::scratch::straus_multiscalar_mul_scratch(
+        pairs.iter().map(|(scalar, _)| scalar),
+        pairs.iter().map(|(_, point)| point),
+        scratch,
+    )
 }
 
 fn multiexp_terms(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
@@ -114,7 +139,10 @@ pub fn bench_multiexp_chain(n: usize, iters: u32, tail: bool, gen_points: bool) 
                 (s, p)
             })
             .collect();
-        let point = multiexp(&pairs);
+        let point = EdwardsPoint::multiscalar_mul(
+            pairs.iter().map(|(s, _)| s),
+            pairs.iter().map(|(_, p)| p),
+        );
         let point = if tail {
             point * monero_ed25519::Scalar::INV_EIGHT.into()
         } else {
@@ -137,12 +165,55 @@ fn bench_scalar(seed: usize) -> Scalar {
     Scalar::from_bytes_mod_order(b)
 }
 
-pub(crate) fn multiexp_vartime(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
-    // shlosilo vendor patch (Z5.3 cut 2): same Borrow-iterator feed as
-    // `multiexp_terms` — the staging Vecs were pure waste.
+/// shlosilo vendor patch (Z5.3 D-cut): the small-count vartime helper (the
+/// inline path — no scratch, no allocation, no Result).
+pub(crate) fn multiexp_vartime_small(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
+    debug_assert!(pairs.len() <= 4);
     EdwardsPoint::vartime_multiscalar_mul(
         pairs.iter().map(|(scalar, _)| scalar),
         pairs.iter().map(|(_, point)| point),
+    )
+}
+
+/// shlosilo vendor patch (Z5.3 D-cut): explicitly-allocating ct path for the
+/// legacy `original` Bulletproof line (not on the XMR sign path).
+pub(crate) fn multiexp_alloc(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
+    EdwardsPoint::multiscalar_mul(
+        pairs.iter().map(|(scalar, _)| scalar),
+        pairs.iter().map(|(_, point)| point),
+    )
+}
+
+/// shlosilo vendor patch (Z5.3 D-cut): the explicitly-allocating vartime
+/// path for legacy callers (the `original` Bulletproof line, not on the XMR
+/// sign path). Named loudly so any new use is visible in review; the
+/// zero-alloc path is `multiexp_vartime` over caller scratch.
+pub(crate) fn multiexp_vartime_alloc(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
+    EdwardsPoint::vartime_multiscalar_mul(
+        pairs.iter().map(|(scalar, _)| scalar),
+        pairs.iter().map(|(_, point)| point),
+    )
+}
+
+/// shlosilo vendor patch (Z5.3 D-cut): vartime over caller scratch above the
+/// inline threshold; the small path stays allocation-free.
+pub(crate) fn multiexp_vartime(
+    pairs: &[(Scalar, EdwardsPoint)],
+    scratch: &mut curve25519_dalek::scratch::StrausScratch,
+) -> Result<EdwardsPoint, curve25519_dalek::scratch::ScratchError> {
+    if pairs.len() <= 4 {
+        return Ok(EdwardsPoint::vartime_multiscalar_mul(
+            pairs.iter().map(|(scalar, _)| scalar),
+            pairs.iter().map(|(_, point)| point),
+        ));
+    }
+    Ok(
+        curve25519_dalek::scratch::straus_optional_multiscalar_mul_scratch(
+            pairs.iter().map(|(scalar, _)| scalar),
+            pairs.iter().map(|(_, point)| Some(*point)),
+            scratch,
+        )?
+        .expect("all points present"),
     )
 }
 

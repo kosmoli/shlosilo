@@ -752,6 +752,78 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -
 -doc-internal:
 -	cargo +nightly rustdoc --features "$(FEATURES)" -- --document-private-items
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/mod.rs b/src/backend/mod.rs
+--- a/src/backend/mod.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/backend/mod.rs	2026-09-27 00:59:59.581607075 +0800
+@@ -193,6 +193,68 @@
+     }
+ }
+ 
++/// shlosilo vendor patch (Z5.3 D-cut): scratch-backed dispatch — identical
++/// math to `straus_multiscalar_mul`, storage provided by the caller.
++pub fn straus_multiscalar_mul_scratch<I, J>(
++    scalars: I,
++    points: J,
++    scratch: &mut crate::scratch::StrausScratch,
++) -> Result<EdwardsPoint, crate::scratch::ScratchError>
++where
++    I: IntoIterator,
++    I::Item: core::borrow::Borrow<Scalar>,
++    J: IntoIterator,
++    J::Item: core::borrow::Borrow<EdwardsPoint>,
++{
++    match get_selected_backend() {
++        #[cfg(curve25519_dalek_backend = "simd")]
++        BackendKind::Avx2 => vector::scalar_mul::straus::spec_avx2::Straus::multiscalar_mul_scratch::<
++            I,
++            J,
++        >(scalars, points, scratch),
++        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++        BackendKind::Avx512 => {
++            let _ = (scalars, points, scratch);
++            Err(crate::scratch::ScratchError::UnsupportedBackend)
++        }
++        BackendKind::Serial => {
++            serial::scalar_mul::straus::Straus::multiscalar_mul_scratch::<I, J>(
++                scalars, points, scratch,
++            )
++        }
++    }
++}
++
++/// shlosilo vendor patch (Z5.3 D-cut): scratch-backed vartime dispatch.
++pub fn straus_optional_multiscalar_mul_scratch<I, J>(
++    scalars: I,
++    points: J,
++    scratch: &mut crate::scratch::StrausScratch,
++) -> Result<Option<EdwardsPoint>, crate::scratch::ScratchError>
++where
++    I: IntoIterator,
++    I::Item: core::borrow::Borrow<Scalar>,
++    J: IntoIterator<Item = core::option::Option<EdwardsPoint>>,
++{
++    match get_selected_backend() {
++        #[cfg(curve25519_dalek_backend = "simd")]
++        BackendKind::Avx2 => vector::scalar_mul::straus::spec_avx2::Straus::optional_multiscalar_mul_scratch::<
++            I,
++            J,
++        >(scalars, points, scratch),
++        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++        BackendKind::Avx512 => {
++            let _ = (scalars, points, scratch);
++            Err(crate::scratch::ScratchError::UnsupportedBackend)
++        }
++        BackendKind::Serial => {
++            serial::scalar_mul::straus::Straus::optional_multiscalar_mul_scratch::<I, J>(
++                scalars, points, scratch,
++            )
++        }
++    }
++}
++
+ #[allow(missing_docs)]
+ #[cfg(feature = "alloc")]
+ pub fn straus_optional_multiscalar_mul<I, J>(scalars: I, points: J) -> Option<EdwardsPoint>
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/curve_models/mod.rs b/src/backend/serial/curve_models/mod.rs
 --- a/src/backend/serial/curve_models/mod.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/backend/serial/curve_models/mod.rs	2026-09-15 12:12:11.259428252 +0800
@@ -789,7 +861,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
          let Y_minus_X = &self.Y - &self.X;
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/scalar_mul/straus.rs b/src/backend/serial/scalar_mul/straus.rs
 --- a/src/backend/serial/scalar_mul/straus.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/serial/scalar_mul/straus.rs	2026-09-26 19:39:24.979841968 +0800
++++ b/src/backend/serial/scalar_mul/straus.rs	2026-09-27 01:00:41.380118275 +0800
 @@ -111,8 +111,37 @@
          use crate::traits::Identity;
          use crate::window::LookupTable;
@@ -837,7 +909,131 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
              .map(|s| s.borrow().as_radix_16())
              .collect();
  
-@@ -168,13 +196,46 @@
+@@ -144,6 +172,123 @@
+     }
+ }
+ 
++impl Straus {
++    /// shlosilo vendor patch (Z5.3 D-cut): ct Straus over caller scratch
++    /// (device path). Same tables/digits/loop as `multiscalar_mul`; the
++    /// secret-derived radix-16 digits are zeroized on every exit path.
++    pub fn multiscalar_mul_scratch<I, J>(
++        scalars: I,
++        points: J,
++        scratch: &mut crate::scratch::StrausScratch,
++    ) -> Result<EdwardsPoint, crate::scratch::ScratchError>
++    where
++        I: IntoIterator,
++        I::Item: Borrow<Scalar>,
++        J: IntoIterator,
++        J::Item: Borrow<EdwardsPoint>,
++    {
++        use crate::backend::serial::curve_models::ProjectiveNielsPoint;
++        use crate::scratch::ScratchError;
++        use crate::traits::Identity;
++        use crate::window::LookupTable;
++        let mut scalars = scalars.into_iter();
++        let mut points = points.into_iter();
++        let (lo, hi) = scalars.size_hint();
++        if hi != Some(lo) || points.size_hint() != (lo, Some(lo)) {
++            return Err(ScratchError::TooSmall);
++        }
++        let n = lo;
++        let table_size = core::mem::size_of::<LookupTable<ProjectiveNielsPoint>>();
++        let digits_size = core::mem::size_of::<[i8; 64]>();
++        let (tables_bytes, digits_bytes) = scratch.split(n * table_size, n * digits_size)?;
++        let lookup_tables: &mut [LookupTable<ProjectiveNielsPoint>] =
++            unsafe { crate::scratch::StrausScratch::cast(tables_bytes) };
++        let scalar_digits: &mut [[i8; 64]] =
++            unsafe { crate::scratch::StrausScratch::cast(digits_bytes) };
++        let fill = LookupTable::<ProjectiveNielsPoint>::from(&EdwardsPoint::identity());
++        for t in lookup_tables.iter_mut() {
++            *t = fill;
++        }
++        for (i, (scalar, point)) in scalars.zip(points).enumerate() {
++            lookup_tables[i] = LookupTable::<ProjectiveNielsPoint>::from(point.borrow());
++            scalar_digits[i] = scalar.borrow().as_radix_16();
++        }
++        let mut Q = EdwardsPoint::identity();
++        for j in (0 .. 64).rev() {
++            Q = Q.mul_by_pow_2(4);
++            for (s_i, lookup_table_i) in scalar_digits.iter().zip(lookup_tables.iter()) {
++                let R_i = lookup_table_i.select(s_i[j]);
++                Q = (&Q + &R_i).as_extended();
++            }
++        }
++        for d in scalar_digits.iter_mut() {
++            for b in d.iter_mut() {
++                *b = 0;
++            }
++        }
++        Ok(Q)
++    }
++
++    /// shlosilo vendor patch (Z5.3 D-cut): vartime Straus over caller scratch
++    /// (NAF digits public; no wipe, parity with the allocating path).
++    pub fn optional_multiscalar_mul_scratch<I, J>(
++        scalars: I,
++        points: J,
++        scratch: &mut crate::scratch::StrausScratch,
++    ) -> Result<Option<EdwardsPoint>, crate::scratch::ScratchError>
++    where
++        I: IntoIterator,
++        I::Item: Borrow<Scalar>,
++        J: IntoIterator<Item = Option<EdwardsPoint>>,
++    {
++        use crate::backend::serial::curve_models::{
++            CompletedPoint, ProjectiveNielsPoint, ProjectivePoint,
++        };
++        use crate::scratch::ScratchError;
++        use crate::traits::Identity;
++        use crate::window::NafLookupTable5;
++        let mut scalars = scalars.into_iter();
++        let mut points = points.into_iter();
++        let (lo, hi) = scalars.size_hint();
++        if hi != Some(lo) || points.size_hint() != (lo, Some(lo)) {
++            return Err(ScratchError::TooSmall);
++        }
++        let n = lo;
++        let table_size = core::mem::size_of::<NafLookupTable5<ProjectiveNielsPoint>>();
++        let digits_size = core::mem::size_of::<[i8; 256]>();
++        let (tables_bytes, digits_bytes) = scratch.split(n * table_size, n * digits_size)?;
++        let lookup_tables: &mut [NafLookupTable5<ProjectiveNielsPoint>] =
++            unsafe { crate::scratch::StrausScratch::cast(tables_bytes) };
++        let nafs: &mut [[i8; 256]] = unsafe { crate::scratch::StrausScratch::cast(digits_bytes) };
++        let fill = NafLookupTable5::<ProjectiveNielsPoint>::from(&EdwardsPoint::identity());
++        for t in lookup_tables.iter_mut() {
++            *t = fill;
++        }
++        for (i, (scalar, point)) in scalars.zip(points).enumerate() {
++            let Some(p) = point else {
++                return Ok(None);
++            };
++            lookup_tables[i] = NafLookupTable5::<ProjectiveNielsPoint>::from(&p);
++            nafs[i] = scalar.borrow().non_adjacent_form(5);
++        }
++        let mut r = ProjectivePoint::identity();
++        for i in (0 .. 256).rev() {
++            let mut t: CompletedPoint = r.double();
++            for (naf, lookup_table) in nafs.iter().zip(lookup_tables.iter()) {
++                match naf[i].cmp(&0) {
++                    Ordering::Greater => {
++                        t = &t.as_extended() + &lookup_table.select(naf[i] as usize)
++                    }
++                    Ordering::Less => t = &t.as_extended() - &lookup_table.select(-naf[i] as usize),
++                    Ordering::Equal => {}
++                }
++            }
++            r = t.as_projective();
++        }
++        Ok(Some(r.as_extended()))
++    }
++}
++
+ impl VartimeMultiscalarMul for Straus {
+     type Point = EdwardsPoint;
+ 
+@@ -168,13 +313,46 @@
          use crate::traits::Identity;
          use crate::window::NafLookupTable5;
  
@@ -888,7 +1084,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/vector/scalar_mul/straus.rs b/src/backend/vector/scalar_mul/straus.rs
 --- a/src/backend/vector/scalar_mul/straus.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/vector/scalar_mul/straus.rs	2026-09-26 19:38:12.343495803 +0800
++++ b/src/backend/vector/scalar_mul/straus.rs	2026-09-27 01:00:41.380172203 +0800
 @@ -56,15 +56,46 @@
              J: IntoIterator,
              J::Item: Borrow<EdwardsPoint>,
@@ -938,7 +1134,143 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
                  .map(|s| s.borrow().as_radix_16())
                  .collect();
              // Pass ownership to a `Zeroizing` wrapper
-@@ -93,12 +124,45 @@
+@@ -84,6 +115,135 @@
+         }
+     }
+ 
++    impl Straus {
++        /// shlosilo vendor patch (Z5.3 D-cut): the constant-time Straus over
++        /// caller-provided scratch — same tables, digits and accumulation
++        /// loop as `multiscalar_mul`; storage only. The digit array is
++        /// secret-derived and is zeroized on every exit path.
++        pub fn multiscalar_mul_scratch<I, J>(
++            scalars: I,
++            points: J,
++            scratch: &mut crate::scratch::StrausScratch,
++        ) -> Result<EdwardsPoint, crate::scratch::ScratchError>
++        where
++            I: IntoIterator,
++            I::Item: Borrow<Scalar>,
++            J: IntoIterator,
++            J::Item: Borrow<EdwardsPoint>,
++        {
++            use crate::scratch::ScratchError;
++            use crate::traits::Identity;
++            let mut scalars = scalars.into_iter();
++            let mut points = points.into_iter();
++            let (lo, hi) = scalars.size_hint();
++            if hi != Some(lo) || points.size_hint() != (lo, Some(lo)) {
++                return Err(ScratchError::TooSmall);
++            }
++            let n = lo;
++
++            let table_size = core::mem::size_of::<LookupTable<CachedPoint>>();
++            let digits_size = core::mem::size_of::<[i8; 64]>();
++            let (tables_bytes, digits_bytes) =
++                scratch.split(n * table_size, n * digits_size)?;
++            // SAFETY: regions come from the aligned scratch; lengths are exact
++            // multiples of the element sizes; every element is written before
++            // it is read (tables/digits below).
++            let lookup_tables: &mut [LookupTable<CachedPoint>] =
++                unsafe { crate::scratch::StrausScratch::cast(tables_bytes) };
++            let scalar_digits: &mut [[i8; 64]] =
++                unsafe { crate::scratch::StrausScratch::cast(digits_bytes) };
++
++            // The tables are public-point material; init with the identity
++            // table (cheap, one construction + copies) so the slices are
++            // fully initialized before any read.
++            let fill = LookupTable::<CachedPoint>::from(&EdwardsPoint::identity());
++            for t in lookup_tables.iter_mut() {
++                *t = fill;
++            }
++            for (i, (scalar, point)) in scalars.zip(points).enumerate() {
++                lookup_tables[i] = LookupTable::<CachedPoint>::from(point.borrow());
++                scalar_digits[i] = scalar.borrow().as_radix_16();
++            }
++
++            let mut Q = ExtendedPoint::identity();
++            for j in (0 .. 64).rev() {
++                Q = Q.mul_by_pow_2(4);
++                for (s_i, lookup_table_i) in scalar_digits.iter().zip(lookup_tables.iter()) {
++                    Q = &Q + &lookup_table_i.select(s_i[j]);
++                }
++            }
++            // Secret-derived digits: wipe on every path (success included —
++            // the scratch is caller-owned and may be re-provisioned).
++            for d in scalar_digits.iter_mut() {
++                for b in d.iter_mut() {
++                    *b = 0;
++                }
++            }
++            Ok(Q.into())
++        }
++
++        /// shlosilo vendor patch (Z5.3 D-cut): the vartime Straus over
++        /// caller-provided scratch (NAF digits are public-challenge material;
++        /// no wipe, parity with the allocating path).
++        pub fn optional_multiscalar_mul_scratch<I, J>(
++            scalars: I,
++            points: J,
++            scratch: &mut crate::scratch::StrausScratch,
++        ) -> Result<Option<EdwardsPoint>, crate::scratch::ScratchError>
++        where
++            I: IntoIterator,
++            I::Item: Borrow<Scalar>,
++            J: IntoIterator<Item = Option<EdwardsPoint>>,
++        {
++            use crate::scratch::ScratchError;
++            use crate::traits::Identity;
++            let mut scalars = scalars.into_iter();
++            let mut points = points.into_iter();
++            let (lo, hi) = scalars.size_hint();
++            if hi != Some(lo) || points.size_hint() != (lo, Some(lo)) {
++                return Err(ScratchError::TooSmall);
++            }
++            let n = lo;
++
++            let table_size = core::mem::size_of::<NafLookupTable5<CachedPoint>>();
++            let digits_size = core::mem::size_of::<[i8; 256]>();
++            let (tables_bytes, digits_bytes) =
++                scratch.split(n * table_size, n * digits_size)?;
++            let lookup_tables: &mut [NafLookupTable5<CachedPoint>] =
++                unsafe { crate::scratch::StrausScratch::cast(tables_bytes) };
++            let nafs: &mut [[i8; 256]] = unsafe { crate::scratch::StrausScratch::cast(digits_bytes) };
++
++            let fill = NafLookupTable5::<CachedPoint>::from(&EdwardsPoint::identity());
++            for t in lookup_tables.iter_mut() {
++                *t = fill;
++            }
++            for (i, (scalar, point)) in scalars.zip(points).enumerate() {
++                let Some(p) = point else {
++                    return Ok(None);
++                };
++                lookup_tables[i] = NafLookupTable5::<CachedPoint>::from(&p);
++                nafs[i] = scalar.borrow().non_adjacent_form(5);
++            }
++
++            let mut Q = ExtendedPoint::identity();
++            for i in (0 .. 256).rev() {
++                Q = Q.double();
++                for (naf, lookup_table) in nafs.iter().zip(lookup_tables.iter()) {
++                    match naf[i].cmp(&0) {
++                        Ordering::Greater => {
++                            Q = &Q + &lookup_table.select(naf[i] as usize);
++                        }
++                        Ordering::Less => {
++                            Q = &Q - &lookup_table.select(-naf[i] as usize);
++                        }
++                        Ordering::Equal => {}
++                    }
++                }
++            }
++            Ok(Some(Q.into()))
++        }
++    }
++
+     impl VartimeMultiscalarMul for Straus {
+         type Point = EdwardsPoint;
+ 
+@@ -93,12 +253,45 @@
              I::Item: Borrow<Scalar>,
              J: IntoIterator<Item = Option<EdwardsPoint>>,
          {
@@ -1036,8 +1368,17 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
          ProjectiveNielsPoint {
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-15 12:19:39.951277086 +0800
-@@ -104,6 +104,12 @@
++++ b/src/lib.rs	2026-09-27 00:56:42.276210783 +0800
+@@ -72,6 +72,8 @@
+ 
+ // Scalar arithmetic mod l = 2^252 + ..., the order of the Ristretto group
+ pub mod scalar;
++/// shlosilo vendor patch (Z5.3): caller-provided Straus scratch.
++pub mod scratch;
+ 
+ // Point operations on the Montgomery form of Curve25519
+ pub mod montgomery;
+@@ -104,6 +106,12 @@
  // Generic code for window lookups
  pub(crate) mod window;
  
@@ -1261,6 +1602,122 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
      pub(crate) fn as_radix_16(&self) -> [i8; 64] {
          debug_assert!(self[31] <= 127);
          let mut output = [0i8; 64];
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/scratch.rs b/src/scratch.rs
+--- a/src/scratch.rs	1970-01-01 08:00:00.000000000 +0800
++++ b/src/scratch.rs	2026-09-27 01:20:19.377265300 +0800
+@@ -0,0 +1,112 @@
++//! shlosilo vendor patch (Z5.3 D-cut, 2026-09-26): caller-provided scratch
++//! for the large-term Straus multi-exponentiations.
++//!
++//! Design contract (agreed with Kosmo + GPT review):
++//! - The scratch is a RESOURCE, not global state: the caller owns the storage
++//!   (static/PSRAM/heap — the L3 decides placement) and passes `&mut`
++//!   explicitly. No `thread_local`, no bare `static mut` — the borrow itself
++//!   is the single-consumer proof.
++//! - Secrecy trichotomy: lookup tables are built from PUBLIC points (no
++//!   wipe); constant-time radix-16 digits are derived from SECRET scalars and
++//!   are zeroized on every path (success or error); vartime NAF digits derive
++//!   from public challenges (no wipe).
++//! - The ct and vartime views OVERLAY the same two regions (their working
++//!   sets are never simultaneously alive — each multiexp completes before
++//!   the next starts), halving the footprint; `&mut` prevents overlap in use.
++//! - Everything is explicit: `storage_bytes(n)` is the single size source of
++//!   truth; too-small/misaligned storage is a loud `ScratchError`; the
++//!   trait-based allocating path remains as the fallback.
++
++use core::mem::align_of;
++
++/// Error returned when the provided storage cannot hold the requested
++/// working set (explicit failure; no silent truncation).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ScratchError {
++    /// Storage is smaller than `storage_bytes(n)` for the requested term
++    /// count, or misaligned.
++    TooSmall,
++    /// The selected backend has no scratch path (the nightly AVX-512 straus
++    /// is not wired; reported loudly rather than silently allocating).
++    UnsupportedBackend,
++}
++
++/// Caller-owned Straus scratch storage: two overlaid regions —
++/// `tables` (sized for the widest table type) and `digits` (sized for the
++/// widest digit array), each sized from the term capacity.
++pub struct StrausScratch<'a> {
++    tables: &'a mut [u8],
++    digits: &'a mut [u8],
++    terms_cap: usize,
++}
++
++impl<'a> StrausScratch<'a> {
++    /// The single sizing source of truth for `terms` concurrent terms.
++    /// Widest element assumptions (both backends are within these bounds):
++    /// table element = 16 * 160 B (NafLookupTable5 over a 160 B point),
++    /// digits = 256 B per term (NAF5). 64 B of alignment slack is included.
++    pub const fn storage_bytes(terms: usize) -> usize {
++        const WIDEST_POINT: usize = 160;
++        let tables = terms * (16 * WIDEST_POINT);
++        let digits = terms * 256;
++        tables + digits + 64
++    }
++
++    /// Wrap caller storage for up to `terms_cap` concurrent terms. The buffer
++    /// must be at least `storage_bytes(terms_cap)` bytes and 8-aligned.
++    pub fn new(storage: &'a mut [u8], terms_cap: usize) -> Result<Self, ScratchError> {
++        if storage.len() < Self::storage_bytes(terms_cap) {
++            return Err(ScratchError::TooSmall);
++        }
++        // AVX2 table types are 32-byte aligned; the tables region is aligned
++        // internally (the storage_bytes slack covers the padding). The digits
++        // region needs byte alignment only.
++        let base = storage.as_ptr() as usize;
++        let pad = (32 - (base % 32)) % 32;
++        if storage.len() < pad + Self::storage_bytes(terms_cap) - 64 {
++            return Err(ScratchError::TooSmall);
++        }
++        let storage = &mut storage[pad..];
++        const WIDEST_POINT: usize = 160;
++        let tables_len = terms_cap * (16 * WIDEST_POINT);
++        let digits_len = terms_cap * 256;
++        let (tables, rest) = storage.split_at_mut(tables_len);
++        let (digits, _slack) = rest.split_at_mut(digits_len);
++        Ok(StrausScratch { tables, digits, terms_cap })
++    }
++
++    /// The term capacity this scratch was sized for.
++    pub fn terms_cap(&self) -> usize {
++        self.terms_cap
++    }
++
++    /// Borrow both regions at once (disjoint fields — one `&mut self` split).
++    /// Slices are exactly the requested lengths; too-small storage is a loud
++    /// `ScratchError`.
++    pub(crate) fn split(
++        &mut self,
++        tables_need: usize,
++        digits_need: usize,
++    ) -> Result<(&mut [u8], &mut [u8]), ScratchError> {
++        if tables_need > self.tables.len() || digits_need > self.digits.len() {
++            return Err(ScratchError::TooSmall);
++        }
++        Ok((&mut self.tables[..tables_need], &mut self.digits[..digits_need]))
++    }
++
++    /// Typed view helper: reinterpret a byte region as `&mut [T]`.
++    ///
++    /// # Safety
++    /// `bytes` must be aligned for `T` and sized in whole `T`s; the caller
++    /// initializes every element before reading it.
++    pub(crate) unsafe fn cast<T>(bytes: &mut [u8]) -> &mut [T] {
++        debug_assert_eq!(bytes.as_ptr() as usize % align_of::<T>(), 0);
++        debug_assert_eq!(bytes.len() % core::mem::size_of::<T>(), 0);
++        core::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, bytes.len() / core::mem::size_of::<T>())
++    }
++}
++
++// Re-exports so callers name the scratch path through one module.
++pub use crate::backend::{
++    straus_multiscalar_mul_scratch, straus_optional_multiscalar_mul_scratch,
++};
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/window.rs b/src/window.rs
 --- a/src/window.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/window.rs	2026-09-15 12:12:11.259342518 +0800

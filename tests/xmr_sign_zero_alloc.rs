@@ -236,6 +236,17 @@ fn xmr_sign_zero_alloc() {
         );
         shlosilo::types::caps::SIGN_WS_BP_TERMS
     ];
+    let mut bp_straus_storage = vec![
+        0u8;
+        curve25519_dalek::scratch::StrausScratch::storage_bytes(
+            shlosilo::types::caps::SIGN_WS_BP_TERMS
+        )
+    ];
+    let mut bp_straus = curve25519_dalek::scratch::StrausScratch::new(
+        &mut bp_straus_storage,
+        shlosilo::types::caps::SIGN_WS_BP_TERMS,
+    )
+    .expect("sized storage");
 
     let n = sign_tx_from_construction_with_rngs_into(
         tx_data,
@@ -246,6 +257,7 @@ fn xmr_sign_zero_alloc() {
         &mut clsag_rng,
         &mut out,
         &mut bp_terms,
+        &mut bp_straus,
     )
     .expect("warm-up sign");
     assert!(n > 0);
@@ -262,6 +274,7 @@ fn xmr_sign_zero_alloc() {
             &mut clsag_rng,
             &mut out,
             &mut bp_terms,
+            &mut bp_straus,
         )
         .expect("measured sign")
     });
@@ -329,6 +342,17 @@ fn alloc_site_histogram() {
         );
         shlosilo::types::caps::SIGN_WS_BP_TERMS
     ];
+    let mut bp_straus_storage = vec![
+        0u8;
+        curve25519_dalek::scratch::StrausScratch::storage_bytes(
+            shlosilo::types::caps::SIGN_WS_BP_TERMS
+        )
+    ];
+    let mut bp_straus = curve25519_dalek::scratch::StrausScratch::new(
+        &mut bp_straus_storage,
+        shlosilo::types::caps::SIGN_WS_BP_TERMS,
+    )
+    .expect("sized storage");
 
     CAPTURED.store(0, Ordering::Relaxed);
     CAPTURING.store(true, Ordering::Relaxed);
@@ -341,6 +365,7 @@ fn alloc_site_histogram() {
         &mut clsag_rng,
         &mut out,
         &mut bp_terms,
+        &mut bp_straus,
     )
     .expect("sign");
     CAPTURING.store(false, Ordering::Relaxed);

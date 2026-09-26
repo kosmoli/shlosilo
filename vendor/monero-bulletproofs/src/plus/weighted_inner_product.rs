@@ -29,7 +29,7 @@ use curve25519_dalek::{EdwardsPoint, Scalar};
 
 use crate::{
     batch_verifier::BulletproofsPlusBatchVerifier,
-    core::{challenge_products, multiexp, multiexp_vartime},
+    core::{challenge_products, multiexp, multiexp_vartime, multiexp_vartime_small},
     plus::{padded_pow_of_2, BpPlusGenerators, GeneratorsList, PointVector, ScalarVector},
 };
 use monero_ed25519::CompressedPoint;
@@ -137,6 +137,7 @@ impl WipStatement {
         L: CompressedPoint,
         R: CompressedPoint,
         y_inv_n_hat: Scalar,
+        straus: &mut curve25519_dalek::scratch::StrausScratch,
     ) -> (Scalar, Scalar, Scalar, Scalar, PointVector, PointVector) {
         debug_assert_eq!(g_bold1.len(), g_bold2.len());
         debug_assert_eq!(h_bold1.len(), h_bold2.len());
@@ -150,12 +151,15 @@ impl WipStatement {
         let mut new_g_bold = Vec::with_capacity(g_bold1.len());
         let e_y_inv = e * y_inv_n_hat;
         for g_bold in g_bold1.0.drain(..).zip(g_bold2.0.drain(..)) {
-            new_g_bold.push(multiexp_vartime(&[(inv_e, g_bold.0), (e_y_inv, g_bold.1)]));
+            new_g_bold.push(multiexp_vartime_small(&[
+                (inv_e, g_bold.0),
+                (e_y_inv, g_bold.1),
+            ]));
         }
 
         let mut new_h_bold = Vec::with_capacity(h_bold1.len());
         for h_bold in h_bold1.0.drain(..).zip(h_bold2.0.drain(..)) {
-            new_h_bold.push(multiexp_vartime(&[(e, h_bold.0), (inv_e, h_bold.1)]));
+            new_h_bold.push(multiexp_vartime_small(&[(e, h_bold.0), (inv_e, h_bold.1)]));
         }
 
         let e_square = e * e;
@@ -178,6 +182,7 @@ impl WipStatement {
         mut transcript: Scalar,
         witness: &WipWitness,
         terms: &mut [(Scalar, EdwardsPoint)],
+        straus: &mut curve25519_dalek::scratch::StrausScratch,
     ) -> Option<WipProof> {
         let WipStatement {
             generators,
@@ -228,7 +233,7 @@ impl WipStatement {
                 .collect::<Vec<_>>();
             P_terms.push((witness.a.clone().weighted_inner_product(&witness.b, &y), g));
             P_terms.push((witness.alpha, h));
-            debug_assert_eq!(multiexp(&P_terms), P);
+            debug_assert_eq!(crate::core::multiexp_alloc(&P_terms), P);
             P_terms.zeroize();
         }
 
@@ -302,8 +307,11 @@ impl WipStatement {
             let lr_probe = PhaseProbe::start(PHASE_WIP_L_R);
             #[cfg(feature = "prove-timing")]
             let round_l = PhaseProbe::start(PHASE_WIP_L_BASE + wip_round);
-            let L =
-                CompressedPoint::from((multiexp(L_terms) * INV_EIGHT.into()).compress().to_bytes());
+            let L = CompressedPoint::from(
+                (multiexp(L_terms, straus).ok()? * INV_EIGHT.into())
+                    .compress()
+                    .to_bytes(),
+            );
             #[cfg(feature = "prove-timing")]
             round_l.end();
             L_vec.push(L);
@@ -330,8 +338,11 @@ impl WipStatement {
             R_terms[t + 1] = (d_r, h);
             #[cfg(feature = "prove-timing")]
             let round_r = PhaseProbe::start(PHASE_WIP_R_BASE + wip_round);
-            let R =
-                CompressedPoint::from((multiexp(R_terms) * INV_EIGHT.into()).compress().to_bytes());
+            let R = CompressedPoint::from(
+                (multiexp(R_terms, straus).ok()? * INV_EIGHT.into())
+                    .compress()
+                    .to_bytes(),
+            );
             #[cfg(feature = "prove-timing")]
             round_r.end();
             R_vec.push(R);
@@ -350,6 +361,7 @@ impl WipStatement {
                 L,
                 R,
                 y_inv_n_hat,
+                straus,
             );
 
             a = (a1 * e) + &(a2 * (y_n_hat * inv_e));
@@ -382,7 +394,7 @@ impl WipStatement {
             (delta, h),
         ];
         let A = CompressedPoint::from(
-            (multiexp(&A_terms) * INV_EIGHT.into())
+            (multiexp(&A_terms, straus).ok()? * INV_EIGHT.into())
                 .compress()
                 .to_bytes(),
         );
@@ -390,7 +402,7 @@ impl WipStatement {
 
         let mut B_terms = vec![(ry * s, g), (eta, h)];
         let B = CompressedPoint::from(
-            (multiexp(&B_terms) * INV_EIGHT.into())
+            (multiexp(&B_terms, straus).ok()? * INV_EIGHT.into())
                 .compress()
                 .to_bytes(),
         );

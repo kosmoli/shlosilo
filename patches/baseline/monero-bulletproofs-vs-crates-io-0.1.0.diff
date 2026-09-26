@@ -436,8 +436,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/core.rs b/src/core.rs
 --- a/src/core.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/core.rs	2026-09-26 19:13:25.600476900 +0800
-@@ -1,33 +1,149 @@
++++ b/src/core.rs	2026-09-27 01:21:08.348845634 +0800
+@@ -1,33 +1,220 @@
 +use core::sync::atomic::{AtomicUsize, Ordering};
 +
  use std_shims::{vec, vec::Vec};
@@ -456,6 +456,24 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    COMMITMENT_BITS, MAX_BULLETPROOF_COMMITMENTS as MAX_COMMITMENTS,
  };
  
+-pub(crate) fn multiexp(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
+-  let mut buf_scalars = Vec::with_capacity(pairs.len());
+-  let mut buf_points = Vec::with_capacity(pairs.len());
+-  for (scalar, point) in pairs {
+-    buf_scalars.push(scalar);
+-    buf_points.push(point);
+-  }
+-  EdwardsPoint::multiscalar_mul(buf_scalars, buf_points)
+-}
+-
+-pub(crate) fn multiexp_vartime(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
+-  let mut buf_scalars = Vec::with_capacity(pairs.len());
+-  let mut buf_points = Vec::with_capacity(pairs.len());
+-  for (scalar, point) in pairs {
+-    buf_scalars.push(scalar);
+-    buf_points.push(point);
+-  }
+-  EdwardsPoint::vartime_multiscalar_mul(buf_scalars, buf_points)
 +/// Constant-time multiexp, chunked so every Straus lookup table fits the
 +/// host's fast memory. The chunk size is a PER-PLATFORM tuning knob
 +/// (runtime, default 36):
@@ -504,26 +522,44 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    MULTIEXP_CHUNK_TERMS.load(Ordering::Relaxed)
 +}
 +
- pub(crate) fn multiexp(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
--  let mut buf_scalars = Vec::with_capacity(pairs.len());
--  let mut buf_points = Vec::with_capacity(pairs.len());
--  for (scalar, point) in pairs {
--    buf_scalars.push(scalar);
--    buf_points.push(point);
--  }
--  EdwardsPoint::multiscalar_mul(buf_scalars, buf_points)
++/// shlosilo vendor patch (Z5.3 D-cut): the large-term path runs over the
++/// caller's `StrausScratch` (the small path is inline, allocation-free). The
++/// chunked accumulation is unchanged (same chunks, same order).
++pub(crate) fn multiexp(
++    pairs: &[(Scalar, EdwardsPoint)],
++    scratch: &mut curve25519_dalek::scratch::StrausScratch,
++) -> Result<EdwardsPoint, curve25519_dalek::scratch::ScratchError> {
 +    let chunk = multiexp_chunk_terms();
 +    if pairs.len() <= chunk {
-+        return multiexp_terms(pairs);
++        return multiexp_chunk_scratch(pairs, scratch);
 +    }
 +    let mut acc = EdwardsPoint::identity();
 +    let mut remaining = pairs;
 +    while !remaining.is_empty() {
 +        let take = remaining.len().min(chunk);
-+        acc += multiexp_terms(&remaining[..take]);
++        acc += multiexp_chunk_scratch(&remaining[..take], scratch)?;
 +        remaining = &remaining[take..];
 +    }
-+    acc
++    Ok(acc)
++}
++
++fn multiexp_chunk_scratch(
++    pairs: &[(Scalar, EdwardsPoint)],
++    scratch: &mut curve25519_dalek::scratch::StrausScratch,
++) -> Result<EdwardsPoint, curve25519_dalek::scratch::ScratchError> {
++    if pairs.len() <= 4 {
++        // inline small path (no scratch, no allocation) — same as
++        // `multiexp_terms`' Borrow-iterator feed.
++        return Ok(EdwardsPoint::multiscalar_mul(
++            pairs.iter().map(|(scalar, _)| scalar),
++            pairs.iter().map(|(_, point)| point),
++        ));
++    }
++    curve25519_dalek::scratch::straus_multiscalar_mul_scratch(
++        pairs.iter().map(|(scalar, _)| scalar),
++        pairs.iter().map(|(_, point)| point),
++        scratch,
++    )
 +}
 +
 +fn multiexp_terms(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
@@ -565,7 +601,10 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                (s, p)
 +            })
 +            .collect();
-+        let point = multiexp(&pairs);
++        let point = EdwardsPoint::multiscalar_mul(
++            pairs.iter().map(|(s, _)| s),
++            pairs.iter().map(|(_, p)| p),
++        );
 +        let point = if tail {
 +            point * monero_ed25519::Scalar::INV_EIGHT.into()
 +        } else {
@@ -586,26 +625,62 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        *x = k;
 +    }
 +    Scalar::from_bytes_mod_order(b)
- }
- 
- pub(crate) fn multiexp_vartime(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
--  let mut buf_scalars = Vec::with_capacity(pairs.len());
--  let mut buf_points = Vec::with_capacity(pairs.len());
--  for (scalar, point) in pairs {
--    buf_scalars.push(scalar);
--    buf_points.push(point);
--  }
--  EdwardsPoint::vartime_multiscalar_mul(buf_scalars, buf_points)
-+    // shlosilo vendor patch (Z5.3 cut 2): same Borrow-iterator feed as
-+    // `multiexp_terms` — the staging Vecs were pure waste.
++}
++
++/// shlosilo vendor patch (Z5.3 D-cut): the small-count vartime helper (the
++/// inline path — no scratch, no allocation, no Result).
++pub(crate) fn multiexp_vartime_small(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
++    debug_assert!(pairs.len() <= 4);
 +    EdwardsPoint::vartime_multiscalar_mul(
 +        pairs.iter().map(|(scalar, _)| scalar),
 +        pairs.iter().map(|(_, point)| point),
 +    )
++}
++
++/// shlosilo vendor patch (Z5.3 D-cut): explicitly-allocating ct path for the
++/// legacy `original` Bulletproof line (not on the XMR sign path).
++pub(crate) fn multiexp_alloc(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
++    EdwardsPoint::multiscalar_mul(
++        pairs.iter().map(|(scalar, _)| scalar),
++        pairs.iter().map(|(_, point)| point),
++    )
++}
++
++/// shlosilo vendor patch (Z5.3 D-cut): the explicitly-allocating vartime
++/// path for legacy callers (the `original` Bulletproof line, not on the XMR
++/// sign path). Named loudly so any new use is visible in review; the
++/// zero-alloc path is `multiexp_vartime` over caller scratch.
++pub(crate) fn multiexp_vartime_alloc(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
++    EdwardsPoint::vartime_multiscalar_mul(
++        pairs.iter().map(|(scalar, _)| scalar),
++        pairs.iter().map(|(_, point)| point),
++    )
++}
++
++/// shlosilo vendor patch (Z5.3 D-cut): vartime over caller scratch above the
++/// inline threshold; the small path stays allocation-free.
++pub(crate) fn multiexp_vartime(
++    pairs: &[(Scalar, EdwardsPoint)],
++    scratch: &mut curve25519_dalek::scratch::StrausScratch,
++) -> Result<EdwardsPoint, curve25519_dalek::scratch::ScratchError> {
++    if pairs.len() <= 4 {
++        return Ok(EdwardsPoint::vartime_multiscalar_mul(
++            pairs.iter().map(|(scalar, _)| scalar),
++            pairs.iter().map(|(_, point)| point),
++        ));
++    }
++    Ok(
++        curve25519_dalek::scratch::straus_optional_multiscalar_mul_scratch(
++            pairs.iter().map(|(scalar, _)| scalar),
++            pairs.iter().map(|(_, point)| Some(*point)),
++            scratch,
++        )?
++        .expect("all points present"),
++    )
  }
  
  /*
-@@ -50,27 +166,27 @@
+@@ -50,27 +237,27 @@
  versus divide and conquer's 24.
  */
  pub(crate) fn challenge_products(challenges: &[(Scalar, Scalar)]) -> Vec<Scalar> {
@@ -898,7 +973,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-27 00:07:50.776832023 +0800
++++ b/src/lib.rs	2026-09-27 01:10:43.913600237 +0800
 @@ -4,40 +4,58 @@
  #![allow(non_snake_case)]
  
@@ -1133,7 +1208,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        OriginalStatement::new(&commitments)
          .expect("failed to create statement despite checking amount of commitments")
          .prove(
-@@ -145,201 +170,300 @@
+@@ -145,201 +170,302 @@
            "failed to prove Bulletproof::Original despite ensuring statement/witness consistency",
          ),
      ))
@@ -1170,6 +1245,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        rng: &mut R,
 +        outputs: &[Commitment],
 +        terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
++        straus: &mut curve25519_dalek::scratch::StrausScratch,
 +    ) -> Result<Bulletproof, BulletproofError> {
 +        if outputs.is_empty() {
 +            Err(BulletproofError::NoCommitments)?;
@@ -1209,6 +1285,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +          &witness_res
 +            .expect("failed to create witness despite checking amount of commitments"),
 +          terms,
++          straus,
          )
          .expect("failed to prove Bulletproof::Plus despite ensuring statement/witness consistency"),
      ))
@@ -1617,7 +1694,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/original/inner_product.rs b/src/original/inner_product.rs
 --- a/src/original/inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/original/inner_product.rs	2026-09-03 13:43:46.797301080 +0800
++++ b/src/original/inner_product.rs	2026-09-27 01:21:08.352845662 +0800
 @@ -2,23 +2,23 @@
  
  use zeroize::Zeroize;
@@ -1629,7 +1706,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -  scalar_vector::ScalarVector,
 -  point_vector::PointVector,
 -  MONERO_H, BulletproofsBatchVerifier,
-+    core::{challenge_products, multiexp_vartime},
++    core::{challenge_products, multiexp_vartime_alloc},
 +    point_vector::PointVector,
 +    scalar_vector::ScalarVector,
 +    BulletproofsBatchVerifier, MONERO_H,
@@ -2005,7 +2082,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                  inputs to this proof are NOT secret, and we do not have to be concerned about revealing
 +                  them via timing analysis.
 +                */
-+                multiexp_vartime(&L_terms)
++                multiexp_vartime_alloc(&L_terms)
 +            };
 +            L_vec.push(CompressedPoint::from(
 +                (L * INV_EIGHT.into()).compress().to_bytes(),
@@ -2020,7 +2097,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                    R_terms.push((*b, *h));
 +                }
 +                R_terms.push((cr, u));
-+                multiexp_vartime(&R_terms)
++                multiexp_vartime_alloc(&R_terms)
 +            };
 +            R_vec.push(CompressedPoint::from(
 +                (R * INV_EIGHT.into()).compress().to_bytes(),
@@ -2042,11 +2119,11 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            // The prover and verifier now calculate the following (28-31)
 +            g_bold = PointVector(Vec::with_capacity(g_bold1.len()));
 +            for (a, b) in g_bold1.0.into_iter().zip(g_bold2.0) {
-+                g_bold.0.push(multiexp_vartime(&[(x_inv, a), (x, b)]));
++                g_bold.0.push(multiexp_vartime_alloc(&[(x_inv, a), (x, b)]));
 +            }
 +            h_bold = PointVector(Vec::with_capacity(h_bold1.len()));
 +            for (a, b) in h_bold1.0.into_iter().zip(h_bold2.0) {
-+                h_bold.0.push(multiexp_vartime(&[(x, a), (x_inv, b)]));
++                h_bold.0.push(multiexp_vartime_alloc(&[(x, a), (x_inv, b)]));
 +            }
 +
 +            // 32-34
@@ -2248,7 +2325,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/original/mod.rs b/src/original/mod.rs
 --- a/src/original/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/original/mod.rs	2026-09-26 09:52:56.894629253 +0800
++++ b/src/original/mod.rs	2026-09-27 01:06:50.687492428 +0800
 @@ -2,24 +2,24 @@
  
  use std_shims::{sync::LazyLock, vec::Vec};
@@ -2556,7 +2633,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                for (aR, H) in aR.0.iter().zip(generators.H.iter()) {
 +                    terms.push((*aR, *H));
 +                }
-+                let res = multiexp(&terms) * INV_EIGHT.into();
++                let res = crate::core::multiexp_vartime_alloc(&terms) * INV_EIGHT.into();
 +                terms.zeroize();
 +                res
 +            }
@@ -2613,7 +2690,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                for (sR, H) in sR.0.iter().zip(generators.H.iter()) {
 +                    terms.push((*sR, *H));
 +                }
-+                let res = multiexp(&terms) * INV_EIGHT.into();
++                let res = crate::core::multiexp_vartime_alloc(&terms) * INV_EIGHT.into();
 +                terms.zeroize();
 +                res
 +            }
@@ -2695,7 +2772,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                for term in &mut T1_terms {
 +                    term.0 *= INV_EIGHT.into();
 +                }
-+                let T1 = multiexp(&T1_terms);
++                let T1 = crate::core::multiexp_alloc(&T1_terms);
 +                T1_terms.zeroize();
 +                T1
 +            }
@@ -2709,7 +2786,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                for term in &mut T2_terms {
 +                    term.0 *= INV_EIGHT.into();
 +                }
-+                let T2 = multiexp(&T2_terms);
++                let T2 = crate::core::multiexp_alloc(&T2_terms);
 +                T2_terms.zeroize();
 +                T2
 +            }
@@ -2994,10 +3071,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.rs
 --- a/src/plus/aggregate_range_proof.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/aggregate_range_proof.rs	2026-09-27 00:10:15.832007669 +0800
++++ b/src/plus/aggregate_range_proof.rs	2026-09-27 01:23:12.829768909 +0800
 @@ -1,21 +1,47 @@
--use std_shims::{vec, vec::Vec};
-+use std_shims::vec::Vec;
+ use std_shims::{vec, vec::Vec};
  
 -use rand_core::{RngCore, CryptoRng};
 -use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
@@ -3056,7 +3132,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  };
  
  const INV_EIGHT: monero_ed25519::Scalar = monero_ed25519::Scalar::INV_EIGHT;
-@@ -23,249 +49,354 @@
+@@ -23,249 +49,373 @@
  // Figure 3 of the Bulletproofs+ Paper
  #[derive(Clone, Debug)]
  pub(crate) struct AggregateRangeStatement<'a> {
@@ -3198,6 +3274,65 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -    for (i, d_y_z) in d_descending_y_plus_z.0.iter().enumerate() {
 -      A_terms.push((neg_z, generators.generator(GeneratorsList::GBold, i)));
 -      A_terms.push((*d_y_z, generators.generator(GeneratorsList::HBold, i)));
+-    }
+-    A_terms.push((y_mn_plus_one, commitment_accum));
+-    A_terms.push((
+-      ((y_pows * z) - (d.sum() * y_mn_plus_one * z) - (y_pows * (z * z))),
+-      BpPlusGenerators::g(),
+-    ));
+-
+-    Some(AHatComputation {
+-      y,
+-      d_descending_y_plus_z,
+-      y_mn_plus_one,
+-      z,
+-      z_pow: ScalarVector(z_pow),
+-      A_hat: A + multiexp_vartime(&A_terms),
+-    })
+-  }
+-
+-  pub(crate) fn prove<R: RngCore + CryptoRng>(
+-    self,
+-    rng: &mut R,
+-    witness: &AggregateRangeWitness,
+-  ) -> Option<AggregateRangeProof> {
+-    // Check for consistency with the witness
+-    if self.V.len() != witness.0.len() {
+-      return None;
+-    }
+-    for (commitment, witness) in self.V.iter().zip(witness.0.iter()) {
+-      if witness.commit().into() != *commitment {
+-        return None;
+-      }
+-    }
+-
+-    let Self { generators, V } = self;
+-    // Monero expects all of these points to be torsion-free
+-    // Generally, for Bulletproofs, it sends points * INV_EIGHT and then performs a torsion clear
+-    // by multiplying by 8
+-    // This also restores the original value due to the preprocessing
+-    // Commitments aren't transmitted INV_EIGHT though, so this multiplies by INV_EIGHT to enable
+-    // clearing its cofactor without mutating the value
+-    // For some reason, these values are transcripted * INV_EIGHT, not as transmitted
+-    let V = V.iter().map(|V| V * INV_EIGHT.into()).collect::<Vec<_>>();
+-    let mut transcript = initial_transcript(V.iter());
+-    let mut V = V.iter().map(EdwardsPoint::mul_by_cofactor).collect::<Vec<_>>();
+-
+-    // Pad V
+-    while V.len() < padded_pow_of_2(V.len()) {
+-      V.push(EdwardsPoint::identity());
+-    }
+-
+-    let generators = generators.reduce(V.len() * COMMITMENT_BITS);
+-
+-    let mut d_js = Vec::with_capacity(V.len());
+-    let mut a_l = ScalarVector(Vec::with_capacity(V.len() * COMMITMENT_BITS));
+-    for j in 1 ..= V.len() {
+-      d_js.push(Self::d_j(j, V.len()));
+-      #[allow(clippy::map_unwrap_or)]
+-      a_l.0.append(
+-        &mut u64_decompose(
+-          *witness.0.get(j - 1).map(|commitment| &commitment.amount).unwrap_or(&0),
 +    pub(crate) fn new(V: &'a [EdwardsPoint]) -> Option<Self> {
 +        if V.is_empty() || (V.len() > MAX_COMMITMENTS) {
 +            return None;
@@ -3234,6 +3369,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        transcript: &mut Scalar,
 +        A: CompressedPoint,
 +        terms: &mut [(Scalar, EdwardsPoint)],
++        straus: &mut curve25519_dalek::scratch::StrausScratch,
 +    ) -> Option<AHatComputation> {
 +        let (y, z) = Self::transcript_A(transcript, A);
 +
@@ -3326,7 +3462,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            z,
 +            z_pow: ScalarVector(z_pow[..V.len() + 1].to_vec()),
 +            A_hat: {
-+                let hat = A + multiexp_vartime(A_terms);
++                let hat = A + multiexp_vartime(A_terms, straus).ok()?;
 +                for e in A_terms.iter_mut() {
 +                    e.zeroize();
 +                }
@@ -3340,6 +3476,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        rng: &mut R,
 +        witness: &AggregateRangeWitness,
 +        terms: &mut [(Scalar, EdwardsPoint)],
++        straus: &mut curve25519_dalek::scratch::StrausScratch,
 +    ) -> Option<AggregateRangeProof> {
 +        // Check for consistency with the witness
 +        #[cfg(feature = "prove-timing")]
@@ -3418,7 +3555,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        }
 +        A_terms[t] = (alpha, BpPlusGenerators::h());
 +        let _p1 = PhaseProbe::start(PHASE_INITIAL_MULTISEXP);
-+        let mut A = multiexp(A_terms);
++        let mut A = multiexp(A_terms, straus).ok()?;
 +        _p1.end();
 +        for e in A_terms.iter_mut() {
 +            e.zeroize();
@@ -3437,10 +3574,48 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            z,
 +            z_pow,
 +            A_hat,
-+        } = Self::compute_A_hat(PointVector(V), &generators, &mut transcript, A, terms)
-+            .expect("A is a valid point as we just compressed it");
++        } = Self::compute_A_hat(
++            PointVector(V),
++            &generators,
++            &mut transcript,
++            A,
++            terms,
++            straus,
+         )
+-        .0,
+-      );
+-    }
+-
+-    let a_r = a_l.clone() - Scalar::ONE;
+-
+-    let alpha = monero_ed25519::Scalar::random(&mut *rng).into();
+-
+-    let mut A_terms = Vec::with_capacity((generators.len() * 2) + 1);
+-    for (i, a_l) in a_l.0.iter().enumerate() {
+-      A_terms.push((*a_l, generators.generator(GeneratorsList::GBold, i)));
+-    }
+-    for (i, a_r) in a_r.0.iter().enumerate() {
+-      A_terms.push((*a_r, generators.generator(GeneratorsList::HBold, i)));
+-    }
+-    A_terms.push((alpha, BpPlusGenerators::h()));
+-    let mut A = multiexp(&A_terms);
+-    A_terms.zeroize();
+-
+-    // Multiply by INV_EIGHT per earlier commentary
+-    A *= INV_EIGHT.into();
+-
+-    let A = CompressedPoint::from(A.compress().to_bytes());
+-
+-    let AHatComputation { y, d_descending_y_plus_z, y_mn_plus_one, z, z_pow, A_hat } =
+-      Self::compute_A_hat(PointVector(V), &generators, &mut transcript, A)
+         .expect("A is a valid point as we just compressed it");
 +        _p2.end();
-+
+ 
+-    let a_l = a_l - z;
+-    let a_r = a_r + &d_descending_y_plus_z;
+-    let mut alpha = alpha;
+-    for j in 1 ..= witness.0.len() {
+-      alpha += z_pow[j - 1] * witness.0[j - 1].mask.into() * y_mn_plus_one;
 +        let a_l = a_l - z;
 +        let a_r = a_r + &d_descending_y_plus_z;
 +        let mut alpha = alpha;
@@ -3461,6 +3636,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                                .expect("Bulletproofs::Plus created an invalid WipWitness"),
 +                        ),
 +                        terms,
++                        straus,
 +                    )
 +                    .expect("Bulletproof::Plus failed to prove the weighted inner-product");
 +                _p3.end();
@@ -3491,16 +3667,25 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        // Z5.3 pool cut: verify self-provisions one staging Vec (the Z6
 +        // zero-alloc claim covers the sign path; verify staging is tracked).
 +        let a_hat_res = {
-+            // (len matters: compute_A_hat checks `terms.len()`, so this must be
-+            // a sized buffer, not `with_capacity`)
-+            let mut verify_terms = Vec::new();
-+            verify_terms.resize((2 * 1024) + 2, (Scalar::ZERO, EdwardsPoint::identity()));
++            // Z5.3 D-cut: verify self-provisions both scratch buffers (the
++            // Z6 zero-alloc claim covers the sign path; verify staging is
++            // tracked). `terms.len()` is checked, so the buffer is sized.
++            let mut verify_terms = vec![(Scalar::ZERO, EdwardsPoint::identity()); (2 * 1024) + 2];
++            let mut verify_straus_storage =
++                vec![0u8; curve25519_dalek::scratch::StrausScratch::storage_bytes((2 * 1024) + 2)];
++            let Ok(mut verify_straus) = curve25519_dalek::scratch::StrausScratch::new(
++                &mut verify_straus_storage,
++                (2 * 1024) + 2,
++            ) else {
++                return false;
++            };
 +            Self::compute_A_hat(
 +                PointVector(V),
 +                &generators,
 +                &mut transcript,
 +                proof.A,
 +                &mut verify_terms,
++                &mut verify_straus,
 +            )
 +        };
 +        let Some(AHatComputation { y, A_hat, .. }) = a_hat_res else {
@@ -3508,99 +3693,6 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        };
 +        WipStatement::new(generators, A_hat, y).verify(rng, verifier, transcript, proof.wip)
      }
--    A_terms.push((y_mn_plus_one, commitment_accum));
--    A_terms.push((
--      ((y_pows * z) - (d.sum() * y_mn_plus_one * z) - (y_pows * (z * z))),
--      BpPlusGenerators::g(),
--    ));
--
--    Some(AHatComputation {
--      y,
--      d_descending_y_plus_z,
--      y_mn_plus_one,
--      z,
--      z_pow: ScalarVector(z_pow),
--      A_hat: A + multiexp_vartime(&A_terms),
--    })
--  }
--
--  pub(crate) fn prove<R: RngCore + CryptoRng>(
--    self,
--    rng: &mut R,
--    witness: &AggregateRangeWitness,
--  ) -> Option<AggregateRangeProof> {
--    // Check for consistency with the witness
--    if self.V.len() != witness.0.len() {
--      return None;
--    }
--    for (commitment, witness) in self.V.iter().zip(witness.0.iter()) {
--      if witness.commit().into() != *commitment {
--        return None;
--      }
--    }
--
--    let Self { generators, V } = self;
--    // Monero expects all of these points to be torsion-free
--    // Generally, for Bulletproofs, it sends points * INV_EIGHT and then performs a torsion clear
--    // by multiplying by 8
--    // This also restores the original value due to the preprocessing
--    // Commitments aren't transmitted INV_EIGHT though, so this multiplies by INV_EIGHT to enable
--    // clearing its cofactor without mutating the value
--    // For some reason, these values are transcripted * INV_EIGHT, not as transmitted
--    let V = V.iter().map(|V| V * INV_EIGHT.into()).collect::<Vec<_>>();
--    let mut transcript = initial_transcript(V.iter());
--    let mut V = V.iter().map(EdwardsPoint::mul_by_cofactor).collect::<Vec<_>>();
--
--    // Pad V
--    while V.len() < padded_pow_of_2(V.len()) {
--      V.push(EdwardsPoint::identity());
--    }
--
--    let generators = generators.reduce(V.len() * COMMITMENT_BITS);
--
--    let mut d_js = Vec::with_capacity(V.len());
--    let mut a_l = ScalarVector(Vec::with_capacity(V.len() * COMMITMENT_BITS));
--    for j in 1 ..= V.len() {
--      d_js.push(Self::d_j(j, V.len()));
--      #[allow(clippy::map_unwrap_or)]
--      a_l.0.append(
--        &mut u64_decompose(
--          *witness.0.get(j - 1).map(|commitment| &commitment.amount).unwrap_or(&0),
--        )
--        .0,
--      );
--    }
--
--    let a_r = a_l.clone() - Scalar::ONE;
--
--    let alpha = monero_ed25519::Scalar::random(&mut *rng).into();
--
--    let mut A_terms = Vec::with_capacity((generators.len() * 2) + 1);
--    for (i, a_l) in a_l.0.iter().enumerate() {
--      A_terms.push((*a_l, generators.generator(GeneratorsList::GBold, i)));
--    }
--    for (i, a_r) in a_r.0.iter().enumerate() {
--      A_terms.push((*a_r, generators.generator(GeneratorsList::HBold, i)));
--    }
--    A_terms.push((alpha, BpPlusGenerators::h()));
--    let mut A = multiexp(&A_terms);
--    A_terms.zeroize();
--
--    // Multiply by INV_EIGHT per earlier commentary
--    A *= INV_EIGHT.into();
--
--    let A = CompressedPoint::from(A.compress().to_bytes());
--
--    let AHatComputation { y, d_descending_y_plus_z, y_mn_plus_one, z, z_pow, A_hat } =
--      Self::compute_A_hat(PointVector(V), &generators, &mut transcript, A)
--        .expect("A is a valid point as we just compressed it");
--
--    let a_l = a_l - z;
--    let a_r = a_r + &d_descending_y_plus_z;
--    let mut alpha = alpha;
--    for j in 1 ..= witness.0.len() {
--      alpha += z_pow[j - 1] * witness.0[j - 1].mask.into() * y_mn_plus_one;
--    }
 -
 -    Some(AggregateRangeProof {
 -      A,
@@ -3819,8 +3911,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/weighted_inner_product.rs b/src/plus/weighted_inner_product.rs
 --- a/src/plus/weighted_inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/weighted_inner_product.rs	2026-09-26 20:42:35.517709283 +0800
-@@ -1,415 +1,548 @@
++++ b/src/plus/weighted_inner_product.rs	2026-09-27 01:21:08.359845712 +0800
+@@ -1,415 +1,560 @@
  use std_shims::{vec, vec::Vec};
  
 -use rand_core::{RngCore, CryptoRng};
@@ -3858,7 +3950,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -  batch_verifier::BulletproofsPlusBatchVerifier,
 -  plus::{ScalarVector, PointVector, GeneratorsList, BpPlusGenerators, padded_pow_of_2},
 +    batch_verifier::BulletproofsPlusBatchVerifier,
-+    core::{challenge_products, multiexp, multiexp_vartime},
++    core::{challenge_products, multiexp, multiexp_vartime, multiexp_vartime_small},
 +    plus::{padded_pow_of_2, BpPlusGenerators, GeneratorsList, PointVector, ScalarVector},
  };
 +use monero_ed25519::CompressedPoint;
@@ -4248,6 +4340,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        L: CompressedPoint,
 +        R: CompressedPoint,
 +        y_inv_n_hat: Scalar,
++        straus: &mut curve25519_dalek::scratch::StrausScratch,
 +    ) -> (Scalar, Scalar, Scalar, Scalar, PointVector, PointVector) {
 +        debug_assert_eq!(g_bold1.len(), g_bold2.len());
 +        debug_assert_eq!(h_bold1.len(), h_bold2.len());
@@ -4261,12 +4354,15 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        let mut new_g_bold = Vec::with_capacity(g_bold1.len());
 +        let e_y_inv = e * y_inv_n_hat;
 +        for g_bold in g_bold1.0.drain(..).zip(g_bold2.0.drain(..)) {
-+            new_g_bold.push(multiexp_vartime(&[(inv_e, g_bold.0), (e_y_inv, g_bold.1)]));
++            new_g_bold.push(multiexp_vartime_small(&[
++                (inv_e, g_bold.0),
++                (e_y_inv, g_bold.1),
++            ]));
 +        }
 +
 +        let mut new_h_bold = Vec::with_capacity(h_bold1.len());
 +        for h_bold in h_bold1.0.drain(..).zip(h_bold2.0.drain(..)) {
-+            new_h_bold.push(multiexp_vartime(&[(e, h_bold.0), (inv_e, h_bold.1)]));
++            new_h_bold.push(multiexp_vartime_small(&[(e, h_bold.0), (inv_e, h_bold.1)]));
 +        }
 +
 +        let e_square = e * e;
@@ -4289,6 +4385,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        mut transcript: Scalar,
 +        witness: &WipWitness,
 +        terms: &mut [(Scalar, EdwardsPoint)],
++        straus: &mut curve25519_dalek::scratch::StrausScratch,
 +    ) -> Option<WipProof> {
 +        let WipStatement {
 +            generators,
@@ -4339,7 +4436,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                .collect::<Vec<_>>();
 +            P_terms.push((witness.a.clone().weighted_inner_product(&witness.b, &y), g));
 +            P_terms.push((witness.alpha, h));
-+            debug_assert_eq!(multiexp(&P_terms), P);
++            debug_assert_eq!(crate::core::multiexp_alloc(&P_terms), P);
 +            P_terms.zeroize();
 +        }
 +
@@ -4413,8 +4510,11 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            let lr_probe = PhaseProbe::start(PHASE_WIP_L_R);
 +            #[cfg(feature = "prove-timing")]
 +            let round_l = PhaseProbe::start(PHASE_WIP_L_BASE + wip_round);
-+            let L =
-+                CompressedPoint::from((multiexp(L_terms) * INV_EIGHT.into()).compress().to_bytes());
++            let L = CompressedPoint::from(
++                (multiexp(L_terms, straus).ok()? * INV_EIGHT.into())
++                    .compress()
++                    .to_bytes(),
++            );
 +            #[cfg(feature = "prove-timing")]
 +            round_l.end();
 +            L_vec.push(L);
@@ -4441,8 +4541,11 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            R_terms[t + 1] = (d_r, h);
 +            #[cfg(feature = "prove-timing")]
 +            let round_r = PhaseProbe::start(PHASE_WIP_R_BASE + wip_round);
-+            let R =
-+                CompressedPoint::from((multiexp(R_terms) * INV_EIGHT.into()).compress().to_bytes());
++            let R = CompressedPoint::from(
++                (multiexp(R_terms, straus).ok()? * INV_EIGHT.into())
++                    .compress()
++                    .to_bytes(),
++            );
 +            #[cfg(feature = "prove-timing")]
 +            round_r.end();
 +            R_vec.push(R);
@@ -4461,6 +4564,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                L,
 +                R,
 +                y_inv_n_hat,
++                straus,
 +            );
 +
 +            a = (a1 * e) + &(a2 * (y_n_hat * inv_e));
@@ -4493,7 +4597,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            (delta, h),
 +        ];
 +        let A = CompressedPoint::from(
-+            (multiexp(&A_terms) * INV_EIGHT.into())
++            (multiexp(&A_terms, straus).ok()? * INV_EIGHT.into())
 +                .compress()
 +                .to_bytes(),
          );
@@ -4558,7 +4662,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -    };
 +        let mut B_terms = vec![(ry * s, g), (eta, h)];
 +        let B = CompressedPoint::from(
-+            (multiexp(&B_terms) * INV_EIGHT.into())
++            (multiexp(&B_terms, straus).ok()? * INV_EIGHT.into())
 +                .compress()
 +                .to_bytes(),
 +        );
@@ -4920,7 +5024,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/scalar_vector.rs b/src/scalar_vector.rs
 --- a/src/scalar_vector.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/scalar_vector.rs	2026-09-03 13:43:46.805301118 +0800
++++ b/src/scalar_vector.rs	2026-09-27 01:03:46.347911436 +0800
 @@ -1,12 +1,12 @@
  use core::{
 -  borrow::Borrow,
@@ -4937,7 +5041,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  
  use crate::core::multiexp;
  
-@@ -14,125 +14,130 @@
+@@ -14,125 +14,116 @@
  pub(crate) struct ScalarVector(pub(crate) Vec<Scalar>);
  
  impl Index<usize> for ScalarVector {
@@ -5045,19 +5149,12 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -    debug_assert_eq!(self.len(), other.len());
 -    for (s, o) in self.0.iter_mut().zip(other.0.iter()) {
 -      *s *= o;
-+    type Output = ScalarVector;
-+    fn mul(mut self, other: &ScalarVector) -> ScalarVector {
-+        debug_assert_eq!(self.len(), other.len());
-+        for (s, o) in self.0.iter_mut().zip(other.0.iter()) {
-+            *s *= o;
-+        }
-+        self
-     }
+-    }
 -    self
 -  }
- }
- 
- impl Mul<&[EdwardsPoint]> for &ScalarVector {
+-}
+-
+-impl Mul<&[EdwardsPoint]> for &ScalarVector {
 -  type Output = EdwardsPoint;
 -  fn mul(self, b: &[EdwardsPoint]) -> EdwardsPoint {
 -    debug_assert_eq!(self.len(), b.len());
@@ -5066,21 +5163,18 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -    multiexp_args.zeroize();
 -    res
 -  }
-+    type Output = EdwardsPoint;
-+    fn mul(self, b: &[EdwardsPoint]) -> EdwardsPoint {
-+        debug_assert_eq!(self.len(), b.len());
-+        let mut multiexp_args = self
-+            .0
-+            .iter()
-+            .copied()
-+            .zip(b.iter().copied())
-+            .collect::<Vec<_>>();
-+        let res = multiexp(&multiexp_args);
-+        multiexp_args.zeroize();
-+        res
++    type Output = ScalarVector;
++    fn mul(mut self, other: &ScalarVector) -> ScalarVector {
++        debug_assert_eq!(self.len(), other.len());
++        for (s, o) in self.0.iter_mut().zip(other.0.iter()) {
++            *s *= o;
++        }
++        self
 +    }
  }
  
++// Z5.3 D-cut: the allocating `Mul<&[EdwardsPoint]>` operator is retired —
++// large multiexps run over the caller's StrausScratch (see core.rs).
  impl ScalarVector {
 -  pub(crate) fn new(len: usize) -> Self {
 -    ScalarVector(vec![Scalar::ZERO; len])
