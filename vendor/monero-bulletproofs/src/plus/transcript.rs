@@ -20,5 +20,9 @@ pub(crate) fn initial_transcript(commitments: core::slice::Iter<'_, EdwardsPoint
             .flat_map(|V| V.compress().to_bytes())
             .collect::<Vec<_>>(),
     );
-    monero_ed25519::Scalar::hash([*TRANSCRIPT, <[u8; 32]>::from(commitments_hash)].concat()).into()
+    // Z5.3 F-cut: fixed-size stack concat (byte-identical).
+    let mut buf = [0u8; 64];
+    buf[..32].copy_from_slice(&(*TRANSCRIPT)[..]);
+    buf[32..].copy_from_slice(&<[u8; 32]>::from(commitments_hash));
+    monero_ed25519::Scalar::hash(buf).into()
 }

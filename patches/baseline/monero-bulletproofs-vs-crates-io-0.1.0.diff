@@ -3094,7 +3094,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.rs
 --- a/src/plus/aggregate_range_proof.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/aggregate_range_proof.rs	2026-09-27 03:39:29.571001630 +0800
++++ b/src/plus/aggregate_range_proof.rs	2026-09-27 03:47:05.004640786 +0800
 @@ -1,21 +1,47 @@
  use std_shims::{vec, vec::Vec};
  
@@ -3155,7 +3155,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  };
  
  const INV_EIGHT: monero_ed25519::Scalar = monero_ed25519::Scalar::INV_EIGHT;
-@@ -23,249 +49,437 @@
+@@ -23,249 +49,441 @@
  // Figure 3 of the Bulletproofs+ Paper
  #[derive(Clone, Debug)]
  pub(crate) struct AggregateRangeStatement<'a> {
@@ -3369,7 +3369,11 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    }
 +
 +    fn transcript_A(transcript: &mut Scalar, A: CompressedPoint) -> (Scalar, Scalar) {
-+        let y = monero_ed25519::Scalar::hash([transcript.to_bytes(), A.to_bytes()].concat()).into();
++        // Z5.3 F-cut: fixed-size stack concat (byte-identical).
++        let mut buf = [0u8; 64];
++        buf[..32].copy_from_slice(&transcript.to_bytes());
++        buf[32..].copy_from_slice(&A.to_bytes());
++        let y = monero_ed25519::Scalar::hash(buf).into();
 +        let z = monero_ed25519::Scalar::hash(y.to_bytes()).into();
 +        *transcript = z;
 +        (y, z)
@@ -3966,7 +3970,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/transcript.rs b/src/plus/transcript.rs
 --- a/src/plus/transcript.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/transcript.rs	2026-09-03 13:43:46.802301104 +0800
++++ b/src/plus/transcript.rs	2026-09-27 03:47:17.015546746 +0800
 @@ -1,6 +1,6 @@
  use std_shims::{sync::LazyLock, vec::Vec};
  
@@ -3975,7 +3979,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  
  use monero_primitives::keccak256;
  
-@@ -8,15 +8,17 @@
+@@ -8,15 +8,21 @@
  // Why this uses a hash to point is completely unknown.
  // TODO: This can be promoted to a constant, remove `monero-primitives`
  pub(crate) static TRANSCRIPT: LazyLock<[u8; 32]> = LazyLock::new(|| {
@@ -3998,12 +4002,16 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            .flat_map(|V| V.compress().to_bytes())
 +            .collect::<Vec<_>>(),
 +    );
-+    monero_ed25519::Scalar::hash([*TRANSCRIPT, <[u8; 32]>::from(commitments_hash)].concat()).into()
++    // Z5.3 F-cut: fixed-size stack concat (byte-identical).
++    let mut buf = [0u8; 64];
++    buf[..32].copy_from_slice(&(*TRANSCRIPT)[..]);
++    buf[32..].copy_from_slice(&<[u8; 32]>::from(commitments_hash));
++    monero_ed25519::Scalar::hash(buf).into()
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/weighted_inner_product.rs b/src/plus/weighted_inner_product.rs
 --- a/src/plus/weighted_inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/weighted_inner_product.rs	2026-09-27 03:37:44.129564743 +0800
-@@ -1,415 +1,703 @@
++++ b/src/plus/weighted_inner_product.rs	2026-09-27 03:47:05.004517954 +0800
+@@ -1,415 +1,707 @@
  use std_shims::{vec, vec::Vec};
  
 -use rand_core::{RngCore, CryptoRng};
@@ -4189,6 +4197,15 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -  pub(crate) fn new(mut a: ScalarVector, mut b: ScalarVector, alpha: Scalar) -> Option<Self> {
 -    if a.0.is_empty() || (a.len() != b.len()) {
 -      return None;
+-    }
+-
+-    // Pad to the nearest power of 2
+-    let missing = padded_pow_of_2(a.len()) - a.len();
+-    a.0.reserve(missing);
+-    b.0.reserve(missing);
+-    for _ in 0 .. missing {
+-      a.0.push(Scalar::ZERO);
+-      b.0.push(Scalar::ZERO);
 +impl<'a> WipWitness<'a> {
 +    pub(crate) fn new(a: &'a [Scalar], b: &'a [Scalar], alpha: Scalar) -> Option<Self> {
 +        if a.is_empty() || (a.len() != b.len()) {
@@ -4201,15 +4218,6 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        }
 +        Some(Self { a, b, alpha })
      }
--
--    // Pad to the nearest power of 2
--    let missing = padded_pow_of_2(a.len()) - a.len();
--    a.0.reserve(missing);
--    b.0.reserve(missing);
--    for _ in 0 .. missing {
--      a.0.push(Scalar::ZERO);
--      b.0.push(Scalar::ZERO);
--    }
 -
 -    Some(Self { a, b, alpha })
 -  }
@@ -4243,7 +4251,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  impl WipStatement {
 -  pub(crate) fn new(generators: BpPlusGenerators, P: EdwardsPoint, y: Scalar) -> Self {
 -    debug_assert_eq!(generators.len(), padded_pow_of_2(generators.len()));
--
++    pub(crate) fn new(generators: BpPlusGenerators, P: EdwardsPoint, y: Scalar) -> Self {
++        debug_assert_eq!(generators.len(), padded_pow_of_2(generators.len()));
+ 
 -    // y ** n
 -    let mut y_vec = ScalarVector::new(generators.len());
 -    y_vec[0] = y;
@@ -4498,84 +4508,34 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -      while res.len() < y.len() {
 -        res.push(
 -          inv_y * res.last().expect("couldn't get last inv_y despite inv_y always being non-empty"),
--        );
--      }
--      res
--    };
--
--    let mut e_is = Vec::with_capacity(L.len());
--    let mut L_decomp = Vec::with_capacity(L.len());
--    let mut R_decomp = Vec::with_capacity(R.len());
--
--    let decomp_mul_cofactor =
--      |p| CompressedPoint::decompress(&p).map(|p| EdwardsPoint::mul_by_cofactor(&p.into()));
--
--    for (L_i, R_i) in L.into_iter().zip(R) {
--      e_is.push(Self::transcript_L_R(&mut transcript, L_i, R_i));
--
--      let (Some(L_i), Some(R_i)) = (decomp_mul_cofactor(L_i), decomp_mul_cofactor(R_i)) else {
--        return false;
--      };
-+    pub(crate) fn new(generators: BpPlusGenerators, P: EdwardsPoint, y: Scalar) -> Self {
-+        debug_assert_eq!(generators.len(), padded_pow_of_2(generators.len()));
- 
--      L_decomp.push(L_i);
--      R_decomp.push(R_i);
 +        // Z5.3 C-cut D: the challenge-power vector is NOT built here — the
 +        // prover materialises it into its scratch (`p_y`), the verifier into
 +        // a local Vec (verify-side staging is tracked, not pool-bound).
 +        Self { generators, P, y }
-     }
- 
--    let L = L_decomp;
--    let R = R_decomp;
--
--    let e = Self::transcript_A_B(&mut transcript, A, B);
--
--    let (Some(A), Some(B)) = (decomp_mul_cofactor(A), decomp_mul_cofactor(B)) else {
--      return false;
--    };
--
--    let neg_e_square = verifier_weight * -(e * e);
--
--    verifier.0.other.push((neg_e_square, P));
--
--    let mut challenges = Vec::with_capacity(L.len());
--    let product_cache = {
--      let mut inv_e_is = e_is.clone();
--      Scalar::batch_invert(&mut inv_e_is);
--
--      debug_assert_eq!(e_is.len(), inv_e_is.len());
--      debug_assert_eq!(e_is.len(), L.len());
--      debug_assert_eq!(e_is.len(), R.len());
--      for ((e_i, inv_e_i), (L, R)) in
--        e_is.drain(..).zip(inv_e_is.drain(..)).zip(L.iter().zip(R.iter()))
--      {
--        debug_assert_eq!(e_i.invert(), inv_e_i);
++    }
++
 +    fn transcript_L_R(transcript: &mut Scalar, L: CompressedPoint, R: CompressedPoint) -> Scalar {
-+        let e = monero_ed25519::Scalar::hash(
-+            [transcript.to_bytes(), L.to_bytes(), R.to_bytes()].concat(),
-+        )
-+        .into();
++        // Z5.3 F-cut: fixed-size stack concat (byte-identical input to the
++        // same hash fn; the Vec concat allocated on every round).
++        let mut buf = [0u8; 96];
++        buf[..32].copy_from_slice(&transcript.to_bytes());
++        buf[32..64].copy_from_slice(&L.to_bytes());
++        buf[64..].copy_from_slice(&R.to_bytes());
++        let e = monero_ed25519::Scalar::hash(buf).into();
 +        *transcript = e;
 +        e
 +    }
- 
--        challenges.push((e_i, inv_e_i));
++
 +    fn transcript_A_B(transcript: &mut Scalar, A: CompressedPoint, B: CompressedPoint) -> Scalar {
-+        let e = monero_ed25519::Scalar::hash(
-+            [transcript.to_bytes(), A.to_bytes(), B.to_bytes()].concat(),
-+        )
-+        .into();
++        let mut buf = [0u8; 96];
++        buf[..32].copy_from_slice(&transcript.to_bytes());
++        buf[32..64].copy_from_slice(&A.to_bytes());
++        buf[64..].copy_from_slice(&B.to_bytes());
++        let e = monero_ed25519::Scalar::hash(buf).into();
 +        *transcript = e;
 +        e
 +    }
- 
--        let e_i_square = e_i * e_i;
--        let inv_e_i_square = inv_e_i * inv_e_i;
--        verifier.0.other.push((neg_e_square * e_i_square, *L));
--        verifier.0.other.push((neg_e_square * inv_e_i_square, *R));
--      }
++
 +    // Prover's variant of the shared code block to calculate G/H/P when n > 1
 +    // Returns each permutation of G/H since the prover needs to do operation on each permutation
 +    // P is dropped as it's unused in the prover's path
@@ -4878,9 +4838,64 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            (multiexp(&A_terms, straus).ok()? * INV_EIGHT.into())
 +                .compress()
 +                .to_bytes(),
-+        );
+         );
+-      }
+-      res
+-    };
 +        A_terms.zeroize();
  
+-    let mut e_is = Vec::with_capacity(L.len());
+-    let mut L_decomp = Vec::with_capacity(L.len());
+-    let mut R_decomp = Vec::with_capacity(R.len());
+-
+-    let decomp_mul_cofactor =
+-      |p| CompressedPoint::decompress(&p).map(|p| EdwardsPoint::mul_by_cofactor(&p.into()));
+-
+-    for (L_i, R_i) in L.into_iter().zip(R) {
+-      e_is.push(Self::transcript_L_R(&mut transcript, L_i, R_i));
+-
+-      let (Some(L_i), Some(R_i)) = (decomp_mul_cofactor(L_i), decomp_mul_cofactor(R_i)) else {
+-        return false;
+-      };
+-
+-      L_decomp.push(L_i);
+-      R_decomp.push(R_i);
+-    }
+-
+-    let L = L_decomp;
+-    let R = R_decomp;
+-
+-    let e = Self::transcript_A_B(&mut transcript, A, B);
+-
+-    let (Some(A), Some(B)) = (decomp_mul_cofactor(A), decomp_mul_cofactor(B)) else {
+-      return false;
+-    };
+-
+-    let neg_e_square = verifier_weight * -(e * e);
+-
+-    verifier.0.other.push((neg_e_square, P));
+-
+-    let mut challenges = Vec::with_capacity(L.len());
+-    let product_cache = {
+-      let mut inv_e_is = e_is.clone();
+-      Scalar::batch_invert(&mut inv_e_is);
+-
+-      debug_assert_eq!(e_is.len(), inv_e_is.len());
+-      debug_assert_eq!(e_is.len(), L.len());
+-      debug_assert_eq!(e_is.len(), R.len());
+-      for ((e_i, inv_e_i), (L, R)) in
+-        e_is.drain(..).zip(inv_e_is.drain(..)).zip(L.iter().zip(R.iter()))
+-      {
+-        debug_assert_eq!(e_i.invert(), inv_e_i);
+-
+-        challenges.push((e_i, inv_e_i));
+-
+-        let e_i_square = e_i * e_i;
+-        let inv_e_i_square = inv_e_i * inv_e_i;
+-        verifier.0.other.push((neg_e_square * e_i_square, *L));
+-        verifier.0.other.push((neg_e_square * inv_e_i_square, *R));
+-      }
+-
 -      challenge_products(&challenges)
 -    };
 +        let mut B_terms = vec![(ry * s, g), (eta, h)];

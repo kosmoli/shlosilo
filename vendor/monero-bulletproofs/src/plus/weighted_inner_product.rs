@@ -204,19 +204,23 @@ impl WipStatement {
     }
 
     fn transcript_L_R(transcript: &mut Scalar, L: CompressedPoint, R: CompressedPoint) -> Scalar {
-        let e = monero_ed25519::Scalar::hash(
-            [transcript.to_bytes(), L.to_bytes(), R.to_bytes()].concat(),
-        )
-        .into();
+        // Z5.3 F-cut: fixed-size stack concat (byte-identical input to the
+        // same hash fn; the Vec concat allocated on every round).
+        let mut buf = [0u8; 96];
+        buf[..32].copy_from_slice(&transcript.to_bytes());
+        buf[32..64].copy_from_slice(&L.to_bytes());
+        buf[64..].copy_from_slice(&R.to_bytes());
+        let e = monero_ed25519::Scalar::hash(buf).into();
         *transcript = e;
         e
     }
 
     fn transcript_A_B(transcript: &mut Scalar, A: CompressedPoint, B: CompressedPoint) -> Scalar {
-        let e = monero_ed25519::Scalar::hash(
-            [transcript.to_bytes(), A.to_bytes(), B.to_bytes()].concat(),
-        )
-        .into();
+        let mut buf = [0u8; 96];
+        buf[..32].copy_from_slice(&transcript.to_bytes());
+        buf[32..64].copy_from_slice(&A.to_bytes());
+        buf[64..].copy_from_slice(&B.to_bytes());
+        let e = monero_ed25519::Scalar::hash(buf).into();
         *transcript = e;
         e
     }

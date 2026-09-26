@@ -101,7 +101,11 @@ impl<'a> AggregateRangeStatement<'a> {
     }
 
     fn transcript_A(transcript: &mut Scalar, A: CompressedPoint) -> (Scalar, Scalar) {
-        let y = monero_ed25519::Scalar::hash([transcript.to_bytes(), A.to_bytes()].concat()).into();
+        // Z5.3 F-cut: fixed-size stack concat (byte-identical).
+        let mut buf = [0u8; 64];
+        buf[..32].copy_from_slice(&transcript.to_bytes());
+        buf[32..].copy_from_slice(&A.to_bytes());
+        let y = monero_ed25519::Scalar::hash(buf).into();
         let z = monero_ed25519::Scalar::hash(y.to_bytes()).into();
         *transcript = z;
         (y, z)

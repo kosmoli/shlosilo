@@ -22,11 +22,18 @@ use zeroize::Zeroize;
 /// Drop erases it uniformly. Reads go only through the `get()` read-only borrow; there is no API that takes data away
 /// (audit #6 re-review P1-01: into_inner used to unwrap before the CLSAG section, letting the last
 /// error-path segment skip zeroization — eliminated per re-review recommendation).
+/// Z5.3 F-cut: fixed owner capacity — the input count is bounded upstream by
+/// the workspace sizing; over-cap push asserts loudly (G1, never truncate).
+const MASK_GUARD_CAP: usize = 16;
+
 struct ZeroizingMaskGuard {
     /// Z2.5 ledger: SECRET-OWNER container (audit #6/#8/#9 semantics — take-over
     /// copies + Drop zeroize + shadow attribution). Not plain storage: Z3 may swap
     /// the backing for a caller slab without changing the owner semantics.
-    masks: Vec<[u8; 32]>,
+    // Z5.3 F-cut: fixed-capacity owner storage (the Vec grew per input).
+    // Over-cap push is an explicit panic-loud assert (never a silent drop).
+    masks: [[u8; 32]; MASK_GUARD_CAP],
+    len: usize,
     /// Audit #9 P2-01: owner identity tag — shadow records carry kind so tests can attribute precisely
     /// (closes the attribution gap where "the global latest slot cannot distinguish input_sk/real_mask")
     #[cfg(test)]
@@ -36,7 +43,8 @@ impl ZeroizingMaskGuard {
     #[allow(unused_variables)] // kind is used only by the cfg(test) shadow observer
     fn new(kind: &'static str) -> Self {
         Self {
-            masks: Vec::new(),
+            len: 0,
+            masks: [[0u8; 32]; MASK_GUARD_CAP],
             #[cfg(test)]
             kind,
         }
@@ -44,13 +52,22 @@ impl ZeroizingMaskGuard {
     /// Take-over semantics: after copying into the owner, **immediately zero the caller's buffer** — audit #8 P1-01,
     /// eliminating the "second live copy caused by [u8;32] being Copy"
     fn push_take(&mut self, mask: &mut [u8; 32]) {
-        self.masks.push(*mask);
+        assert!(
+            self.len < self.masks.len(),
+            "ZeroizingMaskGuard over capacity"
+        );
+        self.masks[self.len] = *mask;
+        self.len += 1;
         mask.zeroize();
     }
     /// Read-only borrow — data is never taken away; zeroization is fully handled by Drop
     /// (audit #6 re-review P1-01: into_inner would release protection before the last error-path segment)
     fn get(&self, idx: usize) -> Option<&[u8; 32]> {
-        self.masks.get(idx)
+        if idx < self.len {
+            Some(&self.masks[idx])
+        } else {
+            None
+        }
     }
 }
 /// Audit #7 Gate2 #1: test shadow buffer — landing spot for the real backing copy after Drop zeroization.
@@ -141,7 +158,7 @@ impl Drop for ZeroizingMaskGuard {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(shadow::ShadowRecord {
                     kind: self.kind,
-                    masks: self.masks.clone(),
+                    masks: self.masks[..self.len].to_vec(),
                 });
         }
     }
@@ -230,23 +247,30 @@ fn derive_output(
     // Audit #8 P0-01: temporary buffers go into Zeroizing from creation (avoiding manual cleanup ordering
     // affecting protocol semantics — previously od_data was zeroized before its consumers, so stealth used
     // Hs(empty) and the output address was wrong; zeroize on a Vec = clear + erase capacity)
-    let mut od_data = zeroize::Zeroizing::new(Vec::with_capacity(33));
-    od_data.extend_from_slice(&eight_ra);
-    monero_encode_varint(&mut od_data, index as u64);
+    // Z5.3 F-cut: fixed stack staging (byte-identical hash inputs; the Vec
+    // capacity-33 staging allocated per output).
+    let mut od_data = zeroize::Zeroizing::new([0u8; 48]);
+    od_data[..32].copy_from_slice(&eight_ra);
+    let mut od_len = 32usize;
+    crate::chain::xmr::transaction::monero_encode_varint_at(
+        &mut od_data[..],
+        &mut od_len,
+        index as u64,
+    )?;
 
-    let shared_key = crate::types::SecretBytes::new(hash_to_scalar(&od_data)?);
+    let shared_key = crate::types::SecretBytes::new(hash_to_scalar(&od_data[..od_len])?);
 
     // mask = Hs("commitment_mask" || shared_key)
-    let mut mask_data = zeroize::Zeroizing::new(Vec::with_capacity(16 + 32));
-    mask_data.extend_from_slice(b"commitment_mask");
-    mask_data.extend_from_slice(shared_key.expose());
-    let commitment_mask = crate::types::SecretBytes::new(hash_to_scalar(&mask_data)?);
+    let mut mask_data = zeroize::Zeroizing::new([0u8; 47]);
+    mask_data[..15].copy_from_slice(b"commitment_mask");
+    mask_data[15..].copy_from_slice(shared_key.expose());
+    let commitment_mask = crate::types::SecretBytes::new(hash_to_scalar(&mask_data[..])?);
 
     // enc amount = amount XOR Hs("amount"||shared_key)[..8] (LE)
-    let mut amt_data = zeroize::Zeroizing::new(Vec::with_capacity(6 + 32));
-    amt_data.extend_from_slice(b"amount");
-    amt_data.extend_from_slice(shared_key.expose());
-    let amt_mask = zeroize::Zeroizing::new(crate::encoding::keccak256::hash(&amt_data)?);
+    let mut amt_data = zeroize::Zeroizing::new([0u8; 38]);
+    amt_data[..6].copy_from_slice(b"amount");
+    amt_data[6..].copy_from_slice(shared_key.expose());
+    let amt_mask = zeroize::Zeroizing::new(crate::encoding::keccak256::hash(&amt_data[..])?);
     let mask8 = zeroize::Zeroizing::new(<[u8; 8]>::try_from(&amt_mask[..8]).unwrap());
     let xor_val = u64::from_le_bytes(*mask8);
     let encrypted_amount = (dest.amount ^ xor_val).to_le_bytes();
@@ -937,7 +961,7 @@ mod guard_tests {
             assert_eq!(borrowed[0], 0x42);
         }
         // the guard still holds the data (after get)
-        assert_eq!(g.masks.len(), 1);
+        assert_eq!(g.len /* logical (Z5.3 fixed backing) */, 1);
         assert_eq!(g.masks[0][0], 0x42);
     }
 
@@ -952,7 +976,7 @@ mod guard_tests {
         let mut rng_clone = rng.clone();
         let g = derive_pseudo_masks(1, &sum, &mut rng).expect("n=1");
         assert_eq!(g.get(0).expect("mask 0"), &sum.to_bytes());
-        assert_eq!(g.masks.len(), 1);
+        assert_eq!(g.len /* logical (Z5.3 fixed backing) */, 1);
         // no rng consumed: another fill should match a clone never touched by derive
         let mut a = [0u8; 8];
         let mut b = [0u8; 8];
@@ -992,7 +1016,7 @@ mod guard_tests {
         let sum = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(sum_bytes);
         let mut rng = rand_chacha::ChaCha20Rng::from_seed([0x33u8; 32]);
         let g = derive_pseudo_masks(3, &sum, &mut rng).expect("n=3");
-        assert_eq!(g.masks.len(), 3);
+        assert_eq!(g.len /* logical (Z5.3 fixed backing) */, 3);
         let mut acc = Scalar::ZERO;
         for i in 0..3 {
             acc += Scalar::from_bytes_mod_order(*g.get(i).expect("mask"));
