@@ -898,7 +898,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-26 10:22:46.900341934 +0800
++++ b/src/lib.rs	2026-09-26 16:50:32.940890456 +0800
 @@ -4,40 +4,58 @@
  #![allow(non_snake_case)]
  
@@ -1133,7 +1133,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        OriginalStatement::new(&commitments)
          .expect("failed to create statement despite checking amount of commitments")
          .prove(
-@@ -145,201 +170,222 @@
+@@ -145,201 +170,268 @@
            "failed to prove Bulletproof::Original despite ensuring statement/witness consistency",
          ),
      ))
@@ -1403,6 +1403,26 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    /// Write a Bulletproof(+).
 +    pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
 +        self.write_core(w, |points, w| write_vec(CompressedPoint::write, points, w))
++    }
++
++    // ── shlosilo vendor patch (T-06, 2026-09-26): caller-buffer serialization.
++    // Same bytes as `write`; `serialized_len` is the single length source of
++    // truth (previously measured by a forms-side counting adapter). Wipe of
++    // secrets is not at issue here (proofs are public wire data).
++
++    /// Serialized length in bytes (identical output to `write`).
++    pub fn serialized_len(&self) -> usize {
++        struct Counter(usize);
++        impl Write for Counter {
++            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
++                self.0 += buf.len();
++                Ok(buf.len())
++            }
++        }
++        let mut c = Counter(0);
++        self.write(&mut c)
++            .expect("write into a counter cannot fail");
++        c.0
      }
 -  }
  
@@ -1494,6 +1514,32 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -      },
 -    }))
 -  }
++    /// Serialize into a caller-provided buffer, returning the length written.
++    /// Over-capacity is an EXPLICIT `io::Error` (never truncates).
++    pub fn serialize_into(&self, out: &mut [u8]) -> io::Result<usize> {
++        struct SliceWriter<'a> {
++            buf: &'a mut [u8],
++            pos: usize,
++        }
++        impl<'a> Write for SliceWriter<'a> {
++            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
++                let end = self
++                    .pos
++                    .checked_add(data.len())
++                    .ok_or_else(|| io::Error::other("overflow"))?;
++                if end > self.buf.len() {
++                    return Err(io::Error::other("proof serialize buffer too small"));
++                }
++                self.buf[self.pos..end].copy_from_slice(data);
++                self.pos = end;
++                Ok(data.len())
++            }
++        }
++        let mut w = SliceWriter { buf: out, pos: 0 };
++        self.write(&mut w)?;
++        Ok(w.pos)
++    }
++
 +    /// Serialize a Bulletproof(+) to a `Vec<u8>`.
 +    pub fn serialize(&self) -> Vec<u8> {
 +        let mut serialized = Vec::with_capacity(512);

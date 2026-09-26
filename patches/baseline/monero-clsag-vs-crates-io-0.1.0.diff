@@ -320,7 +320,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-26 14:58:26.695690541 +0800
++++ b/src/lib.rs	2026-09-26 16:50:32.940996974 +0800
 @@ -5,7 +5,6 @@
  
  use core::ops::Deref as _;
@@ -591,8 +591,34 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
      I: &CompressedPoint,
      pseudo_out: &CompressedPoint,
      msg_hash: &[u8; 32],
-@@ -491,10 +539,15 @@
+@@ -489,12 +537,41 @@
+     self.D.write(w)
+   }
  
++  /// shlosilo vendor patch (T-06): caller-buffer serialization — same bytes
++  /// as `write`, over-capacity is an EXPLICIT `io::Error` (never truncates).
++  pub fn serialize_into(&self, out: &mut [u8]) -> io::Result<usize> {
++    struct SliceWriter<'a> {
++      buf: &'a mut [u8],
++      pos: usize,
++    }
++    impl<'a> Write for SliceWriter<'a> {
++      fn write(&mut self, data: &[u8]) -> io::Result<usize> {
++        let end =
++          self.pos.checked_add(data.len()).ok_or_else(|| io::Error::other("overflow"))?;
++        if end > self.buf.len() {
++          return Err(io::Error::other("clsag serialize buffer too small"));
++        }
++        self.buf[self.pos .. end].copy_from_slice(data);
++        self.pos = end;
++        Ok(data.len())
++      }
++    }
++    let mut w = SliceWriter { buf: out, pos: 0 };
++    self.write(&mut w)?;
++    Ok(w.pos)
++  }
++
    /// Read a CLSAG.
    pub fn read<R: Read>(decoys: usize, r: &mut R) -> io::Result<Clsag> {
 -    Ok(Clsag {

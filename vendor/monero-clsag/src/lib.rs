@@ -537,6 +537,30 @@ impl Clsag {
     self.D.write(w)
   }
 
+  /// shlosilo vendor patch (T-06): caller-buffer serialization — same bytes
+  /// as `write`, over-capacity is an EXPLICIT `io::Error` (never truncates).
+  pub fn serialize_into(&self, out: &mut [u8]) -> io::Result<usize> {
+    struct SliceWriter<'a> {
+      buf: &'a mut [u8],
+      pos: usize,
+    }
+    impl<'a> Write for SliceWriter<'a> {
+      fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let end =
+          self.pos.checked_add(data.len()).ok_or_else(|| io::Error::other("overflow"))?;
+        if end > self.buf.len() {
+          return Err(io::Error::other("clsag serialize buffer too small"));
+        }
+        self.buf[self.pos .. end].copy_from_slice(data);
+        self.pos = end;
+        Ok(data.len())
+      }
+    }
+    let mut w = SliceWriter { buf: out, pos: 0 };
+    self.write(&mut w)?;
+    Ok(w.pos)
+  }
+
   /// Read a CLSAG.
   pub fn read<R: Read>(decoys: usize, r: &mut R) -> io::Result<Clsag> {
     // shlosilo vendor patch: fixed-capacity decode (mirrors `read_raw_vec`'s

@@ -49,11 +49,7 @@ pub fn prove_tiny_bp_plus() {
     let mask_bytes = crate::curve_primitive::ed25519::scalar_to_bytes(
         &crate::chain::xmr::reduce_scalar::reduce_scalar(&[0x42u8; 32]).expect("scalar"),
     );
-    let mask = {
-        use crate::chain::xmr::transaction::Read32Cursor;
-        let mut cursor = Read32Cursor(mask_bytes);
-        monero_ed25519::Scalar::read(&mut cursor).expect("reduced scalar")
-    };
+    let mask = crate::chain::xmr::transaction::bytes_to_monerod_scalar(&mask_bytes);
     let commitments: Vec<MoneroCommitment> = [
         MoneroCommitment::new(mask, 100_000_000),
         MoneroCommitment::new(mask, 200_000_000),

@@ -968,7 +968,6 @@ dependencies = [
  "rand_core 0.6.4",
  "ripemd",
  "sha2 0.10.9",
- "std-shims",
  "subtle",
  "tiny-keccak",
  "zeroize",

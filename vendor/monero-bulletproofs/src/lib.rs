@@ -346,6 +346,52 @@ impl Bulletproof {
         self.write_core(w, |points, w| write_vec(CompressedPoint::write, points, w))
     }
 
+    // ── shlosilo vendor patch (T-06, 2026-09-26): caller-buffer serialization.
+    // Same bytes as `write`; `serialized_len` is the single length source of
+    // truth (previously measured by a forms-side counting adapter). Wipe of
+    // secrets is not at issue here (proofs are public wire data).
+
+    /// Serialized length in bytes (identical output to `write`).
+    pub fn serialized_len(&self) -> usize {
+        struct Counter(usize);
+        impl Write for Counter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0 += buf.len();
+                Ok(buf.len())
+            }
+        }
+        let mut c = Counter(0);
+        self.write(&mut c)
+            .expect("write into a counter cannot fail");
+        c.0
+    }
+
+    /// Serialize into a caller-provided buffer, returning the length written.
+    /// Over-capacity is an EXPLICIT `io::Error` (never truncates).
+    pub fn serialize_into(&self, out: &mut [u8]) -> io::Result<usize> {
+        struct SliceWriter<'a> {
+            buf: &'a mut [u8],
+            pos: usize,
+        }
+        impl<'a> Write for SliceWriter<'a> {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                let end = self
+                    .pos
+                    .checked_add(data.len())
+                    .ok_or_else(|| io::Error::other("overflow"))?;
+                if end > self.buf.len() {
+                    return Err(io::Error::other("proof serialize buffer too small"));
+                }
+                self.buf[self.pos..end].copy_from_slice(data);
+                self.pos = end;
+                Ok(data.len())
+            }
+        }
+        let mut w = SliceWriter { buf: out, pos: 0 };
+        self.write(&mut w)?;
+        Ok(w.pos)
+    }
+
     /// Serialize a Bulletproof(+) to a `Vec<u8>`.
     pub fn serialize(&self) -> Vec<u8> {
         let mut serialized = Vec::with_capacity(512);

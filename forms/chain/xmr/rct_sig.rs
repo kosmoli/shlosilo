@@ -81,31 +81,9 @@ pub struct RctSigBase<'a> {
     pub pseudo_outs: SliceVec<'a, [u8; 32]>,
 }
 
-// ─── Z2.4d serialize_into adapters (vendor `Bulletproof::write(impl io::Write)`) ──
-
-/// Counts bytes without storing them (length pre-pass for the BP block).
-struct LenCounter(usize);
-
-impl std_shims::io::Write for LenCounter {
-    fn write(&mut self, buf: &[u8]) -> std_shims::io::Result<usize> {
-        self.0 += buf.len();
-        Ok(buf.len())
-    }
-}
-
-/// Writes into a caller buffer at a cursor position.
-struct SliceWriter<'b> {
-    out: &'b mut [u8],
-    n: &'b mut usize,
-}
-
-impl<'b> std_shims::io::Write for SliceWriter<'b> {
-    fn write(&mut self, buf: &[u8]) -> std_shims::io::Result<usize> {
-        crate::types::push::push_slice(self.out, self.n, buf)
-            .map_err(|_| std_shims::io::Error::other("serialize buffer too small"))?;
-        Ok(buf.len())
-    }
-}
+// T-06 (2026-09-26): the Z2.4d LenCounter/SliceWriter io::Write adapters are
+// gone — the vendored `Bulletproof::serialized_len`/`serialize_into` carry the
+// length source of truth and the caller-buffer write (explicit overflow error).
 
 impl<'a> RctSigBase<'a> {
     pub fn new(rct_type: u8, fee: u64, pseudo_outs: SliceVec<'a, [u8; 32]>) -> Self {
@@ -198,15 +176,21 @@ impl<'a> RctSigPrunable<'a> {
             push_slice(out, n, a)?;
         }
         // bulletproofs: length pass, then write at the right offset
-        let mut lc = LenCounter(0);
+        // (T-06: `serialized_len`/`serialize_into` from the vendor — single
+        // length source of truth, explicit overflow error)
+        let mut bp_len = 0usize;
         for bp in self.bulletproofs.iter().flatten() {
-            bp.write(&mut lc)
-                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            bp_len += bp.serialized_len();
         }
-        monero_encode_varint_at(out, n, lc.0 as u64)?;
+        monero_encode_varint_at(out, n, bp_len as u64)?;
         for bp in self.bulletproofs.iter().flatten() {
-            bp.write(&mut SliceWriter { out, n: &mut *n })
+            let remaining = out
+                .get_mut(*n..)
+                .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            let written = bp
+                .serialize_into(remaining)
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            *n += written;
         }
         // clsag_sigs
         monero_encode_varint_at(out, n, self.clsag_sigs.len() as u64)?;
@@ -399,8 +383,7 @@ mod tests {
         let scalar_bytes = reduce_scalar(&[0x55u8; 32]).unwrap();
         let mask = {
             let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-            let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-            Scalar::read(&mut cursor).expect("reduced scalar")
+            crate::chain::xmr::transaction::bytes_to_monerod_scalar(&bytes)
         };
         let amount: u64 = 1000;
         let c = make_commitment(&mask, amount);
@@ -420,8 +403,7 @@ mod tests {
         let scalar_bytes = reduce_scalar(&[0x77u8; 32]).unwrap();
         let pseudo_mask = {
             let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-            let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-            Scalar::read(&mut cursor).expect("reduced scalar")
+            crate::chain::xmr::transaction::bytes_to_monerod_scalar(&bytes)
         };
         let bytes = pseudo_out_commitment(&pseudo_mask);
         assert_eq!(bytes.len(), 32);
@@ -435,8 +417,7 @@ mod tests {
         let scalar_bytes = reduce_scalar(&[0x33u8; 32]).unwrap();
         let mask = {
             let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-            let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-            Scalar::read(&mut cursor).expect("reduced scalar")
+            crate::chain::xmr::transaction::bytes_to_monerod_scalar(&bytes)
         };
         let commitments = vec![MoneroCommitment::new(mask, 100_000_000)];
         let bp = prove_bulletproofs_plus(&mut rng, &commitments).unwrap();
@@ -470,8 +451,7 @@ mod tests {
             let scalar_bytes = reduce_scalar(&[i as u8 + 1; 32]).unwrap();
             let mask = {
                 let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-                let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-                Scalar::read(&mut cursor).expect("reduced scalar")
+                crate::chain::xmr::transaction::bytes_to_monerod_scalar(&bytes)
             };
             commitments.push(MoneroCommitment::new(mask, (i + 1) * 1000));
         }
@@ -507,8 +487,7 @@ mod tests {
             let scalar_bytes = reduce_scalar(&[i as u8; 32]).unwrap();
             let mask = {
                 let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-                let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-                Scalar::read(&mut cursor).expect("reduced scalar")
+                crate::chain::xmr::transaction::bytes_to_monerod_scalar(&bytes)
             };
             commitments.push(MoneroCommitment::new(mask, i));
         }
@@ -671,8 +650,7 @@ mod tests {
         let scalar_bytes = reduce_scalar(&[0x33u8; 32]).unwrap();
         let mask = {
             let bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&scalar_bytes);
-            let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
-            Scalar::read(&mut cursor).expect("reduced scalar")
+            crate::chain::xmr::transaction::bytes_to_monerod_scalar(&bytes)
         };
         let bp =
             prove_bulletproofs_plus(&mut rng, &[MoneroCommitment::new(mask, 100_000_000)]).unwrap();

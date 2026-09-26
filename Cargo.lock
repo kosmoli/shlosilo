@@ -2379,7 +2379,6 @@ dependencies = [
  "rqrr",
  "sha2 0.10.9",
  "static_assertions",
- "std-shims",
  "subtle",
  "tiny-keccak",
  "zeroize",

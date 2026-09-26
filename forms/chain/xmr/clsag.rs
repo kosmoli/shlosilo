@@ -69,23 +69,9 @@ impl AsRef<[u8]> for KeyImage {
     }
 }
 
-/// Z2.3 C3a (2026-09-24): std-shims `io::Write` sink into a bounded heapless buffer
-/// for `Clsag::write` (vendor boundary keeps `impl io::Write` until the Z5 surgery).
-/// Overflow cannot occur by construction (CLSAG_PROOF_MAX is sized for the checked
-/// ring cap) — the error path exists for the trait contract only. NOTE: std-shims
-/// errors box their payload; this error path rides T-06/Z5 (std-shims removal).
-struct HeaplessWriter<'a>(&'a mut heapless::Vec<u8, { crate::types::caps::CLSAG_PROOF_MAX }>);
-
-impl std_shims::io::Write for HeaplessWriter<'_> {
-    fn write(&mut self, buf: &[u8]) -> std_shims::io::Result<usize> {
-        for b in buf {
-            self.0
-                .push(*b)
-                .map_err(|_| std_shims::io::Error::other("clsag proof overflow"))?;
-        }
-        Ok(buf.len())
-    }
-}
+// T-06 (2026-09-26): the Z2.3 C3a HeaplessWriter io::Write sink is gone —
+// the vendored `Clsag::serialize_into` writes into a caller buffer with an
+// explicit overflow error (the std-shims error-box path disappears with it).
 
 impl ClsagProof {
     /// ClsagProof → serialized bytes
@@ -226,13 +212,13 @@ pub fn sign<R: RngCore + CryptoRng>(
         heapless::Vec::new();
     // in-bounds by construction (ring cap checked above + empty vec)
     let _ = bytes.extend_from_slice(&pseudo_out_bytes);
-    // The Clsag struct has no public Serialize; we use write_to into a buffer
-    {
-        let mut clsag_buf = HeaplessWriter(&mut bytes);
-        clsag
-            .write(&mut clsag_buf)
-            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-    }
+    // T-06: vendor `serialize_into` (bounded temp; CLSAG_PROOF_MAX covers the
+    // whole proof, so the temp cannot overflow under the checked ring cap)
+    let mut clsag_tmp = [0u8; crate::types::caps::CLSAG_PROOF_MAX];
+    let m = clsag
+        .serialize_into(&mut clsag_tmp)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let _ = bytes.extend_from_slice(&clsag_tmp[..m]);
 
     Ok((
         ClsagProof { bytes },

@@ -772,9 +772,11 @@ pub fn construct_key_image(spend_key: &[u8; 32]) -> Result<[u8; 32]> {
 /// First reduced via curve25519-dalek's `from_bytes_mod_order` — some scalars in the Monero protocol
 /// (e.g. decoy commitment masks) are not guaranteed canonical, and `Scalar::read` would reject them.
 pub fn bytes_to_monerod_scalar(bytes: &[u8; 32]) -> Scalar {
-    let reduced = curve25519_dalek::Scalar::from_bytes_mod_order(*bytes).to_bytes();
-    let mut cursor = Read32Cursor(reduced);
-    Scalar::read(&mut cursor).expect("reduced scalar is canonical")
+    // T-06 (2026-09-26): direct construction replaces the reduce→bytes→read
+    // cursor path. `Scalar::from(dalek)` stores `to_bytes()` of the reduced
+    // scalar — byte-identical to the old reduce→read result (which stored the
+    // same canonical bytes after its canonicity check).
+    Scalar::from(curve25519_dalek::Scalar::from_bytes_mod_order(*bytes))
 }
 
 /// Convert shlosilo Scalar to monero-ed25519 Scalar
@@ -782,20 +784,22 @@ pub fn bytes_to_monerod_scalar(bytes: &[u8; 32]) -> Scalar {
 /// XMR specific type bridge. Both are 32-byte scalars, but monero-ed25519 Scalar is newtype.
 /// shlosilo uses reduced scalars (32 bytes), so we can use `Scalar::read` via Cursor.
 pub fn shlosilo_scalar_to_monerod(s: &ShlosiloScalar) -> Scalar {
+    // T-06: direct construction keeps the old contract exactly — the old
+    // `Scalar::read` path rejected non-canonical bytes (panic via expect), and
+    // stored the canonical bytes unchanged. `from_canonical_bytes` + the same
+    // expect message preserves both halves; `Scalar::from` stores the same
+    // bytes for canonical input.
     let bytes = scalar_to_bytes(s);
-    let mut cursor = Read32Cursor(bytes);
-    Scalar::read(&mut cursor).expect("shlosilo scalar is reduced")
+    let canonical = Option::<curve25519_dalek::Scalar>::from(
+        curve25519_dalek::Scalar::from_canonical_bytes(bytes),
+    )
+    .expect("shlosilo scalar is reduced");
+    Scalar::from(canonical)
 }
 
-pub struct Read32Cursor(pub [u8; 32]);
-impl std_shims::io::Read for Read32Cursor {
-    fn read(&mut self, buf: &mut [u8]) -> std_shims::io::Result<usize> {
-        let n = buf.len().min(self.0.len());
-        buf[..n].copy_from_slice(&self.0[..n]);
-        self.0 = [0u8; 32];
-        Ok(n)
-    }
-}
+// T-06 (2026-09-26): `Read32Cursor` + its std-shims `io::Read` impl are gone —
+// the scalar conversion paths above construct `monero_ed25519::Scalar`
+// directly (byte-identical semantics, documented at each site).
 
 /// Convert monero-ed25519 CompressedPoint to 32-byte array
 pub fn compressed_point_to_bytes(p: &CompressedPoint) -> [u8; 32] {

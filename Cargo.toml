@@ -72,7 +72,7 @@ curve25519-dalek = { version = "4", default-features = false, features = ["alloc
 monero-clsag = { version = "0.1", default-features = false }  # CLSAG ring signature (XMR)
 monero-bulletproofs = { path = "vendor/monero-bulletproofs", default-features = false, features = ["compile-time-generators"] }  # Bulletproofs+; vendor patch: generator loop decompresses to avoid vec![decompress();2048] blowing the stack
 monero-bulletproofs-generators = { version = "0.1", default-features = false }  # Pedersen commitment generators for Bulletproofs+
-std-shims = { version = "0.1", default-features = false }  # XMR io compat (Cursor/Read for Scalar::read)
+
 base58-monero = { version = "2", default-features = false }  # XMR base58 (encoding class, audited; check feature omitted because encode_check has a bug and we hand-write it)
 cuprate-cryptonight = { path = "vendor/cryptonight" }  # CryptoNight V0 (XMR txset chacha key derivation); vendored no_std version, see the comment in vendor/cryptonight/Cargo.toml
 chacha20 = { version = "0.9", default-features = false }  # ChaCha20 + ChaCha20Legacy (XMR txset decryption; keystone uses the same 0.9.1)
