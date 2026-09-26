@@ -13,6 +13,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static MEASURING: AtomicBool = AtomicBool::new(false);
 static EVENTS: AtomicU64 = AtomicU64::new(0);
+static CAPTURING: AtomicBool = AtomicBool::new(false);
+static CAPTURED: AtomicU64 = AtomicU64::new(0);
+static SITES: std::sync::Mutex<std::collections::BTreeMap<String, usize>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 struct Counting;
 
@@ -20,6 +24,35 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if MEASURING.load(Ordering::Relaxed) {
             EVENTS.fetch_add(1, Ordering::Relaxed);
+        }
+        if CAPTURING.load(Ordering::Relaxed) {
+            // diagnosis only (first 200 sites — symbolization is slow). The
+            // capture path allocates (backtrace + map growth), so guard the
+            // re-entry or the map lock deadlocks against itself.
+            thread_local! {
+                static IN_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+            }
+            IN_CAPTURE.with(|flag| {
+                if flag.get() {
+                    return;
+                }
+                flag.set(true);
+                if CAPTURED.fetch_add(1, Ordering::Relaxed) >= 200 {
+                    flag.set(false);
+                    return;
+                }
+                let bt = std::backtrace::Backtrace::force_capture();
+                let frame = format!("{bt}")
+                    .lines()
+                    .skip(1)
+                    .filter(|l| l.contains("shlosilo::"))
+                    .take(2)
+                    .map(|l| l.trim())
+                    .collect::<Vec<&str>>()
+                    .join(" <- ");
+                *SITES.lock().unwrap().entry(frame).or_insert(0) += 1;
+                flag.set(false);
+            });
         }
         System.alloc(layout)
     }
@@ -215,4 +248,83 @@ fn xmr_sign_zero_alloc() {
         events, 0,
         "Z6: the XMR sign path allocated {events} time(s)"
     );
+}
+
+/// Z4 diagnosis: allocation-site histogram over one XMR sign (ignored; the
+/// backtrace capture allocates, so this measures SITES, not counts).
+#[test]
+#[ignore = "Z4 diagnosis: run manually with P2IN keys to profile alloc sites"]
+fn alloc_site_histogram() {
+    // Reuse the XMR fixture flow (duplicated minimally to keep this file's
+    // helpers independent of test order).
+    fn env_hex(name: &str) -> Option<[u8; 32]> {
+        let s = std::env::var(name).ok()?;
+        let v: Vec<u8> = (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+            .collect::<Option<_>>()?;
+        v.try_into().ok()
+    }
+    use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into;
+    use shlosilo::chain::xmr::unsigned_txset::{
+        decrypt_unsigned_txset, deserialize_unsigned_tx, TxDestinationEntry, TxConstructionData,
+        TxSourceEntry, UnsignedTxPools,
+    };
+    let spend_sk = env_hex("SHLOSILO_TEST_XMR_SPEND_SK").expect("env");
+    let view_sk = env_hex("SHLOSILO_TEST_XMR_VIEW_SK").expect("env");
+    const ENC: &[u8] = include_bytes!("fixtures/unsigned_txset_2in.bin");
+    let plain = decrypt_unsigned_txset(ENC, &view_sk).expect("decrypt");
+    let mut p_txes = core::array::from_fn::<Option<TxConstructionData<'_>>, 8, _>(|_| None);
+    let mut p_src = core::array::from_fn::<Option<TxSourceEntry>, 32, _>(|_| None);
+    let mut p_sd =
+        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+    let mut p_sel = [0usize; 256];
+    let mut p_ex = [0u8; 8192];
+    let mut p_de =
+        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+    let mut p_su = [0u32; 256];
+    let utx = deserialize_unsigned_tx(
+        &plain,
+        UnsignedTxPools {
+            txes: &mut p_txes,
+            sources: &mut p_src,
+            splitted_dsts: &mut p_sd,
+            selected_transfers: &mut p_sel,
+            extra: &mut p_ex,
+            dests: &mut p_de,
+            subaddr_indices: &mut p_su,
+        },
+    )
+    .expect("deserialize");
+    let tx_data = utx.txes.iter().flatten().next().unwrap();
+    let r_bytes = zeroize::Zeroizing::new([0x11u8; 32]);
+    let mut bp_rng = rand_chacha::ChaCha20Rng::from_seed([0xB1u8; 32]);
+    let mut clsag_rng = rand_chacha::ChaCha20Rng::from_seed([0xC1u8; 32]);
+    let mut out = vec![0u8; 65536];
+
+    CAPTURED.store(0, Ordering::Relaxed);
+    CAPTURING.store(true, Ordering::Relaxed);
+    let _ = sign_tx_from_construction_with_rngs_into(
+        tx_data,
+        &spend_sk,
+        &view_sk,
+        &r_bytes,
+        &mut bp_rng,
+        &mut clsag_rng,
+        &mut out,
+    )
+    .expect("sign");
+    CAPTURING.store(false, Ordering::Relaxed);
+
+    let mut sites: Vec<(usize, String)> = SITES
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (*v, k.clone()))
+        .collect();
+    sites.sort_by(|a, b| b.0.cmp(&a.0));
+    println!("=== Z4 alloc site histogram (top 25 of {}) ===", sites.len());
+    for (n, site) in sites.iter().take(25) {
+        println!("{n:>6}  {site}");
+    }
 }
