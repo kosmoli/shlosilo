@@ -337,8 +337,8 @@ impl Bulletproof {
                 w.write_all(&bp.wip.r_answer.to_bytes())?;
                 w.write_all(&bp.wip.s_answer.to_bytes())?;
                 w.write_all(&bp.wip.delta_answer.to_bytes())?;
-                specific_write_vec(&bp.wip.L, w)?;
-                specific_write_vec(&bp.wip.R, w)
+                specific_write_vec(&bp.wip.L[..bp.wip.L_len], w)?;
+                specific_write_vec(&bp.wip.R[..bp.wip.R_len], w)
             }
         }
     }
@@ -458,6 +458,23 @@ impl Bulletproof {
 
     /// Read a Bulletproof+.
     pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
+        // shlosilo vendor patch (Z5.3 C-cut C): the wire reader stages into a
+        // Vec (verify-side only) then copies into the proof's fixed arrays —
+        // the wire ORDER and bytes are unchanged.
+        let l_v = read_vec(CompressedPoint::read, Some(MAX_LR), r)?;
+        let r_v = read_vec(CompressedPoint::read, Some(MAX_LR), r)?;
+        let mut L =
+            [CompressedPoint::from([0u8; 32]); plus::weighted_inner_product::WIP_MAX_ROUNDS];
+        let mut R =
+            [CompressedPoint::from([0u8; 32]); plus::weighted_inner_product::WIP_MAX_ROUNDS];
+        // read_vec caps at MAX_LR == WIP_MAX_ROUNDS, so this never trips.
+        debug_assert!(l_v.len() <= L.len() && r_v.len() <= R.len());
+        for (dst, src) in L.iter_mut().zip(l_v.iter()) {
+            *dst = *src;
+        }
+        for (dst, src) in R.iter_mut().zip(r_v.iter()) {
+            *dst = *src;
+        }
         Ok(Bulletproof::Plus(PlusProof {
             A: CompressedPoint::read(r)?,
             wip: WipProof {
@@ -466,8 +483,10 @@ impl Bulletproof {
                 r_answer: Scalar::read(r)?.into(),
                 s_answer: Scalar::read(r)?.into(),
                 delta_answer: Scalar::read(r)?.into(),
-                L: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
-                R: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
+                L,
+                L_len: l_v.len(),
+                R,
+                R_len: r_v.len(),
             },
         }))
     }

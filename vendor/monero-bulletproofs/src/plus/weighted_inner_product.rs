@@ -144,10 +144,17 @@ impl WipWitness {
     }
 }
 
+/// shlosilo vendor patch (Z5.3 C-cut C): the proof L/R rounds live in fixed
+/// arrays (the round count is log2 of the padded generator count <= 1024, so
+/// 10 is the format-correct bound — same L/R ORDER, byte-identical wire).
+pub(crate) const WIP_MAX_ROUNDS: usize = 10;
+
 #[derive(Clone, PartialEq, Eq, Debug, Zeroize)]
 pub(crate) struct WipProof {
-    pub(crate) L: Vec<CompressedPoint>,
-    pub(crate) R: Vec<CompressedPoint>,
+    pub(crate) L: [CompressedPoint; WIP_MAX_ROUNDS],
+    pub(crate) L_len: usize,
+    pub(crate) R: [CompressedPoint; WIP_MAX_ROUNDS],
+    pub(crate) R_len: usize,
     pub(crate) A: CompressedPoint,
     pub(crate) B: CompressedPoint,
     pub(crate) r_answer: Scalar,
@@ -341,8 +348,10 @@ impl WipStatement {
         let mut h_cur: &mut [EdwardsPoint] = h0;
         let mut h_next: &mut [EdwardsPoint] = h1;
 
-        let mut L_vec = vec![];
-        let mut R_vec = vec![];
+        let mut L_vec = [CompressedPoint::from([0u8; 32]); WIP_MAX_ROUNDS];
+        let mut L_len = 0usize;
+        let mut R_vec = [CompressedPoint::from([0u8; 32]); WIP_MAX_ROUNDS];
+        let mut R_len = 0usize;
 
         // bp5 drill-down (shlosilo, prove-timing): round counter for the
         // per-round L/R multiexp probes.
@@ -400,7 +409,8 @@ impl WipStatement {
             );
             #[cfg(feature = "prove-timing")]
             round_l.end();
-            L_vec.push(L);
+            L_vec[L_len] = L;
+            L_len += 1;
             for e in L_terms.iter_mut() {
                 e.zeroize();
             }
@@ -430,7 +440,8 @@ impl WipStatement {
             );
             #[cfg(feature = "prove-timing")]
             round_r.end();
-            R_vec.push(R);
+            R_vec[R_len] = R;
+            R_len += 1;
             for e in R_terms.iter_mut() {
                 e.zeroize();
             }
@@ -501,7 +512,9 @@ impl WipStatement {
 
         Some(WipProof {
             L: L_vec,
+            L_len,
             R: R_vec,
+            R_len,
             A,
             B,
             r_answer,
@@ -517,7 +530,9 @@ impl WipStatement {
         mut transcript: Scalar,
         WipProof {
             L,
+            L_len,
             R,
+            R_len,
             A,
             B,
             r_answer,
@@ -525,6 +540,8 @@ impl WipStatement {
             delta_answer,
         }: WipProof,
     ) -> bool {
+        let L = &L[..L_len];
+        let R = &R[..R_len];
         let verifier_weight = monero_ed25519::Scalar::random(rng).into();
 
         let WipStatement { generators, P, y } = self;
@@ -562,7 +579,7 @@ impl WipStatement {
         let decomp_mul_cofactor =
             |p| CompressedPoint::decompress(&p).map(|p| EdwardsPoint::mul_by_cofactor(&p.into()));
 
-        for (L_i, R_i) in L.into_iter().zip(R) {
+        for (L_i, R_i) in L.iter().copied().zip(R.iter().copied()) {
             e_is.push(Self::transcript_L_R(&mut transcript, L_i, R_i));
 
             let (Some(L_i), Some(R_i)) = (decomp_mul_cofactor(L_i), decomp_mul_cofactor(R_i))

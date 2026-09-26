@@ -973,7 +973,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-27 02:40:30.649876614 +0800
++++ b/src/lib.rs	2026-09-27 03:06:12.593402600 +0800
 @@ -4,40 +4,59 @@
  #![allow(non_snake_case)]
  
@@ -1210,7 +1210,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        OriginalStatement::new(&commitments)
          .expect("failed to create statement despite checking amount of commitments")
          .prove(
-@@ -145,201 +171,304 @@
+@@ -145,201 +171,323 @@
            "failed to prove Bulletproof::Original despite ensuring statement/witness consistency",
          ),
      ))
@@ -1472,12 +1472,101 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                w.write_all(&bp.wip.r_answer.to_bytes())?;
 +                w.write_all(&bp.wip.s_answer.to_bytes())?;
 +                w.write_all(&bp.wip.delta_answer.to_bytes())?;
-+                specific_write_vec(&bp.wip.L, w)?;
-+                specific_write_vec(&bp.wip.R, w)
++                specific_write_vec(&bp.wip.L[..bp.wip.L_len], w)?;
++                specific_write_vec(&bp.wip.R[..bp.wip.R_len], w)
 +            }
 +        }
-+    }
-+
+     }
+-  }
+ 
+-  // This uses `write_all(scalar.to_bytes())` as these are `curve25519_dalek::Scalar`, not
+-  // `monero_ed25519::Scalar`
+-  fn write_core<W: Write, F: Fn(&[CompressedPoint], &mut W) -> io::Result<()>>(
+-    &self,
+-    w: &mut W,
+-    specific_write_vec: F,
+-  ) -> io::Result<()> {
+-    match self {
+-      Bulletproof::Original(bp) => {
+-        bp.A.write(w)?;
+-        bp.S.write(w)?;
+-        bp.T1.write(w)?;
+-        bp.T2.write(w)?;
+-        w.write_all(&bp.tau_x.to_bytes())?;
+-        w.write_all(&bp.mu.to_bytes())?;
+-        specific_write_vec(&bp.ip.L, w)?;
+-        specific_write_vec(&bp.ip.R, w)?;
+-        w.write_all(&bp.ip.a.to_bytes())?;
+-        w.write_all(&bp.ip.b.to_bytes())?;
+-        w.write_all(&bp.t_hat.to_bytes())
+-      }
+-
+-      Bulletproof::Plus(bp) => {
+-        bp.A.write(w)?;
+-        bp.wip.A.write(w)?;
+-        bp.wip.B.write(w)?;
+-        w.write_all(&bp.wip.r_answer.to_bytes())?;
+-        w.write_all(&bp.wip.s_answer.to_bytes())?;
+-        w.write_all(&bp.wip.delta_answer.to_bytes())?;
+-        specific_write_vec(&bp.wip.L, w)?;
+-        specific_write_vec(&bp.wip.R, w)
+-      }
+-    }
+-  }
+-
+-  /// Write a Bulletproof(+) for the message signed by a transaction's signature.
+-  ///
+-  /// This has a distinct encoding from the standard encoding.
+-  pub fn signature_write<W: Write>(&self, w: &mut W) -> io::Result<()> {
+-    self.write_core(w, |points, w| write_raw_vec(CompressedPoint::write, points, w))
+-  }
+-
+-  /// Write a Bulletproof(+).
+-  pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
+-    self.write_core(w, |points, w| write_vec(CompressedPoint::write, points, w))
+-  }
+-
+-  /// Serialize a Bulletproof(+) to a `Vec<u8>`.
+-  pub fn serialize(&self) -> Vec<u8> {
+-    let mut serialized = Vec::with_capacity(512);
+-    self.write(&mut serialized).expect("write failed but <Vec as io::Write> doesn't fail");
+-    serialized
+-  }
+-
+-  /// Read a Bulletproof.
+-  pub fn read<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
+-    Ok(Bulletproof::Original(OriginalProof {
+-      A: CompressedPoint::read(r)?,
+-      S: CompressedPoint::read(r)?,
+-      T1: CompressedPoint::read(r)?,
+-      T2: CompressedPoint::read(r)?,
+-      tau_x: Scalar::read(r)?.into(),
+-      mu: Scalar::read(r)?.into(),
+-      ip: IpProof {
+-        L: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
+-        R: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
+-        a: Scalar::read(r)?.into(),
+-        b: Scalar::read(r)?.into(),
+-      },
+-      t_hat: Scalar::read(r)?.into(),
+-    }))
+-  }
+-
+-  /// Read a Bulletproof+.
+-  pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
+-    Ok(Bulletproof::Plus(PlusProof {
+-      A: CompressedPoint::read(r)?,
+-      wip: WipProof {
+-        A: CompressedPoint::read(r)?,
+-        B: CompressedPoint::read(r)?,
+-        r_answer: Scalar::read(r)?.into(),
+-        s_answer: Scalar::read(r)?.into(),
+-        delta_answer: Scalar::read(r)?.into(),
+-        L: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
+-        R: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
+-      },
+-    }))
+-  }
 +    /// Write a Bulletproof(+) for the message signed by a transaction's signature.
 +    ///
 +    /// This has a distinct encoding from the standard encoding.
@@ -1570,97 +1659,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        self.write(&mut serialized)
 +            .expect("write failed but <Vec as io::Write> doesn't fail");
 +        serialized
-     }
--  }
- 
--  // This uses `write_all(scalar.to_bytes())` as these are `curve25519_dalek::Scalar`, not
--  // `monero_ed25519::Scalar`
--  fn write_core<W: Write, F: Fn(&[CompressedPoint], &mut W) -> io::Result<()>>(
--    &self,
--    w: &mut W,
--    specific_write_vec: F,
--  ) -> io::Result<()> {
--    match self {
--      Bulletproof::Original(bp) => {
--        bp.A.write(w)?;
--        bp.S.write(w)?;
--        bp.T1.write(w)?;
--        bp.T2.write(w)?;
--        w.write_all(&bp.tau_x.to_bytes())?;
--        w.write_all(&bp.mu.to_bytes())?;
--        specific_write_vec(&bp.ip.L, w)?;
--        specific_write_vec(&bp.ip.R, w)?;
--        w.write_all(&bp.ip.a.to_bytes())?;
--        w.write_all(&bp.ip.b.to_bytes())?;
--        w.write_all(&bp.t_hat.to_bytes())
--      }
--
--      Bulletproof::Plus(bp) => {
--        bp.A.write(w)?;
--        bp.wip.A.write(w)?;
--        bp.wip.B.write(w)?;
--        w.write_all(&bp.wip.r_answer.to_bytes())?;
--        w.write_all(&bp.wip.s_answer.to_bytes())?;
--        w.write_all(&bp.wip.delta_answer.to_bytes())?;
--        specific_write_vec(&bp.wip.L, w)?;
--        specific_write_vec(&bp.wip.R, w)
--      }
--    }
--  }
--
--  /// Write a Bulletproof(+) for the message signed by a transaction's signature.
--  ///
--  /// This has a distinct encoding from the standard encoding.
--  pub fn signature_write<W: Write>(&self, w: &mut W) -> io::Result<()> {
--    self.write_core(w, |points, w| write_raw_vec(CompressedPoint::write, points, w))
--  }
--
--  /// Write a Bulletproof(+).
--  pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
--    self.write_core(w, |points, w| write_vec(CompressedPoint::write, points, w))
--  }
--
--  /// Serialize a Bulletproof(+) to a `Vec<u8>`.
--  pub fn serialize(&self) -> Vec<u8> {
--    let mut serialized = Vec::with_capacity(512);
--    self.write(&mut serialized).expect("write failed but <Vec as io::Write> doesn't fail");
--    serialized
--  }
--
--  /// Read a Bulletproof.
--  pub fn read<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
--    Ok(Bulletproof::Original(OriginalProof {
--      A: CompressedPoint::read(r)?,
--      S: CompressedPoint::read(r)?,
--      T1: CompressedPoint::read(r)?,
--      T2: CompressedPoint::read(r)?,
--      tau_x: Scalar::read(r)?.into(),
--      mu: Scalar::read(r)?.into(),
--      ip: IpProof {
--        L: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
--        R: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
--        a: Scalar::read(r)?.into(),
--        b: Scalar::read(r)?.into(),
--      },
--      t_hat: Scalar::read(r)?.into(),
--    }))
--  }
--
--  /// Read a Bulletproof+.
--  pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
--    Ok(Bulletproof::Plus(PlusProof {
--      A: CompressedPoint::read(r)?,
--      wip: WipProof {
--        A: CompressedPoint::read(r)?,
--        B: CompressedPoint::read(r)?,
--        r_answer: Scalar::read(r)?.into(),
--        s_answer: Scalar::read(r)?.into(),
--        delta_answer: Scalar::read(r)?.into(),
--        L: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
--        R: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
--      },
--    }))
--  }
++    }
++
 +    /// Read a Bulletproof.
 +    pub fn read<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
 +        Ok(Bulletproof::Original(OriginalProof {
@@ -1682,6 +1682,23 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +
 +    /// Read a Bulletproof+.
 +    pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
++        // shlosilo vendor patch (Z5.3 C-cut C): the wire reader stages into a
++        // Vec (verify-side only) then copies into the proof's fixed arrays —
++        // the wire ORDER and bytes are unchanged.
++        let l_v = read_vec(CompressedPoint::read, Some(MAX_LR), r)?;
++        let r_v = read_vec(CompressedPoint::read, Some(MAX_LR), r)?;
++        let mut L =
++            [CompressedPoint::from([0u8; 32]); plus::weighted_inner_product::WIP_MAX_ROUNDS];
++        let mut R =
++            [CompressedPoint::from([0u8; 32]); plus::weighted_inner_product::WIP_MAX_ROUNDS];
++        // read_vec caps at MAX_LR == WIP_MAX_ROUNDS, so this never trips.
++        debug_assert!(l_v.len() <= L.len() && r_v.len() <= R.len());
++        for (dst, src) in L.iter_mut().zip(l_v.iter()) {
++            *dst = *src;
++        }
++        for (dst, src) in R.iter_mut().zip(r_v.iter()) {
++            *dst = *src;
++        }
 +        Ok(Bulletproof::Plus(PlusProof {
 +            A: CompressedPoint::read(r)?,
 +            wip: WipProof {
@@ -1690,8 +1707,10 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                r_answer: Scalar::read(r)?.into(),
 +                s_answer: Scalar::read(r)?.into(),
 +                delta_answer: Scalar::read(r)?.into(),
-+                L: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
-+                R: read_vec(CompressedPoint::read, Some(MAX_LR), r)?,
++                L,
++                L_len: l_v.len(),
++                R,
++                R_len: r_v.len(),
 +            },
 +        }))
 +    }
@@ -3920,8 +3939,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/weighted_inner_product.rs b/src/plus/weighted_inner_product.rs
 --- a/src/plus/weighted_inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/weighted_inner_product.rs	2026-09-27 02:46:18.220283497 +0800
-@@ -1,415 +1,645 @@
++++ b/src/plus/weighted_inner_product.rs	2026-09-27 03:05:35.459890734 +0800
+@@ -1,415 +1,662 @@
  use std_shims::{vec, vec::Vec};
  
 -use rand_core::{RngCore, CryptoRng};
@@ -4099,6 +4118,11 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    }
  }
  
++/// shlosilo vendor patch (Z5.3 C-cut C): the proof L/R rounds live in fixed
++/// arrays (the round count is log2 of the padded generator count <= 1024, so
++/// 10 is the format-correct bound — same L/R ORDER, byte-identical wire).
++pub(crate) const WIP_MAX_ROUNDS: usize = 10;
++
  #[derive(Clone, PartialEq, Eq, Debug, Zeroize)]
  pub(crate) struct WipProof {
 -  pub(crate) L: Vec<CompressedPoint>,
@@ -4108,8 +4132,10 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -  pub(crate) r_answer: Scalar,
 -  pub(crate) s_answer: Scalar,
 -  pub(crate) delta_answer: Scalar,
-+    pub(crate) L: Vec<CompressedPoint>,
-+    pub(crate) R: Vec<CompressedPoint>,
++    pub(crate) L: [CompressedPoint; WIP_MAX_ROUNDS],
++    pub(crate) L_len: usize,
++    pub(crate) R: [CompressedPoint; WIP_MAX_ROUNDS],
++    pub(crate) R_len: usize,
 +    pub(crate) A: CompressedPoint,
 +    pub(crate) B: CompressedPoint,
 +    pub(crate) r_answer: Scalar,
@@ -4611,8 +4637,10 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        let mut h_cur: &mut [EdwardsPoint] = h0;
 +        let mut h_next: &mut [EdwardsPoint] = h1;
 +
-+        let mut L_vec = vec![];
-+        let mut R_vec = vec![];
++        let mut L_vec = [CompressedPoint::from([0u8; 32]); WIP_MAX_ROUNDS];
++        let mut L_len = 0usize;
++        let mut R_vec = [CompressedPoint::from([0u8; 32]); WIP_MAX_ROUNDS];
++        let mut R_len = 0usize;
 +
 +        // bp5 drill-down (shlosilo, prove-timing): round counter for the
 +        // per-round L/R multiexp probes.
@@ -4670,7 +4698,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            );
 +            #[cfg(feature = "prove-timing")]
 +            round_l.end();
-+            L_vec.push(L);
++            L_vec[L_len] = L;
++            L_len += 1;
 +            for e in L_terms.iter_mut() {
 +                e.zeroize();
 +            }
@@ -4700,7 +4729,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            );
 +            #[cfg(feature = "prove-timing")]
 +            round_r.end();
-+            R_vec.push(R);
++            R_vec[R_len] = R;
++            R_len += 1;
 +            for e in R_terms.iter_mut() {
 +                e.zeroize();
 +            }
@@ -4787,7 +4817,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +
 +        Some(WipProof {
 +            L: L_vec,
++            L_len,
 +            R: R_vec,
++            R_len,
 +            A,
 +            B,
 +            r_answer,
@@ -4803,7 +4835,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        mut transcript: Scalar,
 +        WipProof {
 +            L,
++            L_len,
 +            R,
++            R_len,
 +            A,
 +            B,
 +            r_answer,
@@ -4811,6 +4845,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            delta_answer,
 +        }: WipProof,
 +    ) -> bool {
++        let L = &L[..L_len];
++        let R = &R[..R_len];
 +        let verifier_weight = monero_ed25519::Scalar::random(rng).into();
 +
 +        let WipStatement { generators, P, y } = self;
@@ -4848,7 +4884,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        let decomp_mul_cofactor =
 +            |p| CompressedPoint::decompress(&p).map(|p| EdwardsPoint::mul_by_cofactor(&p.into()));
 +
-+        for (L_i, R_i) in L.into_iter().zip(R) {
++        for (L_i, R_i) in L.iter().copied().zip(R.iter().copied()) {
 +            e_is.push(Self::transcript_L_R(&mut transcript, L_i, R_i));
 +
 +            let (Some(L_i), Some(R_i)) = (decomp_mul_cofactor(L_i), decomp_mul_cofactor(R_i))

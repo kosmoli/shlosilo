@@ -40,7 +40,7 @@ unsafe impl GlobalAlloc for Counting {
                 // spread the sample over the WHOLE sign (every 20th alloc):
                 // a leading window hides the bulk wherever it sits later.
                 let k = CAPTURED.fetch_add(1, Ordering::Relaxed);
-                if !k.is_multiple_of(20) {
+                if !k.is_multiple_of(1) {
                     flag.set(false);
                     return;
                 }
