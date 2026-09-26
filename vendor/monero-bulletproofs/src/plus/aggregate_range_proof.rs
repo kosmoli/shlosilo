@@ -26,7 +26,7 @@ use timing_noop::{
 };
 
 use rand_core::{CryptoRng, RngCore};
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::{Zeroize, Zeroizing};
 
 use curve25519_dalek::{edwards::EdwardsPoint, scalar::Scalar, traits::Identity as _};
 
@@ -53,11 +53,16 @@ pub(crate) struct AggregateRangeStatement<'a> {
     V: &'a [EdwardsPoint],
 }
 
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub(crate) struct AggregateRangeWitness(Vec<Commitment>);
+// shlosilo vendor patch (Z5.1, 2026-09-25): the witness BORROWS the caller's
+// commitments (was: owned Vec). Memory-management only — the proof math is
+// untouched. Wipe duty for the mask-bearing Commitment values moves to the
+// caller: the API contract is "commitments live in a Zeroizing owner at the
+// call site" (forms keeps one; the old Vec-witness ZeroizeOnDrop is retired).
+#[derive(Clone)]
+pub(crate) struct AggregateRangeWitness<'a>(&'a [Commitment]);
 
-impl AggregateRangeWitness {
-    pub(crate) fn new(commitments: Vec<Commitment>) -> Option<Self> {
+impl<'a> AggregateRangeWitness<'a> {
+    pub(crate) fn new(commitments: &'a [Commitment]) -> Option<Self> {
         if commitments.is_empty() || (commitments.len() > MAX_COMMITMENTS) {
             return None;
         }

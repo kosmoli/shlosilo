@@ -597,15 +597,21 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // x8/x9/x10: rct_base drill-down sub-probes (bb3aa58 follow-up)
     #[cfg(feature = "tx-phase-timing-ffi")]
     let mut px8 = PhaseProbe::start(8);
-    let commitments: Vec<MonCommitment> = outs
-        .iter()
-        .map(|o| {
-            MonCommitment::new(
-                bytes_to_monerod_scalar(o.deriv.commitment_mask.expose()),
-                o.dest.amount,
-            )
-        })
-        .collect();
+    // Z5.1 (2026-09-25): commitments live in a fixed Zeroizing owner (the
+    // mask-bearing values keep their wipe duty HERE — the vendor witness now
+    // borrows; see the vendor patch note). Capacity = MAX_COMMITMENTS (the
+    // BP+ protocol cap), so the fixed array can never bind.
+    let mut commitments =
+        zeroize::Zeroizing::new(core::array::from_fn::<MonCommitment, 16, _>(|_| {
+            MonCommitment::new(monero_ed25519::Scalar::ZERO, 0)
+        }));
+    let n_commitments = outs.len();
+    for (slot, o) in commitments[..n_commitments].iter_mut().zip(outs.iter()) {
+        *slot = MonCommitment::new(
+            bytes_to_monerod_scalar(o.deriv.commitment_mask.expose()),
+            o.dest.amount,
+        );
+    }
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px8.as_mut() {
         p.end();
@@ -614,7 +620,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     let mut px9 = PhaseProbe::start(9);
     // Audit #7 Gate1 #5: commitments are public on-chain data (Pedersen commitments are broadcast with the tx and contain
     // no mask plaintext); clone is not a secret-copy problem — but the value has no consumers after this, so move it to eliminate the copy
-    let bp = prove_bulletproofs_plus(bp_rng, commitments)?;
+    let bp = prove_bulletproofs_plus(bp_rng, &commitments[..n_commitments])?;
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px9.as_mut() {
         p.end();

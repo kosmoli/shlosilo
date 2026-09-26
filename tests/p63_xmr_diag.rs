@@ -196,14 +196,14 @@ fn diag_bp_size_and_verify() {
     // same as the signing path: 2 outputs, amounts 1869360000 / 100000000
     let masks: Vec<[u8; 32]> = vec![[0xaau8; 32], [0xbbu8; 32]];
     use shlosilo::chain::xmr::transaction::bytes_to_monerod_scalar;
-    let commitments = masks
+    let commitments: Vec<monero_ed25519::Commitment> = masks
         .iter()
         .map(|m| {
             let ms = bytes_to_monerod_scalar(m);
             monero_ed25519::Commitment::new(ms, 1_000_000)
         })
         .collect();
-    let bp = prove_bulletproofs_plus(&mut rng, commitments).expect("bp");
+    let bp = prove_bulletproofs_plus(&mut rng, &commitments).expect("bp");
     let mut buf = Vec::new();
     bp.write(&mut buf).unwrap();
     eprintln!("D BP+ wire size = {}", buf.len());

@@ -290,7 +290,7 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
     // lives at the vendor edge like clsag's `vec![...]` until the surgery).
     let bp = prove_bulletproofs_plus(
         rng,
-        commitments
+        &commitments
             .iter()
             .map(|c| c.as_ref().cloned().unwrap())
             .collect::<alloc::vec::Vec<_>>(),

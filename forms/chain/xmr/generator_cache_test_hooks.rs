@@ -50,5 +50,5 @@ pub fn prove_tiny_bp_plus() {
         MoneroCommitment::new(mask, 200_000_000),
     ]
     .into();
-    let _proof = prove_bulletproofs_plus(&mut rng, commitments).expect("tiny bp+ prove");
+    let _proof = prove_bulletproofs_plus(&mut rng, &commitments).expect("tiny bp+ prove");
 }

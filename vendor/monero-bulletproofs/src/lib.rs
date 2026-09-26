@@ -10,7 +10,6 @@ use std_shims::{
 };
 
 use rand_core::{CryptoRng, RngCore};
-use zeroize::Zeroizing;
 
 use curve25519_dalek::EdwardsPoint;
 
@@ -140,9 +139,11 @@ impl Bulletproof {
     /// Prove the list of commitments are within [0 .. 2^64) with an aggregate Bulletproof.
     ///
     /// This function runs in time variable to the validity of the arguments and the public data.
+    // shlosilo vendor patch (Z5.1): slice API — callers keep ownership of the
+    // commitment storage (wipe duty included). Memory-management only.
     pub fn prove<R: RngCore + CryptoRng>(
         rng: &mut R,
-        outputs: Vec<Commitment>,
+        outputs: &[Commitment],
     ) -> Result<Bulletproof, BulletproofError> {
         if outputs.is_empty() {
             Err(BulletproofError::NoCommitments)?;
@@ -171,9 +172,11 @@ impl Bulletproof {
     /// Prove the list of commitments are within [0 .. 2^64) with an aggregate Bulletproof+.
     ///
     /// This function runs in time variable to the validity of the arguments and the public data.
+    // shlosilo vendor patch (Z5.1): slice API — callers keep ownership of the
+    // commitment storage (wipe duty included). Memory-management only.
     pub fn prove_plus<R: RngCore + CryptoRng>(
         rng: &mut R,
-        outputs: Vec<Commitment>,
+        outputs: &[Commitment],
     ) -> Result<Bulletproof, BulletproofError> {
         if outputs.is_empty() {
             Err(BulletproofError::NoCommitments)?;
@@ -203,10 +206,11 @@ impl Bulletproof {
         .expect("failed to create statement despite checking amount of commitments")
         .prove(
           rng,
-          &Zeroizing::new(
-            witness_res
-              .expect("failed to create witness despite checking amount of commitments"),
-          ),
+          // shlosilo vendor patch (Z5.1): the witness borrows the caller's
+          // commitments — the Zeroizing wrapper (wipe-on-drop of the old owned
+          // Vec) is retired; wipe duty lives at the call site (forms owner).
+          &witness_res
+            .expect("failed to create witness despite checking amount of commitments"),
         )
         .expect("failed to prove Bulletproof::Plus despite ensuring statement/witness consistency"),
     ))

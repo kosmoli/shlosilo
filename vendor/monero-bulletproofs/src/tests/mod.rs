@@ -18,9 +18,9 @@ macro_rules! bulletproofs_tests {
                     .collect::<Vec<_>>();
 
                 let bp = if $plus {
-                    Bulletproof::prove_plus(&mut OsRng, commitments.clone()).unwrap()
+                    Bulletproof::prove_plus(&mut OsRng, &commitments).unwrap()
                 } else {
-                    Bulletproof::prove(&mut OsRng, commitments.clone()).unwrap()
+                    Bulletproof::prove(&mut OsRng, &commitments).unwrap()
                 };
 
                 let commitments = commitments
@@ -43,9 +43,9 @@ macro_rules! bulletproofs_tests {
             }
             assert_eq!(
                 (if $plus {
-                    Bulletproof::prove_plus(&mut OsRng, commitments)
+                    Bulletproof::prove_plus(&mut OsRng, &commitments)
                 } else {
-                    Bulletproof::prove(&mut OsRng, commitments)
+                    Bulletproof::prove(&mut OsRng, &commitments)
                 })
                 .unwrap_err(),
                 BulletproofError::TooManyCommitments,

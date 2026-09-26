@@ -30,9 +30,11 @@ pub(crate) struct AggregateRangeStatement<'a> {
     commitments: &'a [EdwardsPoint],
 }
 
+// shlosilo vendor patch (Z5.1, 2026-09-25): borrows the caller's commitments
+// (was: owned Vec); wipe duty at the call site. Memory-management only.
 #[derive(Clone)]
-pub(crate) struct AggregateRangeWitness {
-    commitments: Vec<Commitment>,
+pub(crate) struct AggregateRangeWitness<'a> {
+    commitments: &'a [Commitment],
 }
 
 /// Internal structure representing a Bulletproof, as defined by Monero.
@@ -58,8 +60,8 @@ impl<'a> AggregateRangeStatement<'a> {
     }
 }
 
-impl AggregateRangeWitness {
-    pub(crate) fn new(commitments: Vec<Commitment>) -> Option<Self> {
+impl<'a> AggregateRangeWitness<'a> {
+    pub(crate) fn new(commitments: &'a [Commitment]) -> Option<Self> {
         if commitments.is_empty() || (commitments.len() > MAX_COMMITMENTS) {
             None?;
         }
@@ -127,7 +129,7 @@ impl AggregateRangeStatement<'_> {
     pub(crate) fn prove(
         self,
         rng: &mut (impl RngCore + CryptoRng),
-        witness: AggregateRangeWitness,
+        witness: AggregateRangeWitness<'_>,
     ) -> Option<AggregateRangeProof> {
         if self.commitments
             != witness

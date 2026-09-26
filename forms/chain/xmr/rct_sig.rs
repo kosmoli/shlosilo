@@ -318,7 +318,7 @@ pub fn serialize_commitments(commitments: &[MoneroCommitment]) -> Vec<u8> {
 /// **Constraint**: commitments.len() <= MAX_COMMITMENTS (16)
 pub fn prove_bulletproofs_plus<R: RngCore + CryptoRng>(
     rng: &mut R,
-    commitments: Vec<MoneroCommitment>,
+    commitments: &[MoneroCommitment],
 ) -> Result<Bulletproof> {
     if commitments.is_empty() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -439,7 +439,7 @@ mod tests {
             Scalar::read(&mut cursor).expect("reduced scalar")
         };
         let commitments = vec![MoneroCommitment::new(mask, 100_000_000)];
-        let bp = prove_bulletproofs_plus(&mut rng, commitments).unwrap();
+        let bp = prove_bulletproofs_plus(&mut rng, &commitments).unwrap();
 
         // Verify with commitments
         let verify_mask_bytes = reduce_scalar(&[0x33u8; 32]).unwrap();
@@ -476,7 +476,7 @@ mod tests {
             commitments.push(MoneroCommitment::new(mask, (i + 1) * 1000));
         }
 
-        let bp = prove_bulletproofs_plus(&mut rng, commitments.clone()).unwrap();
+        let bp = prove_bulletproofs_plus(&mut rng, &commitments).unwrap();
 
         // Verify
         let mut compressed_pts = Vec::new();
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn bulletproof_plus_empty() {
         let mut rng = OsRng;
-        let result = prove_bulletproofs_plus(&mut rng, vec![]);
+        let result = prove_bulletproofs_plus(&mut rng, &[]);
         assert!(result.is_err());
     }
 
@@ -512,7 +512,7 @@ mod tests {
             };
             commitments.push(MoneroCommitment::new(mask, i));
         }
-        let result = prove_bulletproofs_plus(&mut rng, commitments);
+        let result = prove_bulletproofs_plus(&mut rng, &commitments);
         assert!(result.is_err());
     }
 
@@ -674,11 +674,8 @@ mod tests {
             let mut cursor = crate::chain::xmr::transaction::Read32Cursor(bytes);
             Scalar::read(&mut cursor).expect("reduced scalar")
         };
-        let bp = prove_bulletproofs_plus(
-            &mut rng,
-            alloc::vec![MoneroCommitment::new(mask, 100_000_000)],
-        )
-        .unwrap();
+        let bp =
+            prove_bulletproofs_plus(&mut rng, &[MoneroCommitment::new(mask, 100_000_000)]).unwrap();
 
         let mut cm = [[0u8; 32]; 1];
         let mut ea = [[0u8; 8]; 1];

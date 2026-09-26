@@ -667,8 +667,8 @@ diff -ruN a/src/generator_cache_hook.rs b/src/generator_cache_hook.rs
 +}
 diff -ruN a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-15 01:51:25.803645085 +0800
-@@ -4,40 +4,56 @@
++++ b/src/lib.rs	2026-09-26 08:48:20.886661813 +0800
+@@ -4,40 +4,55 @@
  #![allow(non_snake_case)]
  
  use std_shims::{
@@ -681,8 +681,8 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  };
  
 -use rand_core::{RngCore, CryptoRng};
+-use zeroize::Zeroizing;
 +use rand_core::{CryptoRng, RngCore};
- use zeroize::Zeroizing;
  
  use curve25519_dalek::EdwardsPoint;
  
@@ -738,7 +738,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  };
  
  #[cfg(test)]
-@@ -52,18 +68,21 @@
+@@ -52,18 +67,21 @@
  
  // A static for `H` as it's frequently used yet this decompression is expensive.
  static MONERO_H: LazyLock<EdwardsPoint> = LazyLock::new(|| {
@@ -767,7 +767,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  }
  
  /// A Bulletproof(+).
-@@ -72,68 +91,70 @@
+@@ -72,68 +90,72 @@
  #[allow(clippy::large_enum_variant)]
  #[derive(Clone, PartialEq, Eq, Debug)]
  pub enum Bulletproof {
@@ -879,9 +879,11 @@ diff -ruN a/src/lib.rs b/src/lib.rs
 +    /// Prove the list of commitments are within [0 .. 2^64) with an aggregate Bulletproof.
 +    ///
 +    /// This function runs in time variable to the validity of the arguments and the public data.
++    // shlosilo vendor patch (Z5.1): slice API — callers keep ownership of the
++    // commitment storage (wipe duty included). Memory-management only.
 +    pub fn prove<R: RngCore + CryptoRng>(
 +        rng: &mut R,
-+        outputs: Vec<Commitment>,
++        outputs: &[Commitment],
 +    ) -> Result<Bulletproof, BulletproofError> {
 +        if outputs.is_empty() {
 +            Err(BulletproofError::NoCommitments)?;
@@ -897,7 +899,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
        OriginalStatement::new(&commitments)
          .expect("failed to create statement despite checking amount of commitments")
          .prove(
-@@ -145,201 +166,219 @@
+@@ -145,201 +167,222 @@
            "failed to prove Bulletproof::Original despite ensuring statement/witness consistency",
          ),
      ))
@@ -924,9 +926,11 @@ diff -ruN a/src/lib.rs b/src/lib.rs
 +    /// Prove the list of commitments are within [0 .. 2^64) with an aggregate Bulletproof+.
 +    ///
 +    /// This function runs in time variable to the validity of the arguments and the public data.
++    // shlosilo vendor patch (Z5.1): slice API — callers keep ownership of the
++    // commitment storage (wipe duty included). Memory-management only.
 +    pub fn prove_plus<R: RngCore + CryptoRng>(
 +        rng: &mut R,
-+        outputs: Vec<Commitment>,
++        outputs: &[Commitment],
 +    ) -> Result<Bulletproof, BulletproofError> {
 +        if outputs.is_empty() {
 +            Err(BulletproofError::NoCommitments)?;
@@ -956,11 +960,15 @@ diff -ruN a/src/lib.rs b/src/lib.rs
          .expect("failed to create statement despite checking amount of commitments")
          .prove(
            rng,
-           &Zeroizing::new(
+-          &Zeroizing::new(
 -            PlusWitness::new(outputs)
-+            witness_res
-               .expect("failed to create witness despite checking amount of commitments"),
-           ),
+-              .expect("failed to create witness despite checking amount of commitments"),
+-          ),
++          // shlosilo vendor patch (Z5.1): the witness borrows the caller's
++          // commitments — the Zeroizing wrapper (wipe-on-drop of the old owned
++          // Vec) is retired; wipe duty lives at the call site (forms owner).
++          &witness_res
++            .expect("failed to create witness despite checking amount of commitments"),
          )
          .expect("failed to prove Bulletproof::Plus despite ensuring statement/witness consistency"),
      ))
@@ -1928,7 +1936,7 @@ diff -ruN a/src/original/inner_product.rs b/src/original/inner_product.rs
  }
 diff -ruN a/src/original/mod.rs b/src/original/mod.rs
 --- a/src/original/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/original/mod.rs	2026-09-03 13:43:46.800301095 +0800
++++ b/src/original/mod.rs	2026-09-26 08:48:20.886410944 +0800
 @@ -2,24 +2,24 @@
  
  use std_shims::{sync::LazyLock, vec::Vec};
@@ -1961,7 +1969,7 @@ diff -ruN a/src/original/mod.rs b/src/original/mod.rs
  
  include!(concat!(env!("OUT_DIR"), "/generators.rs"));
  
-@@ -27,361 +27,390 @@
+@@ -27,361 +27,392 @@
  
  #[derive(Clone, Debug)]
  pub(crate) struct AggregateRangeStatement<'a> {
@@ -1969,10 +1977,13 @@ diff -ruN a/src/original/mod.rs b/src/original/mod.rs
 +    commitments: &'a [EdwardsPoint],
  }
  
++// shlosilo vendor patch (Z5.1, 2026-09-25): borrows the caller's commitments
++// (was: owned Vec); wipe duty at the call site. Memory-management only.
  #[derive(Clone)]
- pub(crate) struct AggregateRangeWitness {
+-pub(crate) struct AggregateRangeWitness {
 -  commitments: Vec<Commitment>,
-+    commitments: Vec<Commitment>,
++pub(crate) struct AggregateRangeWitness<'a> {
++    commitments: &'a [Commitment],
  }
  
  /// Internal structure representing a Bulletproof, as defined by Monero.
@@ -2011,11 +2022,12 @@ diff -ruN a/src/original/mod.rs b/src/original/mod.rs
 -  }
  }
  
- impl AggregateRangeWitness {
+-impl AggregateRangeWitness {
 -  pub(crate) fn new(commitments: Vec<Commitment>) -> Option<Self> {
 -    if commitments.is_empty() || (commitments.len() > MAX_COMMITMENTS) {
 -      None?;
-+    pub(crate) fn new(commitments: Vec<Commitment>) -> Option<Self> {
++impl<'a> AggregateRangeWitness<'a> {
++    pub(crate) fn new(commitments: &'a [Commitment]) -> Option<Self> {
 +        if commitments.is_empty() || (commitments.len() > MAX_COMMITMENTS) {
 +            None?;
 +        }
@@ -2145,7 +2157,7 @@ diff -ruN a/src/original/mod.rs b/src/original/mod.rs
 +    pub(crate) fn prove(
 +        self,
 +        rng: &mut (impl RngCore + CryptoRng),
-+        witness: AggregateRangeWitness,
++        witness: AggregateRangeWitness<'_>,
 +    ) -> Option<AggregateRangeProof> {
 +        if self.commitments
 +            != witness
@@ -2669,11 +2681,12 @@ diff -ruN a/src/original/mod.rs b/src/original/mod.rs
  }
 diff -ruN a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.rs
 --- a/src/plus/aggregate_range_proof.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/aggregate_range_proof.rs	2026-09-10 04:01:20.370967026 +0800
++++ b/src/plus/aggregate_range_proof.rs	2026-09-26 08:47:37.058650871 +0800
 @@ -1,21 +1,47 @@
  use std_shims::{vec, vec::Vec};
  
 -use rand_core::{RngCore, CryptoRng};
+-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 +// shlosilo vendor patch: prove-phase timing (device perf decomposition).
 +// No-op stubs keep call sites unconditional; real impl is feature-gated.
 +#[cfg(feature = "prove-timing")]
@@ -2698,14 +2711,14 @@ diff -ruN a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.r
 +use timing_noop::{
 +    PhaseProbe, PHASE_A_HAT, PHASE_INITIAL_MULTISEXP, PHASE_TOTAL, PHASE_WIP_ROUNDS,
 +};
-+
-+use rand_core::{CryptoRng, RngCore};
- use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
  
 -use curve25519_dalek::{traits::Identity as _, scalar::Scalar, edwards::EdwardsPoint};
-+use curve25519_dalek::{edwards::EdwardsPoint, scalar::Scalar, traits::Identity as _};
++use rand_core::{CryptoRng, RngCore};
++use zeroize::{Zeroize, Zeroizing};
  
 -use monero_ed25519::{Point, CompressedPoint, Commitment};
++use curve25519_dalek::{edwards::EdwardsPoint, scalar::Scalar, traits::Identity as _};
++
 +use monero_ed25519::{Commitment, CompressedPoint, Point};
  
  use crate::{
@@ -2729,7 +2742,7 @@ diff -ruN a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.r
  };
  
  const INV_EIGHT: monero_ed25519::Scalar = monero_ed25519::Scalar::INV_EIGHT;
-@@ -23,249 +49,291 @@
+@@ -23,249 +49,296 @@
  // Figure 3 of the Bulletproofs+ Paper
  #[derive(Clone, Debug)]
  pub(crate) struct AggregateRangeStatement<'a> {
@@ -2739,23 +2752,31 @@ diff -ruN a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.r
 +    V: &'a [EdwardsPoint],
  }
  
- #[derive(Clone, Zeroize, ZeroizeOnDrop)]
- pub(crate) struct AggregateRangeWitness(Vec<Commitment>);
- 
- impl AggregateRangeWitness {
--  pub(crate) fn new(commitments: Vec<Commitment>) -> Option<Self> {
--    if commitments.is_empty() || (commitments.len() > MAX_COMMITMENTS) {
--      return None;
--    }
-+    pub(crate) fn new(commitments: Vec<Commitment>) -> Option<Self> {
+-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+-pub(crate) struct AggregateRangeWitness(Vec<Commitment>);
++// shlosilo vendor patch (Z5.1, 2026-09-25): the witness BORROWS the caller's
++// commitments (was: owned Vec). Memory-management only — the proof math is
++// untouched. Wipe duty for the mask-bearing Commitment values moves to the
++// caller: the API contract is "commitments live in a Zeroizing owner at the
++// call site" (forms keeps one; the old Vec-witness ZeroizeOnDrop is retired).
++#[derive(Clone)]
++pub(crate) struct AggregateRangeWitness<'a>(&'a [Commitment]);
++
++impl<'a> AggregateRangeWitness<'a> {
++    pub(crate) fn new(commitments: &'a [Commitment]) -> Option<Self> {
 +        if commitments.is_empty() || (commitments.len() > MAX_COMMITMENTS) {
 +            return None;
 +        }
  
+-impl AggregateRangeWitness {
+-  pub(crate) fn new(commitments: Vec<Commitment>) -> Option<Self> {
+-    if commitments.is_empty() || (commitments.len() > MAX_COMMITMENTS) {
+-      return None;
++        Some(AggregateRangeWitness(commitments))
+     }
+-
 -    Some(AggregateRangeWitness(commitments))
 -  }
-+        Some(AggregateRangeWitness(commitments))
-+    }
  }
  
  /// Internal structure representing a Bulletproof+, as defined by Monero.
@@ -2807,6 +2828,62 @@ diff -ruN a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.r
 -    d_j.append(&mut ScalarVector::powers(Scalar::from(2u8), COMMITMENT_BITS).0);
 -    for _ in 0 .. (m - j) * COMMITMENT_BITS {
 -      d_j.push(Scalar::ZERO);
+-    }
+-    ScalarVector(d_j)
+-  }
+-
+-  fn compute_A_hat(
+-    mut V: PointVector,
+-    generators: &BpPlusGenerators,
+-    transcript: &mut Scalar,
+-    A: CompressedPoint,
+-  ) -> Option<AHatComputation> {
+-    let (y, z) = Self::transcript_A(transcript, A);
+-
+-    let A = A.decompress().map(Point::into).as_ref().map(EdwardsPoint::mul_by_cofactor)?;
+-
+-    while V.len() < padded_pow_of_2(V.len()) {
+-      V.0.push(EdwardsPoint::identity());
+-    }
+-    let mn = V.len() * COMMITMENT_BITS;
+-
+-    // 2, 4, 6, 8... powers of z, of length equivalent to the amount of commitments
+-    let mut z_pow = Vec::with_capacity(V.len());
+-    // z**2
+-    z_pow.push(z * z);
+-
+-    let mut d = ScalarVector::new(mn);
+-    for j in 1 ..= V.len() {
+-      z_pow.push(
+-        *z_pow.last().expect("couldn't get last z_pow despite always being non-empty") * z_pow[0],
+-      );
+-      d = d + &(Self::d_j(j, V.len()) * (z_pow[j - 1]));
+-    }
+-
+-    let mut ascending_y = ScalarVector(vec![y]);
+-    for i in 1 .. d.len() {
+-      ascending_y.0.push(ascending_y[i - 1] * y);
+-    }
+-    let y_pows = ascending_y.clone().sum();
+-
+-    let mut descending_y = ascending_y.clone();
+-    descending_y.0.reverse();
+-
+-    let d_descending_y = d.clone() * &descending_y;
+-    let d_descending_y_plus_z = d_descending_y + z;
+-
+-    let y_mn_plus_one = descending_y[0] * y;
+-
+-    let mut commitment_accum = EdwardsPoint::identity();
+-    for (j, commitment) in V.0.iter().enumerate() {
+-      commitment_accum += *commitment * z_pow[j];
+-    }
+-
+-    let neg_z = -z;
+-    let mut A_terms = Vec::with_capacity((generators.len() * 2) + 2);
+-    for (i, d_y_z) in d_descending_y_plus_z.0.iter().enumerate() {
+-      A_terms.push((neg_z, generators.generator(GeneratorsList::GBold, i)));
+-      A_terms.push((*d_y_z, generators.generator(GeneratorsList::HBold, i)));
 +    pub(crate) fn new(V: &'a [EdwardsPoint]) -> Option<Self> {
 +        if V.is_empty() || (V.len() > MAX_COMMITMENTS) {
 +            return None;
@@ -3059,62 +3136,6 @@ diff -ruN a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.r
 +        };
 +        WipStatement::new(generators, A_hat, y).verify(rng, verifier, transcript, proof.wip)
      }
--    ScalarVector(d_j)
--  }
--
--  fn compute_A_hat(
--    mut V: PointVector,
--    generators: &BpPlusGenerators,
--    transcript: &mut Scalar,
--    A: CompressedPoint,
--  ) -> Option<AHatComputation> {
--    let (y, z) = Self::transcript_A(transcript, A);
--
--    let A = A.decompress().map(Point::into).as_ref().map(EdwardsPoint::mul_by_cofactor)?;
--
--    while V.len() < padded_pow_of_2(V.len()) {
--      V.0.push(EdwardsPoint::identity());
--    }
--    let mn = V.len() * COMMITMENT_BITS;
--
--    // 2, 4, 6, 8... powers of z, of length equivalent to the amount of commitments
--    let mut z_pow = Vec::with_capacity(V.len());
--    // z**2
--    z_pow.push(z * z);
--
--    let mut d = ScalarVector::new(mn);
--    for j in 1 ..= V.len() {
--      z_pow.push(
--        *z_pow.last().expect("couldn't get last z_pow despite always being non-empty") * z_pow[0],
--      );
--      d = d + &(Self::d_j(j, V.len()) * (z_pow[j - 1]));
--    }
--
--    let mut ascending_y = ScalarVector(vec![y]);
--    for i in 1 .. d.len() {
--      ascending_y.0.push(ascending_y[i - 1] * y);
--    }
--    let y_pows = ascending_y.clone().sum();
--
--    let mut descending_y = ascending_y.clone();
--    descending_y.0.reverse();
--
--    let d_descending_y = d.clone() * &descending_y;
--    let d_descending_y_plus_z = d_descending_y + z;
--
--    let y_mn_plus_one = descending_y[0] * y;
--
--    let mut commitment_accum = EdwardsPoint::identity();
--    for (j, commitment) in V.0.iter().enumerate() {
--      commitment_accum += *commitment * z_pow[j];
--    }
--
--    let neg_z = -z;
--    let mut A_terms = Vec::with_capacity((generators.len() * 2) + 2);
--    for (i, d_y_z) in d_descending_y_plus_z.0.iter().enumerate() {
--      A_terms.push((neg_z, generators.generator(GeneratorsList::GBold, i)));
--      A_terms.push((*d_y_z, generators.generator(GeneratorsList::HBold, i)));
--    }
 -    A_terms.push((y_mn_plus_one, commitment_accum));
 -    A_terms.push((
 -      ((y_pows * z) - (d.sum() * y_mn_plus_one * z) - (y_pows * (z * z))),
@@ -4748,7 +4769,7 @@ diff -ruN a/src/scalar_vector.rs b/src/scalar_vector.rs
  }
 diff -ruN a/src/tests/mod.rs b/src/tests/mod.rs
 --- a/src/tests/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/tests/mod.rs	2026-09-03 13:43:46.806301123 +0800
++++ b/src/tests/mod.rs	2026-09-26 08:46:13.159675929 +0800
 @@ -1,57 +1,57 @@
 -use rand_core::{RngCore as _, OsRng};
 +use rand_core::{OsRng, RngCore as _};
@@ -4817,9 +4838,9 @@ diff -ruN a/src/tests/mod.rs b/src/tests/mod.rs
 +                    .collect::<Vec<_>>();
 +
 +                let bp = if $plus {
-+                    Bulletproof::prove_plus(&mut OsRng, commitments.clone()).unwrap()
++                    Bulletproof::prove_plus(&mut OsRng, &commitments).unwrap()
 +                } else {
-+                    Bulletproof::prove(&mut OsRng, commitments.clone()).unwrap()
++                    Bulletproof::prove(&mut OsRng, &commitments).unwrap()
 +                };
 +
 +                let commitments = commitments
@@ -4842,9 +4863,9 @@ diff -ruN a/src/tests/mod.rs b/src/tests/mod.rs
 +            }
 +            assert_eq!(
 +                (if $plus {
-+                    Bulletproof::prove_plus(&mut OsRng, commitments)
++                    Bulletproof::prove_plus(&mut OsRng, &commitments)
 +                } else {
-+                    Bulletproof::prove(&mut OsRng, commitments)
++                    Bulletproof::prove(&mut OsRng, &commitments)
 +                })
 +                .unwrap_err(),
 +                BulletproofError::TooManyCommitments,
@@ -5231,7 +5252,7 @@ diff -ruN a/src/tests/original/mod.rs b/src/tests/original/mod.rs
  }
 diff -ruN a/src/tests/plus/aggregate_range_proof.rs b/src/tests/plus/aggregate_range_proof.rs
 --- a/src/tests/plus/aggregate_range_proof.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/tests/plus/aggregate_range_proof.rs	2026-09-03 13:43:46.808301133 +0800
++++ b/src/tests/plus/aggregate_range_proof.rs	2026-09-26 08:46:13.159705957 +0800
 @@ -1,26 +1,31 @@
 -use rand_core::{RngCore as _, OsRng};
 +use rand_core::{OsRng, RngCore as _};
@@ -5271,7 +5292,7 @@ diff -ruN a/src/tests/plus/aggregate_range_proof.rs b/src/tests/plus/aggregate_r
 +            .map(|commitment| commitment.commit().into())
 +            .collect::<Vec<_>>();
 +        let statement = AggregateRangeStatement::new(&commitment_points).unwrap();
-+        let witness = AggregateRangeWitness::new(commitments).unwrap();
++        let witness = AggregateRangeWitness::new(&commitments).unwrap();
  
 -    let proof = statement.clone().prove(&mut OsRng, &witness).unwrap();
 -    statement.verify(&mut OsRng, &mut verifier, proof);
