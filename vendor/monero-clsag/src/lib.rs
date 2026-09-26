@@ -5,7 +5,6 @@
 
 use core::ops::Deref as _;
 use std_shims::{
-  vec,
   vec::Vec,
   io::{self, Read, Write},
 };
@@ -30,7 +29,7 @@ use monero_io::*;
 use monero_ed25519::*;
 
 mod decoys;
-pub(crate) use decoys::MAX_RING_SIZE;
+pub(crate) use decoys::{MAX_RING_SIZE, RING_MAX};
 pub use decoys::Decoys;
 
 #[cfg(feature = "multisig")]
@@ -63,6 +62,9 @@ pub enum ClsagError {
   /// The ring was invalid (such as being too small or too large).
   #[error("invalid ring")]
   InvalidRing,
+  /// The sign batch or its output slice exceeded `MAX_INPUTS` / its length.
+  #[error("too many inputs for the sign batch/output capacity")]
+  TooManyInputs,
   /// The discrete logarithm of the key, scaling G, wasn't equivalent to the signing ring member.
   #[error("invalid commitment")]
   InvalidKey,
@@ -82,6 +84,17 @@ pub enum ClsagError {
   #[error("invalid c1")]
   InvalidC1,
 }
+
+// shlosilo vendor patch (clsag 方案 A, 2026-09-26): zero-semantic-change
+// de-alloc. Ring/inputs-sized scratch moves to fixed-capacity `heapless::Vec`
+// (RING_MAX) or caller-provided output slices; over-capacity is always an
+// EXPLICIT error. Crypto semantics untouched.
+use core::mem::MaybeUninit;
+use heapless::Vec as HVec;
+
+/// Max inputs per `sign` batch (per-input scratch bound). Over-capacity is an
+/// explicit `ClsagError::TooManyInputs`.
+pub const MAX_INPUTS: usize = 16;
 
 /// Context on the input being signed for.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
@@ -142,33 +155,35 @@ fn core(
   const ROUND: &[u8]  =       b"round";
   const PREFIX_AGG_0_LEN: usize = PREFIX.len() + AGG_0.len();
 
-  let mut to_hash = Vec::with_capacity(((2 * n) + 5) * 32);
-  to_hash.extend(PREFIX);
-  to_hash.extend(AGG_0);
+  // shlosilo vendor patch: fixed-capacity transcript buffer. `n <= RING_MAX`
+  // is enforced by `Decoys`; the exact worst case is ((2 * 16) + 5) * 32.
+  let mut to_hash = HVec::<u8, { ((2 * RING_MAX) + 5) * 32 }>::new();
+  to_hash.extend(PREFIX.iter().copied());
+  to_hash.extend(AGG_0.iter().copied());
   to_hash.extend([0; 32 - PREFIX_AGG_0_LEN]);
 
-  let mut P = Vec::with_capacity(n);
+  let mut P = HVec::<_, RING_MAX>::new();
   for member in ring {
-    P.push(member[0].into());
-    to_hash.extend(member[0].compress().to_bytes());
+    P.push(member[0].into()).ok().unwrap();
+    to_hash.extend(member[0].compress().to_bytes().iter().copied());
   }
 
-  let mut C = Vec::with_capacity(n);
+  let mut C = HVec::<_, RING_MAX>::new();
   for member in ring {
-    C.push(member[1].into() - pseudo_out);
-    to_hash.extend(member[1].compress().to_bytes());
+    C.push(member[1].into() - pseudo_out).ok().unwrap();
+    to_hash.extend(member[1].compress().to_bytes().iter().copied());
   }
 
-  to_hash.extend(I.compress().to_bytes());
+  to_hash.extend(I.compress().to_bytes().iter().copied());
   match A_c1 {
     Mode::Sign { .. } => {
-      to_hash.extend(D_inv_eight.compress().to_bytes());
+      to_hash.extend(D_inv_eight.compress().to_bytes().iter().copied());
     }
     Mode::Verify { D_serialized, .. } => {
-      to_hash.extend(D_serialized.to_bytes());
+      to_hash.extend(D_serialized.to_bytes().iter().copied());
     }
   }
-  to_hash.extend(pseudo_out.compress().to_bytes());
+  to_hash.extend(pseudo_out.compress().to_bytes().iter().copied());
   // mu_P with agg_0
   let mu_P = Scalar::hash(&to_hash).into();
   // mu_C with agg_1
@@ -182,8 +197,8 @@ fn core(
   }
   // Unfortunately, it's I D pseudo_out instead of pseudo_out I D, meaning this needs to be
   // truncated just to add it back
-  to_hash.extend(pseudo_out.compress().to_bytes());
-  to_hash.extend(msg_hash);
+  to_hash.extend(pseudo_out.compress().to_bytes().iter().copied());
+  to_hash.extend(msg_hash.iter().copied());
 
   // Configure the loop based on if we're signing or verifying
   let start;
@@ -196,8 +211,8 @@ fn core(
       start = signer_index + 1;
       end = signer_index + n;
       iter_end = 2 * n;
-      to_hash.extend(A.compress().to_bytes());
-      to_hash.extend(AH.compress().to_bytes());
+      to_hash.extend(A.compress().to_bytes().iter().copied());
+      to_hash.extend(AH.compress().to_bytes().iter().copied());
       c = Scalar::hash(&to_hash).into();
     }
 
@@ -245,8 +260,8 @@ fn core(
     };
 
     to_hash.truncate(((2 * n) + 3) * 32);
-    to_hash.extend(L.compress().to_bytes());
-    to_hash.extend(R.compress().to_bytes());
+    to_hash.extend(L.compress().to_bytes().iter().copied());
+    to_hash.extend(R.compress().to_bytes().iter().copied());
     c.conditional_assign(&Scalar::hash(&to_hash).into(), in_range);
 
     c1.conditional_assign(&c, in_range & i.ct_eq(&(n - 1)));
@@ -257,12 +272,15 @@ fn core(
 }
 
 /// The CLSAG signature, as used in Monero.
-#[derive(Clone, PartialEq, Eq, Debug, Zeroize)]
+///
+/// shlosilo vendor patch: `Zeroize` is manual (the `s` field is a fixed-capacity
+/// `heapless::Vec`, wiped element-wise + cleared — `Vec::zeroize` parity).
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Clsag {
   /// The difference of the commitment randomnesses, scaling the key image generator.
   pub D: CompressedPoint,
   /// The responses for each ring member.
-  pub s: Vec<Scalar>,
+  pub s: HVec<Scalar, RING_MAX>,
   /// The first challenge in the ring.
   pub c1: Scalar,
 }
@@ -272,6 +290,17 @@ struct ClsagSignCore {
   pseudo_out: EdwardsPoint,
   key_challenge: DScalar,
   challenged_mask: DScalar,
+}
+
+impl Zeroize for Clsag {
+  fn zeroize(&mut self) {
+    self.D.zeroize();
+    for response in self.s.iter_mut() {
+      response.zeroize();
+    }
+    self.s.clear();
+    self.c1.zeroize();
+  }
 }
 
 impl Clsag {
@@ -293,9 +322,9 @@ impl Clsag {
 
     let H = Point::biased_hash(input.decoys.signer_ring_members()[0].compress().to_bytes()).into();
     let D = H * mask_delta;
-    let mut s = Vec::with_capacity(input.decoys.ring().len());
+    let mut s = HVec::new();
     for _ in 0 .. input.decoys.ring().len() {
-      s.push(Scalar::random(rng));
+      s.push(Scalar::random(rng)).ok().unwrap();
     }
     let ((D, c_p, c_c), c1) = core(
       input.decoys.ring(),
@@ -342,16 +371,26 @@ impl Clsag {
   /// WARNING: This follows the Fiat-Shamir transcript format used by the Monero protocol, which
   /// makes assumptions on what has already been transcripted and bound to within `msg_hash`. Do
   /// not use this if you don't know what you're doing.
+  /// shlosilo vendor patch: `inputs` is a mutable borrow (the secrets are
+  /// wiped in place at the same point the old consuming API zeroized them, and
+  /// the `Zeroizing` drop is the caller's backstop), results are written into
+  /// `out` (the caller owns the output memory), and the filled count is
+  /// returned. Over-capacity (`inputs.len() > MAX_INPUTS` or
+  /// `out.len() < inputs.len()`) is an EXPLICIT `ClsagError::TooManyInputs`.
   pub fn sign<R: RngCore + CryptoRng>(
     rng: &mut R,
-    mut inputs: Vec<(Zeroizing<Scalar>, ClsagContext)>,
+    inputs: &mut [(Zeroizing<Scalar>, ClsagContext)],
     sum_outputs: Scalar,
     msg_hash: [u8; 32],
-  ) -> Result<Vec<(Clsag, Point)>, ClsagError> {
+    out: &mut [MaybeUninit<(Clsag, Point)>],
+  ) -> Result<usize, ClsagError> {
+    if (inputs.len() > MAX_INPUTS) || (out.len() < inputs.len()) {
+      Err(ClsagError::TooManyInputs)?;
+    }
     // Create the key images
-    let mut key_image_generators = vec![];
-    let mut key_images = vec![];
-    for input in &inputs {
+    let mut key_image_generators = HVec::<_, MAX_INPUTS>::new();
+    let mut key_images = HVec::<_, MAX_INPUTS>::new();
+    for input in inputs.iter() {
       let key = Zeroizing::new((*input.0.deref()).into());
       let public_key = input.1.decoys.signer_ring_members()[0].into();
 
@@ -361,11 +400,11 @@ impl Clsag {
       }
 
       let key_image_generator = Point::biased_hash(public_key.compress().0).into();
-      key_image_generators.push(key_image_generator);
-      key_images.push(key_image_generator * key.deref());
+      key_image_generators.push(key_image_generator).ok().unwrap();
+      key_images.push(key_image_generator * key.deref()).ok().unwrap();
     }
 
-    let mut res = Vec::with_capacity(inputs.len());
+    let mut filled = 0usize;
     let mut sum_pseudo_outs = DScalar::ZERO;
     for i in 0 .. inputs.len() {
       let mask;
@@ -411,19 +450,28 @@ impl Clsag {
       inputs[i].0.zeroize();
       nonce.zeroize();
 
-      debug_assert!(clsag
-        .verify(
-          inputs[i].1.decoys.ring().iter().map(|r| [r[0].compress(), r[1].compress()]).collect(),
-          &key_images[i].compress().to_bytes().into(),
-          &pseudo_out.compress().to_bytes().into(),
-          &msg_hash
-        )
-        .is_ok());
+      // shlosilo vendor patch: manual fill (heapless `FromIterator` silently
+      // truncates over capacity — never used here).
+      debug_assert!({
+        let mut ring_c = HVec::<[CompressedPoint; 2], RING_MAX>::new();
+        for r in inputs[i].1.decoys.ring() {
+          ring_c.push([r[0].compress(), r[1].compress()]).ok().unwrap();
+        }
+        clsag
+          .verify(
+            &ring_c,
+            &key_images[i].compress().to_bytes().into(),
+            &pseudo_out.compress().to_bytes().into(),
+            &msg_hash
+          )
+          .is_ok()
+      });
 
-      res.push((clsag, Point::from(pseudo_out)));
+      out[i].write((clsag, Point::from(pseudo_out)));
+      filled += 1;
     }
 
-    Ok(res)
+    Ok(filled)
   }
 
   /// Verify a CLSAG signature for the provided context.
@@ -433,7 +481,7 @@ impl Clsag {
   /// not use this if you don't know what you're doing.
   pub fn verify(
     &self,
-    ring: Vec<[CompressedPoint; 2]>,
+    ring: &[[CompressedPoint; 2]],
     I: &CompressedPoint,
     pseudo_out: &CompressedPoint,
     msg_hash: &[u8; 32],
@@ -491,10 +539,15 @@ impl Clsag {
 
   /// Read a CLSAG.
   pub fn read<R: Read>(decoys: usize, r: &mut R) -> io::Result<Clsag> {
-    Ok(Clsag {
-      s: read_raw_vec(Scalar::read, decoys, r)?,
-      c1: Scalar::read(r)?,
-      D: CompressedPoint::read(r)?,
-    })
+    // shlosilo vendor patch: fixed-capacity decode (mirrors `read_raw_vec`'s
+    // wire format) with an EXPLICIT bound error instead of Vec allocation.
+    if decoys > RING_MAX {
+      Err(io::Error::other("Decoys ring too large"))?;
+    }
+    let mut s = HVec::<Scalar, RING_MAX>::new();
+    for _ in 0 .. decoys {
+      s.push(Scalar::read(r)?).ok().unwrap();
+    }
+    Ok(Clsag { s, c1: Scalar::read(r)?, D: CompressedPoint::read(r)? })
   }
 }

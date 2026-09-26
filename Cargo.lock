@@ -1565,6 +1565,7 @@ name = "monero-clsag"
 version = "0.1.0"
 dependencies = [
  "curve25519-dalek",
+ "heapless 0.7.17",
  "monero-ed25519",
  "monero-io",
  "rand_core 0.6.4",

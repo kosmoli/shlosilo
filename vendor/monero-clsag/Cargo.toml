@@ -105,6 +105,11 @@ default-features = false
 version = "0.6"
 default-features = false
 
+# shlosilo vendor patch (clsag 方案 A): fixed-capacity ring storage.
+[dependencies.heapless]
+version = "0.7"
+default-features = false
+
 [dependencies.std-shims]
 version = "0.1.5"
 default-features = false

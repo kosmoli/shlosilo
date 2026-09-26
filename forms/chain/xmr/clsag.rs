@@ -21,7 +21,6 @@
 
 extern crate alloc;
 
-use alloc::vec;
 use alloc::vec::Vec;
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::traits::IsIdentity;
@@ -175,7 +174,7 @@ pub fn sign<R: RngCore + CryptoRng>(
         .collect::<Result<Vec<_>>>()?;
 
     let offsets: Vec<u64> = (1..=ring.len() as u64).collect();
-    let decoys = Decoys::new(offsets, real_index, ring_points)
+    let decoys = Decoys::new(&offsets, real_index, &ring_points)
         .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
     // 3. Construct the Commitment for ClsagContext (real commitment: real_mask + amount)
@@ -193,19 +192,21 @@ pub fn sign<R: RngCore + CryptoRng>(
     let pseudo_mask_scalar = scalar_from_reduced_bytes(pseudo_mask)?;
     let sum_outputs = pseudo_mask_scalar;
 
-    // 6. Sign
-    let signed = Clsag::sign(
+    // 6. Sign (clsag 方案 A: borrowed inputs + caller-owned output slot)
+    let mut sign_out = [core::mem::MaybeUninit::uninit()];
+    let filled = Clsag::sign(
         rng,
-        vec![(Zeroizing::new(spend_scalar), ctx)],
+        &mut [(Zeroizing::new(spend_scalar), ctx)],
         sum_outputs,
         *msg_hash,
+        &mut sign_out,
     )
     .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-
-    let (clsag, pseudo_out) = signed
-        .into_iter()
-        .next()
-        .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    if filled != 1 {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    // SAFETY: sign() initialized exactly `filled` leading entries; checked == 1.
+    let (clsag, pseudo_out) = unsafe { sign_out[0].assume_init_read() };
 
     // 7. Compute the key image: I = x * Hp(P) where P = one-time output pubkey
     let spend_scalar_dalek = scalar_to_dalek(input_skey)?;
@@ -307,7 +308,7 @@ pub fn verify(
 
     // 5. verify
     clsag
-        .verify(ring_compressed, &image, &pseudo, msg_hash)
+        .verify(&ring_compressed, &image, &pseudo, msg_hash)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
     Ok(())
@@ -343,6 +344,7 @@ fn _check_is_identity() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use rand_core::OsRng;
 
     fn rand_scalar<R: RngCore + CryptoRng>(_rng: &mut R) -> [u8; 32] {
