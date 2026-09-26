@@ -37,15 +37,26 @@ unsafe impl GlobalAlloc for Counting {
                     return;
                 }
                 flag.set(true);
-                if CAPTURED.fetch_add(1, Ordering::Relaxed) >= 200 {
+                // spread the sample over the WHOLE sign (every 20th alloc):
+                // a leading window hides the bulk wherever it sits later.
+                let k = CAPTURED.fetch_add(1, Ordering::Relaxed);
+                if !k.is_multiple_of(20) {
                     flag.set(false);
                     return;
                 }
                 let bt = std::backtrace::Backtrace::force_capture();
+                // innermost-first: the true site is the first frame in OUR
+                // code (shlosilo OR the vendored crates) — earlier revisions
+                // filtered to `shlosilo::` only and flattened every vendor
+                // site into the outer wrapper.
                 let frame = format!("{bt}")
                     .lines()
                     .skip(1)
-                    .filter(|l| l.contains("shlosilo::"))
+                    .filter(|l| {
+                        l.contains("shlosilo::")
+                            || l.contains("monero_bulletproofs::")
+                            || l.contains("monero_clsag::")
+                    })
                     .take(2)
                     .map(|l| l.trim())
                     .collect::<Vec<&str>>()
@@ -267,7 +278,7 @@ fn alloc_site_histogram() {
     }
     use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into;
     use shlosilo::chain::xmr::unsigned_txset::{
-        decrypt_unsigned_txset, deserialize_unsigned_tx, TxDestinationEntry, TxConstructionData,
+        decrypt_unsigned_txset, deserialize_unsigned_tx, TxConstructionData, TxDestinationEntry,
         TxSourceEntry, UnsignedTxPools,
     };
     let spend_sk = env_hex("SHLOSILO_TEST_XMR_SPEND_SK").expect("env");
@@ -322,8 +333,11 @@ fn alloc_site_histogram() {
         .iter()
         .map(|(k, v)| (*v, k.clone()))
         .collect();
-    sites.sort_by(|a, b| b.0.cmp(&a.0));
-    println!("=== Z4 alloc site histogram (top 25 of {}) ===", sites.len());
+    sites.sort_by_key(|(n, _)| std::cmp::Reverse(*n));
+    println!(
+        "=== Z4 alloc site histogram (top 25 of {}) ===",
+        sites.len()
+    );
     for (n, site) in sites.iter().take(25) {
         println!("{n:>6}  {site}");
     }

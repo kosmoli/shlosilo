@@ -76,13 +76,14 @@ pub(crate) fn multiexp(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
 }
 
 fn multiexp_terms(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
-    let mut buf_scalars = Vec::with_capacity(pairs.len());
-    let mut buf_points = Vec::with_capacity(pairs.len());
-    for (scalar, point) in pairs {
-        buf_scalars.push(scalar);
-        buf_points.push(point);
-    }
-    EdwardsPoint::multiscalar_mul(buf_scalars, buf_points)
+    // shlosilo vendor patch (Z5.3 cut 1, 2026-09-26): feed dalek directly
+    // from the pair slice — `multiscalar_mul` accepts `impl Borrow<_>`
+    // iterators, so the old per-call scalar/point staging Vecs were pure
+    // waste. Same math, byte-identical outputs (the pins hold).
+    EdwardsPoint::multiscalar_mul(
+        pairs.iter().map(|(scalar, _)| scalar),
+        pairs.iter().map(|(_, point)| point),
+    )
 }
 
 /// shlosilo bench (feature `prove-timing`): replicate the WIP L/R call
@@ -137,13 +138,12 @@ fn bench_scalar(seed: usize) -> Scalar {
 }
 
 pub(crate) fn multiexp_vartime(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
-    let mut buf_scalars = Vec::with_capacity(pairs.len());
-    let mut buf_points = Vec::with_capacity(pairs.len());
-    for (scalar, point) in pairs {
-        buf_scalars.push(scalar);
-        buf_points.push(point);
-    }
-    EdwardsPoint::vartime_multiscalar_mul(buf_scalars, buf_points)
+    // shlosilo vendor patch (Z5.3 cut 2): same Borrow-iterator feed as
+    // `multiexp_terms` — the staging Vecs were pure waste.
+    EdwardsPoint::vartime_multiscalar_mul(
+        pairs.iter().map(|(scalar, _)| scalar),
+        pairs.iter().map(|(_, point)| point),
+    )
 }
 
 /*
