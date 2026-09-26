@@ -1,0 +1,2028 @@
+diff -ruN a/benches/dalek_benchmarks.rs b/benches/dalek_benchmarks.rs
+--- a/benches/dalek_benchmarks.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/benches/dalek_benchmarks.rs	1970-01-01 08:00:00.000000000 +0800
+@@ -1,366 +0,0 @@
+-#![allow(non_snake_case)]
+-
+-use rand::{rngs::OsRng, thread_rng};
+-
+-use criterion::{
+-    criterion_main, measurement::Measurement, BatchSize, BenchmarkGroup, BenchmarkId, Criterion,
+-};
+-
+-use curve25519_dalek::constants;
+-use curve25519_dalek::scalar::Scalar;
+-
+-static BATCH_SIZES: [usize; 5] = [1, 2, 4, 8, 16];
+-static MULTISCALAR_SIZES: [usize; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 384, 512, 768, 1024];
+-
+-mod edwards_benches {
+-    use super::*;
+-
+-    use curve25519_dalek::edwards::EdwardsPoint;
+-
+-    fn compress<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        let B = &constants::ED25519_BASEPOINT_POINT;
+-        c.bench_function("EdwardsPoint compression", move |b| b.iter(|| B.compress()));
+-    }
+-
+-    fn decompress<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        let B_comp = &constants::ED25519_BASEPOINT_COMPRESSED;
+-        c.bench_function("EdwardsPoint decompression", move |b| {
+-            b.iter(|| B_comp.decompress().unwrap())
+-        });
+-    }
+-
+-    fn consttime_fixed_base_scalar_mul<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        let s = Scalar::from(897987897u64).invert();
+-        c.bench_function("Constant-time fixed-base scalar mul", move |b| {
+-            b.iter(|| EdwardsPoint::mul_base(&s))
+-        });
+-    }
+-
+-    fn consttime_variable_base_scalar_mul<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        let B = &constants::ED25519_BASEPOINT_POINT;
+-        let s = Scalar::from(897987897u64).invert();
+-        c.bench_function("Constant-time variable-base scalar mul", move |b| {
+-            b.iter(|| B * s)
+-        });
+-    }
+-
+-    fn vartime_double_base_scalar_mul<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        c.bench_function("Variable-time aA+bB, A variable, B fixed", |bench| {
+-            let mut rng = thread_rng();
+-            let A = EdwardsPoint::mul_base(&Scalar::random(&mut rng));
+-            bench.iter_batched(
+-                || (Scalar::random(&mut rng), Scalar::random(&mut rng)),
+-                |(a, b)| EdwardsPoint::vartime_double_scalar_mul_basepoint(&a, &A, &b),
+-                BatchSize::SmallInput,
+-            );
+-        });
+-    }
+-
+-    pub(crate) fn edwards_benches() {
+-        let mut c = Criterion::default();
+-        let mut g = c.benchmark_group("edwards benches");
+-
+-        compress(&mut g);
+-        decompress(&mut g);
+-        consttime_fixed_base_scalar_mul(&mut g);
+-        consttime_variable_base_scalar_mul(&mut g);
+-        vartime_double_base_scalar_mul(&mut g);
+-    }
+-}
+-
+-mod multiscalar_benches {
+-    use super::*;
+-
+-    use curve25519_dalek::edwards::EdwardsPoint;
+-    use curve25519_dalek::edwards::VartimeEdwardsPrecomputation;
+-    use curve25519_dalek::traits::MultiscalarMul;
+-    use curve25519_dalek::traits::VartimeMultiscalarMul;
+-    use curve25519_dalek::traits::VartimePrecomputedMultiscalarMul;
+-
+-    fn construct_scalars(n: usize) -> Vec<Scalar> {
+-        let mut rng = thread_rng();
+-        (0..n).map(|_| Scalar::random(&mut rng)).collect()
+-    }
+-
+-    fn construct_points(n: usize) -> Vec<EdwardsPoint> {
+-        let mut rng = thread_rng();
+-        (0..n)
+-            .map(|_| EdwardsPoint::mul_base(&Scalar::random(&mut rng)))
+-            .collect()
+-    }
+-
+-    fn consttime_multiscalar_mul<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        for multiscalar_size in &MULTISCALAR_SIZES {
+-            c.bench_with_input(
+-                BenchmarkId::new(
+-                    "Constant-time variable-base multiscalar multiplication",
+-                    *multiscalar_size,
+-                ),
+-                &multiscalar_size,
+-                |b, &&size| {
+-                    let points = construct_points(size);
+-                    // This is supposed to be constant-time, but we might as well
+-                    // rerandomize the scalars for every call just in case.
+-                    b.iter_batched(
+-                        || construct_scalars(size),
+-                        |scalars| EdwardsPoint::multiscalar_mul(&scalars, &points),
+-                        BatchSize::SmallInput,
+-                    );
+-                },
+-            );
+-        }
+-    }
+-
+-    fn vartime_multiscalar_mul<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        for multiscalar_size in &MULTISCALAR_SIZES {
+-            c.bench_with_input(
+-                BenchmarkId::new(
+-                    "Variable-time variable-base multiscalar multiplication",
+-                    *multiscalar_size,
+-                ),
+-                &multiscalar_size,
+-                |b, &&size| {
+-                    let points = construct_points(size);
+-                    // Rerandomize the scalars for every call to prevent
+-                    // false timings from better caching (e.g., the CPU
+-                    // cache lifts exactly the right table entries for the
+-                    // benchmark into the highest cache levels).
+-                    b.iter_batched(
+-                        || construct_scalars(size),
+-                        |scalars| EdwardsPoint::vartime_multiscalar_mul(&scalars, &points),
+-                        BatchSize::SmallInput,
+-                    );
+-                },
+-            );
+-        }
+-    }
+-
+-    fn vartime_precomputed_pure_static<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        for multiscalar_size in &MULTISCALAR_SIZES {
+-            c.bench_with_input(
+-                BenchmarkId::new(
+-                    "Variable-time fixed-base multiscalar multiplication",
+-                    multiscalar_size,
+-                ),
+-                &multiscalar_size,
+-                move |b, &&total_size| {
+-                    let static_size = total_size;
+-
+-                    let static_points = construct_points(static_size);
+-                    let precomp = VartimeEdwardsPrecomputation::new(static_points);
+-                    // Rerandomize the scalars for every call to prevent
+-                    // false timings from better caching (e.g., the CPU
+-                    // cache lifts exactly the right table entries for the
+-                    // benchmark into the highest cache levels).
+-                    b.iter_batched(
+-                        || construct_scalars(static_size),
+-                        |scalars| precomp.vartime_multiscalar_mul(scalars),
+-                        BatchSize::SmallInput,
+-                    );
+-                },
+-            );
+-        }
+-    }
+-
+-    fn vartime_precomputed_helper<M: Measurement>(
+-        c: &mut BenchmarkGroup<M>,
+-        dynamic_fraction: f64,
+-    ) {
+-        for multiscalar_size in &MULTISCALAR_SIZES {
+-            let bench_id = BenchmarkId::new(
+-                "Variable-time mixed-base",
+-                format!(
+-                    "(size: {:?}), ({:.0}pct dyn)",
+-                    multiscalar_size,
+-                    100.0 * dynamic_fraction
+-                ),
+-            );
+-
+-            c.bench_with_input(bench_id, &multiscalar_size, move |b, &&total_size| {
+-                let dynamic_size = ((total_size as f64) * dynamic_fraction) as usize;
+-                let static_size = total_size - dynamic_size;
+-
+-                let static_points = construct_points(static_size);
+-                let dynamic_points = construct_points(dynamic_size);
+-                let precomp = VartimeEdwardsPrecomputation::new(static_points);
+-                // Rerandomize the scalars for every call to prevent
+-                // false timings from better caching (e.g., the CPU
+-                // cache lifts exactly the right table entries for the
+-                // benchmark into the highest cache levels).  Timings
+-                // should be independent of points so we don't
+-                // randomize them.
+-                b.iter_batched(
+-                    || {
+-                        (
+-                            construct_scalars(static_size),
+-                            construct_scalars(dynamic_size),
+-                        )
+-                    },
+-                    |(static_scalars, dynamic_scalars)| {
+-                        precomp.vartime_mixed_multiscalar_mul(
+-                            &static_scalars,
+-                            &dynamic_scalars,
+-                            &dynamic_points,
+-                        )
+-                    },
+-                    BatchSize::SmallInput,
+-                );
+-            });
+-        }
+-    }
+-
+-    pub(crate) fn multiscalar_benches() {
+-        let mut c = Criterion::default();
+-        let mut g = c.benchmark_group("multiscalar benches");
+-
+-        consttime_multiscalar_mul(&mut g);
+-        vartime_multiscalar_mul(&mut g);
+-        vartime_precomputed_pure_static(&mut g);
+-
+-        let dynamic_fracs = [0.0, 0.2, 0.5];
+-
+-        for frac in dynamic_fracs.iter() {
+-            vartime_precomputed_helper(&mut g, *frac);
+-        }
+-    }
+-}
+-
+-mod ristretto_benches {
+-    use super::*;
+-    use curve25519_dalek::ristretto::RistrettoPoint;
+-
+-    fn compress<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        c.bench_function("RistrettoPoint compression", |b| {
+-            let B = &constants::RISTRETTO_BASEPOINT_POINT;
+-            b.iter(|| B.compress())
+-        });
+-    }
+-
+-    fn decompress<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        c.bench_function("RistrettoPoint decompression", |b| {
+-            let B_comp = &constants::RISTRETTO_BASEPOINT_COMPRESSED;
+-            b.iter(|| B_comp.decompress().unwrap())
+-        });
+-    }
+-
+-    fn double_and_compress_batch<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        for batch_size in &BATCH_SIZES {
+-            c.bench_with_input(
+-                BenchmarkId::new("Batch Ristretto double-and-encode", *batch_size),
+-                &batch_size,
+-                |b, &&size| {
+-                    let mut rng = OsRng;
+-                    let points: Vec<RistrettoPoint> = (0..size)
+-                        .map(|_| RistrettoPoint::random(&mut rng))
+-                        .collect();
+-                    b.iter(|| RistrettoPoint::double_and_compress_batch(&points));
+-                },
+-            );
+-        }
+-    }
+-
+-    pub(crate) fn ristretto_benches() {
+-        let mut c = Criterion::default();
+-        let mut g = c.benchmark_group("ristretto benches");
+-
+-        compress(&mut g);
+-        decompress(&mut g);
+-        double_and_compress_batch(&mut g);
+-    }
+-}
+-
+-mod montgomery_benches {
+-    use super::*;
+-    use curve25519_dalek::montgomery::MontgomeryPoint;
+-
+-    fn montgomery_ladder<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        c.bench_function("Montgomery pseudomultiplication", |b| {
+-            let B = constants::X25519_BASEPOINT;
+-            let s = Scalar::from(897987897u64).invert();
+-            b.iter(|| B * s);
+-        });
+-    }
+-
+-    fn consttime_fixed_base_scalar_mul<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        let s = Scalar::from(897987897u64).invert();
+-        c.bench_function("Constant-time fixed-base scalar mul", move |b| {
+-            b.iter(|| MontgomeryPoint::mul_base(&s))
+-        });
+-    }
+-
+-    pub(crate) fn montgomery_benches() {
+-        let mut c = Criterion::default();
+-        let mut g = c.benchmark_group("montgomery benches");
+-
+-        montgomery_ladder(&mut g);
+-        consttime_fixed_base_scalar_mul(&mut g);
+-    }
+-}
+-
+-mod scalar_benches {
+-    use super::*;
+-
+-    fn scalar_arith<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        let mut rng = thread_rng();
+-
+-        c.bench_function("Scalar inversion", |b| {
+-            let s = Scalar::from(897987897u64).invert();
+-            b.iter(|| s.invert());
+-        });
+-        c.bench_function("Scalar addition", |b| {
+-            b.iter_batched(
+-                || (Scalar::random(&mut rng), Scalar::random(&mut rng)),
+-                |(a, b)| a + b,
+-                BatchSize::SmallInput,
+-            );
+-        });
+-        c.bench_function("Scalar subtraction", |b| {
+-            b.iter_batched(
+-                || (Scalar::random(&mut rng), Scalar::random(&mut rng)),
+-                |(a, b)| a - b,
+-                BatchSize::SmallInput,
+-            );
+-        });
+-        c.bench_function("Scalar multiplication", |b| {
+-            b.iter_batched(
+-                || (Scalar::random(&mut rng), Scalar::random(&mut rng)),
+-                |(a, b)| a * b,
+-                BatchSize::SmallInput,
+-            );
+-        });
+-    }
+-
+-    fn batch_scalar_inversion<M: Measurement>(c: &mut BenchmarkGroup<M>) {
+-        for batch_size in &BATCH_SIZES {
+-            c.bench_with_input(
+-                BenchmarkId::new("Batch scalar inversion", *batch_size),
+-                &batch_size,
+-                |b, &&size| {
+-                    let mut rng = OsRng;
+-                    let scalars: Vec<Scalar> =
+-                        (0..size).map(|_| Scalar::random(&mut rng)).collect();
+-                    b.iter(|| {
+-                        let mut s = scalars.clone();
+-                        Scalar::batch_invert(&mut s);
+-                    });
+-                },
+-            );
+-        }
+-    }
+-
+-    pub(crate) fn scalar_benches() {
+-        let mut c = Criterion::default();
+-        let mut g = c.benchmark_group("scalar benches");
+-
+-        scalar_arith(&mut g);
+-        batch_scalar_inversion(&mut g);
+-    }
+-}
+-
+-criterion_main!(
+-    scalar_benches::scalar_benches,
+-    montgomery_benches::montgomery_benches,
+-    ristretto_benches::ristretto_benches,
+-    edwards_benches::edwards_benches,
+-    multiscalar_benches::multiscalar_benches,
+-);
+diff -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml	1970-01-01 08:00:01.000000000 +0800
++++ b/Cargo.toml	2026-09-15 12:12:11.258716490 +0800
+@@ -127,6 +127,16 @@
+ version = "0.4.0"
+ 
+ [features]
++# shlosilo vendor patch: exposes the raw extended-coordinate generator cache
++# serialize/reconstruct pair (to_raw_extended_bytes / from_raw_extended_bytes).
++generator-cache = []
++# shlosilo vendor patch: device perf-bench entry points (see src/perf_bench.rs).
++perf-bench = []
++# shlosilo vendor patch: force the CT-Straus core out-of-line (per-site
++# inline(never); the bp5 attribution says the sign path's instantiation
++# over-inlines into ~10 KB / 3 KB stack vs the bench's compact ~2.5 KB
++# shape, which runs faster). Opt-in; forgebox never activates it.
++straus-compact-codegen = []
+ alloc = ["zeroize?/alloc"]
+ default = [
+     "alloc",
+diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
+--- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
++++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
+@@ -1,73 +0,0 @@
+-[package]
+-name = "curve25519-dalek"
+-# Before incrementing:
+-# - update CHANGELOG
+-# - update README if required by semver
+-# - if README was updated, also update module documentation in src/lib.rs
+-version = "4.1.3"
+-edition = "2021"
+-rust-version = "1.60.0"
+-authors = ["Isis Lovecruft <isis@patternsinthevoid.net>",
+-           "Henry de Valence <hdevalence@hdevalence.ca>"]
+-readme = "README.md"
+-license = "BSD-3-Clause"
+-repository = "https://github.com/dalek-cryptography/curve25519-dalek/tree/main/curve25519-dalek"
+-homepage = "https://github.com/dalek-cryptography/curve25519-dalek"
+-documentation = "https://docs.rs/curve25519-dalek"
+-categories = ["cryptography", "no-std"]
+-keywords = ["cryptography", "crypto", "ristretto", "curve25519", "ristretto255"]
+-description = "A pure-Rust implementation of group operations on ristretto255 and Curve25519"
+-exclude = [
+-    "**/.gitignore",
+-    ".gitignore",
+-]
+-
+-[package.metadata.docs.rs]
+-rustdoc-args = [
+-    "--html-in-header", "docs/assets/rustdoc-include-katex-header.html",
+-    "--cfg", "docsrs",
+-]
+-features = ["serde", "rand_core", "digest", "legacy_compatibility", "group-bits"]
+-
+-[dev-dependencies]
+-sha2 = { version = "0.10", default-features = false }
+-bincode = "1"
+-criterion = { version = "0.5", features = ["html_reports"] }
+-hex = "0.4.2"
+-rand = "0.8"
+-rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
+-
+-[build-dependencies]
+-rustc_version = "0.4.0"
+-
+-[[bench]]
+-name = "dalek_benchmarks"
+-harness = false
+-required-features = ["alloc", "rand_core"]
+-
+-[dependencies]
+-cfg-if = "1"
+-ff = { version = "0.13", default-features = false, optional = true }
+-group = { version = "0.13", default-features = false, optional = true }
+-rand_core = { version = "0.6.4", default-features = false, optional = true }
+-digest = { version = "0.10", default-features = false, optional = true }
+-subtle = { version = "2.3.0", default-features = false }
+-serde = { version = "1.0", default-features = false, optional = true, features = ["derive"] }
+-zeroize = { version = "1", default-features = false, optional = true }
+-
+-[target.'cfg(target_arch = "x86_64")'.dependencies]
+-cpufeatures = "0.2.6"
+-
+-[target.'cfg(curve25519_dalek_backend = "fiat")'.dependencies]
+-fiat-crypto = { version = "0.2.1", default-features = false }
+-
+-[features]
+-default = ["alloc", "precomputed-tables", "zeroize"]
+-alloc = ["zeroize?/alloc"]
+-precomputed-tables = []
+-legacy_compatibility = []
+-group = ["dep:group", "rand_core"]
+-group-bits = ["group", "ff/bits"]
+-
+-[target.'cfg(all(not(curve25519_dalek_backend = "fiat"), not(curve25519_dalek_backend = "serial"), target_arch = "x86_64"))'.dependencies]
+-curve25519-dalek-derive = { version = "0.1", path = "../curve25519-dalek-derive" }
+diff -ruN a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md	2006-07-24 09:21:28.000000000 +0800
++++ b/CHANGELOG.md	1970-01-01 08:00:00.000000000 +0800
+@@ -1,268 +0,0 @@
+-# Changelog
+-
+-Entries are listed in reverse chronological order per undeprecated
+-major series.
+-
+-## 4.x series
+-
+-### 4.1.3
+-
+-* Security: Fix timing leak in Scalar subtraction on u32, u64, fiat_u32, and fiat_u64 backends
+-* Fix assorted new warnings and lints from rustc and clippy
+-
+-### 4.1.2
+-
+-* Fix nightly SIMD build
+-
+-### 4.1.1
+-
+-* Mark `constants::BASEPOINT_ORDER` deprecated from pub API
+-* Add implementation for `PrimeFieldBits`, behind the `group-bits` feature flag.
+-
+-### 4.1.0
+-
+-* Add arbitrary integer multiplication with `MontgomeryPoint::mul_bits_be`
+-* Add implementations of the `ff` and `group` traits, behind the `group` feature flag
+-* Adapt to new types introduced in `fiat-crypto` 0.2 in `fiat` backend
+-* Fix `no_std` for `fiat` backend
+-* Mark `Scalar::clamp_integer` as `#[must_use]`
+-* Various documentation fixes
+-
+-### 4.0.0
+-
+-#### Breaking changes
+-
+-* Update the MSRV from 1.41 to 1.60
+-* Provide SemVer policy
+-* Make `digest` an optional feature
+-* Make `rand_core` an optional feature
+-* Remove `std` feature flag
+-* Remove `nightly` feature flag
+-* Automatic serial backend selection between `u32` and `u64` over the default `u32`
+-* Backend `simd` is now automatically selected over `serial` when a supported CPU is detected
+-* Backend override is now via cfg(curve25519_dalek_backend) over additive features
+-* Provide override to select `u32` or `u64` backend via cfg(curve25519_dalek_bits)
+-* Replace methods `Scalar::{zero, one}` with constants `Scalar::{ZERO, ONE}`
+-* Deprecate `EdwardsPoint::hash_from_bytes` and rename it `EdwardsPoint::nonspec_map_to_curve`
+-* Require including a new trait, `use curve25519_dalek::traits::BasepointTable`
+-  whenever using `EdwardsBasepointTable` or `RistrettoBasepointTable`
+-* `Scalar::from_canonical_bytes` now returns `CtOption`
+-* `Scalar::is_canonical` now returns `Choice`
+-* Remove `Scalar::from_bytes_clamped` and `Scalar::reduce`
+-* Deprecate and feature-gate `Scalar::from_bits` behind `legacy_compatibility`
+-
+-#### Other changes
+-
+-* Add `EdwardsPoint::{mul_base, mul_base_clamped}`, `MontgomeryPoint::{mul_base, mul_base_clamped}`, and `BasepointTable::mul_base_clamped`
+-* Add `precomputed-tables` feature
+-* Update Maintenance Policies for SemVer
+-* Migrate documentation to docs.rs hosted
+-* Fix backend documentation generation
+-* Fix panic when `Ristretto::double_and_compress_batch` receives the identity point
+-* Remove `byteorder` dependency
+-* Update the `criterion` dependency to 0.4.0
+-* Include README.md into crate Documentation
+-* Update the `rand_core` dependency version and the `rand` dev-dependency
+-  version.
+-* Relax the `zeroize` dependency to `^1`
+-* Update the edition from 2015 to 2021
+-
+-## 3.x series
+-
+-### 3.2.0
+-
+-* Add support for getting the identity element for the Montgomery
+-  form of curve25519, which is useful in certain protocols for
+-  checking contributory behaviour in derivation of shared secrets.
+-
+-### 3.1.2
+-
+-* Revert a commit which mistakenly removed support for `zeroize` traits
+-  for some point types, as well as elligator2 support for Edwards points.
+-
+-### 3.1.1
+-
+-* Fix documentation builds on nightly due to syntax changes to
+-  `#![cfg_attr(feature = "nightly", doc = include_str!("../README.md"))]`.
+-
+-### 3.1.0
+-
+-* Add support for the Elligator2 encoding for Edwards points.
+-* Add two optional formally-verified field arithmetic backends which
+-  use the Fiat Crypto project's Rust code, which is generated from
+-  proofs of functional correctness checked by the Coq theorem proving
+-  system.
+-* Add support for additional sizes of precomputed tables for basepoint
+-  scalar multiplication.
+-* Fix an unused import.
+-* Add support for using the `zeroize` traits with all point types.
+-  Note that points are not automatically zeroized on Drop, but that
+-  consumers of `curve25519-dalek` should call these methods manually
+-  when needed.
+-
+-### 3.0.3
+-
+-* Fix documentation builds on nightly due to syntax changes to
+-  `#![cfg_attr(feature = "nightly", doc = include_str!("../README.md"))]`.
+-
+-### 3.0.2
+-
+-* Multiple documentation typo fixes.
+-* Fixes to make using `alloc`+`no_std` possible for stable Rust.
+-
+-### 3.0.1
+-
+-* Update the optional `packed-simd` dependency to rely on a newer,
+-  maintained version of the `packed-simd-2` crate.
+-
+-### 3.0.0
+-
+-#### Breaking changes
+-
+-* Update the `digest` dependency to `0.9`.  This requires a major version
+-  because the `digest` traits are part of the public API, but there are
+-  otherwise no changes to the API.
+-
+-## 2.x series
+-
+-### 2.1.3
+-
+-* Fix documentation builds on nightly due to syntax changes to
+-  `#![fg_attr(feature = "nightly", doc = include_str!("../README.md"))]`.
+-
+-### 2.1.2
+-
+-* Multiple documentation typo fixes.
+-* Fix `alloc` feature working with stable rust.
+-
+-### 2.1.1
+-
+-* Update the optional `packed-simd` dependency to rely on a newer,
+-  maintained version of the `packed-simd-2` crate.
+-
+-### 2.1.0
+-
+-* Make `Scalar::from_bits` a `const fn`, allowing its use in `const` contexts.
+-
+-### 2.0.0
+-
+-The only significant change is the data model change to the `serde` feature;
+-besides the `rand_core` version bump, there are no other user-visible changes.
+-
+-#### Breaking changes
+-
+-* Fix a data modeling error in the `serde` feature pointed out by Trevor Perrin
+-  which caused points and scalars to be serialized with length fields rather
+-  than as fixed-size 32-byte arrays.  This is a breaking change, but it fixes
+-  compatibility with `serde-json` and ensures that the `serde-bincode` encoding
+-  matches the conventional encoding for X/Ed25519.
+-* Update `rand_core` to `0.5`, allowing use with new `rand` versions.
+-
+-#### Other changes
+-
+-* Switch from `clear_on_drop` to `zeroize` (by Tony Arcieri).
+-* Require `subtle = ^2.2.1` and remove the note advising nightly Rust, which is
+-  no longer required as of that version of `subtle`.  See the `subtle`
+-  changelog for more details.
+-* Update `README.md` for `2.x` series.
+-* Remove the `build.rs` hack which loaded the entire crate into its own
+-  `build.rs` to generate constants, and keep the constants in the source code.
+-
+-## 1.x series
+-
+-### 1.2.6
+-
+-* Fixes to make using alloc+no_std possible for stable Rust.
+-
+-### 1.2.5
+-
+-* Update the optional `packed-simd` dependency to rely on a newer,
+-  maintained version of the `packed-simd-2` crate.
+-
+-### 1.2.4
+-
+-* Specify a semver bound for `clear_on_drop` rather than an exact version,
+-  addressing an issue where changes to inline assembly in rustc prevented
+-  `clear_on_drop` from working without an update.
+-
+-### 1.2.3
+-
+-* Fix an issue identified by a Quarkslab audit (and Jack Grigg), where manually
+-  constructing unreduced `Scalar` values, as needed for X/Ed25519, and then
+-  performing scalar/scalar arithmetic could compute incorrect results.
+-* Switch to upstream Rust intrinsics for the IFMA backend now that they exist in
+-  Rust and don't need to be defined locally.
+-* Ensure that the NAF computation works correctly, even for parameters never
+-  used elsewhere in the codebase.
+-* Minor refactoring to EdwardsPoint decompression.
+-* Fix broken links in documentation.
+-* Fix compilation on nightly broken due to changes to the `#[doc(include)]` path
+-  root (not quite correctly done in 1.2.2).
+-
+-### 1.2.2
+-
+-* Fix a typo in an internal doc-comment.
+-* Add the "crypto" tag to crate metadata.
+-* Fix compilation on nightly broken due to changes to the `#[doc(include)]` path
+-  root.
+-
+-### 1.2.1
+-
+-* Fix a bug in bucket index calculations in the Pippenger multiscalar algorithm
+-  for very large input sizes.
+-* Add a more extensive randomized multiscalar multiplication consistency check
+-  to the test suite to prevent regressions.
+-* Ensure that that multiscalar and NAF computations work correctly on extremal
+-  `Scalar` values constructed via `from_bits`.
+-
+-### 1.2.0
+-
+-* New multiscalar multiplication algorithm with better performance for
+-  large problem sizes.  The backend algorithm is selected
+-  transparently using the size hints of the input iterators, so no
+-  changes are required for client crates to start using it.
+-* Equality of Edwards points is now checked in projective coordinates.
+-* Serde can now be used with `no_std`.
+-
+-### 1.1.4
+-
+-* Fix typos in documentation comments.
+-* Remove unnecessary `Default` bound on `Scalar::from_hash`.
+-
+-### 1.1.3
+-
+-* Reverts the change in 1.1.0 to allow owned and borrowed RNGs, which caused a breakage due to a subtle interaction with ownership rules.  (The `RngCore` change is retained).
+-
+-### 1.1.2
+-
+-* Disabled KaTeX on `docs.rs` pending proper [support upstream](https://github.com/rust-lang/docs.rs/issues/302).
+-
+-## 1.1.1
+-
+-* Fixed an issue related to `#[cfg(rustdoc)]` which prevented documenting multiple backends.
+-
+-### 1.1.0
+-
+-* Adds support for precomputation for multiscalar multiplication.
+-* Restructures the internal source tree into `serial` and `vector` backends (no change to external API).
+-* Adds a new IFMA backend which sets speed records.
+-* The `avx2_backend` feature is now an alias for the `simd_backend` feature, which autoselects an appropriate vector backend (currently AVX2 or IFMA).
+-* Replaces the `rand` dependency with `rand_core`.
+-* Generalizes trait bounds on `RistrettoPoint::random()` and `Scalar::random()` to allow owned and borrowed RNGs and to allow `RngCore` instead of `Rng`.
+-
+-### 1.0.3
+-
+-* Adds `ConstantTimeEq` implementation for compressed points.
+-
+-### 1.0.2
+-
+-* Fixes a typo in the naming of variables in Ristretto formulas (no change to functionality).
+-
+-### 1.0.1
+-
+-* Depends on the stable `2.0` version of `subtle` instead of `2.0.0-pre.0`.
+-
+-### 1.0.0
+-
+-Initial stable release.  Yanked due to a dependency mistake (see above).
+-
+diff -ruN a/Makefile b/Makefile
+--- a/Makefile	2006-07-24 09:21:28.000000000 +0800
++++ b/Makefile	1970-01-01 08:00:00.000000000 +0800
+@@ -1,11 +0,0 @@
+-FEATURES := serde rand_core digest legacy_compatibility
+-
+-export RUSTDOCFLAGS := \
+-	--cfg docsrs \
+-	--html-in-header docs/assets/rustdoc-include-katex-header.html
+-
+-doc:
+-	cargo +nightly rustdoc --features "$(FEATURES)"
+-
+-doc-internal:
+-	cargo +nightly rustdoc --features "$(FEATURES)" -- --document-private-items
+diff -ruN a/src/backend/serial/curve_models/mod.rs b/src/backend/serial/curve_models/mod.rs
+--- a/src/backend/serial/curve_models/mod.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/backend/serial/curve_models/mod.rs	2026-09-15 12:12:11.259428252 +0800
+@@ -335,6 +335,7 @@
+     /// \\( \mathbb P\^3 \\) model.
+     ///
+     /// This costs \\(3 \mathrm M + 1 \mathrm S\\).
++    #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
+     pub fn as_extended(&self) -> EdwardsPoint {
+         EdwardsPoint {
+             X: &self.X * &self.Z,
+@@ -362,6 +363,7 @@
+     /// \\) model to the \\( \mathbb P\^3 \\) model.
+     ///
+     /// This costs \\(4 \mathrm M \\).
++    #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
+     pub fn as_extended(&self) -> EdwardsPoint {
+         EdwardsPoint {
+             X: &self.X * &self.T,
+@@ -378,6 +380,7 @@
+ 
+ impl ProjectivePoint {
+     /// Double this point: return self + self
++    #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
+     pub fn double(&self) -> CompletedPoint {
+         // Double()
+         let XX = self.X.square();
+@@ -411,6 +414,7 @@
+ impl<'a, 'b> Add<&'b ProjectiveNielsPoint> for &'a EdwardsPoint {
+     type Output = CompletedPoint;
+ 
++    #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
+     fn add(self, other: &'b ProjectiveNielsPoint) -> CompletedPoint {
+         let Y_plus_X = &self.Y + &self.X;
+         let Y_minus_X = &self.Y - &self.X;
+diff -ruN a/src/edwards.rs b/src/edwards.rs
+--- a/src/edwards.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/edwards.rs	2026-09-07 17:47:40.291904384 +0800
+@@ -505,6 +505,44 @@
+ // ------------------------------------------------------------------------
+ 
+ impl EdwardsPoint {
++    #[cfg(feature = "generator-cache")]
++    /// shlosilo vendor patch (2026-09-07): raw extended-coordinate serialization.
++    ///
++    /// Serializes (X, Y, Z, T) as 4 x 32-byte little-endian limbs (128 bytes total).
++    /// Used by the BP+ generator cache to persist decompressed generators without any
++    /// inversion or square root; the load side rebuilds points losslessly via
++    /// [`EdwardsPoint::from_raw_extended_bytes`].
++    pub fn to_raw_extended_bytes(&self) -> [u8; 128] {
++        let mut out = [0u8; 128];
++        out[0..32].copy_from_slice(&self.X.as_bytes());
++        out[32..64].copy_from_slice(&self.Y.as_bytes());
++        out[64..96].copy_from_slice(&self.Z.as_bytes());
++        out[96..128].copy_from_slice(&self.T.as_bytes());
++        out
++    }
++
++    #[cfg(feature = "generator-cache")]
++    /// shlosilo vendor patch (2026-09-07): direct reconstruction from raw extended
++    /// coordinates. NOT a decompression path: no curve membership check, no sqrt.
++    /// Callers MUST only pass coordinates that came from a validated point (e.g.
++    /// produced by [`EdwardsPoint::to_raw_extended_bytes`] on a decompressed generator).
++    pub fn from_raw_extended_bytes(bytes: &[u8; 128]) -> EdwardsPoint {
++        let mut x = [0u8; 32];
++        let mut y = [0u8; 32];
++        let mut z = [0u8; 32];
++        let mut t = [0u8; 32];
++        x.copy_from_slice(&bytes[0..32]);
++        y.copy_from_slice(&bytes[32..64]);
++        z.copy_from_slice(&bytes[64..96]);
++        t.copy_from_slice(&bytes[96..128]);
++        EdwardsPoint {
++            X: FieldElement::from_bytes(&x),
++            Y: FieldElement::from_bytes(&y),
++            Z: FieldElement::from_bytes(&z),
++            T: FieldElement::from_bytes(&t),
++        }
++    }
++
+     /// Convert to a ProjectiveNielsPoint
+     pub(crate) fn as_projective_niels(&self) -> ProjectiveNielsPoint {
+         ProjectiveNielsPoint {
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/lib.rs	2026-09-15 12:19:39.951277086 +0800
+@@ -104,6 +104,12 @@
+ // Generic code for window lookups
+ pub(crate) mod window;
+ 
++// Device perf-bench entry points (feature `perf-bench`; shlosilo vendor patch).
++/// Device primitive benchmarks (fmul / CT select / madd / chunked CT Straus /
++/// vartime 2-term fold). shlosilo vendor patch, feature-gated.
++#[cfg(feature = "perf-bench")]
++pub mod perf_bench;
++
+ pub use crate::{
+     edwards::EdwardsPoint, montgomery::MontgomeryPoint, ristretto::RistrettoPoint, scalar::Scalar,
+ };
+diff -ruN a/src/perf_bench.rs b/src/perf_bench.rs
+--- a/src/perf_bench.rs	1970-01-01 08:00:00.000000000 +0800
++++ b/src/perf_bench.rs	2026-09-15 01:18:59.942233270 +0800
+@@ -0,0 +1,196 @@
++// -*- mode: rust; -*-
++//
++// This file is part of curve25519-dalek (shlosilo vendor patch).
++//
++// Device perf-bench entry points (feature `perf-bench`).
++//
++// shlosilo perf session: measures raw primitive costs on the target device so
++// the remaining optimization space is quantified from hardware numbers instead
++// of fitted models. The C caller (helloworld smoke task) times each call with
++// its own millisecond tick; every function returns a digest and `black_box`
++// forces the benchmarked values to be materialized, so nothing is eliminated.
++//
++// Feature-gated: zero code when off (production .a does not enable it).
++
++#![allow(clippy::needless_range_loop)]
++
++use core::hint::black_box;
++use core::iter::repeat;
++
++use crate::constants::ED25519_BASEPOINT_POINT;
++use crate::edwards::EdwardsPoint;
++use crate::field::FieldElement;
++use crate::scalar::Scalar;
++use crate::traits::{Identity, MultiscalarMul as _, VartimeMultiscalarMul as _};
++use crate::window::LookupTable;
++
++use crate::backend::serial::curve_models::ProjectiveNielsPoint;
++
++/// Affine-niels table variant of `select`: 3 field elements per entry
++/// (96 bytes) instead of 5 (160 bytes), so the constant-time scan and the
++/// conditional selects shrink by 40%. Candidate for the CT Straus hot loop;
++/// costs one batch inversion to build the table (not timed here).
++pub fn select_affine(iters: u32) -> u64 {
++    let table = LookupTable::<crate::backend::serial::curve_models::AffineNielsPoint>::from(
++        &ED25519_BASEPOINT_POINT,
++    );
++    let mut acc: u64 = 0;
++    for i in 0..iters {
++        let d = ((i % 15) as i8) - 7;
++        let t = table.select(black_box(d));
++        black_box(t);
++        acc = acc.wrapping_add(1);
++    }
++    black_box(acc)
++}
++
++/// Affine variant of `madd`: select + mixed add + convert.
++pub fn madd_affine(iters: u32) -> u64 {
++    let table = LookupTable::<crate::backend::serial::curve_models::AffineNielsPoint>::from(
++        &ED25519_BASEPOINT_POINT,
++    );
++    let mut q = ED25519_BASEPOINT_POINT;
++    for i in 0..iters {
++        let d = ((i % 15) as i8) - 7;
++        let r = table.select(d);
++        q = (&q + &r).as_extended();
++    }
++    q.compress().to_bytes()[0] as u64
++}
++
++/// Field multiplication `x = x * y` iterated `iters` times.
++/// Digest: first byte of the final element.
++pub fn fmul(iters: u32) -> u64 {
++    let mut x = FieldElement::from_bytes(&[0x42u8; 32]);
++    let y = FieldElement::from_bytes(&[0x17u8; 32]);
++    for _ in 0..iters {
++        x = &x * &y;
++    }
++    black_box(x.as_bytes()[0]) as u64
++}
++
++/// Field squaring `x = x.square()` iterated `iters` times.
++pub fn fsq(iters: u32) -> u64 {
++    let mut x = FieldElement::from_bytes(&[0x42u8; 32]);
++    for _ in 0..iters {
++        x = x.square();
++    }
++    black_box(x.as_bytes()[0]) as u64
++}
++
++/// One constant-time table select per iteration (8 ProjectiveNiels entries,
++/// all scanned — the CT Straus inner select).
++pub fn select(iters: u32) -> u64 {
++    let table = LookupTable::<ProjectiveNielsPoint>::from(&ED25519_BASEPOINT_POINT);
++    let mut acc: u64 = 0;
++    for i in 0..iters {
++        let d = ((i % 15) as i8) - 7;
++        let t = table.select(black_box(d));
++        black_box(t);
++        acc = acc.wrapping_add(1);
++    }
++    black_box(acc)
++}
++
++/// One mixed addition per iteration: `EdwardsPoint + ProjectiveNiels -> as_extended`
++/// (the CT Straus per-step arithmetic, sans select).
++pub fn madd(iters: u32) -> u64 {
++    let table = LookupTable::<ProjectiveNielsPoint>::from(&ED25519_BASEPOINT_POINT);
++    let mut q = ED25519_BASEPOINT_POINT;
++    for i in 0..iters {
++        let d = ((i % 15) as i8) - 7;
++        let r = table.select(d);
++        q = (&q + &r).as_extended();
++    }
++    q.compress().to_bytes()[0] as u64
++}
++
++/// Quadruple doubling `q = q.mul_by_pow_2(4)` per iteration (the CT Straus
++/// per-j-iteration doubling chain).
++pub fn quadruple(iters: u32) -> u64 {
++    let mut q = ED25519_BASEPOINT_POINT;
++    for _ in 0..iters {
++        q = q.mul_by_pow_2(4);
++    }
++    q.compress().to_bytes()[0] as u64
++}
++
++/// One constant-time Straus multiexp over `n` terms (the A2 chunk shape;
++/// n = 36 on device). Inputs vary per iteration so nothing hoists.
++pub fn ct_chunk(n: u32, iters: u32) -> u64 {
++    let n = n as u64;
++    let mut acc = EdwardsPoint::identity();
++    for it in 0..iters {
++        let scalars = (0..n).map(|i| Scalar::from(i + 3 + (it as u64) * 7));
++        let points = repeat(ED25519_BASEPOINT_POINT).take(n as usize);
++        acc = &acc + &EdwardsPoint::multiscalar_mul(scalars, points);
++    }
++    acc.compress().to_bytes()[0] as u64
++}
++
++/// One variable-time 2-term multiexp per iteration (the bp6 fold shape:
++/// 256 iterations of NAF-5 within dalek). Inputs vary per iteration.
++pub fn vartime_2term(iters: u32) -> u64 {
++    let mut acc = EdwardsPoint::identity();
++    for it in 0..iters {
++        let s1 = Scalar::from(0x1111u64 + it as u64);
++        let s2 = Scalar::from(0x9999u64 + (it as u64) * 3);
++        acc = &acc
++            + &EdwardsPoint::vartime_multiscalar_mul(
++                [black_box(s1), black_box(s2)],
++                [ED25519_BASEPOINT_POINT, ED25519_BASEPOINT_POINT],
++            );
++    }
++    acc.compress().to_bytes()[0] as u64
++}
++
++/// Deterministic full-width scalar (the in-situ magnitude class: products of
++/// witness scalars, unlike the small `Scalar::from` values used above).
++fn full_width_scalar(seed: u64) -> Scalar {
++    let mut b = [0u8; 32];
++    let mut k = (seed as u8).wrapping_mul(31).wrapping_add(7);
++    for x in b.iter_mut() {
++        k = k.wrapping_mul(97).wrapping_add(53);
++        *x = k;
++    }
++    Scalar::from_bytes_mod_order(b)
++}
++
++/// Chunked constant-time multiexp with full-width scalars, mirroring the
++/// BP+ helper (monero-bulletproofs `core.rs::multiexp`): the n-term sum is
++/// split into chunks of `chunk` terms, each running its own Straus
++/// `multiscalar_mul`. Use this (not `ct_chunk`) to model the in-situ cost:
++/// the signing workload's scalars are full-width.
++pub fn ct_chunked(n: u32, chunk: u32, iters: u32) -> u64 {
++    let n = u64::from(n);
++    let chunk = u64::from(chunk).max(1);
++    let mut acc = EdwardsPoint::identity();
++    for it in 0..iters {
++        let mut off = 0;
++        while off < n {
++            let take = (n - off).min(chunk);
++            let scalars = (0..take).map(|i| full_width_scalar(i + off + u64::from(it) * 1000));
++            let points = repeat(ED25519_BASEPOINT_POINT).take(take as usize);
++            acc = &acc + &EdwardsPoint::multiscalar_mul(scalars, points);
++            off += take;
++        }
++    }
++    acc.compress().to_bytes()[0] as u64
++}
++
++/// One variable-time 2-term multiexp per iteration with full-width scalars
++/// (the bp6 fold shape; `vartime_2term` feeds ~17-bit scalars, which skip
++/// nearly every NAF addition and under-count the real fold cost).
++pub fn vartime_2term_fullwidth(iters: u32) -> u64 {
++    let s1 = full_width_scalar(0x1111);
++    let s2 = full_width_scalar(0x9999);
++    let mut acc = EdwardsPoint::identity();
++    for _ in 0..iters {
++        acc = &acc
++            + &EdwardsPoint::vartime_multiscalar_mul(
++                [black_box(s1), black_box(s2)],
++                [ED25519_BASEPOINT_POINT, ED25519_BASEPOINT_POINT],
++            );
++    }
++    acc.compress().to_bytes()[0] as u64
++}
+diff -ruN a/src/scalar.rs b/src/scalar.rs
+--- a/src/scalar.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/scalar.rs	2026-09-15 12:12:11.259129016 +0800
+@@ -982,6 +982,7 @@
+     /// The largest value that can be decomposed like this is just over \\(2^{255}\\). Thus, in
+     /// order to not error, the top bit MUST NOT be set, i.e., `Self` MUST be less than
+     /// \\(2^{255}\\).
++    #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
+     pub(crate) fn as_radix_16(&self) -> [i8; 64] {
+         debug_assert!(self[31] <= 127);
+         let mut output = [0i8; 64];
+diff -ruN a/src/window.rs b/src/window.rs
+--- a/src/window.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/window.rs	2026-09-15 12:12:11.259342518 +0800
+@@ -51,6 +51,7 @@
+             T: Identity + ConditionallySelectable + ConditionallyNegatable,
+         {
+             /// Given \\(-8 \leq x \leq 8\\), return \\(xP\\) in constant time.
++            #[cfg_attr(feature = "straus-compact-codegen", inline(never))]
+             pub fn select(&self, x: i8) -> T {
+                 debug_assert!(x >= $neg);
+                 debug_assert!(x as i16 <= $size as i16); // XXX We have to convert to i16s here for the radix-256 case.. this is wrong.
+diff -ruN a/tests/build_tests.sh b/tests/build_tests.sh
+--- a/tests/build_tests.sh	2006-07-24 09:21:28.000000000 +0800
++++ b/tests/build_tests.sh	1970-01-01 08:00:00.000000000 +0800
+@@ -1,88 +0,0 @@
+-#!/bin/bash
+-
+-function match_and_report() {
+-    PATTERN=$1
+-    FILE=$2
+-
+-    if grep -q "$PATTERN" "$FILE"; then
+-      echo build OK "$FILE" : "$PATTERN"
+-    else
+-      echo build ERROR "$FILE" : "$PATTERN"
+-      echo ">>>>>>>>>>>>>>>>>>>>>>>>>>"
+-      cat "$FILE"
+-      echo "<<<<<<<<<<<<<<<<<<<<<<<<<<"
+-      exit 1
+-    fi
+-}
+-
+-# Assuming naively 64 bit host
+-cargo clean
+-OUT=build_1.txt
+-env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\"" cargo build > "$OUT" 2>&1
+-match_and_report "curve25519_dalek_backend is 'simd'" "$OUT"
+-match_and_report "curve25519_dalek_bits is '64'" "$OUT"
+-
+-# Override to 32 bits assuming naively 64 bit build host
+-cargo clean
+-OUT=build_2.txt
+-env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\" --cfg curve25519_dalek_bits=\"32\"" cargo build > "$OUT" 2>&1
+-match_and_report "curve25519_dalek_backend is 'serial'" "$OUT"
+-match_and_report "curve25519_dalek_bits is '32'" "$OUT"
+-
+-# Override to 64 bits on 32 bit target
+-cargo clean
+-OUT=build_3.txt
+-env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\" --cfg curve25519_dalek_bits=\"64\"" cargo build --target i686-unknown-linux-gnu > "$OUT" 2>&1
+-match_and_report "curve25519_dalek_backend is 'serial'" "$OUT"
+-match_and_report "curve25519_dalek_bits is '64'" "$OUT"
+-
+-# 32 bit target default
+-cargo clean
+-OUT=build_4.txt
+-env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\"" cargo build --target i686-unknown-linux-gnu > "$OUT" 2>&1
+-match_and_report "curve25519_dalek_backend is 'serial'" "$OUT"
+-match_and_report "curve25519_dalek_bits is '32'" "$OUT"
+-
+-# wasm 32 bit target default
+-cargo clean
+-OUT=build_5.txt
+-env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\"" cargo build --target wasm32-unknown-unknown > "$OUT" 2>&1
+-match_and_report "curve25519_dalek_backend is 'serial'" "$OUT"
+-match_and_report "curve25519_dalek_bits is '32'" "$OUT"
+-
+-# wasm 32 bit target default
+-# Attempted override w/ "simd" should result "serial" addition
+-cargo clean
+-OUT=build_5_1.txt
+-env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\" --cfg curve25519_dalek_backend=\"simd\"" cargo build --target wasm32-unknown-unknown > "$OUT" 2>&1
+-# This overide must fail the compilation since "simd" is not available
+-# See: issues/532
+-match_and_report "Could not override curve25519_dalek_backend to simd" "$OUT"
+-
+-# fiat override with default 64 bit naive host assumption
+-cargo clean
+-OUT=build_6.txt
+-env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\" --cfg curve25519_dalek_backend=\"fiat\"" cargo build > "$OUT" 2>&1
+-match_and_report "curve25519_dalek_backend is 'fiat'" "$OUT"
+-match_and_report "curve25519_dalek_bits is '64'" "$OUT"
+-
+-# fiat 32 bit override
+-cargo clean
+-OUT=build_7.txt
+-env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\" --cfg curve25519_dalek_backend=\"fiat\" --cfg curve25519_dalek_bits=\"32\"" cargo build > "$OUT" 2>&1
+-match_and_report "curve25519_dalek_backend is 'fiat'" "$OUT"
+-match_and_report "curve25519_dalek_bits is '32'" "$OUT"
+-
+-# serial override with default 64 bit naive host assumption
+-cargo clean
+-OUT=build_8.txt
+-env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\" --cfg curve25519_dalek_backend=\"serial\"" cargo build > "$OUT" 2>&1
+-match_and_report "curve25519_dalek_backend is 'serial'" "$OUT"
+-match_and_report "curve25519_dalek_bits is '64'" "$OUT"
+-
+-# serial 32 bit override
+-cargo clean
+-OUT=build_9.txt
+-env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\" --cfg curve25519_dalek_backend=\"serial\" --cfg curve25519_dalek_bits=\"32\"" cargo build > "$OUT" 2>&1
+-match_and_report "curve25519_dalek_backend is 'serial'" "$OUT"
+-match_and_report "curve25519_dalek_bits is '32'" "$OUT"
+diff -ruN a/vendor/ristretto.sage b/vendor/ristretto.sage
+--- a/vendor/ristretto.sage	2006-07-24 09:21:28.000000000 +0800
++++ b/vendor/ristretto.sage	1970-01-01 08:00:00.000000000 +0800
+@@ -1,857 +0,0 @@
+-import binascii
+-class InvalidEncodingException(Exception): pass
+-class NotOnCurveException(Exception): pass
+-class SpecException(Exception): pass
+-
+-def lobit(x): return int(x) & 1
+-def hibit(x): return lobit(2*x)
+-def negative(x): return lobit(x)
+-def enc_le(x,n): return bytearray([int(x)>>(8*i) & 0xFF for i in xrange(n)])
+-def dec_le(x): return sum(b<<(8*i) for i,b in enumerate(x))
+-def randombytes(n): return bytearray([randint(0,255) for _ in range(n)])
+-
+-def optimized_version_of(spec):
+-    """Decorator: This function is an optimized version of some specification"""
+-    def decorator(f):
+-        def wrapper(self,*args,**kwargs):
+-            def pr(x):
+-                if isinstance(x,bytearray): return binascii.hexlify(x)
+-                else: return str(x)
+-            try: spec_ans = getattr(self,spec,spec)(*args,**kwargs),None
+-            except Exception as e: spec_ans = None,e
+-            try: opt_ans = f(self,*args,**kwargs),None
+-            except Exception as e: opt_ans = None,e
+-            if spec_ans[1] is None and opt_ans[1] is not None:
+-                raise
+-                #raise SpecException("Mismatch in %s: spec returned %s but opt threw %s"
+-                #    % (f.__name__,str(spec_ans[0]),str(opt_ans[1])))
+-            if spec_ans[1] is not None and opt_ans[1] is None:
+-                raise
+-                #raise SpecException("Mismatch in %s: spec threw %s but opt returned %s"
+-                #    % (f.__name__,str(spec_ans[1]),str(opt_ans[0])))
+-            if spec_ans[0] != opt_ans[0]:
+-                raise SpecException("Mismatch in %s: %s != %s"
+-                    % (f.__name__,pr(spec_ans[0]),pr(opt_ans[0])))
+-            if opt_ans[1] is not None: raise
+-            else: return opt_ans[0]
+-        wrapper.__name__ = f.__name__
+-        return wrapper
+-    return decorator
+-    
+-def xsqrt(x,exn=InvalidEncodingException("Not on curve")):
+-    """Return sqrt(x)"""
+-    if not is_square(x): raise exn
+-    s = sqrt(x)
+-    if negative(s): s=-s
+-    return s        
+-
+-def isqrt(x,exn=InvalidEncodingException("Not on curve")):
+-    """Return 1/sqrt(x)"""
+-    if x==0: return 0
+-    if not is_square(x): raise exn
+-    s = sqrt(x)
+-    #if negative(s): s=-s
+-    return 1/s
+-
+-def inv0(x): return 1/x if x != 0 else 0
+-
+-def isqrt_i(x):
+-    """Return 1/sqrt(x) or 1/sqrt(zeta * x)"""
+-    if x==0: return True,0
+-    gen = x.parent(-1)
+-    while is_square(gen): gen = sqrt(gen)
+-    if is_square(x): return True,1/sqrt(x)
+-    else: return False,1/sqrt(x*gen)
+-
+-class QuotientEdwardsPoint(object):
+-    """Abstract class for point an a quotiented Edwards curve; needs F,a,d,cofactor to work"""
+-    def __init__(self,x=0,y=1):
+-        x = self.x = self.F(x)
+-        y = self.y = self.F(y)
+-        if y^2 + self.a*x^2 != 1 + self.d*x^2*y^2:
+-            raise NotOnCurveException(str(self))
+-
+-    def __repr__(self):
+-        return "%s(0x%x,0x%x)" % (self.__class__.__name__, self.x, self.y)
+-
+-    def __iter__(self):
+-        yield self.x
+-        yield self.y
+-
+-    def __add__(self,other):
+-        x,y = self
+-        X,Y = other
+-        a,d = self.a,self.d
+-        return self.__class__(
+-            (x*Y+y*X)/(1+d*x*y*X*Y), 
+-            (y*Y-a*x*X)/(1-d*x*y*X*Y)
+-        )
+-    
+-    def __neg__(self): return self.__class__(-self.x,self.y)
+-    def __sub__(self,other): return self + (-other)
+-    def __rmul__(self,other): return self*other
+-    def __eq__(self,other):
+-        """NB: this is the only method that is different from the usual one"""
+-        x,y = self
+-        X,Y = other
+-        return x*Y == X*y or (self.cofactor==8 and -self.a*x*X == y*Y)
+-    def __ne__(self,other): return not (self==other)
+-    
+-    def __mul__(self,exp):
+-        exp = int(exp)
+-        if exp < 0: exp,self = -exp,-self
+-        total = self.__class__()
+-        work  = self
+-        while exp != 0:
+-            if exp & 1: total += work
+-            work += work
+-            exp >>= 1
+-        return total
+-    
+-    def xyzt(self):
+-        x,y = self
+-        z = self.F.random_element()
+-        return x*z,y*z,z,x*y*z
+-        
+-    def torque(self):
+-        """Apply cofactor group, except keeping the point even"""
+-        if self.cofactor == 8:
+-            if self.a == -1: return self.__class__(self.y*self.i, self.x*self.i)
+-            if self.a ==  1: return self.__class__(-self.y, self.x)
+-        else:
+-            return self.__class__(-self.x, -self.y)
+-    
+-    def doubleAndEncodeSpec(self):
+-        return (self+self).encode()
+-
+-    # Utility functions
+-    @classmethod
+-    def bytesToGf(cls,bytes,mustBeProper=True,mustBePositive=False,maskHiBits=False):
+-        """Convert little-endian bytes to field element, sanity check length"""
+-        if len(bytes) != cls.encLen:
+-            raise InvalidEncodingException("wrong length %d" % len(bytes))
+-        s = dec_le(bytes)
+-        if mustBeProper and s >= cls.F.order():
+-            raise InvalidEncodingException("%d out of range!" % s)
+-        bitlen = int(ceil(log(cls.F.order())/log(2)))
+-        if maskHiBits: s &= 2^bitlen-1
+-        s = cls.F(s)
+-        if mustBePositive and negative(s):
+-            raise InvalidEncodingException("%d is negative!" % s)
+-        return s
+-        
+-    @classmethod
+-    def gfToBytes(cls,x,mustBePositive=False):
+-        """Convert little-endian bytes to field element, sanity check length"""
+-        if negative(x) and mustBePositive: x = -x
+-        return enc_le(x,cls.encLen)
+-
+-class RistrettoPoint(QuotientEdwardsPoint):
+-    """The new Ristretto group"""
+-    def encodeSpec(self):
+-        """Unoptimized specification for encoding"""
+-        x,y = self
+-        if self.cofactor==8 and (negative(x*y) or y==0): (x,y) = self.torque()
+-        if y == -1: y = 1 # Avoid divide by 0; doesn't affect impl
+-            
+-        if negative(x): x,y = -x,-y
+-        s = xsqrt(self.mneg*(1-y)/(1+y),exn=Exception("Unimplemented: point is odd: " + str(self)))
+-        return self.gfToBytes(s)
+-        
+-    @classmethod
+-    def decodeSpec(cls,s):
+-        """Unoptimized specification for decoding"""
+-        s = cls.bytesToGf(s,mustBePositive=True)
+-        
+-        a,d = cls.a,cls.d
+-        x = xsqrt(4*s^2 / (a*d*(1+a*s^2)^2 - (1-a*s^2)^2))
+-        y = (1+a*s^2) / (1-a*s^2)
+-    
+-        if cls.cofactor==8 and (negative(x*y) or y==0):
+-            raise InvalidEncodingException("x*y has high bit")
+-                
+-        return cls(x,y)
+-
+-    @optimized_version_of("encodeSpec")
+-    def encode(self):
+-        """Encode, optimized version"""
+-        a,d,mneg = self.a,self.d,self.mneg
+-        x,y,z,t = self.xyzt()
+-        
+-        if self.cofactor==8:
+-            u1    = mneg*(z+y)*(z-y)
+-            u2    = x*y # = t*z
+-            isr   = isqrt(u1*u2^2)
+-            i1    = isr*u1 # sqrt(mneg*(z+y)*(z-y))/(x*y)
+-            i2    = isr*u2 # 1/sqrt(a*(y+z)*(y-z))
+-            z_inv = i1*i2*t # 1/z
+-        
+-            if negative(t*z_inv):
+-                if a==-1:
+-                    x,y = y*self.i,x*self.i
+-                    den_inv = self.magic * i1
+-                else:
+-                    x,y = -y,x
+-                    den_inv = self.i * self.magic * i1
+-                
+-            else:
+-                den_inv = i2
+-
+-            if negative(x*z_inv): y = -y
+-            s = (z-y) * den_inv
+-        else:
+-            num   = mneg*(z+y)*(z-y)
+-            isr   = isqrt(num*y^2)
+-            if negative(isr^2*num*y*t): y = -y
+-            s = isr*y*(z-y)
+-            
+-        return self.gfToBytes(s,mustBePositive=True)
+-      
+-    @optimized_version_of("doubleAndEncodeSpec")
+-    def doubleAndEncode(self):
+-        X,Y,Z,T = self.xyzt()
+-        a,d,mneg = self.a,self.d,self.mneg
+-
+-        if self.cofactor==8:
+-            e = 2*X*Y
+-            f = Z^2+d*T^2
+-            g = Y^2-a*X^2
+-            h = Z^2-d*T^2
+-            
+-            inv1 = 1/(e*f*g*h)
+-            z_inv = inv1*e*g # 1 / (f*h)
+-            t_inv = inv1*f*h
+-        
+-            if negative(e*g*z_inv):
+-                if a==-1: sqrta = self.i
+-                else:     sqrta = -1
+-                e,f,g,h = g,h,-e,f*sqrta
+-                factor = self.i
+-            else:
+-                factor = self.magic
+-            
+-            if negative(h*e*z_inv): g=-g
+-            s = (h-g)*factor*g*t_inv
+-            
+-        else:
+-            foo = Y^2+a*X^2
+-            bar = X*Y
+-            den = 1/(foo*bar)
+-            if negative(2*bar^2*den): tmp = a*X^2
+-            else: tmp = Y^2
+-            s = self.magic*(Z^2-tmp)*foo*den
+-            
+-        return self.gfToBytes(s,mustBePositive=True)
+-        
+-    @classmethod
+-    @optimized_version_of("decodeSpec")
+-    def decode(cls,s):
+-        """Decode, optimized version"""
+-        s = cls.bytesToGf(s,mustBePositive=True)
+-        
+-        a,d = cls.a,cls.d
+-        yden     = 1-a*s^2
+-        ynum     = 1+a*s^2
+-        yden_sqr = yden^2
+-        xden_sqr = a*d*ynum^2 - yden_sqr
+-        
+-        isr = isqrt(xden_sqr * yden_sqr)
+-        
+-        xden_inv = isr * yden
+-        yden_inv = xden_inv * isr * xden_sqr
+-        
+-        x = 2*s*xden_inv
+-        if negative(x): x = -x
+-        y = ynum * yden_inv
+-    
+-        if cls.cofactor==8 and (negative(x*y) or y==0):
+-            raise InvalidEncodingException("x*y is invalid: %d, %d" % (x,y))
+-            
+-        return cls(x,y)
+-       
+-    @classmethod     
+-    def fromJacobiQuartic(cls,s,t,sgn=1):
+-        """Convert point from its Jacobi Quartic representation"""
+-        a,d = cls.a,cls.d
+-        assert s^4 - 2*cls.a*(1-2*d/(d-a))*s^2 + 1 == t^2
+-        x = 2*s*cls.magic / t
+-        y = (1+a*s^2) / (1-a*s^2)
+-        return cls(sgn*x,y)
+-            
+-    @classmethod
+-    def elligatorSpec(cls,r0):
+-        a,d = cls.a,cls.d
+-        r = cls.qnr * cls.bytesToGf(r0,mustBeProper=False,maskHiBits=True)^2
+-        den = (d*r-a)*(a*r-d)
+-        if den == 0: return cls()
+-        n1 = cls.a*(r+1)*(a+d)*(d-a)/den
+-        n2 = r*n1
+-        if is_square(n1):
+-            sgn,s,t =  1, xsqrt(n1), -(r-1)*(a+d)^2 / den - 1
+-        else:
+-            sgn,s,t = -1,-xsqrt(n2), r*(r-1)*(a+d)^2 / den - 1
+-        
+-        return cls.fromJacobiQuartic(s,t)
+-            
+-    @classmethod
+-    @optimized_version_of("elligatorSpec")
+-    def elligator(cls,r0):
+-        a,d = cls.a,cls.d
+-        r0 = cls.bytesToGf(r0,mustBeProper=False,maskHiBits=True)
+-        r = cls.qnr * r0^2
+-        den = (d*r-a)*(a*r-d)
+-        num = cls.a*(r+1)*(a+d)*(d-a)
+-        
+-        iss,isri = isqrt_i(num*den)
+-        if iss: sgn,twiddle =  1,1
+-        else:   sgn,twiddle = -1,r0*cls.qnr
+-        isri *= twiddle
+-        s = isri*num
+-        t = -sgn*isri*s*(r-1)*(d+a)^2 - 1
+-        if negative(s) == iss: s = -s
+-        return cls.fromJacobiQuartic(s,t)
+-
+-
+-class Decaf_1_1_Point(QuotientEdwardsPoint):
+-    """Like current decaf but tweaked for simplicity"""
+-    def encodeSpec(self):
+-        """Unoptimized specification for encoding"""
+-        a,d = self.a,self.d
+-        x,y = self
+-        if x==0 or y==0: return(self.gfToBytes(0))
+-        
+-        if self.cofactor==8 and negative(x*y*self.isoMagic):
+-            x,y = self.torque()
+-            
+-        sr = xsqrt(1-a*x^2)
+-        altx = x*y*self.isoMagic / sr
+-        if negative(altx): s = (1+sr)/x
+-        else:              s = (1-sr)/x
+-        
+-        return self.gfToBytes(s,mustBePositive=True)
+-        
+-    @classmethod
+-    def decodeSpec(cls,s):
+-        """Unoptimized specification for decoding"""
+-        a,d = cls.a,cls.d
+-        s = cls.bytesToGf(s,mustBePositive=True)
+-        
+-        if s==0: return cls()
+-        t = xsqrt(s^4 + 2*(a-2*d)*s^2 + 1)
+-        altx = 2*s*cls.isoMagic/t
+-        if negative(altx): t = -t
+-        x = 2*s / (1+a*s^2)
+-        y = (1-a*s^2) / t
+-        
+-        if cls.cofactor==8 and (negative(x*y*cls.isoMagic) or y==0):
+-            raise InvalidEncodingException("x*y is invalid: %d, %d" % (x,y))
+-        
+-        return cls(x,y)
+-
+-    def toJacobiQuartic(self,toggle_rotation=False,toggle_altx=False,toggle_s=False):
+-        "Return s,t on jacobi curve"
+-        a,d = self.a,self.d
+-        x,y,z,t = self.xyzt()
+-        
+-        if self.cofactor == 8:
+-            # Cofactor 8 version
+-            # Simulate IMAGINE_TWIST because that's how libdecaf does it
+-            x = self.i*x
+-            t = self.i*t
+-            a = -a
+-            d = -d
+-            
+-            # OK, the actual libdecaf code should be here
+-            num = (z+y)*(z-y)
+-            den = x*y
+-            isr = isqrt(num*(a-d)*den^2)
+-    
+-            iden = isr * den * self.isoMagic # 1/sqrt((z+y)(z-y)) = 1/sqrt(1-Y^2) / z
+-            inum = isr * num # sqrt(1-Y^2) * z / xysqrt(a-d) ~ 1/sqrt(1-ax^2)/z
+-            
+-            if negative(iden*inum*self.i*t^2*(d-a)) != toggle_rotation:
+-                iden,inum = inum,iden
+-                fac = x*sqrt(a)
+-                toggle=(a==-1)
+-            else:
+-                fac = y
+-                toggle=False
+-            
+-            imi = self.isoMagic * self.i
+-            altx = inum*t*imi
+-            neg_altx = negative(altx) != toggle_altx
+-            if neg_altx != toggle: inum =- inum
+-            
+-            tmp = fac*(inum*z + 1)
+-            s = iden*tmp*imi
+-            
+-            negm1 = (negative(s) != toggle_s) != neg_altx
+-            if negm1: m1 = a*fac + z
+-            else:     m1 = a*fac - z
+-            
+-            swap = toggle_s
+-        
+-        else:
+-            # Much simpler cofactor 4 version
+-            num = (x+t)*(x-t)
+-            isr = isqrt(num*(a-d)*x^2)
+-            ratio = isr*num 
+-            altx = ratio*self.isoMagic
+-            
+-            neg_altx = negative(altx) != toggle_altx
+-            if neg_altx: ratio =- ratio
+-                
+-            tmp = ratio*z - t
+-            s = (a-d)*isr*x*tmp
+-            
+-            negx = (negative(s) != toggle_s) != neg_altx
+-            if negx: m1 = -a*t + x
+-            else:    m1 = -a*t - x
+-            
+-            swap = toggle_s
+-            
+-        if negative(s): s = -s
+-        
+-        return s,m1,a*tmp,swap
+-    
+-    def invertElligator(self,toggle_r=False,*args,**kwargs):
+-        "Produce preimage of self under elligator, or None"
+-        a,d = self.a,self.d
+-        
+-        rets = []
+-        
+-        tr = [False,True] if self.cofactor == 8 else [False]
+-        for toggle_rotation in tr:
+-            for toggle_altx in [False,True]:
+-                for toggle_s in [False,True]:
+-                    for toggle_r in [False,True]:
+-                        s,m1,m12,swap = self.toJacobiQuartic(toggle_rotation,toggle_altx,toggle_s)
+-
+-                        #print
+-                        #print toggle_rotation,toggle_altx,toggle_s
+-                        #print m1
+-                        #print m12
+-                    
+-                    
+-                        if self == self.__class__():
+-                            if self.cofactor == 4:
+-                                # Hacks for identity!
+-                                if toggle_altx: m12 = 1
+-                                elif toggle_s: m1 = 1
+-                                elif toggle_r: continue
+-                                ## BOTH???
+-                                
+-                            else:
+-                                m12 = 1
+-                                imi = self.isoMagic * self.i
+-                                if toggle_rotation:
+-                                    if toggle_altx: m1 = -imi
+-                                    else:           m1 = +imi
+-                                else:
+-                                    if toggle_altx: m1 = 0
+-                                    else: m1 = a-d
+-                    
+-                        rnum = (d*a*m12-m1)
+-                        rden = ((d*a-1)*m12+m1)
+-                        if swap: rnum,rden = rden,rnum
+-                    
+-                        ok,sr = isqrt_i(rnum*rden*self.qnr)
+-                        if not ok: continue
+-                        sr *= rnum
+-                        #print "Works! %d %x" % (swap,sr)
+-                    
+-                        if negative(sr) != toggle_r: sr = -sr
+-                        ret = self.gfToBytes(sr)
+-                        if self.elligator(ret) != self and self.elligator(ret) != -self:
+-                            print "WRONG!",[toggle_rotation,toggle_altx,toggle_s]
+-                        if self.elligator(ret) == -self and self != -self: print "Negated!",[toggle_rotation,toggle_altx,toggle_s]
+-                        rets.append(bytes(ret))
+-        return rets
+-
+-    @optimized_version_of("encodeSpec")
+-    def encode(self):
+-        """Encode, optimized version"""    
+-        return self.gfToBytes(self.toJacobiQuartic()[0])
+-        
+-    @classmethod
+-    @optimized_version_of("decodeSpec")
+-    def decode(cls,s):
+-        """Decode, optimized version"""
+-        a,d = cls.a,cls.d
+-        s = cls.bytesToGf(s,mustBePositive=True)
+-        
+-        #if s==0: return cls()
+-        s2 = s^2
+-        den = 1+a*s2
+-        num = den^2 - 4*d*s2
+-        isr = isqrt(num*den^2)
+-        altx = 2*s*isr*den*cls.isoMagic
+-        if negative(altx): isr = -isr
+-        x = 2*s *isr^2*den*num
+-        y = (1-a*s^2) * isr*den
+-        
+-        if cls.cofactor==8 and (negative(x*y*cls.isoMagic) or y==0):
+-            raise InvalidEncodingException("x*y is invalid: %d, %d" % (x,y))
+-        
+-        return cls(x,y)
+-
+-    @classmethod     
+-    def fromJacobiQuartic(cls,s,t,sgn=1):
+-        """Convert point from its Jacobi Quartic representation"""
+-        a,d = cls.a,cls.d
+-        if s==0: return cls()
+-        x = 2*s / (1+a*s^2)
+-        y = (1-a*s^2) / t
+-        return cls(x,sgn*y)
+-
+-    @optimized_version_of("doubleAndEncodeSpec")
+-    def doubleAndEncode(self):
+-        X,Y,Z,T = self.xyzt()
+-        a,d = self.a,self.d
+-        
+-        if self.cofactor == 8:
+-            # Cofactor 8 version
+-            # Simulate IMAGINE_TWIST because that's how libdecaf does it
+-            X = self.i*X
+-            T = self.i*T
+-            a = -a
+-            d = -d
+-            # TODO: This is only being called for a=-1, so could
+-            # be wrong for a=1
+-            
+-            e = 2*X*Y
+-            f = Y^2+a*X^2
+-            g = Y^2-a*X^2
+-            h = Z^2-d*T^2
+-            
+-            eim = e*self.isoMagic
+-            inv = 1/(eim*g*f*h)
+-            fh_inv = eim*g*inv*self.i
+-            
+-            if negative(eim*g*fh_inv):
+-                idf = g*self.isoMagic*self.i
+-                bar = f
+-                foo = g
+-                test = eim*f
+-            else:
+-                idf = eim
+-                bar = h
+-                foo = -eim
+-                test = g*h
+-            
+-            if negative(test*fh_inv): bar =- bar
+-            s = idf*(foo+bar)*inv*f*h
+-        
+-        else:
+-            xy = X*Y
+-            h = Z^2-d*T^2
+-            inv = 1/(xy*h)
+-            if negative(inv*2*xy^2*self.isoMagic): tmp = Y
+-            else: tmp = X
+-            s = tmp^2*h*inv # = X/Y or Y/X, interestingly
+-            
+-        return self.gfToBytes(s,mustBePositive=True)
+-            
+-    @classmethod
+-    def elligatorSpec(cls,r0,fromR=False):
+-        a,d = cls.a,cls.d
+-        if fromR: r = r0
+-        else: r = cls.qnr * cls.bytesToGf(r0,mustBeProper=False,maskHiBits=True)^2
+-        
+-        den = (d*r-(d-a))*((d-a)*r-d)
+-        if den == 0: return cls()
+-        n1 = (r+1)*(a-2*d)/den
+-        n2 = r*n1
+-        if is_square(n1):
+-            sgn,s,t = 1,   xsqrt(n1),  -(r-1)*(a-2*d)^2 / den - 1
+-        else:
+-            sgn,s,t = -1, -xsqrt(n2), r*(r-1)*(a-2*d)^2 / den - 1
+-        
+-        return cls.fromJacobiQuartic(s,t)
+-            
+-    @classmethod
+-    @optimized_version_of("elligatorSpec")
+-    def elligator(cls,r0):
+-        a,d = cls.a,cls.d
+-        r0 = cls.bytesToGf(r0,mustBeProper=False,maskHiBits=True)
+-        r = cls.qnr * r0^2
+-        den = (d*r-(d-a))*((d-a)*r-d)
+-        num = (r+1)*(a-2*d)
+-        
+-        iss,isri = isqrt_i(num*den)
+-        if iss: sgn,twiddle =  1,1
+-        else:   sgn,twiddle = -1,r0*cls.qnr
+-        isri *= twiddle
+-        s = isri*num
+-        t = -sgn*isri*s*(r-1)*(a-2*d)^2 - 1
+-        if negative(s) == iss: s = -s
+-        return cls.fromJacobiQuartic(s,t)
+-            
+-    def elligatorInverseBruteForce(self):
+-        """Invert Elligator using SAGE's polynomial solver"""
+-        a,d = self.a,self.d
+-        R.<r0> = self.F[]
+-        r = self.qnr * r0^2
+-        den = (d*r-(d-a))*((d-a)*r-d)
+-        n1 = (r+1)*(a-2*d)/den
+-        n2 = r*n1
+-        ret = set()
+-        for s2,t in [(n1, -(r-1)*(a-2*d)^2 / den - 1),
+-                     (n2,r*(r-1)*(a-2*d)^2 / den - 1)]:
+-            x2 = 4*s2/(1+a*s2)^2
+-            y = (1-a*s2) / t
+-
+-            selfT = self
+-            for i in xrange(self.cofactor/2):
+-                xT,yT = selfT
+-                polyX = xT^2-x2
+-                polyY = yT-y
+-                sx = set(r for r,_ in polyX.numerator().roots())
+-                sy = set(r for r,_ in polyY.numerator().roots())
+-                ret = ret.union(sx.intersection(sy))
+-            
+-                selfT = selfT.torque()
+-
+-        ret = [self.gfToBytes(r) for r in ret]
+-        
+-        for r in ret:
+-            assert self.elligator(r) in [self,-self]
+-            
+-        ret = [r for r in ret if self.elligator(r) == self]
+-
+-        return ret
+-            
+-class Ed25519Point(RistrettoPoint):
+-    F = GF(2^255-19)
+-    d = F(-121665/121666)
+-    a = F(-1)
+-    i = sqrt(F(-1))
+-    mneg = F(1)
+-    qnr = i
+-    magic = isqrt(a*d-1)
+-    cofactor = 8
+-    encLen = 32
+-    
+-    @classmethod
+-    def base(cls):
+-        return cls( 15112221349535400772501151409588531511454012693041857206046113283949847762202, 46316835694926478169428394003475163141307993866256225615783033603165251855960
+-        )
+-            
+-class NegEd25519Point(RistrettoPoint):
+-    F = GF(2^255-19)
+-    d = F(121665/121666)
+-    a = F(1)
+-    i = sqrt(F(-1))
+-    mneg = F(-1) # TODO checkme vs 1-ad or whatever
+-    qnr = i
+-    magic = isqrt(a*d-1)
+-    cofactor = 8
+-    encLen = 32
+-    
+-    @classmethod
+-    def base(cls):
+-        y = cls.F(4/5)
+-        x = sqrt((y^2-1)/(cls.d*y^2-cls.a))
+-        if negative(x): x = -x
+-        return cls(x,y)
+-
+-class IsoEd448Point(RistrettoPoint):
+-    F = GF(2^448-2^224-1)
+-    d = F(39082/39081)
+-    a = F(1)
+-    mneg = F(-1)
+-    qnr = -1
+-    magic = isqrt(a*d-1)
+-    cofactor = 4
+-    encLen = 56
+-    
+-    @classmethod
+-    def base(cls):
+-        return cls(  # RFC has it wrong
+-         345397493039729516374008604150537410266655260075183290216406970281645695073672344430481787759340633221708391583424041788924124567700732,
+-            -363419362147803445274661903944002267176820680343659030140745099590306164083365386343198191849338272965044442230921818680526749009182718
+-        )
+-            
+-class TwistedEd448GoldilocksPoint(Decaf_1_1_Point):
+-    F = GF(2^448-2^224-1)
+-    d = F(-39082)
+-    a = F(-1)
+-    qnr = -1
+-    cofactor = 4
+-    encLen = 56
+-    isoMagic = IsoEd448Point.magic
+-
+-    @classmethod
+-    def base(cls):
+-        return cls.decodeSpec(Ed448GoldilocksPoint.base().encodeSpec())
+-
+-class Ed448GoldilocksPoint(Decaf_1_1_Point):
+-    F = GF(2^448-2^224-1)
+-    d = F(-39081)
+-    a = F(1)
+-    qnr = -1
+-    cofactor = 4
+-    encLen = 56
+-    isoMagic = IsoEd448Point.magic
+-    
+-    @classmethod
+-    def base(cls):
+-        return 2*cls(
+- 224580040295924300187604334099896036246789641632564134246125461686950415467406032909029192869357953282578032075146446173674602635247710, 298819210078481492676017930443930673437544040154080242095928241372331506189835876003536878655418784733982303233503462500531545062832660
+-        )
+-
+-class IsoEd25519Point(Decaf_1_1_Point):
+-    # TODO: twisted iso too!
+-    # TODO: twisted iso might have to IMAGINE_TWIST or whatever
+-    F = GF(2^255-19)
+-    d = F(-121665)
+-    a = F(1)
+-    i = sqrt(F(-1))
+-    qnr = i
+-    magic = isqrt(a*d-1)
+-    cofactor = 8
+-    encLen = 32
+-    isoMagic = Ed25519Point.magic
+-    isoA = Ed25519Point.a
+-    
+-    @classmethod
+-    def base(cls):
+-        return cls.decodeSpec(Ed25519Point.base().encode())
+-
+-class TestFailedException(Exception): pass
+-
+-def test(cls,n):
+-    print "Testing curve %s" % cls.__name__
+-    
+-    specials = [1]
+-    ii = cls.F(-1)
+-    while is_square(ii):
+-        specials.append(ii)
+-        ii = sqrt(ii)
+-    specials.append(ii)
+-    for i in specials:
+-        if negative(cls.F(i)): i = -i
+-        i = enc_le(i,cls.encLen)
+-        try:
+-            Q = cls.decode(i)
+-            QE = Q.encode()
+-            if QE != i:
+-                raise TestFailedException("Round trip special %s != %s" %
+-                     (binascii.hexlify(QE),binascii.hexlify(i)))
+-        except NotOnCurveException: pass
+-        except InvalidEncodingException: pass
+-        
+-    
+-    P = cls.base()
+-    Q = cls()
+-    for i in xrange(n):
+-        #print binascii.hexlify(Q.encode())
+-        QE = Q.encode()
+-        QQ = cls.decode(QE)
+-        if QQ != Q: raise TestFailedException("Round trip %s != %s" % (str(QQ),str(Q)))
+-    
+-        # Testing s -> 1/s: encodes -point on cofactor 
+-        s = cls.bytesToGf(QE)
+-        if s != 0:
+-            ss = cls.gfToBytes(1/s,mustBePositive=True)
+-            try:
+-                QN = cls.decode(ss)
+-                if cls.cofactor == 8:
+-                    raise TestFailedException("1/s shouldnt work for cofactor 8")
+-                if QN != -Q:
+-                    raise TestFailedException("s -> 1/s should negate point for cofactor 4")
+-            except InvalidEncodingException as e:
+-                # Should be raised iff cofactor==8
+-                if cls.cofactor == 4:
+-                    raise TestFailedException("s -> 1/s should work for cofactor 4")
+-        
+-        QT = Q
+-        for h in xrange(cls.cofactor):
+-            QT = QT.torque()
+-            if QT.encode() != QE:
+-                raise TestFailedException("Can't torque %s,%d" % (str(Q),h+1))
+-            
+-        Q0 = Q + P
+-        if Q0 == Q: raise TestFailedException("Addition doesn't work")
+-        if Q0-P != Q: raise TestFailedException("Subtraction doesn't work")
+-        
+-        r = randint(1,1000)
+-        Q1 = Q0*r
+-        Q2 = Q0*(r+1)
+-        if Q1 + Q0 != Q2: raise TestFailedException("Scalarmul doesn't work")
+-        Q = Q1
+-        
+-def testElligator(cls,n):
+-    print "Testing elligator on %s" % cls.__name__
+-    for i in xrange(n):
+-        r = randombytes(cls.encLen)
+-        P = cls.elligator(r)
+-        if hasattr(P,"invertElligator"):
+-            iv = P.invertElligator()
+-            modr = bytes(cls.gfToBytes(cls.bytesToGf(r,mustBeProper=False,maskHiBits=True)))
+-            iv2 = P.torque().invertElligator()
+-            if modr not in iv: print "Failed to invert Elligator!"
+-            if len(iv) != len(set(iv)):
+-                print "Elligator inverses not unique!", len(set(iv)), len(iv)
+-            if iv != iv2:
+-                print "Elligator is untorqueable!"
+-                #print [binascii.hexlify(j) for j in iv]
+-                #print [binascii.hexlify(j) for j in iv2]
+-                #break
+-        else:
+-            pass # TODO
+-
+-def gangtest(classes,n):
+-    print "Gang test",[cls.__name__ for cls in classes]
+-    specials = [1]
+-    ii = classes[0].F(-1)
+-    while is_square(ii):
+-        specials.append(ii)
+-        ii = sqrt(ii)
+-    specials.append(ii)
+-    
+-    for i in xrange(n):
+-        rets = [bytes((cls.base()*i).encode()) for cls in classes]
+-        if len(set(rets)) != 1:
+-            print "Divergence in encode at %d" % i
+-            for c,ret in zip(classes,rets):
+-                print c,binascii.hexlify(ret)
+-            print
+-        
+-        if i < len(specials): r0 = enc_le(specials[i],classes[0].encLen)
+-        else: r0 = randombytes(classes[0].encLen)
+-        
+-        rets = [bytes((cls.elligator(r0)*i).encode()) for cls in classes]
+-        if len(set(rets)) != 1:
+-            print "Divergence in elligator at %d" % i
+-            for c,ret in zip(classes,rets):
+-                print c,binascii.hexlify(ret)
+-            print
+-
+-def testDoubleAndEncode(cls,n):
+-    print "Testing doubleAndEncode on %s" % cls.__name__
+-    for i in xrange(n):
+-        r1 = randombytes(cls.encLen)
+-        r2 = randombytes(cls.encLen)
+-        u = cls.elligator(r1) + cls.elligator(r2)
+-        u.doubleAndEncode()
+-
+-testDoubleAndEncode(Ed25519Point,100)
+-testDoubleAndEncode(NegEd25519Point,100)
+-testDoubleAndEncode(IsoEd25519Point,100)
+-testDoubleAndEncode(IsoEd448Point,100)
+-testDoubleAndEncode(TwistedEd448GoldilocksPoint,100)
+-#test(Ed25519Point,100)
+-#test(NegEd25519Point,100)
+-#test(IsoEd25519Point,100)
+-#test(IsoEd448Point,100)
+-#test(TwistedEd448GoldilocksPoint,100)
+-#test(Ed448GoldilocksPoint,100)
+-#testElligator(Ed25519Point,100)
+-#testElligator(NegEd25519Point,100)
+-#testElligator(IsoEd25519Point,100)
+-#testElligator(IsoEd448Point,100)
+-#testElligator(Ed448GoldilocksPoint,100)
+-#testElligator(TwistedEd448GoldilocksPoint,100)
+-#gangtest([IsoEd448Point,TwistedEd448GoldilocksPoint,Ed448GoldilocksPoint],100)
+-#gangtest([Ed25519Point,IsoEd25519Point],100)

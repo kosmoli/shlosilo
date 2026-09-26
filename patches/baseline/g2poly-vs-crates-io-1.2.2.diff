@@ -1,0 +1,50 @@
+diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
+--- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
++++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
+@@ -1,18 +0,0 @@
+-[package]
+-name = "g2poly"
+-version = "1.2.2"
+-authors = ["WanzenBug <moritz@wanzenbug.xyz>"]
+-edition = "2018"
+-readme = "./README.md"
+-license = "MIT/Apache-2.0"
+-repository = "https://github.com/WanzenBug/g2p"
+-documentation = "https://docs.rs/g2poly"
+-description = """
+-Primitive implementation of polynomials over the field GF(2)
+-"""
+-categories = [ "no-std", "algorithms" ]
+-keywords = [ "finite-field", "galois"]
+-rust-version = "1.60"
+-
+-[lib]
+-path = "src/lib.rs"
+diff -ruN a/.cargo_vcs_info.json b/.cargo_vcs_info.json
+--- a/.cargo_vcs_info.json	1970-01-01 08:00:01.000000000 +0800
++++ b/.cargo_vcs_info.json	1970-01-01 08:00:00.000000000 +0800
+@@ -1,6 +0,0 @@
+-{
+-  "git": {
+-    "sha1": "f2e41e6a0b23a598b7573d699773ca8f7b434b64"
+-  },
+-  "path_in_vcs": "g2poly"
+-}
+\ 文件末尾没有换行符
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/lib.rs	2026-09-17 11:32:47.282575689 +0800
+@@ -1,8 +1,13 @@
++// shlosilo vendor patch (2026-09-17): no_std support (pure core; the crate
++// has no std API dependency). See patches/rqrr-g2p-no-std.patch for the
++// full change set and the exit condition.
++//
+ // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+ // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+ // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+ // option. This file may not be copied, modified, or distributed
+ // except according to those terms.
++#![no_std]
+ 
+ //! # g2poly
+ //!

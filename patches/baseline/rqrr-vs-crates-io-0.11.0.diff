@@ -1,0 +1,220 @@
+diff -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml	1970-01-01 08:00:01.000000000 +0800
++++ b/Cargo.toml	2026-09-17 11:34:04.245349657 +0800
+@@ -59,6 +59,11 @@
+ optional = true
+ default-features = false
+ 
++[dependencies.libm]
++# shlosilo vendor patch: f64::{round,floor} are std-only; libm supplies
++# the no_std equivalents (see patches/rqrr-g2p-no-std.patch).
++version = "0.2"
++
+ [dependencies.lru]
+ version = "0.18"
+ 
+diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
+--- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
++++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
+@@ -1,43 +0,0 @@
+-[package]
+-name = "rqrr"
+-edition = "2021"
+-version = "0.11.0"
+-authors = ["WanzenBug <moritz@wanzenbug.xyz>"]
+-license = "(MIT OR Apache-2.0) AND ISC"
+-documentation = "https://docs.rs/rqrr/"
+-repository = "https://github.com/WanzenBug/rqrr"
+-readme = "./README.md"
+-keywords = ["qrcode", "detection"]
+-description = """
+-Detect and read QR codes from any image source
+-"""
+-categories = [
+-    "graphics",
+-    "encoding",
+-]
+-include = [
+-    "/README.md",
+-    "/LICENSE-*",
+-    "/src/**/*.rs",
+-    "/src/**/*.png",
+-]
+-rust-version = "1.85.1"
+-
+-[features]
+-img = ["image"]
+-default = ["img"]
+-
+-[[bench]]
+-name = "bench_cap_find"
+-path = "benches/bench_cap_find.rs"
+-required-features = ["img"]
+-harness = false
+-
+-[dev-dependencies]
+-#criterion = "0.5"
+-image = { version = ">= 0.24, <= 0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+-
+-[dependencies]
+-g2p = "1.0"
+-lru = "0.18"
+-image = { version = ">= 0.24, <= 0.25", optional = true, default-features = false }
+diff -ruN a/.cargo_vcs_info.json b/.cargo_vcs_info.json
+--- a/.cargo_vcs_info.json	1970-01-01 08:00:01.000000000 +0800
++++ b/.cargo_vcs_info.json	1970-01-01 08:00:00.000000000 +0800
+@@ -1,6 +0,0 @@
+-{
+-  "git": {
+-    "sha1": "a62fda575254a1de532c8eaf5785c3d74f4eeb1a"
+-  },
+-  "path_in_vcs": ""
+-}
+\ 文件末尾没有换行符
+diff -ruN a/src/decode.rs b/src/decode.rs
+--- a/src/decode.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/decode.rs	2026-09-17 12:10:09.880015499 +0800
+@@ -1,5 +1,7 @@
+-use std::io::Write;
+-use std::mem;
++#[cfg(test)]
++use alloc::{vec, vec::Vec};
++use crate::Write;
++use core::mem;
+ 
+ use g2p::{g2p, GaloisField};
+ 
+@@ -85,7 +87,7 @@
+ 
+     pub fn take_bits(&mut self, nbits: usize) -> usize {
+         let mut ret = 0;
+-        let max_len = ::std::cmp::min(self.bits_remaining(), nbits);
++        let max_len = core::cmp::min(self.bits_remaining(), nbits);
+         assert!(max_len <= mem::size_of::<usize>() * 8);
+         for _ in 0..max_len {
+             let b = self.data[self.ptr >> 3];
+diff -ruN a/src/detect.rs b/src/detect.rs
+--- a/src/detect.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/detect.rs	2026-09-17 11:39:59.173661689 +0800
+@@ -1,3 +1,4 @@
++use alloc::vec::Vec;
+ use crate::prepare::{AreaFiller, ImageBuffer, PixelColor};
+ use crate::{
+     geometry::Perspective,
+diff -ruN a/src/geometry.rs b/src/geometry.rs
+--- a/src/geometry.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/geometry.rs	2026-09-17 11:34:04.245487307 +0800
+@@ -49,8 +49,8 @@
+         let x = (self.0[0] * u + self.0[1] * v + self.0[2]) / den;
+         let y = (self.0[3] * u + self.0[4] * v + self.0[5]) / den;
+ 
+-        let x = x.round();
+-        let y = y.round();
++        let x = libm::round(x);
++        let y = libm::round(y);
+ 
+         assert!(x <= i32::MAX as f64);
+         assert!(x >= i32::MIN as f64);
+diff -ruN a/src/identify/grid.rs b/src/identify/grid.rs
+--- a/src/identify/grid.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/identify/grid.rs	2026-09-17 11:34:04.245592736 +0800
+@@ -1,4 +1,4 @@
+-use std::{cmp, mem};
++use core::{cmp, mem};
+ 
+ use crate::{
+     geometry,
+@@ -205,7 +205,7 @@
+     /* Choose the nearest allowable grid size */
+     assert!(scan >= 1);
+     let size = scan + 13;
+-    let ver = (size as f64 - 15.0).floor() as usize / 4;
++    let ver = libm::floor(size as f64 - 15.0) as usize / 4;
+     ver * 4 + 17
+ }
+ 
+diff -ruN a/src/identify/match_capstones.rs b/src/identify/match_capstones.rs
+--- a/src/identify/match_capstones.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/identify/match_capstones.rs	2026-09-17 11:41:20.026605308 +0800
+@@ -1,3 +1,4 @@
++use alloc::vec::Vec;
+ use crate::CapStone;
+ 
+ #[derive(Debug, Clone)]
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/lib.rs	2026-09-17 11:41:20.026751494 +0800
+@@ -34,13 +34,41 @@
+ you to define your own source for images.
+ "##
+ )]
++#![no_std]
++
++extern crate alloc;
++
++use alloc::{string::String, vec, vec::Vec};
++
++/// Minimal byte-sink trait (vendor patch: replaces `std::io::Write`, which
++/// does not exist in no_std). Implemented for `Vec<u8>`, the only writer
++/// the in-tree API path (`Grid::decode`) uses. Same shape as the std trait
++/// for the methods this crate calls: `write_all` only.
++pub trait Write {
++    /// Append all of `buf`, or fail.
++    fn write_all(&mut self, buf: &[u8]) -> Result<(), ()>;
++}
++
++impl Write for Vec<u8> {
++    fn write_all(&mut self, buf: &[u8]) -> Result<(), ()> {
++        self.extend_from_slice(buf);
++        Ok(())
++    }
++}
++
++impl<T: Write + ?Sized> Write for &mut T {
++    fn write_all(&mut self, buf: &[u8]) -> Result<(), ()> {
++        (**self).write_all(buf)
++    }
++}
++
+ pub use self::decode::{MetaData, RawData, Version, MAX_PAYLOAD_SIZE};
+ pub(crate) use self::detect::{capstones_from_image, CapStone};
+ pub use self::identify::Point;
+ pub(crate) use self::identify::SkewedGridLocation;
+ pub use self::prepare::PreparedImage;
+-use std::error::Error;
+-use std::io::Write;
++
++use core::error::Error;
+ 
+ mod decode;
+ mod detect;
+@@ -312,14 +340,14 @@
+ 
+ impl Error for DeQRError {}
+ 
+-impl From<::std::string::FromUtf8Error> for DeQRError {
+-    fn from(_: ::std::string::FromUtf8Error) -> Self {
++impl From<alloc::string::FromUtf8Error> for DeQRError {
++    fn from(_: alloc::string::FromUtf8Error) -> Self {
+         DeQRError::EncodingError
+     }
+ }
+ 
+-impl ::std::fmt::Display for DeQRError {
+-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++impl core::fmt::Display for DeQRError {
++    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+         let msg = match self {
+             DeQRError::IoError => "IoError(Could not write to output)",
+             DeQRError::DataUnderflow => "DataUnderflow(Expected more bits to decode)",
+diff -ruN a/src/prepare.rs b/src/prepare.rs
+--- a/src/prepare.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/prepare.rs	2026-09-17 11:33:30.491792278 +0800
+@@ -1,4 +1,6 @@
+-use std::{cmp, num::NonZeroUsize};
++use alloc::boxed::Box;
++use alloc::{vec, vec::Vec};
++use core::{cmp, num::NonZeroUsize};
+ 
+ use crate::identify::match_capstones::CapStoneGroup;
+ use crate::identify::Point;

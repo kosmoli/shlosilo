@@ -1,0 +1,233 @@
+diff -ruN a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml	1970-01-01 08:00:01.000000000 +0800
++++ b/Cargo.toml	2026-09-17 19:05:56.570907988 +0800
+@@ -30,9 +30,11 @@
+ license = "MIT"
+ repository = "https://github.com/dignifiedquire/quircs"
+ 
++# shlosilo vendor patch: "staticlib" removed - it forces a standalone link
++# check (global allocator + panic handler) that only the final firmware
++# provides; this crate is consumed as an ordinary rlib dependency.
+ [lib]
+ crate-type = [
+-    "staticlib",
+     "rlib",
+ ]
+ 
+@@ -41,9 +43,9 @@
+ 
+ [dependencies.num-traits]
+ version = "0.2.11"
++default-features = false
+ 
+-[dependencies.thiserror]
+-version = "1.0.19"
+-
+-[dev-dependencies.image]
+-version = "0.24"
++# shlosilo vendor patch: thiserror removed (std-only); libm supplies f64::round
++# for no_std (see patches/quircs-no-std.patch).
++[dependencies.libm]
++version = "0.2"
+diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
+--- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
++++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
+@@ -1,28 +0,0 @@
+-[package]
+-name = "quircs"
+-authors = ["dignifiedquire <me@dignifiedquire.com>"]
+-version = "0.10.2"
+-license = "MIT"
+-documentation = "https://docs.rs/qurics/"
+-repository = "https://github.com/dignifiedquire/quircs"
+-homepage = "https://github.com/dignifiedquire/quircs"
+-description = "QR code detection and scanning. Pure Rust."
+-readme = "README.md"
+-edition = "2018"
+-
+-keywords = ["qr", "scanner"]
+-categories = ["encoding", "multimedia"]
+-exclude = ["tests"]
+-
+-[lib]
+-crate-type = ["staticlib", "rlib"]
+-
+-[dependencies]
+-num-derive = "0.4.0"
+-num-traits = "0.2.11"
+-thiserror = "1.0.19"
+-
+-[dev-dependencies]
+-image = "0.24"
+-
+-
+diff -ruN a/.cargo_vcs_info.json b/.cargo_vcs_info.json
+--- a/.cargo_vcs_info.json	1970-01-01 08:00:01.000000000 +0800
++++ b/.cargo_vcs_info.json	1970-01-01 08:00:00.000000000 +0800
+@@ -1,6 +0,0 @@
+-{
+-  "git": {
+-    "sha1": "46244aa36b68adc4fbe332e0573eee9b274517e7"
+-  },
+-  "path_in_vcs": ""
+-}
+\ 文件末尾没有换行符
+diff -ruN a/src/decode.rs b/src/decode.rs
+--- a/src/decode.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/decode.rs	2026-09-17 19:05:30.902822588 +0800
+@@ -1,7 +1,7 @@
+ #![allow(clippy::many_single_char_names)]
+ 
+ use num_traits::{FromPrimitive, ToPrimitive};
+-use std::convert::TryFrom;
++use core::convert::TryFrom;
+ 
+ use crate::quirc::*;
+ use crate::version_db::*;
+diff -ruN a/src/error.rs b/src/error.rs
+--- a/src/error.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/error.rs	2026-09-17 19:05:30.902643921 +0800
+@@ -1,25 +1,43 @@
+-use thiserror::Error;
++// shlosilo vendor patch (2026-09-17): thiserror removed for no_std; the
++// error types keep their Display strings and implement core::error::Error.
++use core::fmt;
+ 
+-#[derive(Debug, Error)]
++#[derive(Debug)]
+ pub enum DecodeError {
+-    #[error("Invalid grid size")]
+     InvalidGridSize,
+-    #[error("Invalid version")]
+     InvalidVersion,
+-    #[error("Format data ECC failure")]
+     DataEcc,
+-    #[error("ECC failure")]
+     FormatEcc,
+-    #[error("Unknown data type")]
+     UnkownDataType,
+-    #[error("Data overflow")]
+     DataOverflow,
+-    #[error("Data underflow")]
+     DataUnderflow,
+ }
+ 
+-#[derive(Debug, Error)]
++impl fmt::Display for DecodeError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str(match self {
++            DecodeError::InvalidGridSize => "Invalid grid size",
++            DecodeError::InvalidVersion => "Invalid version",
++            DecodeError::DataEcc => "Format data ECC failure",
++            DecodeError::FormatEcc => "ECC failure",
++            DecodeError::UnkownDataType => "Unknown data type",
++            DecodeError::DataOverflow => "Data overflow",
++            DecodeError::DataUnderflow => "Data underflow",
++        })
++    }
++}
++
++impl core::error::Error for DecodeError {}
++
++#[derive(Debug)]
+ pub enum ExtractError {
+-    #[error("Out of bounds")]
+     OutOfBounds,
+ }
++
++impl fmt::Display for ExtractError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str("Out of bounds")
++    }
++}
++
++impl core::error::Error for ExtractError {}
+diff -ruN a/src/identify.rs b/src/identify.rs
+--- a/src/identify.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/identify.rs	2026-09-17 19:05:30.902776910 +0800
+@@ -1,6 +1,8 @@
+ #![allow(clippy::many_single_char_names)]
+ 
+-use std::convert::TryFrom;
++use alloc::vec;
++use alloc::vec::Vec;
++use core::convert::TryFrom;
+ 
+ use crate::error::ExtractError;
+ use crate::quirc::*;
+@@ -96,8 +98,8 @@
+     let x = (c[0] * u + c[1] * v + c[2]) / den;
+     let y = (c[3] * u + c[4] * v + c[5]) / den;
+ 
+-    ret.x = x.round() as i32;
+-    ret.y = y.round() as i32;
++    ret.x = libm::round(x) as i32;
++    ret.y = libm::round(y) as i32;
+ }
+ 
+ fn perspective_unmap(c: &[f64; 8], in_0: &Point, u: &mut f64, v: &mut f64) {
+@@ -621,7 +623,7 @@
+     }
+ 
+     let is_x_dom = if n.abs() > d.abs() {
+-        std::mem::swap(&mut n, &mut d);
++        core::mem::swap(&mut n, &mut d);
+         true
+     } else {
+         false
+@@ -960,7 +962,7 @@
+ 
+     /* Make sure A-B-C is clockwise */
+     if (capstones[b].center.x - h0.x) * -hd.y + (capstones[b].center.y - h0.y) * hd.x > 0 {
+-        std::mem::swap(&mut a, &mut c);
++        core::mem::swap(&mut a, &mut c);
+         hd.x = -hd.x;
+         hd.y = -hd.y
+     }
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/lib.rs	2026-09-17 19:05:56.570855151 +0800
+@@ -22,8 +22,14 @@
+ //! }
+ //! ```
+ 
++// shlosilo vendor patch (2026-09-17): no_std support (see
++// patches/quircs-no-std.patch in the repo root for the full change set and
++// the exit condition). No logic changes.
++#![no_std]
+ #![deny(clippy::all)]
+ 
++extern crate alloc;
++
+ mod decode;
+ mod error;
+ mod identify;
+diff -ruN a/src/quirc.rs b/src/quirc.rs
+--- a/src/quirc.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/quirc.rs	2026-09-17 19:05:30.902689910 +0800
+@@ -1,3 +1,5 @@
++use alloc::string::String;
++use alloc::vec::Vec;
+ use num_derive::{FromPrimitive, ToPrimitive};
+ 
+ pub type Pixel = u16;
+@@ -167,7 +169,7 @@
+ 
+ /// Obtain the library version string.
+ pub fn version() -> String {
+-    env!("CARGO_PKG_VERSION").to_string()
++    String::from(env!("CARGO_PKG_VERSION"))
+ }
+ 
+ /// QR-code ECC types.
+@@ -197,8 +199,8 @@
+     Kanji = 8,
+ }
+ 
+-impl std::fmt::Display for DataType {
+-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++impl core::fmt::Display for DataType {
++    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+         let x = match self {
+             DataType::Numeric => "numeric",
+             DataType::Alpha => "alpha",

@@ -1,0 +1,71 @@
+diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
+--- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
++++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
+@@ -1,30 +0,0 @@
+-[package]
+-name = "g2p"
+-version = "1.2.2"
+-authors = ["WanzenBug <moritz@wanzenbug.xyz>"]
+-edition = "2018"
+-readme = "../README.md"
+-license = "MIT/Apache-2.0"
+-repository = "https://github.com/WanzenBug/g2p"
+-documentation = "https://docs.rs/g2p"
+-description = """
+-A crate to create types that implement fast finite field arithmetic.
+-"""
+-categories = [ "no-std", "cryptography", "algorithms" ]
+-keywords = [ "finite-field", "galois", "macro", "newtype"]
+-rust-version = "1.61"
+-
+-[dev-dependencies]
+-static_assertions = "1.1"
+-galois_2p8 = "0.1.2"
+-reed-solomon-erasure = "6.0"
+-criterion = "0.4"
+-rand = "0.8"
+-
+-[dependencies]
+-g2gen = { path = "../g2gen", version = "1.2" }
+-g2poly = { path = "../g2poly", version = "1.2" }
+-
+-[[bench]]
+-name = "g2_8_bench"
+-harness = false
+diff -ruN a/.cargo_vcs_info.json b/.cargo_vcs_info.json
+--- a/.cargo_vcs_info.json	1970-01-01 08:00:01.000000000 +0800
++++ b/.cargo_vcs_info.json	1970-01-01 08:00:00.000000000 +0800
+@@ -1,6 +0,0 @@
+-{
+-  "git": {
+-    "sha1": "f2e41e6a0b23a598b7573d699773ca8f7b434b64"
+-  },
+-  "path_in_vcs": "g2p"
+-}
+\ 文件末尾没有换行符
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/lib.rs	2026-09-17 11:31:54.639037626 +0800
+@@ -1,8 +1,13 @@
++// shlosilo vendor patch (2026-09-17): no_std support (core::mem only; the
++// crate has no other std dependency). See patches/rqrr-g2p-no-std.patch
++// for the full change set and the exit condition.
++//
+ // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+ // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+ // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+ // option. This file may not be copied, modified, or distributed
+ // except according to those terms.
++#![no_std]
+ 
+ //! This crate can generate types that implement fast finite field arithmetic.
+ //!
+@@ -149,7 +154,7 @@
+     /// ```
+     fn pow(self, p: usize) -> Self {
+         let mut val = Self::ONE;
+-        let mut pow_pos = 1 << (::std::mem::size_of::<usize>() * 8 - 1);
++        let mut pow_pos = 1 << (::core::mem::size_of::<usize>() * 8 - 1);
+         assert_eq!(pow_pos << 1, 0);
+         while pow_pos > 0 {
+             val *= val;
