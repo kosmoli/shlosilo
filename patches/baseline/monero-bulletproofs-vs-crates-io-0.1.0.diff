@@ -1,6 +1,6 @@
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/build.rs b/build.rs
 --- a/build.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/build.rs	2026-09-26 10:21:14.672081338 +0800
++++ b/build.rs	2026-09-26 10:48:41.745829172 +0800
 @@ -1,59 +1,126 @@
  //! Builds the generators within the Constant Reference String for Bulletproofs(+) at compile-time,
  //! allowing apps to solely deserialize them (without having to calculate them).
@@ -76,12 +76,12 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    // Z5.2b: emitted table lengths — the single sizing source of truth for the
 +    // probe, the provide validation, and the init-time fill check.
 +    let _ = f.write_all(
-+      format!(
++        format!(
 +        "pub(crate) const TABLE_G_LEN: usize = {};\npub(crate) const TABLE_H_LEN: usize = {};\n",
 +        generators.G.len(),
 +        generators.H.len(),
 +      )
-+      .as_bytes(),
++        .as_bytes(),
 +    );
 +    f.write_all(
        format!(
@@ -655,8 +655,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/generator_cache_hook.rs b/src/generator_cache_hook.rs
 --- a/src/generator_cache_hook.rs	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/generator_cache_hook.rs	2026-09-26 10:21:14.672121364 +0800
-@@ -0,0 +1,246 @@
++++ b/src/generator_cache_hook.rs	2026-09-26 10:48:41.750829192 +0800
+@@ -0,0 +1,239 @@
 +//! shlosilo vendor patch (2026-09-07): external generator cache hooks.
 +//!
 +//! BP+/BP generators are public constants. On embedded targets the default
@@ -793,10 +793,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +/// registration wins). Returns false when the slot is taken or ALREADY
 +/// CONSUMED at init (a late provide would mislead the caller into thinking
 +/// the buffers were used), or when the blob scratch is inconsistently sized.
-+pub fn provide_generator_table_storage(
-+    set: GeneratorSet,
-+    storage: GeneratorTableStorage,
-+) -> bool {
++pub fn provide_generator_table_storage(set: GeneratorSet, storage: GeneratorTableStorage) -> bool {
 +    if storage.blob.len() != (storage.g.len() + storage.h.len()) * 128 {
 +        return false;
 +    }
@@ -830,12 +827,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +/// Returns (g_bytes, h_bytes, blob_bytes).
 +pub fn generator_table_sizes(set: GeneratorSet) -> (usize, usize, usize) {
 +    let (g, h) = match set {
-+        GeneratorSet::Bulletproof => {
-+            (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN)
-+        }
-+        GeneratorSet::BulletproofPlus => {
-+            (crate::plus::TABLE_G_LEN, crate::plus::TABLE_H_LEN)
-+        }
++        GeneratorSet::Bulletproof => (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN),
++        GeneratorSet::BulletproofPlus => (crate::plus::TABLE_G_LEN, crate::plus::TABLE_H_LEN),
 +    };
 +    let g_bytes = g * core::mem::size_of::<EdwardsPoint>();
 +    let h_bytes = h * core::mem::size_of::<EdwardsPoint>();
@@ -3511,8 +3504,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/mod.rs b/src/plus/mod.rs
 --- a/src/plus/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/mod.rs	2026-09-26 09:52:56.894595230 +0800
-@@ -2,11 +2,10 @@
++++ b/src/plus/mod.rs	2026-09-26 10:48:41.757829221 +0800
+@@ -2,11 +2,9 @@
  
  use std_shims::sync::LazyLock;
  
@@ -3520,13 +3513,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +use curve25519_dalek::{constants::ED25519_BASEPOINT_POINT, EdwardsPoint, Scalar};
  
 -use monero_bulletproofs_generators::Generators;
- 
+-
 -pub(crate) use crate::{scalar_vector::ScalarVector, point_vector::PointVector, MONERO_H};
 +pub(crate) use crate::{point_vector::PointVector, scalar_vector::ScalarVector, MONERO_H};
  
  pub(crate) mod transcript;
  pub(crate) mod weighted_inner_product;
-@@ -15,70 +14,76 @@
+@@ -15,70 +13,76 @@
  pub(crate) use aggregate_range_proof::*;
  
  pub(crate) fn padded_pow_of_2(i: usize) -> usize {

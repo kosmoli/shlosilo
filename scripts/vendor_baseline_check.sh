@@ -18,6 +18,7 @@ CHECKS=(
   "curve25519-dalek|https://static.crates.io/crates/curve25519-dalek/curve25519-dalek-4.1.3.crate|patches/baseline/curve25519-dalek-vs-crates-io-4.1.3.diff"
   "cryptonight|https://codeload.github.com/Cuprate/cuprate/tar.gz/cf3137b7579bfc930303243a634ca4d66b7266ed|patches/baseline/cryptonight-vs-upstream-cf3137b7579b.diff"
   "monero-bulletproofs|https://static.crates.io/crates/monero-bulletproofs/monero-bulletproofs-0.1.0.crate|patches/baseline/monero-bulletproofs-vs-crates-io-0.1.0.diff"
+  "monero-clsag|https://static.crates.io/crates/monero-clsag/monero-clsag-0.1.0.crate|patches/baseline/monero-clsag-vs-crates-io-0.1.0.diff"
 )
 # cryptonight 的基准是 tar 子目录（其余为 crate 根）
 SUBDIR_cryptonight="cryptonight"

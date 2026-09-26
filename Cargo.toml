@@ -191,3 +191,8 @@ g2poly = { path = "vendor/g2poly" }
 # patches/quircs-no-std.patch. Exit condition: drop both when upstream
 # ships no_std (watch github.com/dignifiedquire/quircs).
 quircs = { path = "vendor/quircs" }
+# monero-clsag (monero-oxide; kayabaNerve): CLSAG ring signature. Vendored
+# for the Z5 clsag memory surgery (方案 A, 2026-09-24): zero-semantic-change
+# de-alloc (ring capacity 16) + matching upstream PR track. Exit condition:
+# upstream merges the equivalent change and releases >0.1.0 (see VENDOR.md).
+monero-clsag = { path = "vendor/monero-clsag" }
