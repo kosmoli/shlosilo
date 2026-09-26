@@ -134,10 +134,7 @@ static TABLE_TAKEN_BP_PLUS: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(
 /// registration wins). Returns false when the slot is taken or ALREADY
 /// CONSUMED at init (a late provide would mislead the caller into thinking
 /// the buffers were used), or when the blob scratch is inconsistently sized.
-pub fn provide_generator_table_storage(
-    set: GeneratorSet,
-    storage: GeneratorTableStorage,
-) -> bool {
+pub fn provide_generator_table_storage(set: GeneratorSet, storage: GeneratorTableStorage) -> bool {
     if storage.blob.len() != (storage.g.len() + storage.h.len()) * 128 {
         return false;
     }
@@ -171,12 +168,8 @@ pub(crate) fn take_table_storage(prefix: &'static [u8]) -> Option<GeneratorTable
 /// Returns (g_bytes, h_bytes, blob_bytes).
 pub fn generator_table_sizes(set: GeneratorSet) -> (usize, usize, usize) {
     let (g, h) = match set {
-        GeneratorSet::Bulletproof => {
-            (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN)
-        }
-        GeneratorSet::BulletproofPlus => {
-            (crate::plus::TABLE_G_LEN, crate::plus::TABLE_H_LEN)
-        }
+        GeneratorSet::Bulletproof => (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN),
+        GeneratorSet::BulletproofPlus => (crate::plus::TABLE_G_LEN, crate::plus::TABLE_H_LEN),
     };
     let g_bytes = g * core::mem::size_of::<EdwardsPoint>();
     let h_bytes = h * core::mem::size_of::<EdwardsPoint>();

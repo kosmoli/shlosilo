@@ -1585,8 +1585,10 @@ pub mod r3 {
 /// than some targets need (thumbv7em's natural u64 alignment is 4, caught by
 /// this pin when it asserted `== 8`), which keeps the ABI stable while the
 /// in-Rust requirement (`align_of`) stays a subset of it.
-const _: () = assert!(core::mem::size_of::<curve25519_dalek::EdwardsPoint>()
-    == crate::types::caps::SHLOSILO_GENPOINT_SIZE);
+const _: () = assert!(
+    core::mem::size_of::<curve25519_dalek::EdwardsPoint>()
+        == crate::types::caps::SHLOSILO_GENPOINT_SIZE
+);
 const _: () = assert!(core::mem::align_of::<curve25519_dalek::EdwardsPoint>() <= 8);
 
 fn genset_from_c(set: i32) -> Option<monero_bulletproofs::GeneratorSet> {
@@ -1600,6 +1602,9 @@ fn genset_from_c(set: i32) -> Option<monero_bulletproofs::GeneratorSet> {
 /// INV-1: pure probe — reports the required buffer sizes for a generator set.
 /// No side effects: does not touch the registry slot, consumes no RNG, derives
 /// no secrets. Values == what `shlosilo_gencache_provide_table` requires.
+///
+/// # Safety
+/// All three out-pointers must be valid for writes of `u32` and non-aliased.
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_gencache_table_sizes(
     set: i32,
@@ -1623,6 +1628,13 @@ pub unsafe extern "C" fn shlosilo_gencache_table_sizes(
 /// INV-2/3/4: provide the decompressed-table storage for one generator set.
 /// All validation happens before any state change or write; success commits
 /// the slot atomically (CONSUMED); failure leaves state unchanged (retry OK).
+///
+/// # Safety
+/// `g`/`h` must be 8-aligned and point to at least `*g_bytes`/`*h_bytes`
+/// writable bytes; `blob` to at least `*blob_bytes`. The used regions must be
+/// pairwise disjoint (enforced). The buffers must outlive every generator
+/// use — they are written ONCE at first generator use and read thereafter.
+/// Size out-pointers must be valid for read/write and non-aliased.
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_gencache_provide_table(
     set: i32,
@@ -1659,7 +1671,7 @@ pub unsafe extern "C" fn shlosilo_gencache_provide_table(
 
     // INV-3: alignment of the point tables.
     let align = core::mem::align_of::<curve25519_dalek::EdwardsPoint>();
-    if (g as usize) % align != 0 || (h as usize) % align != 0 {
+    if !(g as usize).is_multiple_of(align) || !(h as usize).is_multiple_of(align) {
         return ERR_NULL_POINTER;
     }
     // INV-3: pairwise-disjoint used regions (first `required` bytes each).

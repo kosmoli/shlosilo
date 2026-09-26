@@ -8,9 +8,7 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use shlosilo::ffi::c_abi::{
-    shlosilo_gencache_provide_table, shlosilo_gencache_table_sizes,
-};
+use shlosilo::ffi::c_abi::{shlosilo_gencache_provide_table, shlosilo_gencache_table_sizes};
 use shlosilo::ffi::error_code::{ERR_BUFFER_TOO_SMALL, ERR_NULL_POINTER, ERR_SLOT_CONSUMED, OK};
 use shlosilo::types::caps::{
     SHLOSILO_GENCACHE_BLOB_BYTES, SHLOSILO_GENCACHE_G_BYTES, SHLOSILO_GENCACHE_H_BYTES,
@@ -137,7 +135,15 @@ fn inv3_topology_rejects_illegal() {
 
     // partial-NULL: g missing, others present
     let rc = unsafe {
-        shlosilo_gencache_provide_table(SET_BP, core::ptr::null_mut(), &mut gsz, hp, &mut hsz, bp, &mut bsz)
+        shlosilo_gencache_provide_table(
+            SET_BP,
+            core::ptr::null_mut(),
+            &mut gsz,
+            hp,
+            &mut hsz,
+            bp,
+            &mut bsz,
+        )
     };
     assert_eq!(rc, ERR_NULL_POINTER, "partial-NULL must be rejected");
 
@@ -145,7 +151,10 @@ fn inv3_topology_rejects_illegal() {
     let rc = unsafe {
         shlosilo_gencache_provide_table(SET_BP, gp.add(1), &mut gsz, hp, &mut hsz, bp, &mut bsz)
     };
-    assert_eq!(rc, ERR_NULL_POINTER, "misaligned point table must be rejected");
+    assert_eq!(
+        rc, ERR_NULL_POINTER,
+        "misaligned point table must be rejected"
+    );
 
     // overlapping g/h (same base address)
     let rc = unsafe {

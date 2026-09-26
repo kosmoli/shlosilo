@@ -39,12 +39,12 @@ fn generators(prefix: &'static str, path: &str) {
     // Z5.2b: emitted table lengths — the single sizing source of truth for the
     // probe, the provide validation, and the init-time fill check.
     let _ = f.write_all(
-      format!(
+        format!(
         "pub(crate) const TABLE_G_LEN: usize = {};\npub(crate) const TABLE_H_LEN: usize = {};\n",
         generators.G.len(),
         generators.H.len(),
       )
-      .as_bytes(),
+        .as_bytes(),
     );
     f.write_all(
       format!(

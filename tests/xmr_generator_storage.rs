@@ -10,7 +10,7 @@
 use curve25519_dalek::EdwardsPoint;
 use monero_bulletproofs_generators::bulletproofs_generators;
 use shlosilo::chain::xmr::generator_cache_test_hooks::{
-    provide_table_storage, prove_tiny_bp_plus, GeneratorSet, GeneratorTableStorage,
+    prove_tiny_bp_plus, provide_table_storage, GeneratorSet, GeneratorTableStorage,
 };
 
 #[test]
@@ -22,10 +22,8 @@ fn caller_storage_fills_reference_generators() {
 
     // caller-owned 'static storage (device: static/PSRAM; here: leaked test memory)
     let base = curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
-    let g: &'static mut [EdwardsPoint] =
-        Box::leak(vec![base; n_g].into_boxed_slice());
-    let h: &'static mut [EdwardsPoint] =
-        Box::leak(vec![base; n_h].into_boxed_slice());
+    let g: &'static mut [EdwardsPoint] = Box::leak(vec![base; n_g].into_boxed_slice());
+    let h: &'static mut [EdwardsPoint] = Box::leak(vec![base; n_h].into_boxed_slice());
     let blob: &'static mut [u8] = Box::leak(vec![0u8; (n_g + n_h) * 128].into_boxed_slice());
     let g_ptr = g.as_ptr();
     let h_ptr = h.as_ptr();
@@ -51,6 +49,10 @@ fn caller_storage_fills_reference_generators() {
     let b2: &'static mut [u8] = Box::leak(vec![0u8; (n_g + n_h) * 128].into_boxed_slice());
     assert!(!provide_table_storage(
         GeneratorSet::BulletproofPlus,
-        GeneratorTableStorage { g: g2, h: h2, blob: b2 },
+        GeneratorTableStorage {
+            g: g2,
+            h: h2,
+            blob: b2
+        },
     ));
 }

@@ -702,6 +702,9 @@ int shlosilo_supported_protocols_ffi(uint8_t *output_buf,
  * INV-1: pure probe — reports the required buffer sizes for a generator set.
  * No side effects: does not touch the registry slot, consumes no RNG, derives
  * no secrets. Values == what `shlosilo_gencache_provide_table` requires.
+ *
+ * # Safety
+ * All three out-pointers must be valid for writes of `u32` and non-aliased.
  */
 int32_t shlosilo_gencache_table_sizes(int32_t set,
                                       uint32_t *g_bytes,
@@ -712,6 +715,13 @@ int32_t shlosilo_gencache_table_sizes(int32_t set,
  * INV-2/3/4: provide the decompressed-table storage for one generator set.
  * All validation happens before any state change or write; success commits
  * the slot atomically (CONSUMED); failure leaves state unchanged (retry OK).
+ *
+ * # Safety
+ * `g`/`h` must be 8-aligned and point to at least `*g_bytes`/`*h_bytes`
+ * writable bytes; `blob` to at least `*blob_bytes`. The used regions must be
+ * pairwise disjoint (enforced). The buffers must outlive every generator
+ * use — they are written ONCE at first generator use and read thereafter.
+ * Size out-pointers must be valid for read/write and non-aliased.
  */
 int32_t shlosilo_gencache_provide_table(int32_t set,
                                         uint8_t *g,
