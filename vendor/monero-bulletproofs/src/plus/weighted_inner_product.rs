@@ -58,6 +58,17 @@ pub struct WipScratch<'a> {
     pub(crate) p_y: &'a mut [Scalar],
 }
 
+/// Z5.3 C-cut D: the prove-side parts of a WipScratch, split out so the
+/// caller can borrow the staging regions (p_al/p_ar/...) independently.
+pub struct RoundBufs<'a> {
+    pub a: &'a mut [Scalar],
+    pub b: &'a mut [Scalar],
+    pub g: &'a mut [EdwardsPoint],
+    pub h: &'a mut [EdwardsPoint],
+    pub p_y: &'a mut [Scalar],
+    pub p_zp: &'a mut [Scalar],
+}
+
 impl<'a> WipScratch<'a> {
     /// Sizing source of truth: two buffers of `terms_cap` for each of the
     /// four vectors (scalars 32 B, points 160 B worst case).
@@ -140,28 +151,26 @@ impl Zeroize for WipStatement {
     }
 }
 
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub(crate) struct WipWitness {
-    a: ScalarVector,
-    b: ScalarVector,
+// Z5.3 C-cut D: the witness borrows the caller's staging regions — the
+// wipe duty moves to the region owner (the caller zeroes the regions after
+// the prove call; see aggregate_range_proof::prove).
+#[derive(Clone)]
+pub(crate) struct WipWitness<'a> {
+    a: &'a [Scalar],
+    b: &'a [Scalar],
     alpha: Scalar,
 }
 
-impl WipWitness {
-    pub(crate) fn new(mut a: ScalarVector, mut b: ScalarVector, alpha: Scalar) -> Option<Self> {
-        if a.0.is_empty() || (a.len() != b.len()) {
+impl<'a> WipWitness<'a> {
+    pub(crate) fn new(a: &'a [Scalar], b: &'a [Scalar], alpha: Scalar) -> Option<Self> {
+        if a.is_empty() || (a.len() != b.len()) {
             return None;
         }
-
-        // Pad to the nearest power of 2
-        let missing = padded_pow_of_2(a.len()) - a.len();
-        a.0.reserve(missing);
-        b.0.reserve(missing);
-        for _ in 0..missing {
-            a.0.push(Scalar::ZERO);
-            b.0.push(Scalar::ZERO);
+        // Z5.3 C-cut D: the caller stages a/b in its scratch ALREADY padded
+        // to a power of two (zero tail), so no reserve+push growth here.
+        if a.len() != padded_pow_of_2(a.len()) {
+            return None;
         }
-
         Some(Self { a, b, alpha })
     }
 }
@@ -275,7 +284,7 @@ impl WipStatement {
         witness: &WipWitness,
         terms: &mut [(Scalar, EdwardsPoint)],
         straus: &mut curve25519_dalek::scratch::StrausScratch,
-        wip: &mut WipScratch,
+        round: &mut RoundBufs,
     ) -> Option<WipProof> {
         let WipStatement {
             generators,
@@ -294,7 +303,7 @@ impl WipStatement {
         // path. (The challenge-power semantics match the old constructor:
         // p_y[0] = y, p_y[i] = p_y[i-1] * y.)
         let n_gen = generators.len();
-        let p_y: &mut [Scalar] = &mut wip.p_y[..n_gen];
+        let p_y: &mut [Scalar] = &mut round.p_y[..n_gen];
         p_y[0] = y;
         for i in 1..n_gen {
             p_y[i] = p_y[i - 1] * y;
@@ -310,15 +319,14 @@ impl WipStatement {
         {
             let mut P_terms = witness
                 .a
-                .0
                 .iter()
                 .copied()
                 .zip((0..generators.len()).map(|i| generators.generator(GeneratorsList::GBold, i)))
-                .chain(witness.b.0.iter().copied().zip(
+                .chain(witness.b.iter().copied().zip(
                     (0..generators.len()).map(|i| generators.generator(GeneratorsList::HBold, i)),
                 ))
                 .collect::<Vec<_>>();
-            P_terms.push((wip_ref(&witness.a.0, &witness.b.0, p_y), g));
+            P_terms.push((wip_ref(witness.a, witness.b, p_y), g));
             P_terms.push((witness.alpha, h));
             debug_assert_eq!(crate::core::multiexp_alloc(&P_terms), P);
             P_terms.zeroize();
@@ -333,17 +341,17 @@ impl WipStatement {
         if n == 0 || !n.is_power_of_two() || (n / 2) * 2 != n {
             return None;
         }
-        if wip.a.len() < n {
+        if round.a.len() < n {
             return None; // explicit over-cap (G1)
         }
-        let (a0, a1) = wip.a.split_at_mut(n);
-        let (b0, b1) = wip.b.split_at_mut(n);
-        let (g0, g1) = wip.g.split_at_mut(n);
-        let (h0, h1) = wip.h.split_at_mut(n);
+        let (a0, a1) = round.a.split_at_mut(n);
+        let (b0, b1) = round.b.split_at_mut(n);
+        let (g0, g1) = round.g.split_at_mut(n);
+        let (h0, h1) = round.h.split_at_mut(n);
         let mut cur_len = n; // logical round length (the ping-pong tails are
                              // capacity leftovers, not round data)
-        a0[..n].copy_from_slice(&witness.a.0);
-        b0[..n].copy_from_slice(&witness.b.0);
+        a0[..n].copy_from_slice(witness.a);
+        b0[..n].copy_from_slice(witness.b);
         for i in 0..n {
             g0[i] = generators.generator(GeneratorsList::GBold, i);
             h0[i] = generators.generator(GeneratorsList::HBold, i);
@@ -364,11 +372,11 @@ impl WipStatement {
         {
             let mut i = 1;
             while i < n {
-                wip.p_zp[y_inv_len] = p_y[i - 1];
+                round.p_zp[y_inv_len] = p_y[i - 1];
                 y_inv_len += 1;
                 i *= 2;
             }
-            Scalar::batch_invert(&mut wip.p_zp[..y_inv_len]);
+            Scalar::batch_invert(&mut round.p_zp[..y_inv_len]);
         }
 
         let mut L_vec = [CompressedPoint::from([0u8; 32]); WIP_MAX_ROUNDS];
@@ -402,7 +410,7 @@ impl WipStatement {
             let c_r = y_n_hat * wip_ref(a2s, b1s, &p_y[..y_len]);
 
             y_inv_len -= 1;
-            let y_inv_n_hat = wip.p_zp[y_inv_len];
+            let y_inv_n_hat = round.p_zp[y_inv_len];
 
             // L terms fill the caller scratch (see the Z5.3 pool cut notes)
             let l_len = (n_hat * 2) + 2;

@@ -79,9 +79,9 @@ pub struct AggregateRangeProof {
     pub(crate) wip: WipProof,
 }
 
-struct AHatComputation {
+struct AHatComputation<'a> {
     y: Scalar,
-    d_descending_y_plus_z: ScalarVector,
+    d_descending_y_plus_z: &'a [Scalar],
     y_mn_plus_one: Scalar,
     z: Scalar,
     z_pow: ScalarVector,
@@ -119,14 +119,17 @@ impl<'a> AggregateRangeStatement<'a> {
         ScalarVector(d_j)
     }
 
-    fn compute_A_hat(
+    fn compute_A_hat<'z>(
         mut V: PointVector,
         generators: &BpPlusGenerators,
         transcript: &mut Scalar,
         A: CompressedPoint,
         terms: &mut [(Scalar, EdwardsPoint)],
         straus: &mut curve25519_dalek::scratch::StrausScratch,
-    ) -> Option<AHatComputation> {
+        p_d: &mut [Scalar],
+        p_ay: &mut [Scalar],
+        p_zp: &'z mut [Scalar],
+    ) -> Option<AHatComputation<'z>> {
         let (y, z) = Self::transcript_A(transcript, A);
 
         let A = A
@@ -155,32 +158,36 @@ impl<'a> AggregateRangeStatement<'a> {
             z_pow[i] = z_pow[i - 1] * z_pow[0];
         }
 
-        let mut d = ScalarVector::new(mn);
+        let d = &mut p_d[..mn];
         for j in 1..=V.len() {
             // d += d_j(j) * z_pow[j-1]; d_j is zero outside its 2^k block
             let zj = z_pow[j - 1];
             let base = (j - 1) * COMMITMENT_BITS;
             let mut p = Scalar::ONE;
             for k in 0..COMMITMENT_BITS {
-                d.0[base + k] += p * zj;
+                d[base + k] += p * zj;
                 p += p;
             }
         }
 
-        let mut ascending_y = ScalarVector::new(mn);
-        ascending_y.0[0] = y;
+        let ascending_y = &mut p_ay[..mn];
+        ascending_y[0] = y;
         for i in 1..d.len() {
-            ascending_y.0[i] = ascending_y.0[i - 1] * y;
+            ascending_y[i] = ascending_y[i - 1] * y;
         }
-        let y_pows: Scalar = ascending_y.0.iter().sum();
+        let y_pows: Scalar = ascending_y.iter().sum();
         // `d.sum()` is needed at the end — hoist it, then consume d below
-        let d_sum: Scalar = d.0.iter().sum();
+        let d_sum: Scalar = d.iter().sum();
 
-        let mut descending_y = ascending_y;
-        descending_y.0.reverse();
-
-        let d_descending_y = d * &descending_y;
-        let d_descending_y_plus_z = d_descending_y + z;
+        // descending = ascending reversed in place (only descending survives);
+        // the fused product lands in p_zp (z_pow is a stack array, done by
+        // now) and outlives this fn via the returned borrow.
+        ascending_y.reverse();
+        let descending_y: &[Scalar] = ascending_y;
+        let d_descending_y_plus_z: &mut [Scalar] = &mut p_zp[..mn];
+        for i in 0..mn {
+            d_descending_y_plus_z[i] = d[i] * descending_y[i] + z;
+        }
 
         let y_mn_plus_one = descending_y[0] * y;
 
@@ -198,7 +205,7 @@ impl<'a> AggregateRangeStatement<'a> {
         }
         let A_terms = &mut terms[..a_terms_len];
         let mut t = 0;
-        for (i, d_y_z) in d_descending_y_plus_z.0.iter().enumerate() {
+        for (i, d_y_z) in d_descending_y_plus_z.iter().enumerate() {
             A_terms[t] = (neg_z, generators.generator(GeneratorsList::GBold, i));
             t += 1;
             A_terms[t] = (*d_y_z, generators.generator(GeneratorsList::HBold, i));
@@ -235,6 +242,19 @@ impl<'a> AggregateRangeStatement<'a> {
         straus: &mut curve25519_dalek::scratch::StrausScratch,
         wip: &mut crate::plus::weighted_inner_product::WipScratch,
     ) -> Option<AggregateRangeProof> {
+        // Z5.3 C-cut D: split the scratch into disjoint field borrows.
+        let crate::plus::weighted_inner_product::WipScratch {
+            a: rb_a,
+            b: rb_b,
+            g: rb_g,
+            h: rb_h,
+            p_d,
+            p_ay,
+            p_al,
+            p_ar,
+            p_zp,
+            p_y,
+        } = wip;
         // Check for consistency with the witness
         #[cfg(feature = "prove-timing")]
         let consistency = PhaseProbe::start(crate::prove_timing_hook::PHASE_WRAP_CONSISTENCY);
@@ -277,7 +297,17 @@ impl<'a> AggregateRangeStatement<'a> {
         // writes straight into `a_l` (missing commitments decompose to zero,
         // matching the old `unwrap_or(&0)` path bit for bit).
         let mn = V.len() * COMMITMENT_BITS;
-        let mut a_l = ScalarVector::new(mn);
+        // Z5.3 C-cut D: a_l/a_r live in the caller staging regions; the
+        // witness pow2 padding is the zero tail (same values as the old
+        // WipWitness::new reserve+push padding).
+        let padded = padded_pow_of_2(mn);
+        if p_al.len() < padded || p_ar.len() < padded {
+            return None;
+        }
+        let a_l = &mut p_al[..padded];
+        for e in a_l.iter_mut() {
+            *e = Scalar::ZERO;
+        }
         for j in 1..=V.len() {
             let amount = *witness
                 .0
@@ -286,27 +316,35 @@ impl<'a> AggregateRangeStatement<'a> {
                 .unwrap_or(&0);
             let base = (j - 1) * COMMITMENT_BITS;
             for bit in 0..64 {
-                a_l.0[base + bit] = Scalar::from((amount >> bit) & 1);
+                if base + bit < mn {
+                    a_l[base + bit] = Scalar::from((amount >> bit) & 1);
+                }
             }
         }
 
-        let a_r = a_l.clone() - Scalar::ONE;
+        let a_r = &mut p_ar[..padded];
+        for e in a_r.iter_mut() {
+            *e = Scalar::ZERO;
+        }
+        for i in 0..mn {
+            a_r[i] = a_l[i] - Scalar::ONE;
+        }
 
         let alpha = monero_ed25519::Scalar::random(&mut *rng).into();
 
         // Z5.3 pool cut: A-terms fill the caller scratch (sequential with the
         // compute_A_hat use below).
-        let a_terms_len = (a_l.len() * 2) + 1;
+        let a_terms_len = (mn * 2) + 1;
         if terms.len() < a_terms_len {
             return None;
         }
         let A_terms = &mut terms[..a_terms_len];
         let mut t = 0;
-        for (i, a_l) in a_l.0.iter().enumerate() {
+        for (i, a_l) in a_l.iter().enumerate() {
             A_terms[t] = (*a_l, generators.generator(GeneratorsList::GBold, i));
             t += 1;
         }
-        for (i, a_r) in a_r.0.iter().enumerate() {
+        for (i, a_r) in a_r.iter().enumerate() {
             A_terms[t] = (*a_r, generators.generator(GeneratorsList::HBold, i));
             t += 1;
         }
@@ -338,12 +376,17 @@ impl<'a> AggregateRangeStatement<'a> {
             A,
             terms,
             straus,
+            p_d,
+            p_ay,
+            &mut *p_zp,
         )
         .expect("A is a valid point as we just compressed it");
         _p2.end();
 
-        let a_l = a_l - z;
-        let a_r = a_r + &d_descending_y_plus_z;
+        for i in 0..mn {
+            a_l[i] -= z;
+            a_r[i] += d_descending_y_plus_z[i];
+        }
         let mut alpha = alpha;
         for j in 1..=witness.0.len() {
             alpha += z_pow[j - 1] * witness.0[j - 1].mask.into() * y_mn_plus_one;
@@ -357,16 +400,29 @@ impl<'a> AggregateRangeStatement<'a> {
                     .prove(
                         rng,
                         transcript,
-                        &Zeroizing::new(
-                            WipWitness::new(a_l, a_r, alpha)
-                                .expect("Bulletproofs::Plus created an invalid WipWitness"),
-                        ),
+                        &WipWitness::new(a_l, a_r, alpha)
+                            .expect("Bulletproofs::Plus created an invalid WipWitness"),
                         terms,
                         straus,
-                        wip,
+                        &mut crate::plus::weighted_inner_product::RoundBufs {
+                            a: rb_a,
+                            b: rb_b,
+                            g: rb_g,
+                            h: rb_h,
+                            p_y,
+                            p_zp,
+                        },
                     )
                     .expect("Bulletproof::Plus failed to prove the weighted inner-product");
                 _p3.end();
+                // Z5.3 C-cut D: the witness wipe duty moved here with the
+                // borrowed staging (was ZeroizeOnDrop on the owned vectors).
+                for e in p_al[..padded].iter_mut() {
+                    *e = Scalar::ZERO;
+                }
+                for e in p_ar[..padded].iter_mut() {
+                    *e = Scalar::ZERO;
+                }
                 wip
             },
         };
@@ -393,6 +449,9 @@ impl<'a> AggregateRangeStatement<'a> {
 
         // Z5.3 pool cut: verify self-provisions one staging Vec (the Z6
         // zero-alloc claim covers the sign path; verify staging is tracked).
+        let mut verify_d = vec![Scalar::ZERO; 1024];
+        let mut verify_ay = vec![Scalar::ZERO; 1024];
+        let mut verify_zp = vec![Scalar::ZERO; 1024];
         let a_hat_res = {
             // Z5.3 D-cut: verify self-provisions both scratch buffers (the
             // Z6 zero-alloc claim covers the sign path; verify staging is
@@ -413,6 +472,9 @@ impl<'a> AggregateRangeStatement<'a> {
                 proof.A,
                 &mut verify_terms,
                 &mut verify_straus,
+                &mut verify_d,
+                &mut verify_ay,
+                &mut verify_zp,
             )
         };
         let Some(AHatComputation { y, A_hat, .. }) = a_hat_res else {
