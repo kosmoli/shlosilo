@@ -233,6 +233,34 @@ static int run_checks(void)
     /* Z3.3b: sign workspace — C-side provisioning by runtime query (the
      * capacity is never frozen into the ABI). One-shot diagnostic workspace,
      * freed before return. */
+    /* Z5.2b: decompressed generator table storage (BP+ set). Provided ONCE
+       and never freed — the buffers must outlive every generator use
+       (shlosilo.h contract). Subsequent runs skip (slot is CONSUMED). */
+    {
+        static uint8_t *gen_g = NULL;
+        static uint8_t *gen_h = NULL;
+        static uint8_t *gen_blob = NULL;
+        if (gen_g == NULL) {
+            uint32_t g_sz = 0, h_sz = 0, b_sz = 0;
+            if (shlosilo_gencache_table_sizes(1, &g_sz, &h_sz, &b_sz) != 0) {
+                log_line("gen table sizes probe failed");
+            } else {
+                gen_g = (uint8_t *)malloc(g_sz);
+                gen_h = (uint8_t *)malloc(h_sz);
+                gen_blob = (uint8_t *)malloc(b_sz);
+                if (gen_g != NULL && gen_h != NULL && gen_blob != NULL) {
+                    uint32_t gs = g_sz, hs = h_sz, bs = b_sz;
+                    int32_t grc = shlosilo_gencache_provide_table(
+                        1, gen_g, &gs, gen_h, &hs, gen_blob, &bs);
+                    log_line("gen table provide rc=%d (g=%u h=%u b=%u)",
+                             (int)grc, (unsigned)gs, (unsigned)hs, (unsigned)bs);
+                } else {
+                    log_line("gen table malloc failed");
+                }
+            }
+        }
+    }
+
     unsigned ws_need = shlosilo_sign_ws_len();
     uint8_t *sign_ws = (uint8_t *)malloc(ws_need);
     if (sign_ws == NULL) {

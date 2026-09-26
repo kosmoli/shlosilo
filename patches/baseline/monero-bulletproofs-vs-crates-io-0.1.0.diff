@@ -1,7 +1,7 @@
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/build.rs b/build.rs
 --- a/build.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/build.rs	2026-09-26 09:52:56.894509432 +0800
-@@ -1,59 +1,110 @@
++++ b/build.rs	2026-09-26 10:21:14.672081338 +0800
+@@ -1,59 +1,126 @@
  //! Builds the generators within the Constant Reference String for Bulletproofs(+) at compile-time,
  //! allowing apps to solely deserialize them (without having to calculate them).
 +//!
@@ -60,6 +60,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -  let path = Path::new(&env::var("OUT_DIR").expect("cargo didn't set $OUT_DIR")).join(path);
 -  let _ = remove_file(&path);
 -  File::create(&path)
+-    .expect("failed to create file in $OUT_DIR")
+-    .write_all(
 +    let generators = bulletproofs_generators(prefix.as_bytes());
 +    #[allow(non_snake_case)]
 +    let mut G_str = String::new();
@@ -70,9 +72,18 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +
 +    let path = Path::new(&env::var("OUT_DIR").expect("cargo didn't set $OUT_DIR")).join(path);
 +    let _ = remove_file(&path);
-+    File::create(&path)
-     .expect("failed to create file in $OUT_DIR")
-     .write_all(
++    let mut f = File::create(&path).expect("failed to create file in $OUT_DIR");
++    // Z5.2b: emitted table lengths — the single sizing source of truth for the
++    // probe, the provide validation, and the init-time fill check.
++    let _ = f.write_all(
++      format!(
++        "pub(crate) const TABLE_G_LEN: usize = {};\npub(crate) const TABLE_H_LEN: usize = {};\n",
++        generators.G.len(),
++        generators.H.len(),
++      )
++      .as_bytes(),
++    );
++    f.write_all(
        format!(
 -        "
 -          pub(crate) static GENERATORS: LazyLock<Generators> = LazyLock::new(|| Generators {{
@@ -83,6 +94,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -              {H_str}
 -            ],
 +        r#"
++          #[cfg(feature = "alloc-fallback")]
 +          fn decompress_generator_vec(bytes: &[[u8; 32]]) -> std_shims::vec::Vec<curve25519_dalek::EdwardsPoint> {{
 +            let mut out = std_shims::vec::Vec::with_capacity(bytes.len());
 +            for b in bytes {{
@@ -94,6 +106,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            }}
 +            out
 +          }}
++          #[cfg(feature = "alloc-fallback")]
 +          fn rebuild_from_blob(blob: &[u8], n: usize) -> crate::generator_cache_hook::Generators<'static> {{
 +            // n points x 128 bytes of raw extended coordinates (X, Y, Z, T),
 +            // all G first, then all H. Coordinates came from validated points.
@@ -128,31 +141,36 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                return crate::generator_cache_hook::init_tables(b"{prefix}", n_points, G_BYTES, H_BYTES, st);
 +              }}
 +            }}
-+            // Transitional fallback (no storage provided): one-shot decompress
-+            // into a leaked Vec (Z5.2b removes once every host provisions).
-+            // Load-hit still honored (persistence works without table storage).
-+            if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
-+              return rebuild_from_blob(blob, n_points);
-+            }}
-+            let g = decompress_generator_vec(G_BYTES);
-+            let h = decompress_generator_vec(H_BYTES);
++            // Transitional fallback (alloc-fallback feature): one-shot
++            // decompress into a leaked Vec. Load-hit still honored (persistence
++            // works without table storage).
++            #[cfg(feature = "alloc-fallback")]
 +            {{
-+              let mut blob = std_shims::vec::Vec::with_capacity(n_points * 128);
-+              for p in g.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
-+              for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
-+              crate::generator_cache_hook::try_store_blob(b"{prefix}", &blob);
++              if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
++                return rebuild_from_blob(blob, n_points);
++              }}
++              let g = decompress_generator_vec(G_BYTES);
++              let h = decompress_generator_vec(H_BYTES);
++              {{
++                let mut blob = std_shims::vec::Vec::with_capacity(n_points * 128);
++                for p in g.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
++                for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
++                crate::generator_cache_hook::try_store_blob(b"{prefix}", &blob);
++              }}
++              return crate::generator_cache_hook::Generators {{
++                G: crate::generator_cache_hook::leak_vec(g),
++                H: crate::generator_cache_hook::leak_vec(h),
++              }};
 +            }}
-+            crate::generator_cache_hook::Generators {{
-+              G: crate::generator_cache_hook::leak_vec(g),
-+              H: crate::generator_cache_hook::leak_vec(h),
-+            }}
++            #[cfg(not(feature = "alloc-fallback"))]
++            panic!("generator table storage not provided (alloc-fallback disabled)");
            }});
 -        ",
 +        "#,
        )
        .as_bytes(),
      )
-@@ -62,26 +113,30 @@
+@@ -62,26 +129,40 @@
  
  #[cfg(not(feature = "compile-time-generators"))]
  fn generators(prefix: &'static str, path: &str) {
@@ -172,12 +190,22 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        .write_all(
 +            format!(
 +                r#"
++        // Z5.2b: upstream generator sets are definitionally 1024 + 1024.
++        pub(crate) const TABLE_G_LEN: usize = 1024;
++        pub(crate) const TABLE_H_LEN: usize = 1024;
 +        pub(crate) static GENERATORS: LazyLock<crate::generator_cache_hook::Generators<'static>> = LazyLock::new(|| {{
 +          let ext = monero_bulletproofs_generators::bulletproofs_generators(b"{prefix}");
-+          crate::generator_cache_hook::Generators {{
-+            G: crate::generator_cache_hook::leak_vec(ext.G),
-+            H: crate::generator_cache_hook::leak_vec(ext.H),
++          assert_eq!(ext.G.len(), TABLE_G_LEN);
++          assert_eq!(ext.H.len(), TABLE_H_LEN);
++          #[cfg(feature = "alloc-fallback")]
++          {{
++            return crate::generator_cache_hook::Generators {{
++              G: crate::generator_cache_hook::leak_vec(ext.G),
++              H: crate::generator_cache_hook::leak_vec(ext.H),
++            }};
 +          }}
++          #[cfg(not(feature = "alloc-fallback"))]
++          panic!("generator table storage not provided (alloc-fallback disabled)");
          }});
        "#,
 -      )
@@ -201,17 +229,25 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
-+++ b/Cargo.toml	2026-09-08 10:56:57.258280887 +0800
-@@ -35,6 +35,8 @@
++++ b/Cargo.toml	2026-09-26 10:21:14.671889709 +0800
+@@ -35,9 +35,16 @@
  
  [features]
  compile-time-generators = ["curve25519-dalek/precomputed-tables"]
 +# shlosilo vendor patch: prove-phase timing probes (device perf decomposition)
 +prove-timing = []
++# shlosilo vendor patch: transitional no-storage fallback (decompress into a
++# leaked Vec). Device builds (Z6 no-allocator acceptance) disable this and
++# MUST provide generator table storage up front.
++alloc-fallback = []
  default = [
      "std",
      "compile-time-generators",
-@@ -59,6 +61,8 @@
++    "alloc-fallback",
+ ]
+ std = [
+     "std-shims/std",
+@@ -59,6 +66,8 @@
  features = [
      "alloc",
      "zeroize",
@@ -619,8 +655,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/generator_cache_hook.rs b/src/generator_cache_hook.rs
 --- a/src/generator_cache_hook.rs	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/generator_cache_hook.rs	2026-09-26 09:56:39.452658697 +0800
-@@ -0,0 +1,228 @@
++++ b/src/generator_cache_hook.rs	2026-09-26 10:21:14.672121364 +0800
+@@ -0,0 +1,246 @@
 +//! shlosilo vendor patch (2026-09-07): external generator cache hooks.
 +//!
 +//! BP+/BP generators are public constants. On embedded targets the default
@@ -789,8 +825,26 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    out
 +}
 +
++/// Z5.2b: the single sizing source of truth — the C probe, the provide-time
++/// capacity validation, and the init-time fill check all derive from here.
++/// Returns (g_bytes, h_bytes, blob_bytes).
++pub fn generator_table_sizes(set: GeneratorSet) -> (usize, usize, usize) {
++    let (g, h) = match set {
++        GeneratorSet::Bulletproof => {
++            (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN)
++        }
++        GeneratorSet::BulletproofPlus => {
++            (crate::plus::TABLE_G_LEN, crate::plus::TABLE_H_LEN)
++        }
++    };
++    let g_bytes = g * core::mem::size_of::<EdwardsPoint>();
++    let h_bytes = h * core::mem::size_of::<EdwardsPoint>();
++    (g_bytes, h_bytes, (g + h) * 128)
++}
++
 +/// Leak a Vec as a 'static slice WITHOUT requiring Box (MSRV-safe one-shot
 +/// leak for the transitional fallback path; the memory is never freed).
++#[cfg(feature = "alloc-fallback")]
 +pub(crate) fn leak_vec<T>(mut v: std_shims::vec::Vec<T>) -> &'static mut [T] {
 +    let ptr = v.as_mut_ptr();
 +    let len = v.len();
@@ -851,7 +905,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-26 09:51:43.807293137 +0800
++++ b/src/lib.rs	2026-09-26 10:22:46.900341934 +0800
 @@ -4,40 +4,58 @@
  #![allow(non_snake_case)]
  
@@ -891,8 +945,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +
 +pub(crate) mod generator_cache_hook;
 +pub use generator_cache_hook::{
-+    provide_generator_table_storage, register_generator_cache_hooks, GeneratorSet,
-+    GeneratorTableStorage,
++    generator_table_sizes, provide_generator_table_storage, register_generator_cache_hooks,
++    GeneratorSet, GeneratorTableStorage,
 +};
 +
 +#[cfg(feature = "prove-timing")]

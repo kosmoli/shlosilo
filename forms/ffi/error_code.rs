@@ -32,6 +32,10 @@ pub const ERR_UNKNOWN: i32 = ShlosiloErrorCode::UnknownError as i32;
 pub const ERR_NULL_POINTER: i32 = ShlosiloErrorCode::InvalidArgument as i32;
 pub const ERR_BUFFER_TOO_SMALL: i32 = ShlosiloErrorCode::BufferTooSmall as i32;
 pub const ERR_PANIC: i32 = ShlosiloErrorCode::FfiPanic as i32;
+/// Z5.2b: generator table storage slot already provided/consumed (terminal).
+/// A bare code in the -10..-40 FFI space (same style as -21/-30), not an enum
+/// variant: this is an FFI-contract outcome, not a `ShlosiloError` kind.
+pub const ERR_SLOT_CONSUMED: i32 = -22;
 
 /// Success
 pub const OK: i32 = ShlosiloErrorCode::Ok as i32;
@@ -53,6 +57,7 @@ pub fn describe(code: i32) -> &'static str {
         -14 => "Feature not implemented",
         -15 => "PSBT ownership rejected",
         -21 => "Encoding error",
+        -22 => "Generator table slot already consumed",
         -30 => "Invalid UR payload",
         -31 => "Invalid mnemonic",
         -32 => "Invalid derivation path",

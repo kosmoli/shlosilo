@@ -301,6 +301,13 @@
 
 
 
+/**
+ * Z5.2b: generator table storage slot already provided/consumed (terminal).
+ * A bare code in the -10..-40 FFI space (same style as -21/-30), not an enum
+ * variant: this is an FFI-contract outcome, not a `ShlosiloError` kind.
+ */
+#define ERR_SLOT_CONSUMED -22
+
 
 
 /**
@@ -360,7 +367,23 @@
 
 /**
  * Protocol-hard: Monero fixed ring size (post-v13 CLSAG). Never tunable.
+ * Z5.2b: decompressed generator point element size (curve25519-dalek
+ * `EdwardsPoint` repr: 4 x [u64; 5]). Pinned by a static assert in c_abi;
+ * the C side sizes table buffers as points * this constant.
  */
+#define SHLOSILO_GENPOINT_SIZE 160
+
+/**
+ * Z5.2b: per-set generator table storage (deploy constants; pinned ==
+ * `generator_table_sizes` runtime query by tests/ffi_gencache_provide.rs —
+ * same source-of-truth contract as the Z3.3b ws layout).
+ */
+#define SHLOSILO_GENCACHE_G_BYTES 163840
+
+#define SHLOSILO_GENCACHE_H_BYTES 163840
+
+#define SHLOSILO_GENCACHE_BLOB_BYTES 262144
+
 #define RING_MAX 16
 
 /**
@@ -674,6 +697,29 @@ int shlosilo_supported_networks_ffi(uint8_t *output_buf,
 int shlosilo_supported_protocols_ffi(uint8_t *output_buf,
                                      unsigned int output_buf_len,
                                      unsigned int *actual_len);
+
+/**
+ * INV-1: pure probe — reports the required buffer sizes for a generator set.
+ * No side effects: does not touch the registry slot, consumes no RNG, derives
+ * no secrets. Values == what `shlosilo_gencache_provide_table` requires.
+ */
+int32_t shlosilo_gencache_table_sizes(int32_t set,
+                                      uint32_t *g_bytes,
+                                      uint32_t *h_bytes,
+                                      uint32_t *blob_bytes);
+
+/**
+ * INV-2/3/4: provide the decompressed-table storage for one generator set.
+ * All validation happens before any state change or write; success commits
+ * the slot atomically (CONSUMED); failure leaves state unchanged (retry OK).
+ */
+int32_t shlosilo_gencache_provide_table(int32_t set,
+                                        uint8_t *g,
+                                        uint32_t *g_bytes,
+                                        uint8_t *h,
+                                        uint32_t *h_bytes,
+                                        uint8_t *blob,
+                                        uint32_t *blob_bytes);
 
 /**
  * R3: create a multipart encoder. Returns a handle (non-null) on success, null on failure.

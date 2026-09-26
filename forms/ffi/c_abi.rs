@@ -1551,6 +1551,159 @@ pub mod r3 {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Z5.2b: C-side decompressed generator table storage provisioning.
+//
+// Four ABI invariants (each pinned by a dedicated regression test in
+// tests/ffi_gencache_provide.rs):
+//
+// INV-1 (pure probe): `shlosilo_gencache_table_sizes` has no side effects —
+//       no RNG consumption, no secret derivation, no state change, repeatable;
+//       its values come from the SAME source of truth the fill actually uses.
+// INV-2 (capacity): any insufficiency fails BEFORE the first write/build and
+//       reports the required lengths through the size out-params.
+// INV-3 (topology): partial-NULL, misaligned, or overlapping buffers are
+//       explicitly rejected (ERR_NULL_POINTER = invalid argument); the
+//       used regions (first `required` bytes of each buffer) must be
+//       pairwise disjoint.
+// INV-4 (atomicity): a successful provide atomically moves the slot to
+//       CONSUMED (terminal; later provides fail with ERR_SLOT_CONSUMED);
+//       any failure leaves the state unchanged and the caller may retry
+//       with corrected buffers.
+//
+// Buffer contract: `g`/`h` hold `ED25519` generator points of
+// SHLOSILO_GENPOINT_SIZE bytes each (8-aligned); `blob` is the raw-blob
+// scratch. Over-capacity is accepted (only the required prefix is used).
+// The buffers must outlive every generator use — they are written ONCE at
+// first generator use and read thereafter; free/unmap them only at
+// end-of-life. Sizes: capacity in, required length out on ERR_BUFFER_TOO_SMALL.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Curve25519-EdwardsPoint repr pin: the C buffer element size must track the
+/// vendored dalek representation exactly (build breaks on divergence). The
+/// C-side alignment contract is a UNIFORM 8 bytes on every target — stricter
+/// than some targets need (thumbv7em's natural u64 alignment is 4, caught by
+/// this pin when it asserted `== 8`), which keeps the ABI stable while the
+/// in-Rust requirement (`align_of`) stays a subset of it.
+const _: () = assert!(core::mem::size_of::<curve25519_dalek::EdwardsPoint>()
+    == crate::types::caps::SHLOSILO_GENPOINT_SIZE);
+const _: () = assert!(core::mem::align_of::<curve25519_dalek::EdwardsPoint>() <= 8);
+
+fn genset_from_c(set: i32) -> Option<monero_bulletproofs::GeneratorSet> {
+    match set {
+        0 => Some(monero_bulletproofs::GeneratorSet::Bulletproof),
+        1 => Some(monero_bulletproofs::GeneratorSet::BulletproofPlus),
+        _ => None,
+    }
+}
+
+/// INV-1: pure probe — reports the required buffer sizes for a generator set.
+/// No side effects: does not touch the registry slot, consumes no RNG, derives
+/// no secrets. Values == what `shlosilo_gencache_provide_table` requires.
+#[no_mangle]
+pub unsafe extern "C" fn shlosilo_gencache_table_sizes(
+    set: i32,
+    g_bytes: *mut u32,
+    h_bytes: *mut u32,
+    blob_bytes: *mut u32,
+) -> i32 {
+    if g_bytes.is_null() || h_bytes.is_null() || blob_bytes.is_null() {
+        return ERR_NULL_POINTER;
+    }
+    let Some(set) = genset_from_c(set) else {
+        return ERR_NULL_POINTER;
+    };
+    let (g, h, b) = monero_bulletproofs::generator_table_sizes(set);
+    *g_bytes = g as u32;
+    *h_bytes = h as u32;
+    *blob_bytes = b as u32;
+    OK
+}
+
+/// INV-2/3/4: provide the decompressed-table storage for one generator set.
+/// All validation happens before any state change or write; success commits
+/// the slot atomically (CONSUMED); failure leaves state unchanged (retry OK).
+#[no_mangle]
+pub unsafe extern "C" fn shlosilo_gencache_provide_table(
+    set: i32,
+    g: *mut u8,
+    g_bytes: *mut u32,
+    h: *mut u8,
+    h_bytes: *mut u32,
+    blob: *mut u8,
+    blob_bytes: *mut u32,
+) -> i32 {
+    // INV-3: partial-NULL topology (buffers AND size out-params) = invalid.
+    if g.is_null()
+        || h.is_null()
+        || blob.is_null()
+        || g_bytes.is_null()
+        || h_bytes.is_null()
+        || blob_bytes.is_null()
+    {
+        return ERR_NULL_POINTER;
+    }
+    let Some(set) = genset_from_c(set) else {
+        return ERR_NULL_POINTER;
+    };
+    let (req_g, req_h, req_b) = monero_bulletproofs::generator_table_sizes(set);
+
+    // INV-2: capacity checked before anything else; required reported on fail.
+    let (cap_g, cap_h, cap_b) = (*g_bytes, *h_bytes, *blob_bytes);
+    if cap_g < req_g as u32 || cap_h < req_h as u32 || cap_b < req_b as u32 {
+        *g_bytes = req_g as u32;
+        *h_bytes = req_h as u32;
+        *blob_bytes = req_b as u32;
+        return ERR_BUFFER_TOO_SMALL;
+    }
+
+    // INV-3: alignment of the point tables.
+    let align = core::mem::align_of::<curve25519_dalek::EdwardsPoint>();
+    if (g as usize) % align != 0 || (h as usize) % align != 0 {
+        return ERR_NULL_POINTER;
+    }
+    // INV-3: pairwise-disjoint used regions (first `required` bytes each).
+    let regions = [
+        (g as usize, req_g),
+        (h as usize, req_h),
+        (blob as usize, req_b),
+    ];
+    for i in 0..regions.len() {
+        for j in (i + 1)..regions.len() {
+            let (a, al) = regions[i];
+            let (b, bl) = regions[j];
+            if a < b.saturating_add(bl) && b < a.saturating_add(al) {
+                return ERR_NULL_POINTER;
+            }
+        }
+    }
+
+    // Build the slices only after every check passed (INV-2: no write/build on
+    // failure paths). Caller contract: buffers outlive every generator use.
+    let pts_g = req_g / core::mem::size_of::<curve25519_dalek::EdwardsPoint>();
+    let pts_h = req_h / core::mem::size_of::<curve25519_dalek::EdwardsPoint>();
+    let g_slice: &'static mut [curve25519_dalek::EdwardsPoint] =
+        core::slice::from_raw_parts_mut(g as *mut curve25519_dalek::EdwardsPoint, pts_g);
+    let h_slice: &'static mut [curve25519_dalek::EdwardsPoint] =
+        core::slice::from_raw_parts_mut(h as *mut curve25519_dalek::EdwardsPoint, pts_h);
+    let blob_slice: &'static mut [u8] = core::slice::from_raw_parts_mut(blob, req_b);
+
+    // INV-4: the registry commit is atomic (validate-then-insert, one lock).
+    let ok = monero_bulletproofs::provide_generator_table_storage(
+        set,
+        monero_bulletproofs::GeneratorTableStorage {
+            g: g_slice,
+            h: h_slice,
+            blob: blob_slice,
+        },
+    );
+    if !ok {
+        // slot already provided/consumed (terminal)
+        return crate::ffi::error_code::ERR_SLOT_CONSUMED;
+    }
+    OK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

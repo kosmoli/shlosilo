@@ -9,6 +9,18 @@
 //! real-wallet validation sweep.
 
 /// Protocol-hard: Monero fixed ring size (post-v13 CLSAG). Never tunable.
+/// Z5.2b: decompressed generator point element size (curve25519-dalek
+/// `EdwardsPoint` repr: 4 x [u64; 5]). Pinned by a static assert in c_abi;
+/// the C side sizes table buffers as points * this constant.
+pub const SHLOSILO_GENPOINT_SIZE: usize = 160;
+
+/// Z5.2b: per-set generator table storage (deploy constants; pinned ==
+/// `generator_table_sizes` runtime query by tests/ffi_gencache_provide.rs —
+/// same source-of-truth contract as the Z3.3b ws layout).
+pub const SHLOSILO_GENCACHE_G_BYTES: u32 = 163_840;
+pub const SHLOSILO_GENCACHE_H_BYTES: u32 = 163_840;
+pub const SHLOSILO_GENCACHE_BLOB_BYTES: u32 = 262_144;
+
 pub const RING_MAX: usize = 16;
 
 /// Soft: additional tx keys per source/output (real traffic 1-2).

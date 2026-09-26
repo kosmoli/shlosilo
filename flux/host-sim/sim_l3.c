@@ -195,6 +195,19 @@ int main(void) {
     unsigned actual = 0;
     /* Z3.3b: sign workspace — capacity stays a runtime query (never frozen
        into the ABI); the host provisions the memory. */
+    /* Z5.2b: decompressed generator table storage (BP+), static lifetime. */
+    {
+        static uint8_t gen_g[163840 + 64] __attribute__((aligned(8)));
+        static uint8_t gen_h[163840 + 64] __attribute__((aligned(8)));
+        static uint8_t gen_blob[262144 + 64];
+        uint32_t g_sz = sizeof(gen_g), h_sz = sizeof(gen_h), b_sz = sizeof(gen_blob);
+        int32_t grc = shlosilo_gencache_provide_table(
+            1, gen_g, &g_sz, gen_h, &h_sz, gen_blob, &b_sz);
+        if (grc != 0) {
+            fprintf(stderr, "gen table provide rc=%d\n", (int)grc);
+        }
+    }
+
     static uint8_t sign_ws[512 * 1024];
     unsigned ws_need = shlosilo_sign_ws_len();
     if (ws_need > sizeof(sign_ws)) {

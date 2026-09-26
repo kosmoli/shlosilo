@@ -35,11 +35,21 @@ fn generators(prefix: &'static str, path: &str) {
 
     let path = Path::new(&env::var("OUT_DIR").expect("cargo didn't set $OUT_DIR")).join(path);
     let _ = remove_file(&path);
-    File::create(&path)
-    .expect("failed to create file in $OUT_DIR")
-    .write_all(
+    let mut f = File::create(&path).expect("failed to create file in $OUT_DIR");
+    // Z5.2b: emitted table lengths — the single sizing source of truth for the
+    // probe, the provide validation, and the init-time fill check.
+    let _ = f.write_all(
+      format!(
+        "pub(crate) const TABLE_G_LEN: usize = {};\npub(crate) const TABLE_H_LEN: usize = {};\n",
+        generators.G.len(),
+        generators.H.len(),
+      )
+      .as_bytes(),
+    );
+    f.write_all(
       format!(
         r#"
+          #[cfg(feature = "alloc-fallback")]
           fn decompress_generator_vec(bytes: &[[u8; 32]]) -> std_shims::vec::Vec<curve25519_dalek::EdwardsPoint> {{
             let mut out = std_shims::vec::Vec::with_capacity(bytes.len());
             for b in bytes {{
@@ -51,6 +61,7 @@ fn generators(prefix: &'static str, path: &str) {
             }}
             out
           }}
+          #[cfg(feature = "alloc-fallback")]
           fn rebuild_from_blob(blob: &[u8], n: usize) -> crate::generator_cache_hook::Generators<'static> {{
             // n points x 128 bytes of raw extended coordinates (X, Y, Z, T),
             // all G first, then all H. Coordinates came from validated points.
@@ -85,24 +96,29 @@ fn generators(prefix: &'static str, path: &str) {
                 return crate::generator_cache_hook::init_tables(b"{prefix}", n_points, G_BYTES, H_BYTES, st);
               }}
             }}
-            // Transitional fallback (no storage provided): one-shot decompress
-            // into a leaked Vec (Z5.2b removes once every host provisions).
-            // Load-hit still honored (persistence works without table storage).
-            if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
-              return rebuild_from_blob(blob, n_points);
-            }}
-            let g = decompress_generator_vec(G_BYTES);
-            let h = decompress_generator_vec(H_BYTES);
+            // Transitional fallback (alloc-fallback feature): one-shot
+            // decompress into a leaked Vec. Load-hit still honored (persistence
+            // works without table storage).
+            #[cfg(feature = "alloc-fallback")]
             {{
-              let mut blob = std_shims::vec::Vec::with_capacity(n_points * 128);
-              for p in g.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
-              for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
-              crate::generator_cache_hook::try_store_blob(b"{prefix}", &blob);
+              if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
+                return rebuild_from_blob(blob, n_points);
+              }}
+              let g = decompress_generator_vec(G_BYTES);
+              let h = decompress_generator_vec(H_BYTES);
+              {{
+                let mut blob = std_shims::vec::Vec::with_capacity(n_points * 128);
+                for p in g.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
+                for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
+                crate::generator_cache_hook::try_store_blob(b"{prefix}", &blob);
+              }}
+              return crate::generator_cache_hook::Generators {{
+                G: crate::generator_cache_hook::leak_vec(g),
+                H: crate::generator_cache_hook::leak_vec(h),
+              }};
             }}
-            crate::generator_cache_hook::Generators {{
-              G: crate::generator_cache_hook::leak_vec(g),
-              H: crate::generator_cache_hook::leak_vec(h),
-            }}
+            #[cfg(not(feature = "alloc-fallback"))]
+            panic!("generator table storage not provided (alloc-fallback disabled)");
           }});
         "#,
       )
@@ -120,12 +136,22 @@ fn generators(prefix: &'static str, path: &str) {
         .write_all(
             format!(
                 r#"
+        // Z5.2b: upstream generator sets are definitionally 1024 + 1024.
+        pub(crate) const TABLE_G_LEN: usize = 1024;
+        pub(crate) const TABLE_H_LEN: usize = 1024;
         pub(crate) static GENERATORS: LazyLock<crate::generator_cache_hook::Generators<'static>> = LazyLock::new(|| {{
           let ext = monero_bulletproofs_generators::bulletproofs_generators(b"{prefix}");
-          crate::generator_cache_hook::Generators {{
-            G: crate::generator_cache_hook::leak_vec(ext.G),
-            H: crate::generator_cache_hook::leak_vec(ext.H),
+          assert_eq!(ext.G.len(), TABLE_G_LEN);
+          assert_eq!(ext.H.len(), TABLE_H_LEN);
+          #[cfg(feature = "alloc-fallback")]
+          {{
+            return crate::generator_cache_hook::Generators {{
+              G: crate::generator_cache_hook::leak_vec(ext.G),
+              H: crate::generator_cache_hook::leak_vec(ext.H),
+            }};
           }}
+          #[cfg(not(feature = "alloc-fallback"))]
+          panic!("generator table storage not provided (alloc-fallback disabled)");
         }});
       "#,
             )

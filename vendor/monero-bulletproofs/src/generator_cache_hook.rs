@@ -166,8 +166,26 @@ pub(crate) fn take_table_storage(prefix: &'static [u8]) -> Option<GeneratorTable
     out
 }
 
+/// Z5.2b: the single sizing source of truth — the C probe, the provide-time
+/// capacity validation, and the init-time fill check all derive from here.
+/// Returns (g_bytes, h_bytes, blob_bytes).
+pub fn generator_table_sizes(set: GeneratorSet) -> (usize, usize, usize) {
+    let (g, h) = match set {
+        GeneratorSet::Bulletproof => {
+            (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN)
+        }
+        GeneratorSet::BulletproofPlus => {
+            (crate::plus::TABLE_G_LEN, crate::plus::TABLE_H_LEN)
+        }
+    };
+    let g_bytes = g * core::mem::size_of::<EdwardsPoint>();
+    let h_bytes = h * core::mem::size_of::<EdwardsPoint>();
+    (g_bytes, h_bytes, (g + h) * 128)
+}
+
 /// Leak a Vec as a 'static slice WITHOUT requiring Box (MSRV-safe one-shot
 /// leak for the transitional fallback path; the memory is never freed).
+#[cfg(feature = "alloc-fallback")]
 pub(crate) fn leak_vec<T>(mut v: std_shims::vec::Vec<T>) -> &'static mut [T] {
     let ptr = v.as_mut_ptr();
     let len = v.len();
