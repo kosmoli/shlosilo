@@ -48,13 +48,23 @@ pub struct WipScratch<'a> {
     pub(crate) b: &'a mut [Scalar],
     pub(crate) g: &'a mut [EdwardsPoint],
     pub(crate) h: &'a mut [EdwardsPoint],
+    // Z5.3 C-cut D: proof-staging scalar regions (disjoint fields, so the
+    // caller can borrow them independently): d, ascending_y, a_l, a_r, z_pow.
+    pub(crate) p_d: &'a mut [Scalar],
+    pub(crate) p_ay: &'a mut [Scalar],
+    pub(crate) p_al: &'a mut [Scalar],
+    pub(crate) p_ar: &'a mut [Scalar],
+    pub(crate) p_zp: &'a mut [Scalar],
+    pub(crate) p_y: &'a mut [Scalar],
 }
 
 impl<'a> WipScratch<'a> {
     /// Sizing source of truth: two buffers of `terms_cap` for each of the
     /// four vectors (scalars 32 B, points 160 B worst case).
     pub const fn storage_bytes(terms_cap: usize) -> usize {
-        terms_cap * 2 * (32 + 32 + 160 + 160)
+        // four round buffers (two each of scalars/points) + five staging
+        // scalar regions
+        terms_cap * 2 * (32 + 32 + 160 + 160) + terms_cap * 6 * 32
     }
 
     /// Build over caller storage (8-aligned; exact regions — `None` on
@@ -81,12 +91,24 @@ impl<'a> WipScratch<'a> {
         let (a_bytes, rest) = storage.split_at_mut(terms_cap * 2 * 32);
         let (b_bytes, rest) = rest.split_at_mut(terms_cap * 2 * 32);
         let (g_bytes, rest) = rest.split_at_mut(terms_cap * 2 * 160);
-        let (h_bytes, _slack) = rest.split_at_mut(terms_cap * 2 * 160);
+        let (h_bytes, rest) = rest.split_at_mut(terms_cap * 2 * 160);
+        let (d_bytes, rest) = rest.split_at_mut(terms_cap * 32);
+        let (ay_bytes, rest) = rest.split_at_mut(terms_cap * 32);
+        let (al_bytes, rest) = rest.split_at_mut(terms_cap * 32);
+        let (ar_bytes, rest) = rest.split_at_mut(terms_cap * 32);
+        let (zp_bytes, rest) = rest.split_at_mut(terms_cap * 32);
+        let (y_bytes, _slack) = rest.split_at_mut(terms_cap * 32);
         Some(WipScratch {
             a: cast_slice(a_bytes),
             b: cast_slice(b_bytes),
             g: cast_slice(g_bytes),
             h: cast_slice(h_bytes),
+            p_d: cast_slice(d_bytes),
+            p_ay: cast_slice(ay_bytes),
+            p_al: cast_slice(al_bytes),
+            p_ar: cast_slice(ar_bytes),
+            p_zp: cast_slice(zp_bytes),
+            p_y: cast_slice(y_bytes),
         })
     }
 }
@@ -108,7 +130,7 @@ const INV_EIGHT: monero_ed25519::Scalar = monero_ed25519::Scalar::INV_EIGHT;
 pub(crate) struct WipStatement {
     generators: BpPlusGenerators,
     P: EdwardsPoint,
-    y: ScalarVector,
+    y: Scalar,
 }
 
 impl Zeroize for WipStatement {
@@ -166,18 +188,10 @@ impl WipStatement {
     pub(crate) fn new(generators: BpPlusGenerators, P: EdwardsPoint, y: Scalar) -> Self {
         debug_assert_eq!(generators.len(), padded_pow_of_2(generators.len()));
 
-        // y ** n
-        let mut y_vec = ScalarVector::new(generators.len());
-        y_vec[0] = y;
-        for i in 1..y_vec.len() {
-            y_vec[i] = y_vec[i - 1] * y;
-        }
-
-        Self {
-            generators,
-            P,
-            y: y_vec,
-        }
+        // Z5.3 C-cut D: the challenge-power vector is NOT built here — the
+        // prover materialises it into its scratch (`p_y`), the verifier into
+        // a local Vec (verify-side staging is tracked, not pool-bound).
+        Self { generators, P, y }
     }
 
     fn transcript_L_R(transcript: &mut Scalar, L: CompressedPoint, R: CompressedPoint) -> Scalar {
@@ -275,25 +289,17 @@ impl WipStatement {
             return None;
         }
         let (g, h) = (BpPlusGenerators::g(), BpPlusGenerators::h());
-        let mut g_bold = vec![];
-        let mut h_bold = vec![];
-        for i in 0..generators.len() {
-            g_bold.push(generators.generator(GeneratorsList::GBold, i));
-            h_bold.push(generators.generator(GeneratorsList::HBold, i));
+        // Z5.3 C-cut D: generators, challenge powers and the inverse stack
+        // all land in the caller's WipScratch — no Vec staging on the sign
+        // path. (The challenge-power semantics match the old constructor:
+        // p_y[0] = y, p_y[i] = p_y[i-1] * y.)
+        let n_gen = generators.len();
+        let p_y: &mut [Scalar] = &mut wip.p_y[..n_gen];
+        p_y[0] = y;
+        for i in 1..n_gen {
+            p_y[i] = p_y[i - 1] * y;
         }
-        let mut g_bold = PointVector(g_bold);
-        let mut h_bold = PointVector(h_bold);
-
-        let mut y_inv = {
-            let mut i = 1;
-            let mut to_invert = vec![];
-            while i < g_bold.len() {
-                to_invert.push(y[i - 1]);
-                i *= 2;
-            }
-            Scalar::batch_invert(&mut to_invert);
-            to_invert
-        };
+        let mut y_len = n_gen;
 
         // Check P has the expected relationship
         #[cfg(debug_assertions)]
@@ -307,10 +313,12 @@ impl WipStatement {
                 .0
                 .iter()
                 .copied()
-                .zip(g_bold.0.iter().copied())
-                .chain(witness.b.0.iter().copied().zip(h_bold.0.iter().copied()))
+                .zip((0..generators.len()).map(|i| generators.generator(GeneratorsList::GBold, i)))
+                .chain(witness.b.0.iter().copied().zip(
+                    (0..generators.len()).map(|i| generators.generator(GeneratorsList::HBold, i)),
+                ))
                 .collect::<Vec<_>>();
-            P_terms.push((witness.a.clone().weighted_inner_product(&witness.b, &y), g));
+            P_terms.push((wip_ref(&witness.a.0, &witness.b.0, p_y), g));
             P_terms.push((witness.alpha, h));
             debug_assert_eq!(crate::core::multiexp_alloc(&P_terms), P);
             P_terms.zeroize();
@@ -336,8 +344,10 @@ impl WipStatement {
                              // capacity leftovers, not round data)
         a0[..n].copy_from_slice(&witness.a.0);
         b0[..n].copy_from_slice(&witness.b.0);
-        g0[..n].copy_from_slice(&g_bold.0);
-        h0[..n].copy_from_slice(&h_bold.0);
+        for i in 0..n {
+            g0[i] = generators.generator(GeneratorsList::GBold, i);
+            h0[i] = generators.generator(GeneratorsList::HBold, i);
+        }
 
         let mut a_cur: &mut [Scalar] = a0;
         let mut a_next: &mut [Scalar] = a1;
@@ -347,6 +357,19 @@ impl WipStatement {
         let mut g_next: &mut [EdwardsPoint] = g1;
         let mut h_cur: &mut [EdwardsPoint] = h0;
         let mut h_next: &mut [EdwardsPoint] = h1;
+
+        // inverse-power stack (same order: y[0], y[1], y[3], ... popped from
+        // the end each round) lives in the p_zp staging region (free by now).
+        let mut y_inv_len = 0usize;
+        {
+            let mut i = 1;
+            while i < n {
+                wip.p_zp[y_inv_len] = p_y[i - 1];
+                y_inv_len += 1;
+                i *= 2;
+            }
+            Scalar::batch_invert(&mut wip.p_zp[..y_inv_len]);
+        }
 
         let mut L_vec = [CompressedPoint::from([0u8; 32]); WIP_MAX_ROUNDS];
         let mut L_len = 0usize;
@@ -369,18 +392,17 @@ impl WipStatement {
             let (a1s, a2s) = a_cur[..cur_len].split_at(n_hat);
             let (b1s, b2s) = b_cur[..cur_len].split_at(n_hat);
 
-            let y_n_hat = y[n_hat - 1];
-            y.0.truncate(n_hat);
+            let y_n_hat = p_y[n_hat - 1];
+            y_len = n_hat;
 
             let d_l = monero_ed25519::Scalar::random(&mut *rng).into();
             let d_r = monero_ed25519::Scalar::random(&mut *rng).into();
 
-            let c_l = wip_ref(a1s, b2s, &y.0);
-            let c_r = y_n_hat * wip_ref(a2s, b1s, &y.0);
+            let c_l = wip_ref(a1s, b2s, &p_y[..y_len]);
+            let c_r = y_n_hat * wip_ref(a2s, b1s, &p_y[..y_len]);
 
-            let y_inv_n_hat = y_inv
-                .pop()
-                .expect("couldn't pop y_inv despite y_inv being of same length as times iterated");
+            y_inv_len -= 1;
+            let y_inv_n_hat = wip.p_zp[y_inv_len];
 
             // L terms fill the caller scratch (see the Z5.3 pool cut notes)
             let l_len = (n_hat * 2) + 2;
@@ -481,12 +503,12 @@ impl WipStatement {
         let delta = monero_ed25519::Scalar::random(&mut *rng).into();
         let eta = monero_ed25519::Scalar::random(&mut *rng).into();
 
-        let ry = r * y[0];
+        let ry = r * y;
 
         let mut A_terms = vec![
             (r, g_cur[0]),
             (s, h_cur[0]),
-            ((ry * b_cur[0]) + (s * y[0] * a_cur[0]), g),
+            ((ry * b_cur[0]) + (s * y * a_cur[0]), g),
             (delta, h),
         ];
         let A = CompressedPoint::from(
@@ -545,6 +567,17 @@ impl WipStatement {
         let verifier_weight = monero_ed25519::Scalar::random(rng).into();
 
         let WipStatement { generators, P, y } = self;
+        // verify-side staging (tracked, not pool-bound): materialise the
+        // challenge-power vector from the statement's scalar.
+        let y = {
+            let mut v = Vec::with_capacity(generators.len());
+            v.push(y);
+            for i in 1..generators.len() {
+                let p = v[i - 1] * y;
+                v.push(p);
+            }
+            ScalarVector(v)
+        };
 
         // Verify the L/R lengths
         {

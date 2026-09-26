@@ -56,3 +56,16 @@ fn caller_storage_fills_reference_generators() {
         },
     ));
 }
+
+/// Z5.3: the caps byte-expressions must come from the SAME source of truth
+/// as the scratch sizing (a stale expression silently turns every sign into
+/// an explicit over-cap error — caught once as a full-suite red).
+#[test]
+fn bp_wip_bytes_match_storage_source_of_truth() {
+    assert_eq!(
+        shlosilo::types::caps::SIGN_WS_BP_WIP_BYTES,
+        shlosilo::monero_bulletproofs::WipScratch::storage_bytes(
+            shlosilo::types::caps::SIGN_WS_BP_TERMS
+        ),
+    );
+}

@@ -62,8 +62,8 @@ pub extern "C" fn z6_probe_run() {
             shlosilo::curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
         ); 2050];
         static mut STRAUS_STORAGE: [u8; 5772864] = [0u8; 5772864];
-        // 2050 * 768 = WipScratch::storage_bytes(2050)
-        static mut WIP_STORAGE: [u8; 1574400] = [0u8; 1574400];
+        // 2050 * 960 = WipScratch::storage_bytes(2050)
+        static mut WIP_STORAGE: [u8; 1968000] = [0u8; 1968000];
         let mut straus = shlosilo::curve25519_dalek::scratch::StrausScratch::new(
             &mut STRAUS_STORAGE,
             2050,
