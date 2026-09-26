@@ -56,15 +56,46 @@ pub mod spec {
             J: IntoIterator,
             J::Item: Borrow<EdwardsPoint>,
         {
+            // shlosilo vendor patch (Z5.3 cut 5): small term counts (<= SMALL,
+            // covering the hot 2-3-term CLSAG/next_G_H calls) build the tables
+            // and digits in INLINE storage — no allocation. Same tables, same
+            // digits, same accumulation loop; storage only. The secret-derived
+            // digits stay `Zeroizing` on both paths.
+            const SMALL: usize = 4;
+            let mut scalars = scalars.into_iter();
+            let mut points = points.into_iter();
+            let (lo, hi) = scalars.size_hint();
+            if hi == Some(lo) && lo <= SMALL && points.size_hint() == (lo, Some(lo)) {
+                let n = lo;
+                let fill = LookupTable::<CachedPoint>::from(&EdwardsPoint::identity());
+                let mut lookup_tables = [fill; SMALL];
+                #[cfg(feature = "zeroize")]
+                let mut scalar_digits_vec = Zeroizing::new([[0i8; 64]; SMALL]);
+                #[cfg(not(feature = "zeroize"))]
+                let mut scalar_digits_vec = [[0i8; 64]; SMALL];
+                for i in 0 .. n {
+                    lookup_tables[i] =
+                        LookupTable::<CachedPoint>::from(points.next().unwrap().borrow());
+                    scalar_digits_vec[i] = scalars.next().unwrap().borrow().as_radix_16();
+                }
+                let mut Q = ExtendedPoint::identity();
+                for j in (0 .. 64).rev() {
+                    Q = Q.mul_by_pow_2(4);
+                    for i in 0 .. n {
+                        // Q = Q + s_{i,j} * P_i
+                        Q = &Q + &lookup_tables[i].select(scalar_digits_vec[i][j]);
+                    }
+                }
+                return Q.into();
+            }
+
             // Construct a lookup table of [P,2P,3P,4P,5P,6P,7P,8P]
             // for each input point P
             let lookup_tables: Vec<_> = points
-                .into_iter()
                 .map(|point| LookupTable::<CachedPoint>::from(point.borrow()))
                 .collect();
 
             let scalar_digits_vec: Vec<_> = scalars
-                .into_iter()
                 .map(|s| s.borrow().as_radix_16())
                 .collect();
             // Pass ownership to a `Zeroizing` wrapper
@@ -93,12 +124,45 @@ pub mod spec {
             I::Item: Borrow<Scalar>,
             J: IntoIterator<Item = Option<EdwardsPoint>>,
         {
+            // shlosilo vendor patch (Z5.3 cut 5): small-count inline path
+            // (vartime digits are public-challenge material, no Zeroizing —
+            // parity with the Vec path below).
+            const SMALL: usize = 4;
+            let mut scalars = scalars.into_iter();
+            let mut points = points.into_iter();
+            let (lo, hi) = scalars.size_hint();
+            if hi == Some(lo) && lo <= SMALL && points.size_hint() == (lo, Some(lo)) {
+                let n = lo;
+                let fill = NafLookupTable5::<CachedPoint>::from(&EdwardsPoint::identity());
+                let mut lookup_tables = [fill; SMALL];
+                let mut nafs = [[0i8; 256]; SMALL];
+                for i in 0 .. n {
+                    let P = points.next().unwrap()?;
+                    lookup_tables[i] = NafLookupTable5::<CachedPoint>::from(&P);
+                    nafs[i] = scalars.next().unwrap().borrow().non_adjacent_form(5);
+                }
+                let mut Q = ExtendedPoint::identity();
+                for i in (0 .. 256).rev() {
+                    Q = Q.double();
+                    for j in 0 .. n {
+                        match nafs[j][i].cmp(&0) {
+                            Ordering::Greater => {
+                                Q = &Q + &lookup_tables[j].select(nafs[j][i] as usize);
+                            }
+                            Ordering::Less => {
+                                Q = &Q - &lookup_tables[j].select(-nafs[j][i] as usize);
+                            }
+                            Ordering::Equal => {}
+                        }
+                    }
+                }
+                return Some(Q.into());
+            }
+
             let nafs: Vec<_> = scalars
-                .into_iter()
                 .map(|c| c.borrow().non_adjacent_form(5))
                 .collect();
             let lookup_tables: Vec<_> = points
-                .into_iter()
                 .map(|P_opt| P_opt.map(|P| NafLookupTable5::<CachedPoint>::from(&P)))
                 .collect::<Option<Vec<_>>>()?;
 

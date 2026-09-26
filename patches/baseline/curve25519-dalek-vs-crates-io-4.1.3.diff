@@ -1,4 +1,4 @@
-diff -ruN a/benches/dalek_benchmarks.rs b/benches/dalek_benchmarks.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/benches/dalek_benchmarks.rs b/benches/dalek_benchmarks.rs
 --- a/benches/dalek_benchmarks.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/benches/dalek_benchmarks.rs	1970-01-01 08:00:00.000000000 +0800
 @@ -1,366 +0,0 @@
@@ -368,7 +368,7 @@ diff -ruN a/benches/dalek_benchmarks.rs b/benches/dalek_benchmarks.rs
 -    edwards_benches::edwards_benches,
 -    multiscalar_benches::multiscalar_benches,
 -);
-diff -ruN a/Cargo.toml b/Cargo.toml
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	1970-01-01 08:00:01.000000000 +0800
 +++ b/Cargo.toml	2026-09-15 12:12:11.258716490 +0800
 @@ -127,6 +127,16 @@
@@ -388,7 +388,7 @@ diff -ruN a/Cargo.toml b/Cargo.toml
  alloc = ["zeroize?/alloc"]
  default = [
      "alloc",
-diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml.orig b/Cargo.toml.orig
 --- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
 +++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
 @@ -1,73 +0,0 @@
@@ -465,7 +465,7 @@ diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
 -
 -[target.'cfg(all(not(curve25519_dalek_backend = "fiat"), not(curve25519_dalek_backend = "serial"), target_arch = "x86_64"))'.dependencies]
 -curve25519-dalek-derive = { version = "0.1", path = "../curve25519-dalek-derive" }
-diff -ruN a/CHANGELOG.md b/CHANGELOG.md
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/CHANGELOG.md b/CHANGELOG.md
 --- a/CHANGELOG.md	2006-07-24 09:21:28.000000000 +0800
 +++ b/CHANGELOG.md	1970-01-01 08:00:00.000000000 +0800
 @@ -1,268 +0,0 @@
@@ -737,7 +737,7 @@ diff -ruN a/CHANGELOG.md b/CHANGELOG.md
 -
 -Initial stable release.  Yanked due to a dependency mistake (see above).
 -
-diff -ruN a/Makefile b/Makefile
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Makefile b/Makefile
 --- a/Makefile	2006-07-24 09:21:28.000000000 +0800
 +++ b/Makefile	1970-01-01 08:00:00.000000000 +0800
 @@ -1,11 +0,0 @@
@@ -752,7 +752,7 @@ diff -ruN a/Makefile b/Makefile
 -
 -doc-internal:
 -	cargo +nightly rustdoc --features "$(FEATURES)" -- --document-private-items
-diff -ruN a/src/backend/serial/curve_models/mod.rs b/src/backend/serial/curve_models/mod.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/curve_models/mod.rs b/src/backend/serial/curve_models/mod.rs
 --- a/src/backend/serial/curve_models/mod.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/backend/serial/curve_models/mod.rs	2026-09-15 12:12:11.259428252 +0800
 @@ -335,6 +335,7 @@
@@ -787,7 +787,206 @@ diff -ruN a/src/backend/serial/curve_models/mod.rs b/src/backend/serial/curve_mo
      fn add(self, other: &'b ProjectiveNielsPoint) -> CompletedPoint {
          let Y_plus_X = &self.Y + &self.X;
          let Y_minus_X = &self.Y - &self.X;
-diff -ruN a/src/edwards.rs b/src/edwards.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/scalar_mul/straus.rs b/src/backend/serial/scalar_mul/straus.rs
+--- a/src/backend/serial/scalar_mul/straus.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/backend/serial/scalar_mul/straus.rs	2026-09-26 19:39:24.979841968 +0800
+@@ -111,8 +111,37 @@
+         use crate::traits::Identity;
+         use crate::window::LookupTable;
+ 
++        // shlosilo vendor patch (Z5.3 cut 5): small-count inline path (the
++        // device straus — CLSAG/next_G_H hot calls are 2-3 terms). Same
++        // tables/digits/loop; storage only. Secret digits stay wiped.
++        const SMALL: usize = 4;
++        let mut scalars = scalars.into_iter();
++        let mut points = points.into_iter();
++        let (lo, hi) = scalars.size_hint();
++        if hi == Some(lo) && lo <= SMALL && points.size_hint() == (lo, Some(lo)) {
++            let n = lo;
++            let fill = LookupTable::<ProjectiveNielsPoint>::from(&EdwardsPoint::identity());
++            let mut lookup_tables = [fill; SMALL];
++            let mut scalar_digits = [[0i8; 64]; SMALL];
++            for i in 0 .. n {
++                lookup_tables[i] =
++                    LookupTable::<ProjectiveNielsPoint>::from(points.next().unwrap().borrow());
++                scalar_digits[i] = scalars.next().unwrap().borrow().as_radix_16();
++            }
++            let mut Q = EdwardsPoint::identity();
++            for j in (0 .. 64).rev() {
++                Q = Q.mul_by_pow_2(4);
++                for i in 0 .. n {
++                    let R_i = lookup_tables[i].select(scalar_digits[i][j]);
++                    Q = (&Q + &R_i).as_extended();
++                }
++            }
++            #[cfg(feature = "zeroize")]
++            zeroize::Zeroize::zeroize(&mut scalar_digits);
++            return Q;
++        }
++
+         let lookup_tables: Vec<_> = points
+-            .into_iter()
+             .map(|point| LookupTable::<ProjectiveNielsPoint>::from(point.borrow()))
+             .collect();
+ 
+@@ -121,7 +150,6 @@
+         // Zeroizing wrapper.
+         #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+         let mut scalar_digits: Vec<_> = scalars
+-            .into_iter()
+             .map(|s| s.borrow().as_radix_16())
+             .collect();
+ 
+@@ -168,13 +196,46 @@
+         use crate::traits::Identity;
+         use crate::window::NafLookupTable5;
+ 
++        // shlosilo vendor patch (Z5.3 cut 5): small-count inline path (public
++        // challenge digits, no wipe — parity with the Vec path).
++        const SMALL: usize = 4;
++        let mut scalars = scalars.into_iter();
++        let mut points = points.into_iter();
++        let (lo, hi) = scalars.size_hint();
++        if hi == Some(lo) && lo <= SMALL && points.size_hint() == (lo, Some(lo)) {
++            let n = lo;
++            let fill = NafLookupTable5::<ProjectiveNielsPoint>::from(&EdwardsPoint::identity());
++            let mut lookup_tables = [fill; SMALL];
++            let mut nafs = [[0i8; 256]; SMALL];
++            for i in 0 .. n {
++                let P = points.next().unwrap()?;
++                lookup_tables[i] = NafLookupTable5::<ProjectiveNielsPoint>::from(&P);
++                nafs[i] = scalars.next().unwrap().borrow().non_adjacent_form(5);
++            }
++            let mut r = ProjectivePoint::identity();
++            for i in (0 .. 256).rev() {
++                let mut t: CompletedPoint = r.double();
++                for j in 0 .. n {
++                    match nafs[j][i].cmp(&0) {
++                        Ordering::Greater => {
++                            t = &t.as_extended() + &lookup_tables[j].select(nafs[j][i] as usize)
++                        }
++                        Ordering::Less => {
++                            t = &t.as_extended() - &lookup_tables[j].select(-nafs[j][i] as usize)
++                        }
++                        Ordering::Equal => {}
++                    }
++                }
++                r = t.as_projective();
++            }
++            return Some(r.as_extended());
++        }
++
+         let nafs: Vec<_> = scalars
+-            .into_iter()
+             .map(|c| c.borrow().non_adjacent_form(5))
+             .collect();
+ 
+         let lookup_tables = points
+-            .into_iter()
+             .map(|P_opt| P_opt.map(|P| NafLookupTable5::<ProjectiveNielsPoint>::from(&P)))
+             .collect::<Option<Vec<_>>>()?;
+ 
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/vector/scalar_mul/straus.rs b/src/backend/vector/scalar_mul/straus.rs
+--- a/src/backend/vector/scalar_mul/straus.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/backend/vector/scalar_mul/straus.rs	2026-09-26 19:38:12.343495803 +0800
+@@ -56,15 +56,46 @@
+             J: IntoIterator,
+             J::Item: Borrow<EdwardsPoint>,
+         {
++            // shlosilo vendor patch (Z5.3 cut 5): small term counts (<= SMALL,
++            // covering the hot 2-3-term CLSAG/next_G_H calls) build the tables
++            // and digits in INLINE storage — no allocation. Same tables, same
++            // digits, same accumulation loop; storage only. The secret-derived
++            // digits stay `Zeroizing` on both paths.
++            const SMALL: usize = 4;
++            let mut scalars = scalars.into_iter();
++            let mut points = points.into_iter();
++            let (lo, hi) = scalars.size_hint();
++            if hi == Some(lo) && lo <= SMALL && points.size_hint() == (lo, Some(lo)) {
++                let n = lo;
++                let fill = LookupTable::<CachedPoint>::from(&EdwardsPoint::identity());
++                let mut lookup_tables = [fill; SMALL];
++                #[cfg(feature = "zeroize")]
++                let mut scalar_digits_vec = Zeroizing::new([[0i8; 64]; SMALL]);
++                #[cfg(not(feature = "zeroize"))]
++                let mut scalar_digits_vec = [[0i8; 64]; SMALL];
++                for i in 0 .. n {
++                    lookup_tables[i] =
++                        LookupTable::<CachedPoint>::from(points.next().unwrap().borrow());
++                    scalar_digits_vec[i] = scalars.next().unwrap().borrow().as_radix_16();
++                }
++                let mut Q = ExtendedPoint::identity();
++                for j in (0 .. 64).rev() {
++                    Q = Q.mul_by_pow_2(4);
++                    for i in 0 .. n {
++                        // Q = Q + s_{i,j} * P_i
++                        Q = &Q + &lookup_tables[i].select(scalar_digits_vec[i][j]);
++                    }
++                }
++                return Q.into();
++            }
++
+             // Construct a lookup table of [P,2P,3P,4P,5P,6P,7P,8P]
+             // for each input point P
+             let lookup_tables: Vec<_> = points
+-                .into_iter()
+                 .map(|point| LookupTable::<CachedPoint>::from(point.borrow()))
+                 .collect();
+ 
+             let scalar_digits_vec: Vec<_> = scalars
+-                .into_iter()
+                 .map(|s| s.borrow().as_radix_16())
+                 .collect();
+             // Pass ownership to a `Zeroizing` wrapper
+@@ -93,12 +124,45 @@
+             I::Item: Borrow<Scalar>,
+             J: IntoIterator<Item = Option<EdwardsPoint>>,
+         {
++            // shlosilo vendor patch (Z5.3 cut 5): small-count inline path
++            // (vartime digits are public-challenge material, no Zeroizing —
++            // parity with the Vec path below).
++            const SMALL: usize = 4;
++            let mut scalars = scalars.into_iter();
++            let mut points = points.into_iter();
++            let (lo, hi) = scalars.size_hint();
++            if hi == Some(lo) && lo <= SMALL && points.size_hint() == (lo, Some(lo)) {
++                let n = lo;
++                let fill = NafLookupTable5::<CachedPoint>::from(&EdwardsPoint::identity());
++                let mut lookup_tables = [fill; SMALL];
++                let mut nafs = [[0i8; 256]; SMALL];
++                for i in 0 .. n {
++                    let P = points.next().unwrap()?;
++                    lookup_tables[i] = NafLookupTable5::<CachedPoint>::from(&P);
++                    nafs[i] = scalars.next().unwrap().borrow().non_adjacent_form(5);
++                }
++                let mut Q = ExtendedPoint::identity();
++                for i in (0 .. 256).rev() {
++                    Q = Q.double();
++                    for j in 0 .. n {
++                        match nafs[j][i].cmp(&0) {
++                            Ordering::Greater => {
++                                Q = &Q + &lookup_tables[j].select(nafs[j][i] as usize);
++                            }
++                            Ordering::Less => {
++                                Q = &Q - &lookup_tables[j].select(-nafs[j][i] as usize);
++                            }
++                            Ordering::Equal => {}
++                        }
++                    }
++                }
++                return Some(Q.into());
++            }
++
+             let nafs: Vec<_> = scalars
+-                .into_iter()
+                 .map(|c| c.borrow().non_adjacent_form(5))
+                 .collect();
+             let lookup_tables: Vec<_> = points
+-                .into_iter()
+                 .map(|P_opt| P_opt.map(|P| NafLookupTable5::<CachedPoint>::from(&P)))
+                 .collect::<Option<Vec<_>>>()?;
+ 
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/edwards.rs b/src/edwards.rs
 --- a/src/edwards.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/edwards.rs	2026-09-07 17:47:40.291904384 +0800
 @@ -505,6 +505,44 @@
@@ -835,7 +1034,7 @@ diff -ruN a/src/edwards.rs b/src/edwards.rs
      /// Convert to a ProjectiveNielsPoint
      pub(crate) fn as_projective_niels(&self) -> ProjectiveNielsPoint {
          ProjectiveNielsPoint {
-diff -ruN a/src/lib.rs b/src/lib.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/lib.rs	2026-09-15 12:19:39.951277086 +0800
 @@ -104,6 +104,12 @@
@@ -851,7 +1050,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  pub use crate::{
      edwards::EdwardsPoint, montgomery::MontgomeryPoint, ristretto::RistrettoPoint, scalar::Scalar,
  };
-diff -ruN a/src/perf_bench.rs b/src/perf_bench.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/perf_bench.rs b/src/perf_bench.rs
 --- a/src/perf_bench.rs	1970-01-01 08:00:00.000000000 +0800
 +++ b/src/perf_bench.rs	2026-09-15 01:18:59.942233270 +0800
 @@ -0,0 +1,196 @@
@@ -1051,7 +1250,7 @@ diff -ruN a/src/perf_bench.rs b/src/perf_bench.rs
 +    }
 +    acc.compress().to_bytes()[0] as u64
 +}
-diff -ruN a/src/scalar.rs b/src/scalar.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/scalar.rs b/src/scalar.rs
 --- a/src/scalar.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/scalar.rs	2026-09-15 12:12:11.259129016 +0800
 @@ -982,6 +982,7 @@
@@ -1062,7 +1261,7 @@ diff -ruN a/src/scalar.rs b/src/scalar.rs
      pub(crate) fn as_radix_16(&self) -> [i8; 64] {
          debug_assert!(self[31] <= 127);
          let mut output = [0i8; 64];
-diff -ruN a/src/window.rs b/src/window.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/window.rs b/src/window.rs
 --- a/src/window.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/window.rs	2026-09-15 12:12:11.259342518 +0800
 @@ -51,6 +51,7 @@
@@ -1073,7 +1272,7 @@ diff -ruN a/src/window.rs b/src/window.rs
              pub fn select(&self, x: i8) -> T {
                  debug_assert!(x >= $neg);
                  debug_assert!(x as i16 <= $size as i16); // XXX We have to convert to i16s here for the radix-256 case.. this is wrong.
-diff -ruN a/tests/build_tests.sh b/tests/build_tests.sh
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/tests/build_tests.sh b/tests/build_tests.sh
 --- a/tests/build_tests.sh	2006-07-24 09:21:28.000000000 +0800
 +++ b/tests/build_tests.sh	1970-01-01 08:00:00.000000000 +0800
 @@ -1,88 +0,0 @@
@@ -1165,7 +1364,7 @@ diff -ruN a/tests/build_tests.sh b/tests/build_tests.sh
 -env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\" --cfg curve25519_dalek_backend=\"serial\" --cfg curve25519_dalek_bits=\"32\"" cargo build > "$OUT" 2>&1
 -match_and_report "curve25519_dalek_backend is 'serial'" "$OUT"
 -match_and_report "curve25519_dalek_bits is '32'" "$OUT"
-diff -ruN a/vendor/ristretto.sage b/vendor/ristretto.sage
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/vendor/ristretto.sage b/vendor/ristretto.sage
 --- a/vendor/ristretto.sage	2006-07-24 09:21:28.000000000 +0800
 +++ b/vendor/ristretto.sage	1970-01-01 08:00:00.000000000 +0800
 @@ -1,857 +0,0 @@

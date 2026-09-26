@@ -436,7 +436,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/core.rs b/src/core.rs
 --- a/src/core.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/core.rs	2026-09-15 02:17:30.746786626 +0800
++++ b/src/core.rs	2026-09-26 19:13:25.600476900 +0800
 @@ -1,33 +1,149 @@
 +use core::sync::atomic::{AtomicUsize, Ordering};
 +
@@ -527,13 +527,14 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 +
 +fn multiexp_terms(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
-+    let mut buf_scalars = Vec::with_capacity(pairs.len());
-+    let mut buf_points = Vec::with_capacity(pairs.len());
-+    for (scalar, point) in pairs {
-+        buf_scalars.push(scalar);
-+        buf_points.push(point);
-+    }
-+    EdwardsPoint::multiscalar_mul(buf_scalars, buf_points)
++    // shlosilo vendor patch (Z5.3 cut 1, 2026-09-26): feed dalek directly
++    // from the pair slice — `multiscalar_mul` accepts `impl Borrow<_>`
++    // iterators, so the old per-call scalar/point staging Vecs were pure
++    // waste. Same math, byte-identical outputs (the pins hold).
++    EdwardsPoint::multiscalar_mul(
++        pairs.iter().map(|(scalar, _)| scalar),
++        pairs.iter().map(|(_, point)| point),
++    )
 +}
 +
 +/// shlosilo bench (feature `prove-timing`): replicate the WIP L/R call
@@ -595,13 +596,12 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -    buf_points.push(point);
 -  }
 -  EdwardsPoint::vartime_multiscalar_mul(buf_scalars, buf_points)
-+    let mut buf_scalars = Vec::with_capacity(pairs.len());
-+    let mut buf_points = Vec::with_capacity(pairs.len());
-+    for (scalar, point) in pairs {
-+        buf_scalars.push(scalar);
-+        buf_points.push(point);
-+    }
-+    EdwardsPoint::vartime_multiscalar_mul(buf_scalars, buf_points)
++    // shlosilo vendor patch (Z5.3 cut 2): same Borrow-iterator feed as
++    // `multiexp_terms` — the staging Vecs were pure waste.
++    EdwardsPoint::vartime_multiscalar_mul(
++        pairs.iter().map(|(scalar, _)| scalar),
++        pairs.iter().map(|(_, point)| point),
++    )
  }
  
  /*

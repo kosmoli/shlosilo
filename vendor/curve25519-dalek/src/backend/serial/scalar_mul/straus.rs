@@ -111,8 +111,37 @@ impl MultiscalarMul for Straus {
         use crate::traits::Identity;
         use crate::window::LookupTable;
 
+        // shlosilo vendor patch (Z5.3 cut 5): small-count inline path (the
+        // device straus — CLSAG/next_G_H hot calls are 2-3 terms). Same
+        // tables/digits/loop; storage only. Secret digits stay wiped.
+        const SMALL: usize = 4;
+        let mut scalars = scalars.into_iter();
+        let mut points = points.into_iter();
+        let (lo, hi) = scalars.size_hint();
+        if hi == Some(lo) && lo <= SMALL && points.size_hint() == (lo, Some(lo)) {
+            let n = lo;
+            let fill = LookupTable::<ProjectiveNielsPoint>::from(&EdwardsPoint::identity());
+            let mut lookup_tables = [fill; SMALL];
+            let mut scalar_digits = [[0i8; 64]; SMALL];
+            for i in 0 .. n {
+                lookup_tables[i] =
+                    LookupTable::<ProjectiveNielsPoint>::from(points.next().unwrap().borrow());
+                scalar_digits[i] = scalars.next().unwrap().borrow().as_radix_16();
+            }
+            let mut Q = EdwardsPoint::identity();
+            for j in (0 .. 64).rev() {
+                Q = Q.mul_by_pow_2(4);
+                for i in 0 .. n {
+                    let R_i = lookup_tables[i].select(scalar_digits[i][j]);
+                    Q = (&Q + &R_i).as_extended();
+                }
+            }
+            #[cfg(feature = "zeroize")]
+            zeroize::Zeroize::zeroize(&mut scalar_digits);
+            return Q;
+        }
+
         let lookup_tables: Vec<_> = points
-            .into_iter()
             .map(|point| LookupTable::<ProjectiveNielsPoint>::from(point.borrow()))
             .collect();
 
@@ -121,7 +150,6 @@ impl MultiscalarMul for Straus {
         // Zeroizing wrapper.
         #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut scalar_digits: Vec<_> = scalars
-            .into_iter()
             .map(|s| s.borrow().as_radix_16())
             .collect();
 
@@ -168,13 +196,46 @@ impl VartimeMultiscalarMul for Straus {
         use crate::traits::Identity;
         use crate::window::NafLookupTable5;
 
+        // shlosilo vendor patch (Z5.3 cut 5): small-count inline path (public
+        // challenge digits, no wipe — parity with the Vec path).
+        const SMALL: usize = 4;
+        let mut scalars = scalars.into_iter();
+        let mut points = points.into_iter();
+        let (lo, hi) = scalars.size_hint();
+        if hi == Some(lo) && lo <= SMALL && points.size_hint() == (lo, Some(lo)) {
+            let n = lo;
+            let fill = NafLookupTable5::<ProjectiveNielsPoint>::from(&EdwardsPoint::identity());
+            let mut lookup_tables = [fill; SMALL];
+            let mut nafs = [[0i8; 256]; SMALL];
+            for i in 0 .. n {
+                let P = points.next().unwrap()?;
+                lookup_tables[i] = NafLookupTable5::<ProjectiveNielsPoint>::from(&P);
+                nafs[i] = scalars.next().unwrap().borrow().non_adjacent_form(5);
+            }
+            let mut r = ProjectivePoint::identity();
+            for i in (0 .. 256).rev() {
+                let mut t: CompletedPoint = r.double();
+                for j in 0 .. n {
+                    match nafs[j][i].cmp(&0) {
+                        Ordering::Greater => {
+                            t = &t.as_extended() + &lookup_tables[j].select(nafs[j][i] as usize)
+                        }
+                        Ordering::Less => {
+                            t = &t.as_extended() - &lookup_tables[j].select(-nafs[j][i] as usize)
+                        }
+                        Ordering::Equal => {}
+                    }
+                }
+                r = t.as_projective();
+            }
+            return Some(r.as_extended());
+        }
+
         let nafs: Vec<_> = scalars
-            .into_iter()
             .map(|c| c.borrow().non_adjacent_form(5))
             .collect();
 
         let lookup_tables = points
-            .into_iter()
             .map(|P_opt| P_opt.map(|P| NafLookupTable5::<ProjectiveNielsPoint>::from(&P)))
             .collect::<Option<Vec<_>>>()?;
 
