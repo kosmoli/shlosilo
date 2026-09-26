@@ -1,4 +1,4 @@
-use std_shims::{vec, vec::Vec};
+use std_shims::vec::Vec;
 
 // shlosilo vendor patch: prove-phase timing (device perf decomposition).
 // No-op stubs keep call sites unconditional; real impl is feature-gated.
@@ -138,32 +138,46 @@ impl<'a> AggregateRangeStatement<'a> {
         }
         let mn = V.len() * COMMITMENT_BITS;
 
-        // 2, 4, 6, 8... powers of z, of length equivalent to the amount of commitments
-        let mut z_pow = Vec::with_capacity(V.len());
+        // shlosilo vendor patch (Z5.3 cut 6): the z/d/y construction runs
+        // in place — the old per-j `d_j` + `powers` temporaries, the
+        // `vec![y]` push-realloc traffic, and three `clone()`s are gone.
+        // Same values, same order of operations per element (byte-pinned).
+        if V.len() > MAX_COMMITMENTS {
+            return None;
+        }
+        // 2, 4, 6, 8... powers of z (one past V.len(), as the old Vec kept)
+        let mut z_pow = [Scalar::ZERO; MAX_COMMITMENTS + 1];
         // z**2
-        z_pow.push(z * z);
+        z_pow[0] = z * z;
+        for i in 1..=V.len() {
+            z_pow[i] = z_pow[i - 1] * z_pow[0];
+        }
 
         let mut d = ScalarVector::new(mn);
         for j in 1..=V.len() {
-            z_pow.push(
-                *z_pow
-                    .last()
-                    .expect("couldn't get last z_pow despite always being non-empty")
-                    * z_pow[0],
-            );
-            d = d + &(Self::d_j(j, V.len()) * (z_pow[j - 1]));
+            // d += d_j(j) * z_pow[j-1]; d_j is zero outside its 2^k block
+            let zj = z_pow[j - 1];
+            let base = (j - 1) * COMMITMENT_BITS;
+            let mut p = Scalar::ONE;
+            for k in 0..COMMITMENT_BITS {
+                d.0[base + k] += p * zj;
+                p += p;
+            }
         }
 
-        let mut ascending_y = ScalarVector(vec![y]);
+        let mut ascending_y = ScalarVector::new(mn);
+        ascending_y.0[0] = y;
         for i in 1..d.len() {
-            ascending_y.0.push(ascending_y[i - 1] * y);
+            ascending_y.0[i] = ascending_y.0[i - 1] * y;
         }
-        let y_pows = ascending_y.clone().sum();
+        let y_pows: Scalar = ascending_y.0.iter().sum();
+        // `d.sum()` is needed at the end — hoist it, then consume d below
+        let d_sum: Scalar = d.0.iter().sum();
 
-        let mut descending_y = ascending_y.clone();
+        let mut descending_y = ascending_y;
         descending_y.0.reverse();
 
-        let d_descending_y = d.clone() * &descending_y;
+        let d_descending_y = d * &descending_y;
         let d_descending_y_plus_z = d_descending_y + z;
 
         let y_mn_plus_one = descending_y[0] * y;
@@ -181,7 +195,7 @@ impl<'a> AggregateRangeStatement<'a> {
         }
         A_terms.push((y_mn_plus_one, commitment_accum));
         A_terms.push((
-            ((y_pows * z) - (d.sum() * y_mn_plus_one * z) - (y_pows * (z * z))),
+            ((y_pows * z) - (d_sum * y_mn_plus_one * z) - (y_pows * (z * z))),
             BpPlusGenerators::g(),
         ));
 
@@ -190,7 +204,7 @@ impl<'a> AggregateRangeStatement<'a> {
             d_descending_y_plus_z,
             y_mn_plus_one,
             z,
-            z_pow: ScalarVector(z_pow),
+            z_pow: ScalarVector(z_pow[..V.len() + 1].to_vec()),
             A_hat: A + multiexp_vartime(&A_terms),
         })
     }
