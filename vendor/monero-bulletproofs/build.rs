@@ -51,7 +51,7 @@ fn generators(prefix: &'static str, path: &str) {
             }}
             out
           }}
-          fn rebuild_from_blob(blob: &[u8], n: usize) -> Generators {{
+          fn rebuild_from_blob(blob: &[u8], n: usize) -> crate::generator_cache_hook::Generators<'static> {{
             // n points x 128 bytes of raw extended coordinates (X, Y, Z, T),
             // all G first, then all H. Coordinates came from validated points.
             let mut g = std_shims::vec::Vec::with_capacity(n / 2);
@@ -68,14 +68,26 @@ fn generators(prefix: &'static str, path: &str) {
               idx += 128;
               h.push(curve25519_dalek::EdwardsPoint::from_raw_extended_bytes(&buf));
             }}
-            Generators {{ G: g, H: h }}
+            crate::generator_cache_hook::Generators {{
+              G: crate::generator_cache_hook::leak_vec(g),
+              H: crate::generator_cache_hook::leak_vec(h),
+            }}
           }}
-          pub(crate) static GENERATORS: LazyLock<Generators> = LazyLock::new(|| {{
+          pub(crate) static GENERATORS: LazyLock<crate::generator_cache_hook::Generators<'static>> = LazyLock::new(|| {{
             const G_BYTES: &[[u8; 32]] = &[
 {G_str}            ];
             const H_BYTES: &[[u8; 32]] = &[
 {H_str}            ];
             let n_points = G_BYTES.len() + H_BYTES.len();
+            // Z5.2: caller-provided decompressed table storage (zero-alloc hot path).
+            if let Some(st) = crate::generator_cache_hook::take_table_storage(b"{prefix}") {{
+              if st.g.len() == G_BYTES.len() && st.h.len() == H_BYTES.len() {{
+                return crate::generator_cache_hook::init_tables(b"{prefix}", n_points, G_BYTES, H_BYTES, st);
+              }}
+            }}
+            // Transitional fallback (no storage provided): one-shot decompress
+            // into a leaked Vec (Z5.2b removes once every host provisions).
+            // Load-hit still honored (persistence works without table storage).
             if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
               return rebuild_from_blob(blob, n_points);
             }}
@@ -87,7 +99,10 @@ fn generators(prefix: &'static str, path: &str) {
               for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
               crate::generator_cache_hook::try_store_blob(b"{prefix}", &blob);
             }}
-            Generators {{ G: g, H: h }}
+            crate::generator_cache_hook::Generators {{
+              G: crate::generator_cache_hook::leak_vec(g),
+              H: crate::generator_cache_hook::leak_vec(h),
+            }}
           }});
         "#,
       )
@@ -105,8 +120,12 @@ fn generators(prefix: &'static str, path: &str) {
         .write_all(
             format!(
                 r#"
-        pub(crate) static GENERATORS: LazyLock<Generators> = LazyLock::new(|| {{
-          monero_bulletproofs_generators::bulletproofs_generators(b"{prefix}")
+        pub(crate) static GENERATORS: LazyLock<crate::generator_cache_hook::Generators<'static>> = LazyLock::new(|| {{
+          let ext = monero_bulletproofs_generators::bulletproofs_generators(b"{prefix}");
+          crate::generator_cache_hook::Generators {{
+            G: crate::generator_cache_hook::leak_vec(ext.G),
+            H: crate::generator_cache_hook::leak_vec(ext.H),
+          }}
         }});
       "#,
             )

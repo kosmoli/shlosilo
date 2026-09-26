@@ -29,7 +29,10 @@ pub(crate) mod point_vector;
 pub(crate) mod scalar_vector;
 
 pub(crate) mod generator_cache_hook;
-pub use generator_cache_hook::register_generator_cache_hooks;
+pub use generator_cache_hook::{
+    provide_generator_table_storage, register_generator_cache_hooks, GeneratorSet,
+    GeneratorTableStorage,
+};
 
 #[cfg(feature = "prove-timing")]
 #[path = "prove_timing_hook.rs"]

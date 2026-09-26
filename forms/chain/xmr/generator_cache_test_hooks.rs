@@ -13,6 +13,15 @@ use alloc::vec::Vec;
 // device-side hook registration arrives with the L3 flash backend (shlosilo_init FFI path).
 use monero_bulletproofs::register_generator_cache_hooks;
 
+// Z5.2: caller-provided decompressed table storage (test surface for
+// tests/xmr_generator_storage.rs; the device wires this through the L3
+// backend at Z5.2b).
+pub use monero_bulletproofs::{GeneratorSet, GeneratorTableStorage};
+
+pub fn provide_table_storage(set: GeneratorSet, storage: GeneratorTableStorage) -> bool {
+    monero_bulletproofs::provide_generator_table_storage(set, storage)
+}
+
 /// Register load/store hooks into the vendored bulletproofs crate. Idempotent: a second
 /// call with the same functions (e.g. two tests in one binary) returns true.
 ///

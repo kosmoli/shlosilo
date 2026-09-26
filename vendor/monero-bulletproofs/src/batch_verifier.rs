@@ -7,7 +7,7 @@ use curve25519_dalek::{
     traits::{IsIdentity as _, VartimeMultiscalarMul as _},
 };
 
-use monero_bulletproofs_generators::Generators;
+use crate::generator_cache_hook::Generators;
 
 use crate::{original, plus, MONERO_H};
 

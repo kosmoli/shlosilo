@@ -8,7 +8,7 @@ use zeroize::Zeroize;
 
 use curve25519_dalek::{constants::ED25519_BASEPOINT_POINT, EdwardsPoint, Scalar};
 
-use monero_bulletproofs_generators::{Generators, COMMITMENT_BITS};
+use monero_bulletproofs_generators::COMMITMENT_BITS;
 use monero_ed25519::{Commitment, CompressedPoint};
 
 use crate::{
@@ -167,10 +167,10 @@ impl AggregateRangeStatement<'_> {
             {
                 let mut terms = Vec::with_capacity(1 + (2 * aL.len()));
                 terms.push((alpha, ED25519_BASEPOINT_POINT));
-                for (aL, G) in aL.0.iter().zip(&generators.G) {
+                for (aL, G) in aL.0.iter().zip(generators.G.iter()) {
                     terms.push((*aL, *G));
                 }
-                for (aR, H) in aR.0.iter().zip(&generators.H) {
+                for (aR, H) in aR.0.iter().zip(generators.H.iter()) {
                     terms.push((*aR, *H));
                 }
                 let res = multiexp(&terms) * INV_EIGHT.into();
@@ -193,10 +193,10 @@ impl AggregateRangeStatement<'_> {
             {
                 let mut terms = Vec::with_capacity(1 + (2 * sL.len()));
                 terms.push((rho, ED25519_BASEPOINT_POINT));
-                for (sL, G) in sL.0.iter().zip(&generators.G) {
+                for (sL, G) in sL.0.iter().zip(generators.G.iter()) {
                     terms.push((*sL, *G));
                 }
-                for (sR, H) in sR.0.iter().zip(&generators.H) {
+                for (sR, H) in sR.0.iter().zip(generators.H.iter()) {
                     terms.push((*sR, *H));
                 }
                 let res = multiexp(&terms) * INV_EIGHT.into();
