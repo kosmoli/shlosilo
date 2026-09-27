@@ -897,13 +897,14 @@ fn parse_derivation_value(value: &[u8]) -> Option<([u8; 4], DerivationPath)> {
     let mut fp = [0u8; 4];
     fp.copy_from_slice(&value[..4]);
     let depth = (value.len() - 4) / 4;
-    let mut flat = alloc::vec::Vec::with_capacity(depth);
-    for j in 0..depth {
+    // Z4-4: the path is a fixed-cap stack array — feed it straight from the
+    // wire words (the old staging Vec was pure waste).
+    DerivationPath::from_flat((0..depth).map(|j| {
         let o = 4 + 4 * j;
-        let raw = u32::from_le_bytes([value[o], value[o + 1], value[o + 2], value[o + 3]]);
-        flat.push(raw);
-    }
-    DerivationPath::from_flat(flat).ok().map(|p| (fp, p))
+        u32::from_le_bytes([value[o], value[o + 1], value[o + 2], value[o + 3]])
+    }))
+    .ok()
+    .map(|p| (fp, p))
 }
 
 fn read_bip32_derivation(
@@ -975,7 +976,9 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         // NOTE (Z2.1 S2 re-review, 2026-09-24): `kv.key[1..34]` is the BIP32_DERIVATION
         // compressed PUBLIC key (verified against derived pubkeys below) — public data,
         // deliberately NOT zeroize-wrapped. (Initially mis-audited as key material.)
-        let mut records: Vec<([u8; 4], DerivationPath, Vec<u8>)> = Vec::new();
+        // Z4-4: pubkeys borrow the map payloads; one exact container.
+        let mut records: Vec<([u8; 4], DerivationPath, &'_ [u8])> =
+            Vec::with_capacity(input_map.len());
         for kv in input_map.iter() {
             if kv.key.first() != Some(&psbt_mod::input_type::BIP32_DERIVATION) {
                 continue;
@@ -985,13 +988,13 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             }
             let (fp, path) = parse_derivation_value(&kv.value)
                 .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-            records.push((fp, path, kv.key[1..34].to_vec()));
+            records.push((fp, path, &kv.key[1..34]));
         }
         if records.is_empty() {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
         // R4 semantics preserved: assert the signing key's derived pubkey equals the first record's pubkey
-        if derived_pub != records[0].2.as_slice() {
+        if derived_pub.as_slice() != records[0].2 {
             return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
         }
         let mut pubkey_hash: Option<[u8; 20]> = None;
@@ -1003,7 +1006,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             let rec_pub = crate::curve_primitive::secp256k1::point_to_compressed(
                 &crate::curve_primitive::secp256k1::base_mul(&rec_sk),
             );
-            if rec_pub != pk.as_slice() {
+            if rec_pub.as_slice() != *pk {
                 return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
             }
             // consistency with the (path, sk) actually used to sign this input: the record path must equal the signing path

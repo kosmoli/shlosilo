@@ -834,7 +834,7 @@ pub fn decode_p2tr_script_pubkey(script_pubkey: &[u8]) -> Result<[u8; 32]> {
 /// decode_compact_size + taken via take_bytes checked_add — the original bare
 /// `pos + spk_len` addition overflows and panics on `amount || 0xff || u64::MAX`
 /// input (on device = malicious QR DoS).
-pub fn decode_witness_utxo(value: &[u8]) -> Result<(u64, Vec<u8>)> {
+pub fn decode_witness_utxo<'a>(value: &'a [u8]) -> Result<(u64, Cow<'a, [u8]>)> {
     if value.len() < 8 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -851,20 +851,20 @@ pub fn decode_witness_utxo(value: &[u8]) -> Result<(u64, Vec<u8>)> {
     if pos != value.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    Ok((amount, spk.to_vec()))
+    Ok((amount, Cow::Borrowed(spk)))
 }
 
 /// Audit #5 open-01: parse the full transaction of NON_WITNESS_UTXO per BIP-174 semantics:
 /// (1) deserialize the full tx (legacy format, no witness — PSBT stores the non-witness serialization)
 /// (2) compute txid = dsha256(serialized) (3) compare with OutPoint.txid
 /// (4) take CTxOut indexed by vout. Any step failing → None (refuse to sign that input).
-fn get_non_witness_utxo_bound(
-    input_map: &[KeyValue],
+fn get_non_witness_utxo_bound<'a>(
+    input_map: &'a [KeyValue<'a>],
     prev_out: &OutPoint,
-) -> Option<(u64, Vec<u8>)> {
+) -> Option<(u64, Cow<'a, [u8]>)> {
     let kv = input_map
         .iter()
-        .find(|kv| kv.key == vec![input_type::NON_WITNESS_UTXO])?;
+        .find(|kv| kv.key.as_ref() == &[input_type::NON_WITNESS_UTXO][..])?;
     let full_tx = deserialize_unsigned_tx(&kv.value).ok()?;
 
     // txid binding: serialize back (using the same legacy serialization) → dsha256
@@ -876,14 +876,14 @@ fn get_non_witness_utxo_bound(
         return None; // a malicious full-tx claiming a UTXO that is not its own — reject
     }
     let txout = full_tx.outputs.get(prev_out.vout as usize)?;
-    Some((txout.value, txout.script_pubkey.clone()))
+    Some((txout.value, Cow::Owned(txout.script_pubkey.clone())))
 }
 
 /// Get the spent output (value, spk) from an input map's WITNESS_UTXO field
-pub fn get_witness_utxo(input_map: &[KeyValue<'_>]) -> Option<(u64, Vec<u8>)> {
+pub fn get_witness_utxo<'a>(input_map: &'a [KeyValue<'a>]) -> Option<(u64, Cow<'a, [u8]>)> {
     let kv = input_map
         .iter()
-        .find(|kv| kv.key == vec![input_type::WITNESS_UTXO])?;
+        .find(|kv| kv.key.as_ref() == &[input_type::WITNESS_UTXO][..])?;
     decode_witness_utxo(&kv.value).ok()
 }
 
@@ -893,7 +893,10 @@ pub fn get_witness_utxo(input_map: &[KeyValue<'_>]) -> Option<(u64, Vec<u8>)> {
 /// parsing + txid binding + vout indexing, no longer blindly trusting a bare CTxOut as fallback.
 /// (The non-standard CTxOut-in-0x01 form from the keystone fixture is no longer supported; affected tests
 ///   now use the standard WITNESS_UTXO form.)
-pub fn get_utxo_any(input_map: &[KeyValue<'_>], prev_out: &OutPoint) -> Option<(u64, Vec<u8>)> {
+pub fn get_utxo_any<'a>(
+    input_map: &'a [KeyValue<'a>],
+    prev_out: &OutPoint,
+) -> Option<(u64, Cow<'a, [u8]>)> {
     // Preferred: WITNESS_UTXO (standard path, CTxOut stored directly)
     if let Some(utxo) = get_witness_utxo(input_map) {
         return Some(utxo);
@@ -1710,6 +1713,8 @@ mod tests {
             })
             .unwrap();
         let (value, spent_spk) = decode_witness_utxo(&utxo_kv.value).unwrap();
+        // own it before the later &mut psbt (the Cow would hold the borrow)
+        let spent_spk = spent_spk.into_owned();
         assert_eq!(value, 0x19bc);
         assert_eq!(&spent_spk[..2], &[0x51, 0x20]);
 
@@ -1721,7 +1726,7 @@ mod tests {
         let sequences = [psbt.unsigned_tx.inputs[0].sequence];
         let spent_outputs = [SpentOutput {
             value,
-            script_pubkey: spent_spk.clone(),
+            script_pubkey: spent_spk.to_vec(),
         }];
         let tx_outputs: alloc::vec::Vec<SpentOutput> = psbt
             .unsigned_tx

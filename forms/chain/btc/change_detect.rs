@@ -8,7 +8,6 @@
 //! shares the same origin as keystone `check_my_input`'s ownership decision.
 
 extern crate alloc;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::chain::btc::psbt::{output_type, Psbt};
@@ -49,7 +48,7 @@ pub fn detect_change_outputs(
     for out_map in &psbt.outputs {
         let origin = out_map
             .iter()
-            .find(|kv| kv.key == vec![output_type::BIP32_DERIVATION])
+            .find(|kv| kv.key.as_ref() == &[output_type::BIP32_DERIVATION][..])
             .and_then(|kv| parse_origin_fingerprint(&kv.value));
         let is_own = origin.as_ref() == Some(master_fingerprint);
         infos.push(ChangeInfo {
