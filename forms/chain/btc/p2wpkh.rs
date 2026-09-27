@@ -60,6 +60,28 @@ pub struct OutPoint {
     pub vout: u32,
 }
 
+/// Z4-7a: fixed backplane caps (the XMR H-cut precedent) — the logical
+/// lengths drive serialization; over-cap is an explicit Err, never truncation.
+/// Measured maxima: the sparrow 12k fixture runs 1 input / 2 outputs.
+pub const BT_TX_INPUTS_MAX: usize = 16;
+pub const BT_TX_OUTPUTS_MAX: usize = 64;
+
+/// Z4-7a: `vec![a, b]`-shaped construction for the capped model vectors —
+/// push + unwrap, so over-cap fails loudly instead of truncating (a bare
+/// `collect()` into a capped Vec silently drops).
+#[macro_export]
+macro_rules! bt_vec {
+    ($($x:expr),* $(,)?) => {{
+        #[allow(unused_mut)]
+        let mut v = heapless::Vec::new();
+        $(
+            v.push($x).expect("bt_vec over capacity");
+        )*
+        v
+    }};
+}
+pub(crate) use bt_vec;
+
 /// TxIn (with witness)
 ///
 /// Z4-5: scriptSig borrows the wire bytes (sign-time witness items own).
@@ -71,7 +93,20 @@ pub struct TxIn<'a> {
     pub witness: Vec<Vec<u8>>, // witness items (sign-time additions own)
 }
 
-impl TxIn<'_> {
+impl<'a> TxIn<'a> {
+    /// The empty backplane slot (no allocation).
+    pub fn empty() -> Self {
+        Self {
+            prev_out: OutPoint {
+                txid: [0u8; 32],
+                vout: 0,
+            },
+            script_sig: alloc::borrow::Cow::Borrowed(&[]),
+            sequence: 0,
+            witness: Vec::new(),
+        }
+    }
+
     /// Serialization (BIP-144 legacy format: outpoint + scriptSig + sequence)
     /// Includes the scriptSig length varint
     pub fn serialize_legacy(&self) -> Vec<u8> {
@@ -94,6 +129,16 @@ pub struct TxOut<'a> {
     pub script_pubkey: alloc::borrow::Cow<'a, [u8]>,
 }
 
+impl<'a> TxOut<'a> {
+    /// The empty backplane slot (no allocation).
+    pub fn empty() -> Self {
+        Self {
+            value: 0,
+            script_pubkey: alloc::borrow::Cow::Borrowed(&[]),
+        }
+    }
+}
+
 impl TxOut<'_> {
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + 1 + self.script_pubkey.len());
@@ -105,11 +150,14 @@ impl TxOut<'_> {
 }
 
 /// Transaction (legacy + segwit format)
+///
+/// Z4-7a: the input/output vectors are fixed backplanes (heapless, deref to
+/// slices) — construction via `vec![]`, over-cap loud.
 #[derive(Clone, Debug)]
 pub struct Transaction<'a> {
     pub version: i32,
-    pub inputs: Vec<TxIn<'a>>,
-    pub outputs: Vec<TxOut<'a>>,
+    pub inputs: heapless::Vec<TxIn<'a>, BT_TX_INPUTS_MAX>,
+    pub outputs: heapless::Vec<TxOut<'a>, BT_TX_OUTPUTS_MAX>,
     pub lock_time: u32,
 }
 
@@ -498,8 +546,8 @@ mod tests {
 
         let tx = Transaction {
             version: 1,
-            inputs: vec![input0, input1],
-            outputs: vec![output0, output1],
+            inputs: bt_vec![input0, input1],
+            outputs: bt_vec![output0, output1],
             lock_time: 0x11,
         };
 
@@ -624,8 +672,8 @@ mod tests {
 
         let mut tx = Transaction {
             version: 1,
-            inputs: vec![input0, input1],
-            outputs: vec![output0, output1],
+            inputs: bt_vec![input0, input1],
+            outputs: bt_vec![output0, output1],
             lock_time: 0x11,
         };
 
@@ -790,8 +838,8 @@ mod tests {
 
         let mut tx = Transaction {
             version: 1,
-            inputs: vec![input0, input1],
-            outputs: vec![output0, output1],
+            inputs: bt_vec![input0, input1],
+            outputs: bt_vec![output0, output1],
             lock_time: 0x11,
         };
 

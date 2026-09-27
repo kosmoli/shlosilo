@@ -30,6 +30,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+#[cfg(test)]
+use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::p2wpkh::{encode_varint, segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL};
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -229,8 +231,8 @@ mod tests {
 
         let mut tx = Transaction {
             version: 1,
-            inputs: vec![txin],
-            outputs: vec![txout],
+            inputs: bt_vec![txin],
+            outputs: bt_vec![txout],
             lock_time: 0,
         };
 
@@ -287,7 +289,7 @@ mod tests {
     fn p2pkh_different_input_different_sighash() {
         let tx_a = Transaction {
             version: 1,
-            inputs: vec![TxIn {
+            inputs: bt_vec![TxIn {
                 prev_out: OutPoint {
                     txid: [1u8; 32],
                     vout: 0,
@@ -296,7 +298,7 @@ mod tests {
                 sequence: 0xffffffff,
                 witness: vec![],
             }],
-            outputs: vec![TxOut {
+            outputs: bt_vec![TxOut {
                 value: 100_000,
                 script_pubkey: vec![0x76, 0xa9, 0x14, 0x42, 0x88, 0xac].into(),
             }],
@@ -305,7 +307,7 @@ mod tests {
 
         let tx_b = Transaction {
             version: 1,
-            inputs: vec![TxIn {
+            inputs: bt_vec![TxIn {
                 prev_out: OutPoint {
                     txid: [2u8; 32],
                     vout: 0,
@@ -314,7 +316,7 @@ mod tests {
                 sequence: 0xffffffff,
                 witness: vec![],
             }],
-            outputs: vec![TxOut {
+            outputs: bt_vec![TxOut {
                 value: 100_000,
                 script_pubkey: vec![0x76, 0xa9, 0x14, 0x42, 0x88, 0xac].into(),
             }],
@@ -336,13 +338,13 @@ mod tests {
         txid[0] = 0xab;
         let mut tx = Transaction {
             version: 1,
-            inputs: vec![TxIn {
+            inputs: bt_vec![TxIn {
                 prev_out: OutPoint { txid, vout: 0 },
                 script_sig: vec![].into(),
                 sequence: 0xffffffff,
                 witness: vec![],
             }],
-            outputs: vec![TxOut {
+            outputs: bt_vec![TxOut {
                 value: 100_000,
                 script_pubkey: p2pkh_script_pubkey(&[0x42; 20]).into(),
             }],
@@ -374,8 +376,8 @@ mod tests {
     fn p2pkh_out_of_bounds_input() {
         let tx = Transaction {
             version: 1,
-            inputs: vec![],
-            outputs: vec![],
+            inputs: bt_vec![],
+            outputs: bt_vec![],
             lock_time: 0,
         };
         let input = P2PKHSignInput {
@@ -394,13 +396,13 @@ mod tests {
         txid[0] = 0xab;
         let mut tx = Transaction {
             version: 1,
-            inputs: vec![TxIn {
+            inputs: bt_vec![TxIn {
                 prev_out: OutPoint { txid, vout: 0 },
                 script_sig: vec![].into(),
                 sequence: 0xffffffff,
                 witness: vec![],
             }],
-            outputs: vec![TxOut {
+            outputs: bt_vec![TxOut {
                 value: 100_000,
                 script_pubkey: p2pkh_script_pubkey(&[0x42; 20]).into(),
             }],

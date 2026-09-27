@@ -79,6 +79,7 @@ fn hex_decode_32(s: &str) -> [u8; 32] {
 
 #[test]
 fn keystone_btc_p2wpkh_sighash_matches() {
+    use shlosilo::bt_vec;
     use shlosilo::chain::btc::p2wpkh::{segwit_sighash_p2wpkh, OutPoint, Transaction, TxIn, TxOut};
     const SIGHASH_ALL: u32 = 1; // BIP-143 sighash ALL (defined locally after p2wpkh::SIGHASH_ALL became pub(crate))
     let input0 = TxIn {
@@ -112,8 +113,8 @@ fn keystone_btc_p2wpkh_sighash_matches() {
     };
     let tx = Transaction {
         version: 1,
-        inputs: vec![input0, input1],
-        outputs: vec![output0, output1],
+        inputs: bt_vec![input0, input1],
+        outputs: bt_vec![output0, output1],
         lock_time: 0x11,
     };
     let mut script_code = Vec::with_capacity(25);

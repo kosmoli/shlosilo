@@ -10,6 +10,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+#[cfg(test)]
+use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::p2wpkh::Transaction;
 use crate::chain::btc::psbt::{get_utxo_any, Psbt};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -298,8 +300,8 @@ mod tests {
         };
         let unsigned_tx = Transaction {
             version: 2,
-            inputs: vec![txin],
-            outputs: vec![txout],
+            inputs: bt_vec![txin],
+            outputs: bt_vec![txout],
             lock_time,
         };
         let in_spk = p2wpkh_spk(0xab);
@@ -383,7 +385,7 @@ mod tests {
         // value == MAX is not huge; bump output via summarize_tx
         let tx = Transaction {
             version: 2,
-            inputs: vec![TxIn {
+            inputs: bt_vec![TxIn {
                 prev_out: OutPoint {
                     txid: [0; 32],
                     vout: 0,
@@ -392,7 +394,7 @@ mod tests {
                 sequence: 0xffffffff,
                 witness: vec![],
             }],
-            outputs: vec![TxOut {
+            outputs: bt_vec![TxOut {
                 value: MAX_MONEY_SATS + 1,
                 script_pubkey: vec![0x51].into(),
             }],

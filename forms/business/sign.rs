@@ -1172,8 +1172,10 @@ pub(crate) fn check_network(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chain::btc::p2wpkh::bt_vec;
     use crate::types::chain_kind::ChainKind;
     extern crate alloc;
+    use alloc::vec;
     use alloc::vec::Vec;
 
     #[test]
@@ -1448,7 +1450,7 @@ mod tests {
         let mut psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 2,
-                inputs: alloc::vec![TxIn {
+                inputs: bt_vec![TxIn {
                     prev_out: OutPoint {
                         txid: [0xABu8; 32],
                         vout: 0,
@@ -1457,14 +1459,14 @@ mod tests {
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
-                outputs: alloc::vec![TxOut {
+                outputs: bt_vec![TxOut {
                     value: 90_000,
                     script_pubkey: spk.clone().into(),
                 }],
                 lock_time: 0,
             },
-            inputs: alloc::vec![],
-            outputs: alloc::vec![alloc::vec![]], // 1 output map (empty)
+            inputs: vec![],
+            outputs: vec![alloc::vec![]], // 1 output map (empty)
         };
         // input map: WITNESS_UTXO + BIP32_DERIVATION
         let mut wu_value = alloc::vec::Vec::new();
@@ -1546,7 +1548,7 @@ mod tests {
     /// P1-02: PSBT with a non-default path (m/84'/0'/1'/0/0) → signing derives the key from that path (threading proof)
     #[test]
     fn sign_btc_psbt_uses_psbt_derivation_path() {
-        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
         use crate::chain::btc::psbt::{self, input_type, Psbt};
         use crate::encoding::cbor;
 
@@ -1565,7 +1567,7 @@ mod tests {
         let mut psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 2,
-                inputs: alloc::vec![TxIn {
+                inputs: bt_vec![TxIn {
                     prev_out: OutPoint {
                         txid: [0xABu8; 32],
                         vout: 0
@@ -1574,14 +1576,14 @@ mod tests {
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
-                outputs: alloc::vec![TxOut {
+                outputs: bt_vec![TxOut {
                     value: 90_000,
                     script_pubkey: spk.clone().into(),
                 }],
                 lock_time: 0,
             },
-            inputs: alloc::vec![],
-            outputs: alloc::vec![alloc::vec![]],
+            inputs: vec![],
+            outputs: vec![alloc::vec![]],
         };
         let mut wu_value = alloc::vec::Vec::new();
         wu_value.extend_from_slice(&100_000u64.to_le_bytes());
@@ -1632,7 +1634,7 @@ mod tests {
     /// P1-02: BIP32_DERIVATION fingerprint mismatch with ours → reject (prevents signing from the wrong wallet)
     #[test]
     fn sign_btc_psbt_rejects_fingerprint_mismatch() {
-        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
         use crate::chain::btc::psbt::{self, input_type, Psbt};
         use crate::encoding::cbor;
 
@@ -1651,7 +1653,7 @@ mod tests {
         let mut psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 2,
-                inputs: alloc::vec![TxIn {
+                inputs: bt_vec![TxIn {
                     prev_out: OutPoint {
                         txid: [0xABu8; 32],
                         vout: 0
@@ -1660,14 +1662,14 @@ mod tests {
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
-                outputs: alloc::vec![TxOut {
+                outputs: bt_vec![TxOut {
                     value: 90_000,
                     script_pubkey: spk.clone().into(),
                 }],
                 lock_time: 0,
             },
-            inputs: alloc::vec![],
-            outputs: alloc::vec![alloc::vec![]],
+            inputs: vec![],
+            outputs: vec![alloc::vec![]],
         };
         let mut wu_value = alloc::vec::Vec::new();
         wu_value.extend_from_slice(&100_000u64.to_le_bytes());
@@ -1716,7 +1718,7 @@ mod tests {
     /// P1-B: witness_utxo scriptPubKey not bound to the signing key (swapped to someone else's P2WPKH) → reject
     #[test]
     fn p1b_rejects_witness_utxo_script_mismatch() {
-        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
         use crate::chain::btc::psbt::{self, input_type, Psbt};
         use crate::encoding::cbor;
 
@@ -1737,7 +1739,7 @@ mod tests {
         let psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 2,
-                inputs: alloc::vec![TxIn {
+                inputs: bt_vec![TxIn {
                     prev_out: OutPoint {
                         txid: [0xABu8; 32],
                         vout: 0
@@ -1746,13 +1748,13 @@ mod tests {
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
-                outputs: alloc::vec![TxOut {
+                outputs: bt_vec![TxOut {
                     value: 90_000,
                     script_pubkey: spk.clone().into(),
                 }],
                 lock_time: 0,
             },
-            inputs: alloc::vec![alloc::vec![
+            inputs: vec![alloc::vec![
                 psbt::KeyValue {
                     key: alloc::vec![input_type::WITNESS_UTXO].into(),
                     value: {
@@ -1782,7 +1784,7 @@ mod tests {
                     },
                 },
             ]],
-            outputs: alloc::vec![alloc::vec![]],
+            outputs: vec![alloc::vec![]],
         };
 
         let psbt_bytes = psbt::serialize_psbt(&psbt);
@@ -1804,7 +1806,7 @@ mod tests {
     /// P1-B: no BIP32_DERIVATION record (the old default-path fallback has been removed) → reject
     #[test]
     fn p1b_rejects_missing_derivation_record() {
-        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+        use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
         use crate::chain::btc::psbt::{self, input_type, Psbt};
         use crate::encoding::cbor;
 
@@ -1815,7 +1817,7 @@ mod tests {
         let psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 2,
-                inputs: alloc::vec![TxIn {
+                inputs: bt_vec![TxIn {
                     prev_out: OutPoint {
                         txid: [0xABu8; 32],
                         vout: 0
@@ -1824,13 +1826,13 @@ mod tests {
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
-                outputs: alloc::vec![TxOut {
+                outputs: bt_vec![TxOut {
                     value: 90_000,
                     script_pubkey: spk.clone().into(),
                 }],
                 lock_time: 0,
             },
-            inputs: alloc::vec![alloc::vec![psbt::KeyValue {
+            inputs: vec![alloc::vec![psbt::KeyValue {
                 key: alloc::vec![input_type::WITNESS_UTXO].into(),
                 value: {
                     let mut v = alloc::vec::Vec::new();
@@ -1840,7 +1842,7 @@ mod tests {
                     v.into()
                 },
             }]],
-            outputs: alloc::vec![alloc::vec![]],
+            outputs: vec![alloc::vec![]],
         };
 
         let psbt_bytes = psbt::serialize_psbt(&psbt);

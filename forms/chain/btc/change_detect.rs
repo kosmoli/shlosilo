@@ -10,6 +10,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+#[cfg(test)]
+use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::psbt::{output_type, Psbt};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
@@ -100,8 +102,8 @@ mod tests {
             .collect();
         let unsigned_tx = Transaction {
             version: 2,
-            inputs: vec![txin],
-            outputs,
+            inputs: bt_vec![txin],
+            outputs: heapless::Vec::from_slice(&outputs).unwrap(),
             lock_time: 0,
         };
         let out_maps: Vec<Vec<KeyValue>> = out_fps

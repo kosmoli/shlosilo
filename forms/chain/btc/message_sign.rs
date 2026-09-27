@@ -15,6 +15,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::p2wpkh::{
     encode_varint, segwit_sighash_p2wpkh, OutPoint, Transaction, TxIn, TxOut, SIGHASH_ALL,
 };
@@ -164,7 +165,7 @@ pub fn sign_bip322_simple_p2wpkh(sk: &Secp256k1Scalar, msg: &[u8]) -> Result<Vec
 
     let to_spend = Transaction {
         version: 0,
-        inputs: vec![TxIn {
+        inputs: bt_vec![TxIn {
             prev_out: OutPoint {
                 txid: [0u8; 32],
                 vout: 0xffff_ffff,
@@ -173,7 +174,7 @@ pub fn sign_bip322_simple_p2wpkh(sk: &Secp256k1Scalar, msg: &[u8]) -> Result<Vec
             sequence: 0,
             witness: vec![],
         }],
-        outputs: vec![TxOut {
+        outputs: bt_vec![TxOut {
             value: 0,
             script_pubkey: challenge.into(),
         }],
@@ -183,7 +184,7 @@ pub fn sign_bip322_simple_p2wpkh(sk: &Secp256k1Scalar, msg: &[u8]) -> Result<Vec
 
     let to_sign = Transaction {
         version: 0,
-        inputs: vec![TxIn {
+        inputs: bt_vec![TxIn {
             prev_out: OutPoint {
                 txid: to_spend_txid,
                 vout: 0,
@@ -192,7 +193,7 @@ pub fn sign_bip322_simple_p2wpkh(sk: &Secp256k1Scalar, msg: &[u8]) -> Result<Vec
             sequence: 0,
             witness: vec![],
         }],
-        outputs: vec![TxOut {
+        outputs: bt_vec![TxOut {
             value: 0,
             script_pubkey: vec![0x6a].into(), // OP_RETURN
         }],
@@ -249,7 +250,7 @@ fn bip322_p2tr_sighash(internal_sk: &[u8; 32], msg: &[u8]) -> Result<[u8; 32]> {
 
     let to_spend = Transaction {
         version: 0,
-        inputs: vec![TxIn {
+        inputs: bt_vec![TxIn {
             prev_out: OutPoint {
                 txid: [0u8; 32],
                 vout: 0xffff_ffff,
@@ -258,7 +259,7 @@ fn bip322_p2tr_sighash(internal_sk: &[u8; 32], msg: &[u8]) -> Result<[u8; 32]> {
             sequence: 0,
             witness: vec![],
         }],
-        outputs: vec![TxOut {
+        outputs: bt_vec![TxOut {
             value: 0,
             script_pubkey: challenge.clone().into(),
         }],
@@ -456,7 +457,7 @@ mod tests {
         challenge.extend_from_slice(&pkh);
         let to_spend = Transaction {
             version: 0,
-            inputs: vec![TxIn {
+            inputs: bt_vec![TxIn {
                 prev_out: OutPoint {
                     txid: [0u8; 32],
                     vout: 0xffff_ffff,
@@ -465,7 +466,7 @@ mod tests {
                 sequence: 0,
                 witness: vec![],
             }],
-            outputs: vec![TxOut {
+            outputs: bt_vec![TxOut {
                 value: 0,
                 script_pubkey: challenge.into(),
             }],

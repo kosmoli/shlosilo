@@ -44,6 +44,8 @@ use alloc::vec::Vec;
 
 use crate::chain::btc::p2pkh::sign_p2pkh;
 use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
+#[cfg(test)]
+use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
 use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -366,7 +368,7 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
     if !count_physically_feasible(n_inputs as usize, bytes.len() - pos, 41) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    let mut inputs = Vec::with_capacity(n_inputs as usize);
+    let mut inputs = heapless::Vec::new();
     for _ in 0..n_inputs {
         // txid (32 bytes)
         let txid_bytes = take_bytes(bytes, &mut pos, 32)?;
@@ -393,12 +395,14 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
         );
 
-        inputs.push(TxIn {
-            prev_out: OutPoint { txid, vout },
-            script_sig,
-            sequence,
-            witness: Vec::new(),
-        });
+        inputs
+            .push(TxIn {
+                prev_out: OutPoint { txid, vout },
+                script_sig,
+                sequence,
+                witness: Vec::new(),
+            })
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     }
 
     // outputs count
@@ -411,7 +415,7 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
     if !count_physically_feasible(n_outputs as usize, bytes.len() - pos, 9) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    let mut outputs = Vec::with_capacity(n_outputs as usize);
+    let mut outputs = heapless::Vec::new();
     for _ in 0..n_outputs {
         // value (8 bytes)
         let value_bytes = take_bytes(bytes, &mut pos, 8)?;
@@ -425,10 +429,12 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
         let script_pubkey_len = decode_compact_size(bytes, &mut pos)? as usize;
         let script_pubkey = Cow::Borrowed(take_bytes(bytes, &mut pos, script_pubkey_len)?);
 
-        outputs.push(TxOut {
-            value,
-            script_pubkey,
-        });
+        outputs
+            .push(TxOut {
+                value,
+                script_pubkey,
+            })
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     }
 
     // lock_time (4 bytes)
@@ -1060,8 +1066,8 @@ mod tests {
 
         let unsigned_tx = Transaction {
             version: 2,
-            inputs: vec![txin],
-            outputs: vec![txout],
+            inputs: bt_vec![txin],
+            outputs: bt_vec![txout],
             lock_time: 0,
         };
 
@@ -1117,8 +1123,8 @@ mod tests {
 
         let unsigned_tx = Transaction {
             version: 2,
-            inputs: vec![txin],
-            outputs: vec![txout],
+            inputs: bt_vec![txin],
+            outputs: bt_vec![txout],
             lock_time: 12345,
         };
 
@@ -1186,8 +1192,8 @@ mod tests {
         let mut psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 2,
-                inputs: vec![txin],
-                outputs: vec![txout],
+                inputs: bt_vec![txin],
+                outputs: bt_vec![txout],
                 lock_time: 0,
             },
             inputs: vec![Vec::new()],
@@ -1235,8 +1241,8 @@ mod tests {
         let psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 1,
-                inputs: vec![],
-                outputs: vec![],
+                inputs: bt_vec![],
+                outputs: bt_vec![],
                 lock_time: 0,
             },
             inputs: vec![],
@@ -1283,8 +1289,8 @@ mod tests {
         let mut psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 1,
-                inputs: vec![txin],
-                outputs: vec![txout],
+                inputs: bt_vec![txin],
+                outputs: bt_vec![txout],
                 lock_time: 0,
             },
             inputs: vec![Vec::new()],
@@ -1333,8 +1339,8 @@ mod tests {
         let psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 1,
-                inputs: vec![],
-                outputs: vec![],
+                inputs: bt_vec![],
+                outputs: bt_vec![],
                 lock_time: 0,
             },
             inputs: vec![],
@@ -1377,8 +1383,8 @@ mod tests {
         let mut psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 2,
-                inputs: vec![txin],
-                outputs: vec![txout],
+                inputs: bt_vec![txin],
+                outputs: bt_vec![txout],
                 lock_time: 0,
             },
             inputs: vec![Vec::new()],
@@ -1441,8 +1447,8 @@ mod tests {
         let psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 1,
-                inputs: vec![],
-                outputs: vec![],
+                inputs: bt_vec![],
+                outputs: bt_vec![],
                 lock_time: 0,
             },
             inputs: vec![],
@@ -1489,7 +1495,7 @@ mod tests {
         let mut psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 2,
-                inputs: vec![crate::chain::btc::p2wpkh::TxIn {
+                inputs: bt_vec![crate::chain::btc::p2wpkh::TxIn {
                     prev_out: crate::chain::btc::p2wpkh::OutPoint {
                         txid: [1u8; 32],
                         vout: 0,
@@ -1498,7 +1504,7 @@ mod tests {
                     sequence: 0xffffffff,
                     witness: vec![],
                 }],
-                outputs: vec![],
+                outputs: bt_vec![],
                 lock_time: 0,
             },
             inputs: vec![input],
@@ -1533,7 +1539,7 @@ mod tests {
         let mut psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 2,
-                inputs: vec![crate::chain::btc::p2wpkh::TxIn {
+                inputs: bt_vec![crate::chain::btc::p2wpkh::TxIn {
                     prev_out: crate::chain::btc::p2wpkh::OutPoint {
                         txid: [2u8; 32],
                         vout: 0,
@@ -1542,7 +1548,7 @@ mod tests {
                     sequence: 0xffffffff,
                     witness: vec![],
                 }],
-                outputs: vec![],
+                outputs: bt_vec![],
                 lock_time: 0,
             },
             inputs: vec![input],
@@ -1590,7 +1596,7 @@ mod tests {
         let mut psbt = Psbt {
             unsigned_tx: Transaction {
                 version: 2,
-                inputs: vec![crate::chain::btc::p2wpkh::TxIn {
+                inputs: bt_vec![crate::chain::btc::p2wpkh::TxIn {
                     prev_out: crate::chain::btc::p2wpkh::OutPoint {
                         txid: [3u8; 32],
                         vout: 0,
@@ -1599,7 +1605,7 @@ mod tests {
                     sequence: 0xffffffff,
                     witness: vec![],
                 }],
-                outputs: vec![],
+                outputs: bt_vec![],
                 lock_time: 0,
             },
             inputs: vec![input],

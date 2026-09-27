@@ -31,6 +31,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::chain::btc::p2pkh::p2pkh_script_code;
+#[cfg(test)]
+use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::p2wpkh::{segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL};
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -250,8 +252,8 @@ mod tests {
         };
         let mut tx = Transaction {
             version: 1,
-            inputs: vec![txin],
-            outputs: vec![txout],
+            inputs: bt_vec![txin],
+            outputs: bt_vec![txout],
             lock_time: 0,
         };
 
@@ -308,8 +310,8 @@ mod tests {
     fn p2sh_p2wpkh_out_of_bounds() {
         let tx = Transaction {
             version: 1,
-            inputs: vec![],
-            outputs: vec![],
+            inputs: bt_vec![],
+            outputs: bt_vec![],
             lock_time: 0,
         };
         let secret = SecretBytes::new([1u8; 32]);
@@ -341,8 +343,8 @@ mod tests {
         };
         let tx = Transaction {
             version: 1,
-            inputs: vec![txin],
-            outputs: vec![txout],
+            inputs: bt_vec![txin],
+            outputs: bt_vec![txout],
             lock_time: 0,
         };
 

@@ -12,6 +12,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+#[cfg(test)]
+use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::p2wpkh::Transaction;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use sha2::{Digest as _, Sha256};
@@ -525,7 +527,7 @@ mod tests {
 
         let mut tx = Transaction {
             version: 2,
-            inputs: alloc::vec![TxIn {
+            inputs: bt_vec![TxIn {
                 prev_out: OutPoint {
                     txid: [1u8; 32],
                     vout: 0,
@@ -534,7 +536,7 @@ mod tests {
                 sequence: 0xffffffff,
                 witness: alloc::vec![],
             }],
-            outputs: alloc::vec![],
+            outputs: bt_vec![],
             lock_time: 0,
         };
 
@@ -561,7 +563,7 @@ mod tests {
 
         let mut tx = Transaction {
             version: 2,
-            inputs: alloc::vec![TxIn {
+            inputs: bt_vec![TxIn {
                 prev_out: OutPoint {
                     txid: [2u8; 32],
                     vout: 0,
@@ -570,7 +572,7 @@ mod tests {
                 sequence: 0xffffffff,
                 witness: alloc::vec![],
             }],
-            outputs: alloc::vec![],
+            outputs: bt_vec![],
             lock_time: 0,
         };
 
@@ -604,7 +606,7 @@ mod tests {
 
         let mut tx = Transaction {
             version: 2,
-            inputs: alloc::vec![TxIn {
+            inputs: bt_vec![TxIn {
                 prev_out: OutPoint {
                     txid: [3u8; 32],
                     vout: 0,
@@ -613,7 +615,7 @@ mod tests {
                 sequence: 0xffffffff,
                 witness: alloc::vec![],
             }],
-            outputs: alloc::vec![],
+            outputs: bt_vec![],
             lock_time: 0,
         };
 
