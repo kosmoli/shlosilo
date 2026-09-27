@@ -4010,8 +4010,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/weighted_inner_product.rs b/src/plus/weighted_inner_product.rs
 --- a/src/plus/weighted_inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/weighted_inner_product.rs	2026-09-27 03:47:05.004517954 +0800
-@@ -1,415 +1,707 @@
++++ b/src/plus/weighted_inner_product.rs	2026-09-27 09:43:00.560012450 +0800
+@@ -1,415 +1,717 @@
  use std_shims::{vec, vec::Vec};
  
 -use rand_core::{RngCore, CryptoRng};
@@ -4197,15 +4197,6 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -  pub(crate) fn new(mut a: ScalarVector, mut b: ScalarVector, alpha: Scalar) -> Option<Self> {
 -    if a.0.is_empty() || (a.len() != b.len()) {
 -      return None;
--    }
--
--    // Pad to the nearest power of 2
--    let missing = padded_pow_of_2(a.len()) - a.len();
--    a.0.reserve(missing);
--    b.0.reserve(missing);
--    for _ in 0 .. missing {
--      a.0.push(Scalar::ZERO);
--      b.0.push(Scalar::ZERO);
 +impl<'a> WipWitness<'a> {
 +    pub(crate) fn new(a: &'a [Scalar], b: &'a [Scalar], alpha: Scalar) -> Option<Self> {
 +        if a.is_empty() || (a.len() != b.len()) {
@@ -4218,6 +4209,15 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        }
 +        Some(Self { a, b, alpha })
      }
+-
+-    // Pad to the nearest power of 2
+-    let missing = padded_pow_of_2(a.len()) - a.len();
+-    a.0.reserve(missing);
+-    b.0.reserve(missing);
+-    for _ in 0 .. missing {
+-      a.0.push(Scalar::ZERO);
+-      b.0.push(Scalar::ZERO);
+-    }
 -
 -    Some(Self { a, b, alpha })
 -  }
@@ -4828,22 +4828,25 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +
 +        let ry = r * y;
 +
-+        let mut A_terms = vec![
-+            (r, g_cur[0]),
-+            (s, h_cur[0]),
-+            ((ry * b_cur[0]) + (s * y * a_cur[0]), g),
-+            (delta, h),
-+        ];
++        // Z5.3 tail cut: A/B terms fill the caller scratch (same order,
++        // same zeroize duty — the Vec staging allocated twice per proof).
++        if terms.len() < 6 {
++            return None;
++        }
++        let A_terms = &mut terms[..4];
++        A_terms[0] = (r, g_cur[0]);
++        A_terms[1] = (s, h_cur[0]);
++        A_terms[2] = ((ry * b_cur[0]) + (s * y * a_cur[0]), g);
++        A_terms[3] = (delta, h);
 +        let A = CompressedPoint::from(
-+            (multiexp(&A_terms, straus).ok()? * INV_EIGHT.into())
++            (multiexp(A_terms, straus).ok()? * INV_EIGHT.into())
 +                .compress()
 +                .to_bytes(),
          );
 -      }
 -      res
 -    };
-+        A_terms.zeroize();
- 
+-
 -    let mut e_is = Vec::with_capacity(L.len());
 -    let mut L_decomp = Vec::with_capacity(L.len());
 -    let mut R_decomp = Vec::with_capacity(R.len());
@@ -4898,22 +4901,14 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -
 -      challenge_products(&challenges)
 -    };
-+        let mut B_terms = vec![(ry * s, g), (eta, h)];
-+        let B = CompressedPoint::from(
-+            (multiexp(&B_terms, straus).ok()? * INV_EIGHT.into())
-+                .compress()
-+                .to_bytes(),
-+        );
-+        B_terms.zeroize();
- 
+-
 -    while verifier.0.g_bold.len() < generators.len() {
 -      verifier.0.g_bold.push(Scalar::ZERO);
 -    }
 -    while verifier.0.h_bold.len() < generators.len() {
 -      verifier.0.h_bold.push(Scalar::ZERO);
 -    }
-+        let e = Self::transcript_A_B(&mut transcript, A, B);
- 
+-
 -    let re = r_answer * e;
 -    for i in 0 .. generators.len() {
 -      let mut scalar = product_cache[i] * re;
@@ -4922,6 +4917,24 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -      }
 -      verifier.0.g_bold[i] += verifier_weight * scalar;
 -    }
++        for e in A_terms.iter_mut() {
++            e.zeroize();
++        }
++
++        let B_terms = &mut terms[..2];
++        B_terms[0] = (ry * s, g);
++        B_terms[1] = (eta, h);
++        let B = CompressedPoint::from(
++            (multiexp(B_terms, straus).ok()? * INV_EIGHT.into())
++                .compress()
++                .to_bytes(),
++        );
++        for e in B_terms.iter_mut() {
++            e.zeroize();
++        }
++
++        let e = Self::transcript_A_B(&mut transcript, A, B);
++
 +        let r_answer = r + (a_cur[0] * e);
 +        let s_answer = s + (b_cur[0] * e);
 +        let delta_answer = eta + (delta * e) + (alpha * (e * e));

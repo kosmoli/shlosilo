@@ -517,26 +517,36 @@ impl WipStatement {
 
         let ry = r * y;
 
-        let mut A_terms = vec![
-            (r, g_cur[0]),
-            (s, h_cur[0]),
-            ((ry * b_cur[0]) + (s * y * a_cur[0]), g),
-            (delta, h),
-        ];
+        // Z5.3 tail cut: A/B terms fill the caller scratch (same order,
+        // same zeroize duty — the Vec staging allocated twice per proof).
+        if terms.len() < 6 {
+            return None;
+        }
+        let A_terms = &mut terms[..4];
+        A_terms[0] = (r, g_cur[0]);
+        A_terms[1] = (s, h_cur[0]);
+        A_terms[2] = ((ry * b_cur[0]) + (s * y * a_cur[0]), g);
+        A_terms[3] = (delta, h);
         let A = CompressedPoint::from(
-            (multiexp(&A_terms, straus).ok()? * INV_EIGHT.into())
+            (multiexp(A_terms, straus).ok()? * INV_EIGHT.into())
                 .compress()
                 .to_bytes(),
         );
-        A_terms.zeroize();
+        for e in A_terms.iter_mut() {
+            e.zeroize();
+        }
 
-        let mut B_terms = vec![(ry * s, g), (eta, h)];
+        let B_terms = &mut terms[..2];
+        B_terms[0] = (ry * s, g);
+        B_terms[1] = (eta, h);
         let B = CompressedPoint::from(
-            (multiexp(&B_terms, straus).ok()? * INV_EIGHT.into())
+            (multiexp(B_terms, straus).ok()? * INV_EIGHT.into())
                 .compress()
                 .to_bytes(),
         );
-        B_terms.zeroize();
+        for e in B_terms.iter_mut() {
+            e.zeroize();
+        }
 
         let e = Self::transcript_A_B(&mut transcript, A, B);
 

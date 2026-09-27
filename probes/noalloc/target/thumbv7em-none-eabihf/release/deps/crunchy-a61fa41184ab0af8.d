@@ -1,0 +1,11 @@
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/deps/crunchy-a61fa41184ab0af8.d: /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crunchy-0.2.4/src/lib.rs /home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/build/crunchy-75fb6f9d50d9bab1/out/lib.rs
+
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/deps/libcrunchy-a61fa41184ab0af8.rlib: /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crunchy-0.2.4/src/lib.rs /home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/build/crunchy-75fb6f9d50d9bab1/out/lib.rs
+
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/deps/libcrunchy-a61fa41184ab0af8.rmeta: /home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crunchy-0.2.4/src/lib.rs /home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/build/crunchy-75fb6f9d50d9bab1/out/lib.rs
+
+/home/komo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crunchy-0.2.4/src/lib.rs:
+/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/build/crunchy-75fb6f9d50d9bab1/out/lib.rs:
+
+# env-dep:CRUNCHY_LIB_SUFFIX=/lib.rs
+# env-dep:OUT_DIR=/home/komo/works/shlosilo-poc4/probes/noalloc/target/thumbv7em-none-eabihf/release/build/crunchy-75fb6f9d50d9bab1/out
