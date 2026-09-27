@@ -423,6 +423,12 @@
 #define SIGN_WS_PSBT_RECS 128
 
 /**
+ * Z4-7e: BIP32_DERIVATION records per input map (measured: 1 in the fixture;
+ * >cap is an explicit Err — single-sig rejects multisig records anyway).
+ */
+#define BT_BIP32_RECORDS_MAX 16
+
+/**
  * Z5.2b: decompressed generator point element size (curve25519-dalek
  * `EdwardsPoint` repr: 4 x [u64; 5]). Pinned by a static assert in c_abi;
  * the C side sizes table buffers as points * this constant.

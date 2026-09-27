@@ -966,7 +966,6 @@ fn sign_btc<'a>(
 
     // P1-02: our master fingerprint (BIP-32 serialization field 5..9); the fingerprint
     // fingerprint mismatch = this PSBT is not from our wallet (wrong seed/wrong wallet); refuse to sign
-    use alloc::vec::Vec;
     let local_fp = crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(seed)?;
 
     for idx in 0..psbt.unsigned_tx.inputs.len() {
@@ -1006,8 +1005,10 @@ fn sign_btc<'a>(
         // compressed PUBLIC key (verified against derived pubkeys below) — public data,
         // deliberately NOT zeroize-wrapped. (Initially mis-audited as key material.)
         // Z4-4: pubkeys borrow the map payloads; one exact container.
-        let mut records: Vec<([u8; 4], DerivationPath, &'_ [u8])> =
-            Vec::with_capacity(input_map.len());
+        let mut records: heapless::Vec<
+            ([u8; 4], DerivationPath, [u8; 33]),
+            { crate::types::caps::BT_BIP32_RECORDS_MAX },
+        > = heapless::Vec::new();
         for kv in input_map.iter() {
             if kv.key.first() != Some(&psbt_mod::input_type::BIP32_DERIVATION) {
                 continue;
@@ -1017,7 +1018,13 @@ fn sign_btc<'a>(
             }
             let (fp, path) = parse_derivation_value(kv.value)
                 .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-            records.push((fp, path, &kv.key[1..34]));
+            // Z4-7e: the record carries the pubkey inline (no borrow of the
+            // map outlives the read view).
+            let mut pk = [0u8; 33];
+            pk.copy_from_slice(&kv.key[1..34]);
+            records
+                .push((fp, path, pk))
+                .map_err(|_| err(ShlosiloErrorKind::BufferTooSmall))?;
         }
         if records.is_empty() {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));

@@ -29,6 +29,9 @@ pub const SIGN_WS_BP_WIP_BYTES: usize = SIGN_WS_BP_TERMS * 960;
 /// (runtime query, never fixed into the ABI). Over-cap is an explicit Err.
 pub const SIGN_WS_PSBT_ARENA: usize = 64 * 1024;
 pub const SIGN_WS_PSBT_RECS: usize = 128;
+/// Z4-7e: BIP32_DERIVATION records per input map (measured: 1 in the fixture;
+/// >cap is an explicit Err — single-sig rejects multisig records anyway).
+pub const BT_BIP32_RECORDS_MAX: usize = 16;
 
 /// Z5.2b: decompressed generator point element size (curve25519-dalek
 /// `EdwardsPoint` repr: 4 x [u64; 5]). Pinned by a static assert in c_abi;

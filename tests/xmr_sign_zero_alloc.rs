@@ -122,7 +122,6 @@ fn measured<T>(f: impl FnOnce() -> T) -> (T, u64) {
 /// conveniences). Kept as the measuring instrument; green when the Z4
 /// de-alloc lands. See the Z6 note in the audit ledger.
 #[test]
-#[ignore = "Z4: BT sign path measured 172 allocs/sign (tracked debt) — flip to enforced when Z4 lands"]
 fn bt_typed_sign_zero_alloc() {
     use shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi;
     use shlosilo::ffi::c_abi::shlosilo_sign_ws_len;
