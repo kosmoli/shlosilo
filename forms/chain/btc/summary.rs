@@ -147,11 +147,9 @@ pub fn summarize_psbt(psbt: &Psbt<'_>, own_spks: &[&[u8]]) -> Result<PsbtSummary
     let mut values = Vec::with_capacity(n);
     for i in 0..n {
         // Audit #5 OP-01: utxo retrieval carries prev_out binding (NON_WITNESS_UTXO txid check)
-        let v = psbt.inputs.get(i).and_then(|m| {
-            psbt.unsigned_tx
-                .inputs
-                .get(i)
-                .and_then(|txin| get_utxo_any(m, &txin.prev_out).map(|(amt, _)| amt))
+        let v = psbt.input_map_checked(i).and_then(|m| {
+            let prev_out = &psbt.unsigned_tx.inputs[i].prev_out;
+            get_utxo_any(m, prev_out).map(|(amt, _)| amt)
         });
         values.push(v);
     }
@@ -254,6 +252,7 @@ pub fn summarize_tx(
 mod tests {
     use super::*;
     use crate::chain::btc::p2wpkh::{OutPoint, TxIn, TxOut};
+    use crate::chain::btc::psbt::psbt_from_maps_leaky;
     use crate::chain::btc::psbt::{input_type, KeyValue};
     use alloc::vec;
 
@@ -305,14 +304,14 @@ mod tests {
             lock_time,
         };
         let in_spk = p2wpkh_spk(0xab);
-        Psbt {
+        psbt_from_maps_leaky(
             unsigned_tx,
-            inputs: vec![vec![KeyValue {
+            &[vec![KeyValue {
                 key: vec![input_type::WITNESS_UTXO].into(),
                 value: witness_utxo_bytes(in_value, &in_spk).into(),
             }]],
-            outputs: vec![vec![]],
-        }
+            &[vec![]],
+        )
     }
 
     #[test]
@@ -364,8 +363,9 @@ mod tests {
 
     #[test]
     fn missing_utxo_fee_unknown() {
-        let mut psbt = sample_psbt(1, 1, 0xffffffff, 0, p2wpkh_spk(1));
-        psbt.inputs[0].clear();
+        let base = sample_psbt(1, 1, 0xffffffff, 0, p2wpkh_spk(1));
+        // rebuild WITHOUT the input map's UTXO entry (the missing-utxo case)
+        let psbt = psbt_from_maps_leaky(base.unsigned_tx.clone(), &[Vec::new()], &[Vec::new()]);
         let s = summarize_psbt(&psbt, &[]).unwrap();
         assert!(s.fee_unknown);
         assert_eq!(s.fee, None);

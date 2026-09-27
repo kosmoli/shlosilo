@@ -50,7 +50,8 @@ fn p63_sign_sparrow_psbt_end_to_end() {
 
     // The output must parse with parse_psbt, and input 0 must show PARTIAL_SIG
     let signed = parse_psbt(&out_buf[..n]).expect("signed output must be a valid PSBT");
-    let partial = signed.inputs[0]
+    let partial = signed
+        .input_map(0)
         .iter()
         .find(|kv| kv.key.first() == Some(&0x02u8)); // BIP-174 PSBT_IN_PARTIAL_SIG
     let partial = partial.expect("PARTIAL_SIG must be injected");

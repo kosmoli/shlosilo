@@ -312,7 +312,7 @@ fn make_full_tx(vout_value: u64, spk_byte: u8) -> Vec<u8> {
 #[test]
 fn kai01_nonwitness_full_tx_bound_happy_path() {
     use shlosilo::chain::btc::p2wpkh::OutPoint;
-    use shlosilo::chain::btc::psbt::{get_utxo_any, KeyValue};
+    use shlosilo::chain::btc::psbt::{get_utxo_any, KeyValue, KvMap};
     use shlosilo::encoding::sha256;
     let full_tx = make_full_tx(651_157, 0x00);
     // txid = dsha256(serialized)
@@ -325,7 +325,7 @@ fn kai01_nonwitness_full_tx_bound_happy_path() {
     }];
     // prev_out matches
     let prev_out = OutPoint { txid, vout: 0 };
-    let r = get_utxo_any(&input_map, &prev_out);
+    let r = get_utxo_any(KvMap::from_slice(&input_map), &prev_out);
     assert!(r.is_some(), "bound NON_WITNESS_UTXO must resolve");
     let (amt, _spk) = r.unwrap();
     assert_eq!(amt, 651_157);
@@ -334,7 +334,7 @@ fn kai01_nonwitness_full_tx_bound_happy_path() {
 #[test]
 fn kai01_nonwitness_txid_mismatch_rejected() {
     use shlosilo::chain::btc::p2wpkh::OutPoint;
-    use shlosilo::chain::btc::psbt::{get_utxo_any, KeyValue};
+    use shlosilo::chain::btc::psbt::{get_utxo_any, KeyValue, KvMap};
     use shlosilo::encoding::sha256;
     let full_tx = make_full_tx(651_157, 0x00);
     let input_map: std::vec::Vec<KeyValue> = vec![KeyValue {
@@ -353,7 +353,7 @@ fn kai01_nonwitness_txid_mismatch_rejected() {
         vout: 0,
     };
     assert!(
-        get_utxo_any(&input_map, &prev_out).is_none(),
+        get_utxo_any(KvMap::from_slice(&input_map), &prev_out).is_none(),
         "txid mismatch must be rejected (fake UTXO attack)"
     );
 }
@@ -361,7 +361,7 @@ fn kai01_nonwitness_txid_mismatch_rejected() {
 #[test]
 fn kai01_nonwitness_vout_oob_rejected() {
     use shlosilo::chain::btc::p2wpkh::OutPoint;
-    use shlosilo::chain::btc::psbt::{get_utxo_any, KeyValue};
+    use shlosilo::chain::btc::psbt::{get_utxo_any, KeyValue, KvMap};
     use shlosilo::encoding::sha256;
     let full_tx = make_full_tx(651_157, 0x00);
     let input_map: std::vec::Vec<KeyValue> = vec![KeyValue {
@@ -372,7 +372,7 @@ fn kai01_nonwitness_vout_oob_rejected() {
     // The full tx has only 1 output; vout=1 is out of bounds
     let prev_out = OutPoint { txid, vout: 1 };
     assert!(
-        get_utxo_any(&input_map, &prev_out).is_none(),
+        get_utxo_any(KvMap::from_slice(&input_map), &prev_out).is_none(),
         "vout out-of-range must be rejected"
     );
 }

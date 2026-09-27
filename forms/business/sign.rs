@@ -908,13 +908,13 @@ fn parse_derivation_value(value: &[u8]) -> Option<([u8; 4], DerivationPath)> {
 }
 
 fn read_bip32_derivation(
-    input_map: &[crate::chain::btc::psbt::KeyValue],
+    input_map: crate::chain::btc::psbt::KvMap<'_>,
 ) -> Option<([u8; 4], DerivationPath)> {
     use crate::chain::btc::psbt::input_type;
     let kv = input_map
         .iter()
         .find(|kv| kv.key.first() == Some(&input_type::BIP32_DERIVATION))?;
-    parse_derivation_value(&kv.value)
+    parse_derivation_value(kv.value)
 }
 
 /// BTC: crypto-psbt CBOR (bare bytes item) → PSBT signing
@@ -945,8 +945,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         // P1-B: inputs without BIP32_DERIVATION no longer fall back to the default path (tightened),
         // all inputs must carry ownership records explicitly (the P6.4 transitional behavior landed early).
         let (_fp0, path_used) = read_bip32_derivation(
-            psbt.inputs
-                .get(idx)
+            psbt.input_map_checked(idx)
                 .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?,
         )
         .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -970,8 +969,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         //   fingerprint == ours; path-derived public key == the pubkey carried by the record;
         //   and all record verifications must agree (different pubkeys = multisig/mixed-source; single-sig device rejects).
         let input_map = psbt
-            .inputs
-            .get(idx)
+            .input_map_checked(idx)
             .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
         // NOTE (Z2.1 S2 re-review, 2026-09-24): `kv.key[1..34]` is the BIP32_DERIVATION
         // compressed PUBLIC key (verified against derived pubkeys below) — public data,
@@ -986,7 +984,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             if kv.key.len() != 1 + 33 {
                 return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
             }
-            let (fp, path) = parse_derivation_value(&kv.value)
+            let (fp, path) = parse_derivation_value(kv.value)
                 .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
             records.push((fp, path, &kv.key[1..34]));
         }
@@ -1034,8 +1032,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         // and the scriptPubKey must be P2WPKH (OP_0 PUSH20) with HASH160 == our pubkey_hash
         // (the prevout txid points to that script on-chain, indirectly anchoring the signed input to this key).
         let (amount, spk) = psbt
-            .inputs
-            .get(idx)
+            .input_map_checked(idx)
             .and_then(|m| psbt_mod::get_witness_utxo(m))
             .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
         if spk.len() != 22 || spk[0] != 0x00 || spk[1] != 0x14 || spk[2..22] != pubkey_hash {
@@ -1173,9 +1170,10 @@ pub(crate) fn check_network(
 mod tests {
     use super::*;
     use crate::chain::btc::p2wpkh::bt_vec;
+    use crate::chain::btc::psbt::psbt_from_maps_leaky;
     use crate::types::chain_kind::ChainKind;
     extern crate alloc;
-    use alloc::vec;
+    // (alloc::vec import dropped — test literals use the qualified form)
     use alloc::vec::Vec;
 
     #[test]
@@ -1428,7 +1426,7 @@ mod tests {
     #[test]
     fn sign_btc_psbt_end_to_end() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
-        use crate::chain::btc::psbt::{self, input_type, Psbt};
+        use crate::chain::btc::psbt::{self, input_type};
         use crate::encoding::cbor;
 
         // 1. Derive key: seed → m/84'/0'/0'/0/0
@@ -1447,8 +1445,8 @@ mod tests {
         // 3. Build the PSBT: 1 in (P2WPKH witness utxo) + 1 out
         let mut spk = alloc::vec![0x00u8, 0x14];
         spk.extend_from_slice(&pk_hash);
-        let mut psbt = Psbt {
-            unsigned_tx: Transaction {
+        let mut psbt = psbt_from_maps_leaky(
+            Transaction {
                 version: 2,
                 inputs: bt_vec![TxIn {
                     prev_out: OutPoint {
@@ -1465,15 +1463,15 @@ mod tests {
                 }],
                 lock_time: 0,
             },
-            inputs: vec![],
-            outputs: vec![alloc::vec![]], // 1 output map (empty)
-        };
+            &[],
+            &[alloc::vec![]], // 1 output map (empty)
+        );
         // input map: WITNESS_UTXO + BIP32_DERIVATION
         let mut wu_value = alloc::vec::Vec::new();
         wu_value.extend_from_slice(&100_000u64.to_le_bytes());
         wu_value.push(22); // varint(22) script len
         wu_value.extend_from_slice(&spk);
-        psbt.inputs.push(alloc::vec![
+        let extra_map = alloc::vec![
             psbt::KeyValue {
                 key: alloc::vec![input_type::WITNESS_UTXO].into(),
                 value: wu_value.into(),
@@ -1497,7 +1495,11 @@ mod tests {
                     vv.into()
                 },
             },
-        ]);
+        ];
+        for kv in extra_map {
+            psbt.set_input_kv(0, kv.key.as_ref(), kv.value.as_ref())
+                .unwrap();
+        }
 
         // 4. serialize → CBOR bytes (the crypto-psbt payload is a CBOR bytes item, no leading type byte)
         let psbt_bytes = psbt::serialize_psbt(&psbt);
@@ -1517,7 +1519,8 @@ mod tests {
         // 6. Verify the output is a valid PSBT containing our PARTIAL_SIG
         let signed = psbt::parse_psbt(&output_buf[..n]).expect("re-parse");
         assert_eq!(signed.unsigned_tx.inputs.len(), 1);
-        let partial = signed.inputs[0]
+        let partial = signed
+            .input_map(0)
             .iter()
             .find(|kv| kv.key[0] == input_type::PARTIAL_SIG)
             .expect("PARTIAL_SIG injected");
@@ -1549,7 +1552,7 @@ mod tests {
     #[test]
     fn sign_btc_psbt_uses_psbt_derivation_path() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
-        use crate::chain::btc::psbt::{self, input_type, Psbt};
+        use crate::chain::btc::psbt::{self, input_type};
         use crate::encoding::cbor;
 
         let seed = [0xA5u8; 64];
@@ -1564,8 +1567,8 @@ mod tests {
 
         let mut spk = alloc::vec![0x00u8, 0x14];
         spk.extend_from_slice(&pk_hash);
-        let mut psbt = Psbt {
-            unsigned_tx: Transaction {
+        let mut psbt = psbt_from_maps_leaky(
+            Transaction {
                 version: 2,
                 inputs: bt_vec![TxIn {
                     prev_out: OutPoint {
@@ -1582,16 +1585,16 @@ mod tests {
                 }],
                 lock_time: 0,
             },
-            inputs: vec![],
-            outputs: vec![alloc::vec![]],
-        };
+            &[],
+            &[alloc::vec![]],
+        );
         let mut wu_value = alloc::vec::Vec::new();
         wu_value.extend_from_slice(&100_000u64.to_le_bytes());
         wu_value.push(22);
         wu_value.extend_from_slice(&spk);
         let local_fp =
             crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed).unwrap();
-        psbt.inputs.push(alloc::vec![
+        let extra_map = alloc::vec![
             psbt::KeyValue {
                 key: alloc::vec![input_type::WITNESS_UTXO].into(),
                 value: wu_value.into(),
@@ -1611,7 +1614,11 @@ mod tests {
                     vv.into()
                 },
             },
-        ]);
+        ];
+        for kv in extra_map {
+            psbt.set_input_kv(0, kv.key.as_ref(), kv.value.as_ref())
+                .unwrap();
+        }
 
         let psbt_bytes = psbt::serialize_psbt(&psbt);
         let ur_payload = cbor::encode_bytes(&psbt_bytes);
@@ -1635,7 +1642,7 @@ mod tests {
     #[test]
     fn sign_btc_psbt_rejects_fingerprint_mismatch() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
-        use crate::chain::btc::psbt::{self, input_type, Psbt};
+        use crate::chain::btc::psbt::{self, input_type};
         use crate::encoding::cbor;
 
         let seed = [0xA5u8; 64];
@@ -1650,8 +1657,8 @@ mod tests {
 
         let mut spk = alloc::vec![0x00u8, 0x14];
         spk.extend_from_slice(&pk_hash);
-        let mut psbt = Psbt {
-            unsigned_tx: Transaction {
+        let mut psbt = psbt_from_maps_leaky(
+            Transaction {
                 version: 2,
                 inputs: bt_vec![TxIn {
                     prev_out: OutPoint {
@@ -1668,15 +1675,15 @@ mod tests {
                 }],
                 lock_time: 0,
             },
-            inputs: vec![],
-            outputs: vec![alloc::vec![]],
-        };
+            &[],
+            &[alloc::vec![]],
+        );
         let mut wu_value = alloc::vec::Vec::new();
         wu_value.extend_from_slice(&100_000u64.to_le_bytes());
         wu_value.push(22);
         wu_value.extend_from_slice(&spk);
         let wrong_fp = [0xDE, 0xAD, 0xBE, 0xEF];
-        psbt.inputs.push(alloc::vec![
+        let extra_map = alloc::vec![
             psbt::KeyValue {
                 key: alloc::vec![input_type::WITNESS_UTXO].into(),
                 value: wu_value.into(),
@@ -1696,7 +1703,11 @@ mod tests {
                     vv.into()
                 },
             },
-        ]);
+        ];
+        for kv in extra_map {
+            psbt.set_input_kv(0, kv.key.as_ref(), kv.value.as_ref())
+                .unwrap();
+        }
 
         let psbt_bytes = psbt::serialize_psbt(&psbt);
         let ur_payload = cbor::encode_bytes(&psbt_bytes);
@@ -1719,7 +1730,7 @@ mod tests {
     #[test]
     fn p1b_rejects_witness_utxo_script_mismatch() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
-        use crate::chain::btc::psbt::{self, input_type, Psbt};
+        use crate::chain::btc::psbt::{self, input_type};
         use crate::encoding::cbor;
 
         let seed = [0xA5u8; 64];
@@ -1736,8 +1747,8 @@ mod tests {
         spk.extend_from_slice(&[0x11u8; 20]);
         let _ = compressed_pk;
 
-        let psbt = Psbt {
-            unsigned_tx: Transaction {
+        let psbt = psbt_from_maps_leaky(
+            Transaction {
                 version: 2,
                 inputs: bt_vec![TxIn {
                     prev_out: OutPoint {
@@ -1754,7 +1765,7 @@ mod tests {
                 }],
                 lock_time: 0,
             },
-            inputs: vec![alloc::vec![
+            &[alloc::vec![
                 psbt::KeyValue {
                     key: alloc::vec![input_type::WITNESS_UTXO].into(),
                     value: {
@@ -1784,8 +1795,8 @@ mod tests {
                     },
                 },
             ]],
-            outputs: vec![alloc::vec![]],
-        };
+            &[alloc::vec![]],
+        );
 
         let psbt_bytes = psbt::serialize_psbt(&psbt);
         let ur_payload = cbor::encode_bytes(&psbt_bytes);
@@ -1807,15 +1818,15 @@ mod tests {
     #[test]
     fn p1b_rejects_missing_derivation_record() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
-        use crate::chain::btc::psbt::{self, input_type, Psbt};
+        use crate::chain::btc::psbt::{self, input_type};
         use crate::encoding::cbor;
 
         let seed = [0xA5u8; 64];
         let mut spk = alloc::vec![0x00u8, 0x14];
         spk.extend_from_slice(&[0x22u8; 20]);
 
-        let psbt = Psbt {
-            unsigned_tx: Transaction {
+        let psbt = psbt_from_maps_leaky(
+            Transaction {
                 version: 2,
                 inputs: bt_vec![TxIn {
                     prev_out: OutPoint {
@@ -1832,7 +1843,7 @@ mod tests {
                 }],
                 lock_time: 0,
             },
-            inputs: vec![alloc::vec![psbt::KeyValue {
+            &[alloc::vec![psbt::KeyValue {
                 key: alloc::vec![input_type::WITNESS_UTXO].into(),
                 value: {
                     let mut v = alloc::vec::Vec::new();
@@ -1842,8 +1853,8 @@ mod tests {
                     v.into()
                 },
             }]],
-            outputs: vec![alloc::vec![]],
-        };
+            &[alloc::vec![]],
+        );
 
         let psbt_bytes = psbt::serialize_psbt(&psbt);
         let ur_payload = cbor::encode_bytes(&psbt_bytes);

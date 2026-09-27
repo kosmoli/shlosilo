@@ -43,15 +43,16 @@ pub fn detect_change_outputs(
     psbt: &Psbt<'_>,
     master_fingerprint: &[u8; 4],
 ) -> Result<Vec<ChangeInfo>> {
-    if psbt.outputs.len() != psbt.unsigned_tx.outputs.len() {
+    if psbt.unsigned_tx.outputs.len() != psbt.unsigned_tx.outputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    let mut infos = Vec::with_capacity(psbt.outputs.len());
-    for out_map in &psbt.outputs {
+    let mut infos = Vec::with_capacity(psbt.unsigned_tx.outputs.len());
+    for i in 0..psbt.unsigned_tx.outputs.len() {
+        let out_map = psbt.output_map(i);
         let origin = out_map
             .iter()
-            .find(|kv| kv.key.as_ref() == &[output_type::BIP32_DERIVATION][..])
-            .and_then(|kv| parse_origin_fingerprint(&kv.value));
+            .find(|kv| kv.key == &[output_type::BIP32_DERIVATION][..])
+            .and_then(|kv| parse_origin_fingerprint(kv.value));
         let is_own = origin.as_ref() == Some(master_fingerprint);
         infos.push(ChangeInfo {
             is_own,
@@ -65,6 +66,7 @@ pub fn detect_change_outputs(
 mod tests {
     use super::*;
     use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+    use crate::chain::btc::psbt::psbt_from_maps_leaky;
     use crate::chain::btc::psbt::{input_type, KeyValue};
     use alloc::vec;
 
@@ -116,9 +118,9 @@ mod tests {
                 None => vec![],
             })
             .collect();
-        Psbt {
+        psbt_from_maps_leaky(
             unsigned_tx,
-            inputs: vec![vec![KeyValue {
+            &[vec![KeyValue {
                 key: vec![input_type::WITNESS_UTXO].into(),
                 value: {
                     let mut v = vec![0x00, 0x14];
@@ -128,8 +130,8 @@ mod tests {
                     v.into()
                 },
             }]],
-            outputs: out_maps,
-        }
+            &out_maps,
+        )
     }
 
     #[test]

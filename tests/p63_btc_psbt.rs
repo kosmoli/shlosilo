@@ -11,7 +11,7 @@ use shlosilo::chain::btc::psbt::{get_witness_utxo, parse_psbt};
 
 const PSBT_BYTES: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 
-fn der_path(input_map: &[shlosilo::chain::btc::psbt::KeyValue<'_>]) -> Option<(Vec<u8>, Vec<u32>)> {
+fn der_path(input_map: shlosilo::chain::btc::psbt::KvMap<'_>) -> Option<(Vec<u8>, Vec<u32>)> {
     let kv = input_map
         .iter()
         .find(|kv| kv.key.first() == Some(&0x06u8))?; // BIP-174 PSBT_IN_BIP32_DERIVATION
@@ -47,7 +47,7 @@ fn p63_parse_sparrow_psbt() {
 #[test]
 fn p63_read_real_derivation_path() {
     let psbt = parse_psbt(PSBT_BYTES).unwrap();
-    let (pk, path) = der_path(&psbt.inputs[0]).expect("BIP32_DERIVATION must exist");
+    let (pk, path) = der_path(psbt.input_map(0)).expect("BIP32_DERIVATION must exist");
     // hardened flags
     const H: u32 = 0x8000_0000;
     assert_eq!(path.len(), 5);
@@ -69,7 +69,7 @@ fn p63_read_real_derivation_path() {
 #[test]
 fn p63_utxo_is_native_p2wpkh() {
     let psbt = parse_psbt(PSBT_BYTES).unwrap();
-    let (amount, spk) = get_witness_utxo(&psbt.inputs[0]).expect("witness utxo");
+    let (amount, spk) = get_witness_utxo(psbt.input_map(0)).expect("witness utxo");
     assert_eq!(amount, 651_157);
     assert_eq!(&spk[..2], &[0x00, 0x14], "native P2WPKH witness program");
     assert_eq!(spk.len(), 22);
