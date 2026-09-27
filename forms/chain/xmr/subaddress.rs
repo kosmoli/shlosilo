@@ -31,7 +31,6 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use monero_ed25519::CompressedPoint;
 
@@ -378,12 +377,18 @@ pub fn calc_output_key_offset(
     let recv_bytes = recv.compress().to_bytes();
 
     // 2. Hs(recv || varint(index))
-    let mut data = Vec::with_capacity(32 + 8);
-    data.extend_from_slice(&recv_bytes);
+    // Z5.3 F-cut: fixed stack staging (the Vec allocated per input).
+    let mut data = [0u8; 41];
+    data[..32].copy_from_slice(&recv_bytes);
+    let mut data_len = 32usize;
     // Z2.4d-2: varint is Monero LEB128 (identical to CompactSize below 0x80 only —
     // internal_output_index >= 128 previously derived a wrong key offset).
-    crate::chain::xmr::transaction::monero_encode_varint(&mut data, internal_output_index);
-    let mut key_offset = hash_to_scalar(&data)?;
+    crate::chain::xmr::transaction::monero_encode_varint_at(
+        &mut data,
+        &mut data_len,
+        internal_output_index,
+    )?;
+    let mut key_offset = hash_to_scalar(&data[..data_len])?;
 
     // 3. Add subaddress m(major,minor)
     if major != 0 || minor != 0 {

@@ -25,6 +25,10 @@ use zeroize::Zeroize;
 /// Z5.3 F-cut: fixed owner capacity — the input count is bounded upstream by
 /// the workspace sizing; over-cap push asserts loudly (G1, never truncate).
 const MASK_GUARD_CAP: usize = 16;
+/// Z5.3 F-cut: ring backing input bound (same bound as the mask guard).
+const MAX_INPUTS_TRACKED: usize = 16;
+/// Z5.3 F-cut: CLSAG wire body bound (s[ring] + c1 + D).
+const CLSAG_WIRE_MAX: usize = 32 + (crate::types::caps::RING_MAX * 32) + 64;
 
 struct ZeroizingMaskGuard {
     /// Z2.5 ledger: SECRET-OWNER container (audit #6/#8/#9 semantics — take-over
@@ -575,13 +579,10 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             if let Some(e8ra) = o.eight_ra_for_pid {
                 let xor = payment_id_xor(&e8ra);
                 let zero_pid = [0u8; 8];
-                let enc_pid = zero_pid
-                    .iter()
-                    .zip(xor.iter())
-                    .map(|(a, b)| a ^ b)
-                    .collect::<Vec<u8>>();
                 let mut enc8 = [0u8; 8];
-                enc8.copy_from_slice(&enc_pid);
+                for i in 0..8 {
+                    enc8[i] = zero_pid[i] ^ xor[i];
+                }
                 extra = extra.with_encrypted_payment_id(enc8);
             }
         }
@@ -602,12 +603,18 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // Audit #6 re-review Gate1 #4: empty sources already rejected at function entry; n>=1 enters the secret
     // owner setup. Multi-input follows the genRctSimple chain; no hard rejection here anymore.
     let mut input_real_masks = ZeroizingMaskGuard::new("real_mask");
-    let mut rings: Vec<Vec<(CompressedPoint, CompressedPoint)>> =
-        Vec::with_capacity(tx_data.sources.len());
+    // Z5.3 F-cut: fixed ring backing (the Vec-of-Vecs grew per input and
+    // per ring member). Over-cap asserts loudly (G1).
+    let mut rings: [[(CompressedPoint, CompressedPoint); crate::types::caps::RING_MAX];
+        MAX_INPUTS_TRACKED] = [[(
+        CompressedPoint::from([0u8; 32]),
+        CompressedPoint::from([0u8; 32]),
+    ); crate::types::caps::RING_MAX]; MAX_INPUTS_TRACKED];
+    let mut ring_lens = [0usize; MAX_INPUTS_TRACKED];
     // Audit #7 Gate1 #4: key_offset is a secret used to build the one-time spend key —
     // never lands in a Vec; input_sk is derived immediately inside the loop into a ZeroizingGuard (owner holds it to the end)
     let mut input_sks = ZeroizingMaskGuard::new("input_sk");
-    for src in tx_data.sources.iter().flatten() {
+    for (i_track, src) in tx_data.sources.iter().flatten().enumerate() {
         // key offsets: absolute→relative (monero absolute_output_offsets_to_relative, ascending differences)
         // Z2.3 (2026-09-24, option 2): leaf cap RING_MAX (protocol-hard ring size).
         let mut offs: heapless::Vec<u64, { crate::types::caps::RING_MAX }> = heapless::Vec::new();
@@ -643,12 +650,18 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
                                                     // ring members: (dest one-time address, on-chain commitment C point bytes).
                                                     // OutputEntry.mask = the on-chain outPk commitment (not a blinding factor), used directly as a point;
                                                     // monerod verify reads the same C from the chain — both sides' inputs must match byte for byte.
-        let ring: Vec<(CompressedPoint, CompressedPoint)> = src
-            .outputs
-            .iter()
-            .map(|o| (CompressedPoint::from(o.dest), CompressedPoint::from(o.mask)))
-            .collect();
-        rings.push(ring);
+        assert!(
+            i_track < MAX_INPUTS_TRACKED,
+            "too many inputs for ring backing"
+        );
+        assert!(
+            src.outputs.len() <= crate::types::caps::RING_MAX,
+            "ring exceeds RING_MAX"
+        );
+        for (j, o) in src.outputs.iter().enumerate() {
+            rings[i_track][j] = (CompressedPoint::from(o.dest), CompressedPoint::from(o.mask));
+        }
+        ring_lens[i_track] = src.outputs.len();
     }
 
     #[cfg(feature = "tx-phase-timing-ffi")]
@@ -793,16 +806,20 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // Per input, clsag::sign is called with sum_outputs = that input's a[i] — with a single-element list
     // the library treats sum_outputs as the last mask, equivalent to using our precomputed a[i].
     let pseudo_masks = derive_pseudo_masks(tx_data.sources.len(), &sum_out_masks, clsag_rng)?;
-    let mut clsag_wire: Vec<Vec<u8>> = Vec::with_capacity(tx_data.sources.len());
-    let mut pseudo_outs_arr: Vec<[u8; 32]> = Vec::with_capacity(tx_data.sources.len());
+    // Z5.3 F-cut: fixed CLSAG wire + pseudo-out staging.
+    let mut clsag_wire = [[0u8; CLSAG_WIRE_MAX]; MAX_INPUTS_TRACKED];
+    let mut clsag_wire_lens = [0usize; MAX_INPUTS_TRACKED];
+    let mut pseudo_outs_arr = [[0u8; 32]; MAX_INPUTS_TRACKED];
+    let mut pseudo_outs_len = 0usize;
 
-    for (i, (src, ring)) in tx_data
+    for (i, (src, ring_row)) in tx_data
         .sources
         .iter()
         .flatten()
-        .zip(rings.iter())
+        .zip(rings.iter().zip(ring_lens.iter()))
         .enumerate()
     {
+        let ring: &[(CompressedPoint, CompressedPoint)] = &(ring_row.0)[..*ring_row.1];
         // Audit #7 Gate1 #5: pseudo_mask is a blinding scalar — owner holds it to the end
         let pseudo_mask_bytes: &[u8; 32] = pseudo_masks.get(i).ok_or_else(err)?;
         // Gate1 #2: read-only borrow; no plain stack copies created
@@ -822,10 +839,13 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             clsag_rng,
         )?;
         // proof.bytes layout = pseudo_out(32) ‖ s[mixin+1] ‖ c1(32) ‖ D(32)
-        let body: Vec<u8> = clsag_proof.wire_body().to_vec();
-        debug_assert_eq!(clsag_proof.to_bytes().len(), 32 + rings[i].len() * 32 + 64);
-        clsag_wire.push(body);
-        pseudo_outs_arr.push(pseudo_out_bytes);
+        let body = clsag_proof.wire_body();
+        assert!(body.len() <= CLSAG_WIRE_MAX, "clsag body over backing");
+        clsag_wire[i][..body.len()].copy_from_slice(body);
+        clsag_wire_lens[i] = body.len();
+        debug_assert_eq!(clsag_proof.to_bytes().len(), 32 + ring_lens[i] * 32 + 64);
+        pseudo_outs_arr[pseudo_outs_len] = pseudo_out_bytes;
+        pseudo_outs_len += 1;
     }
 
     // Audit #6 re-review: the single responsible party for mask zeroization = ZeroizingMaskGuard::drop,
@@ -851,7 +871,13 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     off += bp_wire_len;
     let mut sink = crate::types::push::SinkCursor::new(&mut out[off..]);
-    let r = build_official_wire(&mut sink, &clsag_wire, &pseudo_outs_arr);
+    let r = build_official_wire(
+        &mut sink,
+        &clsag_wire,
+        &clsag_wire_lens,
+        &pseudo_outs_arr,
+        pseudo_outs_len,
+    );
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px5.as_mut() {
         p.end();
@@ -881,18 +907,20 @@ struct OutInfo {
 /// tag 0x02 and a VARINT amount; vout amount uses VARINT.
 fn build_official_wire<S: crate::types::push::Sink>(
     out: &mut S,
-    clsag_wire: &[Vec<u8>],
+    clsag_wire: &[[u8; CLSAG_WIRE_MAX]],
+    clsag_wire_lens: &[usize],
     pseudo_outs: &[[u8; 32]],
+    pseudo_outs_len: usize,
 ) -> Result<()> {
     // Z3.2b: Sink-generic assembly. Z5.3: prefix, rct base, nbp and the BP+
     // proof are already at their final wire positions (serialize-once: those
     // are the very bytes hashed above); this tail appends the rest in order:
     // CLSAGs (no count; element count inferred from mixin+1): s[ring]‖c1‖D,
     // then pseudoOuts (no count). Byte layout unchanged.
-    for w in clsag_wire {
-        out.put(w)?;
+    for (w, len) in clsag_wire.iter().zip(clsag_wire_lens.iter()) {
+        out.put(&w[..*len])?;
     }
-    for po in pseudo_outs {
+    for po in &pseudo_outs[..pseudo_outs_len] {
         out.put(po)?;
     }
     Ok(())
