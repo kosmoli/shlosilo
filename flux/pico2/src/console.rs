@@ -3054,6 +3054,12 @@ async fn run_sign_xmr() {
             shlosilo::types::caps::SIGN_WS_BP_TERMS
         )
     ];
+    // Z4-7d: the PSBT map pool (records + payload arena) joins the SignWs.
+    let mut ws_psbt_recs = alloc::vec![
+        shlosilo::chain::btc::psbt::KvRec::EMPTY;
+        shlosilo::types::caps::SIGN_WS_PSBT_RECS
+    ];
+    let mut ws_psbt_arena = alloc::vec![0u8; shlosilo::types::caps::SIGN_WS_PSBT_ARENA];
     let mut ws = shlosilo::business::sign::SignWs {
         plain: &mut ws_plain,
         txes: &mut ws_txes,
@@ -3073,6 +3079,8 @@ async fn run_sign_xmr() {
         bp_terms: &mut ws_bp_terms,
         bp_straus: &mut ws_bp_straus,
         bp_wip: &mut ws_bp_wip,
+        psbt_recs: &mut ws_psbt_recs,
+        psbt_arena: &mut ws_psbt_arena,
     };
     let t0 = Instant::now();
     match shlosilo::business::sign::sign_with_entropy_ws(

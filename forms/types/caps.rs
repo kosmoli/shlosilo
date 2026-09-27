@@ -24,6 +24,12 @@ pub const SIGN_WS_BP_STRAUS_BYTES: usize = (SIGN_WS_BP_TERMS * 2816) + 64;
 /// byte expression of `WipScratch::storage_bytes(SIGN_WS_BP_TERMS)`.
 pub const SIGN_WS_BP_WIP_BYTES: usize = SIGN_WS_BP_TERMS * 960;
 
+/// Z4-7d: PSBT map pool — record pool + payload arena. The map store's home is
+/// caller memory (SignWs); `shlosilo_sign_ws_len` reports the capacity
+/// (runtime query, never fixed into the ABI). Over-cap is an explicit Err.
+pub const SIGN_WS_PSBT_ARENA: usize = 64 * 1024;
+pub const SIGN_WS_PSBT_RECS: usize = 128;
+
 /// Z5.2b: decompressed generator point element size (curve25519-dalek
 /// `EdwardsPoint` repr: 4 x [u64; 5]). Pinned by a static assert in c_abi;
 /// the C side sizes table buffers as points * this constant.

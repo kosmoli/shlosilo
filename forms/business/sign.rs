@@ -133,7 +133,14 @@ pub fn sign_with_entropy_ws(
 
     match chain_kind {
         crate::types::chain_kind::ChainKind::Btc => {
-            let n = sign_btc(seed.expose(), payload, output_buf)?;
+            // Z4-7d: the PSBT map pool lives in the caller's workspace (the
+            // zero-heap path); without a ws the leaking convenience serves
+            // the transitional shell.
+            let (arena, recs) = match ws {
+                Some(ws) => (Some(&mut *ws.psbt_arena), Some(&mut *ws.psbt_recs)),
+                None => (None, None),
+            };
+            let n = sign_btc(seed.expose(), payload, output_buf, arena, recs)?;
             Ok(n)
         }
         crate::types::chain_kind::ChainKind::Eth => {
@@ -193,6 +200,9 @@ pub struct SignWs<'a> {
     /// constructed from it at the call site).
     pub bp_straus: &'a mut [u8],
     pub bp_wip: &'a mut [u8],
+    /// Z4-7d: PSBT map pool (records + payload arena).
+    pub psbt_recs: &'a mut [crate::chain::btc::psbt::KvRec],
+    pub psbt_arena: &'a mut [u8],
 }
 
 /// Z3.3b: the sign-workspace layout — the SINGLE source of truth behind both
@@ -220,6 +230,8 @@ pub struct SignWsLayout {
     pub bp_terms: usize,
     pub bp_straus: usize,
     pub bp_wip: usize,
+    pub psbt_recs: usize,
+    pub psbt_arena: usize,
 }
 
 fn ws_next(off: &mut usize, align: usize, size: usize) -> usize {
@@ -307,6 +319,12 @@ impl SignWsLayout {
             core::mem::align_of::<u64>(),
             c::SIGN_WS_BP_WIP_BYTES,
         );
+        let psbt_recs = ws_next(
+            &mut off,
+            core::mem::align_of::<crate::chain::btc::psbt::KvRec>(),
+            core::mem::size_of::<crate::chain::btc::psbt::KvRec>() * c::SIGN_WS_PSBT_RECS,
+        );
+        let psbt_arena = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_PSBT_ARENA);
         // trailing pad so the total itself satisfies the widest alignment
         let total = ws_next(&mut off, core::mem::align_of::<usize>(), 0);
         SignWsLayout {
@@ -329,6 +347,8 @@ impl SignWsLayout {
             bp_terms,
             bp_straus,
             bp_wip,
+            psbt_recs,
+            psbt_arena,
         }
     }
 }
@@ -406,6 +426,9 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         unsafe { at(base, l.bp_terms, c::SIGN_WS_BP_TERMS) };
     let bp_straus: &mut [u8] = unsafe { at(base, l.bp_straus, c::SIGN_WS_BP_STRAUS_BYTES) };
     let bp_wip: &mut [u8] = unsafe { at(base, l.bp_wip, c::SIGN_WS_BP_WIP_BYTES) };
+    let psbt_recs: &mut [crate::chain::btc::psbt::KvRec] =
+        unsafe { at(base, l.psbt_recs, c::SIGN_WS_PSBT_RECS) };
+    let psbt_arena: &mut [u8] = unsafe { at(base, l.psbt_arena, c::SIGN_WS_PSBT_ARENA) };
     Some(SignWs {
         plain,
         txes,
@@ -425,6 +448,8 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         bp_terms,
         bp_straus,
         bp_wip,
+        psbt_recs,
+        psbt_arena,
     })
 }
 
@@ -922,7 +947,13 @@ fn read_bip32_derivation(
 /// Derivation path = m/84'/0'/0'/0/0 (standard native segwit path).
 /// Each input derives its private key from the path hinted by BIP32_DERIVATION;
 /// Without a hint, always take the default path.
-fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<usize> {
+fn sign_btc<'a>(
+    seed: &[u8],
+    cbor_payload: &'a [u8],
+    output_buf: &mut [u8],
+    arena: Option<&'a mut [u8]>,
+    recs: Option<&'a mut [crate::chain::btc::psbt::KvRec]>,
+) -> Result<usize> {
     use crate::chain::btc::psbt as psbt_mod;
     use crate::encoding::cbor;
 
@@ -931,7 +962,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         _ => return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor)),
     };
 
-    let mut psbt = psbt_mod::parse_psbt(psbt_bytes)?;
+    let mut psbt = psbt_mod::parse_psbt_any(psbt_bytes, arena, recs)?;
 
     // P1-02: our master fingerprint (BIP-32 serialization field 5..9); the fingerprint
     // fingerprint mismatch = this PSBT is not from our wallet (wrong seed/wrong wallet); refuse to sign

@@ -70,6 +70,22 @@
  */
 #define XRP_ADDRESS_MAX_LEN 64
 
+/**
+ * Z4-7a: fixed backplane caps (the XMR H-cut precedent) — the logical
+ * lengths drive serialization; over-cap is an explicit Err, never truncation.
+ * Measured maxima: the sparrow 12k fixture runs 1 input / 2 outputs.
+ */
+#define BT_TX_INPUTS_MAX 16
+
+#define BT_TX_OUTPUTS_MAX 64
+
+/**
+ * Z4-7b: the PSBT map pool — records + arena + the wire base. Logical map
+ * order is `global, inputs…, outputs…`. Capacities are runtime queries
+ * (`shlosilo_sign_ws_len`); over-cap is an explicit Err, never truncation.
+ */
+#define PSBT_MAPS_MAX ((2 + 16) + 64)
+
 #define UNSIGNED_TX 0
 
 /**
@@ -396,6 +412,15 @@
  * byte expression of `WipScratch::storage_bytes(SIGN_WS_BP_TERMS)`.
  */
 #define SIGN_WS_BP_WIP_BYTES (SIGN_WS_BP_TERMS * 960)
+
+/**
+ * Z4-7d: PSBT map pool — record pool + payload arena. The map store's home is
+ * caller memory (SignWs); `shlosilo_sign_ws_len` reports the capacity
+ * (runtime query, never fixed into the ABI). Over-cap is an explicit Err.
+ */
+#define SIGN_WS_PSBT_ARENA (64 * 1024)
+
+#define SIGN_WS_PSBT_RECS 128
 
 /**
  * Z5.2b: decompressed generator point element size (curve25519-dalek

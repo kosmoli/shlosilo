@@ -797,6 +797,20 @@ pub fn psbt_from_maps_leaky<'a>(
     psbt
 }
 
+/// Parse with optional caller pool storage: `Some`/`Some` = the zero-heap
+/// path (the SignWs carve); `None` = the leaking convenience below
+/// (transitional shell / test surface only).
+pub fn parse_psbt_any<'a>(
+    bytes: &'a [u8],
+    arena: Option<&'a mut [u8]>,
+    recs: Option<&'a mut [KvRec]>,
+) -> Result<Psbt<'a>> {
+    match (arena, recs) {
+        (Some(arena), Some(recs)) => parse_psbt_into(bytes, arena, recs),
+        _ => parse_psbt(bytes),
+    }
+}
+
 /// Test convenience: a LEAKING parse — the pool storage is allocated and
 /// never freed. Production MUST pass caller storage via `parse_psbt_into`
 /// (the SignWs carve).
