@@ -2261,17 +2261,30 @@ async fn run_ui_ur(secs: u32) {
     let mut shown: u32 = 0;
     let mut seq: usize;
     while (Instant::now() - t0).as_secs() < u64::from(secs) {
-        let frame = match enc.next_cyclic_frame() {
-            Ok(f) => f,
+        // Z6 lang-item campaign: the String convenience is alloc-fallback
+        // gated in forms — the app hosts its own scratch and uses the
+        // `_into` production form (the app's Vec stays out of the probe graph).
+        let mut frame_scratch =
+            alloc::vec![0u8; shlosilo::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN + 32];
+        let mut frame_out = alloc::vec![0u8; shlosilo::ur::ur_multipart::MULTIPART_FRAME_MAX_LEN];
+        let frame_len = match enc.next_cyclic_frame_into(&mut frame_scratch, &mut frame_out) {
+            Ok(n) => n,
             Err(e) => {
                 log::info!("[err] ui ur: frame: {:?}", e.kind);
+                break;
+            }
+        };
+        let frame = match core::str::from_utf8(&frame_out[..frame_len]) {
+            Ok(f) => f,
+            Err(_) => {
+                log::info!("[err] ui ur: frame not utf8");
                 break;
             }
         };
         // The frame string carries the real sequence id; the display
         // counter is 1-based for humans.
         seq = (shown as usize % total) + 1;
-        if crate::ui::qr_carousel_frame(&frame, seq, total).is_err() {
+        if crate::ui::qr_carousel_frame(frame, seq, total).is_err() {
             log::info!("[err] ui ur: frame too large to render");
             break;
         }

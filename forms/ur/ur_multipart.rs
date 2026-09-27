@@ -116,6 +116,7 @@ impl<'a> UrMultipartEncoder<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production paths use `next_frame_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn next_frame(&mut self) -> Result<alloc::string::String> {
         let mut scratch = alloc::vec![0u8; MULTIPART_PAYLOAD_MAX_LEN + 32];
         let mut out = alloc::vec![0u8; MULTIPART_FRAME_MAX_LEN];
@@ -125,6 +126,7 @@ impl<'a> UrMultipartEncoder<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production paths use `next_cyclic_frame_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn next_cyclic_frame(&mut self) -> Result<alloc::string::String> {
         let mut scratch = alloc::vec![0u8; MULTIPART_PAYLOAD_MAX_LEN + 32];
         let mut out = alloc::vec![0u8; MULTIPART_FRAME_MAX_LEN];
