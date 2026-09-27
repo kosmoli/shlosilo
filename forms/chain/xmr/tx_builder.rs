@@ -353,7 +353,7 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
         });
     }
 
-    let prefix = TransactionPrefix::new(0, tx_inputs.clone(), tx_outputs.clone(), extra.clone());
+    let prefix = TransactionPrefix::new(0, &tx_inputs, &tx_outputs, extra.clone())?;
     // Real CLSAG message: keccak256(prefix bytes)
     let msg_hash = crate::encoding::keccak256::hash(&prefix.serialize())?;
 
@@ -419,7 +419,7 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
     let rct_bytes = rct_sig.serialize()?;
 
     // 8. Final transaction (prefix built in step 5)
-    let prefix = TransactionPrefix::new(0, tx_inputs, tx_outputs, extra);
+    let prefix = TransactionPrefix::new(0, &tx_inputs, &tx_outputs, extra)?;
     let transaction = Transaction::new_with_rct(prefix, rct_bytes);
 
     Ok(SignedTx {

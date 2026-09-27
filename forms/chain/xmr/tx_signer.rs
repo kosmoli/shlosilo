@@ -589,17 +589,27 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     }
 
     // ---- 4. outputs ----
-    let mut tx_outputs = Vec::with_capacity(outs.len());
+    // Z5.3 H-cut: fixed staging feeding the prefix (was Vec).
+    let mut tx_outputs: [TxOutput; crate::chain::xmr::transaction::PREFIX_OUTPUTS_MAX] =
+        core::array::from_fn(|_| TxOutput::new_tagged(0, [0u8; 32], 0));
+    let mut tx_outputs_len = 0usize;
     for o in &outs {
-        tx_outputs.push(TxOutput::new_tagged(
+        assert!(
+            tx_outputs_len < crate::chain::xmr::transaction::PREFIX_OUTPUTS_MAX,
+            "too many outputs"
+        );
+        tx_outputs[tx_outputs_len] = TxOutput::new_tagged(
             0, // in an RCT tx's wire/prefix, vout amounts are always 0 (real amounts live in ecdhInfo)
             o.deriv.stealth_address,
             o.deriv.view_tag,
-        ));
+        );
+        tx_outputs_len += 1;
     }
 
     // ---- 5. inputs: key_offsets(relative) + key images ----
-    let mut tx_inputs = Vec::with_capacity(tx_data.sources.len());
+    let mut tx_inputs: [TxInput; crate::chain::xmr::transaction::PREFIX_INPUTS_MAX] =
+        core::array::from_fn(|_| TxInput::new(heapless::Vec::new(), [0u8; 32]));
+    let mut tx_inputs_len = 0usize;
     // Audit #6 re-review Gate1 #4: empty sources already rejected at function entry; n>=1 enters the secret
     // owner setup. Multi-input follows the genRctSimple chain; no hard rejection here anymore.
     let mut input_real_masks = ZeroizingMaskGuard::new("real_mask");
@@ -635,7 +645,12 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             tx_data.subaddr_account,
             &tx_data.subaddr_indices,
         )?;
-        tx_inputs.push(TxInput::new(offs.clone(), key_image));
+        assert!(
+            tx_inputs_len < crate::chain::xmr::transaction::PREFIX_INPUTS_MAX,
+            "too many inputs"
+        );
+        tx_inputs[tx_inputs_len] = TxInput::new(offs.clone(), key_image);
+        tx_inputs_len += 1;
         // key_offset is derived and consumed immediately (no intermediate Vec); zeroized in place after push_take
         let mut input_sk =
             crate::chain::xmr::subaddress::derive_input_spend_key(spend_sec, &key_offset)?;
@@ -674,7 +689,12 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // Z5.3 tail: the clones are moves — `tx_inputs`/`tx_outputs`/`extra` are
     // dead after this point (the wire reuses `prefix_bytes`, per the
     // consensus-critical serialize-once invariant below).
-    let prefix = TransactionPrefix::new(0, tx_inputs, tx_outputs, extra);
+    let prefix = TransactionPrefix::new(
+        0,
+        &tx_inputs[..tx_inputs_len],
+        &tx_outputs[..tx_outputs_len],
+        extra,
+    )?;
     // Serialize once and reuse these exact bytes for both the CLSAG message and
     // final wire. This invariant is consensus-critical: even a valid field
     // omitted only from the hash-side serializer makes the signature unverifiable.
@@ -1249,8 +1269,8 @@ fn assert_rct_simple_balance(wire: &[u8], expect_fee: u64) {
     use curve25519_dalek::traits::Identity;
     let mut pos = 0;
     let prefix = TransactionPrefix::deserialize(wire, &mut pos).expect("prefix");
-    let n_in = prefix.inputs.len();
-    let n_out = prefix.outputs.len();
+    let n_in = prefix.inputs_len;
+    let n_out = prefix.outputs_len;
     assert!(n_in >= 1);
     assert!(n_out >= 1);
     pos += 1; // rct type
@@ -1756,7 +1776,7 @@ fn change_output_derivation_kat() {
     .expect("1-input change path must succeed");
     let mut pos = 0;
     let prefix = TransactionPrefix::deserialize(&wire, &mut pos).expect("prefix");
-    assert_eq!(prefix.outputs.len(), 2);
+    assert_eq!(prefix.outputs_len, 2);
 
     // independently recompute change (index=0): 8Ra = 8·(view·tx_pub); tx_pub = r·G
     let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*r_bytes);

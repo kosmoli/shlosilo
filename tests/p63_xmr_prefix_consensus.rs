@@ -6,13 +6,14 @@ use shlosilo::chain::xmr::transaction::{TransactionPrefix, TxExtra, TxInput, TxO
 fn txin_to_key_consensus_encoding_is_in_prefix_hash_bytes() {
     let prefix = TransactionPrefix::new(
         0,
-        vec![TxInput::new(
+        &[TxInput::new(
             heapless::Vec::from_slice(&[5, 7]).unwrap(),
             [0x11; 32],
         )],
-        vec![TxOutput::new_tagged(0, [0x22; 32], 0x33)],
+        &[TxOutput::new_tagged(0, [0x22; 32], 0x33)],
         TxExtra::new(),
-    );
+    )
+    .unwrap();
     let bytes = prefix.serialize();
 
     assert_eq!(

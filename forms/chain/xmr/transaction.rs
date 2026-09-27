@@ -479,6 +479,12 @@ impl TxExtra {
 }
 
 /// Monero transaction prefix (BIP format, before RCT signatures)
+/// Z5.3 H-cut: fixed-capacity input/output backing (was Vec) — the prefix
+/// owns sized storage on both the sign and deserialize paths; over-cap is an
+/// explicit Err (G1). The logical lengths drive serialization.
+pub const PREFIX_INPUTS_MAX: usize = 16;
+pub const PREFIX_OUTPUTS_MAX: usize = 64;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransactionPrefix {
     /// version (always 2)
@@ -486,9 +492,11 @@ pub struct TransactionPrefix {
     /// unlock_time (block height or timestamp; 0 = no lock)
     pub unlock_time: u64,
     /// inputs
-    pub inputs: Vec<TxInput>,
+    pub inputs: [TxInput; PREFIX_INPUTS_MAX],
+    pub inputs_len: usize,
     /// outputs
-    pub outputs: Vec<TxOutput>,
+    pub outputs: [TxOutput; PREFIX_OUTPUTS_MAX],
+    pub outputs_len: usize,
     /// extra field
     pub extra: TxExtra,
 }
@@ -496,15 +504,43 @@ pub struct TransactionPrefix {
 impl TransactionPrefix {
     pub fn new(
         unlock_time: u64,
-        inputs: Vec<TxInput>,
-        outputs: Vec<TxOutput>,
+        inputs: &[TxInput],
+        outputs: &[TxOutput],
+        extra: TxExtra,
+    ) -> Result<Self> {
+        if inputs.len() > PREFIX_INPUTS_MAX || outputs.len() > PREFIX_OUTPUTS_MAX {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        let mut inputs_arr =
+            core::array::from_fn(|_| TxInput::new(heapless::Vec::new(), [0u8; 32]));
+        let mut outputs_arr = core::array::from_fn(|_| TxOutput::new_tagged(0, [0u8; 32], 0));
+        inputs_arr[..inputs.len()].clone_from_slice(inputs);
+        outputs_arr[..outputs.len()].clone_from_slice(outputs);
+        Ok(Self::new_raw(
+            unlock_time,
+            inputs_arr,
+            inputs.len(),
+            outputs_arr,
+            outputs.len(),
+            extra,
+        ))
+    }
+
+    fn new_raw(
+        unlock_time: u64,
+        inputs: [TxInput; PREFIX_INPUTS_MAX],
+        inputs_len: usize,
+        outputs: [TxOutput; PREFIX_OUTPUTS_MAX],
+        outputs_len: usize,
         extra: TxExtra,
     ) -> Self {
         Self {
             version: TX_VERSION,
             unlock_time,
             inputs,
+            inputs_len,
             outputs,
+            outputs_len,
             extra,
         }
     }
@@ -512,13 +548,13 @@ impl TransactionPrefix {
     /// Exact serialized length (pairs with `serialize_into`).
     pub fn serialized_len(&self) -> usize {
         1 + monero_varint_len(self.unlock_time)
-            + monero_varint_len(self.inputs.len() as u64)
+            + monero_varint_len(self.inputs_len as u64)
             + self
                 .inputs
                 .iter()
                 .map(|i| i.serialized_len())
                 .sum::<usize>()
-            + monero_varint_len(self.outputs.len() as u64)
+            + monero_varint_len(self.outputs_len as u64)
             + self
                 .outputs
                 .iter()
@@ -533,12 +569,12 @@ impl TransactionPrefix {
         use crate::types::push::push_byte;
         push_byte(out, n, self.version)?;
         monero_encode_varint_at(out, n, self.unlock_time)?;
-        monero_encode_varint_at(out, n, self.inputs.len() as u64)?;
-        for input in &self.inputs {
+        monero_encode_varint_at(out, n, self.inputs_len as u64)?;
+        for input in self.inputs[..self.inputs_len].iter() {
             input.serialize_into(out, n)?;
         }
-        monero_encode_varint_at(out, n, self.outputs.len() as u64)?;
-        for output in &self.outputs {
+        monero_encode_varint_at(out, n, self.outputs_len as u64)?;
+        for output in self.outputs[..self.outputs_len].iter() {
             output.serialize_into(out, n)?;
         }
         monero_encode_varint_at(out, n, self.extra.serialized_len() as u64)?;
@@ -551,13 +587,13 @@ impl TransactionPrefix {
         let mut out = Vec::new();
         out.push(self.version);
         monero_encode_varint(&mut out, self.unlock_time);
-        monero_encode_varint(&mut out, self.inputs.len() as u64);
-        for input in &self.inputs {
+        monero_encode_varint(&mut out, self.inputs_len as u64);
+        for input in self.inputs[..self.inputs_len].iter() {
             let bytes = input.serialize();
             out.extend_from_slice(&bytes);
         }
-        monero_encode_varint(&mut out, self.outputs.len() as u64);
-        for output in &self.outputs {
+        monero_encode_varint(&mut out, self.outputs_len as u64);
+        for output in self.outputs[..self.outputs_len].iter() {
             let bytes = output.serialize();
             out.extend_from_slice(&bytes);
         }
@@ -609,11 +645,21 @@ impl TransactionPrefix {
         }
         let extra = TxExtra::deserialize(&bytes[*pos..extra_end], &mut 0)?;
         *pos = extra_end;
+        if inputs.len() > PREFIX_INPUTS_MAX || outputs.len() > PREFIX_OUTPUTS_MAX {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        let mut inputs_arr =
+            core::array::from_fn(|_| TxInput::new(heapless::Vec::new(), [0u8; 32]));
+        let mut outputs_arr = core::array::from_fn(|_| TxOutput::new_tagged(0, [0u8; 32], 0));
+        inputs_arr[..inputs.len()].clone_from_slice(&inputs);
+        outputs_arr[..outputs.len()].clone_from_slice(&outputs);
         Ok(Self {
             version,
             unlock_time,
-            inputs,
-            outputs,
+            inputs: inputs_arr,
+            inputs_len: inputs.len(),
+            outputs: outputs_arr,
+            outputs_len: outputs.len(),
             extra,
         })
     }
@@ -922,6 +968,17 @@ pub fn monero_decode_varint(bytes: &[u8], pos: &mut usize) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
+    /// Z5.3 H-cut test shim: the Vec-arg call shape kept stable while the
+    /// constructor grew bounds + a Result.
+    fn prefix_new_for_test(
+        unlock_time: u64,
+        inputs: alloc::vec::Vec<TxInput>,
+        outputs: alloc::vec::Vec<TxOutput>,
+        extra: TxExtra,
+    ) -> TransactionPrefix {
+        TransactionPrefix::new(unlock_time, &inputs, &outputs, extra).unwrap()
+    }
+
     extern crate std;
     use super::*;
     use alloc::string::String;
@@ -980,7 +1037,7 @@ mod tests {
     /// locally self-consistent but invalid to monerod.
     #[test]
     fn tx_prefix_includes_full_txin_to_key_encoding() {
-        let prefix = TransactionPrefix::new(
+        let prefix = prefix_new_for_test(
             0,
             vec![TxInput::new(
                 heapless::Vec::from_slice(&[5, 7]).unwrap(),
@@ -1053,7 +1110,7 @@ mod tests {
     /// TransactionPrefix round-trip
     #[test]
     fn tx_prefix_round_trip() {
-        let prefix = TransactionPrefix::new(
+        let prefix = prefix_new_for_test(
             100, // unlock_time = block 100
             vec![
                 TxInput {
@@ -1081,7 +1138,7 @@ mod tests {
     /// Transaction (no RCT) round-trip
     #[test]
     fn tx_round_trip_no_rct() {
-        let prefix = TransactionPrefix::new(
+        let prefix = prefix_new_for_test(
             0,
             vec![TxInput {
                 key_offsets: heapless::Vec::from_slice(&[1]).unwrap(),
@@ -1141,7 +1198,7 @@ mod tests {
     /// Encoded prefix byte structure sanity check
     #[test]
     fn prefix_byte_structure() {
-        let prefix = TransactionPrefix::new(0, vec![], vec![], TxExtra::new());
+        let prefix = prefix_new_for_test(0, vec![], vec![], TxExtra::new());
         let bytes = prefix.serialize();
         // byte 0: version = 2
         assert_eq!(bytes[0], TX_VERSION);
@@ -1165,7 +1222,7 @@ mod tests {
         let input = TxInput::new(offs, [7u8; 32]);
         let output = TxOutput::new_tagged(12345, [9u8; 32], 0xab);
         let extra = TxExtra::new().with_encrypted_payment_id([5u8; 8]);
-        let prefix = TransactionPrefix::new(
+        let prefix = prefix_new_for_test(
             7,
             alloc::vec![input.clone()],
             alloc::vec![output.clone()],

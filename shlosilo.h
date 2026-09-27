@@ -160,6 +160,16 @@
 #define TX_VERSION 2
 
 /**
+ * Monero transaction prefix (BIP format, before RCT signatures)
+ * Z5.3 H-cut: fixed-capacity input/output backing (was Vec) — the prefix
+ * owns sized storage on both the sign and deserialize paths; over-cap is an
+ * explicit Err (G1). The logical lengths drive serialization.
+ */
+#define PREFIX_INPUTS_MAX 16
+
+#define PREFIX_OUTPUTS_MAX 64
+
+/**
  * Legacy (pre-RingCT, deprecated)
  */
 #define TX_OUT_GEN 0
