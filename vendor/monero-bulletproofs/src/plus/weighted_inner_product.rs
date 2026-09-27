@@ -27,6 +27,33 @@ use rand_core::{CryptoRng, RngCore};
 /// shlosilo vendor patch (Z5.3 C-cut): borrow-form weighted inner product —
 /// the consuming form clones its operands; this computes the identical
 /// `sum(a*b*y)` over borrows (field arithmetic is exact, outputs bit-equal).
+
+/// shlosilo vendor patch (Z5.3 final sweep): Montgomery batch inversion with
+/// a caller-sized STACK scratch (the sign path's inverse-power stack is <= 10
+/// entries) — dalek's `Scalar::batch_invert` stages its scratch in a Vec,
+/// which the constrained path cannot afford. Same field inversions, same
+/// outputs (inversion is unique); the scratch is zeroized (secret-class
+/// products). Zero inputs panic in `invert`, matching dalek's contract.
+fn batch_invert_stack(inputs: &mut [Scalar]) {
+    let n = inputs.len();
+    debug_assert!(n <= 32);
+    let mut scratch = [Scalar::ONE; 32];
+    let mut acc = Scalar::ONE;
+    for (s, x) in scratch[..n].iter_mut().zip(inputs.iter()) {
+        *s = acc;
+        acc *= *x;
+    }
+    let mut inv = acc.invert();
+    for (s, x) in scratch[..n].iter_mut().zip(inputs.iter_mut()).rev() {
+        let tmp = *x;
+        *x = inv * *s;
+        inv *= tmp;
+    }
+    for s in scratch[..n].iter_mut() {
+        s.zeroize();
+    }
+}
+
 fn wip_ref(a: &[Scalar], b: &[Scalar], y: &[Scalar]) -> Scalar {
     debug_assert_eq!(a.len(), b.len());
     debug_assert_eq!(a.len(), y.len());
@@ -380,7 +407,7 @@ impl WipStatement {
                 y_inv_len += 1;
                 i *= 2;
             }
-            Scalar::batch_invert(&mut round.p_zp[..y_inv_len]);
+            batch_invert_stack(&mut round.p_zp[..y_inv_len]);
         }
 
         let mut L_vec = [CompressedPoint::from([0u8; 32]); WIP_MAX_ROUNDS];

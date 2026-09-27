@@ -84,7 +84,7 @@ struct AHatComputation<'a> {
     d_descending_y_plus_z: &'a [Scalar],
     y_mn_plus_one: Scalar,
     z: Scalar,
-    z_pow: ScalarVector,
+    z_pow: [Scalar; crate::MAX_COMMITMENTS + 1],
     A_hat: EdwardsPoint,
 }
 
@@ -226,7 +226,7 @@ impl<'a> AggregateRangeStatement<'a> {
             d_descending_y_plus_z,
             y_mn_plus_one,
             z,
-            z_pow: ScalarVector(z_pow[..V.len() + 1].to_vec()),
+            z_pow,
             A_hat: {
                 let hat = A + multiexp_vartime(A_terms, straus).ok()?;
                 for e in A_terms.iter_mut() {

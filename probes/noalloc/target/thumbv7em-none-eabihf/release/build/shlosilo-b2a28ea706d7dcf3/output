@@ -1,4 +1,4 @@
-cargo:rustc-env=SHLOSILO_BUILD_GIT=4d130db-dirty
+cargo:rustc-env=SHLOSILO_BUILD_GIT=c55ed3d-dirty
 cargo:rerun-if-changed=.git/logs/HEAD
 cargo:rerun-if-changed=build.rs
 cargo:rerun-if-changed=Cargo.toml

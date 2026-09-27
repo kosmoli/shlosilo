@@ -1593,8 +1593,37 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/scalar.rs b/src/scalar.rs
 --- a/src/scalar.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/scalar.rs	2026-09-15 12:12:11.259129016 +0800
-@@ -982,6 +982,7 @@
++++ b/src/scalar.rs	2026-09-27 10:36:11.292328606 +0800
+@@ -796,7 +796,16 @@
+         let n = inputs.len();
+         let one: UnpackedScalar = Scalar::ONE.unpack().as_montgomery();
+ 
+-        let mut scratch = vec![one; n];
++        // shlosilo vendor patch (Z5.3 final sweep): the Montgomery scratch
++        // lives on the stack for small batches (the sign path's inverse-power
++        // stack is <= 10); larger batches keep the Vec form (verify-side
++        // staging, tracked).
++        let mut scratch_storage = [one; 32];
++        let scratch: &mut [UnpackedScalar] = if n <= 32 {
++            &mut scratch_storage[..n]
++        } else {
++            &mut vec![one; n]
++        };
+ 
+         // Keep an accumulator of all of the previous products
+         let mut acc = Scalar::ONE.unpack().as_montgomery();
+@@ -831,7 +840,9 @@
+         }
+ 
+         #[cfg(feature = "zeroize")]
+-        Zeroize::zeroize(&mut scratch);
++        for e in scratch.iter_mut() {
++            Zeroize::zeroize(e);
++        }
+ 
+         ret
+     }
+@@ -982,6 +993,7 @@
      /// The largest value that can be decomposed like this is just over \\(2^{255}\\). Thus, in
      /// order to not error, the top bit MUST NOT be set, i.e., `Self` MUST be less than
      /// \\(2^{255}\\).

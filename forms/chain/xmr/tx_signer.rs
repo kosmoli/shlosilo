@@ -171,8 +171,7 @@ impl Drop for ZeroizingMaskGuard {
 use crate::chain::xmr::clsag::{self as clsag_mod};
 use crate::chain::xmr::subaddress::hash_to_scalar;
 use crate::chain::xmr::transaction::{
-    bytes_to_monerod_scalar, monero_encode_varint, monerod_scalar_to_bytes, TransactionPrefix,
-    TxExtra, TxInput, TxOutput,
+    bytes_to_monerod_scalar, monerod_scalar_to_bytes, TransactionPrefix, TxExtra, TxInput, TxOutput,
 };
 use crate::chain::xmr::unsigned_txset::{TxConstructionData, TxDestinationEntry};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -533,22 +532,28 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             // Audit #8 P1-02: change-branch temporary buffers follow the same discipline as the main branch (Zeroizing owner)
             // Audit #11 P1-03: hashes go straight into the owner where produced (no more plain arrays landing)
             let shared_key = {
-                let mut od = zeroize::Zeroizing::new(Vec::with_capacity(33));
-                od.extend_from_slice(&change_eight_ra);
-                monero_encode_varint(&mut od, i as u64);
-                crate::types::SecretBytes::new(hash_to_scalar(&od)?)
+                // Z5.3 final sweep: fixed stack staging (was Vec).
+                let mut od = zeroize::Zeroizing::new([0u8; 48]);
+                od[..32].copy_from_slice(&change_eight_ra);
+                let mut od_len = 32usize;
+                crate::chain::xmr::transaction::monero_encode_varint_at(
+                    &mut od[..],
+                    &mut od_len,
+                    i as u64,
+                )?;
+                crate::types::SecretBytes::new(hash_to_scalar(&od[..od_len])?)
             };
             let commitment_mask = {
-                let mut md = zeroize::Zeroizing::new(Vec::with_capacity(48));
-                md.extend_from_slice(b"commitment_mask");
-                md.extend_from_slice(shared_key.expose());
-                crate::types::SecretBytes::new(hash_to_scalar(&md)?)
+                let mut md = zeroize::Zeroizing::new([0u8; 47]);
+                md[..15].copy_from_slice(b"commitment_mask");
+                md[15..].copy_from_slice(shared_key.expose());
+                crate::types::SecretBytes::new(hash_to_scalar(&md[..])?)
             };
             let encrypted_amount = {
-                let mut ad = zeroize::Zeroizing::new(Vec::with_capacity(38));
-                ad.extend_from_slice(b"amount");
-                ad.extend_from_slice(shared_key.expose());
-                let h = crate::encoding::keccak256::hash(&ad)?;
+                let mut ad = zeroize::Zeroizing::new([0u8; 38]);
+                ad[..6].copy_from_slice(b"amount");
+                ad[6..].copy_from_slice(shared_key.expose());
+                let h = crate::encoding::keccak256::hash(&ad[..])?;
                 let m8 = u64::from_le_bytes(h[..8].try_into().unwrap());
                 (dest.amount ^ m8).to_le_bytes()
             };
@@ -564,11 +569,16 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             );
             let stealth_address = hs.mul_basepoint_add_point(&b_dest);
             // view tag
-            let mut vt = zeroize::Zeroizing::new(Vec::with_capacity(42));
-            vt.extend_from_slice(b"view_tag");
-            vt.extend_from_slice(&change_eight_ra);
-            monero_encode_varint(&mut vt, i as u64);
-            let vt_full = crate::encoding::keccak256::hash(&vt)?;
+            let mut vt = zeroize::Zeroizing::new([0u8; 50]);
+            vt[..8].copy_from_slice(b"view_tag");
+            vt[8..40].copy_from_slice(&change_eight_ra);
+            let mut vt_len = 40usize;
+            crate::chain::xmr::transaction::monero_encode_varint_at(
+                &mut vt[..],
+                &mut vt_len,
+                i as u64,
+            )?;
+            let vt_full = crate::encoding::keccak256::hash(&vt[..vt_len])?;
             outs[outs_len] = OutInfo {
                 deriv: OutputDerivation {
                     shared_key,

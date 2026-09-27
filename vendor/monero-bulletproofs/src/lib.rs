@@ -11,6 +11,7 @@ use std_shims::{
 
 use rand_core::{CryptoRng, RngCore};
 
+use curve25519_dalek::traits::Identity as _;
 use curve25519_dalek::EdwardsPoint;
 
 // shlosilo vendor patch: per-platform BP+ multiexp chunk tuning (core.rs).
@@ -199,10 +200,15 @@ impl Bulletproof {
         #[cfg(feature = "prove-timing")]
         let wrap_commits =
             prove_timing_hook::PhaseProbe::start(prove_timing_hook::PHASE_WRAP_COMMITS);
-        let commitments = outputs
-            .iter()
-            .map(|commitment| commitment.commit().into())
-            .collect::<Vec<_>>();
+        // shlosilo vendor patch (Z5.3 final sweep): fixed-capacity commitment
+        // staging (MAX_COMMITMENTS) — the Vec collect allocated per proof.
+        let mut commitments = [curve25519_dalek::EdwardsPoint::identity(); MAX_COMMITMENTS];
+        let mut commitments_len = 0usize;
+        for (dst, commitment) in commitments.iter_mut().zip(outputs.iter()) {
+            *dst = commitment.commit().into();
+            commitments_len += 1;
+        }
+        let commitments = &commitments[..commitments_len];
         #[cfg(feature = "prove-timing")]
         wrap_commits.end();
         #[cfg(feature = "prove-timing")]

@@ -796,7 +796,16 @@ impl Scalar {
         let n = inputs.len();
         let one: UnpackedScalar = Scalar::ONE.unpack().as_montgomery();
 
-        let mut scratch = vec![one; n];
+        // shlosilo vendor patch (Z5.3 final sweep): the Montgomery scratch
+        // lives on the stack for small batches (the sign path's inverse-power
+        // stack is <= 10); larger batches keep the Vec form (verify-side
+        // staging, tracked).
+        let mut scratch_storage = [one; 32];
+        let scratch: &mut [UnpackedScalar] = if n <= 32 {
+            &mut scratch_storage[..n]
+        } else {
+            &mut vec![one; n]
+        };
 
         // Keep an accumulator of all of the previous products
         let mut acc = Scalar::ONE.unpack().as_montgomery();
@@ -831,7 +840,9 @@ impl Scalar {
         }
 
         #[cfg(feature = "zeroize")]
-        Zeroize::zeroize(&mut scratch);
+        for e in scratch.iter_mut() {
+            Zeroize::zeroize(e);
+        }
 
         ret
     }

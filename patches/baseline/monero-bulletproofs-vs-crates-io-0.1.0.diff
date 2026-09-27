@@ -973,8 +973,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-27 03:06:12.593402600 +0800
-@@ -4,40 +4,59 @@
++++ b/src/lib.rs	2026-09-27 10:39:12.971425709 +0800
+@@ -4,40 +4,60 @@
  #![allow(non_snake_case)]
  
  use std_shims::{
@@ -990,6 +990,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -use zeroize::Zeroizing;
 +use rand_core::{CryptoRng, RngCore};
  
++use curve25519_dalek::traits::Identity as _;
  use curve25519_dalek::EdwardsPoint;
  
 -use monero_io::*;
@@ -1049,7 +1050,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  };
  
  #[cfg(test)]
-@@ -52,18 +71,21 @@
+@@ -52,18 +72,21 @@
  
  // A static for `H` as it's frequently used yet this decompression is expensive.
  static MONERO_H: LazyLock<EdwardsPoint> = LazyLock::new(|| {
@@ -1078,7 +1079,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
  
  /// A Bulletproof(+).
-@@ -72,68 +94,72 @@
+@@ -72,68 +95,72 @@
  #[allow(clippy::large_enum_variant)]
  #[derive(Clone, PartialEq, Eq, Debug)]
  pub enum Bulletproof {
@@ -1210,7 +1211,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        OriginalStatement::new(&commitments)
          .expect("failed to create statement despite checking amount of commitments")
          .prove(
-@@ -145,201 +171,323 @@
+@@ -145,201 +172,328 @@
            "failed to prove Bulletproof::Original despite ensuring statement/witness consistency",
          ),
      ))
@@ -1260,10 +1261,15 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        #[cfg(feature = "prove-timing")]
 +        let wrap_commits =
 +            prove_timing_hook::PhaseProbe::start(prove_timing_hook::PHASE_WRAP_COMMITS);
-+        let commitments = outputs
-+            .iter()
-+            .map(|commitment| commitment.commit().into())
-+            .collect::<Vec<_>>();
++        // shlosilo vendor patch (Z5.3 final sweep): fixed-capacity commitment
++        // staging (MAX_COMMITMENTS) — the Vec collect allocated per proof.
++        let mut commitments = [curve25519_dalek::EdwardsPoint::identity(); MAX_COMMITMENTS];
++        let mut commitments_len = 0usize;
++        for (dst, commitment) in commitments.iter_mut().zip(outputs.iter()) {
++            *dst = commitment.commit().into();
++            commitments_len += 1;
++        }
++        let commitments = &commitments[..commitments_len];
 +        #[cfg(feature = "prove-timing")]
 +        wrap_commits.end();
 +        #[cfg(feature = "prove-timing")]
@@ -1476,6 +1482,40 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                specific_write_vec(&bp.wip.R[..bp.wip.R_len], w)
 +            }
 +        }
++    }
++
++    /// Write a Bulletproof(+) for the message signed by a transaction's signature.
++    ///
++    /// This has a distinct encoding from the standard encoding.
++    pub fn signature_write<W: Write>(&self, w: &mut W) -> io::Result<()> {
++        self.write_core(w, |points, w| {
++            write_raw_vec(CompressedPoint::write, points, w)
++        })
++    }
++
++    /// Write a Bulletproof(+).
++    pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
++        self.write_core(w, |points, w| write_vec(CompressedPoint::write, points, w))
++    }
++
++    // ── shlosilo vendor patch (T-06, 2026-09-26): caller-buffer serialization.
++    // Same bytes as `write`; `serialized_len` is the single length source of
++    // truth (previously measured by a forms-side counting adapter). Wipe of
++    // secrets is not at issue here (proofs are public wire data).
++
++    /// Serialized length in bytes (identical output to `write`).
++    pub fn serialized_len(&self) -> usize {
++        struct Counter(usize);
++        impl Write for Counter {
++            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
++                self.0 += buf.len();
++                Ok(buf.len())
++            }
++        }
++        let mut c = Counter(0);
++        self.write(&mut c)
++            .expect("write into a counter cannot fail");
++        c.0
      }
 -  }
  
@@ -1567,40 +1607,6 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -      },
 -    }))
 -  }
-+    /// Write a Bulletproof(+) for the message signed by a transaction's signature.
-+    ///
-+    /// This has a distinct encoding from the standard encoding.
-+    pub fn signature_write<W: Write>(&self, w: &mut W) -> io::Result<()> {
-+        self.write_core(w, |points, w| {
-+            write_raw_vec(CompressedPoint::write, points, w)
-+        })
-+    }
-+
-+    /// Write a Bulletproof(+).
-+    pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
-+        self.write_core(w, |points, w| write_vec(CompressedPoint::write, points, w))
-+    }
-+
-+    // ── shlosilo vendor patch (T-06, 2026-09-26): caller-buffer serialization.
-+    // Same bytes as `write`; `serialized_len` is the single length source of
-+    // truth (previously measured by a forms-side counting adapter). Wipe of
-+    // secrets is not at issue here (proofs are public wire data).
-+
-+    /// Serialized length in bytes (identical output to `write`).
-+    pub fn serialized_len(&self) -> usize {
-+        struct Counter(usize);
-+        impl Write for Counter {
-+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-+                self.0 += buf.len();
-+                Ok(buf.len())
-+            }
-+        }
-+        let mut c = Counter(0);
-+        self.write(&mut c)
-+            .expect("write into a counter cannot fail");
-+        c.0
-+    }
-+
 +    /// Serialize into a caller-provided buffer, returning the length written.
 +    /// Over-capacity is an EXPLICIT `io::Error` (never truncates).
 +    pub fn serialize_into(&self, out: &mut [u8]) -> io::Result<usize> {
@@ -3094,7 +3100,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.rs
 --- a/src/plus/aggregate_range_proof.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/aggregate_range_proof.rs	2026-09-27 09:58:02.253854321 +0800
++++ b/src/plus/aggregate_range_proof.rs	2026-09-27 10:34:39.264039068 +0800
 @@ -1,21 +1,47 @@
  use std_shims::{vec, vec::Vec};
  
@@ -3214,7 +3220,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    d_descending_y_plus_z: &'a [Scalar],
 +    y_mn_plus_one: Scalar,
 +    z: Scalar,
-+    z_pow: ScalarVector,
++    z_pow: [Scalar; crate::MAX_COMMITMENTS + 1],
 +    A_hat: EdwardsPoint,
  }
  
@@ -3494,7 +3500,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            d_descending_y_plus_z,
 +            y_mn_plus_one,
 +            z,
-+            z_pow: ScalarVector(z_pow[..V.len() + 1].to_vec()),
++            z_pow,
 +            A_hat: {
 +                let hat = A + multiexp_vartime(A_terms, straus).ok()?;
 +                for e in A_terms.iter_mut() {
@@ -3980,7 +3986,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/transcript.rs b/src/plus/transcript.rs
 --- a/src/plus/transcript.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/transcript.rs	2026-09-27 03:47:17.015546746 +0800
++++ b/src/plus/transcript.rs	2026-09-27 10:36:35.290563926 +0800
 @@ -1,6 +1,6 @@
  use std_shims::{sync::LazyLock, vec::Vec};
  
@@ -3989,7 +3995,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  
  use monero_primitives::keccak256;
  
-@@ -8,15 +8,21 @@
+@@ -8,15 +8,25 @@
  // Why this uses a hash to point is completely unknown.
  // TODO: This can be promoted to a constant, remove `monero-primitives`
  pub(crate) static TRANSCRIPT: LazyLock<[u8; 32]> = LazyLock::new(|| {
@@ -4007,11 +4013,15 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -    commitments.flat_map(|V| V.compress().to_bytes()).collect::<Vec<_>>(),
 -  );
 -  monero_ed25519::Scalar::hash([*TRANSCRIPT, <[u8; 32]>::from(commitments_hash)].concat()).into()
-+    let commitments_hash = monero_ed25519::Scalar::hash(
-+        commitments
-+            .flat_map(|V| V.compress().to_bytes())
-+            .collect::<Vec<_>>(),
-+    );
++    // Z5.3 final sweep: fixed stack staging for the hash input (16 compressed
++    // points max — same bytes into the same hash fn).
++    let mut cbuf = [0u8; 512];
++    let mut clen = 0usize;
++    for V in commitments {
++        cbuf[clen..clen + 32].copy_from_slice(&V.compress().to_bytes());
++        clen += 32;
++    }
++    let commitments_hash = monero_ed25519::Scalar::hash(&cbuf[..clen]);
 +    // Z5.3 F-cut: fixed-size stack concat (byte-identical).
 +    let mut buf = [0u8; 64];
 +    buf[..32].copy_from_slice(&(*TRANSCRIPT)[..]);
@@ -4020,8 +4030,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/weighted_inner_product.rs b/src/plus/weighted_inner_product.rs
 --- a/src/plus/weighted_inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/weighted_inner_product.rs	2026-09-27 09:43:00.560012450 +0800
-@@ -1,415 +1,717 @@
++++ b/src/plus/weighted_inner_product.rs	2026-09-27 10:42:27.167506780 +0800
+@@ -1,415 +1,744 @@
  use std_shims::{vec, vec::Vec};
  
 -use rand_core::{RngCore, CryptoRng};
@@ -4052,6 +4062,33 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +/// shlosilo vendor patch (Z5.3 C-cut): borrow-form weighted inner product —
 +/// the consuming form clones its operands; this computes the identical
 +/// `sum(a*b*y)` over borrows (field arithmetic is exact, outputs bit-equal).
++
++/// shlosilo vendor patch (Z5.3 final sweep): Montgomery batch inversion with
++/// a caller-sized STACK scratch (the sign path's inverse-power stack is <= 10
++/// entries) — dalek's `Scalar::batch_invert` stages its scratch in a Vec,
++/// which the constrained path cannot afford. Same field inversions, same
++/// outputs (inversion is unique); the scratch is zeroized (secret-class
++/// products). Zero inputs panic in `invert`, matching dalek's contract.
++fn batch_invert_stack(inputs: &mut [Scalar]) {
++    let n = inputs.len();
++    debug_assert!(n <= 32);
++    let mut scratch = [Scalar::ONE; 32];
++    let mut acc = Scalar::ONE;
++    for (s, x) in scratch[..n].iter_mut().zip(inputs.iter()) {
++        *s = acc;
++        acc *= *x;
++    }
++    let mut inv = acc.invert();
++    for (s, x) in scratch[..n].iter_mut().zip(inputs.iter_mut()).rev() {
++        let tmp = *x;
++        *x = inv * *s;
++        inv *= tmp;
++    }
++    for s in scratch[..n].iter_mut() {
++        s.zeroize();
++    }
++}
++
 +fn wip_ref(a: &[Scalar], b: &[Scalar], y: &[Scalar]) -> Scalar {
 +    debug_assert_eq!(a.len(), b.len());
 +    debug_assert_eq!(a.len(), y.len());
@@ -4207,6 +4244,15 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -  pub(crate) fn new(mut a: ScalarVector, mut b: ScalarVector, alpha: Scalar) -> Option<Self> {
 -    if a.0.is_empty() || (a.len() != b.len()) {
 -      return None;
+-    }
+-
+-    // Pad to the nearest power of 2
+-    let missing = padded_pow_of_2(a.len()) - a.len();
+-    a.0.reserve(missing);
+-    b.0.reserve(missing);
+-    for _ in 0 .. missing {
+-      a.0.push(Scalar::ZERO);
+-      b.0.push(Scalar::ZERO);
 +impl<'a> WipWitness<'a> {
 +    pub(crate) fn new(a: &'a [Scalar], b: &'a [Scalar], alpha: Scalar) -> Option<Self> {
 +        if a.is_empty() || (a.len() != b.len()) {
@@ -4219,15 +4265,6 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        }
 +        Some(Self { a, b, alpha })
      }
--
--    // Pad to the nearest power of 2
--    let missing = padded_pow_of_2(a.len()) - a.len();
--    a.0.reserve(missing);
--    b.0.reserve(missing);
--    for _ in 0 .. missing {
--      a.0.push(Scalar::ZERO);
--      b.0.push(Scalar::ZERO);
--    }
 -
 -    Some(Self { a, b, alpha })
 -  }
@@ -4701,7 +4738,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                y_inv_len += 1;
 +                i *= 2;
 +            }
-+            Scalar::batch_invert(&mut round.p_zp[..y_inv_len]);
++            batch_invert_stack(&mut round.p_zp[..y_inv_len]);
 +        }
 +
 +        let mut L_vec = [CompressedPoint::from([0u8; 32]); WIP_MAX_ROUNDS];
