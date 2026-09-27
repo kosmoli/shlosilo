@@ -204,7 +204,7 @@ pub fn summarize_tx(
         if is_huge {
             has_huge_output = true;
         }
-        let is_own = own_spks.contains(&txout.script_pubkey.as_slice());
+        let is_own = own_spks.contains(&txout.script_pubkey.as_ref());
         if !is_own {
             external_out = external_out.saturating_add(txout.value);
         }
@@ -271,7 +271,7 @@ mod tests {
     fn witness_utxo_bytes(value: u64, spk: &[u8]) -> Vec<u8> {
         TxOut {
             value,
-            script_pubkey: spk.to_vec(),
+            script_pubkey: spk.to_vec().into(),
         }
         .serialize()
     }
@@ -288,13 +288,13 @@ mod tests {
                 txid: [0x11u8; 32],
                 vout: 1,
             },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence,
             witness: vec![],
         };
         let txout = TxOut {
             value: out_value,
-            script_pubkey: out_spk.clone(),
+            script_pubkey: out_spk.clone().into(),
         };
         let unsigned_tx = Transaction {
             version: 2,
@@ -388,13 +388,13 @@ mod tests {
                     txid: [0; 32],
                     vout: 0,
                 },
-                script_sig: vec![],
+                script_sig: vec![].into(),
                 sequence: 0xffffffff,
                 witness: vec![],
             }],
             outputs: vec![TxOut {
                 value: MAX_MONEY_SATS + 1,
-                script_pubkey: vec![0x51],
+                script_pubkey: vec![0x51].into(),
             }],
             lock_time: 0,
         };

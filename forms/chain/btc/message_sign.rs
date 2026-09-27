@@ -169,13 +169,13 @@ pub fn sign_bip322_simple_p2wpkh(sk: &Secp256k1Scalar, msg: &[u8]) -> Result<Vec
                 txid: [0u8; 32],
                 vout: 0xffff_ffff,
             },
-            script_sig,
+            script_sig: script_sig.into(),
             sequence: 0,
             witness: vec![],
         }],
         outputs: vec![TxOut {
             value: 0,
-            script_pubkey: challenge,
+            script_pubkey: challenge.into(),
         }],
         lock_time: 0,
     };
@@ -188,13 +188,13 @@ pub fn sign_bip322_simple_p2wpkh(sk: &Secp256k1Scalar, msg: &[u8]) -> Result<Vec
                 txid: to_spend_txid,
                 vout: 0,
             },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0,
             witness: vec![],
         }],
         outputs: vec![TxOut {
             value: 0,
-            script_pubkey: vec![0x6a], // OP_RETURN
+            script_pubkey: vec![0x6a].into(), // OP_RETURN
         }],
         lock_time: 0,
     };
@@ -254,13 +254,13 @@ fn bip322_p2tr_sighash(internal_sk: &[u8; 32], msg: &[u8]) -> Result<[u8; 32]> {
                 txid: [0u8; 32],
                 vout: 0xffff_ffff,
             },
-            script_sig,
+            script_sig: script_sig.into(),
             sequence: 0,
             witness: vec![],
         }],
         outputs: vec![TxOut {
             value: 0,
-            script_pubkey: challenge.clone(),
+            script_pubkey: challenge.clone().into(),
         }],
         lock_time: 0,
     };
@@ -461,13 +461,13 @@ mod tests {
                     txid: [0u8; 32],
                     vout: 0xffff_ffff,
                 },
-                script_sig,
+                script_sig: script_sig.into(),
                 sequence: 0,
                 witness: vec![],
             }],
             outputs: vec![TxOut {
                 value: 0,
-                script_pubkey: challenge,
+                script_pubkey: challenge.into(),
             }],
             lock_time: 0,
         };

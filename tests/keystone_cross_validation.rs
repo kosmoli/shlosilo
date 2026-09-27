@@ -86,7 +86,7 @@ fn keystone_btc_p2wpkh_sighash_matches() {
             txid: hex_decode_32("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f"),
             vout: 0,
         },
-        script_sig: vec![],
+        script_sig: vec![].into(),
         // BIP-143 spec: sequence = 0xffffffee for input 0 (NOT 0xfffffffd — that's a
         // different test vector). Each BIP-143 example has its own tx structure.
         sequence: 0xffffffee,
@@ -97,18 +97,18 @@ fn keystone_btc_p2wpkh_sighash_matches() {
             txid: hex_decode_32("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a"),
             vout: 1,
         },
-        script_sig: vec![],
+        script_sig: vec![].into(),
         // BIP-143 spec: sequence = 0xffffffff for input 1
         sequence: 0xffffffff,
         witness: vec![],
     };
     let output0 = TxOut {
         value: 0x0000000006b22c20,
-        script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac"),
+        script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac").into(),
     };
     let output1 = TxOut {
         value: 0x000000000d519390,
-        script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac"),
+        script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac").into(),
     };
     let tx = Transaction {
         version: 1,

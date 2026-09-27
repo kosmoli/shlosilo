@@ -87,7 +87,7 @@ mod tests {
                 txid: [0x11u8; 32],
                 vout: 0,
             },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0xffffffff,
             witness: vec![],
         };
@@ -95,7 +95,7 @@ mod tests {
             .iter()
             .map(|_| TxOut {
                 value: 1000,
-                script_pubkey: vec![0x00, 0x14],
+                script_pubkey: vec![0x00, 0x14].into(),
             })
             .collect();
         let unsigned_tx = Transaction {

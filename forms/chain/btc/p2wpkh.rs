@@ -61,15 +61,17 @@ pub struct OutPoint {
 }
 
 /// TxIn (with witness)
+///
+/// Z4-5: scriptSig borrows the wire bytes (sign-time witness items own).
 #[derive(Clone, Debug)]
-pub struct TxIn {
+pub struct TxIn<'a> {
     pub prev_out: OutPoint,
-    pub script_sig: Vec<u8>,
+    pub script_sig: alloc::borrow::Cow<'a, [u8]>,
     pub sequence: u32,
-    pub witness: Vec<Vec<u8>>, // witness items
+    pub witness: Vec<Vec<u8>>, // witness items (sign-time additions own)
 }
 
-impl TxIn {
+impl TxIn<'_> {
     /// Serialization (BIP-144 legacy format: outpoint + scriptSig + sequence)
     /// Includes the scriptSig length varint
     pub fn serialize_legacy(&self) -> Vec<u8> {
@@ -84,13 +86,15 @@ impl TxIn {
 }
 
 /// TxOut
+///
+/// Z4-5: scriptPubKey borrows the wire bytes.
 #[derive(Clone, Debug)]
-pub struct TxOut {
+pub struct TxOut<'a> {
     pub value: u64,
-    pub script_pubkey: Vec<u8>,
+    pub script_pubkey: alloc::borrow::Cow<'a, [u8]>,
 }
 
-impl TxOut {
+impl TxOut<'_> {
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + 1 + self.script_pubkey.len());
         out.extend_from_slice(&self.value.to_le_bytes());
@@ -102,14 +106,14 @@ impl TxOut {
 
 /// Transaction (legacy + segwit format)
 #[derive(Clone, Debug)]
-pub struct Transaction {
+pub struct Transaction<'a> {
     pub version: i32,
-    pub inputs: Vec<TxIn>,
-    pub outputs: Vec<TxOut>,
+    pub inputs: Vec<TxIn<'a>>,
+    pub outputs: Vec<TxOut<'a>>,
     pub lock_time: u32,
 }
 
-impl Transaction {
+impl Transaction<'_> {
     /// BIP-144 segwit serialization (marker=0x00, flag=0x01)
     pub fn serialize_segwit(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -146,7 +150,7 @@ impl Transaction {
 }
 
 // impl block helpers (avoids clashing with Transaction method signatures)
-impl TxIn {
+impl TxIn<'_> {
     fn serialize_into(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.prev_out.txid);
         out.extend_from_slice(&self.prev_out.vout.to_le_bytes());
@@ -154,7 +158,7 @@ impl TxIn {
     }
 }
 
-impl TxOut {
+impl TxOut<'_> {
     fn serialize_into(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.value.to_le_bytes());
         encode_varint(out, self.script_pubkey.len() as u64);
@@ -453,7 +457,7 @@ mod tests {
                 },
                 vout: 0,
             },
-            script_sig: Vec::new(),
+            script_sig: Vec::new().into(),
             sequence: 0xffffffee,
             witness: Vec::new(),
         };
@@ -473,7 +477,7 @@ mod tests {
                 },
                 vout: 1,
             },
-            script_sig: Vec::new(),
+            script_sig: Vec::new().into(),
             sequence: 0xffffffff,
             witness: Vec::new(),
         };
@@ -482,12 +486,14 @@ mod tests {
         let output0 = TxOut {
             value: 0x0000000006b22c20, // = 0x06b22c20 = 112400416 sat
             script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac")
-                .unwrap(),
+                .unwrap()
+                .into(),
         };
         let output1 = TxOut {
             value: 0x000000000d519390, // = 0x0d519390 = 223580816 sat
             script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac")
-                .unwrap(),
+                .unwrap()
+                .into(),
         };
 
         let tx = Transaction {
@@ -578,7 +584,7 @@ mod tests {
                 },
                 vout: 1,
             },
-            script_sig: Vec::new(),
+            script_sig: Vec::new().into(),
             sequence: 0xffffffff,
             witness: Vec::new(),
         };
@@ -598,7 +604,7 @@ mod tests {
                 },
                 vout: 0,
             },
-            script_sig: Vec::new(),
+            script_sig: Vec::new().into(),
             sequence: 0xffffffee,
             witness: Vec::new(),
         };
@@ -606,12 +612,14 @@ mod tests {
         let output0 = TxOut {
             value: 0x0000000006b22c20,
             script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac")
-                .unwrap(),
+                .unwrap()
+                .into(),
         };
         let output1 = TxOut {
             value: 0x000000000d519390,
             script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac")
-                .unwrap(),
+                .unwrap()
+                .into(),
         };
 
         let mut tx = Transaction {
@@ -744,7 +752,7 @@ mod tests {
                 },
                 vout: 1,
             },
-            script_sig: Vec::new(),
+            script_sig: Vec::new().into(),
             sequence: 0xffffffff,
             witness: Vec::new(),
         };
@@ -763,19 +771,21 @@ mod tests {
                 vout: 0,
             },
             // The real signed scriptSig for P2PK input 0 is long; we simplify by leaving it empty
-            script_sig: Vec::new(),
+            script_sig: Vec::new().into(),
             sequence: 0xffffffee,
             witness: Vec::new(),
         };
         let output0 = TxOut {
             value: 0x0000000006b22c20,
             script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac")
-                .unwrap(),
+                .unwrap()
+                .into(),
         };
         let output1 = TxOut {
             value: 0x000000000d519390,
             script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac")
-                .unwrap(),
+                .unwrap()
+                .into(),
         };
 
         let mut tx = Transaction {

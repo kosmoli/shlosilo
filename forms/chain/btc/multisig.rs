@@ -181,7 +181,8 @@ pub fn sign_p2sh_multisig(tx: &mut Transaction, sign_input: &P2SHMultisigSignInp
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let redeem = multisig_redeem_script(&sign_input.config);
-    tx.inputs[input_idx].script_sig = build_multisig_scriptsig(&sign_input.signatures, &redeem);
+    tx.inputs[input_idx].script_sig =
+        build_multisig_scriptsig(&sign_input.signatures, &redeem).into();
     Ok(())
 }
 
@@ -213,7 +214,7 @@ pub fn sign_p2sh_p2wsh_multisig(
     let mut scriptsig = Vec::new();
     scriptsig.push(p2wsh_spk.len() as u8);
     scriptsig.extend_from_slice(&p2wsh_spk);
-    tx.inputs[input_idx].script_sig = scriptsig;
+    tx.inputs[input_idx].script_sig = scriptsig.into();
     // witness
     tx.inputs[input_idx].witness = build_multisig_witness_items(&sign_input.signatures, &redeem);
     Ok(())
@@ -529,7 +530,7 @@ mod tests {
                     txid: [1u8; 32],
                     vout: 0,
                 },
-                script_sig: alloc::vec![],
+                script_sig: alloc::vec![].into(),
                 sequence: 0xffffffff,
                 witness: alloc::vec![],
             }],
@@ -565,7 +566,7 @@ mod tests {
                     txid: [2u8; 32],
                     vout: 0,
                 },
-                script_sig: alloc::vec![],
+                script_sig: alloc::vec![].into(),
                 sequence: 0xffffffff,
                 witness: alloc::vec![],
             }],
@@ -608,7 +609,7 @@ mod tests {
                     txid: [3u8; 32],
                     vout: 0,
                 },
-                script_sig: alloc::vec![],
+                script_sig: alloc::vec![].into(),
                 sequence: 0xffffffff,
                 witness: alloc::vec![],
             }],

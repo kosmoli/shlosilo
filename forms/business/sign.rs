@@ -1453,13 +1453,13 @@ mod tests {
                         txid: [0xABu8; 32],
                         vout: 0,
                     },
-                    script_sig: Vec::new(),
+                    script_sig: Vec::new().into(),
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
                 outputs: alloc::vec![TxOut {
                     value: 90_000,
-                    script_pubkey: spk.clone(),
+                    script_pubkey: spk.clone().into(),
                 }],
                 lock_time: 0,
             },
@@ -1570,13 +1570,13 @@ mod tests {
                         txid: [0xABu8; 32],
                         vout: 0
                     },
-                    script_sig: Vec::new(),
+                    script_sig: Vec::new().into(),
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
                 outputs: alloc::vec![TxOut {
                     value: 90_000,
-                    script_pubkey: spk.clone()
+                    script_pubkey: spk.clone().into(),
                 }],
                 lock_time: 0,
             },
@@ -1656,13 +1656,13 @@ mod tests {
                         txid: [0xABu8; 32],
                         vout: 0
                     },
-                    script_sig: Vec::new(),
+                    script_sig: Vec::new().into(),
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
                 outputs: alloc::vec![TxOut {
                     value: 90_000,
-                    script_pubkey: spk.clone()
+                    script_pubkey: spk.clone().into(),
                 }],
                 lock_time: 0,
             },
@@ -1742,13 +1742,13 @@ mod tests {
                         txid: [0xABu8; 32],
                         vout: 0
                     },
-                    script_sig: Vec::new(),
+                    script_sig: Vec::new().into(),
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
                 outputs: alloc::vec![TxOut {
                     value: 90_000,
-                    script_pubkey: spk.clone()
+                    script_pubkey: spk.clone().into(),
                 }],
                 lock_time: 0,
             },
@@ -1820,13 +1820,13 @@ mod tests {
                         txid: [0xABu8; 32],
                         vout: 0
                     },
-                    script_sig: Vec::new(),
+                    script_sig: Vec::new().into(),
                     sequence: 0xffff_ffff,
                     witness: Vec::new(),
                 }],
                 outputs: alloc::vec![TxOut {
                     value: 90_000,
-                    script_pubkey: spk.clone()
+                    script_pubkey: spk.clone().into(),
                 }],
                 lock_time: 0,
             },

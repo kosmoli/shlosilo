@@ -120,7 +120,7 @@ pub struct KeyValue<'a> {
 #[derive(Clone, Debug)]
 pub struct Psbt<'a> {
     /// unsigned tx (index matches the input/output maps)
-    pub unsigned_tx: Transaction,
+    pub unsigned_tx: Transaction<'a>,
     /// input maps (length == tx.inputs.len())
     pub inputs: Vec<Vec<KeyValue<'a>>>,
     /// output maps (length == tx.outputs.len())
@@ -140,11 +140,17 @@ impl<'a> EncodedMap<'a> {
         }
     }
 
-    fn get(&self, key: &[u8]) -> Option<&[u8]> {
+    /// The value's wire bytes with the MAP's own lifetime ('a): parse values
+    /// are `Cow::Borrowed` from the payload, so the result outlives `self`
+    /// (the model may borrow it while the parse-time map is a local).
+    fn get(&self, key: &[u8]) -> Option<&'a [u8]> {
         self.entries
             .iter()
             .find(|kv| kv.key.as_ref() == key)
-            .map(|kv| kv.value.as_ref())
+            .and_then(|kv| match &kv.value {
+                Cow::Borrowed(b) => Some(*b),
+                Cow::Owned(_) => None,
+            })
     }
 }
 
@@ -334,7 +340,7 @@ fn write_psbt<S: Sink>(sink: &mut S, psbt: &Psbt<'_>) -> Result<()> {
 ///
 /// P0-01 hardening: all length/count fields are validated against the `decode_compact_size` budget,
 /// byte fields are taken via `take_bytes` checked_add; counts are clamped before `with_capacity`.
-fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
+fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
     let mut pos = 0;
 
     // version (4 bytes LE)
@@ -375,7 +381,7 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
 
         // scriptSig len + bytes
         let script_sig_len = decode_compact_size(bytes, &mut pos)? as usize;
-        let script_sig = take_bytes(bytes, &mut pos, script_sig_len)?.to_vec();
+        let script_sig = Cow::Borrowed(take_bytes(bytes, &mut pos, script_sig_len)?);
 
         // sequence (4 bytes)
         let seq_bytes = take_bytes(bytes, &mut pos, 4)?;
@@ -415,7 +421,7 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
 
         // scriptPubKey len + bytes
         let script_pubkey_len = decode_compact_size(bytes, &mut pos)? as usize;
-        let script_pubkey = take_bytes(bytes, &mut pos, script_pubkey_len)?.to_vec();
+        let script_pubkey = Cow::Borrowed(take_bytes(bytes, &mut pos, script_pubkey_len)?);
 
         outputs.push(TxOut {
             value,
@@ -656,7 +662,7 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> 
     psbt.inputs[input_idx].retain(|kv| kv.key != key);
     psbt.inputs[input_idx].push(KeyValue {
         key: key.into(),
-        value: value.into(),
+        value,
     });
 
     Ok(())
@@ -712,7 +718,7 @@ pub fn sign_psbt_p2sh_p2wpkh(
     psbt.inputs[input_idx].retain(|kv| kv.key != key_script_sig);
     psbt.inputs[input_idx].push(KeyValue {
         key: key_script_sig.into(),
-        value: value_script_sig.into(),
+        value: value_script_sig,
     });
     psbt.inputs[input_idx].retain(|kv| kv.key != key_witness);
     psbt.inputs[input_idx].push(KeyValue {
@@ -876,7 +882,7 @@ fn get_non_witness_utxo_bound<'a>(
         return None; // a malicious full-tx claiming a UTXO that is not its own — reject
     }
     let txout = full_tx.outputs.get(prev_out.vout as usize)?;
-    Some((txout.value, Cow::Owned(txout.script_pubkey.clone())))
+    Some((txout.value, txout.script_pubkey.clone()))
 }
 
 /// Get the spent output (value, spk) from an input map's WITNESS_UTXO field
@@ -1032,7 +1038,7 @@ mod tests {
 
         let txin = TxIn {
             prev_out: OutPoint { txid, vout: 0 },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0xffffffff,
             witness: vec![],
         };
@@ -1047,7 +1053,7 @@ mod tests {
 
         let txout = TxOut {
             value: 100_000,
-            script_pubkey,
+            script_pubkey: script_pubkey.into(),
         };
 
         let unsigned_tx = Transaction {
@@ -1091,7 +1097,7 @@ mod tests {
         txid[0] = 0x11;
         let txin = TxIn {
             prev_out: OutPoint { txid, vout: 1 },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0xffffffee,
             witness: vec![],
         };
@@ -1104,7 +1110,7 @@ mod tests {
 
         let txout = TxOut {
             value: 50_000,
-            script_pubkey,
+            script_pubkey: script_pubkey.into(),
         };
 
         let unsigned_tx = Transaction {
@@ -1122,7 +1128,7 @@ mod tests {
                 s.push(0x00);
                 s.push(0x14);
                 s.extend_from_slice(&pk_hash);
-                s
+                s.into()
             },
         };
         let mut witness_utxo_bytes = Vec::new();
@@ -1160,7 +1166,7 @@ mod tests {
         txid[0] = 0xab;
         let txin = TxIn {
             prev_out: OutPoint { txid, vout: 0 },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0xffffffff,
             witness: vec![],
         };
@@ -1172,7 +1178,7 @@ mod tests {
         script_pubkey.extend_from_slice(&pk_hash);
         let txout = TxOut {
             value: 100_000,
-            script_pubkey,
+            script_pubkey: script_pubkey.into(),
         };
 
         let mut psbt = Psbt {
@@ -1252,7 +1258,7 @@ mod tests {
         txid[0] = 0xab;
         let txin = TxIn {
             prev_out: OutPoint { txid, vout: 0 },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0xffffffff,
             witness: vec![],
         };
@@ -1269,7 +1275,7 @@ mod tests {
 
         let txout = TxOut {
             value: 100_000,
-            script_pubkey,
+            script_pubkey: script_pubkey.into(),
         };
 
         let mut psbt = Psbt {
@@ -1348,7 +1354,7 @@ mod tests {
         txid[0] = 0xab;
         let txin = TxIn {
             prev_out: OutPoint { txid, vout: 0 },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0xffffffff,
             witness: vec![],
         };
@@ -1363,7 +1369,7 @@ mod tests {
 
         let txout = TxOut {
             value: 200_000,
-            script_pubkey,
+            script_pubkey: script_pubkey.into(),
         };
 
         let mut psbt = Psbt {
@@ -1486,7 +1492,7 @@ mod tests {
                         txid: [1u8; 32],
                         vout: 0,
                     },
-                    script_sig: vec![],
+                    script_sig: vec![].into(),
                     sequence: 0xffffffff,
                     witness: vec![],
                 }],
@@ -1530,7 +1536,7 @@ mod tests {
                         txid: [2u8; 32],
                         vout: 0,
                     },
-                    script_sig: vec![],
+                    script_sig: vec![].into(),
                     sequence: 0xffffffff,
                     witness: vec![],
                 }],
@@ -1587,7 +1593,7 @@ mod tests {
                         txid: [3u8; 32],
                         vout: 0,
                     },
-                    script_sig: vec![],
+                    script_sig: vec![].into(),
                     sequence: 0xffffffff,
                     witness: vec![],
                 }],
@@ -1734,7 +1740,7 @@ mod tests {
             .iter()
             .map(|o| SpentOutput {
                 value: o.value,
-                script_pubkey: o.script_pubkey.clone(),
+                script_pubkey: o.script_pubkey.to_vec(),
             })
             .collect();
         let sighash_input = TaprootSighashInput {

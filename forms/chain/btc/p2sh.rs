@@ -148,7 +148,7 @@ pub fn sign_p2sh_p2wpkh(
     let witness = vec![sig_with_sighash, pk_compressed.to_vec()];
 
     // 5. Injection
-    tx.inputs[input.input_index].script_sig = script_sig;
+    tx.inputs[input.input_index].script_sig = script_sig.into();
     tx.inputs[input.input_index].witness = witness;
 
     // 6. BIP-144 segwit serialization (via p2wpkh::Transaction::serialize_segwit)
@@ -240,13 +240,13 @@ mod tests {
         txid[0] = 0xab;
         let txin = TxIn {
             prev_out: OutPoint { txid, vout: 0 },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0xffffffff,
             witness: vec![],
         };
         let txout = TxOut {
             value: 200_000,
-            script_pubkey: p2sh_script_pubkey(&[0x33; 20]), // simulates a P2SH output
+            script_pubkey: p2sh_script_pubkey(&[0x33; 20]).into(), // simulates a P2SH output
         };
         let mut tx = Transaction {
             version: 1,
@@ -331,13 +331,13 @@ mod tests {
 
         let txin = TxIn {
             prev_out: OutPoint { txid, vout: 0 },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0xffffffff,
             witness: vec![],
         };
         let txout = TxOut {
             value: 100_000,
-            script_pubkey: vec![0x00, 0x14, 0x42], // arbitrary
+            script_pubkey: vec![0x00, 0x14, 0x42].into(), // arbitrary
         };
         let tx = Transaction {
             version: 1,

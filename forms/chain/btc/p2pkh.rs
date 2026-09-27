@@ -112,7 +112,7 @@ pub fn sign_p2pkh(tx: &mut Transaction, input: &P2PKHSignInput<'_>) -> Result<P2
     script_sig.extend_from_slice(&pk_compressed);
 
     // 4. Inject the scriptSig
-    tx.inputs[input.input_index].script_sig = script_sig;
+    tx.inputs[input.input_index].script_sig = script_sig.into();
 
     // 5. Legacy serialization (differs from BIP-144 segwit: no marker/flag/witness)
     let mut out = Vec::new();
@@ -217,14 +217,14 @@ mod tests {
 
         let txin = TxIn {
             prev_out: OutPoint { txid, vout: 0 },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0xffffffff,
             witness: vec![],
         };
 
         let txout = TxOut {
             value: 100_000,
-            script_pubkey: p2pkh_script_pubkey(&[0x42; 20]),
+            script_pubkey: p2pkh_script_pubkey(&[0x42; 20]).into(),
         };
 
         let mut tx = Transaction {
@@ -292,13 +292,13 @@ mod tests {
                     txid: [1u8; 32],
                     vout: 0,
                 },
-                script_sig: vec![],
+                script_sig: vec![].into(),
                 sequence: 0xffffffff,
                 witness: vec![],
             }],
             outputs: vec![TxOut {
                 value: 100_000,
-                script_pubkey: vec![0x76, 0xa9, 0x14, 0x42, 0x88, 0xac],
+                script_pubkey: vec![0x76, 0xa9, 0x14, 0x42, 0x88, 0xac].into(),
             }],
             lock_time: 0,
         };
@@ -310,13 +310,13 @@ mod tests {
                     txid: [2u8; 32],
                     vout: 0,
                 },
-                script_sig: vec![],
+                script_sig: vec![].into(),
                 sequence: 0xffffffff,
                 witness: vec![],
             }],
             outputs: vec![TxOut {
                 value: 100_000,
-                script_pubkey: vec![0x76, 0xa9, 0x14, 0x42, 0x88, 0xac],
+                script_pubkey: vec![0x76, 0xa9, 0x14, 0x42, 0x88, 0xac].into(),
             }],
             lock_time: 0,
         };
@@ -338,13 +338,13 @@ mod tests {
             version: 1,
             inputs: vec![TxIn {
                 prev_out: OutPoint { txid, vout: 0 },
-                script_sig: vec![],
+                script_sig: vec![].into(),
                 sequence: 0xffffffff,
                 witness: vec![],
             }],
             outputs: vec![TxOut {
                 value: 100_000,
-                script_pubkey: p2pkh_script_pubkey(&[0x42; 20]),
+                script_pubkey: p2pkh_script_pubkey(&[0x42; 20]).into(),
             }],
             lock_time: 0,
         };
@@ -396,13 +396,13 @@ mod tests {
             version: 1,
             inputs: vec![TxIn {
                 prev_out: OutPoint { txid, vout: 0 },
-                script_sig: vec![],
+                script_sig: vec![].into(),
                 sequence: 0xffffffff,
                 witness: vec![],
             }],
             outputs: vec![TxOut {
                 value: 100_000,
-                script_pubkey: p2pkh_script_pubkey(&[0x42; 20]),
+                script_pubkey: p2pkh_script_pubkey(&[0x42; 20]).into(),
             }],
             lock_time: 0,
         };
