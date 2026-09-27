@@ -875,15 +875,13 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt<'_>, sign_input: &PsbtSignInput) -> Resu
     let (sig_with_sighash, compressed_pk) =
         crate::chain::btc::p2wpkh::sign_p2wpkh_core(&psbt.unsigned_tx, &p2wpkh_input)?;
 
-    // 3. PARTIAL_SIG key = `<0x03><compressed-pubkey>`
-    let mut key = Vec::with_capacity(1 + 33);
-    key.push(input_type::PARTIAL_SIG);
-    key.extend_from_slice(&compressed_pk);
+    // 3. PARTIAL_SIG key = `<0x03><compressed-pubkey>` (stack-built)
+    let mut key = [0u8; 34];
+    key[0] = input_type::PARTIAL_SIG;
+    key[1..34].copy_from_slice(&compressed_pk);
 
     // value = `<DER-sig + 0x01>`
-    let value = sig_with_sighash.to_vec();
-
-    psbt.set_input_kv(input_idx, &key, &value)?;
+    psbt.set_input_kv(input_idx, &key, &sig_with_sighash)?;
 
     Ok(())
 }
@@ -931,10 +929,8 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> 
     // 3. Extract scriptSig → inject FINAL_SCRIPT_SIG (0x08)
     let script_sig = tx.inputs[input_idx].script_sig.clone();
 
-    let key = vec![input_type::FINAL_SCRIPT_SIG];
-    let value = script_sig;
-
-    psbt.set_input_kv(input_idx, &key, &value)?;
+    let key = [input_type::FINAL_SCRIPT_SIG];
+    psbt.set_input_kv(input_idx, &key, script_sig.as_ref())?;
 
     Ok(())
 }
@@ -970,24 +966,26 @@ pub fn sign_psbt_p2sh_p2wpkh(
 
     // 3. Extract scriptSig → FINAL_SCRIPT_SIG
     let script_sig = tx.inputs[input_idx].script_sig.clone();
-    let key_script_sig = vec![input_type::FINAL_SCRIPT_SIG];
-    let value_script_sig = script_sig;
+    let key_script_sig = [input_type::FINAL_SCRIPT_SIG];
 
-    // 4. Extract witness → FINAL_SCRIPTWITNESS (serialize witness as bytes)
+    // 4. Extract witness → FINAL_SCRIPTWITNESS (serialized into a stack
+    // buffer; over-cap is an explicit error via the sink)
     let witness = &tx.inputs[input_idx].witness;
-    let mut witness_bytes = Vec::new();
-    put_compact_size(&mut witness_bytes, witness.len() as u64)?;
-    for item in witness {
-        put_compact_size(&mut witness_bytes, item.len() as u64)?;
-        witness_bytes.extend_from_slice(item);
-    }
-
-    let key_witness = vec![input_type::FINAL_SCRIPTWITNESS];
-    let value_witness = witness_bytes;
+    let mut witness_bytes = [0u8; 256];
+    let wlen = {
+        let mut sink = SinkCursor::new(&mut witness_bytes);
+        put_compact_size(&mut sink, witness.len() as u64)?;
+        for item in witness {
+            put_compact_size(&mut sink, item.len() as u64)?;
+            sink.put(item)?;
+        }
+        sink.pos()
+    };
+    let key_witness = [input_type::FINAL_SCRIPTWITNESS];
 
     // 5. Inject into the PSBT input map
-    psbt.set_input_kv(input_idx, &key_script_sig, &value_script_sig)?;
-    psbt.set_input_kv(input_idx, &key_witness, &value_witness)?;
+    psbt.set_input_kv(input_idx, &key_script_sig, script_sig.as_ref())?;
+    psbt.set_input_kv(input_idx, &key_witness, &witness_bytes[..wlen])?;
 
     Ok(())
 }
@@ -1033,11 +1031,10 @@ pub fn sign_psbt_p2tr_keypath(psbt: &mut Psbt<'_>, sign_input: &PsbtP2TRSignInpu
     }
 
     // Inject TAP_KEY_SIG (0x13) — key = [0x13], value = 64-byte sig
-    let key = vec![input_type::TAP_KEY_SIG];
-    let value = sign_input.tweaked_schnorr_sig.to_vec();
+    let key = [input_type::TAP_KEY_SIG];
 
     // Remove any pre-existing entry
-    psbt.set_input_kv(input_idx, &key, &value)?;
+    psbt.set_input_kv(input_idx, &key, &sign_input.tweaked_schnorr_sig[..])?;
     Ok(())
 }
 
@@ -1063,13 +1060,13 @@ pub fn sign_psbt_p2tr_scriptpath(
     }
 
     // Inject TAP_SCRIPT_SIG (0x14): key = [0x14 || leaf_hash (32)], value = sig(64) || sighash_byte(1)
-    let mut key = Vec::with_capacity(33);
-    key.push(input_type::TAP_SCRIPT_SIG);
-    key.extend_from_slice(&sign_input.leaf_hash);
+    let mut key = [0u8; 33];
+    key[0] = input_type::TAP_SCRIPT_SIG;
+    key[1..33].copy_from_slice(&sign_input.leaf_hash);
 
-    let mut value = Vec::with_capacity(65);
-    value.extend_from_slice(&sign_input.schnorr_sig);
-    value.push(sign_input.sighash_type);
+    let mut value = [0u8; 65];
+    value[..64].copy_from_slice(&sign_input.schnorr_sig);
+    value[64] = sign_input.sighash_type;
 
     psbt.set_input_kv(input_idx, &key, &value)?;
     Ok(())
