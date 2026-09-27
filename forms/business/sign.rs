@@ -1050,15 +1050,7 @@ fn sign_btc(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         )?;
     }
 
-    let signed = psbt_mod::serialize_psbt(&psbt);
-    if output_buf.len() < signed.len() {
-        return Err(ShlosiloError::with_context(
-            ShlosiloErrorKind::BufferTooSmall,
-            crate::error::ErrorContext::RequiredLength(signed.len()),
-        ));
-    }
-    output_buf[..signed.len()].copy_from_slice(&signed);
-    Ok(signed.len())
+    psbt_mod::serialize_psbt_into(&psbt, output_buf)
 }
 
 /// ETH: eth-sign-request CBOR map → signed tx bytes

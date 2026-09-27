@@ -47,6 +47,7 @@ use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
 use crate::chain::btc::p2wpkh::{sign_p2wpkh, OutPoint, Transaction, TxIn, TxOut};
 use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::types::push::{CountSink, Sink, SinkCursor};
 use crate::types::SecretBytes;
 
 /// PSBT magic bytes: "psbt" + 0xff
@@ -139,49 +140,45 @@ impl<'a> EncodedMap<'a> {
         }
     }
 
-    fn add(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        // Remove any existing entry with the same key (PSBT spec: a key must have exactly one value)
-        self.entries.retain(|kv| kv.key.as_ref() != key.as_slice());
-        self.entries.push(KeyValue {
-            key: key.into(),
-            value: value.into(),
-        });
-    }
-
     fn get(&self, key: &[u8]) -> Option<&[u8]> {
         self.entries
             .iter()
             .find(|kv| kv.key.as_ref() == key)
             .map(|kv| kv.value.as_ref())
     }
+}
 
-    /// Serialize to bytes (keylen || key || valuelen || value)*
-    fn serialize(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        for kv in &self.entries {
-            encode_compact_size(&mut out, kv.key.len() as u64);
-            out.extend_from_slice(&kv.key);
-            encode_compact_size(&mut out, kv.value.len() as u64);
-            out.extend_from_slice(&kv.value);
-        }
-        out
+/// Compact size varint encoding (Bitcoin protocol standard), into a sink.
+/// Byte-identical to the legacy Vec form (the wire pins hold).
+fn put_compact_size(sink: &mut impl Sink, n: u64) -> Result<()> {
+    if n < 0xfd {
+        sink.put_u8(n as u8)
+    } else if n <= 0xffff {
+        sink.put(&[0xfd])?;
+        sink.put(&(n as u16).to_le_bytes())
+    } else if n <= 0xffff_ffff {
+        sink.put(&[0xfe])?;
+        sink.put(&(n as u32).to_le_bytes())
+    } else {
+        sink.put(&[0xff])?;
+        sink.put(&n.to_le_bytes())
     }
 }
 
-/// Compact size varint encoding (Bitcoin protocol standard)
-fn encode_compact_size(out: &mut Vec<u8>, n: u64) {
-    if n < 0xfd {
-        out.push(n as u8);
-    } else if n <= 0xffff {
-        out.push(0xfd);
-        out.extend_from_slice(&(n as u16).to_le_bytes());
-    } else if n <= 0xffff_ffff {
-        out.push(0xfe);
-        out.extend_from_slice(&(n as u32).to_le_bytes());
-    } else {
-        out.push(0xff);
-        out.extend_from_slice(&n.to_le_bytes());
+/// One map entry (keylen || key || valuelen || value).
+fn write_kv<S: Sink>(sink: &mut S, kv: &KeyValue<'_>) -> Result<()> {
+    put_compact_size(sink, kv.key.len() as u64)?;
+    sink.put(kv.key.as_ref())?;
+    put_compact_size(sink, kv.value.len() as u64)?;
+    sink.put(kv.value.as_ref())
+}
+
+/// Map entries + the 0x00 separator (keylen=0).
+fn write_map_entries<S: Sink>(sink: &mut S, entries: &[KeyValue<'_>]) -> Result<()> {
+    for kv in entries {
+        write_kv(sink, kv)?;
     }
+    sink.put_u8(0x00)
 }
 
 /// P0-01 (2026-09-01 audit #4): PSBT parser resource budget.
@@ -293,26 +290,44 @@ fn take_bytes<'a>(bytes: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u
     Ok(s)
 }
 
-/// Serialize unsigned tx (same as P2WPKH.legacy, without marker/flag)
-fn serialize_unsigned_tx(tx: &Transaction) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&tx.version.to_le_bytes());
-    encode_compact_size(&mut out, tx.inputs.len() as u64);
+/// Write the unsigned tx (same as P2WPKH.legacy, without marker/flag).
+fn write_unsigned_tx<S: Sink>(sink: &mut S, tx: &Transaction) -> Result<()> {
+    sink.put(&tx.version.to_le_bytes())?;
+    put_compact_size(sink, tx.inputs.len() as u64)?;
     for txin in &tx.inputs {
-        out.extend_from_slice(&txin.prev_out.txid);
-        out.extend_from_slice(&txin.prev_out.vout.to_le_bytes());
-        encode_compact_size(&mut out, txin.script_sig.len() as u64);
-        out.extend_from_slice(&txin.script_sig);
-        out.extend_from_slice(&txin.sequence.to_le_bytes());
+        sink.put(&txin.prev_out.txid)?;
+        sink.put(&txin.prev_out.vout.to_le_bytes())?;
+        put_compact_size(sink, txin.script_sig.len() as u64)?;
+        sink.put(&txin.script_sig)?;
+        sink.put(&txin.sequence.to_le_bytes())?;
     }
-    encode_compact_size(&mut out, tx.outputs.len() as u64);
+    put_compact_size(sink, tx.outputs.len() as u64)?;
     for txout in &tx.outputs {
-        out.extend_from_slice(&txout.value.to_le_bytes());
-        encode_compact_size(&mut out, txout.script_pubkey.len() as u64);
-        out.extend_from_slice(&txout.script_pubkey);
+        sink.put(&txout.value.to_le_bytes())?;
+        put_compact_size(sink, txout.script_pubkey.len() as u64)?;
+        sink.put(&txout.script_pubkey)?;
     }
-    out.extend_from_slice(&tx.lock_time.to_le_bytes());
-    out
+    sink.put(&tx.lock_time.to_le_bytes())
+}
+
+/// One PSBT: magic || global map || input maps || output maps.
+fn write_psbt<S: Sink>(sink: &mut S, psbt: &Psbt<'_>) -> Result<()> {
+    sink.put(&PSBT_MAGIC)?;
+    // global map: the UNSIGNED_TX entry (value = the serialized unsigned tx)
+    put_compact_size(sink, 1)?;
+    sink.put(&[global_type::UNSIGNED_TX])?;
+    let mut len = CountSink(0);
+    write_unsigned_tx(&mut len, &psbt.unsigned_tx)?;
+    put_compact_size(sink, len.0 as u64)?;
+    write_unsigned_tx(sink, &psbt.unsigned_tx)?;
+    sink.put_u8(0x00)?;
+    for entries in &psbt.inputs {
+        write_map_entries(sink, entries)?;
+    }
+    for entries in &psbt.outputs {
+        write_map_entries(sink, entries)?;
+    }
+    Ok(())
 }
 
 /// Deserialize unsigned tx (per PSBT format, without marker/flag/witness)
@@ -462,15 +477,6 @@ fn decode_map<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<EncodedMap<'a>> {
     }
 }
 
-/// Encode the global map: contains the unsigned tx
-fn encode_global_map(tx: &Transaction) -> EncodedMap<'static> {
-    let mut map = EncodedMap::new();
-    let key = vec![global_type::UNSIGNED_TX];
-    let value = serialize_unsigned_tx(tx);
-    map.add(key, value);
-    map
-}
-
 /// Parse PSBT bytes into Psbt struct
 pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt<'_>> {
     if bytes.len() < 5 {
@@ -517,34 +523,34 @@ pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt<'_>> {
     })
 }
 
-/// Serialize Psbt back to bytes
+/// Serialized length — the SAME writer body over an infallible counting
+/// sink (no twin length formula to drift).
+pub fn serialize_psbt_len(psbt: &Psbt<'_>) -> usize {
+    let mut len = CountSink(0);
+    write_psbt(&mut len, psbt).expect("counting sink is infallible");
+    len.0
+}
+
+/// Serialize into a caller buffer; over-capacity is an EXPLICIT error carrying
+/// the required length (same shape as the legacy Vec form produced).
+pub fn serialize_psbt_into(psbt: &Psbt<'_>, out: &mut [u8]) -> Result<usize> {
+    let need = serialize_psbt_len(psbt);
+    if out.len() < need {
+        return Err(ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(need),
+        ));
+    }
+    let mut sink = SinkCursor::new(out);
+    write_psbt(&mut sink, psbt)?;
+    Ok(sink.pos())
+}
+
+/// Test/staging convenience: one sized allocation, same bytes.
 pub fn serialize_psbt(psbt: &Psbt<'_>) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&PSBT_MAGIC);
-
-    // global map
-    let global_map = encode_global_map(&psbt.unsigned_tx);
-    out.extend_from_slice(&global_map.serialize());
-    out.push(0x00); // separator (keylen=0)
-
-    // input maps
-    for entries in &psbt.inputs {
-        let map = EncodedMap {
-            entries: entries.clone(),
-        };
-        out.extend_from_slice(&map.serialize());
-        out.push(0x00);
-    }
-
-    // output maps
-    for entries in &psbt.outputs {
-        let map = EncodedMap {
-            entries: entries.clone(),
-        };
-        out.extend_from_slice(&map.serialize());
-        out.push(0x00);
-    }
-
+    let mut out = vec![0u8; serialize_psbt_len(psbt)];
+    let n = serialize_psbt_into(psbt, &mut out).expect("sized buffer");
+    out.truncate(n);
     out
 }
 
@@ -698,9 +704,9 @@ pub fn sign_psbt_p2sh_p2wpkh(
     // 4. Extract witness → FINAL_SCRIPTWITNESS (serialize witness as bytes)
     let witness = &tx.inputs[input_idx].witness;
     let mut witness_bytes = Vec::new();
-    encode_compact_size(&mut witness_bytes, witness.len() as u64);
+    put_compact_size(&mut witness_bytes, witness.len() as u64)?;
     for item in witness {
-        encode_compact_size(&mut witness_bytes, item.len() as u64);
+        put_compact_size(&mut witness_bytes, item.len() as u64)?;
         witness_bytes.extend_from_slice(item);
     }
 
@@ -868,22 +874,7 @@ fn get_non_witness_utxo_bound(
 
     // txid binding: serialize back (using the same legacy serialization) → dsha256
     let mut ser = Vec::new();
-    ser.extend_from_slice(&full_tx.version.to_le_bytes());
-    encode_compact_size(&mut ser, full_tx.inputs.len() as u64);
-    for txin in &full_tx.inputs {
-        ser.extend_from_slice(&txin.prev_out.txid);
-        ser.extend_from_slice(&txin.prev_out.vout.to_le_bytes());
-        encode_compact_size(&mut ser, txin.script_sig.len() as u64);
-        ser.extend_from_slice(&txin.script_sig);
-        ser.extend_from_slice(&txin.sequence.to_le_bytes());
-    }
-    encode_compact_size(&mut ser, full_tx.outputs.len() as u64);
-    for txout in &full_tx.outputs {
-        ser.extend_from_slice(&txout.value.to_le_bytes());
-        encode_compact_size(&mut ser, txout.script_pubkey.len() as u64);
-        ser.extend_from_slice(&txout.script_pubkey);
-    }
-    ser.extend_from_slice(&full_tx.lock_time.to_le_bytes());
+    write_unsigned_tx(&mut ser, &full_tx).ok()?;
     let txid: [u8; 32] = sha256::hash_twice(&ser).ok()?;
 
     if txid != prev_out.txid {
@@ -1015,19 +1006,19 @@ mod tests {
     #[test]
     fn compact_size_round_trip() {
         let mut out = Vec::new();
-        encode_compact_size(&mut out, 10);
+        put_compact_size(&mut out, 10).unwrap();
         assert_eq!(out, vec![10]);
 
         out.clear();
-        encode_compact_size(&mut out, 0xfd);
+        put_compact_size(&mut out, 0xfd).unwrap();
         assert_eq!(out, vec![0xfd, 0xfd, 0x00]);
 
         out.clear();
-        encode_compact_size(&mut out, 0xffff);
+        put_compact_size(&mut out, 0xffff).unwrap();
         assert_eq!(out, vec![0xfd, 0xff, 0xff]);
 
         out.clear();
-        encode_compact_size(&mut out, 0x10000);
+        put_compact_size(&mut out, 0x10000).unwrap();
         assert_eq!(&out[..5], &[0xfe, 0x00, 0x00, 0x01, 0x00]);
     }
 
@@ -1138,10 +1129,11 @@ mod tests {
         };
         let mut witness_utxo_bytes = Vec::new();
         witness_utxo_bytes.extend_from_slice(&witness_utxo.value.to_le_bytes());
-        encode_compact_size(
+        put_compact_size(
             &mut witness_utxo_bytes,
             witness_utxo.script_pubkey.len() as u64,
-        );
+        )
+        .unwrap();
         witness_utxo_bytes.extend_from_slice(&witness_utxo.script_pubkey);
 
         let psbt = Psbt {
