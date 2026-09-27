@@ -136,7 +136,9 @@ struct EncodedMap<'a> {
 impl<'a> EncodedMap<'a> {
     fn new() -> Self {
         Self {
-            entries: Vec::new(),
+            // Z4-6: PSBT maps are conventionally <= 8 entries — one exact
+            // allocation instead of push-growth (over-reserve is ~8 records).
+            entries: Vec::with_capacity(8),
         }
     }
 
