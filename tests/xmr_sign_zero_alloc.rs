@@ -49,18 +49,26 @@ unsafe impl GlobalAlloc for Counting {
                 // code (shlosilo OR the vendored crates) — earlier revisions
                 // filtered to `shlosilo::` only and flattened every vendor
                 // site into the outer wrapper.
-                let frame = format!("{bt}")
-                    .lines()
-                    .skip(1)
-                    .filter(|l| {
-                        l.contains("shlosilo::")
-                            || l.contains("monero_bulletproofs::")
-                            || l.contains("monero_clsag::")
-                    })
-                    .take(2)
-                    .map(|l| l.trim())
-                    .collect::<Vec<&str>>()
-                    .join(" <- ");
+                let text = format!("{bt}");
+                let lines: Vec<&str> = text.lines().skip(1).collect();
+                // first OUR-code frame + its `at file:line` line (debug builds)
+                let mut frame = String::new();
+                for (i, l) in lines.iter().enumerate() {
+                    if l.contains("shlosilo::")
+                        || l.contains("monero_bulletproofs::")
+                        || l.contains("monero_clsag::")
+                    {
+                        frame.push_str(l.trim());
+                        if let Some(at) = lines.get(i + 1) {
+                            let at = at.trim();
+                            if at.starts_with("at ") {
+                                frame.push(' ');
+                                frame.push_str(at);
+                            }
+                        }
+                        break;
+                    }
+                }
                 *SITES.lock().unwrap().entry(frame).or_insert(0) += 1;
                 flag.set(false);
             });

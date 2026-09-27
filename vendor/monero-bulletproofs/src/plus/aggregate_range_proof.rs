@@ -124,7 +124,7 @@ impl<'a> AggregateRangeStatement<'a> {
     }
 
     fn compute_A_hat<'z>(
-        mut V: PointVector,
+        V: &[EdwardsPoint],
         generators: &BpPlusGenerators,
         transcript: &mut Scalar,
         A: CompressedPoint,
@@ -142,9 +142,8 @@ impl<'a> AggregateRangeStatement<'a> {
             .as_ref()
             .map(EdwardsPoint::mul_by_cofactor)?;
 
-        while V.len() < padded_pow_of_2(V.len()) {
-            V.0.push(EdwardsPoint::identity());
-        }
+        // (the caller pads V to a pow2 with identity tail — see the Z5.3
+        // tail cut; this fn consumes the padded slice)
         let mn = V.len() * COMMITMENT_BITS;
 
         // shlosilo vendor patch (Z5.3 cut 6): the z/d/y construction runs
@@ -196,7 +195,7 @@ impl<'a> AggregateRangeStatement<'a> {
         let y_mn_plus_one = descending_y[0] * y;
 
         let mut commitment_accum = EdwardsPoint::identity();
-        for (j, commitment) in V.0.iter().enumerate() {
+        for (j, commitment) in V.iter().enumerate() {
             commitment_accum += *commitment * z_pow[j];
         }
 
@@ -282,19 +281,26 @@ impl<'a> AggregateRangeStatement<'a> {
         // Commitments aren't transmitted INV_EIGHT though, so this multiplies by INV_EIGHT to enable
         // clearing its cofactor without mutating the value
         // For some reason, these values are transcripted * INV_EIGHT, not as transmitted
-        let V = V.iter().map(|V| V * INV_EIGHT.into()).collect::<Vec<_>>();
-        let mut transcript = initial_transcript(V.iter());
-        let mut V = V
-            .iter()
-            .map(EdwardsPoint::mul_by_cofactor)
-            .collect::<Vec<_>>();
-
-        // Pad V
-        while V.len() < padded_pow_of_2(V.len()) {
-            V.push(EdwardsPoint::identity());
+        // Z5.3 tail cut: V staging is one fixed array — scaled by INV_EIGHT,
+        // transcribed in that exact form (the wire convention), then folded by
+        // the cofactor in place; the pow2 pad is the identity tail. Same
+        // values, same transcript bytes (the pins hold).
+        let mut v_stg = [EdwardsPoint::identity(); crate::MAX_COMMITMENTS];
+        let mut v_len = V.len();
+        for (dst, src) in v_stg.iter_mut().zip(V.iter()) {
+            *dst = *src * INV_EIGHT.into();
         }
+        let mut transcript = initial_transcript(v_stg[..v_len].iter());
+        for i in 0..v_len {
+            v_stg[i] = v_stg[i].mul_by_cofactor();
+        }
+        let padded_v = padded_pow_of_2(v_len);
+        for i in v_len..padded_v {
+            v_stg[i] = EdwardsPoint::identity();
+        }
+        v_len = padded_v;
 
-        let generators = generators.reduce(V.len() * COMMITMENT_BITS);
+        let generators = generators.reduce(v_len * COMMITMENT_BITS);
 
         // Z5.3 tail: `d_js` was built and never read (dead collection — the
         // per-j `d_j` temporaries died with it); the amount decomposition now
@@ -374,7 +380,7 @@ impl<'a> AggregateRangeStatement<'a> {
             z_pow,
             A_hat,
         } = Self::compute_A_hat(
-            PointVector(V),
+            &v_stg[..v_len],
             &generators,
             &mut transcript,
             A,
@@ -469,8 +475,12 @@ impl<'a> AggregateRangeStatement<'a> {
             ) else {
                 return false;
             };
+            let mut verify_v_padded = V.clone();
+            while verify_v_padded.len() < padded_pow_of_2(verify_v_padded.len()) {
+                verify_v_padded.push(EdwardsPoint::identity());
+            }
             Self::compute_A_hat(
-                PointVector(V),
+                &verify_v_padded,
                 &generators,
                 &mut transcript,
                 proof.A,

@@ -292,11 +292,16 @@ fn derive_output(
     let stealth_address = hs.mul_basepoint_add_point(&b_dest);
 
     // view tag = keccak("view_tag" || 8Ra || varint(o))[0]
-    let mut vt_data = zeroize::Zeroizing::new(Vec::with_capacity(9 + 33));
-    vt_data.extend_from_slice(b"view_tag");
-    vt_data.extend_from_slice(&eight_ra);
-    monero_encode_varint(&mut vt_data, index as u64);
-    let vtag_full = zeroize::Zeroizing::new(crate::encoding::keccak256::hash(&vt_data)?);
+    let mut vt_data = zeroize::Zeroizing::new([0u8; 50]);
+    vt_data[..8].copy_from_slice(b"view_tag");
+    vt_data[8..40].copy_from_slice(&eight_ra);
+    let mut vt_len = 40usize;
+    crate::chain::xmr::transaction::monero_encode_varint_at(
+        &mut vt_data[..],
+        &mut vt_len,
+        index as u64,
+    )?;
+    let vtag_full = zeroize::Zeroizing::new(crate::encoding::keccak256::hash(&vt_data[..vt_len])?);
     let view_tag = vtag_full[0];
 
     // For subaddresses the additional key = r·B_sub (keystone should_use_additional_keys=false path:
@@ -320,9 +325,10 @@ fn derive_output(
 
 /// payment_id_xor = keccak(8Ra || 0x8d)[..8]
 fn payment_id_xor(ecdh_view_times_tx_pub: &[u8; 32]) -> [u8; 8] {
-    let mut data = Vec::with_capacity(33);
-    data.extend_from_slice(ecdh_view_times_tx_pub);
-    data.push(0x8d);
+    // Z5.3 tail cut: fixed stack staging (the Vec allocated per call).
+    let mut data = [0u8; 33];
+    data[..32].copy_from_slice(ecdh_view_times_tx_pub);
+    data[32] = 0x8d;
     let h = crate::encoding::keccak256::hash(&data).unwrap_or([0u8; 32]);
     let mut out = [0u8; 8];
     out.copy_from_slice(&h[..8]);
@@ -493,7 +499,31 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     };
     let change_eight_ra = change_ecdh_pt.mul_by_cofactor().compress().to_bytes();
 
-    let mut outs: Vec<OutInfo> = Vec::with_capacity(tx_data.splitted_dsts.len());
+    // Z5.3 tail cut: fixed per-output staging (the Vec grew per output; the
+    // placeholder owners are overwritten in-loop and zeroized on drop).
+    const OUTINFO_MAX: usize = crate::chain::xmr::transaction::PREFIX_OUTPUTS_MAX;
+    let outinfo_placeholder = || OutInfo {
+        deriv: OutputDerivation {
+            shared_key: crate::types::SecretBytes::new([0u8; 32]),
+            commitment_mask: crate::types::SecretBytes::new([0u8; 32]),
+            encrypted_amount: [0u8; 8],
+            stealth_address: [0u8; 32],
+            view_tag: 0,
+            additional_tx_key: None,
+        },
+        is_change: false,
+        dest: crate::chain::xmr::unsigned_txset::TxDestinationEntry {
+            original: heapless::Vec::new(),
+            amount: 0,
+            spend_public_key: [0u8; 32],
+            view_public_key: [0u8; 32],
+            is_subaddress: false,
+            is_integrated: false,
+        },
+        eight_ra_for_pid: None,
+    };
+    let mut outs: [OutInfo; OUTINFO_MAX] = core::array::from_fn(|_| outinfo_placeholder());
+    let mut outs_len = 0usize;
 
     for (i, dest) in tx_data.splitted_dsts.iter().enumerate() {
         let is_change = dest.amount == tx_data.change_dts.amount
@@ -539,7 +569,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             vt.extend_from_slice(&change_eight_ra);
             monero_encode_varint(&mut vt, i as u64);
             let vt_full = crate::encoding::keccak256::hash(&vt)?;
-            outs.push(OutInfo {
+            outs[outs_len] = OutInfo {
                 deriv: OutputDerivation {
                     shared_key,
                     commitment_mask,
@@ -551,21 +581,23 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
                 is_change: true,
                 dest: dest.clone(),
                 eight_ra_for_pid: Some(change_eight_ra),
-            });
+            };
+            outs_len += 1;
         } else {
             let deriv = derive_output(&r, view_sec, dest, &tx_pub, i)?;
-            outs.push(OutInfo {
+            outs[outs_len] = OutInfo {
                 deriv,
                 is_change: false,
                 dest: dest.clone(),
                 eight_ra_for_pid: None,
-            });
+            };
+            outs_len += 1;
         }
     }
 
     // ---- 3. extra（txpub + additional keys + payment_id XOR(change)）----
     let mut extra = TxExtra::new().with_tx_pub_key(tx_pub);
-    for o in &outs {
+    for o in &outs[..outs_len] {
         if !o.is_change {
             if let Some(add) = o.deriv.additional_tx_key {
                 extra = extra.with_additional_pub_key(add)?;
@@ -593,7 +625,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     let mut tx_outputs: [TxOutput; crate::chain::xmr::transaction::PREFIX_OUTPUTS_MAX] =
         core::array::from_fn(|_| TxOutput::new_tagged(0, [0u8; 32], 0));
     let mut tx_outputs_len = 0usize;
-    for o in &outs {
+    for o in &outs[..outs_len] {
         assert!(
             tx_outputs_len < crate::chain::xmr::transaction::PREFIX_OUTPUTS_MAX,
             "too many outputs"
@@ -717,8 +749,11 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
         zeroize::Zeroizing::new(core::array::from_fn::<MonCommitment, 16, _>(|_| {
             MonCommitment::new(monero_ed25519::Scalar::ZERO, 0)
         }));
-    let n_commitments = outs.len();
-    for (slot, o) in commitments[..n_commitments].iter_mut().zip(outs.iter()) {
+    let n_commitments = outs_len;
+    for (slot, o) in commitments[..n_commitments]
+        .iter_mut()
+        .zip(outs[..outs_len].iter())
+    {
         *slot = MonCommitment::new(
             bytes_to_monerod_scalar(o.deriv.commitment_mask.expose()),
             o.dest.amount,
@@ -773,10 +808,10 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             &mut off,
             compute_fee(tx_data),
         )?;
-        for o in &outs {
+        for o in &outs[..outs_len] {
             crate::types::push::push_slice(out, &mut off, &o.deriv.encrypted_amount)?;
         }
-        for o in &outs {
+        for o in &outs[..outs_len] {
             let c = MonCommitment::new(
                 bytes_to_monerod_scalar(o.deriv.commitment_mask.expose()),
                 o.dest.amount,
