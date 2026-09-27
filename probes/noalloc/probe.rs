@@ -8,6 +8,7 @@
 #![no_main]
 
 use core::panic::PanicInfo;
+#[cfg(feature = "lang-stub")]
 use core::alloc::{GlobalAlloc, Layout};
 
 #[panic_handler]
@@ -19,12 +20,16 @@ fn panic(_info: &PanicInfo) -> ! {
 // refuses to build a staticlib whose crate graph still references `alloc`
 // without a `#[global_allocator]`. The audit claim is therefore the
 // DISASSEMBLY check in build.sh: zero allocator call sites in reachable
-// code — this stub panics if one is ever reached at runtime. Dropping the
-// stub entirely (link with no allocator definition) becomes possible only
-// when the `alloc` crate leaves the crate graph altogether (Z4: the
-// verify/convenience Vec surfaces).
+// code — this stub panics if one is ever reached at runtime.
+//
+// Z6 lang-item GATE: build with `--no-default-features` (stub off) to probe
+// the GRAPH — while `alloc` is anywhere in the crate graph rustc reports
+// `no global memory allocator found`; a clean build there means the stub can
+// go for good. See scripts/z6_langitem_check.sh.
+#[cfg(feature = "lang-stub")]
 struct ForbiddingAlloc;
 
+#[cfg(feature = "lang-stub")]
 unsafe impl GlobalAlloc for ForbiddingAlloc {
     unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
         panic!("Z6: allocation reached in the no-alloc probe")
@@ -34,6 +39,7 @@ unsafe impl GlobalAlloc for ForbiddingAlloc {
     }
 }
 
+#[cfg(feature = "lang-stub")]
 #[global_allocator]
 static ALLOC: ForbiddingAlloc = ForbiddingAlloc;
 

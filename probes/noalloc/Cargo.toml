@@ -9,6 +9,12 @@ publish = false
 # with NO allocator. Any reachable allocation breaks the link with an
 # undefined `__rust_alloc*` — that failure IS the audit instrument.
 
+[features]
+# Z6 lang-item gate: the allocator stub (default). `--no-default-features`
+# probes the crate GRAPH — a clean build there is the no-allocator proof.
+default = ["lang-stub"]
+lang-stub = []
+
 [lib]
 path = "probe.rs"
 crate-type = ["staticlib"]
