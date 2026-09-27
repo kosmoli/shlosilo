@@ -8,6 +8,7 @@ __pycache__/
 flux/host-sim/sim_l3
 vendor/cryptonight/target
 vendor/*/target
+probes/*/target
 
 # local audit artifacts (reports are not committed per project convention)
 /功能核心整改*复审报告*.md
