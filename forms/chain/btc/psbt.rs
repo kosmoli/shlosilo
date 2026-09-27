@@ -273,7 +273,15 @@ impl<'a> MapPool<'a> {
         let base = self.wire.len() as u32;
         let k_off = (key.as_ptr() as usize - self.wire.as_ptr() as usize) as u32;
         let v_off = (value.as_ptr() as usize - self.wire.as_ptr() as usize) as u32;
-        debug_assert!(k_off < base && v_off < base);
+        // Input defence (fuzz crash-f3efbe50): a zero-length slice at the
+        // wire's end has off == base — the bounds are inclusive of the end
+        // for empty payloads. Malformed input is rejected with Err; the
+        // parse path must never panic.
+        let k_end = k_off.saturating_add(key.len() as u32);
+        let v_end = v_off.saturating_add(value.len() as u32);
+        if k_off > base || v_off > base || k_end > base || v_end > base {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
         self.recs[self.recs_len] = KvRec {
             key: (k_off, key.len() as u32),
             value: (v_off, value.len() as u32),
