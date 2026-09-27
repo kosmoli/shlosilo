@@ -72,6 +72,19 @@ impl VartimeMultiscalarMul for Pippenger {
     {
         use crate::traits::Identity;
 
+        // shlosilo vendor patch (Z6 link-surface): pippenger is alloc-only
+        // (bucket Vecs even for tiny counts). Zero-heap builds must use the
+        // straus inline/scratch paths; this impl compiles to a loud panic.
+        #[cfg(not(feature = "alloc-fallback"))]
+        {
+            let _ = (scalars, points);
+            panic!(
+                "shlosilo Z6: pippenger MSM is alloc-only and alloc-fallback is \
+                 disabled — use the straus scratch paths"
+            );
+        }
+        #[cfg(feature = "alloc-fallback")]
+        {
         let mut scalars = scalars.into_iter();
         let size = scalars.by_ref().size_hint().0;
 
@@ -157,6 +170,7 @@ impl VartimeMultiscalarMul for Pippenger {
         let hi_column = columns.next().expect("should have more than zero digits");
 
         Some(columns.fold(hi_column, |total, p| total.mul_by_pow_2(w as u32) + p))
+        }
     }
 }
 

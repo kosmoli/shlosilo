@@ -40,7 +40,9 @@ prove-timing = []
 # shlosilo vendor patch: transitional no-storage fallback (decompress into a
 # leaked Vec). Device builds (Z6 no-allocator acceptance) disable this and
 # MUST provide generator table storage up front.
-alloc-fallback = []
+# shlosilo: transitional alloc fallback (boxed errors, Vec cold paths,
+# dalek large-count MSM tails). Zero-heap builds disable it.
+alloc-fallback = ["curve25519-dalek/alloc-fallback"]
 default = [
     "std",
     "compile-time-generators",

@@ -12,6 +12,23 @@ use std_shims::{
 use rand_core::{CryptoRng, RngCore};
 
 use curve25519_dalek::traits::Identity as _;
+
+// Z6 link-surface: `io::Error::other` boxes its payload. With alloc-fallback
+// disabled (zero-heap builds) a ZST payload keeps the error KIND (Other) and
+// the explicit-Err contract without a heap round-trip; messages stay in alloc
+// builds.
+#[cfg(feature = "alloc-fallback")]
+pub(crate) fn ser_err(msg: &'static str) -> io::Error {
+    io::Error::other(msg)
+}
+
+#[cfg(not(feature = "alloc-fallback"))]
+pub(crate) fn ser_err(_msg: &'static str) -> io::Error {
+    #[derive(Debug)]
+    struct SerErr;
+    io::Error::other(SerErr)
+}
+
 use curve25519_dalek::EdwardsPoint;
 
 // shlosilo vendor patch: per-platform BP+ multiexp chunk tuning (core.rs).
@@ -48,6 +65,9 @@ pub use batch_verifier::BatchVerifier;
 use batch_verifier::{BulletproofsBatchVerifier, BulletproofsPlusBatchVerifier};
 
 pub(crate) mod original;
+// Z6 link-surface: the legacy Original line is alloc-fallback material —
+// its IpProof Vec fields put dealloc sites in the enum's shared drop glue.
+#[cfg(feature = "alloc-fallback")]
 use crate::original::{
     AggregateRangeProof as OriginalProof, AggregateRangeStatement as OriginalStatement,
     AggregateRangeWitness as OriginalWitness, IpProof,
@@ -95,6 +115,7 @@ pub enum BulletproofError {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Bulletproof {
+    #[cfg(feature = "alloc-fallback")]
     /// A Bulletproof.
     Original(OriginalProof),
     /// A Bulletproof+.
@@ -141,6 +162,7 @@ impl Bulletproof {
         (clawback, LR_len)
     }
 
+    #[cfg(feature = "alloc-fallback")]
     /// Prove the list of commitments are within [0 .. 2^64) with an aggregate Bulletproof.
     ///
     /// This function runs in time variable to the validity of the arguments and the public data.
@@ -252,6 +274,7 @@ impl Bulletproof {
         };
 
         match self {
+            #[cfg(feature = "alloc-fallback")]
             Bulletproof::Original(bp) => {
                 let mut verifier = BulletproofsBatchVerifier::default();
                 let Some(statement) = OriginalStatement::new(&commitments) else {
@@ -299,6 +322,7 @@ impl Bulletproof {
         };
 
         match self {
+            #[cfg(feature = "alloc-fallback")]
             Bulletproof::Original(bp) => {
                 let Some(statement) = OriginalStatement::new(&commitments) else {
                     return false;
@@ -322,6 +346,7 @@ impl Bulletproof {
         specific_write_vec: F,
     ) -> io::Result<()> {
         match self {
+            #[cfg(feature = "alloc-fallback")]
             Bulletproof::Original(bp) => {
                 bp.A.write(w)?;
                 bp.S.write(w)?;
@@ -395,13 +420,19 @@ impl Bulletproof {
                 let end = self
                     .pos
                     .checked_add(data.len())
-                    .ok_or_else(|| io::Error::other("overflow"))?;
+                    .ok_or_else(|| crate::ser_err("overflow"))?;
                 if end > self.buf.len() {
-                    return Err(io::Error::other("proof serialize buffer too small"));
+                    return Err(crate::ser_err("proof serialize buffer too small"));
                 }
                 self.buf[self.pos..end].copy_from_slice(data);
                 self.pos = end;
                 Ok(data.len())
+            }
+            // Z6 link-surface: override the default `write_all` (its
+            // short-write error path boxes the error payload). `write` is
+            // all-or-error by construction, so this is byte-equivalent.
+            fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+                self.write(data).map(|_| ())
             }
         }
         let mut w = SliceWriter { buf: out, pos: 0 };
@@ -421,13 +452,19 @@ impl Bulletproof {
                 let end = self
                     .pos
                     .checked_add(data.len())
-                    .ok_or_else(|| io::Error::other("overflow"))?;
+                    .ok_or_else(|| crate::ser_err("overflow"))?;
                 if end > self.buf.len() {
-                    return Err(io::Error::other("signature serialize buffer too small"));
+                    return Err(crate::ser_err("signature serialize buffer too small"));
                 }
                 self.buf[self.pos..end].copy_from_slice(data);
                 self.pos = end;
                 Ok(data.len())
+            }
+            // Z6 link-surface: override the default `write_all` (its
+            // short-write error path boxes the error payload). `write` is
+            // all-or-error by construction, so this is byte-equivalent.
+            fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+                self.write(data).map(|_| ())
             }
         }
         let mut w = SliceWriter { buf: out, pos: 0 };
@@ -443,6 +480,7 @@ impl Bulletproof {
         serialized
     }
 
+    #[cfg(feature = "alloc-fallback")]
     /// Read a Bulletproof.
     pub fn read<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
         Ok(Bulletproof::Original(OriginalProof {

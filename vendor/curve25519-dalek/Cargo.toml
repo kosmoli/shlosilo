@@ -137,9 +137,14 @@ perf-bench = []
 # over-inlines into ~10 KB / 3 KB stack vs the bench's compact ~2.5 KB
 # shape, which runs faster). Opt-in; forgebox never activates it.
 straus-compact-codegen = []
+# shlosilo vendor patch (Z6 link-surface): transitional alloc fallback —
+# the large-count Vec MSM tails and the precomputed-straus machinery.
+# Zero-heap builds disable it; the small-count inline/scratch paths stay.
+alloc-fallback = []
 alloc = ["zeroize?/alloc"]
 default = [
     "alloc",
+    "alloc-fallback",
     "precomputed-tables",
     "zeroize",
 ]

@@ -839,9 +839,10 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // Z5.3 tail: fixed buffer (the signature form is under 768 B for any
     // supported proof) instead of a Vec.
     let mut bp_sig_bytes = [0u8; 768];
-    let bp_sig_len = bp
-        .signature_serialize_into(&mut bp_sig_bytes)
-        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let bp_sig_len = crate::error::map_io_err(
+        bp.signature_serialize_into(&mut bp_sig_bytes),
+        ShlosiloErrorKind::EncodingInvalidFormat,
+    )?;
     // get_pre_mlsag_hash hashes the flattened BP+ fields first, then hashes
     // exactly three 32-byte keys: prefix hash, base hash, and BP+ fields hash.
     let bp_sig_hash = crate::encoding::keccak256::hash(&bp_sig_bytes[..bp_sig_len])?;
@@ -931,9 +932,10 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // Z5.3: nbp + the BP+ proof land in place as well; the tail assembler
     // only appends CLSAGs and pseudoOuts over the remaining slot.
     crate::types::push::push_slice(out, &mut off, &[1u8])?; // nbp varint = 1
-    let bp_wire_len = bp
-        .serialize_into(&mut out[off..])
-        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let bp_wire_len = crate::error::map_io_err(
+        bp.serialize_into(&mut out[off..]),
+        ShlosiloErrorKind::EncodingInvalidFormat,
+    )?;
     off += bp_wire_len;
     let mut sink = crate::types::push::SinkCursor::new(&mut out[off..]);
     let r = build_official_wire(

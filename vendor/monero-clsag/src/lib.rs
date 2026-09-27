@@ -10,6 +10,22 @@ use std_shims::{
 };
 
 use rand_core::{RngCore, CryptoRng};
+// Z6 link-surface: `io::Error::other` boxes its payload. With alloc-fallback
+// disabled (zero-heap builds) a ZST payload keeps the error KIND (Other) and
+// the explicit-Err contract without a heap round-trip; messages stay in alloc
+// builds.
+#[cfg(feature = "alloc-fallback")]
+pub(crate) fn ser_err(msg: &'static str) -> io::Error {
+  io::Error::other(msg)
+}
+
+#[cfg(not(feature = "alloc-fallback"))]
+pub(crate) fn ser_err(_msg: &'static str) -> io::Error {
+  #[derive(Debug)]
+  struct SerErr;
+  io::Error::other(SerErr)
+}
+
 
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 use subtle::{Choice, ConstantTimeEq as _, ConditionallySelectable as _};
@@ -17,8 +33,15 @@ use subtle::{Choice, ConstantTimeEq as _, ConditionallySelectable as _};
 use curve25519_dalek::{
   constants::ED25519_BASEPOINT_POINT,
   scalar::Scalar as DScalar,
-  traits::{IsIdentity as _, MultiscalarMul as _, VartimePrecomputedMultiscalarMul as _},
-  edwards::{EdwardsPoint, VartimeEdwardsPrecomputation},
+  traits::{IsIdentity as _, MultiscalarMul as _},
+  edwards::EdwardsPoint,
+};
+// Z6 link-surface: the verify-side precomputation machinery is
+// alloc-fallback material (Vec table builds).
+#[cfg(feature = "alloc-fallback")]
+use curve25519_dalek::{
+  edwards::VartimeEdwardsPrecomputation,
+  traits::VartimePrecomputedMultiscalarMul as _,
 };
 #[cfg(feature = "compile-time-generators")]
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
@@ -40,17 +63,17 @@ pub use multisig::{ClsagMultisigMaskSender, ClsagAddendum, ClsagMultisig};
 #[cfg(all(feature = "std", test))]
 mod tests;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", feature = "alloc-fallback"))]
 static G_PRECOMP_CELL: std_shims::sync::LazyLock<VartimeEdwardsPrecomputation> =
   std_shims::sync::LazyLock::new(|| VartimeEdwardsPrecomputation::new([ED25519_BASEPOINT_POINT]));
 /// A cached (if std) pre-computation of the Ed25519 generator, G.
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", feature = "alloc-fallback"))]
 #[allow(non_snake_case)]
 fn G_PRECOMP() -> &'static VartimeEdwardsPrecomputation {
   &G_PRECOMP_CELL
 }
 /// A cached (if std) pre-computation of the Ed25519 generator, G.
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), feature = "alloc-fallback"))]
 #[allow(non_snake_case)]
 fn G_PRECOMP() -> VartimeEdwardsPrecomputation {
   VartimeEdwardsPrecomputation::new([ED25519_BASEPOINT_POINT])
@@ -140,6 +163,7 @@ fn core(
 ) -> ((EdwardsPoint, DScalar, DScalar), DScalar) {
   let n = ring.len();
 
+  #[cfg(feature = "alloc-fallback")]
   let images_precomp = match A_c1 {
     Mode::Sign { .. } => None,
     Mode::Verify { .. } => Some(VartimeEdwardsPrecomputation::new([I, D_torsion_free])),
@@ -241,9 +265,14 @@ fn core(
         [s[i].into(), c_p, c_c],
         [ED25519_BASEPOINT_POINT, P[i], C[i]],
       ),
+      #[cfg(feature = "alloc-fallback")]
       Mode::Verify { .. } => {
         G_PRECOMP().vartime_mixed_multiscalar_mul([s[i].into()], [c_p, c_c], [P[i], C[i]])
       }
+      #[cfg(not(feature = "alloc-fallback"))]
+      Mode::Verify { .. } => panic!(
+        "shlosilo Z6: clsag verify requires alloc-fallback (precomputation Vecs)"
+      ),
     };
 
     let PH = Point::biased_hash(P[i].compress().0).into();
@@ -253,10 +282,15 @@ fn core(
       Mode::Sign { .. } => {
         EdwardsPoint::multiscalar_mul([c_p, c_c, s[i].into()], [I, D_torsion_free, &PH])
       }
+      #[cfg(feature = "alloc-fallback")]
       Mode::Verify { .. } => images_precomp
         .as_ref()
         .expect("value populated when verifying wasn't populated")
         .vartime_mixed_multiscalar_mul([c_p, c_c], [s[i].into()], [PH]),
+      #[cfg(not(feature = "alloc-fallback"))]
+      Mode::Verify { .. } => panic!(
+        "shlosilo Z6: clsag verify requires alloc-fallback (precomputation Vecs)"
+      ),
     };
 
     to_hash.truncate(((2 * n) + 3) * 32);
@@ -547,13 +581,19 @@ impl Clsag {
     impl<'a> Write for SliceWriter<'a> {
       fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         let end =
-          self.pos.checked_add(data.len()).ok_or_else(|| io::Error::other("overflow"))?;
+          self.pos.checked_add(data.len()).ok_or_else(|| crate::ser_err("overflow"))?;
         if end > self.buf.len() {
-          return Err(io::Error::other("clsag serialize buffer too small"));
+          return Err(crate::ser_err("clsag serialize buffer too small"));
         }
         self.buf[self.pos .. end].copy_from_slice(data);
         self.pos = end;
         Ok(data.len())
+      }
+      // Z6 link-surface: override the default `write_all` (its short-write
+      // error path boxes the error payload). `write` is all-or-error by
+      // construction, so this is byte-equivalent.
+      fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+        self.write(data).map(|_| ())
       }
     }
     let mut w = SliceWriter { buf: out, pos: 0 };

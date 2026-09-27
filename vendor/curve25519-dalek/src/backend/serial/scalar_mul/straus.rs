@@ -141,6 +141,16 @@ impl MultiscalarMul for Straus {
             return Q;
         }
 
+        // shlosilo vendor patch (Z6 link-surface): the large-count Vec tail is
+        // alloc-fallback material — zero-heap builds take the inline path only
+        // and route bigger work to `multiscalar_mul_scratch`.
+        #[cfg(not(feature = "alloc-fallback"))]
+        panic!(
+            "shlosilo Z6: multiscalar_mul count exceeds the inline path and \
+             alloc-fallback is disabled — provide scratch via multiscalar_mul_scratch"
+        );
+        #[cfg(feature = "alloc-fallback")]
+        {
         let lookup_tables: Vec<_> = points
             .map(|point| LookupTable::<ProjectiveNielsPoint>::from(point.borrow()))
             .collect();
@@ -169,6 +179,7 @@ impl MultiscalarMul for Straus {
         zeroize::Zeroize::zeroize(&mut scalar_digits);
 
         Q
+        }
     }
 }
 
@@ -348,6 +359,16 @@ impl VartimeMultiscalarMul for Straus {
             return Some(r.as_extended());
         }
 
+        // shlosilo vendor patch (Z6 link-surface): the large-count Vec tail is
+        // alloc-fallback material — zero-heap builds take the inline path only
+        // and route bigger work to `optional_multiscalar_mul_scratch`.
+        #[cfg(not(feature = "alloc-fallback"))]
+        panic!(
+            "shlosilo Z6: optional_multiscalar_mul count exceeds the inline path \
+             and alloc-fallback is disabled — provide scratch via the *_scratch API"
+        );
+        #[cfg(feature = "alloc-fallback")]
+        {
         let nafs: Vec<_> = scalars
             .map(|c| c.borrow().non_adjacent_form(5))
             .collect();
@@ -375,5 +396,6 @@ impl VartimeMultiscalarMul for Straus {
         }
 
         Some(r.as_extended())
+        }
     }
 }

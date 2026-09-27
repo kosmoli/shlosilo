@@ -222,9 +222,10 @@ pub fn sign<R: RngCore + CryptoRng>(
     // T-06: vendor `serialize_into` (bounded temp; CLSAG_PROOF_MAX covers the
     // whole proof, so the temp cannot overflow under the checked ring cap)
     let mut clsag_tmp = [0u8; crate::types::caps::CLSAG_PROOF_MAX];
-    let m = clsag
-        .serialize_into(&mut clsag_tmp)
-        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let m = crate::error::map_io_err(
+        clsag.serialize_into(&mut clsag_tmp),
+        ShlosiloErrorKind::EncodingInvalidFormat,
+    )?;
     let _ = bytes.extend_from_slice(&clsag_tmp[..m]);
 
     Ok((

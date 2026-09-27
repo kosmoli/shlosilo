@@ -15,10 +15,14 @@ fn panic(_info: &PanicInfo) -> ! {
     loop {}
 }
 
-// TEMPORARY (Z6 enumeration phase): a forbidding allocator so the crate graph
-// compiles while we collect the remaining alloc call sites via `nm`. It is
-// REMOVED in the final state — the proof is the probe building with NO
-// allocator definition at all.
+// Lang-item stub (the Z6 link proof's compile-time requirement): rustc
+// refuses to build a staticlib whose crate graph still references `alloc`
+// without a `#[global_allocator]`. The audit claim is therefore the
+// DISASSEMBLY check in build.sh: zero allocator call sites in reachable
+// code — this stub panics if one is ever reached at runtime. Dropping the
+// stub entirely (link with no allocator definition) becomes possible only
+// when the `alloc` crate leaves the crate graph altogether (Z4: the
+// verify/convenience Vec surfaces).
 struct ForbiddingAlloc;
 
 unsafe impl GlobalAlloc for ForbiddingAlloc {

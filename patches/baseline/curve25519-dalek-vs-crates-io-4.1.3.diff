@@ -370,8 +370,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -);
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	1970-01-01 08:00:01.000000000 +0800
-+++ b/Cargo.toml	2026-09-15 12:12:11.258716490 +0800
-@@ -127,6 +127,16 @@
++++ b/Cargo.toml	2026-09-27 16:01:41.752125400 +0800
+@@ -127,9 +127,24 @@
  version = "0.4.0"
  
  [features]
@@ -385,9 +385,17 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +# over-inlines into ~10 KB / 3 KB stack vs the bench's compact ~2.5 KB
 +# shape, which runs faster). Opt-in; forgebox never activates it.
 +straus-compact-codegen = []
++# shlosilo vendor patch (Z6 link-surface): transitional alloc fallback —
++# the large-count Vec MSM tails and the precomputed-straus machinery.
++# Zero-heap builds disable it; the small-count inline/scratch paths stay.
++alloc-fallback = []
  alloc = ["zeroize?/alloc"]
  default = [
      "alloc",
++    "alloc-fallback",
+     "precomputed-tables",
+     "zeroize",
+ ]
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml.orig b/Cargo.toml.orig
 --- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
 +++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
@@ -859,10 +867,41 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
      fn add(self, other: &'b ProjectiveNielsPoint) -> CompletedPoint {
          let Y_plus_X = &self.Y + &self.X;
          let Y_minus_X = &self.Y - &self.X;
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/scalar_mul/pippenger.rs b/src/backend/serial/scalar_mul/pippenger.rs
+--- a/src/backend/serial/scalar_mul/pippenger.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/backend/serial/scalar_mul/pippenger.rs	2026-09-27 16:02:00.451516317 +0800
+@@ -72,6 +72,19 @@
+     {
+         use crate::traits::Identity;
+ 
++        // shlosilo vendor patch (Z6 link-surface): pippenger is alloc-only
++        // (bucket Vecs even for tiny counts). Zero-heap builds must use the
++        // straus inline/scratch paths; this impl compiles to a loud panic.
++        #[cfg(not(feature = "alloc-fallback"))]
++        {
++            let _ = (scalars, points);
++            panic!(
++                "shlosilo Z6: pippenger MSM is alloc-only and alloc-fallback is \
++                 disabled — use the straus scratch paths"
++            );
++        }
++        #[cfg(feature = "alloc-fallback")]
++        {
+         let mut scalars = scalars.into_iter();
+         let size = scalars.by_ref().size_hint().0;
+ 
+@@ -157,6 +170,7 @@
+         let hi_column = columns.next().expect("should have more than zero digits");
+ 
+         Some(columns.fold(hi_column, |total, p| total.mul_by_pow_2(w as u32) + p))
++        }
+     }
+ }
+ 
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/scalar_mul/straus.rs b/src/backend/serial/scalar_mul/straus.rs
 --- a/src/backend/serial/scalar_mul/straus.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/serial/scalar_mul/straus.rs	2026-09-27 01:00:41.380118275 +0800
-@@ -111,8 +111,37 @@
++++ b/src/backend/serial/scalar_mul/straus.rs	2026-09-27 16:01:41.752659170 +0800
+@@ -111,8 +111,47 @@
          use crate::traits::Identity;
          use crate::window::LookupTable;
  
@@ -896,12 +935,22 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            return Q;
 +        }
 +
++        // shlosilo vendor patch (Z6 link-surface): the large-count Vec tail is
++        // alloc-fallback material — zero-heap builds take the inline path only
++        // and route bigger work to `multiscalar_mul_scratch`.
++        #[cfg(not(feature = "alloc-fallback"))]
++        panic!(
++            "shlosilo Z6: multiscalar_mul count exceeds the inline path and \
++             alloc-fallback is disabled — provide scratch via multiscalar_mul_scratch"
++        );
++        #[cfg(feature = "alloc-fallback")]
++        {
          let lookup_tables: Vec<_> = points
 -            .into_iter()
              .map(|point| LookupTable::<ProjectiveNielsPoint>::from(point.borrow()))
              .collect();
  
-@@ -121,7 +150,6 @@
+@@ -121,7 +160,6 @@
          // Zeroizing wrapper.
          #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
          let mut scalar_digits: Vec<_> = scalars
@@ -909,10 +958,14 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
              .map(|s| s.borrow().as_radix_16())
              .collect();
  
-@@ -144,6 +172,123 @@
-     }
- }
+@@ -141,6 +179,124 @@
+         zeroize::Zeroize::zeroize(&mut scalar_digits);
  
+         Q
++        }
++    }
++}
++
 +impl Straus {
 +    /// shlosilo vendor patch (Z5.3 D-cut): ct Straus over caller scratch
 +    /// (device path). Same tables/digits/loop as `multiscalar_mul`; the
@@ -1027,13 +1080,10 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            r = t.as_projective();
 +        }
 +        Ok(Some(r.as_extended()))
-+    }
-+}
-+
- impl VartimeMultiscalarMul for Straus {
-     type Point = EdwardsPoint;
+     }
+ }
  
-@@ -168,13 +313,46 @@
+@@ -168,13 +324,56 @@
          use crate::traits::Identity;
          use crate::window::NafLookupTable5;
  
@@ -1072,6 +1122,16 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            return Some(r.as_extended());
 +        }
 +
++        // shlosilo vendor patch (Z6 link-surface): the large-count Vec tail is
++        // alloc-fallback material — zero-heap builds take the inline path only
++        // and route bigger work to `optional_multiscalar_mul_scratch`.
++        #[cfg(not(feature = "alloc-fallback"))]
++        panic!(
++            "shlosilo Z6: optional_multiscalar_mul count exceeds the inline path \
++             and alloc-fallback is disabled — provide scratch via the *_scratch API"
++        );
++        #[cfg(feature = "alloc-fallback")]
++        {
          let nafs: Vec<_> = scalars
 -            .into_iter()
              .map(|c| c.borrow().non_adjacent_form(5))
@@ -1082,6 +1142,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
              .map(|P_opt| P_opt.map(|P| NafLookupTable5::<ProjectiveNielsPoint>::from(&P)))
              .collect::<Option<Vec<_>>>()?;
  
+@@ -197,5 +396,6 @@
+         }
+ 
+         Some(r.as_extended())
++        }
+     }
+ }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/vector/scalar_mul/straus.rs b/src/backend/vector/scalar_mul/straus.rs
 --- a/src/backend/vector/scalar_mul/straus.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/backend/vector/scalar_mul/straus.rs	2026-09-27 01:00:41.380172203 +0800

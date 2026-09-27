@@ -1,7 +1,21 @@
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
-+++ b/Cargo.toml	2026-09-26 14:50:26.056646010 +0800
-@@ -105,6 +105,11 @@
++++ b/Cargo.toml	2026-09-27 16:02:08.255564711 +0800
+@@ -35,9 +35,13 @@
+ 
+ [features]
+ compile-time-generators = ["curve25519-dalek/precomputed-tables"]
++# shlosilo: transitional alloc fallback (boxed error payloads, Vec cold
++# paths). Zero-heap builds disable it and take the fixed-cap/cfg arms.
++alloc-fallback = ["curve25519-dalek/alloc-fallback"]
+ default = [
+     "std",
+     "compile-time-generators",
++    "alloc-fallback",
+ ]
+ multisig = [
+     "rand_chacha",
+@@ -105,6 +109,11 @@
  version = "0.6"
  default-features = false
  
@@ -320,8 +334,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-26 16:50:32.940996974 +0800
-@@ -5,7 +5,6 @@
++++ b/src/lib.rs	2026-09-27 16:14:54.582162325 +0800
+@@ -5,12 +5,27 @@
  
  use core::ops::Deref as _;
  use std_shims::{
@@ -329,7 +343,46 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
    vec::Vec,
    io::{self, Read, Write},
  };
-@@ -30,7 +29,7 @@
+ 
+ use rand_core::{RngCore, CryptoRng};
++// Z6 link-surface: `io::Error::other` boxes its payload. With alloc-fallback
++// disabled (zero-heap builds) a ZST payload keeps the error KIND (Other) and
++// the explicit-Err contract without a heap round-trip; messages stay in alloc
++// builds.
++#[cfg(feature = "alloc-fallback")]
++pub(crate) fn ser_err(msg: &'static str) -> io::Error {
++  io::Error::other(msg)
++}
++
++#[cfg(not(feature = "alloc-fallback"))]
++pub(crate) fn ser_err(_msg: &'static str) -> io::Error {
++  #[derive(Debug)]
++  struct SerErr;
++  io::Error::other(SerErr)
++}
++
+ 
+ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+ use subtle::{Choice, ConstantTimeEq as _, ConditionallySelectable as _};
+@@ -18,8 +33,15 @@
+ use curve25519_dalek::{
+   constants::ED25519_BASEPOINT_POINT,
+   scalar::Scalar as DScalar,
+-  traits::{IsIdentity as _, MultiscalarMul as _, VartimePrecomputedMultiscalarMul as _},
+-  edwards::{EdwardsPoint, VartimeEdwardsPrecomputation},
++  traits::{IsIdentity as _, MultiscalarMul as _},
++  edwards::EdwardsPoint,
++};
++// Z6 link-surface: the verify-side precomputation machinery is
++// alloc-fallback material (Vec table builds).
++#[cfg(feature = "alloc-fallback")]
++use curve25519_dalek::{
++  edwards::VartimeEdwardsPrecomputation,
++  traits::VartimePrecomputedMultiscalarMul as _,
+ };
+ #[cfg(feature = "compile-time-generators")]
+ use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+@@ -30,7 +52,7 @@
  use monero_ed25519::*;
  
  mod decoys;
@@ -338,7 +391,28 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  pub use decoys::Decoys;
  
  #[cfg(feature = "multisig")]
-@@ -63,6 +62,9 @@
+@@ -41,17 +63,17 @@
+ #[cfg(all(feature = "std", test))]
+ mod tests;
+ 
+-#[cfg(feature = "std")]
++#[cfg(all(feature = "std", feature = "alloc-fallback"))]
+ static G_PRECOMP_CELL: std_shims::sync::LazyLock<VartimeEdwardsPrecomputation> =
+   std_shims::sync::LazyLock::new(|| VartimeEdwardsPrecomputation::new([ED25519_BASEPOINT_POINT]));
+ /// A cached (if std) pre-computation of the Ed25519 generator, G.
+-#[cfg(feature = "std")]
++#[cfg(all(feature = "std", feature = "alloc-fallback"))]
+ #[allow(non_snake_case)]
+ fn G_PRECOMP() -> &'static VartimeEdwardsPrecomputation {
+   &G_PRECOMP_CELL
+ }
+ /// A cached (if std) pre-computation of the Ed25519 generator, G.
+-#[cfg(not(feature = "std"))]
++#[cfg(all(not(feature = "std"), feature = "alloc-fallback"))]
+ #[allow(non_snake_case)]
+ fn G_PRECOMP() -> VartimeEdwardsPrecomputation {
+   VartimeEdwardsPrecomputation::new([ED25519_BASEPOINT_POINT])
+@@ -63,6 +85,9 @@
    /// The ring was invalid (such as being too small or too large).
    #[error("invalid ring")]
    InvalidRing,
@@ -348,7 +422,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
    /// The discrete logarithm of the key, scaling G, wasn't equivalent to the signing ring member.
    #[error("invalid commitment")]
    InvalidKey,
-@@ -83,6 +85,17 @@
+@@ -83,6 +108,17 @@
    InvalidC1,
  }
  
@@ -366,7 +440,15 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  /// Context on the input being signed for.
  #[derive(Clone, Zeroize, ZeroizeOnDrop)]
  pub struct ClsagContext {
-@@ -142,33 +155,35 @@
+@@ -127,6 +163,7 @@
+ ) -> ((EdwardsPoint, DScalar, DScalar), DScalar) {
+   let n = ring.len();
+ 
++  #[cfg(feature = "alloc-fallback")]
+   let images_precomp = match A_c1 {
+     Mode::Sign { .. } => None,
+     Mode::Verify { .. } => Some(VartimeEdwardsPrecomputation::new([I, D_torsion_free])),
+@@ -142,33 +179,35 @@
    const ROUND: &[u8]  =       b"round";
    const PREFIX_AGG_0_LEN: usize = PREFIX.len() + AGG_0.len();
  
@@ -415,7 +497,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
    // mu_P with agg_0
    let mu_P = Scalar::hash(&to_hash).into();
    // mu_C with agg_1
-@@ -182,8 +197,8 @@
+@@ -182,8 +221,8 @@
    }
    // Unfortunately, it's I D pseudo_out instead of pseudo_out I D, meaning this needs to be
    // truncated just to add it back
@@ -426,7 +508,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  
    // Configure the loop based on if we're signing or verifying
    let start;
-@@ -196,8 +211,8 @@
+@@ -196,8 +235,8 @@
        start = signer_index + 1;
        end = signer_index + n;
        iter_end = 2 * n;
@@ -437,7 +519,34 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        c = Scalar::hash(&to_hash).into();
      }
  
-@@ -245,8 +260,8 @@
+@@ -226,9 +265,14 @@
+         [s[i].into(), c_p, c_c],
+         [ED25519_BASEPOINT_POINT, P[i], C[i]],
+       ),
++      #[cfg(feature = "alloc-fallback")]
+       Mode::Verify { .. } => {
+         G_PRECOMP().vartime_mixed_multiscalar_mul([s[i].into()], [c_p, c_c], [P[i], C[i]])
+       }
++      #[cfg(not(feature = "alloc-fallback"))]
++      Mode::Verify { .. } => panic!(
++        "shlosilo Z6: clsag verify requires alloc-fallback (precomputation Vecs)"
++      ),
+     };
+ 
+     let PH = Point::biased_hash(P[i].compress().0).into();
+@@ -238,15 +282,20 @@
+       Mode::Sign { .. } => {
+         EdwardsPoint::multiscalar_mul([c_p, c_c, s[i].into()], [I, D_torsion_free, &PH])
+       }
++      #[cfg(feature = "alloc-fallback")]
+       Mode::Verify { .. } => images_precomp
+         .as_ref()
+         .expect("value populated when verifying wasn't populated")
+         .vartime_mixed_multiscalar_mul([c_p, c_c], [s[i].into()], [PH]),
++      #[cfg(not(feature = "alloc-fallback"))]
++      Mode::Verify { .. } => panic!(
++        "shlosilo Z6: clsag verify requires alloc-fallback (precomputation Vecs)"
++      ),
      };
  
      to_hash.truncate(((2 * n) + 3) * 32);
@@ -448,7 +557,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
      c.conditional_assign(&Scalar::hash(&to_hash).into(), in_range);
  
      c1.conditional_assign(&c, in_range & i.ct_eq(&(n - 1)));
-@@ -257,12 +272,15 @@
+@@ -257,12 +306,15 @@
  }
  
  /// The CLSAG signature, as used in Monero.
@@ -466,7 +575,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
    /// The first challenge in the ring.
    pub c1: Scalar,
  }
-@@ -274,6 +292,17 @@
+@@ -274,6 +326,17 @@
    challenged_mask: DScalar,
  }
  
@@ -484,7 +593,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  impl Clsag {
    // Sign core is the extension of core as needed for signing, yet is shared between single signer
    // and multisig, hence why it's still core
-@@ -293,9 +322,9 @@
+@@ -293,9 +356,9 @@
  
      let H = Point::biased_hash(input.decoys.signer_ring_members()[0].compress().to_bytes()).into();
      let D = H * mask_delta;
@@ -496,7 +605,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
      }
      let ((D, c_p, c_c), c1) = core(
        input.decoys.ring(),
-@@ -342,16 +371,26 @@
+@@ -342,16 +405,26 @@
    /// WARNING: This follows the Fiat-Shamir transcript format used by the Monero protocol, which
    /// makes assumptions on what has already been transcripted and bound to within `msg_hash`. Do
    /// not use this if you don't know what you're doing.
@@ -528,7 +637,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        let key = Zeroizing::new((*input.0.deref()).into());
        let public_key = input.1.decoys.signer_ring_members()[0].into();
  
-@@ -361,11 +400,11 @@
+@@ -361,11 +434,11 @@
        }
  
        let key_image_generator = Point::biased_hash(public_key.compress().0).into();
@@ -543,7 +652,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
      let mut sum_pseudo_outs = DScalar::ZERO;
      for i in 0 .. inputs.len() {
        let mask;
-@@ -411,19 +450,28 @@
+@@ -411,19 +484,28 @@
        inputs[i].0.zeroize();
        nonce.zeroize();
  
@@ -582,7 +691,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
    }
  
    /// Verify a CLSAG signature for the provided context.
-@@ -433,7 +481,7 @@
+@@ -433,7 +515,7 @@
    /// not use this if you don't know what you're doing.
    pub fn verify(
      &self,
@@ -591,7 +700,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
      I: &CompressedPoint,
      pseudo_out: &CompressedPoint,
      msg_hash: &[u8; 32],
-@@ -489,12 +537,41 @@
+@@ -489,12 +571,47 @@
      self.D.write(w)
    }
  
@@ -605,13 +714,19 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    impl<'a> Write for SliceWriter<'a> {
 +      fn write(&mut self, data: &[u8]) -> io::Result<usize> {
 +        let end =
-+          self.pos.checked_add(data.len()).ok_or_else(|| io::Error::other("overflow"))?;
++          self.pos.checked_add(data.len()).ok_or_else(|| crate::ser_err("overflow"))?;
 +        if end > self.buf.len() {
-+          return Err(io::Error::other("clsag serialize buffer too small"));
++          return Err(crate::ser_err("clsag serialize buffer too small"));
 +        }
 +        self.buf[self.pos .. end].copy_from_slice(data);
 +        self.pos = end;
 +        Ok(data.len())
++      }
++      // Z6 link-surface: override the default `write_all` (its short-write
++      // error path boxes the error payload). `write` is all-or-error by
++      // construction, so this is byte-equivalent.
++      fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
++        self.write(data).map(|_| ())
 +      }
 +    }
 +    let mut w = SliceWriter { buf: out, pos: 0 };

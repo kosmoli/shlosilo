@@ -157,6 +157,27 @@ impl ShlosiloError {
     }
 }
 
+/// Z6 link-surface: consume a foreign `Err` payload WITHOUT dropping it, so
+/// the shared `Box<dyn Send + Sync>` drop glue (an allocator call site) stays
+/// off zero-heap link surfaces. Alloc builds drop normally; zero-heap builds
+/// forget the payload (a ZST there) — semantics of the returned error are
+/// unchanged either way.
+pub(crate) fn map_io_err<T, E>(
+    r: core::result::Result<T, E>,
+    kind: ShlosiloErrorKind,
+) -> Result<T> {
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            #[cfg(feature = "alloc-fallback")]
+            drop(e);
+            #[cfg(not(feature = "alloc-fallback"))]
+            core::mem::forget(e);
+            Err(ShlosiloError::new(kind))
+        }
+    }
+}
+
 impl fmt::Display for ShlosiloError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (&self.kind, &self.context) {
