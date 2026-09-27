@@ -3100,7 +3100,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.rs
 --- a/src/plus/aggregate_range_proof.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/aggregate_range_proof.rs	2026-09-27 10:34:39.264039068 +0800
++++ b/src/plus/aggregate_range_proof.rs	2026-09-27 14:52:24.609679958 +0800
 @@ -1,21 +1,47 @@
  use std_shims::{vec, vec::Vec};
  
@@ -3161,7 +3161,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  };
  
  const INV_EIGHT: monero_ed25519::Scalar = monero_ed25519::Scalar::INV_EIGHT;
-@@ -23,249 +49,451 @@
+@@ -23,249 +49,460 @@
  // Figure 3 of the Bulletproofs+ Paper
  #[derive(Clone, Debug)]
  pub(crate) struct AggregateRangeStatement<'a> {
@@ -3436,6 +3436,15 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        }
 +
 +        let d = &mut p_d[..mn];
++        // Z6 link-surface audit fix: the C-cut E scratch move dropped the
++        // zero-init the old `ScalarVector::new(mn)` provided — `+=` over a
++        // REUSED WipScratch accumulated stale values from the previous prove
++        // (every second-and-later sign produced an invalid proof). Zero the
++        // region first; same values as the old zero-backed Vec, byte-identical
++        // first-prove outputs, correct subsequent proves.
++        for e in d.iter_mut() {
++            *e = Scalar::ZERO;
++        }
 +        for j in 1..=V.len() {
 +            // d += d_j(j) * z_pow[j-1]; d_j is zero outside its 2^k block
 +            let zj = z_pow[j - 1];

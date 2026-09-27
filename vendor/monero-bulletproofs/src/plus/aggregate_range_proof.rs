@@ -162,6 +162,15 @@ impl<'a> AggregateRangeStatement<'a> {
         }
 
         let d = &mut p_d[..mn];
+        // Z6 link-surface audit fix: the C-cut E scratch move dropped the
+        // zero-init the old `ScalarVector::new(mn)` provided — `+=` over a
+        // REUSED WipScratch accumulated stale values from the previous prove
+        // (every second-and-later sign produced an invalid proof). Zero the
+        // region first; same values as the old zero-backed Vec, byte-identical
+        // first-prove outputs, correct subsequent proves.
+        for e in d.iter_mut() {
+            *e = Scalar::ZERO;
+        }
         for j in 1..=V.len() {
             // d += d_j(j) * z_pow[j-1]; d_j is zero outside its 2^k block
             let zj = z_pow[j - 1];

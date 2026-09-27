@@ -188,7 +188,7 @@ fn bt_typed_sign_zero_alloc() {
 /// deploy shape is used: caller storage provided (SignWs + generator tables).
 /// Env-gated like p63 (real fixture keys).
 #[test]
-#[ignore = "Z6: requires SHLOSILO_TEST_XMR_* env (P2IN keys) AND currently measures 4476 allocs in the L2b glue (Z4 debt) — flip to enforced when both clear"]
+#[ignore = "Z6: requires SHLOSILO_TEST_XMR_* env (P2IN keys). Release form = zero-count receipt (0 allocs); debug form = relation shadow + re-sign byte-equality pin"]
 fn xmr_sign_zero_alloc() {
     use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into;
     use shlosilo::chain::xmr::unsigned_txset::{
@@ -303,10 +303,15 @@ fn xmr_sign_zero_alloc() {
     )
     .expect("warm-up sign");
     assert!(n > 0);
+    // Z6 regression pin: the measured sign REUSES the same WipScratch, so the
+    // two runs must be byte-identical (fixed RNG seeds + same fixture). A
+    // stale-scratch read-modify-write in the prove path (the C-cut E d-accident)
+    // only strikes on the second-and-later prove and shows up right here.
+    let warmup_bytes = out[..n].to_vec();
 
     let mut bp_rng = rand_chacha::ChaCha20Rng::from_seed([0xB1u8; 32]);
     let mut clsag_rng = rand_chacha::ChaCha20Rng::from_seed([0xC1u8; 32]);
-    let (_n, events) = measured(|| {
+    let (n2, events) = measured(|| {
         sign_tx_from_construction_with_rngs_into(
             tx_data,
             &spend_sk,
@@ -322,9 +327,21 @@ fn xmr_sign_zero_alloc() {
         .expect("measured sign")
     });
     assert_eq!(
-        events, 0,
-        "Z6: the XMR sign path allocated {events} time(s)"
+        &out[..n2],
+        &warmup_bytes[..],
+        "Z6: reusing the WipScratch must be deterministic (byte-identical re-sign)"
     );
+    // The zero-count receipt is RELEASE-form: under debug_assertions the
+    // relation shadow in wip::prove stages its own Vecs and would count
+    // against the budget. The debug form of this test is still meaningful —
+    // the shadow's relation assert runs on both signs and the byte-equality
+    // pin above holds.
+    if !cfg!(debug_assertions) {
+        assert_eq!(
+            events, 0,
+            "Z6: the XMR sign path allocated {events} time(s)"
+        );
+    }
 }
 
 /// Z4 diagnosis: allocation-site histogram over one XMR sign (ignored; the
