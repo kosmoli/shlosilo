@@ -40,6 +40,7 @@
 
 extern crate alloc;
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
+#[cfg(test)]
 use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
@@ -163,21 +164,33 @@ impl TxOut {
 
 /// BTC varint encoding (used for script_pubkey length etc.)
 pub fn encode_varint(out: &mut Vec<u8>, n: u64) {
+    let mut buf = [0u8; 9];
+    let len = encode_varint_buf(&mut buf, n);
+    out.extend_from_slice(&buf[..len]);
+}
+
+/// Z4-3: BTC varint into a stack buffer; returns the encoded length.
+fn encode_varint_buf(buf: &mut [u8; 9], n: u64) -> usize {
     if n < 0xfd {
-        out.push(n as u8);
+        buf[0] = n as u8;
+        1
     } else if n <= 0xffff {
-        out.push(0xfd);
-        out.extend_from_slice(&(n as u16).to_le_bytes());
+        buf[0] = 0xfd;
+        buf[1..3].copy_from_slice(&(n as u16).to_le_bytes());
+        3
     } else if n <= 0xffff_ffff {
-        out.push(0xfe);
-        out.extend_from_slice(&(n as u32).to_le_bytes());
+        buf[0] = 0xfe;
+        buf[1..5].copy_from_slice(&(n as u32).to_le_bytes());
+        5
     } else {
-        out.push(0xff);
-        out.extend_from_slice(&n.to_le_bytes());
+        buf[0] = 0xff;
+        buf[1..9].copy_from_slice(&n.to_le_bytes());
+        9
     }
 }
 
 /// double SHA-256 (used by BIP-143 hashPrevouts / hashSequence / hashOutputs alike)
+#[cfg(test)]
 fn dsha256(data: &[u8]) -> Result<[u8; 32]> {
     let h1 = sha256::hash(data)?;
     sha256::hash(&h1)
@@ -209,57 +222,68 @@ pub fn segwit_sighash_p2wpkh(
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // BIP-143: hashPrevouts
-    // SIGHASH_ALL: dSHA256(all prevouts serialized)
-    // SIGHASH_ALL without ANYONECANPAY
+    // Z4-3: the BIP-143 digest tree is STREAMED — sha2 updates over the tx
+    // fields, no serialized-segment staging Vecs. Byte-identical: the outer
+    // double hash covers exactly the same concatenated bytes.
+    use sha2::Digest as _;
+
+    // hashPrevouts: dSHA256(all prevouts serialized) — SIGHASH_ALL,
+    // without ANYONECANPAY
     let hash_prevouts = {
-        let mut buf = Vec::with_capacity(36 * tx.inputs.len());
+        let mut inner = sha2::Sha256::new();
         for txin in &tx.inputs {
-            buf.extend_from_slice(&txin.prev_out.txid);
-            buf.extend_from_slice(&txin.prev_out.vout.to_le_bytes());
+            inner.update(txin.prev_out.txid);
+            inner.update(txin.prev_out.vout.to_le_bytes());
         }
-        dsha256(&buf)?
+        dsha256_streamed(inner)
     };
 
-    // BIP-143: hashSequence
-    // SIGHASH_ALL: dSHA256(all sequences)
-    // SIGHASH_ALL without SINGLE/NONE
+    // hashSequence: dSHA256(all sequences) — SIGHASH_ALL, without SINGLE/NONE
     let hash_sequence = {
-        let mut buf = Vec::with_capacity(4 * tx.inputs.len());
+        let mut inner = sha2::Sha256::new();
         for txin in &tx.inputs {
-            buf.extend_from_slice(&txin.sequence.to_le_bytes());
+            inner.update(txin.sequence.to_le_bytes());
         }
-        dsha256(&buf)?
+        dsha256_streamed(inner)
     };
 
-    // BIP-143: hashOutputs
-    // SIGHASH_ALL: dSHA256(all outputs serialized)
+    // hashOutputs: dSHA256(all outputs serialized) — SIGHASH_ALL
     let hash_outputs = {
-        let mut buf = Vec::with_capacity(40 * tx.outputs.len());
+        let mut inner = sha2::Sha256::new();
         for txout in &tx.outputs {
-            buf.extend_from_slice(&txout.value.to_le_bytes());
-            encode_varint(&mut buf, txout.script_pubkey.len() as u64);
-            buf.extend_from_slice(&txout.script_pubkey);
+            inner.update(txout.value.to_le_bytes());
+            let mut varint = [0u8; 9];
+            let len = encode_varint_buf(&mut varint, txout.script_pubkey.len() as u64);
+            inner.update(&varint[..len]);
+            inner.update(&txout.script_pubkey);
         }
-        dsha256(&buf)?
+        dsha256_streamed(inner)
     };
 
     // Preimage (BIP-143)
-    let mut preimage = Vec::with_capacity(156 + script_code.len());
-    preimage.extend_from_slice(&tx.version.to_le_bytes());
-    preimage.extend_from_slice(&hash_prevouts);
-    preimage.extend_from_slice(&hash_sequence);
-    preimage.extend_from_slice(&tx.inputs[input_index].prev_out.txid);
-    preimage.extend_from_slice(&tx.inputs[input_index].prev_out.vout.to_le_bytes());
-    encode_varint(&mut preimage, script_code.len() as u64);
-    preimage.extend_from_slice(script_code);
-    preimage.extend_from_slice(&amount.to_le_bytes());
-    preimage.extend_from_slice(&tx.inputs[input_index].sequence.to_le_bytes());
-    preimage.extend_from_slice(&hash_outputs);
-    preimage.extend_from_slice(&tx.lock_time.to_le_bytes());
-    preimage.extend_from_slice(&hash_type.to_le_bytes());
+    let mut preimage = sha2::Sha256::new();
+    preimage.update(tx.version.to_le_bytes());
+    preimage.update(hash_prevouts);
+    preimage.update(hash_sequence);
+    preimage.update(tx.inputs[input_index].prev_out.txid);
+    preimage.update(tx.inputs[input_index].prev_out.vout.to_le_bytes());
+    let mut varint = [0u8; 9];
+    let len = encode_varint_buf(&mut varint, script_code.len() as u64);
+    preimage.update(&varint[..len]);
+    preimage.update(script_code);
+    preimage.update(amount.to_le_bytes());
+    preimage.update(tx.inputs[input_index].sequence.to_le_bytes());
+    preimage.update(hash_outputs);
+    preimage.update(tx.lock_time.to_le_bytes());
+    preimage.update(hash_type.to_le_bytes());
+    Ok(dsha256_streamed(preimage))
+}
 
-    dsha256(&preimage)
+/// Double-SHA256 of a streamed inner hash: SHA256(SHA256(x)).
+fn dsha256_streamed(inner: sha2::Sha256) -> [u8; 32] {
+    use sha2::Digest as _;
+    let first = inner.finalize();
+    sha2::Sha256::digest(first).into()
 }
 
 // --- P2WPKH signing business ---------------------------------------
@@ -298,16 +322,42 @@ pub fn sign_p2wpkh(
     tx: &mut Transaction,
     sign_input: &P2WPKHSignInput<'_>,
 ) -> Result<P2WPKHSignedTx> {
-    // 1. scriptCode = `76a914{20-byte-pubkey-hash}88ac` (raw P2PKH, **without** the length prefix)
-    let mut script_code = Vec::with_capacity(25);
-    script_code.push(0x76); // OP_DUP
-    script_code.push(0xa9); // OP_HASH160
-    script_code.push(0x14); // push 20 bytes
-    script_code.extend_from_slice(&sign_input.pubkey_hash);
-    script_code.push(0x88); // OP_EQUALVERIFY
-    script_code.push(0xac); // OP_CHECKSIG
-                            // script_code is 25 bytes of raw P2PKH (no length prefix)
-                            // segwit_sighash_p2wpkh internally uses varint(25) = 0x19 + 25 bytes = a 26-byte preimage segment
+    let (sig_with_sighash, compressed) = sign_p2wpkh_core(tx, sign_input)?;
+    // witness: [signature_with_sighash, compressed_pubkey] + the legacy
+    // signed-tx view (test/convenience surface; production calls the core).
+    let input_idx = sign_input.input_index;
+    if input_idx >= tx.inputs.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    let sig_bytes: Vec<u8> = sig_with_sighash.iter().copied().collect();
+    tx.inputs[input_idx].witness.clear();
+    tx.inputs[input_idx].witness.push(sig_bytes.clone());
+    tx.inputs[input_idx].witness.push(compressed.to_vec());
+    let tx_bytes = tx.serialize_segwit();
+
+    Ok(P2WPKHSignedTx {
+        tx_bytes,
+        signatures: vec![sig_bytes],
+    })
+}
+
+/// Z4-3: the signing core — sighash -> ECDSA -> DER + sighash byte ->
+/// compressed pubkey. READ-ONLY over the transaction (no clone, no witness
+/// staging, no serialization); the production PSBT path consumes the pair
+/// directly.
+pub fn sign_p2wpkh_core(
+    tx: &Transaction,
+    sign_input: &P2WPKHSignInput<'_>,
+) -> Result<(heapless::Vec<u8, 72>, [u8; 33])> {
+    // 1. scriptCode = `76a914{20-byte-pubkey-hash}88ac` (raw P2PKH, **without**
+    // the length prefix) — fixed 25 bytes, stack.
+    let mut script_code = [0u8; 25];
+    script_code[0] = 0x76; // OP_DUP
+    script_code[1] = 0xa9; // OP_HASH160
+    script_code[2] = 0x14; // push 20 bytes
+    script_code[3..23].copy_from_slice(&sign_input.pubkey_hash);
+    script_code[23] = 0x88; // OP_EQUALVERIFY
+    script_code[24] = 0xac; // OP_CHECKSIG
 
     // 2. BIP-143 sighash
     let sighash = segwit_sighash_p2wpkh(
@@ -322,9 +372,8 @@ pub fn sign_p2wpkh(
     let sk = scalar_from_bytes(sign_input.private_key.expose())?;
     let sig = ecdsa::sign(&sk, &sighash)?;
 
-    // 4. DER + sighash byte
+    // 4. DER + sighash byte (DER at most 72B + sighash 1B; overflow errors explicitly)
     let mut sig_with_sighash = ecdsa::to_der(&sig)?;
-    // DER at most 72B + sighash 1B = 73B; the 72-capacity bound is only exceeded by extreme l values; overflow must error explicitly, never be ignored
     sig_with_sighash
         .push(SIGHASH_ALL as u8)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
@@ -333,24 +382,7 @@ pub fn sign_p2wpkh(
     let pk = base_mul(&sk);
     let compressed = point_to_compressed(&pk);
 
-    // 6. witness: [signature_with_sighash, compressed_pubkey]
-    let input_idx = sign_input.input_index;
-    if input_idx >= tx.inputs.len() {
-        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-    }
-    // to_der returns heapless::Vec<u8, 72>; converted to alloc::vec::Vec to feed the witness
-    let sig_bytes: Vec<u8> = sig_with_sighash.iter().copied().collect();
-    tx.inputs[input_idx].witness.clear();
-    tx.inputs[input_idx].witness.push(sig_bytes.clone());
-    tx.inputs[input_idx].witness.push(compressed.to_vec());
-
-    // 7. serialize segwit
-    let tx_bytes = tx.serialize_segwit();
-
-    Ok(P2WPKHSignedTx {
-        tx_bytes,
-        signatures: vec![sig_bytes],
-    })
+    Ok((sig_with_sighash, compressed))
 }
 
 // --- Helpers: hex decode -------------------------------------------

@@ -44,7 +44,7 @@ use alloc::vec::Vec;
 
 use crate::chain::btc::p2pkh::sign_p2pkh;
 use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
-use crate::chain::btc::p2wpkh::{sign_p2wpkh, OutPoint, Transaction, TxIn, TxOut};
+use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
 use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::push::{CountSink, Sink, SinkCursor};
@@ -578,30 +578,25 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt<'_>, sign_input: &PsbtSignInput) -> Resu
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 1. Clone the unsigned tx for sighash computation (must not modify psbt.unsigned_tx itself)
-    let mut tx = psbt.unsigned_tx.clone();
-
-    // 2. Call the v9.3 sign_p2wpkh to write the witness
+    // 2. Z4-3: sign against the unsigned tx READ-ONLY — no clone, no witness
+    // staging, no signed-tx serialization (the old flow built all three and
+    // threw them away).
     let p2wpkh_input = crate::chain::btc::p2wpkh::P2WPKHSignInput {
         input_index: sign_input.input_index,
         private_key: &sign_input.private_key,
         amount: sign_input.amount,
         pubkey_hash: sign_input.pubkey_hash,
     };
-    let _signed = sign_p2wpkh(&mut tx, &p2wpkh_input)?;
+    let (sig_with_sighash, compressed_pk) =
+        crate::chain::btc::p2wpkh::sign_p2wpkh_core(&psbt.unsigned_tx, &p2wpkh_input)?;
 
-    // 3. Extract the sig from the witness (item 0) → inject PARTIAL_SIG
-    let witness = &tx.inputs[input_idx].witness;
-    let sig_with_sighash = &witness[0];
-    let compressed_pk = &witness[1];
-
-    // PARTIAL_SIG key = `<0x03><compressed-pubkey>`
+    // 3. PARTIAL_SIG key = `<0x03><compressed-pubkey>`
     let mut key = Vec::with_capacity(1 + 33);
     key.push(input_type::PARTIAL_SIG);
-    key.extend_from_slice(compressed_pk);
+    key.extend_from_slice(&compressed_pk);
 
     // value = `<DER-sig + 0x01>`
-    let value = sig_with_sighash.clone();
+    let value = sig_with_sighash.to_vec();
 
     psbt.inputs[input_idx].retain(|kv| kv.key != key);
     psbt.inputs[input_idx].push(KeyValue {
