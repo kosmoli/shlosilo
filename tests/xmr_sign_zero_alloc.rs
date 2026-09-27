@@ -83,6 +83,29 @@ unsafe impl GlobalAlloc for Counting {
     }
 }
 
+/// Mirror the device path: provide the BP+ generator-table storage before the
+/// first sign (the C-ABI callers do this at init; without it the vendored
+/// LazyLock decompresses its own table — the one-time init allocs).
+fn provide_generators_like_device() {
+    use shlosilo::chain::xmr::generator_cache_test_hooks::{
+        provide_table_storage, GeneratorSet, GeneratorTableStorage,
+    };
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let n = 1024usize;
+        let base = curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
+        let g: &'static mut [curve25519_dalek::EdwardsPoint] =
+            Box::leak(vec![base; n].into_boxed_slice());
+        let h: &'static mut [curve25519_dalek::EdwardsPoint] =
+            Box::leak(vec![base; n].into_boxed_slice());
+        let blob: &'static mut [u8] = Box::leak(vec![0u8; (n + n) * 128].into_boxed_slice());
+        let _ = provide_table_storage(
+            GeneratorSet::BulletproofPlus,
+            GeneratorTableStorage { g, h, blob },
+        );
+    });
+}
+
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
 
@@ -309,6 +332,7 @@ fn xmr_sign_zero_alloc() {
 #[test]
 #[ignore = "Z4 diagnosis: run manually with P2IN keys to profile alloc sites"]
 fn alloc_site_histogram() {
+    provide_generators_like_device();
     // Reuse the XMR fixture flow (duplicated minimally to keep this file's
     // helpers independent of test order).
     fn env_hex(name: &str) -> Option<[u8; 32]> {
