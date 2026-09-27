@@ -38,7 +38,10 @@ fn parse_origin_fingerprint(value: &[u8]) -> Option<[u8; 4]> {
 /// Rules (consistent with keystone's ownership signals):
 /// - The output map has BIP32_DERIVATION and its master fingerprint == this device's mfp → change
 /// - Field absent or fingerprint differs → not change
-pub fn detect_change_outputs(psbt: &Psbt, master_fingerprint: &[u8; 4]) -> Result<Vec<ChangeInfo>> {
+pub fn detect_change_outputs(
+    psbt: &Psbt<'_>,
+    master_fingerprint: &[u8; 4],
+) -> Result<Vec<ChangeInfo>> {
     if psbt.outputs.len() != psbt.unsigned_tx.outputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -79,7 +82,7 @@ mod tests {
         v
     }
 
-    fn sample_psbt(out_fps: Vec<Option<[u8; 4]>>) -> Psbt {
+    fn sample_psbt(out_fps: Vec<Option<[u8; 4]>>) -> Psbt<'static> {
         let txin = TxIn {
             prev_out: OutPoint {
                 txid: [0x11u8; 32],
@@ -106,8 +109,8 @@ mod tests {
             .into_iter()
             .map(|fp| match fp {
                 Some(f) => vec![KeyValue {
-                    key: vec![output_type::BIP32_DERIVATION],
-                    value: bip32_derivation_value(&f),
+                    key: vec![output_type::BIP32_DERIVATION].into(),
+                    value: bip32_derivation_value(&f).into(),
                 }],
                 None => vec![],
             })
@@ -115,13 +118,13 @@ mod tests {
         Psbt {
             unsigned_tx,
             inputs: vec![vec![KeyValue {
-                key: vec![input_type::WITNESS_UTXO],
+                key: vec![input_type::WITNESS_UTXO].into(),
                 value: {
                     let mut v = vec![0x00, 0x14];
                     v.extend_from_slice(&2000u64.to_le_bytes());
                     v.extend_from_slice(&[0x00, 0x14]);
                     v.extend_from_slice(&[0u8; 20]);
-                    v
+                    v.into()
                 },
             }]],
             outputs: out_maps,

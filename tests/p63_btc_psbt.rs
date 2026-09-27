@@ -11,7 +11,7 @@ use shlosilo::chain::btc::psbt::{get_witness_utxo, parse_psbt};
 
 const PSBT_BYTES: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 
-fn der_path(input_map: &[shlosilo::chain::btc::psbt::KeyValue]) -> Option<(Vec<u8>, Vec<u32>)> {
+fn der_path(input_map: &[shlosilo::chain::btc::psbt::KeyValue<'_>]) -> Option<(Vec<u8>, Vec<u32>)> {
     let kv = input_map
         .iter()
         .find(|kv| kv.key.first() == Some(&0x06u8))?; // BIP-174 PSBT_IN_BIP32_DERIVATION

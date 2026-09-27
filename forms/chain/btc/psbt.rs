@@ -38,6 +38,7 @@
 //! **Reference**: <https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki>
 
 extern crate alloc;
+use alloc::borrow::Cow;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -103,31 +104,35 @@ pub(crate) mod output_type {
     pub(crate) const TAP_TREE: u8 = 0x66;
 }
 
-/// Key-value pair in PSBT map
+/// Key-value pair in PSBT map.
+///
+/// Z4-1: zero-copy — parsed payloads borrow the input bytes (`Cow::Borrowed`);
+/// only sign-time additions own their bytes. Cloning a borrowed entry is a
+/// pointer copy, not a heap round-trip.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeyValue {
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
+pub struct KeyValue<'a> {
+    pub key: Cow<'a, [u8]>,
+    pub value: Cow<'a, [u8]>,
 }
 
 /// Intermediate representation after PSBT parsing
 #[derive(Clone, Debug)]
-pub struct Psbt {
+pub struct Psbt<'a> {
     /// unsigned tx (index matches the input/output maps)
     pub unsigned_tx: Transaction,
     /// input maps (length == tx.inputs.len())
-    pub inputs: Vec<Vec<KeyValue>>,
+    pub inputs: Vec<Vec<KeyValue<'a>>>,
     /// output maps (length == tx.outputs.len())
-    pub outputs: Vec<Vec<KeyValue>>,
+    pub outputs: Vec<Vec<KeyValue<'a>>>,
 }
 
 /// Encoded map (after serialization)
 #[derive(Clone, Debug)]
-struct EncodedMap {
-    entries: Vec<KeyValue>,
+struct EncodedMap<'a> {
+    entries: Vec<KeyValue<'a>>,
 }
 
-impl EncodedMap {
+impl<'a> EncodedMap<'a> {
     fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -136,15 +141,18 @@ impl EncodedMap {
 
     fn add(&mut self, key: Vec<u8>, value: Vec<u8>) {
         // Remove any existing entry with the same key (PSBT spec: a key must have exactly one value)
-        self.entries.retain(|kv| kv.key != key);
-        self.entries.push(KeyValue { key, value });
+        self.entries.retain(|kv| kv.key.as_ref() != key.as_slice());
+        self.entries.push(KeyValue {
+            key: key.into(),
+            value: value.into(),
+        });
     }
 
-    fn get(&self, key: &[u8]) -> Option<&Vec<u8>> {
+    fn get(&self, key: &[u8]) -> Option<&[u8]> {
         self.entries
             .iter()
-            .find(|kv| kv.key == key)
-            .map(|kv| &kv.value)
+            .find(|kv| kv.key.as_ref() == key)
+            .map(|kv| kv.value.as_ref())
     }
 
     /// Serialize to bytes (keylen || key || valuelen || value)*
@@ -428,7 +436,7 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction> {
 /// map entry count is implicitly bounded by bytes.len() (at least 2B per entry).
 /// Audit #5 P0-02: **duplicate key rejection** — BIP-174 is one value per key; duplicates are a parser
 /// differential vector (first-wins/last-wins inconsistency).
-fn decode_map(bytes: &[u8], pos: &mut usize) -> Result<EncodedMap> {
+fn decode_map<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<EncodedMap<'a>> {
     let mut map = EncodedMap::new();
     loop {
         if *pos >= bytes.len() {
@@ -440,11 +448,11 @@ fn decode_map(bytes: &[u8], pos: &mut usize) -> Result<EncodedMap> {
             // separator (0x00 key)
             return Ok(map);
         }
-        let key = take_bytes(bytes, pos, key_len)?.to_vec();
+        let key = Cow::Borrowed(take_bytes(bytes, pos, key_len)?);
 
         // valuelen
         let value_len = decode_compact_size(bytes, pos)? as usize;
-        let value = take_bytes(bytes, pos, value_len)?.to_vec();
+        let value = Cow::Borrowed(take_bytes(bytes, pos, value_len)?);
 
         // Audit #5: stably reject duplicate keys (BIP-174: "The key must be unique in a map")
         if map.entries.iter().any(|kv| kv.key == key) {
@@ -455,7 +463,7 @@ fn decode_map(bytes: &[u8], pos: &mut usize) -> Result<EncodedMap> {
 }
 
 /// Encode the global map: contains the unsigned tx
-fn encode_global_map(tx: &Transaction) -> EncodedMap {
+fn encode_global_map(tx: &Transaction) -> EncodedMap<'static> {
     let mut map = EncodedMap::new();
     let key = vec![global_type::UNSIGNED_TX];
     let value = serialize_unsigned_tx(tx);
@@ -464,7 +472,7 @@ fn encode_global_map(tx: &Transaction) -> EncodedMap {
 }
 
 /// Parse PSBT bytes into Psbt struct
-pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt> {
+pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt<'_>> {
     if bytes.len() < 5 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -510,7 +518,7 @@ pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt> {
 }
 
 /// Serialize Psbt back to bytes
-pub fn serialize_psbt(psbt: &Psbt) -> Vec<u8> {
+pub fn serialize_psbt(psbt: &Psbt<'_>) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&PSBT_MAGIC);
 
@@ -558,7 +566,7 @@ pub struct PsbtSignInput {
 ///
 /// Inject into the input map:
 /// - 0x03 PARTIAL_SIG: key = `<type-byte 0x03><33-byte compressed pubkey>`, value = `<DER-sig + 0x01 sighash-byte>`
-pub fn sign_psbt_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtSignInput) -> Result<()> {
+pub fn sign_psbt_p2wpkh(psbt: &mut Psbt<'_>, sign_input: &PsbtSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -590,7 +598,10 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtSignInput) -> Result<(
     let value = sig_with_sighash.clone();
 
     psbt.inputs[input_idx].retain(|kv| kv.key != key);
-    psbt.inputs[input_idx].push(KeyValue { key, value });
+    psbt.inputs[input_idx].push(KeyValue {
+        key: key.into(),
+        value: value.into(),
+    });
 
     Ok(())
 }
@@ -618,7 +629,7 @@ pub struct PsbtP2SHP2WPKHSignInput {
 ///
 /// Unlike P2WPKH: injects FINAL_SCRIPT_SIG (type 0x08) instead of PARTIAL_SIG.
 /// The Finalizer extracts FINAL_SCRIPT_SIG into tx.inputs[].scriptSig (final tx).
-pub fn sign_psbt_p2pkh(psbt: &mut Psbt, sign_input: &PsbtP2PKHSignInput) -> Result<()> {
+pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -642,7 +653,10 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt, sign_input: &PsbtP2PKHSignInput) -> Resu
     let value = script_sig;
 
     psbt.inputs[input_idx].retain(|kv| kv.key != key);
-    psbt.inputs[input_idx].push(KeyValue { key, value });
+    psbt.inputs[input_idx].push(KeyValue {
+        key: key.into(),
+        value: value.into(),
+    });
 
     Ok(())
 }
@@ -655,7 +669,10 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt, sign_input: &PsbtP2PKHSignInput) -> Resu
 ///
 /// Note: FINAL_SCRIPTWITNESS uses the special BIP-174 format; the value is already-serialized witness bytes.
 /// shlosilo reuses the witness output (vec![sig, pk]) of the v9.3 sign_p2sh_p2wpkh.
-pub fn sign_psbt_p2sh_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtP2SHP2WPKHSignInput) -> Result<()> {
+pub fn sign_psbt_p2sh_p2wpkh(
+    psbt: &mut Psbt<'_>,
+    sign_input: &PsbtP2SHP2WPKHSignInput,
+) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -693,13 +710,13 @@ pub fn sign_psbt_p2sh_p2wpkh(psbt: &mut Psbt, sign_input: &PsbtP2SHP2WPKHSignInp
     // 5. Inject into the PSBT input map
     psbt.inputs[input_idx].retain(|kv| kv.key != key_script_sig);
     psbt.inputs[input_idx].push(KeyValue {
-        key: key_script_sig,
-        value: value_script_sig,
+        key: key_script_sig.into(),
+        value: value_script_sig.into(),
     });
     psbt.inputs[input_idx].retain(|kv| kv.key != key_witness);
     psbt.inputs[input_idx].push(KeyValue {
-        key: key_witness,
-        value: value_witness,
+        key: key_witness.into(),
+        value: value_witness.into(),
     });
 
     Ok(())
@@ -728,7 +745,7 @@ pub struct PsbtP2TRScriptPathSignInput {
 /// Sign PSBT P2TR input (BIP-371 keypath-only).
 /// Caller provides pre-computed tweaked Schnorr signature.
 /// Injects PSBT_IN_TAP_KEY_SIG (0x13) into input map.
-pub fn sign_psbt_p2tr_keypath(psbt: &mut Psbt, sign_input: &PsbtP2TRSignInput) -> Result<()> {
+pub fn sign_psbt_p2tr_keypath(psbt: &mut Psbt<'_>, sign_input: &PsbtP2TRSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -751,7 +768,10 @@ pub fn sign_psbt_p2tr_keypath(psbt: &mut Psbt, sign_input: &PsbtP2TRSignInput) -
 
     // Remove any pre-existing entry
     psbt.inputs[input_idx].retain(|kv| kv.key != key);
-    psbt.inputs[input_idx].push(KeyValue { key, value });
+    psbt.inputs[input_idx].push(KeyValue {
+        key: key.into(),
+        value: value.into(),
+    });
     Ok(())
 }
 
@@ -786,7 +806,10 @@ pub fn sign_psbt_p2tr_scriptpath(
     value.push(sign_input.sighash_type);
 
     psbt.inputs[input_idx].retain(|kv| kv.key != key);
-    psbt.inputs[input_idx].push(KeyValue { key, value });
+    psbt.inputs[input_idx].push(KeyValue {
+        key: key.into(),
+        value: value.into(),
+    });
     Ok(())
 }
 
@@ -871,7 +894,7 @@ fn get_non_witness_utxo_bound(
 }
 
 /// Get the spent output (value, spk) from an input map's WITNESS_UTXO field
-pub fn get_witness_utxo(input_map: &[KeyValue]) -> Option<(u64, Vec<u8>)> {
+pub fn get_witness_utxo(input_map: &[KeyValue<'_>]) -> Option<(u64, Vec<u8>)> {
     let kv = input_map
         .iter()
         .find(|kv| kv.key == vec![input_type::WITNESS_UTXO])?;
@@ -884,7 +907,7 @@ pub fn get_witness_utxo(input_map: &[KeyValue]) -> Option<(u64, Vec<u8>)> {
 /// parsing + txid binding + vout indexing, no longer blindly trusting a bare CTxOut as fallback.
 /// (The non-standard CTxOut-in-0x01 form from the keystone fixture is no longer supported; affected tests
 ///   now use the standard WITNESS_UTXO form.)
-pub fn get_utxo_any(input_map: &[KeyValue], prev_out: &OutPoint) -> Option<(u64, Vec<u8>)> {
+pub fn get_utxo_any(input_map: &[KeyValue<'_>], prev_out: &OutPoint) -> Option<(u64, Vec<u8>)> {
     // Preferred: WITNESS_UTXO (standard path, CTxOut stored directly)
     if let Some(utxo) = get_witness_utxo(input_map) {
         return Some(utxo);
@@ -894,7 +917,7 @@ pub fn get_utxo_any(input_map: &[KeyValue], prev_out: &OutPoint) -> Option<(u64,
 }
 
 /// Get TAP_INTERNAL_KEY from input map (BIP-371 0x17)
-pub fn get_tap_internal_key(input_map: &[KeyValue]) -> Option<[u8; 32]> {
+pub fn get_tap_internal_key(input_map: &[KeyValue<'_>]) -> Option<[u8; 32]> {
     let kv = input_map
         .iter()
         .find(|kv| kv.key == vec![input_type::TAP_INTERNAL_KEY])?;
@@ -908,20 +931,20 @@ pub fn get_tap_internal_key(input_map: &[KeyValue]) -> Option<[u8; 32]> {
 
 /// Set TAP_INTERNAL_KEY in input map
 pub fn set_tap_internal_key(
-    input_map: &mut Vec<KeyValue>,
+    input_map: &mut Vec<KeyValue<'_>>,
     internal_key_x: &[u8; 32],
 ) -> Result<()> {
     let key = vec![input_type::TAP_INTERNAL_KEY];
     input_map.retain(|kv| kv.key != key);
     input_map.push(KeyValue {
-        key,
-        value: internal_key_x.to_vec(),
+        key: key.into(),
+        value: internal_key_x.to_vec().into(),
     });
     Ok(())
 }
 
 /// Get TAP_MERKLE_ROOT from input map (BIP-371 0x18)
-pub fn get_tap_merkle_root(input_map: &[KeyValue]) -> Option<[u8; 32]> {
+pub fn get_tap_merkle_root(input_map: &[KeyValue<'_>]) -> Option<[u8; 32]> {
     let kv = input_map
         .iter()
         .find(|kv| kv.key == vec![input_type::TAP_MERKLE_ROOT])?;
@@ -935,7 +958,7 @@ pub fn get_tap_merkle_root(input_map: &[KeyValue]) -> Option<[u8; 32]> {
 
 /// Check if input is P2TR (has P2TR witness UTXO and TAP_INTERNAL_KEY set)
 /// WITNESS_UTXO value = CTxOut: amount(8 LE) || varint(spk_len) || scriptPubKey
-pub fn is_p2tr_input(input_map: &[KeyValue]) -> bool {
+pub fn is_p2tr_input(input_map: &[KeyValue<'_>]) -> bool {
     if get_tap_internal_key(input_map).is_none() {
         return false;
     }
@@ -1124,8 +1147,8 @@ mod tests {
         let psbt = Psbt {
             unsigned_tx: unsigned_tx.clone(),
             inputs: vec![vec![KeyValue {
-                key: vec![input_type::WITNESS_UTXO],
-                value: witness_utxo_bytes,
+                key: vec![input_type::WITNESS_UTXO].into(),
+                value: witness_utxo_bytes.into(),
             }]],
             outputs: vec![Vec::new()],
         };
@@ -1440,7 +1463,7 @@ mod tests {
     // === v9.9 P2TR PSBT tests ===
 
     /// Helper: build a P2TR PSBT input (with witness UTXO containing P2TR scriptPubKey)
-    fn make_p2tr_input(output_key_x: &[u8; 32]) -> Vec<KeyValue> {
+    fn make_p2tr_input(output_key_x: &[u8; 32]) -> Vec<KeyValue<'_>> {
         let mut input = Vec::new();
         // 1. WITNESS_UTXO: value = CTxOut = amount(8) || varint(spk_len=34=0x22) || spk
         // P2TR scriptPubKey = OP_1 PUSH 32 <x-only-pubkey>
@@ -1451,8 +1474,8 @@ mod tests {
         utxo.push(0x20); // push 32
         utxo.extend_from_slice(output_key_x);
         input.push(KeyValue {
-            key: vec![input_type::WITNESS_UTXO],
-            value: utxo,
+            key: vec![input_type::WITNESS_UTXO].into(),
+            value: utxo.into(),
         });
         // 2. TAP_INTERNAL_KEY
         set_tap_internal_key(&mut input, output_key_x).unwrap();
@@ -1562,8 +1585,8 @@ mod tests {
         utxo.push(0x14); // push 20
         utxo.extend_from_slice(&[0x99u8; 20]);
         input.push(KeyValue {
-            key: vec![input_type::WITNESS_UTXO],
-            value: utxo,
+            key: vec![input_type::WITNESS_UTXO].into(),
+            value: utxo.into(),
         });
 
         let mut psbt = Psbt {
@@ -1639,8 +1662,8 @@ mod tests {
     #[test]
     fn psbt_tap_merkle_root_field() {
         let mut input = vec![KeyValue {
-            key: vec![input_type::TAP_MERKLE_ROOT],
-            value: [0xaau8; 32].to_vec(),
+            key: vec![input_type::TAP_MERKLE_ROOT].into(),
+            value: [0xaau8; 32].to_vec().into(),
         }];
         // No merkle root → keypath-only
         assert!(get_tap_merkle_root(&input).is_some());
@@ -1782,7 +1805,7 @@ mod tests {
         // The signature verifies against the output key + sighash (k256 schnorr)
         let output_key_x = decode_p2tr_script_pubkey(&spent_spk).unwrap();
         let vk = k256::schnorr::VerifyingKey::from_bytes((&output_key_x).into()).unwrap();
-        let k_sig = k256::schnorr::Signature::try_from(injected.value.as_slice()).unwrap();
+        let k_sig = k256::schnorr::Signature::try_from(injected.value.as_ref()).unwrap();
         use k256::schnorr::signature::hazmat::PrehashVerifier;
         assert!(
             vk.verify_prehash(&sighash, &k_sig).is_ok(),

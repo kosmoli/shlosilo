@@ -140,7 +140,7 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-pub fn summarize_psbt(psbt: &Psbt, own_spks: &[&[u8]]) -> Result<PsbtSummary> {
+pub fn summarize_psbt(psbt: &Psbt<'_>, own_spks: &[&[u8]]) -> Result<PsbtSummary> {
     let n = psbt.unsigned_tx.inputs.len();
     let mut values = Vec::with_capacity(n);
     for i in 0..n {
@@ -282,7 +282,7 @@ mod tests {
         sequence: u32,
         lock_time: u32,
         out_spk: Vec<u8>,
-    ) -> Psbt {
+    ) -> Psbt<'static> {
         let txin = TxIn {
             prev_out: OutPoint {
                 txid: [0x11u8; 32],
@@ -306,8 +306,8 @@ mod tests {
         Psbt {
             unsigned_tx,
             inputs: vec![vec![KeyValue {
-                key: vec![input_type::WITNESS_UTXO],
-                value: witness_utxo_bytes(in_value, &in_spk),
+                key: vec![input_type::WITNESS_UTXO].into(),
+                value: witness_utxo_bytes(in_value, &in_spk).into(),
             }]],
             outputs: vec![vec![]],
         }

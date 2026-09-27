@@ -1478,14 +1478,14 @@ mod tests {
         wu_value.extend_from_slice(&spk);
         psbt.inputs.push(alloc::vec![
             psbt::KeyValue {
-                key: alloc::vec![input_type::WITNESS_UTXO],
-                value: wu_value,
+                key: alloc::vec![input_type::WITNESS_UTXO].into(),
+                value: wu_value.into(),
             },
             psbt::KeyValue {
                 key: {
                     let mut k = alloc::vec![input_type::BIP32_DERIVATION];
                     k.extend_from_slice(&compressed_pk);
-                    k
+                    k.into()
                 },
                 // BIP-174 canonical shape: master_fingerprint(4B) || child(u32LE) × depth
                 value: {
@@ -1497,7 +1497,7 @@ mod tests {
                     for c in path.as_slice() {
                         vv.extend_from_slice(&c.0.to_le_bytes());
                     }
-                    vv
+                    vv.into()
                 },
             },
         ]);
@@ -1596,14 +1596,14 @@ mod tests {
             crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&seed).unwrap();
         psbt.inputs.push(alloc::vec![
             psbt::KeyValue {
-                key: alloc::vec![input_type::WITNESS_UTXO],
-                value: wu_value,
+                key: alloc::vec![input_type::WITNESS_UTXO].into(),
+                value: wu_value.into(),
             },
             psbt::KeyValue {
                 key: {
                     let mut k = alloc::vec![input_type::BIP32_DERIVATION];
                     k.extend_from_slice(&compressed_pk);
-                    k
+                    k.into()
                 },
                 value: {
                     let mut vv = alloc::vec::Vec::new();
@@ -1611,7 +1611,7 @@ mod tests {
                     for c in path.as_slice() {
                         vv.extend_from_slice(&c.0.to_le_bytes());
                     }
-                    vv
+                    vv.into()
                 },
             },
         ]);
@@ -1681,14 +1681,14 @@ mod tests {
         let wrong_fp = [0xDE, 0xAD, 0xBE, 0xEF];
         psbt.inputs.push(alloc::vec![
             psbt::KeyValue {
-                key: alloc::vec![input_type::WITNESS_UTXO],
-                value: wu_value,
+                key: alloc::vec![input_type::WITNESS_UTXO].into(),
+                value: wu_value.into(),
             },
             psbt::KeyValue {
                 key: {
                     let mut k = alloc::vec![input_type::BIP32_DERIVATION];
                     k.extend_from_slice(&compressed_pk);
-                    k
+                    k.into()
                 },
                 value: {
                     let mut vv = alloc::vec::Vec::new();
@@ -1696,7 +1696,7 @@ mod tests {
                     for c in path.as_slice() {
                         vv.extend_from_slice(&c.0.to_le_bytes());
                     }
-                    vv
+                    vv.into()
                 },
             },
         ]);
@@ -1759,20 +1759,20 @@ mod tests {
             },
             inputs: alloc::vec![alloc::vec![
                 psbt::KeyValue {
-                    key: alloc::vec![input_type::WITNESS_UTXO],
+                    key: alloc::vec![input_type::WITNESS_UTXO].into(),
                     value: {
                         let mut v = alloc::vec::Vec::new();
                         v.extend_from_slice(&100_000u64.to_le_bytes());
                         v.push(22);
                         v.extend_from_slice(&spk);
-                        v
+                        v.into()
                     },
                 },
                 psbt::KeyValue {
                     key: {
                         let mut k = alloc::vec![input_type::BIP32_DERIVATION];
                         k.extend_from_slice(&compressed_pk);
-                        k
+                        k.into()
                     },
                     value: {
                         let fp =
@@ -1783,7 +1783,7 @@ mod tests {
                         for c in path.as_slice() {
                             vv.extend_from_slice(&c.0.to_le_bytes());
                         }
-                        vv
+                        vv.into()
                     },
                 },
             ]],
@@ -1836,13 +1836,13 @@ mod tests {
                 lock_time: 0,
             },
             inputs: alloc::vec![alloc::vec![psbt::KeyValue {
-                key: alloc::vec![input_type::WITNESS_UTXO],
+                key: alloc::vec![input_type::WITNESS_UTXO].into(),
                 value: {
                     let mut v = alloc::vec::Vec::new();
                     v.extend_from_slice(&100_000u64.to_le_bytes());
                     v.push(22);
                     v.extend_from_slice(&spk);
-                    v
+                    v.into()
                 },
             }]],
             outputs: alloc::vec![alloc::vec![]],

@@ -97,7 +97,8 @@ fn p001_script_sig_len_overflow_rejected() {
         w.extend_from_slice(&u64::MAX.to_le_bytes());
         w
     });
-    let r = parse_psbt(&wrap_psbt(&tx));
+    let psbt_bytes = wrap_psbt(&tx);
+    let r = parse_psbt(&psbt_bytes);
     assert!(
         r.is_err(),
         "malicious script_sig_len must error stably (panicked at psbt.rs:272 before the fix)"
@@ -118,7 +119,8 @@ fn p001_script_pubkey_len_oversized_rejected() {
     tx.extend_from_slice(&1000u64.to_le_bytes()); // value
     tx.push(0xfe); // spk_len prefix
     tx.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // over budget
-    let r = parse_psbt(&wrap_psbt_full(&tx, 1, 1));
+    let psbt_bytes = wrap_psbt_full(&tx, 1, 1);
+    let r = parse_psbt(&psbt_bytes);
     assert!(r.is_err());
 }
 
@@ -156,7 +158,8 @@ fn p001_huge_input_count_no_oom() {
     tx.extend_from_slice(&2i32.to_le_bytes());
     tx.push(0xff); // n_inputs prefix
     tx.extend_from_slice(&u64::MAX.to_le_bytes());
-    let r = parse_psbt(&wrap_psbt_full(&tx, 0, 0));
+    let psbt_bytes = wrap_psbt_full(&tx, 0, 0);
+    let r = parse_psbt(&psbt_bytes);
     assert!(
         r.is_err(),
         "malicious input count must error (capacity overflow abort before the fix)"
@@ -177,7 +180,8 @@ fn p001_count_exceeding_physical_bytes_rejected_before_alloc() {
     tx.extend_from_slice(&2i32.to_le_bytes());
     tx.push(0xfd); // n_inputs 2-byte prefix
     tx.extend_from_slice(&60_000u16.to_le_bytes());
-    let r = parse_psbt(&wrap_psbt_full(&tx, 0, 0));
+    let psbt_bytes = wrap_psbt_full(&tx, 0, 0);
+    let r = parse_psbt(&psbt_bytes);
     assert!(r.is_err(), "physically infeasible count must be rejected");
 }
 
@@ -226,7 +230,8 @@ fn p001_unsigned_tx_trailing_bytes_rejected() {
     tx.push(0); // n_outputs
     tx.extend_from_slice(&0u32.to_le_bytes()); // locktime
     tx.push(0xde); // embedded trailing
-    let r = parse_psbt(&wrap_psbt(&tx));
+    let psbt_bytes = wrap_psbt(&tx);
+    let r = parse_psbt(&psbt_bytes);
     assert!(r.is_err(), "unsigned tx trailing bytes must be rejected");
 }
 
@@ -245,7 +250,8 @@ fn p001_noncanonical_compact_size_rejected() {
     t.extend_from_slice(&0xffffffffu32.to_le_bytes());
     t.push(0);
     t.extend_from_slice(&0u32.to_le_bytes());
-    let r = parse_psbt(&wrap_psbt(&t));
+    let psbt_bytes = wrap_psbt(&t);
+    let r = parse_psbt(&psbt_bytes);
     assert!(
         r.is_err(),
         "non-canonical CompactSize (0xfd prefix encoding a value < 0xfd) must be rejected"
@@ -266,7 +272,8 @@ fn p001_zero_prefix_0xff_rejected() {
     t.extend_from_slice(&0xffffffffu32.to_le_bytes());
     t.push(0);
     t.extend_from_slice(&0u32.to_le_bytes());
-    let r = parse_psbt(&wrap_psbt(&t));
+    let psbt_bytes = wrap_psbt(&t);
+    let r = parse_psbt(&psbt_bytes);
     assert!(r.is_err());
 }
 
@@ -275,7 +282,8 @@ fn p001_zero_prefix_0xff_rejected() {
 #[test]
 fn p001_valid_minimal_psbt_still_parses() {
     let tx = tx_with_script_sig_len(&[0x00]); // script_sig_len = 0
-    let psbt = parse_psbt(&wrap_psbt(&tx));
+    let psbt_bytes = wrap_psbt(&tx);
+    let psbt = parse_psbt(&psbt_bytes);
     assert!(psbt.is_ok());
     let p = psbt.unwrap();
     assert_eq!(p.unsigned_tx.inputs.len(), 1);
@@ -312,8 +320,8 @@ fn kai01_nonwitness_full_tx_bound_happy_path() {
 
     // PSBT input map:NON_WITNESS_UTXO = full tx
     let input_map: std::vec::Vec<KeyValue> = vec![KeyValue {
-        key: vec![0x00], // NON_WITNESS_UTXO
-        value: full_tx.clone(),
+        key: vec![0x00].into(), // NON_WITNESS_UTXO
+        value: full_tx.clone().into(),
     }];
     // prev_out matches
     let prev_out = OutPoint { txid, vout: 0 };
@@ -330,8 +338,8 @@ fn kai01_nonwitness_txid_mismatch_rejected() {
     use shlosilo::encoding::sha256;
     let full_tx = make_full_tx(651_157, 0x00);
     let input_map: std::vec::Vec<KeyValue> = vec![KeyValue {
-        key: vec![0x00],
-        value: full_tx.clone(),
+        key: vec![0x00].into(),
+        value: full_tx.clone().into(),
     }];
 
     // The attacker-provided prev_out.txid ≠ the full-tx actual txid → reject
@@ -357,8 +365,8 @@ fn kai01_nonwitness_vout_oob_rejected() {
     use shlosilo::encoding::sha256;
     let full_tx = make_full_tx(651_157, 0x00);
     let input_map: std::vec::Vec<KeyValue> = vec![KeyValue {
-        key: vec![0x00],
-        value: full_tx,
+        key: vec![0x00].into(),
+        value: full_tx.into(),
     }];
     let txid = sha256::hash_twice(&make_full_tx(651_157, 0x00)).unwrap();
     // The full tx has only 1 output; vout=1 is out of bounds
