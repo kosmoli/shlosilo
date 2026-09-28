@@ -19,6 +19,9 @@ pub const SIGN_WS_BP_TERMS: usize = 2050;
 /// `StrausScratch::storage_bytes(SIGN_WS_BP_TERMS)`; a pin test asserts the
 /// two agree — same source-of-truth discipline as the Z3.3b ws layout).
 pub const SIGN_WS_BP_STRAUS_BYTES: usize = (SIGN_WS_BP_TERMS * 2816) + 64;
+/// CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB) — a
+/// ws segment so the HOST decides where it lives (PSRAM on all platforms).
+pub const SIGN_WS_CN_SCRATCH: usize = 1 << 21;
 
 /// Z5.3 C-cut B: WIP round ping-pong scratch (a/b/g/h double buffers) —
 /// byte expression of `WipScratch::storage_bytes(SIGN_WS_BP_TERMS)`.

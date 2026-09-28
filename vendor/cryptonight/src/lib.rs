@@ -1,5 +1,6 @@
 #![no_std]
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 mod blake256;
@@ -10,7 +11,9 @@ mod util;
 #[cfg(feature = "cn-timing")]
 pub mod cn_timing_hook;
 
+#[cfg(feature = "alloc-fallback")]
 use slow_hash::cn_slow_hash;
+use slow_hash::cn_slow_hash_into;
 
 /// Device-phase timing hooks (feature `cn-timing`; no-op stubs otherwise).
 #[cfg(feature = "cn-timing")]
@@ -24,7 +27,18 @@ pub fn phase_ms(_phase: u8) -> u32 {
     0
 }
 
-/// Calculates the `CryptoNight` v0 hash of buf.
+/// Calculates the `CryptoNight` v0 hash of buf over caller scratch (A1).
+/// Scratch is secret-bearing and zeroed on exit. Capacity/alignment
+/// failures are explicit errors.
+pub fn cryptonight_hash_v0_into(
+    buf: &[u8],
+    scratch: &mut [u8],
+) -> Result<[u8; 32], slow_hash::CnScratchError> {
+    cn_slow_hash_into(buf, slow_hash::Variant::V0, 0, scratch)
+}
+
+/// Test/legacy convenience (allocates the scratchpad).
+#[cfg(feature = "alloc-fallback")]
 pub fn cryptonight_hash_v0(buf: &[u8]) -> [u8; 32] {
     cn_slow_hash(buf, slow_hash::Variant::V0, 0)
 }

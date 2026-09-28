@@ -374,8 +374,13 @@ pub fn verify_monero_signature_pubkey(
 /// Computing CN once per call for the same view_sk in decrypt-unsigned + encrypt-signed doubles the cost; callers should reuse it.
 /// Audit #12 P1-02: returns a Zeroizing owner, never landing in a plain [u8;32] binding; internal to the crate
 /// helper (the old pub let callers "wrap Zeroizing on the outside" — wrapping an owner after construction does not erase the source binding).
-pub(crate) fn chacha_key_from_view_sk(view_sk: &[u8; 32]) -> zeroize::Zeroizing<[u8; 32]> {
-    zeroize::Zeroizing::new(cuprate_cryptonight::cryptonight_hash_v0(view_sk))
+pub(crate) fn chacha_key_from_view_sk(
+    view_sk: &[u8; 32],
+    scratch: &mut [u8],
+) -> Result<zeroize::Zeroizing<[u8; 32]>> {
+    let h = cuprate_cryptonight::cryptonight_hash_v0_into(view_sk, scratch)
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+    Ok(zeroize::Zeroizing::new(h))
 }
 
 /// Decrypt an unsigned_txset (aligned with keystone decrypt_data_with_pvk)
@@ -388,7 +393,10 @@ pub fn decrypt_unsigned_txset(
     data: &[u8],
     view_sk: &[u8; 32],
 ) -> Result<zeroize::Zeroizing<Vec<u8>>> {
-    let key = chacha_key_from_view_sk(view_sk);
+    let key = chacha_key_from_view_sk(
+        view_sk,
+        &mut alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH],
+    )?;
     decrypt_unsigned_txset_with_chacha_key(data, view_sk, &key)
 }
 
@@ -1145,7 +1153,11 @@ mod tests {
         assert_eq!(*dec, *plain);
         // Z2.4d-3: fused decrypt+parse == split path, and the plaintext scratch is wiped
         {
-            let key = chacha_key_from_view_sk(&view);
+            let key = chacha_key_from_view_sk(
+                &view,
+                &mut alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH],
+            )
+            .unwrap();
             let mut scratch = alloc::vec![0u8; enc.len()];
             scratch.fill(0xEE); // sentinel: wiped region must not retain it
             let mut u_t = [None; 1];

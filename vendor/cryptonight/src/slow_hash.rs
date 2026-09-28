@@ -1,3 +1,4 @@
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 use core::cmp::PartialEq;
 use core::mem::swap;
@@ -269,7 +270,40 @@ fn extra_hashes(input: &[u8; KECCAK1600_BYTE_SIZE]) -> [u8; 32] {
 /// Original C code:
 /// <https://github.com/monero-project/monero/blob/v0.18.3.4/src/crypto/slow-hash.c#L1776-L1873>
 #[expect(clippy::cast_possible_truncation)]
+/// Core (v-decision A1, 2026-09-28): the 2MB scratchpad is a CALLER
+/// RESOURCE — the algorithm declares the memory, the host decides where it
+/// lives (PSRAM on all three platforms). No allocation, no hidden state.
+/// The scratch is secret-bearing (key-derivation intermediate) and is
+/// zeroed on every exit path (secret-scratch discipline).
+pub(crate) fn cn_slow_hash_into(
+    data: &[u8],
+    variant: Variant,
+    height: u64,
+    scratch: &mut [u8],
+) -> Result<[u8; 32], CnScratchError> {
+    if scratch.len() < MEMORY || scratch.as_ptr() as usize % core::mem::align_of::<u128>() != 0 {
+        return Err(CnScratchError::TooSmall);
+    }
+    let out = cn_slow_hash_core(data, variant, height, scratch);
+    // path-independent zeroize of the secret scratch
+    for b in scratch[..MEMORY].iter_mut() {
+        *b = 0;
+    }
+    Ok(out)
+}
+
+/// Scratch-capacity error (explicit, never a panic).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CnScratchError {
+    TooSmall,
+}
+
+#[cfg(feature = "alloc-fallback")]
 pub(crate) fn cn_slow_hash(data: &[u8], variant: Variant, height: u64) -> [u8; 32] {
+    cn_slow_hash_core(data, variant, height, &mut alloc::vec![0u8; MEMORY])
+}
+
+fn cn_slow_hash_core(data: &[u8], variant: Variant, height: u64, scratch: &mut [u8]) -> [u8; 32] {
     #[cfg(feature = "cn-timing")]
     let mut probe_total = PhaseProbe::start(5);
     let mut state = CnSlowHashState::default();
@@ -286,23 +320,20 @@ pub(crate) fn cn_slow_hash(data: &[u8], variant: Variant, height: u64) -> [u8; 3
     let (mut division_result, mut sqrt_result) = variant_2_init(&mut b, &state, variant);
     let _v4state = variant4_math_init(height, &state, variant);
 
-    // Use a vector so the memory is allocated on the heap. We might have 2MB
-    // available on the stack, but that optimization would only be meaningful if
-    // this code was still used for mining.
-    let mut long_state: Vec<u128> = Vec::with_capacity(MEMORY_BLOCKS);
+    // The scratchpad lives in caller storage (A1): reinterpret the scratch
+    // bytes as the u128 block array (alignment validated in `cn_slow_hash_into`).
+    let long_state: &mut [u128; MEMORY_BLOCKS] =
+        unsafe { &mut *(scratch.as_mut_ptr() as *mut [u128; MEMORY_BLOCKS]) };
 
     #[cfg(feature = "cn-timing")]
     let mut p2 = PhaseProbe::start(2);
     for i in 0..MEMORY_BLOCKS {
         let block = &mut text[i % INIT_BLOCKS];
         *block = cnaes::aesb_pseudo_round(*block, &aes_expanded_key);
-        long_state.push(*block);
+        long_state[i] = *block;
     }
     #[cfg(feature = "cn-timing")]
     p2.as_mut().map_or((), |p| p.end());
-
-    // Treat long_state as an array now that it's initialized on the heap
-    let long_state: &mut [u128; MEMORY_BLOCKS] = subarray_mut(&mut long_state, 0);
 
     let k = state.get_k();
     let mut a = k[0] ^ k[2];

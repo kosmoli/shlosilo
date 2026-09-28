@@ -409,7 +409,10 @@ pub fn encrypt_signed_txset(
     view_sk: &[u8; 32],
     rng: &mut impl rand_core::RngCore,
 ) -> Result<zeroize::Zeroizing<Vec<u8>>> {
-    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk);
+    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(
+        view_sk,
+        &mut alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH],
+    )?;
     encrypt_signed_txset_with_chacha_key(zeroize::Zeroizing::new(plain), view_sk, &key, rng)
 }
 
@@ -464,7 +467,10 @@ pub fn encrypt_unsigned_txset(
     use chacha20::ChaCha20Legacy;
 
     // Audit #12 P1-02: the CN key is an owner from creation (no longer wrapping a bare local CN afterwards).
-    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk);
+    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(
+        view_sk,
+        &mut alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH],
+    )?;
     let nonce_num_bytes = rng.next_u64().to_be_bytes();
     let mut buffer = plain;
     let nonce: chacha20::LegacyNonce = nonce_num_bytes.into();
@@ -519,7 +525,10 @@ pub fn decrypt_signed_txset(
 
     // Audit #12 P1-02: the CN key is an owner from creation; plaintext in Zeroizing (error/early-return
     // paths are covered by Drop).
-    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk);
+    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(
+        view_sk,
+        &mut alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH],
+    )?;
     let mut plain = zeroize::Zeroizing::new(raw[NONCE_LEN..].to_vec());
     let mut nb = [0u8; 8];
     nb.copy_from_slice(nonce_bytes);
@@ -699,7 +708,11 @@ mod tests {
         assert_eq!(&twin[..twin_n], &bytes[..], "serialize_into twin");
         // Z2.4d-3 twin: fused serialize+encrypt == classical pipeline, same RNG stream
         let sk = test_view_sk();
-        let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&sk);
+        let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(
+            &sk,
+            &mut alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH],
+        )
+        .unwrap();
         let mut r1 = ChaCha20Rng::from_seed([0x5Au8; 32]);
         let classical =
             encrypt_signed_txset_with_chacha_key(set.serialize(), &sk, &key, &mut r1).unwrap();
@@ -855,7 +868,11 @@ mod tests {
             tx_key_images: SliceVec::new(&mut tki_backing),
         };
         let sk = test_view_sk();
-        let key = chacha_key_from_view_sk(&sk);
+        let key = chacha_key_from_view_sk(
+            &sk,
+            &mut alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH],
+        )
+        .unwrap();
 
         let mut full = alloc::vec![0u8; 8192];
         let mut r1 = ChaCha20Rng::from_seed([0xC3u8; 32]);
@@ -934,7 +951,11 @@ mod tests {
             TxDestinationEntry, UnsignedTxPools,
         };
         let sk = test_view_sk();
-        let key = chacha_key_from_view_sk(&sk);
+        let key = chacha_key_from_view_sk(
+            &sk,
+            &mut alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH],
+        )
+        .unwrap();
         let mut rng = ChaCha20Rng::from_seed([0x77u8; 32]);
         let enc = encrypt_signed_txset_with_chacha_key(
             zeroize::Zeroizing::new(alloc::vec![0xAAu8; 40]),
@@ -1061,7 +1082,11 @@ mod tests {
         use crate::chain::xmr::signing_rng::export_encrypt_rng;
         use crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk;
         let sk = test_view_sk();
-        let key = chacha_key_from_view_sk(&sk);
+        let key = chacha_key_from_view_sk(
+            &sk,
+            &mut alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH],
+        )
+        .unwrap();
         let entropy = [0x42u8; 32];
 
         mk_export_set!(set_a, 0xAAu8);
@@ -1107,7 +1132,11 @@ mod tests {
         use crate::chain::xmr::signing_rng::export_encrypt_rng;
         use crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk;
         let sk = test_view_sk();
-        let key = chacha_key_from_view_sk(&sk);
+        let key = chacha_key_from_view_sk(
+            &sk,
+            &mut alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH],
+        )
+        .unwrap();
         let entropy = [0x42u8; 32];
 
         mk_export_set!(set_a, 0xAAu8);

@@ -408,6 +408,12 @@
 #define SIGN_WS_BP_STRAUS_BYTES ((SIGN_WS_BP_TERMS * 2816) + 64)
 
 /**
+ * CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB) — a
+ * ws segment so the HOST decides where it lives (PSRAM on all platforms).
+ */
+#define SIGN_WS_CN_SCRATCH (1 << 21)
+
+/**
  * Z5.3 C-cut B: WIP round ping-pong scratch (a/b/g/h double buffers) —
  * byte expression of `WipScratch::storage_bytes(SIGN_WS_BP_TERMS)`.
  */

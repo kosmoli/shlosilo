@@ -203,6 +203,9 @@ pub struct SignWs<'a> {
     /// Z5.3 D-cut: Straus scratch storage (raw bytes; the typed scratch is
     /// constructed from it at the call site).
     pub bp_straus: &'a mut [u8],
+    /// CN-V0 key-derivation scratchpad (2MB, secret-bearing; zeroed by the
+    /// cryptonight core on every exit path).
+    pub cn_scratch: &'a mut [u8],
     pub bp_wip: &'a mut [u8],
     /// Z4-7d: PSBT map pool (records + payload arena).
     pub psbt_recs: &'a mut [crate::chain::btc::psbt::KvRec],
@@ -233,6 +236,7 @@ pub struct SignWsLayout {
     record_dests: usize,
     pub bp_terms: usize,
     pub bp_straus: usize,
+    pub cn_scratch: usize,
     pub bp_wip: usize,
     pub psbt_recs: usize,
     pub psbt_arena: usize,
@@ -313,6 +317,11 @@ impl SignWsLayout {
             core::mem::size_of::<(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)>()
                 * c::SIGN_WS_BP_TERMS,
         );
+        let cn_scratch = ws_next(
+            &mut off,
+            core::mem::align_of::<u128>(),
+            c::SIGN_WS_CN_SCRATCH,
+        );
         let bp_straus = ws_next(
             &mut off,
             core::mem::align_of::<u64>(),
@@ -349,6 +358,7 @@ impl SignWsLayout {
             kstr,
             record_dests,
             bp_terms,
+            cn_scratch,
             bp_straus,
             bp_wip,
             psbt_recs,
@@ -428,6 +438,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     // before reading them).
     let bp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)] =
         unsafe { at(base, l.bp_terms, c::SIGN_WS_BP_TERMS) };
+    let cn_scratch: &mut [u8] = unsafe { at(base, l.cn_scratch, c::SIGN_WS_CN_SCRATCH) };
     let bp_straus: &mut [u8] = unsafe { at(base, l.bp_straus, c::SIGN_WS_BP_STRAUS_BYTES) };
     let bp_wip: &mut [u8] = unsafe { at(base, l.bp_wip, c::SIGN_WS_BP_WIP_BYTES) };
     let psbt_recs: &mut [crate::chain::btc::psbt::KvRec] =
@@ -451,6 +462,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         record_dests,
         bp_terms,
         bp_straus,
+        cn_scratch,
         bp_wip,
         psbt_recs,
         psbt_arena,
@@ -491,7 +503,8 @@ fn sign_xmr_with_ws<'a>(
     ));
     // CN computed only once for the same view_sk (shared by decrypt + encrypt; the 2MB scratchpad dominates on device)
     // Audit #12 P1-02: the CN key is an owner from creation (Zeroizing); the helper returns the owner.
-    let cn_key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&view_sec);
+    let cn_key =
+        crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&view_sec, ws.cn_scratch)?;
 
     // 2. Decrypt (signature verified internally; view key mismatch → Err)
     // Audit #6 P1-01: decrypted plaintext txset goes through Zeroizing (no plaintext residue needed after parsing)
