@@ -224,8 +224,8 @@ diff -ruN a/Cargo.lock b/Cargo.lock
 +]
 diff -ruN a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2026-02-11 00:09:41.000000000 +0800
-+++ b/Cargo.toml	2026-09-28 14:46:36.744145766 +0800
-@@ -2,23 +2,37 @@
++++ b/Cargo.toml	2026-09-28 18:10:44.865605971 +0800
+@@ -2,23 +2,39 @@
  name = "cuprate-cryptonight"
  version = "0.1.0"
  edition = "2021"
@@ -268,8 +268,10 @@ diff -ruN a/Cargo.toml b/Cargo.toml
 -[lints]
 -workspace = true
 +[features]
-+default = []
-+# shlosilo: transitional alloc surface (see the campaign ledger)
++# The allocating convenience shell is default-on for the crate's own
++# tests; forms turns default-features off and maps alloc-fallback
++# explicitly (the graph probe's face).
++default = ["alloc-fallback"]
 +alloc-fallback = []
 +## Device-side CN slow-hash phase timing probes (smoke build only).
 +cn-timing = []
