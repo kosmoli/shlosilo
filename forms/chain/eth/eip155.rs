@@ -38,7 +38,7 @@ extern crate alloc;
 use crate::chain::eth::rlp;
 use crate::chain::eth::sign;
 use crate::encoding::keccak256;
-use crate::error::Result;
+use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::SecretBytes;
 use alloc::vec::Vec;
 
@@ -65,6 +65,7 @@ pub struct Eip155SignInput {
 
 /// Signing output
 #[derive(Clone, Debug)]
+#[cfg(feature = "alloc-fallback")]
 pub struct Eip155SignedTx {
     /// Full signed transaction bytes (rlp([..., v, r, s])) — no type prefix
     pub tx_bytes: Vec<u8>,
@@ -84,47 +85,95 @@ pub struct Eip155SignedTx {
 ///
 /// `keccak256(rlp([nonce, gas_price, gas_limit, destination, amount, data, chain_id, 0, 0]))`
 pub fn signing_hash(tx: &Eip155Transaction) -> Result<[u8; 32]> {
-    let preimage = signing_preimage(tx);
-    keccak256::hash(&preimage)
+    let mut sink = keccak256::KeccakSink::new();
+    rlp::write_list_head(&mut sink, preimage_len(tx))?;
+    write_preimage(&mut sink, tx)?;
+    Ok(sink.finalize())
+}
+
+// ─── Zero-alloc serialization core (production) ──────────────────
+//
+// Same streaming shape as eip1559: the preimage feeds `KeccakSink`
+// directly and the signed transaction writes through `SinkCursor`. The
+// Vec conveniences below are test/legacy surface behind `alloc-fallback`.
+
+use crate::types::push::{Sink, SinkCursor};
+
+/// The 6 fixed tx fields into a sink.
+fn write_tx_base<S: Sink>(s: &mut S, tx: &Eip155Transaction) -> Result<()> {
+    rlp::write_uint(s, tx.nonce as u128)?;
+    rlp::write_uint(s, tx.gas_price)?;
+    rlp::write_uint(s, tx.gas_limit as u128)?;
+    match &tx.destination {
+        Some(addr) => rlp::write_bytes(s, addr)?,
+        None => rlp::write_bytes(s, b"")?,
+    }
+    rlp::write_uint(s, tx.amount)?;
+    rlp::write_bytes(s, &tx.data)?;
+    Ok(())
+}
+
+fn tx_base_len(tx: &Eip155Transaction) -> usize {
+    let dest: &[u8] = match &tx.destination {
+        Some(addr) => addr.as_slice(),
+        None => b"",
+    };
+    rlp::encoded_uint_len(tx.nonce as u128)
+        + rlp::encoded_uint_len(tx.gas_price)
+        + rlp::encoded_uint_len(tx.gas_limit as u128)
+        + rlp::encoded_bytes_len(dest)
+        + rlp::encoded_uint_len(tx.amount)
+        + rlp::encoded_bytes_len(&tx.data)
+}
+
+/// rlp([base, chain_id, 0, 0]) — the EIP-155 signing preimage payload.
+fn write_preimage<S: Sink>(s: &mut S, tx: &Eip155Transaction) -> Result<()> {
+    write_tx_base(s, tx)?;
+    rlp::write_uint(s, tx.chain_id as u128)?;
+    rlp::write_uint(s, 0)?;
+    rlp::write_uint(s, 0)
+}
+
+fn preimage_len(tx: &Eip155Transaction) -> usize {
+    tx_base_len(tx) + rlp::encoded_uint_len(tx.chain_id as u128) + 2
+}
+
+/// Compute the signing preimage bytes into a caller buffer.
+pub fn signing_preimage_into(tx: &Eip155Transaction, out: &mut [u8]) -> Result<usize> {
+    let payload_len = preimage_len(tx);
+    let mut w = SinkCursor::new(out);
+    rlp::write_list_head(&mut w, payload_len)?;
+    write_preimage(&mut w, tx)?;
+    Ok(w.pos())
 }
 
 /// Compute the signing preimage bytes
+#[cfg(feature = "alloc-fallback")]
 pub fn signing_preimage(tx: &Eip155Transaction) -> Vec<u8> {
-    let nonce_rlp = rlp::encode_uint(tx.nonce as u128);
-    let gas_price_rlp = rlp::encode_uint(tx.gas_price);
-    let gas_limit_rlp = rlp::encode_uint(tx.gas_limit as u128);
-
-    let dest_rlp = match &tx.destination {
-        Some(addr) => rlp::encode_bytes(addr),
-        None => rlp::encode_bytes(b""),
-    };
-
-    let amount_rlp = rlp::encode_uint(tx.amount);
-    let data_rlp = rlp::encode_bytes(&tx.data);
-    let chain_id_rlp = rlp::encode_uint(tx.chain_id as u128);
-    let zero_rlp = rlp::encode_uint(0);
-    let zero_rlp_2 = rlp::encode_uint(0);
-
-    rlp::encode_list(&[
-        nonce_rlp,
-        gas_price_rlp,
-        gas_limit_rlp,
-        dest_rlp,
-        amount_rlp,
-        data_rlp,
-        chain_id_rlp,
-        zero_rlp,
-        zero_rlp_2,
-    ])
+    let need = rlp::list_head_len(preimage_len(tx)) + preimage_len(tx);
+    let mut out = alloc::vec![0u8; need];
+    let n = signing_preimage_into(tx, &mut out).expect("buffer pre-sized");
+    out.truncate(n);
+    out
 }
 
 // ─── sign_eip155 business function ──────────────────────────────────────────
 
-/// Sign an EIP-155 legacy transaction
-pub fn sign_eip155(input: &Eip155SignInput) -> Result<Eip155SignedTx> {
+/// Zero-alloc signed-tx outcome (pure arrays).
+pub struct Eip155SignOutcome {
+    pub written: usize,
+    pub signing_hash: [u8; 32],
+    pub r: [u8; 32],
+    pub s: [u8; 32],
+    pub v: u64,
+}
+
+/// Sign an EIP-155 legacy transaction, writing `rlp([9 fields])` straight
+/// into the caller's buffer. Zero-alloc production form.
+pub fn sign_eip155_into(input: &Eip155SignInput, out: &mut [u8]) -> Result<Eip155SignOutcome> {
     let sk = sign::sk_from_pk(input.private_key.expose())?;
 
-    // 1. signing hash
+    // 1. signing hash (streams the preimage into Keccak — no buffer)
     let sighash = signing_hash(&input.tx)?;
 
     // 2. ECDSA sign + low-s enforcement + y_parity
@@ -136,39 +185,47 @@ pub fn sign_eip155(input: &Eip155SignInput) -> Result<Eip155SignedTx> {
     let v = input.tx.chain_id * 2 + 35 + y_parity as u64;
 
     // 4. Build signed transaction (no type prefix)
-    let nonce_rlp = rlp::encode_uint(input.tx.nonce as u128);
-    let gas_price_rlp = rlp::encode_uint(input.tx.gas_price);
-    let gas_limit_rlp = rlp::encode_uint(input.tx.gas_limit as u128);
-    let dest_rlp = match &input.tx.destination {
-        Some(addr) => rlp::encode_bytes(addr),
-        None => rlp::encode_bytes(b""),
-    };
-    let amount_rlp = rlp::encode_uint(input.tx.amount);
-    let data_rlp = rlp::encode_bytes(&input.tx.data);
-    let v_rlp = rlp::encode_uint(v as u128);
-    let r_rlp = rlp::encode_uint256(&r_bytes);
-    let s_rlp = rlp::encode_uint256(&s_bytes);
+    let payload_len = tx_base_len(&input.tx)
+        + rlp::encoded_uint_len(v as u128)
+        + rlp::encoded_uint256_len(&r_bytes)
+        + rlp::encoded_uint256_len(&s_bytes);
+    let need = rlp::list_head_len(payload_len) + payload_len;
+    if out.len() < need {
+        return Err(ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(need),
+        ));
+    }
+    let mut w = SinkCursor::new(out);
+    rlp::write_list_head(&mut w, payload_len)?;
+    write_tx_base(&mut w, &input.tx)?;
+    rlp::write_uint(&mut w, v as u128)?;
+    rlp::write_uint256(&mut w, &r_bytes)?;
+    rlp::write_uint256(&mut w, &s_bytes)?;
 
-    let signed_rlp = rlp::encode_list(&[
-        nonce_rlp,
-        gas_price_rlp,
-        gas_limit_rlp,
-        dest_rlp,
-        amount_rlp,
-        data_rlp,
-        v_rlp,
-        r_rlp,
-        s_rlp,
-    ]);
-
-    let tx_bytes = signed_rlp;
-
-    Ok(Eip155SignedTx {
-        tx_bytes,
+    Ok(Eip155SignOutcome {
+        written: w.pos(),
         signing_hash: sighash,
         r: r_bytes,
         s: s_bytes,
         v,
+    })
+}
+
+/// Test/legacy convenience (allocates). Production paths use `sign_eip155_into`.
+#[cfg(feature = "alloc-fallback")]
+pub fn sign_eip155(input: &Eip155SignInput) -> Result<Eip155SignedTx> {
+    let payload_len = tx_base_len(&input.tx) + rlp::encoded_uint_len(u64::MAX as u128) + 33 + 33;
+    let need = rlp::list_head_len(payload_len) + payload_len;
+    let mut buf = alloc::vec![0u8; need];
+    let out = sign_eip155_into(input, &mut buf)?;
+    buf.truncate(out.written);
+    Ok(Eip155SignedTx {
+        tx_bytes: buf,
+        signing_hash: out.signing_hash,
+        r: out.r,
+        s: out.s,
+        v: out.v,
     })
 }
 
