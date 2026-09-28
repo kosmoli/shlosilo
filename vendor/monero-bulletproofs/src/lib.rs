@@ -213,6 +213,7 @@ impl Bulletproof {
     /// multiexp scratch (`>= 2 * padded_pow_of_2(outputs.len() * 64) + 2`
     /// entries; over-cap is an explicit `BulletproofError`). The prove chain
     /// writes its per-site term lists here instead of heap Vecs.
+#[cfg(feature = "alloc-fallback")]
     pub fn prove_plus<R: RngCore + CryptoRng>(
         rng: &mut R,
         outputs: &[Commitment],
@@ -316,6 +317,7 @@ impl Bulletproof {
     ///
     /// The BatchVerifier must have its verification function executed to actually verify this proof.
     #[must_use]
+#[cfg(feature = "alloc-fallback")]
     pub fn batch_verify<R: RngCore + CryptoRng>(
         &self,
         rng: &mut R,

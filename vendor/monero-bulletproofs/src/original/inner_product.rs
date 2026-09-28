@@ -4,12 +4,10 @@ use zeroize::Zeroize;
 
 use crate::{
     core::{challenge_products, multiexp_vartime_alloc},
-    monero_h,
-#[cfg(feature = "alloc-fallback")]
-    point_vector::PointVector,
-    scalar_vector::ScalarVector,
-    BulletproofsBatchVerifier,
+    monero_h, scalar_vector::ScalarVector, BulletproofsBatchVerifier,
 };
+#[cfg(feature = "alloc-fallback")]
+use crate::point_vector::PointVector;
 use curve25519_dalek::{EdwardsPoint, Scalar};
 use monero_ed25519::CompressedPoint;
 
@@ -27,6 +25,7 @@ pub(crate) enum IpError {
 ///
 /// This is for usage with Protocol 2 from the Bulletproofs paper.
 #[derive(Clone, Debug)]
+#[cfg(feature = "alloc-fallback")]
 pub(crate) struct IpStatement {
     // Weights for h_bold
     h_bold_weights: ScalarVector,
@@ -36,6 +35,7 @@ pub(crate) struct IpStatement {
 
 /// The witness for the Bulletproofs Inner-Product statement.
 #[derive(Clone, Debug)]
+#[cfg(feature = "alloc-fallback")]
 pub(crate) struct IpWitness {
     // a
     a: ScalarVector,
@@ -43,11 +43,13 @@ pub(crate) struct IpWitness {
     b: ScalarVector,
 }
 
+#[cfg(feature = "alloc-fallback")]
 impl IpWitness {
     /// Construct a new witness for an Inner-Product statement.
     ///
     /// This functions return None if the lengths of a, b are mismatched, not a power of two, or are
     /// empty.
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn new(a: ScalarVector, b: ScalarVector) -> Option<Self> {
         if a.0.is_empty() || (a.len() != b.len()) {
             None?;
@@ -74,6 +76,7 @@ pub(crate) struct IpProof {
     pub(crate) b: Scalar,
 }
 
+#[cfg(feature = "alloc-fallback")]
 impl IpStatement {
     /// Create a new Inner-Product statement which won't transcript P.
     ///
@@ -94,6 +97,7 @@ impl IpStatement {
     ///
     /// Returns an error if this statement couldn't be proven for (such as if the witness isn't
     /// consistent).
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn prove(
         self,
         mut transcript: Scalar,

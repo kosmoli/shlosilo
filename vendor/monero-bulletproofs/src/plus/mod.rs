@@ -48,6 +48,7 @@ impl BpPlusGenerators {
         self.g_bold.len()
     }
 
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn g() -> EdwardsPoint {
         monero_h()
     }
@@ -63,6 +64,7 @@ impl BpPlusGenerators {
         }
     }
 
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn reduce(&self, generators: usize) -> Self {
         // Round to the nearest power of 2
         let generators = padded_pow_of_2(generators);
@@ -79,6 +81,7 @@ impl BpPlusGenerators {
 }
 
 // Returns the little-endian decomposition.
+#[cfg(feature = "alloc-fallback")]
 fn u64_decompose(value: u64) -> ScalarVector {
     let mut bits = ScalarVector::new(64);
     for bit in 0..64 {

@@ -13,6 +13,7 @@ mod timing_noop {
         pub(crate) fn start(_phase: u8) -> Self {
             PhaseProbe(0, 0)
         }
+#[cfg(feature = "alloc-fallback")]
         pub(crate) fn end(self) {}
     }
     pub(crate) const PHASE_A_HAT: u8 = 0;
@@ -38,11 +39,13 @@ use crate::{
     plus::{
         padded_pow_of_2,
         transcript::*,
-        u64_decompose,
         weighted_inner_product::{WipProof, WipStatement, WipWitness},
-        BpPlusGenerators, GeneratorsList, PointVector, ScalarVector,
+        BpPlusGenerators, GeneratorsList,
     },
 };
+#[cfg(feature = "alloc-fallback")]
+#[cfg(feature = "alloc-fallback")]
+use crate::plus::{u64_decompose, PointVector, ScalarVector};
 
 const INV_EIGHT: monero_ed25519::Scalar = monero_ed25519::Scalar::INV_EIGHT;
 
@@ -111,6 +114,7 @@ impl<'a> AggregateRangeStatement<'a> {
         (y, z)
     }
 
+#[cfg(feature = "alloc-fallback")]
     fn d_j(j: usize, m: usize) -> ScalarVector {
         let mut d_j = Vec::with_capacity(m * COMMITMENT_BITS);
         for _ in 0..(j - 1) * COMMITMENT_BITS {
@@ -123,6 +127,7 @@ impl<'a> AggregateRangeStatement<'a> {
         ScalarVector(d_j)
     }
 
+#[cfg(feature = "alloc-fallback")]
     fn compute_A_hat<'z>(
         V: &[EdwardsPoint],
         generators: &BpPlusGenerators,
@@ -246,6 +251,7 @@ impl<'a> AggregateRangeStatement<'a> {
         })
     }
 
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn prove<R: RngCore + CryptoRng>(
         self,
         rng: &mut R,
@@ -449,6 +455,7 @@ impl<'a> AggregateRangeStatement<'a> {
         Some(proof)
     }
 
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify<R: RngCore + CryptoRng>(
         self,
         rng: &mut R,
