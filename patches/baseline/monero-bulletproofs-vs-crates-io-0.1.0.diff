@@ -229,7 +229,7 @@ diff -ruN a/build.rs b/build.rs
  }
 diff -ruN a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
-+++ b/Cargo.toml	2026-09-28 12:04:54.507135184 +0800
++++ b/Cargo.toml	2026-09-28 14:46:36.745145761 +0800
 @@ -35,9 +35,18 @@
  
  [features]
@@ -977,7 +977,7 @@ diff -ruN a/src/generator_cache_hook.rs b/src/generator_cache_hook.rs
 +}
 diff -ruN a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-27 23:03:10.871300369 +0800
++++ b/src/lib.rs	2026-09-28 19:12:46.067198428 +0800
 @@ -4,40 +4,80 @@
  #![allow(non_snake_case)]
  
@@ -1237,7 +1237,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
        OriginalStatement::new(&commitments)
          .expect("failed to create statement despite checking amount of commitments")
          .prove(
-@@ -145,201 +194,344 @@
+@@ -145,201 +194,346 @@
            "failed to prove Bulletproof::Original despite ensuring statement/witness consistency",
          ),
      ))
@@ -1621,6 +1621,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
 +
 +    #[cfg(feature = "alloc-fallback")]
 +    /// Read a Bulletproof.
++    #[cfg(feature = "alloc")]
 +    pub fn read<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
 +        Ok(Bulletproof::Original(OriginalProof {
 +            A: CompressedPoint::read(r)?,
@@ -1729,6 +1730,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
 -    }))
 -  }
 +    /// Read a Bulletproof+.
++    #[cfg(feature = "alloc")]
 +    pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
 +        // shlosilo vendor patch (Z5.3 C-cut C): the wire reader stages into a
 +        // Vec (verify-side only) then copies into the proof's fixed arrays —

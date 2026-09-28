@@ -482,6 +482,7 @@ impl Bulletproof {
 
     #[cfg(feature = "alloc-fallback")]
     /// Read a Bulletproof.
+    #[cfg(feature = "alloc")]
     pub fn read<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
         Ok(Bulletproof::Original(OriginalProof {
             A: CompressedPoint::read(r)?,
@@ -501,6 +502,7 @@ impl Bulletproof {
     }
 
     /// Read a Bulletproof+.
+    #[cfg(feature = "alloc")]
     pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
         // shlosilo vendor patch (Z5.3 C-cut C): the wire reader stages into a
         // Vec (verify-side only) then copies into the proof's fixed arrays —
