@@ -578,7 +578,21 @@ impl<'a> UrMultipartDecoder<'a> {
     /// Test/legacy convenience (allocates). Production paths use `receive_frame_with`.
     pub fn receive_frame(&mut self, uri: &str) -> Result<bool> {
         // v1: frame CBOR scratch lives in the workspace (layout `scratch`
-        // segment) — per-call allocation is out of the receive path.
+        // segment) — per-call allocation is out of the receive path. A
+        // decoder built over raw pools (`with_ws`) has no workspace: the
+        // convenience path falls back to a local scratch there; production
+        // paths call `receive_frame_with` with caller storage.
+        if self.ws_base == 0 {
+            #[cfg(feature = "alloc-fallback")]
+            {
+                let mut scratch = alloc::vec![0u8; PART_CBOR_SCRATCH_MAX];
+                return self.receive_frame_with(uri, &mut scratch);
+            }
+            #[cfg(not(feature = "alloc-fallback"))]
+            {
+                return Err(err(ShlosiloErrorKind::BufferTooSmall));
+            }
+        }
         let l = UrDecodeWsLayout::compute();
         let scratch = unsafe {
             core::slice::from_raw_parts_mut(
