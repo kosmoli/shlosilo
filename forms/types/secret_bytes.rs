@@ -88,6 +88,7 @@ impl<const N: usize> fmt::Debug for SecretBytes<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "alloc-fallback")]
     extern crate alloc;
     use alloc::format;
 

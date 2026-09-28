@@ -52,6 +52,7 @@
 #[cfg(feature = "alloc")]
 #[allow(unused_imports)]
 #[macro_use]
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 // TODO: move std-dependent tests to `tests/`

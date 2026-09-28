@@ -37,7 +37,7 @@ rustdoc-args = [
 compile-time-generators = ["curve25519-dalek/precomputed-tables"]
 # shlosilo: transitional alloc fallback (boxed error payloads, Vec cold
 # paths). Zero-heap builds disable it and take the fixed-cap/cfg arms.
-alloc-fallback = ["curve25519-dalek/alloc-fallback"]
+alloc-fallback = ["curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc"]
 default = [
     "std",
     "compile-time-generators",
@@ -70,7 +70,6 @@ path = "src/lib.rs"
 [dependencies.curve25519-dalek]
 version = "4"
 features = [
-    "alloc",
     "zeroize",
 ]
 default-features = false

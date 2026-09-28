@@ -3,8 +3,10 @@
 //! L1 pure functions: turn EIP-155 / EIP-1559 structures + v9.17 calldata decoding
 //! into confirmation-screen data. No DEX/swap recognition.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
-// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+// Consumers live behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 #[allow(unused_imports)]
 use alloc::string::String;
 
@@ -68,7 +70,11 @@ fn classify_call(destination: Option<[u8; 20]>, data: &[u8]) -> Result<(EthCallK
 }
 
 pub fn summarize_eip1559(tx: &Eip1559Transaction) -> Result<EthTxSummary> {
-    let (call, unlimited_approval) = classify_call(tx.destination, &tx.data)?;
+    #[allow(clippy::needless_borrow)] // WireBytes two-face
+    let (call, unlimited_approval) = classify_call(
+        tx.destination,
+        crate::types::wire_bytes::wire_slice(&tx.data),
+    )?;
     Ok(EthTxSummary {
         chain_id: tx.chain_id,
         nonce: tx.nonce,
@@ -82,8 +88,12 @@ pub fn summarize_eip1559(tx: &Eip1559Transaction) -> Result<EthTxSummary> {
     })
 }
 
+#[allow(clippy::needless_borrow)] // WireBytes two-face
 pub fn summarize_eip155(tx: &Eip155Transaction) -> Result<EthTxSummary> {
-    let (call, unlimited_approval) = classify_call(tx.destination, &tx.data)?;
+    let (call, unlimited_approval) = classify_call(
+        tx.destination,
+        crate::types::wire_bytes::wire_slice(&tx.data),
+    )?;
     Ok(EthTxSummary {
         chain_id: tx.chain_id,
         nonce: tx.nonce,

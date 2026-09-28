@@ -12,6 +12,7 @@
 #[cfg(feature = "std")]
 extern crate std;
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 /// catch_unwind shim: actually catches panics under std; direct call under no_std (panic=abort)

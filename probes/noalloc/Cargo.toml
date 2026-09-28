@@ -19,7 +19,7 @@ publish = false
 #    "no global memory allocator found" reports the crate-graph debt.
 default = ["lang-stub", "alloc-face"]
 lang-stub = []
-alloc-face = ["shlosilo/std", "shlosilo/alloc-fallback"]
+alloc-face = ["shlosilo/alloc-fallback"]
 
 [lib]
 path = "probe.rs"

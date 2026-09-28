@@ -5,9 +5,11 @@
 //! ERC-20：`transfer` / `approve` / `increaseAllowance` / `transferFrom`
 //! ERC-721/1155: `setApprovalForAll` fully decoded; `safeTransferFrom*` recognized by selector only.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
-// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+// Consumers live behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 #[allow(unused_imports)]
 use alloc::string::String;
 

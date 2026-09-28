@@ -20,6 +20,7 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 /// UR registry crypto-keypath tag (BCR-2020-006; same source as the encode side of crypto_hd_key.rs)
 const TAG_CRYPTO_KEYPATH: u64 = 304;
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 fn err() -> ShlosiloError {

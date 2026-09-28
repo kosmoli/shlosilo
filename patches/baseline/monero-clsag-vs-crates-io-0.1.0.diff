@@ -1,13 +1,13 @@
-diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
+diff -ruN a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
-+++ b/Cargo.toml	2026-09-27 16:02:08.255564711 +0800
++++ b/Cargo.toml	2026-09-28 12:04:54.507315301 +0800
 @@ -35,9 +35,13 @@
  
  [features]
  compile-time-generators = ["curve25519-dalek/precomputed-tables"]
 +# shlosilo: transitional alloc fallback (boxed error payloads, Vec cold
 +# paths). Zero-heap builds disable it and take the fixed-cap/cfg arms.
-+alloc-fallback = ["curve25519-dalek/alloc-fallback"]
++alloc-fallback = ["curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc"]
  default = [
      "std",
      "compile-time-generators",
@@ -15,7 +15,15 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  ]
  multisig = [
      "rand_chacha",
-@@ -105,6 +109,11 @@
+@@ -66,7 +70,6 @@
+ [dependencies.curve25519-dalek]
+ version = "4"
+ features = [
+-    "alloc",
+     "zeroize",
+ ]
+ default-features = false
+@@ -105,6 +108,11 @@
  version = "0.6"
  default-features = false
  
@@ -27,7 +35,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  [dependencies.std-shims]
  version = "0.1.5"
  default-features = false
-diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml.orig b/Cargo.toml.orig
+diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
 --- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
 +++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
 @@ -1,62 +0,0 @@
@@ -93,9 +101,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -compile-time-generators = ["curve25519-dalek/precomputed-tables"]
 -multisig = ["rand_chacha", "transcript", "group", "dalek-ff-group", "frost", "std"]
 -default = ["std", "compile-time-generators"]
-diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/decoys.rs b/src/decoys.rs
+diff -ruN a/src/decoys.rs b/src/decoys.rs
 --- a/src/decoys.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/decoys.rs	2026-09-26 14:58:26.695768019 +0800
++++ b/src/decoys.rs	2026-09-27 23:03:10.871788956 +0800
 @@ -2,19 +2,55 @@
  use std_shims::prelude::*;
  use std_shims::io;
@@ -332,9 +340,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    Decoys::new(&offsets, signer_index, &ring).ok_or_else(|| io::Error::other("invalid Decoys"))
    }
  }
-diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
+diff -ruN a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-27 16:14:54.582162325 +0800
++++ b/src/lib.rs	2026-09-27 23:03:10.871873264 +0800
 @@ -5,12 +5,27 @@
  
  use core::ops::Deref as _;

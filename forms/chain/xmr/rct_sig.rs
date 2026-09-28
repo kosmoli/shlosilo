@@ -34,8 +34,10 @@
 //! - <https://github.com/monero-project/monero/blob/master/src/ringct/rctTypes.h>
 
 use crate::chain::xmr::clsag::ClsagProof;
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
-// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+// Consumers live behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 #[allow(unused_imports)]
 use alloc::vec::Vec;
 

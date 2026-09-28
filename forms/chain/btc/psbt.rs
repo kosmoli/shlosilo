@@ -37,16 +37,25 @@
 //!
 //! **Reference**: <https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki>
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
-use alloc::borrow::Cow;
+// Consumers live behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
+#[allow(unused_imports)]
 use alloc::vec;
+// Consumers live behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
+#[allow(unused_imports)]
 use alloc::vec::Vec;
 
+#[cfg(feature = "alloc-fallback")]
 use crate::chain::btc::p2pkh::sign_p2pkh;
+#[cfg(feature = "alloc-fallback")]
 use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
 #[cfg(test)]
 use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+#[cfg(feature = "alloc-fallback")]
 use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::push::{CountSink, Sink, SinkCursor};
@@ -115,8 +124,8 @@ pub(crate) mod output_type {
 /// call shapes working (parsed payloads Borrow, test literals Own).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyValue<'a> {
-    pub key: Cow<'a, [u8]>,
-    pub value: Cow<'a, [u8]>,
+    pub key: crate::types::wire_bytes::WireBytes<'a>,
+    pub value: crate::types::wire_bytes::WireBytes<'a>,
 }
 
 /// Z4-7b: one map record — payload offsets in the CONCATENATED address space
@@ -200,8 +209,8 @@ impl<'a> KvMap<'a> {
                 })
             })
             .chain(slice.into_iter().flatten().map(|kv| KvEntry {
-                key: kv.key.as_ref(),
-                value: kv.value.as_ref(),
+                key: crate::types::wire_bytes::wire_slice(&kv.key),
+                value: crate::types::wire_bytes::wire_slice(&kv.value),
             }))
     }
 
@@ -533,17 +542,17 @@ fn write_unsigned_tx<S: Sink>(sink: &mut S, tx: &Transaction) -> Result<()> {
     sink.put(&tx.version.to_le_bytes())?;
     put_compact_size(sink, tx.inputs.len() as u64)?;
     for txin in &tx.inputs {
-        sink.put(&txin.prev_out.txid)?;
+        sink.put(txin.prev_out.txid.as_slice())?;
         sink.put(&txin.prev_out.vout.to_le_bytes())?;
         put_compact_size(sink, txin.script_sig.len() as u64)?;
-        sink.put(&txin.script_sig)?;
+        sink.put(crate::types::wire_bytes::wire_slice(&txin.script_sig))?;
         sink.put(&txin.sequence.to_le_bytes())?;
     }
     put_compact_size(sink, tx.outputs.len() as u64)?;
     for txout in &tx.outputs {
         sink.put(&txout.value.to_le_bytes())?;
         put_compact_size(sink, txout.script_pubkey.len() as u64)?;
-        sink.put(&txout.script_pubkey)?;
+        sink.put(crate::types::wire_bytes::wire_slice(&txout.script_pubkey))?;
     }
     sink.put(&tx.lock_time.to_le_bytes())
 }
@@ -615,7 +624,8 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
 
         // scriptSig len + bytes
         let script_sig_len = decode_compact_size(bytes, &mut pos)? as usize;
-        let script_sig = Cow::Borrowed(take_bytes(bytes, &mut pos, script_sig_len)?);
+        let script_sig =
+            crate::types::wire_bytes::wire_from(take_bytes(bytes, &mut pos, script_sig_len)?);
 
         // sequence (4 bytes)
         let seq_bytes = take_bytes(bytes, &mut pos, 4)?;
@@ -630,7 +640,7 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
                 prev_out: OutPoint { txid, vout },
                 script_sig,
                 sequence,
-                witness: Vec::new(),
+                witness: crate::types::wire_bytes::witness_empty(),
             })
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     }
@@ -657,7 +667,8 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
 
         // scriptPubKey len + bytes
         let script_pubkey_len = decode_compact_size(bytes, &mut pos)? as usize;
-        let script_pubkey = Cow::Borrowed(take_bytes(bytes, &mut pos, script_pubkey_len)?);
+        let script_pubkey =
+            crate::types::wire_bytes::wire_from(take_bytes(bytes, &mut pos, script_pubkey_len)?);
 
         outputs
             .push(TxOut {
@@ -940,6 +951,7 @@ pub struct PsbtP2SHP2WPKHSignInput {
 ///
 /// Unlike P2WPKH: injects FINAL_SCRIPT_SIG (type 0x08) instead of PARTIAL_SIG.
 /// The Finalizer extracts FINAL_SCRIPT_SIG into tx.inputs[].scriptSig (final tx).
+#[cfg(feature = "alloc-fallback")]
 pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
@@ -974,6 +986,7 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> 
 ///
 /// Note: FINAL_SCRIPTWITNESS uses the special BIP-174 format; the value is already-serialized witness bytes.
 /// shlosilo reuses the witness output (vec![sig, pk]) of the v9.3 sign_p2sh_p2wpkh.
+#[cfg(feature = "alloc-fallback")]
 pub fn sign_psbt_p2sh_p2wpkh(
     psbt: &mut Psbt<'_>,
     sign_input: &PsbtP2SHP2WPKHSignInput,
@@ -1056,7 +1069,7 @@ pub fn sign_psbt_p2tr_keypath(psbt: &mut Psbt<'_>, sign_input: &PsbtP2TRSignInpu
     let prev_out = psbt.unsigned_tx.inputs[input_idx].prev_out.clone();
     let (_amount, spk) = get_utxo_any(psbt.input_map(input_idx), &prev_out)
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-    if decode_p2tr_script_pubkey(&spk).is_err() {
+    if decode_p2tr_script_pubkey(crate::types::wire_bytes::wire_slice(&spk)).is_err() {
         // 0x51 = OP_1 (witness v1), 0x20 = push 32 bytes
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -1086,7 +1099,7 @@ pub fn sign_psbt_p2tr_scriptpath(
     let prev_out = psbt.unsigned_tx.inputs[input_idx].prev_out.clone();
     let (_amount, spk) = get_utxo_any(psbt.input_map(input_idx), &prev_out)
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-    if decode_p2tr_script_pubkey(&spk).is_err() {
+    if decode_p2tr_script_pubkey(crate::types::wire_bytes::wire_slice(&spk)).is_err() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
@@ -1123,7 +1136,9 @@ pub fn decode_p2tr_script_pubkey(script_pubkey: &[u8]) -> Result<[u8; 32]> {
 /// decode_compact_size + taken via take_bytes checked_add — the original bare
 /// `pos + spk_len` addition overflows and panics on `amount || 0xff || u64::MAX`
 /// input (on device = malicious QR DoS).
-pub fn decode_witness_utxo<'a>(value: &'a [u8]) -> Result<(u64, Cow<'a, [u8]>)> {
+pub fn decode_witness_utxo<'a>(
+    value: &'a [u8],
+) -> Result<(u64, crate::types::wire_bytes::WireBytes<'a>)> {
     if value.len() < 8 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -1140,17 +1155,19 @@ pub fn decode_witness_utxo<'a>(value: &'a [u8]) -> Result<(u64, Cow<'a, [u8]>)> 
     if pos != value.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    Ok((amount, Cow::Borrowed(spk)))
+    Ok((amount, crate::types::wire_bytes::wire_from(spk)))
 }
 
 /// Audit #5 open-01: parse the full transaction of NON_WITNESS_UTXO per BIP-174 semantics:
 /// (1) deserialize the full tx (legacy format, no witness — PSBT stores the non-witness serialization)
 /// (2) compute txid = dsha256(serialized) (3) compare with OutPoint.txid
 /// (4) take CTxOut indexed by vout. Any step failing → None (refuse to sign that input).
+#[cfg(feature = "alloc-fallback")]
+#[cfg(feature = "alloc-fallback")]
 fn get_non_witness_utxo_bound<'a>(
     input_map: KvMap<'a>,
     prev_out: &OutPoint,
-) -> Option<(u64, Cow<'a, [u8]>)> {
+) -> Option<(u64, crate::types::wire_bytes::WireBytes<'a>)> {
     let value = input_map.get(&[input_type::NON_WITNESS_UTXO])?;
     let full_tx = deserialize_unsigned_tx(value).ok()?;
 
@@ -1167,7 +1184,9 @@ fn get_non_witness_utxo_bound<'a>(
 }
 
 /// Get the spent output (value, spk) from an input map's WITNESS_UTXO field
-pub fn get_witness_utxo<'a>(input_map: KvMap<'a>) -> Option<(u64, Cow<'a, [u8]>)> {
+pub fn get_witness_utxo<'a>(
+    input_map: KvMap<'a>,
+) -> Option<(u64, crate::types::wire_bytes::WireBytes<'a>)> {
     let value = input_map.get(&[input_type::WITNESS_UTXO])?;
     decode_witness_utxo(value).ok()
 }
@@ -1178,16 +1197,29 @@ pub fn get_witness_utxo<'a>(input_map: KvMap<'a>) -> Option<(u64, Cow<'a, [u8]>)
 /// parsing + txid binding + vout indexing, no longer blindly trusting a bare CTxOut as fallback.
 /// (The non-standard CTxOut-in-0x01 form from the keystone fixture is no longer supported; affected tests
 ///   now use the standard WITNESS_UTXO form.)
-pub fn get_utxo_any<'a>(input_map: KvMap<'a>, prev_out: &OutPoint) -> Option<(u64, Cow<'a, [u8]>)> {
+pub fn get_utxo_any<'a>(
+    input_map: KvMap<'a>,
+    prev_out: &OutPoint,
+) -> Option<(u64, crate::types::wire_bytes::WireBytes<'a>)> {
     // Preferred: WITNESS_UTXO (standard path, CTxOut stored directly)
     if let Some(utxo) = get_witness_utxo(input_map) {
         return Some(utxo);
     }
-    // NON_WITNESS_UTXO: full-tx + txid binding + vout indexing
-    get_non_witness_utxo_bound(input_map, prev_out)
+    // NON_WITNESS_UTXO: full-tx + txid binding + vout indexing (legacy
+    // inputs; the p2wpkh production face only reads WITNESS_UTXO)
+    #[cfg(feature = "alloc-fallback")]
+    {
+        get_non_witness_utxo_bound(input_map, prev_out)
+    }
+    #[cfg(not(feature = "alloc-fallback"))]
+    {
+        let _ = prev_out;
+        None
+    }
 }
 
 /// Get TAP_INTERNAL_KEY from input map (BIP-371 0x17)
+#[cfg(feature = "alloc-fallback")]
 pub fn get_tap_internal_key(input_map: KvMap<'_>) -> Option<[u8; 32]> {
     let kv = input_map
         .iter()
@@ -1201,6 +1233,7 @@ pub fn get_tap_internal_key(input_map: KvMap<'_>) -> Option<[u8; 32]> {
 }
 
 /// Set TAP_INTERNAL_KEY in input map
+#[cfg(feature = "alloc-fallback")]
 pub fn set_tap_internal_key(
     input_map: &mut Vec<KeyValue<'_>>,
     internal_key_x: &[u8; 32],
@@ -1215,6 +1248,7 @@ pub fn set_tap_internal_key(
 }
 
 /// Get TAP_MERKLE_ROOT from input map (BIP-371 0x18)
+#[cfg(feature = "alloc-fallback")]
 pub fn get_tap_merkle_root(input_map: KvMap<'_>) -> Option<[u8; 32]> {
     let kv = input_map
         .iter()
@@ -1229,12 +1263,15 @@ pub fn get_tap_merkle_root(input_map: KvMap<'_>) -> Option<[u8; 32]> {
 
 /// Check if input is P2TR (has P2TR witness UTXO and TAP_INTERNAL_KEY set)
 /// WITNESS_UTXO value = CTxOut: amount(8 LE) || varint(spk_len) || scriptPubKey
+#[cfg(feature = "alloc-fallback")]
 pub fn is_p2tr_input(input_map: KvMap<'_>) -> bool {
     if get_tap_internal_key(input_map).is_none() {
         return false;
     }
     get_witness_utxo(input_map)
-        .map(|(_amount, spk)| decode_p2tr_script_pubkey(&spk).is_ok())
+        .map(|(_amount, spk)| {
+            decode_p2tr_script_pubkey(crate::types::wire_bytes::wire_slice(&spk)).is_ok()
+        })
         .unwrap_or(false)
 }
 
@@ -1242,6 +1279,8 @@ pub fn is_p2tr_input(input_map: KvMap<'_>) -> bool {
 mod tests {
     use super::psbt_from_maps_leaky;
     use super::*;
+    // Alloc surface: consumers behind alloc-fallback / cfg(test).
+    #[cfg(feature = "alloc-fallback")]
     use alloc::string::String;
     extern crate std;
     use std::eprintln;

@@ -12,7 +12,10 @@
 //! - additional info 24: 1-byte len；25: 2-byte；26: 4-byte；27: 8-byte
 //! - major 7 info 20/21/22 = false/true/null
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -23,6 +26,7 @@ fn err() -> ShlosiloError {
 
 // ─── Encoding ──────────────────────────────────────────────────────────
 
+#[cfg(feature = "alloc-fallback")]
 fn push_head(out: &mut Vec<u8>, major: u8, arg: u64) {
     let m = major << 5;
     match arg {
@@ -47,6 +51,7 @@ fn push_head(out: &mut Vec<u8>, major: u8, arg: u64) {
 }
 
 /// Encode an unsigned int
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_uint(n: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(9);
     push_head(&mut out, 0, n);
@@ -54,6 +59,7 @@ pub fn encode_uint(n: u64) -> Vec<u8> {
 }
 
 /// Encode a byte string
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_bytes(b: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(9 + b.len());
     push_head(&mut out, 2, b.len() as u64);
@@ -63,6 +69,7 @@ pub fn encode_bytes(b: &[u8]) -> Vec<u8> {
 
 /// Encode a text string
 #[cfg(test)] // Z3.5 collection: test-only convenience
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_text(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(9 + s.len());
     push_head(&mut out, 3, s.len() as u64);
@@ -71,6 +78,7 @@ pub fn encode_text(s: &str) -> Vec<u8> {
 }
 
 /// Encode an array (items are already-encoded items)
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_array(items: &[Vec<u8>]) -> Vec<u8> {
     let mut out = Vec::new();
     push_head(&mut out, 4, items.len() as u64);
@@ -81,6 +89,7 @@ pub fn encode_array(items: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// Encode an ordered key-value map (keys are already-encoded items)
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_map(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
     push_head(&mut out, 5, pairs.len() as u64);
@@ -93,6 +102,7 @@ pub fn encode_map(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
 
 /// Encode a negative int (-1 - n)
 #[cfg(test)] // Z3.5 collection: test-only convenience
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_neg(n: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(9);
     push_head(&mut out, 1, n);
@@ -100,11 +110,13 @@ pub fn encode_neg(n: u64) -> Vec<u8> {
 }
 
 /// Encode a bool
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_bool(b: bool) -> Vec<u8> {
     alloc::vec![if b { 0xf5 } else { 0xf4 }]
 }
 
 /// Encode tag(n) + inner item (inner already encoded)
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_tag(tag: u64, inner: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(9 + inner.len());
     push_head(&mut out, 6, tag);

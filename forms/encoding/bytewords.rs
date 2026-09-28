@@ -4,6 +4,7 @@
 //! shlosilo only uses Minimal style (all UR QRs go through minimal: two letters, no separators).
 //! checksum = CRC32 (IEEE, reflected) appended big-endian as 4 bytes.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 #[cfg(test)] // Z3.5: only the test conveniences return String/Vec now
 use alloc::string::String;

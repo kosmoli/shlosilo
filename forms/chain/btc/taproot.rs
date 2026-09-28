@@ -26,6 +26,7 @@
 //! - BIP-350 (bech32m) — implemented in encoding::bech32
 //! - BIP-86 (P2TR key-path-only) — https://github.com/bitcoin/bips/blob/master/bip-0086.mediawiki
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 use sha2::Digest as _;

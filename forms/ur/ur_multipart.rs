@@ -585,6 +585,8 @@ mod tests {
     }
 
     use super::*;
+    // Alloc surface: consumers behind alloc-fallback / cfg(test).
+    #[cfg(feature = "alloc-fallback")]
     use alloc::vec::Vec;
 
     /// P0-B regression (2026-09-01 re-review): upstream keystone-ur 0.1.1 mixed redundancy frames (seq > count)
@@ -796,6 +798,8 @@ mod tests {
     /// Now valid bytewords bodies pin each case separately: seq>count → Ok, genuinely illegal domain → Err.
     #[test]
     fn invalid_seq_domain_rejected() {
+        // Alloc surface: consumers behind alloc-fallback / cfg(test).
+        #[cfg(feature = "alloc-fallback")]
         use alloc::format;
         // Valid body: Part CBOR [seq, count, msg_len, checksum, data]
         // (bytewords-minimal encoded, shape aligned with part_from_cbor\'s expectation)

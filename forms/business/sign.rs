@@ -13,6 +13,7 @@ use crate::network::Network;
 use crate::tx::tx_normalize;
 use crate::types::SecretBytes;
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 /// Z2.3 C3b-3: one-byte SliceVec push with the standard overflow error shape.
@@ -152,10 +153,13 @@ pub fn sign_with_entropy_ws(
                 let n = sign_xmr_with_ws(ws, seed.expose(), payload, entropy, output_buf)?;
                 Ok(n)
             }
+            #[cfg(feature = "alloc-fallback")]
             None => {
                 let n = sign_xmr(seed.expose(), payload, entropy, output_buf)?;
                 Ok(n)
             }
+            #[cfg(not(feature = "alloc-fallback"))]
+            None => Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall)),
         },
         _ => Err(err(ShlosiloErrorKind::ChainKindUnsupported)),
     }
@@ -895,6 +899,7 @@ fn sign_xmr_with_ws<'a>(
 /// callers; Rust flux hosts pass `Some(ws)` over their own memory instead and
 /// the shell leaves their path entirely. Removed when the C-ABI workspace lands
 /// (Z3.3b) — see the Z3 design doc for the proposed C shape.
+#[cfg(feature = "alloc-fallback")]
 fn sign_xmr(
     seed: &[u8],
     encrypted_unsigned: &[u8],
@@ -1206,6 +1211,7 @@ mod tests {
     use crate::chain::btc::p2wpkh::bt_vec;
     use crate::chain::btc::psbt::psbt_from_maps_leaky;
     use crate::types::chain_kind::ChainKind;
+    #[cfg(feature = "alloc-fallback")]
     extern crate alloc;
     // (alloc::vec import dropped — test literals use the qualified form)
     use alloc::vec::Vec;

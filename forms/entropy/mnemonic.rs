@@ -264,6 +264,7 @@ impl PartialEq for Mnemonic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "alloc-fallback")]
     extern crate alloc;
     use alloc::vec;
     use alloc::vec::Vec;

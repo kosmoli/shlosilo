@@ -9,6 +9,7 @@
 //! ## L1 pure functions
 //! The whole module has no IO/global state.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 use alloc::vec::Vec;
 
