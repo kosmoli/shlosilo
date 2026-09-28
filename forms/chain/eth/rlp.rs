@@ -14,7 +14,8 @@
 //!
 //! ✅ **Self-implemented RLP** (per the Ethereum Yellow Paper; an encoding concern, not cryptography)
 //!
-//! Business modules may allocate (`Vec<u8>` lifetime ≤ the function call).
+//! Production paths use the zero-alloc `RlpWriter` (the `encode_* -> Vec<u8>`
+//! family below is test/legacy convenience API).
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -108,6 +109,149 @@ pub fn encode_list(items: &[Vec<u8>]) -> Vec<u8> {
         out.extend_from_slice(item);
     }
     out
+}
+
+// --- Zero-alloc streaming form (production) --------------------------
+//
+// Byte-for-byte equivalent to the `encode_*` conveniences above, including
+// the single-zero quirk (`[0x00]` encodes as the empty string 0x80) — the
+// existing canonical-uint semantics, pinned by the oracle suite.
+//
+// The writers are generic over `Sink` (types/push.rs): the signing preimage
+// can stream straight into `KeccakSink` with NO intermediate buffer, and
+// output serialization goes through `SinkCursor` over the caller's buffer.
+
+use crate::error::Result;
+use crate::types::push::Sink;
+
+/// Byte length of `encode_bytes(b)`'s output.
+pub fn encoded_bytes_len(b: &[u8]) -> usize {
+    if b.len() == 1 && (b[0] == 0 || b[0] < 0x80) {
+        return 1;
+    }
+    if b.len() <= 55 {
+        return 1 + b.len();
+    }
+    let n_bytes = (b.len() as u32).to_be_bytes();
+    let mut leading_zeros = 0;
+    while leading_zeros < 4 && n_bytes[leading_zeros] == 0 {
+        leading_zeros += 1;
+    }
+    1 + (4 - leading_zeros) + b.len()
+}
+
+/// Byte length of `encode_uint(n)`'s output.
+pub fn encoded_uint_len(n: u128) -> usize {
+    if n == 0 {
+        return 1;
+    }
+    let bytes_needed = (128 - n.leading_zeros()).div_ceil(8) as usize;
+    encoded_bytes_len_of_len(bytes_needed)
+}
+
+/// Byte length of `encode_uint256(bytes)`'s output.
+pub fn encoded_uint256_len(bytes: &[u8; 32]) -> usize {
+    let mut start = 0;
+    while start < 32 && bytes[start] == 0 {
+        start += 1;
+    }
+    if start == 32 {
+        return 1;
+    }
+    encoded_bytes_len_of_len(32 - start)
+}
+
+/// Byte length of an RLP string carrying `len` payload bytes (1-byte payload
+/// is a single as-is byte; callers pass raw payload bytes).
+fn encoded_bytes_len_of_len(len: usize) -> usize {
+    if len == 1 {
+        return 1;
+    }
+    if len <= 55 {
+        return 1 + len;
+    }
+    let n_bytes = (len as u32).to_be_bytes();
+    let mut leading_zeros = 0;
+    while leading_zeros < 4 && n_bytes[leading_zeros] == 0 {
+        leading_zeros += 1;
+    }
+    1 + (4 - leading_zeros) + len
+}
+
+/// Byte length of an RLP list header over `payload_len` payload bytes.
+pub fn list_head_len(payload_len: usize) -> usize {
+    if payload_len <= 55 {
+        1
+    } else {
+        let n_bytes = (payload_len as u32).to_be_bytes();
+        let mut leading_zeros = 0;
+        while leading_zeros < 4 && n_bytes[leading_zeros] == 0 {
+            leading_zeros += 1;
+        }
+        1 + (4 - leading_zeros)
+    }
+}
+
+/// RLP string into a sink — same bytes as `encode_bytes`.
+pub fn write_bytes<S: Sink>(s: &mut S, b: &[u8]) -> Result<()> {
+    if b.len() == 1 && b[0] == 0 {
+        return s.put(&[0x80]);
+    }
+    if b.len() == 1 && b[0] < 0x80 {
+        return s.put(b);
+    }
+    if b.len() <= 55 {
+        s.put(&[0x80 + b.len() as u8])?;
+        return s.put(b);
+    }
+    let n_bytes = (b.len() as u32).to_be_bytes();
+    let mut leading_zeros = 0;
+    while leading_zeros < 4 && n_bytes[leading_zeros] == 0 {
+        leading_zeros += 1;
+    }
+    let len_of_len = (4 - leading_zeros) as u8;
+    s.put(&[0xb7 + len_of_len])?;
+    s.put(&n_bytes[leading_zeros..])?;
+    s.put(b)
+}
+
+/// RLP uint into a sink — same bytes as `encode_uint`.
+pub fn write_uint<S: Sink>(s: &mut S, n: u128) -> Result<()> {
+    if n == 0 {
+        return s.put(&[0x80]);
+    }
+    let bytes_needed = (128 - n.leading_zeros()).div_ceil(8);
+    let be = n.to_be_bytes();
+    let start = 16 - bytes_needed as usize;
+    write_bytes(s, &be[start..])
+}
+
+/// RLP uint256 into a sink — same bytes as `encode_uint256`.
+pub fn write_uint256<S: Sink>(s: &mut S, bytes: &[u8; 32]) -> Result<()> {
+    let mut start = 0;
+    while start < 32 && bytes[start] == 0 {
+        start += 1;
+    }
+    if start == 32 {
+        return s.put(&[0x80]);
+    }
+    write_bytes(s, &bytes[start..])
+}
+
+/// RLP list header over a pre-computed `payload_len` — same bytes as
+/// `encode_list`'s header.
+pub fn write_list_head<S: Sink>(s: &mut S, payload_len: usize) -> Result<()> {
+    if payload_len <= 55 {
+        return s.put(&[0xc0 + payload_len as u8]);
+    }
+    let n_bytes = (payload_len as u32).to_be_bytes();
+    let mut leading_zeros = 0;
+    while leading_zeros < 4 && n_bytes[leading_zeros] == 0 {
+        leading_zeros += 1;
+    }
+    let len_of_len = (4 - leading_zeros) as u8;
+    s.put(&[0xf7 + len_of_len])?;
+    s.put(&n_bytes[leading_zeros..])
 }
 
 #[cfg(test)]

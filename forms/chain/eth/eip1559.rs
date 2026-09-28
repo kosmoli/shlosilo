@@ -74,6 +74,7 @@ pub struct Eip1559SignInput {
 
 /// Signing output
 #[derive(Clone, Debug)]
+#[cfg(feature = "alloc-fallback")]
 pub struct Eip1559SignedTx {
     /// Full signed transaction bytes (0x02 || rlp([..., y_parity, r, s]))
     pub tx_bytes: Vec<u8>,
@@ -93,50 +94,91 @@ pub struct Eip1559SignedTx {
 ///
 /// `keccak256(0x02 || rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit, destination, amount, data, access_list]))`
 pub fn signing_hash(tx: &Eip1559Transaction) -> Result<[u8; 32]> {
-    let preimage = signing_preimage(tx)?;
-    keccak256::hash(&preimage)
+    let mut sink = keccak256::KeccakSink::new();
+    write_preimage(&mut sink, tx)?;
+    Ok(sink.finalize())
+}
+
+// --- Zero-alloc serialization core (production) ----------------------
+//
+// The signing preimage streams straight into `KeccakSink` (no intermediate
+// buffer) and the signed transaction streams into the caller's buffer via
+// `SinkCursor`. The `Vec<u8>` conveniences below are test/legacy surface
+// behind `alloc-fallback`.
+
+use crate::types::push::{Sink, SinkCursor};
+
+/// The 9 fixed tx fields (+3 tail fields when signing) into a sink.
+fn write_tx_fields<S: Sink>(
+    s: &mut S,
+    tx: &Eip1559Transaction,
+    tail: Option<(u8, &[u8; 32], &[u8; 32])>,
+) -> Result<()> {
+    rlp::write_uint(s, tx.chain_id as u128)?;
+    rlp::write_uint(s, tx.nonce as u128)?;
+    rlp::write_uint(s, tx.max_priority_fee_per_gas)?;
+    rlp::write_uint(s, tx.max_fee_per_gas)?;
+    rlp::write_uint(s, tx.gas_limit as u128)?;
+    match &tx.destination {
+        Some(addr) => rlp::write_bytes(s, addr)?,
+        None => rlp::write_bytes(s, b"")?,
+    }
+    rlp::write_uint(s, tx.amount)?;
+    rlp::write_bytes(s, &tx.data)?;
+    rlp::write_list_head(s, 0)?; // empty access_list
+    if let Some((yp, r, sc)) = tail {
+        rlp::write_uint(s, yp as u128)?;
+        rlp::write_uint256(s, r)?;
+        rlp::write_uint256(s, sc)?;
+    }
+    Ok(())
+}
+
+/// Exact byte length of `write_tx_fields`' output for this tx.
+fn tx_fields_len(tx: &Eip1559Transaction, tail: Option<(u8, &[u8; 32], &[u8; 32])>) -> usize {
+    let dest: &[u8] = match &tx.destination {
+        Some(addr) => addr.as_slice(),
+        None => b"",
+    };
+    let mut n = rlp::encoded_uint_len(tx.chain_id as u128)
+        + rlp::encoded_uint_len(tx.nonce as u128)
+        + rlp::encoded_uint_len(tx.max_priority_fee_per_gas)
+        + rlp::encoded_uint_len(tx.max_fee_per_gas)
+        + rlp::encoded_uint_len(tx.gas_limit as u128)
+        + rlp::encoded_bytes_len(dest)
+        + rlp::encoded_uint_len(tx.amount)
+        + rlp::encoded_bytes_len(&tx.data)
+        + rlp::list_head_len(0);
+    if let Some((yp, r, sc)) = tail {
+        n += rlp::encoded_uint_len(yp as u128)
+            + rlp::encoded_uint256_len(r)
+            + rlp::encoded_uint256_len(sc);
+    }
+    n
+}
+
+/// 0x02 || rlp([9 fields]) — the EIP-2718 signing preimage.
+fn write_preimage<S: Sink>(s: &mut S, tx: &Eip1559Transaction) -> Result<()> {
+    s.put(&[0x02])?;
+    rlp::write_list_head(s, tx_fields_len(tx, None))?;
+    write_tx_fields(s, tx, None)
+}
+
+/// The signing preimage bytes into a caller buffer (debug/inspection form).
+pub fn signing_preimage_into(tx: &Eip1559Transaction, out: &mut [u8]) -> Result<usize> {
+    let mut w = SinkCursor::new(out);
+    write_preimage(&mut w, tx)?;
+    Ok(w.pos())
 }
 
 /// Debug helper: returns the signing preimage bytes
+#[cfg(feature = "alloc-fallback")]
 pub fn signing_preimage(tx: &Eip1559Transaction) -> Result<Vec<u8>> {
-    // RLP encode each field
-    let chain_id_rlp = rlp::encode_uint(tx.chain_id as u128);
-    let nonce_rlp = rlp::encode_uint(tx.nonce as u128);
-    let max_prio_rlp = rlp::encode_uint(tx.max_priority_fee_per_gas);
-    let max_fee_rlp = rlp::encode_uint(tx.max_fee_per_gas);
-    let gas_limit_rlp = rlp::encode_uint(tx.gas_limit as u128);
-
-    // destination: 20-byte address, or empty for contract creation
-    let dest_rlp = match &tx.destination {
-        Some(addr) => rlp::encode_bytes(addr),
-        None => rlp::encode_bytes(b""),
-    };
-
-    let amount_rlp = rlp::encode_uint(tx.amount);
-    let data_rlp = rlp::encode_bytes(&tx.data);
-
-    // access_list: empty list
-    let access_list_rlp = rlp::encode_list(&[]);
-
-    // RLP list of all fields
-    let unsigned_rlp = rlp::encode_list(&[
-        chain_id_rlp,
-        nonce_rlp,
-        max_prio_rlp,
-        max_fee_rlp,
-        gas_limit_rlp,
-        dest_rlp,
-        amount_rlp,
-        data_rlp,
-        access_list_rlp,
-    ]);
-
-    // preimage = 0x02 || rlp_list
-    let mut preimage = Vec::with_capacity(1 + unsigned_rlp.len());
-    preimage.push(0x02);
-    preimage.extend_from_slice(&unsigned_rlp);
-
-    Ok(preimage)
+    let need = 1 + rlp::list_head_len(tx_fields_len(tx, None)) + tx_fields_len(tx, None);
+    let mut out = alloc::vec![0u8; need];
+    let n = signing_preimage_into(tx, &mut out)?;
+    out.truncate(n);
+    Ok(out)
 }
 
 // --- sign_eip1559 business function -------------------------------
@@ -191,10 +233,21 @@ fn compute_y_parity(
 }
 
 /// Sign an EIP-1559 transaction
-pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
+/// Zero-alloc signed-tx outcome (pure arrays).
+pub struct Eip1559SignOutcome {
+    pub written: usize,
+    pub signing_hash: [u8; 32],
+    pub r: [u8; 32],
+    pub s: [u8; 32],
+    pub y_parity: u8,
+}
+
+/// Sign an EIP-1559 transaction, writing `0x02 || rlp([12 fields])` straight
+/// into the caller's buffer. Zero-alloc production form.
+pub fn sign_eip1559_into(input: &Eip1559SignInput, out: &mut [u8]) -> Result<Eip1559SignOutcome> {
     let sk = scalar_from_bytes(input.private_key.expose())?;
 
-    // 1. signing hash
+    // 1. signing hash (streams the preimage into Keccak — no buffer)
     let t_hash = crate::device_timing::Mark::start(crate::device_timing::STAGE_KECCAK);
     let sighash = signing_hash(&input.tx)?;
     t_hash.end();
@@ -211,7 +264,6 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     let mut s_bytes = [0u8; 32];
     r_bytes.copy_from_slice(&sig_bytes[..32]);
     s_bytes.copy_from_slice(&sig_bytes[32..]);
-    // DEBUG: print original sig
 
     // 2.5 BIP-146 / EIP-2 low-s enforcement:
     //     compute y_parity with the original s first, then flip s to (n - s) if s > n/2
@@ -260,54 +312,47 @@ pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
         y_parity_original
     };
 
-    // 4. Build signed transaction
-    // 0x02 || rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit,
-    //               destination, amount, data, access_list, y_parity, r, s])
+    // 3. Build signed transaction: 0x02 || rlp([12 fields])
     let t_ser = crate::device_timing::Mark::start(crate::device_timing::STAGE_RLP);
-    let chain_id_rlp = rlp::encode_uint(input.tx.chain_id as u128);
-    let nonce_rlp = rlp::encode_uint(input.tx.nonce as u128);
-    let max_prio_rlp = rlp::encode_uint(input.tx.max_priority_fee_per_gas);
-    let max_fee_rlp = rlp::encode_uint(input.tx.max_fee_per_gas);
-    let gas_limit_rlp = rlp::encode_uint(input.tx.gas_limit as u128);
-    let dest_rlp = match &input.tx.destination {
-        Some(addr) => rlp::encode_bytes(addr),
-        None => rlp::encode_bytes(b""),
-    };
-    let amount_rlp = rlp::encode_uint(input.tx.amount);
-    let data_rlp = rlp::encode_bytes(&input.tx.data);
-    let access_list_rlp = rlp::encode_list(&[]);
-
-    let y_parity_rlp = rlp::encode_uint(y_parity as u128);
-    // r, s are 32-byte big-endian uint256; strip leading zeros
-    let r_rlp = rlp::encode_uint256(&r_bytes);
-    let s_rlp = rlp::encode_uint256(&s_bytes);
-
-    let signed_rlp = rlp::encode_list(&[
-        chain_id_rlp,
-        nonce_rlp,
-        max_prio_rlp,
-        max_fee_rlp,
-        gas_limit_rlp,
-        dest_rlp,
-        amount_rlp,
-        data_rlp,
-        access_list_rlp,
-        y_parity_rlp,
-        r_rlp,
-        s_rlp,
-    ]);
-
-    let mut tx_bytes = Vec::with_capacity(1 + signed_rlp.len());
-    tx_bytes.push(0x02);
-    tx_bytes.extend_from_slice(&signed_rlp);
+    let tail = (y_parity, &r_bytes, &s_bytes);
+    let payload_len = tx_fields_len(&input.tx, Some(tail));
+    let need = 1 + rlp::list_head_len(payload_len) + payload_len;
+    if out.len() < need {
+        return Err(ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(need),
+        ));
+    }
+    let mut w = SinkCursor::new(out);
+    w.put(&[0x02])?;
+    rlp::write_list_head(&mut w, payload_len)?;
+    write_tx_fields(&mut w, &input.tx, Some(tail))?;
     t_ser.end();
 
-    Ok(Eip1559SignedTx {
-        tx_bytes,
+    Ok(Eip1559SignOutcome {
+        written: w.pos(),
         signing_hash: sighash,
         r: r_bytes,
         s: s_bytes,
         y_parity,
+    })
+}
+
+/// Test/legacy convenience (allocates). Production paths use `sign_eip1559_into`.
+#[cfg(feature = "alloc-fallback")]
+pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
+    let payload_len = tx_fields_len(&input.tx, None);
+    let tail_budget = rlp::encoded_uint_len(1) + 33 + 33;
+    let need = 1 + rlp::list_head_len(payload_len + tail_budget) + payload_len + tail_budget;
+    let mut buf = alloc::vec![0u8; need];
+    let out = sign_eip1559_into(input, &mut buf)?;
+    buf.truncate(out.written);
+    Ok(Eip1559SignedTx {
+        tx_bytes: buf,
+        signing_hash: out.signing_hash,
+        r: out.r,
+        s: out.s,
+        y_parity: out.y_parity,
     })
 }
 

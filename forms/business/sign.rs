@@ -1130,19 +1130,15 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     let sk_bytes = zeroize::Zeroizing::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk));
 
     let t_sign = crate::device_timing::Mark::start(crate::device_timing::STAGE_ECDSA);
-    let signed = eip1559::sign_eip1559(&eip1559::Eip1559SignInput {
-        tx,
-        private_key: SecretBytes::new(*sk_bytes),
-    })?;
+    let outcome = eip1559::sign_eip1559_into(
+        &eip1559::Eip1559SignInput {
+            tx,
+            private_key: SecretBytes::new(*sk_bytes),
+        },
+        output_buf,
+    )?;
     t_sign.end();
-    if output_buf.len() < signed.tx_bytes.len() {
-        return Err(ShlosiloError::with_context(
-            ShlosiloErrorKind::BufferTooSmall,
-            crate::error::ErrorContext::RequiredLength(signed.tx_bytes.len()),
-        ));
-    }
-    output_buf[..signed.tx_bytes.len()].copy_from_slice(&signed.tx_bytes);
-    Ok(signed.tx_bytes.len())
+    Ok(outcome.written)
 }
 
 /// Signing (network enters the decision; closed out at P1-02)
