@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Z6 link proof: build the no_std probe staticlib (thumbv7em) and link it
-# against a C main. The probe carries a FORBIDDING allocator (the crate graph
-# still pulls `alloc` for the Z4-pending convenience layer, so rustc's eager
-# check needs a definition); the security claim is the disassembly: no code
-# reachable from `z6_probe_run` may CALL the allocator.
+# Z6 allocation-face measurement — build + link + measure.
+#
+# The probe staticlib carries a FORBIDDING allocator (the crate graph still
+# links `alloc` for the non-signing surfaces, so rustc's lang-item check
+# needs a definition). The security claim is NOT "it linked" — it is the
+# disassembly measurement in measure.py: no code reachable from
+# `z6_probe_run` may call the allocator.
+#
+# Exit: 0 = REACHABLE-CLEAN, 10 = reachable debt (listed), else build broke.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -16,13 +20,4 @@ LIB=target/$TARGET/release/libz6_noalloc_probe.a
 arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard -nostartfiles --specs=nosys.specs \
     -o z6_probe.elf probe.c "$LIB" -Wl,--gc-sections -Wl,-e,main
 
-# NOTE: match the allocator ENTRY POINTS at symbol end (`>`); the OOM glue
-# (`handle_alloc_error` -> `__rust_alloc_error_handler`) is an unreachable
-# dead pair the linker retains and must not be counted as an allocation.
-CALLS=$(arm-none-eabi-objdump -d z6_probe.elf | grep -cE "bl.*__(rust_alloc|rust_dealloc|rust_realloc|rust_alloc_zeroed)>" || true)
-if [ "$CALLS" != "0" ]; then
-    echo "Z6 LINK PROOF FAILED: $CALLS allocator call sites reachable"
-    arm-none-eabi-objdump -d z6_probe.elf | grep -B2 -E "bl.*__rust_(alloc|dealloc|realloc|alloc_zeroed)" | head -30
-    exit 1
-fi
-echo "Z6 LINK PROOF OK: z6_probe.elf linked; 0 allocator call sites in reachable code"
+python3 measure.py z6_probe.elf --entry z6_probe_run --json z6_report.json

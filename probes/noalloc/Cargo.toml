@@ -10,10 +10,16 @@ publish = false
 # undefined `__rust_alloc*` — that failure IS the audit instrument.
 
 [features]
-# Z6 lang-item gate: the allocator stub (default). `--no-default-features`
-# probes the crate GRAPH — a clean build there is the no-allocator proof.
-default = ["lang-stub"]
+# Two faces (see README.md):
+#  * default = lang-stub + alloc-face: the REACHABLE measurement face —
+#    shlosilo in its normal shape; measure.py proves the signing entry
+#    never calls the allocator (disassembly).
+#  * `--no-default-features` (lang-stub off, alloc-face off): the GRAPH
+#    probe — shlosilo without alloc-fallback; rustc's
+#    "no global memory allocator found" reports the crate-graph debt.
+default = ["lang-stub", "alloc-face"]
 lang-stub = []
+alloc-face = ["shlosilo/std", "shlosilo/alloc-fallback"]
 
 [lib]
 path = "probe.rs"
@@ -22,7 +28,7 @@ crate-type = ["staticlib"]
 [dependencies]
 # Same shape as the forgebox staticlib dep: no default features, no
 # alloc-fallback — the zero-heap claim under test.
-shlosilo = { path = "../..", default-features = false }
+shlosilo = { path = "../..", default-features = false }  # alloc-face turns on std+alloc-fallback
 zeroize = { version = "1", default-features = false }
 rand_core = { version = "0.6", default-features = false }
 
