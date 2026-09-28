@@ -572,8 +572,6 @@ dependencies = [
 [[package]]
 name = "monero-bulletproofs-generators"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb66ae7110ee718e10d932ef844b1ab4ca839263e9592f11bd338f562cee0c71"
 dependencies = [
  "curve25519-dalek",
  "monero-ed25519",
@@ -600,8 +598,6 @@ dependencies = [
 [[package]]
 name = "monero-ed25519"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e03a310abc9a9ffa4984a27297dede91d6282260424216a64c734250617ebd90"
 dependencies = [
  "crypto-bigint 0.5.5",
  "curve25519-dalek",
@@ -616,8 +612,6 @@ dependencies = [
 [[package]]
 name = "monero-io"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa9f1a95e908282938246cd0206ee37dcbb8b8317b38c32f6760f7483eff8adb"
 dependencies = [
  "std-shims",
 ]
@@ -895,12 +889,14 @@ dependencies = [
  "monero-bulletproofs-generators",
  "monero-clsag",
  "monero-ed25519",
+ "monero-io",
  "pbkdf2",
  "primeorder",
  "rand_chacha",
  "rand_core 0.6.4",
  "ripemd",
  "sha2 0.10.9",
+ "std-shims",
  "subtle",
  "tiny-keccak",
  "zeroize",
@@ -969,8 +965,6 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 [[package]]
 name = "std-shims"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "227c4f8561598188d0df96dbe749824576174bba278b5b6bb2eacff1066067d0"
 dependencies = [
  "hashbrown",
  "rustversion",

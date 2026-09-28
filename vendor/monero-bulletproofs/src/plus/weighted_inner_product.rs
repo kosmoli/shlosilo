@@ -1,3 +1,4 @@
+#[cfg(feature = "alloc-fallback")]
 use std_shims::{vec, vec::Vec};
 
 // shlosilo vendor patch: prove-phase timing (WIP round decomposition: L/R multiexp
@@ -115,6 +116,7 @@ impl<'a> WipScratch<'a> {
         if (storage.as_ptr() as usize) % 8 != 0 {
             return None;
         }
+#[cfg(feature = "alloc-fallback")]
         fn cast_slice<T>(bytes: &mut [u8]) -> &mut [T] {
             // SAFETY: the caller guarantees 8-alignment of the base and every
             // region size is a whole number of elements (32/160 are multiples
@@ -260,6 +262,7 @@ impl WipStatement {
     // Returns each permutation of G/H since the prover needs to do operation on each permutation
     // P is dropped as it's unused in the prover's path
     #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "alloc-fallback")]
     fn next_G_H(
         transcript: &mut Scalar,
         mut g_bold1: PointVector,
@@ -594,6 +597,7 @@ impl WipStatement {
         })
     }
 
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify<R: RngCore + CryptoRng>(
         self,
         rng: &mut R,

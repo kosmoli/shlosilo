@@ -2,6 +2,7 @@ use core::{
     borrow::Borrow,
     ops::{Add, Index, IndexMut, Mul, Sub},
 };
+#[cfg(feature = "alloc-fallback")]
 use std_shims::{vec, vec::Vec};
 
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -91,6 +92,7 @@ impl ScalarVector {
         ScalarVector(vec![Scalar::ZERO; len])
     }
 
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn powers(x: Scalar, len: usize) -> Self {
         debug_assert!(len != 0);
 

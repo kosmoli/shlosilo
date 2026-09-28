@@ -1,5 +1,6 @@
 #![allow(clippy::many_single_char_names)]
 
+#[cfg(feature = "alloc-fallback")]
 use std_shims::{sync::LazyLock, vec::Vec};
 
 use rand_core::{CryptoRng, RngCore};
@@ -70,6 +71,7 @@ impl<'a> AggregateRangeWitness<'a> {
 }
 
 impl AggregateRangeStatement<'_> {
+#[cfg(feature = "alloc-fallback")]
     fn initial_transcript(&self) -> (Scalar, Vec<EdwardsPoint>) {
         let V = self
             .commitments
@@ -110,6 +112,7 @@ impl AggregateRangeStatement<'_> {
         monero_ed25519::Scalar::hash(buf).into()
     }
 
+#[cfg(feature = "alloc-fallback")]
     fn transcript_tau_x_mu_t_hat(
         transcript: Scalar,
         tau_x: Scalar,

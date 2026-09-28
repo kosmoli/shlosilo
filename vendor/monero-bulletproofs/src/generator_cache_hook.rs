@@ -21,6 +21,7 @@
 //! soundness for the affected transaction (detectable on verification), never leak
 //! secrets. The load path deliberately does NOT re-check curve membership.
 
+#[cfg(feature = "alloc-fallback")]
 use std_shims::sync::{LazyLock, Mutex};
 
 pub(crate) type LoadFn = fn(prefix: &'static [u8]) -> Option<&'static [u8]>;
@@ -114,6 +115,7 @@ pub enum GeneratorSet {
 }
 
 impl GeneratorSet {
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn from_prefix(prefix: &'static [u8]) -> Option<Self> {
         match prefix {
             b"bulletproof" => Some(Self::Bulletproof),
@@ -150,6 +152,7 @@ pub fn provide_generator_table_storage(set: GeneratorSet, storage: GeneratorTabl
     true
 }
 
+#[cfg(feature = "alloc-fallback")]
 pub(crate) fn take_table_storage(prefix: &'static [u8]) -> Option<GeneratorTableStorage> {
     let set = GeneratorSet::from_prefix(prefix)?;
     let (slot, taken) = match set {
@@ -166,6 +169,7 @@ pub(crate) fn take_table_storage(prefix: &'static [u8]) -> Option<GeneratorTable
 /// Z5.2b: the single sizing source of truth — the C probe, the provide-time
 /// capacity validation, and the init-time fill check all derive from here.
 /// Returns (g_bytes, h_bytes, blob_bytes).
+#[cfg(feature = "alloc-fallback")]
 pub fn generator_table_sizes(set: GeneratorSet) -> (usize, usize, usize) {
     let (g, h) = match set {
         GeneratorSet::Bulletproof => (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN),

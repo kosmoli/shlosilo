@@ -4,10 +4,9 @@
 #![allow(non_snake_case)]
 
 use core::ops::Deref as _;
-use std_shims::{
-  vec::Vec,
-  io::{self, Read, Write},
-};
+use std_shims::io::{self, Read, Write};
+#[cfg(feature = "alloc-fallback")]
+use std_shims::vec::Vec;
 
 use rand_core::{RngCore, CryptoRng};
 // Z6 link-surface: `io::Error::other` boxes its payload. With alloc-fallback
@@ -486,7 +485,8 @@ impl Clsag {
 
       // shlosilo vendor patch: manual fill (heapless `FromIterator` silently
       // truncates over capacity — never used here).
-      debug_assert!({
+      #[cfg(feature = "alloc-fallback")]
+    debug_assert!({
         let mut ring_c = HVec::<[CompressedPoint; 2], RING_MAX>::new();
         for r in inputs[i].1.decoys.ring() {
           ring_c.push([r[0].compress(), r[1].compress()]).ok().unwrap();
@@ -513,6 +513,7 @@ impl Clsag {
   /// WARNING: This follows the Fiat-Shamir transcript format used by the Monero protocol, which
   /// makes assumptions on what has already been transcripted and bound to within `msg_hash`. Do
   /// not use this if you don't know what you're doing.
+#[cfg(feature = "alloc-fallback")]
   pub fn verify(
     &self,
     ring: &[[CompressedPoint; 2]],

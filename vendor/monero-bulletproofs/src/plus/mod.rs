@@ -1,5 +1,6 @@
 #![allow(non_snake_case, clippy::many_single_char_names)]
 
+#[cfg(feature = "alloc-fallback")]
 use std_shims::sync::LazyLock;
 
 use curve25519_dalek::{constants::ED25519_BASEPOINT_POINT, EdwardsPoint, Scalar};

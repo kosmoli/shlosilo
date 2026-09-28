@@ -3,6 +3,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(non_snake_case)]
 
+#[cfg(feature = "alloc-fallback")]
 use std_shims::{
     io::{self, Read, Write},
     prelude::*,
@@ -23,6 +24,7 @@ pub(crate) fn ser_err(msg: &'static str) -> io::Error {
 }
 
 #[cfg(not(feature = "alloc-fallback"))]
+#[cfg(feature = "alloc-fallback")]
 pub(crate) fn ser_err(_msg: &'static str) -> io::Error {
     #[derive(Debug)]
     struct SerErr;
@@ -60,10 +62,14 @@ pub use prove_timing_hook::{phase_ms, register_prove_timing_clock, reset as rese
 
 pub(crate) mod core;
 
+#[cfg(feature = "alloc-fallback")]
 pub(crate) mod batch_verifier;
+#[cfg(feature = "alloc-fallback")]
 pub use batch_verifier::BatchVerifier;
+#[cfg(feature = "alloc-fallback")]
 use batch_verifier::{BulletproofsBatchVerifier, BulletproofsPlusBatchVerifier};
 
+#[cfg(feature = "alloc-fallback")]
 pub(crate) mod original;
 // Z6 link-surface: the legacy Original line is alloc-fallback material —
 // its IpProof Vec fields put dealloc sites in the enum's shared drop glue.
@@ -260,6 +266,7 @@ impl Bulletproof {
 
     /// Verify the given Bulletproof(+).
     #[must_use]
+#[cfg(feature = "alloc-fallback")]
     pub fn verify<R: RngCore + CryptoRng>(
         &self,
         rng: &mut R,
@@ -307,6 +314,7 @@ impl Bulletproof {
     ///
     /// The BatchVerifier must have its verification function executed to actually verify this proof.
     #[must_use]
+#[cfg(feature = "alloc-fallback")]
     pub fn batch_verify<R: RngCore + CryptoRng>(
         &self,
         rng: &mut R,
@@ -340,6 +348,7 @@ impl Bulletproof {
 
     // This uses `write_all(scalar.to_bytes())` as these are `curve25519_dalek::Scalar`, not
     // `monero_ed25519::Scalar`
+#[cfg(feature = "alloc-fallback")]
     fn write_core<W: Write, F: Fn(&[CompressedPoint], &mut W) -> io::Result<()>>(
         &self,
         w: &mut W,
@@ -377,6 +386,7 @@ impl Bulletproof {
     /// Write a Bulletproof(+) for the message signed by a transaction's signature.
     ///
     /// This has a distinct encoding from the standard encoding.
+#[cfg(feature = "alloc-fallback")]
     pub fn signature_write<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.write_core(w, |points, w| {
             write_raw_vec(CompressedPoint::write, points, w)
@@ -384,6 +394,7 @@ impl Bulletproof {
     }
 
     /// Write a Bulletproof(+).
+#[cfg(feature = "alloc-fallback")]
     pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.write_core(w, |points, w| write_vec(CompressedPoint::write, points, w))
     }
@@ -396,7 +407,9 @@ impl Bulletproof {
     /// Serialized length in bytes (identical output to `write`).
     pub fn serialized_len(&self) -> usize {
         struct Counter(usize);
+#[cfg(feature = "alloc-fallback")]
         impl Write for Counter {
+#[cfg(feature = "alloc-fallback")]
             fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
                 self.0 += buf.len();
                 Ok(buf.len())
@@ -410,12 +423,14 @@ impl Bulletproof {
 
     /// Serialize into a caller-provided buffer, returning the length written.
     /// Over-capacity is an EXPLICIT `io::Error` (never truncates).
+#[cfg(feature = "alloc-fallback")]
     pub fn serialize_into(&self, out: &mut [u8]) -> io::Result<usize> {
         struct SliceWriter<'a> {
             buf: &'a mut [u8],
             pos: usize,
         }
         impl<'a> Write for SliceWriter<'a> {
+#[cfg(feature = "alloc-fallback")]
             fn write(&mut self, data: &[u8]) -> io::Result<usize> {
                 let end = self
                     .pos
@@ -431,6 +446,7 @@ impl Bulletproof {
             // Z6 link-surface: override the default `write_all` (its
             // short-write error path boxes the error payload). `write` is
             // all-or-error by construction, so this is byte-equivalent.
+#[cfg(feature = "alloc-fallback")]
             fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
                 self.write(data).map(|_| ())
             }
@@ -442,12 +458,14 @@ impl Bulletproof {
 
     /// shlosilo vendor patch (Z5.3 tail): the `signature_write` form into a
     /// caller buffer (same bytes; explicit overflow error).
+#[cfg(feature = "alloc-fallback")]
     pub fn signature_serialize_into(&self, out: &mut [u8]) -> io::Result<usize> {
         struct SliceWriter<'a> {
             buf: &'a mut [u8],
             pos: usize,
         }
         impl<'a> Write for SliceWriter<'a> {
+#[cfg(feature = "alloc-fallback")]
             fn write(&mut self, data: &[u8]) -> io::Result<usize> {
                 let end = self
                     .pos
@@ -473,6 +491,7 @@ impl Bulletproof {
     }
 
     /// Serialize a Bulletproof(+) to a `Vec<u8>`.
+#[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Vec<u8> {
         let mut serialized = Vec::with_capacity(512);
         self.write(&mut serialized)
@@ -483,7 +502,8 @@ impl Bulletproof {
     #[cfg(feature = "alloc-fallback")]
     /// Read a Bulletproof.
     #[cfg(feature = "alloc")]
-    pub fn read<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
+    #[cfg(feature = "alloc")]
+pub fn read<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
         Ok(Bulletproof::Original(OriginalProof {
             A: CompressedPoint::read(r)?,
             S: CompressedPoint::read(r)?,
@@ -503,7 +523,8 @@ impl Bulletproof {
 
     /// Read a Bulletproof+.
     #[cfg(feature = "alloc")]
-    pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
+    #[cfg(feature = "alloc")]
+pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
         // shlosilo vendor patch (Z5.3 C-cut C): the wire reader stages into a
         // Vec (verify-side only) then copies into the proof's fixed arrays —
         // the wire ORDER and bytes are unchanged.

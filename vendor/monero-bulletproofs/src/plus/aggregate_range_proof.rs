@@ -1,3 +1,4 @@
+#[cfg(feature = "alloc-fallback")]
 use std_shims::{vec, vec::Vec};
 
 // shlosilo vendor patch: prove-phase timing (device perf decomposition).
@@ -13,6 +14,7 @@ mod timing_noop {
         pub(crate) fn start(_phase: u8) -> Self {
             PhaseProbe(0, 0)
         }
+#[cfg(feature = "alloc-fallback")]
         pub(crate) fn end(self) {}
     }
     pub(crate) const PHASE_A_HAT: u8 = 0;
@@ -111,6 +113,7 @@ impl<'a> AggregateRangeStatement<'a> {
         (y, z)
     }
 
+#[cfg(feature = "alloc-fallback")]
     fn d_j(j: usize, m: usize) -> ScalarVector {
         let mut d_j = Vec::with_capacity(m * COMMITMENT_BITS);
         for _ in 0..(j - 1) * COMMITMENT_BITS {
@@ -449,6 +452,7 @@ impl<'a> AggregateRangeStatement<'a> {
         Some(proof)
     }
 
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify<R: RngCore + CryptoRng>(
         self,
         rng: &mut R,

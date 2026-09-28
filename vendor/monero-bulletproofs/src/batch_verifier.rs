@@ -1,3 +1,4 @@
+#[cfg(feature = "alloc-fallback")]
 use std_shims::vec::Vec;
 
 use curve25519_dalek::{

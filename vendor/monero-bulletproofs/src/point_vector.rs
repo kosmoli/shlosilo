@@ -1,4 +1,5 @@
 use core::ops::{Index, IndexMut};
+#[cfg(feature = "alloc-fallback")]
 use std_shims::vec::Vec;
 
 use zeroize::Zeroize;

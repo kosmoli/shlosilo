@@ -1,3 +1,4 @@
+#[cfg(feature = "alloc-fallback")]
 use std_shims::{sync::LazyLock, vec::Vec};
 
 use curve25519_dalek::{EdwardsPoint, Scalar};
