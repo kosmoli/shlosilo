@@ -4,9 +4,14 @@
 //! into confirmation-screen data. No DEX/swap recognition.
 
 extern crate alloc;
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use alloc::string::String;
 
-use crate::chain::eth::calldata::{decode_calldata, format_token_amount, DecodedCalldata};
+use crate::chain::eth::calldata::{decode_calldata, DecodedCalldata};
+// The String formatter lives behind alloc-fallback with its consumer.
+#[cfg(feature = "alloc-fallback")]
+use crate::chain::eth::calldata::format_token_amount;
 use crate::chain::eth::eip155::Eip155Transaction;
 use crate::chain::eth::eip1559::Eip1559Transaction;
 use crate::error::Result;
@@ -93,6 +98,7 @@ pub fn summarize_eip155(tx: &Eip155Transaction) -> Result<EthTxSummary> {
 }
 
 /// Format a 32-byte token amount into an 18-decimal string (for tests and the confirmation screen)
+#[cfg(feature = "alloc-fallback")]
 pub fn format_eth_wei(wei: u128) -> Result<String> {
     let mut buf = [0u8; 32];
     let bytes = wei.to_be_bytes();
@@ -129,8 +135,7 @@ mod tests {
             gas_limit: 21_000,
             destination: Some(addr("49ab56b91fc982fd6ec1ec7bb87d74efa6da30ab")),
             amount: 1_000_000_000_000_000_000,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
         let s = summarize_eip1559(&tx).unwrap();
         assert_eq!(s.chain_id, 1);
@@ -153,8 +158,7 @@ mod tests {
             gas_limit: 1_000_000,
             destination: None,
             amount: 0,
-            data: vec![0x60, 0x80],
-            access_list: Vec::new(),
+            data: vec![0x60, 0x80].into(),
         };
         let s = summarize_eip1559(&tx).unwrap();
         assert_eq!(s.call, EthCallKind::ContractCreation);
@@ -174,8 +178,7 @@ mod tests {
             gas_limit: 65_000,
             destination: Some(addr("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48")),
             amount: 0,
-            data,
-            access_list: Vec::new(),
+            data: data.into(),
         };
         let s = summarize_eip1559(&tx).unwrap();
         match s.call {
@@ -202,7 +205,7 @@ mod tests {
             gas_limit: 50_000,
             destination: Some([0u8; 20]),
             amount: 0,
-            data,
+            data: data.into(),
         };
         let s = summarize_eip155(&tx).unwrap();
         assert!(s.unlimited_approval);
@@ -225,8 +228,7 @@ mod tests {
             gas_limit: 21_000,
             destination: Some([1u8; 20]),
             amount: 0,
-            data,
-            access_list: Vec::new(),
+            data: data.into(),
         };
         let s = summarize_eip1559(&tx).unwrap();
         match s.call {

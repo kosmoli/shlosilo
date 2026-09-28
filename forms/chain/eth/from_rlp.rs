@@ -128,7 +128,7 @@ fn be_to_u128(bytes: &[u8]) -> Result<u128> {
 ///
 /// Returns the unsigned part (chain_id cannot be recovered from the signature — it's the list's item 0).
 /// Returns Err when access_list is non-empty (out of v2 scope).
-pub fn parse_eip1559_raw(raw: &[u8]) -> Result<Eip1559Transaction> {
+pub fn parse_eip1559_raw(raw: &[u8]) -> Result<Eip1559Transaction<'_>> {
     if raw.first() != Some(&0x02) {
         return Err(err());
     }
@@ -156,7 +156,7 @@ pub fn parse_eip1559_raw(raw: &[u8]) -> Result<Eip1559Transaction> {
         _ => return Err(err()),
     };
     let amount = be_to_u128(fields[6].as_str()?)?;
-    let data = fields[7].as_str()?.to_vec();
+    let data = alloc::borrow::Cow::Borrowed(fields[7].as_str()?);
     // fields[8] = access_list; non-empty is rejected (shlosilo doesn't sign txs carrying an access list)
     if !fields[8].as_list_items()?.is_empty() {
         return Err(err());
@@ -174,14 +174,13 @@ pub fn parse_eip1559_raw(raw: &[u8]) -> Result<Eip1559Transaction> {
         destination,
         amount,
         data,
-        access_list: Vec::new(),
     })
 }
 
 /// Parse a raw EIP-155 legacy signed tx (no type prefix, rlp([...9 fields]))
 ///
 /// v must be in EIP-155 form (≥35); chain_id = (v - 35) / 2.
-pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction> {
+pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
     let (top, tail) = Rlp::read(raw)?;
     if !tail.is_empty() {
         return Err(err());
@@ -204,7 +203,7 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction> {
         _ => return Err(err()),
     };
     let amount = be_to_u128(fields[4].as_str()?)?;
-    let data = fields[5].as_str()?.to_vec();
+    let data = alloc::borrow::Cow::Borrowed(fields[5].as_str()?);
     let v = be_to_u128(fields[6].as_str()?)? as u64;
     if v < 35 {
         return Err(err()); // pre-EIP-155 unsupported
@@ -267,7 +266,7 @@ mod tests {
             gas_limit: 21000,
             destination: Some([0x35u8; 20]),
             amount: 1_000_000_000_000_000_000,
-            data: Vec::new(),
+            data: Vec::new().into(),
         };
         let signed = sign_eip155(&Eip155SignInput {
             tx,

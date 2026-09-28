@@ -13,8 +13,10 @@
 pub mod calldata;
 pub mod eip155;
 pub mod eip1559;
+#[cfg(feature = "alloc-fallback")]
 pub mod eip712;
 pub mod from_rlp;
+#[cfg(feature = "alloc-fallback")]
 pub mod personal_sign;
 pub mod rlp;
 pub mod sign;

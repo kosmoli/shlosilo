@@ -7,6 +7,8 @@
 
 extern crate alloc;
 
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use alloc::string::String;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -137,6 +139,7 @@ pub fn decode_calldata(input: &[u8]) -> Result<DecodedCalldata> {
 }
 
 /// Format a 32-byte big-endian amount per token decimals (keystone `parse_amount` behavior)
+#[cfg(feature = "alloc-fallback")]
 pub fn format_token_amount(amount: &[u8; 32], decimals: u32) -> Result<String> {
     if decimals > 77 {
         return Err(err());

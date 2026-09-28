@@ -40,11 +40,13 @@ use crate::chain::eth::sign;
 use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::SecretBytes;
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use alloc::vec::Vec;
 
 /// EIP-155 Legacy transaction (unsigned)
 #[derive(Clone, Debug)]
-pub struct Eip155Transaction {
+pub struct Eip155Transaction<'a> {
     pub chain_id: u64,
     pub nonce: u64,
     pub gas_price: u128,
@@ -52,14 +54,15 @@ pub struct Eip155Transaction {
     /// 20-byte destination address, or None for contract creation
     pub destination: Option<[u8; 20]>,
     pub amount: u128,
-    pub data: Vec<u8>,
+    /// Calldata — borrowed from the wire in production (Cow, zero-copy).
+    pub data: alloc::borrow::Cow<'a, [u8]>,
 }
 
 /// Signing input
 ///
 /// P1-03: the private key uses `SecretBytes<32>` — no Clone or Debug, ZeroizeOnDrop, constant-time comparison.
-pub struct Eip155SignInput {
-    pub tx: Eip155Transaction,
+pub struct Eip155SignInput<'a> {
+    pub tx: Eip155Transaction<'a>,
     pub private_key: SecretBytes<32>,
 }
 
@@ -109,7 +112,7 @@ fn write_tx_base<S: Sink>(s: &mut S, tx: &Eip155Transaction) -> Result<()> {
         None => rlp::write_bytes(s, b"")?,
     }
     rlp::write_uint(s, tx.amount)?;
-    rlp::write_bytes(s, &tx.data)?;
+    rlp::write_bytes(s, tx.data.as_ref())?;
     Ok(())
 }
 
@@ -123,7 +126,7 @@ fn tx_base_len(tx: &Eip155Transaction) -> usize {
         + rlp::encoded_uint_len(tx.gas_limit as u128)
         + rlp::encoded_bytes_len(dest)
         + rlp::encoded_uint_len(tx.amount)
-        + rlp::encoded_bytes_len(&tx.data)
+        + rlp::encoded_bytes_len(tx.data.as_ref())
 }
 
 /// rlp([base, chain_id, 0, 0]) — the EIP-155 signing preimage payload.
@@ -234,6 +237,8 @@ pub fn sign_eip155(input: &Eip155SignInput) -> Result<Eip155SignedTx> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+    #[allow(unused_imports)]
     use alloc::vec::Vec;
 
     fn hex_nibble(b: u8) -> Option<u8> {
@@ -275,7 +280,7 @@ mod tests {
             gas_limit: 21000,
             destination: Some([0x35u8; 20]),
             amount: 1_000_000_000_000_000_000,
-            data: Vec::new(),
+            data: Vec::new().into(),
         };
         let hash = signing_hash(&tx).unwrap();
         let expected_hex = "daf5a779ae972f972197303d7b574746c7ef83eadac0f2791ad23db92e4c8e53";
@@ -299,7 +304,7 @@ mod tests {
             gas_limit: 21000,
             destination: Some([0x35u8; 20]),
             amount: 1_000_000_000_000_000_000,
-            data: Vec::new(),
+            data: Vec::new().into(),
         };
 
         let input = Eip155SignInput { tx, private_key };
@@ -342,7 +347,7 @@ mod tests {
             gas_limit: 21000,
             destination: Some([0x35u8; 20]),
             amount: 1_000_000_000_000_000_000,
-            data: Vec::new(),
+            data: Vec::new().into(),
         };
 
         let input = Eip155SignInput {
@@ -364,7 +369,7 @@ mod tests {
             gas_limit: 21000,
             destination: Some([0x35u8; 20]),
             amount: 1_000_000_000_000_000_000,
-            data: Vec::new(),
+            data: Vec::new().into(),
         };
         let mut tx_sepolia = tx_mainnet.clone();
         tx_sepolia.chain_id = 11155111;

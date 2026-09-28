@@ -41,13 +41,15 @@ use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
 use crate::types::SecretBytes;
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use alloc::vec::Vec;
 
 // --- Data structures ------------------------------------------------
 
 /// EIP-1559 transaction (unsigned)
 #[derive(Clone, Debug)]
-pub struct Eip1559Transaction {
+pub struct Eip1559Transaction<'a> {
     pub chain_id: u64,
     pub nonce: u64,
     pub max_priority_fee_per_gas: u128,
@@ -56,9 +58,10 @@ pub struct Eip1559Transaction {
     /// 20-byte destination address, or None for contract creation
     pub destination: Option<[u8; 20]>,
     pub amount: u128,
-    pub data: Vec<u8>,
-    /// access_list (EIP-2930) — unsupported in Phase 5 v7; empty vec
-    pub access_list: Vec<(Address, Vec<[u8; 32]>)>,
+    /// Calldata — borrowed from the wire in production (Cow, zero-copy).
+    /// (EIP-2930 access_list is unsupported in Phase 5 v7: the model carries
+    /// no placeholder field — the wire always writes an empty list.)
+    pub data: alloc::borrow::Cow<'a, [u8]>,
 }
 
 /// 20-byte Ethereum address
@@ -67,8 +70,8 @@ pub type Address = [u8; 20];
 /// Signing input
 ///
 /// P1-03: private keys use `SecretBytes<32>` — no Clone, no Debug, ZeroizeOnDrop, constant-time comparison.
-pub struct Eip1559SignInput {
-    pub tx: Eip1559Transaction,
+pub struct Eip1559SignInput<'a> {
+    pub tx: Eip1559Transaction<'a>,
     pub private_key: SecretBytes<32>,
 }
 
@@ -124,7 +127,7 @@ fn write_tx_fields<S: Sink>(
         None => rlp::write_bytes(s, b"")?,
     }
     rlp::write_uint(s, tx.amount)?;
-    rlp::write_bytes(s, &tx.data)?;
+    rlp::write_bytes(s, tx.data.as_ref())?;
     rlp::write_list_head(s, 0)?; // empty access_list
     if let Some((yp, r, sc)) = tail {
         rlp::write_uint(s, yp as u128)?;
@@ -147,7 +150,7 @@ fn tx_fields_len(tx: &Eip1559Transaction, tail: Option<(u8, &[u8; 32], &[u8; 32]
         + rlp::encoded_uint_len(tx.gas_limit as u128)
         + rlp::encoded_bytes_len(dest)
         + rlp::encoded_uint_len(tx.amount)
-        + rlp::encoded_bytes_len(&tx.data)
+        + rlp::encoded_bytes_len(tx.data.as_ref())
         + rlp::list_head_len(0);
     if let Some((yp, r, sc)) = tail {
         n += rlp::encoded_uint_len(yp as u128)
@@ -409,8 +412,7 @@ mod tests {
             gas_limit: 21000,
             destination: Some([0x35u8; 20]),
             amount: 1_000_000_000_000_000_000,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
 
         let hash = signing_hash(&tx).unwrap();
@@ -436,8 +438,7 @@ mod tests {
             gas_limit: 21000,
             destination: Some([0x35u8; 20]),
             amount: 1_000_000_000_000_000_000,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
 
         let input = Eip1559SignInput { tx, private_key };
@@ -488,8 +489,7 @@ mod tests {
             gas_limit: 21000,
             destination: Some([0x35u8; 20]),
             amount: 1_000_000_000_000_000_000,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
 
         let input = Eip1559SignInput { tx, private_key };
@@ -511,8 +511,7 @@ mod tests {
             gas_limit: 21000,
             destination: Some([0x35u8; 20]),
             amount: 0,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
         let hash_transfer = signing_hash(&tx_transfer).unwrap();
 
@@ -537,8 +536,7 @@ mod tests {
             gas_limit: 21000,
             destination: Some([0x35u8; 20]),
             amount: 0,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
 
         let hash_mainnet = signing_hash(&mk_tx(1)).unwrap();

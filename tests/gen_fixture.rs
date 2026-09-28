@@ -23,8 +23,7 @@ fn gen_fixture() {
         gas_limit: 21_000,
         destination: Some([0x22u8; 20]),
         amount: 999,
-        data: Vec::new(),
-        access_list: Vec::new(),
+        data: Vec::new().into(),
     };
     let list = rlp::encode_list(&[
         rlp::encode_uint(tx.chain_id as u128),

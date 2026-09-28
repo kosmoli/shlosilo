@@ -1278,8 +1278,7 @@ mod tests {
             gas_limit: 21_000,
             destination: Some([0x11u8; 20]),
             amount: 12345,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
         // build the unsigned preimage then strip the signature part — use signing_preimage + manual RLP directly
         // simple approach: from_rlp round-trip — sign once to get the raw, then use it as input
@@ -1340,8 +1339,7 @@ mod tests {
             gas_limit: 21_000,
             destination: Some([0x11u8; 20]),
             amount: 12345,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
         let raw = encode_unsigned_tx_for_test(&tx);
         // request chain_id=5 (≠ the tx's 1)
@@ -1372,8 +1370,7 @@ mod tests {
             gas_limit: 21_000,
             destination: Some([0x11u8; 20]),
             amount: 12345,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         });
         // data_type = 3 (PersonalMessage)
         let ur_payload = encode_eth_sign_request_for_test(&raw, 3, 1);
@@ -1919,8 +1916,7 @@ mod tests {
             gas_limit: 21_000,
             destination: Some([0x11u8; 20]),
             amount: 12345,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
         let test_seed = [7u8; 64];
         // non-default path: account 1
@@ -1985,8 +1981,7 @@ mod tests {
             gas_limit: 21_000,
             destination: Some([0x11u8; 20]),
             amount: 1,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
         let raw = encode_unsigned_tx_for_test(&tx);
         let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);
@@ -2018,8 +2013,7 @@ mod tests {
             gas_limit: 21_000,
             destination: Some([0x11u8; 20]),
             amount: 1,
-            data: Vec::new(),
-            access_list: Vec::new(),
+            data: Vec::new().into(),
         };
         let raw = encode_unsigned_tx_for_test(&tx);
         let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);

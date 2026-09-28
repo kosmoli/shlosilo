@@ -277,8 +277,7 @@ fn eth_eip1559_signing_preimage_structure() {
         gas_limit: 21_000,
         destination: Some(hex_to_20("49aB56B91fc982Fd6Ec1EC7Bb87d74EFA6dA30ab")),
         amount: 1_000_000_000_000_000_000,
-        data: vec![],
-        access_list: vec![],
+        data: vec![].into(),
     };
     let preimage = signing_preimage(&tx).unwrap();
 
