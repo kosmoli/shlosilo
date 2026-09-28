@@ -793,6 +793,18 @@ impl<'a> FountainDecoder<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production reassembly uses `message_into`.
+    /// Message length without materializing (v1 contract 4).
+    /// Buffer CAPACITY `message_into` needs (message + fragment padding) —
+    /// the number the BufferTooSmall path reports for retry (contract 4).
+    /// The delivered length is `message_length` (padding excluded).
+    pub fn message_len(&self) -> Option<usize> {
+        if self.complete() {
+            Some(self.fragment_length * self.sequence_count)
+        } else {
+            None
+        }
+    }
+
     pub fn message(&self) -> Result<Option<Vec<u8>>, FountainError> {
         if !self.complete() {
             return Ok(None);

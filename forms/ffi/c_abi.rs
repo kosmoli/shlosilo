@@ -1014,21 +1014,18 @@ pub mod r3 {
         }
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
             let dec = unsafe { &*handle };
-            let payload = dec.payload()?.ok_or_else(err_unknown)?;
-            if payload.len() > payload_buf_len as usize {
-                return Err(err(ShlosiloErrorKind::BufferTooSmall));
-            }
-            unsafe {
-                core::ptr::copy_nonoverlapping(payload.as_ptr(), payload_buf, payload.len());
-            }
-            Ok(payload.len())
+            // v1: payload goes straight into the caller buffer (no Vec).
+            let out =
+                unsafe { core::slice::from_raw_parts_mut(payload_buf, payload_buf_len as usize) };
+            let n = dec.payload_into(out)?.ok_or_else(err_unknown)?;
+            Ok(n)
         });
         // BufferTooSmall special case: actual_len gets the **required value** (L3 retries the allocation accordingly),
         // all other failure paths keep the R2 zeroing discipline.
         let required: usize = match &result {
             Ok(Err(e)) if e.kind == ShlosiloErrorKind::BufferTooSmall => {
                 ffi_catch_unwind!(|| -> Option<usize> {
-                    unsafe { &*handle }.payload().ok()?.map(|p| p.len())
+                    unsafe { &*handle }.payload_len().ok().flatten()
                 })
                 .ok()
                 .flatten()
@@ -1273,8 +1270,13 @@ pub mod r3 {
     pub extern "C" fn shlosilo_ur_decode_free(handle: *mut UrMultipartDecoder<'static>) {
         // Z3.3c: caller-workspace handle — free drops the value in place (the
         // pools and handle memory return to the caller). Single-owner contract.
+        // v1 contract 5: sensitive spans (decoded parts, buffers, received
+        // bitsets, frame scratch) are zeroed before the drop.
         if !handle.is_null() {
-            unsafe { core::ptr::drop_in_place(handle) };
+            unsafe {
+                crate::ur::ur_multipart::ur_decode_ws_zeroize((*handle).ws_base as *mut u8);
+                core::ptr::drop_in_place(handle);
+            }
         }
     }
 

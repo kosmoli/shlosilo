@@ -290,11 +290,14 @@ pub const MULTIPART_SESSION_RETAINED_MAX: usize = MULTIPART_PAYLOAD_MAX_LEN * 2;
 /// the memory itself belongs to the caller (Z6: no allocator involved).
 pub struct UrDecodeWsLayout {
     pub align: usize,
-    decoded: usize,
-    buffer: usize,
-    queue: usize,
-    received: usize,
-    handle: usize,
+    /// Pool segment offsets — part of the contract surface (invariants 1/5).
+    pub decoded: usize,
+    pub buffer: usize,
+    pub queue: usize,
+    pub received: usize,
+    /// Frame CBOR scratch (v1: per-call allocations out of the UR receive path).
+    pub scratch: usize,
+    pub handle: usize,
     pub total: usize,
 }
 
@@ -333,6 +336,7 @@ impl UrDecodeWsLayout {
             core::mem::align_of::<RS>(),
             core::mem::size_of::<RS>() * c::UR_WS_RECEIVED_SLOTS,
         );
+        let scratch = ur_next(&mut off, 1, crate::ur::ur_multipart::PART_CBOR_SCRATCH_MAX);
         let handle = ur_next(
             &mut off,
             core::mem::align_of::<UrMultipartDecoder<'static>>(),
@@ -348,8 +352,35 @@ impl UrDecodeWsLayout {
             buffer,
             queue,
             received,
+            scratch,
             handle,
             total,
+        }
+    }
+}
+
+/// v1 contract 5: zero every sensitive span (decoded parts, buffers, queue,
+/// received bitsets, frame scratch). The handle is dropped separately.
+/// # Safety
+/// `base` must be the workspace base from `ur_decode_ws_place` (or the
+/// shell's leaked workspace) and exclusive to the caller.
+pub unsafe fn ur_decode_ws_zeroize(base: *mut u8) {
+    if base.is_null() {
+        return;
+    }
+    let l = UrDecodeWsLayout::compute();
+    unsafe {
+        for (off, len) in [
+            (l.decoded, l.buffer - l.decoded),
+            (l.buffer, l.queue - l.buffer),
+            (l.queue, l.received - l.queue),
+            (l.received, l.scratch - l.received),
+            (l.scratch, PART_CBOR_SCRATCH_MAX),
+        ] {
+            let span = core::slice::from_raw_parts_mut(base.add(off), len);
+            for b in span.iter_mut() {
+                *b = 0;
+            }
         }
     }
 }
@@ -439,7 +470,8 @@ pub fn ur_decode_ws_place(buf: &mut [u8]) -> Option<*mut UrMultipartDecoder<'sta
             queue,
             received,
         };
-        let dec = UrMultipartDecoder::with_ws(ws);
+        let mut dec = UrMultipartDecoder::with_ws(ws);
+        dec.ws_base = base as usize;
         let hp = base.add(l.handle) as *mut UrMultipartDecoder<'static>;
         core::ptr::write(hp, dec);
         Some(hp)
@@ -451,12 +483,25 @@ pub struct UrMultipartDecoder<'a> {
     type_name: Option<heapless::String<32>>,
     /// Audit #5: cumulative retained bytes (accumulated data length per frame)
     retained_bytes: usize,
+    /// Workspace base (v1) as an address integer (keeps the decoder `Send`
+    /// for the flux task model; the workspace-stability contract makes the
+    /// address valid until free). 0 = none. The frame CBOR scratch and the
+    /// zeroize spans on free live at layout offsets from here.
+    pub(crate) ws_base: usize,
 }
 
 impl<'a> UrMultipartDecoder<'a> {
     /// Staging convenience: pools allocated + leaked on purpose (ffi staging / tests only).
+    /// v1: the shell hosts its own leaked workspace (same carve shape as
+    /// `ur_decode_ws_place`), so `receive_frame` is allocation-free per call
+    /// on every construction path.
     pub fn new() -> Self {
-        Self::with_ws_of(FountainDecoder::new())
+        let ws: &'static mut [u8] =
+            alloc::boxed::Box::leak(alloc::vec![0u8; ur_decode_ws_len()].into_boxed_slice());
+        let base = ws.as_mut_ptr();
+        let mut dec = Self::with_ws_of(FountainDecoder::new());
+        dec.ws_base = base as usize;
+        dec
     }
 
     /// Zero-heap construction over caller-provided pools (Z2.4c-3 flux surface).
@@ -469,6 +514,7 @@ impl<'a> UrMultipartDecoder<'a> {
             inner,
             type_name: None,
             retained_bytes: 0,
+            ws_base: 0,
         }
     }
 
@@ -531,8 +577,22 @@ impl<'a> UrMultipartDecoder<'a> {
     ///
     /// Test/legacy convenience (allocates). Production paths use `receive_frame_with`.
     pub fn receive_frame(&mut self, uri: &str) -> Result<bool> {
-        let mut scratch = alloc::vec![0u8; PART_CBOR_SCRATCH_MAX];
-        self.receive_frame_with(uri, &mut scratch)
+        // v1: frame CBOR scratch lives in the workspace (layout `scratch`
+        // segment) — per-call allocation is out of the receive path.
+        let l = UrDecodeWsLayout::compute();
+        let scratch = unsafe {
+            core::slice::from_raw_parts_mut(
+                (self.ws_base as *mut u8).add(l.scratch),
+                PART_CBOR_SCRATCH_MAX,
+            )
+        };
+        self.receive_frame_with(uri, scratch)
+    }
+
+    /// Payload length without materializing it (v1 contract 4: the
+    /// BufferTooSmall retry path must not allocate to learn the size).
+    pub fn payload_len(&self) -> Result<Option<usize>> {
+        Ok(self.inner.message_len())
     }
 
     pub fn progress(&self) -> u8 {
@@ -552,9 +612,14 @@ impl<'a> UrMultipartDecoder<'a> {
     /// Payload after completion into a caller buffer (Z2.4c-3 C-class); `out` must hold
     /// fragment_length × sequence_count bytes; returns Some(message_length) when complete.
     pub fn payload_into(&self, out: &mut [u8]) -> Result<Option<usize>> {
-        self.inner
-            .message_into(out)
-            .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))
+        self.inner.message_into(out).map_err(|e| match e {
+            // v1 contract 4: an undersized out buffer is a capacity signal,
+            // not corruption — the C side retries with the reported length.
+            crate::encoding::fountain::FountainError::OutputTooSmall => {
+                err(ShlosiloErrorKind::BufferTooSmall)
+            }
+            _ => err(ShlosiloErrorKind::UrPayloadInvalidCbor),
+        })
     }
 
     /// Payload after completion (None = incomplete)

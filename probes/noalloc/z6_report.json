@@ -1,7 +1,7 @@
 {
   "elf": "z6_probe.elf",
   "entry": "z6_probe_run",
-  "functions": 385,
+  "functions": 391,
   "alloc_sites_linked": 0,
   "alloc_sites_reachable": 0,
   "sites": []
