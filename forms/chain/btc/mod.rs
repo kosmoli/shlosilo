@@ -8,12 +8,15 @@
 //! Phase 5 v9.18 (2026-08-23): + summary (fee / RBF / locktime / CSV / unknown scripts)
 
 pub mod change_detect;
+#[cfg(feature = "alloc-fallback")]
 pub mod message_sign;
 pub mod multisig;
+#[cfg(feature = "alloc-fallback")]
 pub mod musig2;
 pub mod p2pkh;
 pub mod p2sh;
 pub mod p2wpkh;
 pub mod psbt;
 pub mod summary;
+#[cfg(feature = "alloc-fallback")]
 pub mod taproot;

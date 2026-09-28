@@ -80,6 +80,10 @@ macro_rules! bt_vec {
         v
     }};
 }
+// Re-export for sibling model constructors; consumers live in tests /
+// gated surfaces, so the macro import is unused on the no-alloc face —
+// the macro itself is allocation-free (fixed backplane).
+#[allow(unused_imports)]
 pub(crate) use bt_vec;
 
 /// TxIn (with witness)

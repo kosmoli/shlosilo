@@ -731,7 +731,9 @@ fn decode_map_into<'a>(
 }
 
 /// Test/legacy convenience capacities for the leaking parse below.
+#[cfg(feature = "alloc-fallback")]
 const PSBT_TEST_ARENA: usize = 64 * 1024;
+#[cfg(feature = "alloc-fallback")]
 const PSBT_TEST_RECS: usize = 128;
 
 /// Parse PSBT bytes into a caller-provided pool — production passes the
@@ -779,6 +781,7 @@ pub fn parse_psbt_into<'a>(
 /// pool storage (the historical `Psbt { inputs: vec![...], outputs: ... }`
 /// literal shape). Production parses via `parse_psbt_into` with caller
 /// storage. Over-cap panics loudly (test surface only).
+#[cfg(feature = "alloc-fallback")]
 pub fn psbt_from_maps_leaky<'a>(
     unsigned_tx: Transaction<'a>,
     inputs: &[Vec<KeyValue<'a>>],
@@ -806,8 +809,9 @@ pub fn psbt_from_maps_leaky<'a>(
 }
 
 /// Parse with optional caller pool storage: `Some`/`Some` = the zero-heap
-/// path (the SignWs carve); `None` = the leaking convenience below
-/// (transitional shell / test surface only).
+/// path (the SignWs carve). Without a pool: the `alloc-fallback` builds fall
+/// back to the leaking test convenience; no-alloc builds REFUSE (no pool, no
+/// parse — the production contract).
 pub fn parse_psbt_any<'a>(
     bytes: &'a [u8],
     arena: Option<&'a mut [u8]>,
@@ -815,13 +819,17 @@ pub fn parse_psbt_any<'a>(
 ) -> Result<Psbt<'a>> {
     match (arena, recs) {
         (Some(arena), Some(recs)) => parse_psbt_into(bytes, arena, recs),
+        #[cfg(feature = "alloc-fallback")]
         _ => parse_psbt(bytes),
+        #[cfg(not(feature = "alloc-fallback"))]
+        _ => Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall)),
     }
 }
 
 /// Test convenience: a LEAKING parse — the pool storage is allocated and
 /// never freed. Production MUST pass caller storage via `parse_psbt_into`
 /// (the SignWs carve).
+#[cfg(feature = "alloc-fallback")]
 pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt<'_>> {
     let arena: &'static mut [u8] =
         alloc::boxed::Box::leak(alloc::vec![0u8; PSBT_TEST_ARENA].into_boxed_slice());
@@ -854,6 +862,7 @@ pub fn serialize_psbt_into(psbt: &Psbt<'_>, out: &mut [u8]) -> Result<usize> {
 }
 
 /// Test/staging convenience: one sized allocation, same bytes.
+#[cfg(feature = "alloc-fallback")]
 pub fn serialize_psbt(psbt: &Psbt<'_>) -> Vec<u8> {
     let mut out = vec![0u8; serialize_psbt_len(psbt)];
     let n = serialize_psbt_into(psbt, &mut out).expect("sized buffer");

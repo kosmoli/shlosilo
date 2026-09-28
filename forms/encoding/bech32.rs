@@ -174,6 +174,9 @@ pub(crate) fn encode(hrp: &str, data: &[u8]) -> Result<Bech32String> {
 
 /// bech32m encoding (segwit v1+, spec=BECH32M_CONST)
 /// data is already 5-bit groups
+// BIP-137/350 message-signing helper — its consumer (message_sign) is
+// alloc-fallback surface.
+#[cfg(feature = "alloc-fallback")]
 pub(crate) fn encode_m(hrp: &str, data: &[u8]) -> Result<Bech32String> {
     if hrp.is_empty() || hrp.len() > 90 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
