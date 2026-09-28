@@ -114,7 +114,7 @@ fn write_tx_base<S: Sink>(s: &mut S, tx: &Eip155Transaction) -> Result<()> {
         None => rlp::write_bytes(s, b"")?,
     }
     rlp::write_uint(s, tx.amount)?;
-    rlp::write_bytes(s, tx.data.as_ref())?;
+    rlp::write_bytes(s, crate::types::wire_bytes::wire_slice(&tx.data))?;
     Ok(())
 }
 
@@ -128,7 +128,7 @@ fn tx_base_len(tx: &Eip155Transaction) -> usize {
         + rlp::encoded_uint_len(tx.gas_limit as u128)
         + rlp::encoded_bytes_len(dest)
         + rlp::encoded_uint_len(tx.amount)
-        + rlp::encoded_bytes_len(tx.data.as_ref())
+        + rlp::encoded_bytes_len(crate::types::wire_bytes::wire_slice(&tx.data))
 }
 
 /// rlp([base, chain_id, 0, 0]) — the EIP-155 signing preimage payload.

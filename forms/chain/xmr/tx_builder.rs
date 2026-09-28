@@ -42,6 +42,7 @@ use crate::types::SliceVec;
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::Scalar as DScalar;
+#[cfg(feature = "alloc-fallback")]
 use monero_ed25519::{Commitment as MoneroCommitment, CompressedPoint};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
@@ -156,6 +157,7 @@ pub fn decrypt_amount(encrypted: &[u8; 8], shared_key: &[u8; 32]) -> u64 {
 /// Tx input specification (for tx builder)
 ///
 /// P1-03: spend_key / real_mask / pseudo_mask use `SecretBytes<32>` — no Clone or Debug.
+#[cfg(feature = "alloc-fallback")]
 pub struct TxInputSpec {
     /// key offsets (ring members' relative offsets)
     /// Z2.3 (2026-09-24, option 2): leaf collection, protocol-hard cap RING_MAX.
@@ -607,11 +609,11 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::chain::xmr::reduce_scalar::reduce_scalar as rs;
-// Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+    // Alloc surface: consumers behind alloc-fallback / cfg(test).
+    #[cfg(feature = "alloc-fallback")]
     use alloc::string::String;
-// Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+    // Alloc surface: consumers behind alloc-fallback / cfg(test).
+    #[cfg(feature = "alloc-fallback")]
     use alloc::vec;
     use rand_core::OsRng;
     use std::eprintln;

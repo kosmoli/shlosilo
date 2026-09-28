@@ -220,7 +220,7 @@ impl core::fmt::Debug for DerivationPath {
 mod tests {
     use super::*;
     use proptest::prelude::*;
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     extern crate alloc;
     use alloc::format;
     use alloc::string::ToString;

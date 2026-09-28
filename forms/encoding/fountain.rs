@@ -19,12 +19,10 @@
 //!
 //! Budget discipline (same origin as X1): decoder-side received/buffer entry counts are bounded by the `sequence_count` cap.
 
-#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 use crate::encoding::sha256;
 // Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 // ─── Xoshiro256** ───────────────────────────────────────────────────
@@ -832,8 +830,8 @@ impl<'a> FountainDecoder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-// Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+    // Alloc surface: consumers behind alloc-fallback / cfg(test).
+    #[cfg(feature = "alloc-fallback")]
     use alloc::vec;
 
     /// keystone-ur fountain.rs doctest vector 1:

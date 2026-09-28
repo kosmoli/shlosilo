@@ -130,6 +130,7 @@ impl Sink for CountSink {
 }
 
 /// Staging backend (documented convenience; infallible by construction).
+#[cfg(feature = "alloc-fallback")]
 impl Sink for alloc::vec::Vec<u8> {
     fn put(&mut self, bytes: &[u8]) -> Result<()> {
         self.extend_from_slice(bytes);

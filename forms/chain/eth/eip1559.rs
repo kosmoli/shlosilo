@@ -129,7 +129,7 @@ fn write_tx_fields<S: Sink>(
         None => rlp::write_bytes(s, b"")?,
     }
     rlp::write_uint(s, tx.amount)?;
-    rlp::write_bytes(s, tx.data.as_ref())?;
+    rlp::write_bytes(s, crate::types::wire_bytes::wire_slice(&tx.data))?;
     rlp::write_list_head(s, 0)?; // empty access_list
     if let Some((yp, r, sc)) = tail {
         rlp::write_uint(s, yp as u128)?;
@@ -152,7 +152,7 @@ fn tx_fields_len(tx: &Eip1559Transaction, tail: Option<(u8, &[u8; 32], &[u8; 32]
         + rlp::encoded_uint_len(tx.gas_limit as u128)
         + rlp::encoded_bytes_len(dest)
         + rlp::encoded_uint_len(tx.amount)
-        + rlp::encoded_bytes_len(tx.data.as_ref())
+        + rlp::encoded_bytes_len(crate::types::wire_bytes::wire_slice(&tx.data))
         + rlp::list_head_len(0);
     if let Some((yp, r, sc)) = tail {
         n += rlp::encoded_uint_len(yp as u128)

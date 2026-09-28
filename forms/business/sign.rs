@@ -1211,7 +1211,7 @@ mod tests {
     use crate::chain::btc::p2wpkh::bt_vec;
     use crate::chain::btc::psbt::psbt_from_maps_leaky;
     use crate::types::chain_kind::ChainKind;
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     extern crate alloc;
     // (alloc::vec import dropped — test literals use the qualified form)
     use alloc::vec::Vec;

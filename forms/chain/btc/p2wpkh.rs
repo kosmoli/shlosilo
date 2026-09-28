@@ -100,16 +100,19 @@ pub struct TxIn<'a> {
     pub prev_out: OutPoint,
     pub script_sig: crate::types::wire_bytes::WireBytes<'a>,
     pub sequence: u32,
-    /// witness items (sign-time additions own) — test/legacy shape; the
-    /// production core writes witness through the caller's buffer.
-    /// (no-alloc face debt: Vec-typed field, tracked with the batch-5 tail)
+    /// witness items (sign-time additions own) — cfg-double-defined:
+    /// Vec-shaped on the alloc face (legacy constructors keep `vec![..]`),
+    /// borrowed on the no-alloc face (always empty there). The production
+    /// core writes witness through the caller's buffer.
     #[cfg(feature = "alloc-fallback")]
     pub witness: Vec<Vec<u8>>,
+    #[cfg(not(feature = "alloc-fallback"))]
+    pub witness: &'a [&'a [u8]],
 }
 
 impl<'a> TxIn<'a> {
     /// The empty backplane slot (no allocation).
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     pub fn empty() -> Self {
         Self {
             prev_out: OutPoint {
@@ -118,13 +121,13 @@ impl<'a> TxIn<'a> {
             },
             script_sig: (&[]).into(),
             sequence: 0,
-            witness: Vec::new(),
+            witness: crate::types::wire_bytes::witness_empty(),
         }
     }
 
     /// Serialization (BIP-144 legacy format: outpoint + scriptSig + sequence)
     /// Includes the scriptSig length varint
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize_legacy(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(32 + 4 + 1 + self.script_sig.len() + 4);
         out.extend_from_slice(&self.prev_out.txid);
@@ -147,7 +150,7 @@ pub struct TxOut<'a> {
 
 impl<'a> TxOut<'a> {
     /// The empty backplane slot (no allocation).
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     pub fn empty() -> Self {
         Self {
             value: 0,
@@ -157,7 +160,7 @@ impl<'a> TxOut<'a> {
 }
 
 impl TxOut<'_> {
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + 1 + self.script_pubkey.len());
         out.extend_from_slice(&self.value.to_le_bytes());
@@ -181,7 +184,7 @@ pub struct Transaction<'a> {
 
 impl Transaction<'_> {
     /// BIP-144 segwit serialization (marker=0x00, flag=0x01)
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize_segwit(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&self.version.to_le_bytes());
@@ -218,7 +221,7 @@ impl Transaction<'_> {
 
 // impl block helpers (avoids clashing with Transaction method signatures)
 impl TxIn<'_> {
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     fn serialize_into(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.prev_out.txid);
         out.extend_from_slice(&self.prev_out.vout.to_le_bytes());
@@ -227,7 +230,7 @@ impl TxIn<'_> {
 }
 
 impl TxOut<'_> {
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     fn serialize_into(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.value.to_le_bytes());
         encode_varint(out, self.script_pubkey.len() as u64);
@@ -329,7 +332,7 @@ pub fn segwit_sighash_p2wpkh(
             let mut varint = [0u8; 9];
             let len = encode_varint_buf(&mut varint, txout.script_pubkey.len() as u64);
             inner.update(&varint[..len]);
-            inner.update(&txout.script_pubkey);
+            inner.update(crate::types::wire_bytes::wire_slice(&txout.script_pubkey));
         }
         dsha256_streamed(inner)
     };
@@ -531,7 +534,7 @@ mod tests {
             },
             script_sig: Vec::new().into(),
             sequence: 0xffffffee,
-            witness: Vec::new(),
+            witness: crate::types::wire_bytes::witness_empty(),
         };
 
         // Input 1 (P2WPKH)
@@ -551,7 +554,7 @@ mod tests {
             },
             script_sig: Vec::new().into(),
             sequence: 0xffffffff,
-            witness: Vec::new(),
+            witness: crate::types::wire_bytes::witness_empty(),
         };
 
         // Outputs
@@ -658,7 +661,7 @@ mod tests {
             },
             script_sig: Vec::new().into(),
             sequence: 0xffffffff,
-            witness: Vec::new(),
+            witness: crate::types::wire_bytes::witness_empty(),
         };
 
         // Input 0 (P2PK, not signed by us, but needed for hashPrevouts/sequence)
@@ -678,7 +681,7 @@ mod tests {
             },
             script_sig: Vec::new().into(),
             sequence: 0xffffffee,
-            witness: Vec::new(),
+            witness: crate::types::wire_bytes::witness_empty(),
         };
 
         let output0 = TxOut {
@@ -826,7 +829,7 @@ mod tests {
             },
             script_sig: Vec::new().into(),
             sequence: 0xffffffff,
-            witness: Vec::new(),
+            witness: crate::types::wire_bytes::witness_empty(),
         };
         let input0 = TxIn {
             prev_out: OutPoint {
@@ -845,7 +848,7 @@ mod tests {
             // The real signed scriptSig for P2PK input 0 is long; we simplify by leaving it empty
             script_sig: Vec::new().into(),
             sequence: 0xffffffee,
-            witness: Vec::new(),
+            witness: crate::types::wire_bytes::witness_empty(),
         };
         let output0 = TxOut {
             value: 0x0000000006b22c20,

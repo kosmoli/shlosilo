@@ -625,22 +625,27 @@ impl TransactionPrefix {
         // offsets count + one offset varint + 32B key image = 34B) — a malicious
         // count must Err, never reach with_capacity (capacity-overflow abort).
         let n_inputs = monero_decode_varint(bytes, pos)?;
-        if n_inputs > (bytes.len().saturating_sub(*pos) / 34) as u64 {
+        if n_inputs > (bytes.len().saturating_sub(*pos) / 34) as u64
+            || n_inputs as usize > PREFIX_INPUTS_MAX
+        {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        let mut inputs = Vec::with_capacity(wire_len(n_inputs)?);
-        for _ in 0..n_inputs {
-            inputs.push(TxInput::deserialize(bytes, pos)?);
+        let mut inputs_arr =
+            core::array::from_fn(|_| TxInput::new(heapless::Vec::new(), [0u8; 32]));
+        for slot in inputs_arr.iter_mut().take(n_inputs as usize) {
+            *slot = TxInput::deserialize(bytes, pos)?;
         }
         // Same feasibility bound as inputs (min serialized output = varint amount
         // + type byte + 32B stealth address = 34B).
         let n_outputs = monero_decode_varint(bytes, pos)?;
-        if n_outputs > (bytes.len().saturating_sub(*pos) / 34) as u64 {
+        if n_outputs > (bytes.len().saturating_sub(*pos) / 34) as u64
+            || n_outputs as usize > PREFIX_OUTPUTS_MAX
+        {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        let mut outputs = Vec::with_capacity(wire_len(n_outputs)?);
-        for _ in 0..n_outputs {
-            outputs.push(TxOutput::deserialize(bytes, pos)?);
+        let mut outputs_arr = core::array::from_fn(|_| TxOutput::new_tagged(0, [0u8; 32], 0));
+        for slot in outputs_arr.iter_mut().take(n_outputs as usize) {
+            *slot = TxOutput::deserialize(bytes, pos)?;
         }
         // P0-01-class hardening (2026-09-24 T-01): fallible u64 -> usize + checked_add.
         let extra_len = wire_len(monero_decode_varint(bytes, pos)?)?;
@@ -652,21 +657,14 @@ impl TransactionPrefix {
         }
         let extra = TxExtra::deserialize(&bytes[*pos..extra_end], &mut 0)?;
         *pos = extra_end;
-        if inputs.len() > PREFIX_INPUTS_MAX || outputs.len() > PREFIX_OUTPUTS_MAX {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
-        }
-        let mut inputs_arr =
-            core::array::from_fn(|_| TxInput::new(heapless::Vec::new(), [0u8; 32]));
-        let mut outputs_arr = core::array::from_fn(|_| TxOutput::new_tagged(0, [0u8; 32], 0));
-        inputs_arr[..inputs.len()].clone_from_slice(&inputs);
-        outputs_arr[..outputs.len()].clone_from_slice(&outputs);
+        // (count bounds enforced before the fills above)
         Ok(Self {
             version,
             unlock_time,
             inputs: inputs_arr,
-            inputs_len: inputs.len(),
+            inputs_len: n_inputs as usize,
             outputs: outputs_arr,
-            outputs_len: outputs.len(),
+            outputs_len: n_outputs as usize,
             extra,
         })
     }
@@ -872,6 +870,7 @@ pub fn monerod_scalar_to_bytes(s: &Scalar) -> [u8; 32] {
 /// Z2.2 (2026-09-24): delegates to `encode_varint_at` — the Vec and slice-cursor call
 /// shapes share one core and are byte-identical by construction
 /// (see `encode_varint_shapes_identical`).
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_varint(out: &mut Vec<u8>, n: u64) {
     let mut tmp = [0u8; 9];
     let mut pos = 0usize;
@@ -992,11 +991,11 @@ mod tests {
 
     extern crate std;
     use super::*;
-// Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+    // Alloc surface: consumers behind alloc-fallback / cfg(test).
+    #[cfg(feature = "alloc-fallback")]
     use alloc::string::String;
-// Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+    // Alloc surface: consumers behind alloc-fallback / cfg(test).
+    #[cfg(feature = "alloc-fallback")]
     use alloc::vec;
     use std::eprintln;
 

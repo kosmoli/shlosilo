@@ -16,8 +16,11 @@ use alloc::vec::Vec;
 
 #[cfg(test)]
 use crate::chain::btc::p2wpkh::bt_vec;
+#[cfg(feature = "alloc-fallback")]
 use crate::chain::btc::p2wpkh::Transaction;
+#[cfg(feature = "alloc-fallback")]
 use crate::chain::btc::psbt::{get_utxo_any, Psbt};
+#[allow(unused_imports)] // consumed behind the gate on the alloc face
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 /// BIP-125: nSequence < 0xfffffffe means replaceable
@@ -79,6 +82,7 @@ pub struct InputSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "alloc-fallback")]
 pub struct PsbtSummary {
     pub version: i32,
     pub locktime: LocktimeKind,
@@ -122,6 +126,7 @@ pub fn classify_spk(spk: &[u8]) -> SpkKind {
     SpkKind::Unknown
 }
 
+#[cfg(feature = "alloc-fallback")]
 fn relative_lock(sequence: u32) -> RelativeLock {
     if sequence == 0xffffffff || (sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG) != 0 {
         return RelativeLock::None;
@@ -134,6 +139,7 @@ fn relative_lock(sequence: u32) -> RelativeLock {
     }
 }
 
+#[cfg(feature = "alloc-fallback")]
 fn locktime_kind(n: u32) -> LocktimeKind {
     if n == 0 {
         LocktimeKind::None
@@ -144,10 +150,12 @@ fn locktime_kind(n: u32) -> LocktimeKind {
     }
 }
 
+#[cfg(feature = "alloc-fallback")]
 fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
+#[cfg(feature = "alloc-fallback")]
 pub fn summarize_psbt(psbt: &Psbt<'_>, own_spks: &[&[u8]]) -> Result<PsbtSummary> {
     let n = psbt.unsigned_tx.inputs.len();
     let mut values = Vec::with_capacity(n);
@@ -162,6 +170,7 @@ pub fn summarize_psbt(psbt: &Psbt<'_>, own_spks: &[&[u8]]) -> Result<PsbtSummary
     summarize_tx(&psbt.unsigned_tx, &values, own_spks)
 }
 
+#[cfg(feature = "alloc-fallback")]
 pub fn summarize_tx(
     tx: &Transaction,
     input_values: &[Option<u64>],

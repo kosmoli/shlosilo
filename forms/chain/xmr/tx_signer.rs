@@ -349,6 +349,7 @@ fn payment_id_xor(ecdh_view_times_tx_pub: &[u8; 32]) -> [u8; 8] {
 /// real monerod wire is ~2KiB single-input, cap 16KiB covers multi-input).
 pub const TX_WIRE_SLOT_MAX: usize = 16 * 1024;
 
+#[cfg(feature = "alloc-fallback")]
 pub fn sign_tx_from_construction<R: RngCore + CryptoRng + Clone>(
     tx_data: &TxConstructionData,
     spend_sec: &[u8; 32],
@@ -372,6 +373,7 @@ pub fn sign_tx_from_construction<R: RngCore + CryptoRng + Clone>(
 /// Z3.2b legacy convenience (tests): returns the wire as an owned Vec. The
 /// production path writes straight into the caller workspace via the `_into`
 /// core; this shell is slated for Z3.5 shell collection (test-only surface).
+#[cfg(feature = "alloc-fallback")]
 pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + CryptoRng>(
     tx_data: &TxConstructionData,
     spend_sec: &[u8; 32],

@@ -342,8 +342,8 @@ fn _check_is_identity() {
 #[cfg(test)]
 mod tests {
     use super::*;
-// Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+    // Alloc surface: consumers behind alloc-fallback / cfg(test).
+    #[cfg(feature = "alloc-fallback")]
     use alloc::vec;
     use rand_core::OsRng;
 

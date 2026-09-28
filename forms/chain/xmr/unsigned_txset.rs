@@ -343,11 +343,15 @@ pub(crate) fn check_monero_signature(
     }
 
     // c' = Hs(hash || P || R)
-    let mut data = Vec::with_capacity(32 + 32 + 32);
-    data.extend_from_slice(hash);
-    data.extend_from_slice(pubkey);
-    data.extend_from_slice(&result_point.compress().to_bytes());
-    let c2 = crate::chain::xmr::subaddress::hash_to_scalar(&data)?;
+    let mut data = [0u8; 96];
+    let mut n = 0usize;
+    data[n..n + 32].copy_from_slice(hash);
+    n += 32;
+    data[n..n + 32].copy_from_slice(pubkey);
+    n += 32;
+    data[n..n + 32].copy_from_slice(&result_point.compress().to_bytes());
+    n += 32;
+    let c2 = crate::chain::xmr::subaddress::hash_to_scalar(&data[..n])?;
     let c2_opt = Scalar::from_canonical_bytes(c2);
     if bool::from(c2_opt.is_none()) {
         return Ok(false);
@@ -654,6 +658,7 @@ fn read_tx_construction_data<'a>(
 // Z2.4d-2: writers generic over `Sink` (cursor = zero-heap, Vec = staging).
 use crate::types::push::Sink;
 
+#[allow(dead_code)] // consumed behind the gate on the alloc face
 fn put_varint<S: Sink>(out: &mut S, n: u64) -> Result<()> {
     let mut tmp = [0u8; 10];
     let mut pos = 0usize;
@@ -661,6 +666,7 @@ fn put_varint<S: Sink>(out: &mut S, n: u64) -> Result<()> {
     out.put(&tmp[..pos])
 }
 
+#[allow(dead_code)] // consumed behind the gate on the alloc face
 fn write_unsigned_destination<S: Sink>(out: &mut S, e: &TxDestinationEntry) -> Result<()> {
     // monero `tx_destination_entry`: amount is a varint on BOTH sides. (The old
     // "signed side is u64 LE" note was wrong — that mistaken belief lived in
@@ -674,6 +680,7 @@ fn write_unsigned_destination<S: Sink>(out: &mut S, e: &TxDestinationEntry) -> R
     out.put_u8(e.is_integrated as u8)
 }
 
+#[allow(dead_code)] // consumed behind the gate on the alloc face
 fn write_unsigned_source<S: Sink>(out: &mut S, s: &TxSourceEntry) -> Result<()> {
     put_varint(out, s.outputs.len() as u64)?;
     for o in s.outputs.iter() {
@@ -699,6 +706,7 @@ fn write_unsigned_source<S: Sink>(out: &mut S, s: &TxSourceEntry) -> Result<()> 
     out.put(&s.multisig_kLRki.ki)
 }
 
+#[allow(dead_code)] // consumed behind the gate on the alloc face
 fn write_unsigned_construction<S: Sink>(out: &mut S, d: &TxConstructionData<'_>) -> Result<()> {
     put_varint(out, d.sources.len() as u64)?;
     for s in d.sources.iter().flatten() {
@@ -733,6 +741,7 @@ fn write_unsigned_construction<S: Sink>(out: &mut S, d: &TxConstructionData<'_>)
 }
 
 /// Core writer (Z2.4d-2): epee wire form of the txes segment, any `Sink`.
+#[allow(dead_code)] // consumed behind the gate on the alloc face
 fn write_unsigned_tx<S: Sink>(tx: &UnsignedTx<'_>, out: &mut S) -> Result<()> {
     put_varint(out, 2)?;
     put_varint(out, tx.txes.len() as u64)?;
@@ -756,6 +765,7 @@ pub fn serialize_unsigned_tx_into(tx: &UnsignedTx<'_>, out: &mut [u8]) -> Result
 /// epee serialize (dual of `deserialize_unsigned_tx`; excludes the trailing transfers segment).
 /// Audit #12 P1-02: the output contains the mask/kLRki secret fields; returns a Zeroizing owner.
 /// Staging convenience (allocates). Production paths use `serialize_unsigned_tx_into`.
+#[cfg(feature = "alloc-fallback")]
 pub fn serialize_unsigned_tx(tx: &UnsignedTx<'_>) -> zeroize::Zeroizing<Vec<u8>> {
     let mut out = Vec::new();
     write_unsigned_tx(tx, &mut out).expect("Vec sink is infallible by construction");

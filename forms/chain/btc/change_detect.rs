@@ -16,7 +16,9 @@ use alloc::vec::Vec;
 
 #[cfg(test)]
 use crate::chain::btc::p2wpkh::bt_vec;
+#[cfg(feature = "alloc-fallback")]
 use crate::chain::btc::psbt::{output_type, Psbt};
+#[cfg(feature = "alloc-fallback")]
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 /// Ownership info for a single output
@@ -29,6 +31,7 @@ pub struct ChangeInfo {
 }
 
 /// Parse the BIP32_DERIVATION value prefix: fingerprint(4) || depth(1) || ...
+#[cfg(feature = "alloc-fallback")]
 fn parse_origin_fingerprint(value: &[u8]) -> Option<[u8; 4]> {
     if value.len() < 4 {
         return None;

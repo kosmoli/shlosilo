@@ -13,8 +13,6 @@
 #[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 // Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
-use alloc::vec::Vec;
 
 use crate::chain::eth::eip155::Eip155Transaction;
 use crate::chain::eth::eip1559::Eip1559Transaction;
@@ -99,16 +97,18 @@ impl<'a> Rlp<'a> {
         }
     }
 
-    pub fn as_list_items(&self) -> Result<Vec<Rlp<'a>>> {
+    pub fn as_list_items(&self) -> Result<heapless::Vec<Rlp<'a>, 16>> {
         let payload = match self {
             Rlp::List(p) => *p,
             _ => return Err(err()),
         };
-        let mut items = Vec::new();
+        let mut items = heapless::Vec::new();
         let mut rest = payload;
         while !rest.is_empty() {
             let (item, r) = Rlp::read(rest)?;
-            items.push(item);
+            items
+                .push(item)
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
             rest = r;
         }
         Ok(items)
@@ -159,7 +159,7 @@ pub fn parse_eip1559_raw(raw: &[u8]) -> Result<Eip1559Transaction<'_>> {
         _ => return Err(err()),
     };
     let amount = be_to_u128(fields[6].as_str()?)?;
-    let data = (fields[7].as_str()?).into();
+    let data = crate::types::wire_bytes::wire_from(fields[7].as_str()?);
     // fields[8] = access_list; non-empty is rejected (shlosilo doesn't sign txs carrying an access list)
     if !fields[8].as_list_items()?.is_empty() {
         return Err(err());
@@ -206,7 +206,7 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
         _ => return Err(err()),
     };
     let amount = be_to_u128(fields[4].as_str()?)?;
-    let data = (fields[5].as_str()?).into();
+    let data = crate::types::wire_bytes::wire_from(fields[5].as_str()?);
     let v = be_to_u128(fields[6].as_str()?)? as u64;
     if v < 35 {
         return Err(err()); // pre-EIP-155 unsupported
@@ -228,8 +228,9 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-// Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+    // Alloc surface: consumers behind alloc-fallback / cfg(test).
+    #[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     use alloc::vec::Vec;
 
     fn hex_decode(s: &str) -> Vec<u8> {
