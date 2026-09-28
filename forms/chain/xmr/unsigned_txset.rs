@@ -43,7 +43,11 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use chacha20::cipher::{KeyIvInit, StreamCipher};
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use chacha20::ChaCha20Legacy;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -372,6 +376,7 @@ pub(crate) fn chacha_key_from_view_sk(view_sk: &[u8; 32]) -> zeroize::Zeroizing<
 /// Flow: magic check → nonce=8B → Ed25519 verification (view_pub over
 /// keccak256(nonce||ciphertext), trailing 64B) → ChaCha20-Legacy keystream.
 /// Verification failure = data tampered or view key mismatch → reject.
+#[cfg(feature = "alloc-fallback")]
 pub fn decrypt_unsigned_txset(
     data: &[u8],
     view_sk: &[u8; 32],
@@ -383,6 +388,7 @@ pub fn decrypt_unsigned_txset(
 /// same as `decrypt_unsigned_txset`; the ChaCha key is injected by the caller (avoids recomputing CN).
 /// Audit #12 P1-02: plaintext is owner-wrapped — returns Zeroizing<Vec<u8>>; error/early-return
 /// paths covered by Drop; no longer returns a plain Vec.
+#[cfg(feature = "alloc-fallback")]
 pub(crate) fn decrypt_unsigned_txset_with_chacha_key(
     data: &[u8],
     view_sk: &[u8; 32],
@@ -764,7 +770,11 @@ pub fn decrypt_and_parse_unsigned_tx<'a>(
     scratch: &mut [u8],
     pools: UnsignedTxPools<'a>,
 ) -> Result<UnsignedTx<'a>> {
+    // Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+    #[allow(unused_imports)]
     use chacha20::cipher::{KeyIvInit, StreamCipher};
+    // Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+    #[allow(unused_imports)]
     use chacha20::ChaCha20Legacy;
     use zeroize::Zeroize;
 

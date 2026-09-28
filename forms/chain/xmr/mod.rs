@@ -26,7 +26,9 @@ pub mod commitment;
 /// Test-only hooks for the BP+ generator cache (`#[doc(hidden)]`, not public API).
 #[cfg(feature = "std")]
 #[doc(hidden)]
+#[cfg(feature = "alloc-fallback")]
 pub mod generator_cache_test_hooks;
+#[cfg(feature = "alloc-fallback")]
 pub mod key_image_export;
 pub mod output_export;
 pub mod rct_sig;

@@ -110,6 +110,7 @@ impl TxInput {
     /// - 32 bytes key_image
     ///
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(0x02); // txin_to_key variant tag
@@ -222,6 +223,7 @@ impl TxOutput {
     /// - varint(amount) + type + stealth_address [+ view_tag]
     ///
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         monero_encode_varint(&mut out, self.amount);
@@ -359,6 +361,7 @@ impl TxExtra {
     }
 
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         // tx_pub_key: tag 0x01 + 32B raw (official tx_extra_pub_key has no length field)
@@ -583,6 +586,7 @@ impl TransactionPrefix {
     }
 
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(self.version);
@@ -667,6 +671,7 @@ impl TransactionPrefix {
 
 /// Complete Monero transaction (prefix + RCT signatures placeholder)
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "alloc-fallback")]
 pub struct Transaction {
     pub prefix: TransactionPrefix,
     /// rct_signatures bytes (Phase B/C will populate with actual RctSigBase + Prunable)
@@ -674,6 +679,7 @@ pub struct Transaction {
     pub rct_signatures: Vec<u8>,
 }
 
+#[cfg(feature = "alloc-fallback")]
 impl Transaction {
     pub fn new(prefix: TransactionPrefix) -> Self {
         Self {
@@ -691,6 +697,7 @@ impl Transaction {
     }
 
     /// Serialize complete tx
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = self.prefix.serialize();
         // RCT signatures serialized as varint len + bytes
@@ -933,6 +940,7 @@ pub fn monero_encode_varint_at(out: &mut [u8], pos: &mut usize, mut n: u64) -> R
 }
 
 /// Vec-delegating convenience (test/legacy); production writes through `monero_encode_varint_at`.
+#[cfg(feature = "alloc-fallback")]
 pub fn monero_encode_varint(out: &mut Vec<u8>, mut n: u64) {
     loop {
         let b = (n & 0x7f) as u8;

@@ -33,6 +33,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use crate::types::SliceVec;
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
@@ -41,21 +43,37 @@ use monero_ed25519::{Commitment as MoneroCommitment, CompressedPoint};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
 
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use crate::chain::xmr::clsag::{self as clsag_mod};
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use crate::chain::xmr::rct_sig::{
     prove_bulletproofs_plus, pseudo_out_commitment, verify_bulletproofs_plus, RctSig, RctSigBase,
     RctSigPrunable,
 };
 use crate::chain::xmr::reduce_scalar::reduce_scalar;
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use crate::chain::xmr::transaction::{
-    bytes_to_monerod_scalar, monero_encode_varint, Transaction, TransactionPrefix, TxExtra,
-    TxInput, TxOutput,
+    bytes_to_monerod_scalar, monero_encode_varint_at, TransactionPrefix, TxExtra, TxInput, TxOutput,
 };
+// Consumers (build_and_sign_tx, tests) live behind alloc-fallback / cfg(test);
+// unused on the no-alloc face.
+#[allow(unused_imports)]
+#[cfg(feature = "alloc-fallback")]
+use crate::chain::xmr::transaction::{monero_encode_varint, Transaction};
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use crate::chain::xmr::view_tag::{
     derive_view_tag, eight_ra, encrypt_payment_id, payment_id_xor, stealth_address,
 };
 use crate::curve_primitive::ed25519::scalar_to_bytes;
-use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::error::Result;
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
+#[cfg(feature = "alloc-fallback")]
+use crate::error::{ShlosiloError, ShlosiloErrorKind};
 use crate::types::SecretBytes;
 
 /// One-time key pair (per-tx, EphemeralKeyPair in keystone naming)
@@ -121,6 +139,7 @@ pub fn encrypt_amount(amount: u64, shared_key: &[u8; 32]) -> [u8; 8] {
 
 /// Decrypt the amount (8 bytes) using the simplified shared_key
 /// Build output: TxOutput + optional encrypted payment id (8B) + optional view tag derivation helper
+#[cfg(feature = "alloc-fallback")]
 type BuiltOutput = (TxOutput, Option<[u8; 8]>, Option<[u8; 32]>);
 
 pub fn decrypt_amount(encrypted: &[u8; 8], shared_key: &[u8; 32]) -> u64 {
@@ -172,6 +191,7 @@ pub struct TxOutputSpec {
     pub is_subaddress: bool,
 }
 
+#[cfg(feature = "alloc-fallback")]
 fn resolve_tx_output(tx_secret: &[u8; 32], index: u64, spec: &TxOutputSpec) -> Result<BuiltOutput> {
     match (spec.dest_view_pub, spec.dest_spend_pub) {
         (Some(view), Some(spend)) => {
@@ -209,6 +229,7 @@ fn resolve_tx_output(tx_secret: &[u8; 32], index: u64, spec: &TxOutputSpec) -> R
 /// P1-03: `tx_secret` (the r of a payment proof) uses `SecretBytes<32>` — no Clone or Debug.
 /// Z2.3 C3b-2 (2026-09-24, option 2): rct collections live in caller storage; the former
 /// duplicate `encrypted_amounts` field is gone (single home: `rct_sig.prunable`).
+#[cfg(feature = "alloc-fallback")]
 pub struct SignedTx<'a> {
     pub transaction: Transaction,
     pub tx_pub_key: [u8; 32],
@@ -228,6 +249,7 @@ pub struct SignedTx<'a> {
 /// 6. Sign CLSAG per input (using real spend key + ring members)
 /// 7. Compose RctSig (Base + Prunable)
 /// 8. Build Transaction (prefix + rct_signatures)
+#[cfg(feature = "alloc-fallback")]
 pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
     inputs: &[TxInputSpec],
     outputs: &[TxOutputSpec],
@@ -254,13 +276,15 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
         let shared_key = match output.dest_view_pub {
             Some(view) => {
                 let eight = eight_ra(tx_keys.secret.expose(), &view)?;
-                let mut buf = Vec::with_capacity(33);
-                buf.extend_from_slice(&eight);
+                // stack scratch: 32B point + LEB128 (<= 9B)
+                let mut buf = [0u8; 41];
+                buf[..32].copy_from_slice(&eight);
+                let mut n = 32usize;
                 // Z2.4d-2: shared_key = Hs(8Ra || Monero-LEB128(i)) — same formula as the
                 // production signer (tx_signer.rs), which was always LEB128. The old
                 // CompactSize helper diverged at i >= 128.
-                monero_encode_varint(&mut buf, i as u64);
-                crate::chain::xmr::subaddress::hash_to_scalar(&buf)?
+                monero_encode_varint_at(&mut buf, &mut n, i as u64)?;
+                crate::chain::xmr::subaddress::hash_to_scalar(&buf[..n])?
             }
             None => derive_simplified_shared_key(&tx_keys.public, i as u64),
         };
@@ -431,6 +455,7 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
 }
 
 /// Current RingCT type — only Type 3 (Bulletproofs+ aggregated) is supported
+#[cfg(feature = "alloc-fallback")]
 fn rct_sig_type() -> u8 {
     // Type 3 = Bulletproofs+ aggregated (post-fork 1788000+)
     // Type 2 = Bulletproofs per-output (pre-aggregated, deprecated)
@@ -447,6 +472,7 @@ fn rct_sig_type() -> u8 {
 /// - msg_hashes: the msg_hash of each input (same as at sign time)
 ///
 /// **Output**: Ok(()) if all CLSAG + BP+ are valid
+#[cfg(feature = "alloc-fallback")]
 pub fn verify_signed_tx<R: RngCore + CryptoRng>(
     signed: &SignedTx<'_>,
     inputs: &[TxInputSpec],
@@ -525,12 +551,15 @@ pub fn verify_signed_tx<R: RngCore + CryptoRng>(
 /// - std (host): OS entropy
 /// - no_std (embedded): zero-filled — only for temporary challenges in BP+/CLSAG **verify**,
 ///   never part of any secret generation; the signing path\'s RNG is injected by L3 (v2 §7.2)
+#[cfg(feature = "alloc-fallback")]
 struct OsRngFallback;
+#[cfg(feature = "alloc-fallback")]
 impl OsRngFallback {
     fn new() -> Self {
         Self
     }
 }
+#[cfg(feature = "alloc-fallback")]
 impl RngCore for OsRngFallback {
     #[cfg(feature = "std")]
     fn next_u32(&mut self) -> u32 {
@@ -566,6 +595,7 @@ impl RngCore for OsRngFallback {
         Ok(())
     }
 }
+#[cfg(feature = "alloc-fallback")]
 impl CryptoRng for OsRngFallback {}
 
 /// Unit tests

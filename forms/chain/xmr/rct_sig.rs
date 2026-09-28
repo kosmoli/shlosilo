@@ -35,6 +35,8 @@
 
 use crate::chain::xmr::clsag::ClsagProof;
 extern crate alloc;
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
 use alloc::vec::Vec;
 
 use monero_bulletproofs::{Bulletproof, MAX_COMMITMENTS};
@@ -108,6 +110,7 @@ impl<'a> RctSigBase<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(self.rct_type);
@@ -203,6 +206,7 @@ impl<'a> RctSigPrunable<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         // commitments
@@ -265,6 +269,7 @@ impl<'a> RctSig<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut out = self.base.serialize();
         let prunable_bytes = self.prunable.serialize()?;
@@ -279,6 +284,7 @@ pub fn make_commitment(mask: &Scalar, amount: u64) -> MoneroCommitment {
 }
 
 /// Construct commitment points (VarInt count + 32 bytes each) — XMR wire format
+#[cfg(feature = "alloc-fallback")]
 pub fn serialize_commitments(commitments: &[MoneroCommitment]) -> Vec<u8> {
     let mut out = Vec::new();
     crate::chain::xmr::transaction::monero_encode_varint(&mut out, commitments.len() as u64);
