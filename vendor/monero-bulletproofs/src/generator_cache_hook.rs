@@ -21,8 +21,7 @@
 //! soundness for the affected transaction (detectable on verification), never leak
 //! secrets. The load path deliberately does NOT re-check curve membership.
 
-#[cfg(feature = "alloc-fallback")]
-use std_shims::sync::{LazyLock, Mutex};
+use std_shims::sync::Mutex;
 
 pub(crate) type LoadFn = fn(prefix: &'static [u8]) -> Option<&'static [u8]>;
 pub(crate) type StoreFn = fn(prefix: &'static [u8], blob: &[u8]);
@@ -125,12 +124,12 @@ impl GeneratorSet {
     }
 }
 
-static TABLE_BP: LazyLock<Mutex<Option<GeneratorTableStorage>>> =
-    LazyLock::new(|| Mutex::new(None));
-static TABLE_BP_PLUS: LazyLock<Mutex<Option<GeneratorTableStorage>>> =
-    LazyLock::new(|| Mutex::new(None));
-static TABLE_TAKEN_BP: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
-static TABLE_TAKEN_BP_PLUS: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
+// shlosilo vendor patch: plain statics (const-constructible mutexes) — the
+// LazyLock once-cells pulled `alloc::sync` into the graph.
+static TABLE_BP: Mutex<Option<GeneratorTableStorage>> = Mutex::new(None);
+static TABLE_BP_PLUS: Mutex<Option<GeneratorTableStorage>> = Mutex::new(None);
+static TABLE_TAKEN_BP: Mutex<bool> = Mutex::new(false);
+static TABLE_TAKEN_BP_PLUS: Mutex<bool> = Mutex::new(false);
 
 /// Provide the decompressed-table storage for one generator set (once; first
 /// registration wins). Returns false when the slot is taken or ALREADY
@@ -152,7 +151,6 @@ pub fn provide_generator_table_storage(set: GeneratorSet, storage: GeneratorTabl
     true
 }
 
-#[cfg(feature = "alloc-fallback")]
 pub(crate) fn take_table_storage(prefix: &'static [u8]) -> Option<GeneratorTableStorage> {
     let set = GeneratorSet::from_prefix(prefix)?;
     let (slot, taken) = match set {
