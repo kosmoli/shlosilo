@@ -33,6 +33,7 @@
 //!
 //! **y_parity**: 0 or 1 (not the legacy 27/28)
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 extern crate digest;
 use crate::chain::eth::rlp;
@@ -41,7 +42,8 @@ use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
 use crate::types::SecretBytes;
-// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+// Consumers live behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 #[allow(unused_imports)]
 use alloc::vec::Vec;
 
@@ -61,7 +63,7 @@ pub struct Eip1559Transaction<'a> {
     /// Calldata — borrowed from the wire in production (Cow, zero-copy).
     /// (EIP-2930 access_list is unsupported in Phase 5 v7: the model carries
     /// no placeholder field — the wire always writes an empty list.)
-    pub data: alloc::borrow::Cow<'a, [u8]>,
+    pub data: crate::types::wire_bytes::WireBytes<'a>,
 }
 
 /// 20-byte Ethereum address

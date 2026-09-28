@@ -39,8 +39,11 @@
 //! remainder = transfers segment (the display layer skips parsing it)
 //! ```
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 // Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.

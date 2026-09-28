@@ -3,6 +3,7 @@
 //! `#[doc(hidden)]`: not part of the public API surface; used exclusively by integration
 //! tests and the device smoke task to exercise the vendor generator-cache hooks.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 // std is linked explicitly: the crate is `#![no_std]`, and this module only
 // exists under the `std` feature (host builds) - see the cfg on the `mod`

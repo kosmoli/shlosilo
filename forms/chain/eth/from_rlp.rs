@@ -10,7 +10,10 @@
 //! - `0xc0..0xf7`          list，payload len = b - 0xc0
 //! - `0xf8..0xff`          list，len_of_len = b - 0xf7
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 use crate::chain::eth::eip155::Eip155Transaction;
@@ -156,7 +159,7 @@ pub fn parse_eip1559_raw(raw: &[u8]) -> Result<Eip1559Transaction<'_>> {
         _ => return Err(err()),
     };
     let amount = be_to_u128(fields[6].as_str()?)?;
-    let data = alloc::borrow::Cow::Borrowed(fields[7].as_str()?);
+    let data = (fields[7].as_str()?).into();
     // fields[8] = access_list; non-empty is rejected (shlosilo doesn't sign txs carrying an access list)
     if !fields[8].as_list_items()?.is_empty() {
         return Err(err());
@@ -203,7 +206,7 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
         _ => return Err(err()),
     };
     let amount = be_to_u128(fields[4].as_str()?)?;
-    let data = alloc::borrow::Cow::Borrowed(fields[5].as_str()?);
+    let data = (fields[5].as_str()?).into();
     let v = be_to_u128(fields[6].as_str()?)? as u64;
     if v < 35 {
         return Err(err()); // pre-EIP-155 unsupported
@@ -225,6 +228,8 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
     use alloc::vec::Vec;
 
     fn hex_decode(s: &str) -> Vec<u8> {

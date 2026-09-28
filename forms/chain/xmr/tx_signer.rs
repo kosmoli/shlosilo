@@ -9,9 +9,12 @@
 //! 5. pseudo_out_i: genRctSimple chain `a[i]=rng (i<last), a[last]=Σout_masks−Σprev`; single input = Σout_masks
 //! 6. assemble prefix → msg_hash = keccak(prefix) → CLSAG → full tx
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 use crate::chain::xmr::rct_sig::prove_bulletproofs_plus;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 use monero_ed25519::CompressedPoint;
 use rand_core::{CryptoRng, RngCore};

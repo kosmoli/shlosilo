@@ -29,6 +29,7 @@
 //! - <https://github.com/monero-project/monero/blob/master/src/wallet/wallet2.cpp> (get_subaddress_*)
 //! - <https://github.com/monero-project/research-lab/blob/master/monero-subaddresses.md>
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;

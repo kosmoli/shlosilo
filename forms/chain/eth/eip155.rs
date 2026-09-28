@@ -34,13 +34,15 @@
 //! - mainnet chain_id = 1 → v = 37 or 38
 //! - The old unsigned v is 27/28 (pre-EIP-155)
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 use crate::chain::eth::rlp;
 use crate::chain::eth::sign;
 use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::SecretBytes;
-// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+// Consumers live behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 #[allow(unused_imports)]
 use alloc::vec::Vec;
 
@@ -55,7 +57,7 @@ pub struct Eip155Transaction<'a> {
     pub destination: Option<[u8; 20]>,
     pub amount: u128,
     /// Calldata — borrowed from the wire in production (Cow, zero-copy).
-    pub data: alloc::borrow::Cow<'a, [u8]>,
+    pub data: crate::types::wire_bytes::WireBytes<'a>,
 }
 
 /// Signing input

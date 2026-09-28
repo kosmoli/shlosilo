@@ -10,10 +10,13 @@
 pub mod change_detect;
 #[cfg(feature = "alloc-fallback")]
 pub mod message_sign;
+#[cfg(feature = "alloc-fallback")]
 pub mod multisig;
 #[cfg(feature = "alloc-fallback")]
 pub mod musig2;
+#[cfg(feature = "alloc-fallback")]
 pub mod p2pkh;
+#[cfg(feature = "alloc-fallback")]
 pub mod p2sh;
 pub mod p2wpkh;
 pub mod psbt;

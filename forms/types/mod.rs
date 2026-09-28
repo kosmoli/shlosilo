@@ -13,3 +13,4 @@ pub mod slice_vec;
 
 pub use secret_bytes::SecretBytes;
 pub use slice_vec::SliceVec;
+pub mod wire_bytes;

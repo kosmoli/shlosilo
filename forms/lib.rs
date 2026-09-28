@@ -24,6 +24,7 @@
 // era, against the v2 §3.5 zero-heap goal; the Z-series removes those uses. Until
 // then the global allocator is supplied by the consuming appearance (flux).
 #[cfg(test)]
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 pub mod address;

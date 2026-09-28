@@ -70,7 +70,7 @@ primeorder = { version = "0.14", default-features = false, features = ["critical
 ed25519-dalek = { version = "2.1", default-features = false, features = ["fast", "zeroize"] }  # Ed25519 (XMR / SOL / Cardano); std only on host (see the target config below)
 monero-ed25519 = { version = "0.1", default-features = false }  # Ed25519 + Pedersen commitment (XMR)
 # "generator-cache" = shlosilo vendor patch (raw extended-coordinate serialize/reconstruct pair for the BP+ generator cache); see patches/curve25519-dalek-generator-cache.patch
-curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize", "precomputed-tables", "rand_core", "generator-cache"] }  # Ed25519 foundation (curve25519-dalek 4 already serves as the SemVer abstraction layer)
+curve25519-dalek = { version = "4", default-features = false, features = ["zeroize", "precomputed-tables", "rand_core", "generator-cache"] }  # Ed25519 foundation (curve25519-dalek 4 already serves as the SemVer abstraction layer)
 monero-clsag = { version = "0.1", default-features = false }  # CLSAG ring signature (XMR)
 monero-bulletproofs = { path = "vendor/monero-bulletproofs", default-features = false, features = ["compile-time-generators"] }  # Bulletproofs+; vendor patch: generator loop decompresses to avoid vec![decompress();2048] blowing the stack
 monero-bulletproofs-generators = { version = "0.1", default-features = false }  # Pedersen commitment generators for Bulletproofs+
@@ -112,7 +112,7 @@ generator-cache-ffi = []
 # Z5.2b: transitional generator no-storage fallback (vendor alloc-fallback).
 # Host/tests default ON; device builds (Z6 no-allocator acceptance) build with
 # --no-default-features (plus std as needed) and MUST provide table storage.
-alloc-fallback = ["monero-bulletproofs/alloc-fallback", "monero-clsag/alloc-fallback", "curve25519-dalek/alloc-fallback"]
+alloc-fallback = ["monero-bulletproofs/alloc-fallback", "monero-clsag/alloc-fallback", "curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc", "cuprate-cryptonight/alloc-fallback"]
 # Device primitive perf-bench FFI (raw per-op costs; diagnostic only).
 perf-bench-ffi = ["curve25519-dalek/perf-bench"]
 prove-timing-ffi = ["monero-bulletproofs/prove-timing"]

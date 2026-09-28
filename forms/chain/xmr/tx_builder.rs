@@ -30,7 +30,10 @@
 //!
 //! **Reference**: <https://github.com/monero-project/monero/blob/master/src/device/device.cpp>
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 // Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
@@ -604,7 +607,11 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::chain::xmr::reduce_scalar::reduce_scalar as rs;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
     use alloc::string::String;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
     use alloc::vec;
     use rand_core::OsRng;
     use std::eprintln;

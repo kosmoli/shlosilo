@@ -62,6 +62,7 @@ impl ChainKind {
 mod tests {
     use super::*;
     use crate::network::Network;
+#[cfg(feature = "alloc-fallback")]
     extern crate alloc;
     use alloc::format;
     use alloc::vec;

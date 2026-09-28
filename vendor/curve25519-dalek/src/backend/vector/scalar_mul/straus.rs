@@ -17,6 +17,7 @@
 )]
 pub mod spec {
 
+#[cfg(feature = "alloc")]
     use alloc::vec::Vec;
 
     use core::borrow::Borrow;

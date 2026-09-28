@@ -13,6 +13,7 @@
 
 #![allow(non_snake_case)]
 
+#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
 use core::borrow::Borrow;

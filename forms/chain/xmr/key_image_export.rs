@@ -13,6 +13,7 @@
 //!          pubkey = view_pub — see the dual implementation in unsigned_txset::check_monero_signature
 //! ```
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 use alloc::vec::Vec;

@@ -17,6 +17,7 @@
 //! Production paths use the zero-alloc `RlpWriter` (the `encode_* -> Vec<u8>`
 //! family below is test/legacy convenience API).
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 #[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;

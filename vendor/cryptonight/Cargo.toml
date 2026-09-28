@@ -32,5 +32,7 @@ hex = "0.4"
 
 [features]
 default = []
+# shlosilo: transitional alloc surface (see the campaign ledger)
+alloc-fallback = []
 ## Device-side CN slow-hash phase timing probes (smoke build only).
 cn-timing = []

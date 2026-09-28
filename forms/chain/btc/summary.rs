@@ -7,7 +7,11 @@
 //! Mirrors the overview field subset of keystone `parse_psbt`:
 //! fee, fee > amount, missing UTXO, unknown scripts, huge output, RBF, locktime, CSV.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
+// Consumers live behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
+#[allow(unused_imports)]
 use alloc::vec::Vec;
 
 #[cfg(test)]
@@ -55,6 +59,7 @@ pub enum RelativeLock {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "alloc-fallback")]
 pub struct OutputSummary {
     pub value: u64,
     pub spk_kind: SpkKind,
@@ -64,6 +69,7 @@ pub struct OutputSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "alloc-fallback")]
 pub struct InputSummary {
     pub value: Option<u64>,
     pub sequence: u32,

@@ -7,7 +7,11 @@
 //! L1 pure function: no address re-derivation (that needs seed / xpub and belongs to the business layer); fingerprint matching
 //! shares the same origin as keystone `check_my_input`'s ownership decision.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
+// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[allow(unused_imports)]
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 #[cfg(test)]
@@ -39,6 +43,7 @@ fn parse_origin_fingerprint(value: &[u8]) -> Option<[u8; 4]> {
 /// Rules (consistent with keystone's ownership signals):
 /// - The output map has BIP32_DERIVATION and its master fingerprint == this device's mfp → change
 /// - Field absent or fingerprint differs → not change
+#[cfg(feature = "alloc-fallback")]
 pub fn detect_change_outputs(
     psbt: &Psbt<'_>,
     master_fingerprint: &[u8; 4],

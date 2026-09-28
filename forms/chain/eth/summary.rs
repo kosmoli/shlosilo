@@ -3,8 +3,10 @@
 //! L1 pure functions: turn EIP-155 / EIP-1559 structures + v9.17 calldata decoding
 //! into confirmation-screen data. No DEX/swap recognition.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
-// Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+// Consumers live behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 #[allow(unused_imports)]
 use alloc::string::String;
 

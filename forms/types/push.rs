@@ -4,6 +4,7 @@
 //! `String`/`Vec` + `format!` building pattern in the signing path. Overflow is
 //! an explicit error (silent truncation forbidden).
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};

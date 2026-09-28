@@ -2,6 +2,7 @@
 //!
 //! CBOR shape: a bare `bytes` item (not a map). oracle = the ur-registry 1.0.5 test vector.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 use crate::encoding::cbor;

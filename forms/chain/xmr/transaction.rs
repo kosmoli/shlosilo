@@ -41,7 +41,10 @@
 //!
 //! **Reference**: <https://github.com/monero-project/monero/blob/master/src/cryptonote_basic/cryptonote_format_utils.cpp>
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 use crate::chain::xmr::clsag::derive_key_image;
@@ -989,7 +992,11 @@ mod tests {
 
     extern crate std;
     use super::*;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
     use alloc::string::String;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
     use alloc::vec;
     use std::eprintln;
 

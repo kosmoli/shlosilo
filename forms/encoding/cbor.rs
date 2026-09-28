@@ -12,7 +12,10 @@
 //! - additional info 24: 1-byte len；25: 2-byte；26: 4-byte；27: 8-byte
 //! - major 7 info 20/21/22 = false/true/null
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
+// Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};

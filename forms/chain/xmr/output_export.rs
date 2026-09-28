@@ -26,6 +26,7 @@
 //! are kept as ordinary bytes — this structure is **public material** (output pubkey/index/amount are on-chain or public);
 //! only spend/view private keys are sensitive, and this module never touches them.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 #[cfg(test)] // Z3.5: only the test conveniences need Vec now
