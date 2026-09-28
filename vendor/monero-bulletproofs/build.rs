@@ -84,17 +84,26 @@ fn generators(prefix: &'static str, path: &str) {
               H: crate::generator_cache_hook::leak_vec(h),
             }}
           }}
-          pub(crate) static GENERATORS: LazyLock<crate::generator_cache_hook::Generators<'static>> = LazyLock::new(|| {{
+          // A3 (2026-09-28): the compressed table stays in flash (~64KB);
+          // decompression is emplacement into caller-provided gencache
+          // storage (once), behind the atomic ready flag. No LazyLock, no
+          // 640KB expanded cache in flash, no intermediate Vec.
+          pub(crate) fn generators() -> Result<crate::generator_cache_hook::Generators<'static>, crate::generator_cache_hook::InitError> {{
             const G_BYTES: &[[u8; 32]] = &[
 {G_str}            ];
             const H_BYTES: &[[u8; 32]] = &[
 {H_str}            ];
             let n_points = G_BYTES.len() + H_BYTES.len();
-            // Z5.2: caller-provided decompressed table storage (zero-alloc hot path).
+            // ready read first (Acquire): initialized sets borrow directly.
+            if let Some(gens) = crate::generator_cache_hook::table_generators(b"{prefix}") {{
+              return Ok(gens);
+            }}
+            // Z5.2: caller-provided decompressed table storage (emplacement).
             if let Some(st) = crate::generator_cache_hook::take_table_storage(b"{prefix}") {{
               if st.g.len() == G_BYTES.len() && st.h.len() == H_BYTES.len() {{
                 return crate::generator_cache_hook::init_tables(b"{prefix}", n_points, G_BYTES, H_BYTES, st);
               }}
+              return Err(crate::generator_cache_hook::InitError::BlobMismatch);
             }}
             // Transitional fallback (alloc-fallback feature): one-shot
             // decompress into a leaked Vec. Load-hit still honored (persistence
@@ -102,7 +111,7 @@ fn generators(prefix: &'static str, path: &str) {
             #[cfg(feature = "alloc-fallback")]
             {{
               if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
-                return rebuild_from_blob(blob, n_points);
+                return Ok(rebuild_from_blob(blob, n_points));
               }}
               let g = decompress_generator_vec(G_BYTES);
               let h = decompress_generator_vec(H_BYTES);
@@ -112,14 +121,14 @@ fn generators(prefix: &'static str, path: &str) {
                 for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
                 crate::generator_cache_hook::try_store_blob(b"{prefix}", &blob);
               }}
-              return crate::generator_cache_hook::Generators {{
+              return Ok(crate::generator_cache_hook::Generators {{
                 G: crate::generator_cache_hook::leak_vec(g),
                 H: crate::generator_cache_hook::leak_vec(h),
-              }};
+              }});
             }}
             #[cfg(not(feature = "alloc-fallback"))]
-            panic!("generator table storage not provided (alloc-fallback disabled)");
-          }});
+            Err(crate::generator_cache_hook::InitError::BlobMismatch)
+          }}
         "#,
       )
       .as_bytes(),
@@ -139,20 +148,24 @@ fn generators(prefix: &'static str, path: &str) {
         // Z5.2b: upstream generator sets are definitionally 1024 + 1024.
         pub(crate) const TABLE_G_LEN: usize = 1024;
         pub(crate) const TABLE_H_LEN: usize = 1024;
-        pub(crate) static GENERATORS: LazyLock<crate::generator_cache_hook::Generators<'static>> = LazyLock::new(|| {{
+        // A3: same accessor shape as the compile-time template; this face
+        // builds the table through the allocating generators crate and is
+        // test/legacy surface.
+        #[cfg(feature = "alloc-fallback")]
+        pub(crate) fn generators() -> Result<crate::generator_cache_hook::Generators<'static>, crate::generator_cache_hook::InitError> {{
           let ext = monero_bulletproofs_generators::bulletproofs_generators(b"{prefix}");
           assert_eq!(ext.G.len(), TABLE_G_LEN);
           assert_eq!(ext.H.len(), TABLE_H_LEN);
           #[cfg(feature = "alloc-fallback")]
           {{
-            return crate::generator_cache_hook::Generators {{
+            return Ok(crate::generator_cache_hook::Generators {{
               G: crate::generator_cache_hook::leak_vec(ext.G),
               H: crate::generator_cache_hook::leak_vec(ext.H),
-            }};
+            }});
           }}
           #[cfg(not(feature = "alloc-fallback"))]
-          panic!("generator table storage not provided (alloc-fallback disabled)");
-        }});
+          Err(crate::generator_cache_hook::InitError::BlobMismatch)
+        }}
       "#,
             )
             .as_bytes(),

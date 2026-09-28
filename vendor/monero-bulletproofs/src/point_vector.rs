@@ -1,4 +1,5 @@
 use core::ops::{Index, IndexMut};
+#[cfg(feature = "alloc-fallback")]
 use std_shims::vec::Vec;
 
 use zeroize::Zeroize;
@@ -11,21 +12,27 @@ use crate::scalar_vector::ScalarVector;
 use crate::core::multiexp;
 
 #[derive(Clone, PartialEq, Eq, Debug, Zeroize)]
+#[cfg(feature = "alloc-fallback")]
 pub(crate) struct PointVector(pub(crate) Vec<EdwardsPoint>);
 
+#[cfg(feature = "alloc-fallback")]
 impl Index<usize> for PointVector {
     type Output = EdwardsPoint;
+    #[cfg(feature = "alloc-fallback")]
     fn index(&self, index: usize) -> &EdwardsPoint {
         &self.0[index]
     }
 }
 
+#[cfg(feature = "alloc-fallback")]
 impl IndexMut<usize> for PointVector {
+    #[cfg(feature = "alloc-fallback")]
     fn index_mut(&mut self, index: usize) -> &mut EdwardsPoint {
         &mut self.0[index]
     }
 }
 
+#[cfg(feature = "alloc-fallback")]
 impl PointVector {
     pub(crate) fn mul_vec(&self, vector: &ScalarVector) -> Self {
         assert_eq!(self.len(), vector.len());
@@ -50,6 +57,7 @@ impl PointVector {
         self.0.len()
     }
 
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn split(mut self) -> (Self, Self) {
         debug_assert!(self.len() > 1);
         let r = self.0.split_off(self.0.len() / 2);

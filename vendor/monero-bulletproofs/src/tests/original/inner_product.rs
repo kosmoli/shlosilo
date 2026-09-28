@@ -4,8 +4,8 @@ use rand_core::OsRng;
 
 use crate::{
     original::{
+        generators,
         inner_product::{IpStatement, IpWitness},
-        GENERATORS,
     },
     point_vector::PointVector,
     scalar_vector::ScalarVector,
@@ -42,7 +42,7 @@ fn test_zero_inner_product() {
 #[test]
 fn test_inner_product() {
     // P = sum(g_bold * a, h_bold * b, g * u * <a, b>)
-    let generators = &GENERATORS;
+    let generators = &generators()?;
     let mut verifier = BulletproofsBatchVerifier::default();
     verifier.0.g_bold = vec![Scalar::ZERO.into(); 32];
     verifier.0.h_bold = vec![Scalar::ZERO.into(); 32];

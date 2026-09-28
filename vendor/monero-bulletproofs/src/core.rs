@@ -124,7 +124,7 @@ fn multiexp_terms(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
 pub fn bench_multiexp_chain(n: usize, iters: u32, tail: bool, gen_points: bool) -> u64 {
     use crate::plus::{BpPlusGenerators, GeneratorsList};
 
-    let gens = BpPlusGenerators::new();
+    let gens = BpPlusGenerators::new().unwrap();
     let mut out = [0u8; 32];
     for it in 0..iters.max(1) {
         let pairs: Vec<(Scalar, EdwardsPoint)> = (0..n)

@@ -1,10 +1,9 @@
 #![allow(non_snake_case, clippy::many_single_char_names)]
 
-use std_shims::sync::LazyLock;
-
 use curve25519_dalek::{constants::ED25519_BASEPOINT_POINT, EdwardsPoint, Scalar};
 
-pub(crate) use crate::{point_vector::PointVector, scalar_vector::ScalarVector, MONERO_H};
+#[cfg(feature = "alloc-fallback")]
+pub(crate) use crate::{monero_h, point_vector::PointVector, scalar_vector::ScalarVector};
 
 pub(crate) mod transcript;
 pub mod weighted_inner_product;
@@ -37,12 +36,12 @@ include!(concat!(env!("OUT_DIR"), "/generators_plus.rs"));
 
 impl BpPlusGenerators {
     #[allow(clippy::new_without_default)]
-    pub(crate) fn new() -> Self {
-        let gens = &GENERATORS;
-        BpPlusGenerators {
+    pub(crate) fn new() -> Result<Self, crate::generator_cache_hook::InitError> {
+        let gens = &generators()?;
+        Ok(BpPlusGenerators {
             g_bold: &gens.G,
             h_bold: &gens.H,
-        }
+        })
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -50,7 +49,7 @@ impl BpPlusGenerators {
     }
 
     pub(crate) fn g() -> EdwardsPoint {
-        *MONERO_H
+        monero_h()
     }
 
     pub(crate) fn h() -> EdwardsPoint {

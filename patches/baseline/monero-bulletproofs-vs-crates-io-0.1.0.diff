@@ -1,7 +1,7 @@
 diff -ruN a/build.rs b/build.rs
 --- a/build.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/build.rs	2026-09-26 10:48:41.745829172 +0800
-@@ -1,59 +1,126 @@
++++ b/build.rs	2026-09-28 20:22:54.926521763 +0800
+@@ -1,59 +1,135 @@
  //! Builds the generators within the Constant Reference String for Bulletproofs(+) at compile-time,
  //! allowing apps to solely deserialize them (without having to calculate them).
 +//!
@@ -93,6 +93,8 @@ diff -ruN a/build.rs b/build.rs
 -            H: std_shims::vec![
 -              {H_str}
 -            ],
+-          }});
+-        ",
 +        r#"
 +          #[cfg(feature = "alloc-fallback")]
 +          fn decompress_generator_vec(bytes: &[[u8; 32]]) -> std_shims::vec::Vec<curve25519_dalek::EdwardsPoint> {{
@@ -129,17 +131,26 @@ diff -ruN a/build.rs b/build.rs
 +              H: crate::generator_cache_hook::leak_vec(h),
 +            }}
 +          }}
-+          pub(crate) static GENERATORS: LazyLock<crate::generator_cache_hook::Generators<'static>> = LazyLock::new(|| {{
++          // A3 (2026-09-28): the compressed table stays in flash (~64KB);
++          // decompression is emplacement into caller-provided gencache
++          // storage (once), behind the atomic ready flag. No LazyLock, no
++          // 640KB expanded cache in flash, no intermediate Vec.
++          pub(crate) fn generators() -> Result<crate::generator_cache_hook::Generators<'static>, crate::generator_cache_hook::InitError> {{
 +            const G_BYTES: &[[u8; 32]] = &[
 +{G_str}            ];
 +            const H_BYTES: &[[u8; 32]] = &[
 +{H_str}            ];
 +            let n_points = G_BYTES.len() + H_BYTES.len();
-+            // Z5.2: caller-provided decompressed table storage (zero-alloc hot path).
++            // ready read first (Acquire): initialized sets borrow directly.
++            if let Some(gens) = crate::generator_cache_hook::table_generators(b"{prefix}") {{
++              return Ok(gens);
++            }}
++            // Z5.2: caller-provided decompressed table storage (emplacement).
 +            if let Some(st) = crate::generator_cache_hook::take_table_storage(b"{prefix}") {{
 +              if st.g.len() == G_BYTES.len() && st.h.len() == H_BYTES.len() {{
 +                return crate::generator_cache_hook::init_tables(b"{prefix}", n_points, G_BYTES, H_BYTES, st);
 +              }}
++              return Err(crate::generator_cache_hook::InitError::BlobMismatch);
 +            }}
 +            // Transitional fallback (alloc-fallback feature): one-shot
 +            // decompress into a leaked Vec. Load-hit still honored (persistence
@@ -147,7 +158,7 @@ diff -ruN a/build.rs b/build.rs
 +            #[cfg(feature = "alloc-fallback")]
 +            {{
 +              if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
-+                return rebuild_from_blob(blob, n_points);
++                return Ok(rebuild_from_blob(blob, n_points));
 +              }}
 +              let g = decompress_generator_vec(G_BYTES);
 +              let h = decompress_generator_vec(H_BYTES);
@@ -157,20 +168,19 @@ diff -ruN a/build.rs b/build.rs
 +                for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
 +                crate::generator_cache_hook::try_store_blob(b"{prefix}", &blob);
 +              }}
-+              return crate::generator_cache_hook::Generators {{
++              return Ok(crate::generator_cache_hook::Generators {{
 +                G: crate::generator_cache_hook::leak_vec(g),
 +                H: crate::generator_cache_hook::leak_vec(h),
-+              }};
++              }});
 +            }}
 +            #[cfg(not(feature = "alloc-fallback"))]
-+            panic!("generator table storage not provided (alloc-fallback disabled)");
-           }});
--        ",
++            Err(crate::generator_cache_hook::InitError::BlobMismatch)
++          }}
 +        "#,
        )
        .as_bytes(),
      )
-@@ -62,26 +129,40 @@
+@@ -62,26 +138,44 @@
  
  #[cfg(not(feature = "compile-time-generators"))]
  fn generators(prefix: &'static str, path: &str) {
@@ -183,6 +193,7 @@ diff -ruN a/build.rs b/build.rs
 -        r#"
 -        pub(crate) static GENERATORS: LazyLock<Generators> = LazyLock::new(|| {{
 -          monero_bulletproofs_generators::bulletproofs_generators(b"{prefix}")
+-        }});
 +    let path = Path::new(&env::var("OUT_DIR").expect("cargo didn't set $OUT_DIR")).join(path);
 +    let _ = remove_file(&path);
 +    File::create(&path)
@@ -193,20 +204,24 @@ diff -ruN a/build.rs b/build.rs
 +        // Z5.2b: upstream generator sets are definitionally 1024 + 1024.
 +        pub(crate) const TABLE_G_LEN: usize = 1024;
 +        pub(crate) const TABLE_H_LEN: usize = 1024;
-+        pub(crate) static GENERATORS: LazyLock<crate::generator_cache_hook::Generators<'static>> = LazyLock::new(|| {{
++        // A3: same accessor shape as the compile-time template; this face
++        // builds the table through the allocating generators crate and is
++        // test/legacy surface.
++        #[cfg(feature = "alloc-fallback")]
++        pub(crate) fn generators() -> Result<crate::generator_cache_hook::Generators<'static>, crate::generator_cache_hook::InitError> {{
 +          let ext = monero_bulletproofs_generators::bulletproofs_generators(b"{prefix}");
 +          assert_eq!(ext.G.len(), TABLE_G_LEN);
 +          assert_eq!(ext.H.len(), TABLE_H_LEN);
 +          #[cfg(feature = "alloc-fallback")]
 +          {{
-+            return crate::generator_cache_hook::Generators {{
++            return Ok(crate::generator_cache_hook::Generators {{
 +              G: crate::generator_cache_hook::leak_vec(ext.G),
 +              H: crate::generator_cache_hook::leak_vec(ext.H),
-+            }};
++            }});
 +          }}
 +          #[cfg(not(feature = "alloc-fallback"))]
-+          panic!("generator table storage not provided (alloc-fallback disabled)");
-         }});
++          Err(crate::generator_cache_hook::InitError::BlobMismatch)
++        }}
        "#,
 -      )
 -      .as_bytes(),
@@ -229,7 +244,7 @@ diff -ruN a/build.rs b/build.rs
  }
 diff -ruN a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
-+++ b/Cargo.toml	2026-09-28 14:46:36.745145761 +0800
++++ b/Cargo.toml	2026-09-28 19:54:21.730261717 +0800
 @@ -35,9 +35,18 @@
  
  [features]
@@ -262,8 +277,8 @@ diff -ruN a/Cargo.toml b/Cargo.toml
  
 diff -ruN a/src/batch_verifier.rs b/src/batch_verifier.rs
 --- a/src/batch_verifier.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/batch_verifier.rs	2026-09-26 09:50:04.757069355 +0800
-@@ -1,80 +1,82 @@
++++ b/src/batch_verifier.rs	2026-09-28 20:25:23.063441403 +0800
+@@ -1,80 +1,86 @@
  use std_shims::vec::Vec;
  
  use curve25519_dalek::{
@@ -375,8 +390,10 @@ diff -ruN a/src/batch_verifier.rs b/src/batch_verifier.rs
 -  }
 +    #[must_use]
 +    pub(crate) fn verify(self) -> bool {
-+        self.0
-+            .verify(ED25519_BASEPOINT_POINT, *MONERO_H, &original::GENERATORS)
++        let Ok(gens) = original::generators() else {
++            return false;
++        };
++        self.0.verify(ED25519_BASEPOINT_POINT, *MONERO_H, &gens)
 +    }
  }
  
@@ -393,13 +410,15 @@ diff -ruN a/src/batch_verifier.rs b/src/batch_verifier.rs
 +    pub(crate) fn verify(self) -> bool {
 +        // Bulletproofs+ is written as per the paper, with G for the value and H for the mask
 +        // Monero uses H for the value and G for the mask
-+        self.0
-+            .verify(*MONERO_H, ED25519_BASEPOINT_POINT, &plus::GENERATORS)
++        let Ok(gens) = plus::generators() else {
++            return false;
++        };
++        self.0.verify(*MONERO_H, ED25519_BASEPOINT_POINT, &gens)
 +    }
  }
  
  /// A batch verifier for Bulletproofs(+).
-@@ -84,23 +86,23 @@
+@@ -84,23 +90,23 @@
  /// accumulated with the fixed points into a single multiscalar multiplication.
  #[derive(Default)]
  pub struct BatchVerifier {
@@ -440,7 +459,7 @@ diff -ruN a/src/batch_verifier.rs b/src/batch_verifier.rs
  }
 diff -ruN a/src/core.rs b/src/core.rs
 --- a/src/core.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/core.rs	2026-09-27 23:03:10.871208077 +0800
++++ b/src/core.rs	2026-09-28 20:25:37.048440815 +0800
 @@ -1,33 +1,220 @@
 +use core::sync::atomic::{AtomicUsize, Ordering};
 +
@@ -590,7 +609,7 @@ diff -ruN a/src/core.rs b/src/core.rs
 +pub fn bench_multiexp_chain(n: usize, iters: u32, tail: bool, gen_points: bool) -> u64 {
 +    use crate::plus::{BpPlusGenerators, GeneratorsList};
 +
-+    let gens = BpPlusGenerators::new();
++    let gens = BpPlusGenerators::new().unwrap();
 +    let mut out = [0u8; 32];
 +    for it in 0..iters.max(1) {
 +        let pairs: Vec<(Scalar, EdwardsPoint)> = (0..n)
@@ -734,8 +753,8 @@ diff -ruN a/src/core.rs b/src/core.rs
  }
 diff -ruN a/src/generator_cache_hook.rs b/src/generator_cache_hook.rs
 --- a/src/generator_cache_hook.rs	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/generator_cache_hook.rs	2026-09-26 10:48:41.750829192 +0800
-@@ -0,0 +1,239 @@
++++ b/src/generator_cache_hook.rs	2026-09-28 20:25:23.065441429 +0800
+@@ -0,0 +1,314 @@
 +//! shlosilo vendor patch (2026-09-07): external generator cache hooks.
 +//!
 +//! BP+/BP generators are public constants. On embedded targets the default
@@ -928,13 +947,24 @@ diff -ruN a/src/generator_cache_hook.rs b/src/generator_cache_hook.rs
 +/// without persistence) or from the persisted raw blob (cache-hit path); on a
 +/// miss with persistence available, builds the blob in the caller's scratch
 +/// and STOREs it. Returns the borrowed tables.
++/// Table-initialization failure (explicit — never a panic, never a
++/// partially-initialized table exposed; invariant 3).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum InitError {
++    OffCurve,
++    BlobMismatch,
++}
++
++/// Emplacement decompression (invariant 1): points are decompressed
++/// straight into the caller's storage — no intermediate Vec, no copy of a
++/// complete table. Success is what flips the ready flag (invariant 2).
 +pub(crate) fn init_tables(
 +    prefix: &'static [u8],
 +    n_points: usize,
 +    g_bytes: &[[u8; 32]],
 +    h_bytes: &[[u8; 32]],
 +    storage: GeneratorTableStorage,
-+) -> Generators<'static> {
++) -> Result<Generators<'static>, InitError> {
 +    let GeneratorTableStorage { g, h, blob } = storage;
 +    if let Some(b) = try_load_blob(prefix, n_points) {
 +        let mut idx = 0;
@@ -954,12 +984,12 @@ diff -ruN a/src/generator_cache_hook.rs b/src/generator_cache_hook.rs
 +        for (p, b) in g.iter_mut().zip(g_bytes.iter()) {
 +            *p = curve25519_dalek::edwards::CompressedEdwardsY(*b)
 +                .decompress()
-+                .expect("generator from build script wasn't on-curve");
++                .ok_or(InitError::OffCurve)?;
 +        }
 +        for (p, b) in h.iter_mut().zip(h_bytes.iter()) {
 +            *p = curve25519_dalek::edwards::CompressedEdwardsY(*b)
 +                .decompress()
-+                .expect("generator from build script wasn't on-curve");
++                .ok_or(InitError::OffCurve)?;
 +        }
 +        // build + persist the raw blob in the caller's scratch (no alloc)
 +        let mut idx = 0;
@@ -973,11 +1003,75 @@ diff -ruN a/src/generator_cache_hook.rs b/src/generator_cache_hook.rs
 +        }
 +        try_store_blob(prefix, &blob[..idx]);
 +    }
-+    Generators { G: g, H: h }
++    // invariant 2: the table is only marked ready AFTER every point is in
++    // place; a failure above returns Err with the flag still down and no
++    // partial table ever readable (invariant 3).
++    ready_flag_for(prefix).store(true, core::sync::atomic::Ordering::Release);
++    Ok(Generators { G: g, H: h })
++}
++
++/// Per-set ready flags (Release on success / Acquire on read) — the atomic
++/// uninitialized -> ready transition of A3.
++fn ready_flag_for(prefix: &[u8]) -> &'static core::sync::atomic::AtomicBool {
++    if prefix == BP_PLUS_PREFIX {
++        &READY_BP_PLUS
++    } else {
++        &READY_BP
++    }
++}
++
++/// Prefixes identifying the two generated tables (match the build templates).
++pub(crate) const BP_PLUS_PREFIX: &[u8] = b"bp+";
++pub(crate) const BP_PREFIX: &[u8] = b"bp";
++
++static READY_BP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
++static READY_BP_PLUS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
++
++/// Read-side accessor (A3): borrows the decompressed table only when the
++/// ready flag is up (Acquire pairs with `init_tables`' Release).
++pub fn table_generators<'a>(prefix: &'static [u8]) -> Option<Generators<'a>> {
++    if !ready_flag_for(prefix).load(core::sync::atomic::Ordering::Acquire) {
++        return None;
++    }
++    // SAFETY: ready implies `init_tables` completed over this set's storage;
++    // the storage is 'static (caller-provided, stable per the ws contract)
++    // and nothing takes &mut of it after initialization.
++    unsafe {
++        let (g, h) = table_slices(prefix);
++        Some(Generators { G: &*g, H: &*h })
++    }
++}
++
++unsafe fn table_slices(
++    prefix: &[u8],
++) -> (&'static mut [EdwardsPoint], &'static mut [EdwardsPoint]) {
++    let slot = if prefix == BP_PLUS_PREFIX {
++        &TABLE_BP_PLUS
++    } else {
++        &TABLE_BP
++    };
++    let mut guard = slot.lock();
++    let st = guard.as_mut().expect("ready flag implies storage");
++    (
++        core::slice::from_raw_parts_mut(st.g.as_mut_ptr(), st.g.len()),
++        core::slice::from_raw_parts_mut(st.h.as_mut_ptr(), st.h.len()),
++    )
++}
++
++// A3: `?` conversions from the table-init error into the proof error types.
++impl From<InitError> for crate::original::inner_product::IpError {
++    fn from(e: InitError) -> Self {
++        match e {
++            InitError::OffCurve => crate::original::inner_product::IpError::InvalidPoint,
++            InitError::BlobMismatch => {
++                crate::original::inner_product::IpError::IncorrectAmountOfGenerators
++            }
++        }
++    }
 +}
 diff -ruN a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-28 19:12:46.067198428 +0800
++++ b/src/lib.rs	2026-09-28 19:54:21.730261717 +0800
 @@ -4,40 +4,80 @@
  #![allow(non_snake_case)]
  
@@ -1767,7 +1861,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  }
 diff -ruN a/src/original/inner_product.rs b/src/original/inner_product.rs
 --- a/src/original/inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/original/inner_product.rs	2026-09-27 01:21:08.352845662 +0800
++++ b/src/original/inner_product.rs	2026-09-28 20:22:27.501989949 +0800
 @@ -2,23 +2,23 @@
  
  use zeroize::Zeroize;
@@ -2085,7 +2179,7 @@ diff -ruN a/src/original/inner_product.rs b/src/original/inner_product.rs
 +        mut transcript: Scalar,
 +        witness: IpWitness,
 +    ) -> Result<IpProof, IpError> {
-+        let generators = &crate::original::GENERATORS;
++        let generators = &crate::original::generators()?;
 +        let g_bold_slice = &generators.G[..witness.a.len()];
 +        let h_bold_slice = &generators.H[..witness.a.len()];
 +
@@ -2298,7 +2392,7 @@ diff -ruN a/src/original/inner_product.rs b/src/original/inner_product.rs
 +        verifier_weight: Scalar,
 +        proof: IpProof,
 +    ) -> Result<(), IpError> {
-+        let generators = &crate::original::GENERATORS;
++        let generators = &crate::original::generators()?;
 +        let g_bold_slice = &generators.G[..ip_rows];
 +        let h_bold_slice = &generators.H[..ip_rows];
 +
@@ -2398,7 +2492,7 @@ diff -ruN a/src/original/inner_product.rs b/src/original/inner_product.rs
  }
 diff -ruN a/src/original/mod.rs b/src/original/mod.rs
 --- a/src/original/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/original/mod.rs	2026-09-27 23:03:10.871358910 +0800
++++ b/src/original/mod.rs	2026-09-28 20:23:34.486056198 +0800
 @@ -2,24 +2,24 @@
  
  use std_shims::{sync::LazyLock, vec::Vec};
@@ -2633,7 +2727,7 @@ diff -ruN a/src/original/mod.rs b/src/original/mod.rs
 +        }
  
 -    let generators = &GENERATORS;
-+        let generators = &GENERATORS;
++        let generators = &generators().ok()?;
  
 -    let (mut transcript, _) = self.initial_transcript();
 +        let (mut transcript, _) = self.initial_transcript();
@@ -3144,7 +3238,7 @@ diff -ruN a/src/original/mod.rs b/src/original/mod.rs
  }
 diff -ruN a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.rs
 --- a/src/plus/aggregate_range_proof.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/aggregate_range_proof.rs	2026-09-27 23:03:10.871451329 +0800
++++ b/src/plus/aggregate_range_proof.rs	2026-09-28 20:24:35.086084348 +0800
 @@ -1,21 +1,47 @@
  use std_shims::{vec, vec::Vec};
  
@@ -3413,7 +3507,7 @@ diff -ruN a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.r
 +        }
 +
 +        Some(Self {
-+            generators: BpPlusGenerators::new(),
++            generators: BpPlusGenerators::new().ok()?,
 +            V,
 +        })
 +    }
@@ -3894,7 +3988,7 @@ diff -ruN a/src/plus/aggregate_range_proof.rs b/src/plus/aggregate_range_proof.r
  }
 diff -ruN a/src/plus/mod.rs b/src/plus/mod.rs
 --- a/src/plus/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/mod.rs	2026-09-27 23:03:10.871503200 +0800
++++ b/src/plus/mod.rs	2026-09-28 20:24:12.694016822 +0800
 @@ -2,83 +2,88 @@
  
  use std_shims::sync::LazyLock;
@@ -3980,12 +4074,12 @@ diff -ruN a/src/plus/mod.rs b/src/plus/mod.rs
 -      "instantiated with less generators than application required"
 -    );
 +    #[allow(clippy::new_without_default)]
-+    pub(crate) fn new() -> Self {
-+        let gens = &GENERATORS;
-+        BpPlusGenerators {
++    pub(crate) fn new() -> Result<Self, crate::generator_cache_hook::InitError> {
++        let gens = &generators()?;
++        Ok(BpPlusGenerators {
 +            g_bold: &gens.G,
 +            h_bold: &gens.H,
-+        }
++        })
 +    }
 +
 +    pub(crate) fn len(&self) -> usize {
@@ -4039,7 +4133,7 @@ diff -ruN a/src/plus/mod.rs b/src/plus/mod.rs
  }
 diff -ruN a/src/plus/transcript.rs b/src/plus/transcript.rs
 --- a/src/plus/transcript.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/transcript.rs	2026-09-27 23:03:10.871537854 +0800
++++ b/src/plus/transcript.rs	2026-09-28 19:54:21.731261717 +0800
 @@ -1,6 +1,6 @@
  use std_shims::{sync::LazyLock, vec::Vec};
  
@@ -4083,7 +4177,7 @@ diff -ruN a/src/plus/transcript.rs b/src/plus/transcript.rs
  }
 diff -ruN a/src/plus/weighted_inner_product.rs b/src/plus/weighted_inner_product.rs
 --- a/src/plus/weighted_inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/weighted_inner_product.rs	2026-09-27 23:03:10.871675775 +0800
++++ b/src/plus/weighted_inner_product.rs	2026-09-28 19:54:21.731261717 +0800
 @@ -1,415 +1,744 @@
  use std_shims::{vec, vec::Vec};
  
@@ -5213,7 +5307,7 @@ diff -ruN a/src/plus/weighted_inner_product.rs b/src/plus/weighted_inner_product
  }
 diff -ruN a/src/point_vector.rs b/src/point_vector.rs
 --- a/src/point_vector.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/point_vector.rs	2026-09-03 13:43:46.805301118 +0800
++++ b/src/point_vector.rs	2026-09-28 19:54:21.731261717 +0800
 @@ -14,46 +14,46 @@
  pub(crate) struct PointVector(pub(crate) Vec<EdwardsPoint>);
  
@@ -5392,7 +5486,7 @@ diff -ruN a/src/prove_timing_hook.rs b/src/prove_timing_hook.rs
 +}
 diff -ruN a/src/scalar_vector.rs b/src/scalar_vector.rs
 --- a/src/scalar_vector.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/scalar_vector.rs	2026-09-27 23:03:10.871735144 +0800
++++ b/src/scalar_vector.rs	2026-09-28 19:54:21.731261717 +0800
 @@ -1,12 +1,12 @@
  use core::{
 -  borrow::Borrow,
@@ -5733,7 +5827,7 @@ diff -ruN a/src/tests/mod.rs b/src/tests/mod.rs
  bulletproofs_tests!(bulletproofs, bulletproofs_max, false);
 diff -ruN a/src/tests/original/inner_product.rs b/src/tests/original/inner_product.rs
 --- a/src/tests/original/inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/tests/original/inner_product.rs	2026-09-03 13:43:46.807301128 +0800
++++ b/src/tests/original/inner_product.rs	2026-09-28 20:25:23.077441585 +0800
 @@ -2,75 +2,88 @@
  
  use rand_core::OsRng;
@@ -5748,8 +5842,8 @@ diff -ruN a/src/tests/original/inner_product.rs b/src/tests/original/inner_produ
 -  },
 -  BulletproofsBatchVerifier,
 +    original::{
++        generators,
 +        inner_product::{IpStatement, IpWitness},
-+        GENERATORS,
 +    },
 +    point_vector::PointVector,
 +    scalar_vector::ScalarVector,
@@ -5838,7 +5932,7 @@ diff -ruN a/src/tests/original/inner_product.rs b/src/tests/original/inner_produ
 +#[test]
 +fn test_inner_product() {
 +    // P = sum(g_bold * a, h_bold * b, g * u * <a, b>)
-+    let generators = &GENERATORS;
++    let generators = &generators()?;
 +    let mut verifier = BulletproofsBatchVerifier::default();
 +    verifier.0.g_bold = vec![Scalar::ZERO.into(); 32];
 +    verifier.0.h_bold = vec![Scalar::ZERO.into(); 32];

@@ -4,9 +4,11 @@ use zeroize::Zeroize;
 
 use crate::{
     core::{challenge_products, multiexp_vartime_alloc},
+    monero_h,
+#[cfg(feature = "alloc-fallback")]
     point_vector::PointVector,
     scalar_vector::ScalarVector,
-    BulletproofsBatchVerifier, MONERO_H,
+    BulletproofsBatchVerifier,
 };
 use curve25519_dalek::{EdwardsPoint, Scalar};
 use monero_ed25519::CompressedPoint;
@@ -97,13 +99,13 @@ impl IpStatement {
         mut transcript: Scalar,
         witness: IpWitness,
     ) -> Result<IpProof, IpError> {
-        let generators = &crate::original::GENERATORS;
+        let generators = &crate::original::generators()?;
         let g_bold_slice = &generators.G[..witness.a.len()];
         let h_bold_slice = &generators.H[..witness.a.len()];
 
         let (mut g_bold, mut h_bold, u, mut a, mut b) = {
             let IpStatement { h_bold_weights, u } = self;
-            let u = *MONERO_H * u;
+            let u = monero_h() * u;
 
             // Ensure we have the exact amount of weights
             if h_bold_weights.len() != g_bold_slice.len() {
@@ -238,6 +240,7 @@ impl IpStatement {
     /// This will return Err if there is an error. This will return Ok if the proof was successfully
     /// queued for batch verification. The caller is required to verify the batch in order to ensure
     /// the proof is actually correct.
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify(
         self,
         verifier: &mut BulletproofsBatchVerifier,
@@ -246,7 +249,7 @@ impl IpStatement {
         verifier_weight: Scalar,
         proof: IpProof,
     ) -> Result<(), IpError> {
-        let generators = &crate::original::GENERATORS;
+        let generators = &crate::original::generators()?;
         let g_bold_slice = &generators.G[..ip_rows];
         let h_bold_slice = &generators.H[..ip_rows];
 

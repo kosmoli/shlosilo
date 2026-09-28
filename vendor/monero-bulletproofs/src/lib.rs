@@ -6,7 +6,6 @@
 use std_shims::{
     io::{self, Read, Write},
     prelude::*,
-    sync::LazyLock,
 };
 
 use rand_core::{CryptoRng, RngCore};
@@ -90,13 +89,22 @@ const LOG_COMMITMENT_BITS: usize = COMMITMENT_BITS.ilog2() as usize;
 #[allow(clippy::as_conversions)]
 const MAX_LR: usize = (MAX_COMMITMENTS.ilog2() as usize) + LOG_COMMITMENT_BITS;
 
-// A static for `H` as it's frequently used yet this decompression is expensive.
-static MONERO_H: LazyLock<EdwardsPoint> = LazyLock::new(|| {
-    CompressedPoint::H
+// A once-decompressed `H` (frequently used, expensive decompression) —
+// behind an atomic ready flag (no LazyLock; A3: alloc::sync out of graph).
+static MONERO_H_CELL: std_shims::sync::Mutex<Option<EdwardsPoint>> =
+    std_shims::sync::Mutex::new(None);
+
+pub(crate) fn monero_h() -> EdwardsPoint {
+    if let Some(h) = *MONERO_H_CELL.lock() {
+        return h;
+    }
+    let h: EdwardsPoint = CompressedPoint::H
         .decompress()
         .expect("couldn't decompress `CompressedPoint::H`")
-        .into()
-});
+        .into();
+    *MONERO_H_CELL.lock() = Some(h);
+    h
+}
 
 /// An error from proving/verifying Bulletproofs(+).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
@@ -260,6 +268,7 @@ impl Bulletproof {
 
     /// Verify the given Bulletproof(+).
     #[must_use]
+    #[cfg(feature = "alloc-fallback")]
     pub fn verify<R: RngCore + CryptoRng>(
         &self,
         rng: &mut R,

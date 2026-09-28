@@ -594,6 +594,7 @@ impl WipStatement {
         })
     }
 
+#[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify<R: RngCore + CryptoRng>(
         self,
         rng: &mut R,

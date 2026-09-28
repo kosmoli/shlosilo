@@ -1,6 +1,7 @@
 #![allow(clippy::many_single_char_names)]
 
-use std_shims::{sync::LazyLock, vec::Vec};
+#[cfg(feature = "alloc-fallback")]
+use std_shims::vec::Vec;
 
 use rand_core::{CryptoRng, RngCore};
 
@@ -13,8 +14,9 @@ use monero_ed25519::{Commitment, CompressedPoint};
 
 use crate::{
     core::{multiexp, MAX_COMMITMENTS},
+    monero_h,
     scalar_vector::ScalarVector,
-    BulletproofsBatchVerifier, MONERO_H,
+    BulletproofsBatchVerifier,
 };
 
 pub(crate) mod inner_product;
@@ -70,6 +72,7 @@ impl<'a> AggregateRangeWitness<'a> {
 }
 
 impl AggregateRangeStatement<'_> {
+    #[cfg(feature = "alloc-fallback")]
     fn initial_transcript(&self) -> (Scalar, Vec<EdwardsPoint>) {
         let V = self
             .commitments
@@ -87,6 +90,7 @@ impl AggregateRangeStatement<'_> {
         )
     }
 
+    #[cfg(feature = "alloc-fallback")]
     fn transcript_A_S(
         transcript: Scalar,
         A: CompressedPoint,
@@ -101,6 +105,7 @@ impl AggregateRangeStatement<'_> {
         (y, z)
     }
 
+    #[cfg(feature = "alloc-fallback")]
     fn transcript_T12(transcript: Scalar, T1: CompressedPoint, T2: CompressedPoint) -> Scalar {
         let mut buf = Vec::with_capacity(128);
         buf.extend(transcript.to_bytes());
@@ -110,6 +115,7 @@ impl AggregateRangeStatement<'_> {
         monero_ed25519::Scalar::hash(buf).into()
     }
 
+    #[cfg(feature = "alloc-fallback")]
     fn transcript_tau_x_mu_t_hat(
         transcript: Scalar,
         tau_x: Scalar,
@@ -126,6 +132,7 @@ impl AggregateRangeStatement<'_> {
     }
 
     #[allow(clippy::needless_pass_by_value)]
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn prove(
         self,
         rng: &mut (impl RngCore + CryptoRng),
@@ -141,7 +148,7 @@ impl AggregateRangeStatement<'_> {
             None?;
         }
 
-        let generators = &GENERATORS;
+        let generators = &generators().ok()?;
 
         let (mut transcript, _) = self.initial_transcript();
 
@@ -229,7 +236,7 @@ impl AggregateRangeStatement<'_> {
         let tau_1 = monero_ed25519::Scalar::random(&mut *rng).into();
         let T1 = CompressedPoint::from(
             {
-                let mut T1_terms = [(t1, *MONERO_H), (tau_1, ED25519_BASEPOINT_POINT)];
+                let mut T1_terms = [(t1, monero_h()), (tau_1, ED25519_BASEPOINT_POINT)];
                 for term in &mut T1_terms {
                     term.0 *= INV_EIGHT.into();
                 }
@@ -243,7 +250,7 @@ impl AggregateRangeStatement<'_> {
         let tau_2 = monero_ed25519::Scalar::random(&mut *rng).into();
         let T2 = CompressedPoint::from(
             {
-                let mut T2_terms = [(t2, *MONERO_H), (tau_2, ED25519_BASEPOINT_POINT)];
+                let mut T2_terms = [(t2, monero_h()), (tau_2, ED25519_BASEPOINT_POINT)];
                 for term in &mut T2_terms {
                     term.0 *= INV_EIGHT.into();
                 }
@@ -303,6 +310,7 @@ impl AggregateRangeStatement<'_> {
     }
 
     #[must_use]
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify(
         self,
         rng: &mut (impl RngCore + CryptoRng),

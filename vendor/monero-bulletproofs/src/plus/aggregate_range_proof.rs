@@ -95,7 +95,7 @@ impl<'a> AggregateRangeStatement<'a> {
         }
 
         Some(Self {
-            generators: BpPlusGenerators::new(),
+            generators: BpPlusGenerators::new().ok()?,
             V,
         })
     }
