@@ -1,6 +1,6 @@
-diff -ruN a/Cargo.toml b/Cargo.toml
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
-+++ b/Cargo.toml	2026-09-28 12:04:54.507315301 +0800
++++ b/Cargo.toml	2026-09-28 14:46:36.745145761 +0800
 @@ -35,9 +35,13 @@
  
  [features]
@@ -35,7 +35,7 @@ diff -ruN a/Cargo.toml b/Cargo.toml
  [dependencies.std-shims]
  version = "0.1.5"
  default-features = false
-diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml.orig b/Cargo.toml.orig
 --- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
 +++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
 @@ -1,62 +0,0 @@
@@ -101,7 +101,7 @@ diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
 -compile-time-generators = ["curve25519-dalek/precomputed-tables"]
 -multisig = ["rand_chacha", "transcript", "group", "dalek-ff-group", "frost", "std"]
 -default = ["std", "compile-time-generators"]
-diff -ruN a/src/decoys.rs b/src/decoys.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/decoys.rs b/src/decoys.rs
 --- a/src/decoys.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/decoys.rs	2026-09-27 23:03:10.871788956 +0800
 @@ -2,19 +2,55 @@
@@ -340,17 +340,21 @@ diff -ruN a/src/decoys.rs b/src/decoys.rs
 +    Decoys::new(&offsets, signer_index, &ring).ok_or_else(|| io::Error::other("invalid Decoys"))
    }
  }
-diff -ruN a/src/lib.rs b/src/lib.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-27 23:03:10.871873264 +0800
-@@ -5,12 +5,27 @@
++++ b/src/lib.rs	2026-09-29 09:42:05.248001998 +0800
+@@ -4,13 +4,27 @@
+ #![allow(non_snake_case)]
  
  use core::ops::Deref as _;
- use std_shims::{
+-use std_shims::{
 -  vec,
-   vec::Vec,
-   io::{self, Read, Write},
- };
+-  vec::Vec,
+-  io::{self, Read, Write},
+-};
++use std_shims::io::{self, Read, Write};
++#[cfg(feature = "alloc-fallback")]
++use std_shims::vec::Vec;
  
  use rand_core::{RngCore, CryptoRng};
 +// Z6 link-surface: `io::Error::other` boxes its payload. With alloc-fallback
@@ -372,7 +376,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  
  use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
  use subtle::{Choice, ConstantTimeEq as _, ConditionallySelectable as _};
-@@ -18,8 +33,15 @@
+@@ -18,8 +32,15 @@
  use curve25519_dalek::{
    constants::ED25519_BASEPOINT_POINT,
    scalar::Scalar as DScalar,
@@ -390,7 +394,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  };
  #[cfg(feature = "compile-time-generators")]
  use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
-@@ -30,7 +52,7 @@
+@@ -30,7 +51,7 @@
  use monero_ed25519::*;
  
  mod decoys;
@@ -399,7 +403,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  pub use decoys::Decoys;
  
  #[cfg(feature = "multisig")]
-@@ -41,17 +63,17 @@
+@@ -41,17 +62,17 @@
  #[cfg(all(feature = "std", test))]
  mod tests;
  
@@ -420,7 +424,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  #[allow(non_snake_case)]
  fn G_PRECOMP() -> VartimeEdwardsPrecomputation {
    VartimeEdwardsPrecomputation::new([ED25519_BASEPOINT_POINT])
-@@ -63,6 +85,9 @@
+@@ -63,6 +84,9 @@
    /// The ring was invalid (such as being too small or too large).
    #[error("invalid ring")]
    InvalidRing,
@@ -430,7 +434,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
    /// The discrete logarithm of the key, scaling G, wasn't equivalent to the signing ring member.
    #[error("invalid commitment")]
    InvalidKey,
-@@ -83,6 +108,17 @@
+@@ -83,6 +107,17 @@
    InvalidC1,
  }
  
@@ -448,7 +452,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  /// Context on the input being signed for.
  #[derive(Clone, Zeroize, ZeroizeOnDrop)]
  pub struct ClsagContext {
-@@ -127,6 +163,7 @@
+@@ -127,6 +162,7 @@
  ) -> ((EdwardsPoint, DScalar, DScalar), DScalar) {
    let n = ring.len();
  
@@ -456,7 +460,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
    let images_precomp = match A_c1 {
      Mode::Sign { .. } => None,
      Mode::Verify { .. } => Some(VartimeEdwardsPrecomputation::new([I, D_torsion_free])),
-@@ -142,33 +179,35 @@
+@@ -142,33 +178,35 @@
    const ROUND: &[u8]  =       b"round";
    const PREFIX_AGG_0_LEN: usize = PREFIX.len() + AGG_0.len();
  
@@ -505,7 +509,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
    // mu_P with agg_0
    let mu_P = Scalar::hash(&to_hash).into();
    // mu_C with agg_1
-@@ -182,8 +221,8 @@
+@@ -182,8 +220,8 @@
    }
    // Unfortunately, it's I D pseudo_out instead of pseudo_out I D, meaning this needs to be
    // truncated just to add it back
@@ -516,7 +520,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  
    // Configure the loop based on if we're signing or verifying
    let start;
-@@ -196,8 +235,8 @@
+@@ -196,8 +234,8 @@
        start = signer_index + 1;
        end = signer_index + n;
        iter_end = 2 * n;
@@ -527,7 +531,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
        c = Scalar::hash(&to_hash).into();
      }
  
-@@ -226,9 +265,14 @@
+@@ -226,9 +264,14 @@
          [s[i].into(), c_p, c_c],
          [ED25519_BASEPOINT_POINT, P[i], C[i]],
        ),
@@ -542,7 +546,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
      };
  
      let PH = Point::biased_hash(P[i].compress().0).into();
-@@ -238,15 +282,20 @@
+@@ -238,15 +281,20 @@
        Mode::Sign { .. } => {
          EdwardsPoint::multiscalar_mul([c_p, c_c, s[i].into()], [I, D_torsion_free, &PH])
        }
@@ -565,7 +569,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
      c.conditional_assign(&Scalar::hash(&to_hash).into(), in_range);
  
      c1.conditional_assign(&c, in_range & i.ct_eq(&(n - 1)));
-@@ -257,12 +306,15 @@
+@@ -257,12 +305,15 @@
  }
  
  /// The CLSAG signature, as used in Monero.
@@ -583,7 +587,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
    /// The first challenge in the ring.
    pub c1: Scalar,
  }
-@@ -274,6 +326,17 @@
+@@ -274,6 +325,17 @@
    challenged_mask: DScalar,
  }
  
@@ -601,7 +605,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  impl Clsag {
    // Sign core is the extension of core as needed for signing, yet is shared between single signer
    // and multisig, hence why it's still core
-@@ -293,9 +356,9 @@
+@@ -293,9 +355,9 @@
  
      let H = Point::biased_hash(input.decoys.signer_ring_members()[0].compress().to_bytes()).into();
      let D = H * mask_delta;
@@ -613,7 +617,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
      }
      let ((D, c_p, c_c), c1) = core(
        input.decoys.ring(),
-@@ -342,16 +405,26 @@
+@@ -342,16 +404,26 @@
    /// WARNING: This follows the Fiat-Shamir transcript format used by the Monero protocol, which
    /// makes assumptions on what has already been transcripted and bound to within `msg_hash`. Do
    /// not use this if you don't know what you're doing.
@@ -645,7 +649,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
        let key = Zeroizing::new((*input.0.deref()).into());
        let public_key = input.1.decoys.signer_ring_members()[0].into();
  
-@@ -361,11 +434,11 @@
+@@ -361,11 +433,11 @@
        }
  
        let key_image_generator = Point::biased_hash(public_key.compress().0).into();
@@ -660,7 +664,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
      let mut sum_pseudo_outs = DScalar::ZERO;
      for i in 0 .. inputs.len() {
        let mask;
-@@ -411,19 +484,28 @@
+@@ -411,19 +483,29 @@
        inputs[i].0.zeroize();
        nonce.zeroize();
  
@@ -674,7 +678,8 @@ diff -ruN a/src/lib.rs b/src/lib.rs
 -        .is_ok());
 +      // shlosilo vendor patch: manual fill (heapless `FromIterator` silently
 +      // truncates over capacity — never used here).
-+      debug_assert!({
++      #[cfg(feature = "alloc-fallback")]
++    debug_assert!({
 +        let mut ring_c = HVec::<[CompressedPoint; 2], RING_MAX>::new();
 +        for r in inputs[i].1.decoys.ring() {
 +          ring_c.push([r[0].compress(), r[1].compress()]).ok().unwrap();
@@ -699,8 +704,11 @@ diff -ruN a/src/lib.rs b/src/lib.rs
    }
  
    /// Verify a CLSAG signature for the provided context.
-@@ -433,7 +515,7 @@
+@@ -431,9 +513,10 @@
+   /// WARNING: This follows the Fiat-Shamir transcript format used by the Monero protocol, which
+   /// makes assumptions on what has already been transcripted and bound to within `msg_hash`. Do
    /// not use this if you don't know what you're doing.
++#[cfg(feature = "alloc-fallback")]
    pub fn verify(
      &self,
 -    ring: Vec<[CompressedPoint; 2]>,
@@ -708,7 +716,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
      I: &CompressedPoint,
      pseudo_out: &CompressedPoint,
      msg_hash: &[u8; 32],
-@@ -489,12 +571,47 @@
+@@ -489,12 +572,47 @@
      self.D.write(w)
    }
  

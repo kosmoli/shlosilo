@@ -3,11 +3,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(non_snake_case)]
 
-use std_shims::{
-    io::{self, Read, Write},
-    prelude::*,
-    sync::LazyLock,
-};
+use std_shims::io::{self, Read, Write};
+#[cfg(feature = "alloc-fallback")]
+use std_shims::prelude::*;
 
 use rand_core::{CryptoRng, RngCore};
 
@@ -38,12 +36,21 @@ use curve25519_dalek::EdwardsPoint;
 pub use crate::core::bench_multiexp_chain;
 pub use crate::core::{multiexp_chunk_terms, set_multiexp_chunk_terms};
 
-use monero_bulletproofs_generators::COMMITMENT_BITS;
-pub use monero_bulletproofs_generators::MAX_BULLETPROOF_COMMITMENTS as MAX_COMMITMENTS;
+// shlosilo vendor patch: the count constants are redefined locally (verbatim
+// from monero-bulletproofs-generators 0.1.0) so the runtime graph no longer
+// links the crate — its Vec-based API pins an allocator to the graph. The
+// crate stays as a build-dependency (table generation) and a dev-dependency
+// (test oracles). Upstream: MAX_BULLETPROOF_COMMITMENTS = 16, COMMITMENT_BITS = 64.
+pub const MAX_COMMITMENTS: usize = 16;
+pub(crate) const COMMITMENT_BITS: usize = 64;
 use monero_ed25519::*;
 use monero_io::*;
 
+// Z6 link-surface: the Vec-backed proof-vector types are alloc-fallback
+// material — the no-alloc face uses WipScratch slices instead.
+#[cfg(feature = "alloc-fallback")]
 pub(crate) mod point_vector;
+#[cfg(feature = "alloc-fallback")]
 pub(crate) mod scalar_vector;
 
 pub(crate) mod generator_cache_hook;
@@ -60,12 +67,16 @@ pub use prove_timing_hook::{phase_ms, register_prove_timing_clock, reset as rese
 
 pub(crate) mod core;
 
+#[cfg(feature = "alloc-fallback")]
 pub(crate) mod batch_verifier;
+#[cfg(feature = "alloc-fallback")]
 pub use batch_verifier::BatchVerifier;
+#[cfg(feature = "alloc-fallback")]
 use batch_verifier::{BulletproofsBatchVerifier, BulletproofsPlusBatchVerifier};
 
-pub(crate) mod original;
 // Z6 link-surface: the legacy Original line is alloc-fallback material —
+#[cfg(feature = "alloc-fallback")]
+pub(crate) mod original;
 // its IpProof Vec fields put dealloc sites in the enum's shared drop glue.
 #[cfg(feature = "alloc-fallback")]
 use crate::original::{
@@ -90,13 +101,22 @@ const LOG_COMMITMENT_BITS: usize = COMMITMENT_BITS.ilog2() as usize;
 #[allow(clippy::as_conversions)]
 const MAX_LR: usize = (MAX_COMMITMENTS.ilog2() as usize) + LOG_COMMITMENT_BITS;
 
-// A static for `H` as it's frequently used yet this decompression is expensive.
-static MONERO_H: LazyLock<EdwardsPoint> = LazyLock::new(|| {
-    CompressedPoint::H
+// A once-decompressed `H` (frequently used, expensive decompression) —
+// behind an atomic ready flag (no LazyLock; A3: alloc::sync out of graph).
+static MONERO_H_CELL: std_shims::sync::Mutex<Option<EdwardsPoint>> =
+    std_shims::sync::Mutex::new(None);
+
+pub(crate) fn monero_h() -> EdwardsPoint {
+    if let Some(h) = *MONERO_H_CELL.lock() {
+        return h;
+    }
+    let h: EdwardsPoint = CompressedPoint::H
         .decompress()
         .expect("couldn't decompress `CompressedPoint::H`")
-        .into()
-});
+        .into();
+    *MONERO_H_CELL.lock() = Some(h);
+    h
+}
 
 /// An error from proving/verifying Bulletproofs(+).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
@@ -260,6 +280,7 @@ impl Bulletproof {
 
     /// Verify the given Bulletproof(+).
     #[must_use]
+    #[cfg(feature = "alloc-fallback")]
     pub fn verify<R: RngCore + CryptoRng>(
         &self,
         rng: &mut R,
@@ -307,6 +328,7 @@ impl Bulletproof {
     ///
     /// The BatchVerifier must have its verification function executed to actually verify this proof.
     #[must_use]
+    #[cfg(feature = "alloc-fallback")]
     pub fn batch_verify<R: RngCore + CryptoRng>(
         &self,
         rng: &mut R,
@@ -431,6 +453,7 @@ impl Bulletproof {
             // Z6 link-surface: override the default `write_all` (its
             // short-write error path boxes the error payload). `write` is
             // all-or-error by construction, so this is byte-equivalent.
+            #[cfg(feature = "alloc-fallback")]
             fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
                 self.write(data).map(|_| ())
             }
@@ -473,6 +496,7 @@ impl Bulletproof {
     }
 
     /// Serialize a Bulletproof(+) to a `Vec<u8>`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Vec<u8> {
         let mut serialized = Vec::with_capacity(512);
         self.write(&mut serialized)
@@ -482,6 +506,7 @@ impl Bulletproof {
 
     #[cfg(feature = "alloc-fallback")]
     /// Read a Bulletproof.
+    #[cfg(feature = "alloc")]
     #[cfg(feature = "alloc")]
     pub fn read<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
         Ok(Bulletproof::Original(OriginalProof {
@@ -502,6 +527,7 @@ impl Bulletproof {
     }
 
     /// Read a Bulletproof+.
+    #[cfg(feature = "alloc")]
     #[cfg(feature = "alloc")]
     pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
         // shlosilo vendor patch (Z5.3 C-cut C): the wire reader stages into a

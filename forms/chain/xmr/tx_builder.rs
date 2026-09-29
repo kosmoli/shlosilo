@@ -51,10 +51,11 @@ use sha2::{Digest, Sha256};
 #[allow(unused_imports)]
 use crate::chain::xmr::clsag::{self as clsag_mod};
 // Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[cfg(feature = "alloc-fallback")]
+use crate::chain::xmr::rct_sig::verify_bulletproofs_plus;
 #[allow(unused_imports)]
 use crate::chain::xmr::rct_sig::{
-    prove_bulletproofs_plus, pseudo_out_commitment, verify_bulletproofs_plus, RctSig, RctSigBase,
-    RctSigPrunable,
+    prove_bulletproofs_plus, pseudo_out_commitment, RctSig, RctSigBase, RctSigPrunable,
 };
 use crate::chain::xmr::reduce_scalar::reduce_scalar;
 // Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
@@ -477,6 +478,7 @@ fn rct_sig_type() -> u8 {
 /// - msg_hashes: the msg_hash of each input (same as at sign time)
 ///
 /// **Output**: Ok(()) if all CLSAG + BP+ are valid
+#[cfg(feature = "alloc-fallback")]
 #[cfg(feature = "alloc-fallback")]
 pub fn verify_signed_tx<R: RngCore + CryptoRng>(
     signed: &SignedTx<'_>,

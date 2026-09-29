@@ -22,6 +22,8 @@ CHECKS=(
   "monero-io|https://static.crates.io/crates/monero-io/monero-io-0.1.0.crate|patches/baseline/monero-io-vs-crates-io-0.1.0.diff"
   "monero-ed25519|https://static.crates.io/crates/monero-ed25519/monero-ed25519-0.1.0.crate|patches/baseline/monero-ed25519-vs-crates-io-0.1.0.diff"
   "std-shims|https://static.crates.io/crates/std-shims/std-shims-0.1.5.crate|patches/baseline/std-shims-vs-crates-io-0.1.5.diff"
+  "monero-bulletproofs-generators|https://static.crates.io/crates/monero-bulletproofs-generators/monero-bulletproofs-generators-0.1.0.crate|patches/baseline/monero-bulletproofs-generators-vs-crates-io-0.1.0.diff"
+  "base58-monero|https://static.crates.io/crates/base58-monero/base58-monero-2.1.0.crate|patches/baseline/base58-monero-vs-crates-io-2.1.0.diff"
 )
 # cryptonight 的基准是 tar 子目录（其余为 crate 根）
 SUBDIR_cryptonight="cryptonight"

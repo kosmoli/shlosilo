@@ -23,7 +23,9 @@ pub mod variable_base;
 #[allow(missing_docs)]
 pub mod vartime_double_base;
 
-#[cfg(feature = "alloc")]
+// shlosilo vendor patch: straus is ALWAYS available — the small-count inline
+// path and the Z5.3 scratch face (`multiscalar_mul_scratch`) are zero-alloc;
+// only the Vec machinery inside is gated. Signing builds need this module.
 pub mod straus;
 
 #[cfg(feature = "alloc")]

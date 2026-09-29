@@ -1,3 +1,4 @@
+#[cfg(feature = "alloc-fallback")]
 use std_shims::vec::Vec;
 
 use curve25519_dalek::{
@@ -9,19 +10,25 @@ use curve25519_dalek::{
 
 use crate::generator_cache_hook::Generators;
 
-use crate::{original, plus, MONERO_H};
+#[cfg(feature = "alloc-fallback")]
+use crate::original;
+use crate::{monero_h, plus};
 
 #[derive(Default)]
 pub(crate) struct InternalBatchVerifier {
     pub(crate) g: Scalar,
     pub(crate) h: Scalar,
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) g_bold: Vec<Scalar>,
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) h_bold: Vec<Scalar>,
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) other: Vec<(Scalar, EdwardsPoint)>,
 }
 
 impl InternalBatchVerifier {
     #[must_use]
+    #[cfg(feature = "alloc-fallback")]
     fn verify(self, G: EdwardsPoint, H: EdwardsPoint, generators: &Generators) -> bool {
         /*
           Technically, this following line can overflow, and joining these `Vec`s _may_ panic if
@@ -61,9 +68,12 @@ impl InternalBatchVerifier {
 pub(crate) struct BulletproofsBatchVerifier(pub(crate) InternalBatchVerifier);
 impl BulletproofsBatchVerifier {
     #[must_use]
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify(self) -> bool {
-        self.0
-            .verify(ED25519_BASEPOINT_POINT, *MONERO_H, &original::GENERATORS)
+        let Ok(gens) = original::generators() else {
+            return false;
+        };
+        self.0.verify(ED25519_BASEPOINT_POINT, monero_h(), &gens)
     }
 }
 
@@ -71,11 +81,14 @@ impl BulletproofsBatchVerifier {
 pub(crate) struct BulletproofsPlusBatchVerifier(pub(crate) InternalBatchVerifier);
 impl BulletproofsPlusBatchVerifier {
     #[must_use]
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify(self) -> bool {
         // Bulletproofs+ is written as per the paper, with G for the value and H for the mask
         // Monero uses H for the value and G for the mask
-        self.0
-            .verify(*MONERO_H, ED25519_BASEPOINT_POINT, &plus::GENERATORS)
+        let Ok(gens) = plus::generators() else {
+            return false;
+        };
+        self.0.verify(monero_h(), ED25519_BASEPOINT_POINT, &gens)
     }
 }
 
@@ -102,6 +115,7 @@ impl BatchVerifier {
     ///
     /// This uses a variable-time multiscalar multiplication internally.
     #[must_use]
+    #[cfg(feature = "alloc-fallback")]
     pub fn verify(self) -> bool {
         self.original.verify() && self.plus.verify()
     }

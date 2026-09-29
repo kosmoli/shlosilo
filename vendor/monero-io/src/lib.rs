@@ -67,6 +67,7 @@ pub fn read_u64<R: Read>(r: &mut R) -> io::Result<u64> {
 }
 
 /// Read a variable-length list of elements, without length-prefixing.
+#[cfg(feature = "alloc")]
 pub fn read_raw_vec<R: Read, T, F: FnMut(&mut R) -> io::Result<T>>(
   mut f: F,
   len: usize,
@@ -119,6 +120,7 @@ pub fn read_array<R: Read, T: Debug, F: FnMut(&mut R) -> io::Result<T>, const N:
 /// An optional bound on the length of the result may be provided. If `None`, the returned `Vec`
 /// will be of the length read off the reader, if successfully read. If `Some(_)`, an error will be
 /// raised if the length read off the read is greater than the bound.
+#[cfg(feature = "alloc")]
 pub fn read_vec<R: Read, T, F: FnMut(&mut R) -> io::Result<T>>(
   f: F,
   length_bound: Option<usize>,

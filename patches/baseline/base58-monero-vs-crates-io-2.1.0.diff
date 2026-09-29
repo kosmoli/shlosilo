@@ -1,0 +1,91 @@
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
++++ b/Cargo.toml	2026-09-29 13:13:13.576083794 +0800
+@@ -50,7 +50,10 @@
+ 
+ [features]
+ check = ["tiny-keccak"]
+-default = ["std"]
++# shlosilo vendor patch (Z6 zero-heap): the String/Vec API face (encode/
++# decode family) sits behind `alloc`; the block-level primitives stay core.
++alloc = []
++default = ["std", "alloc"]
+ std = ["thiserror"]
+ stream = [
+     "std",
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/base58.rs b/src/base58.rs
+--- a/src/base58.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/base58.rs	2026-09-29 16:03:54.502183624 +0800
+@@ -87,8 +87,13 @@
+ #[cfg(feature = "std")]
+ use thiserror::Error;
+ 
++// shlosilo vendor patch (Z6 zero-heap): the String/Vec surface is opt-in
++// behind `alloc`; the block primitives are core-only.
++#[cfg(feature = "alloc")]
+ extern crate alloc;
++#[cfg(feature = "alloc")]
+ use alloc::string::String;
++#[cfg(feature = "alloc")]
+ use alloc::vec::Vec;
+ use core::num::Wrapping;
+ 
+@@ -177,7 +182,11 @@
+     res
+ }
+ 
+-fn encode_block(data: &[u8]) -> Result<[char; FULL_ENCODED_BLOCK_SIZE]> {
++// shlosilo vendor patch (Z6 zero-heap): made `pub` so the address encoder can
++// compose block-wise output into caller buffers without the String `encode`.
++// Algorithm untouched.
++/// Encode a single base58 block (up to [`FULL_BLOCK_SIZE`] bytes).
++pub fn encode_block(data: &[u8]) -> Result<[char; FULL_ENCODED_BLOCK_SIZE]> {
+     if data.is_empty() || data.len() > FULL_BLOCK_SIZE {
+         return Err(Error::InvalidBlockSize);
+     }
+@@ -208,7 +217,9 @@
+         None => return Err(Error::InvalidBlockSize),
+     };
+ 
+-    let alpha: Vec<_> = Vec::from(BASE58_CHARS);
++    // shlosilo vendor patch (Z6 zero-heap): scan the alphabet directly —
++    // the `Vec::from(BASE58_CHARS)` copy was needless (identical positions).
++    let alpha: &[u8] = BASE58_CHARS;
+     let mut res: u128 = 0;
+     let mut order = Wrapping(1);
+     data.iter()
+@@ -241,6 +252,7 @@
+ }
+ 
+ /// Encode a byte vector into a base58-encoded string
++#[cfg(feature = "alloc")]
+ pub fn encode(data: &[u8]) -> Result<String> {
+     let last_block_size = ENCODED_BLOCK_SIZES[data.len() % FULL_BLOCK_SIZE];
+     let full_block_count = data.len() / FULL_BLOCK_SIZE;
+@@ -379,6 +391,7 @@
+ }
+ 
+ /// Decode base58-encoded string into a byte vector
++#[cfg(feature = "alloc")]
+ pub fn decode(data: &str) -> Result<Vec<u8>> {
+     let data: Result<Vec<DecodedBlock>> = data
+         .as_bytes()
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/lib.rs	2026-09-29 13:13:31.932630062 +0800
+@@ -87,6 +87,7 @@
+ 
+ pub mod base58;
+ 
++#[cfg(feature = "alloc")]
+ pub use base58::decode;
+ #[cfg(feature = "check")]
+ pub use base58::decode_check;
+@@ -94,6 +95,7 @@
+ pub use base58::decode_stream;
+ #[cfg(all(feature = "check", feature = "stream"))]
+ pub use base58::decode_stream_check;
++#[cfg(feature = "alloc")]
+ pub use base58::encode;
+ #[cfg(feature = "check")]
+ pub use base58::encode_check;

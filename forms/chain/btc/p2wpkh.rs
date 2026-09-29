@@ -38,6 +38,7 @@
 //!
 //! BIP-143 Native P2WPKH official test vector (sighash + signature + full signed tx verified)
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 #[cfg(test)]
@@ -48,10 +49,12 @@ use crate::types::SecretBytes;
 // Consumers live behind alloc-fallback / cfg(test).
 #[cfg(feature = "alloc-fallback")]
 #[allow(unused_imports)]
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec;
 // Consumers live behind alloc-fallback / cfg(test).
 #[cfg(feature = "alloc-fallback")]
 #[allow(unused_imports)]
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 // --- Data structures ------------------------------------------------

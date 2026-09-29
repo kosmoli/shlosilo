@@ -7,7 +7,10 @@ edition = "2024"
 # forms core (workspace root crate). Rust-native appearance: the core is a
 # plain rlib here - pico2 owns its runtime (embedded-alloc + fault.rs;
 # critical-section from embassy-rp), so no C-host hooks are involved.
-shlosilo = { path = "../..", default-features = false }
+# alloc-fallback: the USB console host keeps its Vec-based debug/UR session
+# shells (this firmware links an allocator; the Z6 zero-heap artifact is the
+# separate noalloc probe). Production sign paths use the _into forms either way.
+shlosilo = { path = "../..", default-features = false, features = ["alloc-fallback"] }
 
 # RP2350 async stack
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "defmt"] }

@@ -1,12 +1,15 @@
+#[cfg(feature = "alloc-fallback")]
 use std_shims::{vec, vec::Vec};
 
 use zeroize::Zeroize;
 
+#[cfg(feature = "alloc-fallback")]
+use crate::point_vector::PointVector;
 use crate::{
     core::{challenge_products, multiexp_vartime_alloc},
-    point_vector::PointVector,
+    monero_h,
     scalar_vector::ScalarVector,
-    BulletproofsBatchVerifier, MONERO_H,
+    BulletproofsBatchVerifier,
 };
 use curve25519_dalek::{EdwardsPoint, Scalar};
 use monero_ed25519::CompressedPoint;
@@ -25,6 +28,7 @@ pub(crate) enum IpError {
 ///
 /// This is for usage with Protocol 2 from the Bulletproofs paper.
 #[derive(Clone, Debug)]
+#[cfg(feature = "alloc-fallback")]
 pub(crate) struct IpStatement {
     // Weights for h_bold
     h_bold_weights: ScalarVector,
@@ -34,6 +38,7 @@ pub(crate) struct IpStatement {
 
 /// The witness for the Bulletproofs Inner-Product statement.
 #[derive(Clone, Debug)]
+#[cfg(feature = "alloc-fallback")]
 pub(crate) struct IpWitness {
     // a
     a: ScalarVector,
@@ -41,11 +46,13 @@ pub(crate) struct IpWitness {
     b: ScalarVector,
 }
 
+#[cfg(feature = "alloc-fallback")]
 impl IpWitness {
     /// Construct a new witness for an Inner-Product statement.
     ///
     /// This functions return None if the lengths of a, b are mismatched, not a power of two, or are
     /// empty.
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn new(a: ScalarVector, b: ScalarVector) -> Option<Self> {
         if a.0.is_empty() || (a.len() != b.len()) {
             None?;
@@ -72,6 +79,7 @@ pub(crate) struct IpProof {
     pub(crate) b: Scalar,
 }
 
+#[cfg(feature = "alloc-fallback")]
 impl IpStatement {
     /// Create a new Inner-Product statement which won't transcript P.
     ///
@@ -92,18 +100,19 @@ impl IpStatement {
     ///
     /// Returns an error if this statement couldn't be proven for (such as if the witness isn't
     /// consistent).
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn prove(
         self,
         mut transcript: Scalar,
         witness: IpWitness,
     ) -> Result<IpProof, IpError> {
-        let generators = &crate::original::GENERATORS;
+        let generators = &crate::original::generators()?;
         let g_bold_slice = &generators.G[..witness.a.len()];
         let h_bold_slice = &generators.H[..witness.a.len()];
 
         let (mut g_bold, mut h_bold, u, mut a, mut b) = {
             let IpStatement { h_bold_weights, u } = self;
-            let u = *MONERO_H * u;
+            let u = monero_h() * u;
 
             // Ensure we have the exact amount of weights
             if h_bold_weights.len() != g_bold_slice.len() {
@@ -238,6 +247,7 @@ impl IpStatement {
     /// This will return Err if there is an error. This will return Ok if the proof was successfully
     /// queued for batch verification. The caller is required to verify the batch in order to ensure
     /// the proof is actually correct.
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify(
         self,
         verifier: &mut BulletproofsBatchVerifier,
@@ -246,7 +256,7 @@ impl IpStatement {
         verifier_weight: Scalar,
         proof: IpProof,
     ) -> Result<(), IpError> {
-        let generators = &crate::original::GENERATORS;
+        let generators = &crate::original::generators()?;
         let g_bold_slice = &generators.G[..ip_rows];
         let h_bold_slice = &generators.H[..ip_rows];
 

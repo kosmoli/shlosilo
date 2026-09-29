@@ -8,40 +8,17 @@
 #![no_main]
 
 use core::panic::PanicInfo;
-#[cfg(feature = "lang-stub")]
-use core::alloc::{GlobalAlloc, Layout};
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     loop {}
 }
 
-// Lang-item stub (the Z6 link proof's compile-time requirement): rustc
-// refuses to build a staticlib whose crate graph still references `alloc`
-// without a `#[global_allocator]`. The audit claim is therefore the
-// DISASSEMBLY check in build.sh: zero allocator call sites in reachable
-// code — this stub panics if one is ever reached at runtime.
-//
-// Z6 lang-item GATE: build with `--no-default-features` (stub off) to probe
-// the GRAPH — while `alloc` is anywhere in the crate graph rustc reports
-// `no global memory allocator found`; a clean build there means the stub can
-// go for good. See scripts/z6_langitem_check.sh.
-#[cfg(feature = "lang-stub")]
-struct ForbiddingAlloc;
-
-#[cfg(feature = "lang-stub")]
-unsafe impl GlobalAlloc for ForbiddingAlloc {
-    unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
-        panic!("Z6: allocation reached in the no-alloc probe")
-    }
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-        panic!("Z6: deallocation reached in the no-alloc probe")
-    }
-}
-
-#[cfg(feature = "lang-stub")]
-#[global_allocator]
-static ALLOC: ForbiddingAlloc = ForbiddingAlloc;
+// Z6 finale: the lang-item stub is GONE. GRAPH-CLEAN (commit 68abad6)
+// proved the crate graph links with no allocator, so the ForbiddingAlloc
+// `#[global_allocator]` crutch — born as the compile-time requirement of
+// the link proof — is retired. This probe now builds in the production
+// shape and links against a C main with no allocator anywhere.
 
 // Static scratch (the deploy shape: caller-owned memory everywhere).
 static mut OUT: [u8; 16384] = [0u8; 16384];

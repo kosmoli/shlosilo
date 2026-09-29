@@ -21,14 +21,14 @@
 //! soundness for the affected transaction (detectable on verification), never leak
 //! secrets. The load path deliberately does NOT re-check curve membership.
 
-use std_shims::sync::{LazyLock, Mutex};
+use std_shims::sync::Mutex;
 
 pub(crate) type LoadFn = fn(prefix: &'static [u8]) -> Option<&'static [u8]>;
 pub(crate) type StoreFn = fn(prefix: &'static [u8], blob: &[u8]);
 
-static LOAD: LazyLock<Mutex<Option<LoadFn>>> = LazyLock::new(|| Mutex::new(None));
-static STORE: LazyLock<Mutex<Option<StoreFn>>> = LazyLock::new(|| Mutex::new(None));
-static REGISTERED: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
+static LOAD: Mutex<Option<LoadFn>> = Mutex::new(None);
+static STORE: Mutex<Option<StoreFn>> = Mutex::new(None);
+static REGISTERED: Mutex<bool> = Mutex::new(false);
 
 /// Register persistence hooks. Call before any BP+/BP prove/verify (e.g. from shlosilo
 /// init). Returns false if hooks were already registered (first registration wins).
@@ -123,12 +123,12 @@ impl GeneratorSet {
     }
 }
 
-static TABLE_BP: LazyLock<Mutex<Option<GeneratorTableStorage>>> =
-    LazyLock::new(|| Mutex::new(None));
-static TABLE_BP_PLUS: LazyLock<Mutex<Option<GeneratorTableStorage>>> =
-    LazyLock::new(|| Mutex::new(None));
-static TABLE_TAKEN_BP: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
-static TABLE_TAKEN_BP_PLUS: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
+// shlosilo vendor patch: plain statics (const-constructible mutexes) — the
+// LazyLock once-cells pulled `alloc::sync` into the graph.
+static TABLE_BP: Mutex<Option<GeneratorTableStorage>> = Mutex::new(None);
+static TABLE_BP_PLUS: Mutex<Option<GeneratorTableStorage>> = Mutex::new(None);
+static TABLE_TAKEN_BP: Mutex<bool> = Mutex::new(false);
+static TABLE_TAKEN_BP_PLUS: Mutex<bool> = Mutex::new(false);
 
 /// Provide the decompressed-table storage for one generator set (once; first
 /// registration wins). Returns false when the slot is taken or ALREADY
@@ -168,7 +168,18 @@ pub(crate) fn take_table_storage(prefix: &'static [u8]) -> Option<GeneratorTable
 /// Returns (g_bytes, h_bytes, blob_bytes).
 pub fn generator_table_sizes(set: GeneratorSet) -> (usize, usize, usize) {
     let (g, h) = match set {
-        GeneratorSet::Bulletproof => (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN),
+        // Z6: the Original table only exists on the alloc face. Zero capacity
+        // is the honest no-alloc answer — provide/init fail cleanly on it.
+        GeneratorSet::Bulletproof => {
+            #[cfg(feature = "alloc-fallback")]
+            {
+                (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN)
+            }
+            #[cfg(not(feature = "alloc-fallback"))]
+            {
+                (0, 0)
+            }
+        }
         GeneratorSet::BulletproofPlus => (crate::plus::TABLE_G_LEN, crate::plus::TABLE_H_LEN),
     };
     let g_bytes = g * core::mem::size_of::<EdwardsPoint>();
@@ -178,6 +189,7 @@ pub fn generator_table_sizes(set: GeneratorSet) -> (usize, usize, usize) {
 
 /// Leak a Vec as a 'static slice WITHOUT requiring Box (MSRV-safe one-shot
 /// leak for the transitional fallback path; the memory is never freed).
+#[cfg(feature = "alloc-fallback")]
 #[cfg(feature = "alloc-fallback")]
 pub(crate) fn leak_vec<T>(mut v: std_shims::vec::Vec<T>) -> &'static mut [T] {
     let ptr = v.as_mut_ptr();
@@ -190,13 +202,24 @@ pub(crate) fn leak_vec<T>(mut v: std_shims::vec::Vec<T>) -> &'static mut [T] {
 /// without persistence) or from the persisted raw blob (cache-hit path); on a
 /// miss with persistence available, builds the blob in the caller's scratch
 /// and STOREs it. Returns the borrowed tables.
+/// Table-initialization failure (explicit — never a panic, never a
+/// partially-initialized table exposed; invariant 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitError {
+    OffCurve,
+    BlobMismatch,
+}
+
+/// Emplacement decompression (invariant 1): points are decompressed
+/// straight into the caller's storage — no intermediate Vec, no copy of a
+/// complete table. Success is what flips the ready flag (invariant 2).
 pub(crate) fn init_tables(
     prefix: &'static [u8],
     n_points: usize,
     g_bytes: &[[u8; 32]],
     h_bytes: &[[u8; 32]],
     storage: GeneratorTableStorage,
-) -> Generators<'static> {
+) -> Result<Generators<'static>, InitError> {
     let GeneratorTableStorage { g, h, blob } = storage;
     if let Some(b) = try_load_blob(prefix, n_points) {
         let mut idx = 0;
@@ -216,12 +239,12 @@ pub(crate) fn init_tables(
         for (p, b) in g.iter_mut().zip(g_bytes.iter()) {
             *p = curve25519_dalek::edwards::CompressedEdwardsY(*b)
                 .decompress()
-                .expect("generator from build script wasn't on-curve");
+                .ok_or(InitError::OffCurve)?;
         }
         for (p, b) in h.iter_mut().zip(h_bytes.iter()) {
             *p = curve25519_dalek::edwards::CompressedEdwardsY(*b)
                 .decompress()
-                .expect("generator from build script wasn't on-curve");
+                .ok_or(InitError::OffCurve)?;
         }
         // build + persist the raw blob in the caller's scratch (no alloc)
         let mut idx = 0;
@@ -235,5 +258,70 @@ pub(crate) fn init_tables(
         }
         try_store_blob(prefix, &blob[..idx]);
     }
-    Generators { G: g, H: h }
+    // invariant 2: the table is only marked ready AFTER every point is in
+    // place; a failure above returns Err with the flag still down and no
+    // partial table ever readable (invariant 3).
+    ready_flag_for(prefix).store(true, core::sync::atomic::Ordering::Release);
+    Ok(Generators { G: g, H: h })
+}
+
+/// Per-set ready flags (Release on success / Acquire on read) — the atomic
+/// uninitialized -> ready transition of A3.
+fn ready_flag_for(prefix: &[u8]) -> &'static core::sync::atomic::AtomicBool {
+    if prefix == BP_PLUS_PREFIX {
+        &READY_BP_PLUS
+    } else {
+        &READY_BP
+    }
+}
+
+/// Prefixes identifying the two generated tables (match the build templates).
+pub(crate) const BP_PLUS_PREFIX: &[u8] = b"bp+";
+pub(crate) const BP_PREFIX: &[u8] = b"bp";
+
+static READY_BP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static READY_BP_PLUS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Read-side accessor (A3): borrows the decompressed table only when the
+/// ready flag is up (Acquire pairs with `init_tables`' Release).
+pub fn table_generators<'a>(prefix: &'static [u8]) -> Option<Generators<'a>> {
+    if !ready_flag_for(prefix).load(core::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    // SAFETY: ready implies `init_tables` completed over this set's storage;
+    // the storage is 'static (caller-provided, stable per the ws contract)
+    // and nothing takes &mut of it after initialization.
+    unsafe {
+        let (g, h) = table_slices(prefix);
+        Some(Generators { G: &*g, H: &*h })
+    }
+}
+
+unsafe fn table_slices(
+    prefix: &[u8],
+) -> (&'static mut [EdwardsPoint], &'static mut [EdwardsPoint]) {
+    let slot = if prefix == BP_PLUS_PREFIX {
+        &TABLE_BP_PLUS
+    } else {
+        &TABLE_BP
+    };
+    let mut guard = slot.lock();
+    let st = guard.as_mut().expect("ready flag implies storage");
+    (
+        core::slice::from_raw_parts_mut(st.g.as_mut_ptr(), st.g.len()),
+        core::slice::from_raw_parts_mut(st.h.as_mut_ptr(), st.h.len()),
+    )
+}
+
+// A3: `?` conversions from the table-init error into the proof error types.
+#[cfg(feature = "alloc-fallback")]
+impl From<InitError> for crate::original::inner_product::IpError {
+    fn from(e: InitError) -> Self {
+        match e {
+            InitError::OffCurve => crate::original::inner_product::IpError::InvalidPoint,
+            InitError::BlobMismatch => {
+                crate::original::inner_product::IpError::IncorrectAmountOfGenerators
+            }
+        }
+    }
 }

@@ -19,10 +19,12 @@
 //!
 //! Budget discipline (same origin as X1): decoder-side received/buffer entry counts are bounded by the `sequence_count` cap.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 use crate::encoding::sha256;
 // Alloc surface: consumers behind alloc-fallback / cfg(test).
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 // ─── Xoshiro256** ───────────────────────────────────────────────────
@@ -481,6 +483,7 @@ impl<'a> FountainDecoder<'a> {
     /// Staging convenience: allocates and LEAKS pool backing on purpose (ffi staging /
     /// tests only — the handle owns it for its lifetime). Production flux builds `with_ws`
     /// over its own pools (zero-heap).
+    #[cfg(feature = "alloc-fallback")]
     pub fn new() -> FountainDecoder<'static> {
         use crate::types::caps as c;
         let decoded: &'static mut [Option<(usize, Part)>] =
@@ -805,6 +808,8 @@ impl<'a> FountainDecoder<'a> {
         }
     }
 
+    /// Test/legacy convenience (allocates). Production paths use `message_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn message(&self) -> Result<Option<Vec<u8>>, FountainError> {
         if !self.complete() {
             return Ok(None);

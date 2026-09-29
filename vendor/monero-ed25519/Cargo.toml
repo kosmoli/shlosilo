@@ -72,7 +72,6 @@ default-features = false
 [dependencies.curve25519-dalek]
 version = "4"
 features = [
-    "alloc",
     "zeroize",
 ]
 default-features = false
@@ -101,7 +100,6 @@ default-features = false
 version = "1.5"
 features = [
     "zeroize_derive",
-    "alloc",
 ]
 default-features = false
 

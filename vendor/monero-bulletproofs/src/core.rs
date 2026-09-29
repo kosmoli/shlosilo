@@ -1,5 +1,6 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(any(feature = "alloc-fallback", feature = "prove-timing"))]
 use std_shims::{vec, vec::Vec};
 
 use curve25519_dalek::{
@@ -8,9 +9,7 @@ use curve25519_dalek::{
     traits::{Identity as _, MultiscalarMul as _, VartimeMultiscalarMul as _},
 };
 
-pub(crate) use monero_bulletproofs_generators::{
-    COMMITMENT_BITS, MAX_BULLETPROOF_COMMITMENTS as MAX_COMMITMENTS,
-};
+pub(crate) use crate::{COMMITMENT_BITS, MAX_COMMITMENTS};
 
 /// Constant-time multiexp, chunked so every Straus lookup table fits the
 /// host's fast memory. The chunk size is a PER-PLATFORM tuning knob
@@ -124,7 +123,7 @@ fn multiexp_terms(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
 pub fn bench_multiexp_chain(n: usize, iters: u32, tail: bool, gen_points: bool) -> u64 {
     use crate::plus::{BpPlusGenerators, GeneratorsList};
 
-    let gens = BpPlusGenerators::new();
+    let gens = BpPlusGenerators::new().unwrap();
     let mut out = [0u8; 32];
     for it in 0..iters.max(1) {
         let pairs: Vec<(Scalar, EdwardsPoint)> = (0..n)
@@ -236,6 +235,7 @@ Divide and conquer (worth investigating further):
 When there are 4 challenges (n=16), the iterative approach does 28 multiplications
 versus divide and conquer's 24.
 */
+#[cfg(feature = "alloc-fallback")]
 pub(crate) fn challenge_products(challenges: &[(Scalar, Scalar)]) -> Vec<Scalar> {
     let mut products = vec![Scalar::ONE; 1 << challenges.len()];
 

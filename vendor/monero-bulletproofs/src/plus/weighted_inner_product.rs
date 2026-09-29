@@ -1,3 +1,4 @@
+#[cfg(feature = "alloc-fallback")]
 use std_shims::{vec, vec::Vec};
 
 // shlosilo vendor patch: prove-phase timing (WIP round decomposition: L/R multiexp
@@ -154,10 +155,13 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use curve25519_dalek::{EdwardsPoint, Scalar};
 
+#[cfg(feature = "alloc-fallback")]
+use crate::plus::{PointVector, ScalarVector};
+#[cfg(feature = "alloc-fallback")]
+use crate::{batch_verifier::BulletproofsPlusBatchVerifier, core::challenge_products};
 use crate::{
-    batch_verifier::BulletproofsPlusBatchVerifier,
-    core::{challenge_products, multiexp, multiexp_vartime, multiexp_vartime_small},
-    plus::{padded_pow_of_2, BpPlusGenerators, GeneratorsList, PointVector, ScalarVector},
+    core::{multiexp, multiexp_vartime, multiexp_vartime_small},
+    plus::{padded_pow_of_2, BpPlusGenerators, GeneratorsList},
 };
 use monero_ed25519::CompressedPoint;
 
@@ -260,6 +264,7 @@ impl WipStatement {
     // Returns each permutation of G/H since the prover needs to do operation on each permutation
     // P is dropped as it's unused in the prover's path
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "alloc-fallback")]
     fn next_G_H(
         transcript: &mut Scalar,
         mut g_bold1: PointVector,
@@ -594,6 +599,7 @@ impl WipStatement {
         })
     }
 
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify<R: RngCore + CryptoRng>(
         self,
         rng: &mut R,
