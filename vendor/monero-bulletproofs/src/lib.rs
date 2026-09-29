@@ -37,12 +37,21 @@ use curve25519_dalek::EdwardsPoint;
 pub use crate::core::bench_multiexp_chain;
 pub use crate::core::{multiexp_chunk_terms, set_multiexp_chunk_terms};
 
-use monero_bulletproofs_generators::COMMITMENT_BITS;
-pub use monero_bulletproofs_generators::MAX_BULLETPROOF_COMMITMENTS as MAX_COMMITMENTS;
+// shlosilo vendor patch: the count constants are redefined locally (verbatim
+// from monero-bulletproofs-generators 0.1.0) so the runtime graph no longer
+// links the crate — its Vec-based API pins an allocator to the graph. The
+// crate stays as a build-dependency (table generation) and a dev-dependency
+// (test oracles). Upstream: MAX_BULLETPROOF_COMMITMENTS = 16, COMMITMENT_BITS = 64.
+pub const MAX_COMMITMENTS: usize = 16;
+pub(crate) const COMMITMENT_BITS: usize = 64;
 use monero_ed25519::*;
 use monero_io::*;
 
+// Z6 link-surface: the Vec-backed proof-vector types are alloc-fallback
+// material — the no-alloc face uses WipScratch slices instead.
+#[cfg(feature = "alloc-fallback")]
 pub(crate) mod point_vector;
+#[cfg(feature = "alloc-fallback")]
 pub(crate) mod scalar_vector;
 
 pub(crate) mod generator_cache_hook;
@@ -63,8 +72,9 @@ pub(crate) mod batch_verifier;
 pub use batch_verifier::BatchVerifier;
 use batch_verifier::{BulletproofsBatchVerifier, BulletproofsPlusBatchVerifier};
 
-pub(crate) mod original;
 // Z6 link-surface: the legacy Original line is alloc-fallback material —
+#[cfg(feature = "alloc-fallback")]
+pub(crate) mod original;
 // its IpProof Vec fields put dealloc sites in the enum's shared drop glue.
 #[cfg(feature = "alloc-fallback")]
 use crate::original::{
@@ -213,8 +223,7 @@ impl Bulletproof {
     /// multiexp scratch (`>= 2 * padded_pow_of_2(outputs.len() * 64) + 2`
     /// entries; over-cap is an explicit `BulletproofError`). The prove chain
     /// writes its per-site term lists here instead of heap Vecs.
-#[cfg(feature = "alloc-fallback")]
-    pub fn prove_plus<R: RngCore + CryptoRng>(
+pub fn prove_plus<R: RngCore + CryptoRng>(
         rng: &mut R,
         outputs: &[Commitment],
         terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],

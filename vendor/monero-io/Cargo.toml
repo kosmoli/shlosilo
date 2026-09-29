@@ -34,7 +34,9 @@ rustdoc-args = [
 ]
 
 [features]
-default = ["std"]
+# shlosilo vendor patch: the Vec-shaped readers
+default = ["std", "alloc"]
+alloc = ["std-shims/alloc"]
 std = ["std-shims/std"]
 
 [lib]

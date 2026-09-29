@@ -72,9 +72,9 @@ features = [
 ]
 default-features = false
 
-[dependencies.monero-bulletproofs-generators]
-version = "0.1"
-default-features = false
+# shlosilo vendor patch: runtime dep removed — the Vec-based Generators API
+# pins an allocator to the crate graph. Constants are inlined (see src/lib.rs);
+# the crate stays as a build-dependency (table generation below).
 
 [dependencies.monero-ed25519]
 version = "0.1"

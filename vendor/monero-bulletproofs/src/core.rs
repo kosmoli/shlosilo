@@ -8,9 +8,7 @@ use curve25519_dalek::{
     traits::{Identity as _, MultiscalarMul as _, VartimeMultiscalarMul as _},
 };
 
-pub(crate) use monero_bulletproofs_generators::{
-    COMMITMENT_BITS, MAX_BULLETPROOF_COMMITMENTS as MAX_COMMITMENTS,
-};
+pub(crate) use crate::{COMMITMENT_BITS, MAX_COMMITMENTS};
 
 /// Constant-time multiexp, chunked so every Straus lookup table fits the
 /// host's fast memory. The chunk size is a PER-PLATFORM tuning knob

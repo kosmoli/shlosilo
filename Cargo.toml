@@ -73,8 +73,6 @@ monero-ed25519 = { version = "0.1", default-features = false }  # Ed25519 + Pede
 curve25519-dalek = { version = "4", default-features = false, features = ["zeroize", "precomputed-tables", "rand_core", "generator-cache"] }  # Ed25519 foundation (curve25519-dalek 4 already serves as the SemVer abstraction layer)
 monero-clsag = { version = "0.1", default-features = false }  # CLSAG ring signature (XMR)
 monero-bulletproofs = { path = "vendor/monero-bulletproofs", default-features = false, features = ["compile-time-generators"] }  # Bulletproofs+; vendor patch: generator loop decompresses to avoid vec![decompress();2048] blowing the stack
-monero-bulletproofs-generators = { version = "0.1", default-features = false }  # Pedersen commitment generators for Bulletproofs+
-
 base58-monero = { version = "2", default-features = false }  # XMR base58 (encoding class, audited; check feature omitted because encode_check has a bug and we hand-write it)
 cuprate-cryptonight = { path = "vendor/cryptonight", default-features = false }  # CryptoNight V0 (XMR txset chacha key derivation); vendored no_std version, see the comment in vendor/cryptonight/Cargo.toml
 chacha20 = { version = "0.9", default-features = false }  # ChaCha20 + ChaCha20Legacy (XMR txset decryption; keystone uses the same 0.9.1)
@@ -103,6 +101,10 @@ proptest = "1.4"
 static_assertions = "1"
 # XMR cross-validation imports curve25519-dalek directly for ECDH + cofactor reference computation (keystone oracle reproduction)
 curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize", "precomputed-tables", "rand_core"] }
+# Pedersen commitment generators for Bulletproofs+ — DEV-ONLY (test oracles
+# re-derive reference generators via its Vec API). Kept out of the runtime
+# dependency set: the Vec API pins an allocator to the graph (Z6 probe).
+monero-bulletproofs-generators = { version = "0.1", default-features = false }
 # P1-06 oracle: official-format tx parser (monero-rs) to diagnose deviations in our wire serialization
 monero = { version = "0.21" }
 
@@ -198,3 +200,12 @@ quircs = { path = "vendor/quircs" }
 # de-alloc (ring capacity 16) + matching upstream PR track. Exit condition:
 # upstream merges the equivalent change and releases >0.1.0 (see VENDOR.md).
 monero-clsag = { path = "vendor/monero-clsag" }
+# monero-oxide ed25519 / io / std-shims (kayabaNerve): vendored 2026-09-28 for
+# the Z5/Z6 de-alloc surgery (Vec-typed APIs -> scratch/slice faces; alloc
+# roots feature-gated). These trees were measured in-tree but never WIRED —
+# both workspaces kept resolving the registry copies (Z6 graph probe caught
+# it: registry monero-ed25519 pulls curve25519-dalek/alloc unconditionally).
+# Exit condition: upstream merges the no-alloc API faces (see VENDOR.md).
+monero-ed25519 = { path = "vendor/monero-ed25519" }
+monero-io = { path = "vendor/monero-io" }
+std-shims = { path = "vendor/std-shims" }

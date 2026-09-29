@@ -13,7 +13,6 @@ mod timing_noop {
         pub(crate) fn start(_phase: u8) -> Self {
             PhaseProbe(0, 0)
         }
-#[cfg(feature = "alloc-fallback")]
         pub(crate) fn end(self) {}
     }
     pub(crate) const PHASE_A_HAT: u8 = 0;
@@ -127,7 +126,6 @@ impl<'a> AggregateRangeStatement<'a> {
         ScalarVector(d_j)
     }
 
-#[cfg(feature = "alloc-fallback")]
     fn compute_A_hat<'z>(
         V: &[EdwardsPoint],
         generators: &BpPlusGenerators,
@@ -251,7 +249,6 @@ impl<'a> AggregateRangeStatement<'a> {
         })
     }
 
-#[cfg(feature = "alloc-fallback")]
     pub(crate) fn prove<R: RngCore + CryptoRng>(
         self,
         rng: &mut R,

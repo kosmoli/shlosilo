@@ -2,16 +2,24 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(not(feature = "std"), no_std)]
 
+// shlosilo vendor patch (lang-item campaign): the alloc re-export root is
+// feature-gated. `alloc` (default) keeps the historical surface; without
+// it the crate is a pure `core` shim and the graph carries no allocator.
+#[cfg(feature = "alloc")]
 pub extern crate alloc;
 
 pub mod sync;
 pub mod collections;
 pub mod io;
 
+#[cfg(feature = "alloc")]
 pub use alloc::vec;
+#[cfg(feature = "alloc")]
 pub use alloc::str;
+#[cfg(feature = "alloc")]
 pub use alloc::string;
 
+#[cfg(feature = "alloc")]
 pub mod prelude {
   pub use alloc::{
     format, vec,
@@ -80,3 +88,7 @@ pub mod prelude {
     }
   }
 }
+
+/// No-alloc shell: glob imports (`use std_shims::prelude::*`) keep resolving.
+#[cfg(not(feature = "alloc"))]
+pub mod prelude {}

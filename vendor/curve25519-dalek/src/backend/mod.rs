@@ -166,7 +166,7 @@ impl VartimePrecomputedStraus {
 }
 
 #[allow(missing_docs)]
-#[cfg(feature = "alloc")]
+// shlosilo vendor patch: always available (routes to Straus inline/scratch).
 pub fn straus_multiscalar_mul<I, J>(scalars: I, points: J) -> EdwardsPoint
 where
     I: IntoIterator,
@@ -256,7 +256,7 @@ where
 }
 
 #[allow(missing_docs)]
-#[cfg(feature = "alloc")]
+// shlosilo vendor patch: always available (routes to Straus inline/scratch).
 pub fn straus_optional_multiscalar_mul<I, J>(scalars: I, points: J) -> Option<EdwardsPoint>
 where
     I: IntoIterator,

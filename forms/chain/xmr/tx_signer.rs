@@ -12,7 +12,6 @@
 #[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
-#[cfg(feature = "alloc-fallback")]
 use crate::chain::xmr::rct_sig::prove_bulletproofs_plus;
 // Alloc surface: consumers behind alloc-fallback / cfg(test).
 #[cfg(feature = "alloc-fallback")]

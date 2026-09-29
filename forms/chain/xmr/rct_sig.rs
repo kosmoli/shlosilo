@@ -333,6 +333,7 @@ pub fn prove_bulletproofs_plus<R: RngCore + CryptoRng>(
 /// - `commitments`: compressed points (32 bytes each) for verification
 ///
 /// **Output**: true if valid
+#[cfg(feature = "alloc-fallback")]
 pub fn verify_bulletproofs_plus<R: RngCore + CryptoRng>(
     rng: &mut R,
     bp: &Bulletproof,

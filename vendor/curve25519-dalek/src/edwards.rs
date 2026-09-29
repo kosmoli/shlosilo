@@ -147,10 +147,12 @@ use crate::traits::BasepointTable;
 use crate::traits::ValidityCheck;
 use crate::traits::{Identity, IsIdentity};
 
-#[cfg(feature = "alloc")]
 use crate::traits::MultiscalarMul;
+// shlosilo vendor patch: VartimeMultiscalarMul is always available (the
+// inline vartime path is zero-alloc; only pippenger precompute stays gated).
+use crate::traits::VartimeMultiscalarMul;
 #[cfg(feature = "alloc")]
-use crate::traits::{VartimeMultiscalarMul, VartimePrecomputedMultiscalarMul};
+use crate::traits::VartimePrecomputedMultiscalarMul;
 
 // ------------------------------------------------------------------------
 // Compressed points
@@ -831,7 +833,8 @@ impl EdwardsPoint {
 // These use the iterator's size hint and the target settings to
 // forward to a specific backend implementation.
 
-#[cfg(feature = "alloc")]
+// shlosilo vendor patch: always available — routes to Straus, whose inline
+// small-count path is zero-alloc (Vec tail only behind alloc-fallback).
 impl MultiscalarMul for EdwardsPoint {
     type Point = EdwardsPoint;
 
@@ -863,7 +866,7 @@ impl MultiscalarMul for EdwardsPoint {
     }
 }
 
-#[cfg(feature = "alloc")]
+// shlosilo vendor patch: always available — inline vartime path, zero-alloc.
 impl VartimeMultiscalarMul for EdwardsPoint {
     type Point = EdwardsPoint;
 
@@ -893,7 +896,17 @@ impl VartimeMultiscalarMul for EdwardsPoint {
         if size < 190 {
             crate::backend::straus_optional_multiscalar_mul(scalars, points)
         } else {
-            crate::backend::pippenger_optional_multiscalar_mul(scalars, points)
+            // shlosilo vendor patch: without alloc there is no pippenger —
+            // fall back to straus, whose large-count tail fails per the Z6
+            // contract (scratch must be provided via *_scratch entry points).
+            #[cfg(feature = "alloc")]
+            {
+                crate::backend::pippenger_optional_multiscalar_mul(scalars, points)
+            }
+            #[cfg(not(feature = "alloc"))]
+            {
+                crate::backend::straus_optional_multiscalar_mul(scalars, points)
+            }
         }
     }
 }

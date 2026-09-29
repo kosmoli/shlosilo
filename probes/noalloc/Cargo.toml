@@ -40,3 +40,7 @@ g2p = { path = "../../vendor/g2p" }
 g2poly = { path = "../../vendor/g2poly" }
 quircs = { path = "../../vendor/quircs" }
 monero-clsag = { path = "../../vendor/monero-clsag" }
+# Mirror parent: the vendored de-alloc copies (see root Cargo.toml comment).
+monero-ed25519 = { path = "../../vendor/monero-ed25519" }
+monero-io = { path = "../../vendor/monero-io" }
+std-shims = { path = "../../vendor/std-shims" }

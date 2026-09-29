@@ -4,6 +4,7 @@ pub use std::io::*;
 #[cfg(not(feature = "std"))]
 mod shims {
   use core::fmt::{Debug, Formatter};
+  #[cfg(feature = "alloc")]
   use alloc::{boxed::Box, vec::Vec};
 
   #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -12,9 +13,16 @@ mod shims {
     Other,
   }
 
+  #[cfg(feature = "alloc")]
   pub struct Error {
     kind: ErrorKind,
     error: Box<dyn Send + Sync>,
+  }
+  /// No-alloc shape: kind survives; the boxed message is diagnostic-only
+  /// and dropped on this face (Error::other keeps kind == Other).
+  #[cfg(not(feature = "alloc"))]
+  pub struct Error {
+    kind: ErrorKind,
   }
 
   impl Debug for Error {
@@ -24,20 +32,35 @@ mod shims {
   }
 
   impl Error {
+    #[cfg(feature = "alloc")]
     pub fn new<E: 'static + Send + Sync>(kind: ErrorKind, error: E) -> Error {
       Error { kind, error: Box::new(error) }
     }
+    #[cfg(not(feature = "alloc"))]
+    pub fn new<E: 'static + Send + Sync>(kind: ErrorKind, _error: E) -> Error {
+      Error { kind }
+    }
 
+    #[cfg(feature = "alloc")]
     pub fn other<E: 'static + Send + Sync>(error: E) -> Error {
       Error { kind: ErrorKind::Other, error: Box::new(error) }
+    }
+    #[cfg(not(feature = "alloc"))]
+    pub fn other<E: 'static + Send + Sync>(_error: E) -> Error {
+      Error { kind: ErrorKind::Other }
     }
 
     pub fn kind(&self) -> ErrorKind {
       self.kind
     }
 
+    #[cfg(feature = "alloc")]
     pub fn into_inner(self) -> Option<Box<dyn Send + Sync>> {
       Some(self.error)
+    }
+    #[cfg(not(feature = "alloc"))]
+    pub fn into_inner(self) -> Option<()> {
+      None
     }
   }
 
@@ -94,6 +117,7 @@ mod shims {
     }
   }
 
+#[cfg(feature = "alloc")]
   impl Write for Vec<u8> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
       self.extend(buf);

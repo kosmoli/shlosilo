@@ -9,7 +9,7 @@ use zeroize::Zeroize;
 
 use curve25519_dalek::{constants::ED25519_BASEPOINT_POINT, EdwardsPoint, Scalar};
 
-use monero_bulletproofs_generators::COMMITMENT_BITS;
+use crate::COMMITMENT_BITS;
 use monero_ed25519::{Commitment, CompressedPoint};
 
 use crate::{

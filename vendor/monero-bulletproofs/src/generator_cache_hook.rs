@@ -166,7 +166,18 @@ pub(crate) fn take_table_storage(prefix: &'static [u8]) -> Option<GeneratorTable
 /// Returns (g_bytes, h_bytes, blob_bytes).
 pub fn generator_table_sizes(set: GeneratorSet) -> (usize, usize, usize) {
     let (g, h) = match set {
-        GeneratorSet::Bulletproof => (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN),
+        // Z6: the Original table only exists on the alloc face. Zero capacity
+        // is the honest no-alloc answer — provide/init fail cleanly on it.
+        GeneratorSet::Bulletproof => {
+            #[cfg(feature = "alloc-fallback")]
+            {
+                (crate::original::TABLE_G_LEN, crate::original::TABLE_H_LEN)
+            }
+            #[cfg(not(feature = "alloc-fallback"))]
+            {
+                (0, 0)
+            }
+        }
         GeneratorSet::BulletproofPlus => (crate::plus::TABLE_G_LEN, crate::plus::TABLE_H_LEN),
     };
     let g_bytes = g * core::mem::size_of::<EdwardsPoint>();
@@ -301,6 +312,7 @@ unsafe fn table_slices(
 }
 
 // A3: `?` conversions from the table-init error into the proof error types.
+#[cfg(feature = "alloc-fallback")]
 impl From<InitError> for crate::original::inner_product::IpError {
     fn from(e: InitError) -> Self {
         match e {

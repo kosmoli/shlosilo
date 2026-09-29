@@ -2,8 +2,9 @@
 
 use curve25519_dalek::{constants::ED25519_BASEPOINT_POINT, EdwardsPoint, Scalar};
 
+pub(crate) use crate::monero_h;
 #[cfg(feature = "alloc-fallback")]
-pub(crate) use crate::{monero_h, point_vector::PointVector, scalar_vector::ScalarVector};
+pub(crate) use crate::{point_vector::PointVector, scalar_vector::ScalarVector};
 
 pub(crate) mod transcript;
 pub mod weighted_inner_product;
@@ -48,7 +49,6 @@ impl BpPlusGenerators {
         self.g_bold.len()
     }
 
-#[cfg(feature = "alloc-fallback")]
     pub(crate) fn g() -> EdwardsPoint {
         monero_h()
     }
@@ -64,7 +64,6 @@ impl BpPlusGenerators {
         }
     }
 
-#[cfg(feature = "alloc-fallback")]
     pub(crate) fn reduce(&self, generators: usize) -> Self {
         // Round to the nearest power of 2
         let generators = padded_pow_of_2(generators);

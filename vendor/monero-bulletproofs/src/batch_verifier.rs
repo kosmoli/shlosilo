@@ -10,7 +10,9 @@ use curve25519_dalek::{
 
 use crate::generator_cache_hook::Generators;
 
-use crate::{monero_h, original, plus};
+use crate::{monero_h, plus};
+#[cfg(feature = "alloc-fallback")]
+use crate::original;
 
 #[derive(Default)]
 pub(crate) struct InternalBatchVerifier {
