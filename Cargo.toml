@@ -74,6 +74,9 @@ curve25519-dalek = { version = "4", default-features = false, features = ["zeroi
 monero-clsag = { version = "0.1", default-features = false }  # CLSAG ring signature (XMR)
 monero-bulletproofs = { path = "vendor/monero-bulletproofs", default-features = false, features = ["compile-time-generators"] }  # Bulletproofs+; vendor patch: generator loop decompresses to avoid vec![decompress();2048] blowing the stack
 base58-monero = { version = "2", default-features = false }  # XMR base58 (encoding class, audited; check feature omitted because encode_check has a bug and we hand-write it)
+# explicit so alloc-fallback can map the alloc re-export root (vendor-patched)
+std-shims = { version = "0.1.5", default-features = false }
+monero-io = { version = "0.1.0", default-features = false }
 cuprate-cryptonight = { path = "vendor/cryptonight", default-features = false }  # CryptoNight V0 (XMR txset chacha key derivation); vendored no_std version, see the comment in vendor/cryptonight/Cargo.toml
 chacha20 = { version = "0.9", default-features = false }  # ChaCha20 + ChaCha20Legacy (XMR txset decryption; keystone uses the same 0.9.1)
 # §B.5 RNG injection finalized: entropy → HKDF-SHA256 → ChaCha20Rng (no homemade DRBG)
@@ -114,7 +117,7 @@ generator-cache-ffi = []
 # Z5.2b: transitional generator no-storage fallback (vendor alloc-fallback).
 # Host/tests default ON; device builds (Z6 no-allocator acceptance) build with
 # --no-default-features (plus std as needed) and MUST provide table storage.
-alloc-fallback = ["monero-bulletproofs/alloc-fallback", "monero-clsag/alloc-fallback", "curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc", "cuprate-cryptonight/alloc-fallback"]
+alloc-fallback = ["monero-bulletproofs/alloc-fallback", "monero-clsag/alloc-fallback", "curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc", "cuprate-cryptonight/alloc-fallback", "std-shims/alloc", "monero-io/alloc", "monero-bulletproofs-generators/alloc", "base58-monero/alloc"]
 # Device primitive perf-bench FFI (raw per-op costs; diagnostic only).
 perf-bench-ffi = ["curve25519-dalek/perf-bench"]
 prove-timing-ffi = ["monero-bulletproofs/prove-timing"]
@@ -208,4 +211,10 @@ monero-clsag = { path = "vendor/monero-clsag" }
 # Exit condition: upstream merges the no-alloc API faces (see VENDOR.md).
 monero-ed25519 = { path = "vendor/monero-ed25519" }
 monero-io = { path = "vendor/monero-io" }
+monero-bulletproofs-generators = { path = "vendor/monero-bulletproofs-generators" }
+# base58-monero (monero-rs): vendored 2026-09-29 with a visibility-only patch
+# (`encode_block` pub) so the XMR address encoder emits block-wise into caller
+# buffers (Z6 zero-heap; the String `encode` pins an allocator). Algorithm
+# untouched; exit condition: upstream exposes a no-alloc encode face.
+base58-monero = { path = "vendor/base58-monero" }
 std-shims = { path = "vendor/std-shims" }

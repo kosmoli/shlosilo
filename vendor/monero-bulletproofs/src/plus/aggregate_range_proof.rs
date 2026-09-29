@@ -1,3 +1,4 @@
+#[cfg(feature = "alloc-fallback")]
 use std_shims::{vec, vec::Vec};
 
 // shlosilo vendor patch: prove-phase timing (device perf decomposition).
@@ -32,8 +33,12 @@ use curve25519_dalek::{edwards::EdwardsPoint, scalar::Scalar, traits::Identity a
 
 use monero_ed25519::{Commitment, CompressedPoint, Point};
 
+#[cfg(feature = "alloc-fallback")]
+use crate::batch_verifier::BulletproofsPlusBatchVerifier;
+#[cfg(feature = "alloc-fallback")]
+#[cfg(feature = "alloc-fallback")]
+use crate::plus::{u64_decompose, PointVector, ScalarVector};
 use crate::{
-    batch_verifier::BulletproofsPlusBatchVerifier,
     core::{multiexp, multiexp_vartime, COMMITMENT_BITS, MAX_COMMITMENTS},
     plus::{
         padded_pow_of_2,
@@ -42,9 +47,6 @@ use crate::{
         BpPlusGenerators, GeneratorsList,
     },
 };
-#[cfg(feature = "alloc-fallback")]
-#[cfg(feature = "alloc-fallback")]
-use crate::plus::{u64_decompose, PointVector, ScalarVector};
 
 const INV_EIGHT: monero_ed25519::Scalar = monero_ed25519::Scalar::INV_EIGHT;
 
@@ -113,7 +115,7 @@ impl<'a> AggregateRangeStatement<'a> {
         (y, z)
     }
 
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     fn d_j(j: usize, m: usize) -> ScalarVector {
         let mut d_j = Vec::with_capacity(m * COMMITMENT_BITS);
         for _ in 0..(j - 1) * COMMITMENT_BITS {
@@ -452,7 +454,7 @@ impl<'a> AggregateRangeStatement<'a> {
         Some(proof)
     }
 
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn verify<R: RngCore + CryptoRng>(
         self,
         rng: &mut R,

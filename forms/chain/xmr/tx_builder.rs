@@ -51,12 +51,12 @@ use sha2::{Digest, Sha256};
 #[allow(unused_imports)]
 use crate::chain::xmr::clsag::{self as clsag_mod};
 // Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
+#[cfg(feature = "alloc-fallback")]
+use crate::chain::xmr::rct_sig::verify_bulletproofs_plus;
 #[allow(unused_imports)]
 use crate::chain::xmr::rct_sig::{
     prove_bulletproofs_plus, pseudo_out_commitment, RctSig, RctSigBase, RctSigPrunable,
 };
-#[cfg(feature = "alloc-fallback")]
-use crate::chain::xmr::rct_sig::verify_bulletproofs_plus;
 use crate::chain::xmr::reduce_scalar::reduce_scalar;
 // Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
 #[allow(unused_imports)]

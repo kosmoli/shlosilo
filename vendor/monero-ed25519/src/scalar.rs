@@ -1,7 +1,6 @@
 use core::ops::DerefMut as _;
 
 #[allow(unused_imports)]
-use std_shims::prelude::*;
 use std_shims::io::{self, *};
 
 use subtle::{Choice, ConstantTimeEq, ConditionallySelectable};

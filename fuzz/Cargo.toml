@@ -48,6 +48,8 @@ curve25519-dalek = { path = "../vendor/curve25519-dalek" }
 # Mirror parent workspace: vendored de-alloc copies (see root Cargo.toml).
 monero-ed25519 = { path = "../vendor/monero-ed25519" }
 monero-io = { path = "../vendor/monero-io" }
+monero-bulletproofs-generators = { path = "../vendor/monero-bulletproofs-generators" }
+base58-monero = { path = "../vendor/base58-monero" }
 std-shims = { path = "../vendor/std-shims" }
 # clsag 方案 A (Z5): the vendored monero-clsag carries the de-alloc surgery
 # the forms wrapper is written against (borrowed Decoys/sign inputs,

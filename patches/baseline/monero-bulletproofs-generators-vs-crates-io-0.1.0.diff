@@ -1,0 +1,86 @@
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
++++ b/Cargo.toml	2026-09-29 09:42:05.246001989 +0800
+@@ -34,7 +34,9 @@
+ ]
+ 
+ [features]
+-default = ["std"]
++# shlosilo vendor patch: the Vec-shaped Generators surface
++default = ["alloc"]
++alloc = ["std-shims/alloc"]
+ std = [
+     "std-shims/std",
+     "monero-io/std",
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml.orig b/Cargo.toml.orig
+--- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
++++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
+@@ -1,38 +0,0 @@
+-[package]
+-name = "monero-bulletproofs-generators"
+-version = "0.1.0"
+-description = "Monero's hash to point function and generators"
+-license = "MIT"
+-repository = "https://github.com/monero-oxide/monero-oxide/tree/main/monero-oxide/ringct/bulletproofs/generators"
+-authors = ["Luke Parker <lukeparker5132@gmail.com>"]
+-edition = "2021"
+-rust-version = "1.65"
+-
+-[package.metadata.docs.rs]
+-all-features = true
+-rustdoc-args = ["--cfg", "docsrs"]
+-
+-[lints]
+-workspace = true
+-
+-[dependencies]
+-std-shims = { version = "0.1.5", default-features = false }
+-
+-curve25519-dalek = { version = "4", default-features = false }
+-
+-monero-io = { path = "../../../io", version = "0.1", default-features = false }
+-monero-ed25519 = { path = "../../../ed25519", version = "0.1", default-features = false }
+-monero-primitives = { path = "../../../primitives", version = "0.1", default-features = false }
+-
+-[dev-dependencies]
+-hex = "0.4"
+-
+-[features]
+-std = [
+-  "std-shims/std",
+-
+-  "monero-io/std",
+-  "monero-ed25519/std",
+-  "monero-primitives/std",
+-]
+-default = ["std"]
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/.cargo_vcs_info.json b/.cargo_vcs_info.json
+--- a/.cargo_vcs_info.json	2006-07-24 09:21:28.000000000 +0800
++++ b/.cargo_vcs_info.json	1970-01-01 08:00:00.000000000 +0800
+@@ -1,6 +0,0 @@
+-{
+-  "git": {
+-    "sha1": "9e11f5c0f2b18ab821192efa427c863086b51379"
+-  },
+-  "path_in_vcs": "monero-oxide/ringct/bulletproofs/generators"
+-}
+\ 文件末尾没有换行符
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/lib.rs	2026-09-29 09:42:05.247142720 +0800
+@@ -20,6 +20,7 @@
+ /// Container struct for Bulletproofs(+) generators.
+ #[allow(non_snake_case)]
+ #[doc(hidden)]
++#[cfg(feature = "alloc")]
+ pub struct Generators {
+   /// The G (bold) vector of generators.
+   #[doc(hidden)]
+@@ -34,6 +35,7 @@
+ /// Consumers should not call this function ad-hoc, yet call it within a build script or use a
+ /// once-initialized static.
+ #[doc(hidden)]
++#[cfg(feature = "alloc")]
+ pub fn bulletproofs_generators(dst: &'static [u8]) -> Generators {
+   // The maximum amount of bits used within a single range proof.
+   const MAX_MN: usize = MAX_BULLETPROOF_COMMITMENTS * COMMITMENT_BITS;

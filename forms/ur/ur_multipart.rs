@@ -7,6 +7,7 @@
 //!
 //! The single-frame channel (small transactions emitted directly as one large QR) keeps using `ur_encode::encode` — this module only handles multipart.
 
+#[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
 use crate::encoding::bytewords;
@@ -495,6 +496,7 @@ impl<'a> UrMultipartDecoder<'a> {
     /// v1: the shell hosts its own leaked workspace (same carve shape as
     /// `ur_decode_ws_place`), so `receive_frame` is allocation-free per call
     /// on every construction path.
+    #[cfg(feature = "alloc-fallback")]
     pub fn new() -> Self {
         let ws: &'static mut [u8] =
             alloc::boxed::Box::leak(alloc::vec![0u8; ur_decode_ws_len()].into_boxed_slice());
@@ -639,6 +641,7 @@ impl<'a> UrMultipartDecoder<'a> {
     /// Payload after completion (None = incomplete)
     ///
     /// Test/legacy convenience (allocates). Production paths use `payload_into`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn payload(&self) -> Result<Option<alloc::vec::Vec<u8>>> {
         self.inner
             .message()
@@ -646,6 +649,7 @@ impl<'a> UrMultipartDecoder<'a> {
     }
 }
 
+#[cfg(feature = "alloc-fallback")]
 impl Default for UrMultipartDecoder<'_> {
     fn default() -> Self {
         Self::new()

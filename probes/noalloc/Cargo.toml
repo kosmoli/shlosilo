@@ -43,4 +43,7 @@ monero-clsag = { path = "../../vendor/monero-clsag" }
 # Mirror parent: the vendored de-alloc copies (see root Cargo.toml comment).
 monero-ed25519 = { path = "../../vendor/monero-ed25519" }
 monero-io = { path = "../../vendor/monero-io" }
+monero-bulletproofs-generators = { path = "../../vendor/monero-bulletproofs-generators" }
+# Mirror parent: vendored base58 (visibility-only patch, see root comment).
+base58-monero = { path = "../../vendor/base58-monero" }
 std-shims = { path = "../../vendor/std-shims" }

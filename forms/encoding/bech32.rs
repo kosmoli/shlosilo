@@ -253,7 +253,14 @@ pub(crate) fn decode(s: &str) -> Result<(heapless::String<32>, heapless::Vec<u8,
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    let s_lower = s.to_ascii_lowercase();
+    // Z6 zero-heap: lowercase in place on the stack (s.len() <= 90, checked
+    // above) instead of `to_ascii_lowercase()` which returns a String.
+    let mut lower_buf = [0u8; 90];
+    lower_buf[..s.len()].copy_from_slice(s.as_bytes());
+    for b in lower_buf[..s.len()].iter_mut() {
+        *b = b.to_ascii_lowercase();
+    }
+    let s_lower = core::str::from_utf8(&lower_buf[..s.len()]).expect("ascii copy");
     let pos2 = s_lower
         .rfind('1')
         .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;

@@ -34,7 +34,7 @@ use crate::curve_primitive::ed25519::{point_to_compressed, Ed25519Point};
 use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::network::Network;
-use base58_monero::encode as base58_monero_encode;
+use base58_monero::base58::{encode_block, ENCODED_BLOCK_SIZES, FULL_BLOCK_SIZE};
 use core::fmt;
 
 /// Maximum XMR address length (base58-encoding 69 bytes = 8-byte × 8 + 5-byte tail → 11×8 + 7 = 95 chars, safe margin below 128)
@@ -132,13 +132,31 @@ pub fn encode(
     let checksum_full = keccak256::hash(&payload)?;
     let checksum = &checksum_full[..XMR_CHECKSUM_LEN];
 
-    // 5. Correct encoding: 8 full blocks + 1 byte tail
-    //    full blocks (64 bytes) → 88 chars
-    let full_blocks = &payload[..XMR_PAYLOAD_LEN - 1]; // 64 bytes
-    let encoded_full = base58_monero_encode(full_blocks)
-        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    // 5-7. Correct encoding: 8 full blocks + 1 byte tail; last 1 payload byte
+    // + 4 checksum bytes = 5 bytes → 7 chars. Z6 zero-heap: block-wise base58
+    // via the vendored audited `encode_block` — byte-identical to
+    // `base58_monero::encode`, without the intermediate String.
+    fn encode_blocks_into(
+        dst: &mut heapless::String<XMR_ADDRESS_MAX_LEN>,
+        mut data: &[u8],
+    ) -> Result<()> {
+        while !data.is_empty() {
+            let n = core::cmp::min(data.len(), FULL_BLOCK_SIZE);
+            let block = encode_block(&data[..n])
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            for c in block[..ENCODED_BLOCK_SIZES[n]].iter() {
+                dst.push(*c)
+                    .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+            }
+            data = &data[n..];
+        }
+        Ok(())
+    }
 
-    // 6. last 1 byte of payload + 4 checksum bytes = 5 bytes → 7 chars
+    let mut address: heapless::String<XMR_ADDRESS_MAX_LEN> = heapless::String::new();
+    encode_blocks_into(&mut address, &payload[..XMR_PAYLOAD_LEN - 1])?; // 64 bytes → 88 chars
+
+    // last 1 byte of payload + 4 checksum bytes = 5 bytes → 7 chars
     let mut tail_block: heapless::Vec<u8, 8> = heapless::Vec::new();
     tail_block
         .extend_from_slice(&payload[XMR_PAYLOAD_LEN - 1..])
@@ -146,17 +164,7 @@ pub fn encode(
     tail_block
         .extend_from_slice(checksum)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
-    let encoded_tail = base58_monero_encode(&tail_block)
-        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-
-    // 7. Concatenate → 95 chars
-    let mut address: heapless::String<XMR_ADDRESS_MAX_LEN> = heapless::String::new();
-    address
-        .push_str(&encoded_full)
-        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
-    address
-        .push_str(&encoded_tail)
-        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+    encode_blocks_into(&mut address, &tail_block)?;
 
     Ok(XmrAddress { bytes: address })
 }

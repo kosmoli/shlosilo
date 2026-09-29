@@ -3,10 +3,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(non_snake_case)]
 
-use std_shims::{
-    io::{self, Read, Write},
-    prelude::*,
-};
+use std_shims::io::{self, Read, Write};
+#[cfg(feature = "alloc-fallback")]
+use std_shims::prelude::*;
 
 use rand_core::{CryptoRng, RngCore};
 
@@ -68,8 +67,11 @@ pub use prove_timing_hook::{phase_ms, register_prove_timing_clock, reset as rese
 
 pub(crate) mod core;
 
+#[cfg(feature = "alloc-fallback")]
 pub(crate) mod batch_verifier;
+#[cfg(feature = "alloc-fallback")]
 pub use batch_verifier::BatchVerifier;
+#[cfg(feature = "alloc-fallback")]
 use batch_verifier::{BulletproofsBatchVerifier, BulletproofsPlusBatchVerifier};
 
 // Z6 link-surface: the legacy Original line is alloc-fallback material —
@@ -223,7 +225,7 @@ impl Bulletproof {
     /// multiexp scratch (`>= 2 * padded_pow_of_2(outputs.len() * 64) + 2`
     /// entries; over-cap is an explicit `BulletproofError`). The prove chain
     /// writes its per-site term lists here instead of heap Vecs.
-pub fn prove_plus<R: RngCore + CryptoRng>(
+    pub fn prove_plus<R: RngCore + CryptoRng>(
         rng: &mut R,
         outputs: &[Commitment],
         terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
@@ -326,7 +328,7 @@ pub fn prove_plus<R: RngCore + CryptoRng>(
     ///
     /// The BatchVerifier must have its verification function executed to actually verify this proof.
     #[must_use]
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     pub fn batch_verify<R: RngCore + CryptoRng>(
         &self,
         rng: &mut R,
@@ -451,6 +453,7 @@ pub fn prove_plus<R: RngCore + CryptoRng>(
             // Z6 link-surface: override the default `write_all` (its
             // short-write error path boxes the error payload). `write` is
             // all-or-error by construction, so this is byte-equivalent.
+            #[cfg(feature = "alloc-fallback")]
             fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
                 self.write(data).map(|_| ())
             }
@@ -493,6 +496,7 @@ pub fn prove_plus<R: RngCore + CryptoRng>(
     }
 
     /// Serialize a Bulletproof(+) to a `Vec<u8>`.
+    #[cfg(feature = "alloc-fallback")]
     pub fn serialize(&self) -> Vec<u8> {
         let mut serialized = Vec::with_capacity(512);
         self.write(&mut serialized)
@@ -502,6 +506,7 @@ pub fn prove_plus<R: RngCore + CryptoRng>(
 
     #[cfg(feature = "alloc-fallback")]
     /// Read a Bulletproof.
+    #[cfg(feature = "alloc")]
     #[cfg(feature = "alloc")]
     pub fn read<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
         Ok(Bulletproof::Original(OriginalProof {
@@ -522,6 +527,7 @@ pub fn prove_plus<R: RngCore + CryptoRng>(
     }
 
     /// Read a Bulletproof+.
+    #[cfg(feature = "alloc")]
     #[cfg(feature = "alloc")]
     pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
         // shlosilo vendor patch (Z5.3 C-cut C): the wire reader stages into a

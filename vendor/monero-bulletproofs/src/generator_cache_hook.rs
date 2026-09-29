@@ -123,6 +123,8 @@ impl GeneratorSet {
     }
 }
 
+// shlosilo vendor patch: plain statics (const-constructible mutexes) — the
+// LazyLock once-cells pulled `alloc::sync` into the graph.
 static TABLE_BP: Mutex<Option<GeneratorTableStorage>> = Mutex::new(None);
 static TABLE_BP_PLUS: Mutex<Option<GeneratorTableStorage>> = Mutex::new(None);
 static TABLE_TAKEN_BP: Mutex<bool> = Mutex::new(false);

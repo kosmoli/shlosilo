@@ -1,4 +1,4 @@
-diff -ruN a/benches/dalek_benchmarks.rs b/benches/dalek_benchmarks.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/benches/dalek_benchmarks.rs b/benches/dalek_benchmarks.rs
 --- a/benches/dalek_benchmarks.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/benches/dalek_benchmarks.rs	1970-01-01 08:00:00.000000000 +0800
 @@ -1,366 +0,0 @@
@@ -368,13 +368,7 @@ diff -ruN a/benches/dalek_benchmarks.rs b/benches/dalek_benchmarks.rs
 -    edwards_benches::edwards_benches,
 -    multiscalar_benches::multiscalar_benches,
 -);
-diff -ruN a/.cargo-ok b/.cargo-ok
---- a/.cargo-ok	1970-01-01 08:00:00.000000000 +0800
-+++ b/.cargo-ok	2026-09-07 17:24:44.624625740 +0800
-@@ -0,0 +1 @@
-+{"v":1}
-\ 文件末尾没有换行符
-diff -ruN a/Cargo.toml b/Cargo.toml
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	1970-01-01 08:00:01.000000000 +0800
 +++ b/Cargo.toml	2026-09-27 16:01:41.752125400 +0800
 @@ -127,9 +127,24 @@
@@ -402,7 +396,7 @@ diff -ruN a/Cargo.toml b/Cargo.toml
      "precomputed-tables",
      "zeroize",
  ]
-diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml.orig b/Cargo.toml.orig
 --- a/Cargo.toml.orig	2006-07-24 09:21:28.000000000 +0800
 +++ b/Cargo.toml.orig	1970-01-01 08:00:00.000000000 +0800
 @@ -1,73 +0,0 @@
@@ -479,7 +473,7 @@ diff -ruN a/Cargo.toml.orig b/Cargo.toml.orig
 -
 -[target.'cfg(all(not(curve25519_dalek_backend = "fiat"), not(curve25519_dalek_backend = "serial"), target_arch = "x86_64"))'.dependencies]
 -curve25519-dalek-derive = { version = "0.1", path = "../curve25519-dalek-derive" }
-diff -ruN a/CHANGELOG.md b/CHANGELOG.md
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/CHANGELOG.md b/CHANGELOG.md
 --- a/CHANGELOG.md	2006-07-24 09:21:28.000000000 +0800
 +++ b/CHANGELOG.md	1970-01-01 08:00:00.000000000 +0800
 @@ -1,268 +0,0 @@
@@ -751,7 +745,7 @@ diff -ruN a/CHANGELOG.md b/CHANGELOG.md
 -
 -Initial stable release.  Yanked due to a dependency mistake (see above).
 -
-diff -ruN a/Makefile b/Makefile
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Makefile b/Makefile
 --- a/Makefile	2006-07-24 09:21:28.000000000 +0800
 +++ b/Makefile	1970-01-01 08:00:00.000000000 +0800
 @@ -1,11 +0,0 @@
@@ -766,10 +760,19 @@ diff -ruN a/Makefile b/Makefile
 -
 -doc-internal:
 -	cargo +nightly rustdoc --features "$(FEATURES)" -- --document-private-items
-diff -ruN a/src/backend/mod.rs b/src/backend/mod.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/mod.rs b/src/backend/mod.rs
 --- a/src/backend/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/mod.rs	2026-09-27 23:03:10.869851849 +0800
-@@ -193,6 +193,68 @@
++++ b/src/backend/mod.rs	2026-09-29 09:15:10.652432775 +0800
+@@ -166,7 +166,7 @@
+ }
+ 
+ #[allow(missing_docs)]
+-#[cfg(feature = "alloc")]
++// shlosilo vendor patch: always available (routes to Straus inline/scratch).
+ pub fn straus_multiscalar_mul<I, J>(scalars: I, points: J) -> EdwardsPoint
+ where
+     I: IntoIterator,
+@@ -193,8 +193,70 @@
      }
  }
  
@@ -836,9 +839,12 @@ diff -ruN a/src/backend/mod.rs b/src/backend/mod.rs
 +}
 +
  #[allow(missing_docs)]
- #[cfg(feature = "alloc")]
+-#[cfg(feature = "alloc")]
++// shlosilo vendor patch: always available (routes to Straus inline/scratch).
  pub fn straus_optional_multiscalar_mul<I, J>(scalars: I, points: J) -> Option<EdwardsPoint>
-diff -ruN a/src/backend/serial/curve_models/mod.rs b/src/backend/serial/curve_models/mod.rs
+ where
+     I: IntoIterator,
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/curve_models/mod.rs b/src/backend/serial/curve_models/mod.rs
 --- a/src/backend/serial/curve_models/mod.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/backend/serial/curve_models/mod.rs	2026-09-15 12:12:11.259428252 +0800
 @@ -335,6 +335,7 @@
@@ -873,9 +879,23 @@ diff -ruN a/src/backend/serial/curve_models/mod.rs b/src/backend/serial/curve_mo
      fn add(self, other: &'b ProjectiveNielsPoint) -> CompletedPoint {
          let Y_plus_X = &self.Y + &self.X;
          let Y_minus_X = &self.Y - &self.X;
-diff -ruN a/src/backend/serial/scalar_mul/pippenger.rs b/src/backend/serial/scalar_mul/pippenger.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/scalar_mul/mod.rs b/src/backend/serial/scalar_mul/mod.rs
+--- a/src/backend/serial/scalar_mul/mod.rs	2006-07-24 09:21:28.000000000 +0800
++++ b/src/backend/serial/scalar_mul/mod.rs	2026-09-29 09:13:21.856584108 +0800
+@@ -23,7 +23,9 @@
+ #[allow(missing_docs)]
+ pub mod vartime_double_base;
+ 
+-#[cfg(feature = "alloc")]
++// shlosilo vendor patch: straus is ALWAYS available — the small-count inline
++// path and the Z5.3 scratch face (`multiscalar_mul_scratch`) are zero-alloc;
++// only the Vec machinery inside is gated. Signing builds need this module.
+ pub mod straus;
+ 
+ #[cfg(feature = "alloc")]
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/scalar_mul/pippenger.rs b/src/backend/serial/scalar_mul/pippenger.rs
 --- a/src/backend/serial/scalar_mul/pippenger.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/serial/scalar_mul/pippenger.rs	2026-09-28 12:10:36.286085536 +0800
++++ b/src/backend/serial/scalar_mul/pippenger.rs	2026-09-28 14:46:36.744145766 +0800
 @@ -11,6 +11,7 @@
  
  #![allow(non_snake_case)]
@@ -912,9 +932,9 @@ diff -ruN a/src/backend/serial/scalar_mul/pippenger.rs b/src/backend/serial/scal
      }
  }
  
-diff -ruN a/src/backend/serial/scalar_mul/precomputed_straus.rs b/src/backend/serial/scalar_mul/precomputed_straus.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/scalar_mul/precomputed_straus.rs b/src/backend/serial/scalar_mul/precomputed_straus.rs
 --- a/src/backend/serial/scalar_mul/precomputed_straus.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/serial/scalar_mul/precomputed_straus.rs	2026-09-28 12:10:36.286237798 +0800
++++ b/src/backend/serial/scalar_mul/precomputed_straus.rs	2026-09-28 14:46:36.744145766 +0800
 @@ -11,6 +11,7 @@
  
  #![allow(non_snake_case)]
@@ -923,9 +943,9 @@ diff -ruN a/src/backend/serial/scalar_mul/precomputed_straus.rs b/src/backend/se
  use alloc::vec::Vec;
  
  use core::borrow::Borrow;
-diff -ruN a/src/backend/serial/scalar_mul/straus.rs b/src/backend/serial/scalar_mul/straus.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/scalar_mul/straus.rs b/src/backend/serial/scalar_mul/straus.rs
 --- a/src/backend/serial/scalar_mul/straus.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/serial/scalar_mul/straus.rs	2026-09-28 12:10:36.286388662 +0800
++++ b/src/backend/serial/scalar_mul/straus.rs	2026-09-28 14:46:36.744145766 +0800
 @@ -13,6 +13,7 @@
  
  #![allow(non_snake_case)]
@@ -1182,9 +1202,9 @@ diff -ruN a/src/backend/serial/scalar_mul/straus.rs b/src/backend/serial/scalar_
 +        }
      }
  }
-diff -ruN a/src/backend/vector/scalar_mul/pippenger.rs b/src/backend/vector/scalar_mul/pippenger.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/vector/scalar_mul/pippenger.rs b/src/backend/vector/scalar_mul/pippenger.rs
 --- a/src/backend/vector/scalar_mul/pippenger.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/vector/scalar_mul/pippenger.rs	2026-09-28 12:10:36.289282588 +0800
++++ b/src/backend/vector/scalar_mul/pippenger.rs	2026-09-28 14:46:36.744145766 +0800
 @@ -15,6 +15,7 @@
  )]
  pub mod spec {
@@ -1193,9 +1213,9 @@ diff -ruN a/src/backend/vector/scalar_mul/pippenger.rs b/src/backend/vector/scal
      use alloc::vec::Vec;
  
      use core::borrow::Borrow;
-diff -ruN a/src/backend/vector/scalar_mul/precomputed_straus.rs b/src/backend/vector/scalar_mul/precomputed_straus.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/vector/scalar_mul/precomputed_straus.rs b/src/backend/vector/scalar_mul/precomputed_straus.rs
 --- a/src/backend/vector/scalar_mul/precomputed_straus.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/vector/scalar_mul/precomputed_straus.rs	2026-09-28 12:10:36.289372305 +0800
++++ b/src/backend/vector/scalar_mul/precomputed_straus.rs	2026-09-28 14:46:36.744145766 +0800
 @@ -17,6 +17,7 @@
  )]
  pub mod spec {
@@ -1204,9 +1224,9 @@ diff -ruN a/src/backend/vector/scalar_mul/precomputed_straus.rs b/src/backend/ve
      use alloc::vec::Vec;
  
      use core::borrow::Borrow;
-diff -ruN a/src/backend/vector/scalar_mul/straus.rs b/src/backend/vector/scalar_mul/straus.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/vector/scalar_mul/straus.rs b/src/backend/vector/scalar_mul/straus.rs
 --- a/src/backend/vector/scalar_mul/straus.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/vector/scalar_mul/straus.rs	2026-09-28 12:10:36.289514557 +0800
++++ b/src/backend/vector/scalar_mul/straus.rs	2026-09-28 14:46:36.744145766 +0800
 @@ -17,6 +17,7 @@
  )]
  pub mod spec {
@@ -1448,10 +1468,25 @@ diff -ruN a/src/backend/vector/scalar_mul/straus.rs b/src/backend/vector/scalar_
                  .map(|P_opt| P_opt.map(|P| NafLookupTable5::<CachedPoint>::from(&P)))
                  .collect::<Option<Vec<_>>>()?;
  
-diff -ruN a/src/edwards.rs b/src/edwards.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/edwards.rs b/src/edwards.rs
 --- a/src/edwards.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/edwards.rs	2026-09-07 17:47:40.291904384 +0800
-@@ -505,6 +505,44 @@
++++ b/src/edwards.rs	2026-09-29 09:26:22.022690451 +0800
+@@ -147,10 +147,12 @@
+ use crate::traits::ValidityCheck;
+ use crate::traits::{Identity, IsIdentity};
+ 
+-#[cfg(feature = "alloc")]
+ use crate::traits::MultiscalarMul;
++// shlosilo vendor patch: VartimeMultiscalarMul is always available (the
++// inline vartime path is zero-alloc; only pippenger precompute stays gated).
++use crate::traits::VartimeMultiscalarMul;
+ #[cfg(feature = "alloc")]
+-use crate::traits::{VartimeMultiscalarMul, VartimePrecomputedMultiscalarMul};
++use crate::traits::VartimePrecomputedMultiscalarMul;
+ 
+ // ------------------------------------------------------------------------
+ // Compressed points
+@@ -505,6 +507,44 @@
  // ------------------------------------------------------------------------
  
  impl EdwardsPoint {
@@ -1496,9 +1531,47 @@ diff -ruN a/src/edwards.rs b/src/edwards.rs
      /// Convert to a ProjectiveNielsPoint
      pub(crate) fn as_projective_niels(&self) -> ProjectiveNielsPoint {
          ProjectiveNielsPoint {
-diff -ruN a/src/lib.rs b/src/lib.rs
+@@ -793,7 +833,8 @@
+ // These use the iterator's size hint and the target settings to
+ // forward to a specific backend implementation.
+ 
+-#[cfg(feature = "alloc")]
++// shlosilo vendor patch: always available — routes to Straus, whose inline
++// small-count path is zero-alloc (Vec tail only behind alloc-fallback).
+ impl MultiscalarMul for EdwardsPoint {
+     type Point = EdwardsPoint;
+ 
+@@ -825,7 +866,7 @@
+     }
+ }
+ 
+-#[cfg(feature = "alloc")]
++// shlosilo vendor patch: always available — inline vartime path, zero-alloc.
+ impl VartimeMultiscalarMul for EdwardsPoint {
+     type Point = EdwardsPoint;
+ 
+@@ -855,7 +896,17 @@
+         if size < 190 {
+             crate::backend::straus_optional_multiscalar_mul(scalars, points)
+         } else {
+-            crate::backend::pippenger_optional_multiscalar_mul(scalars, points)
++            // shlosilo vendor patch: without alloc there is no pippenger —
++            // fall back to straus, whose large-count tail fails per the Z6
++            // contract (scratch must be provided via *_scratch entry points).
++            #[cfg(feature = "alloc")]
++            {
++                crate::backend::pippenger_optional_multiscalar_mul(scalars, points)
++            }
++            #[cfg(not(feature = "alloc"))]
++            {
++                crate::backend::straus_optional_multiscalar_mul(scalars, points)
++            }
+         }
+     }
+ }
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-28 12:09:24.450753589 +0800
++++ b/src/lib.rs	2026-09-28 14:46:36.745145761 +0800
 @@ -52,6 +52,7 @@
  #[cfg(feature = "alloc")]
  #[allow(unused_imports)]
@@ -1529,7 +1602,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  pub use crate::{
      edwards::EdwardsPoint, montgomery::MontgomeryPoint, ristretto::RistrettoPoint, scalar::Scalar,
  };
-diff -ruN a/src/perf_bench.rs b/src/perf_bench.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/perf_bench.rs b/src/perf_bench.rs
 --- a/src/perf_bench.rs	1970-01-01 08:00:00.000000000 +0800
 +++ b/src/perf_bench.rs	2026-09-15 01:18:59.942233270 +0800
 @@ -0,0 +1,196 @@
@@ -1729,7 +1802,7 @@ diff -ruN a/src/perf_bench.rs b/src/perf_bench.rs
 +    }
 +    acc.compress().to_bytes()[0] as u64
 +}
-diff -ruN a/src/scalar.rs b/src/scalar.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/scalar.rs b/src/scalar.rs
 --- a/src/scalar.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/scalar.rs	2026-09-27 23:03:10.871035165 +0800
 @@ -796,7 +796,16 @@
@@ -1769,7 +1842,7 @@ diff -ruN a/src/scalar.rs b/src/scalar.rs
      pub(crate) fn as_radix_16(&self) -> [i8; 64] {
          debug_assert!(self[31] <= 127);
          let mut output = [0i8; 64];
-diff -ruN a/src/scratch.rs b/src/scratch.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/scratch.rs b/src/scratch.rs
 --- a/src/scratch.rs	1970-01-01 08:00:00.000000000 +0800
 +++ b/src/scratch.rs	2026-09-27 23:03:10.871144026 +0800
 @@ -0,0 +1,112 @@
@@ -1885,7 +1958,7 @@ diff -ruN a/src/scratch.rs b/src/scratch.rs
 +pub use crate::backend::{
 +    straus_multiscalar_mul_scratch, straus_optional_multiscalar_mul_scratch,
 +};
-diff -ruN a/src/window.rs b/src/window.rs
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/window.rs b/src/window.rs
 --- a/src/window.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/window.rs	2026-09-15 12:12:11.259342518 +0800
 @@ -51,6 +51,7 @@
@@ -1896,19 +1969,7 @@ diff -ruN a/src/window.rs b/src/window.rs
              pub fn select(&self, x: i8) -> T {
                  debug_assert!(x >= $neg);
                  debug_assert!(x as i16 <= $size as i16); // XXX We have to convert to i16s here for the radix-256 case.. this is wrong.
-diff -ruN a/target/flycheck0/stderr b/target/flycheck0/stderr
---- a/target/flycheck0/stderr	1970-01-01 08:00:00.000000000 +0800
-+++ b/target/flycheck0/stderr	2026-09-27 00:55:42.636518435 +0800
-@@ -0,0 +1,2 @@
-+error: Cargo.toml: can't find `dalek_benchmarks` bench at `benches/dalek_benchmarks.rs` or `benches/dalek_benchmarks/main.rs`. Please specify bench.path if you want to use a non-default path.
-+error: could not parse `curve25519-dalek` (manifest) due to 1 previous error
-diff -ruN a/target/.rustc_info.json b/target/.rustc_info.json
---- a/target/.rustc_info.json	1970-01-01 08:00:00.000000000 +0800
-+++ b/target/.rustc_info.json	2026-09-27 00:54:34.929775522 +0800
-@@ -0,0 +1 @@
-+{"rustc_fingerprint":15243412284191406956,"outputs":{"7971740275564407648":{"success":true,"status":"","code":0,"stdout":"___\nlib___.rlib\nlib___.so\nlib___.so\nlib___.a\nlib___.so\n/home/komo/.rustup/toolchains/stable-x86_64-unknown-linux-gnu\noff\npacked\nunpacked\n___\ndebug_assertions\npanic=\"unwind\"\nproc_macro\ntarget_abi=\"\"\ntarget_arch=\"x86_64\"\ntarget_endian=\"little\"\ntarget_env=\"gnu\"\ntarget_family=\"unix\"\ntarget_feature=\"fxsr\"\ntarget_feature=\"sse\"\ntarget_feature=\"sse2\"\ntarget_has_atomic=\"16\"\ntarget_has_atomic=\"32\"\ntarget_has_atomic=\"64\"\ntarget_has_atomic=\"8\"\ntarget_has_atomic=\"ptr\"\ntarget_has_atomic_primitive_alignment=\"16\"\ntarget_has_atomic_primitive_alignment=\"32\"\ntarget_has_atomic_primitive_alignment=\"64\"\ntarget_has_atomic_primitive_alignment=\"8\"\ntarget_has_atomic_primitive_alignment=\"ptr\"\ntarget_os=\"linux\"\ntarget_pointer_width=\"64\"\ntarget_vendor=\"unknown\"\nunix\n","stderr":""},"11857020428658561806":{"success":true,"status":"","code":0,"stdout":"___\nlib___.rlib\nlib___.so\nlib___.so\nlib___.a\nlib___.so\n/home/komo/.rustup/toolchains/stable-x86_64-unknown-linux-gnu\noff\npacked\nunpacked\n___\ndebug_assertions\npanic=\"unwind\"\nproc_macro\ntarget_abi=\"\"\ntarget_arch=\"x86_64\"\ntarget_endian=\"little\"\ntarget_env=\"gnu\"\ntarget_family=\"unix\"\ntarget_feature=\"fxsr\"\ntarget_feature=\"sse\"\ntarget_feature=\"sse2\"\ntarget_has_atomic=\"16\"\ntarget_has_atomic=\"32\"\ntarget_has_atomic=\"64\"\ntarget_has_atomic=\"8\"\ntarget_has_atomic=\"ptr\"\ntarget_has_atomic_primitive_alignment=\"16\"\ntarget_has_atomic_primitive_alignment=\"32\"\ntarget_has_atomic_primitive_alignment=\"64\"\ntarget_has_atomic_primitive_alignment=\"8\"\ntarget_has_atomic_primitive_alignment=\"ptr\"\ntarget_os=\"linux\"\ntarget_pointer_width=\"64\"\ntarget_vendor=\"unknown\"\nunix\n","stderr":""},"6417213632752980485":{"success":true,"status":"","code":0,"stdout":"rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n","stderr":""}},"successes":{}}
-\ 文件末尾没有换行符
-diff -ruN a/tests/build_tests.sh b/tests/build_tests.sh
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/tests/build_tests.sh b/tests/build_tests.sh
 --- a/tests/build_tests.sh	2006-07-24 09:21:28.000000000 +0800
 +++ b/tests/build_tests.sh	1970-01-01 08:00:00.000000000 +0800
 @@ -1,88 +0,0 @@
@@ -2000,7 +2061,7 @@ diff -ruN a/tests/build_tests.sh b/tests/build_tests.sh
 -env RUSTFLAGS="--cfg curve25519_dalek_diagnostics=\"build\" --cfg curve25519_dalek_backend=\"serial\" --cfg curve25519_dalek_bits=\"32\"" cargo build > "$OUT" 2>&1
 -match_and_report "curve25519_dalek_backend is 'serial'" "$OUT"
 -match_and_report "curve25519_dalek_bits is '32'" "$OUT"
-diff -ruN a/vendor/ristretto.sage b/vendor/ristretto.sage
+diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/vendor/ristretto.sage b/vendor/ristretto.sage
 --- a/vendor/ristretto.sage	2006-07-24 09:21:28.000000000 +0800
 +++ b/vendor/ristretto.sage	1970-01-01 08:00:00.000000000 +0800
 @@ -1,857 +0,0 @@

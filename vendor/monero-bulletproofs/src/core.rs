@@ -1,5 +1,6 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(any(feature = "alloc-fallback", feature = "prove-timing"))]
 use std_shims::{vec, vec::Vec};
 
 use curve25519_dalek::{
@@ -234,6 +235,7 @@ Divide and conquer (worth investigating further):
 When there are 4 challenges (n=16), the iterative approach does 28 multiplications
 versus divide and conquer's 24.
 */
+#[cfg(feature = "alloc-fallback")]
 pub(crate) fn challenge_products(challenges: &[(Scalar, Scalar)]) -> Vec<Scalar> {
     let mut products = vec![Scalar::ONE; 1 << challenges.len()];
 

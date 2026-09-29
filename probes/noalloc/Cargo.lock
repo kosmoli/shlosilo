@@ -32,8 +32,6 @@ checksum = "fd307490d624467aa6f74b0eabb77633d1f758a7b25f12bceb0b22e08d9726f6"
 [[package]]
 name = "base58-monero"
 version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "174416d4074aa8a817937521f15c35d50f70bf0dcb4662a2795d49f777803265"
 
 [[package]]
 name = "base64ct"
@@ -572,8 +570,6 @@ dependencies = [
 [[package]]
 name = "monero-bulletproofs-generators"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb66ae7110ee718e10d932ef844b1ab4ca839263e9592f11bd338f562cee0c71"
 dependencies = [
  "curve25519-dalek",
  "monero-ed25519",
@@ -890,12 +886,14 @@ dependencies = [
  "monero-bulletproofs",
  "monero-clsag",
  "monero-ed25519",
+ "monero-io",
  "pbkdf2",
  "primeorder",
  "rand_chacha",
  "rand_core 0.6.4",
  "ripemd",
  "sha2 0.10.9",
+ "std-shims",
  "subtle",
  "tiny-keccak",
  "zeroize",

@@ -42,7 +42,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use monero_bulletproofs::{Bulletproof, MAX_COMMITMENTS};
-use monero_ed25519::{Commitment as MoneroCommitment, CompressedPoint, Scalar};
+#[cfg(feature = "alloc-fallback")]
+use monero_ed25519::CompressedPoint;
+use monero_ed25519::{Commitment as MoneroCommitment, Scalar};
 use rand_core::{CryptoRng, RngCore};
 
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};

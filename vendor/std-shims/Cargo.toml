@@ -42,7 +42,7 @@ rustdoc-args = [
 [features]
 # shlosilo vendor patch: the alloc re-export surface
 default = ["std", "alloc"]
-alloc = []
+alloc = ["dep:hashbrown"]
 std = []
 
 [lib]
@@ -50,6 +50,7 @@ name = "std_shims"
 path = "src/lib.rs"
 
 [dependencies.hashbrown]
+optional = true
 version = "0.16"
 features = [
     "default-hasher",

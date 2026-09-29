@@ -1,13 +1,16 @@
+#[cfg(feature = "alloc-fallback")]
 use std_shims::{vec, vec::Vec};
 
 use zeroize::Zeroize;
 
-use crate::{
-    core::{challenge_products, multiexp_vartime_alloc},
-    monero_h, scalar_vector::ScalarVector, BulletproofsBatchVerifier,
-};
 #[cfg(feature = "alloc-fallback")]
 use crate::point_vector::PointVector;
+use crate::{
+    core::{challenge_products, multiexp_vartime_alloc},
+    monero_h,
+    scalar_vector::ScalarVector,
+    BulletproofsBatchVerifier,
+};
 use curve25519_dalek::{EdwardsPoint, Scalar};
 use monero_ed25519::CompressedPoint;
 
@@ -49,7 +52,7 @@ impl IpWitness {
     ///
     /// This functions return None if the lengths of a, b are mismatched, not a power of two, or are
     /// empty.
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn new(a: ScalarVector, b: ScalarVector) -> Option<Self> {
         if a.0.is_empty() || (a.len() != b.len()) {
             None?;
@@ -97,7 +100,7 @@ impl IpStatement {
     ///
     /// Returns an error if this statement couldn't be proven for (such as if the witness isn't
     /// consistent).
-#[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "alloc-fallback")]
     pub(crate) fn prove(
         self,
         mut transcript: Scalar,

@@ -11,20 +11,20 @@
 
 [package]
 edition = "2021"
-rust-version = "1.67"
-name = "monero-bulletproofs"
+rust-version = "1.65"
+name = "monero-bulletproofs-generators"
 version = "0.1.0"
 authors = ["Luke Parker <lukeparker5132@gmail.com>"]
-build = "build.rs"
+build = false
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Bulletproofs(+) range proofs, as defined by the Monero protocol"
+description = "Monero's hash to point function and generators"
 readme = "README.md"
 license = "MIT"
-repository = "https://github.com/monero-oxide/monero-oxide/tree/main/monero-oxide/ringct/bulletproofs"
+repository = "https://github.com/monero-oxide/monero-oxide/tree/main/monero-oxide/ringct/bulletproofs/generators"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -34,47 +34,23 @@ rustdoc-args = [
 ]
 
 [features]
-compile-time-generators = ["curve25519-dalek/precomputed-tables"]
-# shlosilo vendor patch: prove-phase timing probes (device perf decomposition)
-prove-timing = ["std-shims/alloc"]
-# shlosilo vendor patch: transitional no-storage fallback (decompress into a
-# leaked Vec). Device builds (Z6 no-allocator acceptance) disable this and
-# MUST provide generator table storage up front.
-# shlosilo: transitional alloc fallback (boxed errors, Vec cold paths,
-# dalek large-count MSM tails). Zero-heap builds disable it.
-alloc-fallback = ["curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc"]
-default = [
-    "std",
-    "compile-time-generators",
-    "alloc-fallback",
-]
+# shlosilo vendor patch: the Vec-shaped Generators surface
+default = ["alloc"]
+alloc = ["std-shims/alloc"]
 std = [
     "std-shims/std",
-    "thiserror/std",
-    "rand_core/std",
-    "zeroize/std",
     "monero-io/std",
     "monero-ed25519/std",
-    "monero-bulletproofs-generators/std",
     "monero-primitives/std",
 ]
 
 [lib]
-name = "monero_bulletproofs"
+name = "monero_bulletproofs_generators"
 path = "src/lib.rs"
 
 [dependencies.curve25519-dalek]
 version = "4"
-features = [
-    "zeroize",
-    # shlosilo vendor patch: raw extended-coordinate access for the generator cache
-    "generator-cache",
-]
 default-features = false
-
-# shlosilo vendor patch: runtime dep removed — the Vec-based Generators API
-# pins an allocator to the crate graph. Constants are inlined (see src/lib.rs);
-# the crate stays as a build-dependency (table generation below).
 
 [dependencies.monero-ed25519]
 version = "0.1"
@@ -88,39 +64,12 @@ default-features = false
 version = "0.1"
 default-features = false
 
-[dependencies.rand_core]
-version = "0.6"
-default-features = false
-
 [dependencies.std-shims]
 version = "0.1.5"
 default-features = false
 
-[dependencies.thiserror]
-version = "2"
-default-features = false
-
-[dependencies.zeroize]
-version = "^1.5"
-features = ["zeroize_derive"]
-default-features = false
-
-[dev-dependencies.hex-literal]
-version = ">= 0.4, <= 1"
-default-features = false
-
-[build-dependencies.curve25519-dalek]
-version = "4"
-features = [
-    "alloc",
-    "zeroize",
-]
-default-features = false
-
-[build-dependencies.monero-bulletproofs-generators]
-version = "0.1"
-default-features = false
-features = ["alloc"]
+[dev-dependencies.hex]
+version = "0.4"
 
 [lints.clippy]
 alloc_instead_of_core = "warn"
