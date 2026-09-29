@@ -112,6 +112,19 @@ fn xmr_sign_reuse_determinism() {
     assert!(n1 > 0);
     let first = out[..n1].to_vec();
 
+    // T-11 straus codegen A/B handle: the signed-blob digest printed under
+    // `--nocapture` must be identical with and without the vendored
+    // `straus-compact-codegen` codegen attributes (pure `inline(never)`).
+    {
+        let d = shlosilo::encoding::sha256::hash(&first).expect("sha256");
+        let mut hx = String::with_capacity(64);
+        for b in d.iter() {
+            use core::fmt::Write as _;
+            write!(&mut hx, "{b:02x}").expect("hex");
+        }
+        println!("t11_straus_ab digest: sha256={hx} len={}", first.len());
+    }
+
     // sign #2: identical RNG seeds, SAME scratch stack (the reuse under test).
     let mut bp_rng = rand_chacha::ChaCha20Rng::from_seed([0xB1u8; 32]);
     let mut clsag_rng = rand_chacha::ChaCha20Rng::from_seed([0xC1u8; 32]);
