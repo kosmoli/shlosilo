@@ -2,6 +2,9 @@
 # shlosilo gate batch — bare exit codes, no trimming by change surface.
 cd ~/works/shlosilo-poc4 || exit 99
 cargo test --offline --all-targets > /tmp/g_test.log 2>&1; echo "TEST=$?"
+# T-04: mirror CI "Tests (all features)" — the feature-gated contract pins
+# (inv2/inv3 fptr round-trips) only compile under their features.
+cargo test --offline --all-targets --all-features > /tmp/g_testall.log 2>&1; echo "TESTALL=$?"
 bash scripts/clippy.sh > /tmp/g_clippy.log 2>&1; echo "CLIPPY=$?"
 cargo check --offline --target armv7-unknown-linux-gnueabihf > /tmp/g_arm.log 2>&1; echo "ARM=$?"
 cargo check --lib --no-default-features --target thumbv7em-none-eabihf > /tmp/g_embed1.log 2>&1; echo "EMBED1=$?"

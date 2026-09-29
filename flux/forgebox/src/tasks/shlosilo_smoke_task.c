@@ -125,7 +125,7 @@ extern unsigned int shlosilo_sram_pool_peak_blocks(void);
  * `extern unsigned long long f(unsigned int)` forms clash with the header's
  * uint32_t/uint64_t (on arm-none-eabi uint32_t is `unsigned long`). */
 
-static unsigned int smoke_tick_ms(void);
+static uint32_t smoke_tick_ms(void);
 /* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。
  * 64KB：ETH 实测 used 35K。生成元改为循环 decompress 后不再需要 512KB。 */
 #define SHLOSILO_SMOKE_STACK_BYTES (64u * 1024u)
@@ -331,7 +331,7 @@ static int run_checks(void)
     log_line("sign: start...");
     /* device-timing: 注册 ms 时钟（weak 符号，production .a 为 no-op） */
     shlosilo_timing_reset();
-    shlosilo_timing_set_clock_fn((unsigned int)smoke_tick_ms);
+    shlosilo_timing_set_clock_fn(smoke_tick_ms);
     uint32_t t0 = osKernelGetTickCount();
     int rc = shlosilo_sign_ur_ffi(FIXTURE_ETH_SIGN_REQUEST, idx12, 12,
                                   NULL, 0, 0, NULL, 0, out, sizeof(out), &actual,
@@ -445,7 +445,7 @@ static int run_checks(void)
     /* BP+ generator cache: register flash backend (no-op against a production
      * .a without the generator-cache-ffi feature). */
     gc_flash_init();
-    shlosilo_gen_cache_set_hooks((unsigned int)gc_load, (unsigned int)gc_store);
+    shlosilo_gen_cache_set_hooks(gc_load, gc_store);
     /* Cache state probe: 0=hit 1=blank 2=corrupt 3=not-ready */
     log_line("gencache pre: %u", (unsigned)gc_probe());
     /* A2 diagnostics: CRC time in the pre-sign context (the post value is printed
@@ -458,11 +458,11 @@ static int run_checks(void)
                  (unsigned)g_qspi_dp_after_latency);
     }
     /* BP+ prove-phase timing: same clock as device-timing. */
-    shlosilo_bp_timing_set_clock((unsigned int)smoke_tick_ms);
+    shlosilo_bp_timing_set_clock(smoke_tick_ms);
     shlosilo_bp_timing_reset();
-    shlosilo_cn_timing_set_clock((unsigned int)smoke_tick_ms);
+    shlosilo_cn_timing_set_clock(smoke_tick_ms);
     shlosilo_cn_timing_reset();
-    shlosilo_tx_phase_set_clock((unsigned int)smoke_tick_ms);
+    shlosilo_tx_phase_set_clock(smoke_tick_ms);
     shlosilo_tx_phase_reset();
     log_line("xmr: start...");
     {
@@ -580,10 +580,10 @@ void shlosilo_panic_hook(const uint8_t *msg, size_t len)
 }
 
 /* device-timing 时钟回调：给 Rust 侧的毫秒计数 */
-static unsigned int smoke_tick_ms(void);
-static unsigned int smoke_tick_ms(void)
+static uint32_t smoke_tick_ms(void);
+static uint32_t smoke_tick_ms(void)
 {
-    return (unsigned int)osKernelGetTickCount();
+    return (uint32_t)osKernelGetTickCount();
 }
 
 void ShlosiloSmokeTask(void *argument)

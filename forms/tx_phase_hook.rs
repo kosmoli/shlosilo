@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 pub const TX_PHASES: usize = 11;
 
-type ClockFn = fn() -> u32;
+type ClockFn = extern "C" fn() -> u32;
 
 #[allow(static_mut_refs)]
 static mut CLOCK_FN: Option<ClockFn> = None;
@@ -33,10 +33,10 @@ static ACC: [AtomicU32; TX_PHASES] = [
     AtomicU32::new(0),
 ];
 
-pub fn register_clock(f: ClockFn) {
+pub fn register_clock(f: Option<ClockFn>) {
     #[allow(static_mut_refs)]
     unsafe {
-        CLOCK_FN = Some(f);
+        CLOCK_FN = f;
     }
 }
 
@@ -98,22 +98,50 @@ impl PhaseProbe {
 mod tests {
     use super::*;
 
-    /// Audit #15 P2-01: `end()` must not index out of bounds for an invalid
-    /// phase id. Pre-fix it ran `ACC[(phase - 1) as usize]` directly, so phase 0
-    /// wrapped to 255 and panicked on the array bounds check — in every build,
-    /// not just overflow-checked ones.
+    /// Deterministic test clock for this module's single test.
+    static TICK: AtomicU32 = AtomicU32::new(0);
+
+    extern "C" fn test_clock() -> u32 {
+        TICK.load(Ordering::Relaxed)
+    }
+
+    /// T-04 inv2/inv3 + audit #15 P2-01. Single test function on purpose:
+    /// these touch the `static mut` clock, parallel tests would race on it.
     ///
-    /// Single test function on purpose: these touch the `static mut` clock.
+    /// inv2: a real 64-bit function address survives the C-ABI round trip
+    /// (`shlosilo_tx_phase_set_clock`) and the probe actually times through it.
+    /// inv3: `None` means unregistered — `PhaseProbe::start` refuses, reads are 0.
+    /// P2-01: `end()` must not index out of bounds for an invalid phase id
+    /// (pre-fix: `ACC[(phase - 1) as usize]` with phase 0 -> 255, panicking in
+    /// every build, not just overflow-checked ones).
     #[test]
-    fn probe_end_rejects_invalid_phase_ids() {
-        register_clock(|| 1000);
+    fn inv23_tx_clock_contract_and_phase_guards() {
+        // inv2: register through the C-ABI entry, drive a full probe cycle.
+        crate::ffi::tx_phase_ffi::shlosilo_tx_phase_set_clock(Some(test_clock));
+        reset_all();
+        TICK.store(2_000, Ordering::Relaxed);
+        let mut probe = PhaseProbe::start(1).expect("clock registered");
+        TICK.store(2_012, Ordering::Relaxed);
+        probe.end();
+        assert_eq!(
+            phase_ms(1),
+            12,
+            "inv2: probe must time through the registered pointer"
+        );
+
+        // P2-01: invalid ids must not underflow the 1-based index.
         for bad in [0u8, TX_PHASES as u8 + 1, 128, 255] {
             let mut probe = PhaseProbe::start(bad).expect("clock registered");
             probe.end(); // must not panic
         }
-        // A valid id still takes the accounting path.
-        let mut probe = PhaseProbe::start(1).expect("clock registered");
-        probe.end();
+
+        // inv3: None unregisters (last registration wins).
+        crate::ffi::tx_phase_ffi::shlosilo_tx_phase_set_clock(None);
         reset_all();
+        assert!(
+            PhaseProbe::start(1).is_none(),
+            "inv3: unregistered clock must refuse probes"
+        );
+        assert_eq!(phase_ms(1), 0, "inv3: unregistered clock must read as 0");
     }
 }

@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 pub const CN_PHASES: usize = 6;
 
-type ClockFn = fn() -> u32;
+type ClockFn = extern "C" fn() -> u32;
 
 static ACC: [AtomicU32; CN_PHASES] = [
     AtomicU32::new(0),
@@ -29,10 +29,10 @@ static ACC: [AtomicU32; CN_PHASES] = [
 #[allow(static_mut_refs)]
 static mut CLOCK_FN: Option<ClockFn> = None;
 
-pub fn register_clock(f: ClockFn) {
+pub fn register_clock(f: Option<ClockFn>) {
     #[allow(static_mut_refs)]
     unsafe {
-        CLOCK_FN = Some(f);
+        CLOCK_FN = f;
     }
 }
 
@@ -105,11 +105,15 @@ fn enabled() -> bool {
 mod tests {
     use super::*;
 
+    extern "C" fn test_clock() -> u32 {
+        1000
+    }
+
     /// Audit #15 P2-01: `end()` must not index out of bounds for an invalid
     /// phase id (pre-fix: `ACC[(phase - 1) as usize]` with phase 0 -> 255).
     #[test]
     fn probe_end_rejects_invalid_phase_ids() {
-        register_clock(|| 1000);
+        register_clock(Some(test_clock));
         for bad in [0u8, CN_PHASES as u8 + 1, 128, 255] {
             let mut probe = PhaseProbe::start(bad).expect("clock registered");
             probe.end(); // must not panic

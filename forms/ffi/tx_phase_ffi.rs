@@ -1,7 +1,8 @@
 //! Device-side tx-signing phase timing FFI (feature `tx-phase-timing-ffi`).
 //!
-//! C contract:
-//! - `shlosilo_tx_phase_set_clock(u32 fptr)` — register ms clock
+//! C contract (T-04: typed nullable fn pointers, never integer addresses):
+//! - `shlosilo_tx_phase_set_clock(uint32_t (*fptr)(void))` — register ms clock
+//!   (NULL unregisters; last registration wins)
 //! - `shlosilo_tx_phase_reset()` — zero accumulators
 //! - `shlosilo_tx_phase_phase(u8) -> u32` — accumulated ms
 //!
@@ -13,19 +14,13 @@
 /// C-ABI: register the millisecond clock for tx-phase timing.
 ///
 /// # Safety
-/// `clock_fptr` must be a valid `extern "C" fn() -> u32` address (ARM thumb ok).
+/// `clock_fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
 #[cfg_attr(not(feature = "tx-phase-timing-ffi"), allow(unused_variables))]
 #[no_mangle]
-pub extern "C" fn shlosilo_tx_phase_set_clock(clock_fptr: u32) {
+pub extern "C" fn shlosilo_tx_phase_set_clock(clock_fptr: Option<extern "C" fn() -> u32>) {
     #[cfg(feature = "tx-phase-timing-ffi")]
     {
-        // SAFETY: same fptr-as-u32 contract as shlosilo_bp_timing_set_clock.
-        // `as usize` first: a u32->fn transmute fails to compile on 64-bit hosts
-        // (E0512, pointer width differs). Device (thumbv7em) is 32-bit, host is
-        // 64-bit; the widening is lossless and the C side only ever passes a valid
-        // thumb function address on the device target.
-        let f: fn() -> u32 = unsafe { core::mem::transmute(clock_fptr as usize) };
-        crate::tx_phase_hook::register_clock(f);
+        crate::tx_phase_hook::register_clock(clock_fptr);
     }
 }
 

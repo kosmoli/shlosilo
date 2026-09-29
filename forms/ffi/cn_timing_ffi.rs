@@ -12,20 +12,16 @@
 
 /// C-ABI: register the millisecond clock for CN phase timing.
 ///
+/// T-04 contract: typed nullable fn pointer, NULL unregisters.
+///
 /// # Safety
-/// `clock_fptr` must be a valid `extern "C" fn() -> u32` address (ARM thumb ok).
+/// `clock_fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
 #[cfg_attr(not(feature = "cn-timing-ffi"), allow(unused_variables))]
 #[no_mangle]
-pub extern "C" fn shlosilo_cn_timing_set_clock(clock_fptr: u32) {
+pub extern "C" fn shlosilo_cn_timing_set_clock(clock_fptr: Option<extern "C" fn() -> u32>) {
     #[cfg(feature = "cn-timing-ffi")]
     {
-        // SAFETY: same fptr-as-u32 contract as shlosilo_bp_timing_set_clock.
-        // `as usize` first: a u32->fn transmute fails to compile on 64-bit hosts
-        // (E0512, pointer width differs). Device (thumbv7em) is 32-bit, host is
-        // 64-bit; the widening is lossless and the C side only ever passes a valid
-        // thumb function address on the device target.
-        let f: fn() -> u32 = unsafe { core::mem::transmute(clock_fptr as usize) };
-        cuprate_cryptonight::register_clock(f);
+        cuprate_cryptonight::register_clock(clock_fptr);
     }
 }
 

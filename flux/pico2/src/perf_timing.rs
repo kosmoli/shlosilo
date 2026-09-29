@@ -18,28 +18,19 @@ use core::fmt::Write as _;
 
 use embassy_time::Instant;
 
-/// Millisecond clock for the hooks (Rust ABI: tx-phase + CN hooks take
-/// `fn() -> u32`).
-fn now_ms_rust() -> u32 {
-    Instant::now().as_millis() as u32
-}
-
-/// Same clock, C ABI: the BP+ hook stores the raw address and transmutes it
-/// back into an `extern "C" fn() -> u32`.
+/// Millisecond clock for the hooks (C ABI — the T-04 contract carries a typed
+/// nullable `extern "C" fn() -> u32` across the boundary).
 extern "C" fn now_ms_c() -> u32 {
     Instant::now().as_millis() as u32
 }
 
 /// Register this host's clock with all three timing hooks (call once at boot).
 pub(crate) fn register() {
-    // The hooks take the function address as u32 (the thumbv8m target is
-    // 32-bit); the comment in forms/ffi/cn_timing_ffi.rs documents the
-    // fptr-as-u32 contract.
-    let rust_f: fn() -> u32 = now_ms_rust;
-    let c_f: extern "C" fn() -> u32 = now_ms_c;
-    shlosilo::ffi::tx_phase_ffi::shlosilo_tx_phase_set_clock(rust_f as usize as u32);
-    shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_set_clock(rust_f as usize as u32);
-    shlosilo::ffi::prove_timing_ffi::shlosilo_bp_timing_set_clock(c_f as usize as u32);
+    // T-04 contract: typed nullable fn pointers, no address casting.
+    // NULL would unregister; last registration wins.
+    shlosilo::ffi::tx_phase_ffi::shlosilo_tx_phase_set_clock(Some(now_ms_c));
+    shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_set_clock(Some(now_ms_c));
+    shlosilo::ffi::prove_timing_ffi::shlosilo_bp_timing_set_clock(Some(now_ms_c));
 }
 
 /// Zero all accumulators (call right before a timed signing run).

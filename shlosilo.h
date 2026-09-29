@@ -628,10 +628,14 @@ typedef struct UrMultipartEncoder UrMultipartEncoder;
 /**
  * C-ABI: register the millisecond clock callback (no-op when the feature is off).
  *
+ * T-04 contract: the callback crosses the boundary as a typed nullable
+ * function pointer — a mismatched signature is a compile error at the C call
+ * site, and `NULL` means unregistered (last registration wins).
+ *
  * # Safety
- * `fptr` must be a valid `extern "C" fn() -> u32` on the target.
+ * `fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
  */
-void shlosilo_timing_set_clock_fn(uint32_t fptr);
+void shlosilo_timing_set_clock_fn(uint32_t (*fptr)(void));
 
 /**
  * C-ABI: read one stage's measured milliseconds (0 when the feature is off).
@@ -909,10 +913,12 @@ void shlosilo_ur_decode_free(struct UrMultipartDecoder *handle);
 /**
  * C-ABI: register the millisecond clock for CN phase timing.
  *
+ * T-04 contract: typed nullable fn pointer, NULL unregisters.
+ *
  * # Safety
- * `clock_fptr` must be a valid `extern "C" fn() -> u32` address (ARM thumb ok).
+ * `clock_fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
  */
-void shlosilo_cn_timing_set_clock(uint32_t clock_fptr);
+void shlosilo_cn_timing_set_clock(uint32_t (*clock_fptr)(void));
 
 /**
  * C-ABI: reset all CN phase counters.
@@ -926,15 +932,20 @@ uint32_t shlosilo_cn_timing_phase(uint8_t phase);
 
 /**
  * C-ABI: register the flash-backend callbacks. Call once from C init (before the first
- * XMR sign). `load_fptr`/`store_fptr` are ARM thumb addresses of the C functions.
+ * XMR sign). T-04 contract: typed nullable fn pointers — NULL unregisters the slot.
  *
  * # Safety
- * Both pointers must be valid `extern "C"` functions with the documented signatures.
+ * Both pointers, when non-NULL, must be valid `extern "C"` functions with the
+ * documented signatures.
  *
  * Single definition with a cfg-split body (feature on: real hooks; off: no-op)
  * so the C host always links and cbindgen emits exactly one declaration.
  */
-void shlosilo_gen_cache_set_hooks(uint32_t load_fptr, uint32_t store_fptr);
+void shlosilo_gen_cache_set_hooks(const uint8_t *(*load_fptr)(const uint8_t*, uint32_t),
+                                  uint32_t (*store_fptr)(const uint8_t*,
+                                                         uint32_t,
+                                                         const uint8_t*,
+                                                         uint32_t));
 
 uint64_t shlosilo_perf_fmul(uint32_t iters);
 
@@ -975,12 +986,14 @@ uint64_t shlosilo_perf_xchain(uint32_t n, uint32_t iters, uint32_t tail, uint32_
 
 /**
  * C-ABI: register the millisecond clock for prove-phase timing. Call from C init
- * right after `shlosilo_timing_set_clock_fn` (same clock function address works).
+ * right after `shlosilo_timing_set_clock_fn` (same clock function works).
+ *
+ * T-04 contract: typed nullable fn pointer, NULL unregisters.
  *
  * # Safety
- * `clock_fptr` must be a valid `extern "C" fn() -> u32` address (ARM thumb ok).
+ * `clock_fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
  */
-void shlosilo_bp_timing_set_clock(uint32_t clock_fptr);
+void shlosilo_bp_timing_set_clock(uint32_t (*clock_fptr)(void));
 
 /**
  * C-ABI: reset all prove-phase counters.
@@ -996,9 +1009,9 @@ uint32_t shlosilo_bp_timing_phase(uint8_t phase);
  * C-ABI: register the millisecond clock for tx-phase timing.
  *
  * # Safety
- * `clock_fptr` must be a valid `extern "C" fn() -> u32` address (ARM thumb ok).
+ * `clock_fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
  */
-void shlosilo_tx_phase_set_clock(uint32_t clock_fptr);
+void shlosilo_tx_phase_set_clock(uint32_t (*clock_fptr)(void));
 
 /**
  * C-ABI: reset all tx-phase counters.

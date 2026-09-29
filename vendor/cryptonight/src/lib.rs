@@ -19,7 +19,7 @@ use slow_hash::cn_slow_hash_into;
 #[cfg(feature = "cn-timing")]
 pub use cn_timing_hook::{phase_ms, register_clock, reset_all};
 #[cfg(not(feature = "cn-timing"))]
-pub fn register_clock(_f: fn() -> u32) {}
+pub fn register_clock(_f: Option<extern "C" fn() -> u32>) {}
 #[cfg(not(feature = "cn-timing"))]
 pub fn reset_all() {}
 #[cfg(not(feature = "cn-timing"))]

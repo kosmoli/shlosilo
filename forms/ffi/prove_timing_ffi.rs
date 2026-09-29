@@ -15,12 +15,14 @@
 //! function (dual `#[cfg]`-branches produced duplicate header declarations).
 
 /// C-ABI: register the millisecond clock for prove-phase timing. Call from C init
-/// right after `shlosilo_timing_set_clock_fn` (same clock function address works).
+/// right after `shlosilo_timing_set_clock_fn` (same clock function works).
+///
+/// T-04 contract: typed nullable fn pointer, NULL unregisters.
 ///
 /// # Safety
-/// `clock_fptr` must be a valid `extern "C" fn() -> u32` address (ARM thumb ok).
+/// `clock_fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
 #[no_mangle]
-pub extern "C" fn shlosilo_bp_timing_set_clock(clock_fptr: u32) {
+pub extern "C" fn shlosilo_bp_timing_set_clock(clock_fptr: Option<extern "C" fn() -> u32>) {
     #[cfg(feature = "prove-timing-ffi")]
     {
         monero_bulletproofs::register_prove_timing_clock(clock_fptr);

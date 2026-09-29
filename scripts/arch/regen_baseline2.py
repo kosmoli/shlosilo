@@ -49,4 +49,32 @@ for tree, (crate, diffname) in CHANGED.items():
         out = os.path.join(ROOT, "patches", "baseline", diffname)
         open(out, "w").write(r.stdout)
         print(f"{tree}: {r.stdout.count(chr(10))} lines")
+
+# cryptonight: git-subtree anchor (Cuprate/cuprate tarball @ cf3137b7579b), the
+# crate lives in the tarball's `cryptonight/` subdir — mirrors SUBDIR_cryptonight
+# in scripts/vendor_baseline_check.sh. Generated in the canonical a/b shape with
+# the documented exclusions (vendor/BASELINE.md: target/, Cargo.lock,
+# .cargo-checksum.json, .cargo-ok are build artifacts, not tree content).
+CN_ANCH = os.path.join(ANCH, "cf3137b7579bfc930303243a634ca4d66b7266ed")
+if not os.path.exists(CN_ANCH):
+    print("cryptonight: *** ANCHOR MISSING ***")
+else:
+    with tempfile.TemporaryDirectory() as td:
+        ext = os.path.join(td, "ext")
+        with tarfile.open(CN_ANCH) as tf:
+            tf.extractall(ext, filter="tar")
+        tops = os.listdir(ext)
+        assert len(tops) == 1, tops
+        a = os.path.join(td, "a")
+        b = os.path.join(td, "b")
+        shutil.copytree(os.path.join(ext, tops[0], "cryptonight"), a, symlinks=True)
+        shutil.copytree(os.path.join(ROOT, "vendor", "cryptonight"), b, symlinks=True)
+        r = subprocess.run(
+            ["diff", "-ruN", "--exclude=target", "--exclude=Cargo.lock",
+             "--exclude=.cargo-checksum.json", "--exclude=.cargo-ok", "a", "b"],
+            capture_output=True, text=True, cwd=td)
+        out = os.path.join(ROOT, "patches", "baseline",
+                           "cryptonight-vs-upstream-cf3137b7579b.diff")
+        open(out, "w").write(r.stdout)
+        print(f"cryptonight: {r.stdout.count(chr(10))} lines")
 print("done")

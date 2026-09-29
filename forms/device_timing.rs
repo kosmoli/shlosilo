@@ -28,6 +28,10 @@ pub const STAGE_Y_PARITY: u8 = 7;
 pub const STAGE_SERIALIZE: u8 = 8;
 pub const STAGE_COUNT: usize = 8;
 
+/// The C-side millisecond clock (T-04 contract): a typed nullable function
+/// pointer, never an integer address. `None` means unregistered.
+pub type ClockFn = extern "C" fn() -> u32;
+
 #[cfg(feature = "device-timing")]
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -35,7 +39,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 mod imp {
     use super::*;
 
-    pub static CLOCK_FN: AtomicU32 = AtomicU32::new(0);
+    #[allow(static_mut_refs)]
+    pub static mut CLOCK_FN: Option<ClockFn> = None;
     pub static ENABLED: AtomicBool = AtomicBool::new(false);
     pub static LAST_MS: AtomicU32 = AtomicU32::new(0);
 
@@ -50,18 +55,21 @@ mod imp {
         AtomicU32::new(0),
     ];
 
-    /// Register the C-side millisecond clock (fptr as u32, ARM thumb addresses fit).
-    pub fn set_clock(fptr: u32) {
-        CLOCK_FN.store(fptr, Ordering::Relaxed);
+    /// Register the C-side millisecond clock (typed nullable fn pointer).
+    /// Idempotent; last registration wins, `None` unregisters.
+    pub fn set_clock(fptr: Option<ClockFn>) {
+        #[allow(static_mut_refs)]
+        unsafe {
+            CLOCK_FN = fptr;
+        }
     }
 
     pub fn now_ms() -> u32 {
-        let f = CLOCK_FN.load(Ordering::Relaxed);
-        if f == 0 {
-            return 0;
+        #[allow(static_mut_refs)]
+        match unsafe { CLOCK_FN } {
+            Some(f) => f(),
+            None => 0,
         }
-        let fptr: extern "C" fn() -> u32 = unsafe { core::mem::transmute(f as usize) };
-        fptr()
     }
 
     pub struct Mark {
@@ -124,7 +132,7 @@ mod imp {
         }
         pub fn end(self) {}
     }
-    pub fn set_clock(_fptr: u32) {}
+    pub fn set_clock(_fptr: Option<super::ClockFn>) {}
     pub fn now_ms() -> u32 {
         0
     }
@@ -147,10 +155,14 @@ pub use imp::*;
 
 /// C-ABI: register the millisecond clock callback (no-op when the feature is off).
 ///
+/// T-04 contract: the callback crosses the boundary as a typed nullable
+/// function pointer — a mismatched signature is a compile error at the C call
+/// site, and `NULL` means unregistered (last registration wins).
+///
 /// # Safety
-/// `fptr` must be a valid `extern "C" fn() -> u32` on the target.
+/// `fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
 #[no_mangle]
-pub extern "C" fn shlosilo_timing_set_clock_fn(fptr: u32) {
+pub extern "C" fn shlosilo_timing_set_clock_fn(fptr: Option<extern "C" fn() -> u32>) {
     #[cfg(feature = "device-timing")]
     {
         imp::set_clock(fptr);
@@ -194,5 +206,61 @@ pub extern "C" fn shlosilo_timing_reset() {
     #[cfg(feature = "device-timing")]
     {
         imp::reset_all();
+    }
+}
+
+#[cfg(all(test, feature = "device-timing"))]
+mod tests {
+    use super::*;
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    /// Deterministic test clock: returns whatever the test last stored.
+    static TICK: AtomicU32 = AtomicU32::new(0);
+
+    extern "C" fn test_clock() -> u32 {
+        TICK.load(Ordering::Relaxed)
+    }
+
+    /// T-04 pins (single test on purpose: the clock is a process-wide
+    /// `static mut`, parallel tests would race on it).
+    ///
+    /// inv2: a real 64-bit function address survives the C-ABI round trip at
+    /// full pointer width and is actually invoked (the u32 contract truncated
+    /// it on every 64-bit host).
+    /// inv3: NULL/None means unregistered — reads return 0, nothing else fires.
+    #[test]
+    fn inv2_inv3_clock_roundtrip_and_null_sentinel() {
+        // inv2: register the real fn pointer through the C-ABI entry.
+        shlosilo_timing_set_clock_fn(Some(test_clock));
+        shlosilo_timing_reset();
+        TICK.store(1_000, Ordering::Relaxed);
+        let m = Mark::start(STAGE_UR_DECODE);
+        TICK.store(1_050, Ordering::Relaxed);
+        m.end();
+        assert_eq!(
+            shlosilo_timing_get_stage(STAGE_UR_DECODE),
+            50,
+            "inv2: the registered clock must be invoked through the full-width pointer"
+        );
+
+        // inv3: NULL unregisters (last registration wins) — reads are all zero.
+        // TICK moves across the Mark so a stale registration (dt = 50) cannot
+        // masquerade as the unregistered reading (dt = 0).
+        shlosilo_timing_set_clock_fn(None);
+        shlosilo_timing_reset();
+        TICK.store(9_000, Ordering::Relaxed);
+        let m = Mark::start(STAGE_UR_DECODE);
+        TICK.store(9_500, Ordering::Relaxed);
+        m.end();
+        assert_eq!(
+            shlosilo_timing_get_stage(STAGE_UR_DECODE),
+            0,
+            "inv3: unregistered clock must read as 0"
+        );
+        assert_eq!(
+            shlosilo_timing_get_total(),
+            0,
+            "inv3: unregistered clock must read as 0"
+        );
     }
 }

@@ -3,7 +3,7 @@
 //! Phase probes inside the BP+ aggregate range proof, to decompose on-device
 //! prove time (initial commit multiexp / A_hat / WIP rounds / point encode).
 //! Mirrors the shlosilo `device-timing` pattern: the C side registers a
-//! millisecond clock (function pointer as u32, ARM thumb addresses fit);
+//! millisecond clock (typed nullable function pointer, T-04 contract);
 //! zero cost when the feature is off.
 //!
 //! Phase ids (u8):
@@ -31,20 +31,27 @@ pub(crate) const PHASE_WRAP_CONSISTENCY: u8 = 9;
 pub(crate) const PHASE_WIP_L_BASE: u8 = 10;
 pub(crate) const PHASE_WIP_R_BASE: u8 = 20;
 
-static CLOCK_FN: AtomicU32 = AtomicU32::new(0);
+/// The C-side millisecond clock (T-04 contract): typed nullable fn pointer.
+pub type ClockFn = extern "C" fn() -> u32;
 
-/// Register the C-side millisecond clock (fptr as u32). Idempotent; last wins.
-pub fn register_prove_timing_clock(fptr: u32) {
-    CLOCK_FN.store(fptr, Ordering::Relaxed);
+#[allow(static_mut_refs)]
+static mut CLOCK_FN: Option<ClockFn> = None;
+
+/// Register the C-side millisecond clock (typed nullable fn pointer).
+/// Idempotent; last wins, `None` unregisters.
+pub fn register_prove_timing_clock(fptr: Option<ClockFn>) {
+    #[allow(static_mut_refs)]
+    unsafe {
+        CLOCK_FN = fptr;
+    }
 }
 
 fn now_ms() -> u32 {
-    let f = CLOCK_FN.load(Ordering::Relaxed);
-    if f == 0 {
-        return 0;
+    #[allow(static_mut_refs)]
+    match unsafe { CLOCK_FN } {
+        Some(f) => f(),
+        None => 0,
     }
-    let fptr: extern "C" fn() -> u32 = unsafe { core::mem::transmute(f as usize) };
-    fptr()
 }
 
 /// Marker for a phase start (stores the timestamp into the phase slot).
