@@ -36,6 +36,12 @@ A clean build → `GRAPH-CLEAN` — at that point the stub (and its
 `lang-stub` feature) can be deleted from `probe.rs` entirely and the
 link-without-allocator IS the proof.
 
+**DONE (Z6 finale, 2026-09-29)**: `GRAPH-CLEAN` achieved and the
+`lang-stub`/`ForbiddingAlloc` machinery is deleted. The probe default is
+now the production shape and links against the C main with no
+`#[global_allocator]` anywhere; `alloc-face` remains a non-default
+measurement option.
+
 Current graph debt is tracked in the campaign ledger
 (`shlosilo/todo/shlosilo-forms纯度审计-2026-09-24.md`, §8.4-0):
 the CryptoNight scratchpad (2MB, product input-path KDF) is the named
