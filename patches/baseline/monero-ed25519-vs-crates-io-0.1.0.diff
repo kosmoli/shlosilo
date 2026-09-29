@@ -1,6 +1,6 @@
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
-+++ b/Cargo.toml	2026-09-29 02:32:19.804165838 +0800
++++ b/Cargo.toml	2026-09-29 17:37:43.565591256 +0800
 @@ -72,7 +72,6 @@
  [dependencies.curve25519-dalek]
  version = "4"
@@ -69,7 +69,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 \ 文件末尾没有换行符
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/scalar.rs b/src/scalar.rs
 --- a/src/scalar.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/scalar.rs	2026-09-29 09:42:05.248001998 +0800
++++ b/src/scalar.rs	2026-09-29 17:37:43.565591256 +0800
 @@ -1,7 +1,6 @@
  use core::ops::DerefMut as _;
  

@@ -342,7 +342,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-29 09:42:05.248001998 +0800
++++ b/src/lib.rs	2026-09-29 17:37:43.565591256 +0800
 @@ -4,13 +4,27 @@
  #![allow(non_snake_case)]
  

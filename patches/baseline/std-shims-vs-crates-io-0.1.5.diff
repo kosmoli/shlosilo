@@ -1,6 +1,6 @@
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	1970-01-01 08:00:01.000000000 +0800
-+++ b/Cargo.toml	2026-09-29 13:22:18.902405939 +0800
++++ b/Cargo.toml	2026-09-29 17:37:43.566591263 +0800
 @@ -40,7 +40,9 @@
  ]
  
@@ -22,7 +22,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
      "default-hasher",
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/collections.rs b/src/collections.rs
 --- a/src/collections.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/collections.rs	2026-09-29 13:22:18.902486457 +0800
++++ b/src/collections.rs	2026-09-29 17:37:43.566591263 +0800
 @@ -1,7 +1,7 @@
  #[cfg(feature = "std")]
  pub use std::collections::*;
@@ -35,7 +35,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  pub use hashbrown::{HashSet, HashMap};
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/io.rs b/src/io.rs
 --- a/src/io.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/io.rs	2026-09-29 09:37:19.191305048 +0800
++++ b/src/io.rs	2026-09-29 17:37:43.566591263 +0800
 @@ -4,6 +4,7 @@
  #[cfg(not(feature = "std"))]
  mod shims {
@@ -109,7 +109,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        self.extend(buf);
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-29 09:37:19.191319070 +0800
++++ b/src/lib.rs	2026-09-29 17:37:43.566591263 +0800
 @@ -2,16 +2,24 @@
  #![doc = include_str!("../README.md")]
  #![cfg_attr(not(feature = "std"), no_std)]
@@ -145,7 +145,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +pub mod prelude {}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/sync.rs b/src/sync.rs
 --- a/src/sync.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/sync.rs	2026-09-29 09:37:19.191331661 +0800
++++ b/src/sync.rs	2026-09-29 17:37:43.566591263 +0800
 @@ -1,4 +1,5 @@
  pub use core::sync::*;
 +#[cfg(feature = "alloc")]

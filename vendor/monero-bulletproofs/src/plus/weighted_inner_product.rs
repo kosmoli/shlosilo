@@ -347,11 +347,11 @@ impl WipStatement {
         let mut y_len = n_gen;
 
         // Check P has the expected relationship
-        #[cfg(debug_assertions)]
         // Z5.3 pool cut: this block exists only for the debug assertion —
         // gating it removes its staging Vec from release builds (identical
-        // release behavior).
-        #[cfg(debug_assertions)]
+        // release behavior). Z6: also gated on alloc-fallback so the
+        // debug no-alloc face compiles (the staged Vec needs the import).
+        #[cfg(all(debug_assertions, feature = "alloc-fallback"))]
         {
             let mut P_terms = witness
                 .a

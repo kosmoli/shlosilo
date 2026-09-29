@@ -1,6 +1,6 @@
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
-+++ b/Cargo.toml	2026-09-29 09:37:19.191233585 +0800
++++ b/Cargo.toml	2026-09-29 17:37:43.565591256 +0800
 @@ -34,7 +34,9 @@
  ]
  
@@ -52,7 +52,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 \ 文件末尾没有换行符
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-29 09:37:19.191233585 +0800
++++ b/src/lib.rs	2026-09-29 17:37:43.566591263 +0800
 @@ -67,6 +67,7 @@
  }
  

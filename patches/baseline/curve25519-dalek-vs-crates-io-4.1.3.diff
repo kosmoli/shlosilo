@@ -762,7 +762,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -	cargo +nightly rustdoc --features "$(FEATURES)" -- --document-private-items
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/mod.rs b/src/backend/mod.rs
 --- a/src/backend/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/mod.rs	2026-09-29 09:15:10.652432775 +0800
++++ b/src/backend/mod.rs	2026-09-29 17:37:43.562400144 +0800
 @@ -166,7 +166,7 @@
  }
  
@@ -881,7 +881,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
          let Y_minus_X = &self.Y - &self.X;
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/backend/serial/scalar_mul/mod.rs b/src/backend/serial/scalar_mul/mod.rs
 --- a/src/backend/serial/scalar_mul/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/backend/serial/scalar_mul/mod.rs	2026-09-29 09:13:21.856584108 +0800
++++ b/src/backend/serial/scalar_mul/mod.rs	2026-09-29 17:37:43.562400144 +0800
 @@ -23,7 +23,9 @@
  #[allow(missing_docs)]
  pub mod vartime_double_base;
@@ -1470,7 +1470,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/edwards.rs b/src/edwards.rs
 --- a/src/edwards.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/edwards.rs	2026-09-29 09:26:22.022690451 +0800
++++ b/src/edwards.rs	2026-09-29 17:37:43.562400144 +0800
 @@ -147,10 +147,12 @@
  use crate::traits::ValidityCheck;
  use crate::traits::{Identity, IsIdentity};
