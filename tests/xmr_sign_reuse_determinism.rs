@@ -147,3 +147,109 @@ fn xmr_sign_reuse_determinism() {
         "Z6/T-15: reusing the WipScratch must be deterministic (byte-identical re-sign)"
     );
 }
+
+/// T-04 follow-up inv (Q3: overlay consumers must WRITE before they read).
+/// A poisoned (0xAA) straus/wip scratch must sign byte-identically to a
+/// zeroed one. The reuse pin above covers stale-STRUCTURED leftovers (the
+/// C-cut E history); this poison pair kills the false negative zeros can
+/// hide — reading unwritten zeroed memory yields a benign 0 that a digest
+/// comparison would never notice.
+#[test]
+fn poisoned_scratch_matches_zero_scratch() {
+    use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into;
+    use shlosilo::chain::xmr::unsigned_txset::{
+        deserialize_unsigned_tx, TxConstructionData, TxDestinationEntry, TxSourceEntry,
+        UnsignedTxPools,
+    };
+
+    const ENC: &[u8] = include_bytes!("fixtures/unsigned_txset_2in_dev.bin");
+    let plain = shlosilo::chain::xmr::unsigned_txset::decrypt_unsigned_txset(ENC, &DEV_VIEW_SK)
+        .expect("decrypt 2-input DEV fixture");
+    let mut p_txes = core::array::from_fn::<Option<TxConstructionData<'_>>, 8, _>(|_| None);
+    let mut p_src = core::array::from_fn::<Option<TxSourceEntry>, 32, _>(|_| None);
+    let mut p_sd =
+        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+    let mut p_sel = [0usize; 256];
+    let mut p_ex = [0u8; 8192];
+    let mut p_de =
+        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+    let mut p_su = [0u32; 256];
+    let utx = deserialize_unsigned_tx(
+        &plain,
+        UnsignedTxPools {
+            txes: &mut p_txes,
+            sources: &mut p_src,
+            splitted_dsts: &mut p_sd,
+            selected_transfers: &mut p_sel,
+            extra: &mut p_ex,
+            dests: &mut p_de,
+            subaddr_indices: &mut p_su,
+        },
+    )
+    .expect("deserialize");
+    let tx_data = utx.txes.iter().flatten().next().unwrap();
+    let r_bytes = zeroize::Zeroizing::new([0x11u8; 32]);
+
+    let mut out = vec![0u8; 65536];
+
+    let sign_with = |storage: &mut [u8], wip_store: &mut [u8], out: &mut [u8]| -> Vec<u8> {
+        let mut bp_terms = vec![
+            (
+                curve25519_dalek::Scalar::ZERO,
+                curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
+            );
+            shlosilo::types::caps::SIGN_WS_BP_TERMS
+        ];
+        let mut bp_straus = curve25519_dalek::scratch::StrausScratch::new(
+            storage,
+            shlosilo::types::caps::SIGN_WS_BP_TERMS,
+        )
+        .expect("sized storage");
+        let mut wip_scratch = monero_bulletproofs::WipScratch::new(
+            wip_store,
+            shlosilo::types::caps::SIGN_WS_BP_TERMS,
+        )
+        .expect("wip storage");
+        let mut bp_rng = rand_chacha::ChaCha20Rng::from_seed([0xB1u8; 32]);
+        let mut clsag_rng = rand_chacha::ChaCha20Rng::from_seed([0xC1u8; 32]);
+        let n = sign_tx_from_construction_with_rngs_into(
+            tx_data,
+            &DEV_SPEND_SK,
+            &DEV_VIEW_SK,
+            &r_bytes,
+            &mut bp_rng,
+            &mut clsag_rng,
+            out,
+            &mut bp_terms,
+            &mut bp_straus,
+            &mut wip_scratch,
+        )
+        .expect("sign");
+        out[..n].to_vec()
+    };
+
+    // run A: fully poisoned storage (0xAA everywhere).
+    let mut straus_a = vec![
+        0xAAu8;
+        curve25519_dalek::scratch::StrausScratch::storage_bytes(
+            shlosilo::types::caps::SIGN_WS_BP_TERMS,
+        )
+    ];
+    let mut wip_a =
+        vec![
+            0xAAu8;
+            monero_bulletproofs::WipScratch::storage_bytes(shlosilo::types::caps::SIGN_WS_BP_TERMS,)
+        ];
+    let a = sign_with(&mut straus_a, &mut wip_a, &mut out);
+
+    // run B: zeroed storage, same RNG seeds.
+    let mut straus_b = vec![0u8; straus_a.len()];
+    let mut wip_b = vec![0u8; wip_a.len()];
+    let b = sign_with(&mut straus_b, &mut wip_b, &mut out);
+
+    assert_eq!(
+        a, b,
+        "a poisoned scratch must sign byte-identically to a zeroed one \
+         (write-before-read for every overlay consumer)"
+    );
+}

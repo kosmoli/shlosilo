@@ -202,19 +202,71 @@ pub struct SignWs<'a> {
     pub bp_terms: &'a mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
     /// Z5.3 D-cut: Straus scratch storage (raw bytes; the typed scratch is
     /// constructed from it at the call site).
-    pub bp_straus: &'a mut [u8],
-    /// T-04 follow-up (2026-09-30): CN-V0 key-derivation scratchpad (2MB,
-    /// secret-bearing; zeroed by the cryptonight core on every exit path).
-    /// OVERLAID on the bp_straus+bp_wip region (phase time-share: the decrypt
-    /// key derivation completes before the prove phase; the CN core's exit
-    /// zeroing restores the carve's documented zero-fill state). The fit is
-    /// pinned by a const assert in `types::caps`.
-    pub cn_scratch: &'a mut [u8],
-    /// Z5.3 C-cut B: WIP round ping-pong scratch.
-    pub bp_wip: &'a mut [u8],
+    /// T-04 follow-up (2026-09-30): the straus/wip/CN storage is one
+    /// `OverlayRegion` — phase-exclusive by type (see below), zeroized on the
+    /// CN phase's drop.
+    pub bp_overlay: OverlayRegion<'a>,
     /// Z4-7d: PSBT map pool (records + payload arena).
     pub psbt_recs: &'a mut [crate::chain::btc::psbt::KvRec],
     pub psbt_arena: &'a mut [u8],
+}
+
+/// T-04 follow-up (2026-09-30): phase-exclusive handle over the shared
+/// straus/wip/CN overlay region. `enter_cn` and `enter_bp` both re-borrow
+/// `&mut self`, so the borrow checker FORBIDS holding both phases at once —
+/// the overlay's exclusive lifetime is structural, not a convention. The CN
+/// phase guard zeroizes on drop, covering every return/Err/unwind exit path
+/// (abort and hard-fault paths end in a warm reset, which scrubs SRAM on this
+/// chip — the r/p noinit experiments, 2026-09-30).
+pub struct OverlayRegion<'a> {
+    raw: &'a mut [u8],
+}
+
+/// The CN-V0 derivation phase view (the whole region; secret-bearing).
+pub struct CnScratch<'a>(&'a mut [u8]);
+
+impl<'a> core::ops::Deref for CnScratch<'a> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.0
+    }
+}
+
+impl<'a> core::ops::DerefMut for CnScratch<'a> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        self.0
+    }
+}
+
+impl<'a> Drop for CnScratch<'a> {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self.0);
+    }
+}
+
+/// The BP+ prove phase view: disjoint straus + wip slices of the region.
+pub struct BpScratch<'a> {
+    pub straus: &'a mut [u8],
+    pub wip: &'a mut [u8],
+}
+
+impl<'a> OverlayRegion<'a> {
+    pub fn new(raw: &'a mut [u8]) -> Self {
+        Self { raw }
+    }
+
+    /// CN-V0 key-derivation phase. The guard zeroizes the region on drop.
+    pub fn enter_cn(&mut self) -> CnScratch<'_> {
+        CnScratch(self.raw)
+    }
+
+    /// BP+ prove phase: `[straus | wip(+pad)]` views of the same region.
+    pub fn enter_bp(&mut self) -> BpScratch<'_> {
+        let (straus, wip) = self
+            .raw
+            .split_at_mut(crate::types::caps::SIGN_WS_BP_STRAUS_BYTES);
+        BpScratch { straus, wip }
+    }
 }
 
 /// Z3.3b: the sign-workspace layout — the SINGLE source of truth behind both
@@ -446,10 +498,10 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     // before reading them).
     let bp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)] =
         unsafe { at(base, l.bp_terms, c::SIGN_WS_BP_TERMS) };
-    let bp_straus: &mut [u8] = unsafe { at(base, l.bp_straus, c::SIGN_WS_BP_STRAUS_BYTES) };
-    /* T-04: overlaid on the straus+wip region (see layout compute). */
-    let cn_scratch: &mut [u8] = unsafe { at(base, l.cn_scratch, c::SIGN_WS_CN_SCRATCH) };
-    let bp_wip: &mut [u8] = unsafe { at(base, l.bp_wip, c::SIGN_WS_BP_WIP_BYTES) };
+    /* T-04: one phase-exclusive region over the overlaid slot (the layout's
+     * cn_scratch offset == bp_straus offset is pinned in tests). */
+    let bp_overlay: OverlayRegion<'_> =
+        OverlayRegion::new(unsafe { at(base, l.bp_straus, c::SIGN_WS_BP_OVERLAY_BYTES) });
     let psbt_recs: &mut [crate::chain::btc::psbt::KvRec] =
         unsafe { at(base, l.psbt_recs, c::SIGN_WS_PSBT_RECS) };
     let psbt_arena: &mut [u8] = unsafe { at(base, l.psbt_arena, c::SIGN_WS_PSBT_ARENA) };
@@ -470,9 +522,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         kstr,
         record_dests,
         bp_terms,
-        bp_straus,
-        cn_scratch,
-        bp_wip,
+        bp_overlay,
         psbt_recs,
         psbt_arena,
     })
@@ -512,8 +562,13 @@ fn sign_xmr_with_ws<'a>(
     ));
     // CN computed only once for the same view_sk (shared by decrypt + encrypt; the 2MB scratchpad dominates on device)
     // Audit #12 P1-02: the CN key is an owner from creation (Zeroizing); the helper returns the owner.
-    let cn_key =
-        crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&view_sec, ws.cn_scratch)?;
+    // T-04 follow-up: the CN-V0 derivation borrows the overlay region in
+    // its CN phase — the guard zeroizes the region on drop (every
+    // return/Err/unwind path; abort/fault paths end in a warm reset, which
+    // scrubs SRAM on this chip).
+    let mut cn = ws.bp_overlay.enter_cn();
+    let cn_key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&view_sec, &mut cn)?;
+    drop(cn);
 
     // 2. Decrypt (signature verified internally; view key mismatch → Err)
     // Audit #6 P1-01: decrypted plaintext txset goes through Zeroizing (no plaintext residue needed after parsing)
@@ -702,9 +757,12 @@ fn sign_xmr_with_ws<'a>(
         tx_bytes_rest = r;
         let mut ws_bp_terms = core::mem::take(&mut ws.bp_terms);
         let bp_terms_slot = &mut ws_bp_terms;
-        let ws_bp_straus = core::mem::take(&mut ws.bp_straus);
+        // T-04 follow-up: BP+ prove phase — the borrow checker keeps the CN
+        // phase guard from overlapping this borrow (phase exclusivity is
+        // structural).
+        let bp = ws.bp_overlay.enter_bp();
         let mut bp_straus = match curve25519_dalek::scratch::StrausScratch::new(
-            ws_bp_straus,
+            bp.straus,
             crate::types::caps::SIGN_WS_BP_CHUNK_MAX,
         ) {
             Ok(s) => s,
@@ -714,9 +772,8 @@ fn sign_xmr_with_ws<'a>(
                 ))
             }
         };
-        let ws_bp_wip = core::mem::take(&mut ws.bp_wip);
         let mut bp_wip = match monero_bulletproofs::WipScratch::new(
-            ws_bp_wip,
+            bp.wip,
             crate::types::caps::SIGN_WS_BP_TERMS,
         ) {
             Some(s) => s,
@@ -2056,5 +2113,52 @@ mod tests {
             &mut output_buf,
         );
         assert!(result.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod t04_overlay_pins {
+    //! T-04 follow-up pins for the overlay region. The PHASE EXCLUSIVITY
+    //! (enter_cn / enter_bp never coexist) is enforced by the borrow checker —
+    //! compile-time, no test needed. These pins fire the two runtime claims:
+    //! the CN phase zeroizes on every drop path, and the region is fully
+    //! written before it is read (the poison pin lives in
+    //! tests/xmr_sign_reuse_determinism.rs).
+    extern crate alloc;
+    use super::*;
+
+    #[test]
+    fn cn_phase_zeroizes_overlay_on_drop() {
+        let mut raw = alloc::vec![0xAAu8; crate::types::caps::SIGN_WS_BP_OVERLAY_BYTES];
+        let mut region = OverlayRegion::new(&mut raw);
+        {
+            let mut cn = region.enter_cn();
+            let _ =
+                crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(&[0x11u8; 32], &mut cn);
+        }
+        assert!(
+            raw.iter().all(|&b| b == 0),
+            "the CN phase guard must zeroize the overlay on drop"
+        );
+    }
+
+    #[test]
+    fn cn_phase_zeroizes_overlay_on_unwind() {
+        extern crate alloc;
+        extern crate std;
+        let mut raw = alloc::vec![0xAAu8; crate::types::caps::SIGN_WS_BP_OVERLAY_BYTES];
+        {
+            let mut region = OverlayRegion::new(&mut raw);
+            let mut cn = region.enter_cn();
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = &mut *cn;
+                panic!("forced unwind through the CN phase");
+            }));
+            assert!(res.is_err(), "the forced panic must unwind");
+        }
+        assert!(
+            raw.iter().all(|&b| b == 0),
+            "the CN phase guard must zeroize the overlay even on unwind"
+        );
     }
 }

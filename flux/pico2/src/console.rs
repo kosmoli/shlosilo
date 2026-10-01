@@ -3057,16 +3057,10 @@ async fn run_sign_xmr() {
         );
         shlosilo::types::caps::SIGN_WS_BP_TERMS
     ];
-    let mut ws_bp_wip = alloc::vec![
+    /* T-04 follow-up: one phase-exclusive overlay region (straus/wip/CN). */
+    let mut ws_bp_overlay_raw = alloc::vec![
         0u8;
-        shlosilo::types::caps::SIGN_WS_BP_WIP_BYTES
-    ];
-    let mut ws_cn_scratch = alloc::vec![0u8; shlosilo::types::caps::SIGN_WS_CN_SCRATCH];
-    let mut ws_bp_straus = alloc::vec![
-        0u8;
-        shlosilo::curve25519_dalek::scratch::StrausScratch::storage_bytes(
-            shlosilo::types::caps::SIGN_WS_BP_TERMS
-        )
+        shlosilo::types::caps::SIGN_WS_BP_OVERLAY_BYTES
     ];
     // Z4-7d: the PSBT map pool (records + payload arena) joins the SignWs.
     let mut ws_psbt_recs = alloc::vec![
@@ -3091,9 +3085,7 @@ async fn run_sign_xmr() {
         kstr: &mut ws_kstr,
         record_dests: &mut ws_record_dests,
         bp_terms: &mut ws_bp_terms,
-        bp_straus: &mut ws_bp_straus,
-        cn_scratch: &mut ws_cn_scratch,
-        bp_wip: &mut ws_bp_wip,
+        bp_overlay: shlosilo::business::sign::OverlayRegion::new(&mut ws_bp_overlay_raw),
         psbt_recs: &mut ws_psbt_recs,
         psbt_arena: &mut ws_psbt_arena,
     };
