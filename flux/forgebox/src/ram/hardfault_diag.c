@@ -3,9 +3,13 @@
  * 此前 HardFault 落到 startup 的 weak Default_Handler（死循环）→ WDT 2s
  * 复位，故障信息全丢（export 对齐事故、cn5 后崩溃两次盲刷的教训）。
  * 这里捕获 fault：读 SCB 故障状态寄存器 + 从栈帧取 stacked PC/LR，写入
- * 0x2000F000 起的保留字（与 panic 检测同一约定区，0x2000F000 未被
- * .bss 占用——smoke panic-flag 槽位），然后主动 WDT 复位重启。
+ * .diag_noinit 保留区，然后主动 WDT 复位重启。
  * 重启后 smoke task 开头读该区并把寄存器打到屏幕。
+ *
+ * 2026-09-30 修复：记录区原在 0x2000F004（注释称"0x2000F000 未被 .bss
+ * 占用"），实际 g_lvglCache 早已覆盖该地址，启动清 .bss 时把记录清掉——
+ * 诊断从未生效过。现移入 mh1903b.ld 的 .diag_noinit（0x20098000，NOLOAD，
+ * 启动不清零、WDT 暖复位保留）。
  */
 #include <stdint.h>
 #include <string.h>
@@ -13,7 +17,7 @@
 
 /* 复位后由 smoke 读取。布局: [magic][cfsr][hfsr][bfar][pc][lr][xpsr] */
 #define FAULT_MAGIC 0x464C5444U /* 'FLTD' */
-volatile uint32_t *const g_fault_log = (volatile uint32_t *)0x2000F004U;
+volatile uint32_t g_fault_log[7] __attribute__((section(".diag_noinit")));
 
 /* naked: 只取 MSP 栈帧（smoke task 异常时自动压栈的 8 字） */
 __attribute__((naked)) void HardFault_Handler(void)

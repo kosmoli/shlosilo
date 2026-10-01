@@ -117,13 +117,24 @@ pub fn quadruple(iters: u32) -> u64 {
 
 /// One constant-time Straus multiexp over `n` terms (the A2 chunk shape;
 /// n = 36 on device). Inputs vary per iteration so nothing hoists.
+/// T-04/Z6 follow-up (2026-09-30): the zero-alloc build forbids the plain
+/// n-term `multiscalar_mul` (it panics above the inline count); the sum is
+/// chunked into the inline ≤4-term path — mathematically identical. The
+/// production chunked-scratch shape adds scratch setup on top; per-term costs
+/// stay comparable for loop-model calibration.
 pub fn ct_chunk(n: u32, iters: u32) -> u64 {
     let n = n as u64;
     let mut acc = EdwardsPoint::identity();
     for it in 0..iters {
-        let scalars = (0..n).map(|i| Scalar::from(i + 3 + (it as u64) * 7));
-        let points = repeat(ED25519_BASEPOINT_POINT).take(n as usize);
-        acc = &acc + &EdwardsPoint::multiscalar_mul(scalars, points);
+        let mut off = 0;
+        while off < n {
+            let take = (n - off).min(4);
+            let scalars =
+                (0..take).map(|i| Scalar::from(off + i + 3 + (it as u64) * 7));
+            let points = repeat(ED25519_BASEPOINT_POINT).take(take as usize);
+            acc = &acc + &EdwardsPoint::multiscalar_mul(scalars, points);
+            off += take;
+        }
     }
     acc.compress().to_bytes()[0] as u64
 }
@@ -163,7 +174,9 @@ fn full_width_scalar(seed: u64) -> Scalar {
 /// the signing workload's scalars are full-width.
 pub fn ct_chunked(n: u32, chunk: u32, iters: u32) -> u64 {
     let n = u64::from(n);
-    let chunk = u64::from(chunk).max(1);
+    // T-04/Z6 follow-up (2026-09-30): chunks above the inline count panic in
+    // the zero-alloc build — clamp the chunk to the inline path (identical sum).
+    let chunk = u64::from(chunk).max(1).min(4);
     let mut acc = EdwardsPoint::identity();
     for it in 0..iters {
         let mut off = 0;

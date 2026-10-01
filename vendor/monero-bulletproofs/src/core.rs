@@ -196,6 +196,10 @@ pub(crate) fn multiexp_vartime_alloc(pairs: &[(Scalar, EdwardsPoint)]) -> Edward
 
 /// shlosilo vendor patch (Z5.3 D-cut): vartime over caller scratch above the
 /// inline threshold; the small path stays allocation-free.
+/// T-04 follow-up (2026-09-30): chunked like `multiexp` — the caller scratch
+/// is sized for the CHUNK capacity (`SIGN_WS_BP_CHUNK_MAX`), and vartime
+/// callers (compute_A_hat) feed full A-term slices. Sums of point-addition
+/// chunks are the same point (byte pins hold).
 pub(crate) fn multiexp_vartime(
     pairs: &[(Scalar, EdwardsPoint)],
     scratch: &mut curve25519_dalek::scratch::StrausScratch,
@@ -206,14 +210,20 @@ pub(crate) fn multiexp_vartime(
             pairs.iter().map(|(_, point)| point),
         ));
     }
-    Ok(
-        curve25519_dalek::scratch::straus_optional_multiscalar_mul_scratch(
-            pairs.iter().map(|(scalar, _)| scalar),
-            pairs.iter().map(|(_, point)| Some(*point)),
+    let chunk = multiexp_chunk_terms();
+    let mut acc = EdwardsPoint::identity();
+    let mut remaining = pairs;
+    while !remaining.is_empty() {
+        let take = remaining.len().min(chunk);
+        acc += curve25519_dalek::scratch::straus_optional_multiscalar_mul_scratch(
+            remaining[..take].iter().map(|(scalar, _)| scalar),
+            remaining[..take].iter().map(|(_, point)| Some(*point)),
             scratch,
         )?
-        .expect("all points present"),
-    )
+        .expect("all points present");
+        remaining = &remaining[take..];
+    }
+    Ok(acc)
 }
 
 /*

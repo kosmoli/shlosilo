@@ -69,3 +69,61 @@ fn bp_wip_bytes_match_storage_source_of_truth() {
         ),
     );
 }
+
+/// T-04 follow-up: the straus pool is sized for the CHUNK capacity (the
+/// chunked multiexp never holds more than the chunk in the scratch).
+#[test]
+fn bp_straus_bytes_match_storage_source_of_truth() {
+    assert_eq!(
+        shlosilo::types::caps::SIGN_WS_BP_STRAUS_BYTES,
+        shlosilo::curve25519_dalek::scratch::StrausScratch::storage_bytes(
+            shlosilo::types::caps::SIGN_WS_BP_CHUNK_MAX
+        ),
+    );
+}
+
+/// T-04 follow-up inv: the CN scratchpad OVERLAYS the straus+wip region —
+/// same slot start, whole 2MB inside the region, region inside the ws.
+#[test]
+fn cn_overlay_shares_straus_slot_and_fits() {
+    let l = shlosilo::business::sign::SignWsLayout::compute();
+    assert_eq!(
+        l.cn_scratch, l.bp_straus,
+        "cn_scratch must start at the straus slot (overlay)"
+    );
+    let region = shlosilo::types::caps::SIGN_WS_BP_OVERLAY_BYTES;
+    assert!(shlosilo::types::caps::SIGN_WS_CN_SCRATCH <= region);
+    assert!(
+        l.cn_scratch + shlosilo::types::caps::SIGN_WS_CN_SCRATCH <= l.total,
+        "CN overlay must stay inside the workspace"
+    );
+    assert!(
+        l.bp_wip + shlosilo::types::caps::SIGN_WS_BP_WIP_BYTES <= l.total,
+        "WIP scratch must stay inside the workspace"
+    );
+}
+
+/// T-04 follow-up inv: the workspace fits the forgebox PSRAM heap with
+/// headroom (the v12 shape asked for 10.1MB and the host provision failed).
+#[test]
+fn sign_ws_len_fits_device_heap() {
+    let total = shlosilo::business::sign::SignWsLayout::compute().total;
+    assert!(
+        total <= 3 * 1024 * 1024,
+        "sign ws ({total} bytes) must fit the 8MB PSRAM heap alongside the \
+         gencache provision (576KB), the QR decode pool (~410KB) and LVGL"
+    );
+}
+
+/// T-04 follow-up inv: the chunk setter clamps to the cap the straus pool is
+/// sized from (a larger chunk would make StrausScratch::new fail at prove).
+#[test]
+fn chunk_terms_clamp_to_ws_scratch_cap() {
+    shlosilo::chain::xmr::set_bp_multiexp_chunk_terms(1000);
+    assert_eq!(
+        shlosilo::chain::xmr::bp_multiexp_chunk_terms(),
+        shlosilo::types::caps::SIGN_WS_BP_CHUNK_MAX
+    );
+    shlosilo::chain::xmr::set_bp_multiexp_chunk_terms(12);
+    assert_eq!(shlosilo::chain::xmr::bp_multiexp_chunk_terms(), 12);
+}

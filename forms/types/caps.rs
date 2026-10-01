@@ -15,13 +15,44 @@
 /// is an explicit error before any proving starts.
 pub const SIGN_WS_BP_TERMS: usize = 2050;
 
-/// Z5.3 D-cut: the Straus scratch byte pool (mirrors the vendor's
-/// `StrausScratch::storage_bytes(SIGN_WS_BP_TERMS)`; a pin test asserts the
+/// Z5.3 D-cut: the Straus scratch byte pool (byte expression of the vendor's
+/// `StrausScratch::storage_bytes(SIGN_WS_BP_CHUNK_MAX)`; a pin test asserts the
 /// two agree — same source-of-truth discipline as the Z3.3b ws layout).
-pub const SIGN_WS_BP_STRAUS_BYTES: usize = (SIGN_WS_BP_TERMS * 2816) + 64;
-/// CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB) — a
-/// ws segment so the HOST decides where it lives (PSRAM on all platforms).
+///
+/// T-04 follow-up (2026-09-30): sized for the CHUNK capacity, not the terms
+/// bound. The chunked multiexp feeds `multiexp_chunk_terms()` terms at a time
+/// (default 36, per-platform deployment), so a terms-cap-sized pool was 57x
+/// larger than the live working set (5.77MB -> ~99KB) and pushed the ws past
+/// the 8MB PSRAM heap on forgebox ("sign ws: alloc fail (10575072 bytes)").
+/// `set_bp_multiexp_chunk_terms` clamps to this cap (a larger chunk would
+/// make `StrausScratch::new` fail loudly at prove time).
+pub const SIGN_WS_BP_CHUNK_MAX: usize = 36;
+pub const SIGN_WS_BP_STRAUS_BYTES: usize =
+    SIGN_WS_BP_CHUNK_MAX * (16 * 160) + SIGN_WS_BP_CHUNK_MAX * 256 + 64;
+/// CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB).
+/// T-04 follow-up (2026-09-30): the ws segment is OVERLAID on the
+/// bp_straus+bp_wip region (phase time-share — the decrypt key derivation
+/// completes before the prove phase; the CN core zeroes the region on every
+/// exit path, restoring the carve's documented zero-fill state). The overlay
+/// fit is enforced at compile time below and pinned by layout tests.
 pub const SIGN_WS_CN_SCRATCH: usize = 1 << 21;
+
+/// T-04 follow-up: the overlay region shared by the CN scratchpad and the
+/// straus+wip pair — the larger of the two demands. The wip carve is padded
+/// to fill the region (`WipScratch::new` takes "at least" storage).
+pub const SIGN_WS_BP_OVERLAY_BYTES: usize =
+    if SIGN_WS_CN_SCRATCH > SIGN_WS_BP_STRAUS_BYTES + SIGN_WS_BP_WIP_BYTES {
+        SIGN_WS_CN_SCRATCH
+    } else {
+        SIGN_WS_BP_STRAUS_BYTES + SIGN_WS_BP_WIP_BYTES
+    };
+
+/// T-04 follow-up: the overlay must fit the region by construction.
+const _: () = assert!(
+    SIGN_WS_CN_SCRATCH <= SIGN_WS_BP_OVERLAY_BYTES
+        && SIGN_WS_BP_STRAUS_BYTES + SIGN_WS_BP_WIP_BYTES <= SIGN_WS_BP_OVERLAY_BYTES,
+    "CN scratchpad overlay must fit the straus+wip region"
+);
 
 /// Z5.3 C-cut B: WIP round ping-pong scratch (a/b/g/h double buffers) —
 /// byte expression of `WipScratch::storage_bytes(SIGN_WS_BP_TERMS)`.

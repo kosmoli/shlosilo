@@ -22,6 +22,8 @@
 #include "helloworld_task.h"
 #include "hal_touch.h"
 #include "hal_lcd.h"
+#include "drv_lcd_bright.h"
+#include "user_memory.h"
 #include "mhscpu.h"
 #define SHLOSILO_SMOKE_OK 0 /* ShlosiloErrorCode::Ok */
 
@@ -208,6 +210,222 @@ static lv_obj_t *g_log   = NULL;
  * 6144→8192：实验 E（cyccnt / alu diff / cyc×4 / selaff / maddaff / psram cfg）。 */
 static char g_logbuf[8192];
 
+/* Diagnostic noinit markers (survive warm reset; .diag_noinit in mh1903b.ld).
+ * g_diag_boot_count: incremented per boot — climbing values prove a reset loop.
+ * g_diag_progress: last step reached (1=task entry .. 11=version); displayed
+ * on the NEXT boot's title so a hang before any log line is still localized. */
+extern volatile uint32_t g_fault_log[];
+extern volatile uint32_t g_diag_boot_count;
+extern volatile uint32_t g_diag_progress;
+extern volatile uint32_t g_wdt_cr_readback;
+
+/* Raw-LCD liveness square (bypasses LVGL's object tree): 24x24 at the
+ * bottom-right, colour derived from the step code. If LVGL rendering dies but
+ * the panel path works, this square still moves — separating "smoke task
+ * alive, display stack dead" from "smoke task dead".
+ * 2026-09-30 v5: LcdDraw is ASYNC (DMA) and not reentrant — v4's fire-and-
+ * forget draws collided with LVGL's in-flight flushes and wedged the panel
+ * (black screen). Serialize under lvgl_lock and honor the LcdBusy wait, the
+ * same discipline LcdFlush uses. */
+static void diag_square(uint32_t code)
+{
+    /* 16x16: 24x24 buffers pushed .bss into .diag_noinit (linker overlap). */
+    static uint16_t sq[16 * 16];
+    uint16_t color = (uint16_t)((code * 37u) & 0xFFFFu);
+    for (unsigned i = 0; i < 16 * 16; i++) {
+        sq[i] = color;
+    }
+    lvgl_lock();
+    LcdDraw(464, 784, 479, 799, sq);
+    while (LcdBusy()) {
+        osDelay(1);
+    }
+    lvgl_unlock();
+}
+
+static void res_ckpt(uint32_t p);
+
+static void diag_prog(uint32_t p)
+{
+    g_diag_progress = p;
+    diag_square(p);
+    res_ckpt(p); /* v8: flash checkpoint — localizes hangs/panics across boots */
+}
+
+volatile uint32_t g_diag_boot_count __attribute__((section(".diag_noinit")));
+volatile uint32_t g_diag_progress __attribute__((section(".diag_noinit")));
+
+/* Backlight liveness channel (diagnostic, 2026-09-30): the backlight is a raw
+ * GPIO (PF3), independent of the LCD data path and of LVGL. A dip-pulse with
+ * the rest state = ON: if the screen freezes but the backlight keeps pulsing,
+ * the system is alive and only the LCD draw path died. Five fast dips at the
+ * end = battery finished. */
+static void backlight_dip(uint32_t n)
+{
+    while (n--) {
+        SetLcdBright(0);
+        osDelay(120);
+        SetLcdBright(100);
+        osDelay(120);
+    }
+}
+
+/* ==== v7 flash result record (2026-09-30) ====
+ * The LCD draw path dies silently on this board and the product has no
+ * UART/USB-device channel — so the battery summary is persisted to one QSPI
+ * NOR sector (right after the gencache slot) and replayed as the FIRST log
+ * content of the next boot, while the display pipeline is still fresh.
+ * Same erase/program discipline as xmr_gen_cache_flash.c (irq window per
+ * sector + CACHE_CleanAll + WDT feed). */
+#define RES_FLASH_BASE 0x01E41000u /* 4KB sector after the 65-sector gencache slot */
+#define RES_PANIC_BASE 0x01E42000u /* v13: panic record lives apart — it must
+                                    * never clobber the summary/trail sector */
+
+static uint32_t g_sign_ms, g_xmr_ms, g_gcache_pre;
+
+/* Write one text record (erase + program + checksum). Shared by the summary,
+ * the step checkpoints and the panic path. */
+static void res_write_at(uint32_t base, const char *text)
+{
+    /* 512B is enough for the record; AES_Program only asserts the ADDRESS is
+     * 4KB-aligned (page program handles any length). The 4KB-static-block
+     * version pushed .bss into .diag_noinit (linker overlap, 2026-09-30). */
+    static uint8_t block[512];
+    uint32_t len;
+    uint8_t sum = 0;
+    uint32_t i;
+
+    len = (uint32_t)strlen(text);
+    if (len > 400u) {
+        len = 400u;
+    }
+    memset(block, 0xFF, sizeof(block));
+    block[0] = 'R';
+    block[1] = 'S';
+    block[2] = 'L';
+    block[3] = 'T';
+    block[4] = (uint8_t)(len & 0xFF);
+    block[5] = (uint8_t)(len >> 8);
+    for (i = 0; i < len; i++) {
+        block[8 + i] = (uint8_t)text[i];
+        sum = (uint8_t)(sum + (uint8_t)text[i]);
+    }
+    block[6] = sum;
+    __disable_irq();
+    FLASH_EraseSector(base);
+    CACHE_CleanAll(CACHE);
+    __enable_irq();
+    WDT_ReloadCounter();
+    osDelay(1);
+    __disable_irq();
+    (void)AES_Program(NULL, NULL, base, (uint32_t)sizeof(block), block);
+    CACHE_CleanAll(CACHE);
+    __enable_irq();
+    WDT_ReloadCounter();
+}
+
+static void res_write_text(const char *text)
+{
+    res_write_at(RES_FLASH_BASE, text);
+}
+
+/* v10: checkpoint with a data suffix (sizes, alloc verdicts).
+ * v11: cumulative trail — every checkpoint APPENDS to one text buffer and the
+ * whole trail is persisted, so the next boot sees the full death path (v10's
+ * overwrite-per-step lost the sizes when the later steps overwrote ckpt=70). */
+static char g_trail[360];
+
+static void res_ckpt_msg(uint32_t p, const char *msg)
+{
+    char t[64];
+    snprintf(t, sizeof(t), " %u:%s", (unsigned)p, msg);
+    if (strlen(g_trail) + strlen(t) + 20 < sizeof(g_trail)) {
+        strcat(g_trail, t);
+    }
+    {
+        char out[400];
+        snprintf(out, sizeof(out), "PREV ckpt trail:%s", g_trail);
+        res_write_text(out);
+    }
+}
+
+static void res_ckpt(uint32_t p)
+{
+    res_ckpt_msg(p, "");
+}
+
+/* Full summary (fired right after the battery core and at the very end). */
+static void res_save_now(void)
+{
+    char text[400];
+
+    snprintf(text, sizeof(text),
+             "PREV xmr=%u ms gcache=%u sign=%u\n"
+             "PREV bp=%u/%u/%u/%u\n"
+             "PREV cn=%u/%u/%u/%u/%u\n"
+             "PREV tx=%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+             (unsigned)g_xmr_ms, (unsigned)g_gcache_pre, (unsigned)g_sign_ms,
+             (unsigned)shlosilo_bp_timing_phase(1),
+             (unsigned)shlosilo_bp_timing_phase(2),
+             (unsigned)shlosilo_bp_timing_phase(3),
+             (unsigned)shlosilo_bp_timing_phase(4),
+             (unsigned)shlosilo_cn_timing_phase(1),
+             (unsigned)shlosilo_cn_timing_phase(2),
+             (unsigned)shlosilo_cn_timing_phase(3),
+             (unsigned)shlosilo_cn_timing_phase(4),
+             (unsigned)shlosilo_cn_timing_phase(5),
+             (unsigned)shlosilo_tx_phase_phase(1),
+             (unsigned)shlosilo_tx_phase_phase(2),
+             (unsigned)shlosilo_tx_phase_phase(3),
+             (unsigned)shlosilo_tx_phase_phase(4),
+             (unsigned)shlosilo_tx_phase_phase(5),
+             (unsigned)shlosilo_tx_phase_phase(6),
+             (unsigned)shlosilo_tx_phase_phase(7),
+             (unsigned)shlosilo_tx_phase_phase(8),
+             (unsigned)shlosilo_tx_phase_phase(9),
+             (unsigned)shlosilo_tx_phase_phase(10),
+             (unsigned)shlosilo_tx_phase_phase(11));
+    res_write_text(text);
+}
+
+/* Consume-on-read: returns >0 and fills out with the previous run's record. */
+static int res_load_at(uint32_t base, char *out, uint32_t max)
+{
+    const volatile uint8_t *p = (const volatile uint8_t *)base;
+    uint32_t len;
+    uint8_t sum = 0;
+
+    if (p[0] != 'R' || p[1] != 'S' || p[2] != 'L' || p[3] != 'T') {
+        return 0;
+    }
+    len = (uint32_t)p[4] | ((uint32_t)p[5] << 8);
+    if (len == 0 || len > 4000u || len + 1u > max) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < len; i++) {
+        sum = (uint8_t)(sum + p[8 + i]);
+    }
+    if (sum != p[6]) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < len; i++) {
+        out[i] = (char)p[8 + i];
+    }
+    out[len] = '\0';
+    /* consume: erase so the next boot does not replay it */
+    __disable_irq();
+    FLASH_EraseSector(base);
+    CACHE_CleanAll(CACHE);
+    __enable_irq();
+    WDT_ReloadCounter();
+    return 1;
+}
+
+static int res_load(char *out, uint32_t max)
+{
+    return res_load_at(RES_FLASH_BASE, out, max);
+}
+
 static void log_line(const char *fmt, ...)
 {
     va_list ap;
@@ -215,6 +433,10 @@ static void log_line(const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
+    /* UART0 mirror (diagnostic, 2026-09-30): the LCD draw path dies silently
+     * on this board (accounting completes, pixels vanish); the UART keeps the
+     * battery readable even with a dead screen. */
+    printf("[log] %s\r\n", line);
     if (strlen(g_logbuf) + strlen(line) + 2 < sizeof(g_logbuf)) {
         strcat(g_logbuf, line);
         strcat(g_logbuf, "\n");
@@ -242,16 +464,66 @@ static int run_checks(void)
         static uint8_t *gen_blob = NULL;
         if (gen_g == NULL) {
             uint32_t g_sz = 0, h_sz = 0, b_sz = 0;
+            diag_prog(6); /* gencache sizes probe */
             if (shlosilo_gencache_table_sizes(1, &g_sz, &h_sz, &b_sz) != 0) {
                 log_line("gen table sizes probe failed");
             } else {
-                gen_g = (uint8_t *)malloc(g_sz);
-                gen_h = (uint8_t *)malloc(h_sz);
-                gen_blob = (uint8_t *)malloc(b_sz);
+                /* v10: bracket every alloc with flash checkpoints + record the
+                 * real sizes — v9 died between ckpt 7 and 8 (inside these
+                 * mallocs) with no further word. */
+                {
+                    char m[96];
+                    snprintf(m, sizeof(m), "g=%u h=%u b=%u",
+                             (unsigned)g_sz, (unsigned)h_sz, (unsigned)b_sz);
+                    res_ckpt_msg(70, m);
+                }
+                diag_prog(7); /* sizes ok, mallocs */
+                /* v11 escape hatch: absurd sizes = ABI/unit disease — skip the
+                 * provision instead of feeding them to malloc (v10 died inside
+                 * malloc(h_sz)), so the battery still delivers xmr/phase data. */
+                if (g_sz == 0 || g_sz > 2u * 1024u * 1024u ||
+                    h_sz == 0 || h_sz > 2u * 1024u * 1024u ||
+                    b_sz > 4u * 1024u * 1024u) {
+                    res_ckpt_msg(75, "SIZES-INSANE skip");
+                    log_line("gen sizes INSANE, provision skipped");
+                } else {
+                {
+                    /* v12 FIX: these buffers are consumed by the Rust side —
+                     * allocate them from the Rust domain (RustMalloc = the
+                     * shlosilo embedded allocator: K2-D pool + PSRAM fallback).
+                     * Plain malloc (newlib, sbrk base 0x20097e60) grows into
+                     * the K2-D pool (0x20099000) — two allocators on one SRAM
+                     * range; the second big alloc walked metadata the pool had
+                     * stomped and died (v9/v10/v11 death point). */
+                    void *tiny = RustMalloc(16);
+                    res_ckpt_msg(69, tiny ? "tiny=ok" : "tiny=NULL");
+                    RustFree(tiny);
+                }
+                gen_g = (uint8_t *)RustMalloc((int32_t)g_sz);
+                {
+                    char m[40];
+                    snprintf(m, sizeof(m), "gg=%p", (void *)gen_g);
+                    res_ckpt_msg(71, m);
+                }
+                gen_h = (uint8_t *)RustMalloc((int32_t)h_sz);
+                {
+                    char m[40];
+                    snprintf(m, sizeof(m), "gh=%p", (void *)gen_h);
+                    res_ckpt_msg(72, m);
+                }
+                gen_blob = (uint8_t *)RustMalloc((int32_t)b_sz);
+                {
+                    char m[40];
+                    snprintf(m, sizeof(m), "gb=%p", (void *)gen_blob);
+                    res_ckpt_msg(73, m);
+                }
+                }
                 if (gen_g != NULL && gen_h != NULL && gen_blob != NULL) {
                     uint32_t gs = g_sz, hs = h_sz, bs = b_sz;
+                    diag_prog(8); /* provide_table (decompress into caller storage) */
                     int32_t grc = shlosilo_gencache_provide_table(
                         1, gen_g, &gs, gen_h, &hs, gen_blob, &bs);
+                    diag_prog(9); /* provide done */
                     log_line("gen table provide rc=%d (g=%u h=%u b=%u)",
                              (int)grc, (unsigned)gs, (unsigned)hs, (unsigned)bs);
                 } else {
@@ -261,8 +533,15 @@ static int run_checks(void)
         }
     }
 
+    diag_prog(10); /* sign workspace */
     unsigned ws_need = shlosilo_sign_ws_len();
-    uint8_t *sign_ws = (uint8_t *)malloc(ws_need);
+    /* v12: same allocator fix as the provision buffers (Rust-side consumer). */
+    uint8_t *sign_ws = (uint8_t *)RustMalloc((int32_t)ws_need);
+    {
+        char m[40];
+        snprintf(m, sizeof(m), "ws=%p need=%u", (void *)sign_ws, (unsigned)ws_need);
+        res_ckpt_msg(10, m);
+    }
     if (sign_ws == NULL) {
         log_line("sign ws: alloc fail (%u bytes)", ws_need);
         return 1;
@@ -279,6 +558,7 @@ static int run_checks(void)
     for (int i = 0; i < 64; i++) { rolls64[i] = (uint8_t)(i % 6) + 1; }
 
     /* 1. version */
+    diag_prog(11); /* version check */
     if (shlosilo_version() != NULL) {
         log_line("version: %s", shlosilo_version());
     } else {
@@ -340,6 +620,7 @@ static int run_checks(void)
     if (rc == 0 && actual > 0 && out[0] == 0x02) {
         log_line("sign: PASS (%u bytes, type=0x%02x)", actual, out[0]);
         log_line("sign time: %u ms", dt);
+        g_sign_ms = dt;
         log_line("t1 ur_decode: %u", shlosilo_timing_get_stage(1));
         log_line("t2 pbkdf2: %u", shlosilo_timing_get_stage(2));
         log_line("t3 bip32: %u", shlosilo_timing_get_stage(3));
@@ -447,7 +728,8 @@ static int run_checks(void)
     gc_flash_init();
     shlosilo_gen_cache_set_hooks(gc_load, gc_store);
     /* Cache state probe: 0=hit 1=blank 2=corrupt 3=not-ready */
-    log_line("gencache pre: %u", (unsigned)gc_probe());
+    g_gcache_pre = gc_probe();
+    log_line("gencache pre: %u", (unsigned)g_gcache_pre);
     /* A2 diagnostics: CRC time in the pre-sign context (the post value is printed
      * after the XMR block). Same 256 KB blob, two different cache states. */
     log_line("gc crc pre: %u ms", (unsigned)gc_last_crc_ms());
@@ -473,15 +755,18 @@ static int run_checks(void)
         for (i = 0; i < 32; i++) {
             entropy[i] = 0x77;
         }
+        diag_prog(12); /* v8: pre-xmr checkpoint (outside the timed window) */
         uint32_t t0 = osKernelGetTickCount();
         int rc = shlosilo_sign_ur_ffi(FIXTURE_XMR_TX_UNSIGNED, idx12, 12,
                                       NULL, 0, 0, entropy, sizeof(entropy),
                                       xmr_out, sizeof(xmr_out), &xmr_len,
                                       sign_ws, ws_need);
         uint32_t dt = osKernelGetTickCount() - t0;
+        diag_prog(13); /* v8: post-xmr checkpoint (outside the timed window) */
         if (rc == 0 && xmr_len > 64) {
             log_line("xmr: PASS (%u bytes)", xmr_len);
             log_line("xmr time: %u ms", dt);
+            g_xmr_ms = dt;
             /* BP+ phase decomposition: 1=initial multiexp 2=A_hat 3=WIP rounds
              * 4=total prove (ms, accumulated). */
             log_line("bp1 commit: %u ms", (unsigned)shlosilo_bp_timing_phase(1));
@@ -562,6 +847,18 @@ void shlosilo_panic_hook(const uint8_t *msg, size_t len)
     memcpy(tmp, msg, n);
     tmp[n] = '\0';
 
+    /* v8: persist the panic text to the flash record FIRST (the screen may
+     * already be dead and this loop never returns — without this the panic is
+     * invisible and the battery dies silently).
+     * v13: write to the PANIC sector — the v12 panic record clobbered the
+     * summary sector AFTER the battery had already saved the xmr results. */
+    {
+        char rec[208];
+        gc_flash_init();
+        snprintf(rec, sizeof(rec), "PREV PANIC: %s", tmp);
+        res_write_at(RES_PANIC_BASE, rec);
+    }
+
     if (g_log != NULL) {
         char line[224];
         snprintf(line, sizeof(line), "PANIC: %s", tmp);
@@ -589,10 +886,29 @@ static uint32_t smoke_tick_ms(void)
 void ShlosiloSmokeTask(void *argument)
 {
     (void)argument;
+    /* v9: consume the PREVIOUS run's record FIRST, before any checkpoint
+     * write — v8 read it after ckpt(1)/ckpt(2), so the replay showed this
+     * boot's own checkpoint and erased the real death record (ordering bug). */
+    static char g_prev_rec[420];
+    static char g_prev_panic[220];
+    int g_prev_len = 0;
+    int g_prev_panic_len = 0;
+    gc_flash_init(); /* QSPI write access for ckpt writes + consume-erase */
+    g_prev_len = res_load(g_prev_rec, sizeof(g_prev_rec));
+    g_prev_panic_len =
+        res_load_at(RES_PANIC_BASE, g_prev_panic, sizeof(g_prev_panic));
+    g_diag_boot_count += 1;
+    uint32_t prev_prog = g_diag_progress;
+    diag_prog(1); /* task entry */
     osDelay(500); /* 等 LVGL/helloworld task 初始化 */
     lvgl_lock();
     g_title = lv_label_create(lv_scr_act());
-    lv_label_set_text(g_title, "shlosilo P6.2");
+    /* r = warm boot count (climbing = reset loop), p = where the PREVIOUS
+     * boot got to (see diag_prog markers; 1..11). */
+    char title[64];
+    snprintf(title, sizeof(title), "shlosilo P6.2 r=%lu p=%lu",
+             (unsigned long)g_diag_boot_count, (unsigned long)prev_prog);
+    lv_label_set_text(g_title, title);
     lv_obj_align(g_title, LV_ALIGN_TOP_LEFT, 10, 10);
     lv_obj_set_style_text_color(g_title, lv_color_hex(0x00FF00), 0);
 
@@ -615,34 +931,71 @@ void ShlosiloSmokeTask(void *argument)
     lvgl_unlock();
 
     memset(g_logbuf, 0, sizeof(g_logbuf));
+    diag_prog(2); /* UI setup done */
 
+    /* Fault record FIRST (it used to sit behind the touch-probe line, so a
+     * hang before that line hid exactly the evidence needed). */
+    if (g_fault_log[0] == 0x464C5444U) {
+        log_line("FAULT cfsr=%08x hfsr=%08x",
+                 (unsigned)g_fault_log[1], (unsigned)g_fault_log[2]);
+        log_line("FAULT bfar=%08x pc=%08x lr=%08x",
+                 (unsigned)g_fault_log[3], (unsigned)g_fault_log[4],
+                 (unsigned)g_fault_log[5]);
+        /* 清除，避免下次开机误报 */
+        for (int i = 0; i < 7; i++) {
+            g_fault_log[i] = 0;
+        }
+    } else {
+        log_line("no fault record (boot r=%lu)",
+                 (unsigned long)g_diag_boot_count);
+    }
+    log_line("wdt cr=%08x (0 = never armed)", (unsigned)g_wdt_cr_readback);
+
+    /* v7/v9: replay the PREVIOUS run's record (read at task entry, before the
+     * checkpoint writes — displayed now, one label update = one draw). */
+    if (g_prev_len > 0 || g_prev_panic_len > 0) {
+        if (g_prev_len > 0) {
+            printf("[rec] %s\r\n", g_prev_rec);
+            if (strlen(g_logbuf) + strlen(g_prev_rec) + 2 < sizeof(g_logbuf)) {
+                strcat(g_logbuf, g_prev_rec);
+                strcat(g_logbuf, "\n");
+            }
+        }
+        if (g_prev_panic_len > 0) {
+            printf("[rec] %s\r\n", g_prev_panic);
+            if (strlen(g_logbuf) + strlen(g_prev_panic) + 2 < sizeof(g_logbuf)) {
+                strcat(g_logbuf, g_prev_panic);
+                strcat(g_logbuf, "\n");
+            }
+        }
+        lvgl_lock();
+        lv_label_set_text(g_log, g_logbuf);
+        lvgl_unlock();
+    }
+
+    diag_prog(3); /* pre touch-probe delay */
     /* 触摸探测结果屏显（build D 诊断）。TouchInit 位bang扫 128 地址
-     * ~1s，helloworld/smoke 两任务并发，等 3s 保证探测已完成。 */
-    osDelay(3000);
+     * ~1s，helloworld/smoke 两任务并发，等 3s 保证探测已完成。
+     * 2026-09-30: split into 6 heartbeats so a death inside the wait window
+     * leaves a visible trail (the old firmware died somewhere in here). */
+    for (int w = 1; w <= 6; w++) {
+        log_line("wait %d/6", w);
+        diag_square(3);
+        backlight_dip(1); /* liveness channel independent of the LCD path */
+        osDelay(260);
+    }
+    diag_prog(4); /* post delay, first log_line about to run */
     log_line("touch probe: addr=0x%02X ok=%d",
              (unsigned)g_touch_probe_addr, (int)g_touch_probe_ok);
+    diag_prog(5); /* first log_line through log+LVGL path */
     extern volatile uint16_t g_touch_diag_x;
     extern volatile uint16_t g_touch_diag_y;
     extern volatile uint32_t g_touch_diag_err;
     extern volatile uint32_t g_touch_diag_press;
 
-    /* K2-D 诊断：上次复位的 HardFault 捕获记录（hardfault_diag.c 写入） */
-    {
-        extern const volatile uint32_t *const g_fault_log;
-        if (g_fault_log[0] == 0x464C5444U) {
-            log_line("FAULT cfsr=%08x hfsr=%08x",
-                     (unsigned)g_fault_log[1], (unsigned)g_fault_log[2]);
-            log_line("FAULT bfar=%08x pc=%08x lr=%08x",
-                     (unsigned)g_fault_log[3], (unsigned)g_fault_log[4],
-                     (unsigned)g_fault_log[5]);
-            /* 清除，避免下次开机误报 */
-            for (int i = 0; i < 7; i++) {
-                ((volatile uint32_t *)g_fault_log)[i] = 0;
-            }
-        }
-    }
-
     int fail = run_checks();
+    /* v7: persist the key numbers as soon as the battery core is done. */
+    res_save_now();
 
     /* 触摸诊断汇总：run_checks 期间(~45s)的按下次数/错误/末次坐标 */
     log_line("touch diag: press=%u err=%u x=%u y=%u",
@@ -909,6 +1262,11 @@ void ShlosiloSmokeTask(void *argument)
     lvgl_lock();
     lv_label_set_text(g_log, g_logbuf);
     lvgl_unlock();
+
+    /* Battery finished: 5 fast backlight dips = "done" even with a dead
+     * screen (diagnostic channel, 2026-09-30). */
+    res_save_now();
+    backlight_dip(5);
 
     for (;;) {
         osDelay(10000); /* 常驻：结果留在屏幕上，WDT 由 helloworld task 喂 */

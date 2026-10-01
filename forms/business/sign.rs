@@ -203,9 +203,14 @@ pub struct SignWs<'a> {
     /// Z5.3 D-cut: Straus scratch storage (raw bytes; the typed scratch is
     /// constructed from it at the call site).
     pub bp_straus: &'a mut [u8],
-    /// CN-V0 key-derivation scratchpad (2MB, secret-bearing; zeroed by the
-    /// cryptonight core on every exit path).
+    /// T-04 follow-up (2026-09-30): CN-V0 key-derivation scratchpad (2MB,
+    /// secret-bearing; zeroed by the cryptonight core on every exit path).
+    /// OVERLAID on the bp_straus+bp_wip region (phase time-share: the decrypt
+    /// key derivation completes before the prove phase; the CN core's exit
+    /// zeroing restores the carve's documented zero-fill state). The fit is
+    /// pinned by a const assert in `types::caps`.
     pub cn_scratch: &'a mut [u8],
+    /// Z5.3 C-cut B: WIP round ping-pong scratch.
     pub bp_wip: &'a mut [u8],
     /// Z4-7d: PSBT map pool (records + payload arena).
     pub psbt_recs: &'a mut [crate::chain::btc::psbt::KvRec],
@@ -317,20 +322,23 @@ impl SignWsLayout {
             core::mem::size_of::<(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)>()
                 * c::SIGN_WS_BP_TERMS,
         );
-        let cn_scratch = ws_next(
-            &mut off,
-            core::mem::align_of::<u128>(),
-            c::SIGN_WS_CN_SCRATCH,
-        );
+        // T-04 follow-up (2026-09-30): the CN-V0 scratchpad OVERLAYS the
+        // straus+wip region (phase time-share: decrypt key derivation ends
+        // before the prove; the CN core zeroes the region on exit, restoring
+        // the carve's documented zero-fill state). u128 alignment governs the
+        // shared slot; the fit is pinned by a const assert in `types::caps`.
         let bp_straus = ws_next(
             &mut off,
-            core::mem::align_of::<u64>(),
+            core::mem::align_of::<u128>(),
             c::SIGN_WS_BP_STRAUS_BYTES,
         );
+        let cn_scratch = bp_straus;
+        /* wip carve padded to the overlay region tail (WipScratch::new takes
+         * "at least" storage; the pad is the CN overlay's fit margin). */
         let bp_wip = ws_next(
             &mut off,
             core::mem::align_of::<u64>(),
-            c::SIGN_WS_BP_WIP_BYTES,
+            c::SIGN_WS_BP_OVERLAY_BYTES - c::SIGN_WS_BP_STRAUS_BYTES,
         );
         let psbt_recs = ws_next(
             &mut off,
@@ -358,8 +366,8 @@ impl SignWsLayout {
             kstr,
             record_dests,
             bp_terms,
-            cn_scratch,
             bp_straus,
+            cn_scratch,
             bp_wip,
             psbt_recs,
             psbt_arena,
@@ -438,8 +446,9 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     // before reading them).
     let bp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)] =
         unsafe { at(base, l.bp_terms, c::SIGN_WS_BP_TERMS) };
-    let cn_scratch: &mut [u8] = unsafe { at(base, l.cn_scratch, c::SIGN_WS_CN_SCRATCH) };
     let bp_straus: &mut [u8] = unsafe { at(base, l.bp_straus, c::SIGN_WS_BP_STRAUS_BYTES) };
+    /* T-04: overlaid on the straus+wip region (see layout compute). */
+    let cn_scratch: &mut [u8] = unsafe { at(base, l.cn_scratch, c::SIGN_WS_CN_SCRATCH) };
     let bp_wip: &mut [u8] = unsafe { at(base, l.bp_wip, c::SIGN_WS_BP_WIP_BYTES) };
     let psbt_recs: &mut [crate::chain::btc::psbt::KvRec] =
         unsafe { at(base, l.psbt_recs, c::SIGN_WS_PSBT_RECS) };
@@ -696,7 +705,7 @@ fn sign_xmr_with_ws<'a>(
         let ws_bp_straus = core::mem::take(&mut ws.bp_straus);
         let mut bp_straus = match curve25519_dalek::scratch::StrausScratch::new(
             ws_bp_straus,
-            crate::types::caps::SIGN_WS_BP_TERMS,
+            crate::types::caps::SIGN_WS_BP_CHUNK_MAX,
         ) {
             Ok(s) => s,
             Err(_) => {

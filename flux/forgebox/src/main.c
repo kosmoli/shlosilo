@@ -23,6 +23,10 @@
 #define WDT_RELOAD_MAX          (0xC300000U)  // 2 seconds
 uint8_t g_testCmdRcvBuffer[TEST_CMD_MAX_LENGTH];
 uint32_t g_testCmdRcvCount = 0;
+/* Read-back of WDT->WDT_CR after WdtInit: 0 = the WDT block never armed
+ * (APB clock gate never opened anywhere — the SDK driver does not do it),
+ * non-zero = armed. Displayed by the smoke screen (diagnostic, 2026-09-30). */
+volatile uint32_t g_wdt_cr_readback = 0;
 
 static void WdtInit(void)
 {
@@ -30,6 +34,7 @@ static void WdtInit(void)
     WDT_SetReload(WDT_RELOAD_MAX);
     WDT_ReloadCounter();
     WDT_Enable();
+    g_wdt_cr_readback = WDT->WDT_CR;
 }
 
 void CmdIsrRcvByte(uint8_t byte)

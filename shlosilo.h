@@ -401,15 +401,29 @@
 #define SIGN_WS_BP_TERMS 2050
 
 /**
- * Z5.3 D-cut: the Straus scratch byte pool (mirrors the vendor's
- * `StrausScratch::storage_bytes(SIGN_WS_BP_TERMS)`; a pin test asserts the
+ * Z5.3 D-cut: the Straus scratch byte pool (byte expression of the vendor's
+ * `StrausScratch::storage_bytes(SIGN_WS_BP_CHUNK_MAX)`; a pin test asserts the
  * two agree — same source-of-truth discipline as the Z3.3b ws layout).
+ *
+ * T-04 follow-up (2026-09-30): sized for the CHUNK capacity, not the terms
+ * bound. The chunked multiexp feeds `multiexp_chunk_terms()` terms at a time
+ * (default 36, per-platform deployment), so a terms-cap-sized pool was 57x
+ * larger than the live working set (5.77MB -> ~99KB) and pushed the ws past
+ * the 8MB PSRAM heap on forgebox ("sign ws: alloc fail (10575072 bytes)").
+ * `set_bp_multiexp_chunk_terms` clamps to this cap (a larger chunk would
+ * make `StrausScratch::new` fail loudly at prove time).
  */
-#define SIGN_WS_BP_STRAUS_BYTES ((SIGN_WS_BP_TERMS * 2816) + 64)
+#define SIGN_WS_BP_CHUNK_MAX 36
+
+#define SIGN_WS_BP_STRAUS_BYTES (((SIGN_WS_BP_CHUNK_MAX * (16 * 160)) + (SIGN_WS_BP_CHUNK_MAX * 256)) + 64)
 
 /**
- * CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB) — a
- * ws segment so the HOST decides where it lives (PSRAM on all platforms).
+ * CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB).
+ * T-04 follow-up (2026-09-30): the ws segment is OVERLAID on the
+ * bp_straus+bp_wip region (phase time-share — the decrypt key derivation
+ * completes before the prove phase; the CN core zeroes the region on every
+ * exit path, restoring the carve's documented zero-fill state). The overlay
+ * fit is enforced at compile time below and pinned by layout tests.
  */
 #define SIGN_WS_CN_SCRATCH (1 << 21)
 

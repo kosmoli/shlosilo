@@ -13,7 +13,13 @@ pub mod clsag;
 /// host picks the largest chunk whose table fits its fastest memory
 /// (forgebox SRAM pool 48K -> 36; pico2 SRAM heap 16K routing -> 12).
 /// Default 36; call once at boot.
+///
+/// T-04 follow-up (2026-09-30): clamped to `caps::SIGN_WS_BP_CHUNK_MAX` — the
+/// workspace straus scratch is sized from that cap, so a larger chunk would
+/// fail `StrausScratch::new` at prove time. The getter reports the value in
+/// force after clamping.
 pub fn set_bp_multiexp_chunk_terms(n: usize) {
+    let n = n.clamp(1, crate::types::caps::SIGN_WS_BP_CHUNK_MAX);
     monero_bulletproofs::set_multiexp_chunk_terms(n);
 }
 

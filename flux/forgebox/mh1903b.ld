@@ -58,6 +58,18 @@ SECTIONS
 		_ebss = .;
 	} > SRAM
 
+	/* Diagnostic noinit (2026-09-30, T-04 regression triage): survives warm
+	 * reset (WDT CPUReset keeps SRAM) and startup zeroing (which covers only
+	 * [_sbss,_ebss)). The old fault log sat at 0x2000F004 "inside the unused
+	 * 0x2000F000 slot" — g_lvglCache had long since swallowed that address, so
+	 * every boot zeroed the record before the smoke task could read it.
+	 * Contents: g_fault_log[7] (magic/cfsr/hfsr/bfar/pc/lr/xpsr),
+	 * g_diag_boot_count, g_diag_progress. NOLOAD: no init image. */
+	.diag_noinit 0x20098000 (NOLOAD) :
+	{
+		KEEP(*(.diag_noinit))
+	} > SRAM
+
 	.data_parser_section 0x200FC000 (NOLOAD) :
 	{
 		__data_parser_start = .;
@@ -90,6 +102,11 @@ SECTIONS
 		libm.a (*)
 		libgcc.a (*)
 	}
+
+	/* K2-D margin check, enforced at link time (was a manual "check .bss end
+	 * vs pool base" rule): .bss growth must not reach .diag_noinit at
+	 * 0x20098000 (and thereby the pool base at 0x20099000). */
+	ASSERT(_ebss <= 0x20098000, ".bss overflow into .diag_noinit")
 }
 
 end = .;

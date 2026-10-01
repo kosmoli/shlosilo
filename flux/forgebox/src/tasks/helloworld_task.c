@@ -182,6 +182,31 @@ static void HelloWorldTask(void *argument)
         lvgl_lock();
         lv_timer_handler();
         lvgl_unlock();
+
+        /* Loop-liveness heartbeat (diagnostic, 2026-09-30): raw LcdDraw of a
+         * 24x24 square at the top-right, toggled every ~500 ms. Independent of
+         * LVGL and of the smoke task — if this square animates, the display_bg
+         * loop (and the WDT feed) is alive.
+         * v5: same serialization discipline as LcdFlush — lvgl_lock + LcdBusy
+         * wait (LcdDraw is async DMA; v4's unguarded draws wedged the panel). */
+        {
+            static uint32_t lastHb = 0;
+            static uint16_t hbColor = 0xF800; /* red/green toggle */
+            if (now - lastHb >= 500) {
+                lastHb = now;
+                static uint16_t hbBuf[16 * 16];
+                for (unsigned i = 0; i < 16 * 16; i++) {
+                    hbBuf[i] = hbColor;
+                }
+                lvgl_lock();
+                LcdDraw(464, 8, 479, 23, hbBuf);
+                while (LcdBusy()) {
+                    osDelay(1);
+                }
+                lvgl_unlock();
+                hbColor = (hbColor == 0xF800) ? 0x07E0 : 0xF800;
+            }
+        }
         osDelay(5);
     }
 }

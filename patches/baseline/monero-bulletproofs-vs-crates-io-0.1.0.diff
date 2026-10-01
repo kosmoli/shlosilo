@@ -486,8 +486,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/core.rs b/src/core.rs
 --- a/src/core.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/core.rs	2026-09-29 17:37:43.563591243 +0800
-@@ -1,33 +1,219 @@
++++ b/src/core.rs	2026-10-01 16:00:57.826071847 +0800
+@@ -1,33 +1,229 @@
 +use core::sync::atomic::{AtomicUsize, Ordering};
 +
 +#[cfg(any(feature = "alloc-fallback", feature = "prove-timing"))]
@@ -506,7 +506,25 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -  MAX_BULLETPROOF_COMMITMENTS as MAX_COMMITMENTS, COMMITMENT_BITS,
 -};
 +pub(crate) use crate::{COMMITMENT_BITS, MAX_COMMITMENTS};
-+
+ 
+-pub(crate) fn multiexp(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
+-  let mut buf_scalars = Vec::with_capacity(pairs.len());
+-  let mut buf_points = Vec::with_capacity(pairs.len());
+-  for (scalar, point) in pairs {
+-    buf_scalars.push(scalar);
+-    buf_points.push(point);
+-  }
+-  EdwardsPoint::multiscalar_mul(buf_scalars, buf_points)
+-}
+-
+-pub(crate) fn multiexp_vartime(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
+-  let mut buf_scalars = Vec::with_capacity(pairs.len());
+-  let mut buf_points = Vec::with_capacity(pairs.len());
+-  for (scalar, point) in pairs {
+-    buf_scalars.push(scalar);
+-    buf_points.push(point);
+-  }
+-  EdwardsPoint::vartime_multiscalar_mul(buf_scalars, buf_points)
 +/// Constant-time multiexp, chunked so every Straus lookup table fits the
 +/// host's fast memory. The chunk size is a PER-PLATFORM tuning knob
 +/// (runtime, default 36):
@@ -689,27 +707,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        pairs.iter().map(|(_, point)| point),
 +    )
 +}
- 
--pub(crate) fn multiexp(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
--  let mut buf_scalars = Vec::with_capacity(pairs.len());
--  let mut buf_points = Vec::with_capacity(pairs.len());
--  for (scalar, point) in pairs {
--    buf_scalars.push(scalar);
--    buf_points.push(point);
--  }
--  EdwardsPoint::multiscalar_mul(buf_scalars, buf_points)
--}
--
--pub(crate) fn multiexp_vartime(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
--  let mut buf_scalars = Vec::with_capacity(pairs.len());
--  let mut buf_points = Vec::with_capacity(pairs.len());
--  for (scalar, point) in pairs {
--    buf_scalars.push(scalar);
--    buf_points.push(point);
--  }
--  EdwardsPoint::vartime_multiscalar_mul(buf_scalars, buf_points)
++
 +/// shlosilo vendor patch (Z5.3 D-cut): vartime over caller scratch above the
 +/// inline threshold; the small path stays allocation-free.
++/// T-04 follow-up (2026-09-30): chunked like `multiexp` — the caller scratch
++/// is sized for the CHUNK capacity (`SIGN_WS_BP_CHUNK_MAX`), and vartime
++/// callers (compute_A_hat) feed full A-term slices. Sums of point-addition
++/// chunks are the same point (byte pins hold).
 +pub(crate) fn multiexp_vartime(
 +    pairs: &[(Scalar, EdwardsPoint)],
 +    scratch: &mut curve25519_dalek::scratch::StrausScratch,
@@ -720,18 +724,24 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            pairs.iter().map(|(_, point)| point),
 +        ));
 +    }
-+    Ok(
-+        curve25519_dalek::scratch::straus_optional_multiscalar_mul_scratch(
-+            pairs.iter().map(|(scalar, _)| scalar),
-+            pairs.iter().map(|(_, point)| Some(*point)),
++    let chunk = multiexp_chunk_terms();
++    let mut acc = EdwardsPoint::identity();
++    let mut remaining = pairs;
++    while !remaining.is_empty() {
++        let take = remaining.len().min(chunk);
++        acc += curve25519_dalek::scratch::straus_optional_multiscalar_mul_scratch(
++            remaining[..take].iter().map(|(scalar, _)| scalar),
++            remaining[..take].iter().map(|(_, point)| Some(*point)),
 +            scratch,
 +        )?
-+        .expect("all points present"),
-+    )
++        .expect("all points present");
++        remaining = &remaining[take..];
++    }
++    Ok(acc)
  }
  
  /*
-@@ -49,28 +235,29 @@
+@@ -49,28 +245,29 @@
  When there are 4 challenges (n=16), the iterative approach does 28 multiplications
  versus divide and conquer's 24.
  */
