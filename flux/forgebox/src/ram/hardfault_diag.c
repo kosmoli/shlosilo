@@ -13,6 +13,7 @@
  */
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include "mhscpu.h"
 
 /* 复位后由 smoke 读取。布局: [magic][cfsr][hfsr][bfar][pc][lr][xpsr] */
@@ -40,6 +41,42 @@ void hardfault_capture(uint32_t *stack)
     g_fault_log[4] = stack[6]; /* stacked PC */
     g_fault_log[5] = stack[5]; /* stacked LR */
     g_fault_log[6] = stack[7]; /* stacked xPSR */
+
+    /* v20: persist the fault record to FLASH before resetting — the SRAM
+     * noinit slot is scrubbed by warm resets (the r/p experiments), and flash
+     * is the only medium that survives. Format = the RSLT record the smoke
+     * replay reads, so the next boot's PREV line shows the crash registers.
+     * Flash writes are safe here (v19 A/B exonerated the QSPI write path). */
+    {
+        extern void gc_flash_init(void);
+        char rec[160];
+        int n = snprintf(rec, sizeof(rec),
+                         "FAULT cfsr=%08x pc=%08x lr=%08x sp=%08x",
+                         (unsigned)g_fault_log[1],
+                         (unsigned)g_fault_log[4], (unsigned)g_fault_log[5],
+                         (unsigned)(uintptr_t)stack);
+        (void)n;
+        /* minimal RSLT record write (mirrors the smoke task's res_write_at) */
+        {
+            extern void gc_rom_erase_sector(uint32_t addr);
+            uint8_t block[256];
+            uint32_t len = (uint32_t)strlen(rec);
+            uint8_t sum = 0;
+            for (uint32_t i = 0; i < sizeof(block); i++) block[i] = 0xFFu;
+            block[0] = 'R'; block[1] = 'S'; block[2] = 'L'; block[3] = 'T';
+            block[4] = (uint8_t)(len & 0xFF);
+            block[5] = (uint8_t)(len >> 8);
+            for (uint32_t i = 0; i < len; i++) {
+                block[8 + i] = (uint8_t)rec[i];
+                sum = (uint8_t)(sum + (uint8_t)rec[i]);
+            }
+            block[6] = sum;
+            FLASH_EraseSector(0x01E42000u);
+            CACHE_CleanAll(CACHE);
+            (void)AES_Program(NULL, NULL, 0x01E42000u, sizeof(block), block);
+            CACHE_CleanAll(CACHE);
+        }
+    }
 
     /* 主动复位：WDT 最短窗口即可 */
     WDT_ModeConfig(WDT_Mode_CPUReset);

@@ -183,6 +183,16 @@ static void HelloWorldTask(void *argument)
         lv_timer_handler();
         lvgl_unlock();
 
+        /* v18: phase heartbeat to flash (~2s cadence, change-gated inside). */
+        {
+            static uint32_t lastPh = 0;
+            if (now - lastPh >= 2000) {
+                lastPh = now;
+                extern void diag_heartbeat(void);
+                diag_heartbeat();
+            }
+        }
+
         /* Loop-liveness heartbeat (diagnostic, 2026-09-30): raw LcdDraw of a
          * 24x24 square at the top-right, toggled every ~500 ms. Independent of
          * LVGL and of the smoke task — if this square animates, the display_bg
@@ -200,7 +210,9 @@ static void HelloWorldTask(void *argument)
                 }
                 lvgl_lock();
                 LcdDraw(464, 8, 479, 23, hbBuf);
-                while (LcdBusy()) {
+                /* v17: bounded wait (see smoke_task) — a wedge here froze the
+                 * loop's WDT feed and looked like a whole-system death. */
+                for (unsigned i = 0; i < 1000u && LcdBusy(); i++) {
                     osDelay(1);
                 }
                 lvgl_unlock();
@@ -219,7 +231,9 @@ static void LvglTickTimerFunc(void *argument)
 static void LcdFlush(struct _lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p)
 {
     LcdDraw(area->x1, area->y1, area->x2, area->y2, (uint16_t *)color_p);
-    while (LcdBusy()) {
+    /* v17: bounded wait — the flush runs under the lvgl_lock inside the loop;
+     * an unbounded wedge here froze everything (and the WDT feed with it). */
+    for (unsigned i = 0; i < 1000u && LcdBusy(); i++) {
         osDelay(1);
     }
     lv_disp_flush_ready(disp_drv);

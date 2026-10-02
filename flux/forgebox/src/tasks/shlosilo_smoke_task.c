@@ -24,6 +24,7 @@
 #include "hal_lcd.h"
 #include "drv_lcd_bright.h"
 #include "user_memory.h"
+#include "psram_heap_4.h"
 #include "mhscpu.h"
 #define SHLOSILO_SMOKE_OK 0 /* ShlosiloErrorCode::Ok */
 
@@ -130,7 +131,10 @@ extern unsigned int shlosilo_sram_pool_peak_blocks(void);
 static uint32_t smoke_tick_ms(void);
 /* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。
  * 64KB：ETH 实测 used 35K。生成元改为循环 decompress 后不再需要 512KB。 */
-#define SHLOSILO_SMOKE_STACK_BYTES (64u * 1024u)
+/* v21: 64K -> 160K — the Z5.3 chunked/inline paths changed the stack shape
+ * (the v20 fault showed a garbage-PC IBUSERR with smashed-looking frames at
+ * ~4s into the sign = the deep prove path). 160K fits the 450K SRAM heap. */
+#define SHLOSILO_SMOKE_STACK_BYTES (160u * 1024u)
 
 LV_FONT_DECLARE(openSansEnTitle);
 LV_FONT_DECLARE(openSansEnText);
@@ -219,6 +223,9 @@ extern volatile uint32_t g_diag_boot_count;
 extern volatile uint32_t g_diag_progress;
 extern volatile uint32_t g_wdt_cr_readback;
 
+static void res_ckpt(uint32_t p);
+static void res_ckpt_msg(uint32_t p, const char *msg);
+
 /* Raw-LCD liveness square (bypasses LVGL's object tree): 24x24 at the
  * bottom-right, colour derived from the step code. If LVGL rendering dies but
  * the panel path works, this square still moves — separating "smoke task
@@ -237,13 +244,17 @@ static void diag_square(uint32_t code)
     }
     lvgl_lock();
     LcdDraw(464, 784, 479, 799, sq);
-    while (LcdBusy()) {
+    /* v17: bounded wait — a wedged 8080 DMA must not spin here holding the
+     * lvgl_lock (it starved the loop's WDT feed and froze the whole system). */
+    for (unsigned i = 0; i < 1000u && LcdBusy(); i++) {
         osDelay(1);
+    }
+    if (LcdBusy()) {
+        res_ckpt_msg(88, "lcd-wedge");
     }
     lvgl_unlock();
 }
 
-static void res_ckpt(uint32_t p);
 
 static void diag_prog(uint32_t p)
 {
@@ -280,24 +291,36 @@ static void backlight_dip(uint32_t n)
 #define RES_FLASH_BASE 0x01E41000u /* 4KB sector after the 65-sector gencache slot */
 #define RES_PANIC_BASE 0x01E42000u /* v13: panic record lives apart — it must
                                     * never clobber the summary/trail sector */
+#define RES_HB_BASE 0x01E43000u /* v18: phase-heartbeat sector (loop-written) */
 
 static uint32_t g_sign_ms, g_xmr_ms, g_gcache_pre;
 
 /* Write one text record (erase + program + checksum). Shared by the summary,
  * the step checkpoints and the panic path. */
+/* v19 A/B switch: ALL flash writes off — the QSPI self-write vs XIP/PSRAM
+ * arbitration wedge is the prime suspect for the ~4s-into-sign freezes
+ * (erase/program runs in __disable_irq windows while the CPU executes from
+ * the SAME QSPI flash and the sign hammers PSRAM). Reads stay on (pure XIP). */
+#define DIAG_FLASH_WRITES 1 /* v20: writes exonerated by the v19 A/B */
+
 static void res_write_at(uint32_t base, const char *text)
 {
-    /* 512B is enough for the record; AES_Program only asserts the ADDRESS is
-     * 4KB-aligned (page program handles any length). The 4KB-static-block
-     * version pushed .bss into .diag_noinit (linker overlap, 2026-09-30). */
-    static uint8_t block[512];
+#if DIAG_FLASH_WRITES == 0
+    (void)base;
+    (void)text;
+    return;
+#endif
+    /* AES_Program only asserts the ADDRESS is 4KB-aligned (page program
+     * handles any length). 1KB holds the summary + the checkpoint trail in
+     * one record (v15: they used to overwrite each other). */
+    static uint8_t block[1024];
     uint32_t len;
     uint8_t sum = 0;
     uint32_t i;
 
     len = (uint32_t)strlen(text);
-    if (len > 400u) {
-        len = 400u;
+    if (len > 900u) {
+        len = 900u;
     }
     memset(block, 0xFF, sizeof(block));
     block[0] = 'R';
@@ -357,7 +380,7 @@ static void res_ckpt(uint32_t p)
 /* Full summary (fired right after the battery core and at the very end). */
 static void res_save_now(void)
 {
-    char text[400];
+    char text[900];
 
     snprintf(text, sizeof(text),
              "PREV xmr=%u ms gcache=%u sign=%u\n"
@@ -385,7 +408,37 @@ static void res_save_now(void)
              (unsigned)shlosilo_tx_phase_phase(9),
              (unsigned)shlosilo_tx_phase_phase(10),
              (unsigned)shlosilo_tx_phase_phase(11));
+    /* v15: carry the checkpoint trail in the SAME record — the summary used
+     * to overwrite the trail (and vice versa) in the single record sector. */
+    if (text[0] != '\0' && g_trail[0] != '\0') {
+        strncat(text, "\nTRAIL:", sizeof(text) - strlen(text) - 1);
+        strncat(text, g_trail, sizeof(text) - strlen(text) - 1);
+    }
     res_write_text(text);
+}
+
+/* v18: phase heartbeat — called from the display_bg loop (~2s cadence,
+ * written only when the values CHANGE). The phase accumulators are the
+ * in-sign progress; if the sign hangs, the last heartbeat freezes at the
+ * death phase and survives in its own sector. Also discriminates the two
+ * observed death shapes: heartbeats continuing = the loop lived (screen
+ * wedge), heartbeats stopped = the loop died too (WDT-reset shape). */
+void diag_heartbeat(void)
+{
+    static char last[96];
+    char now_s[96];
+    unsigned cn = shlosilo_cn_timing_phase(5);
+    unsigned bp = shlosilo_bp_timing_phase(4);
+    unsigned wip = shlosilo_bp_timing_phase(3);
+    unsigned tx = shlosilo_tx_phase_phase(4);
+    unsigned sg = shlosilo_timing_get_total();
+    snprintf(now_s, sizeof(now_s), "hb sg=%u cn=%u bp=%u wip=%u tx=%u",
+             sg, cn, bp, wip, tx);
+    if (strcmp(now_s, last) != 0) {
+        strncpy(last, now_s, sizeof(last) - 1);
+        last[sizeof(last) - 1] = '\0';
+        res_write_at(RES_HB_BASE, now_s);
+    }
 }
 
 /* Consume-on-read: returns >0 and fills out with the previous run's record. */
@@ -488,30 +541,29 @@ static int run_checks(void)
                     log_line("gen sizes INSANE, provision skipped");
                 } else {
                 {
-                    /* v12 FIX: these buffers are consumed by the Rust side —
-                     * allocate them from the Rust domain (RustMalloc = the
-                     * shlosilo embedded allocator: K2-D pool + PSRAM fallback).
-                     * Plain malloc (newlib, sbrk base 0x20097e60) grows into
-                     * the K2-D pool (0x20099000) — two allocators on one SRAM
-                     * range; the second big alloc walked metadata the pool had
-                     * stomped and died (v9/v10/v11 death point). */
-                    void *tiny = RustMalloc(16);
+                    /* v15 FIX: PsramMalloc (the 8MB PSRAM heap_4) — the only
+                     * domain that can hold these buffers. (v12 routed them to
+                     * `RustMalloc`, which is a legacy shim: it lands in the
+                     * 450KB SRAM FreeRTOS heap, NOT the Rust allocator glue —
+                     * 2.8MB ws and 576KB tables could never fit. The plain
+                     * `malloc` of v9-v11 was the newlib sbrk trap instead.) */
+                    void *tiny = PsramMalloc(16);
                     res_ckpt_msg(69, tiny ? "tiny=ok" : "tiny=NULL");
-                    RustFree(tiny);
+                    PsramFree(tiny);
                 }
-                gen_g = (uint8_t *)RustMalloc((int32_t)g_sz);
+                gen_g = (uint8_t *)PsramMalloc(g_sz);
                 {
                     char m[40];
                     snprintf(m, sizeof(m), "gg=%p", (void *)gen_g);
                     res_ckpt_msg(71, m);
                 }
-                gen_h = (uint8_t *)RustMalloc((int32_t)h_sz);
+                gen_h = (uint8_t *)PsramMalloc(h_sz);
                 {
                     char m[40];
                     snprintf(m, sizeof(m), "gh=%p", (void *)gen_h);
                     res_ckpt_msg(72, m);
                 }
-                gen_blob = (uint8_t *)RustMalloc((int32_t)b_sz);
+                gen_blob = (uint8_t *)PsramMalloc(b_sz);
                 {
                     char m[40];
                     snprintf(m, sizeof(m), "gb=%p", (void *)gen_blob);
@@ -535,8 +587,8 @@ static int run_checks(void)
 
     diag_prog(10); /* sign workspace */
     unsigned ws_need = shlosilo_sign_ws_len();
-    /* v12: same allocator fix as the provision buffers (Rust-side consumer). */
-    uint8_t *sign_ws = (uint8_t *)RustMalloc((int32_t)ws_need);
+    /* v15: same allocator fix as the provision buffers (PSRAM heap_4). */
+    uint8_t *sign_ws = (uint8_t *)PsramMalloc(ws_need);
     {
         char m[40];
         snprintf(m, sizeof(m), "ws=%p need=%u", (void *)sign_ws, (unsigned)ws_need);
@@ -672,13 +724,15 @@ static int run_checks(void)
         /* Z3.3c: handle workspaces — runtime query, C-side provisioning */
         unsigned enc_ws_need = shlosilo_ur_encode_ws_len();
         unsigned dec_ws_need = shlosilo_ur_decode_ws_len();
-        uint8_t *enc_ws = (uint8_t *)malloc(enc_ws_need);
-        uint8_t *dec_ws = (uint8_t *)malloc(dec_ws_need);
+        /* v16: PSRAM heap_4 — the bare `malloc` (newlib sbrk at 0x20097e60)
+         * grows INTO the K2-D pool and the diag region (the v9-v11 trap). */
+        uint8_t *enc_ws = (uint8_t *)PsramMalloc(enc_ws_need);
+        uint8_t *dec_ws = (uint8_t *)PsramMalloc(dec_ws_need);
         if (enc_ws == NULL || dec_ws == NULL) {
             log_line("mp: ws alloc fail (%u/%u)", enc_ws_need, dec_ws_need);
             fail++;
-            free(enc_ws);
-            free(dec_ws);
+            PsramFree(enc_ws);
+            PsramFree(dec_ws);
             return fail;
         }
         UrMultipartEncoder *enc = shlosilo_ur_encode_begin(
@@ -715,8 +769,8 @@ static int run_checks(void)
         }
         shlosilo_ur_encode_free(enc);
         shlosilo_ur_decode_free(dec);
-        free(enc_ws);
-        free(dec_ws);
+        PsramFree(enc_ws);
+        PsramFree(dec_ws);
         memset(mp_payload, 0, sizeof(mp_payload));
         memset(mp_out, 0, sizeof(mp_out));
         memset(frame, 0, sizeof(frame));
@@ -755,6 +809,8 @@ static int run_checks(void)
         for (i = 0; i < 32; i++) {
             entropy[i] = 0x77;
         }
+        log_line("stk pre-xmr: %uW",
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
         diag_prog(12); /* v8: pre-xmr checkpoint (outside the timed window) */
         uint32_t t0 = osKernelGetTickCount();
         int rc = shlosilo_sign_ur_ffi(FIXTURE_XMR_TX_UNSIGNED, idx12, 12,
@@ -816,7 +872,7 @@ static int run_checks(void)
         memset(entropy, 0, sizeof(entropy));
     }
 
-    free(sign_ws);
+    PsramFree(sign_ws); /* v16: sign_ws is a PsramMalloc block — never newlib-free */
     return fail;
 }
 
@@ -889,14 +945,18 @@ void ShlosiloSmokeTask(void *argument)
     /* v9: consume the PREVIOUS run's record FIRST, before any checkpoint
      * write — v8 read it after ckpt(1)/ckpt(2), so the replay showed this
      * boot's own checkpoint and erased the real death record (ordering bug). */
-    static char g_prev_rec[420];
-    static char g_prev_panic[220];
+    /* locals (stack), not statics — .bss is guarded against the diag region */
+    char g_prev_rec[420];
+    char g_prev_panic[220];
+    char g_prev_hb[110];
     int g_prev_len = 0;
     int g_prev_panic_len = 0;
+    int g_prev_hb_len = 0;
     gc_flash_init(); /* QSPI write access for ckpt writes + consume-erase */
     g_prev_len = res_load(g_prev_rec, sizeof(g_prev_rec));
     g_prev_panic_len =
         res_load_at(RES_PANIC_BASE, g_prev_panic, sizeof(g_prev_panic));
+    g_prev_hb_len = res_load_at(RES_HB_BASE, g_prev_hb, sizeof(g_prev_hb));
     g_diag_boot_count += 1;
     uint32_t prev_prog = g_diag_progress;
     diag_prog(1); /* task entry */
@@ -953,7 +1013,7 @@ void ShlosiloSmokeTask(void *argument)
 
     /* v7/v9: replay the PREVIOUS run's record (read at task entry, before the
      * checkpoint writes — displayed now, one label update = one draw). */
-    if (g_prev_len > 0 || g_prev_panic_len > 0) {
+    if (g_prev_len > 0 || g_prev_panic_len > 0 || g_prev_hb_len > 0) {
         if (g_prev_len > 0) {
             printf("[rec] %s\r\n", g_prev_rec);
             if (strlen(g_logbuf) + strlen(g_prev_rec) + 2 < sizeof(g_logbuf)) {
@@ -965,6 +1025,13 @@ void ShlosiloSmokeTask(void *argument)
             printf("[rec] %s\r\n", g_prev_panic);
             if (strlen(g_logbuf) + strlen(g_prev_panic) + 2 < sizeof(g_logbuf)) {
                 strcat(g_logbuf, g_prev_panic);
+                strcat(g_logbuf, "\n");
+            }
+        }
+        if (g_prev_hb_len > 0) {
+            printf("[rec] %s\r\n", g_prev_hb);
+            if (strlen(g_logbuf) + strlen(g_prev_hb) + 2 < sizeof(g_logbuf)) {
+                strcat(g_logbuf, g_prev_hb);
                 strcat(g_logbuf, "\n");
             }
         }
