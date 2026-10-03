@@ -17,7 +17,10 @@
  */
 #include "product_task.h"
 #include <stdio.h>
+#include <string.h>
 #include "cmsis_os.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include "mhscpu.h"
 #include "mhscpu_gpio.h"
 #include "mhscpu_wdt.h"
@@ -277,6 +280,241 @@ static void ProductTask(void *argument)
     }
 }
 
+/* ---------------- sign session (product XMR sign, A) ---------------- */
+
+/* Verification key material: mirrors the smoke battery's idx12 fixture
+ * (shlosilo_smoke_task.c; also xmr_device_peak_fixture.rs SMOKE_IDX12) and
+ * the fixed 0x77x32 entropy, so the product-run signature is byte-comparable
+ * with the smoke anchor. Real key provisioning + TRNG entropy are P4/P5. */
+static const uint16_t k_sign_idx12[12] = {
+    136, 1092, 546, 273, 136, 1092, 546, 273, 136, 1092, 546, 283
+};
+#define SIGN_ENTROPY_LEN          32
+#define SIGN_OUT_MAX              (8 * 1024)
+/* MULTIPART_PAYLOAD_MAX_LEN: the R3 reassembly budget. */
+#define UR_PAYLOAD_MAX            (16 * 1024)
+
+/* Multipart UR intake (QR flow into the sign page): the R3 decoder session
+ * lives from the first scanned frame to completion/abort. */
+static struct UrMultipartDecoder *g_ur_dec = NULL;
+static uint8_t *g_ur_dec_ws = NULL;
+static uint8_t *g_ur_payload = NULL;
+static char g_ur_type[32];
+
+/* Sign result (feeds the output carousel on the QR page). */
+static uint8_t *g_sign_out = NULL;
+static unsigned g_sign_out_len = 0;
+static char g_sign_out_type[32] = "bytes";
+
+static void ur_intake_reset(void)
+{
+    if (g_ur_dec != NULL) {
+        shlosilo_ur_decode_free(g_ur_dec);
+        g_ur_dec = NULL;
+    }
+    ExtFree(g_ur_dec_ws);
+    g_ur_dec_ws = NULL;
+    ExtFree(g_ur_payload);
+    g_ur_payload = NULL;
+}
+
+/* Map the signed set to its output UR type: XMR travels back as the official
+ * registry type (8304), everything else as opaque bytes. */
+static void sign_out_type_for(const char *in_type)
+{
+    if (strcmp(in_type, "xmr-txunsigned") == 0 ||
+        strcmp(in_type, "crypto-monero-tx") == 0) {
+        snprintf(g_sign_out_type, sizeof(g_sign_out_type), "xmr-txsigned");
+    } else if (strcmp(in_type, "crypto-psbt") == 0) {
+        snprintf(g_sign_out_type, sizeof(g_sign_out_type), "crypto-psbt");
+    } else {
+        snprintf(g_sign_out_type, sizeof(g_sign_out_type), "bytes");
+    }
+}
+
+/* Run one sign on this task's stack: uri != NULL is the single-frame path
+ * (shlosilo_sign_ur_ffi), otherwise the multipart path
+ * (shlosilo_sign_typed_ffi over the reassembled (type, payload)). */
+static void sign_run(const char *uri, const char *type,
+                     const uint8_t *payload, unsigned plen)
+{
+    char l1[48], l2[48], l3[48], result[192];
+    uint8_t entropy[SIGN_ENTROPY_LEN];
+    unsigned ws_need = shlosilo_sign_ws_len();
+    unsigned out_len = 0;
+    uint32_t t0, dt;
+    int rc;
+
+    memset(entropy, 0x77, sizeof(entropy));
+
+    if (g_sign_out != NULL) {
+        ExtFree(g_sign_out);
+        g_sign_out = NULL;
+        g_sign_out_len = 0;
+    }
+    g_sign_out = (uint8_t *)ExtMalloc(SIGN_OUT_MAX);
+    uint8_t *ws = (uint8_t *)ExtMalloc(ws_need);
+    if (g_sign_out == NULL || ws == NULL) {
+        printf("sign: ws alloc fail (out=%u ws=%u)\r\n",
+               (unsigned)SIGN_OUT_MAX, ws_need);
+        UiSetLast("sign: ws alloc fail");
+        ExtFree(g_sign_out);
+        g_sign_out = NULL;
+        ExtFree(ws);
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
+    }
+
+    if (uri != NULL) {
+        snprintf(l1, sizeof(l1), "single-frame ur");
+        snprintf(l2, sizeof(l2), "request %u chars", (unsigned)strlen(uri));
+    } else {
+        snprintf(l1, sizeof(l1), "%s", type);
+        snprintf(l2, sizeof(l2), "payload %u bytes", plen);
+    }
+    snprintf(l3, sizeof(l3), "key: fixture idx12");
+    UiSignInfo(l1, l2, l3);
+    UiGotoPage(UI_PAGE_SIGN);
+
+    printf("sign: start (ws=%u)\r\n", ws_need);
+    g_sign_busy = 1;
+    t0 = osKernelGetTickCount();
+    if (uri != NULL) {
+        rc = shlosilo_sign_ur_ffi(uri, k_sign_idx12, 12, NULL, 0, 0,
+                                  entropy, sizeof(entropy),
+                                  g_sign_out, SIGN_OUT_MAX, &out_len,
+                                  ws, ws_need);
+    } else {
+        rc = shlosilo_sign_typed_ffi(type, payload, plen,
+                                     k_sign_idx12, 12, NULL, 0, 0,
+                                     entropy, sizeof(entropy),
+                                     g_sign_out, SIGN_OUT_MAX, &out_len,
+                                     ws, ws_need);
+    }
+    dt = osKernelGetTickCount() - t0;
+    g_sign_busy = 0;
+    ExtFree(ws);
+
+    /* Diagnostic footnote: stack high-water mark across the sign (the A
+     * acceptance reading). HWM = minimum ever free stack in words. */
+    {
+        unsigned hwm_w = (unsigned)uxTaskGetStackHighWaterMark(NULL);
+        unsigned used_k =
+            (PRODUCT_TASK_STACK_BYTES - hwm_w * (unsigned)sizeof(StackType_t))
+            / 1024u;
+        printf("sign: rc=%d out=%u dt=%ums stk used ~%uK (hwm %uW)\r\n",
+               rc, out_len, (unsigned)dt, used_k, hwm_w);
+        if (rc == 0 && out_len > 0) {
+            const char *in_type = type;
+            char it_buf[32];
+            if (uri != NULL) {
+                /* "ur:<type>/..." -> <type> */
+                const char *start = uri + 3;
+                const char *end = strchr(start, '/');
+                unsigned n = (end != NULL)
+                    ? (unsigned)(end - start)
+                    : (unsigned)strlen(start);
+                if (n >= sizeof(it_buf)) {
+                    n = sizeof(it_buf) - 1;
+                }
+                memcpy(it_buf, start, n);
+                it_buf[n] = '\0';
+                in_type = it_buf;
+            }
+            g_sign_out_len = out_len;
+            sign_out_type_for(in_type);
+            snprintf(result, sizeof(result),
+                     "sign ok: %u bytes in %ums\nout type: %s\n"
+                     "stk used ~%uK (hwm %uW of %uK)",
+                     out_len, (unsigned)dt, g_sign_out_type, used_k, hwm_w,
+                     (unsigned)(PRODUCT_TASK_STACK_BYTES / 1024u));
+        } else {
+            g_sign_out_len = 0;
+            snprintf(result, sizeof(result),
+                     "sign FAIL: rc=%d\n"
+                     "stk used ~%uK (hwm %uW of %uK)",
+                     rc, used_k, hwm_w,
+                     (unsigned)(PRODUCT_TASK_STACK_BYTES / 1024u));
+        }
+        snprintf(l3, sizeof(l3), "stk used ~%uK", used_k);
+        UiSetLast(l3);
+    }
+
+    ur_intake_reset();
+    printf("sign: done -> result page\r\n");
+    UiSetPayload(result, (uint32_t)strlen(result));
+}
+
+/* One scanned frame that starts with "ur:". Single-part frames sign right
+ * away; multipart frames accumulate through the R3 fountain decoder until the
+ * message completes, then sign the reassembled (type, payload). */
+static void scan_ur_hit(const char *text)
+{
+    const char *slash1 = strchr(text, '/');
+    const char *slash2 = (slash1 != NULL) ? strchr(slash1 + 1, '/') : NULL;
+    char l3[40];
+    unsigned accepted = 0;
+    unsigned ws_need;
+    int progress;
+
+    if (slash2 == NULL) {
+        scan_exit();
+        sign_run(text, NULL, NULL, 0);
+        return;
+    }
+
+    if (g_ur_dec == NULL) {
+        ws_need = shlosilo_ur_decode_ws_len();
+        g_ur_dec_ws = (uint8_t *)ExtMalloc(ws_need);
+        g_ur_payload = (uint8_t *)ExtMalloc(UR_PAYLOAD_MAX);
+        if (g_ur_dec_ws == NULL || g_ur_payload == NULL) {
+            printf("ur: intake ws alloc fail (%u)\r\n", ws_need);
+            UiScanInfo("ur: ws alloc fail", "", "", "");
+            ur_intake_reset();
+            return;
+        }
+        g_ur_dec = shlosilo_ur_decode_new(g_ur_dec_ws, ws_need);
+        if (g_ur_dec == NULL) {
+            printf("ur: decoder init fail\r\n");
+            UiScanInfo("ur: decoder fail", "", "", "");
+            ur_intake_reset();
+            return;
+        }
+        printf("ur: multipart intake start (ws=%u)\r\n", ws_need);
+        UiScanProgress(0);
+    }
+
+    if (shlosilo_ur_decode_feed(g_ur_dec, text, &accepted) != 0) {
+        printf("ur: frame rejected (accepted=%u)\r\n", accepted);
+        UiScanInfo("ur multipart", "frame rejected", "continuing", "");
+        return;
+    }
+    progress = shlosilo_ur_decode_progress(g_ur_dec);
+    snprintf(l3, sizeof(l3), "%s", accepted ? "new frame" : "dup frame");
+    UiScanInfo("ur multipart", "collecting frames", l3, "");
+    UiScanProgress((uint8_t)progress);
+
+    if (!shlosilo_ur_decode_complete(g_ur_dec)) {
+        return;
+    }
+
+    {
+        unsigned tlen = 0, plen = 0;
+        if (shlosilo_ur_decode_type(g_ur_dec, (uint8_t *)g_ur_type,
+                                    sizeof(g_ur_type), &tlen) != 0 ||
+            shlosilo_ur_decode_payload(g_ur_dec, g_ur_payload,
+                                       UR_PAYLOAD_MAX, &plen) != 0) {
+            printf("ur: complete but extract fail (t=%u p=%u)\r\n", tlen, plen);
+            UiScanInfo("ur: extract FAIL", "", "", "");
+            ur_intake_reset();
+            return;
+        }
+        printf("ur: complete type=%s payload=%u\r\n", g_ur_type, plen);
+        scan_exit();
+        sign_run(NULL, g_ur_type, g_ur_payload, plen);
+    }
+}
+
 /* ---------------- scan session ---------------- */
 
 /* D2.4 experiment (2026-09-18): DECODE POOL IN SRAM.
@@ -384,6 +622,12 @@ static void scan_step(void)
         char msg[48];
         g_qr_result[n] = '\0';
         printf("scan: hit %d chars\r\n", (int)n);
+        if (strncmp(g_qr_result, "ur:", 3) == 0) {
+            /* QR flow into the sign page: single UR signs directly,
+             * multipart frames accumulate first. */
+            scan_ur_hit(g_qr_result);
+            return;
+        }
         snprintf(msg, sizeof(msg), "qr hit %d chars", (int)n);
         scan_exit();
         UiSetLast(msg);
@@ -399,6 +643,7 @@ static void scan_step(void)
         char msg[48];
         g_scan_abort_req = 0;
         scan_exit();
+        ur_intake_reset();      /* abort cancels a partial UR intake too */
         snprintf(msg, sizeof(msg), "abort -> welcome (%d,%d)",
                  g_back_press_x, g_back_press_y);
         UiSetLast(msg);
@@ -438,6 +683,14 @@ static void scan_exit(void)
 
 static void carousel_enter(void)
 {
+    /* The output side shows the signed set when a sign session produced one
+     * (UR type mapped at sign time), else the canned demo payload. */
+    const uint8_t *payload = (g_sign_out_len > 0) ? g_sign_out : g_demo_payload;
+    unsigned payload_len =
+        (g_sign_out_len > 0) ? g_sign_out_len : (unsigned)DEMO_PAYLOAD_LEN;
+    const char *type =
+        (g_sign_out_len > 0) ? g_sign_out_type : DEMO_PAYLOAD_TYPE;
+
     if (shlosilo_sram_pool_live_bytes() != 0) {
         printf("carousel: sram pool busy\r\n");
         UiSetLast("ur: sram busy");
@@ -449,7 +702,10 @@ static void carousel_enter(void)
     shlosilo_sram_pool_reset();
 
     unsigned enc_ws_need = shlosilo_ur_encode_ws_len();
-    g_ur_enc_ws = (uint8_t *)malloc(enc_ws_need);
+    /* PSRAM heap_4 (ExtMalloc): bare malloc/free is newlib sbrk and grows
+     * into the K2-D pool / diag region (the v9-v11 trap, and the same trap
+     * v16 fixed on the smoke side). */
+    g_ur_enc_ws = (uint8_t *)ExtMalloc(enc_ws_need);
     if (g_ur_enc_ws == NULL) {
         printf("carousel: encoder ws alloc fail (%u)\r\n", enc_ws_need);
         UiSetLast("ur: ws fail");
@@ -457,11 +713,11 @@ static void carousel_enter(void)
         UiGotoPage(UI_PAGE_WELCOME);
         return;
     }
-    g_ur_enc = shlosilo_ur_encode_begin(DEMO_PAYLOAD_TYPE, g_demo_payload,
-                                        DEMO_PAYLOAD_LEN, 200,
+    g_ur_enc = shlosilo_ur_encode_begin(type, payload,
+                                        payload_len, 200,
                                         g_ur_enc_ws, enc_ws_need);
     if (g_ur_enc == NULL) {
-        free(g_ur_enc_ws);
+        ExtFree(g_ur_enc_ws);
         g_ur_enc_ws = NULL;
         printf("carousel: encoder begin failed\r\n");
         UiSetLast("ur: encoder fail");
@@ -469,7 +725,7 @@ static void carousel_enter(void)
         UiGotoPage(UI_PAGE_WELCOME);
         return;
     }
-    g_ur_total = (DEMO_PAYLOAD_LEN + 199) / 200;
+    g_ur_total = (payload_len + 199) / 200;
     g_ur_shown = 0;
     /* The entry tap may still be resting on `back`: treat the contact as
      * already seen so exiting needs a fresh press. */
@@ -486,7 +742,7 @@ static void carousel_exit(void)
         shlosilo_ur_encode_free(g_ur_enc);
         g_ur_enc = NULL;
     }
-    free(g_ur_enc_ws);
+    ExtFree(g_ur_enc_ws);
     g_ur_enc_ws = NULL;
     g_carousel = CAROUSEL_IDLE;
     UiTouchReset();

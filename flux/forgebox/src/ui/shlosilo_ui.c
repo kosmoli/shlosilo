@@ -83,6 +83,11 @@ static char g_scan_l3[LIVE_LINE_BYTES] = "";
 static char g_scan_l4[LIVE_LINE_BYTES] = "";
 static uint8_t g_scan_progress;
 
+/* Sign page summary lines (set via UiSignInfo before the page is shown). */
+static char g_sign_l1[LIVE_LINE_BYTES] = "";
+static char g_sign_l2[LIVE_LINE_BYTES] = "";
+static char g_sign_l3[LIVE_LINE_BYTES] = "";
+
 /* Payload page text (copied from the caller's buffer). */
 #define PAYLOAD_MAX 2048
 static char g_payload[PAYLOAD_MAX];
@@ -505,6 +510,15 @@ static void draw_page(void)
         break;
     }
 
+    case UI_PAGE_SIGN:
+        draw_text_center(UI_NG_TITLE_Y, UI_TXT_SIGN, UI_NG_TITLE_SCALE);
+        draw_text_center(UI_NG_SUB_Y, UI_TXT_SIGN_SUB, UI_NG_SUB_SCALE);
+        draw_text_center(UI_NG_INFO1_Y, g_sign_l1, 1);
+        draw_text_center(UI_NG_INFO2_Y, g_sign_l2, 1);
+        draw_text_center(UI_NG_INFO3_Y, g_sign_l3, 1);
+        draw_text_center(UI_NG_STATUS_Y, UI_TXT_SIGN_STATUS, UI_NG_STATUS_SCALE);
+        break;
+
     case UI_PAGE_QR:
         /* Placeholder until the first carousel frame arrives. */
         draw_text_center(UI_Q_TITLE_Y, UI_Q_TXT_TITLE, UI_Q_TITLE_SCALE);
@@ -751,6 +765,17 @@ void UiScanProgress(uint8_t percent)
 {
     g_scan_progress = percent;
     scan_live_update();
+}
+
+void UiSignInfo(const char *line1, const char *line2, const char *line3)
+{
+    snprintf(g_sign_l1, sizeof(g_sign_l1), "%s", line1 ? line1 : "");
+    snprintf(g_sign_l2, sizeof(g_sign_l2), "%s", line2 ? line2 : "");
+    snprintf(g_sign_l3, sizeof(g_sign_l3), "%s", line3 ? line3 : "");
+    if (g_page == UI_PAGE_SIGN && g_fb != NULL && g_band != NULL) {
+        draw_page();
+        ui_flush_range(0, UI_FB_H - 1);
+    }
 }
 
 void UiTouchReset(void)

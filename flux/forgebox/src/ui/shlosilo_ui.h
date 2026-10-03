@@ -14,6 +14,7 @@ typedef enum {
     UI_PAGE_WELCOME = 0,
     UI_PAGE_SCAN,
     UI_PAGE_PAYLOAD,
+    UI_PAGE_SIGN,       /* product sign session (synchronous call behind it) */
     UI_PAGE_QR,         /* UR carousel: animated QR frames for a wallet */
 } UiPage;
 
@@ -26,6 +27,10 @@ void UiGotoPage(UiPage page);
 void UiSetPayload(const char *text, uint32_t len);
 void UiScanInfo(const char *line1, const char *line2, const char *line3, const char *line4);
 void UiScanProgress(uint8_t percent);
+
+/* Sign page summary lines (request type / payload size / key note). Set them
+ * before UiGotoPage(UI_PAGE_SIGN); calling while on the sign page repaints. */
+void UiSignInfo(const char *line1, const char *line2, const char *line3);
 void UiSetLast(const char *text);
 void UiTouchReset(void);
 bool UiIsBackButton(int x, int y);

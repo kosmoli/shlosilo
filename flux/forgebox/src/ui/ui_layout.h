@@ -98,6 +98,22 @@
 #define UI_P_CHARS_PER_LINE  56
 #define UI_TXT_RESULT        "result"
 
+/* Sign page (product XMR sign session): request summary + a fixed status
+ * banner (the sign call is synchronous - the page is painted once before it
+ * blocks, so no live region is needed). */
+#define UI_NG_TITLE_Y        64
+#define UI_NG_TITLE_SCALE    4
+#define UI_NG_SUB_Y          152
+#define UI_NG_SUB_SCALE      2
+#define UI_NG_INFO1_Y        300
+#define UI_NG_INFO2_Y        330
+#define UI_NG_INFO3_Y        360
+#define UI_NG_STATUS_Y       460
+#define UI_NG_STATUS_SCALE   2
+#define UI_TXT_SIGN          "sign"
+#define UI_TXT_SIGN_SUB      "signing request"
+#define UI_TXT_SIGN_STATUS   "signing - do not touch"
+
 /* QR carousel page (F3 output side: UR frames for a wallet to scan) */
 #define UI_Q_TITLE_Y         36
 #define UI_Q_TITLE_SCALE     2
