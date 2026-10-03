@@ -139,6 +139,12 @@ execute_build() {
     fi
     if [[ "${build_options[smoke]}" == true ]]; then
         cmake_parm="${cmake_parm} -DSMOKE_SCREEN=true"
+    else
+        # Explicit OFF: a bare configure REUSES a cached SMOKE_SCREEN=true
+        # from a previous `build.sh smoke` and silently builds the smoke
+        # flavor (bit-identical image - caught twice by sha). Pin the flavor
+        # on every configure.
+        cmake_parm="${cmake_parm} -DSMOKE_SCREEN=false"
     fi
     if [[ "${build_options[debug]}" == true ]]; then
         cmake_parm="${cmake_parm} -DDEBUG_MEMORY=true"
