@@ -155,14 +155,51 @@ static void product_touch_poll(void)
     g_touch_prev = down;
 }
 
+/* A (2026-10-02): the Z5.3 chunked BP+ path peaks at 148 KiB of stack
+ * (smoke-battery measured `stk used 148K` on a 160 KiB task) and the product
+ * task stacks the sign session on top of the UI loop - the old 16 KiB stack
+ * smashed FreeRTOS heap neighbours on the first XMR sign. 192 KiB = measured
+ * peak + headroom; the product flavor runs no LVGL so the 450 KiB SRAM heap
+ * has room. Keep in sync with SHLOSILO_SMOKE_STACK_BYTES in
+ * shlosilo_smoke_task.c when the sign stack shape changes. */
+#define PRODUCT_TASK_STACK_BYTES  (192u * 1024u)
+
+/* WDT feeder flag: see WdtGuardTask. */
+static volatile uint8_t g_sign_busy;
+
+/* A: watchdog feeder for the blocking sign call. The product task is this
+ * flavor's only WDT feeder (the smoke flavor's display task plays that role),
+ * and the ~18 s XMR sign blocks it - without this guard the 2 s WDT resets
+ * the board mid-sign. Gated on g_sign_busy: outside a sign the product loop
+ * keeps feeding, so hangs still trip the watchdog. The guard also keeps the
+ * power button's long-press restart live during the sign (smoke parity).
+ * 4 KiB stack: the long-press path prints. */
+static void WdtGuardTask(void *argument)
+{
+    (void)argument;
+    for (;;) {
+        if (g_sign_busy) {
+            WDT_ReloadCounter();
+            power_button_check();
+        }
+        osDelay(250);
+    }
+}
+
 void CreateProductTask(void)
 {
     static const osThreadAttr_t task_attr = {
         .name = "product_ui",
-        .stack_size = 16 * 1024,
+        .stack_size = PRODUCT_TASK_STACK_BYTES,
         .priority = osPriorityHigh,
     };
+    static const osThreadAttr_t guard_attr = {
+        .name = "wdt_guard",
+        .stack_size = 4 * 1024,
+        .priority = osPriorityNormal,
+    };
     osThreadNew(ProductTask, NULL, &task_attr);
+    osThreadNew(WdtGuardTask, NULL, &guard_attr);
 }
 
 static void ProductTask(void *argument)
