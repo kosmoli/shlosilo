@@ -11,20 +11,16 @@ set(ARCH_FLAGS "-mcpu=${MCU} -mthumb -mlittle-endian")
 set(MCU_FLAGS "${ARCH_FLAGS} -Os -mfloat-abi=hard -mfpu=fpv4-sp-d16")
 # GCC 14 promotes several legacy Keystone-driver warnings to hard errors;
 # GCC 13 (CI image) does not and rejects some of the -Wno-error= flag names.
-# Probe each flag and add only the ones this compiler accepts.
-include(CheckCCompilerFlag)
+# Gate on the compiler version (firmware.cmake is included BEFORE project(),
+# so check_c_compiler_flag cannot run here - C is not enabled yet).
 set(GCC14_RELAX_FLAGS "")
-foreach(_flag
-    -Wno-error=implicit-function-declaration
-    -Wno-error=implicit-int
-    -Wno-error=declaration-missing-parameter-type
-    -Wno-error=incompatible-pointer-types)
-  string(MAKE_C_IDENTIFIER "ok${_flag}" _var)
-  check_c_compiler_flag("${_flag}" ${_var})
-  if(${_var})
-    list(APPEND GCC14_RELAX_FLAGS ${_flag})
-  endif()
-endforeach()
+if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
+  list(APPEND GCC14_RELAX_FLAGS
+       -Wno-error=implicit-function-declaration
+       -Wno-error=implicit-int
+       -Wno-error=declaration-missing-parameter-type
+       -Wno-error=incompatible-pointer-types)
+endif()
 set(CMAKE_C_FLAGS "${MCU_FLAGS} -Wall -Wno-unknown-pragmas -Wno-format -g ${GCC14_RELAX_FLAGS}")
 set(CMAKE_CXX_FLAGS "${MCU_FLAGS} -Wall -Wno-unknown-pragmas -Wno-format -g")
 
