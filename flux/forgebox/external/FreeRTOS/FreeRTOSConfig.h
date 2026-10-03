@@ -62,7 +62,21 @@ extern uint32_t SystemCoreClock;
 #define configTICK_RATE_HZ                          ((TickType_t)1000)
 #define configMAX_PRIORITIES                        ( 56 )
 #define configMINIMAL_STACK_SIZE                    ((uint16_t)128)
+#ifdef SMOKE_SCREEN
+/* Smoke flavor: the LVGL diagnostics world (160K smoke task + 32K display
+ * task + LVGL internals) was sized against 450 KiB and works - do not touch. */
 #define configTOTAL_HEAP_SIZE                       ((size_t)1024 * 450)
+#else
+/* Product flavor: this heap holds the task stacks (192K product task + 4K
+ * wdt_guard) and the SRAM UI buffers (48K fb + 37.5K flush band + ~8K QR
+ * encode buffers) = ~294 KiB in use. The old 450 KiB sized for the smoke
+ * flavor pushed .bss past the QR decode pool base (0x20084000 - pinned by
+ * the 410 KiB pool ending below data_parser at 0x200EA800), tripping the
+ * scan-page guard ("bss overlap"). 384 KiB keeps ~90 KiB slack and moves
+ * _ebss clear of the pool; if .bss grows again, re-check _ebss against
+ * 0x20084000 first (see product_task.c scan_enter guard). */
+#define configTOTAL_HEAP_SIZE                       ((size_t)1024 * 384)
+#endif
 #define configMAX_TASK_NAME_LEN                     ( 16 )
 #define configUSE_TRACE_FACILITY                    1
 #define configUSE_16_BIT_TICKS                      0
