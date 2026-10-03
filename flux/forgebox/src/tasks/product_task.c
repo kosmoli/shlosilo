@@ -21,6 +21,7 @@
 #include "cmsis_os.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "psram_heap_4.h"
 #include "mhscpu.h"
 #include "mhscpu_gpio.h"
 #include "mhscpu_wdt.h"
@@ -328,6 +329,68 @@ static void ProductTask(void *argument)
     }
 }
 
+/* ---------------- gencache provisioning (BP+ generator tables) ---------------- */
+
+/* The BP+ prove path needs the generator tables; on the device face
+ * (no alloc-fallback) `BpPlusGenerators::new()` fails unless either the
+ * persistence hook serves a flash blob or caller storage was provided
+ * (shlosilo.h INV-2/3/4). Missing both makes PlusStatement::new return
+ * None and lib.rs:265's expect panics - the 10-03 "signing crash" (the
+ * panic task held the WDT feeder's CPU while High, so the watchdog also
+ * reset the board; the hook replay now shows the panic instead).
+ * Mirrors the smoke battery's provisioning (shlosilo_smoke_task.c):
+ * gc hooks for the persisted blob (first sign pays the build+store,
+ * later boots load it) + one emplacement storage set as the fallback. */
+
+/* xmr_gen_cache_flash.c */
+extern void gc_flash_init(void);
+extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
+extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
+                         const uint8_t *blob, uint32_t blob_len);
+
+/* One provision per boot, before any sign. Buffers live forever (written
+ * once at first generator use, read thereafter - the shlosilo.h contract). */
+static uint8_t *g_gen_g;
+static uint8_t *g_gen_h;
+static uint8_t *g_gen_blob;
+
+static void gencache_prepare(void)
+{
+    uint32_t g_sz = 0, h_sz = 0, b_sz = 0;
+
+    if (g_gen_g != NULL) {
+        return;     /* already provisioned this boot */
+    }
+    gc_flash_init();
+    shlosilo_gen_cache_set_hooks(gc_load, gc_store);
+
+    if (shlosilo_gencache_table_sizes(1, &g_sz, &h_sz, &b_sz) != 0 ||
+        g_sz == 0 || g_sz > 2u * 1024u * 1024u ||
+        h_sz == 0 || h_sz > 2u * 1024u * 1024u ||
+        b_sz > 4u * 1024u * 1024u) {
+        printf("gencache: sizes probe failed/insane (%u/%u/%u)\r\n",
+               (unsigned)g_sz, (unsigned)h_sz, (unsigned)b_sz);
+        return;     /* sign will fail with a diagnosable error */
+    }
+    g_gen_g = (uint8_t *)PsramMalloc(g_sz);
+    g_gen_h = (uint8_t *)PsramMalloc(h_sz);
+    g_gen_blob = (uint8_t *)PsramMalloc(b_sz);
+    if (g_gen_g == NULL || g_gen_h == NULL || g_gen_blob == NULL) {
+        printf("gencache: table alloc fail (%u/%u/%u)\r\n",
+               (unsigned)g_sz, (unsigned)h_sz, (unsigned)b_sz);
+        ExtFree(g_gen_g);
+        ExtFree(g_gen_h);
+        ExtFree(g_gen_blob);
+        g_gen_g = g_gen_h = g_gen_blob = NULL;
+        return;
+    }
+    int32_t rc = shlosilo_gencache_provide_table(1, g_gen_g, &g_sz,
+                                                 g_gen_h, &h_sz,
+                                                 g_gen_blob, &b_sz);
+    printf("gencache: provide rc=%d (g=%u h=%u blob=%u)\r\n",
+           (int)rc, (unsigned)g_sz, (unsigned)h_sz, (unsigned)b_sz);
+}
+
 /* ---------------- sign session (product XMR sign, A) ---------------- */
 
 /* Verification key material: mirrors the smoke battery's idx12 fixture
@@ -423,6 +486,10 @@ static void sign_run(const char *uri, const char *type,
     snprintf(l3, sizeof(l3), "key: fixture idx12");
     UiSignInfo(l1, l2, l3);
     UiGotoPage(UI_PAGE_SIGN);
+
+    /* BP+ generator tables must be ready before the prove path runs
+     * (missing storage = the lib.rs:265 statement panic, 10-03). */
+    gencache_prepare();
 
     printf("sign: start (ws=%u)\r\n", ws_need);
     g_sign_busy = 1;
