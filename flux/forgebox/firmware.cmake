@@ -11,17 +11,10 @@ set(ARCH_FLAGS "-mcpu=${MCU} -mthumb -mlittle-endian")
 set(MCU_FLAGS "${ARCH_FLAGS} -Os -mfloat-abi=hard -mfpu=fpv4-sp-d16")
 # GCC 14 promotes several legacy Keystone-driver warnings to hard errors;
 # GCC 13 (CI image) does not and rejects some of the -Wno-error= flag names.
-# Gate on the compiler version (firmware.cmake is included BEFORE project(),
-# so check_c_compiler_flag cannot run here - C is not enabled yet).
-set(GCC14_RELAX_FLAGS "")
-if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
-  list(APPEND GCC14_RELAX_FLAGS
-       -Wno-error=implicit-function-declaration
-       -Wno-error=implicit-int
-       -Wno-error=declaration-missing-parameter-type
-       -Wno-error=incompatible-pointer-types)
-endif()
-set(CMAKE_C_FLAGS "${MCU_FLAGS} -Wall -Wno-unknown-pragmas -Wno-format -g ${GCC14_RELAX_FLAGS}")
+# The relaxations themselves live in CMakeLists.txt AFTER project() - the
+# compiler version is only known once the compiler has been detected, and
+# this file runs before project() (cross-compilation system setup).
+set(CMAKE_C_FLAGS "${MCU_FLAGS} -Wall -Wno-unknown-pragmas -Wno-format -g")
 set(CMAKE_CXX_FLAGS "${MCU_FLAGS} -Wall -Wno-unknown-pragmas -Wno-format -g")
 
 set_property(SOURCE external/mh1903_lib/Device/MegaHunt/mhscpu/Source/GCC/startup_mhscpu.s PROPERTY LANGUAGE C)

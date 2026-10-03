@@ -10,6 +10,21 @@ include(firmware.cmake)
 
 project(mh1903)
 
+# GCC 14 promotes several legacy Keystone-driver warnings to hard errors
+# (implicit-function-declaration, implicit-int, ...); the same sources
+# compiled as warnings on GCC 13.2.1 - environment drift, not a code
+# regression. Relax them back to warnings on GCC >= 14 only: GCC 13 (the
+# CI image) rejects some of the -Wno-error= flag NAMES outright. This must
+# run after project(): CMAKE_C_COMPILER_VERSION is only known once the
+# compiler is detected, and firmware.cmake runs before project().
+if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
+  add_compile_options(
+    -Wno-error=implicit-function-declaration
+    -Wno-error=implicit-int
+    -Wno-error=declaration-missing-parameter-type
+    -Wno-error=incompatible-pointer-types)
+endif()
+
 # ====== screen ownership switch (product UI vs smoke diagnostics) ======
 # OFF (default): boot into the product UI (direct-write renderer; no LVGL).
 # ON:  boot into the LVGL smoke diagnostics screen (build.sh smoke).
