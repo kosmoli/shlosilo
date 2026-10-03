@@ -448,6 +448,13 @@ static void sign_out_type_for(const char *in_type)
     }
 }
 
+/* device-timing clock callback (smoke parity: registers the ms source for
+ * the Rust-side stage counters; weak no-op outside device-timing builds). */
+static uint32_t product_tick_ms(void)
+{
+    return osKernelGetTickCount();
+}
+
 /* Run one sign on this task's stack: uri != NULL is the single-frame path
  * (shlosilo_sign_ur_ffi), otherwise the multipart path
  * (shlosilo_sign_typed_ffi over the reassembled (type, payload)). */
@@ -495,6 +502,11 @@ static void sign_run(const char *uri, const char *type,
     /* BP+ generator tables must be ready before the prove path runs
      * (missing storage = the lib.rs:265 statement panic, 10-03). */
     gencache_prepare();
+
+    /* device-timing (smoke parity): register the ms clock + reset counters
+     * so the stage readouts have a time source on device-timing builds. */
+    shlosilo_timing_reset();
+    shlosilo_timing_set_clock_fn(product_tick_ms);
 
     printf("sign: start (ws=%u)\r\n", ws_need);
     g_sign_busy = 1;
