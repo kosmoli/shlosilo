@@ -172,11 +172,18 @@ static volatile uint8_t g_sign_busy;
 
 /* A: watchdog feeder for the blocking sign call. The product task is this
  * flavor's only WDT feeder (the smoke flavor's display task plays that role),
- * and the ~18 s XMR sign blocks it - without this guard the 2 s WDT resets
- * the board mid-sign. Gated on g_sign_busy: outside a sign the product loop
- * keeps feeding, so hangs still trip the watchdog. The guard also keeps the
- * power button's long-press restart live during the sign (smoke parity).
- * 4 KiB stack: the long-press path prints. */
+ * and the ~18 s XMR sign blocks it in a compute-bound FFI call that never
+ * yields - without this guard the 2 s WDT resets the board mid-sign.
+ *
+ * Priority is ABOVE product_ui on purpose (first device run, 2026-10-03:
+ * the sign window reset the board): a lower/equal-priority feeder is not
+ * deterministic - FreeRTOS never schedules a Normal task while the High
+ * sign task stays runnable, and equal-priority time slicing is a config
+ * accident (it is what saves the smoke flavor's feeder). Realtime
+ * preempts every interval unconditionally. Gated on g_sign_busy: outside
+ * a sign the product loop keeps feeding, so hangs still trip the watchdog.
+ * The guard also keeps the power button's long-press restart live during
+ * the sign (smoke parity). 4 KiB stack: the long-press path prints. */
 static void WdtGuardTask(void *argument)
 {
     (void)argument;
@@ -199,10 +206,50 @@ void CreateProductTask(void)
     static const osThreadAttr_t guard_attr = {
         .name = "wdt_guard",
         .stack_size = 4 * 1024,
-        .priority = osPriorityNormal,
+        .priority = osPriorityRealtime,
     };
     osThreadNew(ProductTask, NULL, &task_attr);
     osThreadNew(WdtGuardTask, NULL, &guard_attr);
+}
+
+/* ---------------- boot fault-record replay (blackbox peek) ---------------- */
+
+/* hardfault_diag.c persists a hard fault as an RSLT record ("FAULT cfsr=..
+ * pc=.. lr=.. sp=..") at 0x01E42000 and then DELIBERATELY resets through
+ * the shortest WDT window - so a plain "crash restart" is ambiguous between
+ * a hard fault and a WDT starvation reset UNLESS this record is checked.
+ * Peek at boot, read-and-erase (smoke parity: a stale record must not
+ * impersonate the next crash). No record = the reset was not a hard fault. */
+#define FAULT_REC_BASE        0x01E42000u
+
+extern void FLASH_EraseSector(uint32_t addr);
+extern void CACHE_CleanAll(CACHE_TypeDef *cache);
+
+static void fault_record_peek(void)
+{
+    const volatile uint8_t *rec = (const volatile uint8_t *)FAULT_REC_BASE;
+    char text[128];
+    uint32_t len, i;
+
+    if (rec[0] != 'R' || rec[1] != 'S' || rec[2] != 'L' || rec[3] != 'T') {
+        return;     /* erased sector: previous boot was clean */
+    }
+    len = (uint32_t)rec[4] | ((uint32_t)rec[5] << 8);
+    if (len == 0 || len > sizeof(text) - 1) {
+        len = sizeof(text) - 1;
+    }
+    for (i = 0; i < len; i++) {
+        text[i] = (char)rec[8 + i];
+    }
+    text[len] = '\0';
+    printf("PREV fault: %s\r\n", text);
+    UiSetLast(text);
+
+    __disable_irq();
+    FLASH_EraseSector(FAULT_REC_BASE);
+    CACHE_CleanAll(CACHE);
+    __enable_irq();
+    WDT_ReloadCounter();
 }
 
 static void ProductTask(void *argument)
@@ -211,6 +258,7 @@ static void ProductTask(void *argument)
 
     printf("product UI task started\r\n");
     WDT_ReloadCounter();
+    fault_record_peek();
 
     ExtInterruptInit();
     /* PF15 (charger insert/remove) EXTI -> immediate "c" refresh; see
