@@ -188,10 +188,14 @@ static void ui_flush_range(int y0, int y1)
         /* The DMA reads g_band directly: never refill the buffer while a
          * transfer is still in flight (band-tearing otherwise). Input stays
          * live through the flush: poll in the wait loop (~1 ms cadence) and
-         * once per band. */
-        while (LcdBusy()) {
+         * once per band. Bounded (smoke v17 parity): a wedged 8080 DMA must
+         * not spin here forever - give up after 1 s and carry on. */
+        for (int t = 0; t < 1000 && LcdBusy(); t++) {
             UiInputPoll();
             osDelay(1);
+        }
+        if (LcdBusy()) {
+            printf("ui: lcd wedge (band wait timeout)\r\n");
         }
         UiInputPoll();
 
@@ -209,7 +213,7 @@ static void ui_flush_range(int y0, int y1)
 
         LcdDraw(0, ys, UI_FB_W - 1, ys + UI_BAND_ROWS - 1, (uint16_t *)g_band);
     }
-    while (LcdBusy()) {
+    for (int t = 0; t < 1000 && LcdBusy(); t++) {
         UiInputPoll();
         osDelay(1);
     }

@@ -215,6 +215,12 @@ void CreateProductTask(void)
 
 /* ---------------- boot fault-record replay (blackbox peek) ---------------- */
 
+/* xmr_gen_cache_flash.c (flash persistence hooks, shared with the smoke task). */
+extern void gc_flash_init(void);
+extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
+extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
+                         const uint8_t *blob, uint32_t blob_len);
+
 /* hardfault_diag.c persists a hard fault as an RSLT record ("FAULT cfsr=..
  * pc=.. lr=.. sp=..") at 0x01E42000 and then DELIBERATELY resets through
  * the shortest WDT window - so a plain "crash restart" is ambiguous between
@@ -231,6 +237,11 @@ static void fault_record_peek(void)
     const volatile uint8_t *rec = (const volatile uint8_t *)FAULT_REC_BASE;
     char text[128];
     uint32_t len, i;
+
+    /* QSPI write access first (smoke parity: its ckpt writes call
+     * gc_flash_init before any erase/program - without it the erase below
+     * can silently fail and stale records replay forever). */
+    gc_flash_init();
 
     if (rec[0] != 'R' || rec[1] != 'S' || rec[2] != 'L' || rec[3] != 'T') {
         return;     /* erased sector: previous boot was clean */
@@ -341,12 +352,6 @@ static void ProductTask(void *argument)
  * Mirrors the smoke battery's provisioning (shlosilo_smoke_task.c):
  * gc hooks for the persisted blob (first sign pays the build+store,
  * later boots load it) + one emplacement storage set as the fallback. */
-
-/* xmr_gen_cache_flash.c */
-extern void gc_flash_init(void);
-extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
-extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
-                         const uint8_t *blob, uint32_t blob_len);
 
 /* One provision per boot, before any sign. Buffers live forever (written
  * once at first generator use, read thereafter - the shlosilo.h contract). */
@@ -1027,9 +1032,42 @@ void shlosilo_panic_hook(const uint8_t *msg, size_t len)
     size_t n = len < sizeof(tmp) - 1 ? len : sizeof(tmp) - 1;
 
     __asm__ volatile("cpsie i");    /* panic may sit inside a critical section */
-
     memcpy(tmp, msg, n);
     tmp[n] = '\0';
+
+    /* Persist before the screen (smoke parity: a panic that wedges the
+     * display too would otherwise be lost; the boot replay reads this
+     * sector back). Same RSLT record shape as hardfault_diag's. */
+    {
+        uint8_t block[256];
+        uint32_t plen = (uint32_t)strlen(tmp);
+        uint8_t sum = 0;
+        uint32_t i;
+        if (plen > sizeof(block) - 9u) {
+            plen = sizeof(block) - 9u;
+        }
+        memset(block, 0xFF, sizeof(block));
+        block[0] = 'R'; block[1] = 'S'; block[2] = 'L'; block[3] = 'T';
+        block[4] = (uint8_t)(plen & 0xFF);
+        block[5] = (uint8_t)(plen >> 8);
+        for (i = 0; i < plen; i++) {
+            block[8 + i] = (uint8_t)tmp[i];
+            sum = (uint8_t)(sum + (uint8_t)tmp[i]);
+        }
+        block[6] = sum;
+        gc_flash_init();
+        __disable_irq();
+        FLASH_EraseSector(FAULT_REC_BASE);
+        CACHE_CleanAll(CACHE);
+        __enable_irq();
+        WDT_ReloadCounter();
+        __disable_irq();
+        (void)AES_Program(NULL, NULL, FAULT_REC_BASE,
+                          (uint32_t)sizeof(block), block);
+        CACHE_CleanAll(CACHE);
+        __enable_irq();
+        WDT_ReloadCounter();
+    }
 
     printf("PANIC: %s\r\n", tmp);
     UiPanic(tmp);
