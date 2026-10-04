@@ -226,6 +226,33 @@ extern volatile uint32_t g_wdt_cr_readback;
 static void res_ckpt(uint32_t p);
 static void res_ckpt_msg(uint32_t p, const char *msg);
 
+/* R3 frame fingerprint self-check (2026-10-03): the frames are deterministic
+ * (same payload/encoder on every build), so their CRC32s are build-invariant
+ * constants captured from the host probe (tests/r3_device_face_probe.rs).
+ * The battery compares each frame byte-level against this table - that turns
+ * the on-device encoder face into a verified channel and localizes the r3
+ * FAIL to encoder vs decoder without any OCR. Table: seq1..6 simple +
+ * seq7 mixed (the recovery probe's first frame). */
+static uint32_t mp_crc32(const uint8_t *d, uint32_t n)
+{
+    uint32_t c = 0xFFFFFFFFu;
+    uint32_t i;
+    int b;
+    for (i = 0; i < n; i++) {
+        c ^= d[i];
+        for (b = 0; b < 8; b++) {
+            c = (c & 1u) ? ((c >> 1) ^ 0xEDB88320u) : (c >> 1);
+        }
+    }
+    return ~c;
+}
+
+static const uint32_t mp_exp_crc[7] = {
+    0x60e35ff9u, 0x5e9dde4cu, 0xcf3ed86au,
+    0x7cdab5a2u, 0xca4987c0u, 0x3d1e1c9cu,
+    0x855aa8efu,   /* seq7 mixed */
+};
+
 /* Raw-LCD liveness square (bypasses LVGL's object tree): 24x24 at the
  * bottom-right, colour derived from the step code. If LVGL rendering dies but
  * the panel path works, this square still moves — separating "smoke task
@@ -743,6 +770,8 @@ static int run_checks(void)
         unsigned int flen = 0;
         int mp_fail = 0;    /* 0 ok; 1 enc/feed err; 2 guard; 3 handle NULL */
         int fail_rc = 0, fail_seq = 0, fail_acc = -1;
+        int enc_bad = 0, enc_bad_seq = 0;
+        unsigned int enc_bad_exp = 0, enc_bad_got = 0;
         int guard = 0;
         if (enc == NULL || dec == NULL) {
             mp_fail = 3;
@@ -759,7 +788,19 @@ static int run_checks(void)
                 break;
             }
             frc = shlosilo_ur_decode_feed(dec, (const char *)frame, &acc);
-            if (guard < 12) {
+            if (guard < 7) {
+                unsigned int fc = mp_crc32(frame, flen);
+                int okc = (fc == mp_exp_crc[guard]);
+                if (!okc) {
+                    enc_bad++;
+                    enc_bad_seq = guard + 1;
+                    enc_bad_exp = mp_exp_crc[guard];
+                    enc_bad_got = fc;
+                }
+                log_line("mp f%d: len=%u crc=%08x %s p=%d",
+                         guard + 1, flen, (unsigned)fc, okc ? "OK" : "BAD",
+                         shlosilo_ur_decode_progress(dec));
+            } else if (guard < 12) {
                 log_line("mp f%d: len=%u feed=%d acc=%u p=%d",
                          guard + 1, flen, frc, acc,
                          shlosilo_ur_decode_progress(dec));
@@ -801,6 +842,16 @@ static int run_checks(void)
             }
             log_line("%s", rv);
             res_ckpt_msg(80, rv);
+        }
+        if (enc_bad) {
+            char rv[64];
+            snprintf(rv, sizeof(rv), "mp ENC-FACE seq=%d exp=%08x got=%08x",
+                     enc_bad_seq, enc_bad_exp, enc_bad_got);
+            log_line("%s", rv);
+            res_ckpt_msg(80, rv);
+        } else {
+            log_line("mp enc-face: crc 1-6 OK");
+            res_ckpt_msg(80, "mp enc crc OK");
         }
         /* cyclic frame smoke: SHLOSILO_SMOKE_OK return only */
         if (shlosilo_ur_encode_next_cyclic(enc, frame, sizeof(frame), &flen) != SHLOSILO_SMOKE_OK) {
@@ -856,6 +907,17 @@ static int run_checks(void)
                              shlosilo_ur_decode_progress(dec2));
                 }
                 if (frc != SHLOSILO_SMOKE_OK) { mg_fail = 3; break; }
+                if (mg == 5) {
+                    /* first mixed frame (seq 7) - byte-level encoder check */
+                    unsigned int fc = mp_crc32(frame, flen);
+                    if (fc != mp_exp_crc[6]) {
+                        log_line("mp mx seq7 crc BAD exp=%08x got=%08x",
+                                 (unsigned)mp_exp_crc[6], (unsigned)fc);
+                        mg_fail = 5;
+                        break;
+                    }
+                    log_line("mp mx seq7: crc OK");
+                }
                 if (++mg > 500) { mg_fail = 4; break; }
             }
             {
