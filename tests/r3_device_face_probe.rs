@@ -31,7 +31,11 @@ pub fn crc32(data: &[u8]) -> u32 {
     for &b in data {
         c ^= b as u32;
         for _ in 0..8 {
-            c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+            c = if c & 1 != 0 {
+                (c >> 1) ^ 0xEDB8_8320
+            } else {
+                c >> 1
+            };
         }
     }
     !c
@@ -82,7 +86,12 @@ impl Handles {
     fn next_frame(&mut self, frame: &mut [u8]) -> Result<usize, i32> {
         unsafe {
             let mut actual: u32 = 0;
-            let rc = shlosilo_ur_encode_next(self.enc, frame.as_mut_ptr(), frame.len() as u32, &mut actual);
+            let rc = shlosilo_ur_encode_next(
+                self.enc,
+                frame.as_mut_ptr(),
+                frame.len() as u32,
+                &mut actual,
+            );
             if rc != OK {
                 return Err(rc);
             }
@@ -93,11 +102,8 @@ impl Handles {
     fn feed(&mut self, frame: &[u8]) -> (i32, u32) {
         unsafe {
             let mut accepted: u32 = 9;
-            let rc = shlosilo_ur_decode_feed(
-                self.dec,
-                frame.as_ptr() as *const c_char,
-                &mut accepted,
-            );
+            let rc =
+                shlosilo_ur_decode_feed(self.dec, frame.as_ptr() as *const c_char, &mut accepted);
             (rc, accepted)
         }
     }
@@ -113,7 +119,12 @@ impl Handles {
     fn payload(&mut self, out: &mut [u8]) -> Result<usize, i32> {
         unsafe {
             let mut actual: u32 = 0;
-            let rc = shlosilo_ur_decode_payload(self.dec, out.as_mut_ptr(), out.len() as u32, &mut actual);
+            let rc = shlosilo_ur_decode_payload(
+                self.dec,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                &mut actual,
+            );
             if rc != OK {
                 return Err(rc);
             }
@@ -164,8 +175,15 @@ fn smoke_composition_roundtrip() {
     let mut out = vec![0u8; 2048];
     let n = h.payload(&mut out).expect("decode_payload");
     assert_eq!(n, payload.len(), "payload length mismatch");
-    match out[..n].iter().zip(payload.iter()).position(|(a, b)| a != b) {
-        Some(i) => panic!("payload bytes mismatch at {i}: {:02x} != {:02x}", out[i], payload[i]),
+    match out[..n]
+        .iter()
+        .zip(payload.iter())
+        .position(|(a, b)| a != b)
+    {
+        Some(i) => panic!(
+            "payload bytes mismatch at {i}: {:02x} != {:02x}",
+            out[i], payload[i]
+        ),
         None => {}
     }
     eprintln!("roundtrip PASS ({guard} frames)");
@@ -210,7 +228,11 @@ fn mixed_recovery_probe() {
         }
         assert_eq!(frc, OK, "mixed feed rc={frc}");
         guard += 1;
-        assert!(guard <= GUARD, "mixed guard exceeded, progress={}", h.progress());
+        assert!(
+            guard <= GUARD,
+            "mixed guard exceeded, progress={}",
+            h.progress()
+        );
     }
 
     let mut out = vec![0u8; 2048];
