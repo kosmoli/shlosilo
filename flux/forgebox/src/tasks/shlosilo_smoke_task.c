@@ -741,15 +741,35 @@ static int run_checks(void)
         UrMultipartDecoder *dec = shlosilo_ur_decode_new(dec_ws, dec_ws_need);
         static uint8_t frame[1024]; /* FRAME_BUF_MAX_LEN 对齐 poc4 c_abi */
         unsigned int flen = 0;
-        int mp_fail = 0;
+        int mp_fail = 0;    /* 0 ok; 1 enc/feed err; 2 guard; 3 handle NULL */
+        int fail_rc = 0, fail_seq = 0, fail_acc = -1;
         int guard = 0;
-        while (!shlosilo_ur_decode_complete(dec)) {
-            if (shlosilo_ur_encode_next(enc, frame, sizeof(frame), &flen) != SHLOSILO_SMOKE_OK ||
-                shlosilo_ur_decode_feed(dec, (const char *)frame, NULL) != SHLOSILO_SMOKE_OK) {
-                mp_fail = 1;
+        if (enc == NULL || dec == NULL) {
+            mp_fail = 3;
+            log_line("mp: FAIL handle NULL (enc=%d dec=%d)",
+                     enc != NULL, dec != NULL);
+            res_ckpt_msg(80, "mp FAIL handle-NULL");
+        }
+        while (mp_fail == 0 && !shlosilo_ur_decode_complete(dec)) {
+            unsigned int acc = 9;
+            int erc = shlosilo_ur_encode_next(enc, frame, sizeof(frame), &flen);
+            int frc;
+            if (erc != SHLOSILO_SMOKE_OK) {
+                mp_fail = 1; fail_rc = erc; fail_seq = guard + 1;
                 break;
             }
-            if (++guard > 500) { mp_fail = 1; break; }
+            frc = shlosilo_ur_decode_feed(dec, (const char *)frame, &acc);
+            if (guard < 12) {
+                log_line("mp f%d: len=%u feed=%d acc=%u p=%d",
+                         guard + 1, flen, frc, acc,
+                         shlosilo_ur_decode_progress(dec));
+            }
+            if (frc != SHLOSILO_SMOKE_OK) {
+                mp_fail = 1; fail_rc = frc; fail_seq = guard + 1;
+                fail_acc = (int)acc;
+                break;
+            }
+            if (++guard > 500) { mp_fail = 2; break; }
         }
         static uint8_t mp_out[1024];
         unsigned int mp_len = 0;
@@ -758,9 +778,29 @@ static int run_checks(void)
             mp_len == sizeof(mp_payload) &&
             memcmp(mp_out, mp_payload, mp_len) == 0) {
             log_line("r3 multipart: PASS (%d frames)", guard);
+            res_ckpt_msg(80, "mp PASS");
         } else {
+            char rv[64];
             fail++;
-            log_line("r3 multipart: FAIL");
+            if (mp_fail == 1) {
+                snprintf(rv, sizeof(rv), "mp FAIL enc/feed rc=%d seq=%d acc=%d",
+                         fail_rc, fail_seq, fail_acc);
+            } else if (mp_fail == 2) {
+                snprintf(rv, sizeof(rv), "mp FAIL guard p=%d",
+                         shlosilo_ur_decode_progress(dec));
+            } else if (mp_fail == 3) {
+                snprintf(rv, sizeof(rv), "mp FAIL handle NULL");
+            } else {
+                unsigned int k = 0;
+                while (k < mp_len && k < sizeof(mp_payload) &&
+                       mp_out[k] == mp_payload[k]) {
+                    k++;
+                }
+                snprintf(rv, sizeof(rv), "mp FAIL len=%u byte@%u",
+                         mp_len, (unsigned)k);
+            }
+            log_line("%s", rv);
+            res_ckpt_msg(80, rv);
         }
         /* cyclic frame smoke: SHLOSILO_SMOKE_OK return only */
         if (shlosilo_ur_encode_next_cyclic(enc, frame, sizeof(frame), &flen) != SHLOSILO_SMOKE_OK) {
@@ -769,6 +809,72 @@ static int run_checks(void)
         }
         shlosilo_ur_encode_free(enc);
         shlosilo_ur_decode_free(dec);
+
+        /* Mixed-redundancy recovery probe (2026-10-03): the roundtrip above
+         * completes on seq 1..count SIMPLE parts only - the same shape the
+         * product flow proved on real frames. The seq>count fountain mixing
+         * path is device-UNTESTED and matches both observed failure modes
+         * (wrong payload / guard never satisfied). Probe: fresh decoder gets
+         * frames 1..5 (6 withheld), then mixed frames 7.. - fragment 6 must
+         * arrive via mixed recovery. Handles live in the ws, so this runs
+         * only after the frees above. */
+        {
+            /* NOTE: reuse `frame` (free in this window) - smoke .bss has <210B
+             * of headroom under the .diag_noinit ceiling, a fresh 1KB static
+             * overflows it (linker caught it: .bss 0x2009832f > 0x20098000). */
+            UrMultipartEncoder *enc2 = shlosilo_ur_encode_begin(
+                "xmr-txunsigned", mp_payload, sizeof(mp_payload), 200,
+                enc_ws, enc_ws_need);
+            UrMultipartDecoder *dec2 = shlosilo_ur_decode_new(dec_ws, dec_ws_need);
+            unsigned int flen2 = 0, acc2 = 0;
+            int mg_fail = 0, mg = 0;
+            if (enc2 == NULL || dec2 == NULL) {
+                mg_fail = 1;
+            }
+            while (!mg_fail && mg < 5 &&
+                   shlosilo_ur_encode_next(enc2, frame, sizeof(frame),
+                                           &flen2) == SHLOSILO_SMOKE_OK &&
+                   shlosilo_ur_decode_feed(dec2, (const char *)frame,
+                                           &acc2) == SHLOSILO_SMOKE_OK) {
+                mg++;
+            }
+            /* Discard the seq-6 frame (the withheld fragment): everything the
+             * decoder sees from now on is seq>count MIXED redundancy, which
+             * must reconstruct fragment 5 (the message tail). */
+            if (!mg_fail) {
+                (void)shlosilo_ur_encode_next(enc2, frame, sizeof(frame),
+                                              &flen2);
+            }
+            while (!mg_fail && !shlosilo_ur_decode_complete(dec2)) {
+                int erc = shlosilo_ur_encode_next(enc2, frame, sizeof(frame),
+                                                  &flen2);
+                int frc;
+                if (erc != SHLOSILO_SMOKE_OK) { mg_fail = 2; break; }
+                frc = shlosilo_ur_decode_feed(dec2, (const char *)frame, &acc2);
+                if (mg < 12) {
+                    log_line("mp mx%d: feed=%d acc=%u p=%d", mg + 1, frc, acc2,
+                             shlosilo_ur_decode_progress(dec2));
+                }
+                if (frc != SHLOSILO_SMOKE_OK) { mg_fail = 3; break; }
+                if (++mg > 500) { mg_fail = 4; break; }
+            }
+            {
+                char rv[64];
+                if (!mg_fail && shlosilo_ur_decode_complete(dec2)) {
+                    snprintf(rv, sizeof(rv), "mp mixed: PASS (%d fr)", mg);
+                } else {
+                    snprintf(rv, sizeof(rv), "mp mixed: FAIL %d p=%d", mg_fail,
+                             dec2 ? shlosilo_ur_decode_progress(dec2) : -1);
+                    fail++;
+                }
+                log_line("%s", rv);
+                res_ckpt_msg(80, rv);
+            }
+            shlosilo_ur_encode_free(enc2);
+            shlosilo_ur_decode_free(dec2);
+            memset(frame, 0, sizeof(frame));
+        }
+
         PsramFree(enc_ws);
         PsramFree(dec_ws);
         memset(mp_payload, 0, sizeof(mp_payload));
