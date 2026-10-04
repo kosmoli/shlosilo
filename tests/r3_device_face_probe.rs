@@ -55,90 +55,75 @@ struct Handles {
 
 impl Handles {
     fn new(payload: &[u8]) -> Handles {
-        unsafe {
-            let enc_ws_len = shlosilo_ur_encode_ws_len() as usize;
-            let dec_ws_len = shlosilo_ur_decode_ws_len() as usize;
-            let mut enc_ws = vec![0u8; enc_ws_len];
-            let mut dec_ws = vec![0u8; dec_ws_len];
-            let tname = CString::new("xmr-txunsigned").unwrap();
-            let enc = shlosilo_ur_encode_begin(
-                tname.as_ptr(),
-                payload.as_ptr(),
-                payload.len() as u32,
-                200,
-                enc_ws.as_mut_ptr(),
-                enc_ws_len as u32,
-            );
-            let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), dec_ws_len as u32);
-            assert!(!enc.is_null(), "encode_begin returned null");
-            assert!(!dec.is_null(), "decode_new returned null");
-            Handles {
-                _enc_ws: enc_ws,
-                _dec_ws: dec_ws,
-                enc,
-                dec,
-            }
+        let enc_ws_len = shlosilo_ur_encode_ws_len() as usize;
+        let dec_ws_len = shlosilo_ur_decode_ws_len() as usize;
+        let mut enc_ws = vec![0u8; enc_ws_len];
+        let mut dec_ws = vec![0u8; dec_ws_len];
+        let tname = CString::new("xmr-txunsigned").unwrap();
+        let enc = shlosilo_ur_encode_begin(
+            tname.as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            200,
+            enc_ws.as_mut_ptr(),
+            enc_ws_len as u32,
+        );
+        let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), dec_ws_len as u32);
+        assert!(!enc.is_null(), "encode_begin returned null");
+        assert!(!dec.is_null(), "decode_new returned null");
+        Handles {
+            _enc_ws: enc_ws,
+            _dec_ws: dec_ws,
+            enc,
+            dec,
         }
     }
 
     /// Next encoder frame (the encoder NUL-terminates at out[n]; the C side
     /// feeds the buffer straight to decode_feed — smoke parity).
     fn next_frame(&mut self, frame: &mut [u8]) -> Result<usize, i32> {
-        unsafe {
-            let mut actual: u32 = 0;
-            let rc = shlosilo_ur_encode_next(
-                self.enc,
-                frame.as_mut_ptr(),
-                frame.len() as u32,
-                &mut actual,
-            );
-            if rc != OK {
-                return Err(rc);
-            }
-            Ok(actual as usize)
+        let mut actual: u32 = 0;
+        let rc = shlosilo_ur_encode_next(
+            self.enc,
+            frame.as_mut_ptr(),
+            frame.len() as u32,
+            &mut actual,
+        );
+        if rc != OK {
+            return Err(rc);
         }
+        Ok(actual as usize)
     }
 
     fn feed(&mut self, frame: &[u8]) -> (i32, u32) {
-        unsafe {
-            let mut accepted: u32 = 9;
-            let rc =
-                shlosilo_ur_decode_feed(self.dec, frame.as_ptr() as *const c_char, &mut accepted);
-            (rc, accepted)
-        }
+        let mut accepted: u32 = 9;
+        let rc = shlosilo_ur_decode_feed(self.dec, frame.as_ptr() as *const c_char, &mut accepted);
+        (rc, accepted)
     }
 
     fn complete(&self) -> bool {
-        unsafe { shlosilo_ur_decode_complete(self.dec) != 0 }
+        shlosilo_ur_decode_complete(self.dec) != 0
     }
 
     fn progress(&self) -> i32 {
-        unsafe { shlosilo_ur_decode_progress(self.dec) }
+        shlosilo_ur_decode_progress(self.dec)
     }
 
     fn payload(&mut self, out: &mut [u8]) -> Result<usize, i32> {
-        unsafe {
-            let mut actual: u32 = 0;
-            let rc = shlosilo_ur_decode_payload(
-                self.dec,
-                out.as_mut_ptr(),
-                out.len() as u32,
-                &mut actual,
-            );
-            if rc != OK {
-                return Err(rc);
-            }
-            Ok(actual as usize)
+        let mut actual: u32 = 0;
+        let rc =
+            shlosilo_ur_decode_payload(self.dec, out.as_mut_ptr(), out.len() as u32, &mut actual);
+        if rc != OK {
+            return Err(rc);
         }
+        Ok(actual as usize)
     }
 }
 
 impl Drop for Handles {
     fn drop(&mut self) {
-        unsafe {
-            shlosilo_ur_encode_free(self.enc);
-            shlosilo_ur_decode_free(self.dec);
-        }
+        shlosilo_ur_encode_free(self.enc);
+        shlosilo_ur_decode_free(self.dec);
     }
 }
 
@@ -175,16 +160,15 @@ fn smoke_composition_roundtrip() {
     let mut out = vec![0u8; 2048];
     let n = h.payload(&mut out).expect("decode_payload");
     assert_eq!(n, payload.len(), "payload length mismatch");
-    match out[..n]
+    if let Some(i) = out[..n]
         .iter()
         .zip(payload.iter())
         .position(|(a, b)| a != b)
     {
-        Some(i) => panic!(
+        panic!(
             "payload bytes mismatch at {i}: {:02x} != {:02x}",
             out[i], payload[i]
-        ),
-        None => {}
+        );
     }
     eprintln!("roundtrip PASS ({guard} frames)");
 }
@@ -207,7 +191,6 @@ fn mixed_recovery_probe() {
     }
     // Discard the seq-6 frame: from here on the decoder sees only mixed parts.
     h.next_frame(&mut frame).expect("encode_next seq6");
-    fed += 1;
 
     let mut guard = 0u32;
     while !h.complete() {
