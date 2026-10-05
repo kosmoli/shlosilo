@@ -416,6 +416,13 @@ static struct UrMultipartDecoder *g_ur_dec = NULL;
 static uint8_t *g_ur_dec_ws = NULL;
 static uint8_t *g_ur_payload = NULL;
 static char g_ur_type[32];
+/* Collection metrics for the real-wallet acceptance (pool 1-3: collect and
+ * decode a real dynamic-UR animation within 15-20 s). Timed from the first
+ * fed frame to reassembly complete; fed/dup counts expose the scan cadence. */
+static uint32_t g_ur_t0_ms;
+static unsigned g_ur_feed_cnt;
+static unsigned g_ur_dup_cnt;
+static unsigned g_ur_collect_ms;
 
 /* Sign result (feeds the output carousel on the QR page). */
 static uint8_t *g_sign_out = NULL;
@@ -557,8 +564,13 @@ static void sign_run(const char *uri, const char *type,
             sign_out_type_for(in_type);
             snprintf(result, sizeof(result),
                      "sign ok: %u bytes in %ums\nout type: %s\n"
+                     "ur collect: %u fr (%u dup) in %u.%us\n"
                      "stk used ~%uK (hwm %uW of %uK)",
-                     out_len, (unsigned)dt, g_sign_out_type, used_k, hwm_w,
+                     out_len, (unsigned)dt, g_sign_out_type,
+                     g_ur_feed_cnt, g_ur_dup_cnt,
+                     (unsigned)(g_ur_collect_ms / 1000u),
+                     (unsigned)((g_ur_collect_ms / 100u) % 10u),
+                     used_k, hwm_w,
                      (unsigned)(PRODUCT_TASK_STACK_BYTES / 1024u));
         } else {
             g_sign_out_len = 0;
@@ -613,6 +625,10 @@ static void scan_ur_hit(const char *text)
             return;
         }
         printf("ur: multipart intake start (ws=%u)\r\n", ws_need);
+        g_ur_t0_ms = osKernelGetTickCount();
+        g_ur_feed_cnt = 0;
+        g_ur_dup_cnt = 0;
+        g_ur_collect_ms = 0;
         UiScanProgress(0);
     }
 
@@ -621,8 +637,12 @@ static void scan_ur_hit(const char *text)
         UiScanInfo("ur multipart", "frame rejected", "continuing", "");
         return;
     }
+    g_ur_feed_cnt++;
+    if (!accepted) {
+        g_ur_dup_cnt++;
+    }
     progress = shlosilo_ur_decode_progress(g_ur_dec);
-    snprintf(l3, sizeof(l3), "%s", accepted ? "new frame" : "dup frame");
+    snprintf(l3, sizeof(l3), "fr %u dup %u", g_ur_feed_cnt, g_ur_dup_cnt);
     UiScanInfo("ur multipart", "collecting frames", l3, "");
     UiScanProgress((uint8_t)progress);
 
@@ -642,6 +662,9 @@ static void scan_ur_hit(const char *text)
             return;
         }
         printf("ur: complete type=%s payload=%u\r\n", g_ur_type, plen);
+        g_ur_collect_ms = osKernelGetTickCount() - g_ur_t0_ms;
+        printf("ur: collected in %u ms (%u fr, %u dup)\r\n",
+               (unsigned)g_ur_collect_ms, g_ur_feed_cnt, g_ur_dup_cnt);
         scan_exit();
         sign_run(NULL, g_ur_type, g_ur_payload, plen);
     }
