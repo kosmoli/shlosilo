@@ -812,7 +812,14 @@ static int run_checks(void)
             }
             if (++guard > 500) { mp_fail = 2; break; }
         }
-        static uint8_t mp_out[1024];
+        static uint8_t mp_out[1024 + 16]; /* contract 4: decode_payload's buffer
+                                          * must hold fragment_length x count
+                                          * (1026 here, padding INCLUDED) - the
+                                          * 1024 payload-sized buffer of the
+                                          * old test was 2 bytes short and got
+                                          * BufferTooSmall every run (the r3
+                                          * "device FAIL" root cause,
+                                          * 2026-10-05). Delivered len = 1024. */
         unsigned int mp_len = 0;
         if (!mp_fail &&
             shlosilo_ur_decode_payload(dec, mp_out, sizeof(mp_out), &mp_len) == SHLOSILO_SMOKE_OK &&

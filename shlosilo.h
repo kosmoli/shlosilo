@@ -882,7 +882,11 @@ int shlosilo_ur_decode_complete(struct UrMultipartDecoder *handle);
 
 /**
  * R3: get the complete payload (written to payload_buf; actual length written to actual_len).
- * Calling before completion → ERR_UNKNOWN; payload larger than buf → ERR_BUFFER_TOO_SMALL (actual_len gets the required value).
+ * Calling before completion → ERR_UNKNOWN; buffer smaller than the reassembled
+ * capacity (`fragment_length × sequence_count`, padding INCLUDED - not the
+ * delivered payload length) → ERR_BUFFER_TOO_SMALL with actual_len set to that
+ * capacity for the retry allocation. On success actual_len is the delivered
+ * length (message_length, padding excluded).
  */
 int shlosilo_ur_decode_payload(struct UrMultipartDecoder *handle,
                                uint8_t *payload_buf,

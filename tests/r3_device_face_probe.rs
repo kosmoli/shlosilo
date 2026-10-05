@@ -173,6 +173,42 @@ fn smoke_composition_roundtrip() {
     eprintln!("roundtrip PASS ({guard} frames)");
 }
 
+/// Contract 4 pin (the r3 "device FAIL" root cause, 2026-10-05): the
+/// decode_payload buffer must hold the reassembled CAPACITY
+/// (fragment_length × sequence_count = 1026 here, padding INCLUDED), not the
+/// delivered payload length (1024). A payload-sized buffer gets
+/// ERR_BUFFER_TOO_SMALL with actual_len reporting the padded capacity, and
+/// the out buffer is left untouched. Delivered length stays message_length.
+#[test]
+fn payload_capacity_contract() {
+    let payload = smoke_payload();
+    let mut h = Handles::new(&payload);
+    let mut frame = vec![0u8; 1024];
+    while !h.complete() {
+        let flen = h.next_frame(&mut frame).expect("encode_next");
+        let (frc, _) = h.feed(&frame[..=flen]);
+        assert_eq!(frc, OK);
+    }
+
+    // 1024 (payload-sized): the exact shape that broke the battery test.
+    let mut small = vec![0u8; 1024];
+    let mut actual: u32 = 0;
+    let rc = shlosilo_ur_decode_payload(h.dec, small.as_mut_ptr(), 1024, &mut actual);
+    assert_ne!(rc, OK, "payload-sized buffer must be rejected (contract 4)");
+    assert_eq!(
+        actual, 1026,
+        "BufferTooSmall must report the padded capacity"
+    );
+
+    // Padded capacity: succeeds and delivers message_length (1024).
+    let mut big = vec![0u8; 1026];
+    let rc = shlosilo_ur_decode_payload(h.dec, big.as_mut_ptr(), 1026, &mut actual);
+    assert_eq!(rc, OK);
+    assert_eq!(actual, 1024, "delivered length is message_length (trimmed)");
+    assert_eq!(&big[..1024], &payload[..], "payload content");
+    eprintln!("capacity contract PASS (1024 buf -> need 1026; 1026 buf -> 1024)");
+}
+
 /// Mixed-redundancy recovery: give the decoder frames 1..5, withhold the
 /// seq-6 frame (the 6th simple fragment = the message tail), then feed only
 /// seq>count MIXED frames — the tail must arrive via fountain recovery.
