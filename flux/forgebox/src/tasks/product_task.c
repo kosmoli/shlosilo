@@ -468,7 +468,7 @@ static uint32_t product_tick_ms(void)
 static void sign_run(const char *uri, const char *type,
                      const uint8_t *payload, unsigned plen)
 {
-    char l1[48], l2[48], l3[48], result[192];
+    char l1[48], l2[48], l3[48], result[256];
     uint8_t entropy[SIGN_ENTROPY_LEN];
     unsigned ws_need = shlosilo_sign_ws_len();
     unsigned out_len = 0;
@@ -575,9 +575,25 @@ static void sign_run(const char *uri, const char *type,
         } else {
             g_sign_out_len = 0;
             snprintf(result, sizeof(result),
-                     "sign FAIL: rc=%d\n"
+                     "sign FAIL: rc=%d\ntype: %.16s len %u\n"
+                     "head: %02x%02x%02x%02x %02x%02x%02x%02x\n"
+                     "ur collect: %u fr (%u dup) in %u.%us\n"
                      "stk used ~%uK (hwm %uW of %uK)",
-                     rc, used_k, hwm_w,
+                     rc,
+                     (uri != NULL) ? "single-frame" : g_ur_type,
+                     plen,
+                     (plen > 0) ? g_ur_payload[0] : 0u,
+                     (plen > 1) ? g_ur_payload[1] : 0u,
+                     (plen > 2) ? g_ur_payload[2] : 0u,
+                     (plen > 3) ? g_ur_payload[3] : 0u,
+                     (plen > 4) ? g_ur_payload[4] : 0u,
+                     (plen > 5) ? g_ur_payload[5] : 0u,
+                     (plen > 6) ? g_ur_payload[6] : 0u,
+                     (plen > 7) ? g_ur_payload[7] : 0u,
+                     g_ur_feed_cnt, g_ur_dup_cnt,
+                     (unsigned)(g_ur_collect_ms / 1000u),
+                     (unsigned)((g_ur_collect_ms / 100u) % 10u),
+                     used_k, hwm_w,
                      (unsigned)(PRODUCT_TASK_STACK_BYTES / 1024u));
         }
         snprintf(l3, sizeof(l3), "stk used ~%uK", used_k);
