@@ -649,8 +649,16 @@ static void scan_ur_hit(const char *text)
     }
 
     if (shlosilo_ur_decode_feed(g_ur_dec, text, &accepted) != 0) {
-        printf("ur: frame rejected (accepted=%u)\r\n", accepted);
-        UiScanInfo("ur multipart", "frame rejected", "continuing", "");
+        /* A rejected frame means it does not belong to the current session:
+         * a message switch (the wallet UI toggles between two different
+         * URs - e.g. Cake's Outputs(all)/(partial) - same type, different
+         * checksum) or a malformed frame. Either way the session is stale;
+         * reset so the next frame starts fresh instead of wedging the
+         * intake on the old message forever. Frames cycle, so at most one
+         * animation round is lost. */
+        printf("ur: frame rejected (accepted=%u), session reset\r\n", accepted);
+        UiScanInfo("ur multipart", "frame rejected", "session reset", "");
+        ur_intake_reset();
         return;
     }
     g_ur_feed_cnt++;
