@@ -681,6 +681,22 @@ static void scan_ur_hit(const char *text)
         g_ur_collect_ms = osKernelGetTickCount() - g_ur_t0_ms;
         printf("ur: collected in %u ms (%u fr, %u dup)\r\n",
                (unsigned)g_ur_collect_ms, g_ur_feed_cnt, g_ur_dup_cnt);
+        if (strncmp(g_ur_type, "xmr-txunsigned", 14) != 0 &&
+            strncmp(g_ur_type, "crypto-monero-tx", 16) != 0 &&
+            strncmp(g_ur_type, "crypto-psbt", 11) != 0 &&
+            strncmp(g_ur_type, "eth-sign-request", 16) != 0) {
+            /* Real-wallet flows animate exchange legs first (xmr-output,
+             * xmr-keyimage, ...) which need key material this device does
+             * not hold. Collect, report, and KEEP SCANNING so the sign
+             * request (xmr-txunsigned) is caught whenever it appears. */
+            char l1[48], l2[48];
+            snprintf(l1, sizeof(l1), "collected %.16s", g_ur_type);
+            snprintf(l2, sizeof(l2), "not a sign request");
+            printf("ur: non-sign type, keep scanning\r\n");
+            UiScanInfo(l1, l2, "keep scanning...", "");
+            ur_intake_reset();
+            return;
+        }
         scan_exit();
         sign_run(NULL, g_ur_type, g_ur_payload, plen);
     }
