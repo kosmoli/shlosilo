@@ -130,6 +130,8 @@ void DS28S60_Open(void);
 int32_t DS28S60_ReadPage(uint8_t *data, uint8_t page);
 int32_t DS28S60_WritePage(uint8_t *data, uint8_t page);
 int32_t DS28S60_GetRng(uint8_t *rngArray, uint32_t num);
+/* Task 7: read-only identification (no binding / no OTP burn) */
+int32_t DS28S60ProbeInfo(DS28S60_Info_t *info);
 
 int32_t DS28S60_HmacAuthentication(uint8_t page);
 

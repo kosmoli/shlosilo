@@ -796,3 +796,18 @@ void DS28S60_Test(int argc, char *argv[])
         printf("DS28S60_Setup=%d\r\n", ret);
     }
 }
+
+/*
+ * Task 7 minimal driver adaptation (shlosilo): read-only identification
+ * entry for the SE smoke battery. DS28S60_Init runs DS28S60_Binding (OTP key
+ * burn + chip setup on a first-start unit) - permanent hardware side effects.
+ * This wrapper only reads the ROM option page (ROMID/MANID).
+ */
+int32_t DS28S60ProbeInfo(DS28S60_Info_t *info)
+{
+    int32_t ret = DS28S60_GetInfo();
+    if (ret == DS28S60_SUCCESS && info != NULL) {
+        memcpy(info, &g_ds28s60Info, sizeof(*info));
+    }
+    return ret;
+}

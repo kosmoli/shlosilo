@@ -58,6 +58,7 @@ set(EXTERNAL_INCLUDE_PATH
     external/mh1903_lib/MHSCPU_Driver/inc
     external/mh1903_lib/Device/MegaHunt/mhscpu/Include
     external/mh1903_lib/CMSIS/Include
+    external/cryptoauthlib/lib
 )
 
 set(SRC_INCLUDE_PATH
@@ -179,7 +180,33 @@ set(APP_SRC
     src/driver/drv_trng.c
     src/driver/drv_otp.c
     src/driver/drv_mpu.c
+    # SE comm face (Task 7): ATECC608B / DS28S60 drivers + the dev console
+    # battery (se_smoke.c, hardware safety gate inside) + its utils.
+    src/driver/drv_atecc608b.c
+    src/driver/drv_ds28s60.c
+    src/tasks/se_smoke.c
+    src/utils/err_code.c
+    src/utils/log_print.c
 )
+
+# ATECC608B driver library: vendored from keystone3-firmware external/
+# (same provenance as the keystore port; keystone3's own CMake builds this
+# exact file set -- atca core + calib + host + crypto + hashes + hal).
+file(GLOB_RECURSE CRYPTOAUTHLIB_SRC
+    external/cryptoauthlib/lib/atca_basic.c
+    external/cryptoauthlib/lib/atca_cfgs.c
+    external/cryptoauthlib/lib/atca_debug.c
+    external/cryptoauthlib/lib/atca_device.c
+    external/cryptoauthlib/lib/atca_helpers.c
+    external/cryptoauthlib/lib/atca_iface.c
+    external/cryptoauthlib/lib/atca_utils_sizes.c
+    external/cryptoauthlib/lib/calib/*.c
+    external/cryptoauthlib/lib/host/atca_host.c
+    external/cryptoauthlib/lib/crypto/*.c
+    external/cryptoauthlib/lib/crypto/hashes/*.c
+    external/cryptoauthlib/lib/hal/*.c
+)
+list(APPEND INCLUDE_DIR ${CRYPTOAUTHLIB_SRC})
 
 # Screen ownership: exactly one renderer per build owns the panel.
 if(SMOKE_SCREEN)

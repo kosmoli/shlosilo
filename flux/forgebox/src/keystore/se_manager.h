@@ -19,6 +19,10 @@
 
 #define KEY_PIECE_LEN                               32
 
+/* keystone3 secret_cache.h:9 (verbatim). The piece derivations clamp the
+ * password length with strnlen_s(password, PASSWORD_MAX_LEN). */
+#define PASSWORD_MAX_LEN                            (128)
+
 //DS28S60 page map (keystone3 se_manager.h:9-33, 逐值照抄)
 #define PAGE_NUM_PER_ACCOUNT                        12
 #define PAGE_INDEX_IV                               0
@@ -52,11 +56,11 @@ typedef struct {
 } AccountSlot_t;
 
 /*
- * SE communication surface (keystone3 se_interface.h:7-14). All of these are
- * communication-plane: implemented against the real ATECC608B + DS28S60 in
- * Task 7. This task ships stubs in se_manager.c that return
- * ERR_KEYSTORE_UNAVAILABLE - the keystore data plane is exercised against an
- * in-memory SE sim in tests/host_keystore instead of the real chips.
+ * SE communication surface (keystone3 se_interface.h:7-14). Task 7 implements
+ * these in se_manager.c against the in-tree drv_atecc608b / drv_ds28s60 /
+ * drv_trng drivers. Host tests substitute the DRIVERS at link level
+ * (tests/host_se/se_shims.c) so the protocol glue in se_manager.c itself is
+ * what the host suite pins.
  */
 int32_t SE_EncryptWrite(uint8_t slot, uint8_t block, const uint8_t *data);
 int32_t SE_Kdf(uint8_t slot, const uint8_t *authKey, const uint8_t *inData, uint32_t inLen, uint8_t *outData);
@@ -67,9 +71,20 @@ int32_t SE_GetDS28S60Rng(uint8_t *rngArray, uint32_t num);
 void SE_GetTRng(void *buf, uint32_t len);
 int32_t SE_GetAtecc608bRng(uint8_t *rngArray, uint32_t num);
 
-/* key-piece supply (keystone3 se_manager.h:41-42, bodies in Task 7) */
+/* key-piece supply (keystone3 se_manager.h:41-42; bodies 1:1 from
+ * keystone3 se_manager.c:20-200, Task 7) */
 void GetAccountSlot(AccountSlot_t *accountSlot, uint8_t accountIndex);
 int32_t GetKeyPieceFromSE(uint8_t accountIndex, uint8_t *piece, const char *password);
 int32_t SetNewKeyPieceToSE(uint8_t accountIndex, uint8_t *piece, const char *password);
+
+/*
+ * Per-SE piece derivations (keystone3 se_manager.c:20-23 keeps them static).
+ * Exported so the smoke battery (wrong-password piece comparison) and the
+ * host suite can drive each half separately. Semantics unchanged.
+ */
+int32_t SetNewKeyPieceToAtecc608b(uint8_t accountIndex, uint8_t *piece, const char *password);
+int32_t SetNewKeyPieceToDs28s60(uint8_t accountIndex, uint8_t *piece, const char *password);
+int32_t GetKeyPieceFromAtecc608b(uint8_t accountIndex, uint8_t *piece, const char *password);
+int32_t GetKeyPieceFromDs28s60(uint8_t accountIndex, uint8_t *piece, const char *password);
 
 #endif

@@ -21,6 +21,7 @@
 #include "lvgl.h"
 #include "helloworld_task.h"
 #include "hal_touch.h"
+#include "se_smoke.h"
 #include "hal_lcd.h"
 #include "drv_lcd_bright.h"
 #include "user_memory.h"

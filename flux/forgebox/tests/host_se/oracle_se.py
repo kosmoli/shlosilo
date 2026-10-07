@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""
+oracle_se.py - independent golden-vector oracle for the SE communication plane
+(Task 7). Mirrors the determinism contract of se_shims.c (see se_shims.h) and
+computes every expected value with hashlib/hmac - none of the C glue under
+test is reused. Run: python3 oracle_se.py > golden_se_vectors.h
+
+Model (the shim's stand-in for the two chips - real chip protocol/timing is
+device-only):
+  ATECC608B Kdf(slot, authKey, in)      = HMAC-SHA256(key=slot_key, msg=in)
+  ATECC608B DeriveKey(slot, authKey)    = slot_key = HMAC-SHA256(
+                                            key=old_slot_key,
+                                            msg="shlosilo-host-sim-derive"||authKey)
+  ATECC608B auth gate                   = authKey must equal the group auth
+                                          slot's key, else 0xD1
+                                          (ATCA_CHECKMAC_VERIFY_FAILED)
+  DS28S60 HmacEncryptWrite/Read         = plain 32-byte page store
+  TRNG block j                          = SHA256("shlosilo-host-sim-trng"||le32(j))
+  blank ATECC slot                      = 32 x 0x00
+
+The piece compositions themselves are keystone3 se_manager.c:30-143 verbatim:
+  Set  atecc:  authKey=HS(pwd,"auth_key"); write auth slot; derive rollKdf;
+               r0=TRNG(); write hostKdf; k1=KDF(rollKdf,HS(pwd,
+               "password_atecc608b")); k2=KDF(hostKdf,k1); piece=SHA256^3(k2)
+  Set  ds:     ph=HS(pwd,"ds28s60 digest"); r1=TRNG(); page=ph^r1; piece=r1
+  Get  atecc:  same chain without writes/derive (rollKdf key is the ROLLED one)
+  Get  ds:     piece=HS(pwd,"ds28s60 digest") ^ page
+"""
+import hashlib
+import hmac
+import struct
+import sys
+
+SALT = bytes((0x51 + i) % 256 for i in range(32))
+PASSWORD = "host-se-oracle-pwd"
+PASSWORD_WRONG = "host-se-oracle-wrong"
+DERIVE = b"shlosilo-host-sim-derive"
+
+SLOT_MAP = {0: (3, 4, 5), 1: (6, 7, 9), 2: (10, 11, 12)}  # (auth, rollKdf, hostKdf)
+
+
+def hs(data: bytes, salt_string: str) -> bytes:
+    """HashWithSaltImpl (hash_and_salt.c): HMAC(salt, in) then HMAC(saltString, t)."""
+    t = hmac.new(SALT, data, hashlib.sha256).digest()
+    return hmac.new(salt_string.encode(), t, hashlib.sha256).digest()
+
+
+def trng(block: int) -> bytes:
+    return hashlib.sha256(b"shlosilo-host-sim-trng" + struct.pack("<I", block)).digest()
+
+
+def sha256x3(x: bytes) -> bytes:
+    for _ in range(3):
+        x = hashlib.sha256(x).digest()
+    return x
+
+
+class AteccModel:
+    def __init__(self):
+        self.slots = [bytes(32) for _ in range(16)]
+
+    @staticmethod
+    def auth_slot(slot: int):
+        if slot in (4, 5):
+            return 3
+        if slot in (7, 9):
+            return 6
+        if slot in (11, 12):
+            return 10
+        return 255
+
+    def kdf(self, slot, auth_key, in_data):
+        a = self.auth_slot(slot)
+        if a == 255 or auth_key != self.slots[a]:
+            return None  # auth failure
+        return hmac.new(self.slots[slot], in_data, hashlib.sha256).digest()
+
+    def derive(self, slot, auth_key):
+        a = self.auth_slot(slot)
+        if a == 255 or auth_key != self.slots[a]:
+            return False
+        self.slots[slot] = hmac.new(self.slots[slot], DERIVE + auth_key,
+                                    hashlib.sha256).digest()
+        return True
+
+
+def atecc_piece(atecc: AteccModel, account: int, password: str, trng_block=None):
+    auth = hs(password.encode(), "auth_key")
+    a_slot, roll_slot, host_slot = SLOT_MAP[account]
+    if trng_block is not None:  # Set flow
+        atecc.slots[a_slot] = auth
+        assert atecc.derive(roll_slot, auth)
+        atecc.slots[host_slot] = trng(trng_block)
+    k1 = atecc.kdf(roll_slot, auth, hs(password.encode(), "password_atecc608b"))
+    assert k1 is not None
+    k2 = atecc.kdf(host_slot, auth, k1)
+    assert k2 is not None
+    return sha256x3(k2)
+
+
+def ds_page(account: int, password: str, trng_block: int):
+    ph = hs(password.encode(), "ds28s60 digest")
+    return bytes(p ^ r for p, r in zip(ph, trng(trng_block)))
+
+
+def c_array(name, data):
+    body = ", ".join("0x%02X" % b for b in data)
+    return "static const uint8_t %s[%d] = {%s};" % (name, len(data), body)
+
+
+def main():
+    atecc = AteccModel()
+    # Set flow for account 1: TrngGet calls in order -> blocks 0 (hostRandom),
+    # 1 (ds28s60 randomKey).
+    piece0_set = atecc_piece(atecc, 1, PASSWORD, trng_block=0)
+    page = ds_page(1, PASSWORD, 1)
+    piece1_set = trng(1)
+    # Get flow (same chip state, no TRNG): rollKdf slot now holds the ROLLED key.
+    piece0_get = atecc_piece(atecc, 1, PASSWORD)
+    # Wrong password: the ATECC half fails auth at the KDF gate (no piece is
+    # ever derived - the expectation is ERR_KEYSTORE_AUTH, pinned in C). The
+    # DS28S60 half has no gate and yields a WRONG piece - that value is golden.
+    piece1_wrong = bytes(p ^ r for p, r in zip(hs(PASSWORD_WRONG.encode(), "ds28s60 digest"), page))
+
+    print("/* Auto-generated by oracle_se.py - DO NOT EDIT. */")
+    print("#ifndef _GOLDEN_SE_VECTORS_H")
+    print("#define _GOLDEN_SE_VECTORS_H")
+    print('#include "stdint.h"')
+    print()
+    print(c_array("GV_SE_SALT", SALT))
+    print('static const char GV_SE_PASSWORD[] = "%s";' % PASSWORD)
+    print('static const char GV_SE_PASSWORD_WRONG[] = "%s";' % PASSWORD_WRONG)
+    print()
+    print("/* account 1 Set flow (Trng blocks: 0=hostRandom, 1=ds28s60 randomKey) */")
+    print(c_array("GV_SE_PIECE0_SET", piece0_set))
+    print(c_array("GV_SE_PIECE1_SET", piece1_set))
+    print(c_array("GV_SE_DS_PAGE1", page))
+    print()
+    print("/* account 1 Get flow (rolled rollKdf key, no TRNG) */")
+    print(c_array("GV_SE_PIECE0_GET", piece0_get))
+    print(c_array("GV_SE_PIECE1_GET_WRONG", piece1_wrong))
+    print()
+    print("#endif")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

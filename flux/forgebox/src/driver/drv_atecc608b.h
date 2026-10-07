@@ -58,6 +58,9 @@ typedef struct __Atecc608bConfig_t {
 #pragma pack()
 
 void Atecc608bInit(void);
+/* Task 7: read-only identification (no binding / no OTP burn) */
+int32_t Atecc608bProbeInit(void);
+int32_t Atecc608bReadSerial(uint8_t serial[9]);
 int32_t Atecc608bGetRng(uint8_t *rngArray, uint32_t num);
 int32_t Atecc608bEncryptWrite(uint8_t slot, uint8_t block, const uint8_t *data);
 int32_t Atecc608bEncryptRead(uint8_t slot, uint8_t block, uint8_t *data);

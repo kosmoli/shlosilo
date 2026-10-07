@@ -738,3 +738,23 @@ void Atecc608bTest(int argc, char *argv[])
         }
     }
 }
+
+/*
+ * Task 7 minimal driver adaptation (shlosilo): read-only identification
+ * entries for the SE smoke battery. The stock Atecc608bInit runs
+ * Atecc608bBinding, which on a first-start unit BURNS the OTP binding keys
+ * (OTP_ADDR_ATECC608B) and writes/locks the chip config - permanent hardware
+ * side effects that must never ride along with a read-only self-check. These
+ * two wrappers talk to the chip WITHOUT binding anything.
+ */
+int32_t Atecc608bProbeInit(void)
+{
+    return (atcab_init(&cfg_ateccx08a_i2c_default) == ATCA_SUCCESS)
+               ? SUCCESS_CODE : ERR_GENERAL_FAIL;
+}
+
+int32_t Atecc608bReadSerial(uint8_t serial[9])
+{
+    int32_t ret = atcab_read_serial_number(serial);
+    return (ret == ATCA_SUCCESS) ? SUCCESS_CODE : ERR_GENERAL_FAIL;
+}

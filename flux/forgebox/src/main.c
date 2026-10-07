@@ -23,6 +23,9 @@
 #define WDT_RELOAD_MAX          (0xC300000U)  // 2 seconds
 uint8_t g_testCmdRcvBuffer[TEST_CMD_MAX_LENGTH];
 uint32_t g_testCmdRcvCount = 0;
+/* Task 7 dev console (se_smoke.c): set by CmdIsrRcvByte when a full
+ * command line is buffered; consumed by SeConsolePoll in task context. */
+volatile uint32_t g_testCmdReady = 0;
 /* Read-back of WDT->WDT_CR after WdtInit: 0 = the WDT block never armed
  * (APB clock gate never opened anywhere — the SDK driver does not do it),
  * non-zero = armed. Displayed by the smoke screen (diagnostic, 2026-09-30). */
@@ -39,27 +42,31 @@ static void WdtInit(void)
 
 void CmdIsrRcvByte(uint8_t byte)
 {
-    static uint32_t lastTick = 0;
-    uint32_t tick;
     static uint32_t rxF8Count = 0;
 
     if (osKernelGetState() < osKernelRunning) {
         return;
     }
-    tick = osKernelGetTickCount();
-    if (g_testCmdRcvCount != 0) {
-        if (tick - lastTick > 200) {
-            g_testCmdRcvCount = 0;
-            rxF8Count = 0;
-        }
-    }
-    lastTick = tick;
     if (byte == 0xF8) {
         if (rxF8Count++ > 10) {
             NVIC_SystemReset();
         }
-    } else {
-        rxF8Count = 0;
+        return;
+    }
+    rxF8Count = 0;
+    /* Task 7 dev console (se_smoke.c): buffer a command line; \r or \n
+     * publishes it via g_testCmdReady. While a line is pending, incoming
+     * bytes are dropped (the buffer is owned by the consumer until then).
+     * No inter-byte timeout flush - manual typing has >200ms gaps and the
+     * old flush would eat half-typed commands. */
+    if (byte == '\r' || byte == '\n') {
+        if (g_testCmdRcvCount != 0 && !g_testCmdReady) {
+            g_testCmdRcvBuffer[g_testCmdRcvCount] = '\0';
+            g_testCmdRcvCount = 0;
+            g_testCmdReady = 1;
+        }
+    } else if (!g_testCmdReady && g_testCmdRcvCount < TEST_CMD_MAX_LENGTH - 1) {
+        g_testCmdRcvBuffer[g_testCmdRcvCount++] = byte;
     }
 }
 
