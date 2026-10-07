@@ -114,6 +114,27 @@
 #define UI_TXT_SIGN_SUB      "signing request"
 #define UI_TXT_SIGN_STATUS   "signing - do not touch"
 
+/* Confirm page (Task 5b: seed-plate import confirmation). Text only, one ink
+ * (the UI constraints hold: no LVGL, monochrome, back/continue text buttons).
+ * Type line + source line are pushed by the product task (UiSeedConfirmInfo);
+ * the warning is fixed here. */
+#define UI_C_TITLE_Y         64
+#define UI_C_TITLE_SCALE     4
+#define UI_C_SUB_Y           152
+#define UI_C_SUB_SCALE       2
+#define UI_C_TYPE_Y          300
+#define UI_C_TYPE_SCALE      2
+#define UI_C_WARN1_Y         380
+#define UI_C_WARN2_Y         412
+#define UI_C_WARN_SCALE      2
+#define UI_C_SRC_Y           480
+#define UI_C_SRC_SCALE       2
+#define UI_TXT_CONFIRM       "confirm seed"
+#define UI_TXT_CONFIRM_SUB   "key import"
+#define UI_TXT_CONFIRM_W1    "KEY MATERIAL ENTERS RAM"
+#define UI_TXT_CONFIRM_W2    "SHUTDOWN CLEARS THE KEY"
+#define UI_TXT_CONFIRM_SRC   "source: plate scan"
+
 /* QR carousel page (F3 output side: UR frames for a wallet to scan) */
 #define UI_Q_TITLE_Y         36
 #define UI_Q_TITLE_SCALE     2

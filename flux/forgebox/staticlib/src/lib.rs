@@ -127,7 +127,7 @@ struct Addr(*const ());
 unsafe impl Sync for Addr {}
 
 #[used]
-static KEEP_FFI: [Addr; 58] = [
+static KEEP_FFI: [Addr; 59] = [
     Addr(shlosilo::device_timing::shlosilo_timing_set_clock_fn as *const ()),
     Addr(shlosilo::device_timing::shlosilo_timing_get_stage as *const ()),
     Addr(shlosilo::device_timing::shlosilo_timing_get_total as *const ()),
@@ -152,6 +152,7 @@ static KEEP_FFI: [Addr; 58] = [
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_complete as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_payload as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_type as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_uri_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_sign_session_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_session_free_ffi as *const ()),

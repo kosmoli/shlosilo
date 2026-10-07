@@ -88,6 +88,13 @@ static char g_sign_l1[LIVE_LINE_BYTES] = "";
 static char g_sign_l2[LIVE_LINE_BYTES] = "";
 static char g_sign_l3[LIVE_LINE_BYTES] = "";
 
+/* Confirm page lines + pending decision (Task 5b seed import). The decision
+ * is recorded by handle_press and consumed by the product task - the UI does
+ * no key work itself. */
+static char g_confirm_type[LIVE_LINE_BYTES] = "";
+static char g_confirm_src[LIVE_LINE_BYTES] = "";
+static int g_confirm_req;
+
 /* Payload page text (copied from the caller's buffer). */
 #define PAYLOAD_MAX 2048
 static char g_payload[PAYLOAD_MAX];
@@ -523,6 +530,16 @@ static void draw_page(void)
         draw_text_center(UI_NG_STATUS_Y, UI_TXT_SIGN_STATUS, UI_NG_STATUS_SCALE);
         break;
 
+    case UI_PAGE_CONFIRM:
+        /* Task 5b: seed-plate import confirmation - text only, one ink. */
+        draw_text_center(UI_C_TITLE_Y, UI_TXT_CONFIRM, UI_C_TITLE_SCALE);
+        draw_text_center(UI_C_SUB_Y, UI_TXT_CONFIRM_SUB, UI_C_SUB_SCALE);
+        draw_text_center(UI_C_TYPE_Y, g_confirm_type, UI_C_TYPE_SCALE);
+        draw_text_center(UI_C_WARN1_Y, UI_TXT_CONFIRM_W1, UI_C_WARN_SCALE);
+        draw_text_center(UI_C_WARN2_Y, UI_TXT_CONFIRM_W2, UI_C_WARN_SCALE);
+        draw_text_center(UI_C_SRC_Y, g_confirm_src, UI_C_SRC_SCALE);
+        break;
+
     case UI_PAGE_QR:
         /* Placeholder until the first carousel frame arrives. */
         draw_text_center(UI_Q_TITLE_Y, UI_Q_TXT_TITLE, UI_Q_TITLE_SCALE);
@@ -656,7 +673,12 @@ static void handle_press(int x, int y)
     char msg[56];
 
     if (UiIsBackButton(x, y)) {
-        if (g_page == UI_PAGE_WELCOME) {
+        if (g_page == UI_PAGE_CONFIRM) {
+            /* Task 5b: reject the import - the product task closes any live
+             * key session and returns to the scan page (no navigation here). */
+            snprintf(msg, sizeof(msg), "seed confirm: reject (%d,%d)", x, y);
+            g_confirm_req = -1;
+        } else if (g_page == UI_PAGE_WELCOME) {
             /* Dev entry (F3 output side): welcome back -> UR carousel demo. */
             snprintf(msg, sizeof(msg), "back -> ur demo (%d,%d)", x, y);
             g_page = UI_PAGE_QR;
@@ -665,7 +687,12 @@ static void handle_press(int x, int y)
             g_page = UI_PAGE_WELCOME;
         }
     } else if (UiIsContinueButton(x, y)) {
-        if (g_page == UI_PAGE_WELCOME || g_page == UI_PAGE_PAYLOAD) {
+        if (g_page == UI_PAGE_CONFIRM) {
+            /* Task 5b: accept the import - the product task opens the key
+             * session from the scanned plate bytes and routes on. */
+            snprintf(msg, sizeof(msg), "seed confirm: accept (%d,%d)", x, y);
+            g_confirm_req = 1;
+        } else if (g_page == UI_PAGE_WELCOME || g_page == UI_PAGE_PAYLOAD) {
             snprintf(msg, sizeof(msg), "continue -> scan (%d,%d)", x, y);
             g_page = UI_PAGE_SCAN;
         } else {
@@ -780,6 +807,24 @@ void UiSignInfo(const char *line1, const char *line2, const char *line3)
         draw_page();
         ui_flush_range(0, UI_FB_H - 1);
     }
+}
+
+void UiSeedConfirmInfo(const char *type_line, const char *src_line)
+{
+    snprintf(g_confirm_type, sizeof(g_confirm_type), "%s", type_line ? type_line : "");
+    snprintf(g_confirm_src, sizeof(g_confirm_src), "%s", src_line ? src_line : "");
+    g_confirm_req = 0;      /* a fresh confirmation: no stale decision */
+    if (g_page == UI_PAGE_CONFIRM && g_fb != NULL && g_band != NULL) {
+        draw_page();
+        ui_flush_range(0, UI_FB_H - 1);
+    }
+}
+
+int UiConfirmDecision(void)
+{
+    int req = g_confirm_req;
+    g_confirm_req = 0;
+    return req;
 }
 
 void UiTouchReset(void)

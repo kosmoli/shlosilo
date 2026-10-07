@@ -101,5 +101,17 @@ mod tests {
     fn describe_known_codes() {
         assert_eq!(describe(OK), "OK");
         assert_eq!(describe(ERR_NULL_POINTER), "Null pointer passed to FFI");
+        // Task 5b blind spot: the bare FFI-contract codes (-22/-23) have no
+        // ShlosiloErrorKind backing — pin their UI strings explicitly.
+        assert_eq!(
+            describe(ERR_SLOT_CONSUMED),
+            "Generator table slot already consumed"
+        );
+        assert_eq!(describe(ERR_SLOT_CONSUMED), describe(-22));
+        assert_eq!(
+            describe(ERR_SLOT_OCCUPIED),
+            "Key session slot already occupied"
+        );
+        assert_eq!(describe(ERR_SLOT_OCCUPIED), describe(-23));
     }
 }

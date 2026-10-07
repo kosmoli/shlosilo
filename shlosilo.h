@@ -949,6 +949,35 @@ int shlosilo_ur_decode_type(struct UrMultipartDecoder *handle,
                             unsigned int *actual_len);
 
 /**
+ * Task 5b (2026-10-08): decode ONE single-fragment UR (`ur:<type>/<body>`)
+ * into the typed face's input pair — no key material anywhere in this
+ * entry (the payload is an unsigned request).
+ *
+ * Why a separate entry: the session sign face (`shlosilo_sign_session_ffi`)
+ * is typed-only, and the R3 fountain decoder deliberately rejects single
+ * frames ("single frames go through ur_decode::decode"). The C scan flow
+ * hits exactly that gap when a keysource QR session is live and a
+ * single-frame sign request is scanned — multipart frames keep using the
+ * fountain decoder entries.
+ *
+ * - `uri`: NUL-terminated `ur:<type>/<body>`; multipart shapes
+ *   (`ur:<type>/<seq>-<count>/<body>`) are REJECTED here (-21).
+ * - `type_buf` / `type_buf_len`: receive the NUL-terminated type name.
+ * - `payload` / `payload_len`: receive the raw payload bytes;
+ *   `actual_len` receives the delivered length on success and the
+ *   required payload length on `ERR_BUFFER_TOO_SMALL` (-20).
+ *
+ * Returns 0 = Ok, negative = error code (-2 NULL argument, -20 buffer
+ * too small, -21 malformed / multipart URI).
+ */
+int shlosilo_ur_decode_uri_ffi(const char *uri,
+                               uint8_t *type_buf,
+                               unsigned int type_buf_len,
+                               uint8_t *payload,
+                               unsigned int payload_len,
+                               unsigned int *actual_len);
+
+/**
  * R3/P0-C (2026-09-01): typed sign — vertical pass-through signing of the (type, payload) reassembled from multipart.
  * type_name must be a known signable UrTypeTag (Unknown/arbitrary strings are rejected);
  * payload budget = MULTIPART_PAYLOAD_MAX_LEN (16 KiB, aligned with the multipart reassembly cap).

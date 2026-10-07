@@ -16,6 +16,7 @@ typedef enum {
     UI_PAGE_PAYLOAD,
     UI_PAGE_SIGN,       /* product sign session (synchronous call behind it) */
     UI_PAGE_QR,         /* UR carousel: animated QR frames for a wallet */
+    UI_PAGE_CONFIRM,    /* Task 5b: seed-plate import confirmation */
 } UiPage;
 
 void UiInit(void);
@@ -32,6 +33,15 @@ void UiScanProgress(uint8_t percent);
  * before UiGotoPage(UI_PAGE_SIGN); calling while on the sign page repaints. */
 void UiSignInfo(const char *line1, const char *line2, const char *line3);
 void UiSetLast(const char *text);
+
+/* Seed-plate import confirmation (Task 5b). Set the lines before
+ * UiGotoPage(UI_PAGE_CONFIRM); calling while on the confirm page repaints.
+ * The warning block is fixed text (ui_layout.h). The page's back/continue
+ * buttons do not navigate directly - they record a decision the product
+ * task consumes with UiConfirmDecision() and then routes (open/reject ->
+ * close + back to scan). */
+void UiSeedConfirmInfo(const char *type_line, const char *src_line);
+int UiConfirmDecision(void);    /* 0 = pending, 1 = continue, -1 = back */
 void UiTouchReset(void);
 bool UiIsBackButton(int x, int y);
 bool UiIsContinueButton(int x, int y);

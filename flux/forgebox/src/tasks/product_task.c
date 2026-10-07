@@ -81,6 +81,11 @@ static void ProductTask(void *argument);
 static void scan_enter(void);
 static void scan_step(void);
 static void scan_exit(void);
+static void seed_confirm_step(void);
+static void key_qr_session_close(void);
+/* Task 5b seed-flow state (full definition below with the seed helpers;
+ * tentative declaration here because ProductTask's exit leg consults it). */
+static const struct KeySession *g_key_session;
 static void carousel_enter(void);
 static void carousel_step(void);
 static void carousel_exit(void);
@@ -318,6 +323,17 @@ static void ProductTask(void *argument)
             } else if (UiGetPage() == UI_PAGE_QR && g_carousel == CAROUSEL_IDLE) {
                 carousel_enter();
             }
+            if (UiGetPage() == UI_PAGE_CONFIRM) {
+                seed_confirm_step();
+            }
+            /* Task 5b: back on the welcome page with a live plate session =
+             * the flow exited -> the key dies here (the sign-done and
+             * confirm-reject legs close through the same teardown). */
+            if (UiGetPage() == UI_PAGE_WELCOME && g_key_session != NULL) {
+                key_qr_session_close();
+                UiSetLast("key zeroized (exit)");
+                UiGotoPage(UI_PAGE_WELCOME);    /* repaint the footer line */
+            }
             if (UiGetPage() != UI_PAGE_SCAN && g_scan == SCAN_FAILED) {
                 g_scan = SCAN_IDLE;     /* left the scan page; allow a retry */
             }
@@ -429,6 +445,138 @@ static uint8_t *g_sign_out = NULL;
 static unsigned g_sign_out_len = 0;
 static char g_sign_out_type[32] = "bytes";
 
+/* ---------------- seed import (Task 5b): scan branch -> confirm -> key session ---------------- */
+
+/* Seed-QR scan-flow classes (shlosilo_seed_qr_probe_ffi return codes). */
+#define SEED_CLASS_NOTSEED        0
+#define SEED_CLASS_STANDARD12     1
+#define SEED_CLASS_STANDARD24     2
+#define SEED_CLASS_COMPACT12      3
+#define SEED_CLASS_COMPACT24      4
+#define SEED_CLASS_UR             5
+#define KEY_ERR_SLOT_OCCUPIED     (-23)
+
+/* The scanned plate bytes, held between scan and the confirmation decision
+ * (the open call needs them; the plate itself is at most 96 bytes - the
+ * budget here is pure slack). */
+#define SEED_PLATE_MAX            1024
+static uint8_t g_seed_plate[SEED_PLATE_MAX];
+static unsigned g_seed_plate_len;
+
+/* Key-source QR workspace (shlosilo_keysource_qr_ws_len() bytes): caller-
+ * pinned static storage - BSS-zeroed at boot (the REQUIRED initial state),
+ * stable address for the self-referential handle (shlosilo.h contract).
+ * Sized generously at compile time and checked against the runtime query
+ * before first use (contract 3: the query is the single layout source). */
+#define KEY_QR_WS_MAX             4096
+static uint8_t g_key_qr_ws[KEY_QR_WS_MAX];
+/* The live session pointer from shlosilo_keysource_qr_open_ffi - valid until
+ * shlosilo_keysource_qr_close_ffi. NULL = no session (old sign path runs). */
+static const struct KeySession *g_key_session = NULL;
+
+static const char *seed_class_name(int cls)
+{
+    switch (cls) {
+    case SEED_CLASS_STANDARD12: return "standard seed - 12 words";
+    case SEED_CLASS_STANDARD24: return "standard seed - 24 words";
+    case SEED_CLASS_COMPACT12:  return "compact seed - 12 words";
+    case SEED_CLASS_COMPACT24:  return "compact seed - 24 words";
+    default:                    return "seed plate";
+    }
+}
+
+/* Close (zeroize) the live plate session, if any. The glue's close is total
+ * and idempotent, so calling it on a quiet workspace is a defined no-op -
+ * it is also the single teardown used by every exit leg (sign done, confirm
+ * reject, flow exit to welcome). */
+static void key_qr_session_close(void)
+{
+    if (g_key_session != NULL) {
+        printf("seed: key session closed (zeroized)\r\n");
+    }
+    if (shlosilo_keysource_qr_close_ffi(g_key_qr_ws) == 0) {
+        g_key_session = NULL;
+    }
+}
+
+/* Confirm-page handler (product loop, while the page is up):
+ * continue -> open the key session from the scanned bytes and resume
+ * scanning; back -> reject (close if any) and resume scanning. */
+static void seed_confirm_step(void)
+{
+    char msg[48];
+    unsigned ws_need;
+    int rc;
+
+    rc = UiConfirmDecision();
+    if (rc == 0) {
+        return;
+    }
+    if (rc < 0) {
+        /* back / reject: close ANY live session (idempotent) + rescan. */
+        printf("seed: rejected -> close + rescan\r\n");
+        key_qr_session_close();
+        UiSetLast("seed rejected");
+        UiGotoPage(UI_PAGE_SCAN);
+        return;
+    }
+
+    /* continue: open the session from the plate bytes still in hand (no
+     * re-scan needed - the open runs full validation + BIP-39 checksum). */
+    ws_need = shlosilo_keysource_qr_ws_len();
+    if (ws_need > KEY_QR_WS_MAX) {
+        printf("seed: ws query %u > static %u\r\n",
+               ws_need, (unsigned)KEY_QR_WS_MAX);
+        UiSetLast("key ws too small");
+        UiGotoPage(UI_PAGE_SCAN);
+        return;
+    }
+    rc = shlosilo_keysource_qr_open_ffi(g_key_qr_ws, (unsigned)sizeof(g_key_qr_ws),
+                                        g_seed_plate, g_seed_plate_len,
+                                        &g_key_session);
+    if (rc == KEY_ERR_SLOT_OCCUPIED) {
+        /* Re-entry with a live session (confirm-continue on a second plate):
+         * close the old session (zeroize) and reopen from the new scan
+         * bytes - the sequence pinned by qr_ffi.rs
+         * slot_occupied_recovery_close_then_reopen_yields_new_scan_keys. */
+        printf("seed: slot occupied (-23) -> close old + reopen\r\n");
+        key_qr_session_close();
+        rc = shlosilo_keysource_qr_open_ffi(g_key_qr_ws, (unsigned)sizeof(g_key_qr_ws),
+                                            g_seed_plate, g_seed_plate_len,
+                                            &g_key_session);
+    }
+    if (rc != 0 || g_key_session == NULL) {
+        snprintf(msg, sizeof(msg), "seed open FAIL rc=%d", rc);
+        printf("seed: open failed rc=%d\r\n", rc);
+        key_qr_session_close();
+        UiSetLast(msg);
+        UiGotoPage(UI_PAGE_SCAN);
+        return;
+    }
+    printf("seed: key session live (plate %u bytes)\r\n", g_seed_plate_len);
+    UiSetLast("key session live");
+    UiGotoPage(UI_PAGE_SCAN);
+}
+
+/* Seed-class scan hit (class 1-4): leave the scan session and put the
+ * confirmation page in front of the key work (the probe is zero-key; the
+ * decode + session only run on confirm-continue). */
+static void scan_seed_confirm(int cls, unsigned n)
+{
+    scan_exit();
+    if (n > sizeof(g_seed_plate)) {
+        n = sizeof(g_seed_plate);   /* defensive; plates are <= 96 bytes */
+    }
+    memcpy(g_seed_plate, g_qr_result, n);
+    g_seed_plate_len = n;
+    printf("seed: class %d (%s), %u bytes -> confirm page\r\n",
+           cls, seed_class_name(cls), n);
+    UiSeedConfirmInfo(seed_class_name(cls), UI_TXT_CONFIRM_SRC);
+    UiGotoPage(UI_PAGE_CONFIRM);
+    /* The entry tap's contact may still be resting: need a fresh press. */
+    g_touch_prev = 1;
+}
+
 static void ur_intake_reset(void)
 {
     if (g_ur_dec != NULL) {
@@ -502,7 +650,11 @@ static void sign_run(const char *uri, const char *type,
         snprintf(l1, sizeof(l1), "%s", type);
         snprintf(l2, sizeof(l2), "payload %u bytes", plen);
     }
-    snprintf(l3, sizeof(l3), "key: fixture idx12");
+    if (g_key_session != NULL) {
+        snprintf(l3, sizeof(l3), "key: plate scan");
+    } else {
+        snprintf(l3, sizeof(l3), "key: fixture idx12");
+    }
     UiSignInfo(l1, l2, l3);
     UiGotoPage(UI_PAGE_SIGN);
 
@@ -515,10 +667,20 @@ static void sign_run(const char *uri, const char *type,
     shlosilo_timing_reset();
     shlosilo_timing_set_clock_fn(product_tick_ms);
 
-    printf("sign: start (ws=%u)\r\n", ws_need);
+    printf("sign: start (ws=%u) key=%s\r\n", ws_need,
+           (g_key_session != NULL) ? "plate session" : "fixture idx12");
     g_sign_busy = 1;
     t0 = osKernelGetTickCount();
-    if (uri != NULL) {
+    if (g_key_session != NULL) {
+        /* Task 5b: live plate session -> the seed-less session entry (the
+         * scanned key never crosses the FFI again). Routing guarantees a
+         * typed (type, payload) pair here; a NULL type would be refused by
+         * the entry itself (-2), never signed with a fallback key. */
+        rc = shlosilo_sign_session_ffi(g_key_session, type, payload, plen,
+                                      entropy, sizeof(entropy),
+                                      g_sign_out, SIGN_OUT_MAX, &out_len,
+                                      ws, ws_need);
+    } else if (uri != NULL) {
         rc = shlosilo_sign_ur_ffi(uri, k_sign_idx12, 12, NULL, 0, 0,
                                   entropy, sizeof(entropy),
                                   g_sign_out, SIGN_OUT_MAX, &out_len,
@@ -600,6 +762,10 @@ static void sign_run(const char *uri, const char *type,
         UiSetLast(l3);
     }
 
+    /* Task 5b: sign done -> close (zeroize) -> back to the scan flow. The
+     * plate key's job ends with the sign; the same teardown runs on every
+     * exit leg (confirm reject / welcome housekeeping). */
+    key_qr_session_close();
     ur_intake_reset();
     printf("sign: done -> result page\r\n");
     UiSetPayload(result, (uint32_t)strlen(result));
@@ -617,9 +783,40 @@ static void scan_ur_hit(const char *text)
     unsigned ws_need;
     int progress;
 
-    if (slash2 == NULL) {
+    if (slash2 == NULL && g_key_session == NULL) {
         scan_exit();
         sign_run(text, NULL, NULL, 0);
+        return;
+    }
+    if (slash2 == NULL) {
+        /* Task 5b: single-frame request with a LIVE plate session. The
+         * session sign face is typed-only and the fountain decoder rejects
+         * single frames ("single frames go through ur_decode::decode"), so
+         * extract (type, payload) through shlosilo_ur_decode_uri_ffi and run
+         * the typed session sign on the pair. */
+        unsigned plen = 0;
+        if (g_ur_payload == NULL) {
+            g_ur_payload = (uint8_t *)ExtMalloc(UR_PAYLOAD_MAX);
+        }
+        if (g_ur_payload == NULL) {
+            printf("ur: single-frame payload alloc fail\r\n");
+            UiScanInfo("ur: payload alloc FAIL", "", "", "");
+            return;
+        }
+        if (shlosilo_ur_decode_uri_ffi(text, (uint8_t *)g_ur_type,
+                                      (unsigned)sizeof(g_ur_type),
+                                      g_ur_payload, UR_PAYLOAD_MAX,
+                                      &plen) != 0) {
+            printf("ur: single-frame decode FAIL\r\n");
+            UiScanInfo("ur: decode FAIL", "not a sign request?", "", "");
+            ExtFree(g_ur_payload);
+            g_ur_payload = NULL;
+            return;
+        }
+        printf("ur: single-frame type=%s payload=%u (session sign)\r\n",
+               g_ur_type, plen);
+        scan_exit();
+        sign_run(NULL, g_ur_type, g_ur_payload, plen);
         return;
     }
 
@@ -815,9 +1012,19 @@ static void scan_step(void)
 
     if (n > 0) {
         char msg[48];
+        /* Task 5b: classify the scan BEFORE any leg runs (zero-key probe) -
+         * seed plates (class 1-4) go to the confirmation page, `ur:`
+         * transport (class 5) keeps the existing UR intake leg, everything
+         * else (class 0) keeps the existing non-signing payload leg. */
+        int cls = shlosilo_seed_qr_probe_ffi((const uint8_t *)g_qr_result,
+                                            (unsigned)n);
         g_qr_result[n] = '\0';
-        printf("scan: hit %d chars\r\n", (int)n);
-        if (strncmp(g_qr_result, "ur:", 3) == 0) {
+        printf("scan: hit %d chars (seed class %d)\r\n", (int)n, cls);
+        if (cls >= SEED_CLASS_STANDARD12 && cls <= SEED_CLASS_COMPACT24) {
+            scan_seed_confirm(cls, (unsigned)n);
+            return;
+        }
+        if (cls == SEED_CLASS_UR || strncmp(g_qr_result, "ur:", 3) == 0) {
             /* QR flow into the sign page: single UR signs directly,
              * multipart frames accumulate first. */
             scan_ur_hit(g_qr_result);

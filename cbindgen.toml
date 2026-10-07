@@ -79,6 +79,7 @@ include = [
   "shlosilo_ur_decode_complete",
   "shlosilo_ur_decode_payload",
   "shlosilo_ur_decode_type",
+  "shlosilo_ur_decode_uri_ffi",
   "shlosilo_ur_decode_free",
 ]
 # Same-named constants across multiple mods (crate-internal implementation details, not needed on the C contract surface).

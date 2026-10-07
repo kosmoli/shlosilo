@@ -21,6 +21,13 @@ fi
 tmp="$(mktemp /tmp/shlosilo_regen.XXXXXX.h)"
 trap 'rm -f "$tmp"' EXIT
 
+# P2 gate (Task 5b): cbindgen regen reproduces the cbindgen.toml trailer
+# VERBATIM, so a changed Rust signature in the flux/keysource glue would keep
+# the byte-equal diff below green while the C host compiles against a stale
+# ABI. Compare the trailer declarations against the real Rust signatures too
+# (normalized name/return/params) so that drift turns this gate red.
+python3 scripts/check_ffi_decls.py
+
 cbindgen --config cbindgen.toml --crate shlosilo --output "$tmp" >/dev/null
 
 if ! diff -q "$tmp" shlosilo.h >/dev/null; then

@@ -1195,6 +1195,91 @@ pub mod r3 {
         }
     }
 
+    /// Task 5b (2026-10-08): decode ONE single-fragment UR (`ur:<type>/<body>`)
+    /// into the typed face's input pair — no key material anywhere in this
+    /// entry (the payload is an unsigned request).
+    ///
+    /// Why a separate entry: the session sign face (`shlosilo_sign_session_ffi`)
+    /// is typed-only, and the R3 fountain decoder deliberately rejects single
+    /// frames ("single frames go through ur_decode::decode"). The C scan flow
+    /// hits exactly that gap when a keysource QR session is live and a
+    /// single-frame sign request is scanned — multipart frames keep using the
+    /// fountain decoder entries.
+    ///
+    /// - `uri`: NUL-terminated `ur:<type>/<body>`; multipart shapes
+    ///   (`ur:<type>/<seq>-<count>/<body>`) are REJECTED here (-21).
+    /// - `type_buf` / `type_buf_len`: receive the NUL-terminated type name.
+    /// - `payload` / `payload_len`: receive the raw payload bytes;
+    ///   `actual_len` receives the delivered length on success and the
+    ///   required payload length on `ERR_BUFFER_TOO_SMALL` (-20).
+    ///
+    /// Returns 0 = Ok, negative = error code (-2 NULL argument, -20 buffer
+    /// too small, -21 malformed / multipart URI).
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: entry null-checks first
+    pub extern "C" fn shlosilo_ur_decode_uri_ffi(
+        uri: *const c_char,
+        type_buf: *mut u8,
+        type_buf_len: c_uint,
+        payload: *mut u8,
+        payload_len: c_uint,
+        actual_len: *mut c_uint,
+    ) -> c_int {
+        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+        if uri.is_null() || type_buf.is_null() || payload.is_null() {
+            return ERR_NULL_POINTER;
+        }
+        let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            let mut ulen = 0usize;
+            unsafe {
+                while *uri.add(ulen) != 0 {
+                    ulen += 1;
+                    if ulen > MULTIPART_FRAME_MAX_LEN {
+                        return Err(err_type_name());
+                    }
+                }
+            }
+            let uslice = checked_slice(uri.cast::<u8>(), ulen, MULTIPART_FRAME_MAX_LEN, false)
+                .ok_or_else(err_type_name)?;
+            let ustr = core::str::from_utf8(uslice).map_err(|_| err_type_name())?;
+            // Same recognition order as `ur_decode::decode` (which this wraps),
+            // with the type name extracted for the caller.
+            let rest = ustr.strip_prefix("ur:").ok_or_else(err_type_name)?;
+            let (type_name, body) = rest.split_once('/').ok_or_else(err_type_name)?;
+            if type_name.is_empty()
+                || !type_name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                || body.contains('/')
+            {
+                return Err(err_type_name());
+            }
+            if type_name.len() + 1 > type_buf_len as usize {
+                return Err(err(ShlosiloErrorKind::BufferTooSmall));
+            }
+            let decoded = crate::ur::ur_decode::decode(ustr)?;
+            let bytes = decoded.as_ref();
+            if bytes.len() > payload_len as usize {
+                write_actual_len(actual_len, bytes.len()); // required value for the retry
+                return Err(err(ShlosiloErrorKind::BufferTooSmall));
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(type_name.as_ptr(), type_buf, type_name.len());
+                *type_buf.add(type_name.len()) = 0;
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
+            }
+            Ok(bytes.len())
+        });
+        match result {
+            Ok(Ok(n)) => {
+                write_actual_len(actual_len, n);
+                OK
+            }
+            Ok(Err(e)) => to_ffi_code(&e),
+            Err(_) => ERR_PANIC,
+        }
+    }
+
     /// R3/P0-C (2026-09-01): typed sign — vertical pass-through signing of the (type, payload) reassembled from multipart.
     /// type_name must be a known signable UrTypeTag (Unknown/arbitrary strings are rejected);
     /// payload budget = MULTIPART_PAYLOAD_MAX_LEN (16 KiB, aligned with the multipart reassembly cap).
