@@ -304,6 +304,70 @@ pub extern "C" fn shlosilo_ur_decode_ws_len() -> c_uint {
     crate::ur::ur_multipart::ur_decode_ws_len() as c_uint
 }
 
+/// Task 5a (2026-10-07): seed-QR scan-flow probe — classify a scanned payload
+/// WITHOUT producing any key material (v2 §4.1: zero key output).
+///
+/// Wraps `entropy::seed_qr::classify` — the pure classifier that mirrors
+/// `seed_qr::decode`'s recognition order (`ur:` guard first, then the disjoint
+/// compact / digit length domains) but runs NO decode. The 12/24 word-count
+/// split the C scan flow routes on is recovered from those disjoint domains
+/// (16/32 raw bytes vs. 48/96 ASCII digits) — no second parsing pass.
+///
+/// Return codes (non-negative = class):
+/// - `0` NotSeed — not a steel-plate payload (wrong length / charset / empty)
+/// - `1` Standard12 — SeedQR standard, 12 words (48 `%04d` digits)
+/// - `2` Standard24 — SeedQR standard, 24 words (96 digits)
+/// - `3` Compact12 — CompactSeedQR, 12 words (16 raw entropy bytes)
+/// - `4` Compact24 — CompactSeedQR, 24 words (32 raw entropy bytes)
+/// - `5` UrUnsupported — `ur:` transport (`ur:crypto-seed` is a v2 concern;
+///   it is REJECTED, never silently misread as plate data)
+/// - negative = error: `ERR_NULL_POINTER` (-2) for a NULL buffer,
+///   `EncodingError` (-21) when `data_len` exceeds the scan budget.
+///
+/// **Zero-key invariant**: the probe only reads the payload to classify it —
+/// no decode, no mnemonic, no session, no seed value in the signature or the
+/// result. Safe to call before user confirmation; the full validation (word
+/// index range + BIP-39 checksum) stays in `seed_qr::decode` and runs at
+/// session-open time (the keysource QR glue).
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checked first; bounded slice below (P0-03 discipline)
+pub extern "C" fn shlosilo_seed_qr_probe_ffi(data: *const u8, data_len: c_uint) -> c_int {
+    use crate::entropy::seed_qr::{classify, SeedQrClass};
+    if data.is_null() {
+        return ERR_NULL_POINTER;
+    }
+    // Scan-payload budget: larger than any QR symbol can deliver (a QR code
+    // tops out around 3 KiB) and far above the biggest plate payload (96
+    // digits). Over-budget = invalid scan input, same policy as every other
+    // FFI entry's over-cap input (EncodingError).
+    const SCAN_PAYLOAD_MAX_LEN: usize = 4096;
+    let payload = match checked_slice(data, data_len as usize, SCAN_PAYLOAD_MAX_LEN, false) {
+        Some(s) => s,
+        None => return to_ffi_code(&err(ShlosiloErrorKind::EncodingInvalidFormat)),
+    };
+    match classify(payload) {
+        SeedQrClass::NotSeed => 0,
+        // classify only answers Standard for 48|96 bytes and Compact for
+        // 16|32 bytes (disjoint domains), so the length alone carries the
+        // word count.
+        SeedQrClass::Standard => {
+            if payload.len() == 48 {
+                1
+            } else {
+                2
+            }
+        }
+        SeedQrClass::Compact => {
+            if payload.len() == 16 {
+                3
+            } else {
+                4
+            }
+        }
+        SeedQrClass::UrTransport => 5,
+    }
+}
+
 /// shlosilo_sign_ur_ffi — full UR string + mnemonic → signature (P6.1d)
 ///
 /// L3 feeds `ur:crypto-psbt/...` / `ur:eth-sign-request/...` / `ur:xmr-txunsigned/...` directly;
@@ -1518,6 +1582,14 @@ pub mod r3 {
     ///
     /// The slot is NULLed before the reclaim drop, so no exit path can leave
     /// the caller holding a stale handle.
+    ///
+    /// **Two-model boundary (Task 5a)**: this entry closes sessions from the
+    /// CALLER-placement model only. A session obtained from the flux-side QR
+    /// glue (`shlosilo_keysource_qr_open_ffi`, flux/keysource) is owned by its
+    /// workspace slot through a live handle and MUST be closed by
+    /// `shlosilo_keysource_qr_close_ffi` instead — freeing it here would drop
+    /// the slot-owned session behind the handle's back and turn the glue's
+    /// next close into a double drop.
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checked first; single-owner handle (see below)
     pub extern "C" fn shlosilo_session_free_ffi(session: *mut *mut KeySession) -> c_int {

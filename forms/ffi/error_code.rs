@@ -37,6 +37,13 @@ pub const ERR_PANIC: i32 = ShlosiloErrorCode::FfiPanic as i32;
 /// variant: this is an FFI-contract outcome, not a `ShlosiloError` kind.
 pub const ERR_SLOT_CONSUMED: i32 = -22;
 
+/// Task 5a: QR key-source session slot already occupied — a live session
+/// holds the single slot of the caller's keysource workspace (a second
+/// `shlosilo_keysource_qr_open_ffi` on the same workspace answers this before
+/// touching anything). Same bare-code style as `ERR_SLOT_CONSUMED`: an
+/// FFI-contract outcome of the flux-side glue, not a `ShlosiloError` kind.
+pub const ERR_SLOT_OCCUPIED: i32 = -23;
+
 /// Success
 pub const OK: i32 = ShlosiloErrorCode::Ok as i32;
 
@@ -58,6 +65,7 @@ pub fn describe(code: i32) -> &'static str {
         -15 => "PSBT ownership rejected",
         -21 => "Encoding error",
         -22 => "Generator table slot already consumed",
+        -23 => "Key session slot already occupied",
         -30 => "Invalid UR payload",
         -31 => "Invalid mnemonic",
         -32 => "Invalid derivation path",

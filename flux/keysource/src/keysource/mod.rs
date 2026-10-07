@@ -9,6 +9,9 @@ use core::mem::MaybeUninit;
 
 use shlosilo::types::key_session::KeySession;
 
+/// Task 5a: the C-ABI scan-flow glue (scan bytes in, session pointer out).
+pub mod ffi;
+
 pub mod qr;
 
 pub use qr::QrKeySource;

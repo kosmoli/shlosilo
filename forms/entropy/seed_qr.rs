@@ -413,7 +413,11 @@ mod tests {
         assert_eq!(classify(&ent32), SeedQrClass::Compact);
         assert!(decode(&ent32).is_ok());
 
-        for bad in [b"ur:crypto-seed/x".as_slice(), b"".as_slice(), &[0u8; 15][..]] {
+        for bad in [
+            b"ur:crypto-seed/x".as_slice(),
+            b"".as_slice(),
+            &[0u8; 15][..],
+        ] {
             assert!(decode(bad).is_err(), "decode must reject {bad:?}");
         }
     }

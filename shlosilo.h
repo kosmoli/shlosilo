@@ -334,6 +334,15 @@
  */
 #define ERR_SLOT_CONSUMED -22
 
+/**
+ * Task 5a: QR key-source session slot already occupied — a live session
+ * holds the single slot of the caller's keysource workspace (a second
+ * `shlosilo_keysource_qr_open_ffi` on the same workspace answers this before
+ * touching anything). Same bare-code style as `ERR_SLOT_CONSUMED`: an
+ * FFI-contract outcome of the flux-side glue, not a `ShlosiloError` kind.
+ */
+#define ERR_SLOT_OCCUPIED -23
+
 
 
 /**
@@ -716,6 +725,35 @@ unsigned int shlosilo_ur_encode_ws_len(void);
 unsigned int shlosilo_ur_decode_ws_len(void);
 
 /**
+ * Task 5a (2026-10-07): seed-QR scan-flow probe — classify a scanned payload
+ * WITHOUT producing any key material (v2 §4.1: zero key output).
+ *
+ * Wraps `entropy::seed_qr::classify` — the pure classifier that mirrors
+ * `seed_qr::decode`'s recognition order (`ur:` guard first, then the disjoint
+ * compact / digit length domains) but runs NO decode. The 12/24 word-count
+ * split the C scan flow routes on is recovered from those disjoint domains
+ * (16/32 raw bytes vs. 48/96 ASCII digits) — no second parsing pass.
+ *
+ * Return codes (non-negative = class):
+ * - `0` NotSeed — not a steel-plate payload (wrong length / charset / empty)
+ * - `1` Standard12 — SeedQR standard, 12 words (48 `%04d` digits)
+ * - `2` Standard24 — SeedQR standard, 24 words (96 digits)
+ * - `3` Compact12 — CompactSeedQR, 12 words (16 raw entropy bytes)
+ * - `4` Compact24 — CompactSeedQR, 24 words (32 raw entropy bytes)
+ * - `5` UrUnsupported — `ur:` transport (`ur:crypto-seed` is a v2 concern;
+ *   it is REJECTED, never silently misread as plate data)
+ * - negative = error: `ERR_NULL_POINTER` (-2) for a NULL buffer,
+ *   `EncodingError` (-21) when `data_len` exceeds the scan budget.
+ *
+ * **Zero-key invariant**: the probe only reads the payload to classify it —
+ * no decode, no mnemonic, no session, no seed value in the signature or the
+ * result. Safe to call before user confirmation; the full validation (word
+ * index range + BIP-39 checksum) stays in `seed_qr::decode` and runs at
+ * session-open time (the keysource QR glue).
+ */
+int shlosilo_seed_qr_probe_ffi(const uint8_t *data, unsigned int data_len);
+
+/**
  * shlosilo_sign_ur_ffi — full UR string + mnemonic → signature (P6.1d)
  *
  * L3 feeds `ur:crypto-psbt/...` / `ur:eth-sign-request/...` / `ur:xmr-txunsigned/...` directly;
@@ -1007,6 +1045,14 @@ int shlosilo_sign_session_ffi(const struct KeySession *session,
  *
  * The slot is NULLed before the reclaim drop, so no exit path can leave
  * the caller holding a stale handle.
+ *
+ * **Two-model boundary (Task 5a)**: this entry closes sessions from the
+ * CALLER-placement model only. A session obtained from the flux-side QR
+ * glue (`shlosilo_keysource_qr_open_ffi`, flux/keysource) is owned by its
+ * workspace slot through a live handle and MUST be closed by
+ * `shlosilo_keysource_qr_close_ffi` instead — freeing it here would drop
+ * the slot-owned session behind the handle's back and turn the glue's
+ * next close into a double drop.
  */
 int shlosilo_session_free_ffi(struct KeySession **session);
 
@@ -1146,3 +1192,30 @@ const uint8_t *shlosilo_cabi_version(void);
 int32_t shlosilo_cabi_check(uint16_t l3_expected_major,
                             uint16_t l3_expected_minor,
                             uint16_t l3_expected_patch);
+
+/*
+ * Task 5a — flux/keysource QR scan-flow glue (scan bytes in, session pointer
+ * out). Workspace contract (same shape as the R3 handle workspaces): the
+ * caller provides `shlosilo_keysource_qr_ws_len()` ZERO-INITIALIZED bytes in a
+ * static / task workspace at a stable address (pinned until close); one live
+ * session per workspace; close before discarding the workspace.
+ *
+ * Two-model boundary: sessions obtained here are closed by
+ * `shlosilo_keysource_qr_close_ffi` ONLY — never through
+ * `shlosilo_session_free_ffi` (that would drop the slot-owned session behind
+ * the live handle's back).
+ *
+ * `shlosilo_keysource_qr_open_ffi` return codes: 0 = Ok (*out_session receives
+ * the live session pointer, valid until close), -2 = NULL argument, -20 =
+ * ws_len under capacity, -23 = a session is already live in this workspace,
+ * otherwise the seed_qr::decode / from_entropy L2b error codes.
+ */
+unsigned int shlosilo_keysource_qr_ws_len(void);
+
+int shlosilo_keysource_qr_open_ffi(uint8_t *ws,
+                                   unsigned int ws_len,
+                                   const uint8_t *data,
+                                   unsigned int data_len,
+                                   const struct KeySession **out_session);
+
+int shlosilo_keysource_qr_close_ffi(uint8_t *ws);

@@ -16,6 +16,10 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("../src/keysource/mod.rs"),
     ),
     (
+        "src/keysource/ffi.rs",
+        include_str!("../src/keysource/ffi.rs"),
+    ),
+    (
         "src/keysource/qr.rs",
         include_str!("../src/keysource/qr.rs"),
     ),

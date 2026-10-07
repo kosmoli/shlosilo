@@ -127,7 +127,7 @@ struct Addr(*const ());
 unsafe impl Sync for Addr {}
 
 #[used]
-static KEEP_FFI: [Addr; 54] = [
+static KEEP_FFI: [Addr; 58] = [
     Addr(shlosilo::device_timing::shlosilo_timing_set_clock_fn as *const ()),
     Addr(shlosilo::device_timing::shlosilo_timing_get_stage as *const ()),
     Addr(shlosilo::device_timing::shlosilo_timing_get_total as *const ()),
@@ -136,6 +136,7 @@ static KEEP_FFI: [Addr; 54] = [
     Addr(shlosilo::ffi::c_abi::shlosilo_sign_ws_len as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_ur_encode_ws_len as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_ur_decode_ws_len as *const ()),
+    Addr(shlosilo::ffi::c_abi::shlosilo_seed_qr_probe_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_sign_ur_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_export_readonly_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_create_account_ffi as *const ()),
@@ -182,4 +183,7 @@ static KEEP_FFI: [Addr; 54] = [
     Addr(shlosilo::ffi::version::shlosilo_version as *const ()),
     Addr(shlosilo::ffi::version::shlosilo_cabi_version as *const ()),
     Addr(shlosilo::ffi::version::shlosilo_cabi_check as *const ()),
+    Addr(shlosilo_flux_keysource::keysource::ffi::shlosilo_keysource_qr_ws_len as *const ()),
+    Addr(shlosilo_flux_keysource::keysource::ffi::shlosilo_keysource_qr_open_ffi as *const ()),
+    Addr(shlosilo_flux_keysource::keysource::ffi::shlosilo_keysource_qr_close_ffi as *const ()),
 ];
