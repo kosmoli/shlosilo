@@ -42,6 +42,13 @@
  *     account-manager/forms link, not in this task.
  */
 
+/*
+ * SECURITY: KEYSTORE_PRINT_ARRAY prints plaintext key material - the pieces
+ * hash, enKey/authKey, the decrypted entropy/seed buffers and the whole slot
+ * blob. Enabling KEYSTORE_DEBUG=1 leaks secrets to whatever listens on the
+ * debug console. Dev builds only; never on a provisioned device. (Prefer
+ * printing a hash of a buffer over printing the buffer when adding new sites.)
+ */
 #define KEYSTORE_DEBUG          0
 
 #if KEYSTORE_DEBUG == 1
@@ -83,7 +90,11 @@ int32_t AccountExists(uint8_t accountIndex, bool *exists)
 /// @return err code.
 int32_t SaveAccountSecret(uint8_t accountIndex, const AccountSecret_t *accountSecret, const char *password, bool newAccount)
 {
-    uint8_t pieces[KEY_PIECE_LEN * 2], hash[32], sha512Hash[64];
+    uint8_t pieces[KEY_PIECE_LEN * 2], hash[32];
+    struct sha512 sha512Hash;   /* real struct, not a byte array: sha512()
+                                 * writes through uint64_t members, so the old
+                                 * (struct sha512 *) cast on a uint8_t[64] was
+                                 * a strict-aliasing/alignment UB idiom. */
     uint8_t *enKey, *authKey;
     uint8_t *iv, *encryptEntropy, *encryptSeed, *slip39EmsOrTonEntropyL32, *encryptReservedData, *hmac;
     uint8_t accountEncryptData[ACCOUNT_TOTAL_LEN];
@@ -91,8 +102,8 @@ int32_t SaveAccountSecret(uint8_t accountIndex, const AccountSecret_t *accountSe
     AES256_CBC_ctx ctx;
 
     ASSERT(accountIndex <= 2);
-    enKey = sha512Hash;
-    authKey = sha512Hash + AES_KEY_LEN;
+    enKey = sha512Hash.u.u8;
+    authKey = sha512Hash.u.u8 + AES_KEY_LEN;
     iv = accountEncryptData;
     encryptEntropy = iv + AES_IV_LEN;
     encryptSeed = encryptEntropy + ENTROPY_MAX_LEN;
@@ -104,8 +115,8 @@ int32_t SaveAccountSecret(uint8_t accountIndex, const AccountSecret_t *accountSe
         CHECK_ERRCODE_BREAK("set key to se", ret);
         HashWithSalt(hash, pieces, sizeof(pieces), "combine two pieces");
         KEYSTORE_PRINT_ARRAY("pieces hash", hash, sizeof(hash));
-        sha512((struct sha512 *)sha512Hash, hash, sizeof(hash));
-        KEYSTORE_PRINT_ARRAY("sha512Hash", sha512Hash, 64);
+        sha512(&sha512Hash, hash, sizeof(hash));
+        KEYSTORE_PRINT_ARRAY("sha512Hash", sha512Hash.u.u8, 64);
         TrngGet(iv, AES_IV_LEN);
         CombineInnerAesKey(enKey);
         AES256_CBC_init(&ctx, enKey, iv);
@@ -152,7 +163,7 @@ int32_t SaveAccountSecret(uint8_t accountIndex, const AccountSecret_t *accountSe
     CLEAR_OBJECT(ctx);
     CLEAR_ARRAY(pieces);
     CLEAR_ARRAY(hash);
-    CLEAR_ARRAY(sha512Hash);
+    CLEAR_OBJECT(sha512Hash);
     CLEAR_ARRAY(accountEncryptData);
     return ret;
 }
@@ -165,7 +176,10 @@ int32_t SaveAccountSecret(uint8_t accountIndex, const AccountSecret_t *accountSe
 /// @return err code.
 static int32_t LoadAccountSecretFromSE(uint8_t accountIndex, AccountSecret_t *accountSecret, const char *password)
 {
-    uint8_t pieces[KEY_PIECE_LEN * 2], hash[32], sha512Hash[64], hmacCalc[32];
+    uint8_t pieces[KEY_PIECE_LEN * 2], hash[32], hmacCalc[32];
+    struct sha512 sha512Hash;   /* real struct, see SaveAccountSecret: the old
+                                 * (struct sha512 *) cast on uint8_t[64] was a
+                                 * strict-aliasing/alignment UB idiom. */
     uint8_t *enKey, *authKey;
     uint8_t *iv, *encryptEntropy, *encryptSeed, *slip39EmsOrTonEntropyL32, *encryptReservedData, *hmac;
     uint8_t accountEncryptData[ACCOUNT_TOTAL_LEN], param[32];
@@ -174,8 +188,8 @@ static int32_t LoadAccountSecretFromSE(uint8_t accountIndex, AccountSecret_t *ac
     AES256_CBC_ctx ctx;
 
     ASSERT(accountIndex <= 2);
-    enKey = sha512Hash;
-    authKey = sha512Hash + AES_KEY_LEN;
+    enKey = sha512Hash.u.u8;
+    authKey = sha512Hash.u.u8 + AES_KEY_LEN;
     iv = accountEncryptData;
     encryptEntropy = iv + AES_IV_LEN;
     encryptSeed = encryptEntropy + ENTROPY_MAX_LEN;
@@ -187,8 +201,8 @@ static int32_t LoadAccountSecretFromSE(uint8_t accountIndex, AccountSecret_t *ac
         CHECK_ERRCODE_BREAK("get key piece", ret);
         HashWithSalt(hash, pieces, sizeof(pieces), "combine two pieces");
         KEYSTORE_PRINT_ARRAY("pieces hash", hash, sizeof(hash));
-        sha512((struct sha512 *)sha512Hash, hash, sizeof(hash));
-        KEYSTORE_PRINT_ARRAY("sha512Hash", sha512Hash, 64);
+        sha512(&sha512Hash, hash, sizeof(hash));
+        KEYSTORE_PRINT_ARRAY("sha512Hash", sha512Hash.u.u8, 64);
 
         ret = SE_HmacEncryptRead(iv, accountIndex * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_IV);
         CHECK_ERRCODE_BREAK("read iv", ret);
@@ -229,9 +243,12 @@ static int32_t LoadAccountSecretFromSE(uint8_t accountIndex, AccountSecret_t *ac
     CLEAR_OBJECT(ctx);
     CLEAR_ARRAY(pieces);
     CLEAR_ARRAY(hash);
-    CLEAR_ARRAY(sha512Hash);
+    CLEAR_OBJECT(sha512Hash);
     CLEAR_ARRAY(accountEncryptData);
     CLEAR_ARRAY(hmacCalc);
+    /* param carries account metadata (entropyLen + the account-info tail the
+     * account manager owns) - wipe it like the key material. */
+    CLEAR_ARRAY(param);
     return ret;
 }
 
@@ -261,7 +278,14 @@ void CombineInnerAesKey(uint8_t *aesKey)
     if (CheckEntropy(aesPiece, AES_KEY_LEN) == false) {
         printf("need generate inner aes piece\r\n");
         TrngGet(aesPiece, AES_KEY_LEN);
-        WriteOtpData(OTP_ADDR_AES_KEY, aesPiece, AES_KEY_LEN);
+        /* The OTP burn must be loud. A silently failed write would leave THIS
+         * call XORing a freshly generated, never-persisted piece into the
+         * enKey while every later call re-generates a DIFFERENT piece - load
+         * would then decrypt with a wrong enKey, and because authKey is not
+         * XORed with the OTP piece the HMAC still verifies: LoadAccountSecret
+         * would silently return a garbled seed. Same loud pattern as
+         * hash_and_salt.c:58. */
+        ASSERT(SUCCESS_CODE == WriteOtpData(OTP_ADDR_AES_KEY, aesPiece, AES_KEY_LEN));
     }
     MpuSetOtpProtection(true);
     for (uint32_t i = 0; i < AES_KEY_LEN; i++) {

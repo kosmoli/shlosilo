@@ -25,6 +25,12 @@
  *   5. auth failure  - wrong password / tampered ciphertext => ERR_KEYSTORE_AUTH
  *   6. account flag  - AccountExists via IV page entropy
  *   7. OTP third factor - inner AES piece generated + burned on first use
+ *   8. write faults  - each of the 7 slot pages rejects its write: return
+ *                      code + terminal slot state pinned
+ *   9. HMAC boundary - tamper at domain byte 191 / stored-HMAC bytes 192-193
+ *  10. param gap     - entropyLen tamper ACCEPTED (outside HMAC domain,
+ *                      pool item #24) - fact itself pinned
+ *  11. entropyLen    - 33 / 255 pass through unclamped (1:1 keystone3)
  */
 
 static int g_failures;
@@ -240,6 +246,139 @@ static void TestOtpInnerAesGeneration(void)
              "round-trip entropy across generated OTP piece");
 }
 
+/* ---- 8. write faults on each of the 7 slot pages ---- */
+static void TestSaveWriteFaults(void)
+{
+    AccountSecret_t s;
+    uint8_t blank[32];
+    char name[96];
+
+    memset(blank, 0xFF, sizeof(blank));
+    for (uint8_t failPage = 0; failPage < 7; failPage++) {
+        HostShimsReset();
+        HostShimsSeedOtp(GV_SALT, GV_OTP_AES_PIECE);
+        FillSecret(&s);
+        HostShimsFailSeWritePage(failPage);
+        /* SaveAccountSecret must propagate the injected write error (via
+         * CHECK_ERRCODE_BREAK), not swallow it and report success. */
+        Check(SaveAccountSecret(0, &s, (const char *)GV_PASSWORD, false) == HOST_SIM_WRITE_ERR,
+              "save write fault => injected error code propagated");
+        /* Terminal slot state: pages written before the fault are committed
+         * (deterministic save == oracle golden pages), the faulting page and
+         * everything after it stay blank (0xFF). */
+        for (uint8_t i = 0; i < 7; i++) {
+            snprintf(name, sizeof(name),
+                     "write fault page %u: page %u terminal state (%s)",
+                     failPage, i, (i < failPage) ? "committed" : "blank");
+            if (i < failPage) {
+                CheckMem(HostSePage(i), GV_SAVE_PAGES[i], 32, name);
+            } else {
+                CheckMem(HostSePage(i), blank, 32, name);
+            }
+        }
+    }
+}
+
+/* ---- 9. HMAC domain / stored-tag boundary tamper triplet ---- */
+static void TestHmacBoundaryTamper(void)
+{
+    AccountSecret_t s, loaded;
+    uint8_t *slot;
+    uint8_t saved;
+
+    HostShimsReset();
+    HostShimsSeedOtp(GV_SALT, GV_OTP_AES_PIECE);
+    FillSecret(&s);
+    Check(SaveAccountSecret(0, &s, (const char *)GV_PASSWORD, false) == SUCCESS_CODE,
+          "SaveAccountSecret hmac-boundary run");
+
+    /* Slot blob layout (ACCOUNT_TOTAL_LEN = 224):
+     *   iv 0..31 | entropy 32..63 | seed 64..127 | ems 128..159 |
+     *   reserved 160..191 | stored HMAC 192..223.
+     * The HMAC domain is bytes 0..191 (ACCOUNT_TOTAL_LEN - HMAC_LEN = 192). */
+
+    /* byte 191 = LAST byte inside the HMAC domain (page 5 / off 31). Pins
+     * that the domain end boundary is covered - no off-by-one letting the
+     * final domain byte escape verification. */
+    slot = HostSePage(0 * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_RESERVED);
+    saved = slot[31];
+    slot[31] ^= 0x01;
+    Check(LoadAccountSecret(0, &loaded, (const char *)GV_PASSWORD) == ERR_KEYSTORE_AUTH,
+          "tamper domain byte 191 (last covered byte) => ERR_KEYSTORE_AUTH");
+    slot[31] = saved;
+
+    /* byte 192 = FIRST byte of the stored HMAC (page 6 / off 0). Tampering
+     * the tag itself, not the data, must trip just the same. */
+    slot = HostSePage(0 * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_HMAC);
+    saved = slot[0];
+    slot[0] ^= 0x01;
+    Check(LoadAccountSecret(0, &loaded, (const char *)GV_PASSWORD) == ERR_KEYSTORE_AUTH,
+          "tamper stored-HMAC byte 192 (tag byte 0) => ERR_KEYSTORE_AUTH");
+    slot[0] = saved;
+
+    /* byte 193 = second stored-HMAC byte (page 6 / off 1). Pins that the
+     * memcmp runs over the full HMAC_LEN = 32, not a truncated prefix. */
+    saved = slot[1];
+    slot[1] ^= 0x01;
+    Check(LoadAccountSecret(0, &loaded, (const char *)GV_PASSWORD) == ERR_KEYSTORE_AUTH,
+          "tamper stored-HMAC byte 193 (tag byte 1) => ERR_KEYSTORE_AUTH");
+    slot[1] = saved;
+
+    Check(LoadAccountSecret(0, &loaded, (const char *)GV_PASSWORD) == SUCCESS_CODE,
+          "all boundary tams restored => loads again");
+}
+
+/* ---- 10. param-page entropyLen tamper is ACCEPTED (known gap) ---- */
+static void TestParamEntropyLenTamperAccepted(void)
+{
+    AccountSecret_t s, loaded;
+
+    HostShimsReset();
+    HostShimsSeedOtp(GV_SALT, GV_OTP_AES_PIECE);
+    FillSecret(&s);
+    Check(SaveAccountSecret(0, &s, (const char *)GV_PASSWORD, false) == SUCCESS_CODE,
+          "SaveAccountSecret param-gap run");
+
+    /* KNOWN INTEGRITY GAP (pool item #24): PAGE_INDEX_PARAM sits OUTSIDE the
+     * HMAC domain (bytes 0..191 cover iv..reserved only), so entropyLen can
+     * be changed without tripping ERR_KEYSTORE_AUTH - keystone3 accepts it
+     * the same way. This test pins the CURRENT accepted behavior so it cannot
+     * quietly regress into unreviewed "silent trust": anyone extending the
+     * HMAC domain to cover param (or adding validation) must consciously
+     * update this pin. */
+    HostSePage(0 * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_PARAM)[0] = 24;
+    Check(LoadAccountSecret(0, &loaded, (const char *)GV_PASSWORD) == SUCCESS_CODE,
+          "param entropyLen tamper does NOT trip HMAC (outside domain, pool #24)");
+    Check(loaded.entropyLen == 24,
+          "tampered entropyLen accepted verbatim (pool #24, gap pinned)");
+}
+
+/* ---- 11. entropyLen passthrough: no range validation (1:1 keystone3) ---- */
+static void TestEntropyLenPassthrough(void)
+{
+    AccountSecret_t s, loaded;
+
+    HostShimsReset();
+    HostShimsSeedOtp(GV_SALT, GV_OTP_AES_PIECE);
+    FillSecret(&s);
+    Check(SaveAccountSecret(0, &s, (const char *)GV_PASSWORD, false) == SUCCESS_CODE,
+          "SaveAccountSecret entropyLen-passthrough run");
+
+    /* keystore.c:214 forwards the param byte unclamped - values beyond
+     * ENTROPY_MAX_LEN (32) flow through to the caller unchanged (keystone3
+     * parity; range validation is the caller's job). Pinned so a future
+     * "helpful" clamp is a deliberate, reviewed decision. */
+    HostSePage(0 * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_PARAM)[0] = 33;
+    Check(LoadAccountSecret(0, &loaded, (const char *)GV_PASSWORD) == SUCCESS_CODE,
+          "load with entropyLen=33");
+    Check(loaded.entropyLen == 33, "entropyLen=33 passes through unclamped");
+
+    HostSePage(0 * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_PARAM)[0] = 255;
+    Check(LoadAccountSecret(0, &loaded, (const char *)GV_PASSWORD) == SUCCESS_CODE,
+          "load with entropyLen=255");
+    Check(loaded.entropyLen == 255, "entropyLen=255 passes through unclamped");
+}
+
 int main(void)
 {
     TestPrimitives();
@@ -248,6 +387,10 @@ int main(void)
     TestAuthFailures();
     TestAccountExists();
     TestOtpInnerAesGeneration();
+    TestSaveWriteFaults();
+    TestHmacBoundaryTamper();
+    TestParamEntropyLenTamperAccepted();
+    TestEntropyLenPassthrough();
 
     printf("keystore host test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

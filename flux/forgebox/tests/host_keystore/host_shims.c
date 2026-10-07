@@ -16,6 +16,7 @@
 static uint8_t g_pages[HOST_SIM_PAGE_COUNT][HOST_SIM_PAGE_LEN];
 static uint32_t g_trngBlock;
 static uint8_t *g_otpWindow;
+static int g_failWritePage = -1;
 
 #define OTP_WINDOW_BASE     0x40009000UL
 #define OTP_WINDOW_SIZE     0x1000U
@@ -40,6 +41,12 @@ void HostShimsReset(void)
     memset(g_pages, 0xFF, sizeof(g_pages));
     memset(g_otpWindow, 0xFF, OTP_WINDOW_SIZE);
     g_trngBlock = 0;
+    g_failWritePage = -1;
+}
+
+void HostShimsFailSeWritePage(uint8_t page)
+{
+    g_failWritePage = (int)page;
 }
 
 void HostShimsSeedOtp(const uint8_t *salt, const uint8_t *aesPiece)
@@ -151,6 +158,9 @@ int32_t SE_HmacEncryptRead(uint8_t *data, uint8_t page)
 
 int32_t SE_HmacEncryptWrite(const uint8_t *data, uint8_t page)
 {
+    if ((int)page == g_failWritePage) {
+        return HOST_SIM_WRITE_ERR;  /* fault injection: reject without storing */
+    }
     memcpy(g_pages[page], data, HOST_SIM_PAGE_LEN);
     return 0;
 }

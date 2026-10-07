@@ -38,4 +38,11 @@ void HostShimsBlankOtpAesPiece(void);
 /* Direct access to the SE page store for assertions / fault injection. */
 uint8_t *HostSePage(uint8_t page);
 
+/* Write-fault injection: while armed, SE_HmacEncryptWrite to `page` fails
+ * with HOST_SIM_WRITE_ERR and does NOT store. HostShimsReset() disarms.
+ * Lets the tests pin the save path's terminal slot state + return code when
+ * one of the seven slot pages rejects its write. */
+#define HOST_SIM_WRITE_ERR      (-23)
+void HostShimsFailSeWritePage(uint8_t page);
+
 #endif
