@@ -7,7 +7,9 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// Monero derivation path (v2 §2.7 key point: MoneroPath is not DerivationPath)
 ///
 /// Monero paths use the account / subaddress index structure, not BIP-32 strings
-#[derive(Clone, Debug)]
+// Zeroize (2026-10-07): lets `KeySession` derive ZeroizeOnDrop over a struct
+// holding a path; the path itself is not secret, zeroizing is just uniform hygiene.
+#[derive(Clone, Debug, Zeroize)]
 pub struct MoneroPath {
     pub account: u32,
     pub subaddress_major: u32,
