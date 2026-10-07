@@ -27,7 +27,10 @@ use super::{KeySessionHandle, KeySessionSlot, KeySource, KeySourceError, KeySour
 ///   key bytes) and clears the slot; dropping the handle does the same as a
 ///   fallback.
 pub struct QrKeySource<'s> {
-    slot: &'s mut KeySessionSlot,
+    /// Shared slot borrow (interior-mutability slot): the handle handed out by
+    /// [`KeySource::open_session`] carries the same `'s`, so it can never
+    /// outlive the caller's storage. A `static` slot works (`&'static`).
+    slot: &'s KeySessionSlot,
     /// Staged scan material, RAM-only (dropped = zeroized).
     pending: Option<SeedEntropy>,
     /// Next handle serial (wrapping; a wrap needs 2^32 opens to matter).
@@ -36,7 +39,7 @@ pub struct QrKeySource<'s> {
 
 impl<'s> QrKeySource<'s> {
     /// New source with material staged (the scan flow just decoded a plate).
-    pub fn new(slot: &'s mut KeySessionSlot, entropy: SeedEntropy) -> Self {
+    pub fn new(slot: &'s KeySessionSlot, entropy: SeedEntropy) -> Self {
         Self {
             slot,
             pending: Some(entropy),
@@ -46,7 +49,7 @@ impl<'s> QrKeySource<'s> {
 
     /// New source with nothing staged (scan not done yet) — `open_session`
     /// answers [`KeySourceErrorKind::NoSession`] until [`QrKeySource::load`].
-    pub fn empty(slot: &'s mut KeySessionSlot) -> Self {
+    pub fn empty(slot: &'s KeySessionSlot) -> Self {
         Self {
             slot,
             pending: None,
@@ -74,6 +77,9 @@ impl<'s> KeySource<'s> for QrKeySource<'s> {
             return Err(KeySourceError::new(KeySourceErrorKind::Capacity));
         }
         // take() — the staged material is single-use (未入料/已消耗 → NoSession).
+        // NOTE: a DecodeRejected outcome also consumes the material (take()
+        // already ran) — the caller must re-scan to retry. This is the frozen
+        // "consumes" contract, not a bug.
         let entropy = self
             .pending
             .take()
@@ -89,7 +95,8 @@ impl<'s> KeySource<'s> for QrKeySource<'s> {
         let serial = self.next_serial;
         self.next_serial = self.next_serial.wrapping_add(1);
         // In-place into the CALLER's slot (MaybeUninit-backed, never Boxed).
-        self.slot.install(session, serial);
+        // install is also a real guard (never overwrites a live session).
+        self.slot.install(session, serial)?;
         Ok(KeySessionHandle::new(self.slot, serial))
     }
 
@@ -130,8 +137,8 @@ mod tests {
     /// re-open (re-fed material).
     #[test]
     fn full_cycle_keys_match_from_entropy_and_slot_reopens() {
-        let mut slot = KeySessionSlot::empty();
-        let mut src = QrKeySource::new(&mut slot, entropy16());
+        let slot = KeySessionSlot::empty();
+        let mut src = QrKeySource::new(&slot, entropy16());
         let h = src.open_session("").expect("open");
         let (spend, view) = expected_keys(&FIXTURE_ENTROPY);
         assert_eq!(
@@ -163,8 +170,8 @@ mod tests {
     /// Task 4 test 2a: never-fed → NoSession; consumed → NoSession again.
     #[test]
     fn open_without_material_is_no_session() {
-        let mut slot = KeySessionSlot::empty();
-        let mut src = QrKeySource::empty(&mut slot);
+        let slot = KeySessionSlot::empty();
+        let mut src = QrKeySource::empty(&slot);
         let err = src.open_session("").expect_err("no material");
         assert_eq!(err.kind, KeySourceErrorKind::NoSession);
 
@@ -180,8 +187,8 @@ mod tests {
     /// material must SURVIVE the failed open for a retry after close).
     #[test]
     fn open_while_occupied_is_capacity_and_material_survives() {
-        let mut slot = KeySessionSlot::empty();
-        let mut src = QrKeySource::new(&mut slot, entropy16());
+        let slot = KeySessionSlot::empty();
+        let mut src = QrKeySource::new(&slot, entropy16());
         let h = src.open_session("").expect("open");
         // Scan produced a NEW plate while the session is live:
         src.load(SeedEntropy::from_entropy(&FIXTURE_ENTROPY_24).expect("entropy"));
@@ -208,8 +215,8 @@ mod tests {
     /// semantically empty (keys derive exactly as with an empty auth).
     #[test]
     fn non_empty_auth_is_accepted_and_semantically_empty() {
-        let mut slot = KeySessionSlot::empty();
-        let mut src = QrKeySource::new(&mut slot, entropy16());
+        let slot = KeySessionSlot::empty();
+        let mut src = QrKeySource::new(&slot, entropy16());
         let h = src
             .open_session("1234")
             .expect("auth ignored, not an error");
@@ -227,8 +234,8 @@ mod tests {
     /// `close_session` twice is a defined no-op (serial guard), never UB.
     #[test]
     fn close_session_on_stale_handle_is_defined() {
-        let mut slot = KeySessionSlot::empty();
-        let mut src = QrKeySource::new(&mut slot, entropy16());
+        let slot = KeySessionSlot::empty();
+        let mut src = QrKeySource::new(&slot, entropy16());
         let h = src.open_session("").expect("open");
         // TEST-ONLY misuse probe (see keysource/mod.rs tests).
         let dup = unsafe { core::ptr::read(&h) };
