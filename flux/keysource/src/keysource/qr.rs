@@ -33,8 +33,6 @@ pub struct QrKeySource<'s> {
     slot: &'s KeySessionSlot,
     /// Staged scan material, RAM-only (dropped = zeroized).
     pending: Option<SeedEntropy>,
-    /// Next handle serial (wrapping; a wrap needs 2^32 opens to matter).
-    next_serial: u32,
 }
 
 impl<'s> QrKeySource<'s> {
@@ -43,7 +41,6 @@ impl<'s> QrKeySource<'s> {
         Self {
             slot,
             pending: Some(entropy),
-            next_serial: 1,
         }
     }
 
@@ -53,7 +50,6 @@ impl<'s> QrKeySource<'s> {
         Self {
             slot,
             pending: None,
-            next_serial: 1,
         }
     }
 
@@ -92,12 +88,12 @@ impl<'s> KeySource<'s> for QrKeySource<'s> {
         // Staged plaintext dies before the session goes live (SecretBytes
         // hygiene: only the KeySession's own ZeroizeOnDrop fields persist).
         drop(entropy);
-        let serial = self.next_serial;
-        self.next_serial = self.next_serial.wrapping_add(1);
         // In-place into the CALLER's slot (MaybeUninit-backed, never Boxed).
-        // install is also a real guard (never overwrites a live session).
-        self.slot.install(session, serial)?;
-        Ok(KeySessionHandle::new(self.slot, serial))
+        // `open` is the sole handle source (serial is slot-owned) and
+        // refuses while occupied — never overwrites a live session.
+        self.slot
+            .open(session)
+            .map_err(|_| KeySourceError::new(KeySourceErrorKind::Capacity))
     }
 
     fn close_session(&mut self, handle: KeySessionHandle<'s>) {

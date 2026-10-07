@@ -111,6 +111,10 @@ pub struct KeySessionSlot {
 struct SlotInner {
     session: MaybeUninit<KeySession>,
     state: SlotState,
+    /// Next handle serial (wrapping; a wrap needs 2^32 opens to matter).
+    /// Slot-owned: handle construction is impossible outside [`Self::open`],
+    /// so a serial can never be guessed or forged by safe code.
+    next_serial: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -127,6 +131,7 @@ impl KeySessionSlot {
             inner: core::cell::UnsafeCell::new(SlotInner {
                 session: MaybeUninit::uninit(),
                 state: SlotState::Empty,
+                next_serial: 1,
             }),
         }
     }
@@ -140,19 +145,33 @@ impl KeySessionSlot {
     }
 
     /// Write a freshly derived session into the free slot (in place — the
-    /// caller's storage, no allocator involved). Occupied slot is a real
-    /// error (defense in depth: the release build must never overwrite and
-    /// silently skip the old session's zeroizing drop).
-    fn install(&self, session: KeySession, serial: u32) -> Result<(), KeySourceError> {
-        // SAFETY: exclusive by the one-live-handle invariant (open-while-
-        // occupied is Capacity) + `!Sync`; see `inner` docs.
+    /// caller's storage, no allocator involved) and hand out the single
+    /// [`KeySessionHandle`] for it. **This is the only handle source**: an
+    /// occupied slot is refused BEFORE any `&mut` is formed, so at most one
+    /// handle can ever exist per slot and an outstanding `&KeySession` can
+    /// never be invalidated by a second opener.
+    pub fn open(&self, session: KeySession) -> Result<KeySessionHandle<'_>, KeySourceError> {
+        // Occupancy check on a SHARED read first: when a session is live
+        // (and a `&KeySession` may be borrowed through its handle), we must
+        // not form `&mut SlotInner` at all — return before it.
+        if self.is_occupied() {
+            return Err(KeySourceError::new(KeySourceErrorKind::Capacity));
+        }
+        // SAFETY: the shared check above proves the slot is Empty. No
+        // `&KeySession` can be outstanding: every session reference borrows
+        // a live handle, a live handle implies `Occupied`, and `open` is the
+        // only handle source (construction is otherwise impossible — see
+        // `KeySessionHandle`). Single-thread (`!Sync`) keeps the check/write
+        // window race-free.
         let inner = unsafe { &mut *self.inner.get() };
         if matches!(inner.state, SlotState::Occupied(_)) {
             return Err(KeySourceError::new(KeySourceErrorKind::Capacity));
         }
+        let serial = inner.next_serial;
+        inner.next_serial = inner.next_serial.wrapping_add(1);
         inner.session = MaybeUninit::new(session);
         inner.state = SlotState::Occupied(serial);
-        Ok(())
+        Ok(KeySessionHandle { slot: self, serial })
     }
 
     /// Close the live session if `serial` is the one that opened it: drop in
@@ -176,9 +195,11 @@ impl KeySessionSlot {
 
     /// Borrow the session live under `serial`; `None` for a stale handle.
     fn live_session(&self, serial: u32) -> Option<&KeySession> {
-        // SAFETY: shared borrow of the installed session; the returned
-        // reference borrows `&self`, so `close_if` (which needs the handle by
-        // value) cannot run while it is live. Serial gate → stale = `None`.
+        // SAFETY: shared borrow of the installed session. The returned
+        // reference is tied to `&self`, and handle uniqueness (private
+        // fields, no constructor, `open` refuses while occupied — see the
+        // SAFETY NOTE on `KeySessionHandle`) guarantees `close_if` cannot
+        // run while it is live. Serial gate → stale = `None`.
         let inner = unsafe { &*self.inner.get() };
         if inner.state == SlotState::Occupied(serial) {
             // SAFETY: same invariant as `close_if` — occupied ⇒ initialized.
@@ -212,45 +233,38 @@ impl Drop for KeySessionSlot {
 ///   interrupt), same rule as the session FFI handles.
 /// - **Double-close defense**: the slot tracks which serial is live; a stale
 ///   or duplicated handle closes as a defined no-op (no UB, no double drop).
+/// - **Handle uniqueness (the load-bearing invariant)**: the fields are
+///   private, there is NO constructor, and [`KeySessionSlot::open`] is the
+///   only way to obtain a handle — and it refuses while the slot is occupied.
+///   Safe code can therefore never hold two handles to one slot, which is
+///   what keeps `close_if` from running under an outstanding `&KeySession`
+///   (see `live_session`). The probe below keeps this true: if construction
+///   ever becomes possible again, it starts compiling and the doctest goes
+///   red.
+///
+/// ```compile_fail
+/// use shlosilo_flux_keysource::keysource::{KeySessionHandle, KeySessionSlot};
+/// let slot = KeySessionSlot::empty();
+/// let _forged = KeySessionHandle { slot: &slot, serial: 1 };
+/// ```
 pub struct KeySessionHandle<'s> {
     /// Lifetime-tied shared borrow of the caller's slot: `'s` is structurally
     /// bound to this reference, so a handle can never outlive its slot —
-    /// forging one from a function-local slot is E0515 (see the compile-fail
-    /// probe on [`KeySessionHandle::new`]).
+    /// forging one from a function-local slot is E0515.
     slot: &'s KeySessionSlot,
     serial: u32,
 }
 
 impl<'s> KeySessionHandle<'s> {
-    /// Build a handle for the session just installed in `slot`.
-    ///
-    /// For [`KeySource`] implementations (e.g. `QrKeySource` today,
-    /// `SeKeySource` in its own crate later) — callers use
-    /// [`KeySource::open_session`]. The `serial` must be the one
-    /// [`KeySessionSlot::install`] stamped on the session.
-    ///
-    /// The lifetime of the returned handle is bound to `slot`: any attempt to
-    /// return a handle outliving the slot fails to compile.
-    ///
-    /// ```compile_fail,E0515
-    /// use shlosilo_flux_keysource::keysource::{KeySessionHandle, KeySessionSlot};
-    /// fn forge() -> KeySessionHandle<'static> {
-    ///     let slot = KeySessionSlot::empty();
-    ///     // ERROR: borrowed data escapes outside of function (E0515) —
-    ///     // the handle's `'s` is tied to `slot`, which dies at the end of
-    ///     // this function. This is the UAF probe: it MUST stay red.
-    ///     KeySessionHandle::new(&slot, 1)
-    /// }
-    /// ```
-    pub fn new(slot: &'s KeySessionSlot, serial: u32) -> KeySessionHandle<'s> {
-        KeySessionHandle { slot, serial }
-    }
-
     /// Borrow the live session (e.g. to sign). `None` once the handle is
     /// stale (already closed through a duplicate) — defined, never UB.
     pub fn session(&self) -> Option<&KeySession> {
         // SAFETY: the slot outlives the handle by construction (`'s` on the
-        // stored reference); the serial gate makes stale access return `None`.
+        // stored reference). Soundness of the returned reference rests on
+        // handle uniqueness (see the SAFETY NOTE above): the reference
+        // borrows the handle (`&self`), pinning it open, and no second
+        // handle exists that could `close_if` underneath it. The serial gate
+        // turns any stale state into `None`.
         self.slot.live_session(self.serial)
     }
 
@@ -291,13 +305,8 @@ mod tests {
     ];
 
     fn open_fixture(slot: &KeySessionSlot) -> KeySessionHandle<'_> {
-        let serial = 1;
-        slot.install(
-            KeySession::from_entropy(&FIXTURE_ENTROPY, b"").expect("session"),
-            serial,
-        )
-        .expect("install into empty slot");
-        KeySessionHandle::new(slot, serial)
+        slot.open(KeySession::from_entropy(&FIXTURE_ENTROPY, b"").expect("session"))
+            .expect("open in empty slot")
     }
 
     // Forensic byte view of the slot: used by the zeroization poison tests.
@@ -418,6 +427,28 @@ mod tests {
             !contains(&after, &spend) && !contains(&after, &view),
             "slot Drop must wipe the key bytes"
         );
+    }
+
+    /// Regression pin for the duplicate-handle UAF (Miri-judgeable): the only
+    /// handle source is `open`, which refuses while occupied — so a second
+    /// opener can never invalidate an outstanding `&KeySession`. Under Miri,
+    /// any regression that forms `&mut SlotInner` before the refusal (or
+    /// hands out a second handle) surfaces here as Stacked Borrows UB.
+    #[test]
+    fn second_open_refused_while_session_borrowed() {
+        let slot = KeySessionSlot::empty();
+        let h = open_fixture(&slot);
+        let r = h.session().expect("session live");
+        // Second would-be opener: must be refused on the shared check,
+        // BEFORE any &mut is formed — `r` stays valid below.
+        let refused = slot.open(KeySession::from_entropy(&FIXTURE_ENTROPY, b"").unwrap());
+        assert!(refused.is_err(), "occupied slot must refuse a second open");
+        let spend_nonzero = {
+            let spend = r.monero().spend_sk.expose();
+            spend.iter().any(|&b| b != 0)
+        };
+        assert!(spend_nonzero, "r must still see live key bytes");
+        drop(h);
     }
 
     /// Debug redaction: the handle's Debug must never leak key bytes.
