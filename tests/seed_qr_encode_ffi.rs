@@ -27,6 +27,7 @@ const OK: i32 = 0;
 const ERR_NULL_POINTER: i32 = -2;
 const ERR_BUFFER_TOO_SMALL: i32 = -20;
 const ERR_ENCODING: i32 = -21;
+const ERR_MNEMONIC_INVALID_ENTROPY_LEN: i32 = -31;
 
 /// Encode through the C ABI exactly the way the device `key plate` path does.
 fn encode(mode: i32, entropy: &[u8]) -> (i32, Vec<u8>, u32) {
@@ -137,7 +138,10 @@ fn error_side() {
             96,
             &mut actual,
         );
-        assert_ne!(rc, OK, "len {bad_len} must be rejected");
+        assert_eq!(
+            rc, ERR_MNEMONIC_INVALID_ENTROPY_LEN,
+            "len {bad_len} must be rejected with the documented length-class code"
+        );
         assert_eq!(actual, 0);
     }
 

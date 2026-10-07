@@ -686,13 +686,25 @@ int ProductKeyNew(const char *arg)
                                      plate, sizeof(plate), &plate_len);
     if (rc != 0) {
         key_wallet_wipe();
-        memset(plate, 0, sizeof(plate));
+        {
+            volatile uint8_t *p = plate;
+            unsigned i;
+            for (i = 0; i < sizeof(plate); i++) {
+                p[i] = 0;
+            }
+        }
         return rc;
     }
     ws_need = shlosilo_keysource_qr_ws_len();
     if (ws_need > KEY_WS_MAX) {
         printf("key new: ws query %u > static %u\r\n", ws_need, (unsigned)KEY_WS_MAX);
-        memset(plate, 0, sizeof(plate));
+        {
+            volatile uint8_t *p = plate;
+            unsigned i;
+            for (i = 0; i < sizeof(plate); i++) {
+                p[i] = 0;
+            }
+        }
         key_wallet_wipe();
         return -2;
     }

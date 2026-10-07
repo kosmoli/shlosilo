@@ -133,13 +133,20 @@ impl SeedEntropy {
 /// would dump every byte, unlike [`SecretBytes`]/[`Mnemonic`], which redact.
 /// Wrap in `zeroize::Zeroizing` and drop it as soon as the consumer is done.
 ///
+/// # Panics
+///
+/// Panics when `m` is outside the 12/24-word steel-plate family — the family
+/// is a hard error in [`encode_compact_into`] and this sized wrapper has no
+/// error channel (host/alloc convenience only; the device face uses `_into`).
+///
 /// Availability: `alloc-fallback` builds only (returns `Vec<u8>`); the
 /// zero-alloc device builds use the stack-buffer form introduced for the
 /// engraving flow (Task 8) — `decode` and `indices_to_entropy` stay no-alloc.
 #[cfg(feature = "alloc-fallback")]
 pub fn encode_compact(m: &Mnemonic) -> Vec<u8> {
     let mut out = alloc::vec![0u8; m.word_count().entropy_bytes()];
-    let n = encode_compact_into(m, &mut out).expect("sized buffer");
+    let n = encode_compact_into(m, &mut out)
+        .expect("encode_compact: the 12/24 plate family is hard-gated in encode_compact_into");
     debug_assert_eq!(n, out.len());
     out
 }
@@ -195,13 +202,19 @@ pub fn encode_compact_into(m: &Mnemonic, out: &mut [u8]) -> Result<usize> {
 /// stream — the plaintext equivalent of the mnemonic. Never log or
 /// `Debug`-print it; drop it as soon as the consumer is done.
 ///
+/// # Panics
+///
+/// Panics when `m` is outside the 12/24-word steel-plate family (hard-gated
+/// in [`encode_standard_into`]; same contract as [`encode_compact`]).
+///
 /// Availability: `alloc-fallback` builds only (returns `String`) — same gate
 /// as [`encode_compact`]. The zero-alloc device builds use
 /// [`encode_standard_into`].
 #[cfg(feature = "alloc-fallback")]
 pub fn encode_standard(m: &Mnemonic) -> String {
     let mut buf = [0u8; STANDARD_MAX_LEN];
-    let n = encode_standard_into(m, &mut buf).expect("sized buffer");
+    let n = encode_standard_into(m, &mut buf)
+        .expect("encode_standard: the 12/24 plate family is hard-gated in encode_standard_into");
     let s = String::from_utf8(buf[..n].to_vec()).expect("ASCII digits");
     buf.zeroize();
     s
