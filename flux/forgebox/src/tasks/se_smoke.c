@@ -75,6 +75,7 @@ static bool OtpAreaProvisioned(uint32_t addr, uint32_t len)
 static void OtpBurn(uint32_t addr, const char *what, uint32_t len)
 {
     uint8_t buf[96];
+    bool rb_ok;
 
     if (len > sizeof(buf)) {
         len = sizeof(buf);
@@ -85,9 +86,19 @@ static void OtpBurn(uint32_t addr, const char *what, uint32_t len)
     /* Loud: a silently failed burn would make every later derivation use a
      * different piece (same discipline as keystore.c CombineInnerAesKey). */
     ASSERT(SUCCESS_CODE == WriteOtpData(addr, buf, len));
+    /* Post-burn readback (OTP is memory-mapped, protection still off): a burn
+     * that did not land must die HERE, not surface much later as a wrong key
+     * derivation. Byte-exact readback is proven on this part (drv_otp.c
+     * ReadTamperFlag compares the same mapped bytes). */
+    rb_ok = (memcmp((const void *)addr, buf, len) == 0);
     MpuSetOtpProtection(true);
     CLEAR_ARRAY(buf);
     Log("%s: BURNED (%u bytes, PERMANENT)", what, (unsigned)len);
+    if (!rb_ok) {
+        Log("%s: READBACK FAIL (burn did not land!)", what);
+    }
+    ASSERT(rb_ok);
+    Log("%s: readback: OK", what);
 }
 
 /* ---- read-only battery ---- */
@@ -163,6 +174,7 @@ int SeSmokeProbe(void)
     Log("otp ds28s60 keys: %s", OtpAreaProvisioned(OTP_ADDR_DS28S60, 96) ? "provisioned" : "BLANK");
 
     CLEAR_ARRAY(buf);
+    Log("probe done: %d failures", fail);
     return fail;
 }
 
@@ -218,12 +230,15 @@ int SeSmokeKdfChecks(const char *password)
     CLEAR_ARRAY(pieceA);
     CLEAR_ARRAY(pieceB);
     CLEAR_ARRAY(tmp);
+    Log("kdf done: %d failures", fail);
     return fail;
 }
 
-/* ---- gated write flows (explicit trigger only!) ---- */
-
-static void RunProvision(void)
+/* ---- gated write flows (explicit trigger only!) ----
+ * noinline: these are the irreversible-write paths and the arm state
+ * machine - they must stay identifiable symbols in the image (nm/audit +
+ * crash forensics), not folded into SeConsolePoll by LTO. */
+static void __attribute__((noinline)) RunProvision(void)
 {
     Log("!! EXECUTING PERMANENT OTP WRITES !!");
     if (!OtpAreaProvisioned(OTP_ADDR_SALT, 32)) {
@@ -246,7 +261,7 @@ static void RunProvision(void)
     Log("provision complete - now: se slots CONFIRM <password>");
 }
 
-static void RunSlots(const char *password)
+static void __attribute__((noinline)) RunSlots(const char *password)
 {
     int fail = 0;
 
@@ -284,7 +299,7 @@ static void PrintWarning(const char *cmd, const char *confirm, const char *what)
     (void)cmd;
 }
 
-static void Dispatch(char *line)
+static void __attribute__((noinline)) Dispatch(char *line)
 {
     char *argv[4];
     int argc = 0;
@@ -331,12 +346,30 @@ static void Dispatch(char *line)
         return;
     }
 
+    /* P2 fix (fail-closed): the arm warning promises "any other command
+     * aborts". Only the matching CONFIRM forms above may consume an arm;
+     * everything else cancels it first. A CONFIRM aimed at the wrong
+     * flow/state (or missing its password) must also cancel - and must never
+     * fall through into the arm commands below, which would re-arm off a
+     * CONFIRM. */
+    if (argc >= 3 && strcmp(argv[2], "CONFIRM") == 0) {
+        if (g_armed != SE_ARM_NONE) {
+            Log("arm aborted: CONFIRM does not match the armed flow");
+        } else {
+            Log("confirm ignored: nothing armed");
+        }
+        g_armed = SE_ARM_NONE;
+        return;
+    }
+    if (g_armed != SE_ARM_NONE) {
+        Log("arm aborted (any non-CONFIRM command cancels; nothing written)");
+        g_armed = SE_ARM_NONE;
+    }
+
     if (argc >= 2 && strcmp(argv[0], "se") == 0) {
         if (strcmp(argv[1], "probe") == 0) {
-            g_armed = SE_ARM_NONE;
             (void)SeSmokeProbe();
         } else if (strcmp(argv[1], "kdf") == 0) {
-            g_armed = SE_ARM_NONE;
             (void)SeSmokeKdfChecks(argc >= 3 ? argv[2] : NULL);
         } else if (strcmp(argv[1], "provision") == 0) {
             g_armed = SE_ARM_PROVISION;

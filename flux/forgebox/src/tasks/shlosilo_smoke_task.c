@@ -527,6 +527,15 @@ static void log_line(const char *fmt, ...)
     }
 }
 
+/* SE console sink (Task 7 wiring): se_smoke.c's Log() lines land in the same
+ * screen + UART0 mirror as the battery lines. Without this call the whole
+ * SE console/safety-gate plane had zero callers and --gc-sections stripped
+ * it out of the image entirely. */
+static void se_log_sink(const char *line)
+{
+    log_line("%s", line);
+}
+
 static int run_checks(void)
 {
     int fail = 0;
@@ -1169,6 +1178,10 @@ void ShlosiloSmokeTask(void *argument)
     memset(g_logbuf, 0, sizeof(g_logbuf));
     diag_prog(2); /* UI setup done */
 
+    /* Task 7 wiring: route the SE console log to the screen + UART0 mirror
+     * (se_smoke.c's SeSmokeSetLog sink; default sink is printf-only). */
+    SeSmokeSetLog(se_log_sink);
+
     /* Fault record FIRST (it used to sit behind the touch-probe line, so a
      * hang before that line hid exactly the evidence needed). */
     if (g_fault_log[0] == 0x464C5444U) {
@@ -1511,7 +1524,12 @@ void ShlosiloSmokeTask(void *argument)
     res_save_now();
     backlight_dip(5);
 
+    /* Resident loop: serve the SE command console (line-buffered on UART0,
+     * see se_smoke.c). Typed-during-battery commands stay queued in the ISR's
+     * line buffer and dispatch here - which also keeps SE/OTP write flows out
+     * of the heavy sign paths. WDT is fed by the helloworld task. */
     for (;;) {
-        osDelay(10000); /* 常驻：结果留在屏幕上，WDT 由 helloworld task 喂 */
+        SeConsolePoll();
+        osDelay(50);
     }
 }

@@ -36,6 +36,7 @@ set(COMMON_DEFINITIONS
     ARM_MATH_CM4
     __TARGET_FPU_VFP
     NDEBUG
+    ATCA_HAL_I2C
 )
 
 # Include paths
@@ -182,8 +183,11 @@ set(APP_SRC
     src/driver/drv_mpu.c
     # SE comm face (Task 7): ATECC608B / DS28S60 drivers + the dev console
     # battery (se_smoke.c, hardware safety gate inside) + its utils.
+    # drv_spi_io.c is the GPIO-bitbang SPI the DS28S60 rides on (its absence
+    # was hidden by the same --gc-sections gap that hid the console).
     src/driver/drv_atecc608b.c
     src/driver/drv_ds28s60.c
+    src/driver/drv_spi_io.c
     src/tasks/se_smoke.c
     src/utils/err_code.c
     src/utils/log_print.c
@@ -192,6 +196,13 @@ set(APP_SRC
 # ATECC608B driver library: vendored from keystone3-firmware external/
 # (same provenance as the keystore port; keystone3's own CMake builds this
 # exact file set -- atca core + calib + host + crypto + hashes + hal).
+# The file set is COMPILE INPUT (goes into objsrc), NOT an include path:
+# the old `list(APPEND INCLUDE_DIR ${CRYPTOAUTHLIB_SRC})` fed ~40 source
+# file paths to the include-dir list (a "not a directory" warning per file)
+# and the library was never compiled at all -- nothing referenced it while
+# the SE console plane was stripped by --gc-sections, so the link gap was
+# invisible. keystone3's chain is ${cryptoauthlib} -> ${EXTERNAL} ->
+# ${objsrc}; this glob is the same end (appended to objsrc below).
 file(GLOB_RECURSE CRYPTOAUTHLIB_SRC
     external/cryptoauthlib/lib/atca_basic.c
     external/cryptoauthlib/lib/atca_cfgs.c
@@ -206,7 +217,6 @@ file(GLOB_RECURSE CRYPTOAUTHLIB_SRC
     external/cryptoauthlib/lib/crypto/hashes/*.c
     external/cryptoauthlib/lib/hal/*.c
 )
-list(APPEND INCLUDE_DIR ${CRYPTOAUTHLIB_SRC})
 
 # Screen ownership: exactly one renderer per build owns the panel.
 if(SMOKE_SCREEN)
@@ -255,6 +265,7 @@ set(objsrc
     ${APP_SRC}
     ${FREERTOS}
     ${LVGL}
+    ${CRYPTOAUTHLIB_SRC}
     external/mh1903_lib/Device/MegaHunt/mhscpu/Source/GCC/startup_mhscpu.s
 )
 

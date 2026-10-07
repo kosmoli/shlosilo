@@ -41,11 +41,12 @@ otp salt: provisioned 或 BLANK
 otp aes piece: provisioned 或 BLANK
 otp atecc keys: provisioned 或 BLANK
 otp ds28s60 keys: provisioned 或 BLANK
+probe done: 0 failures
 ```
 
 - 全新板子预期 4 个 `BLANK`（尚未 provision）。
 - `FAIL comm rc=…`：SE 芯片通信问题——查 I2C 接线/供电，勿继续。
-- 最终以失败计数收尾（`62 checks` 层面的 host 对应物；真机上 fail 计数=0 为过）。
+- 末行以失败计数收尾：`probe done: N failures`（`62 checks` 层面的 host 对应物；真机上 N=0 为过）。
 
 ## 阶段 B：只读 KDF 检查（安全）
 
@@ -56,6 +57,7 @@ se kdf 你的测试口令
 - 若 `otp salt: BLANK` → 输出 `kdf: SKIP (otp salt blank - run 'se provision' first)`（**这不是失败**，盐未烧时 KDF 无从谈起，跳过是正确行为）。
 - 盐已烧时预期：`ds wrong-piece differs: PASS`、`kdf auth gate: PASS (rc=…)`；
   若用 provision 时的同一口令且 slots 已写，还会见 `kdf right-pwd get: PASS`。
+- 末行同样是失败计数收尾：`kdf done: N failures`（N=0 为过）。
 
 ## 阶段 C：⚠️ 一次性永久烧录（provision）
 
@@ -67,7 +69,17 @@ se kdf 你的测试口令
 se provision
 ```
 
-屏幕应出现永久性警示（`!! EXECUTING PERMANENT OTP WRITES !!` 类警示文案）。
+屏幕应出现 5 行警示（此时**不写任何东西**）：
+
+```
+WARNING: one-time device provisioning (OTP + SE binding)
+WARNING: OTP BURN IS PERMANENT
+this cannot be undone or re-flashed
+to proceed type: se provision CONFIRM
+(any other command aborts; 60s window)
+```
+
+注意：`!! EXECUTING PERMANENT OTP WRITES !!` 是第 2 步 CONFIRM **执行时**的首行，arm 阶段不出现。60s 窗口内发任何非 CONFIRM 命令都会撤销 arm（输出 `arm aborted (any non-CONFIRM command cancels; nothing written)`），需重新 `se provision`。
 
 2. 确认要做，再发：
 
@@ -75,7 +87,7 @@ se provision
 se provision CONFIRM
 ```
 
-预期：逐区 `…: BURNED (n bytes, PERMANENT)`；每个烧录点烧后回读验证。
+预期：首行 `!! EXECUTING PERMANENT OTP WRITES !!`，随后逐区两行——`…: BURNED (n bytes, PERMANENT)` + `…: readback: OK`（烧后回读验证；回读失败则打 `…: READBACK FAIL (burn did not land!)` 并 ASSERT 停机，绝不算过）。
 
 3. 复验：重跑 `se probe`，4 个 OTP 行全部应显示 `provisioned`。
 
@@ -83,8 +95,15 @@ se provision CONFIRM
 
 SE 数据槽可重写（非一次性），但写的是**密钥分片**，也走双段确认：
 
-1. `se slots` → 弹 SE 写警示。
-2. `se slots CONFIRM <口令>` → 3 账户 key-piece 写入 + 读回比对，预期逐槽 `OK`。
+1. `se slots` → 弹 SE 写警示（首行 `WARNING: SE write: overwrites the 3 account key pieces`，其余 4 行同阶段 C 的警示格式；此时不写）。
+2. `se slots CONFIRM <口令>` → 首行 `!! EXECUTING SE WRITES (3 accounts) !!`，3 账户 key-piece 写入 + 读回比对，预期逐槽：
+
+```
+slot 0 write/readback: PASS
+slot 1 write/readback: PASS
+slot 2 write/readback: PASS
+slots done: 0 failures - see 'se kdf' for the read-only checks
+```
 
 ## 失败排查速查
 

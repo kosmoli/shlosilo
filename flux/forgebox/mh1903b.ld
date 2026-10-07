@@ -64,8 +64,14 @@ SECTIONS
 	 * 0x2000F000 slot" — g_lvglCache had long since swallowed that address, so
 	 * every boot zeroed the record before the smoke task could read it.
 	 * Contents: g_fault_log[7] (magic/cfsr/hfsr/bfar/pc/lr/xpsr),
-	 * g_diag_boot_count, g_diag_progress. NOLOAD: no init image. */
-	.diag_noinit 0x20098000 (NOLOAD) :
+	 * g_diag_boot_count, g_diag_progress. NOLOAD: no init image.
+	 * 2026-10-07 (Task 7): 0x20098000 -> 0x20098800. Wiring the SE console/
+	 * safety-gate plane into the image added ~250B of .bss (cryptoauthlib
+	 * state, drv_spi_io, se_smoke statics) and .bss ran 43B past the old
+	 * ceiling. Same remedy as the 2026-09-11 pool move: slide the fixed
+	 * region up inside the free window (0x20098024..0x20099000) instead of
+	 * shrinking diagnostic buffers. Nothing hardcodes the old address. */
+	.diag_noinit 0x20098800 (NOLOAD) :
 	{
 		KEEP(*(.diag_noinit))
 	} > SRAM
@@ -105,8 +111,8 @@ SECTIONS
 
 	/* K2-D margin check, enforced at link time (was a manual "check .bss end
 	 * vs pool base" rule): .bss growth must not reach .diag_noinit at
-	 * 0x20098000 (and thereby the pool base at 0x20099000). */
-	ASSERT(_ebss <= 0x20098000, ".bss overflow into .diag_noinit")
+	 * 0x20098800 (and thereby the pool base at 0x20099000). */
+	ASSERT(_ebss <= 0x20098800, ".bss overflow into .diag_noinit")
 }
 
 end = .;

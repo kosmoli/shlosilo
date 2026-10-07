@@ -20,3 +20,17 @@ void PrintArray(const char *name, const uint8_t *data, uint16_t length)
     }
     printf("\r\n");
 }
+
+/* drv_atecc608b.c config-zone dump (keystone3 log_print.c parity; the port
+ * originally missed it - invisible until the SE plane linked for real). */
+void PrintU16Array(const char *name, const uint16_t *data, uint16_t length)
+{
+    printf("%s,length=%d\r\n", name, length);
+    for (uint32_t i = 0; i < length; i++) {
+        if (i % 16 == 0 && i != 0) {
+            printf("\r\n");
+        }
+        printf("%04X ", data[i]);
+    }
+    printf("\r\n");
+}
