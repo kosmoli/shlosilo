@@ -19,7 +19,10 @@
 #endif
 #include "cmsis_os.h"
 
-#define TEST_CMD_MAX_LENGTH     3072
+/* Console input buffer contract (TEST_CMD_MAX_LENGTH + the SeConsolePoll
+ * entry): shared with the console consumer (se_smoke.c), which wipes the
+ * WHOLE buffer after draining it. */
+#include "se_smoke.h"
 #define WDT_RELOAD_MAX          (0xC300000U)  // 2 seconds
 uint8_t g_testCmdRcvBuffer[TEST_CMD_MAX_LENGTH];
 uint32_t g_testCmdRcvCount = 0;

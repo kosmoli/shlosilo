@@ -26,6 +26,10 @@
 //! [`KeySession::from_entropy`] derives); anything else is
 //! [`KeySourceErrorKind::DecodeRejected`] BEFORE any slice is formed — a
 //! lying 255 must never become a `&entropy[..255]` over a 32-byte buffer.
+//! (Pool item #24 note: `entropyLen = 0` is silently coerced to 32 in the C
+//! layer — keystore.c:228 `(entropyLen == 0) ? 32 : …`, keystone3 parity,
+//! unchanged — so tampering the byte to 0 is equivalent to specifying 32 and
+//! the real chain can never deliver a 0 here.)
 //!
 //! # Key hygiene
 //!
@@ -214,7 +218,11 @@ impl<'s> SeKeySource<'s> {
         // Pool item #24: `entropyLen` is an UNAUTHENTICATED byte. Validate
         // the value before it is ever used as a length — only 16/32 may reach
         // `from_entropy`; 33/255/anything else is refused (it must never
-        // form a slice over the 32-byte entropy buffer).
+        // form a slice over the 32-byte entropy buffer). Defense-in-depth:
+        // in the real chain a stored 0 is ALREADY coerced to 32 at
+        // keystore.c:228 (keystone3 parity — see the module docs), so this
+        // gate catches the other tampered values of the unauthenticated byte
+        // (pool item #24), not the 0 case.
         let entropy_len = secret.entropy_len as usize;
         if entropy_len != 16 && entropy_len != 32 {
             secret.wipe();

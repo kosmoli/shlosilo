@@ -19,7 +19,10 @@
 //! - wrong password → `ERR_AUTH_FAILED` (-24), ONE LoadAccountSecret call
 //!   (no retry), no session;
 //! - `entropyLen` is untrusted (pool item #24): 33 / 255 / other ≠ 16/32 →
-//!   refused before any slice is formed;
+//!   refused before any slice is formed. `entropyLen = 0` is the documented
+//!   exception: the C layer silently coerces it to 32 (keystore.c:228,
+//!   keystone3 parity) — pinned as chain behaviour (tampering the byte to 0
+//!   is equivalent to specifying 32);
 //! - close wipes the key bytes (forensic workspace scan) and is total +
 //!   idempotent; QR/SE close entries share ONE teardown;
 //! - double unlock / unlock-while-live = `ERR_SLOT_OCCUPIED` (-23), refused
@@ -61,6 +64,9 @@ const FIXTURE_ENTROPY: [u8; 16] = [
 ];
 /// 24-word fixture entropy (KeySession's other supported shape).
 const FIXTURE_ENTROPY_24: [u8; 32] = [0x11u8; 32];
+/// 32-byte fixture for the `entropyLen = 0` chain pin (distinct fill: the
+/// assertion must show the FULL coerced 32 bytes feed the derivation).
+const FIXTURE_ENTROPY_LEN0: [u8; 32] = [0x3cu8; 32];
 /// The shim's "stored" password: right password = unlock, anything else =
 /// ERR_KEYSTORE_AUTH.
 const FIXTURE_PWD: &[u8] = b"shlosilo-se-test-pwd";
@@ -79,7 +85,7 @@ const MODE_COMM: u8 = 3; // always ERR_GENERAL_FAIL (non-password SE failure)
 const MODE_LEN33: u8 = 4; // success but entropyLen = 33 (lying length)
 const MODE_LEN255: u8 = 5; // success but entropyLen = 255 (lying length)
 const MODE_LEN24: u8 = 6; // success but entropyLen = 24 (not 16/32)
-const MODE_LEN0: u8 = 7; // success but entropyLen = 0 (not 16/32 — fail-closed)
+const MODE_LEN0: u8 = 7; // param entropyLen = 0 -> coerced to 32 by the C layer (keystore.c:228)
 
 static SHIM_LOCK: Mutex<()> = Mutex::new(());
 static SHIM_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(MODE_OK16);
@@ -184,7 +190,14 @@ pub unsafe extern "C" fn LoadAccountSecret(
                     secret.entropy_len = 24; // not 16/32
                 }
                 MODE_LEN0 => {
-                    secret.entropy_len = 0; // not 16/32 (fail-closed)
+                    // keystore.c:228 verbatim (keystone3 parity, NOT
+                    // changed): a param-page entropyLen of 0 becomes
+                    // `(0 == 0) ? 32 : …` = 32 ("32 bytes as default").
+                    // The shim plays the WHOLE C function — coercion
+                    // included — so the Rust chain sees exactly what the
+                    // device delivers: 32, never 0.
+                    secret.entropy.copy_from_slice(&FIXTURE_ENTROPY_LEN0);
+                    secret.entropy_len = 32; // <- 0 upstream, coerced HERE
                 }
                 _ => unreachable!(),
             }
@@ -316,7 +329,7 @@ fn auth_failure_mode_maps_to_auth_failed() {
 #[test]
 fn entropy_len_not_16_or_32_is_refused() {
     let _g = shim_lock();
-    for mode in [MODE_LEN33, MODE_LEN255, MODE_LEN24, MODE_LEN0] {
+    for mode in [MODE_LEN33, MODE_LEN255, MODE_LEN24] {
         shim_set_mode(mode);
         let mut ws = fresh_ws();
         let mut out: *const KeySession = core::ptr::null();
@@ -334,6 +347,37 @@ fn entropy_len_not_16_or_32_is_refused() {
         assert!(!out.is_null());
         assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
     }
+}
+
+/// Chain pin (keystone3 parity): `entropyLen = 0` is NOT a refusal — the C
+/// layer coerces it to 32 (keystore.c:228 `(entropyLen == 0) ? 32 : …`, "32
+/// bytes as default"), unchanged by design. The shim performs the same
+/// coercion, so this pins the FACT ITSELF: a stored 0 unlocks a session
+/// derived from the full 32 bytes (tampering the unauthenticated byte to 0
+/// is equivalent to specifying 32 — pool item #24).
+#[test]
+fn entropy_len_zero_is_coerced_to_32_by_the_c_chain_keystone3_parity() {
+    let _g = shim_lock();
+    shim_set_mode(MODE_LEN0);
+    let mut ws = fresh_ws();
+    let mut out: *const KeySession = core::ptr::null();
+    assert_eq!(
+        se_open(&mut ws, FIXTURE_PWD, &mut out),
+        OK,
+        "entropyLen=0 must NOT be refused: keystore.c:228 coerces it to 32 (keystone3 parity)"
+    );
+    assert!(!out.is_null(), "the 0→32 coercion still yields a session");
+    // The derivation consumed the whole coerced 32 bytes (not 0, not 16):
+    // the session keys == from_entropy over the full 32-byte fixture.
+    let (want_spend, want_view) = reference_keys(&FIXTURE_ENTROPY_LEN0);
+    {
+        // SAFETY: `out` is the live slot session the glue just opened (valid
+        // until close — read the keys before closing).
+        let sess = unsafe { &*out };
+        assert_eq!(sess.monero().spend_sk.expose(), &want_spend);
+        assert_eq!(sess.monero().view_sk.expose(), &want_view);
+    }
+    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
 }
 
 // ── capacity + close discipline ────────────────────────────────────────────

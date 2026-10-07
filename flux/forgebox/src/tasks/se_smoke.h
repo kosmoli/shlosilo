@@ -29,7 +29,19 @@
  *   se provision CONFIRM           execute: OTP salt + AES piece + SE binding
  *   se slots                       ARM: print SE-write warning
  *   se slots CONFIRM <password>    execute: 3-account key-piece write/readback
+ *   se unlock <password>           READ-ONLY self-run (no arm gate): open the
+ *                                  signing session from the password. The
+ *                                  password just crossed UART0 in CLEARTEXT -
+ *                                  warned loudly, every single time.
+ *   se lock                        close (zeroize) the live key session
  */
+
+/* Console input buffer contract (shared with main.c, the ISR writer):
+ * CmdIsrRcvByte fills g_testCmdRcvBuffer[TEST_CMD_MAX_LENGTH]; SeConsolePoll
+ * drains it and must wipe the WHOLE buffer after the copy (password hygiene:
+ * the stale tail of an earlier, longer command can still hold an older
+ * password), so the size lives HERE where both sides see it. */
+#define TEST_CMD_MAX_LENGTH     3072
 
 /* Run the read-only self-check battery. Returns the number of failed checks.
  * `line` output goes through SeSmokeSetLog's sink (screen + UART mirror). */

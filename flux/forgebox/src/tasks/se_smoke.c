@@ -23,9 +23,24 @@
  * the Chinese annotations lives in flux/forgebox/docs/se-keystore-checklist.md.
  */
 
-/* console input, filled by CmdIsrRcvByte (main.c) */
-extern uint8_t g_testCmdRcvBuffer[];
+/* console input, filled by CmdIsrRcvByte (main.c). Sized (the shared
+ * TEST_CMD_MAX_LENGTH contract in se_smoke.h) so the consumer can wipe the
+ * WHOLE buffer after draining it - not just the bytes it copied out. */
+extern uint8_t g_testCmdRcvBuffer[TEST_CMD_MAX_LENGTH];
 extern volatile uint32_t g_testCmdReady;
+
+/* Password hygiene (gap 3): volatile walk, dead-store-elimination-proof -
+ * the same idiom as product_task.c's seed_plate_wipe (pool item #22
+ * direction). A plain memset could be elided on the password copies. */
+static void WipeVolatile(void *buf, uint32_t len)
+{
+    volatile uint8_t *p = (volatile uint8_t *)buf;
+    uint32_t i;
+
+    for (i = 0; i < len; i++) {
+        p[i] = 0;
+    }
+}
 
 static void (*g_logSink)(const char *line) = NULL;
 
@@ -440,8 +455,16 @@ static void __attribute__((noinline)) Dispatch(char *line)
             g_armTick = osKernelGetTickCount();
             PrintWarning("se slots", "se slots CONFIRM <password>",
                          "SE write: overwrites the 3 account key pieces");
+        } else if (strcmp(argv[1], "unlock") == 0) {
+            /* READ-ONLY, self-running - no arm gate (it writes nothing).
+             * RunUnlock prints the password-over-UART warning EVERY time. */
+            RunUnlock(argc >= 3 ? argv[2] : NULL);
+        } else if (strcmp(argv[1], "lock") == 0) {
+            /* READ-ONLY, idempotent: the shared zeroizing teardown. */
+            RunLock();
         } else if (strcmp(argv[1], "help") == 0) {
             Log("se probe | se kdf <pwd> | se provision | se slots");
+            Log("se unlock <pwd> | se lock");
         } else {
             Log("unknown: %s (try 'se help')", argv[1]);
         }
@@ -467,7 +490,17 @@ void SeConsolePoll(void)
     }
     memcpy(line, g_testCmdRcvBuffer, n);
     line[n] = '\0';
-    g_testCmdRcvBuffer[0] = '\0';
+    /* Password hygiene (gap 3): the console line can carry a password
+     * ('se unlock <password>' / 'se kdf <pwd>'), so the shared buffer is
+     * volatile-wiped in FULL - the stale tail of an earlier, longer command
+     * can still hold an older password, so clearing byte 0 (the old
+     * behaviour) was not enough. Runs while g_testCmdReady is still set: the
+     * ISR keeps dropping bytes and cannot race the wipe. */
+    WipeVolatile(g_testCmdRcvBuffer, TEST_CMD_MAX_LENGTH);
     g_testCmdReady = 0;
     Dispatch(line);
+    /* ... and the stack copy dies here too: the WHOLE line buffer, not just
+     * the used bytes (argv tokens point into `line`; Dispatch has consumed
+     * them all by now). */
+    WipeVolatile(line, sizeof(line));
 }
