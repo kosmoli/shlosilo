@@ -39,6 +39,7 @@
 #include "demo_payload.h"
 #include "err_code.h"
 #include "se_smoke.h"
+#include "drv_trng.h"
 
 /* SRAM window handoff (shared with the K2-D Rust pool; implemented in
  * shlosilo/embedded_alloc_glue.c - not part of the FFI surface). */
@@ -93,6 +94,10 @@ static const struct KeySession *g_key_session;
  * outside the flow pages means the flow exited"); an SE session lives until
  * `se lock` or the sign-done close (v1: session per sign). */
 static int g_key_from_se;
+/* Phase 4: console-created wallet session ('key new') — NOT flow-owned (same
+ * lifetime as an SE unlock: lives until 'se lock' / sign-done close), so it
+ * survives UI navigation and the plate-export flow can run against it. */
+static int g_key_console;
 static void seed_plate_wipe(void);
 static void carousel_enter(void);
 static void carousel_step(void);
@@ -336,8 +341,10 @@ static void ProductTask(void *argument)
              * the old session live across a second plate's confirm page.
              * Task 8: this leg is for PLATE sessions only - an SE unlock is
              * not flow-owned (it lives until 'se lock' or the sign-done
-             * close), so it survives UI navigation. */
-            if (g_key_session != NULL && g_key_from_se == 0 &&
+             * close), so it survives UI navigation. Phase 4: a console
+             * 'key new' wallet session is not flow-owned either (same
+             * lifetime). */
+            if (g_key_session != NULL && g_key_from_se == 0 && g_key_console == 0 &&
                 UiGetPage() != UI_PAGE_SCAN &&
                 UiGetPage() != UI_PAGE_SIGN && UiGetPage() != UI_PAGE_CONFIRM) {
                 key_session_close();
@@ -516,6 +523,34 @@ static void seed_plate_wipe(void)
  * workspace (an open on a busy workspace answers -23). */
 #define KEY_WS_MAX             4096
 static uint8_t g_key_ws[KEY_WS_MAX];
+
+/* ---- Phase 4 acceptance ②: wallet staging ('key new' / 'key plate') ----
+ *
+ * The dev-console wallet-create + SeedQR plate-export face (the product UI
+ * face is P4). Interface detail §2: EXPORT is deliberately not part of the
+ * KeySource trait (import-only) — this is a separate output face built on
+ * the plate-export FFI (shlosilo_seed_qr_encode_ffi, stack-buffer encoders)
+ * plus the QR display face (UiShowPlateQr).
+ *
+ * The staging area holds the generated wallet's raw BIP-39 entropy in the
+ * clear — plaintext-equivalent key material. Zeroization discipline is the
+ * same as the plate scan flow: volatile wipe at EVERY teardown leg
+ * (key_session_close below covers se lock / sign-done / flow exit), and the
+ * bytes are never printed except by the explicit 'se dump' forensics. */
+#define KEY_WALLET_MAX         32
+static uint8_t g_key_wallet[KEY_WALLET_MAX];
+static unsigned g_key_wallet_len;
+
+/* Volatile walk (dead-store-elimination-proof — seed_plate_wipe idiom). */
+static void key_wallet_wipe(void)
+{
+    volatile uint8_t *p = g_key_wallet;
+    unsigned i;
+    for (i = 0; i < sizeof(g_key_wallet); i++) {
+        p[i] = 0;
+    }
+    g_key_wallet_len = 0;
+}
 /* The live session pointer from shlosilo_keysource_qr_open_ffi /
  * shlosilo_keysource_se_open_ffi - valid until the matching close. NULL = no
  * session (old sign path runs). SE sessions and QR sessions ride this SAME
@@ -551,6 +586,10 @@ static void key_session_close(void)
     (void)shlosilo_keysource_se_close_ffi(g_key_ws);
     g_key_session = NULL;
     g_key_from_se = 0;
+    g_key_console = 0;
+    /* Phase 4: the generated wallet dies with the session (same teardown
+     * discipline — one key-bearing state, one close). */
+    key_wallet_wipe();
 }
 
 /* ---- Task 8: SE password unlock -> signing session ----
@@ -607,6 +646,164 @@ int ProductKeySeUnlock(const char *password)
 void ProductKeyLock(void)
 {
     key_session_close();
+}
+
+/* ---- Phase 4 acceptance ②: 'key new' / 'key plate' (dev console) ---- */
+
+/* 'key new [12|24]': generate a fresh wallet from the on-chip TRNG.
+ * Entropy (16/32 bytes) -> BIP-39 Mnemonic derivation + validation through
+ * the plate-export FFI (forms 件; the checksum is derived at from_entropy and
+ * re-verified on encode), staged in g_key_wallet, then round-tripped through
+ * the SAME import path a scanned plate takes (shlosilo_keysource_qr_open_ffi)
+ * so the wallet is immediately sign-capable and the export->import loop is
+ * exercised on device. Returns 0 ok, -1 usage, -2 ws too small, else FFI rc. */
+int ProductKeyNew(const char *arg)
+{
+    unsigned ws_need, ent_len = 32, plate_len = 0;
+    uint8_t plate[96];
+    int rc;
+
+    if (arg != NULL && arg[0] != '\0') {
+        if (strcmp(arg, "12") == 0) {
+            ent_len = 16;
+        } else if (strcmp(arg, "24") == 0) {
+            ent_len = 32;
+        } else {
+            return -1;
+        }
+    }
+    /* One wallet at a time: whatever was live dies first (zeroized). */
+    key_session_close();
+
+    TrngGet(g_key_wallet, ent_len);
+    g_key_wallet_len = ent_len;
+
+    /* Derive + validate through the export FFI (full BIP-39 path): a
+     * generated wallet is proven plate-exportable from the start. The plate
+     * bytes are transient here - wiped below at every exit. */
+    rc = shlosilo_seed_qr_encode_ffi(SEED_QR_MODE_STANDARD,
+                                     g_key_wallet, g_key_wallet_len,
+                                     plate, sizeof(plate), &plate_len);
+    if (rc != 0) {
+        key_wallet_wipe();
+        memset(plate, 0, sizeof(plate));
+        return rc;
+    }
+    ws_need = shlosilo_keysource_qr_ws_len();
+    if (ws_need > KEY_WS_MAX) {
+        printf("key new: ws query %u > static %u\r\n", ws_need, (unsigned)KEY_WS_MAX);
+        memset(plate, 0, sizeof(plate));
+        key_wallet_wipe();
+        return -2;
+    }
+    /* Round-trip import: the generated plate goes through the same validated
+     * open a scanned plate takes (the -23 recovery cannot trigger here - the
+     * close above guarantees a free workspace). */
+    rc = shlosilo_keysource_qr_open_ffi(g_key_ws, (unsigned)sizeof(g_key_ws),
+                                        plate, plate_len, &g_key_session);
+    {
+        /* Transient plate copy dies here (volatile walk). */
+        volatile uint8_t *p = plate;
+        unsigned i;
+        for (i = 0; i < sizeof(plate); i++) {
+            p[i] = 0;
+        }
+    }
+    if (rc != 0 || g_key_session == NULL) {
+        printf("key new: open failed rc=%d\r\n", rc);
+        key_wallet_wipe();
+        return (rc != 0) ? rc : -3;
+    }
+    g_key_from_se = 0;
+    g_key_console = 1;
+    printf("key new: wallet live (%u words), session open\r\n",
+           (ent_len == 16) ? 12u : 24u);
+    return 0;
+}
+
+/* 'key plate [standard|compact]': render the staged wallet as a SeedQR QR on
+ * the screen (standard = 48/96 %04d digits, compact = 16/32 raw entropy -
+ * the SeedSigner plate family). Returns 0 ok, -1 usage, -2 no wallet, else
+ * FFI rc. The payload is wiped after render; the SCREEN is the exposure. */
+int ProductKeyPlate(const char *mode)
+{
+    uint8_t payload[96];
+    unsigned len = 0;
+    int compact = 0;
+    int rc;
+
+    if (mode != NULL && mode[0] != '\0') {
+        if (strcmp(mode, "compact") == 0) {
+            compact = 1;
+        } else if (strcmp(mode, "standard") != 0) {
+            return -1;
+        }
+    }
+    if (g_key_wallet_len != 16 && g_key_wallet_len != 32) {
+        return -2;
+    }
+    rc = shlosilo_seed_qr_encode_ffi(compact ? SEED_QR_MODE_COMPACT
+                                             : SEED_QR_MODE_STANDARD,
+                                     g_key_wallet, g_key_wallet_len,
+                                     payload, sizeof(payload), &len);
+    if (rc != 0) {
+        return rc;
+    }
+    UiShowPlateQr(payload, len);
+    /* The QR symbol is on screen now - the payload copy dies here. */
+    {
+        volatile uint8_t *p = payload;
+        unsigned i;
+        for (i = 0; i < sizeof(payload); i++) {
+            p[i] = 0;
+        }
+    }
+    printf("key plate: %s SeedQR shown (%u bytes)\r\n",
+           compact ? "compact" : "standard", len);
+    return 0;
+}
+
+/* 'se dump' forensics (Phase 4 acceptance ③): hexdump the keysource ws
+ * window - the raw bytes the workspace holds. BEFORE close the window shows
+ * live key bytes; AFTER close it must read ALL ZERO (ws.rs ws_close wipes
+ * the whole window). Prints key material to the serial console BY DESIGN -
+ * the warning is in RunDump (se_smoke.c), and the dump is the acceptance
+ * evidence for the zeroization claim. */
+void ProductKeyWsDump(void)
+{
+    static const char hexd[] = "0123456789ABCDEF";
+    unsigned n = shlosilo_keysource_qr_ws_len();
+    unsigned i;
+
+    if (n > KEY_WS_MAX) {
+        n = KEY_WS_MAX;
+    }
+    printf("se dump: ws window %u bytes, session %s\r\n", n,
+           (g_key_session != NULL) ? "LIVE" : "closed");
+    for (i = 0; i < n; i += 16) {
+        char hex[2 * 16 + 1];
+        unsigned chunk = (n - i < 16) ? (n - i) : 16;
+        unsigned j;
+        for (j = 0; j < chunk; j++) {
+            hex[2 * j] = hexd[g_key_ws[i + j] >> 4];
+            hex[2 * j + 1] = hexd[g_key_ws[i + j] & 0xF];
+        }
+        hex[2 * chunk] = '\0';
+        printf("  %04X: %s\r\n", i, hex);
+    }
+    printf("se dump: wallet staging %u bytes%s\r\n", g_key_wallet_len,
+           (g_key_wallet_len == 0) ? " (wiped)" : "");
+    for (i = 0; i < g_key_wallet_len; i += 16) {
+        char hex[2 * 16 + 1];
+        unsigned chunk = (g_key_wallet_len - i < 16) ? (g_key_wallet_len - i) : 16;
+        unsigned j;
+        for (j = 0; j < chunk; j++) {
+            hex[2 * j] = hexd[g_key_wallet[i + j] >> 4];
+            hex[2 * j + 1] = hexd[g_key_wallet[i + j] & 0xF];
+        }
+        hex[2 * chunk] = '\0';
+        printf("  %04X: %s\r\n", i, hex);
+    }
 }
 
 /* Confirm-page handler (product loop, while the page is up):
@@ -780,7 +977,8 @@ static void sign_run(const char *uri, const char *type,
     }
     if (g_key_session != NULL) {
         snprintf(l3, sizeof(l3), "key: %s",
-                 (g_key_from_se != 0) ? "se unlock" : "plate scan");
+                 (g_key_from_se != 0) ? "se unlock"
+                                      : ((g_key_console != 0) ? "key new" : "plate scan"));
     } else {
         snprintf(l3, sizeof(l3), "key: fixture idx12");
     }
@@ -798,7 +996,8 @@ static void sign_run(const char *uri, const char *type,
 
     printf("sign: start (ws=%u) key=%s\r\n", ws_need,
            (g_key_session != NULL)
-               ? ((g_key_from_se != 0) ? "se unlock" : "plate session")
+               ? ((g_key_from_se != 0) ? "se unlock"
+                                       : ((g_key_console != 0) ? "key new" : "plate session"))
                : "fixture idx12");
     g_sign_busy = 1;
     t0 = osKernelGetTickCount();

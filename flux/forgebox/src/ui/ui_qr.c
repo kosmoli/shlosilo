@@ -2,6 +2,7 @@
  * in the host verification harness (scripts/test_qr_render.py). */
 #include "ui_qr.h"
 #include "qrcodegen.h"
+#include "string.h"
 
 #define UI_QR_QUIET 4
 
@@ -37,6 +38,25 @@ bool ui_qr_encode(const char *text, uint8_t *temp, uint8_t *qr, int *modules_out
     bool ok = qrcodegen_encodeText(text, temp, qr, qrcodegen_Ecc_LOW,
                                    qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
                                    qrcodegen_Mask_AUTO, true);
+    if (ok && modules_out != NULL) {
+        *modules_out = qrcodegen_getSize(qr);
+    }
+    return ok;
+}
+
+bool ui_qr_encode_bin(const uint8_t *data, int len, uint8_t *temp, uint8_t *qr,
+                      int *modules_out)
+{
+    if (data == NULL || temp == NULL || qr == NULL || len <= 0 ||
+        len > UI_QR_BUF_BYTES) {
+        return false;
+    }
+    /* qrcodegen_encodeBinary overwrites its input buffer (dataAndTemp), so
+     * the payload is copied into temp first. */
+    memcpy(temp, data, (size_t)len);
+    bool ok = qrcodegen_encodeBinary(temp, (size_t)len, qr, qrcodegen_Ecc_LOW,
+                                     qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
+                                     qrcodegen_Mask_AUTO, true);
     if (ok && modules_out != NULL) {
         *modules_out = qrcodegen_getSize(qr);
     }

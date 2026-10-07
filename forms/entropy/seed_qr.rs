@@ -124,8 +124,9 @@ impl SeedEntropy {
 /// instead drops the checksum bits and yields BIP-39 entropy 20/24/28 bytes —
 /// **NOT byte-compatible with SeedSigner's ceil-packed compact format** — and
 /// [`decode`] has no plate representation for them anyway. The
-/// `debug_assert!` below pins the supported 12/24 steel-plate family (same
-/// interop limit as `KeySession::from_entropy`).
+/// `_into` forms hard-gate the supported 12/24 steel-plate family
+/// (same interop limit as `KeySession::from_entropy`) — refused in
+/// release builds too; the sized wrappers here delegate to them.
 ///
 /// **Secret hygiene**: the output is the plaintext equivalent of the mnemonic
 /// (raw BIP-39 entropy). Never log or `Debug`-print it — the `Vec<u8> Debug`
@@ -137,13 +138,49 @@ impl SeedEntropy {
 /// engraving flow (Task 8) — `decode` and `indices_to_entropy` stay no-alloc.
 #[cfg(feature = "alloc-fallback")]
 pub fn encode_compact(m: &Mnemonic) -> Vec<u8> {
-    debug_assert!(
-        matches!(m.word_count(), WordCount::Words12 | WordCount::Words24),
-        "encode_compact: only the 12/24 steel-plate family is SeedSigner-compatible"
-    );
     let mut out = alloc::vec![0u8; m.word_count().entropy_bytes()];
-    indices_to_entropy(m.indices(), &mut out);
+    let n = encode_compact_into(m, &mut out).expect("sized buffer");
+    debug_assert_eq!(n, out.len());
     out
+}
+
+/// Largest compact-plate payload: 24 words = 32 raw entropy bytes.
+/// Stack-buffer budget for [`encode_compact_into`] callers (device face).
+pub const COMPACT_MAX_LEN: usize = 32;
+
+/// Largest standard-plate payload: 24 words × 4 digits = 96 bytes.
+/// Stack-buffer budget for [`encode_standard_into`] callers (device face).
+pub const STANDARD_MAX_LEN: usize = 96;
+
+/// Stack-buffer form of [`encode_compact`] (plate export / device face:
+/// no `alloc-fallback`, no heap — the export FFI's encoder).
+///
+/// Writes the raw entropy bytes into `out` and returns the length written
+/// (16 = 12 words / 32 = 24 words). `Err(BufferTooSmall)` when `out` cannot
+/// hold the payload. Byte-equal to [`encode_compact`] by construction (that
+/// function delegates here) — pinned by the round-trip tests.
+///
+/// **Secret hygiene**: same contract as [`encode_compact`] — the output IS
+/// the seed entropy in the clear; zeroize `out` after use (`SecretBytes::take`
+/// or a volatile walk on the C side).
+pub fn encode_compact_into(m: &Mnemonic, out: &mut [u8]) -> Result<usize> {
+    // Hard gate (NOT a debug_assert): the 12/24 steel-plate family is an
+    // interop contract — 15/18/21 words have no SeedSigner-compatible plate
+    // representation and must be refused in release builds too.
+    if !matches!(m.word_count(), WordCount::Words12 | WordCount::Words24) {
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::MnemonicInvalidWordCount,
+        ));
+    }
+    let n = m.word_count().entropy_bytes();
+    if out.len() < n {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
+    // indices_to_entropy ORs bits in — zero the region first so a dirty
+    // caller buffer (device stack reuse) can never corrupt the payload.
+    out[..n].fill(0);
+    indices_to_entropy(m.indices(), &mut out[..n]);
+    Ok(n)
 }
 
 /// SeedQR (standard): each word index as `%04d`, concatenated.
@@ -151,27 +188,55 @@ pub fn encode_compact(m: &Mnemonic) -> Vec<u8> {
 ///
 /// The digit format itself is word-count-agnostic (SeedSigner writes `%04d`
 /// per index regardless), but the plate family is a hard 12/24 interop limit
-/// (see [`encode_compact`]); the `debug_assert!` below pins it.
+/// (see [`encode_compact`]); [`encode_standard_into`] enforces it as a hard
+/// error, and this sized wrapper delegates there.
 ///
 /// **Secret hygiene**: the digit string encodes the complete word-index
 /// stream — the plaintext equivalent of the mnemonic. Never log or
 /// `Debug`-print it; drop it as soon as the consumer is done.
 ///
 /// Availability: `alloc-fallback` builds only (returns `String`) — same gate
-/// as [`encode_compact`].
+/// as [`encode_compact`]. The zero-alloc device builds use
+/// [`encode_standard_into`].
 #[cfg(feature = "alloc-fallback")]
 pub fn encode_standard(m: &Mnemonic) -> String {
-    debug_assert!(
-        matches!(m.word_count(), WordCount::Words12 | WordCount::Words24),
-        "encode_standard: only the 12/24 steel-plate family is in scope"
-    );
-    use core::fmt::Write as _;
-    let mut s = String::with_capacity(m.indices().len() * 4);
-    for &idx in m.indices() {
-        // indices are < 2048 → always fits 4 digits; write! never fails on String
-        let _ = write!(s, "{:04}", idx);
-    }
+    let mut buf = [0u8; STANDARD_MAX_LEN];
+    let n = encode_standard_into(m, &mut buf).expect("sized buffer");
+    let s = String::from_utf8(buf[..n].to_vec()).expect("ASCII digits");
+    buf.zeroize();
     s
+}
+
+/// Stack-buffer form of [`encode_standard`] (plate export / device face:
+/// no `alloc-fallback`, no heap — the export FFI's encoder).
+///
+/// Writes the `%04d` digit string into `out` and returns the length written
+/// (48 = 12 words / 96 = 24 words). `Err(BufferTooSmall)` when `out` cannot
+/// hold the payload. Byte-equal to [`encode_standard`] by construction (that
+/// function delegates here) — pinned by the round-trip tests.
+///
+/// **Secret hygiene**: same contract as [`encode_standard`] — the digit
+/// string is the complete word-index stream; zeroize `out` after use.
+pub fn encode_standard_into(m: &Mnemonic, out: &mut [u8]) -> Result<usize> {
+    // Hard gate (NOT a debug_assert): same 12/24 steel-plate interop limit
+    // as `encode_compact_into` — refused in release builds too.
+    if !matches!(m.word_count(), WordCount::Words12 | WordCount::Words24) {
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::MnemonicInvalidWordCount,
+        ));
+    }
+    let n = m.indices().len() * 4;
+    if out.len() < n {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
+    for (i, &idx) in m.indices().iter().enumerate() {
+        // indices are < 2048 → always fits 4 digits
+        out[i * 4] = b'0' + (idx / 1000) as u8;
+        out[i * 4 + 1] = b'0' + ((idx / 100) % 10) as u8;
+        out[i * 4 + 2] = b'0' + ((idx / 10) % 10) as u8;
+        out[i * 4 + 3] = b'0' + (idx % 10) as u8;
+    }
+    Ok(n)
 }
 
 /// Recognize and decode a steel-plate payload back to seed entropy.
@@ -419,6 +484,91 @@ mod tests {
             &[0u8; 15][..],
         ] {
             assert!(decode(bad).is_err(), "decode must reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn stack_encode_matches_oracle_golden() {
+        // Plate-export QR payload == the SeedSigner oracle goldens
+        // (tests/seed_qr_oracle.rs provenance: seedsigner SeedQrEncoder /
+        // CompactSeedQrEncoder output). The device 'key plate' payload is
+        // these exact bytes — an external SeedSigner must scan them back to
+        // the same wallet.
+        let m12 = Mnemonic::from_entropy(&[0x11u8; 16]).unwrap();
+        let mut out = [0u8; STANDARD_MAX_LEN];
+        let n = encode_standard_into(&m12, &mut out).unwrap();
+        assert_eq!(
+            &out[..n],
+            b"013610920546027301361092054602730136109205460283"
+        );
+        let n = encode_compact_into(&m12, &mut out).unwrap();
+        assert_eq!(&out[..n], &[0x11u8; 16][..]);
+        // Dirty-buffer pin: the compact encoder must overwrite, not OR into,
+        // whatever the caller left behind (device stack reuse).
+        out = [0xAAu8; STANDARD_MAX_LEN];
+        let n = encode_compact_into(&m12, &mut out).unwrap();
+        assert_eq!(
+            &out[..n],
+            &[0x11u8; 16][..],
+            "dirty buffer must not corrupt"
+        );
+
+        let m24 = Mnemonic::from_entropy(&[0x22u8; 32]).unwrap();
+        let n = encode_standard_into(&m24, &mut out).unwrap();
+        assert_eq!(
+            &out[..n],
+            b"027301361092054602730136109205460273013610920546027301361092054602730136109205460273013610920671"
+        );
+        let n = encode_compact_into(&m24, &mut out).unwrap();
+        assert_eq!(&out[..n], &[0x22u8; 32][..]);
+    }
+
+    #[test]
+    fn stack_encode_rejects_small_buffers() {
+        let m12 = Mnemonic::from_entropy(&[0x11u8; 16]).unwrap();
+        let mut out = [0u8; STANDARD_MAX_LEN];
+        for cap in [0usize, 15, 47] {
+            let e = encode_standard_into(&m12, &mut out[..cap]).unwrap_err();
+            assert_eq!(e.kind, ShlosiloErrorKind::BufferTooSmall, "std cap {cap}");
+        }
+        let e = encode_compact_into(&m12, &mut out[..15]).unwrap_err();
+        assert_eq!(e.kind, ShlosiloErrorKind::BufferTooSmall);
+        // exact fit works
+        let mut exact = [0u8; 48];
+        assert_eq!(encode_standard_into(&m12, &mut exact).unwrap(), 48);
+        let mut exact = [0u8; 16];
+        assert_eq!(encode_compact_into(&m12, &mut exact).unwrap(), 16);
+    }
+
+    /// Hard gate: 15/18/21-word mnemonics (20/24/28 entropy bytes) have NO
+    /// SeedSigner plate representation — refused in release builds too (the
+    /// old debug_assert! vanished there and 18 words slipped through).
+    #[test]
+    fn plate_family_rejects_15_18_21_words() {
+        let ent = [0x24u8; 28];
+        for ent_len in [20usize, 24, 28] {
+            let m = Mnemonic::from_entropy(&ent[..ent_len]).unwrap();
+            let e = encode_standard_into(&m, &mut [0u8; 96]).unwrap_err();
+            assert_eq!(e.kind, ShlosiloErrorKind::MnemonicInvalidWordCount);
+            let e = encode_compact_into(&m, &mut [0u8; 32]).unwrap_err();
+            assert_eq!(e.kind, ShlosiloErrorKind::MnemonicInvalidWordCount);
+        }
+    }
+
+    /// 对拍: the stack-buffer variants must be byte-equal to the alloc forms
+    /// (one source of truth — the alloc forms delegate — and the contract the
+    /// plate-export FFI relies on).
+    #[cfg(feature = "alloc-fallback")]
+    #[test]
+    fn stack_encode_matches_alloc_encode() {
+        for ent in [&[0x11u8; 16][..], &[0x22u8; 32][..]] {
+            let m = Mnemonic::from_entropy(ent).unwrap();
+            let mut std_buf = [0u8; STANDARD_MAX_LEN];
+            let n = encode_standard_into(&m, &mut std_buf).unwrap();
+            assert_eq!(&std_buf[..n], encode_standard(&m).as_bytes());
+            let mut cmp_buf = [0u8; COMPACT_MAX_LEN];
+            let n = encode_compact_into(&m, &mut cmp_buf).unwrap();
+            assert_eq!(&cmp_buf[..n], encode_compact(&m).as_slice());
         }
     }
 }

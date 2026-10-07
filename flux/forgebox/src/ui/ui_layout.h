@@ -139,6 +139,11 @@
 #define UI_Q_TITLE_Y         36
 #define UI_Q_TITLE_SCALE     2
 #define UI_Q_TXT_TITLE       "scan with wallet"
+/* Plate export (Phase 4 acceptance ②): the screen QR IS the wallet's steel
+ * plate - anyone who photographs it owns the wallet. The title says so, on
+ * the screen, next to the code (same warning style as the console face). */
+#define UI_Q_TXT_PLATE_TITLE "seedqr plate - SECRET"
+#define UI_Q_TXT_PLATE_CAP   "screen shows the wallet!"
 #define UI_Q_AREA_X0         16
 #define UI_Q_AREA_Y0         80
 #define UI_Q_AREA_W          448

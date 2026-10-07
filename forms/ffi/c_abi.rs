@@ -368,6 +368,98 @@ pub extern "C" fn shlosilo_seed_qr_probe_ffi(data: *const u8, data_len: c_uint) 
     }
 }
 
+/// Plate-export modes for [`shlosilo_seed_qr_encode_ffi`] (the C contract).
+pub const SEED_QR_MODE_STANDARD: c_int = 1;
+pub const SEED_QR_MODE_COMPACT: c_int = 2;
+
+/// shlosilo_seed_qr_encode_ffi — wallet entropy → steel-plate QR payload
+/// (Phase 4 acceptance ②: shlosilo builds a wallet, exports SeedQR, an
+/// external SeedSigner scans it back to the same wallet).
+///
+/// The EXPORT face of the seed-QR codecs (interface-detail §2: export is a
+/// deliberately separate face from the KeySource import trait — nothing here
+/// can open a session). Input is the raw BIP-39 entropy (16 = 12 words /
+/// 32 = 24 words); output is the exact bytes a SeedQR QR symbol must carry:
+/// - `SEED_QR_MODE_STANDARD` (1): `%04d` word-index digits, 48/96 ASCII
+///   bytes (SeedSigner `SeedQrEncoder`),
+/// - `SEED_QR_MODE_COMPACT` (2): raw entropy bytes, 16/32
+///   (SeedSigner `CompactSeedQrEncoder`).
+///
+/// Encoder: the stack-buffer forms `seed_qr::encode_standard_into` /
+/// `encode_compact_into` — no-alloc device-safe (the `alloc-fallback`-gated
+/// `encode_standard`/`encode_compact` are unavailable on the zero-heap Z6
+/// face and would break the no-heap picture). Payload is pinned byte-exact
+/// against the SeedSigner oracle goldens (tests/seed_qr_oracle.rs).
+///
+/// Contract:
+/// - `out_buf` receives the payload; `actual_len` receives the written
+///   length (zeroed first on every path — R2: never a stale value).
+/// - entropy length must be 16 or 32 (the 12/24 steel-plate family) —
+///   anything else `MnemonicInvalidEntropyLength`.
+/// - `out_buf_len` budget: `seed_qr::STANDARD_MAX_LEN` (96) bytes.
+/// - negative = error: `ERR_NULL_POINTER` (-2), `BufferTooSmall` (-20),
+///   `MnemonicInvalidEntropyLength` / `EncodingInvalidFormat` (-21), or the
+///   mapped validation error.
+///
+/// **Secret hygiene (the plate IS the wallet)**: `out_buf` leaves this call
+/// holding the plaintext-equivalent seed material — the caller MUST wipe it
+/// after rendering (volatile walk, same as the scan flow's plate wipe), and
+/// showing it on screen is a deliberate secret-exposure surface (steel-plate
+/// threat model: anyone who photographs the plate owns the wallet).
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checked first; bounded slices below (P0-03 discipline)
+pub extern "C" fn shlosilo_seed_qr_encode_ffi(
+    mode: c_int,
+    entropy: *const u8,
+    entropy_len: c_uint,
+    out_buf: *mut u8,
+    out_buf_len: c_uint,
+    actual_len: *mut c_uint,
+) -> c_int {
+    use crate::entropy::seed_qr::{encode_compact_into, encode_standard_into, STANDARD_MAX_LEN};
+    write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+    if entropy.is_null() || out_buf.is_null() {
+        return ERR_NULL_POINTER;
+    }
+    let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+        // Entropy budget: 32 bytes is the 24-word plate cap; the steel-plate
+        // family is EXACTLY 16/32 (BIP-39 proper also has 15/18/21 words —
+        // those have no plate representation and are refused here).
+        let ent = checked_slice(entropy, entropy_len as usize, 32, false).ok_or(
+            ShlosiloError::new(ShlosiloErrorKind::MnemonicInvalidEntropyLength),
+        )?;
+        if ent.len() != 16 && ent.len() != 32 {
+            return Err(ShlosiloError::new(
+                ShlosiloErrorKind::MnemonicInvalidEntropyLength,
+            ));
+        }
+        let out = checked_slice_mut(out_buf, out_buf_len as usize, STANDARD_MAX_LEN)
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+        // Full validation on the way out too (BIP-39 checksum included):
+        // a plate export always carries a scan-importable wallet.
+        let m = Mnemonic::from_entropy(ent)?;
+        match mode {
+            SEED_QR_MODE_STANDARD => encode_standard_into(&m, out),
+            SEED_QR_MODE_COMPACT => encode_compact_into(&m, out),
+            _ => Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
+        }
+    });
+    match result {
+        Ok(Ok(length)) => {
+            write_actual_len(actual_len, length);
+            OK
+        }
+        Ok(Err(e)) => {
+            write_actual_len(actual_len, 0);
+            to_ffi_code(&e)
+        }
+        Err(_) => {
+            write_actual_len(actual_len, 0);
+            ERR_PANIC
+        }
+    }
+}
+
 /// shlosilo_sign_ur_ffi — full UR string + mnemonic → signature (P6.1d)
 ///
 /// L3 feeds `ur:crypto-psbt/...` / `ur:eth-sign-request/...` / `ur:xmr-txunsigned/...` directly;

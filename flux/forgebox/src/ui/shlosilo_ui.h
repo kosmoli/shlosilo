@@ -55,6 +55,16 @@ uint32_t UiScanGetFocus(void);
  * the QR page. index is zero-based; total is the cycle's frame count. */
 void UiShowQrFrame(const char *text, uint32_t index, uint32_t total);
 
+/* Plate-export QR (Phase 4 acceptance ②): render a steel-plate QR payload
+ * (SeedQR standard digits or CompactSeedQR raw entropy bytes) fullscreen on
+ * the QR page, with the SECRET-exposure title/caption. Always the BINARY QR
+ * encoder: the payload is a length-delimited buffer (never NUL-terminated),
+ * and byte-mode carries ASCII digits and raw entropy with the identical
+ * decoded payload a text-mode symbol would show. One static frame (no
+ * carousel); the payload is a plaintext-equivalent wallet - the caller must
+ * wipe its own buffer after this returns. */
+void UiShowPlateQr(const uint8_t *payload, uint32_t len);
+
 /* Battery corner readout ("NN%" / "NN%c") driven by the product task:
  * repaints just that corner, and only when the value changes. */
 void UiSetBattery(uint8_t percent, bool charging);

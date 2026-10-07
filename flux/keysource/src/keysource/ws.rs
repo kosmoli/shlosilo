@@ -155,18 +155,28 @@ pub(crate) unsafe fn ws_close(ws: *mut u8) -> i32 {
     // exclusive); placement only needs the base.
     let state = ws_state(ws);
     // SAFETY: `live` is a plain byte (zero-initialized workspace contract).
-    if (*state).live == 0 {
-        return OK; // no live session → defined no-op
+    if (*state).live != 0 {
+        // SAFETY: `live == 1` means the handle slot holds the live handle
+        // (one-handle invariant + the open commit order). `assume_init_read`
+        // MOVES the handle out — its Drop then runs the serial-guarded close
+        // exactly once (drop_in_place on the slot session → key bytes wiped).
+        // `live` is cleared BEFORE the drop, so a re-entrant close during the
+        // drop sees `0` and no-ops: the drop can never run twice.
+        let handle = (*state).handle.assume_init_read();
+        (*state).live = 0;
+        drop(handle);
     }
-    // SAFETY: `live == 1` means the handle slot holds the live handle
-    // (one-handle invariant + the open commit order). `assume_init_read`
-    // MOVES the handle out — its Drop then runs the serial-guarded close
-    // exactly once (drop_in_place on the slot session → key bytes wiped).
-    // `live` is cleared BEFORE the drop, so a re-entrant close during the
-    // drop sees `0` and no-ops: the drop can never run twice.
-    let handle = (*state).handle.assume_init_read();
-    (*state).live = 0;
-    drop(handle);
+    // Total wipe of the WHOLE workspace window (Phase 4 acceptance ③: the
+    // `se dump` forensic view must read ALL ZERO after close). The drop above
+    // wipes the key bytes but leaves moved-out handle residue (serial /
+    // slot pointer) and padding behind — volatile walk so no compiler can
+    // dead-store-eliminate the final clear (same idiom as the C side's
+    // WipeVolatile). Also covers the no-op paths (fresh / double close), so
+    // any close leaves a defined, fully-zero workspace.
+    let n = ws_len() as usize;
+    for i in 0..n {
+        core::ptr::write_volatile(ws.add(i), 0u8);
+    }
     OK
 }
 

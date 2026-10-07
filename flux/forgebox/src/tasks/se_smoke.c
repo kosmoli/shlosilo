@@ -353,6 +353,80 @@ static void __attribute__((noinline)) RunLock(void)
     Log("lock: key session closed (zeroized)");
 }
 
+/* ---- Phase 4: wallet create / plate export / ws dump (dev console) ---- */
+
+extern int ProductKeyNew(const char *arg) __attribute__((weak));
+extern int ProductKeyPlate(const char *mode) __attribute__((weak));
+extern void ProductKeyWsDump(void) __attribute__((weak));
+
+/* 'key new [12|24]': generate a fresh wallet (TRNG entropy -> BIP-39
+ * mnemonic via the forms 件) and open it as a signing session. Nothing
+ * irreversible is written, so no arm gate - but the DISPLAY is a secret
+ * exposure surface and that is said LOUDLY, every time (same disclosure
+ * discipline as RunUnlock's password warning). */
+static void __attribute__((noinline)) RunKeyNew(const char *arg)
+{
+    int rc;
+
+    Log("WARNING: wallet display = SECRET EXPOSURE SURFACE");
+    Log("WARNING: plate/mnemonic on screen IS the wallet in the clear");
+    Log("WARNING: anyone who photographs the screen owns the wallet");
+    if (ProductKeyNew == NULL) {
+        Log("key: route not wired in this flavor");
+        return;
+    }
+    rc = ProductKeyNew(arg);
+    if (rc == 0) {
+        Log("key new: wallet live (close with 'se lock')");
+    } else if (rc == -1) {
+        Log("usage: key new [12|24]");
+    } else if (rc == -2) {
+        Log("key new: ws too small");
+    } else {
+        Log("key new: FAIL rc=%d", rc);
+    }
+}
+
+/* 'key plate [standard|compact]': render the current wallet as a SeedQR QR
+ * on the screen (standard = 48/96 digits, compact = 16/32 raw entropy) for
+ * an external SeedSigner to scan. The SCREEN is the exposure surface. */
+static void __attribute__((noinline)) RunKeyPlate(const char *mode)
+{
+    int rc;
+
+    Log("WARNING: plate QR on screen = wallet in the clear");
+    Log("WARNING: screen/steel plate = secret exposure surface");
+    if (ProductKeyPlate == NULL) {
+        Log("key: route not wired in this flavor");
+        return;
+    }
+    rc = ProductKeyPlate(mode);
+    if (rc == 0) {
+        Log("key plate: shown (scan it with the external signer)");
+    } else if (rc == -1) {
+        Log("usage: key plate [standard|compact]");
+    } else if (rc == -2) {
+        Log("key plate: no wallet ('key new' first)");
+    } else {
+        Log("key plate: FAIL rc=%d", rc);
+    }
+}
+
+/* 'se dump': hexdump the keysource ws window (Phase 4 acceptance ③
+ * zeroization forensics). Dumps KEY BYTES to the serial console BY DESIGN -
+ * the acceptance photo is "close 前有钥字节 / close 后全零" straight off this
+ * output. DEBUG FIRMWARE / ACCEPTANCE ONLY. */
+static void __attribute__((noinline)) RunDump(void)
+{
+    Log("WARNING: dump prints KEY BYTES over serial (UART0)");
+    Log("WARNING: debug firmware / acceptance forensics ONLY");
+    if (ProductKeyWsDump == NULL) {
+        Log("dump: key route not wired in this flavor");
+        return;
+    }
+    ProductKeyWsDump();
+}
+
 /* ---- UART0 command console ---- */
 
 static void PrintWarning(const char *cmd, const char *confirm, const char *what)
@@ -462,15 +536,34 @@ static void __attribute__((noinline)) Dispatch(char *line)
         } else if (strcmp(argv[1], "lock") == 0) {
             /* READ-ONLY, idempotent: the shared zeroizing teardown. */
             RunLock();
+        } else if (strcmp(argv[1], "dump") == 0) {
+            /* Phase 4 acceptance ③ forensics: READ-ONLY hexdump of the ws
+             * window (prints key bytes - RunDump warns EVERY time). */
+            RunDump();
         } else if (strcmp(argv[1], "help") == 0) {
             Log("se probe | se kdf <pwd> | se provision | se slots");
             Log("se unlock <pwd> | se lock");
+            Log("se dump (forensics - PRINTS KEY BYTES)");
+            Log("key new [12|24] | key plate [standard|compact]");
         } else {
             Log("unknown: %s (try 'se help')", argv[1]);
         }
         return;
     }
-    Log("unknown command (try 'se help')");
+    if (argc >= 2 && strcmp(argv[0], "key") == 0) {
+        if (strcmp(argv[1], "new") == 0) {
+            RunKeyNew(argc >= 3 ? argv[2] : NULL);
+        } else if (strcmp(argv[1], "plate") == 0) {
+            RunKeyPlate(argc >= 3 ? argv[2] : NULL);
+        } else if (strcmp(argv[1], "help") == 0) {
+            Log("key new [12|24] - create wallet (screen = SECRET)");
+            Log("key plate [standard|compact] - show SeedQR (SECRET)");
+        } else {
+            Log("unknown: %s (try 'key help')", argv[1]);
+        }
+        return;
+    }
+    Log("unknown command (try 'se help' / 'key help')");
 }
 
 void SeConsolePoll(void)

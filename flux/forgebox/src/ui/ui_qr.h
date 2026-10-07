@@ -29,6 +29,16 @@ typedef struct {
  * text does not fit a version-40 QR or the buffers are unusable. */
 bool ui_qr_encode(const char *text, uint8_t *temp, uint8_t *qr, int *modules_out);
 
+/* Encode a BINARY payload (ECC LOW, boosted, automatic mask - same profile as
+ * ui_qr_encode). Needed for CompactSeedQR plate export, where the QR payload
+ * is raw entropy bytes and can contain NUL / non-text values that the text
+ * encoder cannot carry. `data`/`len` is the payload; temp and qr are caller
+ * buffers of UI_QR_BUF_BYTES (the payload is copied into temp internally -
+ * qrcodegen_encodeBinary overwrites its input buffer). Returns false when the
+ * payload does not fit a version-40 QR or the buffers are unusable. */
+bool ui_qr_encode_bin(const uint8_t *data, int len, uint8_t *temp, uint8_t *qr,
+                      int *modules_out);
+
 /* Compute the placement of a `modules`-sized QR inside the given area,
  * including a 4-module quiet zone and an integer module scale. Returns false
  * when even scale 1 does not fit. */

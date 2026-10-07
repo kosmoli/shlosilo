@@ -587,3 +587,79 @@ fn qr_session_sign_matches_typed_entry_byte_for_byte() {
     );
     assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
 }
+
+// -- Phase 4 acceptance ③: the `se dump` zeroization forensic view --
+//
+// The device `se dump` command hexdumps exactly this workspace window (the
+// keysource ws bytes). The acceptance photo is "close 前有钥字节 / close 后
+// 全零" — asserted here byte-for-byte on the same window the firmware prints.
+
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// 毒丸手法 (slot-forensics discipline, flux/keysource mod.rs): the live key
+/// bytes MUST be visible in the raw window before close (kills the vacuous
+/// all-zero pass and the "close does nothing" mutation), then EVERY byte of
+/// the window must read zero after close (kills "key bytes wiped but handle
+/// residue left behind").
+#[test]
+fn dump_view_close_leaves_workspace_window_all_zero() {
+    let cases: [(Vec<u8>, [u8; 32]); 3] = [
+        (standard_plate(&FIXTURE_ENTROPY), {
+            let mut e = [0u8; 32];
+            e[..16].copy_from_slice(&FIXTURE_ENTROPY);
+            e
+        }),
+        (FIXTURE_ENTROPY.to_vec(), {
+            let mut e = [0u8; 32];
+            e[..16].copy_from_slice(&FIXTURE_ENTROPY);
+            e
+        }),
+        (FIXTURE_ENTROPY_24.to_vec(), FIXTURE_ENTROPY_24),
+    ];
+    for (plate, entropy32) in cases {
+        let entropy = if plate.len() == 16 || plate.len() == 48 {
+            &entropy32[..16]
+        } else {
+            &entropy32[..]
+        };
+        let mut ws = fresh_ws();
+        let mut session: *const KeySession = core::ptr::null();
+        assert_eq!(
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws.len() as core::ffi::c_uint,
+                plate.as_ptr(),
+                plate.len() as core::ffi::c_uint,
+                &mut session
+            ),
+            OK
+        );
+        let (spend, view) = reference_keys(entropy);
+        assert!(
+            contains(&ws, &spend) && contains(&ws, &view),
+            "precondition (dump 前): live key bytes visible in the ws window"
+        );
+        assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+        assert!(
+            ws.iter().all(|&b| b == 0),
+            "close must leave the WHOLE ws window zero (dump 后全零): {:?}",
+            &ws[..32.min(ws.len())]
+        );
+        // The reusable state the acceptance re-run depends on: a reopen from
+        // the all-zero window works and closes all-zero again.
+        assert_eq!(
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws.len() as core::ffi::c_uint,
+                plate.as_ptr(),
+                plate.len() as core::ffi::c_uint,
+                &mut session
+            ),
+            OK
+        );
+        assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+        assert!(ws.iter().all(|&b| b == 0), "second close all-zero");
+    }
+}

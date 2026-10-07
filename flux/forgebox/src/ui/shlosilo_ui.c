@@ -611,6 +611,50 @@ void UiShowQrFrame(const char *text, uint32_t index, uint32_t total)
     ui_flush_range(0, UI_FB_H - 1);
 }
 
+void UiShowPlateQr(const uint8_t *payload, uint32_t len)
+{
+    int modules = 0;
+    UiQrLayout layout;
+
+    if (g_fb == NULL || g_band == NULL || payload == NULL || len == 0) {
+        return;
+    }
+    if (g_qr_temp == NULL) {
+        g_qr_temp = SramMalloc(UI_QR_BUF_BYTES);
+        g_qr_code = SramMalloc(UI_QR_BUF_BYTES);
+        if (g_qr_temp == NULL || g_qr_code == NULL) {
+            printf("ui: qr buffers alloc failed\r\n");
+        }
+    }
+
+    memset(g_fb, 0, FB_BYTES);
+
+    /* Binary encoder for both plate forms: the payload is length-delimited
+     * (never NUL-terminated), and byte-mode decoded content is identical for
+     * the ASCII digit plate and the raw-entropy compact plate. */
+    bool ok = (g_qr_temp != NULL && g_qr_code != NULL) &&
+              ui_qr_encode_bin(payload, (int)len, g_qr_temp, g_qr_code, &modules);
+    if (!ok || !ui_qr_layout(modules, UI_Q_AREA_X0, UI_Q_AREA_Y0,
+                            UI_Q_AREA_W, UI_Q_AREA_H, &layout)) {
+        draw_text_center(UI_Q_AREA_Y0 + UI_Q_AREA_H / 2, "qr encode FAIL", 2);
+    } else {
+        ui_qr_draw(g_qr_code, &layout, g_fb, UI_FB_W, UI_FB_H);
+        draw_text_center(UI_Q_TITLE_Y, UI_Q_TXT_PLATE_TITLE, UI_Q_TITLE_SCALE);
+        draw_text_center(UI_Q_CAP_Y, UI_Q_TXT_PLATE_CAP, 1);
+    }
+
+    UiInputPoll();
+    fill_rect(UI_LINE_X0, UI_LINE_Y, UI_LINE_X1 - UI_LINE_X0 + 1, 1);
+    rect_outline(UI_BTN_L_X0, UI_BTN_Y0, UI_BTN_L_X1, UI_BTN_Y1, UI_BTN_T);
+    rect_outline(UI_BTN_R_X0, UI_BTN_Y0, UI_BTN_R_X1, UI_BTN_Y1, UI_BTN_T);
+    draw_button_label(UI_BTN_L_X0, UI_BTN_L_X1, UI_BTN_LABEL_LEFT);
+    draw_button_label(UI_BTN_R_X0, UI_BTN_R_X1, UI_BTN_LABEL_RIGHT);
+    draw_footer();
+    ui_draw_battery();
+
+    ui_flush_range(0, UI_FB_H - 1);
+}
+
 /* ---------------- panic ---------------- */
 
 void UiPanic(const char *msg)
