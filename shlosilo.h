@@ -631,6 +631,14 @@
  */
 #define MULTIPART_SESSION_RETAINED_MAX (MULTIPART_PAYLOAD_MAX_LEN * 2)
 
+/**
+ * Entropy-seeded signing session. Construct once, borrow keys, drop to erase.
+ *
+ * Not implemented: `Clone`, `Copy` — each clone doubles the live key material
+ * (v2-security §2 discipline, same as `SecretBytes` / `MoneroKeyPair`).
+ */
+typedef struct KeySession KeySession;
+
 typedef struct UrMultipartDecoder UrMultipartDecoder;
 
 /**
@@ -906,6 +914,12 @@ int shlosilo_ur_decode_type(struct UrMultipartDecoder *handle,
  * R3/P0-C (2026-09-01): typed sign — vertical pass-through signing of the (type, payload) reassembled from multipart.
  * type_name must be a known signable UrTypeTag (Unknown/arbitrary strings are rejected);
  * payload budget = MULTIPART_PAYLOAD_MAX_LEN (16 KiB, aligned with the multipart reassembly cap).
+ *
+ * **Deprecated (Task 3, 2026-10-07)** — kept for one deprecation cycle for
+ * existing C callers; new integrations use [`shlosilo_sign_session_ffi`]
+ * (seed-less `KeySession` handle). Behavior is byte-for-byte unchanged:
+ * the body now delegates to the shared sign core (`sign_typed_core`) that
+ * the session entry also uses.
  */
 int shlosilo_sign_typed_ffi(const char *type_name,
                             const uint8_t *payload,
@@ -922,6 +936,57 @@ int shlosilo_sign_typed_ffi(const char *type_name,
                             unsigned int *actual_len,
                             uint8_t *ws,
                             unsigned int ws_len);
+
+/**
+ * Task 3 (2026-10-07): session sign — the seed-less signing entry (v2 §4.1).
+ *
+ * Frozen signature (interface detail decides): the caller constructs a
+ * [`KeySession`] on the flux side and passes only the raw handle here —
+ * NO seed/mnemonic/passphrase parameter exists on this entry, so key
+ * material cannot cross the FFI boundary even by mistake.
+ *
+ * - `session`: flux-constructed `KeySession` handle (single-owner; release
+ *   with [`shlosilo_session_free_ffi`])
+ * - `type_name` / `payload` / `payload_len`: the typed UR face — identical
+ *   budget + validation to the typed entry (payload ≤ 16 KiB)
+ * - `entropy_ptr` / `entropy_len`: §B.5 signing-randomness stream for the
+ *   XMR path (misuse guard unchanged; BTC/ETH ignore it)
+ * - `output_buf` / `output_buf_len` / `actual_len`: signature bytes out
+ * - `ws` / `ws_len`: caller workspace — `ws == NULL` is the PURE PROBE
+ *   (Z3.3b: reports the requirement, touches nothing else)
+ *
+ * Returns 0 = Ok (length in `actual_len`), negative = error code.
+ * The frozen signature carries no network parameter: chain/network gating
+ * is the caller's policy (the deprecated typed entry keeps its own).
+ */
+int shlosilo_sign_session_ffi(const struct KeySession *session,
+                              const char *type_name,
+                              const uint8_t *payload,
+                              unsigned int payload_len,
+                              const uint8_t *entropy_ptr,
+                              unsigned int entropy_len,
+                              uint8_t *output_buf,
+                              unsigned int output_buf_len,
+                              unsigned int *actual_len,
+                              uint8_t *ws,
+                              unsigned int ws_len);
+
+/**
+ * Task 3 (2026-10-07): session reclaim — the handle lifecycle contract.
+ *
+ * `session` is a POINTER TO the caller's handle slot (C: `KeySession **`).
+ * Contract:
+ * - success: the session is reclaimed (`Box::from_raw`) and dropped —
+ *   `KeySession: ZeroizeOnDrop` wipes the seed/spend/view key bytes — and
+ *   the caller's slot is set to NULL;
+ * - a second free of the SAME slot sees the NULLed handle and returns
+ *   ERR_NULL_POINTER — reclaim + zeroize happens exactly once, never UB;
+ * - a NULL slot pointer or a NULL handle is likewise ERR_NULL_POINTER.
+ *
+ * The slot is NULLed before the reclaim drop, so no exit path can leave
+ * the caller holding a stale handle.
+ */
+int shlosilo_session_free_ffi(struct KeySession **session);
 
 /**
  * R3: release the decoder handle. Null-safe (idempotent).

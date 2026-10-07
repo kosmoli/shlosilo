@@ -23,6 +23,8 @@ include = [
   "shlosilo_sign_ffi",
   "shlosilo_sign_ur_ffi",
   "shlosilo_sign_typed_ffi",
+  "shlosilo_sign_session_ffi",
+  "shlosilo_session_free_ffi",
   "shlosilo_export_readonly_ffi",
   "shlosilo_create_account_ffi",
   "shlosilo_supported_networks_ffi",

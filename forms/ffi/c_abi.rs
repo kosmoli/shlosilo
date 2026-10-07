@@ -8,11 +8,18 @@
 //! **v2 §4.1 invariants**:
 //! - ❌ seed never crosses the FFI — sign only accepts mnemonic indices
 //! - ✅ FFI accepts public material and returns public output
+//! - ✅ Task 3: `shlosilo_sign_session_ffi` signs from a `KeySession` handle —
+//!   still no seed/mnemonic parameter (the session is flux-constructed; the
+//!   handle is reclaimed via `shlosilo_session_free_ffi`)
 
 #[cfg(feature = "std")]
 extern crate std;
 
-#[cfg(feature = "alloc-fallback")]
+// `alloc` is declared unconditionally (Task 3): the session handle reclaim
+// (`Box::from_raw` in `shlosilo_session_free_ffi`) names `alloc::boxed::Box` in
+// every feature configuration, including the forgebox zero-heap build (whose
+// staticlib glue provides the global allocator for handle management only —
+// the sign flows themselves remain allocation-free). Nothing here allocates.
 extern crate alloc;
 
 /// catch_unwind shim: actually catches panics under std; direct call under no_std (panic=abort)
@@ -701,6 +708,7 @@ const _: c_int = ERR_BUFFER_TOO_SMALL;
 // --- R3 typed multipart FFI (2026-08-31) ---------------------------------
 pub mod r3 {
     use super::*;
+    use crate::types::key_session::KeySession;
     use crate::ur::ur_multipart::{
         UrMultipartDecoder, UrMultipartEncoder, MULTIPART_FRAME_MAX_LEN,
     };
@@ -1120,6 +1128,12 @@ pub mod r3 {
     /// R3/P0-C (2026-09-01): typed sign — vertical pass-through signing of the (type, payload) reassembled from multipart.
     /// type_name must be a known signable UrTypeTag (Unknown/arbitrary strings are rejected);
     /// payload budget = MULTIPART_PAYLOAD_MAX_LEN (16 KiB, aligned with the multipart reassembly cap).
+    ///
+    /// **Deprecated (Task 3, 2026-10-07)** — kept for one deprecation cycle for
+    /// existing C callers; new integrations use [`shlosilo_sign_session_ffi`]
+    /// (seed-less `KeySession` handle). Behavior is byte-for-byte unchanged:
+    /// the body now delegates to the shared sign core (`sign_typed_core`) that
+    /// the session entry also uses.
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub extern "C" fn shlosilo_sign_typed_ffi(
@@ -1173,85 +1187,56 @@ pub mod r3 {
                 None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
             };
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-            // C string → &str (≤ 64 chars is enough for a type name)
-            let mut tlen = 0usize;
-            unsafe {
-                while *type_name.add(tlen) != 0 {
-                    tlen += 1;
-                    if tlen > 64 {
-                        return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
-                    }
-                }
-            }
-            let t_slice =
-                checked_slice(type_name.cast::<u8>(), tlen, 64, false).ok_or_else(err_type_name)?;
-            let t_str = core::str::from_utf8(t_slice)
-                .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-            let tag = crate::ur::ur_encode::UrTypeTag::from_name(t_str);
-            if matches!(tag, crate::ur::ur_encode::UrTypeTag::Unknown) {
-                return Err(err(ShlosiloErrorKind::UrPayloadUnknownType));
-            }
-            if payload_len as usize > crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN {
-                return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
-            }
-            let payload_slice = checked_slice(
+            // Task 3 (2026-10-07): the deprecated entry delegates to the shared
+            // sign core — the same core `shlosilo_sign_session_ffi` uses (one
+            // signing implementation, no duplicated logic). `Legacy` keeps this
+            // entry's historical validation order and error codes verbatim.
+            sign_typed_core(
+                SignKeySource::Legacy {
+                    mnemonic_indices,
+                    word_count,
+                    passphrase,
+                    passphrase_len,
+                    network,
+                },
+                type_name,
                 payload,
-                payload_len as usize,
-                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-                false,
-            )
-            .ok_or(ShlosiloError::new(ShlosiloErrorKind::UrPayloadTooLarge))?;
-            // P0-02 #2: (NULL, len>0) rejected
-            let entropy_slice = optional_bytes_in(
+                payload_len,
                 entropy_ptr,
-                entropy_len as usize,
-                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-            )
-            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
-            // SAFETY: mnemonic_count has passed the whitelist, null pointer already excluded
-            // P0-03: mnemonic goes through checked_slice
-            let mnem_slice = checked_slice(mnemonic_indices, word_count as usize, 24, false)
-                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
-            // SAFETY: output_buf is non-null (excluded in the prologue)
-            // P0-03: output buffer goes through checked_slice_mut
-            let out_slice =
-                checked_slice_mut(output_buf, output_buf_len as usize, SIGN_OUTPUT_BUF_MAX_LEN)
-                    .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
-            // P0-02 #2: (NULL, len>0) rejected
-            let pass_slice =
-                optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN)
-                    .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
-            if pass_slice.len() > PASSPHRASE_MAX_LEN {
-                return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
-            }
-            let mnemonic = Mnemonic::from_indices(mnem_slice, word_count)
-                .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
-            // P0-02 #3: network narrowing wraparound replaced by full-value validation via u8::try_from
-            let n8 =
-                u8::try_from(network).map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
-            let network_parsed = Network::try_from_u8(n8)
-                .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
-            let input = business::sign::SignInput::Mnemonic {
-                mnemonic,
-                passphrase: pass_slice,
-            };
-            business::sign::check_network(tag, payload_slice, network_parsed)?;
-            let ws_slice = unsafe { core::slice::from_raw_parts_mut(ws, ws_need) };
-            let mut ws = crate::business::sign::carve_sign_ws(ws_slice).ok_or_else(|| {
-                ShlosiloError::with_context(
-                    ShlosiloErrorKind::BufferTooSmall,
-                    crate::error::ErrorContext::RequiredLength(ws_need),
-                )
-            })?;
-            business::sign::sign_with_entropy_ws(
-                input,
-                tag,
-                payload_slice,
-                entropy_slice,
-                Some(&mut ws),
-                out_slice,
+                entropy_len,
+                output_buf,
+                output_buf_len,
+                ws,
+                ws_need,
             )
         });
+        finish_sign_ffi(result, actual_len)
+    }
+
+    /// Task 3: key face for the shared sign core (internal; not on the C-ABI surface).
+    #[derive(Clone, Copy)]
+    enum SignKeySource {
+        /// A flux-constructed `KeySession` (the FFI side only holds the raw
+        /// pointer). Signing borrows the session's stored BIP-39 seed — no
+        /// seed/mnemonic parameter exists on the session entry (v2 §4.1).
+        Session(*const KeySession),
+        /// The deprecated typed entry's key face: indices + passphrase +
+        /// network, reassembled per call (the old zero-storage flow).
+        Legacy {
+            mnemonic_indices: *const u16,
+            word_count: WordCount,
+            passphrase: *const u8,
+            passphrase_len: c_uint,
+            network: c_uint,
+        },
+    }
+
+    /// Task 3: shared result mapping for the sign family (Gate4 out-param
+    /// discipline: length on success, zeroed on every failure path).
+    fn finish_sign_ffi<E>(
+        result: Result<Result<usize, ShlosiloError>, E>,
+        actual_len: *mut c_uint,
+    ) -> c_int {
         match result {
             Ok(Ok(length)) => {
                 write_actual_len(actual_len, length);
@@ -1266,6 +1251,266 @@ pub mod r3 {
                 ERR_PANIC
             }
         }
+    }
+
+    /// Task 3: the shared sign core — ONE signing implementation for
+    /// `shlosilo_sign_session_ffi` and the deprecated `shlosilo_sign_typed_ffi`.
+    ///
+    /// The step order below is the typed entry's historical validation order,
+    /// preserved verbatim (`SignKeySource::Legacy` runs the same steps at the
+    /// same positions), so the deprecated entry's error precedence cannot move.
+    /// The session face skips the legacy-only steps (5, 7-10): its key material
+    /// is the session's stored seed, and the frozen session signature carries
+    /// no network parameter (chain/network gating for the session path is the
+    /// caller's policy, upstream of this entry).
+    #[allow(clippy::too_many_arguments)] // mirrors the frozen C-ABI face 1:1 (the entries' param lists are fixed by contract)
+    fn sign_typed_core(
+        source: SignKeySource,
+        type_name: *const c_char,
+        payload: *const u8,
+        payload_len: c_uint,
+        entropy_ptr: *const u8,
+        entropy_len: c_uint,
+        output_buf: *mut u8,
+        output_buf_len: c_uint,
+        ws: *mut u8,
+        ws_need: usize,
+    ) -> Result<usize, ShlosiloError> {
+        // (1) C string → &str (≤ 64 chars is enough for a type name)
+        let mut tlen = 0usize;
+        unsafe {
+            while *type_name.add(tlen) != 0 {
+                tlen += 1;
+                if tlen > 64 {
+                    return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+                }
+            }
+        }
+        let t_slice =
+            checked_slice(type_name.cast::<u8>(), tlen, 64, false).ok_or_else(err_type_name)?;
+        let t_str = core::str::from_utf8(t_slice)
+            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        let tag = crate::ur::ur_encode::UrTypeTag::from_name(t_str);
+        if matches!(tag, crate::ur::ur_encode::UrTypeTag::Unknown) {
+            return Err(err(ShlosiloErrorKind::UrPayloadUnknownType));
+        }
+        // (2) payload budget, (3) payload slice
+        if payload_len as usize > crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN {
+            return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
+        }
+        let payload_slice = checked_slice(
+            payload,
+            payload_len as usize,
+            crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+            false,
+        )
+        .ok_or(ShlosiloError::new(ShlosiloErrorKind::UrPayloadTooLarge))?;
+        // (4) P0-02 #2: (NULL, len>0) rejected
+        let entropy_slice = optional_bytes_in(
+            entropy_ptr,
+            entropy_len as usize,
+            crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+        )
+        .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+        // (5, legacy only) mnemonic slice — kept BEFORE the output slice:
+        // the deprecated entry's historical error precedence.
+        let mnem_slice: Option<&[u16]> = match source {
+            SignKeySource::Legacy {
+                mnemonic_indices,
+                word_count,
+                ..
+            } => Some(
+                checked_slice(mnemonic_indices, word_count as usize, 24, false)
+                    .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?,
+            ),
+            SignKeySource::Session(_) => None,
+        };
+        // SAFETY: output_buf is non-null (excluded in the entry prologue)
+        // (6) P0-03: output buffer goes through checked_slice_mut
+        let out_slice =
+            checked_slice_mut(output_buf, output_buf_len as usize, SIGN_OUTPUT_BUF_MAX_LEN)
+                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+        // (7-10) key face → SignInput (+ the legacy network gate)
+        let (sign_input, network): (business::sign::SignInput<'_>, Option<Network>) = match source {
+            SignKeySource::Session(session) => {
+                // SAFETY: the entry prologue excluded the null pointer; handle
+                // validity is the caller's single-owner contract (same as the
+                // R3 encode/decode handles).
+                let session = unsafe { &*session };
+                (
+                    business::sign::SignInput::Seed {
+                        seed: session.seed().expose(),
+                    },
+                    None,
+                )
+            }
+            SignKeySource::Legacy {
+                word_count,
+                passphrase,
+                passphrase_len,
+                network,
+                ..
+            } => {
+                // SAFETY: mnemonic_count has passed the whitelist, null pointer already excluded
+                let mnem_slice =
+                    mnem_slice.ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+                // (7) P0-02 #2: (NULL, len>0) rejected
+                let pass_slice =
+                    optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN)
+                        .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+                if pass_slice.len() > PASSPHRASE_MAX_LEN {
+                    return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+                }
+                // (8)
+                let mnemonic = Mnemonic::from_indices(mnem_slice, word_count)
+                    .map_err(|_| err(ShlosiloErrorKind::MnemonicInvalidWord))?;
+                // (9) P0-02 #3: network narrowing wraparound replaced by full-value validation via u8::try_from
+                let n8 = u8::try_from(network)
+                    .map_err(|_| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+                let network_parsed = Network::try_from_u8(n8)
+                    .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+                (
+                    business::sign::SignInput::Mnemonic {
+                        mnemonic,
+                        passphrase: pass_slice,
+                    },
+                    Some(network_parsed),
+                )
+            }
+        };
+        // (10) network gate (legacy face only — see the doc note above)
+        if let Some(network) = network {
+            business::sign::check_network(tag, payload_slice, network)?;
+        }
+        // (11) workspace carve (Z3.3b: capacity validated in the entry prologue)
+        let ws_slice = unsafe { core::slice::from_raw_parts_mut(ws, ws_need) };
+        let mut ws = crate::business::sign::carve_sign_ws(ws_slice).ok_or_else(|| {
+            ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(ws_need),
+            )
+        })?;
+        // (12) sign — §B.5: entropy_slice feeds the XMR signing randomness stream
+        business::sign::sign_with_entropy_ws(
+            sign_input,
+            tag,
+            payload_slice,
+            entropy_slice,
+            Some(&mut ws),
+            out_slice,
+        )
+    }
+
+    /// Task 3 (2026-10-07): session sign — the seed-less signing entry (v2 §4.1).
+    ///
+    /// Frozen signature (interface detail decides): the caller constructs a
+    /// [`KeySession`] on the flux side and passes only the raw handle here —
+    /// NO seed/mnemonic/passphrase parameter exists on this entry, so key
+    /// material cannot cross the FFI boundary even by mistake.
+    ///
+    /// - `session`: flux-constructed `KeySession` handle (single-owner; release
+    ///   with [`shlosilo_session_free_ffi`])
+    /// - `type_name` / `payload` / `payload_len`: the typed UR face — identical
+    ///   budget + validation to the typed entry (payload ≤ 16 KiB)
+    /// - `entropy_ptr` / `entropy_len`: §B.5 signing-randomness stream for the
+    ///   XMR path (misuse guard unchanged; BTC/ETH ignore it)
+    /// - `output_buf` / `output_buf_len` / `actual_len`: signature bytes out
+    /// - `ws` / `ws_len`: caller workspace — `ws == NULL` is the PURE PROBE
+    ///   (Z3.3b: reports the requirement, touches nothing else)
+    ///
+    /// Returns 0 = Ok (length in `actual_len`), negative = error code.
+    /// The frozen signature carries no network parameter: chain/network gating
+    /// is the caller's policy (the deprecated typed entry keeps its own).
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
+    pub extern "C" fn shlosilo_sign_session_ffi(
+        session: *const KeySession, // flux-constructed; the FFI side only holds the pointer
+        type_name: *const c_char,
+        payload: *const u8,
+        payload_len: c_uint,
+        entropy_ptr: *const u8,
+        entropy_len: c_uint,
+        output_buf: *mut u8,
+        output_buf_len: c_uint,
+        actual_len: *mut c_uint,
+        ws: *mut u8,
+        ws_len: c_uint,
+    ) -> c_int {
+        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+                                         // Z3.3b workspace contract: ws == NULL is a PURE PROBE —
+                                         // reports the workspace requirement and returns before any
+                                         // key access, parsing, or RNG use; no output side effects.
+        if ws.is_null() {
+            write_actual_len(actual_len, shlosilo_sign_ws_len() as usize);
+            return OK;
+        }
+        // Capacity is validated BEFORE execution; under-capacity reports the
+        // required length through actual_len (documented exception to the
+        // zero-on-failure rule — the caller needs the number to resize).
+        let ws_need = shlosilo_sign_ws_len() as usize;
+        if (ws_len as usize) < ws_need {
+            write_actual_len(actual_len, ws_need);
+            return to_ffi_code(&ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(ws_need),
+            ));
+        }
+        // Gate4: required pointers rejected up front (same discipline as the
+        // typed entry — the session handle takes the mnemonic_indices slot).
+        if session.is_null() || type_name.is_null() || payload.is_null() || output_buf.is_null() {
+            return ERR_NULL_POINTER;
+        }
+        let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            sign_typed_core(
+                SignKeySource::Session(session),
+                type_name,
+                payload,
+                payload_len,
+                entropy_ptr,
+                entropy_len,
+                output_buf,
+                output_buf_len,
+                ws,
+                ws_need,
+            )
+        });
+        finish_sign_ffi(result, actual_len)
+    }
+
+    /// Task 3 (2026-10-07): session reclaim — the handle lifecycle contract.
+    ///
+    /// `session` is a POINTER TO the caller's handle slot (C: `KeySession **`).
+    /// Contract:
+    /// - success: the session is reclaimed (`Box::from_raw`) and dropped —
+    ///   `KeySession: ZeroizeOnDrop` wipes the seed/spend/view key bytes — and
+    ///   the caller's slot is set to NULL;
+    /// - a second free of the SAME slot sees the NULLed handle and returns
+    ///   ERR_NULL_POINTER — reclaim + zeroize happens exactly once, never UB;
+    /// - a NULL slot pointer or a NULL handle is likewise ERR_NULL_POINTER.
+    ///
+    /// The slot is NULLed before the reclaim drop, so no exit path can leave
+    /// the caller holding a stale handle.
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checked first; single-owner handle (see below)
+    pub extern "C" fn shlosilo_session_free_ffi(session: *mut *mut KeySession) -> c_int {
+        if session.is_null() {
+            return ERR_NULL_POINTER;
+        }
+        let handle = unsafe { *session };
+        if handle.is_null() {
+            return ERR_NULL_POINTER;
+        }
+        // SAFETY: single-owner handle contract (same as the R3 encoder/decoder
+        // handles): the pointer came from `Box::into_raw` on the construction
+        // side and is reclaimed exactly once — the slot is NULLed first, so a
+        // second call (or re-entry) errors out instead of double-freeing. The
+        // drop runs KeySession's ZeroizeOnDrop before the heap slot returns to
+        // the allocator.
+        unsafe {
+            *session = core::ptr::null_mut();
+            drop(alloc::boxed::Box::from_raw(handle));
+        }
+        OK
     }
 
     /// R3: release the decoder handle. Null-safe (idempotent).
