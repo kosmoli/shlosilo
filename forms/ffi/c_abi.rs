@@ -9,17 +9,22 @@
 //! - ❌ seed never crosses the FFI — sign only accepts mnemonic indices
 //! - ✅ FFI accepts public material and returns public output
 //! - ✅ Task 3: `shlosilo_sign_session_ffi` signs from a `KeySession` handle —
-//!   still no seed/mnemonic parameter (the session is flux-constructed; the
-//!   handle is reclaimed via `shlosilo_session_free_ffi`)
+//!   still no seed/mnemonic parameter (the session is flux-constructed in
+//!   caller-owned storage; the handle is dropped in place via
+//!   `shlosilo_session_free_ffi`)
 
 #[cfg(feature = "std")]
 extern crate std;
 
-// `alloc` is declared unconditionally (Task 3): the session handle reclaim
-// (`Box::from_raw` in `shlosilo_session_free_ffi`) names `alloc::boxed::Box` in
-// every feature configuration, including the forgebox zero-heap build (whose
-// staticlib glue provides the global allocator for handle management only —
-// the sign flows themselves remain allocation-free). Nothing here allocates.
+// Z6 (C1 remediation, 2026-10-07): `alloc` is gated again. Nothing on the
+// production face allocates — the session handle reclaim is a plain
+// `drop_in_place` over CALLER-owned storage (R3/Z3.3c caller-workspace
+// contract, see `shlosilo_session_free_ffi`), so the crate graph carries no
+// allocator lang item. Instruments: `scripts/z6_langitem_check.sh` must
+// report GRAPH-CLEAN and `probes/noalloc/build.sh` must link the sign paths
+// against a C main with NO allocator. The declaration below remains only for
+// the alloc-fallback face and the test modules in this file.
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 /// catch_unwind shim: actually catches panics under std; direct call under no_std (panic=abort)
@@ -720,7 +725,8 @@ pub mod r3 {
     //   animated multipart     = this group of three functions (payload ≤ 16 KiB, frame stream `ur:<type>/<seq>-<count>/<bw>`)
     //
     // Handle contract:
-    //   - encode_begin / decode_new return handles (Box::into_raw raw pointers, non-null = success)
+    //   - encode_begin / decode_new place the handle in CALLER workspace (Z3.3c;
+    //     constructed in place over the ws buffer, non-null = success) — never Box::into_raw
     //   - reusing the same handle / double-free is an L3 bug — debug_assert plus an error-code fallback
     //   - encode_free / decode_free release them; other functions return ERR_NULL_POINTER for a null handle
 
@@ -1408,8 +1414,18 @@ pub mod r3 {
     /// NO seed/mnemonic/passphrase parameter exists on this entry, so key
     /// material cannot cross the FFI boundary even by mistake.
     ///
-    /// - `session`: flux-constructed `KeySession` handle (single-owner; release
-    ///   with [`shlosilo_session_free_ffi`])
+    /// - `session`: flux-constructed `KeySession` handle (single-owner).
+    ///   **Handle storage is the caller's** (R3/Z3.3c caller-workspace
+    ///   contract): the session is constructed IN PLACE in caller memory —
+    ///   Rust glue `ptr::write`s it into a static slot or caller workspace;
+    ///   tests use `MaybeUninit` + `ptr::write` over a workspace buffer (never
+    ///   `Box::into_raw`). Release with [`shlosilo_session_free_ffi`], which
+    ///   drops the value in place and returns the storage to the caller.
+    /// - **Lifetime rule**: the session must stay alive for the whole sign
+    ///   call. While a sign is in flight on a handle, the caller must NOT free
+    ///   it and must NOT use the same handle concurrently — including from
+    ///   another thread or an interrupt (forgebox signs across interrupt
+    ///   context). Free only after every sign call has returned.
     /// - `type_name` / `payload` / `payload_len`: the typed UR face — identical
     ///   budget + validation to the typed entry (payload ≤ 16 KiB)
     /// - `entropy_ptr` / `entropy_len`: §B.5 signing-randomness stream for the
@@ -1480,13 +1496,25 @@ pub mod r3 {
     /// Task 3 (2026-10-07): session reclaim — the handle lifecycle contract.
     ///
     /// `session` is a POINTER TO the caller's handle slot (C: `KeySession **`).
+    /// **Handle storage is the caller's** (R3/Z3.3c caller-workspace contract):
+    /// the session was constructed in place in caller memory (Rust glue
+    /// `ptr::write` into a static slot / caller workspace; tests use
+    /// `MaybeUninit` + `ptr::write` — never `Box::into_raw`), so this call
+    /// drops the value IN PLACE (`core::ptr::drop_in_place`) and the storage
+    /// returns to the caller — no allocator is involved anywhere in the handle
+    /// lifecycle (Z6 zero-heap face).
     /// Contract:
-    /// - success: the session is reclaimed (`Box::from_raw`) and dropped —
-    ///   `KeySession: ZeroizeOnDrop` wipes the seed/spend/view key bytes — and
-    ///   the caller's slot is set to NULL;
+    /// - success: the session is dropped in place — `KeySession: ZeroizeOnDrop`
+    ///   wipes the seed/spend/view key bytes — and the caller's slot is set to
+    ///   NULL;
     /// - a second free of the SAME slot sees the NULLed handle and returns
-    ///   ERR_NULL_POINTER — reclaim + zeroize happens exactly once, never UB;
+    ///   ERR_NULL_POINTER — the zeroizing drop runs exactly once, never UB;
     /// - a NULL slot pointer or a NULL handle is likewise ERR_NULL_POINTER.
+    ///
+    /// **Lifetime rule**: never call this while a sign call on the same handle
+    /// is in flight (including from an interrupt or another thread) — the
+    /// in-flight sign would read freed/zeroed key material. Free only after
+    /// every sign call has returned.
     ///
     /// The slot is NULLed before the reclaim drop, so no exit path can leave
     /// the caller holding a stale handle.
@@ -1501,14 +1529,16 @@ pub mod r3 {
             return ERR_NULL_POINTER;
         }
         // SAFETY: single-owner handle contract (same as the R3 encoder/decoder
-        // handles): the pointer came from `Box::into_raw` on the construction
-        // side and is reclaimed exactly once — the slot is NULLed first, so a
-        // second call (or re-entry) errors out instead of double-freeing. The
-        // drop runs KeySession's ZeroizeOnDrop before the heap slot returns to
-        // the allocator.
+        // handles, Z3.3c caller-workspace): the handle points at a `KeySession`
+        // the caller constructed in place in their own storage (static slot /
+        // caller workspace; tests: MaybeUninit + ptr::write). This call drops
+        // it IN PLACE — no `Box`, no allocator: the memory goes back to the
+        // caller — and `KeySession`'s ZeroizeOnDrop wipes the seed/spend/view
+        // key bytes on the way out. The slot is NULLed first, so a second call
+        // (or re-entry) errors out instead of double-dropping.
         unsafe {
             *session = core::ptr::null_mut();
-            drop(alloc::boxed::Box::from_raw(handle));
+            core::ptr::drop_in_place(handle);
         }
         OK
     }

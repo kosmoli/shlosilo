@@ -20,6 +20,7 @@
 //! outcome of the SeedSigner bit layout (11-bit index stream, drop the trailing
 //! 4/8 checksum bits, repack 8 bits at a time), independently confirmed by the
 //! oracle rather than assumed.
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::entropy::mnemonic::{Mnemonic, WordCount};
 use shlosilo::entropy::seed_qr::{decode, encode_compact, encode_standard};

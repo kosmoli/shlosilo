@@ -9,11 +9,25 @@
 //! 2. Handle lifecycle: `shlosilo_session_free_ffi` takes the handle slot by
 //!    pointer; a second free of the same slot returns an error code (the slot
 //!    was NULLed), never UB. A NULL slot or NULL handle is likewise an error.
-//! 3. Old entry delegation: the deprecated typed entry's output equals the
-//!    session path's — asserted separately from the round-trip.
+//! 3. Old entry behavior: the deprecated typed entry's output is byte-identical
+//!    to the session path's (same sign core) — asserted separately from the
+//!    round-trip, on the 24-word fixture.
+//! 4. Negative probes (M2): undersized output buffer (BufferTooSmall +
+//!    zeroed `actual_len`), NULL required args, ws under-capacity (reports the
+//!    required length), and the §B.5 XMR entropy misuse guard via the session
+//!    path.
+//!
+//! Handle construction contract (Z6 / R3 Z3.3c caller-workspace): the caller
+//! OWNS the handle storage and the session is constructed IN PLACE — Rust glue
+//! `ptr::write`s it into a static slot / caller workspace; here that is
+//! `MaybeUninit` + `ptr::write` over a workspace buffer. `Box::into_raw` is
+//! deliberately absent: the handle lifecycle must not touch the allocator
+//! (see `scripts/z6_langitem_check.sh` / `probes/noalloc`).
 //!
 //! The ETH request fixture is reused (tests/pico2_smoke_parity.rs's UR, shared
 //! with flux/host-sim/sim_l3.c) — nothing here hand-rolls an ETH sign request.
+
+use core::mem::MaybeUninit;
 
 use shlosilo::business;
 use shlosilo::business::sign::SignInput;
@@ -28,6 +42,7 @@ use shlosilo::ur::ur_decode;
 
 const OK: i32 = 0;
 const ERR_NULL_POINTER: i32 = ShlosiloErrorCode::InvalidArgument as i32;
+const ERR_BUFFER_TOO_SMALL: i32 = ShlosiloErrorCode::BufferTooSmall as i32;
 
 /// ETH sign-request fixture UR — the same string as tests/pico2_smoke_parity.rs
 /// and flux/host-sim/sim_l3.c (the shared C-oracle fixture). Reused verbatim.
@@ -44,6 +59,18 @@ const FIXTURE_ENTROPY_24: [u8; 32] = [0x11u8; 32];
 /// Network value for the ETH fixture: EthereumMainnet maps to EIP-155 chain
 /// id 1, which matches the fixture tx (see forms/network.rs + check_network).
 const ETHEREUM_MAINNET: u32 = 10;
+
+/// Z6/R3 caller-workspace handle contract: construct the session IN PLACE in
+/// caller-owned storage (Rust glue: `ptr::write` into a static slot / workspace;
+/// here `MaybeUninit` + `ptr::write` — the r3_tests `dec_ws.as_mut_ptr()`
+/// discipline). `Box::into_raw` is deliberately NOT used: the handle lifecycle
+/// must stay off the allocator (zero-heap face).
+fn place_session(slot: &mut MaybeUninit<KeySession>, entropy: &[u8]) -> *mut KeySession {
+    let session = KeySession::from_entropy(entropy, b"").expect("session");
+    let handle = slot.as_mut_ptr();
+    unsafe { core::ptr::write(handle, session) };
+    handle
+}
 
 fn eth_fixture_payload() -> std::vec::Vec<u8> {
     let decoded = ur_decode::decode(ETH_SIGN_REQUEST_URI).expect("fixture UR decodes");
@@ -112,9 +139,9 @@ fn indices_for(entropy: &[u8]) -> std::vec::Vec<u16> {
 fn session_sign_matches_typed_entry_byte_for_byte() {
     let payload = eth_fixture_payload();
     let indices = indices_for(&FIXTURE_ENTROPY);
-    let session = KeySession::from_entropy(&FIXTURE_ENTROPY, b"").expect("session");
-    // leak-slot pattern: flux owns the construction, the FFI only holds the pointer
-    let handle = Box::into_raw(Box::new(session));
+    // caller-storage handle: flux owns the construction, the FFI only holds the pointer
+    let mut slot_mem = MaybeUninit::<KeySession>::uninit();
+    let handle = place_session(&mut slot_mem, &FIXTURE_ENTROPY);
 
     let (rc_old, out_old, n_old) = sign_via_typed(&indices, ETHEREUM_MAINNET, &payload);
     assert_eq!(rc_old, OK, "typed entry must sign the fixture");
@@ -142,8 +169,8 @@ fn session_sign_matches_typed_entry_byte_for_byte() {
 
 #[test]
 fn session_free_lifecycle_contract() {
-    let session = KeySession::from_entropy(&FIXTURE_ENTROPY, b"").expect("session");
-    let handle = Box::into_raw(Box::new(session));
+    let mut slot_mem = MaybeUninit::<KeySession>::uninit();
+    let handle = place_session(&mut slot_mem, &FIXTURE_ENTROPY);
     let mut slot = handle;
 
     assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
@@ -171,14 +198,15 @@ fn session_free_lifecycle_contract() {
     );
 }
 
-//-- 3. Old entry delegation: old entry output == session path (separate assertion) --
+//-- 3. Old entry behavior: old entry output == session path, byte-identical
+//       (separate assertion, 24-word fixture) --
 
 #[test]
-fn typed_entry_delegates_to_session_path() {
+fn typed_entry_output_matches_session_byte_for_byte_24_word() {
     let payload = eth_fixture_payload();
     let indices = indices_for(&FIXTURE_ENTROPY_24);
-    let session = KeySession::from_entropy(&FIXTURE_ENTROPY_24, b"").expect("session");
-    let handle = Box::into_raw(Box::new(session));
+    let mut slot_mem = MaybeUninit::<KeySession>::uninit();
+    let handle = place_session(&mut slot_mem, &FIXTURE_ENTROPY_24);
 
     let (rc_old, out_old, n_old) = sign_via_typed(&indices, ETHEREUM_MAINNET, &payload);
     assert_eq!(rc_old, OK);
@@ -189,7 +217,7 @@ fn typed_entry_delegates_to_session_path() {
     assert_eq!(
         &out_old[..n_old as usize],
         &out_new[..n_new as usize],
-        "deprecated typed entry must route through the same sign core"
+        "deprecated typed entry must be byte-identical to the session path"
     );
 
     let mut slot = handle;
@@ -231,7 +259,6 @@ fn typed_entry_output_unchanged_vs_business_path() {
 }
 
 //-- 4. Gate4 discipline on the new entry: null session / ws probe --
-
 #[test]
 fn session_sign_null_session_rejected() {
     let payload = eth_fixture_payload();
@@ -280,4 +307,223 @@ fn session_sign_ws_probe_reports_requirement() {
         shlosilo_sign_ws_len(),
         "probe must report the workspace requirement"
     );
+}
+
+//-- 5. Negative probes (M2): buffers / pointers / entropy misuse — error codes, never UB --
+
+/// Undersized output buffer → BufferTooSmall, `actual_len` zeroed (Gate4 #2:
+/// zero on every failure path — a partial write is never reported as success).
+#[test]
+fn session_sign_output_buf_too_small_reports_buffer_too_small() {
+    let payload = eth_fixture_payload();
+    let mut slot_mem = MaybeUninit::<KeySession>::uninit();
+    let handle = place_session(&mut slot_mem, &FIXTURE_ENTROPY);
+    let mut out = [0u8; 8]; // ≪ ETH signature output
+    let mut actual: u32 = 0;
+    let need = shlosilo_sign_ws_len();
+    let mut ws = std::vec![0u8; need as usize];
+    let rc = shlosilo_sign_session_ffi(
+        handle,
+        c"eth-sign-request".as_ptr(),
+        payload.as_ptr(),
+        payload.len() as u32,
+        core::ptr::null(),
+        0,
+        out.as_mut_ptr(),
+        out.len() as u32,
+        &mut actual,
+        ws.as_mut_ptr(),
+        need,
+    );
+    assert_eq!(
+        rc, ERR_BUFFER_TOO_SMALL,
+        "undersized output buffer must report BufferTooSmall"
+    );
+    assert_eq!(actual, 0, "failure path must zero actual_len");
+
+    let mut slot = handle;
+    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+}
+
+/// NULL required args (type_name / payload / output_buf) → ERR_NULL_POINTER,
+/// `actual_len` zeroed. The session handle may be NULL first (excluded in the
+/// entry prologue), so each case is probed with a live session.
+#[test]
+fn session_sign_null_required_args_rejected() {
+    let payload = eth_fixture_payload();
+    let mut slot_mem = MaybeUninit::<KeySession>::uninit();
+    let handle = place_session(&mut slot_mem, &FIXTURE_ENTROPY);
+    let mut out = [0u8; 512];
+    let need = shlosilo_sign_ws_len();
+    let mut ws = std::vec![0u8; need as usize];
+
+    let cases: [(*const u8, *const u8, *mut u8); 3] = [
+        // (type_name, payload, output_buf)
+        (core::ptr::null(), payload.as_ptr(), out.as_mut_ptr()),
+        (
+            c"eth-sign-request".as_ptr().cast(),
+            core::ptr::null(),
+            out.as_mut_ptr(),
+        ),
+        (
+            c"eth-sign-request".as_ptr().cast(),
+            payload.as_ptr(),
+            core::ptr::null_mut(),
+        ),
+    ];
+    for (i, (type_name, pl, ob)) in cases.into_iter().enumerate() {
+        let mut actual: u32 = 0;
+        let rc = shlosilo_sign_session_ffi(
+            handle,
+            type_name.cast(),
+            pl,
+            if pl.is_null() {
+                0
+            } else {
+                payload.len() as u32
+            },
+            core::ptr::null(),
+            0,
+            ob,
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            need,
+        );
+        assert_eq!(
+            rc, ERR_NULL_POINTER,
+            "case {i}: NULL required arg must be rejected"
+        );
+        assert_eq!(actual, 0, "case {i}: failure path must zero actual_len");
+    }
+
+    let mut slot = handle;
+    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+}
+
+/// ws under-capacity → BufferTooSmall AND `actual_len` reports the required
+/// workspace length (the documented exception to the zero-on-failure rule —
+/// the caller needs the number to resize).
+#[test]
+fn session_sign_ws_under_capacity_reports_requirement() {
+    let payload = eth_fixture_payload();
+    let mut slot_mem = MaybeUninit::<KeySession>::uninit();
+    let handle = place_session(&mut slot_mem, &FIXTURE_ENTROPY);
+    let mut out = [0u8; 512];
+    let mut actual: u32 = 0;
+    let need = shlosilo_sign_ws_len();
+    let mut ws = std::vec![0u8; need as usize - 1]; // one byte short
+    let rc = shlosilo_sign_session_ffi(
+        handle,
+        c"eth-sign-request".as_ptr(),
+        payload.as_ptr(),
+        payload.len() as u32,
+        core::ptr::null(),
+        0,
+        out.as_mut_ptr(),
+        out.len() as u32,
+        &mut actual,
+        ws.as_mut_ptr(),
+        need - 1,
+    );
+    assert_eq!(rc, ERR_BUFFER_TOO_SMALL, "under-capacity ws must error");
+    assert_eq!(
+        actual,
+        shlosilo_sign_ws_len(),
+        "under-capacity ws must report the required length (documented exception)"
+    );
+
+    let mut slot = handle;
+    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+}
+
+/// §B.5 XMR entropy misuse guard through the SESSION path: an XMR sign request
+/// with < 16 B of signing entropy must fail with EntropyInjectionInvalid
+/// (mapped to `InvalidDiceRolls` = -33 at the FFI, error.rs L2b), never sign.
+///
+/// The guard fires on the first `purpose_rng` call — i.e. AFTER decrypt+parse —
+/// so the payload is the p1_06 fixture plaintext re-encrypted for the
+/// session's OWN derived view key (helper duplicated from
+/// tests/p1_06_xmr_business.rs). The round-trip is asserted first: if
+/// decryption broke, the guard would never be reached and the test would fail
+/// loudly instead of passing vacuously.
+#[test]
+fn session_sign_xmr_short_entropy_hits_misuse_guard() {
+    let mut slot_mem = MaybeUninit::<KeySession>::uninit();
+    let handle = place_session(&mut slot_mem, &FIXTURE_ENTROPY_24);
+    let view_sk = *unsafe { &*handle }.monero().view_sk.expose();
+
+    let plain: &[u8] = include_bytes!("fixtures/txset_plain.bin");
+    use rand_chacha::rand_core::SeedableRng;
+    let mut enc_rng = rand_chacha::ChaCha20Rng::from_seed([0xABu8; 32]);
+    let encrypted = encrypt_unsigned_with_self_view(plain, &view_sk, &mut enc_rng);
+    // the session's own view key must open the request (guard reachability)
+    let dec = shlosilo::chain::xmr::unsigned_txset::decrypt_unsigned_txset(&encrypted, &view_sk)
+        .expect("self-encrypted request decrypts");
+    assert_eq!(&*dec, plain);
+
+    let mut out = [0u8; 512];
+    let mut actual: u32 = 0;
+    let need = shlosilo_sign_ws_len();
+    let mut ws = std::vec![0u8; need as usize];
+    let short_entropy = [0x77u8; 8]; // < ENTROPY_MIN_LEN (16)
+    let rc = shlosilo_sign_session_ffi(
+        handle,
+        c"xmr-txunsigned".as_ptr(),
+        encrypted.as_ptr(),
+        encrypted.len() as u32,
+        short_entropy.as_ptr(),
+        short_entropy.len() as u32,
+        out.as_mut_ptr(),
+        out.len() as u32,
+        &mut actual,
+        ws.as_mut_ptr(),
+        need,
+    );
+    assert_eq!(
+        rc,
+        ShlosiloErrorCode::InvalidDiceRolls as i32,
+        "XMR + short entropy must hit the §B.5 misuse guard (EntropyInjectionInvalid)"
+    );
+    assert_eq!(actual, 0, "failure path must zero actual_len");
+
+    let mut slot = handle;
+    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+}
+
+/// Encrypt with the unsigned-side isomorphic format (duplicated from
+/// tests/p1_06_xmr_business.rs — lets a test hand the wallet an XMR request
+/// its own derived view key can decrypt):
+/// magic(23) ‖ nonce(8 BE) ‖ chacha20-legacy(cn_v0(view_sk)) ‖ sig(64).
+fn encrypt_unsigned_with_self_view(
+    plain: &[u8],
+    view_sk: &[u8; 32],
+    rng: &mut rand_chacha::ChaCha20Rng,
+) -> std::vec::Vec<u8> {
+    use chacha20::cipher::{KeyIvInit, StreamCipher};
+    use chacha20::ChaCha20Legacy;
+    use rand_chacha::rand_core::RngCore;
+
+    const PREFIX: &[u8] = b"Monero unsigned tx set\x05";
+    let key = cuprate_cryptonight::cryptonight_hash_v0(view_sk);
+    let nonce = rng.next_u64().to_be_bytes();
+    let mut buf = plain.to_vec();
+    #[allow(deprecated)]
+    let mut cipher =
+        ChaCha20Legacy::new_from_slices(&key, chacha20::LegacyNonce::from_slice(&nonce)).unwrap();
+    cipher.apply_keystream(&mut buf);
+
+    let mut unsigned = std::vec::Vec::with_capacity(8 + buf.len());
+    unsigned.extend_from_slice(&nonce);
+    unsigned.extend_from_slice(&buf);
+    let hash = shlosilo::encoding::keccak256::hash(&unsigned).unwrap();
+    let [c, r] = shlosilo::chain::xmr::signed_txset::monero_sign(&hash, view_sk, rng).unwrap();
+
+    let mut out = std::vec::Vec::with_capacity(PREFIX.len() + 8 + buf.len() + 64);
+    out.extend_from_slice(PREFIX);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&buf);
+    out.extend_from_slice(&c);
+    out.extend_from_slice(&r);
+    out
 }

@@ -945,8 +945,18 @@ int shlosilo_sign_typed_ffi(const char *type_name,
  * NO seed/mnemonic/passphrase parameter exists on this entry, so key
  * material cannot cross the FFI boundary even by mistake.
  *
- * - `session`: flux-constructed `KeySession` handle (single-owner; release
- *   with [`shlosilo_session_free_ffi`])
+ * - `session`: flux-constructed `KeySession` handle (single-owner).
+ *   **Handle storage is the caller's** (R3/Z3.3c caller-workspace
+ *   contract): the session is constructed IN PLACE in caller memory —
+ *   Rust glue `ptr::write`s it into a static slot or caller workspace;
+ *   tests use `MaybeUninit` + `ptr::write` over a workspace buffer (never
+ *   `Box::into_raw`). Release with [`shlosilo_session_free_ffi`], which
+ *   drops the value in place and returns the storage to the caller.
+ * - **Lifetime rule**: the session must stay alive for the whole sign
+ *   call. While a sign is in flight on a handle, the caller must NOT free
+ *   it and must NOT use the same handle concurrently — including from
+ *   another thread or an interrupt (forgebox signs across interrupt
+ *   context). Free only after every sign call has returned.
  * - `type_name` / `payload` / `payload_len`: the typed UR face — identical
  *   budget + validation to the typed entry (payload ≤ 16 KiB)
  * - `entropy_ptr` / `entropy_len`: §B.5 signing-randomness stream for the
@@ -975,13 +985,25 @@ int shlosilo_sign_session_ffi(const struct KeySession *session,
  * Task 3 (2026-10-07): session reclaim — the handle lifecycle contract.
  *
  * `session` is a POINTER TO the caller's handle slot (C: `KeySession **`).
+ * **Handle storage is the caller's** (R3/Z3.3c caller-workspace contract):
+ * the session was constructed in place in caller memory (Rust glue
+ * `ptr::write` into a static slot / caller workspace; tests use
+ * `MaybeUninit` + `ptr::write` — never `Box::into_raw`), so this call
+ * drops the value IN PLACE (`core::ptr::drop_in_place`) and the storage
+ * returns to the caller — no allocator is involved anywhere in the handle
+ * lifecycle (Z6 zero-heap face).
  * Contract:
- * - success: the session is reclaimed (`Box::from_raw`) and dropped —
- *   `KeySession: ZeroizeOnDrop` wipes the seed/spend/view key bytes — and
- *   the caller's slot is set to NULL;
+ * - success: the session is dropped in place — `KeySession: ZeroizeOnDrop`
+ *   wipes the seed/spend/view key bytes — and the caller's slot is set to
+ *   NULL;
  * - a second free of the SAME slot sees the NULLed handle and returns
- *   ERR_NULL_POINTER — reclaim + zeroize happens exactly once, never UB;
+ *   ERR_NULL_POINTER — the zeroizing drop runs exactly once, never UB;
  * - a NULL slot pointer or a NULL handle is likewise ERR_NULL_POINTER.
+ *
+ * **Lifetime rule**: never call this while a sign call on the same handle
+ * is in flight (including from an interrupt or another thread) — the
+ * in-flight sign would read freed/zeroed key material. Free only after
+ * every sign call has returned.
  *
  * The slot is NULLed before the reclaim drop, so no exit path can leave
  * the caller holding a stale handle.
