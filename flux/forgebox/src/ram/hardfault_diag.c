@@ -8,7 +8,7 @@
  *
  * 2026-09-30 修复：记录区原在 0x2000F004（注释称"0x2000F000 未被 .bss
  * 占用"），实际 g_lvglCache 早已覆盖该地址，启动清 .bss 时把记录清掉——
- * 诊断从未生效过。现移入 mh1903b.ld 的 .diag_noinit（0x20098000，NOLOAD，
+ * 诊断从未生效过。现移入 mh1903b.ld 的 .diag_noinit（0x20098800，NOLOAD，
  * 启动不清零、WDT 暖复位保留）。
  */
 #include <stdint.h>

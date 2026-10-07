@@ -316,9 +316,17 @@ static void __attribute__((noinline)) Dispatch(char *line)
         while (*p != '\0' && *p != ' ') {
             p++;
         }
+        if (*p == ' ') {
+            /* terminate EVERY token at its trailing space (the skip loop
+             * covers non-final tokens; this covers the last one, so a
+             * 4-token argv[3] is a single-word password like argv[2]) */
+            *p = '\0';
+        }
     }
 
     if (argc == 0) {
+        /* "any other command aborts" covers whitespace-only lines too */
+        g_armed = SE_ARM_NONE;
         return;
     }
 
@@ -399,7 +407,9 @@ void SeConsolePoll(void)
     if (!g_testCmdReady) {
         return;
     }
-    g_testCmdReady = 0;
+    /* Copy FIRST, release the ISR last: while g_testCmdReady stays set the
+     * ISR drops incoming bytes, so the buffer is stable through the copy
+     * and no freshly published line can be wiped by the stale-line clear. */
     n = strlen((const char *)g_testCmdRcvBuffer);
     if (n >= sizeof(line)) {
         n = sizeof(line) - 1;
@@ -407,5 +417,6 @@ void SeConsolePoll(void)
     memcpy(line, g_testCmdRcvBuffer, n);
     line[n] = '\0';
     g_testCmdRcvBuffer[0] = '\0';
+    g_testCmdReady = 0;
     Dispatch(line);
 }
