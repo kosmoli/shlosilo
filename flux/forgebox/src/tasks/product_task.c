@@ -37,6 +37,8 @@
 #include "ui_layout.h"
 #include "shlosilo.h"
 #include "demo_payload.h"
+#include "err_code.h"
+#include "se_smoke.h"
 
 /* SRAM window handoff (shared with the K2-D Rust pool; implemented in
  * shlosilo/embedded_alloc_glue.c - not part of the FFI surface). */
@@ -82,10 +84,15 @@ static void scan_enter(void);
 static void scan_step(void);
 static void scan_exit(void);
 static void seed_confirm_step(void);
-static void key_qr_session_close(void);
+static void key_session_close(void);
 /* Task 5b seed-flow state (full definition below with the seed helpers;
  * tentative declaration here because ProductTask's exit leg consults it). */
 static const struct KeySession *g_key_session;
+/* Task 8: which source opened the live session (1 = SE password unlock). The
+ * seed-flow exit leg only tears down PLATE sessions ("a live plate session
+ * outside the flow pages means the flow exited"); an SE session lives until
+ * `se lock` or the sign-done close (v1: session per sign). */
+static int g_key_from_se;
 static void seed_plate_wipe(void);
 static void carousel_enter(void);
 static void carousel_step(void);
@@ -326,10 +333,14 @@ static void ProductTask(void *argument)
              * WELCOME->QR gap a page==WELCOME check would miss (a rapid
              * second tap could otherwise carry a live session into the
              * carousel); CONFIRM is exempt because the -23 recovery keeps
-             * the old session live across a second plate's confirm page. */
-            if (g_key_session != NULL && UiGetPage() != UI_PAGE_SCAN &&
+             * the old session live across a second plate's confirm page.
+             * Task 8: this leg is for PLATE sessions only - an SE unlock is
+             * not flow-owned (it lives until 'se lock' or the sign-done
+             * close), so it survives UI navigation. */
+            if (g_key_session != NULL && g_key_from_se == 0 &&
+                UiGetPage() != UI_PAGE_SCAN &&
                 UiGetPage() != UI_PAGE_SIGN && UiGetPage() != UI_PAGE_CONFIRM) {
-                key_qr_session_close();
+                key_session_close();
                 seed_plate_wipe();
                 UiSetLast("key zeroized (exit)");
                 UiGotoPage(UI_PAGE_WELCOME);    /* repaint the footer line */
@@ -348,6 +359,14 @@ static void ProductTask(void *argument)
             if (UiGetPage() != UI_PAGE_QR && g_carousel == CAROUSEL_FAILED) {
                 g_carousel = CAROUSEL_IDLE;     /* left the QR page; allow retry */
             }
+
+            /* Task 8 dev console (se_smoke.c, UART0 line-buffered): 'se
+             * unlock <password>' / 'se lock' drive the SE key session on the
+             * g_key_session route. POLLED HERE ONLY (idle branch): the
+             * scan/carousel loops are busy with hardware. The password
+             * transits the serial console - development convenience; the
+             * product entry is the P4 UI. */
+            SeConsolePoll();
 
             osDelay(UI_POLL_MS);
         }
@@ -463,6 +482,8 @@ static char g_sign_out_type[32] = "bytes";
 #define SEED_CLASS_COMPACT24      4
 #define SEED_CLASS_UR             5
 #define KEY_ERR_SLOT_OCCUPIED     (-23)
+#define KEY_ERR_BUFFER_TOO_SMALL  (-20)
+#define KEY_ERR_AUTH_FAILED       (-24)
 
 /* The scanned plate bytes, held between scan and the confirmation decision
  * (the open call needs them; the plate itself is at most 96 bytes - the
@@ -485,15 +506,20 @@ static void seed_plate_wipe(void)
     g_seed_plate_len = 0;
 }
 
-/* Key-source QR workspace (shlosilo_keysource_qr_ws_len() bytes): caller-
+/* Key-source workspace (shlosilo_keysource_qr_ws_len() /
+ * shlosilo_keysource_se_ws_len() bytes - one shared layout, Task 8): caller-
  * pinned static storage - BSS-zeroed at boot (the REQUIRED initial state),
  * stable address for the self-referential handle (shlosilo.h contract).
  * Sized generously at compile time and checked against the runtime query
- * before first use (contract 3: the query is the single layout source). */
-#define KEY_QR_WS_MAX             4096
-static uint8_t g_key_qr_ws[KEY_QR_WS_MAX];
-/* The live session pointer from shlosilo_keysource_qr_open_ffi - valid until
- * shlosilo_keysource_qr_close_ffi. NULL = no session (old sign path runs). */
+ * before first use (contract 3: the query is the single layout source).
+ * Shared by the QR plate flow and the SE unlock flow: one live session per
+ * workspace (an open on a busy workspace answers -23). */
+#define KEY_WS_MAX             4096
+static uint8_t g_key_ws[KEY_WS_MAX];
+/* The live session pointer from shlosilo_keysource_qr_open_ffi /
+ * shlosilo_keysource_se_open_ffi - valid until the matching close. NULL = no
+ * session (old sign path runs). SE sessions and QR sessions ride this SAME
+ * sign route. */
 static const struct KeySession *g_key_session = NULL;
 
 static const char *seed_class_name(int cls)
@@ -507,19 +533,80 @@ static const char *seed_class_name(int cls)
     }
 }
 
-/* Close (zeroize) the live plate session, if any. The glue's close is total
- * and idempotent, so calling it on a quiet workspace is a defined no-op -
- * it is also the single teardown used by every exit leg (sign done, confirm
- * reject, flow exit to welcome). */
-static void key_qr_session_close(void)
+/* Close (zeroize) the live key session, whichever source opened it (Task 8:
+ * the QR and SE glue entries share ONE teardown - see flux/keysource
+ * ws.rs). The glue's close is total and idempotent, so calling it on a quiet
+ * workspace is a defined no-op - it is also the single teardown used by every
+ * exit leg (sign done, confirm reject, flow exit to welcome, se lock). Both
+ * close entries run over the shared workspace: they are the same function
+ * inside, the second call is the idempotent no-op. */
+static void key_session_close(void)
 {
     if (g_key_session != NULL) {
         printf("seed: key session closed (zeroized)\r\n");
     }
     /* The glue's close is total for a non-NULL ws (only ws==NULL errs), so
      * the pointer dies unconditionally -- never keep a stale session. */
-    (void)shlosilo_keysource_qr_close_ffi(g_key_qr_ws);
+    (void)shlosilo_keysource_qr_close_ffi(g_key_ws);
+    (void)shlosilo_keysource_se_close_ffi(g_key_ws);
     g_key_session = NULL;
+    g_key_from_se = 0;
+}
+
+/* ---- Task 8: SE password unlock -> signing session ----
+ *
+ * v1 entry is the dev console ('se unlock <password>', se_smoke.c): the
+ * password transits the serial console - DEVELOPMENT CONVENIENCE ONLY, the
+ * product entry is the P4 UI. The unlocked session rides the SAME
+ * g_key_session sign route as the plate flow (one route, two sources).
+ * v1 account scope: account 0 (FindAccountByPassword is not ported yet -
+ * multi-account unlock rides that port). */
+
+/* err_code.h ERR_KEYSTORE_AUTH pins the Rust-side constant in
+ * flux/keysource/src/keysource/se.rs (the AuthFailed mapping). */
+_Static_assert(ERR_KEYSTORE_AUTH == 20, "se.rs ERR_KEYSTORE_AUTH drift");
+
+int ProductKeySeUnlock(const char *password)
+{
+    unsigned ws_need;
+    int rc;
+
+    if (password == NULL || password[0] == '\0') {
+        return KEY_ERR_AUTH_FAILED;
+    }
+    if (g_key_session != NULL) {
+        /* Unlock while unlocked = Capacity (-23): refused BEFORE any
+         * credential attempt. Close first ('se lock' or the flow close). */
+        printf("se unlock: refused, session already live (se lock first)\r\n");
+        return KEY_ERR_SLOT_OCCUPIED;
+    }
+    ws_need = shlosilo_keysource_se_ws_len();
+    if (ws_need > KEY_WS_MAX) {
+        printf("se unlock: ws query %u > static %u\r\n",
+               ws_need, (unsigned)KEY_WS_MAX);
+        return KEY_ERR_BUFFER_TOO_SMALL;
+    }
+    rc = shlosilo_keysource_se_open_ffi(g_key_ws, (unsigned)sizeof(g_key_ws),
+                                        (const uint8_t *)password,
+                                        (unsigned)strlen(password),
+                                        &g_key_session);
+    if (rc != 0 || g_key_session == NULL) {
+        /* Wrong password is a plain refusal (rc=-24, one shot - the glue
+         * never retries): report and leave no session behind. */
+        printf("se unlock: FAIL rc=%d\r\n", rc);
+        key_session_close();
+        return rc;
+    }
+    g_key_from_se = 1;
+    printf("se unlock: key session live (account 0)\r\n");
+    return 0;
+}
+
+/* Console 'se lock': close (zeroize) the live session, whichever source
+ * opened it - the shared teardown above. */
+void ProductKeyLock(void)
+{
+    key_session_close();
 }
 
 /* Confirm-page handler (product loop, while the page is up):
@@ -538,7 +625,7 @@ static void seed_confirm_step(void)
     if (rc < 0) {
         /* back / reject: close ANY live session (idempotent) + rescan. */
         printf("seed: rejected -> close + rescan\r\n");
-        key_qr_session_close();
+        key_session_close();
         seed_plate_wipe();
         UiSetLast("seed rejected");
         UiGotoPage(UI_PAGE_SCAN);
@@ -548,17 +635,17 @@ static void seed_confirm_step(void)
     /* continue: open the session from the plate bytes still in hand (no
      * re-scan needed - the open runs full validation + BIP-39 checksum). */
     ws_need = shlosilo_keysource_qr_ws_len();
-    if (ws_need > KEY_QR_WS_MAX) {
+    if (ws_need > KEY_WS_MAX) {
         printf("seed: ws query %u > static %u\r\n",
-               ws_need, (unsigned)KEY_QR_WS_MAX);
+               ws_need, (unsigned)KEY_WS_MAX);
         /* Same teardown semantics as reject: no session survives this leg. */
-        key_qr_session_close();
+        key_session_close();
         seed_plate_wipe();
         UiSetLast("key ws too small");
         UiGotoPage(UI_PAGE_SCAN);
         return;
     }
-    rc = shlosilo_keysource_qr_open_ffi(g_key_qr_ws, (unsigned)sizeof(g_key_qr_ws),
+    rc = shlosilo_keysource_qr_open_ffi(g_key_ws, (unsigned)sizeof(g_key_ws),
                                         g_seed_plate, g_seed_plate_len,
                                         &g_key_session);
     if (rc == KEY_ERR_SLOT_OCCUPIED) {
@@ -567,15 +654,15 @@ static void seed_confirm_step(void)
          * bytes - the sequence pinned by qr_ffi.rs
          * slot_occupied_recovery_close_then_reopen_yields_new_scan_keys. */
         printf("seed: slot occupied (-23) -> close old + reopen\r\n");
-        key_qr_session_close();
-        rc = shlosilo_keysource_qr_open_ffi(g_key_qr_ws, (unsigned)sizeof(g_key_qr_ws),
+        key_session_close();
+        rc = shlosilo_keysource_qr_open_ffi(g_key_ws, (unsigned)sizeof(g_key_ws),
                                             g_seed_plate, g_seed_plate_len,
                                             &g_key_session);
     }
     if (rc != 0 || g_key_session == NULL) {
         snprintf(msg, sizeof(msg), "seed open FAIL rc=%d", rc);
         printf("seed: open failed rc=%d\r\n", rc);
-        key_qr_session_close();
+        key_session_close();
         seed_plate_wipe();
         UiSetLast(msg);
         UiGotoPage(UI_PAGE_SCAN);
@@ -692,7 +779,8 @@ static void sign_run(const char *uri, const char *type,
         snprintf(l2, sizeof(l2), "payload %u bytes", plen);
     }
     if (g_key_session != NULL) {
-        snprintf(l3, sizeof(l3), "key: plate scan");
+        snprintf(l3, sizeof(l3), "key: %s",
+                 (g_key_from_se != 0) ? "se unlock" : "plate scan");
     } else {
         snprintf(l3, sizeof(l3), "key: fixture idx12");
     }
@@ -709,7 +797,9 @@ static void sign_run(const char *uri, const char *type,
     shlosilo_timing_set_clock_fn(product_tick_ms);
 
     printf("sign: start (ws=%u) key=%s\r\n", ws_need,
-           (g_key_session != NULL) ? "plate session" : "fixture idx12");
+           (g_key_session != NULL)
+               ? ((g_key_from_se != 0) ? "se unlock" : "plate session")
+               : "fixture idx12");
     g_sign_busy = 1;
     t0 = osKernelGetTickCount();
     if (g_key_session != NULL) {
@@ -806,7 +896,7 @@ static void sign_run(const char *uri, const char *type,
     /* Task 5b: sign done -> close (zeroize) -> back to the scan flow. The
      * plate key's job ends with the sign; the same teardown runs on every
      * exit leg (confirm reject / welcome housekeeping). */
-    key_qr_session_close();
+    key_session_close();
     ur_intake_reset();
     printf("sign: done -> result page\r\n");
     UiSetPayload(result, (uint32_t)strlen(result));

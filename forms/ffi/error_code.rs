@@ -44,6 +44,17 @@ pub const ERR_SLOT_CONSUMED: i32 = -22;
 /// FFI-contract outcome of the flux-side glue, not a `ShlosiloError` kind.
 pub const ERR_SLOT_OCCUPIED: i32 = -23;
 
+/// Task 8: SE key-source password unlock rejected — the credential was
+/// refused (wrong password, empty, or over the SE password bound). One-shot:
+/// the glue never retries and never downgrades to another key source. Bare
+/// code, same style as `ERR_SLOT_OCCUPIED`.
+pub const ERR_AUTH_FAILED: i32 = -24;
+
+/// Task 8: SE key-source secure-element communication failure — the
+/// SE/keystore path failed for a reason that is not the password (transport,
+/// key-piece derivation, slot read). Bare code, same style as above.
+pub const ERR_SE_COMM: i32 = -25;
+
 /// Success
 pub const OK: i32 = ShlosiloErrorCode::Ok as i32;
 
@@ -66,6 +77,8 @@ pub fn describe(code: i32) -> &'static str {
         -21 => "Encoding error",
         -22 => "Generator table slot already consumed",
         -23 => "Key session slot already occupied",
+        -24 => "Auth failed (password rejected)",
+        -25 => "Secure element communication failure",
         -30 => "Invalid UR payload",
         -31 => "Invalid mnemonic",
         -32 => "Invalid derivation path",
@@ -113,5 +126,12 @@ mod tests {
             "Key session slot already occupied"
         );
         assert_eq!(describe(ERR_SLOT_OCCUPIED), describe(-23));
+        assert_eq!(describe(ERR_AUTH_FAILED), "Auth failed (password rejected)");
+        assert_eq!(describe(ERR_AUTH_FAILED), describe(-24));
+        assert_eq!(
+            describe(ERR_SE_COMM),
+            "Secure element communication failure"
+        );
+        assert_eq!(describe(ERR_SE_COMM), describe(-25));
     }
 }

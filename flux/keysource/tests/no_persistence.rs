@@ -23,6 +23,18 @@ const SOURCES: &[(&str, &str)] = &[
         "src/keysource/qr.rs",
         include_str!("../src/keysource/qr.rs"),
     ),
+    (
+        "src/keysource/se.rs",
+        include_str!("../src/keysource/se.rs"),
+    ),
+    (
+        "src/keysource/se_ffi.rs",
+        include_str!("../src/keysource/se_ffi.rs"),
+    ),
+    (
+        "src/keysource/ws.rs",
+        include_str!("../src/keysource/ws.rs"),
+    ),
 ];
 
 /// Forbidden tokens: persistence APIs (flash/fs) and heap allocation roots.

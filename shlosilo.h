@@ -343,6 +343,21 @@
  */
 #define ERR_SLOT_OCCUPIED -23
 
+/**
+ * Task 8: SE key-source password unlock rejected — the credential was
+ * refused (wrong password, empty, or over the SE password bound). One-shot:
+ * the glue never retries and never downgrades to another key source. Bare
+ * code, same style as `ERR_SLOT_OCCUPIED`.
+ */
+#define ERR_AUTH_FAILED -24
+
+/**
+ * Task 8: SE key-source secure-element communication failure — the
+ * SE/keystore path failed for a reason that is not the password (transport,
+ * key-piece derivation, slot read). Bare code, same style as above.
+ */
+#define ERR_SE_COMM -25
+
 
 
 /**
@@ -1248,3 +1263,32 @@ int shlosilo_keysource_qr_open_ffi(uint8_t *ws,
                                    const struct KeySession **out_session);
 
 int shlosilo_keysource_qr_close_ffi(uint8_t *ws);
+
+/*
+ * Task 8 — flux/keysource SE password-unlock glue (password in, session
+ * pointer out). Same workspace contract as the QR glue above — and the SAME
+ * teardown: `shlosilo_keysource_se_close_ffi` and
+ * `shlosilo_keysource_qr_close_ffi` are one shared close, so a workspace
+ * opened by either open entry closes through either close entry.
+ *
+ * `shlosilo_keysource_se_open_ffi` return codes: 0 = Ok (*out_session
+ * receives the live session pointer, valid until close), -2 = NULL argument,
+ * -20 = ws_len under capacity, -23 = a session is already live in this
+ * workspace (refused BEFORE any password attempt), -24 = auth failed (empty /
+ * over-long / wrong password; one attempt, never retried), -25 = secure
+ * element communication failure, otherwise the keystore/from_entropy L2b
+ * error codes (e.g. -31: the untrusted entropyLen byte was not 16/32).
+ *
+ * Password: `password`/`password_len` bytes (not necessarily NUL-terminated).
+ * The password never outlives the call; seed/entropy never appears in any
+ * signature. v1 unlocks account 0 only.
+ */
+unsigned int shlosilo_keysource_se_ws_len(void);
+
+int shlosilo_keysource_se_open_ffi(uint8_t *ws,
+                                   unsigned int ws_len,
+                                   const uint8_t *password,
+                                   unsigned int password_len,
+                                   const struct KeySession **out_session);
+
+int shlosilo_keysource_se_close_ffi(uint8_t *ws);

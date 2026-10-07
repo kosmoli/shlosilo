@@ -287,6 +287,57 @@ static void __attribute__((noinline)) RunSlots(const char *password)
     Log("slots done: %d failures - see 'se kdf' for the read-only checks", fail);
 }
 
+/* ---- Task 8: SE unlock / lock (password -> signing session) ---- */
+
+/* product_task.c owns the g_key_session sign route - PRODUCT flavor only.
+ * Weak references so the smoke flavor (no product_task.c) still links: the
+ * console reports the route as not wired there instead of failing the link. */
+extern int ProductKeySeUnlock(const char *password) __attribute__((weak));
+extern void ProductKeyLock(void) __attribute__((weak));
+
+/* 'se unlock <password>': READ-ONLY (no write path, no burn) - it self-runs
+ * without the arm gate. The safety story here is disclosure, not an arm: the
+ * password just transited the serial console in CLEARTEXT, so say so LOUDLY
+ * every single time. DEV CONVENIENCE ONLY - the product entry is the P4 UI. */
+static void __attribute__((noinline)) RunUnlock(const char *password)
+{
+    int rc;
+
+    Log("WARNING: the password was just sent over the serial console");
+    Log("WARNING: cleartext on UART0 = DEV CONVENIENCE ONLY");
+    Log("WARNING: the product entry is the P4 UI (not this console)");
+    if (ProductKeySeUnlock == NULL) {
+        Log("unlock: key route not wired in this flavor");
+        return;
+    }
+    if (password == NULL || password[0] == '\0') {
+        Log("usage: se unlock <password>");
+        return;
+    }
+    rc = ProductKeySeUnlock(password);
+    if (rc == 0) {
+        Log("unlock: key session live (sign route)");
+    } else if (rc == -23) {
+        Log("unlock: refused, session already live ('se lock' first)");
+    } else if (rc == -24) {
+        Log("unlock: AUTH FAILED (wrong password?) - one shot, not retried");
+    } else {
+        Log("unlock: FAIL rc=%d", rc);
+    }
+}
+
+/* 'se lock': close (zeroize) the live key session (QR or SE - one shared
+ * teardown). Read-only, idempotent. */
+static void __attribute__((noinline)) RunLock(void)
+{
+    if (ProductKeyLock == NULL) {
+        Log("lock: key route not wired in this flavor");
+        return;
+    }
+    ProductKeyLock();
+    Log("lock: key session closed (zeroized)");
+}
+
 /* ---- UART0 command console ---- */
 
 static void PrintWarning(const char *cmd, const char *confirm, const char *what)

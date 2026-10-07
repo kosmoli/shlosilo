@@ -29,6 +29,7 @@
 pub mod keysource;
 
 pub use keysource::qr::QrKeySource;
+pub use keysource::se::SeKeySource;
 pub use keysource::{
     KeySessionHandle, KeySessionSlot, KeySource, KeySourceError, KeySourceErrorKind,
 };

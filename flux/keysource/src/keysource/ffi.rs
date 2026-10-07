@@ -67,16 +67,15 @@
 //! on each function.
 
 use core::ffi::{c_int, c_uint};
-use core::mem::MaybeUninit;
 
 use shlosilo::entropy::seed_qr;
 use shlosilo::error::{ShlosiloError, ShlosiloErrorKind};
 use shlosilo::ffi::error_code::{
-    to_ffi_code, ERR_BUFFER_TOO_SMALL, ERR_NULL_POINTER, ERR_SLOT_OCCUPIED, OK,
+    to_ffi_code, ERR_BUFFER_TOO_SMALL, ERR_NULL_POINTER, ERR_SLOT_OCCUPIED,
 };
 use shlosilo::types::key_session::KeySession;
 
-use super::{KeySessionHandle, KeySessionSlot};
+use super::ws;
 
 /// Scan-payload budget for the FFI entries: larger than any QR symbol can
 /// deliver (a QR code tops out around 3 KiB) and far above the biggest plate
@@ -84,26 +83,11 @@ use super::{KeySessionHandle, KeySessionSlot};
 /// formed (P0-03 discipline).
 const SCAN_PAYLOAD_MAX_LEN: usize = 4096;
 
-/// The workspace-carried state (exactly one per caller workspace).
-///
-/// `#[repr(C)]` only so the shape is documented; no field offset is part of
-/// any contract — the glue places the WHOLE struct at an aligned address
-/// inside the workspace.
-#[repr(C)]
-struct QrWs {
-    /// `0` = no live session — the REQUIRED initial state of a fresh
-    /// workspace (BSS-zeroed `static` / task workspace) and the state `close`
-    /// restores. `1` = `handle` holds a live [`KeySessionHandle`]. Written
-    /// only by this glue.
-    live: u8,
-    /// The one session slot (capacity 1), constructed in place at each open
-    /// (`ptr::write`, caller storage — never `Box`, Z6).
-    slot: KeySessionSlot,
-    /// Single-owner handle of the live session. Self-referential: it borrows
-    /// `slot` in this same workspace (fabricated `'static` under the
-    /// caller-pinning contract, R3 `UrMultipartDecoder` style).
-    handle: MaybeUninit<KeySessionHandle<'static>>,
-}
+/// Workspace state (slot + live handle) is shared with the SE glue — see
+/// [`super::ws`]. Task 8: one layout and one teardown (`ws::ws_close`) for
+/// every keysource entry, so a QR-opened workspace closes through the SE
+/// close entry and vice versa (both are the same function).
+type QrWs = ws::KeyWs;
 
 /// Typed workspace base: align the raw `ws` up to `QrWs`.
 ///
@@ -115,9 +99,7 @@ struct QrWs {
 /// same validity.
 #[inline(always)]
 unsafe fn ws_state(ws: *mut u8) -> *mut QrWs {
-    let align = core::mem::align_of::<QrWs>();
-    let addr = (ws as usize).wrapping_add(align - 1) & !(align - 1);
-    addr as *mut QrWs
+    ws::ws_state(ws)
 }
 
 /// Bounded scan slice: `(data, data_len)` → `&[u8]`, `None` over budget.
@@ -146,8 +128,7 @@ fn scan_payload<'a>(data: *const u8, data_len: c_uint) -> Option<&'a [u8]> {
 /// one layout source of truth).
 #[no_mangle]
 pub extern "C" fn shlosilo_keysource_qr_ws_len() -> c_uint {
-    let align = core::mem::align_of::<QrWs>();
-    (core::mem::size_of::<QrWs>() + align - 1) as c_uint
+    ws::ws_len()
 }
 
 /// Task 5a: open a signing session from one scanned seed-QR payload.
@@ -208,15 +189,11 @@ pub extern "C" fn shlosilo_keysource_qr_open_ffi(
             ))
         }
     };
-    // SAFETY: `ws` is non-null with `ws_len >= ws_len()` (checked above) — the
-    // documented caller-workspace contract; exclusive single-context use.
-    let state = unsafe { ws_state(ws) };
-    // `live` read: a plain byte, defined by the workspace contract (zero-
-    // initialized before first use; written only by this glue).
-    if unsafe { (*state).live } != 0 {
-        // Invariant 3: at most one live session per workspace. Refused BEFORE
-        // any write — the live session (and any borrowed pointer to it) is
-        // never disturbed.
+    // `live` occupancy: a plain byte in the workspace, defined by the
+    // workspace contract (zero-initialized before first use; written only by
+    // this glue). Refused BEFORE any write — the live session (and any
+    // borrowed pointer to it) is never disturbed.
+    if unsafe { ws::ws_busy(ws) } == ERR_SLOT_OCCUPIED {
         return ERR_SLOT_OCCUPIED;
     }
     // Full validation + derivation — before ANY workspace write, so a failed
@@ -232,40 +209,14 @@ pub extern "C" fn shlosilo_keysource_qr_open_ffi(
     // Staged plaintext dies before the session goes live (SecretBytes
     // hygiene: only the KeySession's own ZeroizeOnDrop fields persist).
     drop(entropy);
-    // SAFETY: `state` is inside the pinned workspace; `live == 0` means no
-    // handle and no borrowed session can be outstanding (the only handle
-    // source is the `open` below, and its drop is what clears `live`), so
-    // re-placing the slot cannot disturb a live value. `ptr::write` over the
-    // previous (empty or never-initialized) slot skips its Drop, which is a
-    // no-op for an empty slot — nothing is leaked. The `'static` slot
-    // reference is fabricated under the caller-pinning contract (the
-    // workspace outlives every use; R3 `UrMultipartDecoder` pattern).
-    unsafe {
-        core::ptr::write(&mut (*state).slot, KeySessionSlot::empty());
-        let slot_ref: &KeySessionSlot = &*core::ptr::addr_of!((*state).slot);
-        // `open` is the sole handle source; a fresh slot is empty, so this
-        // succeeds — mapped defensively to the invariant code if it ever does
-        // not.
-        let handle = match slot_ref.open(session) {
-            Ok(h) => h,
-            Err(_) => {
-                return to_ffi_code(&ShlosiloError::new(ShlosiloErrorKind::InvariantViolation))
-            }
-        };
-        core::ptr::write(&mut (*state).handle, MaybeUninit::new(handle));
-        // `live` set only after the handle is in place: an interrupting close
-        // can never observe `live == 1` without a valid handle.
-        (*state).live = 1;
-        let live_session: *const KeySession = match (&*(*state).handle.as_ptr()).session() {
-            Some(s) => s,
-            None => {
-                (*state).live = 0;
-                return to_ffi_code(&ShlosiloError::new(ShlosiloErrorKind::InvariantViolation));
-            }
-        };
-        *out_session = live_session;
-    }
-    OK
+    // SAFETY: `ws` is non-null with `ws_len >= ws_len()` (checked above) — the
+    // documented caller-workspace contract; exclusive single-context use.
+    // `live == 0` (checked above) means no handle and no borrowed session can
+    // be outstanding — the shared placement (`ws::ws_open_into`) cannot
+    // disturb a live value. The `'static` slot reference is fabricated under
+    // the caller-pinning contract (the workspace outlives every use).
+    let state = unsafe { ws_state(ws) };
+    unsafe { ws::ws_open_into(state, session, out_session) }
 }
 
 /// Task 5a: close the live QR session in this workspace (error-path and
@@ -297,23 +248,7 @@ pub extern "C" fn shlosilo_keysource_qr_close_ffi(ws: *mut u8) -> c_int {
     if ws.is_null() {
         return ERR_NULL_POINTER;
     }
-    // SAFETY: `ws` is the caller workspace from the contract (pinned,
-    // exclusive); `ws_len` is unnecessary — placement only needs the base.
-    let state = unsafe { ws_state(ws) };
-    // SAFETY: `live` is a plain byte (zero-initialized workspace contract).
-    if unsafe { (*state).live } == 0 {
-        return OK; // invariant 4: no live session → defined no-op
-    }
-    // SAFETY: `live == 1` means the handle slot holds the live handle
-    // (invariant 3 + the open commit order). `assume_init_read` MOVES the
-    // handle out — its Drop then runs the serial-guarded close exactly once
-    // (drop_in_place on the slot session → key bytes wiped). `live` is
-    // cleared BEFORE the drop, so a re-entrant close during the drop sees
-    // `0` and no-ops: the drop can never run twice.
-    unsafe {
-        let handle = (*state).handle.assume_init_read();
-        (*state).live = 0;
-        drop(handle);
-    }
-    OK
+    // Shared teardown (Task 8: the SE close entry is this same function) —
+    // total + idempotent, drop runs exactly once per session (see `ws::ws_close`).
+    unsafe { super::ws::ws_close(ws) }
 }
