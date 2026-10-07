@@ -65,6 +65,8 @@ set(SRC_INCLUDE_PATH
     src/config
     src/tasks
     src/driver
+    src/keystore
+    src/crypto
     src/ui
     src/ram
     src/utils
@@ -165,6 +167,18 @@ set(APP_SRC
     src/driver/low_power.c
     src/flash/xmr_gen_cache_flash.c
     external/mh1903_lib/ctaes/ctaes.c
+
+    # keystore data plane (keystone3-parity) + its crypto primitives and the
+    # TRNG/OTP/MPU drivers it depends on (Task 6; SE comm arrives in Task 7).
+    src/keystore/keystore.c
+    src/keystore/se_manager.c
+    src/crypto/sha256.c
+    src/crypto/sha512.c
+    src/crypto/hmac.c
+    src/crypto/hash_and_salt.c
+    src/driver/drv_trng.c
+    src/driver/drv_otp.c
+    src/driver/drv_mpu.c
 )
 
 # Screen ownership: exactly one renderer per build owns the panel.
