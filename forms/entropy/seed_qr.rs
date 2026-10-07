@@ -113,11 +113,27 @@ impl SeedEntropy {
 /// CompactSeedQR: word indices → 11-bit stream → drop trailing checksum bits
 /// (12 words: 4, 24 words: 8 — BIP-39 gives ENT/32 in general) → 8-bit groups.
 ///
-/// Returns the raw entropy bytes: 16 (12 words) / 32 (24 words). Generic over
-/// the BIP-39 word counts (15/18/21 words yield 20/24/28 bytes), but note that
-/// [`decode`] only accepts the 12/24 steel-plate family — other sizes encode
-/// faithfully yet have no plate representation to decode back from.
+/// Returns the raw entropy bytes: 16 (12 words) / 32 (24 words).
+///
+/// **Interop honesty**: only 12/24-word phrases are byte-compatible with
+/// SeedSigner's `CompactSeedQrEncoder`, which strips the checksum bits for
+/// exactly 12/24 words and *ceil-packs the full 11-bit stream otherwise*
+/// (15/18/21 words → 21/25/29 bytes). For non-12/24 phrases this function
+/// instead drops the checksum bits and yields BIP-39 entropy 20/24/28 bytes —
+/// **NOT byte-compatible with SeedSigner's ceil-packed compact format** — and
+/// [`decode`] has no plate representation for them anyway. The
+/// `debug_assert!` below pins the supported 12/24 steel-plate family (same
+/// interop limit as `KeySession::from_entropy`).
+///
+/// **Secret hygiene**: the output is the plaintext equivalent of the mnemonic
+/// (raw BIP-39 entropy). Never log or `Debug`-print it — the `Vec<u8> Debug`
+/// would dump every byte, unlike [`SecretBytes`]/[`Mnemonic`], which redact.
+/// Wrap in `zeroize::Zeroizing` and drop it as soon as the consumer is done.
 pub fn encode_compact(m: &Mnemonic) -> Vec<u8> {
+    debug_assert!(
+        matches!(m.word_count(), WordCount::Words12 | WordCount::Words24),
+        "encode_compact: only the 12/24 steel-plate family is SeedSigner-compatible"
+    );
     let mut out = alloc::vec![0u8; m.word_count().entropy_bytes()];
     indices_to_entropy(m.indices(), &mut out);
     out
@@ -125,7 +141,19 @@ pub fn encode_compact(m: &Mnemonic) -> Vec<u8> {
 
 /// SeedQR (standard): each word index as `%04d`, concatenated.
 /// 48 digits (12 words) / 96 digits (24 words).
+///
+/// The digit format itself is word-count-agnostic (SeedSigner writes `%04d`
+/// per index regardless), but the plate family is a hard 12/24 interop limit
+/// (see [`encode_compact`]); the `debug_assert!` below pins it.
+///
+/// **Secret hygiene**: the digit string encodes the complete word-index
+/// stream — the plaintext equivalent of the mnemonic. Never log or
+/// `Debug`-print it; drop it as soon as the consumer is done.
 pub fn encode_standard(m: &Mnemonic) -> String {
+    debug_assert!(
+        matches!(m.word_count(), WordCount::Words12 | WordCount::Words24),
+        "encode_standard: only the 12/24 steel-plate family is in scope"
+    );
     use core::fmt::Write as _;
     let mut s = String::with_capacity(m.indices().len() * 4);
     for &idx in m.indices() {
@@ -195,6 +223,9 @@ pub fn decode(data: &[u8]) -> Result<SeedEntropy> {
             indices_to_entropy(m.indices(), &mut ent[..wc.entropy_bytes()]);
             let out = SeedEntropy::from_entropy(&ent[..wc.entropy_bytes()]);
             ent.zeroize();
+            // Plaintext index copy dies here too (SecretBytes hygiene: no
+            // lingering mnemonic-equivalent material after use).
+            indices.zeroize();
             out
         }
         // 4. everything else

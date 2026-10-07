@@ -144,6 +144,41 @@ fn decode_rejects_ur_payload() {
 }
 
 #[test]
+fn decode_rejects_ur_case_variants() {
+    // The `ur:` guard is case-insensitive: `UR:`/`Ur:`/`uR:` must land on the
+    // same FeatureNotImplemented path as lowercase `ur:`.
+    for prefix in [&b"UR:"[..], &b"Ur:"[..], &b"uR:"[..]] {
+        let mut payload = prefix.to_vec();
+        payload.extend_from_slice(b"xy");
+        let err = decode(&payload).unwrap_err();
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::FeatureNotImplemented,
+            "short variant {prefix:?} must be recognized as UR"
+        );
+    }
+    // Same variants at 16 bytes: without case-insensitive matching these would
+    // be misread as CompactSeedQR entropy (any 16 bytes derive a valid
+    // mnemonic) instead of being refused as UR transport.
+    for prefix in [&b"UR:"[..], &b"Ur:"[..], &b"uR:"[..]] {
+        let mut payload = vec![0u8; 16];
+        payload[..3].copy_from_slice(prefix);
+        let err = decode(&payload).unwrap_err();
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::FeatureNotImplemented,
+            "16-byte variant {prefix:?} must be recognized as UR, not compact entropy"
+        );
+    }
+}
+
+#[test]
+fn decode_rejects_empty_input() {
+    let err = decode(b"").unwrap_err();
+    assert_eq!(err.kind, ShlosiloErrorKind::EncodingInvalidFormat);
+}
+
+#[test]
 fn decode_rejects_nondigit_in_digit_domains() {
     // 48/96-length domains reserved for the %04d digit strings.
     let mut a = GOLDEN_SEEDQR_A.as_bytes().to_vec();

@@ -4,7 +4,7 @@
 //!
 //! Phase 2.0 stub:
 //! - Mnemonic fields: fixed-size [u16; MAX_MNEMONIC_WORDS] + len
-//! - `from_entropy`: validates entropy length + simplified checksum (replaced by SHA-256 at Phase 4)
+//! - `from_entropy`: validates entropy length + computes the real SHA-256 BIP-39 checksum
 //! - `to_seed`: returns a [0u8; 64] placeholder (real PBKDF2-HMAC-SHA512 implementation at Phase 4)
 //! - `from_indices`: real implementation at Phase 4 + used by tests
 
@@ -87,11 +87,10 @@ impl core::fmt::Debug for Mnemonic {
 }
 
 impl Mnemonic {
-    /// Build a mnemonic from entropy bytes (Phase 2.0 stub)
+    /// Build a mnemonic from entropy bytes
     ///
-    /// Phase 2.0 simplification:
     /// - validate the entropy length
-    /// - compute the SHA-256 checksum (zero placeholder for now; real implementation at Phase 4)
+    /// - compute the BIP-39 checksum: the top `checksum_bits` of SHA-256(entropy)
     /// - split into 11-bit segments written into indices
     pub fn from_entropy(entropy: &[u8]) -> Result<Self> {
         let word_count = match entropy.len() {
@@ -103,7 +102,7 @@ impl Mnemonic {
             _ => {
                 return Err(ShlosiloError::new(
                     ShlosiloErrorKind::MnemonicInvalidEntropyLength,
-                ))
+                ));
             }
         };
 
@@ -467,18 +466,19 @@ mod tests {
     // Phase 3 BIP-39 test vectors (published by trezor-mnemonic)
     // ============================================================
     //
-    // **IMPORTANT**: the Phase 2.0 stub's Mnemonic::from_entropy uses a 0 byte in place of the checksum
-    // (not a real SHA-256) — which is why **standard BIP-39 test vectors cannot pass directly**
-    // but the **flow** should be right: call from_entropy, build the mnemonic, get word_count / indices
+    // **NOTE**: Mnemonic::from_entropy computes the real SHA-256 BIP-39 checksum
+    // (the official all-zero-entropy vector is pinned below in
+    // validate_passes_official_abandon_about); these tests pin the **flow**:
+    // call from_entropy, build the mnemonic, get word_count / indices
 
-    /// BIP-39 12-word standard entropy "0000...0000" → 12-word stub output
+    /// BIP-39 12-word standard entropy "0000...0000" → 12-word mnemonic
     #[test]
     fn bip39_stub_12_words_from_zero_entropy() {
         let entropy = [0u8; 16]; // 128-bit entropy
         let m = Mnemonic::from_entropy(&entropy).unwrap();
         assert_eq!(m.word_count(), WordCount::Words12);
         assert_eq!(m.indices().len(), 12);
-        // stub: checksum byte = 0, so the first 11 indices are all 0 and the last index is the top 3 bits of entropy byte[0] (=0)
+        // real checksum: SHA-256(0^16) top 4 bits = 0b0011, so the last index is 3 ("about")
         for (i, &idx) in m.indices().iter().enumerate() {
             assert!(
                 idx < 2048,
@@ -489,7 +489,7 @@ mod tests {
         }
     }
 
-    /// BIP-39 24-word standard entropy "0000...0000" (256-bit) → 24-word stub output
+    /// BIP-39 24-word standard entropy "0000...0000" (256-bit) → 24-word mnemonic
     #[test]
     fn bip39_stub_24_words_from_zero_entropy() {
         let entropy = [0u8; 32]; // 256-bit entropy
