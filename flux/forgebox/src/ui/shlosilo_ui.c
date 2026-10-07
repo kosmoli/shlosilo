@@ -611,6 +611,52 @@ void UiShowQrFrame(const char *text, uint32_t index, uint32_t total)
     ui_flush_range(0, UI_FB_H - 1);
 }
 
+/* ---------------- plate-secret hygiene ---------------- */
+
+static void wipe_volatile(uint8_t *p, uint32_t n)
+{
+    volatile uint8_t *v = p;
+    uint32_t i;
+    if (p == NULL) {
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        v[i] = 0;
+    }
+}
+
+/* Teardown for the plate QR scratch regions (payload buffer, codeword
+ * buffer, drawn framebuffer): called from the single key-session close
+ * funnel so every exit leg (se lock / sign-done / flow-exit) wipes them. */
+void UiWipePlateQr(void)
+{
+    wipe_volatile(g_qr_temp, UI_QR_BUF_BYTES);
+    wipe_volatile(g_qr_code, UI_QR_BUF_BYTES);
+    wipe_volatile(g_fb, FB_BYTES);
+}
+
+/* Forensics view for `se dump`: NONZERO byte count across the plate
+ * scratch regions. Count only -- the bytes themselves never print. */
+uint32_t UiPlateQrResidueCount(void)
+{
+    uint32_t count = 0;
+    const uint8_t *regions[3] = { g_qr_temp, g_qr_code, g_fb };
+    const uint32_t sizes[3] = { UI_QR_BUF_BYTES, UI_QR_BUF_BYTES, FB_BYTES };
+    int r;
+    for (r = 0; r < 3; r++) {
+        uint32_t i;
+        if (regions[r] == NULL) {
+            continue;
+        }
+        for (i = 0; i < sizes[r]; i++) {
+            if (regions[r][i] != 0) {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
 void UiShowPlateQr(const uint8_t *payload, uint32_t len)
 {
     int modules = 0;
@@ -642,6 +688,13 @@ void UiShowPlateQr(const uint8_t *payload, uint32_t len)
         draw_text_center(UI_Q_TITLE_Y, UI_Q_TXT_PLATE_TITLE, UI_Q_TITLE_SCALE);
         draw_text_center(UI_Q_CAP_Y, UI_Q_TXT_PLATE_CAP, 1);
     }
+
+    /* The plate payload and codewords are plaintext-equivalent wallet
+     * material: both scratch buffers die once the symbol is drawn (the
+     * drawn fb stays while displayed and is wiped at teardown by
+     * UiWipePlateQr). */
+    wipe_volatile(g_qr_temp, UI_QR_BUF_BYTES);
+    wipe_volatile(g_qr_code, UI_QR_BUF_BYTES);
 
     UiInputPoll();
     fill_rect(UI_LINE_X0, UI_LINE_Y, UI_LINE_X1 - UI_LINE_X0 + 1, 1);

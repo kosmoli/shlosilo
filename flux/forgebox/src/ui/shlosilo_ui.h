@@ -64,6 +64,11 @@ void UiShowQrFrame(const char *text, uint32_t index, uint32_t total);
  * carousel); the payload is a plaintext-equivalent wallet - the caller must
  * wipe its own buffer after this returns. */
 void UiShowPlateQr(const uint8_t *payload, uint32_t len);
+/* Plate-secret hygiene (Task 8/acceptance): wipe the QR scratch regions
+ * (payload buffer, codeword buffer, framebuffer) at session teardown, and
+ * report the NONZERO byte count across them for `se dump` forensics. */
+void UiWipePlateQr(void);
+uint32_t UiPlateQrResidueCount(void);
 
 /* Battery corner readout ("NN%" / "NN%c") driven by the product task:
  * repaints just that corner, and only when the value changes. */

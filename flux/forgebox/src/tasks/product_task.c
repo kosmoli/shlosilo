@@ -587,6 +587,9 @@ static void key_session_close(void)
     g_key_session = NULL;
     g_key_from_se = 0;
     g_key_console = 0;
+    /* The plate QR scratch regions are plaintext-equivalent carriers too:
+     * the single teardown funnel wipes them on every exit leg. */
+    UiWipePlateQr();
     /* Phase 4: the generated wallet dies with the session (same teardown
      * discipline — one key-bearing state, one close). */
     key_wallet_wipe();
@@ -759,6 +762,13 @@ int ProductKeyPlate(const char *mode)
                                      g_key_wallet, g_key_wallet_len,
                                      payload, sizeof(payload), &len);
     if (rc != 0) {
+        /* Belt: the FFI writes nothing on error, but every terminal leg
+         * wipes the payload buffer (same discipline as the success leg). */
+        volatile uint8_t *p = payload;
+        unsigned i;
+        for (i = 0; i < sizeof(payload); i++) {
+            p[i] = 0;
+        }
         return rc;
     }
     UiShowPlateQr(payload, len);
@@ -816,6 +826,11 @@ void ProductKeyWsDump(void)
         hex[2 * chunk] = '\0';
         printf("  %04X: %s\r\n", i, hex);
     }
+    /* Acceptance forensics: the plate QR scratch regions (payload buffer,
+     * codeword buffer, framebuffer) were the blind spot of the ws-only view.
+     * Count only -- the bytes themselves never print. Expect 0 after close. */
+    printf("qr scratch residue: %u nonzero bytes\r\n",
+           (unsigned)UiPlateQrResidueCount());
 }
 
 /* Confirm-page handler (product loop, while the page is up):

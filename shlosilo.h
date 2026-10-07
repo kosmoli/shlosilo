@@ -814,8 +814,10 @@ int shlosilo_seed_qr_probe_ffi(const uint8_t *data, unsigned int data_len);
  *   anything else `MnemonicInvalidEntropyLength`.
  * - `out_buf_len` budget: `seed_qr::STANDARD_MAX_LEN` (96) bytes.
  * - negative = error: `ERR_NULL_POINTER` (-2), `BufferTooSmall` (-20),
- *   `MnemonicInvalidEntropyLength` / `EncodingInvalidFormat` (-21), or the
- *   mapped validation error.
+ *   `EncodingInvalidFormat` (-21) for format-class failures, and
+ *   `MnemonicInvalidEntropyLength` (-31, `InvalidMnemonic`) for
+ *   entropy-length violations — the two classes are distinct codes —
+ *   or the mapped validation error.
  *
  * **Secret hygiene (the plate IS the wallet)**: `out_buf` leaves this call
  * holding the plaintext-equivalent seed material — the caller MUST wipe it
