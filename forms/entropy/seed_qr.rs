@@ -244,6 +244,40 @@ pub fn decode(data: &[u8]) -> Result<SeedEntropy> {
     }
 }
 
+/// Transport/format class of a scanned payload (Task 5 scan-flow routing).
+///
+/// Pure classification: mirrors [`decode`]'s recognition order exactly (UR
+/// guard first, then the disjoint compact / digit length domains) but runs
+/// NO decode and produces NO key material — safe to call before any user
+/// confirmation. The full validation (index range + BIP-39 checksum) stays
+/// in [`decode`] and runs at session-open time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedQrClass {
+    /// Not a steel-plate payload: wrong length, wrong charset, or empty.
+    NotSeed,
+    /// SeedQR (standard): 48/96 ASCII digits (`%04d` word indices).
+    Standard,
+    /// CompactSeedQR: raw 16/32 entropy bytes.
+    Compact,
+    /// `ur:` prefix — UR seed transport (`ur:crypto-seed`) is a v2 concern
+    /// and is rejected (never silently misread as plate data).
+    UrTransport,
+}
+
+/// Classify a scanned payload for the scan flow. See [`SeedQrClass`].
+pub fn classify(data: &[u8]) -> SeedQrClass {
+    // UR transport guard — same precedence as [`decode`]: checked first so
+    // short `ur:` payloads cannot land in the compact (16/32-byte) domain.
+    if data.len() >= 3 && (data[0] | 0x20) == b'u' && (data[1] | 0x20) == b'r' && data[2] == b':' {
+        return SeedQrClass::UrTransport;
+    }
+    match data.len() {
+        16 | 32 => SeedQrClass::Compact,
+        48 | 96 if data.iter().all(u8::is_ascii_digit) => SeedQrClass::Standard,
+        _ => SeedQrClass::NotSeed,
+    }
+}
+
 /// Largest word count that fits on a plate (24 words).
 const MAX_PLATE_WORDS: usize = 24;
 
@@ -314,6 +348,73 @@ mod tests {
             let expected = if i % 11 == 10 { 1 } else { 0 };
             let got = (out[i / 8] >> (7 - (i % 8))) & 1;
             assert_eq!(got, expected, "stream bit {i}");
+        }
+    }
+
+    // -- classify: the scan-flow routing matrix (Task 5) --
+
+    #[test]
+    fn classify_compact_domain_16_and_32_bytes() {
+        // ANY 16/32-byte payload is a compact plate by format (the BIP-39
+        // checksum is derived, so decode can never reject the shape).
+        assert_eq!(classify(&[0u8; 16]), SeedQrClass::Compact);
+        assert_eq!(classify(&[0xffu8; 32]), SeedQrClass::Compact);
+        assert_eq!(classify(&[0x5au8; 16]), SeedQrClass::Compact);
+    }
+
+    #[test]
+    fn classify_standard_domain_48_and_96_digits() {
+        let digits48 = [b'0'; 48];
+        let digits96 = [b'9'; 96];
+        assert_eq!(classify(&digits48), SeedQrClass::Standard);
+        assert_eq!(classify(&digits96), SeedQrClass::Standard);
+    }
+
+    #[test]
+    fn classify_ur_prefix_wins_over_compact_length() {
+        // A 16-byte "ur:..." payload must NOT land in the compact domain
+        // (same precedence rule as decode).
+        let mut short = [b'x'; 16];
+        short[..3].copy_from_slice(b"ur:");
+        assert_eq!(classify(&short), SeedQrClass::UrTransport);
+        assert_eq!(classify(b"ur:"), SeedQrClass::UrTransport);
+        assert_eq!(classify(b"ur:crypto-seed/abc"), SeedQrClass::UrTransport);
+        // case-insensitive "ur:" prefix
+        assert_eq!(classify(b"UR:abc"), SeedQrClass::UrTransport);
+        // "ur" without the colon is NOT transport
+        assert_eq!(classify(b"ur"), SeedQrClass::NotSeed);
+    }
+
+    #[test]
+    fn classify_rejects_foreign_lengths_and_noise() {
+        // empty + wrong-length noise (incl. the 15/17/33-byte neighbours of
+        // the compact domain and 47/49 around the standard domain)
+        assert_eq!(classify(b""), SeedQrClass::NotSeed);
+        for n in [1usize, 15, 17, 20, 33, 47, 49, 95, 97, 128] {
+            let data = [0x5au8; 128];
+            assert_eq!(classify(&data[..n]), SeedQrClass::NotSeed, "len {n}");
+        }
+        // 48/96 bytes that are not ASCII digits
+        let mut noisy = [b'a'; 48];
+        noisy[7] = b'-';
+        assert_eq!(classify(&noisy), SeedQrClass::NotSeed);
+        assert_eq!(classify(&[b'a'; 96]), SeedQrClass::NotSeed);
+    }
+
+    #[test]
+    fn classify_agrees_with_decode() {
+        // Class 1/2 payloads must decode; class 0/3 must not. (Probe = shape
+        // only, so a shape-valid plate with a broken checksum classifies 1
+        // but still fails decode — that boundary is covered in the FFI tests.)
+        let ent16 = [0x11u8; 16];
+        let ent32 = [0x22u8; 32];
+        assert_eq!(classify(&ent16), SeedQrClass::Compact);
+        assert!(decode(&ent16).is_ok());
+        assert_eq!(classify(&ent32), SeedQrClass::Compact);
+        assert!(decode(&ent32).is_ok());
+
+        for bad in [b"ur:crypto-seed/x".as_slice(), b"".as_slice(), &[0u8; 15][..]] {
+            assert!(decode(bad).is_err(), "decode must reject {bad:?}");
         }
     }
 }
