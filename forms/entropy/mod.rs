@@ -6,6 +6,7 @@
 //!   - dice_rolls.rs (base-N accumulation + minimum_rolls pure function + bits_per_digit)
 //!   - bip39_words.rs (2048-word table stub)
 //!   - bip39_passphrase.rs（mnemonic + passphrase → 64-byte seed）
+//!   - seed_qr.rs (SeedQR / CompactSeedQR steel-plate codecs, SeedSigner-compatible)
 //!
 //! **v2.4 security fix**: all functions take borrowed inputs, **business modules hold no owned copies**.
 
@@ -14,4 +15,5 @@ pub mod bip39_words;
 pub mod dice_rolls;
 pub mod mnemonic;
 pub mod pbkdf2_fast;
+pub mod seed_qr;
 pub mod source;
