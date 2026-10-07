@@ -274,8 +274,10 @@ mod tests {
     use super::*;
     #[cfg(feature = "alloc-fallback")]
     extern crate alloc;
+    #[cfg(feature = "alloc-fallback")]
     use alloc::format;
 
+    #[cfg(feature = "alloc-fallback")]
     #[test]
     fn debug_is_redacted() {
         let s = SeedEntropy::from_entropy(&[0x11u8; 16]).unwrap();
