@@ -31,7 +31,9 @@ extern crate alloc;
 use crate::entropy::mnemonic::{Mnemonic, WordCount};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::SecretBytes;
+#[cfg(feature = "alloc-fallback")]
 use alloc::string::String;
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -129,6 +131,11 @@ impl SeedEntropy {
 /// (raw BIP-39 entropy). Never log or `Debug`-print it — the `Vec<u8> Debug`
 /// would dump every byte, unlike [`SecretBytes`]/[`Mnemonic`], which redact.
 /// Wrap in `zeroize::Zeroizing` and drop it as soon as the consumer is done.
+///
+/// Availability: `alloc-fallback` builds only (returns `Vec<u8>`); the
+/// zero-alloc device builds use the stack-buffer form introduced for the
+/// engraving flow (Task 8) — `decode` and `indices_to_entropy` stay no-alloc.
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_compact(m: &Mnemonic) -> Vec<u8> {
     debug_assert!(
         matches!(m.word_count(), WordCount::Words12 | WordCount::Words24),
@@ -149,6 +156,10 @@ pub fn encode_compact(m: &Mnemonic) -> Vec<u8> {
 /// **Secret hygiene**: the digit string encodes the complete word-index
 /// stream — the plaintext equivalent of the mnemonic. Never log or
 /// `Debug`-print it; drop it as soon as the consumer is done.
+///
+/// Availability: `alloc-fallback` builds only (returns `String`) — same gate
+/// as [`encode_compact`].
+#[cfg(feature = "alloc-fallback")]
 pub fn encode_standard(m: &Mnemonic) -> String {
     debug_assert!(
         matches!(m.word_count(), WordCount::Words12 | WordCount::Words24),
