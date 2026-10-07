@@ -1,0 +1,37 @@
+[package]
+name = "shlosilo-flux-keysource"
+version = "0.5.0"
+edition = "2021"
+publish = false
+
+# Flux-side key acquisition face (Task 4): `KeySource` trait + `QrKeySource`
+# thin shell. This is flux infrastructure, not `forms`: the core stays pure
+# functions, the appearances own key-material acquisition.
+#
+# Placement rationale (host testability): the forgebox Rust face is its
+# embedded-only staticlib shim (flux/forgebox/staticlib) — its build.rs
+# rejects hosted targets outright, and its runtime hooks (global allocator,
+# panic handler, PRIMASK critical-section impl) collide with a host test
+# harness. `cargo test` therefore cannot run there at all, so the keysource
+# module lives in its own no_std rlib: host-testable on any machine, and
+# shareable by every appearance (forgebox / host-sim / pico2) instead of being
+# pinned to one shim. The forgebox staticlib depends on it so the firmware
+# target (thumbv7em) compiles the face in CI.
+#
+# Z6 discipline: the key path is zero-alloc (KeySession / SeedEntropy /
+# KeySessionSlot are all fixed-size; no Box, no Vec, no String).
+[lib]
+# rlib only — like the core crate, this package never requests a staticlib
+# unit; the C hosts get their runtime hooks from their own shim packages.
+crate-type = ["rlib"]
+
+[dependencies]
+# default-features = false: the key path must stay std/alloc-free (Z6), and
+# KeySession/SeedEntropy are core-only faces. Same feature posture as
+# flux/host-sim/staticlib's dependency on the core.
+shlosilo = { path = "../..", default-features = false }
+
+[dev-dependencies]
+# P1-03 discipline: assert_not_impl_any! pins "no Copy/Clone" compile-time
+# properties of the handle (same as forms/types/key_session.rs tests).
+static_assertions = "1"

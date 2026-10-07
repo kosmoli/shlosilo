@@ -22,6 +22,11 @@ name = "shlosilo"
 crate-type = ["staticlib"]
 
 [dependencies]
+# Flux-side key acquisition face (Task 4): KeySource trait + QrKeySource thin
+# shell. Rust-only so far (no C glue yet) — it rides the firmware graph so the
+# thumbv7em build (CI + build.sh) compiles the face; the scan-flow glue lands
+# with the caller.
+shlosilo-flux-keysource = { path = "../../keysource" }
 # The diagnostic FFI features compiled into the .a for the C host.
 shlosilo = { path = "../../..", default-features = false, features = [
     "generator-cache-ffi",

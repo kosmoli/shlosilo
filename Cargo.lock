@@ -2379,11 +2379,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "shlosilo-flux-keysource"
+version = "0.5.0"
+dependencies = [
+ "shlosilo",
+ "static_assertions",
+]
+
+[[package]]
 name = "shlosilo-forgebox"
 version = "0.5.0"
 dependencies = [
  "critical-section",
  "shlosilo",
+ "shlosilo-flux-keysource",
 ]
 
 [[package]]

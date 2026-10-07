@@ -107,6 +107,10 @@ jobs:
           bash scripts/check_header.sh
       - name: vendor baseline replay gate (T-12 zero-residue)
         run: bash scripts/vendor_baseline_check.sh
+      - name: flux keysource (host tests + no-alloc embedded face)
+        run: |
+          cargo test -p shlosilo-flux-keysource
+          cargo check -p shlosilo-flux-keysource --no-default-features --target thumbv7em-none-eabihf
       - name: forgebox staticlib (embedded, thumbv7em)
         run: cargo check -p shlosilo-forgebox --release --target thumbv7em-none-eabihf
       - name: forgebox full image (MH1903 C host, smoke/product callers)

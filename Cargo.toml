@@ -32,7 +32,15 @@ edition = "2021"
 # vendor/* and fuzz/ stay standalone: vendor is third-party patched code (kept
 # out of workspace lint gates, as before the workspace existed); fuzz is a
 # cargo-fuzz crate with its own lockfile.
-members = ["flux/pico2", "flux/forgebox/staticlib", "flux/host-sim/staticlib"]
+members = [
+    "flux/pico2",
+    "flux/forgebox/staticlib",
+    "flux/host-sim/staticlib",
+    # flux-side key acquisition face (KeySource trait + QrKeySource): shared
+    # flux infrastructure, host-testable (the staticlib shims are embedded-only
+    # and cannot run `cargo test`); see flux/keysource/Cargo.toml.
+    "flux/keysource",
+]
 exclude = [
     "fuzz",
     "probes/noalloc",
