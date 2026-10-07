@@ -86,6 +86,7 @@ static void key_qr_session_close(void);
 /* Task 5b seed-flow state (full definition below with the seed helpers;
  * tentative declaration here because ProductTask's exit leg consults it). */
 static const struct KeySession *g_key_session;
+static void seed_plate_wipe(void);
 static void carousel_enter(void);
 static void carousel_step(void);
 static void carousel_exit(void);
@@ -318,6 +319,17 @@ static void ProductTask(void *argument)
         } else {
             UiTick();
 
+            /* Task 5b: back on the welcome page with a live plate session =
+             * the flow exited -> the key dies here (the sign-done and
+             * confirm-reject legs close through the same teardown). Runs
+             * BEFORE the page-entry arms so a session can never survive
+             * into the dev QR carousel for a tick. */
+            if (UiGetPage() == UI_PAGE_WELCOME && g_key_session != NULL) {
+                key_qr_session_close();
+                seed_plate_wipe();
+                UiSetLast("key zeroized (exit)");
+                UiGotoPage(UI_PAGE_WELCOME);    /* repaint the footer line */
+            }
             if (UiGetPage() == UI_PAGE_SCAN && g_scan == SCAN_IDLE) {
                 scan_enter();
             } else if (UiGetPage() == UI_PAGE_QR && g_carousel == CAROUSEL_IDLE) {
@@ -325,14 +337,6 @@ static void ProductTask(void *argument)
             }
             if (UiGetPage() == UI_PAGE_CONFIRM) {
                 seed_confirm_step();
-            }
-            /* Task 5b: back on the welcome page with a live plate session =
-             * the flow exited -> the key dies here (the sign-done and
-             * confirm-reject legs close through the same teardown). */
-            if (UiGetPage() == UI_PAGE_WELCOME && g_key_session != NULL) {
-                key_qr_session_close();
-                UiSetLast("key zeroized (exit)");
-                UiGotoPage(UI_PAGE_WELCOME);    /* repaint the footer line */
             }
             if (UiGetPage() != UI_PAGE_SCAN && g_scan == SCAN_FAILED) {
                 g_scan = SCAN_IDLE;     /* left the scan page; allow a retry */
@@ -463,6 +467,20 @@ static char g_sign_out_type[32] = "bytes";
 static uint8_t g_seed_plate[SEED_PLATE_MAX];
 static unsigned g_seed_plate_len;
 
+/* Wipe the staged plate bytes (they are raw entropy carriers). Called at
+ * every terminal exit of the seed flow (confirm reject/continue, open
+ * failure, flow exit) -- NOT from the -23 recovery leg, which re-reads the
+ * plate for the reopen. Volatile walk defeats dead-store elimination. */
+static void seed_plate_wipe(void)
+{
+    volatile uint8_t *p = g_seed_plate;
+    unsigned i;
+    for (i = 0; i < sizeof(g_seed_plate); i++) {
+        p[i] = 0;
+    }
+    g_seed_plate_len = 0;
+}
+
 /* Key-source QR workspace (shlosilo_keysource_qr_ws_len() bytes): caller-
  * pinned static storage - BSS-zeroed at boot (the REQUIRED initial state),
  * stable address for the self-referential handle (shlosilo.h contract).
@@ -516,6 +534,7 @@ static void seed_confirm_step(void)
         /* back / reject: close ANY live session (idempotent) + rescan. */
         printf("seed: rejected -> close + rescan\r\n");
         key_qr_session_close();
+        seed_plate_wipe();
         UiSetLast("seed rejected");
         UiGotoPage(UI_PAGE_SCAN);
         return;
@@ -527,6 +546,7 @@ static void seed_confirm_step(void)
     if (ws_need > KEY_QR_WS_MAX) {
         printf("seed: ws query %u > static %u\r\n",
                ws_need, (unsigned)KEY_QR_WS_MAX);
+        seed_plate_wipe();
         UiSetLast("key ws too small");
         UiGotoPage(UI_PAGE_SCAN);
         return;
@@ -549,11 +569,14 @@ static void seed_confirm_step(void)
         snprintf(msg, sizeof(msg), "seed open FAIL rc=%d", rc);
         printf("seed: open failed rc=%d\r\n", rc);
         key_qr_session_close();
+        seed_plate_wipe();
         UiSetLast(msg);
         UiGotoPage(UI_PAGE_SCAN);
         return;
     }
     printf("seed: key session live (plate %u bytes)\r\n", g_seed_plate_len);
+    /* Plate consumed: the session holds the derived keys now. */
+    seed_plate_wipe();
     UiSetLast("key session live");
     UiGotoPage(UI_PAGE_SCAN);
 }
@@ -569,6 +592,9 @@ static void scan_seed_confirm(int cls, unsigned n)
     }
     memcpy(g_seed_plate, g_qr_result, n);
     g_seed_plate_len = n;
+    /* The QR result buffer is the second plaintext copy of the plate: it
+     * dies here (the staging buffer is the only copy from now on). */
+    memset(g_qr_result, 0, sizeof(g_qr_result));
     printf("seed: class %d (%s), %u bytes -> confirm page\r\n",
            cls, seed_class_name(cls), n);
     UiSeedConfirmInfo(seed_class_name(cls), UI_TXT_CONFIRM_SRC);
