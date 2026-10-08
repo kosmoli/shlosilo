@@ -12,20 +12,25 @@
 
 ---
 
-## 验收①：钢板入 → XMR 真交易签名（Cake 四腿）
+## 验收①：钢板入 → XMR 真交易签名（Cake 四腿·主网终版）
 
-**目的**：SeedSigner 生态的钢板能被 shlosilo 读入并完成真实签名。
+**目的**：SeedSigner 生态钢板 ⇄ Cake 直配全流程（设备直答配对腿，Cupcake 出局）。
 
-1. 刷 `forgebox-product-20261008.bin`（核 sha256）。
-2. 屏幕全屏显示 `plate_12w_standard.png`（手机/电脑放大显示），设备扫描页对准——
-   沿用既有瞄准指引（约 40cm、QR 占画面 1/3 以上、居中稳定）。
-3. 确认页应显示 **`standard seed - 12 words`**（类型识别必须正确）→ 点 continue →
-   状态行 `key session live`。
-4. Cake + Cupcake 双手机走既有 XMR 四腿流程（outputs → keyimage → **xmr-txunsigned**）。
-5. 设备完成签名（约 17s 量级、输出 `xmr-txsigned`），Cake 收下签名腿。
+**前提**：盘钱包已充值（2026-10-08 已打入，≥10 确认后 Cake 可用）。
+- 盘地址：`49KRWBDNoN6W8V1vMQZcfLFNuVUTTm8rp23NRiULyUbdQ8eWa4kNygGdCMjuTF8yHW7kySrSq7qbQLfkaPAycvEBDb8WRrJ`
+- view_priv（Cake watch-only）：`db93ce632d8d31e31bd0b4ecbdbdb833cae813928af402c5b7ffeb85769cf000`
+- 固件：`fw-product-pairing.bin`（sha `6962c4f3215c…`，四腿全套 + 槽位显示）
 
-**验收判据**：确认页类型识别正确 + 签名成功（Cake 接受签名腿）。
-**做完**：`se dump`（确认残余）→ 拔电。盘明文/会话在退出时自动清零。
+**步骤**：
+1. 设备扫 `plate_24w_standard.png` → `standard seed - 24 words` → continue → `key session live`。
+2. Cake 侧建 **watch-only 钱包**（restore：address + view key）→ 等余额解锁（≥10 确认）。
+3. Cake 发起 Send（金额随意小额）→ 出 **xmr-output** 动画 → 设备扫入（自动进配对腿）→
+   设备出 **xmr-keyimage** QR → Cake 点 **"Scan QR Code"** 收。
+4. Cake 推进到 **xmr-txunsigned** 动画 → 设备扫入 → 签名（~17s）→ 设备出 **xmr-txsigned** QR
+   → Cake 点 **"Scan QR Code"** 收 → Cake 广播。
+
+**验收判据**：四腿全自动走通 + Cake 广播上链（txid 可查）。
+**做完**：`se dump`（残余应 0）→ 退到 welcome 自动清。
 
 ## 验收②：钢板出 → SeedSigner 扫入 → BTC 地址一致
 
