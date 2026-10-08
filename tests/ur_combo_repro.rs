@@ -31,7 +31,7 @@ fn combo_part_acceptance_repro() {
 
     for (i, f) in frames.iter().enumerate() {
         let c = std::ffi::CString::new(f.as_str()).unwrap();
-        let rc = unsafe { shlosilo_ur_decode_feed(dec, c.as_ptr(), &mut accepted) };
+        let rc = shlosilo_ur_decode_feed(dec, c.as_ptr(), &mut accepted);
         let prog = shlosilo_ur_decode_progress(dec);
         let complete = shlosilo_ur_decode_complete(dec);
         println!(
@@ -41,14 +41,12 @@ fn combo_part_acceptance_repro() {
         );
         if complete != 0 {
             let mut plen = 0u32;
-            let prc = unsafe {
-                shlosilo_ur_decode_payload(
-                    dec,
-                    payload.as_mut_ptr(),
-                    payload.len() as u32,
-                    &mut plen,
-                )
-            };
+            let prc = shlosilo_ur_decode_payload(
+                dec,
+                payload.as_mut_ptr(),
+                payload.len() as u32,
+                &mut plen,
+            );
             println!("COMPLETE after frame {i}: payload rc={prc} len={plen}");
             break;
         }
@@ -58,5 +56,5 @@ fn combo_part_acceptance_repro() {
         shlosilo_ur_decode_progress(dec),
         shlosilo_ur_decode_complete(dec)
     );
-    unsafe { shlosilo_ur_decode_free(dec) };
+    shlosilo_ur_decode_free(dec);
 }

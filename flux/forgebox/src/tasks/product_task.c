@@ -1304,6 +1304,21 @@ static int ur_single_decode(const char *text, unsigned *plen_out)
     return 0;
 }
 
+/* Sign-face type whitelist, shared by the single-frame and multipart
+ * dispatch: only these types reach sign_run. Every other collected type
+ * (the Cake exchange legs -- xmr-output is routed to pairing_run earlier,
+ * xmr-keyimage is a device-OUT leg -- and anything unknown) is
+ * prompt + keep scanning: the typed sign FFI refuses foreign types, and
+ * the sign FAIL leg closes the plate session underneath -- a session
+ * must survive a stray exchange-leg QR (spec: 提示 + 续扫). */
+static int ur_type_is_sign(const char *type)
+{
+    return strncmp(type, "xmr-txunsigned", 14) == 0 ||
+           strncmp(type, "crypto-monero-tx", 16) == 0 ||
+           strncmp(type, "crypto-psbt", 11) == 0 ||
+           strncmp(type, "eth-sign-request", 16) == 0;
+}
+
 /* One scanned frame that starts with "ur:". Single-part frames sign right
  * away; multipart frames accumulate through the R3 fountain decoder until the
  * message completes, then sign the reassembled (type, payload). */
@@ -1316,11 +1331,14 @@ static void scan_ur_hit(const char *text)
     unsigned ws_need;
     int progress;
 
-    if (slash2 == NULL && strncmp(text, "ur:xmr-output/", 14) == 0) {
+    if (slash2 == NULL && strncmp(text, "ur:xmr-output", 13) == 0) {
         /* T5 beat 1 (single-frame form): a Cake pairing request. Decode the
          * (type, payload) pair and answer the pairing leg -- the session
          * check lives inside pairing_run, so a keyless device prompts and
-         * keeps scanning instead of falling into the fixture sign path. */
+         * keeps scanning instead of falling into the fixture sign path.
+         * Prefix is 13 chars ("ur:xmr-output") so the slash-less form is
+         * covered too -- anything that claims to be xmr-output must never
+         * reach the fixture sign path (no fixture fallback on this leg). */
         unsigned plen = 0;
         if (ur_single_decode(text, &plen) == 0) {
             printf("ur: single-frame type=%s payload=%u (pairing)\r\n",
@@ -1344,6 +1362,18 @@ static void scan_ur_hit(const char *text)
         if (ur_single_decode(text, &plen) == 0) {
             printf("ur: single-frame type=%s payload=%u (session sign)\r\n",
                    g_ur_type, plen);
+            if (!ur_type_is_sign(g_ur_type)) {
+                /* Exchange legs (xmr-keyimage, ...) and unknown types: the
+                 * typed sign FFI would refuse and the FAIL leg closes the
+                 * plate session underneath. Prompt + keep scanning instead
+                 * so the session survives until the sign request shows up. */
+                char l1[48];
+                snprintf(l1, sizeof(l1), "collected %.16s", g_ur_type);
+                printf("ur: non-sign single frame, keep scanning\r\n");
+                UiScanInfo(l1, "not a sign request", "keep scanning...", "");
+                ur_intake_reset();
+                return;
+            }
             scan_exit();
             sign_run(NULL, g_ur_type, g_ur_payload, plen);
         }
@@ -1427,10 +1457,7 @@ static void scan_ur_hit(const char *text)
             pairing_run(g_ur_payload, plen);
             return;
         }
-        if (strncmp(g_ur_type, "xmr-txunsigned", 14) != 0 &&
-            strncmp(g_ur_type, "crypto-monero-tx", 16) != 0 &&
-            strncmp(g_ur_type, "crypto-psbt", 11) != 0 &&
-            strncmp(g_ur_type, "eth-sign-request", 16) != 0) {
+        if (!ur_type_is_sign(g_ur_type)) {
             /* Real-wallet flows animate exchange legs first (xmr-output,
              * xmr-keyimage, ...) which need key material this device does
              * not hold. Collect, report, and KEEP SCANNING so the sign
@@ -1638,6 +1665,11 @@ static void carousel_enter(void)
         printf("carousel: sram pool busy\r\n");
         UiSetLast("ur: sram busy");
         g_carousel = CAROUSEL_FAILED;
+        g_pairing_qr = 0;   /* failed show: the pairing flag must not survive
+                             * into WELCOME (UiTick clears it only AFTER
+                             * UiTick() has run -- a fresh back press could
+                             * reach the QR demo page in the same tick with
+                             * the stale exemption still set) */
         UiGotoPage(UI_PAGE_WELCOME);
         return;
     }
@@ -1653,6 +1685,7 @@ static void carousel_enter(void)
         printf("carousel: encoder ws alloc fail (%u)\r\n", enc_ws_need);
         UiSetLast("ur: ws fail");
         g_carousel = CAROUSEL_FAILED;
+        g_pairing_qr = 0;   /* see the sram-busy leg: no stale exemption */
         UiGotoPage(UI_PAGE_WELCOME);
         return;
     }
@@ -1665,6 +1698,7 @@ static void carousel_enter(void)
         printf("carousel: encoder begin failed\r\n");
         UiSetLast("ur: encoder fail");
         g_carousel = CAROUSEL_FAILED;
+        g_pairing_qr = 0;   /* see the sram-busy leg: no stale exemption */
         UiGotoPage(UI_PAGE_WELCOME);
         return;
     }

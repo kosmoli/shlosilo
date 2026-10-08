@@ -116,8 +116,10 @@ def static_checks() -> None:
     print("static: pairing leg wiring in product_task.c")
 
     # -- beat 1 dispatch: BOTH UR shapes reach pairing_run -----------------
-    require(r'strncmp\(text, "ur:xmr-output/", 14\) == 0',
-            "single-frame xmr-output dispatch")
+    # G2: 13-char prefix so the slash-less `ur:xmr-output` form is covered
+    # too -- it must never reach the fixture sign path.
+    require(r'strncmp\(text, "ur:xmr-output", 13\) == 0',
+            "single-frame xmr-output dispatch (incl. slash-less form)")
     require(r'strncmp\(g_ur_type, "xmr-output", 10\) == 0[\s\S]{0,400}?pairing_run\(g_ur_payload, plen\)',
             "multipart xmr-output -> pairing_run dispatch")
     require(r'ur_single_decode\(text, &plen\) == 0\)[\s\S]{0,400}?pairing_run\(g_ur_payload, plen\)',
@@ -149,13 +151,43 @@ def static_checks() -> None:
             "sign_out_type_for xmr-output -> xmr-keyimage mapping")
     print("  ok: beat 2 shows the xmr-keyimage QR through the F3 carousel")
 
-    # -- xmr-keyimage INPUT stays prompt + keep scanning -------------------
-    wl = re.search(r'if \(strncmp\(g_ur_type, "xmr-txunsigned", 14\) != 0 &&([\s\S]*?)\n\s*\{', src)
+    # -- non-sign types stay prompt + keep scanning (single + multipart) ----
+    # Shared whitelist helper: only sign types reach sign_run. Exchange legs
+    # (xmr-keyimage is a device-OUT leg) must never enter it -- the sign FAIL
+    # leg unconditionally closes the plate session underneath.
+    wl = re.search(r"static int ur_type_is_sign\(const char \*type\)\n\{([\s\S]*?)\n\}", src)
     if not wl:
-        fail("multipart sign whitelist not found")
-    if '"xmr-keyimage"' in wl.group(1):
-        fail("xmr-keyimage must NOT enter the sign whitelist (device-out leg)")
-    print("  ok: xmr-keyimage input stays 'prompt + keep scanning'")
+        fail("ur_type_is_sign whitelist helper not found")
+    wbody = wl.group(1)
+    for t in ("xmr-txunsigned", "crypto-monero-tx", "crypto-psbt",
+              "eth-sign-request"):
+        if t not in wbody:
+            fail(f"sign whitelist lost {t!r}")
+    if '"xmr-keyimage"' in wbody or '"xmr-output"' in wbody:
+        fail("exchange legs must NOT be in the sign whitelist")
+    if src.count("ur_type_is_sign(g_ur_type)") < 2:
+        fail("single-frame AND multipart dispatch must both gate through ur_type_is_sign")
+    print("  ok: sign whitelist shared (single + multipart), xmr-keyimage stays out")
+
+    # -- dispatch ORDER: pairing leg BEFORE the fixture path ---------------
+    # N2: a bare/odd xmr-output must never fall through to the fixture sign
+    # path (no fixture fallback on the pairing leg) -- pin the order, not
+    # just the presence, so a re-shuffle cannot re-open the leak.
+    sm = re.search(r"static void scan_ur_hit\(const char \*text\)\n\{([\s\S]*?)\n\}", src)
+    if not sm:
+        fail("scan_ur_hit not found")
+    sbody = sm.group(1)
+    ppos = sbody.find('strncmp(text, "ur:xmr-output", 13)')
+    fpos = sbody.find("sign_run(text, NULL, NULL, 0)")
+    if ppos < 0 or fpos < 0:
+        fail("scan_ur_hit lost the pairing dispatch or the fixture sign path")
+    if ppos > fpos:
+        fail("pairing dispatch must run BEFORE the fixture path (no fixture leak)")
+    gpos = sbody.find("!ur_type_is_sign(g_ur_type)")
+    spos = sbody.find("sign_run(NULL, g_ur_type, g_ur_payload, plen)")
+    if gpos < 0 or spos < 0 or gpos > spos:
+        fail("single-frame session sign must gate through ur_type_is_sign BEFORE sign_run")
+    print("  ok: pairing dispatch precedes the fixture path; single-frame sign gated")
 
     # -- the page gate: exemption + self-clear + teardown intact -----------
     gate = re.search(
