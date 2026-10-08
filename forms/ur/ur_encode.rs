@@ -60,12 +60,14 @@ pub enum UrTypeTag {
     CryptoMoneroTx,     // XMR (compatibility alias, deprecated — official is xmr-txunsigned/signed)
     XmrTxUnsigned,      // XMR official registry 8303 (payload = full encrypted unsigned txset blob)
     XmrTxSigned,        // XMR official registry 8304 (payload = full encrypted signed txset blob)
-    SolanaSignRequest,  // SOL
+    XmrOutput, // Cake direct pairing (monero_c patch name): encrypted output-export container (Monero output export\x04)
+    XmrKeyImage, // Cake direct pairing (monero_c patch name): encrypted key-image container (Monero key image export\x03)
+    SolanaSignRequest, // SOL
     CardanoSignRequest, // ADA
-    CosmosSignRequest,  // Cosmos family
-    Bytes,              // opaque bytes (tests / passthrough)
-    CryptoHdKey,        // crypto-hdkey
-    CryptoAccount,      // crypto-account
+    CosmosSignRequest, // Cosmos family
+    Bytes,       // opaque bytes (tests / passthrough)
+    CryptoHdKey, // crypto-hdkey
+    CryptoAccount, // crypto-account
     Unknown,
 }
 
@@ -77,6 +79,8 @@ impl UrTypeTag {
             "crypto-monero-tx" => Self::CryptoMoneroTx,
             "xmr-txunsigned" => Self::XmrTxUnsigned,
             "xmr-txsigned" => Self::XmrTxSigned,
+            "xmr-output" => Self::XmrOutput,
+            "xmr-keyimage" => Self::XmrKeyImage,
             "solana-sign-request" => Self::SolanaSignRequest,
             "cardano-sign-request" => Self::CardanoSignRequest,
             "cosmos-sign-request" => Self::CosmosSignRequest,
@@ -94,6 +98,8 @@ impl UrTypeTag {
             Self::CryptoMoneroTx => "crypto-monero-tx",
             Self::XmrTxUnsigned => "xmr-txunsigned",
             Self::XmrTxSigned => "xmr-txsigned",
+            Self::XmrOutput => "xmr-output",
+            Self::XmrKeyImage => "xmr-keyimage",
             Self::SolanaSignRequest => "solana-sign-request",
             Self::CardanoSignRequest => "cardano-sign-request",
             Self::CosmosSignRequest => "cosmos-sign-request",
@@ -233,6 +239,70 @@ mod xmr_tag_tests {
                 "tag {:?}",
                 tag
             );
+        }
+    }
+}
+
+// ============================================================================
+// T2 tests (2026-10-08): Cake direct pairing UR tags (xmr-output / xmr-keyimage)
+// ============================================================================
+#[cfg(test)]
+mod xmr_pairing_tag_tests {
+    use super::*;
+
+    /// Type string ↔ enum bidirectional mapping (the string literal IS the UR
+    /// type, identical to the monero_c patch names).
+    #[test]
+    fn xmr_pairing_tags_round_trip() {
+        assert_eq!(UrTypeTag::from_name("xmr-output"), UrTypeTag::XmrOutput);
+        assert_eq!(UrTypeTag::XmrOutput.type_name(), "xmr-output");
+        assert_eq!(UrTypeTag::from_name("xmr-keyimage"), UrTypeTag::XmrKeyImage);
+        assert_eq!(UrTypeTag::XmrKeyImage.type_name(), "xmr-keyimage");
+    }
+
+    /// Single-frame encode/decode round trip through the new tags.
+    #[test]
+    fn xmr_pairing_tag_encode_decode() {
+        for (tag, name) in [
+            (UrTypeTag::XmrOutput, "ur:xmr-output/"),
+            (UrTypeTag::XmrKeyImage, "ur:xmr-keyimage/"),
+        ] {
+            let payload = b"Monero output export\x04fake";
+            let enc = encode(tag, payload).unwrap();
+            assert!(enc.as_str().starts_with(name));
+            let dec = crate::ur::ur_decode::decode(enc.as_str()).unwrap();
+            assert_eq!(dec.type_tag(), tag);
+            assert_eq!(dec.as_ref(), payload);
+        }
+    }
+
+    /// Decode routing: the UR layer must route the container types by their
+    /// type strings, not by payload content.
+    #[test]
+    fn xmr_pairing_decode_routes_type() {
+        let out = encode(UrTypeTag::XmrOutput, b"aa").unwrap();
+        let ki = encode(UrTypeTag::XmrKeyImage, b"bb").unwrap();
+        assert_eq!(
+            crate::ur::ur_decode::decode(out.as_str())
+                .unwrap()
+                .type_tag(),
+            UrTypeTag::XmrOutput
+        );
+        assert_eq!(
+            crate::ur::ur_decode::decode(ki.as_str())
+                .unwrap()
+                .type_tag(),
+            UrTypeTag::XmrKeyImage
+        );
+    }
+
+    /// The pairing containers are not signing requests: `to_template` must
+    /// refuse them (they never reach the sign dispatch).
+    #[test]
+    fn xmr_pairing_tags_not_signable() {
+        for tag in [UrTypeTag::XmrOutput, UrTypeTag::XmrKeyImage] {
+            let r = crate::tx::tx_normalize::to_template(tag, b"x");
+            assert!(r.is_err(), "tag {:?} must not become a TxTemplate", tag);
         }
     }
 }

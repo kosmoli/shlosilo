@@ -46,6 +46,10 @@ pub fn to_template<'a>(type_tag: UrTypeTag, payload: &'a [u8]) -> Result<TxTempl
         UrTypeTag::Bytes
         | UrTypeTag::CryptoHdKey
         | UrTypeTag::CryptoAccount
+        // Cake direct pairing containers are not signing requests — they have
+        // their own business entry (`business::xmr_pairing`), never `sign`.
+        | UrTypeTag::XmrOutput
+        | UrTypeTag::XmrKeyImage
         | UrTypeTag::Unknown => {
             return Err(crate::error::ShlosiloError::new(
                 crate::error::ShlosiloErrorKind::UrPayloadUnknownType,
