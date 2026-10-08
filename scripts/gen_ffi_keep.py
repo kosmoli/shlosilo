@@ -155,7 +155,9 @@ def render(entries):
     for name, mod, cfg in entries:
         cfg_groups.setdefault(cfg, []).append((name, mod))
     out.append("#[used]")
-    out.append(f"static KEEP_FFI: [Addr; {len(entries)}] = [")
+    # Slice literal (inferred length): cfg-gated entries mean the element count
+    # differs per feature set, so a fixed-size array cannot hold the table.
+    out.append("static KEEP_FFI: &[Addr] = &[")
     for cfg in sorted(cfg_groups, key=lambda c: (c is not None, c or "")):
         group = cfg_groups[cfg]
         if cfg:
