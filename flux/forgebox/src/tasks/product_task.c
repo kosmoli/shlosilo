@@ -1393,7 +1393,11 @@ static void scan_ur_hit(const char *text)
         g_ur_dup_cnt++;
     }
     progress = shlosilo_ur_decode_progress(g_ur_dec);
-    snprintf(l3, sizeof(l3), "fr %u dup %u", g_ur_feed_cnt, g_ur_dup_cnt);
+    /* Diagnostic (stagenet UR hunt): show the frag-seq slot of the frame
+     * just fed ("S1-11".."S24-11") -- photos of this line prove whether the
+     * fed texts repeat (capture stickiness) or cycle (intake bug). */
+    snprintf(l3, sizeof(l3), "fr %u dup %u S%.*s", g_ur_feed_cnt, g_ur_dup_cnt,
+             (int)(slash2 - (slash1 + 1)), slash1 + 1);
     UiScanInfo("ur multipart", "collecting frames", l3, "");
     UiScanProgress((uint8_t)progress);
 
