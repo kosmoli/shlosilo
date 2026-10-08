@@ -81,3 +81,56 @@ fn real_wallet_output_export_e2e() {
             .collect::<String>()
     );
 }
+
+/// T3 golden: the business receive leg (`process_output_export`) over the same
+/// real-wallet fixture must produce a key image byte-identical to the CLI's
+/// self-computed `export_key_images` reference. The accompanying signature
+/// carries randomness, so only the 32 B image is compared (same rule as above).
+#[test]
+#[ignore]
+fn real_wallet_business_process_output_export() {
+    let payload = std::fs::read("/tmp/test0830_outputs_all").expect("fixture not found");
+    let keys = std::fs::read_to_string("/tmp/test0830_keys.hex").expect("keys");
+    let mut it = keys.split_whitespace();
+    let spend_sk = hex_to_32(it.next().unwrap().trim());
+    let view_sk = hex_to_32(it.next().unwrap().trim());
+
+    let mut ws_raw = vec![0u8; shlosilo::business::xmr_pairing::pairing_ws_len()];
+    let mut ws = shlosilo::business::xmr_pairing::carve_pairing_ws(&mut ws_raw).expect("carve ws");
+    use rand_chacha::rand_core::SeedableRng as _;
+    let mut rng = rand_chacha::ChaCha20Rng::from_seed([7u8; 32]);
+    let mut out = vec![0u8; 8192];
+    let outcome = shlosilo::business::xmr_pairing::process_output_export(
+        &view_sk, &spend_sk, &payload, &mut ws, &mut out, &mut rng,
+    )
+    .expect("process_output_export failed");
+    assert_eq!(outcome.output_count, 1, "expected exactly 1 output");
+    assert!(outcome.written > 0);
+
+    // Read-back: decrypt the produced container and the CLI golden; compare images.
+    let (_rpk1, _rpk2, wire) = shlosilo::chain::xmr::key_image_export::decrypt_export_payload(
+        &out[..outcome.written],
+        shlosilo::chain::xmr::key_image_export::KEY_IMAGE_EXPORT_MAGIC,
+        &view_sk,
+    )
+    .expect("roundtrip decrypt failed");
+    assert_eq!(
+        wire.len(),
+        KEY_IMAGE_RECORD_LEN,
+        "1 output = one 96B record"
+    );
+
+    let cli_ki = std::fs::read("/tmp/test0830_cli_ki_all").expect("cli key image fixture");
+    let (_cpk1, _cpk2, cwire) = shlosilo::chain::xmr::key_image_export::decrypt_export_payload(
+        &cli_ki,
+        shlosilo::chain::xmr::key_image_export::KEY_IMAGE_EXPORT_MAGIC,
+        &view_sk,
+    )
+    .expect("cli key image decrypt failed");
+    assert_eq!(cwire.len(), KEY_IMAGE_RECORD_LEN);
+    assert_eq!(
+        &wire[..32],
+        &cwire[..32],
+        "key image mismatch vs CLI golden"
+    );
+}

@@ -127,7 +127,7 @@ struct Addr(*const ());
 unsafe impl Sync for Addr {}
 
 #[used]
-static KEEP_FFI: [Addr; 63] = [
+static KEEP_FFI: [Addr; 65] = [
     Addr(shlosilo::device_timing::shlosilo_timing_set_clock_fn as *const ()),
     Addr(shlosilo::device_timing::shlosilo_timing_get_stage as *const ()),
     Addr(shlosilo::device_timing::shlosilo_timing_get_total as *const ()),
@@ -191,4 +191,8 @@ static KEEP_FFI: [Addr; 63] = [
     Addr(shlosilo_flux_keysource::keysource::se_ffi::shlosilo_keysource_se_ws_len as *const ()),
     Addr(shlosilo_flux_keysource::keysource::se_ffi::shlosilo_keysource_se_open_ffi as *const ()),
     Addr(shlosilo_flux_keysource::keysource::se_ffi::shlosilo_keysource_se_close_ffi as *const ()),
+    #[cfg(feature = "alloc-fallback")]
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_xmr_pairing_ffi as *const ()),
+    #[cfg(not(feature = "alloc-fallback"))]
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_xmr_pairing_ffi as *const ()),
 ];

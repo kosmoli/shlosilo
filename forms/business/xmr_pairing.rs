@@ -1,0 +1,374 @@
+//! Cake direct pairing — output-export receive leg (T3).
+//!
+//! One business chain (isomorphic to keystone `generate_export_ur_data`):
+//! 1. `xmr-output` UR payload (the `Monero output export\x04` encrypted container)
+//!    → `decrypt_export_payload` (signature first, then decrypt)
+//! 2. epee parse (`ExportedTransferDetails`) + pk1/pk2 ownership validation
+//!    (pk1 must equal spend_pub, pk2 must equal view_pub derived from the
+//!    session keys — a foreign request is rejected before any key image exists)
+//! 3. per-output key image + accompanying signature → `Monero key image export\x03`
+//!    encrypted container — the `xmr-keyimage` UR payload bytes, written to the
+//!    caller's output buffer verbatim.
+//!
+//! Key source: the caller (FFI) borrows the keys from a [`KeySession`] read
+//! port (`KeySession::monero`) — plaintext key bytes never cross the FFI
+//! boundary (v2 §4.1). Intermediate buffers are wiped before return (the
+//! request plaintext transient is wiped inside the chain core; the workspace
+//! scratch is wiped here).
+
+use rand_core::{CryptoRng, RngCore};
+
+use crate::chain::xmr::key_image_export::{
+    generate_key_image_export_into, KEY_IMAGE_EXPORT_MAGIC, OUTPUT_EXPORT_MAGIC,
+};
+use crate::chain::xmr::output_export::{ExportedTransferDetail, KEY_IMAGE_RECORD_LEN};
+use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::types::key_session::KeySession;
+
+/// Request plaintext scratch cap (decrypted request + wire staging). The
+/// encrypted request itself is budgeted upstream at `MULTIPART_PAYLOAD_MAX_LEN`;
+/// the real-wallet fixtures sit far below this (1 output ≈ 240 B ciphertext).
+const PAIRING_SCRATCH_LEN: usize = 2048;
+/// Output-detail pool (deployment parameter; over-cap surfaces as an explicit
+/// `Err(BufferTooSmall)`, never truncation).
+const PAIRING_DETAILS_MAX: usize = 8;
+/// Key-image record pool (one 96 B record per output).
+const PAIRING_RECORDS_MAX: usize = 8;
+
+/// Caller-provisioned workspace for the receive leg (Z3 caller-workspace
+/// discipline — forms allocates nothing on this path). Carved from raw caller
+/// bytes by [`carve_pairing_ws`].
+pub struct PairingWs<'a> {
+    /// Decrypted-request transient + response wire staging (wiped before return).
+    scratch: &'a mut [u8],
+    /// Parsed output details (public material).
+    details: &'a mut [ExportedTransferDetail],
+    /// Computed (image, sig) records (public material).
+    records: &'a mut [([u8; 32], [u8; 64])],
+}
+
+fn align_up(off: usize, align: usize) -> usize {
+    (off + align - 1) & !(align - 1)
+}
+
+/// Total caller-workspace bytes required by [`carve_pairing_ws`].
+pub fn pairing_ws_len() -> usize {
+    let a_d = core::mem::align_of::<ExportedTransferDetail>().max(8);
+    let a_r = core::mem::align_of::<([u8; 32], [u8; 64])>().max(8);
+    let details_off = align_up(PAIRING_SCRATCH_LEN, a_d);
+    let records_off = align_up(
+        details_off + core::mem::size_of::<ExportedTransferDetail>() * PAIRING_DETAILS_MAX,
+        a_r,
+    );
+    align_up(
+        records_off + core::mem::size_of::<([u8; 32], [u8; 64])>() * PAIRING_RECORDS_MAX,
+        8,
+    )
+}
+
+/// Carve a [`PairingWs`] out of a caller workspace buffer (the same pattern as
+/// `business::sign::carve_sign_ws`). Returns `None` when `buf` is smaller than
+/// [`pairing_ws_len`] — the carve never partially succeeds.
+///
+/// # Safety contract (internal unsafe, ffi-seam pattern)
+/// The typed spans reinterpret caller bytes; every slot is explicitly
+/// initialized after carving (`ExportedTransferDetail::default()`, records
+/// zeroed) so no uninit value is ever observable.
+pub fn carve_pairing_ws(buf: &mut [u8]) -> Option<PairingWs<'_>> {
+    let total = pairing_ws_len();
+    if buf.len() < total {
+        return None;
+    }
+    buf[..total].fill(0);
+    let base: *mut u8 = buf.as_mut_ptr();
+    // SAFETY: offsets are disjoint by construction (the same computation
+    // `pairing_ws_len` reports); every element is initialized below before the
+    // slices are handed out; all spans derive from one base pointer.
+    unsafe fn at<'a, T>(base: *mut u8, off: usize, count: usize) -> &'a mut [T] {
+        core::slice::from_raw_parts_mut(base.add(off) as *mut T, count)
+    }
+    let a_d = core::mem::align_of::<ExportedTransferDetail>().max(8);
+    let a_r = core::mem::align_of::<([u8; 32], [u8; 64])>().max(8);
+    let details_off = align_up(PAIRING_SCRATCH_LEN, a_d);
+    let records_off = align_up(
+        details_off + core::mem::size_of::<ExportedTransferDetail>() * PAIRING_DETAILS_MAX,
+        a_r,
+    );
+    let scratch: &mut [u8] = unsafe { at(base, 0, PAIRING_SCRATCH_LEN) };
+    let details: &mut [ExportedTransferDetail] =
+        unsafe { at(base, details_off, PAIRING_DETAILS_MAX) };
+    for s in details.iter_mut() {
+        unsafe { core::ptr::write(s, ExportedTransferDetail::default()) };
+    }
+    let records: &mut [([u8; 32], [u8; 64])] =
+        unsafe { at(base, records_off, PAIRING_RECORDS_MAX) };
+    for r in records.iter_mut() {
+        unsafe { core::ptr::write(r, ([0u8; 32], [0u8; 64])) };
+    }
+    Some(PairingWs {
+        scratch,
+        details,
+        records,
+    })
+}
+
+/// Receive-leg outcome.
+#[derive(Clone, Copy, Debug)]
+pub struct OutputExportOutcome {
+    /// Bytes written to `out` — the `Monero key image export\x03` container,
+    /// i.e. the `xmr-keyimage` UR payload (encode with `UrTypeTag::XmrKeyImage`).
+    pub written: usize,
+    /// Outputs parsed from the request (= key images produced).
+    pub output_count: usize,
+}
+
+/// The Cake direct pairing receive leg: `xmr-output` payload in,
+/// `xmr-keyimage` container bytes out.
+///
+/// `view_sk`/`spend_sk` are borrows (no copies leave the key holder — see the
+/// module docs); `payload` is the raw decrypted-container bytes of the
+/// `xmr-output` UR; `out` receives the response container.
+pub fn process_output_export<R: RngCore + CryptoRng>(
+    view_sk: &[u8; 32],
+    spend_sk: &[u8; 32],
+    payload: &[u8],
+    ws: &mut PairingWs<'_>,
+    out: &mut [u8],
+    rng: &mut R,
+) -> Result<OutputExportOutcome> {
+    use zeroize::Zeroize as _;
+    // The fused chain core: decrypt (signature first) → parse → pk1/pk2
+    // ownership check → key images → KEY_IMAGE_EXPORT encryption. The request
+    // plaintext transient is wiped inside the core before the response is built.
+    let written = generate_key_image_export_into(
+        view_sk, spend_sk, payload, ws.scratch, ws.details, ws.records, out, rng,
+    )?;
+    // forms wipe duty: the scratch staged the response wire records (public
+    // material) — wipe regardless before the workspace leaves this function.
+    ws.scratch.zeroize();
+    // Container shape pin: `magic ‖ nonce(8) ‖ ChaCha(u32le tag ‖ pk1 ‖ pk2 ‖
+    // count×96B records) ‖ sig(64)` — count derived from the exact length so
+    // the caller learns how many outputs were answered (asserted in tests).
+    let overhead = KEY_IMAGE_EXPORT_MAGIC.len() + 8 + 4 + 64 + 64;
+    if written < overhead || !(written - overhead).is_multiple_of(KEY_IMAGE_RECORD_LEN) {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    Ok(OutputExportOutcome {
+        written,
+        output_count: (written - overhead) / KEY_IMAGE_RECORD_LEN,
+    })
+}
+
+/// Session-bound face: keys are borrowed from the [`KeySession`] read port
+/// (`KeySession::monero`) — the FFI layer calls this so plaintext key bytes
+/// never cross the boundary.
+pub fn process_output_export_session<R: RngCore + CryptoRng>(
+    session: &KeySession,
+    payload: &[u8],
+    ws: &mut PairingWs<'_>,
+    out: &mut [u8],
+    rng: &mut R,
+) -> Result<OutputExportOutcome> {
+    let keys = session.monero();
+    process_output_export(
+        keys.view_sk.expose(),
+        keys.spend_sk.expose(),
+        payload,
+        ws,
+        out,
+        rng,
+    )
+}
+
+/// Re-export for the receive-side callers that only need the request magic
+/// (decode routing / pre-flight checks).
+pub const REQUEST_MAGIC: &[u8] = OUTPUT_EXPORT_MAGIC;
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::chain::xmr::key_image_export::{
+        decrypt_export_payload, encrypt_export_payload_into,
+    };
+    use crate::chain::xmr::output_export::deserialize_key_images_into;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use rand_chacha::rand_core::SeedableRng;
+
+    fn rng_from(seed: u64) -> rand_chacha::ChaCha20Rng {
+        rand_chacha::ChaCha20Rng::seed_from_u64(seed)
+    }
+
+    fn make_keypair(seed: u8) -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        use curve25519_dalek::scalar::Scalar;
+        let sk = Scalar::from_bytes_mod_order([seed; 32]);
+        let sk_b = sk.to_bytes();
+        let pk = (ED25519_BASEPOINT_TABLE * &sk).compress().to_bytes();
+        (sk_b, pk, sk_b, pk) // (spend_sk, spend_pub, view_sk, view_pub)
+    }
+
+    /// One main-address output with the key-image-request bit set (the same
+    /// plaintext shape the real wallet emits).
+    fn request_plain(view_sk: &[u8; 32], spend_sk: &[u8; 32]) -> (Vec<u8>, [u8; 32]) {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        use curve25519_dalek::scalar::Scalar;
+        let mut plain = Vec::new();
+        plain.extend_from_slice(&[0x01]); // has_transfers
+        plain.extend_from_slice(&[0x00]); // offset
+        plain.extend_from_slice(&[0x01]); // transfer_count
+        plain.extend_from_slice(&[0x00]); // blob size (ignored)
+        plain.extend_from_slice(&[0x01]); // version
+        let offset =
+            crate::chain::xmr::subaddress::calc_output_key_offset(view_sk, &[0x22u8; 32], 0, 0, 0)
+                .unwrap();
+        let input_sk =
+            Scalar::from_bytes_mod_order(*spend_sk) + Scalar::from_bytes_mod_order(offset);
+        let out_pub = (ED25519_BASEPOINT_TABLE * &input_sk).compress().to_bytes();
+        plain.extend_from_slice(&out_pub);
+        plain.extend_from_slice(&[0x00]); // idx=0
+        plain.extend_from_slice(&[0x64]); // gidx=100
+        plain.extend_from_slice(&[0x22u8; 32]); // tx_pubkey
+        plain.push(0b0001_0100); // rct + key_image_request
+        plain.extend_from_slice(&[0x80, 0x89, 0x2f]); // amount
+        plain.extend_from_slice(&[0x00]); // no additional keys
+        plain.extend_from_slice(&[0x00, 0x00]); // major=0 minor=0
+        (plain, out_pub)
+    }
+
+    fn make_request(view_sk: &[u8; 32], spend_sk: &[u8; 32], seed: u64) -> (Vec<u8>, [u8; 32]) {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        use curve25519_dalek::scalar::Scalar;
+        let (plain, out_pub) = request_plain(view_sk, spend_sk);
+        let spend_pub = (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(*spend_sk))
+            .compress()
+            .to_bytes();
+        let view_pub = (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(*view_sk))
+            .compress()
+            .to_bytes();
+        let mut rng = rng_from(seed);
+        let mut buf = vec![0u8; 2048];
+        let n = encrypt_export_payload_into(
+            OUTPUT_EXPORT_MAGIC,
+            view_sk,
+            &spend_pub,
+            &view_pub,
+            &plain,
+            &mut rng,
+            &mut buf,
+        )
+        .unwrap();
+        buf.truncate(n);
+        (buf, out_pub)
+    }
+
+    fn ws_buf() -> Vec<u8> {
+        vec![0u8; pairing_ws_len()]
+    }
+
+    /// Shared with the FFI end-to-end test (c_abi): build a valid encrypted
+    /// output-export request under the given wallet keys.
+    pub(crate) fn make_request_pub(
+        view_sk: &[u8; 32],
+        spend_sk: &[u8; 32],
+        seed: u64,
+    ) -> (Vec<u8>, [u8; 32]) {
+        make_request(view_sk, spend_sk, seed)
+    }
+
+    /// End-to-end: request container → process_output_export → decrypt the
+    /// response → 1 record, key image matches the independent recomputation.
+    #[test]
+    fn process_output_export_end_to_end() {
+        let (spend_sk, _, view_sk, _) = make_keypair(5);
+        let (req, out_pub) = make_request(&view_sk, &spend_sk, 7);
+        let mut ws_raw = ws_buf();
+        let mut ws = carve_pairing_ws(&mut ws_raw).unwrap();
+        let mut rng = rng_from(11);
+        let mut out = vec![0u8; 2048];
+        let outcome =
+            process_output_export(&view_sk, &spend_sk, &req, &mut ws, &mut out, &mut rng).unwrap();
+        assert_eq!(outcome.output_count, 1);
+        assert_eq!(
+            outcome.written,
+            KEY_IMAGE_EXPORT_MAGIC.len() + 140 + KEY_IMAGE_RECORD_LEN
+        );
+
+        // Hot-side read-back
+        let (_, _, resp_plain) =
+            decrypt_export_payload(&out[..outcome.written], KEY_IMAGE_EXPORT_MAGIC, &view_sk)
+                .unwrap();
+        let mut recs = [([0u8; 32], [0u8; 64]); 8];
+        let n = deserialize_key_images_into(&resp_plain, &mut recs).unwrap();
+        assert_eq!(n, 1);
+        // Independent key image recomputation
+        use curve25519_dalek::scalar::Scalar;
+        use monero_ed25519::Point;
+        let offset =
+            crate::chain::xmr::subaddress::calc_output_key_offset(&view_sk, &[0x22u8; 32], 0, 0, 0)
+                .unwrap();
+        let input_sk =
+            Scalar::from_bytes_mod_order(spend_sk) + Scalar::from_bytes_mod_order(offset);
+        let hp: curve25519_dalek::EdwardsPoint = Point::biased_hash(out_pub).into();
+        let expect: [u8; 32] = (hp * input_sk).compress().to_bytes();
+        assert_eq!(recs[0].0, expect);
+    }
+
+    /// Foreign request (pk1/pk2 not derived from these keys) is rejected
+    /// before any key image is produced.
+    #[test]
+    fn foreign_request_rejected() {
+        let (spend_sk, _, view_sk, _) = make_keypair(5);
+        let (other_spend, _, other_view, _) = make_keypair(9);
+        // Encrypt a request under the OTHER wallet's envelope
+        let (req, _) = make_request(&other_view, &other_spend, 3);
+        let mut ws_raw = ws_buf();
+        let mut ws = carve_pairing_ws(&mut ws_raw).unwrap();
+        let mut rng = rng_from(1);
+        let mut out = vec![0u8; 2048];
+        let r = process_output_export(&view_sk, &spend_sk, &req, &mut ws, &mut out, &mut rng);
+        assert!(r.is_err(), "foreign pk1/pk2 must be rejected");
+    }
+
+    /// Session face: keys only enter through the KeySession read port.
+    #[test]
+    fn session_face_matches_raw_keys() {
+        let session = KeySession::from_entropy(&[0x11u8; 16], b"").unwrap();
+        let keys = session.monero();
+        let view_sk = *keys.view_sk.expose();
+        let spend_sk = *keys.spend_sk.expose();
+        let (req, _) = make_request(&view_sk, &spend_sk, 7);
+
+        let mut ws_a = ws_buf();
+        let mut wa = carve_pairing_ws(&mut ws_a).unwrap();
+        let mut ws_b = ws_buf();
+        let mut wb = carve_pairing_ws(&mut ws_b).unwrap();
+        let mut out_a = vec![0u8; 2048];
+        let mut out_b = vec![0u8; 2048];
+        let a =
+            process_output_export_session(&session, &req, &mut wa, &mut out_a, &mut rng_from(3))
+                .unwrap();
+        let b = process_output_export(
+            &view_sk,
+            &spend_sk,
+            &req,
+            &mut wb,
+            &mut out_b,
+            &mut rng_from(3),
+        )
+        .unwrap();
+        assert_eq!(a.written, b.written);
+        assert_eq!(
+            out_a[..a.written],
+            out_b[..b.written],
+            "session face byte-identical"
+        );
+    }
+
+    /// Workspace discipline: under-capacity never partially carves.
+    #[test]
+    fn carve_rejects_short_buffer() {
+        let mut small = vec![0u8; pairing_ws_len() - 1];
+        assert!(carve_pairing_ws(&mut small).is_none());
+    }
+}

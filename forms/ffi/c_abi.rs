@@ -1794,6 +1794,154 @@ pub mod r3 {
         OK
     }
 
+    /// Cake direct pairing (T6): the `xmr-output` receive leg — seed-less
+    /// session entry, frozen signature shape mirroring [`shlosilo_sign_session_ffi`].
+    ///
+    /// Chain: decrypt the `Monero output export\x04` container → epee parse →
+    /// pk1/pk2 ownership check → key image + signature per output → write the
+    /// `Monero key image export\x03` container (`xmr-keyimage` UR payload) to
+    /// `output_buf`. Encode it with `UrTypeTag::XmrKeyImage`.
+    ///
+    /// Contract (same discipline as the sign session entry):
+    /// - `session`: flux-constructed `KeySession` handle (single-owner,
+    ///   caller-workspace placement; see [`shlosilo_sign_session_ffi`]). Keys
+    ///   are borrowed from the session's read port — **no seed or key parameter
+    ///   exists on this entry**, so key material cannot cross the FFI boundary.
+    ///   **Lifetime rule**: the session must stay alive for the whole call; no
+    ///   concurrent free/use (including from interrupt context).
+    /// - `payload` / `payload_len`: the `xmr-output` UR payload bytes (the
+    ///   encrypted container as decoded from the UR), ≤ 16 KiB.
+    /// - `entropy_ptr` / `entropy_len`: §B.5 signing-randomness stream for the
+    ///   export envelope + key-image signatures — REQUIRED for the XMR pairing
+    ///   path (< 16 B raises `EntropyInjectionInvalid` at the first RNG
+    ///   derivation, same misuse guard as the XMR sign path).
+    /// - `output_buf` / `output_buf_len` / `actual_len`: response container out.
+    /// - `ws` / `ws_len`: caller workspace — `ws == NULL` is the PURE PROBE
+    ///   (reports the workspace requirement in `actual_len`, touches nothing).
+    ///
+    /// Returns 0 = Ok (length in `actual_len`), negative = error code.
+    #[cfg(feature = "alloc-fallback")]
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
+    pub extern "C" fn shlosilo_xmr_pairing_ffi(
+        session: *const KeySession, // flux-constructed; the FFI side only holds the pointer
+        payload: *const u8,
+        payload_len: c_uint,
+        entropy_ptr: *const u8,
+        entropy_len: c_uint,
+        output_buf: *mut u8,
+        output_buf_len: c_uint,
+        actual_len: *mut c_uint,
+        ws: *mut u8,
+        ws_len: c_uint,
+    ) -> c_int {
+        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+        let ws_need = crate::business::xmr_pairing::pairing_ws_len();
+        // Z3.3b workspace contract: ws == NULL is a PURE PROBE — reports the
+        // workspace requirement and returns before any key access or parsing.
+        if ws.is_null() {
+            write_actual_len(actual_len, ws_need);
+            return OK;
+        }
+        // Capacity validated BEFORE execution; under-capacity reports the
+        // required length through actual_len (documented exception to the
+        // zero-on-failure rule).
+        if (ws_len as usize) < ws_need {
+            write_actual_len(actual_len, ws_need);
+            return to_ffi_code(&ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(ws_need),
+            ));
+        }
+        if session.is_null() || payload.is_null() || output_buf.is_null() {
+            return ERR_NULL_POINTER;
+        }
+        let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            // (1) payload budget + slice (the xmr-output UR payload = container bytes)
+            if payload_len as usize > crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN {
+                return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
+            }
+            let payload_slice = checked_slice(
+                payload,
+                payload_len as usize,
+                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+                false,
+            )
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::UrPayloadTooLarge))?;
+            // (2) entropy (§B.5): the export randomness stream. (NULL,0) is
+            // accepted here and rejected by the misuse guard below — same
+            // behavior as the XMR sign path.
+            let entropy_slice = optional_bytes_in(
+                entropy_ptr,
+                entropy_len as usize,
+                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+            )
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+            // (3) output buffer through the checked constructor
+            let out_slice =
+                checked_slice_mut(output_buf, output_buf_len as usize, SIGN_OUTPUT_BUF_MAX_LEN)
+                    .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+            // SAFETY: ws is non-null (the probe returned above) and ws_len >=
+            // ws_need (checked above) — the carve validates the exact size.
+            let ws_slice = unsafe { core::slice::from_raw_parts_mut(ws, ws_need) };
+            let mut pws =
+                crate::business::xmr_pairing::carve_pairing_ws(ws_slice).ok_or_else(|| {
+                    ShlosiloError::with_context(
+                        ShlosiloErrorKind::BufferTooSmall,
+                        crate::error::ErrorContext::RequiredLength(ws_need),
+                    )
+                })?;
+            // (4) per-export RNG context: Keccak(EXPORT_CTX_DOMAIN ‖ request
+            // container) — Z2.4d-3 derivation, bound to this exact request.
+            let ctx = {
+                use crate::types::push::Sink as _;
+                let mut h = crate::encoding::keccak256::KeccakSink::new();
+                h.put(crate::chain::xmr::signing_rng::EXPORT_CTX_DOMAIN)?;
+                h.put(payload_slice)?;
+                h.finalize()
+            };
+            let mut rng = crate::chain::xmr::signing_rng::export_encrypt_rng(entropy_slice, &ctx)?;
+            // (5) key source: the KeySession read port — plaintext key bytes
+            // never cross the boundary (v2 §4.1).
+            // SAFETY: the entry prologue excluded the null pointer; handle
+            // validity is the caller's single-owner contract (as above).
+            let session_ref = unsafe { &*session };
+            let outcome = crate::business::xmr_pairing::process_output_export_session(
+                session_ref,
+                payload_slice,
+                &mut pws,
+                out_slice,
+                &mut rng,
+            )?;
+            Ok(outcome.written)
+        });
+        finish_sign_ffi(result, actual_len)
+    }
+
+    /// No-alloc face stub (P2-01 discipline): the pairing chain layer needs the
+    /// alloc-backed CryptoNight scratchpad (the container key derivation), so
+    /// without `alloc-fallback` this entry reports a stable error code — it
+    /// never panics and the C host still links.
+    #[cfg(not(feature = "alloc-fallback"))]
+    #[no_mangle]
+    pub extern "C" fn shlosilo_xmr_pairing_ffi(
+        _session: *const KeySession,
+        _payload: *const u8,
+        _payload_len: c_uint,
+        _entropy_ptr: *const u8,
+        _entropy_len: c_uint,
+        _output_buf: *mut u8,
+        _output_buf_len: c_uint,
+        actual_len: *mut c_uint,
+        _ws: *mut u8,
+        _ws_len: c_uint,
+    ) -> c_int {
+        write_actual_len(actual_len, 0);
+        to_ffi_code(&ShlosiloError::new(
+            ShlosiloErrorKind::FeatureNotImplemented,
+        ))
+    }
+
     /// R3: release the decoder handle. Null-safe (idempotent).
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: visible to clippy once mod r3 becomes pub; free contract: single-owner
@@ -2438,6 +2586,115 @@ mod tests {
             *mut u8,
             c_uint,
         ) -> c_int = shlosilo_sign_ffi;
+    }
+
+    /// T6 signature pin: the Cake pairing entry's frozen C shape.
+    #[test]
+    fn ffi_xmr_pairing_signature_exists() {
+        const _: extern "C" fn(
+            *const crate::types::key_session::KeySession,
+            *const u8,
+            c_uint,
+            *const u8,
+            c_uint,
+            *mut u8,
+            c_uint,
+            *mut c_uint,
+            *mut u8,
+            c_uint,
+        ) -> c_int = r3::shlosilo_xmr_pairing_ffi;
+    }
+
+    /// T6 end-to-end through the frozen entry: session handle + valid request
+    /// container → response container decrypts to exactly one key-image record
+    /// whose image matches the independent recomputation.
+    #[cfg(feature = "alloc-fallback")]
+    #[test]
+    fn ffi_xmr_pairing_e2e() {
+        use crate::types::key_session::KeySession;
+        let session = KeySession::from_entropy(&[0x11u8; 16], b"").unwrap();
+        let keys = session.monero();
+        let view_sk = *keys.view_sk.expose();
+        let spend_sk = *keys.spend_sk.expose();
+        let (req, out_pub) =
+            crate::business::xmr_pairing::tests::make_request_pub(&view_sk, &spend_sk, 7);
+        let entropy = [7u8; 32];
+        let mut out = alloc::vec![0u8; 8192];
+        let mut ws = alloc::vec![0u8; crate::business::xmr_pairing::pairing_ws_len()];
+
+        // PURE PROBE: ws == NULL reports the workspace requirement.
+        let mut actual: c_uint = 0;
+        let rc = r3::shlosilo_xmr_pairing_ffi(
+            &session,
+            req.as_ptr(),
+            req.len() as c_uint,
+            entropy.as_ptr(),
+            entropy.len() as c_uint,
+            out.as_mut_ptr(),
+            out.len() as c_uint,
+            &mut actual,
+            core::ptr::null_mut(),
+            0,
+        );
+        assert_eq!(rc, OK);
+        assert_eq!(
+            actual as usize,
+            crate::business::xmr_pairing::pairing_ws_len()
+        );
+
+        // Real call.
+        let rc = r3::shlosilo_xmr_pairing_ffi(
+            &session,
+            req.as_ptr(),
+            req.len() as c_uint,
+            entropy.as_ptr(),
+            entropy.len() as c_uint,
+            out.as_mut_ptr(),
+            out.len() as c_uint,
+            &mut actual,
+            ws.as_mut_ptr(),
+            ws.len() as c_uint,
+        );
+        assert_eq!(rc, OK, "pairing entry must succeed");
+        let n = actual as usize;
+        assert!(n > 0);
+
+        // Hot-side read-back + independent key image recomputation.
+        let (_, _, plain) = crate::chain::xmr::key_image_export::decrypt_export_payload(
+            &out[..n],
+            crate::chain::xmr::key_image_export::KEY_IMAGE_EXPORT_MAGIC,
+            &view_sk,
+        )
+        .unwrap();
+        let mut recs = [([0u8; 32], [0u8; 64]); 8];
+        let cnt = crate::chain::xmr::output_export::deserialize_key_images_into(&plain, &mut recs)
+            .unwrap();
+        assert_eq!(cnt, 1);
+        use curve25519_dalek::scalar::Scalar;
+        use monero_ed25519::Point;
+        let offset =
+            crate::chain::xmr::subaddress::calc_output_key_offset(&view_sk, &[0x22u8; 32], 0, 0, 0)
+                .unwrap();
+        let input_sk =
+            Scalar::from_bytes_mod_order(spend_sk) + Scalar::from_bytes_mod_order(offset);
+        let hp: curve25519_dalek::EdwardsPoint = Point::biased_hash(out_pub).into();
+        assert_eq!(recs[0].0, (hp * input_sk).compress().to_bytes());
+
+        // Entropy misuse guard: short entropy raises EntropyInjectionInvalid.
+        let mut actual2: c_uint = 0;
+        let rc = r3::shlosilo_xmr_pairing_ffi(
+            &session,
+            req.as_ptr(),
+            req.len() as c_uint,
+            entropy.as_ptr(),
+            4,
+            out.as_mut_ptr(),
+            out.len() as c_uint,
+            &mut actual2,
+            ws.as_mut_ptr(),
+            ws.len() as c_uint,
+        );
+        assert_ne!(rc, OK, "short entropy must be rejected");
     }
 
     #[test]

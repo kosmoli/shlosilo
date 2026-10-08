@@ -1165,6 +1165,62 @@ int shlosilo_sign_session_ffi(const struct KeySession *session,
 int shlosilo_session_free_ffi(struct KeySession **session);
 
 /**
+ * Cake direct pairing (T6): the `xmr-output` receive leg — seed-less
+ * session entry, frozen signature shape mirroring [`shlosilo_sign_session_ffi`].
+ *
+ * Chain: decrypt the `Monero output export\x04` container → epee parse →
+ * pk1/pk2 ownership check → key image + signature per output → write the
+ * `Monero key image export\x03` container (`xmr-keyimage` UR payload) to
+ * `output_buf`. Encode it with `UrTypeTag::XmrKeyImage`.
+ *
+ * Contract (same discipline as the sign session entry):
+ * - `session`: flux-constructed `KeySession` handle (single-owner,
+ *   caller-workspace placement; see [`shlosilo_sign_session_ffi`]). Keys
+ *   are borrowed from the session's read port — **no seed or key parameter
+ *   exists on this entry**, so key material cannot cross the FFI boundary.
+ *   **Lifetime rule**: the session must stay alive for the whole call; no
+ *   concurrent free/use (including from interrupt context).
+ * - `payload` / `payload_len`: the `xmr-output` UR payload bytes (the
+ *   encrypted container as decoded from the UR), ≤ 16 KiB.
+ * - `entropy_ptr` / `entropy_len`: §B.5 signing-randomness stream for the
+ *   export envelope + key-image signatures — REQUIRED for the XMR pairing
+ *   path (< 16 B raises `EntropyInjectionInvalid` at the first RNG
+ *   derivation, same misuse guard as the XMR sign path).
+ * - `output_buf` / `output_buf_len` / `actual_len`: response container out.
+ * - `ws` / `ws_len`: caller workspace — `ws == NULL` is the PURE PROBE
+ *   (reports the workspace requirement in `actual_len`, touches nothing).
+ *
+ * Returns 0 = Ok (length in `actual_len`), negative = error code.
+ */
+int shlosilo_xmr_pairing_ffi(const struct KeySession *session,
+                             const uint8_t *payload,
+                             unsigned int payload_len,
+                             const uint8_t *entropy_ptr,
+                             unsigned int entropy_len,
+                             uint8_t *output_buf,
+                             unsigned int output_buf_len,
+                             unsigned int *actual_len,
+                             uint8_t *ws,
+                             unsigned int ws_len);
+
+/**
+ * No-alloc face stub (P2-01 discipline): the pairing chain layer needs the
+ * alloc-backed CryptoNight scratchpad (the container key derivation), so
+ * without `alloc-fallback` this entry reports a stable error code — it
+ * never panics and the C host still links.
+ */
+int shlosilo_xmr_pairing_ffi(const struct KeySession *_session,
+                             const uint8_t *_payload,
+                             unsigned int _payload_len,
+                             const uint8_t *_entropy_ptr,
+                             unsigned int _entropy_len,
+                             uint8_t *_output_buf,
+                             unsigned int _output_buf_len,
+                             unsigned int *actual_len,
+                             uint8_t *_ws,
+                             unsigned int _ws_len);
+
+/**
  * R3: release the decoder handle. Null-safe (idempotent).
  */
 void shlosilo_ur_decode_free(struct UrMultipartDecoder *handle);
