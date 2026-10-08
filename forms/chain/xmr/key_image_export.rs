@@ -80,9 +80,12 @@ pub fn decrypt_export_payload(
     Ok((pk1, pk2, zeroize::Zeroizing::new(scratch[..n].to_vec())))
 }
 
-/// Fused core (Z2.4d-5): decrypts into caller storage. `scratch[..n]` is the payload
-/// (request details — same secrecy class as `details_out`, not secret); the scratch
-/// TAIL is wiped by forms before return. Signature verified first (anti-tamper).
+/// Fused core (Z2.4d-5): decrypts into caller storage. `scratch[..n]` is the
+/// request plaintext (request details — same non-secret class as `details_out`),
+/// held as a TRANSIENT: this core wipes the tail beyond `n` before return and
+/// callers wipe the whole scratch on every exit path (the zeroize-on-drop
+/// guard in [`generate_key_image_export_into`]). Signature verified first
+/// (anti-tamper).
 /// `cn_scratch` is the CryptoNight-V0 key-derivation scratchpad (≥
 /// `types::caps::SIGN_WS_CN_SCRATCH`, u128-aligned — see
 /// `unsigned_txset::chacha_key_from_view_sk`); it is secret-bearing and wiped

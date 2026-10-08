@@ -98,6 +98,14 @@ static int g_key_from_se;
  * lifetime as an SE unlock: lives until 'se lock' / sign-done close), so it
  * survives UI navigation and the plate-export flow can run against it. */
 static int g_key_console;
+/* T5 Cake pairing: the QR page is currently showing the FLOW-OWNED pairing
+ * output (xmr-keyimage, beat 2 of the four-beat cold-sign flow). The seed-flow
+ * exit gate must not kill the plate session underneath it -- the sign request
+ * (beat 3) is still coming. Self-clearing invariant: only meaningful while
+ * the QR page is up (the idle loop drops it the moment the page changes), so
+ * a real exit (back to welcome, any other page) falls back to the default
+ * teardown. */
+static int g_pairing_qr;
 static void seed_plate_wipe(void);
 static void carousel_enter(void);
 static void carousel_step(void);
@@ -344,9 +352,16 @@ static void ProductTask(void *argument)
              * close), so it survives UI navigation. Phase 4: a console
              * 'key new' wallet session is not flow-owned either (same
              * lifetime). */
+            if (UiGetPage() != UI_PAGE_QR) {
+                /* g_pairing_qr is only meaningful while the pairing output
+                 * leg owns the QR page; drop it on any other page so a stale
+                 * flag can never exempt a later non-pairing QR show. */
+                g_pairing_qr = 0;
+            }
             if (g_key_session != NULL && g_key_from_se == 0 && g_key_console == 0 &&
                 UiGetPage() != UI_PAGE_SCAN &&
-                UiGetPage() != UI_PAGE_SIGN && UiGetPage() != UI_PAGE_CONFIRM) {
+                UiGetPage() != UI_PAGE_SIGN && UiGetPage() != UI_PAGE_CONFIRM &&
+                !(g_pairing_qr != 0 && UiGetPage() == UI_PAGE_QR)) {
                 key_session_close();
                 seed_plate_wipe();
                 UiSetLast("key zeroized (exit)");
@@ -942,10 +957,15 @@ static void ur_intake_reset(void)
 }
 
 /* Map the signed set to its output UR type: XMR travels back as the official
- * registry type (8304), everything else as opaque bytes. */
+ * registry type (8304), everything else as opaque bytes. T5: the pairing
+ * receive leg reuses the same mapping face -- an `xmr-output` request is
+ * answered with the `xmr-keyimage` container (registry type for the key-image
+ * export). */
 static void sign_out_type_for(const char *in_type)
 {
-    if (strcmp(in_type, "xmr-txunsigned") == 0 ||
+    if (strcmp(in_type, "xmr-output") == 0) {
+        snprintf(g_sign_out_type, sizeof(g_sign_out_type), "xmr-keyimage");
+    } else if (strcmp(in_type, "xmr-txunsigned") == 0 ||
         strcmp(in_type, "crypto-monero-tx") == 0) {
         snprintf(g_sign_out_type, sizeof(g_sign_out_type), "xmr-txsigned");
     } else if (strcmp(in_type, "crypto-psbt") == 0) {
@@ -1124,8 +1144,164 @@ static void sign_run(const char *uri, const char *type,
      * exit leg (confirm reject / welcome housekeeping). */
     key_session_close();
     ur_intake_reset();
+    if (g_sign_out_len > 0 &&
+        strcmp(g_sign_out_type, "xmr-txsigned") == 0) {
+        /* T5 beat 4: an XMR signed set goes straight to the QR carousel --
+         * Cake's "scan QR code" step collects it (the rc/out/dt diagnostics
+         * already went to the console above). The session is already closed
+         * above, so the carousel's exit leg is a plain return to welcome. */
+        printf("sign: done -> xmr-txsigned qr (result page skipped)\r\n");
+        UiSetLast("signed - scan with Cake");
+        UiGotoPage(UI_PAGE_QR);
+        return;
+    }
     printf("sign: done -> result page\r\n");
     UiSetPayload(result, (uint32_t)strlen(result));
+}
+
+/* ---------------- Cake pairing leg (T5): xmr-output -> xmr-keyimage ---------------- */
+
+/* Beat 1->2 of the four-beat cold-sign flow: the Cake `xmr-output` receive
+ * leg. The device answers Cake DIRECTLY -- key images + accompanying
+ * signatures are computed through the seed-less session entry
+ * (shlosilo_xmr_pairing_ffi; keys are borrowed from the live session, never
+ * across the FFI), and the `xmr-keyimage` container goes onto the F3 QR
+ * carousel for Cake's "scan QR code" step.
+ *
+ *   (1) scan Cake's xmr-output animation -> this function;
+ *   (2) xmr-keyimage QR on the carousel (back tap -> back to scanning);
+ *   (3) scan Cake's xmr-txunsigned animation -> sign_run;
+ *   (4) xmr-txsigned QR on the carousel.
+ *
+ * Failure (any kind) = prompt + KEEP SCANNING: the frames cycle, so the next
+ * animation round retries. There is NO fixture-key fallback on this leg (unlike
+ * the sign face) -- a keyless device must not answer Cake at all. */
+static void pairing_run(const uint8_t *payload, unsigned plen)
+{
+    char l3[40];
+    uint8_t entropy[SIGN_ENTROPY_LEN];
+    uint8_t *ws_raw = NULL;
+    uint8_t *ws = NULL;
+    unsigned ws_need = 0;
+    unsigned out_len = 0;
+    uint32_t t0, dt;
+    int rc;
+
+    if (g_key_session == NULL) {
+        printf("pairing: no key session (payload %u), keep scanning\r\n", plen);
+        UiScanInfo("pairing: need key", "no key session", "keep scanning...", "");
+        ur_intake_reset();
+        return;
+    }
+
+    /* Same §B.5 fixed stream as sign_run (byte-comparable with the smoke
+     * anchor; real TRNG entropy is the P4/P5 provisioning item). */
+    memset(entropy, 0x77, sizeof(entropy));
+
+    /* Workspace requirement through the PURE PROBE (ws == NULL reports the
+     * need in actual_len and touches nothing -- no key access, no parse). */
+    rc = shlosilo_xmr_pairing_ffi(g_key_session, NULL, 0, NULL, 0,
+                                  NULL, 0, &ws_need, NULL, 0);
+    if (rc != 0 || ws_need == 0) {
+        printf("pairing: ws probe fail rc=%d need=%u\r\n", rc, ws_need);
+        UiScanInfo("pairing: ws probe FAIL", "keep scanning...", "", "");
+        ur_intake_reset();
+        return;
+    }
+
+    if (g_sign_out != NULL) {
+        ExtFree(g_sign_out);
+        g_sign_out = NULL;
+        g_sign_out_len = 0;
+    }
+    g_sign_out = (uint8_t *)ExtMalloc(SIGN_OUT_MAX);
+    /* The ws contract wants a u128-aligned base (the carve places the CN
+     * scratch slot at u128 alignment relative to the base and the CN core
+     * validates the ABSOLUTE address): over-allocate and align up; the free
+     * below goes to the original block. */
+    ws_raw = (uint8_t *)ExtMalloc(ws_need + 15u);
+    if (ws_raw != NULL) {
+        ws = (uint8_t *)(((uintptr_t)ws_raw + 15u) & ~(uintptr_t)15u);
+    }
+    if (g_sign_out == NULL || ws == NULL) {
+        printf("pairing: alloc fail (out=%u ws=%u)\r\n",
+               (unsigned)SIGN_OUT_MAX, ws_need);
+        UiScanInfo("pairing: alloc FAIL", "keep scanning...", "", "");
+        ExtFree(g_sign_out);
+        g_sign_out = NULL;
+        g_sign_out_len = 0;
+        ExtFree(ws_raw);
+        ur_intake_reset();
+        return;
+    }
+
+    snprintf(l3, sizeof(l3), "key: %s",
+             (g_key_from_se != 0) ? "se unlock"
+                                  : ((g_key_console != 0) ? "key new" : "plate scan"));
+    UiScanInfo("pairing: output received", "-> key images ready",
+               "computing key images", l3);
+    printf("pairing: start (payload=%u ws=%u)\r\n", plen, ws_need);
+    t0 = osKernelGetTickCount();
+    rc = shlosilo_xmr_pairing_ffi(g_key_session, payload, plen,
+                                  entropy, sizeof(entropy),
+                                  g_sign_out, SIGN_OUT_MAX, &out_len,
+                                  ws, ws_need);
+    dt = osKernelGetTickCount() - t0;
+    ExtFree(ws_raw);
+    if (rc != 0 || out_len == 0 || out_len > SIGN_OUT_MAX) {
+        printf("pairing: FAIL rc=%d out=%u dt=%ums\r\n", rc, out_len, (unsigned)dt);
+        UiScanInfo("pairing: FAIL", "keep scanning...", "", "");
+        ExtFree(g_sign_out);
+        g_sign_out = NULL;
+        g_sign_out_len = 0;
+        ur_intake_reset();
+        return;     /* still on the scan page: intake restarts fresh */
+    }
+
+    printf("pairing: ok %u bytes in %ums -> xmr-keyimage qr\r\n",
+           out_len, (unsigned)dt);
+    g_sign_out_len = out_len;
+    sign_out_type_for("xmr-output");    /* -> xmr-keyimage */
+    ur_intake_reset();
+
+    /* Beat 2: the key-image QR rides the F3 carousel. The QR page is
+     * flow-owned while this leg is showing (g_pairing_qr): the exit gate must
+     * not kill the plate session underneath it -- the sign request is beat 3.
+     * A real exit is the back tap in the carousel (-> scan page) or from the
+     * scan page (-> welcome, where the gate tears the session down). */
+    scan_exit();
+    g_pairing_qr = 1;
+    UiSetLast("key images ready - scan with Cake");
+    UiGotoPage(UI_PAGE_QR);
+}
+
+/* Decode a single-frame `ur:` into (g_ur_type, g_ur_payload). Returns 0 on
+ * success (payload length through plen_out), non-zero on failure (nothing is
+ * kept; the caller keeps scanning). */
+static int ur_single_decode(const char *text, unsigned *plen_out)
+{
+    unsigned plen = 0;
+
+    if (g_ur_payload == NULL) {
+        g_ur_payload = (uint8_t *)ExtMalloc(UR_PAYLOAD_MAX);
+    }
+    if (g_ur_payload == NULL) {
+        printf("ur: single-frame payload alloc fail\r\n");
+        UiScanInfo("ur: payload alloc FAIL", "", "", "");
+        return -1;
+    }
+    if (shlosilo_ur_decode_uri_ffi(text, (uint8_t *)g_ur_type,
+                                  (unsigned)sizeof(g_ur_type),
+                                  g_ur_payload, UR_PAYLOAD_MAX,
+                                  &plen) != 0) {
+        printf("ur: single-frame decode FAIL\r\n");
+        UiScanInfo("ur: decode FAIL", "not a sign request?", "", "");
+        ExtFree(g_ur_payload);
+        g_ur_payload = NULL;
+        return -1;
+    }
+    *plen_out = plen;
+    return 0;
 }
 
 /* One scanned frame that starts with "ur:". Single-part frames sign right
@@ -1140,6 +1316,19 @@ static void scan_ur_hit(const char *text)
     unsigned ws_need;
     int progress;
 
+    if (slash2 == NULL && strncmp(text, "ur:xmr-output/", 14) == 0) {
+        /* T5 beat 1 (single-frame form): a Cake pairing request. Decode the
+         * (type, payload) pair and answer the pairing leg -- the session
+         * check lives inside pairing_run, so a keyless device prompts and
+         * keeps scanning instead of falling into the fixture sign path. */
+        unsigned plen = 0;
+        if (ur_single_decode(text, &plen) == 0) {
+            printf("ur: single-frame type=%s payload=%u (pairing)\r\n",
+                   g_ur_type, plen);
+            pairing_run(g_ur_payload, plen);
+        }
+        return;
+    }
     if (slash2 == NULL && g_key_session == NULL) {
         scan_exit();
         sign_run(text, NULL, NULL, 0);
@@ -1152,28 +1341,12 @@ static void scan_ur_hit(const char *text)
          * extract (type, payload) through shlosilo_ur_decode_uri_ffi and run
          * the typed session sign on the pair. */
         unsigned plen = 0;
-        if (g_ur_payload == NULL) {
-            g_ur_payload = (uint8_t *)ExtMalloc(UR_PAYLOAD_MAX);
+        if (ur_single_decode(text, &plen) == 0) {
+            printf("ur: single-frame type=%s payload=%u (session sign)\r\n",
+                   g_ur_type, plen);
+            scan_exit();
+            sign_run(NULL, g_ur_type, g_ur_payload, plen);
         }
-        if (g_ur_payload == NULL) {
-            printf("ur: single-frame payload alloc fail\r\n");
-            UiScanInfo("ur: payload alloc FAIL", "", "", "");
-            return;
-        }
-        if (shlosilo_ur_decode_uri_ffi(text, (uint8_t *)g_ur_type,
-                                      (unsigned)sizeof(g_ur_type),
-                                      g_ur_payload, UR_PAYLOAD_MAX,
-                                      &plen) != 0) {
-            printf("ur: single-frame decode FAIL\r\n");
-            UiScanInfo("ur: decode FAIL", "not a sign request?", "", "");
-            ExtFree(g_ur_payload);
-            g_ur_payload = NULL;
-            return;
-        }
-        printf("ur: single-frame type=%s payload=%u (session sign)\r\n",
-               g_ur_type, plen);
-        scan_exit();
-        sign_run(NULL, g_ur_type, g_ur_payload, plen);
         return;
     }
 
@@ -1243,6 +1416,13 @@ static void scan_ur_hit(const char *text)
         g_ur_collect_ms = osKernelGetTickCount() - g_ur_t0_ms;
         printf("ur: collected in %u ms (%u fr, %u dup)\r\n",
                (unsigned)g_ur_collect_ms, g_ur_feed_cnt, g_ur_dup_cnt);
+        if (strncmp(g_ur_type, "xmr-output", 10) == 0) {
+            /* T5 beat 1: Cake's output export -- the device answers the
+             * pairing leg directly (xmr-keyimage QR out). Session check and
+             * every failure prompt live inside pairing_run. */
+            pairing_run(g_ur_payload, plen);
+            return;
+        }
         if (strncmp(g_ur_type, "xmr-txunsigned", 14) != 0 &&
             strncmp(g_ur_type, "crypto-monero-tx", 16) != 0 &&
             strncmp(g_ur_type, "crypto-psbt", 11) != 0 &&
@@ -1491,7 +1671,7 @@ static void carousel_enter(void)
     g_touch_prev = 1;
     g_ur_exit_req = 0;
     g_carousel = CAROUSEL_ACTIVE;
-    printf("carousel: begin %s, %u frames\r\n", DEMO_PAYLOAD_TYPE,
+    printf("carousel: begin %s, %u frames\r\n", type,
            (unsigned)g_ur_total);
 }
 
@@ -1505,6 +1685,26 @@ static void carousel_exit(void)
     g_ur_enc_ws = NULL;
     g_carousel = CAROUSEL_IDLE;
     UiTouchReset();
+}
+
+/* Leave the carousel. T5 beat 2 (the pairing output leg) is flow-owned: its
+ * back tap returns to the SCAN page so the SAME key session carries into
+ * beat 3 (the xmr-txunsigned request). Every other carousel (demo / signed
+ * set) exits to welcome -- for the beat-4 signed set the session is already
+ * closed, and a live plate session at welcome is the flow-exit teardown. */
+static void carousel_leave(const char *why)
+{
+    int pairing = g_pairing_qr;
+
+    carousel_exit();
+    g_pairing_qr = 0;
+    if (pairing) {
+        UiSetLast("keyimage sent - scan txunsigned");
+        UiGotoPage(UI_PAGE_SCAN);
+        return;
+    }
+    UiSetLast(why);
+    UiGotoPage(UI_PAGE_WELCOME);
 }
 
 /* A fresh back press (sampled anywhere - dwell slices, band flush waits,
@@ -1527,9 +1727,7 @@ static void carousel_step(void)
     WDT_ReloadCounter();
 
     if (carousel_exit_requested()) {
-        carousel_exit();
-        UiSetLast("carousel -> welcome");
-        UiGotoPage(UI_PAGE_WELCOME);
+        carousel_leave("carousel -> welcome");
         return;
     }
 
@@ -1537,9 +1735,7 @@ static void carousel_step(void)
                                         sizeof(g_ur_frame), &flen);
     if (rc != 0 || flen == 0 || flen >= sizeof(g_ur_frame)) {
         printf("carousel: frame error rc=%d len=%u\r\n", rc, flen);
-        carousel_exit();
-        UiSetLast("ur: frame error");
-        UiGotoPage(UI_PAGE_WELCOME);
+        carousel_leave("ur: frame error");
         return;
     }
     g_ur_frame[flen] = '\0';
@@ -1555,9 +1751,7 @@ static void carousel_step(void)
      * and flush windows are covered by the UiInputPoll hook. */
     for (uint32_t t = 0; t < CAROUSEL_FRAME_MS; t += CAROUSEL_TOUCH_SLICE_MS) {
         if (carousel_exit_requested()) {
-            carousel_exit();
-            UiSetLast("carousel -> welcome");
-            UiGotoPage(UI_PAGE_WELCOME);
+            carousel_leave("carousel -> welcome");
             return;
         }
         osDelay(CAROUSEL_TOUCH_SLICE_MS);
