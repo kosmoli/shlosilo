@@ -34,7 +34,9 @@ pub mod commitment;
 #[doc(hidden)]
 #[cfg(feature = "alloc-fallback")]
 pub mod generator_cache_test_hooks;
-#[cfg(feature = "alloc-fallback")]
+// Zero-alloc on every face since the pairing campaign: the CN key derivation
+// rides the caller's `cn_scratch` (`_into` cores); the Vec conveniences keep
+// their alloc-fallback gate inside the module.
 pub mod key_image_export;
 pub mod output_export;
 pub mod rct_sig;

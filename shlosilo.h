@@ -1204,23 +1204,6 @@ int shlosilo_xmr_pairing_ffi(const struct KeySession *session,
                              unsigned int ws_len);
 
 /**
- * No-alloc face stub (P2-01 discipline): the pairing chain layer needs the
- * alloc-backed CryptoNight scratchpad (the container key derivation), so
- * without `alloc-fallback` this entry reports a stable error code — it
- * never panics and the C host still links.
- */
-int shlosilo_xmr_pairing_ffi(const struct KeySession *_session,
-                             const uint8_t *_payload,
-                             unsigned int _payload_len,
-                             const uint8_t *_entropy_ptr,
-                             unsigned int _entropy_len,
-                             uint8_t *_output_buf,
-                             unsigned int _output_buf_len,
-                             unsigned int *actual_len,
-                             uint8_t *_ws,
-                             unsigned int _ws_len);
-
-/**
  * R3: release the decoder handle. Null-safe (idempotent).
  */
 void shlosilo_ur_decode_free(struct UrMultipartDecoder *handle);

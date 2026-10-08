@@ -157,6 +157,7 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_sign_session_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_session_free_ffi as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_xmr_pairing_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_free as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_gencache_table_sizes as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_gencache_provide_table as *const ()),
@@ -191,8 +192,4 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo_flux_keysource::keysource::se_ffi::shlosilo_keysource_se_ws_len as *const ()),
     Addr(shlosilo_flux_keysource::keysource::se_ffi::shlosilo_keysource_se_open_ffi as *const ()),
     Addr(shlosilo_flux_keysource::keysource::se_ffi::shlosilo_keysource_se_close_ffi as *const ()),
-    #[cfg(feature = "alloc-fallback")]
-    Addr(shlosilo::ffi::c_abi::r3::shlosilo_xmr_pairing_ffi as *const ()),
-    #[cfg(not(feature = "alloc-fallback"))]
-    Addr(shlosilo::ffi::c_abi::r3::shlosilo_xmr_pairing_ffi as *const ()),
 ];

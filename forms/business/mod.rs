@@ -8,9 +8,8 @@ pub mod export_readonly;
 pub mod restore_seed;
 pub mod sign;
 /// Cake direct pairing receive leg. The chain layer it wraps
-/// (`chain::xmr::key_image_export`) requires the alloc-backed CryptoNight
-/// scratchpad (`cuprate_cryptonight::cryptonight_hash_v0`), so this module rides
-/// the same alloc-fallback gate — the FFI entry carries a stable-error stub on
-/// the no-alloc face.
-#[cfg(feature = "alloc-fallback")]
+/// (`chain::xmr::key_image_export`) derives the container ChaCha key with
+/// CryptoNight-V0 over the caller-provided workspace scratchpad
+/// (`PairingWs` carries the `cn_scratch` region), so the whole receive chain
+/// is alloc-free — the FFI entry is the real body on every face.
 pub mod xmr_pairing;

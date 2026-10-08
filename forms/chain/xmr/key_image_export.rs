@@ -16,6 +16,10 @@
 #[cfg(feature = "alloc-fallback")]
 extern crate alloc;
 
+// Alloc surface: the convenience shells + test helpers behind alloc-fallback;
+// the `_into` cores below are caller-storage (zero-alloc, incl. the CryptoNight
+// key derivation over the caller's `cn_scratch`).
+#[cfg(feature = "alloc-fallback")]
 use alloc::vec::Vec;
 
 use chacha20::cipher::{KeyIvInit as _, StreamCipher as _};
@@ -41,12 +45,14 @@ fn err() -> ShlosiloError {
 }
 
 /// Decrypted export payload: (pk1, pk2, zeroizing plaintext).
+#[cfg(feature = "alloc-fallback")]
 pub type ExportPayload = ([u8; 32], [u8; 32], zeroize::Zeroizing<Vec<u8>>);
 
 /// Decrypt an export-class payload (OUTPUT/KEY_IMAGE magic share a structure).
 ///
 /// Returns `(pk1, pk2, plaintext)`; pk1/pk2 exist only for OUTPUT/KEY_IMAGE magic
 /// (unsigned/signed txset have no such section). Signature verified first (anti-tamper), then decrypted.
+#[cfg(feature = "alloc-fallback")]
 pub fn decrypt_export_payload(
     data: &[u8],
     magic: &[u8],
@@ -54,18 +60,25 @@ pub fn decrypt_export_payload(
 ) -> Result<ExportPayload> {
     // Z2.4d-5 staging convenience (allocates); core is `decrypt_export_payload_into`.
     let mut scratch = zeroize::Zeroizing::new(alloc::vec![0u8; data.len()]);
-    let (pk1, pk2, n) = decrypt_export_payload_into(data, magic, view_sk, &mut scratch)?;
+    let mut cn_scratch = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
+    let (pk1, pk2, n) =
+        decrypt_export_payload_into(data, magic, view_sk, &mut scratch, &mut cn_scratch)?;
     Ok((pk1, pk2, zeroize::Zeroizing::new(scratch[..n].to_vec())))
 }
 
 /// Fused core (Z2.4d-5): decrypts into caller storage. `scratch[..n]` is the payload
 /// (request details — same secrecy class as `details_out`, not secret); the scratch
 /// TAIL is wiped by forms before return. Signature verified first (anti-tamper).
+/// `cn_scratch` is the CryptoNight-V0 key-derivation scratchpad (≥
+/// `types::caps::SIGN_WS_CN_SCRATCH`, u128-aligned — see
+/// `unsigned_txset::chacha_key_from_view_sk`); it is secret-bearing and wiped
+/// by the CN core on every exit path.
 pub fn decrypt_export_payload_into(
     data: &[u8],
     magic: &[u8],
     view_sk: &[u8; 32],
     scratch: &mut [u8],
+    cn_scratch: &mut [u8],
 ) -> Result<([u8; 32], [u8; 32], usize)> {
     use zeroize::Zeroize;
     if data.len() < magic.len() + NONCE_LEN + SIG_LEN {
@@ -91,7 +104,9 @@ pub fn decrypt_export_payload_into(
 
     // 2. ChaCha20-Legacy decryption into the caller scratch
     // Z2.2 (2026-09-24): ChaCha key material zeroized on drop.
-    let key = zeroize::Zeroizing::new(cuprate_cryptonight::cryptonight_hash_v0(view_sk));
+    // Zero-alloc (pairing): CN-V0 derives over the caller's `cn_scratch` —
+    // same wiring as `unsigned_txset::chacha_key_from_view_sk`.
+    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk, cn_scratch)?;
     let mut cipher =
         chacha20::ChaCha20Legacy::new_from_slices(key.as_slice(), nonce).map_err(|_| err())?;
     let ct = &raw_data[NONCE_LEN..];
@@ -140,7 +155,17 @@ fn encrypt_export_payload<R: RngCore + CryptoRng>(
 ) -> Result<Vec<u8>> {
     // Z2.4d-5 staging convenience (allocates); core is `encrypt_export_payload_into`.
     let mut out = alloc::vec![0u8; magic.len() + NONCE_LEN + 4 + 64 + data.len() + SIG_LEN];
-    let n = encrypt_export_payload_into(magic, view_sk, spend_pub, view_pub, data, rng, &mut out)?;
+    let mut cn_scratch = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
+    let n = encrypt_export_payload_into(
+        magic,
+        view_sk,
+        spend_pub,
+        view_pub,
+        data,
+        rng,
+        &mut out,
+        &mut cn_scratch,
+    )?;
     out.truncate(n);
     Ok(out)
 }
@@ -149,7 +174,10 @@ fn encrypt_export_payload<R: RngCore + CryptoRng>(
 /// into `out` — the plaintext sections stream through the keystream and never
 /// materialize (same shape as `SignedTxSet::encrypt_signed_txset_into`). Byte-identical
 /// to the former buffer-based body under the same RNG (nonce draw first, then the
-/// signature k). The output is ciphertext (not sensitive).
+/// signature k). The output is ciphertext (not sensitive). `cn_scratch` is the
+/// CryptoNight-V0 key-derivation scratchpad (same contract as
+/// [`decrypt_export_payload_into`]).
+#[allow(clippy::too_many_arguments)]
 pub fn encrypt_export_payload_into<R: RngCore + CryptoRng>(
     magic: &[u8],
     view_sk: &[u8; 32],
@@ -158,10 +186,12 @@ pub fn encrypt_export_payload_into<R: RngCore + CryptoRng>(
     data: &[u8],
     rng: &mut R,
     out: &mut [u8],
+    cn_scratch: &mut [u8],
 ) -> Result<usize> {
     use crate::types::push::{push_slice, EncryptingSink, Sink as _, SinkCursor};
     // Z2.2 (2026-09-24): ChaCha key material zeroized on drop.
-    let key = zeroize::Zeroizing::new(cuprate_cryptonight::cryptonight_hash_v0(view_sk));
+    // Zero-alloc (pairing): CN-V0 derives over the caller's `cn_scratch`.
+    let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk, cn_scratch)?;
     let nonce_num = rng.next_u64().to_be_bytes();
     let cipher =
         chacha20::ChaCha20Legacy::new_from_slices(key.as_slice(), &nonce_num).map_err(|_| err())?;
@@ -274,6 +304,7 @@ fn generate_key_image_signature<R: RngCore + CryptoRng>(
 /// `view_sk`/`spend_sk` are held by the caller in Zeroizing; this function takes only borrows (v2-security §2)
 /// and creates no extra copies. Computes only outputs with `is_key_image_request()` (keystone computes all,
 /// but the flags bit5 semantics are exactly "needs key image" — keeping full alignment; a parameter switch is left for the future).
+#[cfg(feature = "alloc-fallback")]
 pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     view_sk: &[u8; 32],
     spend_sk: &[u8; 32],
@@ -286,6 +317,7 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     let mut records_out: alloc::vec::Vec<([u8; 32], [u8; 64])> = alloc::vec::Vec::new();
     records_out.resize(details_out.len().max(1), ([0u8; 32], [0u8; 64]));
     let mut out = alloc::vec![0u8; 8192];
+    let mut cn_scratch = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
     let n = generate_key_image_export_into(
         view_sk,
         spend_sk,
@@ -295,6 +327,7 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
         &mut records_out,
         &mut out,
         rng,
+        &mut cn_scratch,
     )?;
     out.truncate(n);
     Ok(out)
@@ -305,6 +338,9 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
 /// forms before return (same contract as `decrypt_and_parse_unsigned_tx`), then
 /// reused to stage the response records (public data) for the keystream sections.
 /// `records_out` holds the computed (image, sig) pairs; `out` receives ciphertext.
+/// `cn_scratch` is the CryptoNight-V0 key-derivation scratchpad (same contract
+/// as [`decrypt_export_payload_into`]; used sequentially by the decrypt and
+/// encrypt derivations).
 #[allow(clippy::too_many_arguments)]
 pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     view_sk: &[u8; 32],
@@ -315,12 +351,18 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     records_out: &mut [([u8; 32], [u8; 64])],
     out: &mut [u8],
     rng: &mut R,
+    cn_scratch: &mut [u8],
 ) -> Result<usize> {
     use crate::types::push::SinkCursor;
     use zeroize::Zeroize;
     // 1. Decrypt the OUTPUT_EXPORT payload into the scratch, validate pk1/pk2 ownership
-    let (pk1, pk2, req_len) =
-        decrypt_export_payload_into(request_payload, OUTPUT_EXPORT_MAGIC, view_sk, scratch)?;
+    let (pk1, pk2, req_len) = decrypt_export_payload_into(
+        request_payload,
+        OUTPUT_EXPORT_MAGIC,
+        view_sk,
+        scratch,
+        cn_scratch,
+    )?;
 
     let spend_sk_scalar = Scalar::from_bytes_mod_order(*spend_sk);
     let spend_pub = (ED25519_BASEPOINT_TABLE * &spend_sk_scalar)
@@ -366,6 +408,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
         &scratch[..wire_len],
         rng,
         out,
+        cn_scratch,
     )
 }
 
@@ -572,6 +615,7 @@ mod tests {
                 alloc::vec![( [0u8; 32], [0u8; 64] ); 4];
             let mut rng2 = rng_from(0xC0);
             let mut out2 = alloc::vec![0u8; 8192];
+            let mut cn2 = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
             let n2 = generate_key_image_export_into(
                 &view_sk,
                 &spend_sk,
@@ -581,6 +625,7 @@ mod tests {
                 &mut recs2,
                 &mut out2,
                 &mut rng2,
+                &mut cn2,
             )
             .unwrap();
             // the e2e above used a seeded rng as well — same seed, same bytes
@@ -710,6 +755,7 @@ mod tests {
         .unwrap();
         let mut r2 = rng_from(0x51);
         let mut buf = alloc::vec![0u8; 4096];
+        let mut cn = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
         let n = encrypt_export_payload_into(
             KEY_IMAGE_EXPORT_MAGIC,
             &view_sk,
@@ -718,15 +764,22 @@ mod tests {
             &data,
             &mut r2,
             &mut buf,
+            &mut cn,
         )
         .unwrap();
         assert_eq!(&buf[..n], &conv[..], "encrypt into != convenience");
 
         // decrypt twin + tail wipe
         let mut scratch = alloc::vec![0xEEu8; 1024];
-        let (pk1, pk2, plen) =
-            decrypt_export_payload_into(&conv, KEY_IMAGE_EXPORT_MAGIC, &view_sk, &mut scratch)
-                .unwrap();
+        let mut cn2 = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
+        let (pk1, pk2, plen) = decrypt_export_payload_into(
+            &conv,
+            KEY_IMAGE_EXPORT_MAGIC,
+            &view_sk,
+            &mut scratch,
+            &mut cn2,
+        )
+        .unwrap();
         assert_eq!(pk1, spend_pub);
         assert_eq!(pk2, view_pub);
         assert_eq!(&scratch[..plen], &data[..]);

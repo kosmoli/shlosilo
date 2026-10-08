@@ -41,6 +41,11 @@ const PAIRING_RECORDS_MAX: usize = 8;
 pub struct PairingWs<'a> {
     /// Decrypted-request transient + response wire staging (wiped before return).
     scratch: &'a mut [u8],
+    /// CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB — the
+    /// same `types::caps::SIGN_WS_CN_SCRATCH` constant as the sign ws slot).
+    /// Secret-bearing (key-derivation intermediate): the CN core zeroes it on
+    /// every exit path, restoring the carve's documented zero-fill state.
+    cn_scratch: &'a mut [u8],
     /// Parsed output details (public material).
     details: &'a mut [ExportedTransferDetail],
     /// Computed (image, sig) records (public material).
@@ -51,19 +56,60 @@ fn align_up(off: usize, align: usize) -> usize {
     (off + align - 1) & !(align - 1)
 }
 
+fn ws_next(off: &mut usize, align: usize, size: usize) -> usize {
+    let start = align_up(*off, align);
+    *off = start + size;
+    start
+}
+
+/// Workspace layout — ONE computation shared by [`pairing_ws_len`] and
+/// [`carve_pairing_ws`] (the probe and the carve must never disagree; each
+/// slot's offset comes from this struct only).
+struct PairingWsLayout {
+    scratch: usize,
+    cn_scratch: usize,
+    details: usize,
+    records: usize,
+    total: usize,
+}
+
+impl PairingWsLayout {
+    fn compute() -> Self {
+        let mut off = 0usize;
+        let scratch = ws_next(&mut off, 1, PAIRING_SCRATCH_LEN);
+        // CN-V0 scratchpad: u128 alignment governs the slot (the CN core
+        // validates it — same slot rule as `SignWsLayout`'s cn overlay).
+        let cn_scratch = ws_next(
+            &mut off,
+            core::mem::align_of::<u128>(),
+            crate::types::caps::SIGN_WS_CN_SCRATCH,
+        );
+        let a_d = core::mem::align_of::<ExportedTransferDetail>().max(8);
+        let details = ws_next(
+            &mut off,
+            a_d,
+            core::mem::size_of::<ExportedTransferDetail>() * PAIRING_DETAILS_MAX,
+        );
+        let a_r = core::mem::align_of::<([u8; 32], [u8; 64])>().max(8);
+        let records = ws_next(
+            &mut off,
+            a_r,
+            core::mem::size_of::<([u8; 32], [u8; 64])>() * PAIRING_RECORDS_MAX,
+        );
+        let total = align_up(off, 8);
+        PairingWsLayout {
+            scratch,
+            cn_scratch,
+            details,
+            records,
+            total,
+        }
+    }
+}
+
 /// Total caller-workspace bytes required by [`carve_pairing_ws`].
 pub fn pairing_ws_len() -> usize {
-    let a_d = core::mem::align_of::<ExportedTransferDetail>().max(8);
-    let a_r = core::mem::align_of::<([u8; 32], [u8; 64])>().max(8);
-    let details_off = align_up(PAIRING_SCRATCH_LEN, a_d);
-    let records_off = align_up(
-        details_off + core::mem::size_of::<ExportedTransferDetail>() * PAIRING_DETAILS_MAX,
-        a_r,
-    );
-    align_up(
-        records_off + core::mem::size_of::<([u8; 32], [u8; 64])>() * PAIRING_RECORDS_MAX,
-        8,
-    )
+    PairingWsLayout::compute().total
 }
 
 /// Carve a [`PairingWs`] out of a caller workspace buffer (the same pattern as
@@ -75,11 +121,11 @@ pub fn pairing_ws_len() -> usize {
 /// initialized after carving (`ExportedTransferDetail::default()`, records
 /// zeroed) so no uninit value is ever observable.
 pub fn carve_pairing_ws(buf: &mut [u8]) -> Option<PairingWs<'_>> {
-    let total = pairing_ws_len();
-    if buf.len() < total {
+    let l = PairingWsLayout::compute();
+    if buf.len() < l.total {
         return None;
     }
-    buf[..total].fill(0);
+    buf[..l.total].fill(0);
     let base: *mut u8 = buf.as_mut_ptr();
     // SAFETY: offsets are disjoint by construction (the same computation
     // `pairing_ws_len` reports); every element is initialized below before the
@@ -87,26 +133,21 @@ pub fn carve_pairing_ws(buf: &mut [u8]) -> Option<PairingWs<'_>> {
     unsafe fn at<'a, T>(base: *mut u8, off: usize, count: usize) -> &'a mut [T] {
         core::slice::from_raw_parts_mut(base.add(off) as *mut T, count)
     }
-    let a_d = core::mem::align_of::<ExportedTransferDetail>().max(8);
-    let a_r = core::mem::align_of::<([u8; 32], [u8; 64])>().max(8);
-    let details_off = align_up(PAIRING_SCRATCH_LEN, a_d);
-    let records_off = align_up(
-        details_off + core::mem::size_of::<ExportedTransferDetail>() * PAIRING_DETAILS_MAX,
-        a_r,
-    );
-    let scratch: &mut [u8] = unsafe { at(base, 0, PAIRING_SCRATCH_LEN) };
+    let scratch: &mut [u8] = unsafe { at(base, l.scratch, PAIRING_SCRATCH_LEN) };
+    let cn_scratch: &mut [u8] =
+        unsafe { at(base, l.cn_scratch, crate::types::caps::SIGN_WS_CN_SCRATCH) };
     let details: &mut [ExportedTransferDetail] =
-        unsafe { at(base, details_off, PAIRING_DETAILS_MAX) };
+        unsafe { at(base, l.details, PAIRING_DETAILS_MAX) };
     for s in details.iter_mut() {
         unsafe { core::ptr::write(s, ExportedTransferDetail::default()) };
     }
-    let records: &mut [([u8; 32], [u8; 64])] =
-        unsafe { at(base, records_off, PAIRING_RECORDS_MAX) };
+    let records: &mut [([u8; 32], [u8; 64])] = unsafe { at(base, l.records, PAIRING_RECORDS_MAX) };
     for r in records.iter_mut() {
         unsafe { core::ptr::write(r, ([0u8; 32], [0u8; 64])) };
     }
     Some(PairingWs {
         scratch,
+        cn_scratch,
         details,
         records,
     })
@@ -139,9 +180,18 @@ pub fn process_output_export<R: RngCore + CryptoRng>(
     use zeroize::Zeroize as _;
     // The fused chain core: decrypt (signature first) → parse → pk1/pk2
     // ownership check → key images → KEY_IMAGE_EXPORT encryption. The request
-    // plaintext transient is wiped inside the core before the response is built.
+    // plaintext transient is wiped inside the core before the response is
+    // built; the CN scratchpad is wiped by the CN core on every exit path.
     let written = generate_key_image_export_into(
-        view_sk, spend_sk, payload, ws.scratch, ws.details, ws.records, out, rng,
+        view_sk,
+        spend_sk,
+        payload,
+        ws.scratch,
+        ws.details,
+        ws.records,
+        out,
+        rng,
+        ws.cn_scratch,
     )?;
     // forms wipe duty: the scratch staged the response wire records (public
     // material) — wipe regardless before the workspace leaves this function.
@@ -248,6 +298,7 @@ pub(crate) mod tests {
             .to_bytes();
         let mut rng = rng_from(seed);
         let mut buf = vec![0u8; 2048];
+        let mut cn = vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
         let n = encrypt_export_payload_into(
             OUTPUT_EXPORT_MAGIC,
             view_sk,
@@ -256,6 +307,7 @@ pub(crate) mod tests {
             &plain,
             &mut rng,
             &mut buf,
+            &mut cn,
         )
         .unwrap();
         buf.truncate(n);
@@ -370,5 +422,60 @@ pub(crate) mod tests {
     fn carve_rejects_short_buffer() {
         let mut small = vec![0u8; pairing_ws_len() - 1];
         assert!(carve_pairing_ws(&mut small).is_none());
+    }
+
+    /// Layout pin: the carve and the probe share one layout computation — the
+    /// CN scratchpad slot is exactly `SIGN_WS_CN_SCRATCH` bytes at u128
+    /// alignment (the CN core's validation contract).
+    #[test]
+    fn ws_layout_pin() {
+        use crate::types::caps::SIGN_WS_CN_SCRATCH;
+        let mut raw = ws_buf();
+        let ws = carve_pairing_ws(&mut raw).unwrap();
+        assert_eq!(ws.cn_scratch.len(), SIGN_WS_CN_SCRATCH);
+        assert_eq!(
+            ws.cn_scratch.as_ptr() as usize % core::mem::align_of::<u128>(),
+            0,
+            "CN core requires u128-aligned scratch"
+        );
+        assert_eq!(ws.scratch.len(), PAIRING_SCRATCH_LEN);
+        assert!(pairing_ws_len() >= PAIRING_SCRATCH_LEN + SIGN_WS_CN_SCRATCH);
+    }
+
+    /// Reuse-order pin: a second call on the SAME workspace (fixed RNG seeds)
+    /// must be byte-identical — stale-scratch accumulation in the pairing chain
+    /// only strikes on the second-and-later use of one ws.
+    #[test]
+    fn ws_reuse_deterministic() {
+        let (spend_sk, _, view_sk, _) = make_keypair(6);
+        let (req, _) = make_request(&view_sk, &spend_sk, 8);
+        let mut ws_raw = ws_buf();
+        let mut ws = carve_pairing_ws(&mut ws_raw).unwrap();
+        let mut out1 = vec![0u8; 2048];
+        let mut out2 = vec![0u8; 2048];
+        let a = process_output_export(
+            &view_sk,
+            &spend_sk,
+            &req,
+            &mut ws,
+            &mut out1,
+            &mut rng_from(21),
+        )
+        .unwrap();
+        let b = process_output_export(
+            &view_sk,
+            &spend_sk,
+            &req,
+            &mut ws,
+            &mut out2,
+            &mut rng_from(21),
+        )
+        .unwrap();
+        assert_eq!(a.written, b.written);
+        assert_eq!(
+            &out1[..a.written],
+            &out2[..b.written],
+            "same ws reused must be byte-identical (stale-scratch pin)"
+        );
     }
 }

@@ -1820,7 +1820,6 @@ pub mod r3 {
     ///   (reports the workspace requirement in `actual_len`, touches nothing).
     ///
     /// Returns 0 = Ok (length in `actual_len`), negative = error code.
-    #[cfg(feature = "alloc-fallback")]
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
     pub extern "C" fn shlosilo_xmr_pairing_ffi(
@@ -1916,30 +1915,6 @@ pub mod r3 {
             Ok(outcome.written)
         });
         finish_sign_ffi(result, actual_len)
-    }
-
-    /// No-alloc face stub (P2-01 discipline): the pairing chain layer needs the
-    /// alloc-backed CryptoNight scratchpad (the container key derivation), so
-    /// without `alloc-fallback` this entry reports a stable error code — it
-    /// never panics and the C host still links.
-    #[cfg(not(feature = "alloc-fallback"))]
-    #[no_mangle]
-    pub extern "C" fn shlosilo_xmr_pairing_ffi(
-        _session: *const KeySession,
-        _payload: *const u8,
-        _payload_len: c_uint,
-        _entropy_ptr: *const u8,
-        _entropy_len: c_uint,
-        _output_buf: *mut u8,
-        _output_buf_len: c_uint,
-        actual_len: *mut c_uint,
-        _ws: *mut u8,
-        _ws_len: c_uint,
-    ) -> c_int {
-        write_actual_len(actual_len, 0);
-        to_ffi_code(&ShlosiloError::new(
-            ShlosiloErrorKind::FeatureNotImplemented,
-        ))
     }
 
     /// R3: release the decoder handle. Null-safe (idempotent).
