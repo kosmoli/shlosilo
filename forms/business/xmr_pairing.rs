@@ -367,7 +367,8 @@ pub(crate) mod tests {
     }
 
     /// Foreign request (pk1/pk2 not derived from these keys) is rejected
-    /// before any key image is produced.
+    /// before any key image is produced — and the decrypted request plaintext
+    /// does not survive the rejection.
     #[test]
     fn foreign_request_rejected() {
         let (spend_sk, _, view_sk, _) = make_keypair(5);
@@ -380,6 +381,41 @@ pub(crate) mod tests {
         let mut out = vec![0u8; 2048];
         let r = process_output_export(&view_sk, &spend_sk, &req, &mut ws, &mut out, &mut rng);
         assert!(r.is_err(), "foreign pk1/pk2 must be rejected");
+
+        // Case 2: OUR envelope (signature + ChaCha verify) but foreign pk1/pk2
+        // — the ownership rejection fires AFTER decryption, i.e. the request
+        // plaintext is fully resident when the error path runs.
+        let (_, f_spend_pub, _, f_view_pub) = make_keypair(9);
+        let (plain, _) = request_plain(&view_sk, &spend_sk);
+        let mut rng = rng_from(4);
+        let mut buf = vec![0u8; 2048];
+        let mut cn = vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
+        let n = encrypt_export_payload_into(
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &f_spend_pub,
+            &f_view_pub,
+            &plain,
+            &mut rng,
+            &mut buf,
+            &mut cn,
+        )
+        .unwrap();
+        buf.truncate(n);
+        let mut ws_raw = ws_buf();
+        let mut ws = carve_pairing_ws(&mut ws_raw).unwrap();
+        let mut out = vec![0u8; 2048];
+        let r = process_output_export(&view_sk, &spend_sk, &buf, &mut ws, &mut out, &mut rng);
+        assert!(
+            r.is_err(),
+            "foreign pk1/pk2 must be rejected (post-decrypt)"
+        );
+        // Error-path wipe duty: the decrypted request plaintext must not
+        // survive the rejection (the chain core's zeroize-on-drop guard).
+        assert!(
+            ws.scratch.iter().all(|&b| b == 0),
+            "error path must wipe the pairing ws scratch"
+        );
     }
 
     /// Session face: keys only enter through the KeySession read port.

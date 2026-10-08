@@ -1187,8 +1187,16 @@ int shlosilo_session_free_ffi(struct KeySession **session);
  *   path (< 16 B raises `EntropyInjectionInvalid` at the first RNG
  *   derivation, same misuse guard as the XMR sign path).
  * - `output_buf` / `output_buf_len` / `actual_len`: response container out.
- * - `ws` / `ws_len`: caller workspace — `ws == NULL` is the PURE PROBE
+ * - `ws` / `ws_len`: caller workspace — the ws base address MUST be
+ *   **u128-aligned** (the carve places the CryptoNight scratch slot at
+ *   u128 alignment *relative to the base*; the CN core validates the
+ *   absolute address). `ws == NULL` is the PURE PROBE
  *   (reports the workspace requirement in `actual_len`, touches nothing).
+ *
+ * Response wire: `magic ‖ nonce(8) ‖ ChaCha(u32le tag ‖ pk1 ‖ pk2 ‖
+ * count×96B records) ‖ sig(64)`; each record is `[32B image][64B sig]` —
+ * isomorphic to keystone `KeyImages::to_bytes` (the Cake pairing link's
+ * wire), NOT the boost-archive `wallet2::export_key_images_str` blob.
  *
  * Returns 0 = Ok (length in `actual_len`), negative = error code.
  */

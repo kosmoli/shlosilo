@@ -44,6 +44,20 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
+/// Zeroize-on-drop guard over the request/wire scratch of
+/// [`generate_key_image_export_into`]: the decrypted request plaintext is a
+/// transient that must be gone on EVERY exit path — the foreign-pk rejection
+/// and the epee-parse `?` used to return with it still resident (the explicit
+/// `scratch.zeroize()` only ran on the happy path).
+struct ScratchWipe<'a>(&'a mut [u8]);
+
+impl Drop for ScratchWipe<'_> {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.0.zeroize();
+    }
+}
+
 /// Decrypted export payload: (pk1, pk2, zeroizing plaintext).
 #[cfg(feature = "alloc-fallback")]
 pub type ExportPayload = ([u8; 32], [u8; 32], zeroize::Zeroizing<Vec<u8>>);
@@ -302,8 +316,10 @@ fn generate_key_image_signature<R: RngCore + CryptoRng>(
 /// End-to-end: XmrOutput payload → XmrKeyImage payload (isomorphic to keystone generate_export_ur_data).
 ///
 /// `view_sk`/`spend_sk` are held by the caller in Zeroizing; this function takes only borrows (v2-security §2)
-/// and creates no extra copies. Computes only outputs with `is_key_image_request()` (keystone computes all,
-/// but the flags bit5 semantics are exactly "needs key image" — keeping full alignment; a parameter switch is left for the future).
+/// and creates no extra copies. Computes a key image + accompanying signature for EVERY parsed output —
+/// NO `is_key_image_request()` filtering (keystone computes all outputs and the CLI golden
+/// (`export_key_images`) covers all of them; filtering would break golden compatibility).
+/// The flag is advisory metadata for the hot side, not a device-side selector.
 #[cfg(feature = "alloc-fallback")]
 pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     view_sk: &[u8; 32],
@@ -334,9 +350,10 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
 }
 
 /// Fused core (Z2.4d-5): request decrypt→parse→key images→response encrypt in one
-/// pass. `scratch` is storage only — the request plaintext transient is wiped by
-/// forms before return (same contract as `decrypt_and_parse_unsigned_tx`), then
-/// reused to stage the response records (public data) for the keystream sections.
+/// pass. `scratch` is storage only — the request plaintext transient is wiped on
+/// EVERY exit path (a zeroize-on-drop guard; same contract as
+/// `decrypt_and_parse_unsigned_tx`), then reused to stage the response records
+/// (public data) for the keystream sections.
 /// `records_out` holds the computed (image, sig) pairs; `out` receives ciphertext.
 /// `cn_scratch` is the CryptoNight-V0 key-derivation scratchpad (same contract
 /// as [`decrypt_export_payload_into`]; used sequentially by the decrypt and
@@ -354,18 +371,23 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     cn_scratch: &mut [u8],
 ) -> Result<usize> {
     use crate::types::push::SinkCursor;
-    use zeroize::Zeroize;
+    use zeroize::Zeroize as _;
+    // Zeroize-on-drop: the request plaintext leaves the scratch on every exit
+    // path (the foreign-pk / parse `?` below included).
+    let scratch = ScratchWipe(scratch);
     // 1. Decrypt the OUTPUT_EXPORT payload into the scratch, validate pk1/pk2 ownership
     let (pk1, pk2, req_len) = decrypt_export_payload_into(
         request_payload,
         OUTPUT_EXPORT_MAGIC,
         view_sk,
-        scratch,
+        scratch.0,
         cn_scratch,
     )?;
 
-    let spend_sk_scalar = Scalar::from_bytes_mod_order(*spend_sk);
-    let spend_pub = (ED25519_BASEPOINT_TABLE * &spend_sk_scalar)
+    // Secret-bearing scalar stack copies are Zeroizing so they are wiped on
+    // drop (the raw `spend_sk` borrow stays with the key holder).
+    let spend_sk_scalar = Zeroizing::new(Scalar::from_bytes_mod_order(*spend_sk));
+    let spend_pub = (ED25519_BASEPOINT_TABLE * &*spend_sk_scalar)
         .compress()
         .to_bytes();
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
@@ -377,13 +399,11 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     }
 
     // 2. Parse the outputs (Z2.3 C3b-1: details list into caller storage)
-    let details = ExportedTransferDetails::from_bytes(&scratch[..req_len], details_out)?;
+    let details = ExportedTransferDetails::from_bytes(&scratch.0[..req_len], details_out)?;
     // request plaintext transient done with — wiped before anything else happens
-    scratch.zeroize();
+    scratch.0.zeroize();
 
     // 3. Compute key image + accompanying signature per output into the caller slot
-    let spend_sk_z = Zeroizing::new(*spend_sk);
-    let _ = spend_sk_z; // Zeroizing lifetime pinned to end of function
     let count = details.details.len();
     if count > records_out.len() {
         return Err(crate::error::ShlosiloError::new(
@@ -397,7 +417,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
 
     // 4. KEY_IMAGE_EXPORT_MAGIC encryption — records stream through the keystream
     //    (wire staged in the same scratch; it holds public data only).
-    let mut w = SinkCursor::new(scratch);
+    let mut w = SinkCursor::new(&mut *scratch.0);
     crate::chain::xmr::output_export::write_key_images(&records_out[..count], &mut w)?;
     let wire_len = w.pos();
     encrypt_export_payload_into(
@@ -405,7 +425,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
         view_sk,
         &spend_pub,
         &view_pub,
-        &scratch[..wire_len],
+        &scratch.0[..wire_len],
         rng,
         out,
         cn_scratch,
@@ -442,9 +462,11 @@ fn compute_key_image_with_signature<R: RngCore + CryptoRng>(
         detail.minor,
     )?;
 
-    // input_sk = spend_sk + offset; verifies input_sk·G == output_pubkey
-    let input_sk = spend_sk + Scalar::from_bytes_mod_order(offset);
-    let input_pub = (ED25519_BASEPOINT_TABLE * &input_sk).compress().to_bytes();
+    // input_sk = spend_sk + offset; verifies input_sk·G == output_pubkey.
+    // Zeroizing: the per-output ephemeral secret is wiped from the stack on
+    // drop (every exit path below included).
+    let input_sk = Zeroizing::new(spend_sk + Scalar::from_bytes_mod_order(offset));
+    let input_pub = (ED25519_BASEPOINT_TABLE * &*input_sk).compress().to_bytes();
     if input_pub != detail.pubkey {
         return Err(err());
     }
@@ -452,7 +474,7 @@ fn compute_key_image_with_signature<R: RngCore + CryptoRng>(
     // I = input_sk · Hp(P)
     let image: [u8; 32] = {
         let point: curve25519_dalek::EdwardsPoint = Point::biased_hash(detail.pubkey).into();
-        (point * input_sk).compress().to_bytes()
+        (point * *input_sk).compress().to_bytes()
     };
 
     // Accompanying signature: prefix = the image itself
@@ -712,6 +734,71 @@ mod tests {
         // The first output is a key_image_request with a known amount (characteristic of real wallet data)
         assert!(details.details[0].is_key_image_request());
         assert!(details.details[0].amount > 0);
+    }
+
+    /// Z-hygiene (pairing review): the decrypted request plaintext must be
+    /// wiped on EVERY error path (zeroize-on-drop guard) — the foreign-pk
+    /// rejection and the epee-parse failure both used to return with it still
+    /// resident in the scratch.
+    #[test]
+    fn error_paths_wipe_scratch() {
+        fn run_err(enc_req: &[u8], view_sk: &[u8; 32], spend_sk: &[u8; 32]) -> bool {
+            let mut scratch = alloc::vec![0xEEu8; 2048];
+            let mut details: [ExportedTransferDetail; 2] =
+                core::array::from_fn(|_| ExportedTransferDetail::default());
+            let mut recs = [([0u8; 32], [0u8; 64]); 2];
+            let mut out = alloc::vec![0u8; 4096];
+            let mut cn = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
+            let mut rng = rng_from(0x33);
+            let r = generate_key_image_export_into(
+                view_sk,
+                spend_sk,
+                enc_req,
+                &mut scratch,
+                &mut details,
+                &mut recs,
+                &mut out,
+                &mut rng,
+                &mut cn,
+            );
+            assert!(r.is_err());
+            scratch.iter().all(|&b| b == 0)
+        }
+
+        let (spend_sk, spend_pub, view_sk, view_pub) = make_keypair(7);
+
+        // case 1: foreign pk1/pk2 — ownership rejection AFTER decryption (the
+        // request plaintext is fully resident when the error fires)
+        let (_, foreign_spend_pub, _, foreign_view_pub) = make_keypair(8);
+        let mut rng = rng_from(0x31);
+        let enc_req = encrypt_export_payload(
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &foreign_spend_pub,
+            &foreign_view_pub,
+            b"\x01\x00\x01\x00",
+            &mut rng,
+        )
+        .unwrap();
+        assert!(
+            run_err(&enc_req, &view_sk, &spend_sk),
+            "foreign-pk error path must wipe the scratch"
+        );
+
+        // case 2: valid envelope, epee parse failure (claims 2 transfers, no data)
+        let enc_req = encrypt_export_payload(
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &spend_pub,
+            &view_pub,
+            b"\x01\x00\x02\x00",
+            &mut rng,
+        )
+        .unwrap();
+        assert!(
+            run_err(&enc_req, &view_sk, &spend_sk),
+            "epee-parse error path must wipe the scratch"
+        );
     }
 
     fn hex_to_32(h: &str) -> [u8; 32] {

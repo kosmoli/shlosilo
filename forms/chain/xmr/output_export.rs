@@ -103,11 +103,6 @@ pub struct ExportedTransferDetails<'a> {
     pub details: SliceVec<'a, ExportedTransferDetail>,
 }
 
-/// `flags & 0b0001_0000` — compute and export only for outputs that need a key image.
-pub fn wants_key_image(detail: &ExportedTransferDetail) -> bool {
-    detail.is_key_image_request()
-}
-
 fn read_varint(data: &[u8], off: &mut usize) -> Result<u64> {
     let mut value: u64 = 0;
     let mut shift = 0u32;
