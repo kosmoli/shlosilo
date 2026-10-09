@@ -557,7 +557,13 @@ impl<'a> FountainDecoder<'a> {
     }
 
     pub fn complete(&self) -> bool {
-        self.message_length != 0 && self.decoded_count == self.sequence_count
+        // `>=`, not `==`: a single feed can resolve several slots through the
+        // reduction cascade when combo parts arrive before their systematics,
+        // so decoded_count can JUMP OVER the exact target — an equality check
+        // never fires again and the session wedges at the 99% progress cap
+        // (the 2026-10-08 device hunt: combo-first orders wedge, clean orders
+        // complete; host repro = rotation/reverse feed patterns).
+        self.message_length != 0 && self.decoded_count >= self.sequence_count
     }
 
     pub fn progress(&self) -> u8 {
@@ -627,9 +633,19 @@ impl<'a> FountainDecoder<'a> {
             && part.data.len() == self.fragment_length
     }
 
+    fn decoded_contains(&self, index: usize) -> bool {
+        self.decoded.iter().flatten().any(|(idx, _)| *idx == index)
+    }
+
     fn process_simple(&mut self, part: Part) -> Result<(), FountainError> {
         let (raw, _) = part.indexes_raw();
         let index = raw[0] as usize;
+        // Idempotence guard: the cascade may have already resolved this index
+        // (a reduced combo landing before its systematic). A second entry
+        // would inflate decoded_count and fill a slot with a duplicate.
+        if self.decoded_contains(index) {
+            return Ok(());
+        }
         let slot = self
             .decoded
             .iter_mut()
@@ -672,6 +688,9 @@ impl<'a> FountainDecoder<'a> {
                 xor_into(&mut part.data, &simple.data);
                 if new_key.len() == 1 {
                     let only = new_key[0] as usize;
+                    if self.decoded_contains(only) {
+                        continue;
+                    }
                     let slot = self
                         .decoded
                         .iter_mut()
@@ -742,6 +761,9 @@ impl<'a> FountainDecoder<'a> {
         }
         if indexes.len() == 1 {
             let only = indexes[0] as usize;
+            if self.decoded_contains(only) {
+                return Ok(());
+            }
             let slot = self
                 .decoded
                 .iter_mut()
