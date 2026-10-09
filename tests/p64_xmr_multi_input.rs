@@ -208,7 +208,15 @@ fn encode_ur_frames() {
         std::env::var("P64_FRAMES_OUT").unwrap_or_else(|_| "/tmp/xmr_2in_frames.txt".to_string());
     let payload = std::fs::read(&enc_path).expect("read encrypted fixture");
 
-    let mut encer = UrMultipartEncoder::new("xmr-txunsigned", &payload, 200).expect("encoder");
+    // Fragment length = QR density knob: bytewords roughly doubles the payload,
+    // so large fragments produce high-module-count QRs that sit at the camera's
+    // decode margin (the "certain frames never read" hunt, 2026-10-08).
+    // Cupcake's proven-readable default is 130; override via P64_FRAG_LEN.
+    let frag_len: usize = std::env::var("P64_FRAG_LEN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
+    let mut encer = UrMultipartEncoder::new("xmr-txunsigned", &payload, frag_len).expect("encoder");
     let n = encer.fragment_count();
     println!("payload {} bytes -> {n} fountain fragments", payload.len());
 
