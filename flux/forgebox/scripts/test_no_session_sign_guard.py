@@ -80,6 +80,21 @@ def main() -> int:
         and single.rstrip().endswith("}"),
     )
     pin("single-frame: arm consumed one-shot", "g_fixture_sign_ok = 0;" in single)
+    # follow-up (2026-10-09): the single-frame no-session leg runs the SAME
+    # type filter as the multipart completion leg BEFORE the import prompt --
+    # a non-sign frame with no session is "not a sign request", not "import a
+    # wallet first" (the pre-filter shape prompted import for every type).
+    pin(
+        "single-frame: type filter before the no-session prompt",
+        "ur_type_is_sign(g_ur_type)" in single
+        and single.index("!ur_type_is_sign(g_ur_type)")
+        < single.index("no_session_prompt();")
+        and "not a sign request" in single,
+    )
+    pin(
+        "fixture arm is volatile (cross-task flag)",
+        "static volatile int g_fixture_sign_ok;" in src,
+    )
 
     # 2. shared prompt copy
     prompt = block(src, "static void no_session_prompt(void)")

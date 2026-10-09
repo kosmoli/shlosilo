@@ -113,12 +113,32 @@ pub enum GeneratorSet {
     BulletproofPlus,
 }
 
+/// Cache-key prefixes identifying the two generated tables. The ONLY key
+/// literals in the runtime: the build.rs templates pass these constants BY
+/// NAME as their cache key (generated code holds no raw `b"..."` key), and
+/// `GeneratorSet::from_prefix` matches on them — one source, no human sync.
+/// The byte values are the wire form the persistence backend / C probe see
+/// ("bulletproof" / "bulletproof_plus"), pinned by
+/// tests/xmr_generator_dual_set.rs.
+pub(crate) const BP_PLUS_PREFIX: &[u8] = b"bulletproof_plus";
+pub(crate) const BP_PREFIX: &[u8] = b"bulletproof";
+
 impl GeneratorSet {
-    pub(crate) fn from_prefix(prefix: &'static [u8]) -> Option<Self> {
-        match prefix {
-            b"bulletproof" => Some(Self::Bulletproof),
-            b"bulletproof_plus" => Some(Self::BulletproofPlus),
-            _ => None,
+    /// THE key dispatch: every slot decision (provide/take/ready/desc) routes
+    /// through here. 2026-10-09 (key-collapse fix): `ready_flag_for`/
+    /// `desc_slot_for` used to compare the prefix against `b"bp+"/b"bp"`
+    /// literals the generated code never passes — both sets matched the else
+    /// branch, collapsed onto the BP slot, and the second init silently won
+    /// the descriptor (readers of the first set got the WRONG generators ->
+    /// invalid proofs/signatures). Unknown keys return None (no slot is ever
+    /// borrowed for them).
+    pub(crate) fn from_prefix(prefix: &[u8]) -> Option<Self> {
+        if prefix == BP_PREFIX {
+            Some(Self::Bulletproof)
+        } else if prefix == BP_PLUS_PREFIX {
+            Some(Self::BulletproofPlus)
+        } else {
+            None
         }
     }
 }
@@ -268,29 +288,32 @@ pub(crate) fn init_tables(
     // the first init onward and cannot be the read source. Record the table
     // descriptors BEFORE the Release store: a reader that observes ready must
     // also observe the cache (invariant: ready == cache populated).
-    *desc_slot_for(prefix).lock() = Some(TableDesc {
+    //
+    // Key-collapse fix (2026-10-09): slot choice goes through
+    // `GeneratorSet::from_prefix` (both sets used to land on the BP slot).
+    // The prefix comes from the generated code (= the named constants), so a
+    // non-compiled-in key here is a programming error, not data.
+    let set = GeneratorSet::from_prefix(prefix)
+        .expect("init_tables: prefix is a compiled-in generator set");
+    *desc_slot_for(set).lock() = Some(TableDesc {
         g_ptr: g.as_ptr() as usize,
         g_len: g.len(),
         h_ptr: h.as_ptr() as usize,
         h_len: h.len(),
     });
-    ready_flag_for(prefix).store(true, core::sync::atomic::Ordering::Release);
+    ready_flag_for(set).store(true, core::sync::atomic::Ordering::Release);
     Ok(Generators { G: g, H: h })
 }
 
 /// Per-set ready flags (Release on success / Acquire on read) — the atomic
-/// uninitialized -> ready transition of A3.
-fn ready_flag_for(prefix: &[u8]) -> &'static core::sync::atomic::AtomicBool {
-    if prefix == BP_PLUS_PREFIX {
-        &READY_BP_PLUS
-    } else {
-        &READY_BP
+/// uninitialized -> ready transition of A3. Keyed by `GeneratorSet` (via
+/// `from_prefix` upstream), never by raw-literal comparison.
+fn ready_flag_for(set: GeneratorSet) -> &'static core::sync::atomic::AtomicBool {
+    match set {
+        GeneratorSet::Bulletproof => &READY_BP,
+        GeneratorSet::BulletproofPlus => &READY_BP_PLUS,
     }
 }
-
-/// Prefixes identifying the two generated tables (match the build templates).
-pub(crate) const BP_PLUS_PREFIX: &[u8] = b"bp+";
-pub(crate) const BP_PREFIX: &[u8] = b"bp";
 
 static READY_BP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static READY_BP_PLUS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -318,46 +341,79 @@ struct TableDesc {
 static DESC_BP: Mutex<Option<TableDesc>> = Mutex::new(None);
 static DESC_BP_PLUS: Mutex<Option<TableDesc>> = Mutex::new(None);
 
-fn desc_slot_for(prefix: &[u8]) -> &'static Mutex<Option<TableDesc>> {
-    if prefix == BP_PLUS_PREFIX {
-        &DESC_BP_PLUS
-    } else {
-        &DESC_BP
+fn desc_slot_for(set: GeneratorSet) -> &'static Mutex<Option<TableDesc>> {
+    match set {
+        GeneratorSet::Bulletproof => &DESC_BP,
+        GeneratorSet::BulletproofPlus => &DESC_BP_PLUS,
     }
 }
 
 /// Read-side accessor (A3): borrows the decompressed table only when the
-/// ready flag is up (Acquire pairs with `init_tables`' Release).
+/// ready flag is up (Acquire pairs with `init_tables`' Release). An unknown
+/// key serves NOTHING (pre-fix: any key fell onto the BP slot).
 pub fn table_generators<'a>(prefix: &'static [u8]) -> Option<Generators<'a>> {
-    if !ready_flag_for(prefix).load(core::sync::atomic::Ordering::Acquire) {
+    let set = GeneratorSet::from_prefix(prefix)?;
+    if !ready_flag_for(set).load(core::sync::atomic::Ordering::Acquire) {
         return None;
     }
     // SAFETY: ready implies `init_tables` completed over this set's storage;
     // the storage is 'static (caller-provided, stable per the ws contract)
-    // and nothing takes &mut of it after initialization.
+    // and is only WRITTEN during that one init — every read-side borrow is
+    // shared (no `&'static mut` is ever minted here).
     unsafe {
-        let (g, h) = table_slices(prefix);
-        Some(Generators { G: &*g, H: &*h })
+        let (g, h) = table_slices(set);
+        Some(Generators { G: g, H: h })
     }
 }
 
-unsafe fn table_slices(
-    prefix: &[u8],
-) -> (&'static mut [EdwardsPoint], &'static mut [EdwardsPoint]) {
+/// Read-side slice construction (A3): SHARED slices only. The pre-fix shape
+/// minted fresh `&'static mut` slices per call, so two concurrent readers
+/// could hold aliasing `&mut` to the same table (undefined behavior). The
+/// tables are written exactly once at init (`take_table_storage` guarantees
+/// single consumption) and read-only afterwards, so shared borrows are the
+/// honest shape.
+///
+/// # Safety
+/// Caller must have observed the set's ready flag with Acquire (the
+/// descriptors are populated before `init_tables`' Release store).
+unsafe fn table_slices(set: GeneratorSet) -> (&'static [EdwardsPoint], &'static [EdwardsPoint]) {
     // shlosilo vendor patch (2026-10-09, second-sign fix): source = the
     // init-time descriptor cache, NOT the provide slot. The slot is consumed
     // by `take_table_storage` at first init, so reading it here panicked on
     // every sign after the first ("ready flag implies storage"). The cache is
     // populated BEFORE the ready flag's Release store (init_tables), so the
     // ready read (Acquire) above guarantees it is present here.
-    let desc = desc_slot_for(prefix).lock();
+    let desc = desc_slot_for(set).lock();
     let d = desc
         .as_ref()
         .expect("ready flag implies cached table descriptors");
     (
-        core::slice::from_raw_parts_mut(d.g_ptr as *mut EdwardsPoint, d.g_len),
-        core::slice::from_raw_parts_mut(d.h_ptr as *mut EdwardsPoint, d.h_len),
+        core::slice::from_raw_parts(d.g_ptr as *const EdwardsPoint, d.g_len),
+        core::slice::from_raw_parts(d.h_ptr as *const EdwardsPoint, d.h_len),
     )
+}
+
+/// #[doc(hidden)] init-entry surface for tests/diagnostics: run one set's
+/// generated `generators()` entry exactly as the prove/verify faces do on
+/// first use — emplacement into provided storage when provisioned (ready flag
+/// up, descriptors cached), transitional fallback otherwise. Returns the
+/// served tables.
+#[doc(hidden)]
+pub fn init_generator_set(set: GeneratorSet) -> Result<Generators<'static>, InitError> {
+    match set {
+        GeneratorSet::Bulletproof => {
+            // Z6: the Original line is alloc-face only.
+            #[cfg(feature = "alloc-fallback")]
+            {
+                crate::original::generators()
+            }
+            #[cfg(not(feature = "alloc-fallback"))]
+            {
+                Err(InitError::BlobMismatch)
+            }
+        }
+        GeneratorSet::BulletproofPlus => crate::plus::generators(),
+    }
 }
 
 // A3: `?` conversions from the table-init error into the proof error types.

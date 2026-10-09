@@ -14,7 +14,7 @@ use std::{
 };
 
 #[cfg(feature = "compile-time-generators")]
-fn generators(prefix: &'static str, path: &str) {
+fn generators(prefix: &'static str, path: &str, key_const: &'static str) {
     use curve25519_dalek::EdwardsPoint;
 
     use monero_bulletproofs_generators::bulletproofs_generators;
@@ -95,13 +95,13 @@ fn generators(prefix: &'static str, path: &str) {
 {H_str}            ];
             let n_points = G_BYTES.len() + H_BYTES.len();
             // ready read first (Acquire): initialized sets borrow directly.
-            if let Some(gens) = crate::generator_cache_hook::table_generators(b"{prefix}") {{
+            if let Some(gens) = crate::generator_cache_hook::table_generators(crate::generator_cache_hook::{key_const}) {{
               return Ok(gens);
             }}
             // Z5.2: caller-provided decompressed table storage (emplacement).
-            if let Some(st) = crate::generator_cache_hook::take_table_storage(b"{prefix}") {{
+            if let Some(st) = crate::generator_cache_hook::take_table_storage(crate::generator_cache_hook::{key_const}) {{
               if st.g.len() == G_BYTES.len() && st.h.len() == H_BYTES.len() {{
-                return crate::generator_cache_hook::init_tables(b"{prefix}", n_points, G_BYTES, H_BYTES, st);
+                return crate::generator_cache_hook::init_tables(crate::generator_cache_hook::{key_const}, n_points, G_BYTES, H_BYTES, st);
               }}
               return Err(crate::generator_cache_hook::InitError::BlobMismatch);
             }}
@@ -110,7 +110,7 @@ fn generators(prefix: &'static str, path: &str) {
             // works without table storage).
             #[cfg(feature = "alloc-fallback")]
             {{
-              if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
+              if let Some(blob) = crate::generator_cache_hook::try_load_blob(crate::generator_cache_hook::{key_const}, n_points) {{
                 return Ok(rebuild_from_blob(blob, n_points));
               }}
               let g = decompress_generator_vec(G_BYTES);
@@ -119,7 +119,7 @@ fn generators(prefix: &'static str, path: &str) {
                 let mut blob = std_shims::vec::Vec::with_capacity(n_points * 128);
                 for p in g.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
                 for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
-                crate::generator_cache_hook::try_store_blob(b"{prefix}", &blob);
+                crate::generator_cache_hook::try_store_blob(crate::generator_cache_hook::{key_const}, &blob);
               }}
               return Ok(crate::generator_cache_hook::Generators {{
                 G: crate::generator_cache_hook::leak_vec(g),
@@ -137,7 +137,8 @@ fn generators(prefix: &'static str, path: &str) {
 }
 
 #[cfg(not(feature = "compile-time-generators"))]
-fn generators(prefix: &'static str, path: &str) {
+fn generators(prefix: &'static str, path: &str, key_const: &'static str) {
+    let _ = prefix; // derivation happens via `key_const` on this face
     let path = Path::new(&env::var("OUT_DIR").expect("cargo didn't set $OUT_DIR")).join(path);
     let _ = remove_file(&path);
     File::create(&path)
@@ -153,7 +154,7 @@ fn generators(prefix: &'static str, path: &str) {
         // test/legacy surface.
         #[cfg(feature = "alloc-fallback")]
         pub(crate) fn generators() -> Result<crate::generator_cache_hook::Generators<'static>, crate::generator_cache_hook::InitError> {{
-          let ext = monero_bulletproofs_generators::bulletproofs_generators(b"{prefix}");
+          let ext = monero_bulletproofs_generators::bulletproofs_generators(crate::generator_cache_hook::{key_const});
           assert_eq!(ext.G.len(), TABLE_G_LEN);
           assert_eq!(ext.H.len(), TABLE_H_LEN);
           #[cfg(feature = "alloc-fallback")]
@@ -176,6 +177,11 @@ fn generators(prefix: &'static str, path: &str) {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
-    generators("bulletproof", "generators.rs");
-    generators("bulletproof_plus", "generators_plus.rs");
+    // key_const: the cache-key constant the generated code passes BY NAME
+    // (generator_cache_hook.rs) — the generated tables hold no raw key
+    // literal, so the key bytes and the slot dispatch cannot drift apart.
+    // `prefix` is the build-time point-derivation domain separator (the
+    // reference tables pin it).
+    generators("bulletproof", "generators.rs", "BP_PREFIX");
+    generators("bulletproof_plus", "generators_plus.rs", "BP_PLUS_PREFIX");
 }

@@ -1329,8 +1329,11 @@ static int ur_type_is_sign(const char *type)
  * smoke/acceptance anchor run ('sign fixture' dev console, se_smoke.c) arms
  * it, the next sign UR signs with the fixture key exactly as before
  * (byte-parity with the smoke anchor), then the arm clears. Off by default,
- * never a fallback. */
-static int g_fixture_sign_ok;
+ * never a fallback.
+ *
+ * `volatile`: written by the dev-console task (se_smoke.c), read + cleared by
+ * the scan task -- a plain int is a cross-task flag, not task-local state. */
+static volatile int g_fixture_sign_ok;
 
 /* 'sign fixture' (dev console): arm the one-shot legacy fixture-key sign. */
 int ProductSignFixtureArm(void)
@@ -1380,7 +1383,26 @@ static void scan_ur_hit(const char *text)
         /* Bug A (2026-10-09): no session -> never fall silently into the
          * legacy fixture-key sign path (wrong key, wallet rejects rc=-21).
          * Prompt + keep scanning. The legacy path survives ONLY behind the
-         * explicit one-shot 'sign fixture' arm (smoke/acceptance anchor). */
+         * explicit one-shot 'sign fixture' arm (smoke/acceptance anchor).
+         *
+         * Follow-up (2026-10-09): the type filter runs BEFORE the no-session
+         * guard, aligned with the multipart completion leg below -- a
+         * non-sign single frame (xmr-keyimage, unknown, ...) with no session
+         * is "not a sign request" + keep scanning, NOT "import a wallet
+         * first". Only an actual sign request prompts the import. */
+        unsigned plen = 0;
+        if (ur_single_decode(text, &plen) != 0) {
+            /* decode fail already prompted ("ur: decode FAIL") */
+            return;
+        }
+        if (!ur_type_is_sign(g_ur_type)) {
+            char l1[48];
+            snprintf(l1, sizeof(l1), "collected %.16s", g_ur_type);
+            printf("ur: non-sign single frame (no session), keep scanning\r\n");
+            UiScanInfo(l1, "not a sign request", "keep scanning...", "");
+            ur_intake_reset();
+            return;
+        }
         if (g_fixture_sign_ok) {
             g_fixture_sign_ok = 0;      /* one-shot */
             scan_exit();

@@ -1,6 +1,6 @@
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/build.rs b/build.rs
 --- a/build.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/build.rs	2026-09-29 17:37:43.562591237 +0800
++++ b/build.rs	2026-10-09 18:22:33.066738394 +0800
 @@ -1,59 +1,135 @@
  //! Builds the generators within the Constant Reference String for Bulletproofs(+) at compile-time,
  //! allowing apps to solely deserialize them (without having to calculate them).
@@ -22,8 +22,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  };
  
  #[cfg(feature = "compile-time-generators")]
- fn generators(prefix: &'static str, path: &str) {
+-fn generators(prefix: &'static str, path: &str) {
 -  use curve25519_dalek::EdwardsPoint;
++fn generators(prefix: &'static str, path: &str, key_const: &'static str) {
 +    use curve25519_dalek::EdwardsPoint;
  
 -  use monero_bulletproofs_generators::bulletproofs_generators;
@@ -142,13 +143,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +{H_str}            ];
 +            let n_points = G_BYTES.len() + H_BYTES.len();
 +            // ready read first (Acquire): initialized sets borrow directly.
-+            if let Some(gens) = crate::generator_cache_hook::table_generators(b"{prefix}") {{
++            if let Some(gens) = crate::generator_cache_hook::table_generators(crate::generator_cache_hook::{key_const}) {{
 +              return Ok(gens);
 +            }}
 +            // Z5.2: caller-provided decompressed table storage (emplacement).
-+            if let Some(st) = crate::generator_cache_hook::take_table_storage(b"{prefix}") {{
++            if let Some(st) = crate::generator_cache_hook::take_table_storage(crate::generator_cache_hook::{key_const}) {{
 +              if st.g.len() == G_BYTES.len() && st.h.len() == H_BYTES.len() {{
-+                return crate::generator_cache_hook::init_tables(b"{prefix}", n_points, G_BYTES, H_BYTES, st);
++                return crate::generator_cache_hook::init_tables(crate::generator_cache_hook::{key_const}, n_points, G_BYTES, H_BYTES, st);
 +              }}
 +              return Err(crate::generator_cache_hook::InitError::BlobMismatch);
 +            }}
@@ -157,7 +158,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            // works without table storage).
 +            #[cfg(feature = "alloc-fallback")]
 +            {{
-+              if let Some(blob) = crate::generator_cache_hook::try_load_blob(b"{prefix}", n_points) {{
++              if let Some(blob) = crate::generator_cache_hook::try_load_blob(crate::generator_cache_hook::{key_const}, n_points) {{
 +                return Ok(rebuild_from_blob(blob, n_points));
 +              }}
 +              let g = decompress_generator_vec(G_BYTES);
@@ -166,7 +167,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                let mut blob = std_shims::vec::Vec::with_capacity(n_points * 128);
 +                for p in g.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
 +                for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
-+                crate::generator_cache_hook::try_store_blob(b"{prefix}", &blob);
++                crate::generator_cache_hook::try_store_blob(crate::generator_cache_hook::{key_const}, &blob);
 +              }}
 +              return Ok(crate::generator_cache_hook::Generators {{
 +                G: crate::generator_cache_hook::leak_vec(g),
@@ -180,10 +181,11 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        )
        .as_bytes(),
      )
-@@ -62,26 +138,44 @@
+@@ -61,27 +137,51 @@
+ }
  
  #[cfg(not(feature = "compile-time-generators"))]
- fn generators(prefix: &'static str, path: &str) {
+-fn generators(prefix: &'static str, path: &str) {
 -  let path = Path::new(&env::var("OUT_DIR").expect("cargo didn't set $OUT_DIR")).join(path);
 -  let _ = remove_file(&path);
 -  File::create(&path)
@@ -194,6 +196,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -        pub(crate) static GENERATORS: LazyLock<Generators> = LazyLock::new(|| {{
 -          monero_bulletproofs_generators::bulletproofs_generators(b"{prefix}")
 -        }});
++fn generators(prefix: &'static str, path: &str, key_const: &'static str) {
++    let _ = prefix; // derivation happens via `key_const` on this face
 +    let path = Path::new(&env::var("OUT_DIR").expect("cargo didn't set $OUT_DIR")).join(path);
 +    let _ = remove_file(&path);
 +    File::create(&path)
@@ -209,7 +213,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        // test/legacy surface.
 +        #[cfg(feature = "alloc-fallback")]
 +        pub(crate) fn generators() -> Result<crate::generator_cache_hook::Generators<'static>, crate::generator_cache_hook::InitError> {{
-+          let ext = monero_bulletproofs_generators::bulletproofs_generators(b"{prefix}");
++          let ext = monero_bulletproofs_generators::bulletproofs_generators(crate::generator_cache_hook::{key_const});
 +          assert_eq!(ext.G.len(), TABLE_G_LEN);
 +          assert_eq!(ext.H.len(), TABLE_H_LEN);
 +          #[cfg(feature = "alloc-fallback")]
@@ -239,8 +243,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  
 -  generators("bulletproof", "generators.rs");
 -  generators("bulletproof_plus", "generators_plus.rs");
-+    generators("bulletproof", "generators.rs");
-+    generators("bulletproof_plus", "generators_plus.rs");
++    // key_const: the cache-key constant the generated code passes BY NAME
++    // (generator_cache_hook.rs) — the generated tables hold no raw key
++    // literal, so the key bytes and the slot dispatch cannot drift apart.
++    // `prefix` is the build-time point-derivation domain separator (the
++    // reference tables pin it).
++    generators("bulletproof", "generators.rs", "BP_PREFIX");
++    generators("bulletproof_plus", "generators_plus.rs", "BP_PLUS_PREFIX");
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
@@ -793,8 +802,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/generator_cache_hook.rs b/src/generator_cache_hook.rs
 --- a/src/generator_cache_hook.rs	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/generator_cache_hook.rs	2026-10-09 17:49:53.016982603 +0800
-@@ -0,0 +1,374 @@
++++ b/src/generator_cache_hook.rs	2026-10-09 18:23:20.732308963 +0800
+@@ -0,0 +1,430 @@
 +//! shlosilo vendor patch (2026-09-07): external generator cache hooks.
 +//!
 +//! BP+/BP generators are public constants. On embedded targets the default
@@ -910,12 +919,32 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    BulletproofPlus,
 +}
 +
++/// Cache-key prefixes identifying the two generated tables. The ONLY key
++/// literals in the runtime: the build.rs templates pass these constants BY
++/// NAME as their cache key (generated code holds no raw `b"..."` key), and
++/// `GeneratorSet::from_prefix` matches on them — one source, no human sync.
++/// The byte values are the wire form the persistence backend / C probe see
++/// ("bulletproof" / "bulletproof_plus"), pinned by
++/// tests/xmr_generator_dual_set.rs.
++pub(crate) const BP_PLUS_PREFIX: &[u8] = b"bulletproof_plus";
++pub(crate) const BP_PREFIX: &[u8] = b"bulletproof";
++
 +impl GeneratorSet {
-+    pub(crate) fn from_prefix(prefix: &'static [u8]) -> Option<Self> {
-+        match prefix {
-+            b"bulletproof" => Some(Self::Bulletproof),
-+            b"bulletproof_plus" => Some(Self::BulletproofPlus),
-+            _ => None,
++    /// THE key dispatch: every slot decision (provide/take/ready/desc) routes
++    /// through here. 2026-10-09 (key-collapse fix): `ready_flag_for`/
++    /// `desc_slot_for` used to compare the prefix against `b"bp+"/b"bp"`
++    /// literals the generated code never passes — both sets matched the else
++    /// branch, collapsed onto the BP slot, and the second init silently won
++    /// the descriptor (readers of the first set got the WRONG generators ->
++    /// invalid proofs/signatures). Unknown keys return None (no slot is ever
++    /// borrowed for them).
++    pub(crate) fn from_prefix(prefix: &[u8]) -> Option<Self> {
++        if prefix == BP_PREFIX {
++            Some(Self::Bulletproof)
++        } else if prefix == BP_PLUS_PREFIX {
++            Some(Self::BulletproofPlus)
++        } else {
++            None
 +        }
 +    }
 +}
@@ -1065,29 +1094,32 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    // the first init onward and cannot be the read source. Record the table
 +    // descriptors BEFORE the Release store: a reader that observes ready must
 +    // also observe the cache (invariant: ready == cache populated).
-+    *desc_slot_for(prefix).lock() = Some(TableDesc {
++    //
++    // Key-collapse fix (2026-10-09): slot choice goes through
++    // `GeneratorSet::from_prefix` (both sets used to land on the BP slot).
++    // The prefix comes from the generated code (= the named constants), so a
++    // non-compiled-in key here is a programming error, not data.
++    let set = GeneratorSet::from_prefix(prefix)
++        .expect("init_tables: prefix is a compiled-in generator set");
++    *desc_slot_for(set).lock() = Some(TableDesc {
 +        g_ptr: g.as_ptr() as usize,
 +        g_len: g.len(),
 +        h_ptr: h.as_ptr() as usize,
 +        h_len: h.len(),
 +    });
-+    ready_flag_for(prefix).store(true, core::sync::atomic::Ordering::Release);
++    ready_flag_for(set).store(true, core::sync::atomic::Ordering::Release);
 +    Ok(Generators { G: g, H: h })
 +}
 +
 +/// Per-set ready flags (Release on success / Acquire on read) — the atomic
-+/// uninitialized -> ready transition of A3.
-+fn ready_flag_for(prefix: &[u8]) -> &'static core::sync::atomic::AtomicBool {
-+    if prefix == BP_PLUS_PREFIX {
-+        &READY_BP_PLUS
-+    } else {
-+        &READY_BP
++/// uninitialized -> ready transition of A3. Keyed by `GeneratorSet` (via
++/// `from_prefix` upstream), never by raw-literal comparison.
++fn ready_flag_for(set: GeneratorSet) -> &'static core::sync::atomic::AtomicBool {
++    match set {
++        GeneratorSet::Bulletproof => &READY_BP,
++        GeneratorSet::BulletproofPlus => &READY_BP_PLUS,
 +    }
 +}
-+
-+/// Prefixes identifying the two generated tables (match the build templates).
-+pub(crate) const BP_PLUS_PREFIX: &[u8] = b"bp+";
-+pub(crate) const BP_PREFIX: &[u8] = b"bp";
 +
 +static READY_BP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 +static READY_BP_PLUS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -1115,46 +1147,79 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +static DESC_BP: Mutex<Option<TableDesc>> = Mutex::new(None);
 +static DESC_BP_PLUS: Mutex<Option<TableDesc>> = Mutex::new(None);
 +
-+fn desc_slot_for(prefix: &[u8]) -> &'static Mutex<Option<TableDesc>> {
-+    if prefix == BP_PLUS_PREFIX {
-+        &DESC_BP_PLUS
-+    } else {
-+        &DESC_BP
++fn desc_slot_for(set: GeneratorSet) -> &'static Mutex<Option<TableDesc>> {
++    match set {
++        GeneratorSet::Bulletproof => &DESC_BP,
++        GeneratorSet::BulletproofPlus => &DESC_BP_PLUS,
 +    }
 +}
 +
 +/// Read-side accessor (A3): borrows the decompressed table only when the
-+/// ready flag is up (Acquire pairs with `init_tables`' Release).
++/// ready flag is up (Acquire pairs with `init_tables`' Release). An unknown
++/// key serves NOTHING (pre-fix: any key fell onto the BP slot).
 +pub fn table_generators<'a>(prefix: &'static [u8]) -> Option<Generators<'a>> {
-+    if !ready_flag_for(prefix).load(core::sync::atomic::Ordering::Acquire) {
++    let set = GeneratorSet::from_prefix(prefix)?;
++    if !ready_flag_for(set).load(core::sync::atomic::Ordering::Acquire) {
 +        return None;
 +    }
 +    // SAFETY: ready implies `init_tables` completed over this set's storage;
 +    // the storage is 'static (caller-provided, stable per the ws contract)
-+    // and nothing takes &mut of it after initialization.
++    // and is only WRITTEN during that one init — every read-side borrow is
++    // shared (no `&'static mut` is ever minted here).
 +    unsafe {
-+        let (g, h) = table_slices(prefix);
-+        Some(Generators { G: &*g, H: &*h })
++        let (g, h) = table_slices(set);
++        Some(Generators { G: g, H: h })
 +    }
 +}
 +
-+unsafe fn table_slices(
-+    prefix: &[u8],
-+) -> (&'static mut [EdwardsPoint], &'static mut [EdwardsPoint]) {
++/// Read-side slice construction (A3): SHARED slices only. The pre-fix shape
++/// minted fresh `&'static mut` slices per call, so two concurrent readers
++/// could hold aliasing `&mut` to the same table (undefined behavior). The
++/// tables are written exactly once at init (`take_table_storage` guarantees
++/// single consumption) and read-only afterwards, so shared borrows are the
++/// honest shape.
++///
++/// # Safety
++/// Caller must have observed the set's ready flag with Acquire (the
++/// descriptors are populated before `init_tables`' Release store).
++unsafe fn table_slices(set: GeneratorSet) -> (&'static [EdwardsPoint], &'static [EdwardsPoint]) {
 +    // shlosilo vendor patch (2026-10-09, second-sign fix): source = the
 +    // init-time descriptor cache, NOT the provide slot. The slot is consumed
 +    // by `take_table_storage` at first init, so reading it here panicked on
 +    // every sign after the first ("ready flag implies storage"). The cache is
 +    // populated BEFORE the ready flag's Release store (init_tables), so the
 +    // ready read (Acquire) above guarantees it is present here.
-+    let desc = desc_slot_for(prefix).lock();
++    let desc = desc_slot_for(set).lock();
 +    let d = desc
 +        .as_ref()
 +        .expect("ready flag implies cached table descriptors");
 +    (
-+        core::slice::from_raw_parts_mut(d.g_ptr as *mut EdwardsPoint, d.g_len),
-+        core::slice::from_raw_parts_mut(d.h_ptr as *mut EdwardsPoint, d.h_len),
++        core::slice::from_raw_parts(d.g_ptr as *const EdwardsPoint, d.g_len),
++        core::slice::from_raw_parts(d.h_ptr as *const EdwardsPoint, d.h_len),
 +    )
++}
++
++/// #[doc(hidden)] init-entry surface for tests/diagnostics: run one set's
++/// generated `generators()` entry exactly as the prove/verify faces do on
++/// first use — emplacement into provided storage when provisioned (ready flag
++/// up, descriptors cached), transitional fallback otherwise. Returns the
++/// served tables.
++#[doc(hidden)]
++pub fn init_generator_set(set: GeneratorSet) -> Result<Generators<'static>, InitError> {
++    match set {
++        GeneratorSet::Bulletproof => {
++            // Z6: the Original line is alloc-face only.
++            #[cfg(feature = "alloc-fallback")]
++            {
++                crate::original::generators()
++            }
++            #[cfg(not(feature = "alloc-fallback"))]
++            {
++                Err(InitError::BlobMismatch)
++            }
++        }
++        GeneratorSet::BulletproofPlus => crate::plus::generators(),
++    }
 +}
 +
 +// A3: `?` conversions from the table-init error into the proof error types.
@@ -1171,8 +1236,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-09-29 17:37:43.563591243 +0800
-@@ -3,41 +3,92 @@
++++ b/src/lib.rs	2026-10-09 18:20:59.614401764 +0800
+@@ -3,41 +3,93 @@
  #![cfg_attr(not(feature = "std"), no_std)]
  #![allow(non_snake_case)]
  
@@ -1239,8 +1304,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +
 +pub(crate) mod generator_cache_hook;
 +pub use generator_cache_hook::{
-+    generator_table_sizes, provide_generator_table_storage, register_generator_cache_hooks,
-+    GeneratorSet, GeneratorTableStorage,
++    generator_table_sizes, init_generator_set, provide_generator_table_storage,
++    register_generator_cache_hooks, table_generators, GeneratorSet, GeneratorTableStorage,
++    Generators,
 +};
 +
 +#[cfg(feature = "prove-timing")]
@@ -1282,7 +1348,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  };
  
  #[cfg(test)]
-@@ -50,20 +101,32 @@
+@@ -50,20 +102,32 @@
  #[allow(clippy::as_conversions)]
  const MAX_LR: usize = (MAX_COMMITMENTS.ilog2() as usize) + LOG_COMMITMENT_BITS;
  
@@ -1325,7 +1391,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
  
  /// A Bulletproof(+).
-@@ -72,68 +135,74 @@
+@@ -72,68 +136,74 @@
  #[allow(clippy::large_enum_variant)]
  #[derive(Clone, PartialEq, Eq, Debug)]
  pub enum Bulletproof {
@@ -1459,7 +1525,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        OriginalStatement::new(&commitments)
          .expect("failed to create statement despite checking amount of commitments")
          .prove(
-@@ -145,201 +214,352 @@
+@@ -145,201 +215,352 @@
            "failed to prove Bulletproof::Original despite ensuring statement/witness consistency",
          ),
      ))

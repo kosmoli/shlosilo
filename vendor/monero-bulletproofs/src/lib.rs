@@ -55,8 +55,9 @@ pub(crate) mod scalar_vector;
 
 pub(crate) mod generator_cache_hook;
 pub use generator_cache_hook::{
-    generator_table_sizes, provide_generator_table_storage, register_generator_cache_hooks,
-    GeneratorSet, GeneratorTableStorage,
+    generator_table_sizes, init_generator_set, provide_generator_table_storage,
+    register_generator_cache_hooks, table_generators, GeneratorSet, GeneratorTableStorage,
+    Generators,
 };
 
 #[cfg(feature = "prove-timing")]
