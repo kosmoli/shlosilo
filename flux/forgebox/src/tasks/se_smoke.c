@@ -358,6 +358,11 @@ static void __attribute__((noinline)) RunLock(void)
 extern int ProductKeyNew(const char *arg) __attribute__((weak));
 extern int ProductKeyPlate(const char *mode) __attribute__((weak));
 extern void ProductKeyWsDump(void) __attribute__((weak));
+/* Bug A follow-up (2026-10-09): explicit one-shot arm of the legacy
+ * fixture-key sign path (product_task.c). The smoke/acceptance anchor run
+ * needs it (byte parity with the smoke battery's idx12 fixture); the product
+ * scan flow no longer falls into it implicitly. */
+extern int ProductSignFixtureArm(void) __attribute__((weak));
 
 /* 'key new [12|24]': generate a fresh wallet (TRNG entropy -> BIP-39
  * mnemonic via the forms 件) and open it as a signing session. Nothing
@@ -425,6 +430,24 @@ static void __attribute__((noinline)) RunDump(void)
         return;
     }
     ProductKeyWsDump();
+}
+
+/* 'sign fixture': arm the ONE-SHOT legacy fixture-key sign (product_task.c).
+ * The next scanned sign UR signs with the idx12 fixture key exactly as the
+ * old no-session fallback did, then the arm clears. Smoke/acceptance anchor
+ * runs only -- the product flow prompts "import a wallet first" instead. */
+static void __attribute__((noinline)) RunSignFixture(void)
+{
+    if (ProductSignFixtureArm == NULL) {
+        Log("sign: route not wired in this flavor");
+        return;
+    }
+    Log("WARNING: fixture key (idx12) -- smoke/acceptance anchor ONLY");
+    if (ProductSignFixtureArm() == 0) {
+        Log("sign fixture: ARMED (one-shot, next sign UR)");
+    } else {
+        Log("sign fixture: FAIL");
+    }
 }
 
 /* ---- UART0 command console ---- */
@@ -545,6 +568,7 @@ static void __attribute__((noinline)) Dispatch(char *line)
             Log("se unlock <pwd> | se lock");
             Log("se dump (forensics - PRINTS KEY BYTES)");
             Log("key new [12|24] | key plate [standard|compact]");
+            Log("sign fixture (one-shot legacy anchor sign)");
         } else {
             Log("unknown: %s (try 'se help')", argv[1]);
         }
@@ -563,7 +587,17 @@ static void __attribute__((noinline)) Dispatch(char *line)
         }
         return;
     }
-    Log("unknown command (try 'se help' / 'key help')");
+    if (argc >= 2 && strcmp(argv[0], "sign") == 0) {
+        if (strcmp(argv[1], "fixture") == 0) {
+            RunSignFixture();
+        } else if (strcmp(argv[1], "help") == 0) {
+            Log("sign fixture - arm one-shot legacy fixture-key sign");
+        } else {
+            Log("unknown: %s (try 'sign help')", argv[1]);
+        }
+        return;
+    }
+    Log("unknown command (try 'se help' / 'key help' / 'sign help')");
 }
 
 void SeConsolePoll(void)

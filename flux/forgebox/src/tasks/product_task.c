@@ -1319,6 +1319,35 @@ static int ur_type_is_sign(const char *type)
            strncmp(type, "eth-sign-request", 16) == 0;
 }
 
+/* Bug A (2026-10-09): the legacy fixture-key sign path (k_sign_idx12) used to
+ * be the silent FALLBACK whenever a sign UR was scanned with NO session --
+ * the device signed with the smoke-anchor fixture key and the wallet rejected
+ * the result (Cake rc=-21, wrong key). No-session sign requests now prompt
+ * "import a wallet first / 请先扫盘导入" + keep scanning.
+ *
+ * The legacy path is preserved as an EXPLICIT one-shot entry instead: the
+ * smoke/acceptance anchor run ('sign fixture' dev console, se_smoke.c) arms
+ * it, the next sign UR signs with the fixture key exactly as before
+ * (byte-parity with the smoke anchor), then the arm clears. Off by default,
+ * never a fallback. */
+static int g_fixture_sign_ok;
+
+/* 'sign fixture' (dev console): arm the one-shot legacy fixture-key sign. */
+int ProductSignFixtureArm(void)
+{
+    g_fixture_sign_ok = 1;
+    printf("sign: fixture arm SET (next sign UR -> idx12 fixture key)\r\n");
+    return 0;
+}
+
+/* No-session sign request: prompt + keep scanning (spec: 提示 + 续扫). Shared
+ * copy with the multipart completion leg so the two prompts cannot drift. */
+static void no_session_prompt(void)
+{
+    printf("ur: sign request without session -> import first (keep scanning)\r\n");
+    UiScanInfo("import a wallet first", "请先扫盘导入", "keep scanning...", "");
+}
+
 /* One scanned frame that starts with "ur:". Single-part frames sign right
  * away; multipart frames accumulate through the R3 fountain decoder until the
  * message completes, then sign the reassembled (type, payload). */
@@ -1348,8 +1377,17 @@ static void scan_ur_hit(const char *text)
         return;
     }
     if (slash2 == NULL && g_key_session == NULL) {
-        scan_exit();
-        sign_run(text, NULL, NULL, 0);
+        /* Bug A (2026-10-09): no session -> never fall silently into the
+         * legacy fixture-key sign path (wrong key, wallet rejects rc=-21).
+         * Prompt + keep scanning. The legacy path survives ONLY behind the
+         * explicit one-shot 'sign fixture' arm (smoke/acceptance anchor). */
+        if (g_fixture_sign_ok) {
+            g_fixture_sign_ok = 0;      /* one-shot */
+            scan_exit();
+            sign_run(text, NULL, NULL, 0);
+            return;
+        }
+        no_session_prompt();
         return;
     }
     if (slash2 == NULL) {
@@ -1467,6 +1505,22 @@ static void scan_ur_hit(const char *text)
             snprintf(l2, sizeof(l2), "not a sign request");
             printf("ur: non-sign type, keep scanning\r\n");
             UiScanInfo(l1, l2, "keep scanning...", "");
+            ur_intake_reset();
+            return;
+        }
+        if (g_key_session == NULL) {
+            /* Bug A (2026-10-09): same no-session guard on the multipart
+             * completion leg -- a reassembled sign request must never fall
+             * into the legacy fixture-key path (wrong key, rc=-21). Prompt +
+             * reset the intake + keep scanning; the explicit one-shot
+             * 'sign fixture' arm keeps the smoke/acceptance anchor reachable. */
+            if (g_fixture_sign_ok) {
+                g_fixture_sign_ok = 0;  /* one-shot */
+                scan_exit();
+                sign_run(NULL, g_ur_type, g_ur_payload, plen);
+                return;
+            }
+            no_session_prompt();
             ur_intake_reset();
             return;
         }

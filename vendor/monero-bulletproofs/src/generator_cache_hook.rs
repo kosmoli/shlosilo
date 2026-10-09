@@ -261,6 +261,19 @@ pub(crate) fn init_tables(
     // invariant 2: the table is only marked ready AFTER every point is in
     // place; a failure above returns Err with the flag still down and no
     // partial table ever readable (invariant 3).
+    //
+    // shlosilo vendor patch (2026-10-09, second-sign fix): the ready flag is
+    // set over the DESCRIPTOR CACHE below, not over the provide slot — the
+    // slot is CONSUMED by `take_table_storage` at init, so it is empty from
+    // the first init onward and cannot be the read source. Record the table
+    // descriptors BEFORE the Release store: a reader that observes ready must
+    // also observe the cache (invariant: ready == cache populated).
+    *desc_slot_for(prefix).lock() = Some(TableDesc {
+        g_ptr: g.as_ptr() as usize,
+        g_len: g.len(),
+        h_ptr: h.as_ptr() as usize,
+        h_len: h.len(),
+    });
     ready_flag_for(prefix).store(true, core::sync::atomic::Ordering::Release);
     Ok(Generators { G: g, H: h })
 }
@@ -282,6 +295,37 @@ pub(crate) const BP_PREFIX: &[u8] = b"bp";
 static READY_BP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static READY_BP_PLUS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+// shlosilo vendor patch (2026-10-09, second-sign fix — device panic at the
+// old `expect("ready flag implies storage")` on every sign AFTER the first):
+// the read side used to source the table pointers from the provide slot, but
+// `take_table_storage` empties that slot at init (its whole point: the caller
+// owns the buffers and the slot must not hand them out twice), so on the
+// second sign `table_slices` found `None` and panicked. The fix caches the
+// initialized tables' raw descriptors (ptr + len) at `init_tables` success;
+// `table_slices` reads the cache. Memory-management only: the descriptors
+// point at the very same caller-provided buffers the slot carried, so the
+// generator table CONTENT and every signature byte are unchanged
+// (pinned by tests/xmr_generator_storage.rs + tests/xmr_generator_second_sign.rs).
+// usize fields (not raw pointers) keep the statics Send for the Mutex.
+#[derive(Clone, Copy)]
+struct TableDesc {
+    g_ptr: usize,
+    g_len: usize,
+    h_ptr: usize,
+    h_len: usize,
+}
+
+static DESC_BP: Mutex<Option<TableDesc>> = Mutex::new(None);
+static DESC_BP_PLUS: Mutex<Option<TableDesc>> = Mutex::new(None);
+
+fn desc_slot_for(prefix: &[u8]) -> &'static Mutex<Option<TableDesc>> {
+    if prefix == BP_PLUS_PREFIX {
+        &DESC_BP_PLUS
+    } else {
+        &DESC_BP
+    }
+}
+
 /// Read-side accessor (A3): borrows the decompressed table only when the
 /// ready flag is up (Acquire pairs with `init_tables`' Release).
 pub fn table_generators<'a>(prefix: &'static [u8]) -> Option<Generators<'a>> {
@@ -300,16 +344,19 @@ pub fn table_generators<'a>(prefix: &'static [u8]) -> Option<Generators<'a>> {
 unsafe fn table_slices(
     prefix: &[u8],
 ) -> (&'static mut [EdwardsPoint], &'static mut [EdwardsPoint]) {
-    let slot = if prefix == BP_PLUS_PREFIX {
-        &TABLE_BP_PLUS
-    } else {
-        &TABLE_BP
-    };
-    let mut guard = slot.lock();
-    let st = guard.as_mut().expect("ready flag implies storage");
+    // shlosilo vendor patch (2026-10-09, second-sign fix): source = the
+    // init-time descriptor cache, NOT the provide slot. The slot is consumed
+    // by `take_table_storage` at first init, so reading it here panicked on
+    // every sign after the first ("ready flag implies storage"). The cache is
+    // populated BEFORE the ready flag's Release store (init_tables), so the
+    // ready read (Acquire) above guarantees it is present here.
+    let desc = desc_slot_for(prefix).lock();
+    let d = desc
+        .as_ref()
+        .expect("ready flag implies cached table descriptors");
     (
-        core::slice::from_raw_parts_mut(st.g.as_mut_ptr(), st.g.len()),
-        core::slice::from_raw_parts_mut(st.h.as_mut_ptr(), st.h.len()),
+        core::slice::from_raw_parts_mut(d.g_ptr as *mut EdwardsPoint, d.g_len),
+        core::slice::from_raw_parts_mut(d.h_ptr as *mut EdwardsPoint, d.h_len),
     )
 }
 
