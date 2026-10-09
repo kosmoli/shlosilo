@@ -66,6 +66,13 @@ def main() -> int:
 
     print("== no-session sign guard (Bug A, product_task.c)")
 
+    # 0. prompt persistence (2026-10-09 device report: the scan-info copy is
+    #    overwritten by the next collect tick — the footer copy must survive)
+    pin(
+        "prompt is persistent (footer UiSetLast, not flash-only)",
+        'UiSetLast("import a wallet first' in src,
+    )
+
     # 1. single-frame no-session leg
     single = block(src, "if (slash2 == NULL && g_key_session == NULL)")
     pin(

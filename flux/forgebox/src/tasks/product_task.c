@@ -1344,11 +1344,15 @@ int ProductSignFixtureArm(void)
 }
 
 /* No-session sign request: prompt + keep scanning (spec: 提示 + 续扫). Shared
- * copy with the multipart completion leg so the two prompts cannot drift. */
+ * copy with the multipart completion leg so the two prompts cannot drift.
+ * The scan-info lines are overwritten by the next collect tick, so the prompt
+ * ALSO goes to the persistent footer (UiSetLast): the complete->prompt->reset
+ * cycle would otherwise flash it invisibly (2026-10-09 device report). */
 static void no_session_prompt(void)
 {
     printf("ur: sign request without session -> import first (keep scanning)\r\n");
     UiScanInfo("import a wallet first", "请先扫盘导入", "keep scanning...", "");
+    UiSetLast("import a wallet first (scan plate)");
 }
 
 /* One scanned frame that starts with "ur:". Single-part frames sign right
