@@ -1119,27 +1119,21 @@ static void sign_run(const char *uri, const char *type,
                      (unsigned)(PRODUCT_TASK_STACK_BYTES / 1024u));
         } else {
             g_sign_out_len = 0;
+            /* User-facing failure text is a FIXED template (2026-10-09
+             * injection red line, Kosmo): no rc codes, no QR-derived
+             * strings, no payload bytes on screen -- the full diagnostic
+             * dump goes to the developer console only. */
             snprintf(result, sizeof(result),
-                     "sign FAIL: rc=%d\ntype: %.16s len %u\n"
-                     "head: %02x%02x%02x%02x %02x%02x%02x%02x\n"
-                     "ur collect: %u fr (%u dup) in %u.%us\n"
-                     "stk used ~%uK (hwm %uW of %uK)",
-                     rc,
-                     (uri != NULL) ? "single-frame" : g_ur_type,
-                     plen,
-                     (plen > 0) ? g_ur_payload[0] : 0u,
-                     (plen > 1) ? g_ur_payload[1] : 0u,
-                     (plen > 2) ? g_ur_payload[2] : 0u,
-                     (plen > 3) ? g_ur_payload[3] : 0u,
-                     (plen > 4) ? g_ur_payload[4] : 0u,
-                     (plen > 5) ? g_ur_payload[5] : 0u,
-                     (plen > 6) ? g_ur_payload[6] : 0u,
-                     (plen > 7) ? g_ur_payload[7] : 0u,
-                     g_ur_feed_cnt, g_ur_dup_cnt,
-                     (unsigned)(g_ur_collect_ms / 1000u),
-                     (unsigned)((g_ur_collect_ms / 100u) % 10u),
-                     used_k, hwm_w,
-                     (unsigned)(PRODUCT_TASK_STACK_BYTES / 1024u));
+                     "sign failed\nrequest could not be signed\n"
+                     "rescan, or re-import the wallet and retry");
+            printf("sign FAIL: rc=%d type=%s len %u head=%02x%02x%02x%02x "
+                   "fr=%u dup=%u stk=%uK\r\n",
+                   rc, (uri != NULL) ? "single-frame" : g_ur_type, plen,
+                   (plen > 0) ? g_ur_payload[0] : 0u,
+                   (plen > 1) ? g_ur_payload[1] : 0u,
+                   (plen > 2) ? g_ur_payload[2] : 0u,
+                   (plen > 3) ? g_ur_payload[3] : 0u,
+                   g_ur_feed_cnt, g_ur_dup_cnt, used_k);
         }
         snprintf(l3, sizeof(l3), "stk used ~%uK", used_k);
         UiSetLast(l3);
@@ -1301,13 +1295,46 @@ static int ur_single_decode(const char *text, unsigned *plen_out)
                                   g_ur_payload, UR_PAYLOAD_MAX,
                                   &plen) != 0) {
         printf("ur: single-frame decode FAIL\r\n");
-        UiScanInfo("ur: decode FAIL", "not a sign request?", "", "");
+        UiScanInfo("scan failed", "code not recognized", "", "");
         ExtFree(g_ur_payload);
         g_ur_payload = NULL;
         return -1;
     }
     *plen_out = plen;
     return 0;
+}
+
+/* Map a UR type to a FIXED display name (2026-10-09 injection hardening,
+ * Kosmo's red line): QR-derived strings are ATTACKER-CONTROLLED and must
+ * never reach the screen verbatim -- a crafted "type" could paint arbitrary
+ * UI text (fake prompts). Unknown types all display as "unknown code". */
+static const char *ur_type_display(const char *type)
+{
+    if (type == NULL) {
+        return "unknown code";
+    }
+    if (strncmp(type, "xmr-txunsigned", 14) == 0) {
+        return "sign request: xmr";
+    }
+    if (strncmp(type, "xmr-txsigned", 12) == 0) {
+        return "signed: xmr";
+    }
+    if (strncmp(type, "xmr-output", 10) == 0) {
+        return "pairing: outputs";
+    }
+    if (strncmp(type, "xmr-keyimage", 12) == 0) {
+        return "pairing: key images";
+    }
+    if (strncmp(type, "crypto-monero-tx", 16) == 0) {
+        return "sign request: xmr";
+    }
+    if (strncmp(type, "crypto-psbt", 11) == 0) {
+        return "sign request: btc";
+    }
+    if (strncmp(type, "eth-sign-request", 16) == 0) {
+        return "sign request: eth";
+    }
+    return "unknown code";
 }
 
 /* Sign-face type whitelist, shared by the single-frame and multipart
@@ -1405,7 +1432,7 @@ static void scan_ur_hit(const char *text)
                 if (strncmp(skip_type, ftype, sizeof(skip_type)) != 0) {
                     char l1[48], l2[48];
                     snprintf(skip_type, sizeof(skip_type), "%s", ftype);
-                    snprintf(l1, sizeof(l1), "collected %.16s", ftype);
+                    snprintf(l1, sizeof(l1), "collected: %s", ur_type_display(ftype));
                     snprintf(l2, sizeof(l2), "not a sign request");
                     printf("ur: non-consumable type '%s', skip\r\n", ftype);
                     UiScanInfo(l1, l2, "keep scanning...", "");
@@ -1461,7 +1488,7 @@ static void scan_ur_hit(const char *text)
         }
         if (!ur_type_is_sign(g_ur_type)) {
             char l1[48];
-            snprintf(l1, sizeof(l1), "collected %.16s", g_ur_type);
+            snprintf(l1, sizeof(l1), "collected: %s", ur_type_display(g_ur_type));
             printf("ur: non-sign single frame (no session), keep scanning\r\n");
             UiScanInfo(l1, "not a sign request", "keep scanning...", "");
             ur_intake_reset();
@@ -1492,7 +1519,7 @@ static void scan_ur_hit(const char *text)
                  * plate session underneath. Prompt + keep scanning instead
                  * so the session survives until the sign request shows up. */
                 char l1[48];
-                snprintf(l1, sizeof(l1), "collected %.16s", g_ur_type);
+                snprintf(l1, sizeof(l1), "collected: %s", ur_type_display(g_ur_type));
                 printf("ur: non-sign single frame, keep scanning\r\n");
                 UiScanInfo(l1, "not a sign request", "keep scanning...", "");
                 ur_intake_reset();
@@ -1538,7 +1565,7 @@ static void scan_ur_hit(const char *text)
          * intake on the old message forever. Frames cycle, so at most one
          * animation round is lost. */
         printf("ur: frame rejected (accepted=%u), session reset\r\n", accepted);
-        UiScanInfo("ur multipart", "frame rejected", "session reset", "");
+        UiScanInfo("scan failed", "code not recognized", "rescan...", "");
         ur_intake_reset();
         return;
     }
@@ -1566,7 +1593,7 @@ static void scan_ur_hit(const char *text)
             shlosilo_ur_decode_payload(g_ur_dec, g_ur_payload,
                                        UR_PAYLOAD_MAX, &plen) != 0) {
             printf("ur: complete but extract fail (t=%u p=%u)\r\n", tlen, plen);
-            UiScanInfo("ur: extract FAIL", "", "", "");
+            UiScanInfo("scan failed", "request unreadable", "", "");
             ur_intake_reset();
             return;
         }
@@ -1587,7 +1614,7 @@ static void scan_ur_hit(const char *text)
              * not hold. Collect, report, and KEEP SCANNING so the sign
              * request (xmr-txunsigned) is caught whenever it appears. */
             char l1[48], l2[48];
-            snprintf(l1, sizeof(l1), "collected %.16s", g_ur_type);
+            snprintf(l1, sizeof(l1), "collected: %s", ur_type_display(g_ur_type));
             snprintf(l2, sizeof(l2), "not a sign request");
             printf("ur: non-sign type, keep scanning\r\n");
             UiScanInfo(l1, l2, "keep scanning...", "");

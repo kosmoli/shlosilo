@@ -207,3 +207,23 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+    # 4. injection red line (2026-10-09, Kosmo): QR-derived strings never
+    #    reach the screen verbatim; failures are fixed templates.
+    print("== injection red line (QR-derived text / failure templates)")
+    pin(
+        "UR type display goes through the fixed-name mapper",
+        src.count("ur_type_display(") >= 4 and "%.16s" not in src,
+    )
+    pin(
+        "sign failure screen is a fixed template (no rc / no type / no head)",
+        "sign failed\\nrequest could not be signed" in src
+        and "sign FAIL: rc=%d\\ntype:" not in src,
+    )
+    pin(
+        "scan failures are fixed templates",
+        'UiScanInfo("scan failed"' in src
+        and 'UiScanInfo("scan failed", "code not recognized", "rescan..."' in src,
+    )
+
+    print(f"\nPASS: no-session sign guard wiring contract holds ({PASS} pins)")
