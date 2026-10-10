@@ -94,6 +94,9 @@ static const struct KeySession *g_key_session;
  * outside the flow pages means the flow exited"); an SE session lives until
  * `se lock` or the sign-done close (v1: session per sign). */
 static int g_key_from_se;
+/* No-session intake halt (2026-10-09): set when a sign request asked for a
+ * wallet; blocks UR intake until a session exists or the scan restarts. */
+static int g_no_session_halt;
 /* Phase 4: console-created wallet session ('key new') — NOT flow-owned (same
  * lifetime as an SE unlock: lives until 'se lock' / sign-done close), so it
  * survives UI navigation and the plate-export flow can run against it. */
@@ -1343,16 +1346,18 @@ int ProductSignFixtureArm(void)
     return 0;
 }
 
-/* No-session sign request: prompt + keep scanning (spec: 提示 + 续扫). Shared
- * copy with the multipart completion leg so the two prompts cannot drift.
- * The scan-info lines are overwritten by the next collect tick, so the prompt
- * ALSO goes to the persistent footer (UiSetLast): the complete->prompt->reset
- * cycle would otherwise flash it invisibly (2026-10-09 device report). */
+/* No-session sign request: prompt + halt the UR intake (spec: 提示 + 续扫,
+ * refined on-device 2026-10-09: the complete->prompt->reset cycle was
+ * confusing noise and the prompt flashed away). While halted, frames are
+ * not fed to the intake -- the prompt stays on the persistent footer until
+ * a wallet is imported or the operator restarts the scan. UI strings stay
+ * ASCII (the UI font is ASCII-only -- CJK renders as '?' placeholders). */
 static void no_session_prompt(void)
 {
-    printf("ur: sign request without session -> import first (keep scanning)\r\n");
-    UiScanInfo("import a wallet first", "请先扫盘导入", "keep scanning...", "");
+    printf("ur: sign request without session -> import first\r\n");
+    UiScanInfo("import a wallet first", "scan the plate first", "then re-scan this request", "");
     UiSetLast("import a wallet first (scan plate)");
+    g_no_session_halt = 1;
 }
 
 /* One scanned frame that starts with "ur:". Single-part frames sign right
@@ -1361,6 +1366,16 @@ static void no_session_prompt(void)
 static void scan_ur_hit(const char *text)
 {
     const char *slash1 = strchr(text, '/');
+    /* No-session halt (2026-10-09): a sign request already asked for a
+     * wallet -- stop feeding the intake (the complete->prompt->reset cycle
+     * is noise). Cleared the moment a session exists; scan_enter clears it
+     * too so a fresh scan re-arms collection. */
+    if (g_key_session != NULL) {
+        g_no_session_halt = 0;
+    }
+    if (g_no_session_halt) {
+        return;
+    }
     const char *slash2 = (slash1 != NULL) ? strchr(slash1 + 1, '/') : NULL;
     char l3[40];
     unsigned accepted = 0;
@@ -1580,6 +1595,8 @@ static void scan_ur_hit(const char *text)
 static void scan_enter(void)
 {
     char l1[40];
+
+    g_no_session_halt = 0;  /* fresh scan re-arms UR collection */
 
     if (g_qr_pool == NULL) {
 #if QR_POOL_IN_SRAM

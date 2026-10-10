@@ -11,7 +11,7 @@ test_pairing_flow.py's STATIC half).
 
 Pinned contract (2026-10-09):
   1. single-frame leg, no session: prompt "import a wallet first /
-     请先扫盘导入" + keep scanning -- sign_run is ONLY reachable behind the
+     scan the plate first" + keep scanning -- sign_run is ONLY reachable behind the
      explicit one-shot 'sign fixture' arm;
   2. multipart completion leg, no session: same prompt + ur_intake_reset() +
      keep scanning, again arm-gated before sign_run;
@@ -22,7 +22,7 @@ Pinned contract (2026-10-09):
 DYNAMIC half: not reachable from the host -- the guard is pure firmware C
 routing (scan frame -> sign_run), with no FFI surface to drive it. The
 on-device check is the acceptance run: scan xmr-txunsigned with no wallet ->
-"import a wallet first / 请先扫盘导入" on screen + "keep scanning" on UART0.
+"import a wallet first / scan the plate first" on screen + "keep scanning" on UART0.
 
 Run: python3 flux/forgebox/scripts/test_no_session_sign_guard.py
 """
@@ -72,6 +72,16 @@ def main() -> int:
         "prompt is persistent (footer UiSetLast, not flash-only)",
         'UiSetLast("import a wallet first' in src,
     )
+    pin(
+        "no-session halt: intake blocked + cleared on session/restart",
+        "g_no_session_halt = 1;" in src
+        and "if (g_no_session_halt) {" in src
+        and "g_no_session_halt = 0;" in src,
+    )
+    pin(
+        "UI strings stay ASCII (font is ASCII-only; CJK renders as '?')",
+        not any(ord(c) > 127 for c in src[src.index("static void no_session_prompt"):src.index("static void scan_ur_hit")]),
+    )
 
     # 1. single-frame no-session leg
     single = block(src, "if (slash2 == NULL && g_key_session == NULL)")
@@ -106,8 +116,8 @@ def main() -> int:
     # 2. shared prompt copy
     prompt = block(src, "static void no_session_prompt(void)")
     pin(
-        "prompt copy: 'import a wallet first' + '请先扫盘导入'",
-        "import a wallet first" in prompt and "请先扫盘导入" in prompt,
+        "prompt copy: 'import a wallet first' + 'scan the plate first'",
+        "import a wallet first" in prompt and "scan the plate first" in prompt,
     )
 
     # 3. multipart completion leg
