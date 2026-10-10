@@ -1366,6 +1366,53 @@ static void no_session_prompt(void)
 static void scan_ur_hit(const char *text)
 {
     const char *slash1 = strchr(text, '/');
+    const char *slash2 = (slash1 != NULL) ? strchr(slash1 + 1, '/') : NULL;
+    char l3[40];
+    unsigned accepted = 0;
+    unsigned ws_need;
+    int progress;
+
+    /* ---- First-frame classification (2026-10-09, Kosmo's two-state
+     * machine): the UR type is in EVERY frame header, so decide BEFORE
+     * collecting anything -- the collector only runs for types this flow
+     * consumes. ---- */
+    {
+        char ftype[32];
+        static char skip_type[32];   /* throttle the not-consumable prompt */
+        unsigned tn = (slash1 != NULL) ? (unsigned)(slash1 - (text + 3)) : 0;
+        if (tn >= sizeof(ftype)) {
+            tn = 0;
+        }
+        memcpy(ftype, text + 3, tn);
+        ftype[tn] = '\0';
+
+        if (tn > 0) {
+            int needs_keys = ur_type_is_sign(ftype) ||
+                            strncmp(ftype, "xmr-output", 10) == 0;
+            if (!needs_keys) {
+                /* Not a request this flow consumes (xmr-keyimage input,
+                 * unknown exchange legs): drop at frame 1, prompt once per
+                 * type. */
+                if (strncmp(skip_type, ftype, sizeof(skip_type)) != 0) {
+                    char l1[48], l2[48];
+                    snprintf(skip_type, sizeof(skip_type), "%s", ftype);
+                    snprintf(l1, sizeof(l1), "collected %.16s", ftype);
+                    snprintf(l2, sizeof(l2), "not a sign request");
+                    printf("ur: non-consumable type '%s', skip\r\n", ftype);
+                    UiScanInfo(l1, l2, "keep scanning...", "");
+                }
+                return;
+            }
+            if (g_key_session == NULL) {
+                /* Needs keys and the wallet is not imported: refuse at
+                 * frame 1 (the old collect-then-check cycle was noise). */
+                no_session_prompt();
+                return;
+            }
+            skip_type[0] = '\0';
+        }
+    }
+
     /* No-session halt (2026-10-09): a sign request already asked for a
      * wallet -- stop feeding the intake (the complete->prompt->reset cycle
      * is noise). Cleared the moment a session exists; scan_enter clears it
@@ -1376,11 +1423,6 @@ static void scan_ur_hit(const char *text)
     if (g_no_session_halt) {
         return;
     }
-    const char *slash2 = (slash1 != NULL) ? strchr(slash1 + 1, '/') : NULL;
-    char l3[40];
-    unsigned accepted = 0;
-    unsigned ws_need;
-    int progress;
 
     if (slash2 == NULL && strncmp(text, "ur:xmr-output", 13) == 0) {
         /* T5 beat 1 (single-frame form): a Cake pairing request. Decode the

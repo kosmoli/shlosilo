@@ -82,6 +82,16 @@ def main() -> int:
         "UI strings stay ASCII (font is ASCII-only; CJK renders as '?')",
         not any(ord(c) > 127 for c in src[src.index("static void no_session_prompt"):src.index("static void scan_ur_hit")]),
     )
+    hit = block(src, "static void scan_ur_hit(const char *text)")
+    pin(
+        "first-frame classification precedes the collector (Kosmo's state machine)",
+        "First-frame classification" in hit
+        and hit.index("First-frame classification") < hit.index("shlosilo_ur_decode_feed"),
+    )
+    pin(
+        "frame-1 refusal for key-needing types without a session",
+        "no_session_prompt();" in hit.split("shlosilo_ur_decode_feed")[0],
+    )
 
     # 1. single-frame no-session leg
     single = block(src, "if (slash2 == NULL && g_key_session == NULL)")
@@ -122,7 +132,8 @@ def main() -> int:
 
     # 3. multipart completion leg
     hit = block(src, "static void scan_ur_hit(const char *text)")
-    guard = block(hit, "if (g_key_session == NULL)")
+    complete_leg = hit[hit.index("ur: complete type"):]
+    guard = block(complete_leg, "if (g_key_session == NULL)")
     pin(
         "multipart: session check + prompt + intake reset before sign",
         "no_session_prompt();" in guard and "ur_intake_reset();" in guard,
