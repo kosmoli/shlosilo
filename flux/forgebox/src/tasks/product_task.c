@@ -94,9 +94,12 @@ static const struct KeySession *g_key_session;
  * outside the flow pages means the flow exited"); an SE session lives until
  * `se lock` or the sign-done close (v1: session per sign). */
 static int g_key_from_se;
-/* No-session intake halt (2026-10-09): set when a sign request asked for a
- * wallet; blocks UR intake until a session exists or the scan restarts. */
-static int g_no_session_halt;
+/* No-session prompt throttle (2026-10-09): the first-frame classification
+ * drops key-needing frames without a session; this flag makes the prompt
+ * fire once per state-entry instead of per frame. Cleared when a session
+ * exists or on a fresh scan. (It replaced the 'intake halt' flag of the
+ * same date: the classification layer made the halt dead weight.) */
+static int g_no_session_prompted;
 /* Phase 4: console-created wallet session ('key new') — NOT flow-owned (same
  * lifetime as an SE unlock: lives until 'se lock' / sign-done close), so it
  * survives UI navigation and the plate-export flow can run against it. */
@@ -1346,18 +1349,21 @@ int ProductSignFixtureArm(void)
     return 0;
 }
 
-/* No-session sign request: prompt + halt the UR intake (spec: 提示 + 续扫,
- * refined on-device 2026-10-09: the complete->prompt->reset cycle was
- * confusing noise and the prompt flashed away). While halted, frames are
- * not fed to the intake -- the prompt stays on the persistent footer until
- * a wallet is imported or the operator restarts the scan. UI strings stay
- * ASCII (the UI font is ASCII-only -- CJK renders as '?' placeholders). */
+/* No-session sign request: prompt once per state-entry + keep scanning.
+ * Refinements (2026-10-09): prompt text is ASCII (UI font is ASCII-only --
+ * CJK renders as '?' placeholders); re-prompts are throttled (the first-
+ * frame classification drops the frames anyway, so per-frame prompting was
+ * pure UART/screen spam); the prompt also lands on the persistent footer
+ * (scan-info lines get overwritten by the next tick). */
 static void no_session_prompt(void)
 {
+    if (g_no_session_prompted) {
+        return;
+    }
+    g_no_session_prompted = 1;
     printf("ur: sign request without session -> import first\r\n");
     UiScanInfo("import a wallet first", "scan the plate first", "then re-scan this request", "");
     UiSetLast("import a wallet first (scan plate)");
-    g_no_session_halt = 1;
 }
 
 /* One scanned frame that starts with "ur:". Single-part frames sign right
@@ -1413,15 +1419,9 @@ static void scan_ur_hit(const char *text)
         }
     }
 
-    /* No-session halt (2026-10-09): a sign request already asked for a
-     * wallet -- stop feeding the intake (the complete->prompt->reset cycle
-     * is noise). Cleared the moment a session exists; scan_enter clears it
-     * too so a fresh scan re-arms collection. */
+    /* A live session re-arms the no-session prompt throttle. */
     if (g_key_session != NULL) {
-        g_no_session_halt = 0;
-    }
-    if (g_no_session_halt) {
-        return;
+        g_no_session_prompted = 0;
     }
 
     if (slash2 == NULL && strncmp(text, "ur:xmr-output", 13) == 0) {
@@ -1638,7 +1638,7 @@ static void scan_enter(void)
 {
     char l1[40];
 
-    g_no_session_halt = 0;  /* fresh scan re-arms UR collection */
+    g_no_session_prompted = 0;  /* fresh scan re-arms the prompt */
 
     if (g_qr_pool == NULL) {
 #if QR_POOL_IN_SRAM

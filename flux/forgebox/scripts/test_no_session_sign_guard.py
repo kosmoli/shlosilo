@@ -73,10 +73,10 @@ def main() -> int:
         'UiSetLast("import a wallet first' in src,
     )
     pin(
-        "no-session halt: intake blocked + cleared on session/restart",
-        "g_no_session_halt = 1;" in src
-        and "if (g_no_session_halt) {" in src
-        and "g_no_session_halt = 0;" in src,
+        "no-session prompt throttled once per state-entry",
+        "g_no_session_prompted = 1;" in src
+        and "if (g_no_session_prompted) {" in src
+        and "g_no_session_prompted = 0;" in src,
     )
     pin(
         "UI strings stay ASCII (font is ASCII-only; CJK renders as '?')",
