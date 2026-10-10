@@ -27,6 +27,8 @@ UiPage UiGetPage(void);
 void UiGotoPage(UiPage page);
 void UiSetPayload(const char *text, uint32_t len);
 void UiScanInfo(const char *line1, const char *line2, const char *line3, const char *line4);
+/* Metrics rows only -- never touches the status slot (l1/progress). */
+void UiScanMetrics(const char *m1, const char *m2, const char *m3);
 void UiScanProgress(uint8_t percent);
 
 /* Sign page summary lines (request type / payload size / key note). Set them

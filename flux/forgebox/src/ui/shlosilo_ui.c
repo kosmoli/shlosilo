@@ -889,6 +889,17 @@ void UiScanInfo(const char *line1, const char *line2, const char *line3, const c
     scan_live_update();
 }
 
+/* Diagnostics/metrics rows only (2026-10-09 UI spec): the STATUS slot
+ * (scanning N% / prompt) is owned by the scan state machine and must not be
+ * overwritten by periodic metrics. */
+void UiScanMetrics(const char *m1, const char *m2, const char *m3)
+{
+    snprintf(g_scan_l2, sizeof(g_scan_l2), "%s", m1 ? m1 : "");
+    snprintf(g_scan_l3, sizeof(g_scan_l3), "%s", m2 ? m2 : "");
+    snprintf(g_scan_l4, sizeof(g_scan_l4), "%s", m3 ? m3 : "");
+    scan_live_update();
+}
+
 void UiScanProgress(uint8_t percent)
 {
     g_scan_progress = percent;

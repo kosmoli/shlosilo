@@ -1362,8 +1362,11 @@ static void no_session_prompt(void)
     }
     g_no_session_prompted = 1;
     printf("ur: sign request without session -> import first\r\n");
-    UiScanInfo("import a wallet first", "scan the plate first", "then re-scan this request", "");
-    UiSetLast("import a wallet first (scan plate)");
+    /* Single line in the STATUS slot (progress cleared so the slot shows
+     * the prompt instead of a stale 'scanning N%'); redundant copy lines
+     * removed per 2026-10-09 UI review. */
+    UiScanProgress(0);
+    UiScanInfo("import a wallet first", "", "", "");
 }
 
 /* One scanned frame that starts with "ur:". Single-part frames sign right
@@ -1700,7 +1703,9 @@ static void scan_enter(void)
     g_touch_prev = 1;
     g_scan_abort_req = 0;
     g_scan = SCAN_ACTIVE;
-    UiScanInfo("scanning...", "point camera at QR", "", "");
+    /* Status slot starts EMPTY (2026-10-09 UI spec): 'scanning N%' only
+     * while actually collecting; hints live on the metrics rows. */
+    UiScanInfo("", "point camera at QR", "", "");
 }
 
 static void scan_step(void)
@@ -1708,6 +1713,7 @@ static void scan_step(void)
     char l1[40], l2[40], l3[40];
     uint32_t cam, vR, vW, dec;
     int32_t n;
+    static int g_scan_miss;
 
     WDT_ReloadCounter();
     n = QrDecodeProcess(g_qr_result, QR_RESULT_MAX - 1, 0);
@@ -1716,6 +1722,18 @@ static void scan_step(void)
     vW = QrDecodeGetViewWaitTick();
     dec = QrDecodeGetDecodeTick();
     g_scan_frames++;
+
+    /* Status-slot lifecycle (2026-10-09 Kosmo UI spec): the slot reflects
+     * what the camera CURRENTLY sees. Two consecutive no-decode frames (=
+     * the QR left the view; debounced across animation flip gaps) clear the
+     * slot to empty and re-arm the no-session prompt for the next sighting. */
+    if (n > 0) {
+        g_scan_miss = 0;
+    } else if (++g_scan_miss == 2) {
+        UiScanProgress(0);
+        UiScanInfo("", "", "", "");
+        g_no_session_prompted = 0;
+    }
 
     if (n > 0) {
         char msg[48];
@@ -1766,7 +1784,8 @@ static void scan_step(void)
                  (unsigned)cam, (unsigned)dec, (unsigned)vR, (unsigned)vW);
         snprintf(l3, sizeof(l3), "focus %u res %d",
                  (unsigned)UiScanGetFocus(), (int)n);
-        UiScanInfo("scanning...", l1, l2, l3);
+        /* Metrics rows only -- the status slot belongs to the state machine. */
+        UiScanMetrics(l1, l2, l3);
     }
 }
 

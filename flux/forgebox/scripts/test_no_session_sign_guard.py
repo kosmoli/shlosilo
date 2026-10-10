@@ -69,8 +69,21 @@ def main() -> int:
     # 0. prompt persistence (2026-10-09 device report: the scan-info copy is
     #    overwritten by the next collect tick — the footer copy must survive)
     pin(
-        "prompt is persistent (footer UiSetLast, not flash-only)",
-        'UiSetLast("import a wallet first' in src,
+        "prompt lives in the STATUS slot (l1) with progress cleared",
+        'UiScanProgress(0);' in block(src, "static void no_session_prompt(void)")
+        and 'UiScanInfo("import a wallet first", "", "", "");' in block(src, "static void no_session_prompt(void)"),
+    )
+    pin(
+        "status-slot lifecycle: QR out of view clears slot + re-arms prompt",
+        "g_scan_miss" in src
+        and "g_no_session_prompted = 0;"
+        in src[src.index("static void scan_step(void)\n{") :],
+    )
+    pin(
+        "status slot empty by default + metrics never write the slot",
+        'UiScanInfo("", "point camera at QR", "", "");' in src
+        and "UiScanMetrics(l1, l2, l3);" in src
+        and 'UiScanInfo("scanning..."' not in src,
     )
     pin(
         "no-session prompt throttled once per state-entry",
@@ -126,8 +139,8 @@ def main() -> int:
     # 2. shared prompt copy
     prompt = block(src, "static void no_session_prompt(void)")
     pin(
-        "prompt copy: 'import a wallet first' + 'scan the plate first'",
-        "import a wallet first" in prompt and "scan the plate first" in prompt,
+        "prompt copy: single line 'import a wallet first'",
+        "import a wallet first" in prompt and "scan the plate first" not in prompt,
     )
 
     # 3. multipart completion leg
