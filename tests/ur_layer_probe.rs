@@ -19,12 +19,12 @@
 //!      CBOR byte-string wrapping, oversize single-frame) to see which layer
 //!      produces the device's exact -21.
 
+use rand_chacha::rand_core::SeedableRng as _;
 use shlosilo::business::xmr_pairing::{carve_pairing_ws, pairing_ws_len, process_output_export};
 use shlosilo::chain::xmr::key_image_export::{
     decrypt_export_payload, KEY_IMAGE_EXPORT_MAGIC, OUTPUT_EXPORT_MAGIC,
 };
 use shlosilo::encoding::bytewords;
-use rand_chacha::rand_core::SeedableRng as _;
 use shlosilo::ffi::c_abi::r3::{
     shlosilo_ur_decode_complete, shlosilo_ur_decode_feed, shlosilo_ur_decode_free,
     shlosilo_ur_decode_new, shlosilo_ur_decode_payload, shlosilo_ur_decode_type,
@@ -39,7 +39,11 @@ fn hex(bytes: &[u8]) -> String {
 
 fn head32(label: &str, bytes: &[u8]) {
     let n = 32.min(bytes.len());
-    println!("    {label}: len={} head32={}", bytes.len(), hex(&bytes[..n]));
+    println!(
+        "    {label}: len={} head32={}",
+        bytes.len(),
+        hex(&bytes[..n])
+    );
 }
 
 fn hex_to_32(s: &str) -> [u8; 32] {
@@ -99,7 +103,8 @@ fn ffi_decode_multipart(frames: &[String]) -> (i32, String, Vec<u8>) {
     for f in frames {
         let c: Vec<u8> = f.bytes().chain(core::iter::once(0)).collect();
         let mut accepted: core::ffi::c_uint = 0;
-        let rc = shlosilo_ur_decode_feed(dec, c.as_ptr() as *const core::ffi::c_char, &mut accepted);
+        let rc =
+            shlosilo_ur_decode_feed(dec, c.as_ptr() as *const core::ffi::c_char, &mut accepted);
         assert_eq!(rc, 0, "frame rejected: {f}");
         let _ = accepted;
     }
@@ -150,7 +155,10 @@ fn pairing_with_real_keys(
                     true
                 }
                 Err(e) => {
-                    println!("    pairing[{label}]: wrote {} but readback ERR {:?}", o.written, e);
+                    println!(
+                        "    pairing[{label}]: wrote {} but readback ERR {:?}",
+                        o.written, e
+                    );
                     false
                 }
             }
@@ -175,9 +183,8 @@ fn pairing_with_real_keys(
 /// arrives wrapped (P2 failure mode) or bare.
 #[test]
 fn real_cake_frames_message_framing() {
-    let path = std::env::var("CAKE_FRAMES").unwrap_or_else(|_| {
-        "/home/komo/works/xmr-stagenet-lab/artifacts/frames.txt".into()
-    });
+    let path = std::env::var("CAKE_FRAMES")
+        .unwrap_or_else(|_| "/home/komo/works/xmr-stagenet-lab/artifacts/frames.txt".into());
     let Ok(text) = std::fs::read_to_string(&path) else {
         println!("(no captured Cake frames at {path} — skipped)");
         return;
@@ -189,7 +196,10 @@ fn real_cake_frames_message_framing() {
         .map(String::from)
         .collect();
     println!("==== REAL CAKE FRAMES: {} captured", frames.len());
-    println!("    frame[0] head: {}", &frames[0][..40.min(frames[0].len())]);
+    println!(
+        "    frame[0] head: {}",
+        &frames[0][..40.min(frames[0].len())]
+    );
     let mut ws = vec![0u8; shlosilo::ur::ur_multipart::ur_decode_ws_len()];
     let dec = shlosilo_ur_decode_new(ws.as_mut_ptr(), ws.len() as core::ffi::c_uint);
     let mut rejected = 0usize;
@@ -201,7 +211,10 @@ fn real_cake_frames_message_framing() {
             rejected += 1;
         }
     }
-    println!("    feed: rejected={rejected} complete={}", shlosilo_ur_decode_complete(dec));
+    println!(
+        "    feed: rejected={rejected} complete={}",
+        shlosilo_ur_decode_complete(dec)
+    );
     if shlosilo_ur_decode_complete(dec) != 1 {
         println!("    (frames insufficient — skip)");
         shlosilo_ur_decode_free(dec);
@@ -259,9 +272,14 @@ fn ur_layer_xmr_output_full_chain() {
 
     // ── (a) single-frame URI form ──────────────────────────────────────────
     println!("==== FORM A: single-frame ur:xmr-output/<bytewords>");
-    let uri = shlosilo::ur::ur_encode::encode(shlosilo::ur::ur_encode::UrTypeTag::XmrOutput, &container)
-        .expect("single-frame encode");
-    println!("    uri len={} head: {}", uri.as_str().len(), &uri.as_str()[..40.min(uri.as_str().len())]);
+    let uri =
+        shlosilo::ur::ur_encode::encode(shlosilo::ur::ur_encode::UrTypeTag::XmrOutput, &container)
+            .expect("single-frame encode");
+    println!(
+        "    uri len={} head: {}",
+        uri.as_str().len(),
+        &uri.as_str()[..40.min(uri.as_str().len())]
+    );
     let (rc_a, type_a, payload_a) = ffi_decode_single(uri.as_str());
     println!("    shlosilo_ur_decode_uri_ffi: rc={rc_a} type={type_a}");
     head32("payload_a", &payload_a);
@@ -375,25 +393,28 @@ fn ur_layer_xmr_output_full_chain() {
         .unwrap();
         let req = &req_buf[..req_n];
 
-        for (label, payload) in [("uri single", {
-            let u = shlosilo::ur::ur_encode::encode(
-                shlosilo::ur::ur_encode::UrTypeTag::XmrOutput,
-                req,
-            )
-            .unwrap();
-            let (rc, _, p) = ffi_decode_single(u.as_str());
-            assert_eq!(rc, 0);
-            p
-        }), ("multipart", {
-            let mut e = UrMultipartEncoder::new("xmr-output", req, 128).unwrap();
-            let mut fs = Vec::new();
-            for _ in 0..e.fragment_count() {
-                fs.push(e.next_frame().unwrap());
-            }
-            let (rc, _, p) = ffi_decode_multipart(&fs);
-            assert_eq!(rc, 0);
-            p
-        })] {
+        for (label, payload) in [
+            ("uri single", {
+                let u = shlosilo::ur::ur_encode::encode(
+                    shlosilo::ur::ur_encode::UrTypeTag::XmrOutput,
+                    req,
+                )
+                .unwrap();
+                let (rc, _, p) = ffi_decode_single(u.as_str());
+                assert_eq!(rc, 0);
+                p
+            }),
+            ("multipart", {
+                let mut e = UrMultipartEncoder::new("xmr-output", req, 128).unwrap();
+                let mut fs = Vec::new();
+                for _ in 0..e.fragment_count() {
+                    fs.push(e.next_frame().unwrap());
+                }
+                let (rc, _, p) = ffi_decode_multipart(&fs);
+                assert_eq!(rc, 0);
+                p
+            }),
+        ] {
             let entropy = [7u8; 32];
             let mut out = vec![0u8; 8192];
             let mut ws = vec![0u8; pairing_ws_len()];
@@ -455,14 +476,15 @@ fn ur_layer_xmr_output_full_chain() {
         );
         pairing_with_real_keys("CBOR-wrapped", &p, &view_sk, &spend_sk);
 
-        let mut e = UrMultipartEncoder::new("xmr-output", &wrapped, 128).unwrap();
+        // 2026-10-12: the multipart encoder owns the shell -- feed the raw
+        // container and the wire message IS the keystone CBOR bytes item.
+        let mut e = UrMultipartEncoder::new("xmr-output", &container, 128).unwrap();
         let mut fs = Vec::new();
         for _ in 0..e.fragment_count() {
             fs.push(e.next_frame().unwrap());
         }
         let (rc, _, p) = ffi_decode_multipart(&fs);
-        // multipart fragments the message verbatim (no double wrap): the one
-        // strip lands on the keystone shell -> raw container.
+        // one strip lands on the keystone shell -> raw container.
         println!(
             "    multipart round trip rc={rc} (payload stripped == raw container: {})",
             p == container[..]
@@ -498,5 +520,8 @@ fn ur_layer_xmr_output_full_chain() {
         println!("    2500B payload multipart -> rc={rc} recovered={}B (pairing would then -21 on magic)", p.len());
     }
 
-    assert!(ok_raw && ok_a && ok_b, "UR layer must be byte-faithful for this container");
+    assert!(
+        ok_raw && ok_a && ok_b,
+        "UR layer must be byte-faithful for this container"
+    );
 }

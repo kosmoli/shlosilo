@@ -31,6 +31,11 @@ fn wire_len(n: u64) -> Result<usize> {
 
 /// Multipart payload limit — aligned with TxTemplate 16 KiB (same source as the v2-security §4 size guardrail)
 pub const MULTIPART_PAYLOAD_MAX_LEN: usize = 16384;
+/// Message budget on the wire: content + the longest definite CBOR byte-string
+/// shell head (0x5b + 8B length). Bytes-type UR messages are the CBOR
+/// serialization (shell ++ content), so the MESSAGE can exceed the content cap
+/// by the shell head (2026-10-12 multipart shell parity).
+pub const MULTIPART_MESSAGE_MAX_LEN: usize = MULTIPART_PAYLOAD_MAX_LEN + 9;
 /// Single-frame string limit: bytewords ≈ 2×data; data ≤ fragment (≤ payload) → 2×16 KiB margin
 pub const MULTIPART_FRAME_MAX_LEN: usize = 40960;
 /// Single-frame payload limit (the single-frame large-QR channel goes through ur_encode::encode; only fragmentation here)
@@ -64,8 +69,18 @@ impl<'a> UrMultipartEncoder<'a> {
         type_name_buf
             .push_str(type_name)
             .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        // Bytes-type UR semantics (2026-10-12): the fountain MESSAGE is the
+        // CBOR serialization = byte-string shell ++ content. Cake's real
+        // multipart xmr-output message carries the shell and monero_c's import
+        // side runs `decodeBytes` on the reassembled message -- multipart
+        // outbound must therefore be shelled exactly like single-frame
+        // outbound (the earlier "fountain vectors use bare messages" reading
+        // was the fountain-layer test corpus, not a type convention).
+        let mut head = [0u8; 3];
+        let hn = crate::ur::ur_shell::shell_head(payload.len(), &mut head)
+            .map_err(|_| err(ShlosiloErrorKind::UrPayloadTooLarge))?;
         Ok(Self {
-            inner: FountainEncoder::new(payload, max_fragment_len)
+            inner: FountainEncoder::new_with_prefix(&head[..hn], payload, max_fragment_len)
                 .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?,
             type_name: type_name_buf,
         })
@@ -247,7 +262,7 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
         return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor));
     }
     // P1-02: message_length budget — enforced on the decoder side (before the fix only the encoder side checked)
-    if message_length == 0 || message_length > MULTIPART_PAYLOAD_MAX_LEN {
+    if message_length == 0 || message_length > MULTIPART_MESSAGE_MAX_LEN {
         return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
     }
     // P1-02: fragment/count/message mutually validated —
@@ -835,8 +850,10 @@ mod tests {
     /// keystone-ur ur.rs doctest vector (single-frame semantics cross-check — consistency of our fragmentation layer\'s frame shape)
     #[test]
     fn frame_format_matches_bcr() {
-        // 4-byte payload, 2 fragments → the first frame should be ur:bytes/1-2/<bytewords>
-        let mut enc = UrMultipartEncoder::new("bytes", b"12345678", 4).unwrap();
+        // 6-byte payload + 2-byte CBOR shell = 8-byte message, 2 fragments ->
+        // the first frame should be ur:bytes/1-2/<bytewords> (the encoder owns
+        // the shell: message = shell ++ content)
+        let mut enc = UrMultipartEncoder::new("bytes", b"123456", 4).unwrap();
         assert_eq!(enc.fragment_count(), 2);
         let f1 = enc.next_frame().unwrap();
         assert!(f1.starts_with("ur:bytes/1-2/"), "frame={f1}");

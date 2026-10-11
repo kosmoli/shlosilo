@@ -136,6 +136,20 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+/// CRC-32 over the concatenation `a ++ b` without materializing it (the
+/// multipart encoder checksums shell-prefixed messages as one stream).
+pub fn crc32_concat(a: &[u8], b: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &x in a.iter().chain(b.iter()) {
+        crc ^= x as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
 /// minimal style encoding: payload + CRC32 BE (4 bytes) → two letters per byte concatenated
 ///
 /// Test/legacy convenience (allocates). Production encoders stream through

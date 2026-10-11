@@ -656,6 +656,14 @@
 #define MULTIPART_PAYLOAD_MAX_LEN 16384
 
 /**
+ * Message budget on the wire: content + the longest definite CBOR byte-string
+ * shell head (0x5b + 8B length). Bytes-type UR messages are the CBOR
+ * serialization (shell ++ content), so the MESSAGE can exceed the content cap
+ * by the shell head (2026-10-12 multipart shell parity).
+ */
+#define MULTIPART_MESSAGE_MAX_LEN (MULTIPART_PAYLOAD_MAX_LEN + 9)
+
+/**
  * Single-frame string limit: bytewords ≈ 2×data; data ≤ fragment (≤ payload) → 2×16 KiB margin
  */
 #define MULTIPART_FRAME_MAX_LEN 40960

@@ -321,6 +321,10 @@ fn fragment_length(data_length: usize, max_fragment_length: usize) -> usize {
 /// the old `partition` materialized the whole padded message as Vec<Vec<u8>>) and hoists
 /// the degree sampler (pure function of the fragment count).
 pub(crate) struct FountainEncoder<'a> {
+    /// CBOR shell prefix (bytes-type UR semantics: the fountain MESSAGE is the
+    /// CBOR serialization = shell ++ content). Empty for bare callers.
+    prefix: [u8; 8],
+    prefix_len: usize,
     message: &'a [u8],
     fragment_length: usize,
     fragment_count: usize,
@@ -332,28 +336,48 @@ pub(crate) struct FountainEncoder<'a> {
 
 impl<'a> FountainEncoder<'a> {
     pub fn new(message: &'a [u8], max_fragment_length: usize) -> Result<Self, FountainError> {
-        if message.is_empty() {
+        Self::new_with_prefix(&[], message, max_fragment_length)
+    }
+
+    /// Composite message = `prefix ++ message` (2026-10-12: bytes-type URs put
+    /// the CBOR byte-string shell in front of the content -- Cake's real
+    /// multipart xmr-output message carries it and monero_c's import side runs
+    /// `decodeBytes` on the reassembled message).
+    pub fn new_with_prefix(
+        prefix: &[u8],
+        message: &'a [u8],
+        max_fragment_length: usize,
+    ) -> Result<Self, FountainError> {
+        if message.is_empty() && prefix.is_empty() {
             return Err(FountainError::EmptyMessage);
+        }
+        if prefix.len() > 8 {
+            return Err(FountainError::InvalidFragmentLen);
         }
         if max_fragment_length == 0 {
             return Err(FountainError::InvalidFragmentLen);
         }
-        let fl = fragment_length(message.len(), max_fragment_length);
+        let msg_len = prefix.len() + message.len();
+        let fl = fragment_length(msg_len, max_fragment_length);
         // Z2.4c-2 semantic caps: fragment payload fits Part::data, fragment count fits
         // the decoder budget and the u8 index domain.
         if fl > PART_DATA_MAX {
             return Err(FountainError::InvalidFragmentLen);
         }
-        let fragment_count = div_ceil(message.len(), fl);
+        let fragment_count = div_ceil(msg_len, fl);
         if fragment_count > MAX_SEQUENCE_COUNT {
             return Err(FountainError::InvalidFragmentLen);
         }
+        let mut prefix_buf = [0u8; 8];
+        prefix_buf[..prefix.len()].copy_from_slice(prefix);
         Ok(Self {
+            prefix: prefix_buf,
+            prefix_len: prefix.len(),
             message,
             fragment_length: fl,
             fragment_count,
-            message_length: message.len(),
-            checksum: crate::encoding::bytewords::crc32(message),
+            message_length: msg_len,
+            checksum: crate::encoding::bytewords::crc32_concat(prefix, message),
             current_sequence: 0,
             sampler: Weighted::new_inverse(fragment_count),
         })
@@ -366,10 +390,24 @@ impl<'a> FountainEncoder<'a> {
     /// Fragment i of the virtual zero-padded message: the real (non-pad) slice only —
     /// XOR with the implicit zero pad tail is the identity, so mixing the real prefix
     /// reproduces the padded result byte-for-byte.
-    fn fragment(&self, i: usize) -> &[u8] {
+    /// XOR fragment `i` of the virtual zero-padded (prefix ++ message) into
+    /// `data` at offset 0 (region-wise: a fragment may span shell and content).
+    fn xor_fragment_into(&self, i: usize, data: &mut [u8]) {
         let start = i * self.fragment_length;
-        let end = core::cmp::min(start + self.fragment_length, self.message.len());
-        &self.message[start..end]
+        let end = core::cmp::min(start + self.fragment_length, self.message_length);
+        let mut off = start;
+        while off < end {
+            let (chunk, at) = if off < self.prefix_len {
+                let e = core::cmp::min(end, self.prefix_len);
+                (&self.prefix[off..e], off)
+            } else {
+                let s = off - self.prefix_len;
+                let e = core::cmp::min(end - self.prefix_len, self.message.len());
+                (&self.message[s..e], off)
+            };
+            xor_into(&mut data[at - start..at - start + chunk.len()], chunk);
+            off += chunk.len();
+        }
     }
 
     fn make_part(&self, sequence: usize) -> Result<Part, FountainError> {
@@ -384,8 +422,7 @@ impl<'a> FountainEncoder<'a> {
         let mut data = heapless::Vec::from_slice(&ZEROES[..self.fragment_length])
             .map_err(|_| FountainError::InvalidFragmentLen)?;
         for &item in &idx[..n] {
-            let frag = self.fragment(item as usize);
-            xor_into(&mut data[..frag.len()], frag);
+            self.xor_fragment_into(item as usize, &mut data);
         }
         Ok(Part {
             sequence,

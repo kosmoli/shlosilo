@@ -105,7 +105,9 @@ fn eth_signed_output() -> Vec<u8> {
 /// board). The message is the CBOR bytes item wrapping the PSBT — the shape
 /// the peer emits; the decode exit strips the shell since 2026-10-12.
 fn sparrow_frames() -> (Vec<u8>, Vec<String>) {
-    let payload = cbor::encode_bytes(SPARROW_PSBT);
+    // The multipart encoder owns the CBOR shell (2026-10-12) -- feed the RAW
+    // PSBT; a manual pre-wrap here double-shells the message.
+    let payload = Vec::from(SPARROW_PSBT);
     let mut enc =
         UrMultipartEncoder::new("crypto-psbt", &payload, SPARROW_FRAGMENT_LEN).expect("encoder");
     let n = enc.fragment_count();
@@ -175,9 +177,12 @@ fn pico2_smoke_fixture_parity() {
 
 #[test]
 fn pico2_sparrow_multipart_parity() {
-    let (message, frames) = sparrow_frames();
-    // The multipart message is the CBOR bytes item wrapping the PSBT
-    // (12437 B > 255 → `0x59` + 2-byte length head 0x30 0x95).
+    let (psbt_payload, frames) = sparrow_frames();
+    // The multipart message on the wire is the CBOR bytes item wrapping the
+    // PSBT (12437 B > 255 → `0x59` + 2-byte length head 0x30 0x95). The
+    // encoder owns the shell (2026-10-12), so the wire message is the
+    // reference CBOR bytes item of the raw PSBT the frames were cut from.
+    let message = cbor::encode_bytes(&psbt_payload);
     assert_eq!(message.len(), SPARROW_PSBT.len() + 3);
     assert_eq!(&message[..3], &[0x59, 0x30, 0x95]);
     assert!(frames.len() > 1, "fixture must exercise the multipart path");

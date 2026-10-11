@@ -191,22 +191,25 @@ fn payload_capacity_contract() {
     }
 
     // 1024 (payload-sized): the exact shape that broke the battery test.
+    // 2026-10-12: the wire message is the CBOR bytes item (shell ++ content),
+    // so the message is 1027 B and the fragment-aligned padded capacity is
+    // 1032 -- the required-capacity report grows accordingly.
     let mut small = vec![0u8; 1024];
     let mut actual: u32 = 0;
     let rc = shlosilo_ur_decode_payload(h.dec, small.as_mut_ptr(), 1024, &mut actual);
     assert_ne!(rc, OK, "payload-sized buffer must be rejected (contract 4)");
     assert_eq!(
-        actual, 1026,
+        actual, 1032,
         "BufferTooSmall must report the padded capacity"
     );
 
-    // Padded capacity: succeeds and delivers message_length (1024).
-    let mut big = vec![0u8; 1026];
-    let rc = shlosilo_ur_decode_payload(h.dec, big.as_mut_ptr(), 1026, &mut actual);
+    // Padded capacity: succeeds and delivers the SHELL-STRIPPED content (1024).
+    let mut big = vec![0u8; 1032];
+    let rc = shlosilo_ur_decode_payload(h.dec, big.as_mut_ptr(), 1032, &mut actual);
     assert_eq!(rc, OK);
-    assert_eq!(actual, 1024, "delivered length is message_length (trimmed)");
+    assert_eq!(actual, 1024, "delivered length is the stripped content");
     assert_eq!(&big[..1024], &payload[..], "payload content");
-    eprintln!("capacity contract PASS (1024 buf -> need 1026; 1026 buf -> 1024)");
+    eprintln!("capacity contract PASS (1024 buf -> need 1032; 1032 buf -> 1024)");
 }
 
 /// Mixed-redundancy recovery: give the decoder frames 1..5, withhold the

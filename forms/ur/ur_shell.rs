@@ -74,7 +74,7 @@ pub fn ur_message_content(msg: &[u8]) -> &[u8] {
 /// Outbound shell head for `content_len` bytes: `0x58` + 1-byte length up to
 /// 255 B, `0x59` + 2-byte length up to 65535 B (the short definite forms
 /// monero_c `CborLite::encodeBytes` produces for container-sized payloads).
-fn shell_head(content_len: usize, out: &mut [u8; 3]) -> Result<usize> {
+pub(crate) fn shell_head(content_len: usize, out: &mut [u8; 3]) -> Result<usize> {
     if content_len <= 0xff {
         out[0] = 0x58;
         out[1] = content_len as u8;

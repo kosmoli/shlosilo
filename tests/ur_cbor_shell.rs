@@ -74,9 +74,13 @@ fn inbound_shell_and_bare_yield_same_container() {
         "shell leg (Cake xmr-output)"
     );
 
-    // multipart exit: both wire forms reassemble to the same container
-    for (label, wire) in [("bare", &container[..]), ("shell", &shelled[..])] {
-        let mut enc = UrMultipartEncoder::new("xmr-output", wire, 128).unwrap();
+    // multipart exit: the encoder owns the shell (2026-10-12), so the wire
+    // message is the CBOR bytes item and the decode exit strips it back --
+    // roundtrip delivers the container. Bare multipart WIRE tolerance (the
+    // Cake xmr-txunsigned quirk) is pinned by the real-cake frames regression
+    // (tests/ur_layer_probe.rs, artifacts/frames.txt) and the unit cases above.
+    {
+        let mut enc = UrMultipartEncoder::new("xmr-output", &container, 128).unwrap();
         let mut frames = Vec::new();
         for _ in 0..enc.fragment_count() {
             frames.push(enc.next_frame().unwrap());
@@ -87,7 +91,7 @@ fn inbound_shell_and_bare_yield_same_container() {
         }
         let mut out = vec![0u8; 16384];
         let n = dec.payload_into(&mut out).unwrap().expect("complete");
-        assert_eq!(&out[..n], &container[..], "multipart {label}");
+        assert_eq!(&out[..n], &container[..], "multipart shelled roundtrip");
     }
 }
 

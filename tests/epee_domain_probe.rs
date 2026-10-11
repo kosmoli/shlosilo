@@ -100,17 +100,15 @@ fn build_plain(
         let key_to_use: [u8; 32] = if s.major != 0 || s.minor != 0 {
             match add_pks.len() {
                 1 => add_pks[0],
-                n if n > 1 => {
-                    add_pks.get(s.internal as usize).copied().unwrap_or(tx_pub)
-                }
+                n if n > 1 => add_pks.get(s.internal as usize).copied().unwrap_or(tx_pub),
                 _ => tx_pub,
             }
         } else {
             tx_pub
         };
         let out_pub = if s.derive {
-            let off = calc_output_key_offset(view_sk, &key_to_use, s.internal, s.major, s.minor)
-                .unwrap();
+            let off =
+                calc_output_key_offset(view_sk, &key_to_use, s.internal, s.major, s.minor).unwrap();
             let input_sk =
                 Scalar::from_bytes_mod_order(*spend_sk) + Scalar::from_bytes_mod_order(off);
             (ED25519_BASEPOINT_TABLE * &input_sk).compress().to_bytes()
@@ -187,7 +185,10 @@ fn ref_parse(d: &[u8], loop_on_v3: bool) -> String {
         rec += 1;
     }
     match err {
-        Some(e) => format!("head=({:?},{:?},{:?},{:?}) recs={} FAIL {}", v1, v2, v3, v4, rec, e),
+        Some(e) => format!(
+            "head=({:?},{:?},{:?},{:?}) recs={} FAIL {}",
+            v1, v2, v3, v4, rec, e
+        ),
         None => format!(
             "head=({:?},{:?},{:?},{:?}) recs={} consumed={}/{} exact={}",
             v1,
@@ -207,7 +208,12 @@ fn dev_parse(d: &[u8]) -> String {
     let mut pool: [ExportedTransferDetail; 16] =
         core::array::from_fn(|_| ExportedTransferDetail::default());
     match ExportedTransferDetails::from_bytes(d, &mut pool) {
-        Ok(p) => format!("OK n={} offset={} size={}", p.details.len(), p.offset, p.size),
+        Ok(p) => format!(
+            "OK n={} offset={} size={}",
+            p.details.len(),
+            p.offset,
+            p.size
+        ),
         Err(e) => format!("ERR {:?}", e),
     }
 }

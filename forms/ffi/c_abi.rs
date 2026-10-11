@@ -2037,7 +2037,10 @@ pub mod r3 {
         fn p0c_typed_sign_vertical_slice() {
             use alloc::ffi::CString;
             const PSBT: &[u8] = include_bytes!("../../tests/fixtures/sparrow_signet_12k.psbt");
-            let ur_payload = crate::encoding::cbor::encode_bytes(PSBT);
+            // The multipart encoder owns the CBOR shell (bytes-type UR
+            // semantics) -- feed the RAW PSBT; the old manual pre-wrap would
+            // double-shell the message (2026-10-12).
+            let ur_payload = alloc::vec::Vec::from(PSBT);
             assert!(
                 ur_payload.len() > 4096,
                 "fixture must exceed single-frame legacy budget"
