@@ -82,7 +82,7 @@ fn pairing_ffi_zero_alloc() {
     let input_sk = Scalar::from_bytes_mod_order(spend_sk) + Scalar::from_bytes_mod_order(offset);
     let out_pub = (ED25519_BASEPOINT_TABLE * &input_sk).compress().to_bytes();
     let mut plain = Vec::new();
-    plain.extend_from_slice(&[0x01, 0x00, 0x01, 0x00]); // has_transfers, offset, count, blob_size
+    plain.extend_from_slice(&[0x01, 0x00, 0x01, 0x01]); // head, offset, total, record_count
     plain.extend_from_slice(&[0x01]); // version
     plain.extend_from_slice(&out_pub);
     plain.extend_from_slice(&[0x00]); // internal_output_index

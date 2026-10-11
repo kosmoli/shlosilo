@@ -266,8 +266,8 @@ pub(crate) mod tests {
         let mut plain = Vec::new();
         plain.extend_from_slice(&[0x01]); // has_transfers
         plain.extend_from_slice(&[0x00]); // offset
-        plain.extend_from_slice(&[0x01]); // transfer_count
-        plain.extend_from_slice(&[0x00]); // blob size (ignored)
+        plain.extend_from_slice(&[0x01]); // total
+        plain.extend_from_slice(&[0x01]); // record_count (ignored)
         plain.extend_from_slice(&[0x01]); // version
         let offset =
             crate::chain::xmr::subaddress::calc_output_key_offset(view_sk, &[0x22u8; 32], 0, 0, 0)

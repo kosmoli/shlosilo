@@ -42,7 +42,7 @@ fn generate_shlosilo_keyimage_fixture_for_keystone() {
 
     // ExportedTransferDetails plaintext (main-address output)
     let mut plain = Vec::new();
-    plain.extend_from_slice(&[0x01, 0x00, 0x01, 0x00]); // has_transfers, offset, count, blob_size
+    plain.extend_from_slice(&[0x01, 0x00, 0x01, 0x01]); // head, offset, total, record_count
     plain.extend_from_slice(&[0x01]); // version
     plain.extend_from_slice(&out_pub);
     plain.extend_from_slice(&[0x00]); // internal_output_index

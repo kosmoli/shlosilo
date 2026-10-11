@@ -5,10 +5,13 @@
 //!
 //! Wire format (decrypted plaintext):
 //! ```text
-//! [varint has_transfers]  — 0 = no transfers, end directly
+//! [varint head marker]  — wallet2 emits 3 (tuple arity); 0 = empty short-form
 //! [varint offset]
-//! [varint transfer_count]
-//! [varint details_blob_size]  ← unconsumed (keystone also ignores it)
+//! [varint total]  — transfers.size(); on partial/chunked exports it EXCEEDS
+//!                   the records actually carried here
+//! [varint record_count]  — vector length prefix = the record LOOP BOUND
+//!                          (keystone's outputs.rs loops THIS varint; 2026-10-11
+//!                          looped `total` bug fix + stream-exhaustion pin)
 //! per transfer:
 //!   [varint ignored_version]
 //!   [32B output_pubkey]
@@ -153,13 +156,17 @@ impl ExportedTransferDetails<'_> {
             });
         }
         let offset = read_varint(bytes, &mut off)?;
-        // transfers.size()
+        // transfers.size() (total; on partial/chunked exports it EXCEEDS the
+        // records actually carried in this container)
         let _value_offset = read_varint(bytes, &mut off)?;
-        // details blob size — keystone reads it without consuming; kept isomorphic
+        // Record count = the vector length prefix. keystone's reference
+        // `outputs.rs` loops on THIS varint (2026-10-11 fix: the old loop ran
+        // on `total`, reading past the stream on any total>count container --
+        // e.g. Cake's `outputs(partial)` export -- and surfaced as -21).
         let _value_size = read_varint(bytes, &mut off)?;
 
         let mut details = SliceVec::new(details_out);
-        for _ in 0.._value_offset {
+        for _ in 0.._value_size {
             // version field ignored
             let _version = read_varint(bytes, &mut off)?;
             let pubkey = read_u8_32(bytes, &mut off)?;
@@ -198,6 +205,13 @@ impl ExportedTransferDetails<'_> {
             })?;
         }
 
+        // Stream exhaustion pin (2026-10-11): the tuple carries exactly
+        // `count` records and nothing else -- trailing bytes mean a layout
+        // divergence and must not be silently ignored (the old parser
+        // under-read without error when count > total).
+        if off != bytes.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
         Ok(ExportedTransferDetails {
             offset,
             size: _value_offset,
@@ -331,8 +345,8 @@ mod tests {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&encode_varint_leb(1)); // has_transfers
         bytes.extend_from_slice(&encode_varint_leb(0)); // offset
-        bytes.extend_from_slice(&encode_varint_leb(1)); // transfer_count
-        bytes.extend_from_slice(&encode_varint_leb(999)); // blob size (ignored)
+        bytes.extend_from_slice(&encode_varint_leb(1)); // total
+        bytes.extend_from_slice(&encode_varint_leb(1)); // record_count
         bytes.extend_from_slice(&make_detail_bytes(0, false));
 
         let mut pool: [ExportedTransferDetail; 4] =
@@ -358,8 +372,8 @@ mod tests {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&encode_varint_leb(1));
         bytes.extend_from_slice(&encode_varint_leb(42));
-        bytes.extend_from_slice(&encode_varint_leb(3));
-        bytes.extend_from_slice(&encode_varint_leb(0));
+        bytes.extend_from_slice(&encode_varint_leb(3)); // total
+        bytes.extend_from_slice(&encode_varint_leb(3)); // record_count
         bytes.extend_from_slice(&make_detail_bytes(0, true));
         bytes.extend_from_slice(&make_detail_bytes(1, true));
         bytes.extend_from_slice(&make_detail_bytes(2, false));

@@ -594,8 +594,8 @@ mod tests {
         let mut plain = Vec::new();
         plain.extend_from_slice(&[0x01]); // has_transfers
         plain.extend_from_slice(&[0x00]); // offset
-        plain.extend_from_slice(&[0x01]); // transfer_count
-        plain.extend_from_slice(&[0x00]); // blob size
+        plain.extend_from_slice(&[0x01]); // total
+        plain.extend_from_slice(&[0x01]); // record_count
                                           // detail: version, pubkey, idx, gidx, tx_pubkey, flags, amount, keys, major, minor
         plain.extend_from_slice(&[0x01]); // version
                                           // output pubkey = input_sk·G，input_sk = spend + offset(0)
@@ -797,13 +797,16 @@ mod tests {
             "foreign-pk error path must wipe the scratch"
         );
 
-        // case 2: valid envelope, epee parse failure (claims 2 transfers, no data)
+        // case 2: valid envelope, epee parse failure (claims 2 records,
+        // carries none — malformed under the wallet2/keystone grammar;
+        // note `02 00` = a 0-record export is LEGAL since the 2026-10-11
+        // loop-bound fix, so the failing shape must claim missing records)
         let enc_req = encrypt_export_payload(
             OUTPUT_EXPORT_MAGIC,
             &view_sk,
             &spend_pub,
             &view_pub,
-            b"\x01\x00\x02\x00",
+            b"\x01\x00\x02\x02",
             &mut rng,
         )
         .unwrap();
