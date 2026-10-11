@@ -80,9 +80,9 @@ def main() -> int:
         in src[src.index("static void scan_step(void)\n{") :],
     )
     pin(
-        "status slot empty by default + metrics never write the slot",
+        "status slot empty by default + dev metrics removed from product face",
         'UiScanInfo("", "point camera at QR", "", "");' in src
-        and "UiScanMetrics(l1, l2, l3);" in src
+        and "UiScanMetrics(" not in src
         and 'UiScanInfo("scanning..."' not in src,
     )
     pin(
@@ -234,4 +234,13 @@ if __name__ == "__main__":
         "g_ur_latch = 1;" in src
         and "if (g_ur_latch) {" in src
         and "pairing_fail_reason" in src,
+    )
+
+    # 6. diagnostic class split (2026-10-11): three fixed phrases for the
+    #    three failure classes (format -21 / signature -40 / ownership -15)
+    pin(
+        "pairing failure vocabulary split by class",
+        '"output format not recognized"' in src
+        and '"output signature check failed"' in src
+        and '"output not from this wallet"' in src,
     )

@@ -110,7 +110,16 @@ static int g_ur_latch;
  * under THIS wallet's keys = it is not this wallet's output. */
 static const char *pairing_fail_reason(int rc)
 {
+    /* Three diagnostic classes (2026-10-11 split, Kosmo's red line: fixed
+     * vocabulary, no internal detail): -21 container shape, -40 envelope
+     * signature, -15 pk1/pk2 ownership binding. */
     if (rc == -21) {
+        return "output format not recognized";
+    }
+    if (rc == -40) {
+        return "output signature check failed";
+    }
+    if (rc == -15) {
         return "output not from this wallet";
     }
     if (rc == -20 || rc == -2) {

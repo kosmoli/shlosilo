@@ -116,7 +116,11 @@ pub fn decrypt_export_payload_into(
     let view_pub = (ED25519_BASEPOINT_TABLE * &v_scalar).compress().to_bytes();
     let msg_hash = keccak256::hash(raw_data)?;
     if !check_monero_signature(&msg_hash, &view_pub, sig)? {
-        return Err(err());
+        // Signature failure is a distinct diagnostic class from a malformed
+        // container (2026-10-11 split for on-device diagnosis): -40 vs -21.
+        return Err(crate::error::ShlosiloError::new(
+            crate::error::ShlosiloErrorKind::CryptoEd25519SignFailed,
+        ));
     }
 
     // 2. ChaCha20-Legacy decryption into the caller scratch
@@ -397,8 +401,13 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     let view_pub = (ED25519_BASEPOINT_TABLE * &v_scalar).compress().to_bytes();
 
     // Ownership validation (keystone panics — we return an error code; a signer must not panic)
+    // Kind reuse: `PsbtOwnershipMismatch` is the stable code for "ownership
+    // binding failure" (-15) — here the XMR pk1/pk2 binding, distinct from a
+    // malformed container (-21) or a failed envelope signature (-40).
     if pk1 != spend_pub || pk2 != view_pub {
-        return Err(err());
+        return Err(crate::error::ShlosiloError::new(
+            crate::error::ShlosiloErrorKind::PsbtOwnershipMismatch,
+        ));
     }
 
     // 2. Parse the outputs (Z2.3 C3b-1: details list into caller storage)
