@@ -100,6 +100,24 @@ static int g_key_from_se;
  * exists or on a fresh scan. (It replaced the 'intake halt' flag of the
  * same date: the classification layer made the halt dead weight.) */
 static int g_no_session_prompted;
+/* Failure latch (2026-10-09): after a pairing/sign failure the intake
+ * stops re-collecting the same doomed message in a loop -- frames are
+ * dropped until the QR leaves the view (status-slot miss-clear). */
+static int g_ur_latch;
+
+/* Fixed diagnostic vocabulary for pairing failures (injection red line:
+ * no raw rc codes on screen). -21 = the container did not authenticate
+ * under THIS wallet's keys = it is not this wallet's output. */
+static const char *pairing_fail_reason(int rc)
+{
+    if (rc == -21) {
+        return "output not from this wallet";
+    }
+    if (rc == -20 || rc == -2) {
+        return "data error";
+    }
+    return "unrecognized output";
+}
 /* Phase 4: console-created wallet session ('key new') — NOT flow-owned (same
  * lifetime as an SE unlock: lives until 'se lock' / sign-done close), so it
  * survives UI navigation and the plate-export flow can run against it. */
@@ -1238,8 +1256,8 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     snprintf(l3, sizeof(l3), "key: %s",
              (g_key_from_se != 0) ? "se unlock"
                                   : ((g_key_console != 0) ? "key new" : "plate scan"));
-    UiScanInfo("pairing: output received", "-> key images ready",
-               "computing key images", l3);
+    UiScanInfo("pairing: output received", "computing key images...",
+               "hold steady...", l3);
     printf("pairing: start (payload=%u ws=%u)\r\n", plen, ws_need);
     t0 = osKernelGetTickCount();
     rc = shlosilo_xmr_pairing_ffi(g_key_session, payload, plen,
@@ -1250,7 +1268,8 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     ExtFree(ws_raw);
     if (rc != 0 || out_len == 0 || out_len > SIGN_OUT_MAX) {
         printf("pairing: FAIL rc=%d out=%u dt=%ums\r\n", rc, out_len, (unsigned)dt);
-        UiScanInfo("pairing: FAIL", "keep scanning...", "", "");
+        UiScanInfo("pairing failed", pairing_fail_reason(rc), "move camera away, retry", "");
+        g_ur_latch = 1;
         ExtFree(g_sign_out);
         g_sign_out = NULL;
         g_sign_out_len = 0;
@@ -1408,6 +1427,12 @@ static void scan_ur_hit(const char *text)
     unsigned ws_need;
     int progress;
 
+    /* Failure latch: a doomed message already failed once -- drop frames
+     * until the QR leaves the view (the miss-clear re-arms). */
+    if (g_ur_latch) {
+        return;
+    }
+
     /* ---- First-frame classification (2026-10-09, Kosmo's two-state
      * machine): the UR type is in EVERY frame header, so decide BEFORE
      * collecting anything -- the collector only runs for types this flow
@@ -1452,6 +1477,7 @@ static void scan_ur_hit(const char *text)
     /* A live session re-arms the no-session prompt throttle. */
     if (g_key_session != NULL) {
         g_no_session_prompted = 0;
+        g_ur_latch = 0;
     }
 
     if (slash2 == NULL && strncmp(text, "ur:xmr-output", 13) == 0) {
@@ -1760,6 +1786,7 @@ static void scan_step(void)
         UiScanProgress(0);
         UiScanInfo("", "", "", "");
         g_no_session_prompted = 0;
+        g_ur_latch = 0;
     }
 
     if (n > 0) {

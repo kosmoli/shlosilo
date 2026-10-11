@@ -227,3 +227,11 @@ if __name__ == "__main__":
     )
 
     print(f"\nPASS: no-session sign guard wiring contract holds ({PASS} pins)")
+
+    # 5. failure latch (2026-10-09): no doomed-message re-collection loop
+    pin(
+        "failure latch: set on pairing fail, frames dropped, cleared on QR-away",
+        "g_ur_latch = 1;" in src
+        and "if (g_ur_latch) {" in src
+        and "pairing_fail_reason" in src,
+    )
