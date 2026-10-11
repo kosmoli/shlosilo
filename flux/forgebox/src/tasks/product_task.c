@@ -1832,15 +1832,10 @@ static void scan_step(void)
         return;
     }
 
-    if ((g_scan_frames % SCAN_INFO_EVERY_FRAMES) == 0) {
-        snprintf(l1, sizeof(l1), "frames=%u", (unsigned)g_scan_frames);
-        snprintf(l2, sizeof(l2), "cam %u dec %u vR %u vW %u ms",
-                 (unsigned)cam, (unsigned)dec, (unsigned)vR, (unsigned)vW);
-        snprintf(l3, sizeof(l3), "focus %u res %d",
-                 (unsigned)UiScanGetFocus(), (int)n);
-        /* Metrics rows only -- the status slot belongs to the state machine. */
-        UiScanMetrics(l1, l2, l3);
-    }
+    /* Dev metrics removed from the product face (2026-10-10 Kosmo review:
+     * the frames/cam/focus rows kept covering failure messages and are
+     * hunt instruments, not product UX -- bring them back behind a dev
+     * toggle when a camera hunt needs them). */
 }
 
 static void scan_exit(void)
