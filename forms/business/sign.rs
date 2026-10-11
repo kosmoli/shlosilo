@@ -1041,9 +1041,13 @@ fn sign_btc<'a>(
     use crate::chain::btc::psbt as psbt_mod;
     use crate::encoding::cbor;
 
-    let psbt_bytes = match cbor::decode(cbor_payload)? {
-        cbor::Cbor::Bytes(b) => b,
-        _ => return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor)),
+    // Payload semantics (2026-10-12): the UR exits strip the CBOR byte-string
+    // shell, so a registry-shaped crypto-psbt arrives as the RAW PSBT. Both
+    // shapes are accepted: a Bytes item (legacy direct callers passing the
+    // wrapped form) or bare PSBT bytes (shell already stripped).
+    let psbt_bytes: &[u8] = match cbor::decode(cbor_payload) {
+        Ok(cbor::Cbor::Bytes(b)) => b,
+        _ => cbor_payload,
     };
 
     let mut psbt = psbt_mod::parse_psbt_any(psbt_bytes, arena, recs)?;

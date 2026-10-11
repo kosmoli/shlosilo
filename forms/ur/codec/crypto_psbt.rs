@@ -15,29 +15,36 @@ fn err() -> ShlosiloError {
 }
 
 /// Encode raw PSBT bytes into `ur:crypto-psbt/...`
+///
+/// The CBOR byte-string shell is owned by the transport (`ur_encode` wraps
+/// outbound, `ur_message_content` strips inbound) — the codec passes the raw
+/// PSBT through. This keeps the ur-registry 1.0.5 wire vector byte-equal: its
+/// message IS the `bytes` item wrapping the PSBT.
 pub fn encode(psbt: &[u8]) -> Result<UrEncoded> {
-    let cbor = cbor::encode_bytes(psbt);
-    ur_encode::encode(UrTypeTag::CryptoPsbt, &cbor)
+    ur_encode::encode(UrTypeTag::CryptoPsbt, psbt)
 }
 
 /// Parse PSBT raw bytes into a caller buffer (Z2.4c-4); returns the length written.
+///
+/// Payload semantics (2026-10-12): the UR exits strip the CBOR byte-string
+/// shell, so a registry-shaped UR arrives carrying the RAW PSBT. Both shapes
+/// are accepted: a Bytes item (legacy wrapped payload) or bare PSBT bytes.
 pub fn decode_into(uri: &str, out: &mut [u8]) -> Result<usize> {
     let d = ur_decode::decode(uri)?;
     if d.type_tag() != UrTypeTag::CryptoPsbt {
         return Err(err());
     }
-    match cbor::decode(d.as_ref())? {
-        cbor::Cbor::Bytes(b) => {
-            if b.len() > out.len() {
-                return Err(ShlosiloError::new(
-                    ShlosiloErrorKind::EncodingBufferOverflow,
-                ));
-            }
-            out[..b.len()].copy_from_slice(b);
-            Ok(b.len())
-        }
-        _ => Err(err()),
+    let psbt: &[u8] = match cbor::decode(d.as_ref()) {
+        Ok(cbor::Cbor::Bytes(b)) => b,
+        _ => d.as_ref(),
+    };
+    if psbt.len() > out.len() {
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::EncodingBufferOverflow,
+        ));
     }
+    out[..psbt.len()].copy_from_slice(psbt);
+    Ok(psbt.len())
 }
 
 /// Parse PSBT raw bytes out of `ur:crypto-psbt/...`

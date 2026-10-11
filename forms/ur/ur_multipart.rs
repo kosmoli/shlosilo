@@ -626,26 +626,51 @@ impl<'a> UrMultipartDecoder<'a> {
     }
 
     /// Payload after completion into a caller buffer (Z2.4c-3 C-class); `out` must hold
-    /// fragment_length × sequence_count bytes; returns Some(message_length) when complete.
+    /// fragment_length × sequence_count bytes; returns Some(payload length) when
+    /// complete. Payload semantics (2026-10-12): any complete CBOR byte-string
+    /// shell is stripped in place (bare messages pass through), and the returned
+    /// length is the delivered content length.
     pub fn payload_into(&self, out: &mut [u8]) -> Result<Option<usize>> {
-        self.inner.message_into(out).map_err(|e| match e {
+        let n = match self.inner.message_into(out).map_err(|e| match e {
             // v1 contract 4: an undersized out buffer is a capacity signal,
             // not corruption — the C side retries with the reported length.
             crate::encoding::fountain::FountainError::OutputTooSmall => {
                 err(ShlosiloErrorKind::BufferTooSmall)
             }
             _ => err(ShlosiloErrorKind::UrPayloadInvalidCbor),
-        })
+        })? {
+            Some(n) => n,
+            None => return Ok(None), // incomplete
+        };
+        // Strip one complete CBOR byte-string shell in place (zero-copy shift
+        // of the content to the front); bare messages pass through untouched.
+        let content_len = crate::ur::ur_shell::ur_message_content(&out[..n]).len();
+        let head = n - content_len;
+        if head > 0 {
+            out.copy_within(head..n, 0);
+        }
+        Ok(Some(content_len))
     }
 
-    /// Payload after completion (None = incomplete)
+    /// Payload after completion (None = incomplete) — same shell-stripping
+    /// semantics as `payload_into`.
     ///
     /// Test/legacy convenience (allocates). Production paths use `payload_into`.
     #[cfg(feature = "alloc-fallback")]
     pub fn payload(&self) -> Result<Option<alloc::vec::Vec<u8>>> {
-        self.inner
+        let mut msg = self
+            .inner
             .message()
-            .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))
+            .map_err(|_| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
+        if let Some(m) = msg.as_mut() {
+            let content_len = crate::ur::ur_shell::ur_message_content(m).len();
+            let head = m.len() - content_len;
+            if head > 0 {
+                m.copy_within(head.., 0);
+                m.truncate(content_len);
+            }
+        }
+        Ok(msg)
     }
 }
 

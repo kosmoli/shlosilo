@@ -1,15 +1,22 @@
 //! UR encoding (BC-UR single fragment) — Phase 6 P6.0b real implementation
 //!
-//! Format: `ur:<type>/<bytewords-minimal(payload)>`
+//! Format: `ur:<type>/<bytewords-minimal(message)>`
 //!
-//! The UR transport layer does **not** wrap another CBOR layer. The CBOR bytes produced by codecs
-//! (crypto-psbt / crypto-hd-key) enter bytewords verbatim as the payload. The body of the BCR-2020-05 /
-//! keystone-ur official vector `ur:bytes/iehsjyhspmwfwfia` decodes to the raw `b"data"`, not a CBOR item.
+//! Message convention (2026-10-12, keystone-ur Bytes / monero_c alignment):
+//! the message body is one CBOR byte-string item — short shell (`0x58` +
+//! 1-byte length / `0x59` + 2-byte length) wrapping the container — encoded
+//! into bytewords verbatim. Peers that decode with `CborLite::decodeBytes`
+//! (monero_c importKeyImagesUR / submitTransactionUR, Cupcake exportKeyImagesUR
+//! / signUR) expect exactly this shape; the real-capture Cake xmr-output leg
+//! reassembles to `58 f0 ...`. On the decode side `ur_message_content`
+//! strips the shell and passes bare messages through, so legacy bare senders
+//! (Cake's xmr-txunsigned leg) keep working.
 //!
 //! Multi-fragment fountain arrives in Phase 6 P6.2 (for large on-device PSBTs).
 
 use crate::encoding::bytewords;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::ur::ur_shell::ur_message_shell_len;
 
 fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
@@ -124,16 +131,21 @@ impl UrTypeTag {
     }
 }
 
-/// Single-fragment encoding: payload → bytewords-minimal → `ur:<type>/<body>`
+/// Single-fragment encoding: payload → CBOR byte-string shell →
+/// bytewords-minimal → `ur:<type>/<body>` (outbound wrap; the delivered
+/// payload is what `ur_decode` hands back after stripping).
 pub fn encode(type_tag: UrTypeTag, payload: &[u8]) -> Result<UrEncoded> {
     if payload.len() > UR_PAYLOAD_MAX_LEN {
         return Err(err());
     }
+    let mut wire = heapless::Vec::<u8, { UR_PAYLOAD_MAX_LEN + 3 }>::new();
+    crate::ur::ur_shell::ur_message_wrap_into(payload, &mut wire)?;
+    debug_assert_eq!(wire.len(), ur_message_shell_len(payload.len())?);
     let mut uri = heapless::String::<UR_URI_MAX_LEN>::new();
     push_str(&mut uri, "ur:")?;
     push_str(&mut uri, type_tag.type_name())?;
     push_str(&mut uri, "/")?;
-    bytewords::encode_minimal_into_str(payload, &mut uri)?;
+    bytewords::encode_minimal_into_str(&wire, &mut uri)?;
     Ok(UrEncoded { uri })
 }
 
@@ -147,21 +159,28 @@ mod tests {
     use super::*;
 
     /// BCR-2020-05 / keystone-ur doctest：
-    /// `ur:bytes/iehsjyhspmwfwfia` ↔ `b"data"`
+    /// `ur:bytes/iehsjyhspmwfwfia` ↔ `b"data"` — the legacy vector's message is
+    /// bare (`0x64` is CBOR text, not a byte-string head), so the inbound shell
+    /// strip passes it through unchanged. Since 2026-10-12 outbound is shelled,
+    /// so `encode` produces the wrapped form and still round-trips to `b"data"`.
     #[test]
     fn bcr_official_single_part_round_trip() {
         let d = crate::ur::ur_decode::decode("ur:bytes/iehsjyhspmwfwfia").unwrap();
         assert_eq!(d.type_tag(), UrTypeTag::Bytes);
         assert_eq!(d.as_ref(), b"data");
+        // outbound message = CBOR byte-string shell (0x58 0x04) + content
         let enc = encode(UrTypeTag::Bytes, b"data").unwrap();
-        assert_eq!(enc.as_str(), "ur:bytes/iehsjyhspmwfwfia");
+        assert_eq!(enc.as_str(), "ur:bytes/hdaaiehsjyhsdedeoyln");
+        let d = crate::ur::ur_decode::decode(enc.as_str()).unwrap();
+        assert_eq!(d.as_ref(), b"data");
     }
 
-    /// Independent Python implementation: raw `[0x01, 0x02]` → `ur:bytes/adaorpsffwmo`
+    /// Independent Python implementation: raw `[0x01, 0x02]` → shell-wrapped
+    /// `ur:bytes/hdaoadaouyjzkegm` (message = `58 02 01 02` + CRC32)
     #[test]
     fn independent_oracle_bytes_vector() {
         let enc = encode(UrTypeTag::Bytes, &[0x01, 0x02]).unwrap();
-        assert_eq!(enc.as_str(), "ur:bytes/adaorpsffwmo");
+        assert_eq!(enc.as_str(), "ur:bytes/hdaoadaouyjzkegm");
         let d = crate::ur::ur_decode::decode(enc.as_str()).unwrap();
         assert_eq!(d.as_ref(), &[0x01, 0x02]);
     }

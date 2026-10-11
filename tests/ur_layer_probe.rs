@@ -233,6 +233,14 @@ fn real_cake_frames_message_framing() {
         "    head is CBOR byte-string (0x58/0x59/0x5a): {}",
         matches!(payload.first(), Some(0x58) | Some(0x59) | Some(0x5a))
     );
+    // 2026-10-12 payload semantics: the exits deliver ur_message_content —
+    // shell content when the message is a complete byte-string, bare otherwise.
+    let content = shlosilo::ur::ur_message_content(&payload);
+    println!(
+        "    ur_message_content: bare passthrough={} stripped_len={}",
+        core::ptr::eq(content.as_ptr(), payload.as_ptr()),
+        content.len()
+    );
 }
 
 #[test]
@@ -428,10 +436,22 @@ fn ur_layer_xmr_output_full_chain() {
         )
         .unwrap();
         let (rc, _, p) = ffi_decode_single(u.as_str());
-        println!("    single-frame round trip rc={rc} (payload passthrough = {})", p == wrapped[..]);
+        // 2026-10-12 semantics: the decode exit strips exactly ONE complete
+        // CBOR byte-string shell. The probe's pre-wrapped message enters
+        // encode -> double-wrapped on the wire -> the transport shell is
+        // stripped, delivering the (keystone-style) wrapped form.
         println!(
-            "    payload vs raw container first_diff={:?}",
-            first_diff(&p, &container)
+            "    single-frame round trip rc={rc} (transport shell stripped, payload == wrapped form: {})",
+            p == wrapped[..]
+        );
+        println!(
+            "    wrapped form still carries the container at +2: {}",
+            p.len() == wrapped.len() && p[2..] == container[..]
+        );
+        assert_eq!(
+            p,
+            wrapped[..],
+            "exactly one shell stripped (P2 new semantics)"
         );
         pairing_with_real_keys("CBOR-wrapped", &p, &view_sk, &spend_sk);
 
@@ -441,7 +461,17 @@ fn ur_layer_xmr_output_full_chain() {
             fs.push(e.next_frame().unwrap());
         }
         let (rc, _, p) = ffi_decode_multipart(&fs);
-        println!("    multipart round trip rc={rc} (payload passthrough = {})", p == wrapped[..]);
+        // multipart fragments the message verbatim (no double wrap): the one
+        // strip lands on the keystone shell -> raw container.
+        println!(
+            "    multipart round trip rc={rc} (payload stripped == raw container: {})",
+            p == container[..]
+        );
+        assert_eq!(
+            p,
+            container[..],
+            "multipart exit strips the keystone shell (P2 new semantics)"
+        );
         pairing_with_real_keys("CBOR-wrapped mp", &p, &view_sk, &spend_sk);
     }
 

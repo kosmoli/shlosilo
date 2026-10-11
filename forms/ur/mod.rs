@@ -17,3 +17,6 @@ pub mod codec;
 pub mod ur_decode;
 pub mod ur_encode;
 pub mod ur_multipart;
+pub mod ur_shell;
+
+pub use ur_shell::ur_message_content;

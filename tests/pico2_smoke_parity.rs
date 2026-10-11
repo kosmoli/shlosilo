@@ -36,8 +36,10 @@ fn fixture_rolls() -> [u8; 64] {
 const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
 
 /// The crypto-hdkey UR the host-sim prints for the fixture mnemonic at
-/// m/44'/0'/0'/0/0 (mainnet).
-const EXPECTED_EXPORT_UR: &str = "ur:crypto-hdkey/oxaxhdclaxisyagdbdhsvarersbykegssnhesonthdetkokklomsprldoseymnpansbnwynyioaahdcxaorptnpmcmdibgcevegaetftloemsfhphdcflkswfsgmdyidchkndyprswsnfewpaycysssefxgwamtaaddyoeadlecsdwykaeykaeykaewkaewkaxahaemnvsmn";
+/// m/44'/0'/0'/0/0 (mainnet). 2026-10-12 outbound convention: the message
+/// carries the CBOR byte-string shell (`0x58` + len) before bytewords, so the
+/// body gains the `hd` prefix and a new CRC tail versus the pre-shell vector.
+const EXPECTED_EXPORT_UR: &str = "ur:crypto-hdkey/hdidoxaxhdclaxisyagdbdhsvarersbykegssnhesonthdetkokklomsprldoseymnpansbnwynyioaahdcxaorptnpmcmdibgcevegaetftloemsfhphdcflkswfsgmdyidchkndyprswsnfewpaycysssefxgwamtaaddyoeadlecsdwykaeykaeykaewkaewkaxahenknzovl";
 
 /// The signed EIP-1559 tx hex the host-sim prints (111 bytes).
 const EXPECTED_SIGNED_HEX: &str = "02f86c0180843b9aca0084773594008252089422222222222222222222222222222222222222228203e780c080a0231db6acdbb8e2b9ce1c7c38f0eaea8520dd327b4c7b9f24627459d57a4548a9a0444004dd6f14355354be998067ad1cc1d467bb9e3d73175c5b2b1215eeba1a72";
@@ -98,8 +100,10 @@ fn eth_signed_output() -> Vec<u8> {
     out[..n].to_vec()
 }
 
-/// Sparrow fixture: the `crypto-psbt` payload and its systematic multipart
-/// frames (the exact strings the console channel feeds to the board).
+/// Sparrow fixture: the `crypto-psbt` reassembled message and its systematic
+/// multipart frames (the exact strings the console channel feeds to the
+/// board). The message is the CBOR bytes item wrapping the PSBT — the shape
+/// the peer emits; the decode exit strips the shell since 2026-10-12.
 fn sparrow_frames() -> (Vec<u8>, Vec<String>) {
     let payload = cbor::encode_bytes(SPARROW_PSBT);
     let mut enc =
@@ -171,7 +175,11 @@ fn pico2_smoke_fixture_parity() {
 
 #[test]
 fn pico2_sparrow_multipart_parity() {
-    let (payload, frames) = sparrow_frames();
+    let (message, frames) = sparrow_frames();
+    // The multipart message is the CBOR bytes item wrapping the PSBT
+    // (12437 B > 255 → `0x59` + 2-byte length head 0x30 0x95).
+    assert_eq!(message.len(), SPARROW_PSBT.len() + 3);
+    assert_eq!(&message[..3], &[0x59, 0x30, 0x95]);
     assert!(frames.len() > 1, "fixture must exercise the multipart path");
 
     let mut dec = UrMultipartDecoder::new();
@@ -184,8 +192,11 @@ fn pico2_sparrow_multipart_parity() {
     );
     assert_eq!(dec.ur_type(), Some("crypto-psbt"));
     let decoded = dec.payload().expect("payload ok").expect("complete");
+    // 2026-10-12 payload semantics: the reassembled message is the CBOR bytes
+    // item; the decode exit strips the shell, so the delivered payload is the
+    // RAW PSBT (what the sign face consumes either way — sign_btc dual-accepts).
     assert_eq!(
-        decoded, payload,
+        decoded, SPARROW_PSBT,
         "multipart roundtrip must reproduce the payload"
     );
 

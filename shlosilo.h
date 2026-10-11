@@ -1007,11 +1007,14 @@ int shlosilo_ur_decode_complete(struct UrMultipartDecoder *handle);
 
 /**
  * R3: get the complete payload (written to payload_buf; actual length written to actual_len).
+ * Payload semantics (2026-10-12): any complete CBOR byte-string shell is
+ * stripped from the reassembled message (bare messages pass through), so
+ * the delivered bytes are the container itself.
  * Calling before completion → ERR_UNKNOWN; buffer smaller than the reassembled
  * capacity (`fragment_length × sequence_count`, padding INCLUDED - not the
  * delivered payload length) → ERR_BUFFER_TOO_SMALL with actual_len set to that
  * capacity for the retry allocation. On success actual_len is the delivered
- * length (message_length, padding excluded).
+ * payload length (padding excluded, CBOR shell stripped).
  */
 int shlosilo_ur_decode_payload(struct UrMultipartDecoder *handle,
                                uint8_t *payload_buf,
@@ -1042,7 +1045,9 @@ int shlosilo_ur_decode_type(struct UrMultipartDecoder *handle,
  * - `uri`: NUL-terminated `ur:<type>/<body>`; multipart shapes
  *   (`ur:<type>/<seq>-<count>/<body>`) are REJECTED here (-21).
  * - `type_buf` / `type_buf_len`: receive the NUL-terminated type name.
- * - `payload` / `payload_len`: receive the raw payload bytes;
+ * - `payload` / `payload_len`: receive the payload bytes (2026-10-12
+ *   semantics: any complete CBOR byte-string shell is stripped — bare
+ *   messages pass through — so the delivered bytes are the container);
  *   `actual_len` receives the delivered length on success and the
  *   required payload length on `ERR_BUFFER_TOO_SMALL` (-20).
  *

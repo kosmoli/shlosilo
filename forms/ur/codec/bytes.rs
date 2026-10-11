@@ -1,4 +1,5 @@
-//! bytes UR codec (opaque payload, no extra CBOR wrapping)
+//! bytes UR codec (opaque payload; the UR message shell is handled by the
+//! transport: `ur_encode` wraps outbound, `ur_message_content` strips inbound)
 
 use crate::error::Result;
 use crate::ur::ur_encode::{self, UrEncoded, UrTypeTag};
@@ -13,9 +14,19 @@ mod tests {
 
     const _: fn(&[u8]) -> Result<UrEncoded> = encode;
 
+    /// BCR-2020-05 / keystone-ur doctest vector: bare message `b"data"`,
+    /// decoded as-is (head `0x64` is CBOR text — no shell to strip).
     #[test]
-    fn official_data_vector() {
+    fn official_data_vector_decodes_bare() {
+        let d = crate::ur::ur_decode::decode("ur:bytes/iehsjyhspmwfwfia").unwrap();
+        assert_eq!(d.as_ref(), b"data");
+    }
+
+    /// Since 2026-10-12 outbound messages carry the CBOR byte-string shell
+    /// (keystone-ur Bytes / monero_c `CborLite::encodeBytes` semantics).
+    #[test]
+    fn official_data_vector_encode_shells() {
         let enc = encode(b"data").unwrap();
-        assert_eq!(enc.as_str(), "ur:bytes/iehsjyhspmwfwfia");
+        assert_eq!(enc.as_str(), "ur:bytes/hdaaiehsjyhsdedeoyln");
     }
 }
