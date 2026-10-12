@@ -422,6 +422,10 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
             crate::error::ShlosiloErrorKind::BufferTooSmall,
         ));
     }
+    // Crash-forensics phase marker (3 = before the per-output loop): the
+    // device blackbox needs this point because the heavy key-image work below
+    // is where the pairing leg wedges. No-op without a registered host hook.
+    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_PAIR_LOOP);
     for (i, detail) in details.details.iter().enumerate() {
         let rec = compute_key_image_with_signature(view_sk, &spend_sk_scalar, detail, rng)?;
         records_out[i] = rec;

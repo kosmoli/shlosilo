@@ -150,4 +150,18 @@
 #define UI_Q_AREA_H          476
 #define UI_Q_CAP_Y           566
 
+/* Crash-forensics page (boot self-check "LAST CRASH", operator diagnostic).
+ * Fixed template: title + 5 content lines + ack hint; addresses/hex allowed. */
+#define UI_X_TITLE_Y         88
+#define UI_X_TITLE_SCALE     3
+#define UI_X_L1_Y            190
+#define UI_X_L2_Y            226
+#define UI_X_L3_Y            262
+#define UI_X_L4_Y            298
+#define UI_X_L5_Y            334
+#define UI_X_HINT_Y          430
+#define UI_X_HINT_SCALE      2
+#define UI_TXT_CRASH         "LAST CRASH"
+#define UI_TXT_CRASH_HINT    "back: clear record"
+
 #endif

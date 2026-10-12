@@ -338,6 +338,16 @@
 
 #define SEED_QR_MODE_COMPACT 2
 
+/**
+ * No phase marked yet (mirrors the C `CRASH_PHASE_NONE`).
+ */
+#define CRASH_PHASE_NONE 255
+
+/**
+ * 3 = immediately before the per-output key-image loop.
+ */
+#define CRASH_PHASE_PAIR_LOOP 3
+
 
 
 
@@ -1248,6 +1258,21 @@ void shlosilo_cn_timing_reset(void);
  * C-ABI: read one phase's accumulated ms (0 for unknown phase).
  */
 uint32_t shlosilo_cn_timing_phase(uint8_t phase);
+
+/**
+ * Register the host phase callback (typed nullable fn pointer; `None`
+ * unregisters). Last registration wins. The fn type is spelled out inline so
+ * cbindgen maps it to a nullable C function pointer (same as
+ * `shlosilo_gen_cache_set_hooks`; a type alias would surface as an opaque
+ * `struct Option_...`).
+ */
+void shlosilo_crash_phase_set_hook(void (*hook)(uint8_t));
+
+/**
+ * Last marked phase (0xFF = none). C-side marks that bypass `mark` live in
+ * the host blackbox only.
+ */
+uint8_t shlosilo_crash_phase_get(void);
 
 /**
  * C-ABI: register the flash-backend callbacks. Call once from C init (before the first

@@ -94,6 +94,12 @@ static char g_sign_l3[LIVE_LINE_BYTES] = "";
 static char g_confirm_type[LIVE_LINE_BYTES] = "";
 static char g_confirm_src[LIVE_LINE_BYTES] = "";
 static int g_confirm_req;
+static char g_crash_l1[LIVE_LINE_BYTES] = "";
+static char g_crash_l2[LIVE_LINE_BYTES] = "";
+static char g_crash_l3[LIVE_LINE_BYTES] = "";
+static char g_crash_l4[LIVE_LINE_BYTES] = "";
+static char g_crash_l5[LIVE_LINE_BYTES] = "";
+static int g_crash_ack;
 
 /* Payload page text (copied from the caller's buffer). */
 #define PAYLOAD_MAX 2048
@@ -546,6 +552,17 @@ static void draw_page(void)
         draw_text_center(UI_Q_AREA_Y0 + UI_Q_AREA_H / 2, "preparing...", 2);
         break;
 
+    case UI_PAGE_CRASH:
+        /* Crash-forensics boot self-check: fixed template, one ink. */
+        draw_text_center(UI_X_TITLE_Y, UI_TXT_CRASH, UI_X_TITLE_SCALE);
+        draw_text_center(UI_X_L1_Y, g_crash_l1, 1);
+        draw_text_center(UI_X_L2_Y, g_crash_l2, 1);
+        draw_text_center(UI_X_L3_Y, g_crash_l3, 1);
+        draw_text_center(UI_X_L4_Y, g_crash_l4, 1);
+        draw_text_center(UI_X_L5_Y, g_crash_l5, 1);
+        draw_text_center(UI_X_HINT_Y, UI_TXT_CRASH_HINT, UI_X_HINT_SCALE);
+        break;
+
     default:
         break;
     }
@@ -775,6 +792,11 @@ static void handle_press(int x, int y)
              * key session and returns to the scan page (no navigation here). */
             snprintf(msg, sizeof(msg), "seed confirm: reject (%d,%d)", x, y);
             g_confirm_req = -1;
+        } else if (g_page == UI_PAGE_CRASH) {
+            /* Consume the crash record: the product task erases the flash
+             * record and routes on (no navigation here). */
+            snprintf(msg, sizeof(msg), "crash: ack (%d,%d)", x, y);
+            g_crash_ack = 1;
         } else if (g_page == UI_PAGE_WELCOME) {
             /* Dev entry (F3 output side): welcome back -> UR carousel demo. */
             snprintf(msg, sizeof(msg), "back -> ur demo (%d,%d)", x, y);
@@ -933,6 +955,28 @@ int UiConfirmDecision(void)
     int req = g_confirm_req;
     g_confirm_req = 0;
     return req;
+}
+
+void UiCrashInfo(const char *l1, const char *l2, const char *l3,
+                 const char *l4, const char *l5)
+{
+    snprintf(g_crash_l1, sizeof(g_crash_l1), "%s", l1 ? l1 : "");
+    snprintf(g_crash_l2, sizeof(g_crash_l2), "%s", l2 ? l2 : "");
+    snprintf(g_crash_l3, sizeof(g_crash_l3), "%s", l3 ? l3 : "");
+    snprintf(g_crash_l4, sizeof(g_crash_l4), "%s", l4 ? l4 : "");
+    snprintf(g_crash_l5, sizeof(g_crash_l5), "%s", l5 ? l5 : "");
+    g_crash_ack = 0;        /* a fresh record: no stale ack */
+    if (g_page == UI_PAGE_CRASH && g_fb != NULL && g_band != NULL) {
+        draw_page();
+        ui_flush_range(0, UI_FB_H - 1);
+    }
+}
+
+int UiCrashAck(void)
+{
+    int ack = g_crash_ack;
+    g_crash_ack = 0;
+    return ack;
 }
 
 void UiTouchReset(void)

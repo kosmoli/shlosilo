@@ -164,6 +164,8 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_set_clock as *const ()),
     Addr(shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_reset as *const ()),
     Addr(shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_phase as *const ()),
+    Addr(shlosilo::ffi::crash_phase::shlosilo_crash_phase_set_hook as *const ()),
+    Addr(shlosilo::ffi::crash_phase::shlosilo_crash_phase_get as *const ()),
     Addr(shlosilo::ffi::generator_cache_ffi::shlosilo_gen_cache_set_hooks as *const ()),
     Addr(shlosilo::ffi::perf_bench_ffi::shlosilo_perf_fmul as *const ()),
     Addr(shlosilo::ffi::perf_bench_ffi::shlosilo_perf_fsq as *const ()),

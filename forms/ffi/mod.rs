@@ -19,6 +19,8 @@ pub mod c_abi;
 /// module itself would drop the stubs too, which is what the previous layout did
 /// by mistake (audit #15 P1-01).
 pub mod cn_timing_ffi;
+/// Crash-forensics pairing-phase marker hook (device crash blackbox).
+pub mod crash_phase;
 pub mod error_code;
 /// BP+ generator cache FFI hooks (device flash backend). See module docs.
 pub mod generator_cache_ffi;

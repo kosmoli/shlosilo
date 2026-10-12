@@ -67,6 +67,7 @@ set(SRC_INCLUDE_PATH
     src/config
     src/tasks
     src/driver
+    src/diag
     src/keystore
     src/crypto
     src/ui
@@ -152,6 +153,8 @@ set(APP_SRC
     src/ram/psram_heap_4.c
     src/ram/user_memory.c
     src/ram/hardfault_diag.c
+    src/diag/crash_record.c
+    src/diag/crash_blackbox.c
     src/driver/hal_touch.c
     src/driver/drv_i2c.c
     src/driver/drv_exti.c

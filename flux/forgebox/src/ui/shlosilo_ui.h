@@ -17,6 +17,7 @@ typedef enum {
     UI_PAGE_SIGN,       /* product sign session (synchronous call behind it) */
     UI_PAGE_QR,         /* UR carousel: animated QR frames for a wallet */
     UI_PAGE_CONFIRM,    /* Task 5b: seed-plate import confirmation */
+    UI_PAGE_CRASH,      /* operator diagnostic: unconsumed "LAST CRASH" record */
 } UiPage;
 
 void UiInit(void);
@@ -79,6 +80,17 @@ void UiSetBattery(uint8_t percent, bool charging);
 /* Panic screen: show an L3 panic message (called from shlosilo_panic_hook;
  * the caller keeps the WDT fed afterwards). No-op before UiInit. */
 void UiPanic(const char *msg);
+
+/* Crash-forensics page (boot self-check): fixed-template operator diagnostic
+ * for an unconsumed crash record. Lines are pre-formatted by the product task
+ * from the fixed vocabulary (type name, "PC .. LR ..", "PSR .. CFSR ..",
+ * "PHASE n NAME", "LOC file:line") - addresses/hex are allowed here, this is
+ * the operator diagnostic surface, not the error surface. Set the lines
+ * before UiGotoPage(UI_PAGE_CRASH). The back tap requests consumption
+ * (UiCrashAck -> product task erases the record and routes on). */
+void UiCrashInfo(const char *l1, const char *l2, const char *l3,
+                 const char *l4, const char *l5);
+int UiCrashAck(void);   /* 0 = pending, 1 = back tapped (consumed once) */
 
 /* Input poll hook: the UI runs synchronous waits (band flushes here, capture
  * waits in drv_qrdecode.c) during which a page loop cannot sample input -

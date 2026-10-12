@@ -36,6 +36,7 @@
 #include "shlosilo_ui.h"
 #include "ui_layout.h"
 #include "shlosilo.h"
+#include "crash_blackbox.h"
 #include "demo_payload.h"
 #include "err_code.h"
 #include "se_smoke.h"
@@ -280,47 +281,61 @@ extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
 extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
                          const uint8_t *blob, uint32_t blob_len);
 
-/* hardfault_diag.c persists a hard fault as an RSLT record ("FAULT cfsr=..
- * pc=.. lr=.. sp=..") at 0x01E42000 and then DELIBERATELY resets through
- * the shortest WDT window - so a plain "crash restart" is ambiguous between
- * a hard fault and a WDT starvation reset UNLESS this record is checked.
- * Peek at boot, read-and-erase (smoke parity: a stale record must not
- * impersonate the next crash). No record = the reset was not a hard fault. */
-#define FAULT_REC_BASE        0x01E42000u
+/* crash_blackbox.c (v21 crash forensics): the blackbox sector (CRASH_REC_BASE,
+ * the same 4KB record area the legacy 'RSLT' fault/panic records used) holds
+ * ONE sealed crash_rec_t - PHASE marker (pairing-phase heartbeat, silently
+ * left behind when the leg hangs before returning), PANIC or HARDFAULT. Peek
+ * at boot and show it on the operator "LAST CRASH" page; the record is
+ * consumed (erased) only on the operator's back tap - an unacknowledged crash
+ * must replay on every boot. A plain "crash restart" without a record was not
+ * a hard fault/panic (WDT starvation or power loss). */
+static crash_rec_t g_crash_rec;
+static int g_crash_pending;
 
 extern void FLASH_EraseSector(uint32_t addr);
 extern void CACHE_CleanAll(CACHE_TypeDef *cache);
 
 static void fault_record_peek(void)
 {
-    const volatile uint8_t *rec = (const volatile uint8_t *)FAULT_REC_BASE;
-    char text[128];
-    uint32_t len, i;
+    /* QSPI write access first (smoke parity: without gc_flash_init the later
+     * consume erase can silently fail and stale records replay forever). */
+    crash_bb_init();
 
-    /* QSPI write access first (smoke parity: its ckpt writes call
-     * gc_flash_init before any erase/program - without it the erase below
-     * can silently fail and stale records replay forever). */
-    gc_flash_init();
-
-    if (rec[0] != 'R' || rec[1] != 'S' || rec[2] != 'L' || rec[3] != 'T') {
+    if (!crash_bb_read(&g_crash_rec)) {
         return;     /* erased sector: previous boot was clean */
     }
-    len = (uint32_t)rec[4] | ((uint32_t)rec[5] << 8);
-    if (len == 0 || len > sizeof(text) - 1) {
-        len = sizeof(text) - 1;
-    }
-    for (i = 0; i < len; i++) {
-        text[i] = (char)rec[8 + i];
-    }
-    text[len] = '\0';
-    printf("PREV fault: %s\r\n", text);
-    UiSetLast(text);
+    g_crash_pending = 1;
+    printf("PREV crash: type=%s pc=%08x lr=%08x xpsr=%08x cfsr=%08x phase=%u loc=%s\r\n",
+           crash_rec_type_name(g_crash_rec.type),
+           (unsigned)g_crash_rec.pc, (unsigned)g_crash_rec.lr,
+           (unsigned)g_crash_rec.xpsr, (unsigned)g_crash_rec.cfsr,
+           (unsigned)g_crash_rec.phase,
+           g_crash_rec.loc[0] != '\0' ? g_crash_rec.loc : "-");
+    UiSetLast("prev crash (see page)");
+}
 
-    __disable_irq();
-    FLASH_EraseSector(FAULT_REC_BASE);
-    CACHE_CleanAll(CACHE);
-    __enable_irq();
-    WDT_ReloadCounter();
+/* Fixed-template operator diagnostic page: type name + register lines + the
+ * pairing-phase marker + the panic location. Addresses/hex are intentional
+ * here (operator diagnostic surface, not the error prompt surface). */
+static void crash_page_show(void)
+{
+    char l1[40], l2[40], l3[40], l4[40], l5[64];
+
+    snprintf(l1, sizeof(l1), "TYPE %s", crash_rec_type_name(g_crash_rec.type));
+    snprintf(l2, sizeof(l2), "PC %08X LR %08X",
+             (unsigned)g_crash_rec.pc, (unsigned)g_crash_rec.lr);
+    snprintf(l3, sizeof(l3), "PSR %08X CFSR %08X",
+             (unsigned)g_crash_rec.xpsr, (unsigned)g_crash_rec.cfsr);
+    if (g_crash_rec.phase == CRASH_PHASE_NONE) {
+        snprintf(l4, sizeof(l4), "PHASE NONE");
+    } else {
+        snprintf(l4, sizeof(l4), "PHASE %u %s",
+                 (unsigned)g_crash_rec.phase, crash_phase_name(g_crash_rec.phase));
+    }
+    snprintf(l5, sizeof(l5), "LOC %.48s",
+             g_crash_rec.loc[0] != '\0' ? g_crash_rec.loc : "-");
+    UiCrashInfo(l1, l2, l3, l4, l5);
+    UiGotoPage(UI_PAGE_CRASH);
 }
 
 static void ProductTask(void *argument)
@@ -330,6 +345,9 @@ static void ProductTask(void *argument)
     printf("product UI task started\r\n");
     WDT_ReloadCounter();
     fault_record_peek();
+    /* Crash forensics: the Rust side forwards its per-output-loop phase
+     * marker (forms/ffi/crash_phase.rs) into the same flash record area. */
+    shlosilo_crash_phase_set_hook(crash_bb_phase);
 
     ExtInterruptInit();
     /* PF15 (charger insert/remove) EXTI -> immediate "c" refresh; see
@@ -351,6 +369,11 @@ static void ProductTask(void *argument)
     UiSetInputPoll(product_touch_poll);
     UiShow();
     printf("ui: welcome page shown\r\n");
+    /* Boot self-check: an unconsumed crash record owns the screen until the
+     * operator acknowledges it (back tap -> erase + welcome). */
+    if (g_crash_pending) {
+        crash_page_show();
+    }
 
     /* ~1 s after reset the chip is fully settled: last chance to catch a
      * config that lost the race with the chip's own init (re-applies and
@@ -362,6 +385,15 @@ static void ProductTask(void *argument)
 
     while (1) {
         product_status_tick();
+
+        /* Crash-page ack: consume (erase) the record, then route on. */
+        if (UiGetPage() == UI_PAGE_CRASH && UiCrashAck() != 0) {
+            crash_bb_consume();
+            g_crash_pending = 0;
+            printf("crash record consumed (back)\r\n");
+            UiSetLast("crash record cleared");
+            UiGotoPage(UI_PAGE_WELCOME);
+        }
 
         if (g_scan == SCAN_ACTIVE) {
             WDT_ReloadCounter();
@@ -1225,6 +1257,11 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
      * anchor; real TRNG entropy is the P4/P5 provisioning item). */
     memset(entropy, 0x77, sizeof(entropy));
 
+    /* Crash forensics phase trail (0 = enter pairing): sealed to the blackbox
+     * before each key phase so a silent hang pins the hang point. Cleared on
+     * EVERY return below - a surviving record means the leg never returned. */
+    crash_bb_phase(CRASH_PHASE_PAIR_ENTER);
+
     /* Workspace requirement through the PURE PROBE (ws == NULL reports the
      * need in actual_len and touches nothing -- no key access, no parse). */
     rc = shlosilo_xmr_pairing_ffi(g_key_session, NULL, 0, NULL, 0,
@@ -1232,6 +1269,7 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     if (rc != 0 || ws_need == 0) {
         printf("pairing: ws probe fail rc=%d need=%u\r\n", rc, ws_need);
         UiScanInfo("pairing: ws probe FAIL", "keep scanning...", "", "");
+        crash_bb_phase_clear();
         ur_intake_reset();
         return;
     }
@@ -1258,9 +1296,11 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
         g_sign_out = NULL;
         g_sign_out_len = 0;
         ExtFree(ws_raw);
+        crash_bb_phase_clear();
         ur_intake_reset();
         return;
     }
+    crash_bb_phase(CRASH_PHASE_PAIR_ALLOC);     /* 1 = alloc done */
 
     snprintf(l3, sizeof(l3), "key: %s",
              (g_key_from_se != 0) ? "se unlock"
@@ -1269,10 +1309,14 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
                "hold steady...", l3);
     printf("pairing: start (payload=%u ws=%u)\r\n", plen, ws_need);
     t0 = osKernelGetTickCount();
+    crash_bb_phase(CRASH_PHASE_PAIR_FFI_IN);    /* 2 = ffi enter */
     rc = shlosilo_xmr_pairing_ffi(g_key_session, payload, plen,
                                   entropy, sizeof(entropy),
                                   g_sign_out, SIGN_OUT_MAX, &out_len,
                                   ws, ws_need);
+    crash_bb_phase(CRASH_PHASE_PAIR_FFI_OUT);   /* 4 = ffi back (3 is marked
+                                                 * in-core before the
+                                                 * per-output loop) */
     dt = osKernelGetTickCount() - t0;
     ExtFree(ws_raw);
     if (rc != 0 || out_len == 0 || out_len > SIGN_OUT_MAX) {
@@ -1282,6 +1326,7 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
         ExtFree(g_sign_out);
         g_sign_out = NULL;
         g_sign_out_len = 0;
+        crash_bb_phase_clear();
         ur_intake_reset();
         return;     /* still on the scan page: intake restarts fresh */
     }
@@ -1301,6 +1346,9 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     g_pairing_qr = 1;
     UiSetLast("key images ready - scan with Cake");
     UiGotoPage(UI_PAGE_QR);
+    /* Leg returned: retire the phase trail (a crash AFTER this point carries
+     * its own record and a PHASE NONE marker). */
+    crash_bb_phase_clear();
 }
 
 /* Decode a single-frame `ur:` into (g_ur_type, g_ur_payload). Returns 0 on
@@ -2123,38 +2171,12 @@ void shlosilo_panic_hook(const uint8_t *msg, size_t len)
     tmp[n] = '\0';
 
     /* Persist before the screen (smoke parity: a panic that wedges the
-     * display too would otherwise be lost; the boot replay reads this
-     * sector back). Same RSLT record shape as hardfault_diag's. */
-    {
-        uint8_t block[256];
-        uint32_t plen = (uint32_t)strlen(tmp);
-        uint8_t sum = 0;
-        uint32_t i;
-        if (plen > sizeof(block) - 9u) {
-            plen = sizeof(block) - 9u;
-        }
-        memset(block, 0xFF, sizeof(block));
-        block[0] = 'R'; block[1] = 'S'; block[2] = 'L'; block[3] = 'T';
-        block[4] = (uint8_t)(plen & 0xFF);
-        block[5] = (uint8_t)(plen >> 8);
-        for (i = 0; i < plen; i++) {
-            block[8 + i] = (uint8_t)tmp[i];
-            sum = (uint8_t)(sum + (uint8_t)tmp[i]);
-        }
-        block[6] = sum;
-        gc_flash_init();
-        __disable_irq();
-        FLASH_EraseSector(FAULT_REC_BASE);
-        CACHE_CleanAll(CACHE);
-        __enable_irq();
-        WDT_ReloadCounter();
-        __disable_irq();
-        (void)AES_Program(NULL, NULL, FAULT_REC_BASE,
-                          (uint32_t)sizeof(block), block);
-        CACHE_CleanAll(CACHE);
-        __enable_irq();
-        WDT_ReloadCounter();
-    }
+     * display too would otherwise be lost). v21 crash forensics: the
+     * blackbox seals a crash_rec_t (type PANIC, best-effort PC/LR from the
+     * hook's caller chain, the panic location string and the pairing-phase
+     * marker) into the record sector the boot self-check replays. */
+    crash_bb_write_panic(tmp, (uint32_t)n,
+                         (uint32_t)(uintptr_t)__builtin_return_address(0), 0u);
 
     printf("PANIC: %s\r\n", tmp);
     UiPanic(tmp);
