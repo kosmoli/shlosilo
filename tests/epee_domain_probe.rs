@@ -218,18 +218,23 @@ fn dev_parse(d: &[u8]) -> String {
     }
 }
 
+/* Row is the probe's report vocabulary (label + expected shape); the harness
+ * prints through run_variant's args today, so the struct fields stay for the
+ * upcoming table form. */
+#[allow(dead_code)]
 struct Row {
     label: &'static str,
     expect: &'static str,
 }
 
+#[allow(clippy::too_many_arguments)] /* probe harness: one row per variant */
 fn run_variant(
     label: &'static str,
     expect: &'static str,
     plain: &[u8],
     session: &KeySession,
     view_sk: &[u8; 32],
-    spend_sk: &[u8; 32],
+    _spend_sk: &[u8; 32],
     spend_pub: &[u8; 32],
     view_pub: &[u8; 32],
     use_business_face: bool,

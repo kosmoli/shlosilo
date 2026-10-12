@@ -43,7 +43,6 @@ fn derive_pub(sk: &[u8; 32]) -> [u8; 32] {
 /// Self-implemented Monero Schnorr verify (independent of the library path):
 /// sig = c‖r; valid ⇔ c == Hs(hash ‖ P ‖ (r·B + c·P)).
 fn verify_sig_with(hash: &[u8; 32], pub32: &[u8; 32], sig: &[u8]) -> bool {
-    use shlosilo::encoding::keccak256;
     let c = Scalar::from_bytes_mod_order(sig[..32].try_into().unwrap());
     let r = Scalar::from_bytes_mod_order(sig[32..].try_into().unwrap());
     let p: curve25519_dalek::EdwardsPoint = monero_ed25519::CompressedPoint::from(*pub32)
@@ -131,8 +130,8 @@ fn analyze(label: &str, container: &[u8], spend_sk: &[u8; 32], view_sk: &[u8; 32
     let pk1 = &plain[..32];
     let pk2 = &plain[32..64];
     println!("forced plaintext ({} B):", plain.len());
-    println!("  pk1 = {} (== spend_pub {})", hex(pk1), pk1 == &spend_pub);
-    println!("  pk2 = {} (== view_pub  {})", hex(pk2), pk2 == &view_pub);
+    println!("  pk1 = {} (== spend_pub {})", hex(pk1), pk1 == spend_pub);
+    println!("  pk2 = {} (== view_pub  {})", hex(pk2), pk2 == view_pub);
     println!("  rest = {}", hex(&plain[64..]));
 
     let mut pool: [ExportedTransferDetail; 8] =

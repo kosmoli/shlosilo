@@ -335,6 +335,10 @@ pub(crate) struct FountainEncoder<'a> {
 }
 
 impl<'a> FountainEncoder<'a> {
+    /// Bare (prefix-less) convenience constructor. The multipart path goes
+    /// through `new_with_prefix`; this one stays for the unit tests and bare
+    /// callers, so it is intentionally unreferenced in the non-test build.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(message: &'a [u8], max_fragment_length: usize) -> Result<Self, FountainError> {
         Self::new_with_prefix(&[], message, max_fragment_length)
     }

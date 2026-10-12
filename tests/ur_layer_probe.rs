@@ -150,7 +150,7 @@ fn pairing_with_real_keys(
                         "    pairing[{label}]: rc=0 written={} outputs={} readback OK",
                         o.written, o.output_count
                     );
-                    head32(&format!("keyimage wire"), wire);
+                    head32("keyimage wire", wire);
                     head32("keyimage plain", &plain);
                     true
                 }
