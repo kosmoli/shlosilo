@@ -382,6 +382,33 @@ static void ProductTask(void *argument)
         crash_page_show();
     }
 
+    /* Blackbox bench self-test (2026-10-13, four field strikes): prove the
+     * write -> persist -> read chain WITHOUT any crash. The footer shows the
+     * RAW sector head first (FFFFFFFF = nothing ever landed; 43524631 =
+     * "CRF1" = records landed all along), then the real writer path writes a
+     * record and reads it back. Two boots settle write vs read vs display. */
+    {
+        const volatile uint8_t *raw = (const volatile uint8_t *)CRASH_REC_BASE;
+        char msg[48];
+        uint32_t h;
+        crash_rec_t t;
+        int got;
+        osDelay(800);
+        h = ((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16)
+            | ((uint32_t)raw[2] << 8) | (uint32_t)raw[3];
+        snprintf(msg, sizeof(msg), "bb raw=%08X", (unsigned)h);
+        UiSetLast(msg);
+        osDelay(2000);
+        crash_bb_phase(CRASH_PHASE_PAIR_ENTER);
+        osDelay(500);
+        got = crash_bb_read(&t);
+        h = ((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16)
+            | ((uint32_t)raw[2] << 8) | (uint32_t)raw[3];
+        snprintf(msg, sizeof(msg), "bb2 raw=%08X rd=%d ph=%u",
+                 (unsigned)h, got, (unsigned)t.phase);
+        UiSetLast(msg);
+    }
+
     /* ~1 s after reset the chip is fully settled: last chance to catch a
      * config that lost the race with the chip's own init (re-applies and
      * verifies; see drv_ft6336.c). */
