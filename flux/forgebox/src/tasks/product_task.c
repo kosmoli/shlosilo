@@ -398,6 +398,7 @@ static void ProductTask(void *argument)
             | ((uint32_t)raw[2] << 8) | (uint32_t)raw[3];
         snprintf(msg, sizeof(msg), "bb raw=%08X", (unsigned)h);
         UiSetLast(msg);
+        UiGotoPage(UiGetPage());   /* UiSetLast alone never re-renders */
         osDelay(2000);
         crash_bb_phase(CRASH_PHASE_PAIR_ENTER);
         osDelay(500);
@@ -407,6 +408,7 @@ static void ProductTask(void *argument)
         snprintf(msg, sizeof(msg), "bb2 raw=%08X rd=%d ph=%u",
                  (unsigned)h, got, (unsigned)t.phase);
         UiSetLast(msg);
+        UiGotoPage(UiGetPage());   /* keep the verdict on screen */
     }
 
     /* ~1 s after reset the chip is fully settled: last chance to catch a
