@@ -281,13 +281,15 @@ extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
 extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
                          const uint8_t *blob, uint32_t blob_len);
 
-/* crash_blackbox.c (v21 crash forensics): the blackbox sector (CRASH_REC_BASE,
- * the same 4KB record area the legacy 'RSLT' fault/panic records used) holds
- * ONE sealed crash_rec_t - PHASE marker (pairing-phase heartbeat, silently
- * left behind when the leg hangs before returning), PANIC or HARDFAULT. Peek
- * at boot and show it on the operator "LAST CRASH" page; the record is
- * consumed (erased) only on the operator's back tap - an unacknowledged crash
- * must replay on every boot. A plain "crash restart" without a record was not
+/* crash_blackbox.c (v21 crash forensics, fix15 append log): the blackbox
+ * sector (CRASH_REC_BASE, the same 4KB record area the legacy 'RSLT'
+ * fault/panic records used) holds an append-only log of sealed crash_rec_t
+ * records - PHASE pins (pairing-phase heartbeat, silently left behind when
+ * the leg hangs before returning), the leg-returned marker, PANIC or
+ * HARDFAULT. Peek at boot and show the read-rule winner on the operator
+ * "LAST CRASH" page; records are erased only on the operator's back tap (or
+ * the healthy-state sector-full reclaim) - an unacknowledged crash must
+ * replay on every boot. A plain "crash restart" without a record was not
  * a hard fault/panic (WDT starvation or power loss). */
 static crash_rec_t g_crash_rec;
 static int g_crash_pending;
@@ -1258,8 +1260,9 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     memset(entropy, 0x77, sizeof(entropy));
 
     /* Crash forensics phase trail (0 = enter pairing): sealed to the blackbox
-     * before each key phase so a silent hang pins the hang point. Cleared on
-     * EVERY return below - a surviving record means the leg never returned. */
+     * append log before each key phase so a silent hang pins the hang point.
+     * Retired (leg-returned marker) on EVERY return below - a surviving pin
+     * means the leg never returned. */
     crash_bb_phase(CRASH_PHASE_PAIR_ENTER);
 
     /* Workspace requirement through the PURE PROBE (ws == NULL reports the
@@ -1346,8 +1349,9 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     g_pairing_qr = 1;
     UiSetLast("key images ready - scan with Cake");
     UiGotoPage(UI_PAGE_QR);
-    /* Leg returned: retire the phase trail (a crash AFTER this point carries
-     * its own record and a PHASE NONE marker). */
+    /* Leg returned: retire the phase trail with the leg-returned marker (a
+     * crash AFTER this point carries its own record and a PHASE NONE
+     * marker). */
     crash_bb_phase_clear();
 }
 

@@ -154,6 +154,7 @@ set(APP_SRC
     src/ram/user_memory.c
     src/ram/hardfault_diag.c
     src/diag/crash_record.c
+    src/diag/crash_store.c
     src/diag/crash_blackbox.c
     src/driver/hal_touch.c
     src/driver/drv_i2c.c
