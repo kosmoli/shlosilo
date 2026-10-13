@@ -372,7 +372,12 @@ static void ProductTask(void *argument)
     UiShow();
     printf("ui: welcome page shown\r\n");
     /* Boot self-check: an unconsumed crash record owns the screen until the
-     * operator acknowledges it (back tap -> erase + welcome). */
+     * operator acknowledges it (back tap -> erase + welcome). UiGotoPage can
+     * silently skip the DRAW when the renderer buffers are not ready yet (or
+     * lose the screen to a late async welcome flush) -- field-falsified as
+     * "no LAST CRASH ever appears" three times. Re-assert the page for a
+     * bounded window until it has provably held the screen. */
+    uint32_t crash_reassert_until = osKernelGetTickCount() + 3000u;
     if (g_crash_pending) {
         crash_page_show();
     }
@@ -387,6 +392,17 @@ static void ProductTask(void *argument)
 
     while (1) {
         product_status_tick();
+
+        /* Crash-page latching: keep re-asserting while inside the window so
+         * a skipped draw or a late async flush cannot lose the page. */
+        if (g_crash_pending && UiGetPage() == UI_PAGE_CRASH &&
+            (int32_t)(crash_reassert_until - osKernelGetTickCount()) > 0) {
+            static uint32_t crash_last_draw;
+            if (osKernelGetTickCount() - crash_last_draw >= 200u) {
+                crash_last_draw = osKernelGetTickCount();
+                crash_page_show();
+            }
+        }
 
         /* Crash-page ack: consume (erase) the record, then route on. */
         if (UiGetPage() == UI_PAGE_CRASH && UiCrashAck() != 0) {
