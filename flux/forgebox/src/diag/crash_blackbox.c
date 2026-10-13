@@ -74,10 +74,19 @@ static void bb_erase(void)
  * (ms level), WDT fed before and after. */
 static void bb_program_block(void)
 {
+    gc_flash_init();
     WDT_ReloadCounter();
+    /* Proven program discipline (res_write_at parity, 2026-10-13 field fix):
+     * AES_Program runs in a SHORT irq-off window -- without it, any ISR
+     * touching the QSPI controller/XIP cache mid-program silently aborts the
+     * transaction (the fix14/15 field symptom: records never landed). The
+     * program step is ms-level, so the window is WDT-safe; the ERASE is the
+     * long one and keeps its own window + feed. */
+    __disable_irq();
     (void)AES_Program(NULL, NULL, CRASH_REC_BASE,
                       (uint32_t)sizeof(g_bb_block), g_bb_block);
     CACHE_CleanAll(CACHE);
+    __enable_irq();
     WDT_ReloadCounter();
 }
 
