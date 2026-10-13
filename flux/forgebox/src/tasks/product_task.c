@@ -37,6 +37,7 @@
 #include "ui_layout.h"
 #include "shlosilo.h"
 #include "crash_blackbox.h"
+#include "crash_store.h"
 #include "demo_payload.h"
 #include "err_code.h"
 #include "se_smoke.h"
@@ -409,6 +410,52 @@ static void ProductTask(void *argument)
                  (unsigned)h, got, (unsigned)t.phase);
         UiSetLast(msg);
         UiGotoPage(UiGetPage());   /* keep the verdict on screen */
+        osDelay(2500);
+        /* v2 census: how many slots hold VALID records at all? Splits
+         * write-dead vs validity-reject vs read-rule-reject in one line. */
+        {
+            uint32_t n_ok = 0, n_bad = 0, n_free = 0;
+            int first_bad = -1;
+            uint8_t bad_ver = 0, bad_type = 0, bad_phase = 0;
+            uint32_t bad_crc = 0;
+            for (uint32_t s = 0; s < CRASH_BB_SLOTS; s++) {
+                crash_rec_t t2;
+                uint32_t i;
+                const uint8_t *sp =
+                    (const uint8_t *)(uintptr_t)(CRASH_REC_BASE +
+                                                 s * CRASH_BB_SLOT_SIZE);
+                memcpy(&t2, sp, sizeof(t2));
+                {
+                    int free = 1;
+                    for (i = 0; i < sizeof(t2); i++) {
+                        if (((const uint8_t *)&t2)[i] != 0xFFu) { free = 0; break; }
+                    }
+                    if (free) { n_free++; continue; }
+                }
+                if (crash_rec_valid(&t2)) {
+                    n_ok++;
+                } else {
+                    n_bad++;
+                    if (first_bad < 0) {
+                        first_bad = (int)s;
+                        bad_ver = t2.ver;
+                        bad_type = t2.type;
+                        bad_phase = t2.phase;
+                        bad_crc = t2.crc;
+                    }
+                }
+            }
+            snprintf(msg, sizeof(msg), "bb3 ok=%u bad=%u fr=%u s%d v%u t%u",
+                     (unsigned)n_ok, (unsigned)n_bad, (unsigned)n_free,
+                     first_bad, (unsigned)bad_ver, (unsigned)bad_type);
+            UiSetLast(msg);
+            UiGotoPage(UiGetPage());
+            osDelay(2500);
+            snprintf(msg, sizeof(msg), "bb4 bad crc=%08X ph=%u",
+                     (unsigned)bad_crc, (unsigned)bad_phase);
+            UiSetLast(msg);
+            UiGotoPage(UiGetPage());
+        }
     }
 
     /* ~1 s after reset the chip is fully settled: last chance to catch a
