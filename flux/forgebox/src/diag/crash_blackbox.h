@@ -48,7 +48,12 @@
 #include <stdint.h>
 #include "crash_record.h"
 
-#define CRASH_REC_BASE 0x01E42000u /* 4KB sector, same record area as the
+#define CRASH_REC_BASE 0x01E41000u /* 4KB sector. 2026-10-14 A/B/C/D ladder
+ * verdict: the historical 0x01E42000 sector is IMMUTABLE on this board
+ * (erase and program both silently ignored -- content never changes), so the
+ * blackbox moved to the smoke-proven RES sector whose PREV/RSLT records have
+ * demonstrably read/written on real hardware since September. Cross-flavor
+ * coexistence is safe: each reader rejects the other's record format. Was:
                                     * legacy 'RSLT' fault/panic records */
 
 void crash_bb_init(void);              /* flash write-access bring-up */
