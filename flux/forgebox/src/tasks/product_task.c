@@ -37,6 +37,7 @@
 #include "ui_layout.h"
 #include "shlosilo.h"
 #include "crash_blackbox.h"
+#include "crash_noinit.h"
 #include "crash_store.h"
 #include "demo_payload.h"
 #include "err_code.h"
@@ -304,8 +305,29 @@ static void fault_record_peek(void)
      * consume erase can silently fail and stale records replay forever). */
     crash_bb_init();
 
+    /* PRIMARY recorder (2026-10-14): the QSPI path is dead on this board;
+     * the noinit marker at 0x20098000 survives the WDT warm reset. */
+    {
+        crash_noinit_rec_t nr;
+        if (crash_noinit_read(&nr)) {
+            g_crash_rec.pc = nr.pc;
+            g_crash_rec.lr = 0;
+            g_crash_rec.xpsr = 0;
+            g_crash_rec.cfsr = 0;
+            g_crash_rec.type = (nr.type == CRASH_NOINIT_TYPE_PANIC)
+                                   ? CRASH_REC_TYPE_PANIC
+                                   : ((nr.type == CRASH_NOINIT_TYPE_HARDFAULT)
+                                          ? CRASH_REC_TYPE_HARDFAULT
+                                          : CRASH_REC_TYPE_PHASE);
+            g_crash_rec.phase = nr.phase;
+            g_crash_rec.loc[0] = '\0';
+            g_crash_pending = 1;
+            UiSetLast("prev crash (noinit)");
+            return;
+        }
+    }
     if (!crash_bb_read(&g_crash_rec)) {
-        return;     /* no live record (the bench self-test owns GC for now) */
+        return;     /* no live flash record (the QSPI path is dead here) */
     }
     g_crash_pending = 1;
     printf("PREV crash: type=%s pc=%08x lr=%08x xpsr=%08x cfsr=%08x phase=%u loc=%s\r\n",
@@ -433,6 +455,15 @@ static void ProductTask(void *argument)
 
         crash_bb_phase(CRASH_PHASE_PAIR_ENTER); /* real writer path */
         snprintf(msg, sizeof(msg), "bbC raw=%08X", (unsigned)RAW_HEAD());
+        UiSetLast(msg);
+        UiGotoPage(UiGetPage());
+        SELFTEST_WAIT(1500);
+
+        /* Noinit round-trip probe: leave a marker UNCONSUMED so the next
+         * boot's peek must show the LAST CRASH page (TYPE PHASE / PC
+         * 5E1F7E57). Zero-flash proof of the whole display chain. */
+        crash_noinit_mark(CRASH_NOINIT_TYPE_PHASE, 0u, 0x5E1F7E57u);
+        snprintf(msg, sizeof(msg), "nv marked - reboot to verify");
         UiSetLast(msg);
         UiGotoPage(UiGetPage());
         SELFTEST_WAIT(1500);

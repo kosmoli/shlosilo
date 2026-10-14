@@ -156,6 +156,7 @@ set(APP_SRC
     src/diag/crash_record.c
     src/diag/crash_store.c
     src/diag/crash_blackbox.c
+    src/diag/crash_noinit.c
     src/driver/hal_touch.c
     src/driver/drv_i2c.c
     src/driver/drv_exti.c

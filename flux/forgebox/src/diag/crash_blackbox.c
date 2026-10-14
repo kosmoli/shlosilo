@@ -28,6 +28,7 @@
 #include <string.h>
 #include "mhscpu.h"
 #include "crash_blackbox.h"
+#include "crash_noinit.h"
 #include "crash_store.h"
 
 /* xmr_gen_cache_flash.c: QSPI write-access bring-up (without it the erase can
@@ -133,6 +134,7 @@ void crash_bb_phase(uint8_t phase)
     g_bb_phase = crash_phase_advance(g_bb_phase, phase);
     crash_rec_init(&rec, CRASH_REC_TYPE_PHASE, g_bb_phase);
     crash_rec_seal(&rec);           /* fix14 wrote records UNSEALED (crc=0) */
+    crash_noinit_mark(CRASH_NOINIT_TYPE_PHASE, g_bb_phase, 0u);
     bb_append(&rec, 0);             /* crash path: program only */
 }
 
@@ -144,6 +146,7 @@ void crash_bb_phase_clear(void)
      * (PHASE/NONE). It closes the run so a surviving PHASE pin still means
      * "the leg never returned". Healthy path: the sector-full reclaim is the
      * only erase this call may ever trigger. */
+    crash_noinit_mark(CRASH_NOINIT_TYPE_NONE, CRASH_PHASE_NONE, 0u);
     crash_rec_init(&rec, CRASH_REC_TYPE_PHASE, CRASH_PHASE_NONE);
     crash_rec_seal(&rec);
     bb_append(&rec, 1);
@@ -152,6 +155,7 @@ void crash_bb_phase_clear(void)
 void crash_bb_write_panic(const char *msg, uint32_t len, uint32_t pc, uint32_t lr)
 {
     crash_rec_t rec;
+    crash_noinit_mark(CRASH_NOINIT_TYPE_PANIC, g_bb_phase, 0u);
     crash_rec_init(&rec, CRASH_REC_TYPE_PANIC, g_bb_phase);
     rec.pc = pc;
     rec.lr = lr;
@@ -163,6 +167,7 @@ void crash_bb_write_panic(const char *msg, uint32_t len, uint32_t pc, uint32_t l
 void crash_bb_write_hardfault(const uint32_t *stack)
 {
     crash_rec_t rec;
+    crash_noinit_mark(CRASH_NOINIT_TYPE_HARDFAULT, g_bb_phase, stack[6]);
     crash_rec_init(&rec, CRASH_REC_TYPE_HARDFAULT, g_bb_phase);
     rec.pc = stack[6];              /* stacked PC */
     rec.lr = stack[5];              /* stacked LR */
