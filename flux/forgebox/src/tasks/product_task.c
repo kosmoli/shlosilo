@@ -305,13 +305,7 @@ static void fault_record_peek(void)
     crash_bb_init();
 
     if (!crash_bb_read(&g_crash_rec)) {
-        /* No live record under the read rule. The sector may still be FULL
-         * of historical garbage (unsealed fix14-era records + AND-corrupted
-         * slots: field census bad=16 fr=0) -- and a full sector DROPS every
-         * new append. Garbage-collect at the healthy boot point so future
-         * crash records can land again. */
-        crash_bb_consume();
-        return;
+        return;     /* no live record (the bench self-test owns GC for now) */
     }
     g_crash_pending = 1;
     printf("PREV crash: type=%s pc=%08x lr=%08x xpsr=%08x cfsr=%08x phase=%u loc=%s\r\n",
@@ -389,20 +383,18 @@ static void ProductTask(void *argument)
         crash_page_show();
     }
 
-    /* Blackbox bench self-test (2026-10-13, four field strikes): prove the
-     * write -> persist -> read chain WITHOUT any crash. The footer shows the
-     * RAW sector head first (FFFFFFFF = nothing ever landed; 43524631 =
-     * "CRF1" = records landed all along), then the real writer path writes a
-     * record and reads it back. Two boots settle write vs read vs display. */
+    /* Blackbox bench self-test v3 (2026-10-14): A/B/C/D ladder splits
+     * construction vs erase vs program vs read in ONE boot.
+     *   bbA = sector as found;  bbB = after consume (erase);
+     *   rec = the record as built in RAM (magic+crc shown live);
+     *   bbC = after append;     bbD = scan verdict.
+     * Every wait feeds the WDT (this block runs before the main loop). */
     {
         const volatile uint8_t *raw = (const volatile uint8_t *)CRASH_REC_BASE;
         char msg[48];
         uint32_t h;
         crash_rec_t t;
         int got;
-        /* The init block runs BEFORE the main loop's WDT feeding: long bare
-         * osDelay windows here bite the watchdog (field: reboot right after
-         * the bb3 line). Chunk every wait with feeds. */
 #define SELFTEST_WAIT(ms) do { \
             uint32_t _w = (ms); \
             while (_w > 0u) { \
@@ -413,73 +405,49 @@ static void ProductTask(void *argument)
             } \
             WDT_ReloadCounter(); \
         } while (0)
+#define RAW_HEAD() (((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16) | \
+                    ((uint32_t)raw[2] << 8) | (uint32_t)raw[3])
         SELFTEST_WAIT(800);
-        h = ((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16)
-            | ((uint32_t)raw[2] << 8) | (uint32_t)raw[3];
-        snprintf(msg, sizeof(msg), "bb raw=%08X", (unsigned)h);
+        snprintf(msg, sizeof(msg), "bbA raw=%08X", (unsigned)RAW_HEAD());
         UiSetLast(msg);
-        UiGotoPage(UiGetPage());   /* UiSetLast alone never re-renders */
-        SELFTEST_WAIT(2000);
-        crash_bb_phase(CRASH_PHASE_PAIR_ENTER);   /* sector was GC'd at peek */
-        SELFTEST_WAIT(500);
+        UiGotoPage(UiGetPage());
+        SELFTEST_WAIT(1500);
+
+        crash_bb_consume();                     /* the ONLY erase */
+        snprintf(msg, sizeof(msg), "bbB raw=%08X", (unsigned)RAW_HEAD());
+        UiSetLast(msg);
+        UiGotoPage(UiGetPage());
+        SELFTEST_WAIT(1500);
+
+        crash_rec_init(&t, CRASH_REC_TYPE_PHASE, CRASH_PHASE_PAIR_ENTER);
+        crash_rec_seal(&t);
+        snprintf(msg, sizeof(msg), "rec m=%08X c=%08X",
+                 (unsigned)(((uint32_t)t.magic[0] << 24) |
+                            ((uint32_t)t.magic[1] << 16) |
+                            ((uint32_t)t.magic[2] << 8) |
+                            (uint32_t)t.magic[3]),
+                 (unsigned)t.crc);
+        UiSetLast(msg);
+        UiGotoPage(UiGetPage());
+        SELFTEST_WAIT(1500);
+
+        crash_bb_phase(CRASH_PHASE_PAIR_ENTER); /* real writer path */
+        snprintf(msg, sizeof(msg), "bbC raw=%08X", (unsigned)RAW_HEAD());
+        UiSetLast(msg);
+        UiGotoPage(UiGetPage());
+        SELFTEST_WAIT(1500);
+
         got = crash_bb_read(&t);
-        h = ((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16)
-            | ((uint32_t)raw[2] << 8) | (uint32_t)raw[3];
-        snprintf(msg, sizeof(msg), "bb2 raw=%08X rd=%d ph=%u",
-                 (unsigned)h, got, (unsigned)t.phase);
+        snprintf(msg, sizeof(msg), "bbD rd=%d ph=%u m=%08X",
+                 got, (unsigned)t.phase,
+                 (unsigned)(((uint32_t)t.magic[0] << 24) |
+                            ((uint32_t)t.magic[1] << 16) |
+                            ((uint32_t)t.magic[2] << 8) |
+                            (uint32_t)t.magic[3]));
         UiSetLast(msg);
-        UiGotoPage(UiGetPage());   /* keep the verdict on screen */
-        SELFTEST_WAIT(2500);
-        /* v2 census: how many slots hold VALID records at all? Splits
-         * write-dead vs validity-reject vs read-rule-reject in one line. */
-        {
-            uint32_t n_ok = 0, n_bad = 0, n_free = 0;
-            int first_bad = -1;
-            uint8_t bad_ver = 0, bad_type = 0, bad_phase = 0;
-            uint32_t bad_crc = 0;
-            for (uint32_t s = 0; s < CRASH_BB_SLOTS; s++) {
-                crash_rec_t t2;
-                uint32_t i;
-                const uint8_t *sp =
-                    (const uint8_t *)(uintptr_t)(CRASH_REC_BASE +
-                                                 s * CRASH_BB_SLOT_SIZE);
-                memcpy(&t2, sp, sizeof(t2));
-                {
-                    int free = 1;
-                    for (i = 0; i < sizeof(t2); i++) {
-                        if (((const uint8_t *)&t2)[i] != 0xFFu) { free = 0; break; }
-                    }
-                    if (free) { n_free++; continue; }
-                }
-                if (crash_rec_valid(&t2)) {
-                    n_ok++;
-                } else {
-                    n_bad++;
-                    if (first_bad < 0) {
-                        first_bad = (int)s;
-                        bad_ver = t2.ver;
-                        bad_type = t2.type;
-                        bad_phase = t2.phase;
-                        bad_crc = t2.crc;
-                    }
-                }
-            }
-            snprintf(msg, sizeof(msg), "bb3 ok=%u bad=%u fr=%u s%d v%u t%u",
-                     (unsigned)n_ok, (unsigned)n_bad, (unsigned)n_free,
-                     first_bad, (unsigned)bad_ver, (unsigned)bad_type);
-            UiSetLast(msg);
-            UiGotoPage(UiGetPage());
-            SELFTEST_WAIT(2500);
-            snprintf(msg, sizeof(msg), "bb4 bad crc=%08X ph=%u",
-                     (unsigned)bad_crc, (unsigned)bad_phase);
-            UiSetLast(msg);
-            UiGotoPage(UiGetPage());
-        }
+        UiGotoPage(UiGetPage());
     }
 
-    /* ~1 s after reset the chip is fully settled: last chance to catch a
-     * config that lost the race with the chip's own init (re-applies and
-     * verifies; see drv_ft6336.c). */
     Ft6336BootVerify();
 
     uint32_t last_wdt = osKernelGetTickCount();
