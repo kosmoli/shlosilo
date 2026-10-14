@@ -305,7 +305,13 @@ static void fault_record_peek(void)
     crash_bb_init();
 
     if (!crash_bb_read(&g_crash_rec)) {
-        return;     /* erased sector: previous boot was clean */
+        /* No live record under the read rule. The sector may still be FULL
+         * of historical garbage (unsealed fix14-era records + AND-corrupted
+         * slots: field census bad=16 fr=0) -- and a full sector DROPS every
+         * new append. Garbage-collect at the healthy boot point so future
+         * crash records can land again. */
+        crash_bb_consume();
+        return;
     }
     g_crash_pending = 1;
     printf("PREV crash: type=%s pc=%08x lr=%08x xpsr=%08x cfsr=%08x phase=%u loc=%s\r\n",
@@ -414,7 +420,7 @@ static void ProductTask(void *argument)
         UiSetLast(msg);
         UiGotoPage(UiGetPage());   /* UiSetLast alone never re-renders */
         SELFTEST_WAIT(2000);
-        crash_bb_phase(CRASH_PHASE_PAIR_ENTER);
+        crash_bb_phase(CRASH_PHASE_PAIR_ENTER);   /* sector was GC'd at peek */
         SELFTEST_WAIT(500);
         got = crash_bb_read(&t);
         h = ((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16)
