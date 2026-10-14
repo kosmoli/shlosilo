@@ -23,6 +23,13 @@ use core::sync::atomic::{AtomicU8, Ordering};
 pub const CRASH_PHASE_NONE: u8 = 0xFF;
 /// 3 = immediately before the per-output key-image loop.
 pub const CRASH_PHASE_PAIR_LOOP: u8 = 3;
+/// Fine ladder (2026-10-15): the device wedges somewhere in the pairing
+/// prologue; host runs it in 25 ms. These marks paint the death point.
+pub const CRASH_PHASE_DECRYPT_IN: u8 = 5;
+pub const CRASH_PHASE_SIG_VERIFY: u8 = 6;
+pub const CRASH_PHASE_CN_DONE: u8 = 7;
+pub const CRASH_PHASE_OWNERSHIP: u8 = 8;
+pub const CRASH_PHASE_PARSED: u8 = 9;
 
 /// C-side phase callback: `void hook(uint8_t phase)`.
 pub type CrashPhaseHookC = extern "C" fn(u8);

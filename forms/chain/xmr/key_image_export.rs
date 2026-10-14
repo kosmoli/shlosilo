@@ -115,6 +115,7 @@ pub fn decrypt_export_payload_into(
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
     let view_pub = (ED25519_BASEPOINT_TABLE * &v_scalar).compress().to_bytes();
     let msg_hash = keccak256::hash(raw_data)?;
+    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_SIG_VERIFY);
     if !check_monero_signature(&msg_hash, &view_pub, sig)? {
         // Signature failure is a distinct diagnostic class from a malformed
         // container (2026-10-11 split for on-device diagnosis): -40 vs -21.
@@ -128,6 +129,7 @@ pub fn decrypt_export_payload_into(
     // Zero-alloc (pairing): CN-V0 derives over the caller's `cn_scratch` —
     // same wiring as `unsigned_txset::chacha_key_from_view_sk`.
     let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk, cn_scratch)?;
+    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_CN_DONE);
     let mut cipher =
         chacha20::ChaCha20Legacy::new_from_slices(key.as_slice(), nonce).map_err(|_| err())?;
     let ct = &raw_data[NONCE_LEN..];
@@ -383,6 +385,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     // path (the foreign-pk / parse `?` below included).
     let scratch = ScratchWipe(scratch);
     // 1. Decrypt the OUTPUT_EXPORT payload into the scratch, validate pk1/pk2 ownership
+    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_DECRYPT_IN);
     let (pk1, pk2, req_len) = decrypt_export_payload_into(
         request_payload,
         OUTPUT_EXPORT_MAGIC,
@@ -400,6 +403,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
     let view_pub = (ED25519_BASEPOINT_TABLE * &v_scalar).compress().to_bytes();
 
+    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_OWNERSHIP);
     // Ownership validation (keystone panics — we return an error code; a signer must not panic)
     // Kind reuse: `PsbtOwnershipMismatch` is the stable code for "ownership
     // binding failure" (-15) — here the XMR pk1/pk2 binding, distinct from a
@@ -411,6 +415,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     }
 
     // 2. Parse the outputs (Z2.3 C3b-1: details list into caller storage)
+    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_PARSED);
     let details = ExportedTransferDetails::from_bytes(&scratch.0[..req_len], details_out)?;
     // request plaintext transient done with — wiped before anything else happens
     scratch.0.zeroize();

@@ -40,7 +40,7 @@
 #define CRASH_PHASE_PAIR_FFI_IN  2u
 #define CRASH_PHASE_PAIR_LOOP    3u
 #define CRASH_PHASE_PAIR_FFI_OUT 4u
-#define CRASH_PHASE_MAX          4u
+#define CRASH_PHASE_MAX          9u
 #define CRASH_PHASE_NONE         0xFFu
 
 typedef struct {

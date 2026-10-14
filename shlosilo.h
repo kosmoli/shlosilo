@@ -348,6 +348,20 @@
  */
 #define CRASH_PHASE_PAIR_LOOP 3
 
+/**
+ * Fine ladder (2026-10-15): the device wedges somewhere in the pairing
+ * prologue; host runs it in 25 ms. These marks paint the death point.
+ */
+#define CRASH_PHASE_DECRYPT_IN 5
+
+#define CRASH_PHASE_SIG_VERIFY 6
+
+#define CRASH_PHASE_CN_DONE 7
+
+#define CRASH_PHASE_OWNERSHIP 8
+
+#define CRASH_PHASE_PARSED 9
+
 
 
 

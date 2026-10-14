@@ -141,8 +141,8 @@ void crash_bb_phase(uint8_t phase)
          * name so the last frame before a hang self-reports the death
          * point. Fixed vocabulary, operator diagnostic surface. */
         char ph[28];
-        snprintf(ph, sizeof(ph), "P%u f29 %s", (unsigned)g_bb_phase,
-                 crash_phase_name(g_bb_phase));
+        snprintf(ph, sizeof(ph), "P%u f30 %s", (unsigned)phase,
+                 crash_phase_name(phase));
         /* The SCAN page renders UiScanInfo lines 2-4 ONLY -- line 1 sits
          * under the progress bar (2026-10-14 field A/B: the l2/l3/l4 text
          * shows, the l1 never does). Paint the phase into the VISIBLE
