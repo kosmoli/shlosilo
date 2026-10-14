@@ -1423,6 +1423,12 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     printf("pairing: start (payload=%u ws=%u)\r\n", plen, ws_need);
     t0 = osKernelGetTickCount();
     crash_bb_phase(CRASH_PHASE_PAIR_FFI_IN);    /* 2 = ffi enter */
+    /* Final paint immediately before the FFI (2026-10-14): the frozen frame
+     * must carry the firmware tag AND the death point. If the freeze still
+     * shows the previous 'computing key images...' text, the paint/redraw
+     * path itself is the hang (not the FFI). */
+    UiScanInfo("P2 ffi-in f29", "starting ffi...", "", "");
+    UiGotoPage(UiGetPage());
     rc = shlosilo_xmr_pairing_ffi(g_key_session, payload, plen,
                                   entropy, sizeof(entropy),
                                   g_sign_out, SIGN_OUT_MAX, &out_len,
