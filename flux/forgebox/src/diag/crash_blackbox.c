@@ -143,6 +143,12 @@ void crash_bb_phase(uint8_t phase)
         char ph[28];
         snprintf(ph, sizeof(ph), "P%u %s", (unsigned)g_bb_phase,
                  crash_phase_name(g_bb_phase));
+        /* The SCAN page renders the STATUS area (UiScanInfo), not the
+         * footer's last: line (2026-10-14 field: the operator watched
+         * 'computing key image' while the paint went to an unrendered
+         * line). Paint into the status area -- the frozen frame the
+         * operator stares at IS the recorder. */
+        UiScanInfo(ph, "computing key images...", "", "");
         UiSetLast(ph);
         UiGotoPage(UiGetPage());
     }
