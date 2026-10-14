@@ -29,6 +29,7 @@
 #include "mhscpu.h"
 #include "crash_blackbox.h"
 #include "crash_noinit.h"
+#include "shlosilo_ui.h"
 #include "crash_store.h"
 
 /* xmr_gen_cache_flash.c: QSPI write-access bring-up (without it the erase can
@@ -135,6 +136,16 @@ void crash_bb_phase(uint8_t phase)
     crash_rec_init(&rec, CRASH_REC_TYPE_PHASE, g_bb_phase);
     crash_rec_seal(&rec);           /* fix14 wrote records UNSEALED (crc=0) */
     crash_noinit_mark(CRASH_NOINIT_TYPE_PHASE, g_bb_phase, 0u);
+    {
+        /* The frozen screen IS the recorder (2026-10-14): paint the phase
+         * name so the last frame before a hang self-reports the death
+         * point. Fixed vocabulary, operator diagnostic surface. */
+        char ph[28];
+        snprintf(ph, sizeof(ph), "P%u %s", (unsigned)g_bb_phase,
+                 crash_phase_name(g_bb_phase));
+        UiSetLast(ph);
+        UiGotoPage(UiGetPage());
+    }
     bb_append(&rec, 0);             /* crash path: program only */
 }
 
@@ -152,6 +163,25 @@ void crash_bb_phase_clear(void)
     bb_append(&rec, 1);
 }
 
+/* Paint the death certificate and hold forever (feeding the WDT so nothing
+ * resets us). The screen outlives every persistence medium on this board
+ * (QSPI sector immutable, SRAM scrubbed at warm reset). */
+static void crash_screen_hold(const crash_rec_t *rec)
+{
+    char l2[40], l4[40], l5[64];
+    snprintf(l2, sizeof(l2), "PC %08X LR %08X",
+             (unsigned)rec->pc, (unsigned)rec->lr);
+    snprintf(l4, sizeof(l4), "PHASE %u %s",
+             (unsigned)rec->phase, crash_phase_name(rec->phase));
+    snprintf(l5, sizeof(l5), "LOC %.48s",
+             rec->loc[0] != '\0' ? rec->loc : "-");
+    UiCrashInfo(crash_rec_type_name(rec->type), l2, "", l4, l5);
+    UiGotoPage(UI_PAGE_CRASH);
+    for (;;) {
+        WDT_ReloadCounter();
+    }
+}
+
 void crash_bb_write_panic(const char *msg, uint32_t len, uint32_t pc, uint32_t lr)
 {
     crash_rec_t rec;
@@ -162,6 +192,7 @@ void crash_bb_write_panic(const char *msg, uint32_t len, uint32_t pc, uint32_t l
     crash_rec_loc_from_panic(&rec, msg, len);
     crash_rec_seal(&rec);
     bb_append(&rec, 0);             /* crash path: program only */
+    crash_screen_hold(&rec);        /* never returns */
 }
 
 void crash_bb_write_hardfault(const uint32_t *stack)
@@ -178,6 +209,7 @@ void crash_bb_write_hardfault(const uint32_t *stack)
     rec.bfar = SCB->BFAR;
     crash_rec_seal(&rec);
     bb_append(&rec, 0);             /* crash path: program only */
+    crash_screen_hold(&rec);        /* never returns */
 }
 
 int crash_bb_read(crash_rec_t *out)
