@@ -394,15 +394,28 @@ static void ProductTask(void *argument)
         uint32_t h;
         crash_rec_t t;
         int got;
-        osDelay(800);
+        /* The init block runs BEFORE the main loop's WDT feeding: long bare
+         * osDelay windows here bite the watchdog (field: reboot right after
+         * the bb3 line). Chunk every wait with feeds. */
+#define SELFTEST_WAIT(ms) do { \
+            uint32_t _w = (ms); \
+            while (_w > 0u) { \
+                uint32_t _c = (_w > 100u) ? 100u : _w; \
+                WDT_ReloadCounter(); \
+                osDelay(_c); \
+                _w -= _c; \
+            } \
+            WDT_ReloadCounter(); \
+        } while (0)
+        SELFTEST_WAIT(800);
         h = ((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16)
             | ((uint32_t)raw[2] << 8) | (uint32_t)raw[3];
         snprintf(msg, sizeof(msg), "bb raw=%08X", (unsigned)h);
         UiSetLast(msg);
         UiGotoPage(UiGetPage());   /* UiSetLast alone never re-renders */
-        osDelay(2000);
+        SELFTEST_WAIT(2000);
         crash_bb_phase(CRASH_PHASE_PAIR_ENTER);
-        osDelay(500);
+        SELFTEST_WAIT(500);
         got = crash_bb_read(&t);
         h = ((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16)
             | ((uint32_t)raw[2] << 8) | (uint32_t)raw[3];
@@ -410,7 +423,7 @@ static void ProductTask(void *argument)
                  (unsigned)h, got, (unsigned)t.phase);
         UiSetLast(msg);
         UiGotoPage(UiGetPage());   /* keep the verdict on screen */
-        osDelay(2500);
+        SELFTEST_WAIT(2500);
         /* v2 census: how many slots hold VALID records at all? Splits
          * write-dead vs validity-reject vs read-rule-reject in one line. */
         {
@@ -450,7 +463,7 @@ static void ProductTask(void *argument)
                      first_bad, (unsigned)bad_ver, (unsigned)bad_type);
             UiSetLast(msg);
             UiGotoPage(UiGetPage());
-            osDelay(2500);
+            SELFTEST_WAIT(2500);
             snprintf(msg, sizeof(msg), "bb4 bad crc=%08X ph=%u",
                      (unsigned)bad_crc, (unsigned)bad_phase);
             UiSetLast(msg);

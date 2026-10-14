@@ -95,14 +95,34 @@ static void bb_program_block(void)
 static void bb_append(const crash_rec_t *rec, int healthy)
 {
     int erase_first = 0;
+    int slot;
 
+    /* Fresh view for the placement decision (2026-10-14: field census found
+     * bad=16 -- whole-block programming over a stale sector mirror ANDs old
+     * records into garbage). The PROGRAM image below no longer depends on
+     * this view being fresh: non-target bytes are 0xFF, and NOR 1->0
+     * programming makes re-programming other slots a no-op regardless of
+     * what the mirror believed. */
+    CACHE_CleanAll(CACHE);
     memcpy(g_bb_block, BB_BASE, sizeof(g_bb_block));
-    if (crash_store_append(g_bb_block, rec, healthy, &erase_first) < 0) {
+    slot = crash_store_append(g_bb_block, rec, healthy, &erase_first);
+    if (slot < 0) {
         WDT_ReloadCounter();        /* dropped on the crash path: full sector */
         return;
     }
     if (erase_first) {
         bb_erase();                 /* (b) healthy-state sector-full reclaim */
+        /* reclaim rebuilds the kept record at slot 0 inside g_bb_block;
+         * program it like any other append (FF elsewhere). */
+    }
+    {
+        /* 0xFF-fill program image: only the appended slot carries data. */
+        static uint8_t prog[CRASH_BB_SECTOR_SIZE];
+        memset(prog, 0xFF, sizeof(prog));
+        memcpy(&prog[(uint32_t)slot * CRASH_BB_SLOT_SIZE],
+               &g_bb_block[(uint32_t)slot * CRASH_BB_SLOT_SIZE],
+               CRASH_BB_SLOT_SIZE);
+        memcpy(g_bb_block, prog, sizeof(g_bb_block));
     }
     bb_program_block();
 }
