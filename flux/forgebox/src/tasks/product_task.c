@@ -1429,10 +1429,16 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
      * path itself is the hang (not the FFI). */
     UiScanInfo("P2 ffi-in f29", "starting ffi...", "", "");
     UiGotoPage(UiGetPage());
+    /* The pairing FFI is the same class of blocking compute-bound call as
+     * the sign FFI (CN-V0 alone is multi-second): without the g_sign_busy
+     * window the 2 s hardware WDT kills it mid-compute (2026-10-15 root
+     * cause: T5 added this call without the feed window). */
+    g_sign_busy = 1;
     rc = shlosilo_xmr_pairing_ffi(g_key_session, payload, plen,
                                   entropy, sizeof(entropy),
                                   g_sign_out, SIGN_OUT_MAX, &out_len,
                                   ws, ws_need);
+    g_sign_busy = 0;
     crash_bb_phase(CRASH_PHASE_PAIR_FFI_OUT);   /* 4 = ffi back (3 is marked
                                                  * in-core before the
                                                  * per-output loop) */

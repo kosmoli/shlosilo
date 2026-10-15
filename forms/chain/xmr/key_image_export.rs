@@ -123,6 +123,7 @@ pub fn decrypt_export_payload_into(
             crate::error::ShlosiloErrorKind::CryptoEd25519SignFailed,
         ));
     }
+    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_SIG_OK);
 
     // 2. ChaCha20-Legacy decryption into the caller scratch
     // Z2.2 (2026-09-24): ChaCha key material zeroized on drop.

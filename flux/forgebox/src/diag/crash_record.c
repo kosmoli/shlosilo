@@ -131,6 +131,8 @@ const char *crash_phase_name(uint8_t phase)
         return "OWNERSHIP";
     case 9:
         return "PARSED";
+    case 10:
+        return "SIG-OK";
     default:
         return "NONE";
     }
