@@ -132,9 +132,9 @@ extern unsigned int shlosilo_sram_pool_peak_blocks(void);
 static uint32_t smoke_tick_ms(void);
 /* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。
  * 64KB：ETH 实测 used 35K。生成元改为循环 decompress 后不再需要 512KB。 */
-/* v21: 64K -> 160K — the Z5.3 chunked/inline paths changed the stack shape
- * (the v20 fault showed a garbage-PC IBUSERR with smashed-looking frames at
- * ~4s into the sign = the deep prove path). 160K fits the 450K SRAM heap. */
+/* 160K SRAM stack: the chunked/inline prove paths changed the stack shape
+ * (a deep-prove sign fault showed a garbage-PC IBUSERR with smashed frames at
+ * ~4s in). 160K fits the 450K SRAM heap. */
 #define SHLOSILO_SMOKE_STACK_BYTES (160u * 1024u)
 
 LV_FONT_DECLARE(openSansEnTitle);

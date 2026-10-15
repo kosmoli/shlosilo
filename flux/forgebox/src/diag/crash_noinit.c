@@ -1,12 +1,16 @@
 /* crash_noinit.c -- warm-reset crash marker in NOINIT SRAM.
  *
- * 2026-10-14: the QSPI NOR record path is dead on this board (identical
- * garbage reads from two sectors, erase+program both silently ignored;
- * the same sectors demonstrably worked in September -- the controller
- * config changed under us). The v3/v4 diagnostic precedent keeps a marker
- * in the noinit region at 0x20098000 that survives a WDT warm reset; this
- * is now the PRIMARY crash recorder. Zero flash, zero drivers: a few
- * absolute word writes that cannot fail.
+ * BOARD LIMITATION (2026-10-15 field finding): on the current forgebox board
+ * the warm reset SCRUBS the SRAM noinit region, so a marker written before a
+ * crash does NOT survive to the next boot here. The mechanism is kept at zero
+ * cost (a few absolute word writes, no drivers) for boards whose noinit
+ * region does survive a warm reset.
+ *
+ * The QSPI NOR record path is also dead on this board (identical garbage
+ * reads from two sectors, erase+program both silently ignored; the same
+ * sectors demonstrably worked in September -- the controller config changed
+ * under us). On this board the frozen screen (crash_screen_hold) is the only
+ * recorder that outlives a crash.
  *
  * Layout (16 bytes, word-aligned):
  *   [0] magic  'CRNV' (0x43524E56)

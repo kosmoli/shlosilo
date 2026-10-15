@@ -57,7 +57,6 @@
                                     * legacy 'RSLT' fault/panic records */
 
 void crash_bb_init(void);              /* flash write-access bring-up */
-uint8_t crash_bb_phase_cur(void);      /* current pairing phase marker */
 
 /* Phase pin: validates the transition (crash_phase_advance), then seals a
  * PHASE record into the next free slot (program only). Also the Rust-side

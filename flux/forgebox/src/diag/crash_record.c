@@ -121,17 +121,17 @@ const char *crash_phase_name(uint8_t phase)
         return "PAIRING-LOOP";
     case CRASH_PHASE_PAIR_FFI_OUT:
         return "PAIRING-FFI-OUT";
-    case 5:
+    case CRASH_PHASE_DECRYPT_IN:
         return "DECRYPT-IN";
-    case 6:
+    case CRASH_PHASE_SIG_VERIFY:
         return "SIG-VERIFY";
-    case 7:
+    case CRASH_PHASE_CN_DONE:
         return "CN-DONE";
-    case 8:
+    case CRASH_PHASE_OWNERSHIP:
         return "OWNERSHIP";
-    case 9:
+    case CRASH_PHASE_PARSED:
         return "PARSED";
-    case 10:
+    case CRASH_PHASE_SIG_OK:
         return "SIG-OK";
     default:
         return "NONE";

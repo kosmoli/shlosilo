@@ -1,5 +1,15 @@
 /* crash_blackbox.c — crash-forensics blackbox: QSPI NOR persistence.
  *
+ * BOARD LIMITATION (2026-10-14 A/B/C/D ladder, repeated with a write ladder):
+ * on the current forgebox board the QSPI record region is effectively
+ * READ-ONLY — erase and program are silently ignored and reads return a
+ * frozen image. The flash write path below is kept (with its 69 host tests)
+ * because other boards demonstrably persist records through it; here the
+ * frozen screen (crash_screen_hold) and the phase paint are the actual
+ * recorder. The write attempts stay live: they are ms-level, WDT-fed, and
+ * proven harmless during the mainnet acceptance run — gating them behind a
+ * flag would change a verified build for no field gain.
+ *
  * WDT-safe APPEND-ONLY log (fix15). The crash path NEVER erases: a write is
  * one pure-program append (NOR programming turns 1 -> 0 without an erase) of
  * a 256B slot block into the first all-0xFF slot of the record sector — the
@@ -51,11 +61,6 @@ static uint8_t g_bb_block[CRASH_BB_SECTOR_SIZE];
 void crash_bb_init(void)
 {
     gc_flash_init();
-}
-
-uint8_t crash_bb_phase_cur(void)
-{
-    return g_bb_phase;
 }
 
 /* The ONLY erase primitive in the module: healthy-state paths ((a) and (b))
@@ -134,14 +139,14 @@ void crash_bb_phase(uint8_t phase)
     crash_rec_t rec;
     g_bb_phase = crash_phase_advance(g_bb_phase, phase);
     crash_rec_init(&rec, CRASH_REC_TYPE_PHASE, g_bb_phase);
-    crash_rec_seal(&rec);           /* fix14 wrote records UNSEALED (crc=0) */
+    crash_rec_seal(&rec);           /* records must carry a valid crc */
     crash_noinit_mark(CRASH_NOINIT_TYPE_PHASE, g_bb_phase, 0u);
     {
         /* The frozen screen IS the recorder (2026-10-14): paint the phase
          * name so the last frame before a hang self-reports the death
          * point. Fixed vocabulary, operator diagnostic surface. */
         char ph[28];
-        snprintf(ph, sizeof(ph), "P%u f30 %s", (unsigned)phase,
+        snprintf(ph, sizeof(ph), "P%u %s", (unsigned)phase,
                  crash_phase_name(phase));
         /* The SCAN page renders UiScanInfo lines 2-4 ONLY -- line 1 sits
          * under the progress bar (2026-10-14 field A/B: the l2/l3/l4 text

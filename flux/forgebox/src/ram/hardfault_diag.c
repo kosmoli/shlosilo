@@ -43,13 +43,15 @@ void hardfault_capture(uint32_t *stack)
     g_fault_log[5] = stack[5]; /* stacked LR */
     g_fault_log[6] = stack[7]; /* stacked xPSR */
 
-    /* v20: persist the fault record to FLASH before resetting — the SRAM
-     * noinit slot is scrubbed by warm resets (the r/p experiments), and flash
-     * is the only medium that survives. v21 (crash forensics): the blackbox
-     * writes a sealed crash_rec_t (type HARDFAULT + SCB regs + stacked
-     * PC/LR/xPSR/SP + pairing-phase marker) into the same record sector;
-     * the boot self-check replays it on the operator "LAST CRASH" page.
-     * Flash writes are safe here (v19 A/B exonerated the QSPI write path). */
+    /* Persist the fault record before anything else. The blackbox writes a
+     * sealed crash_rec_t (type HARDFAULT + SCB regs + stacked PC/LR/xPSR/SP +
+     * pairing-phase marker) into the record sector and then paints the death
+     * certificate and holds the screen (crash_screen_hold: never returns, WDT
+     * fed forever) -- on this board the QSPI record sector is read-only and
+     * the warm reset scrubs the SRAM noinit slots, so the frozen screen is
+     * the only medium that outlives the crash. The flash attempt is kept
+     * (harmless, ms-level) for boards where it lands; the WDT-reset tail
+     * below is only a defensive fallback for a write path that ever returns. */
     crash_bb_write_hardfault(stack);
 
     /* 主动复位：WDT 最短窗口即可 */

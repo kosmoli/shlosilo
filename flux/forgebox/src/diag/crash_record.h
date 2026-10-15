@@ -8,7 +8,7 @@
  *   [0..4)   magic "CRF1"
  *   [4]      ver (1)
  *   [5]      type (0 phase marker | 1 panic | 2 hardfault)
- *   [6]      pairing phase (0..4, 0xFF = none)
+ *   [6]      pairing phase (0..10, 0xFF = none)
  *   [7]      flags (reserved, 0)
  *   [8..36)  pc, lr, xpsr, cfsr, hfsr, bfar, sp (u32 LE each)
  *   [36..100) panic location string ("file:line"), NUL-padded, truncated 64B
@@ -34,13 +34,20 @@
 
 /* Pairing-phase markers: written before each key phase of the pairing leg so
  * a silent hang (WDT reset, no panic screen) still pins the hang point.
- * 0=enter pairing 1=alloc done 2=ffi enter 3=before per-output loop 4=ffi back */
+ * 0=enter pairing 1=alloc done 2=ffi enter 3=before per-output loop 4=ffi back
+ * 5=decrypt-in 6=sig-verify 7=cn-done 8=ownership 9=parsed 10=sig-ok */
 #define CRASH_PHASE_PAIR_ENTER   0u
 #define CRASH_PHASE_PAIR_ALLOC   1u
 #define CRASH_PHASE_PAIR_FFI_IN  2u
 #define CRASH_PHASE_PAIR_LOOP    3u
 #define CRASH_PHASE_PAIR_FFI_OUT 4u
-#define CRASH_PHASE_MAX          9u
+#define CRASH_PHASE_DECRYPT_IN   5u
+#define CRASH_PHASE_SIG_VERIFY   6u
+#define CRASH_PHASE_CN_DONE      7u
+#define CRASH_PHASE_OWNERSHIP    8u
+#define CRASH_PHASE_PARSED       9u
+#define CRASH_PHASE_SIG_OK       10u
+#define CRASH_PHASE_MAX          10u
 #define CRASH_PHASE_NONE         0xFFu
 
 typedef struct {

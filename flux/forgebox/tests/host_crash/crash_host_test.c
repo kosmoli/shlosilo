@@ -336,7 +336,7 @@ int main(void)
     r2 = r; r2.type = 7;
     crash_rec_seal(&r2);
     check(!crash_rec_valid(&r2), "enum: out-of-range type rejected even sealed");
-    r2 = r; r2.phase = 5;
+    r2 = r; r2.phase = CRASH_PHASE_MAX + 1u;
     crash_rec_seal(&r2);
     check(!crash_rec_valid(&r2), "enum: out-of-range phase rejected even sealed");
 
