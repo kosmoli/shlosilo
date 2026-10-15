@@ -471,33 +471,54 @@ fn compute_key_image_with_signature<R: RngCore + CryptoRng>(
     detail: &ExportedTransferDetail,
     rng: &mut R,
 ) -> Result<([u8; 32], [u8; 64])> {
-    // additional key semantics: subaddress outputs use the per-output additional tx key
-    let key_to_use: [u8; 32] = if detail.major != 0 || detail.minor != 0 {
-        match detail.additional_tx_keys.len() {
-            1 => *detail.additional_tx_keys[0],
-            n if n > 1 => {
-                let idx = detail.internal_output_index as usize;
-                **detail.additional_tx_keys.get(idx).ok_or_else(err)?
-            }
-            _ => detail.tx_pubkey,
-        }
-    } else {
-        detail.tx_pubkey
+    // Derivation-key SELECTION by MATCHING (2026-10-16, wallet2
+    // `is_out_to_acc_precomp` parity): the old (major,minor) index rule picked
+    // additional_tx_keys[idx] for subaddress records, but a change output to
+    // the wallet's OWN subaddress derives from the MAIN tx key (device_default
+    // change_addr branch) -- index-picking rejected or mis-derived it. Try
+    // every candidate derivation key and take the first whose x*G equals the
+    // record's output pubkey. This also dissolves the len==1/idx>0 shortcut
+    // divergence: matching never indexes.
+    fn input_key_matches(sk: &Scalar, want: &[u8; 32]) -> bool {
+        (ED25519_BASEPOINT_TABLE * sk).compress().to_bytes() == *want
+    }
+    let derive_candidate = |key: &[u8; 32]| -> Option<Zeroizing<Scalar>> {
+        let offset = crate::chain::xmr::subaddress::calc_output_key_offset(
+            view_sk,
+            key,
+            detail.internal_output_index,
+            detail.major,
+            detail.minor,
+        )
+        .ok()?;
+        Some(Zeroizing::new(
+            *spend_sk + Scalar::from_bytes_mod_order(offset),
+        ))
     };
-
-    // key_offset = Hs((view·tx_pub)·8 || varint(idx)) + m(major,minor)
-    let offset = crate::chain::xmr::subaddress::calc_output_key_offset(
-        view_sk,
-        &key_to_use,
-        detail.internal_output_index,
-        detail.major,
-        detail.minor,
-    )?;
+    // Candidate set is wallet2-faithful (bounded, not exhaustive): the main
+    // tx key (branch 1: change-to-own-subaddress) plus the INDEXED additional
+    // key (branch 2: `additional[idx]`, out-of-range = reject, matching
+    // wallet2 L1080). The len==1 shortcut (keystone parity) keeps accepting
+    // idx>0 against the single additional key.
+    let mut input_sk =
+        derive_candidate(&detail.tx_pubkey).filter(|sk| input_key_matches(sk, &detail.pubkey));
+    if input_sk.is_none() {
+        let idx = detail.internal_output_index as usize;
+        let add = &detail.additional_tx_keys;
+        let keyed: Option<&[u8; 32]> = if add.len() == 1 {
+            Some(&*add[0])
+        } else {
+            add.get(idx).map(|k| &**k)
+        };
+        if let Some(k) = keyed {
+            input_sk = derive_candidate(k).filter(|sk| input_key_matches(sk, &detail.pubkey));
+        }
+    }
 
     // input_sk = spend_sk + offset; verifies input_sk·G == output_pubkey.
     // Zeroizing: the per-output ephemeral secret is wiped from the stack on
     // drop (every exit path below included).
-    let input_sk = Zeroizing::new(spend_sk + Scalar::from_bytes_mod_order(offset));
+    let input_sk = input_sk.ok_or_else(err)?;
     let input_pub = (ED25519_BASEPOINT_TABLE * &*input_sk).compress().to_bytes();
     if input_pub != detail.pubkey {
         return Err(err());
