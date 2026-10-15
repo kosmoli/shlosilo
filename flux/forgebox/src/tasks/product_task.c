@@ -283,7 +283,7 @@ extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
 extern uint32_t gc_store(const uint8_t *prefix, uint32_t prefix_len,
                          const uint8_t *blob, uint32_t blob_len);
 
-/* crash_blackbox.c (v21 crash forensics, fix15 append log): the blackbox
+/* crash_blackbox.c (append-only crash record log): the blackbox
  * sector (CRASH_REC_BASE, the same 4KB record area the legacy 'RSLT'
  * fault/panic records used) holds an append-only log of sealed crash_rec_t
  * records - PHASE pins (pairing-phase heartbeat, silently left behind when
@@ -305,8 +305,8 @@ static void fault_record_peek(void)
      * consume erase can silently fail and stale records replay forever). */
     crash_bb_init();
 
-    /* PRIMARY recorder (2026-10-14): the QSPI path is dead on this board;
-     * the noinit marker at 0x20098000 survives the WDT warm reset. */
+    /* Noinit marker first (zero-cost, best-effort: this board scrubs SRAM on
+     * warm reset, so it rarely survives here -- see crash_noinit.c). */
     {
         crash_noinit_rec_t nr;
         if (crash_noinit_read(&nr)) {
@@ -403,80 +403,6 @@ static void ProductTask(void *argument)
     uint32_t crash_reassert_until = osKernelGetTickCount() + 3000u;
     if (g_crash_pending) {
         crash_page_show();
-    }
-
-    /* Blackbox bench self-test v3 (2026-10-14): A/B/C/D ladder splits
-     * construction vs erase vs program vs read in ONE boot.
-     *   bbA = sector as found;  bbB = after consume (erase);
-     *   rec = the record as built in RAM (magic+crc shown live);
-     *   bbC = after append;     bbD = scan verdict.
-     * Every wait feeds the WDT (this block runs before the main loop). */
-    {
-        const volatile uint8_t *raw = (const volatile uint8_t *)CRASH_REC_BASE;
-        char msg[48];
-        uint32_t h;
-        crash_rec_t t;
-        int got;
-#define SELFTEST_WAIT(ms) do { \
-            uint32_t _w = (ms); \
-            while (_w > 0u) { \
-                uint32_t _c = (_w > 100u) ? 100u : _w; \
-                WDT_ReloadCounter(); \
-                osDelay(_c); \
-                _w -= _c; \
-            } \
-            WDT_ReloadCounter(); \
-        } while (0)
-#define RAW_HEAD() (((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16) | \
-                    ((uint32_t)raw[2] << 8) | (uint32_t)raw[3])
-        SELFTEST_WAIT(800);
-        snprintf(msg, sizeof(msg), "bbA raw=%08X", (unsigned)RAW_HEAD());
-        UiSetLast(msg);
-        UiGotoPage(UiGetPage());
-        SELFTEST_WAIT(1500);
-
-        crash_bb_consume();                     /* the ONLY erase */
-        snprintf(msg, sizeof(msg), "bbB raw=%08X", (unsigned)RAW_HEAD());
-        UiSetLast(msg);
-        UiGotoPage(UiGetPage());
-        SELFTEST_WAIT(1500);
-
-        crash_rec_init(&t, CRASH_REC_TYPE_PHASE, CRASH_PHASE_PAIR_ENTER);
-        crash_rec_seal(&t);
-        snprintf(msg, sizeof(msg), "rec m=%08X c=%08X",
-                 (unsigned)(((uint32_t)t.magic[0] << 24) |
-                            ((uint32_t)t.magic[1] << 16) |
-                            ((uint32_t)t.magic[2] << 8) |
-                            (uint32_t)t.magic[3]),
-                 (unsigned)t.crc);
-        UiSetLast(msg);
-        UiGotoPage(UiGetPage());
-        SELFTEST_WAIT(1500);
-
-        crash_bb_phase(CRASH_PHASE_PAIR_ENTER); /* real writer path */
-        snprintf(msg, sizeof(msg), "bbC raw=%08X", (unsigned)RAW_HEAD());
-        UiSetLast(msg);
-        UiGotoPage(UiGetPage());
-        SELFTEST_WAIT(1500);
-
-        /* Noinit round-trip probe: leave a marker UNCONSUMED so the next
-         * boot's peek must show the LAST CRASH page (TYPE PHASE / PC
-         * 5E1F7E57). Zero-flash proof of the whole display chain. */
-        crash_noinit_mark(CRASH_NOINIT_TYPE_PHASE, 0u, 0x5E1F7E57u);
-        snprintf(msg, sizeof(msg), "nv marked - reboot to verify");
-        UiSetLast(msg);
-        UiGotoPage(UiGetPage());
-        SELFTEST_WAIT(1500);
-
-        got = crash_bb_read(&t);
-        snprintf(msg, sizeof(msg), "bbD rd=%d ph=%u m=%08X",
-                 got, (unsigned)t.phase,
-                 (unsigned)(((uint32_t)t.magic[0] << 24) |
-                            ((uint32_t)t.magic[1] << 16) |
-                            ((uint32_t)t.magic[2] << 8) |
-                            (uint32_t)t.magic[3]));
-        UiSetLast(msg);
-        UiGotoPage(UiGetPage());
     }
 
     Ft6336BootVerify();
@@ -1427,7 +1353,7 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
      * must carry the firmware tag AND the death point. If the freeze still
      * shows the previous 'computing key images...' text, the paint/redraw
      * path itself is the hang (not the FFI). */
-    UiScanInfo("P2 ffi-in f29", "starting ffi...", "", "");
+    UiScanInfo("P2 ffi-in", "starting ffi...", "", "");
     UiGotoPage(UiGetPage());
     /* The pairing FFI is the same class of blocking compute-bound call as
      * the sign FFI (CN-V0 alone is multi-second): without the g_sign_busy
@@ -2297,8 +2223,8 @@ void shlosilo_panic_hook(const uint8_t *msg, size_t len)
     tmp[n] = '\0';
 
     /* Persist before the screen (smoke parity: a panic that wedges the
-     * display too would otherwise be lost). v21 crash forensics: the
-     * blackbox seals a crash_rec_t (type PANIC, best-effort PC/LR from the
+     * display too would otherwise be lost). The blackbox seals a crash_rec_t
+     * (type PANIC, best-effort PC/LR from the
      * hook's caller chain, the panic location string and the pairing-phase
      * marker) into the record sector the boot self-check replays. */
     crash_bb_write_panic(tmp, (uint32_t)n,
