@@ -390,6 +390,7 @@ fn ur_layer_xmr_output_full_chain() {
             &v,
             &spend_pub,
             &view_pub,
+            0u32,
             &plain,
             &mut rng,
             &mut req_buf,

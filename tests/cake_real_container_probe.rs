@@ -85,7 +85,8 @@ fn real_container() -> Vec<u8> {
         "{}/tests/fixtures/cake_real_frames.txt",
         env!("CARGO_MANIFEST_DIR")
     );
-    let text = std::fs::read_to_string(&path).expect("cake_real_frames.txt fixture");
+    let path = std::env::var("CAKE_FRAMES").unwrap_or(path);
+    let text = std::fs::read_to_string(&path).expect("cake frames fixture");
     let frames: Vec<&str> = text
         .lines()
         .map(str::trim)
@@ -410,6 +411,7 @@ fn cake_real_container_prologue_staged_timed() {
                 &view_sk,
                 &spend_pub,
                 &view_pub,
+                0u32,
                 &lab_plain,
                 &mut rng,
                 &mut lab,
@@ -694,6 +696,7 @@ fn encrypt_request(view_sk: &[u8; 32], plain: &[u8], seed: u64) -> Vec<u8> {
         view_sk,
         &spend_pub,
         &view_pub,
+        0u32,
         plain,
         &mut rng,
         &mut buf,
@@ -892,4 +895,105 @@ fn prying_surface_additional_tx_keys_and_amount_zero() {
     let err = run_chain(&req_d, &view_sk, &spend_sk)
         .expect_err("out-of-range additional key index must error (wallet2 also aborts)");
     println!("case D (idx=5 over 2 add keys) rejected: {err}");
+}
+
+/// Mainnet regression pin (2026-10-16): the wild failing case -- a request
+/// container with offset=1. The key-image response plaintext field 1 (u32 LE,
+/// right after the nonce in the cipher) MUST echo the request offset: wallet2's
+/// import_key_images maps records onto `m_transfers[offset + n]`; the old
+/// hardcoded 0 pinned the record to transfer 0 and the signature was checked
+/// against the wrong pubkey ("Signature check failed 0/1" on mainnet).
+///
+/// Decrypt-free differential pin: run the pairing twice over identical
+/// records with request offset 1 vs 0 and the SAME response RNG seed -- the
+/// responses must be identical EXCEPT the 4 offset bytes in the cipher
+/// (magic + nonce identical because the seed is fixed). With the old
+/// hardcoded 0 the two responses are fully equal (this test goes RED).
+#[test]
+fn failing_case_offset_echo() {
+    use rand_chacha::rand_core::SeedableRng as _;
+    let session = disk_session();
+    let keys = session.monero();
+    let spend_sk = *keys.spend_sk.expose();
+    let view_sk = *keys.view_sk.expose();
+
+    // Wild capture (v2): 2-transfer wallet, request offset=1.
+    let path = format!(
+        "{}/tests/fixtures/cake_real_frames_v2.txt",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = std::fs::read_to_string(&path).expect("v2 frames fixture");
+    let frames: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("ur:"))
+        .collect();
+    let mut dec = UrMultipartDecoder::new();
+    for f in &frames {
+        dec.receive_frame(f).expect("frame feeds");
+    }
+    assert!(dec.complete());
+    let mut msg = vec![0u8; 16384];
+    let n = dec.payload_into(&mut msg).unwrap().expect("complete");
+    let container = msg[..n].to_vec();
+
+    // Request A = the wild bytes; request B = same plaintext with offset 0.
+    let (_a, _b, plain_a) =
+        decrypt_export_payload(&container, OUTPUT_EXPORT_MAGIC, &view_sk).expect("decrypt request");
+    let mut plain_b = plain_a.clone();
+    assert_eq!(
+        plain_b[1], 1,
+        "wild request head: [has_transfers=1][offset=1]"
+    );
+    plain_b[1] = 0;
+    let req_a = encrypt_request(&view_sk, &plain_a, 0xA1);
+    let req_b = encrypt_request(&view_sk, &plain_b, 0xA2);
+
+    let run = |req: &Vec<u8>| {
+        let mut scratch = vec![0xEEu8; 4096];
+        let mut details: [shlosilo::chain::xmr::output_export::ExportedTransferDetail; 8] =
+            core::array::from_fn(|_| Default::default());
+        let mut recs = [([0u8; 32], [0u8; 64]); 8];
+        let mut out = vec![0u8; 4096];
+        let mut cn = vec![0u8; shlosilo::types::caps::SIGN_WS_CN_SCRATCH];
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(0xF1CE);
+        let n = generate_key_image_export_into(
+            &view_sk,
+            &spend_sk,
+            req,
+            &mut scratch,
+            &mut details,
+            &mut recs,
+            &mut out,
+            &mut rng,
+            &mut cn,
+        )
+        .expect("pairing run");
+        out[..n].to_vec()
+    };
+    let resp_a = run(&req_a);
+    let resp_b = run(&req_b);
+
+    // Header = 24B magic + 8B nonce; the cipher starts at 32 and its first 4
+    // bytes are the echoed offset.
+    assert_eq!(resp_a.len(), resp_b.len(), "same shape");
+    assert_eq!(
+        resp_a[..32],
+        resp_b[..32],
+        "magic + nonce identical (fixed seed)"
+    );
+    assert_ne!(
+        resp_a[32..36],
+        resp_b[32..36],
+        "THE PIN: the response offset field must follow the request offset"
+    );
+    // Body before the trailing 64 B envelope signature must be identical:
+    // pk1||pk2||records cipher. (The envelope Schnorr sig legitimately
+    // differs -- it signs the ciphertext, which contains the offset bytes.)
+    let body = resp_a.len() - 64;
+    assert_eq!(
+        resp_a[36..body],
+        resp_b[36..body],
+        "pk1/pk2/records identical -- only the offset differs"
+    );
 }

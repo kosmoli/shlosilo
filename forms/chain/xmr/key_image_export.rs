@@ -185,6 +185,7 @@ fn encrypt_export_payload<R: RngCore + CryptoRng>(
         view_sk,
         spend_pub,
         view_pub,
+        0u32, /* test fixtures are single-slot (offset 0) */
         data,
         rng,
         &mut out,
@@ -207,6 +208,12 @@ pub fn encrypt_export_payload_into<R: RngCore + CryptoRng>(
     view_sk: &[u8; 32],
     spend_pub: &[u8; 32],
     view_pub: &[u8; 32],
+    // KEY_IMAGE response plaintext field 1: the wallet2 import maps records
+    // onto `m_transfers[offset + n]` (2026-10-16 mainnet regression: the old
+    // hardcoded 0 pinned every record to transfer 0 -- harmless for
+    // single-transfer wallets, wrong-slot signature failure once the
+    // request's offset went non-zero).
+    key_image_offset: u32,
     data: &[u8],
     rng: &mut R,
     out: &mut [u8],
@@ -231,7 +238,7 @@ pub fn encrypt_export_payload_into<R: RngCore + CryptoRng>(
         let mut enc = EncryptingSink::new(w, cipher);
         // Plaintext sections: key-image magic has a leading u32 LE 0; export magic carries pk1||pk2
         if magic == KEY_IMAGE_EXPORT_MAGIC {
-            enc.put(&0u32.to_le_bytes())?;
+            enc.put(&key_image_offset.to_le_bytes())?;
         }
         enc.put(spend_pub)?;
         enc.put(view_pub)?;
@@ -447,6 +454,9 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
         view_sk,
         &spend_pub,
         &view_pub,
+        u32::try_from(details.offset).map_err(|_| {
+            crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::EncodingInvalidFormat)
+        })?,
         &scratch.0[..wire_len],
         rng,
         out,
@@ -873,6 +883,7 @@ mod tests {
             &view_sk,
             &spend_pub,
             &view_pub,
+            0u32,
             &data,
             &mut r2,
             &mut buf,

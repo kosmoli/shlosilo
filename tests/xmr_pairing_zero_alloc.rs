@@ -100,6 +100,7 @@ fn pairing_ffi_zero_alloc() {
         &view_sk,
         &spend_pub,
         &view_pub,
+        0u32,
         &plain,
         &mut rng,
         &mut req_buf,
