@@ -158,7 +158,14 @@ fn analyze(label: &str, container: &[u8], spend_sk: &[u8; 32], view_sk: &[u8; 32
     plain
 }
 
+/// Concluded root-cause experiment (2026-10-11): does wallet2's
+/// `export_outputs` container differ structurally between a full wallet and a
+/// watch-only wallet? Kept as a lab tool, not a CI test -- it needs the
+/// captured wallet fixtures under WATCHONLY_PROBE_DIR (machine-bound) and the
+/// question it asked has been answered. Run manually with:
+///   `cargo test --offline --test watchonly_probe -- --ignored --nocapture`
 #[test]
+#[ignore = "lab fixture-dependent root-cause experiment; run manually with --ignored"]
 fn watchonly_vs_full_export_outputs() {
     let dir = std::env::var("WATCHONLY_PROBE_DIR")
         .unwrap_or_else(|_| "/home/komo/works/xmr-stagenet-lab/watchonly_probe".into());
