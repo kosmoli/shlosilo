@@ -216,7 +216,8 @@ fn encode_ur_frames() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(200);
-    let mut encer = UrMultipartEncoder::new("xmr-txunsigned", &payload, frag_len).expect("encoder");
+    let ur_type = std::env::var("P64_UR_TYPE").unwrap_or_else(|_| "xmr-txunsigned".to_string());
+    let mut encer = UrMultipartEncoder::new(&ur_type, &payload, frag_len).expect("encoder");
     let n = encer.fragment_count();
     println!("payload {} bytes -> {n} fountain fragments", payload.len());
 
