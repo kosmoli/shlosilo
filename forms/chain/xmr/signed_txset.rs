@@ -811,6 +811,72 @@ mod tests {
         assert_eq!(off, bytes.len());
     }
 
+    /// Add-keys wire anchor (2026-10-16, `signed_rt/fc` verdict): a source entry with
+    /// NON-EMPTY `real_out_additional_tx_keys` must serialize exactly per wallet2
+    /// `cryptonote_core/cryptonote_tx_utils.h` `tx_source_entry::BEGIN_SERIALIZE`
+    /// (v0.18.5.1): `outputs` varint(n) ‖ per entry `0x02 ‖ varint(idx) ‖ dest(32) ‖ mask(32)`
+    /// ‖ `real_output` u64LE ‖ `real_out_tx_key`(32) ‖ varint(add_len) ‖ key(32)×add_len
+    /// ‖ `real_output_in_tx_index` u64LE ‖ `amount` u64LE ‖ `rct` u8 ‖ `mask`(32)
+    /// ‖ `multisig_kLRki` 4×32. FIELD(uint64) = fixed 8B LE here (unlike
+    /// `tx_destination_entry.amount`, which is VARINT_FIELD) — both pinned.
+    /// Real-chain corroboration: the fc fixture (source add_keys=3, real_idx=2,
+    /// amount=30000000000) round-trips wallet2 `parse_tx_from_str` →
+    /// `Loaded signed tx data from binary: 1 transactions` (wallet2.cpp:8112),
+    /// i.e. wallet2 deserialized this exact region without divergence.
+    #[test]
+    fn serialize_layout_anchor_source_entry_addkeys() {
+        use crate::chain::xmr::unsigned_txset::{
+            MultisigKLRki, OutputEntry, SourceMask, TxSourceEntry,
+        };
+        let src = TxSourceEntry {
+            outputs: heapless::Vec::from_slice(&[OutputEntry {
+                index: 7,
+                dest: [0xD1u8; 32],
+                mask: [0xD2u8; 32],
+            }])
+            .unwrap(),
+            real_output: 1,
+            real_out_tx_key: zeroize::Zeroizing::new([0x55u8; 32]),
+            real_out_additional_tx_keys: heapless::Vec::from_slice(&[
+                zeroize::Zeroizing::new([0xA1u8; 32]),
+                zeroize::Zeroizing::new([0xA2u8; 32]),
+                zeroize::Zeroizing::new([0xA3u8; 32]),
+            ])
+            .unwrap(),
+            real_output_in_tx_index: 2,
+            amount: 30_000_000_000,
+            rct: true,
+            mask: SourceMask::take(&mut [0xB1u8; 32]),
+            multisig_kLRki: MultisigKLRki {
+                k: [0; 32],
+                l: [0; 32],
+                r: [0; 32],
+                ki: [0; 32],
+            },
+        };
+        let mut out: Vec<u8> = Vec::new();
+        write_source_entry(&mut out, &src).unwrap();
+        // hand-assembled wallet2 wire (cryptonote_tx_utils.h field order)
+        let mut exp: Vec<u8> = Vec::new();
+        exp.push(1); // outputs count (varint)
+        exp.push(2); // std::pair begin_array(2)
+        exp.push(7); // pair.first = global index (varint)
+        exp.extend_from_slice(&[0xD1u8; 32]);
+        exp.extend_from_slice(&[0xD2u8; 32]);
+        exp.extend_from_slice(&1u64.to_le_bytes()); // real_output u64LE
+        exp.extend_from_slice(&[0x55u8; 32]); // real_out_tx_key
+        exp.push(3); // real_out_additional_tx_keys count (varint)
+        exp.extend_from_slice(&[0xA1u8; 32]);
+        exp.extend_from_slice(&[0xA2u8; 32]);
+        exp.extend_from_slice(&[0xA3u8; 32]);
+        exp.extend_from_slice(&2u64.to_le_bytes()); // real_output_in_tx_index u64LE
+        exp.extend_from_slice(&30_000_000_000u64.to_le_bytes()); // amount u64LE
+        exp.push(1); // rct flag byte
+        exp.extend_from_slice(&[0xB1u8; 32]); // mask
+        exp.extend_from_slice(&[0u8; 128]); // multisig_kLRki k,L,R,ki
+        assert_eq!(&out[..], &exp[..], "add-keys source entry wire layout");
+    }
+
     /// Z2.4d-3 (GPT review, strengthened): forced mid-stream failure must leave the
     /// already-written prefix byte-identical to the normal encryption's ciphertext
     /// prefix (no plaintext fallback anywhere), and the tail must be untouched
