@@ -94,15 +94,20 @@ static void key_session_close(void);
 static const struct KeySession *g_key_session;
 /* tx2 wire fix (2026-10-17): pairing-beat wallet key image retention --
  * (wallet transfer index, true key image) pairs as derived while answering
- * the xmr-output -> xmr-keyimage leg. Retained across the four beats and
- * handed to the session sign entry so the signed container's
- * wallet-transfer-indexed key_images array can be filled (an uncovered
- * position refuses the sign -- never a placeholder). Cleared on session
- * close / sign-done; merged across repeated pairing scans (last scan wins
- * per slot). */
+ * the xmr-output -> xmr-keyimage leg. Handed to the session sign entry so
+ * the signed container's wallet-transfer-indexed key_images array can prefer
+ * TRUE key images over the conservative filler.
+ *
+ * Lifetime (fix36 revision): a transfer's key image is IMMUTABLE, so the
+ * retention is never stale -- it survives sign-done/session close and merges
+ * by transfer index across pairing scans (scanning the partial export after
+ * the full one must not drop coverage). Cross-wallet contamination is caught
+ * at sign time by the selected-index mismatch guard (KeyImageRecordMismatch:
+ * a wrong-wallet record cannot match the derived key image). */
 #define PAIRING_KI_MAX 8 /* mirrors forms/business/xmr_pairing.rs PAIRING_RECORDS_MAX */
 static struct WalletKiRecord g_pairing_ki[PAIRING_KI_MAX];
 static unsigned int g_pairing_ki_n;
+static struct WalletKiRecord g_pairing_ki_tmp[PAIRING_KI_MAX];
 /* Task 8: which source opened the live session (1 = SE password unlock). The
  * seed-flow exit leg only tears down PLATE sessions ("a live plate session
  * outside the flow pages means the flow exited"); an SE session lives until
@@ -716,9 +721,10 @@ static void key_session_close(void)
     g_key_session = NULL;
     g_key_from_se = 0;
     g_key_console = 0;
-    /* Pairing KI retention dies with the session (same teardown discipline:
-     * stale records from a previous pairing must never feed the next sign). */
-    g_pairing_ki_n = 0;
+    /* Pairing KI retention DELIBERATELY survives (fix36): a transfer's key
+     * image is immutable, and the sign-side selected-index mismatch guard
+     * rejects wrong-wallet records. Clearing here made every sign after the
+     * first fall back to the conservative filler for no reason. */
     /* The plate QR scratch regions are plaintext-equivalent carriers too:
      * the single teardown funnel wipes them on every exit leg. */
     UiWipePlateQr();
@@ -1235,9 +1241,18 @@ static void sign_run(const char *uri, const char *type,
              * injection red line, Kosmo): no rc codes, no QR-derived
              * strings, no payload bytes on screen -- the full diagnostic
              * dump goes to the developer console only. */
-            snprintf(result, sizeof(result),
-                     "sign failed\nrequest could not be signed\n"
-                     "rescan, or re-import the wallet and retry");
+            if (rc == -34 || rc == -35) {
+                /* KeyImageRecordsMissing/Mismatch: the wallet's key image
+                 * picture is out of step with the device's retention. Fixed
+                 * template (2026-10-09 injection red line) -- class only. */
+                snprintf(result, sizeof(result),
+                         "sign failed\nwallet key images out of date\n"
+                         "re-run the wallet key image sync, then retry");
+            } else {
+                snprintf(result, sizeof(result),
+                         "sign failed\nrequest could not be signed\n"
+                         "rescan, or re-import the wallet and retry");
+            }
             printf("sign FAIL: rc=%d type=%s len %u head=%02x%02x%02x%02x "
                    "fr=%u dup=%u stk=%uK\r\n",
                    rc, (uri != NULL) ? "single-frame" : g_ur_type, plen,
@@ -1376,12 +1391,33 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
      * window the 2 s hardware WDT kills it mid-compute (2026-10-15 root
      * cause: T5 added this call without the feed window). */
     g_sign_busy = 1;
+    unsigned int pair_n = 0;
     rc = shlosilo_xmr_pairing_ffi(g_key_session, payload, plen,
                                   entropy, sizeof(entropy),
                                   g_sign_out, SIGN_OUT_MAX, &out_len,
                                   ws, ws_need,
-                                  g_pairing_ki, PAIRING_KI_MAX,
-                                  &g_pairing_ki_n);
+                                  g_pairing_ki_tmp, PAIRING_KI_MAX,
+                                  &pair_n);
+    if (rc == 0) {
+        /* Union-merge by wallet transfer index: a transfer's key image is
+         * immutable, so this scan only adds/updates its own slots -- a
+         * partial export scanned after a full one must not drop coverage. */
+        unsigned int i, j;
+        for (i = 0; i < pair_n && i < PAIRING_KI_MAX; i++) {
+            for (j = 0; j < g_pairing_ki_n; j++) {
+                if (g_pairing_ki[j].transfer_idx == g_pairing_ki_tmp[i].transfer_idx) {
+                    break;
+                }
+            }
+            if (j >= PAIRING_KI_MAX) {
+                continue; /* retention full: sign falls back for the rest */
+            }
+            g_pairing_ki[j] = g_pairing_ki_tmp[i];
+            if (j == g_pairing_ki_n) {
+                g_pairing_ki_n++;
+            }
+        }
+    }
     g_sign_busy = 0;
     crash_bb_phase(CRASH_PHASE_PAIR_FFI_OUT);   /* 4 = ffi back (3 is marked
                                                  * in-core before the

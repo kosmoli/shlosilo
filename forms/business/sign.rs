@@ -781,6 +781,9 @@ fn sign_xmr_with_ws<'a>(
         }
         ki_sv[idx] = r.key_image;
     }
+    // Conservative gap filler: a SOURCE-derived key image (this wallet, this
+    // tx) — captured at the first derived placement below.
+    let mut fallback_ki: Option<[u8; 32]> = None;
     let mut tki_sv = crate::types::SliceVec::new(core::mem::take(&mut ws.tki));
     let mut sel_rest: &mut [u8] = core::mem::take(&mut ws.sel);
     let mut kstr_rest: &mut [u8] = core::mem::take(&mut ws.kstr);
@@ -946,6 +949,9 @@ fn sign_xmr_with_ws<'a>(
                 ));
             }
             ki_sv[idx] = ki;
+            if fallback_ki.is_none() {
+                fallback_ki = Some(ki);
+            }
         }
 
         // tx_key_images: output one-time address + Hs(shared_key)·Hp(stealth)
@@ -1049,10 +1055,25 @@ fn sign_xmr_with_ws<'a>(
             })?;
     }
 
-    // Every covered position must carry a true key image — a poison survivor
-    // is a wallet transfer we can neither derive (not spent here) nor recall
-    // (no pairing record). Refuse: shipping it would import a placeholder into
-    // the phone's m_transfers and corrupt its spent-tracking.
+    // Gap fill (2026-10-17, post-fix35 field finding): the real flow pairs
+    // key images ONCE per wallet (Cake only requests them when unknown), so
+    // the sign leg usually runs with NO pairing records — refusing would make
+    // every second tx un-signable. Uncovered positions (wallet transfers the
+    // device can neither derive nor recall) are filled with a DERIVED key
+    // image of a spent input: the phone's import then marks those transfers
+    // spent — the CONSERVATIVE direction (balance under-counts, never
+    // inflates; a later key-image re-sync writes the true values back).
+    // A record/source mismatch still refuses (KeyImageRecordMismatch): the
+    // selected-index cross-check is the cross-wallet contamination guard.
+    for i in 0..ki_span {
+        if ki_sv[i] != KI_POISON {
+            continue;
+        }
+        let fill = fallback_ki
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::KeyImageRecordMissing))?;
+        ki_sv[i] = fill;
+    }
+    // Invariant: with at least one derived key image the span is fully filled.
     for i in 0..ki_span {
         if ki_sv[i] == KI_POISON {
             return Err(ShlosiloError::new(ShlosiloErrorKind::KeyImageRecordMissing));

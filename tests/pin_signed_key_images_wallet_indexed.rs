@@ -232,43 +232,33 @@ fn key_images_wallet_transfer_indexed_with_records() {
     );
 }
 
-/// Without records the sign REFUSES at the gap (0..=4 are not spent here and
-/// cannot be derived) — never ships placeholders.
+/// Without records (the REAL product case — Cake pairs key images once per
+/// wallet, so every later sign runs recordless) the sign fills the uncovered
+/// positions with the CONSERVATIVE filler: a derived key image of a spent
+/// input. The phone then marks those transfers spent — the balance under-
+/// counts until the next key-image re-sync, never inflates. A zero/unknown
+/// filler would instead make actually-spent transfers look unspent (balance
+/// inflation + double-spend UX), and refusing outright made every second tx
+/// un-signable (fix35 field finding, 2026-10-17).
 #[test]
-fn refuse_without_records_on_uncovered_positions() {
-    use shlosilo::business::sign::{sign_with_entropy, SignInput};
-    use shlosilo::entropy::mnemonic::Mnemonic;
-    use shlosilo::ur::ur_encode::UrTypeTag;
-
-    let enc = include_bytes!("fixtures/tx2_cake_real_unsigned.bin");
-    let mut plain = decrypt_unsigned_txset(enc, &TX2_LAB_VIEW_SK)
-        .expect("decrypt fixture")
-        .to_vec();
-    strip_add_keys(&mut plain);
-    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(0x22);
-    let patched =
-        encrypt_unsigned_txset(zeroize::Zeroizing::new(plain), &TX2_LAB_VIEW_SK, &mut rng)
-            .expect("re-encrypt");
-    let m = Mnemonic::from_entropy(&[0x22u8; 32]).expect("mnemonic");
-    let mut out = vec![0u8; 65536];
-    let err = sign_with_entropy(
-        SignInput::Mnemonic {
-            mnemonic: m,
-            passphrase: b"",
-        },
-        UrTypeTag::XmrTxUnsigned,
-        &patched,
-        &[0x77u8; 32],
-        &mut out,
-    )
-    .expect_err("gap without records must refuse");
-    assert!(
-        matches!(
-            err.kind,
-            shlosilo::error::ShlosiloErrorKind::KeyImageRecordMissing
-        ),
-        "expected KeyImageRecordMissing, got {err:?}"
+fn conservative_fallback_without_records() {
+    let (plain, kis) = sign_stripped_fixture(&[]);
+    assert_eq!(
+        kis.len(),
+        FIXTURE_MAX_SELECTED + 1,
+        "array must cover 0..=max(selected_transfers)"
     );
+    let src_ki = ptx_key_image_from_str_field(&plain);
+    assert_eq!(
+        kis[FIXTURE_MAX_SELECTED], src_ki,
+        "selected position must carry the source-derived key image"
+    );
+    for (i, ki) in kis.iter().enumerate().take(FIXTURE_MAX_SELECTED) {
+        assert_eq!(
+            *ki, src_ki,
+            "gap position {i} must carry the conservative spent-marker filler"
+        );
+    }
 }
 
 /// A record disagreeing with the source-derived key image at the SAME wallet
