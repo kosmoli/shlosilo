@@ -1458,6 +1458,7 @@ pub mod r3 {
                 type_name,
                 payload,
                 payload_len,
+                &[], // no pairing retention on the legacy fixture path
                 entropy_ptr,
                 entropy_len,
                 output_buf,
@@ -1525,6 +1526,7 @@ pub mod r3 {
         type_name: *const c_char,
         payload: *const u8,
         payload_len: c_uint,
+        ki_records: &[crate::business::sign::WalletKiRecord],
         entropy_ptr: *const u8,
         entropy_len: c_uint,
         output_buf: *mut u8,
@@ -1651,7 +1653,7 @@ pub mod r3 {
             sign_input,
             tag,
             payload_slice,
-            &[],
+            ki_records,
             entropy_slice,
             Some(&mut ws),
             out_slice,
@@ -1702,6 +1704,12 @@ pub mod r3 {
         actual_len: *mut c_uint,
         ws: *mut u8,
         ws_len: c_uint,
+        // tx2 wire fix: the pairing-beat wallet key image retention
+        // (repr(C) `WalletKiRecord` array), NULL/0 = none available. The sign
+        // path fills the container's wallet-transfer-indexed `key_images` from
+        // these; an uncovered position refuses the sign.
+        ki_records: *const crate::business::sign::WalletKiRecord,
+        ki_records_len: c_uint,
     ) -> c_int {
         write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
                                          // Z3.3b workspace contract: ws == NULL is a PURE PROBE —
@@ -1728,11 +1736,26 @@ pub mod r3 {
             return ERR_NULL_POINTER;
         }
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            // (13) wallet KI records: NULL/0 = no retention; a non-NULL
+            // pointer with count 0 is likewise empty. Layout-compatible zero
+            // copy (repr(C) WalletKiRecord); the sign path's span check bounds
+            // what the records can cover (BufferTooSmall beyond ws.ki).
+            if ki_records.is_null() && ki_records_len != 0 {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch));
+            }
+            let ki_slice: &[crate::business::sign::WalletKiRecord] = if ki_records.is_null() {
+                &[]
+            } else {
+                // SAFETY: non-null (checked above) with the caller-supplied
+                // count; the array is repr(C) WalletKiRecord (layout match).
+                unsafe { core::slice::from_raw_parts(ki_records, ki_records_len as usize) }
+            };
             sign_typed_core(
                 SignKeySource::Session(session),
                 type_name,
                 payload,
                 payload_len,
+                ki_slice,
                 entropy_ptr,
                 entropy_len,
                 output_buf,
@@ -1849,6 +1872,15 @@ pub mod r3 {
         actual_len: *mut c_uint,
         ws: *mut u8,
         ws_len: c_uint,
+        // tx2 wire fix: wallet key image retention out (repr(C)
+        // `WalletKiRecord` array). NULL = no retention requested;
+        // `ki_records_actual` (nullable) reports the record count the export
+        // produced either way. Entry `i` is the TRUE key image of wallet
+        // transfer `export offset + i` — the flow retains these for the sign
+        // leg's wallet-transfer-indexed `key_images` fill.
+        ki_records_out: *mut crate::business::sign::WalletKiRecord,
+        ki_records_cap: c_uint,
+        ki_records_actual: *mut c_uint,
     ) -> c_int {
         write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
         let ws_need = crate::business::xmr_pairing::pairing_ws_len();
@@ -1921,13 +1953,28 @@ pub mod r3 {
             // SAFETY: the entry prologue excluded the null pointer; handle
             // validity is the caller's single-owner contract (as above).
             let session_ref = unsafe { &*session };
+            if ki_records_out.is_null() && ki_records_cap != 0 {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch));
+            }
+            let ki_slice: &mut [crate::business::sign::WalletKiRecord] = if ki_records_out.is_null()
+            {
+                &mut []
+            } else {
+                // SAFETY: non-null (checked above) with the caller-supplied
+                // capacity; the array is repr(C) WalletKiRecord (layout match).
+                unsafe { core::slice::from_raw_parts_mut(ki_records_out, ki_records_cap as usize) }
+            };
+            let mut ki_written = 0usize;
             let outcome = crate::business::xmr_pairing::process_output_export_session(
                 session_ref,
                 payload_slice,
                 &mut pws,
                 out_slice,
                 &mut rng,
+                ki_slice,
+                &mut ki_written,
             )?;
+            write_actual_len(ki_records_actual, outcome.output_count);
             Ok(outcome.written)
         });
         finish_sign_ffi(result, actual_len)
@@ -2600,6 +2647,9 @@ mod tests {
             *mut c_uint,
             *mut u8,
             c_uint,
+            *mut crate::business::sign::WalletKiRecord,
+            c_uint,
+            *mut c_uint,
         ) -> c_int = r3::shlosilo_xmr_pairing_ffi;
     }
 
@@ -2633,6 +2683,9 @@ mod tests {
             &mut actual,
             core::ptr::null_mut(),
             0,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
         );
         assert_eq!(rc, OK);
         assert_eq!(
@@ -2640,7 +2693,12 @@ mod tests {
             crate::business::xmr_pairing::pairing_ws_len()
         );
 
-        // Real call.
+        // Real call (with the tx2 wire-fix records retention).
+        let mut retained = [crate::business::sign::WalletKiRecord {
+            transfer_idx: 0xFFFF_FFFF,
+            key_image: [0u8; 32],
+        }; 8];
+        let mut retained_n: c_uint = 0;
         let rc = r3::shlosilo_xmr_pairing_ffi(
             &session,
             req.as_ptr(),
@@ -2652,8 +2710,12 @@ mod tests {
             &mut actual,
             ws.as_mut_ptr(),
             ws.len() as c_uint,
+            retained.as_mut_ptr(),
+            retained.len() as c_uint,
+            &mut retained_n,
         );
         assert_eq!(rc, OK, "pairing entry must succeed");
+        assert_eq!(retained_n, 1, "one record retained for one output");
         let n = actual as usize;
         assert!(n > 0);
 
@@ -2677,6 +2739,12 @@ mod tests {
             Scalar::from_bytes_mod_order(spend_sk) + Scalar::from_bytes_mod_order(offset);
         let hp: curve25519_dalek::EdwardsPoint = Point::biased_hash(out_pub).into();
         assert_eq!(recs[0].0, (hp * input_sk).compress().to_bytes());
+        // retention cross-check: the record handed to the flow is the same
+        // true key image the response carries
+        assert_eq!(
+            retained[0].key_image, recs[0].0,
+            "retained KI == response KI"
+        );
 
         // Entropy misuse guard: short entropy raises EntropyInjectionInvalid.
         let mut actual2: c_uint = 0;
@@ -2691,6 +2759,9 @@ mod tests {
             &mut actual2,
             ws.as_mut_ptr(),
             ws.len() as c_uint,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
         );
         assert_ne!(rc, OK, "short entropy must be rejected");
     }

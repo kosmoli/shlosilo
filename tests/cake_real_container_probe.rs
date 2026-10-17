@@ -589,6 +589,9 @@ fn cake_real_container_product_entry_ffi() {
             &mut actual,
             ws.as_mut_ptr(),
             ws.len() as core::ffi::c_uint,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
         )
     });
     println!("  rc={rc}  response len={}  total={dt:?}", actual);
@@ -727,7 +730,7 @@ fn run_chain(
         use rand_chacha::rand_core::SeedableRng as _;
         rand_chacha::ChaCha20Rng::seed_from_u64(0xC0FFEE)
     };
-    let n = generate_key_image_export_into(
+    let (n, _ki_offset) = generate_key_image_export_into(
         view_sk,
         spend_sk,
         req,
@@ -957,7 +960,7 @@ fn failing_case_offset_echo() {
         let mut out = vec![0u8; 4096];
         let mut cn = vec![0u8; shlosilo::types::caps::SIGN_WS_CN_SCRATCH];
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(0xF1CE);
-        let n = generate_key_image_export_into(
+        let (n, _ki_offset) = generate_key_image_export_into(
             &view_sk,
             &spend_sk,
             req,

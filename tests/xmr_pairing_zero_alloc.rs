@@ -126,6 +126,9 @@ fn pairing_ffi_zero_alloc() {
         &mut actual,
         core::ptr::null_mut(),
         0,
+        core::ptr::null_mut(),
+        0,
+        core::ptr::null_mut(),
     );
     assert_eq!(rc, 0, "pure probe must succeed");
     assert_eq!(actual as usize, pairing_ws_len());
@@ -150,6 +153,9 @@ fn pairing_ffi_zero_alloc() {
         &mut actual,
         ws.as_mut_ptr(),
         ws.len() as core::ffi::c_uint,
+        core::ptr::null_mut(),
+        0,
+        core::ptr::null_mut(),
     );
     assert_eq!(rc, 0, "warm-up pairing call must succeed");
 
@@ -166,6 +172,9 @@ fn pairing_ffi_zero_alloc() {
             &mut actual,
             ws.as_mut_ptr(),
             ws.len() as core::ffi::c_uint,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
         )
     });
     assert_eq!(rc, 0, "measured pairing call must succeed");

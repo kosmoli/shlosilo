@@ -261,7 +261,15 @@ fn run_variant(
     let mut actual: core::ffi::c_uint = 0;
     let rc = if use_business_face {
         let mut w = carve_pairing_ws(&mut ws).unwrap();
-        match process_output_export_session(session, req, &mut w, &mut out, &mut rng) {
+        match process_output_export_session(
+            session,
+            req,
+            &mut w,
+            &mut out,
+            &mut rng,
+            &mut [],
+            &mut 0,
+        ) {
             Ok(o) => {
                 actual = o.written as core::ffi::c_uint;
                 0
@@ -280,6 +288,9 @@ fn run_variant(
             &mut actual,
             ws.as_mut_ptr(),
             ws.len() as core::ffi::c_uint,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
         )
     };
 

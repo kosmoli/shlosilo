@@ -125,6 +125,11 @@ pub fn sign_with_entropy(
 /// positions verbatim from these records (they are imported positionally into
 /// the phone wallet), and cross-checks selected positions against its own
 /// source derivation (mismatch = `KeyImageRecordMismatch`).
+///
+/// `repr(C)`: this is the C-ABI retention wire unit (the pairing leg hands
+/// these to the flow, the sign leg takes them back) — the FFI casts caller
+/// arrays zero-copy.
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WalletKiRecord {
     pub transfer_idx: u32,

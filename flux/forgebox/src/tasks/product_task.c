@@ -92,6 +92,17 @@ static void key_session_close(void);
 /* Task 5b seed-flow state (full definition below with the seed helpers;
  * tentative declaration here because ProductTask's exit leg consults it). */
 static const struct KeySession *g_key_session;
+/* tx2 wire fix (2026-10-17): pairing-beat wallet key image retention --
+ * (wallet transfer index, true key image) pairs as derived while answering
+ * the xmr-output -> xmr-keyimage leg. Retained across the four beats and
+ * handed to the session sign entry so the signed container's
+ * wallet-transfer-indexed key_images array can be filled (an uncovered
+ * position refuses the sign -- never a placeholder). Cleared on session
+ * close / sign-done; merged across repeated pairing scans (last scan wins
+ * per slot). */
+#define PAIRING_KI_MAX 8 /* mirrors forms/business/xmr_pairing.rs PAIRING_RECORDS_MAX */
+static struct WalletKiRecord g_pairing_ki[PAIRING_KI_MAX];
+static unsigned int g_pairing_ki_n;
 /* Task 8: which source opened the live session (1 = SE password unlock). The
  * seed-flow exit leg only tears down PLATE sessions ("a live plate session
  * outside the flow pages means the flow exited"); an SE session lives until
@@ -705,6 +716,9 @@ static void key_session_close(void)
     g_key_session = NULL;
     g_key_from_se = 0;
     g_key_console = 0;
+    /* Pairing KI retention dies with the session (same teardown discipline:
+     * stale records from a previous pairing must never feed the next sign). */
+    g_pairing_ki_n = 0;
     /* The plate QR scratch regions are plaintext-equivalent carriers too:
      * the single teardown funnel wipes them on every exit leg. */
     UiWipePlateQr();
@@ -1159,7 +1173,8 @@ static void sign_run(const char *uri, const char *type,
         rc = shlosilo_sign_session_ffi(g_key_session, type, payload, plen,
                                       entropy, sizeof(entropy),
                                       g_sign_out, SIGN_OUT_MAX, &out_len,
-                                      ws, ws_need);
+                                      ws, ws_need,
+                                      g_pairing_ki, g_pairing_ki_n);
     } else if (uri != NULL) {
         rc = shlosilo_sign_ur_ffi(uri, k_sign_idx12, 12, NULL, 0, 0,
                                   entropy, sizeof(entropy),
@@ -1304,7 +1319,8 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     /* Workspace requirement through the PURE PROBE (ws == NULL reports the
      * need in actual_len and touches nothing -- no key access, no parse). */
     rc = shlosilo_xmr_pairing_ffi(g_key_session, NULL, 0, NULL, 0,
-                                  NULL, 0, &ws_need, NULL, 0);
+                                  NULL, 0, &ws_need, NULL, 0,
+                                  NULL, 0, NULL);
     if (rc != 0 || ws_need == 0) {
         printf("pairing: ws probe fail rc=%d need=%u\r\n", rc, ws_need);
         UiScanInfo("pairing: ws probe FAIL", "keep scanning...", "", "");
@@ -1363,7 +1379,9 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     rc = shlosilo_xmr_pairing_ffi(g_key_session, payload, plen,
                                   entropy, sizeof(entropy),
                                   g_sign_out, SIGN_OUT_MAX, &out_len,
-                                  ws, ws_need);
+                                  ws, ws_need,
+                                  g_pairing_ki, PAIRING_KI_MAX,
+                                  &g_pairing_ki_n);
     g_sign_busy = 0;
     crash_bb_phase(CRASH_PHASE_PAIR_FFI_OUT);   /* 4 = ffi back (3 is marked
                                                  * in-core before the

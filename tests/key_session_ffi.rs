@@ -122,6 +122,8 @@ fn sign_via_session(session: *const KeySession, payload: &[u8]) -> (i32, std::ve
         &mut actual,
         ws.as_mut_ptr(),
         need,
+        core::ptr::null(),
+        0,
     );
     (rc, out, actual)
 }
@@ -278,6 +280,8 @@ fn session_sign_null_session_rejected() {
         &mut actual,
         ws.as_mut_ptr(),
         need,
+        core::ptr::null(),
+        0,
     );
     assert_eq!(rc, ERR_NULL_POINTER, "NULL session must be rejected");
     assert_eq!(actual, 0, "failure path must zero actual_len");
@@ -299,6 +303,8 @@ fn session_sign_ws_probe_reports_requirement() {
         out.len() as u32,
         &mut actual,
         core::ptr::null_mut(), // ws == NULL: pure probe
+        0,
+        core::ptr::null(),
         0,
     );
     assert_eq!(rc, OK, "ws == NULL is the pure probe (family contract)");
@@ -334,6 +340,8 @@ fn session_sign_output_buf_too_small_reports_buffer_too_small() {
         &mut actual,
         ws.as_mut_ptr(),
         need,
+        core::ptr::null(),
+        0,
     );
     assert_eq!(
         rc, ERR_BUFFER_TOO_SMALL,
@@ -389,6 +397,8 @@ fn session_sign_null_required_args_rejected() {
             &mut actual,
             ws.as_mut_ptr(),
             need,
+            core::ptr::null(),
+            0,
         );
         assert_eq!(
             rc, ERR_NULL_POINTER,
@@ -425,6 +435,8 @@ fn session_sign_ws_under_capacity_reports_requirement() {
         &mut actual,
         ws.as_mut_ptr(),
         need - 1,
+        core::ptr::null(),
+        0,
     );
     assert_eq!(rc, ERR_BUFFER_TOO_SMALL, "under-capacity ws must error");
     assert_eq!(
@@ -479,6 +491,8 @@ fn session_sign_xmr_short_entropy_hits_misuse_guard() {
         &mut actual,
         ws.as_mut_ptr(),
         need,
+        core::ptr::null(),
+        0,
     );
     assert_eq!(
         rc,

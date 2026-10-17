@@ -351,7 +351,7 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     records_out.resize(details_out.len().max(1), ([0u8; 32], [0u8; 64]));
     let mut out = alloc::vec![0u8; 8192];
     let mut cn_scratch = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
-    let n = generate_key_image_export_into(
+    let (n, _offset) = generate_key_image_export_into(
         view_sk,
         spend_sk,
         request_payload,
@@ -386,7 +386,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     out: &mut [u8],
     rng: &mut R,
     cn_scratch: &mut [u8],
-) -> Result<usize> {
+) -> Result<(usize, u64)> {
     use crate::types::push::SinkCursor;
     use zeroize::Zeroize as _;
     // Zeroize-on-drop: the request plaintext leaves the scratch on every exit
@@ -449,7 +449,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     let mut w = SinkCursor::new(&mut *scratch.0);
     crate::chain::xmr::output_export::write_key_images(&records_out[..count], &mut w)?;
     let wire_len = w.pos();
-    encrypt_export_payload_into(
+    let written = encrypt_export_payload_into(
         KEY_IMAGE_EXPORT_MAGIC,
         view_sk,
         &spend_pub,
@@ -461,7 +461,12 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
         rng,
         out,
         cn_scratch,
-    )
+    )?;
+    // The export's wallet-index base: response record `i` is the TRUE key
+    // image of wallet transfer `offset + i` (the phone imports the response
+    // positionally at this offset). Carried out so the flow can retain
+    // wallet-transfer-indexed records for the sign leg (tx2 wire fix).
+    Ok((written, details.offset))
 }
 
 /// Single-output key image + signature (aligned with keystone `generate_key_image`).
@@ -691,7 +696,7 @@ mod tests {
             let mut rng2 = rng_from(0xC0);
             let mut out2 = alloc::vec![0u8; 8192];
             let mut cn2 = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
-            let n2 = generate_key_image_export_into(
+            let (n2, _off2) = generate_key_image_export_into(
                 &view_sk,
                 &spend_sk,
                 &enc_req,

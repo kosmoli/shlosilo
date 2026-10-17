@@ -177,12 +177,36 @@ pub fn process_output_export<R: RngCore + CryptoRng>(
     out: &mut [u8],
     rng: &mut R,
 ) -> Result<OutputExportOutcome> {
+    process_output_export_with_records(view_sk, spend_sk, payload, ws, out, rng, &mut [], &mut 0)
+}
+
+/// Records-retention face (tx2 wire fix): in addition to the response
+/// container, hands back the (wallet transfer index, true key image) pairs
+/// the device just derived — the sign leg fills the signed container's
+/// wallet-transfer-indexed `key_images` array from these
+/// ([`crate::business::sign::WalletKiRecord`]).
+///
+/// `ki_out` is caller storage: empty = no retention requested (skipped);
+/// non-empty but smaller than the export's record count = `BufferTooSmall`.
+/// Record `i` is the true key image of wallet transfer `offset + i` (the
+/// phone imports the response positionally at the export offset).
+#[allow(clippy::too_many_arguments)] // caller-storage records face (8 args, one call site each)
+pub fn process_output_export_with_records<R: RngCore + CryptoRng>(
+    view_sk: &[u8; 32],
+    spend_sk: &[u8; 32],
+    payload: &[u8],
+    ws: &mut PairingWs<'_>,
+    out: &mut [u8],
+    rng: &mut R,
+    ki_out: &mut [crate::business::sign::WalletKiRecord],
+    ki_written: &mut usize,
+) -> Result<OutputExportOutcome> {
     use zeroize::Zeroize as _;
     // The fused chain core: decrypt (signature first) → parse → pk1/pk2
     // ownership check → key images → KEY_IMAGE_EXPORT encryption. The request
     // plaintext transient is wiped inside the core before the response is
     // built; the CN scratchpad is wiped by the CN core on every exit path.
-    let written = generate_key_image_export_into(
+    let (written, offset) = generate_key_image_export_into(
         view_sk,
         spend_sk,
         payload,
@@ -203,30 +227,55 @@ pub fn process_output_export<R: RngCore + CryptoRng>(
     if written < overhead || !(written - overhead).is_multiple_of(KEY_IMAGE_RECORD_LEN) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
+    let output_count = (written - overhead) / KEY_IMAGE_RECORD_LEN;
+    // Records retention: response record `i` = wallet transfer `offset + i`.
+    *ki_written = 0;
+    if !ki_out.is_empty() {
+        if ki_out.len() < output_count {
+            return Err(ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(output_count),
+            ));
+        }
+        for (i, (image, _sig)) in ws.records[..output_count].iter().enumerate() {
+            let transfer_idx = u32::try_from(offset + i as u64)
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            ki_out[i] = crate::business::sign::WalletKiRecord {
+                transfer_idx,
+                key_image: *image,
+            };
+            *ki_written = i + 1;
+        }
+    }
     Ok(OutputExportOutcome {
         written,
-        output_count: (written - overhead) / KEY_IMAGE_RECORD_LEN,
+        output_count,
     })
 }
 
 /// Session-bound face: keys are borrowed from the [`KeySession`] read port
 /// (`KeySession::monero`) — the FFI layer calls this so plaintext key bytes
-/// never cross the boundary.
+/// never cross the boundary. `ki_out`/`ki_written` see
+/// [`process_output_export_with_records`].
 pub fn process_output_export_session<R: RngCore + CryptoRng>(
     session: &KeySession,
     payload: &[u8],
     ws: &mut PairingWs<'_>,
     out: &mut [u8],
     rng: &mut R,
+    ki_out: &mut [crate::business::sign::WalletKiRecord],
+    ki_written: &mut usize,
 ) -> Result<OutputExportOutcome> {
     let keys = session.monero();
-    process_output_export(
+    process_output_export_with_records(
         keys.view_sk.expose(),
         keys.spend_sk.expose(),
         payload,
         ws,
         out,
         rng,
+        ki_out,
+        ki_written,
     )
 }
 
@@ -435,9 +484,16 @@ pub(crate) mod tests {
         let mut wb = carve_pairing_ws(&mut ws_b).unwrap();
         let mut out_a = vec![0u8; 2048];
         let mut out_b = vec![0u8; 2048];
-        let a =
-            process_output_export_session(&session, &req, &mut wa, &mut out_a, &mut rng_from(3))
-                .unwrap();
+        let a = process_output_export_session(
+            &session,
+            &req,
+            &mut wa,
+            &mut out_a,
+            &mut rng_from(3),
+            &mut [],
+            &mut 0,
+        )
+        .unwrap();
         let b = process_output_export(
             &view_sk,
             &spend_sk,

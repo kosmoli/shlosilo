@@ -436,6 +436,9 @@ fn ur_layer_xmr_output_full_chain() {
                 &mut actual,
                 ws.as_mut_ptr(),
                 ws.len() as core::ffi::c_uint,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
             );
             println!("    xmr_pairing_ffi[{label}]: rc={rc} out_len={}", actual);
         }

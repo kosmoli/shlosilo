@@ -236,7 +236,7 @@ fn run_chain(
         use rand_chacha::rand_core::SeedableRng as _;
         rand_chacha::ChaCha20Rng::seed_from_u64(0xC0FFEE)
     };
-    let n = generate_key_image_export_into(
+    let (n, _ki_offset) = generate_key_image_export_into(
         view_sk,
         spend_sk,
         req,

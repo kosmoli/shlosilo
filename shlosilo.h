@@ -725,6 +725,27 @@ typedef struct UrMultipartDecoder UrMultipartDecoder;
 typedef struct UrMultipartEncoder UrMultipartEncoder;
 
 /**
+ * True key image of one wallet transfer, retained from the pairing beat
+ * (`xmr-output` → `xmr-keyimage`): the device derived it on-device while
+ * answering the key image export and the flow hands it back to the sign leg.
+ *
+ * `transfer_idx` is the WALLET transfer index (the position in the phone
+ * wallet's `m_transfers`) — NOT the input/source position. `key_image` must
+ * be the true key image of that transfer; the sign path takes non-selected
+ * positions verbatim from these records (they are imported positionally into
+ * the phone wallet), and cross-checks selected positions against its own
+ * source derivation (mismatch = `KeyImageRecordMismatch`).
+ *
+ * `repr(C)`: this is the C-ABI retention wire unit (the pairing leg hands
+ * these to the flow, the sign leg takes them back) — the FFI casts caller
+ * arrays zero-copy.
+ */
+typedef struct WalletKiRecord {
+  uint32_t transfer_idx;
+  uint8_t key_image[32];
+} WalletKiRecord;
+
+/**
  * C-ABI: register the millisecond clock callback (no-op when the feature is off).
  *
  * T-04 contract: the callback crosses the boundary as a typed nullable
@@ -1164,7 +1185,9 @@ int shlosilo_sign_session_ffi(const struct KeySession *session,
                               unsigned int output_buf_len,
                               unsigned int *actual_len,
                               uint8_t *ws,
-                              unsigned int ws_len);
+                              unsigned int ws_len,
+                              const struct WalletKiRecord *ki_records,
+                              unsigned int ki_records_len);
 
 /**
  * Task 3 (2026-10-07): session reclaim — the handle lifecycle contract.
@@ -1248,7 +1271,10 @@ int shlosilo_xmr_pairing_ffi(const struct KeySession *session,
                              unsigned int output_buf_len,
                              unsigned int *actual_len,
                              uint8_t *ws,
-                             unsigned int ws_len);
+                             unsigned int ws_len,
+                             struct WalletKiRecord *ki_records_out,
+                             unsigned int ki_records_cap,
+                             unsigned int *ki_records_actual);
 
 /**
  * R3: release the decoder handle. Null-safe (idempotent).
