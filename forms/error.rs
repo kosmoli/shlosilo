@@ -87,6 +87,18 @@ pub enum ShlosiloErrorKind {
     MultisigNotSupported = 0x0304_0001,
     /// Phase 2 stub: algorithms/encodings not wired in (originally an unimplemented!() panic; P2-01 switched to stable error codes)
     FeatureNotImplemented = 0x0305_0001,
+    /// Wallet key image records do not cover a wallet transfer position the
+    /// signed container must fill. `key_images` is wallet-transfer-indexed
+    /// (wallet2 gold: one true key image per wallet transfer) and
+    /// `import_key_images` writes every entry positionally into the phone's
+    /// `m_transfers` — an uncovered position would import a placeholder and
+    /// corrupt the phone's spent-tracking, so the sign REFUSES instead.
+    KeyImageRecordMissing = 0x0306_0001,
+    /// A wallet key image record (or a second input) disagrees with the key
+    /// image already placed at the same wallet transfer index — record list
+    /// misalignment guard (an off-by-one retained list would otherwise import
+    /// shifted key images into the phone wallet).
+    KeyImageRecordMismatch = 0x0306_0002,
 
     // ─── L2a marshaling(0x04xx_xxxx) ───
     /// output_buf capacity insufficient
@@ -217,6 +229,10 @@ pub enum ShlosiloErrorCode {
     InvalidMnemonic = -31,
     InvalidDerivationPath = -32,
     InvalidDiceRolls = -33,
+    /// wallet key image records do not cover the container's key_images span
+    KeyImageRecordsMissing = -34,
+    /// wallet key image record disagrees with the source-derived key image
+    KeyImageRecordsMismatch = -35,
     CryptoError = -40,
     InvariantViolation = -99,
 }
@@ -263,6 +279,8 @@ impl ShlosiloErrorCode {
             | ShlosiloErrorKind::CryptoRsaSignFailed
             | ShlosiloErrorKind::CryptoSr25519SignFailed => Self::CryptoError,
             ShlosiloErrorKind::InvariantViolation => Self::InvariantViolation,
+            ShlosiloErrorKind::KeyImageRecordMissing => Self::KeyImageRecordsMissing,
+            ShlosiloErrorKind::KeyImageRecordMismatch => Self::KeyImageRecordsMismatch,
         };
         code as i32
     }

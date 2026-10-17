@@ -93,6 +93,10 @@ pub fn sign(
 ///   < 16B raises `EntropyInjectionInvalid` (misuse guard, not an entropy-quality check)
 /// - BTC / ETH: deterministic backend **entropy NOT REQUIRED by current backend**
 ///   (the RFC-6979 path) — just pass an empty slice
+///
+/// XMR wallet key image records: none supplied. The XMR path then requires the
+/// spent transfers to cover every wallet index below `max(selected_transfers)`
+/// (see [`sign_with_entropy_records`]); anything else refuses to sign.
 pub fn sign_with_entropy(
     sign_input: SignInput<'_>,
     type_tag: crate::ur::ur_encode::UrTypeTag,
@@ -100,7 +104,57 @@ pub fn sign_with_entropy(
     entropy: &[u8],
     output_buf: &mut [u8],
 ) -> Result<usize> {
-    sign_with_entropy_ws(sign_input, type_tag, ur_payload, entropy, None, output_buf)
+    sign_with_entropy_ws(
+        sign_input,
+        type_tag,
+        ur_payload,
+        &[],
+        entropy,
+        None,
+        output_buf,
+    )
+}
+
+/// True key image of one wallet transfer, retained from the pairing beat
+/// (`xmr-output` → `xmr-keyimage`): the device derived it on-device while
+/// answering the key image export and the flow hands it back to the sign leg.
+///
+/// `transfer_idx` is the WALLET transfer index (the position in the phone
+/// wallet's `m_transfers`) — NOT the input/source position. `key_image` must
+/// be the true key image of that transfer; the sign path takes non-selected
+/// positions verbatim from these records (they are imported positionally into
+/// the phone wallet), and cross-checks selected positions against its own
+/// source derivation (mismatch = `KeyImageRecordMismatch`).
+#[derive(Clone, Copy)]
+pub struct WalletKiRecord {
+    pub transfer_idx: u32,
+    pub key_image: [u8; 32],
+}
+
+/// Signing business entry with XMR wallet key image records (the tx2 wire fix:
+/// `key_images` is wallet-transfer-indexed, wallet2.cpp:8074 gold semantics).
+///
+/// The signed container's outer `key_images` array is filled ONE TRUE key image
+/// per wallet transfer position:
+/// - selected (spent) transfer positions: derived from the tx sources
+///   (authoritative);
+/// - all other positions: taken from `ki_records` (the pairing-beat retention).
+///
+/// Any position below `max(selected_transfers, record indices) + 1` that
+/// neither source can fill refuses the sign with `KeyImageRecordMissing` —
+/// a placeholder would be written positionally into the phone wallet's
+/// `m_transfers` by `import_key_images` and corrupt its spent-tracking.
+pub fn sign_with_entropy_records(
+    sign_input: SignInput<'_>,
+    type_tag: crate::ur::ur_encode::UrTypeTag,
+    ur_payload: &[u8],
+    ki_records: &[WalletKiRecord],
+    entropy: &[u8],
+    output_buf: &mut [u8],
+) -> Result<usize> {
+    sign_with_entropy_ws(
+        sign_input, type_tag, ur_payload, ki_records, entropy, None, output_buf,
+    )
 }
 
 /// Workspace-aware signing entry (Z3.3a).
@@ -111,10 +165,14 @@ pub fn sign_with_entropy(
 /// policy-labeled C-ABI/legacy seam; removed when every caller provisions).
 /// BTC/ETH chain layers ignore `ws` (their provisioning lands in the
 /// chain-tile round).
+///
+/// `ki_records`: the pairing-beat wallet key image retention (XMR only; see
+/// [`sign_with_entropy_records`]). Empty = no retention available.
 pub fn sign_with_entropy_ws(
     sign_input: SignInput<'_>,
     type_tag: crate::ur::ur_encode::UrTypeTag,
     ur_payload: &[u8],
+    ki_records: &[WalletKiRecord],
     entropy: &[u8],
     ws: Option<&mut SignWs<'_>>,
     output_buf: &mut [u8],
@@ -150,12 +208,13 @@ pub fn sign_with_entropy_ws(
         }
         crate::types::chain_kind::ChainKind::Xmr => match ws {
             Some(ws) => {
-                let n = sign_xmr_with_ws(ws, seed.expose(), payload, entropy, output_buf)?;
+                let n =
+                    sign_xmr_with_ws(ws, seed.expose(), payload, ki_records, entropy, output_buf)?;
                 Ok(n)
             }
             #[cfg(feature = "alloc-fallback")]
             None => {
-                let n = sign_xmr(seed.expose(), payload, entropy, output_buf)?;
+                let n = sign_xmr(seed.expose(), payload, ki_records, entropy, output_buf)?;
                 Ok(n)
             }
             #[cfg(not(feature = "alloc-fallback"))]
@@ -544,6 +603,7 @@ fn sign_xmr_with_ws<'a>(
     ws: &mut SignWs<'a>,
     seed: &[u8],
     encrypted_unsigned: &[u8],
+    ki_records: &[WalletKiRecord],
     entropy: &[u8],
     output_buf: &mut [u8],
 ) -> Result<usize> {
@@ -658,8 +718,27 @@ fn sign_xmr_with_ws<'a>(
     if ws.ptx.len() < n_tx {
         return Err(cap_err(n_tx));
     }
-    if ws.ki.len() < total_sources {
-        return Err(cap_err(total_sources));
+    // key_images is wallet-transfer-indexed (wallet2.cpp:8074 gold: one true
+    // key image per wallet transfer position; the phone's import_key_images
+    // writes every entry positionally into m_transfers). ki_span covers every
+    // position the wire array must carry: each tx's selected (spent) transfer
+    // indices plus every retained pairing record index.
+    let mut ki_span = 0usize;
+    for slot in unsigned_tx.txes.iter().flatten() {
+        for &t in slot.selected_transfers.iter() {
+            if t > u8::MAX as usize {
+                // ptx.selected_transfers is u8-carried on the wire (varint-
+                // written copy); above 255 the copy would silently truncate.
+                return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+            }
+            ki_span = ki_span.max(t + 1);
+        }
+    }
+    for r in ki_records {
+        ki_span = ki_span.max(r.transfer_idx as usize + 1);
+    }
+    if ws.ki.len() < ki_span {
+        return Err(cap_err(ki_span));
     }
     if ws.tki.len() < total_dsts {
         return Err(cap_err(total_dsts));
@@ -679,6 +758,24 @@ fn sign_xmr_with_ws<'a>(
     }
     let mut ptx_sv = crate::types::SliceVec::new(core::mem::take(&mut ws.ptx));
     let mut ki_sv = crate::types::SliceVec::new(core::mem::take(&mut ws.ki));
+    // Poison pre-fill (0xAA sentinel — the zero-masking discipline: never let
+    // a zero stand in for "unfilled"). Any poison survivor at the end refuses
+    // the sign (KeyImageRecordMissing) instead of shipping a placeholder that
+    // the phone would import into m_transfers.
+    const KI_POISON: [u8; 32] = [0xAAu8; 32];
+    for _ in 0..ki_span {
+        ki_sv.push(KI_POISON).map_err(|_| cap_err(ki_span))?;
+    }
+    // Pairing-beat retention first (non-selected positions come from here).
+    for r in ki_records {
+        let idx = r.transfer_idx as usize; // < ki_span by construction
+        if ki_sv[idx] != KI_POISON && ki_sv[idx] != r.key_image {
+            return Err(ShlosiloError::new(
+                ShlosiloErrorKind::KeyImageRecordMismatch,
+            ));
+        }
+        ki_sv[idx] = r.key_image;
+    }
     let mut tki_sv = crate::types::SliceVec::new(core::mem::take(&mut ws.tki));
     let mut sel_rest: &mut [u8] = core::mem::take(&mut ws.sel);
     let mut kstr_rest: &mut [u8] = core::mem::take(&mut ws.kstr);
@@ -804,8 +901,20 @@ fn sign_xmr_with_ws<'a>(
 
         #[cfg(feature = "tx-phase-timing-ffi")]
         let mut px6 = PhaseProbe::start(6);
-        // key images: already present in the signed wire; rebuild the `<hex> ` string + outer list here
-        for src in tx_data.sources.iter().flatten() {
+        // key images: already present in the signed wire; rebuild the `<hex> ` string + outer list here.
+        // Wire contract (tx2 fix): the OUTER key_images array is wallet-
+        // transfer-indexed — source j's key image lands at wallet index
+        // selected_transfers[j], not at position j (wallet2.cpp:8074 gold).
+        let src_count = tx_data.sources.iter().flatten().count();
+        if src_count != tx_data.selected_transfers.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        for (src, &sel) in tx_data
+            .sources
+            .iter()
+            .flatten()
+            .zip(tx_data.selected_transfers.iter())
+        {
             let (ki, _off) = crate::chain::xmr::subaddress::derive_input_from_source(
                 &view_sec,
                 &spend_sec,
@@ -822,9 +931,16 @@ fn sign_xmr_with_ws<'a>(
             }
             pushb(&mut key_images_str, b'>')?;
             pushb(&mut key_images_str, b' ')?;
-            ki_sv.push(ki).map_err(|_| {
-                crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::BufferTooSmall)
-            })?;
+            // Authoritative placement at the wallet transfer index. A record
+            // already at that index must agree (misalignment guard) — the
+            // source derivation wins if it never saw one.
+            let idx = sel; // < ki_span by construction
+            if ki_sv[idx] != KI_POISON && ki_sv[idx] != ki {
+                return Err(ShlosiloError::new(
+                    ShlosiloErrorKind::KeyImageRecordMismatch,
+                ));
+            }
+            ki_sv[idx] = ki;
         }
 
         // tx_key_images: output one-time address + Hs(shared_key)·Hp(stealth)
@@ -928,6 +1044,16 @@ fn sign_xmr_with_ws<'a>(
             })?;
     }
 
+    // Every covered position must carry a true key image — a poison survivor
+    // is a wallet transfer we can neither derive (not spent here) nor recall
+    // (no pairing record). Refuse: shipping it would import a placeholder into
+    // the phone's m_transfers and corrupt its spent-tracking.
+    for i in 0..ki_span {
+        if ki_sv[i] == KI_POISON {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::KeyImageRecordMissing));
+        }
+    }
+
     let set = SignedTxSet {
         ptx: ptx_sv,
         key_images: ki_sv,
@@ -982,6 +1108,7 @@ fn sign_xmr_with_ws<'a>(
 fn sign_xmr(
     seed: &[u8],
     encrypted_unsigned: &[u8],
+    ki_records: &[WalletKiRecord],
     entropy: &[u8],
     output_buf: &mut [u8],
 ) -> Result<usize> {
@@ -996,7 +1123,14 @@ fn sign_xmr(
             crate::error::ErrorContext::RequiredLength(need),
         )
     })?;
-    sign_xmr_with_ws(&mut ws, seed, encrypted_unsigned, entropy, output_buf)
+    sign_xmr_with_ws(
+        &mut ws,
+        seed,
+        encrypted_unsigned,
+        ki_records,
+        entropy,
+        output_buf,
+    )
 }
 
 fn parse_derivation_value(value: &[u8]) -> Option<([u8; 4], DerivationPath)> {

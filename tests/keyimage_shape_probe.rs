@@ -220,6 +220,7 @@ fn encrypt_request(view_sk: &[u8; 32], spend_pub: &[u8; 32], plain: &[u8], seed:
 }
 
 /// Run the product pairing chain; returns (response container, records).
+#[allow(clippy::type_complexity)]
 fn run_chain(
     req: &[u8],
     view_sk: &[u8; 32],
@@ -610,7 +611,7 @@ fn response_header_offset_follows_request_offset() {
     let req0 = encrypt_request(
         &view_sk,
         &spend_pub,
-        &synth_plain(0, 1, &[rec.clone()]),
+        &synth_plain(0, 1, std::slice::from_ref(&rec)),
         0xF6,
     );
     let req2 = encrypt_request(&view_sk, &spend_pub, &synth_plain(2, 3, &[rec]), 0xF6);

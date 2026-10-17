@@ -3094,6 +3094,7 @@ async fn run_sign_xmr() {
         input,
         UrTypeTag::XmrTxUnsigned,
         &payload,
+        &[], // wallet KI records: not yet retained on pico2 (dev console)
         entropy,
         Some(&mut ws),
         &mut out,

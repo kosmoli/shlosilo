@@ -256,6 +256,7 @@ pub extern "C" fn shlosilo_sign_ffi(
             legacy_tag,
             payload_slice,
             &[],
+            &[],
             Some(&mut ws),
             out_slice,
         )
@@ -588,6 +589,7 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
             input,
             decoded.type_tag(),
             decoded.as_ref(),
+            &[],
             entropy_slice,
             Some(&mut ws),
             out_slice,
@@ -1649,6 +1651,7 @@ pub mod r3 {
             sign_input,
             tag,
             payload_slice,
+            &[],
             entropy_slice,
             Some(&mut ws),
             out_slice,
