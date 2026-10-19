@@ -237,11 +237,27 @@ pub fn process_output_export_with_records<R: RngCore + CryptoRng>(
                 crate::error::ErrorContext::RequiredLength(output_count),
             ));
         }
+        // fix37: bind every record to THIS wallet's fingerprint. The ownership
+        // check inside the core already pinned the request's pk1/pk2 to this
+        // session's spend/view pubs, so re-deriving them here yields exactly
+        // the pubs the records were computed under.
+        let wfp = {
+            use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+            use curve25519_dalek::scalar::Scalar;
+            let spend_pub = (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(*spend_sk))
+                .compress()
+                .to_bytes();
+            let view_pub = (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(*view_sk))
+                .compress()
+                .to_bytes();
+            crate::business::sign::wallet_fingerprint(&spend_pub, &view_pub)
+        };
         for (i, (image, _sig)) in ws.records[..output_count].iter().enumerate() {
             let transfer_idx = u32::try_from(offset + i as u64)
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
             ki_out[i] = crate::business::sign::WalletKiRecord {
                 transfer_idx,
+                wallet_fp: wfp,
                 key_image: *image,
             };
             *ki_written = i + 1;

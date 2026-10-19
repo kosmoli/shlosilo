@@ -133,7 +133,50 @@ pub fn sign_with_entropy(
 #[derive(Clone, Copy)]
 pub struct WalletKiRecord {
     pub transfer_idx: u32,
+    /// fix37 wallet-fingerprint binding: first 8 bytes of
+    /// keccak256(spend_pub || view_pub) of the wallet this record was computed
+    /// for. The sign leg ignores records whose fingerprint does not match the
+    /// signing session's wallet (treated as absent — the conservative gap
+    /// filler covers), so a plate swap without a power cycle or a rescan that
+    /// re-indexed transfers cannot feed another wallet's key images into this
+    /// wallet's wire array.
+    pub wallet_fp: [u8; 8],
     pub key_image: [u8; 32],
+}
+
+/// Wallet fingerprint binding the pairing-beat KI retention to the wallet it
+/// was computed for (fix37). `spend_pub`/`view_pub` are the request header's
+/// validated `pk1`/`pk2` on the pairing side and the session-derived pubs on
+/// the sign side — the same 64 bytes both ways.
+pub fn wallet_fingerprint(spend_pub: &[u8; 32], view_pub: &[u8; 32]) -> [u8; 8] {
+    let mut buf = [0u8; 64];
+    buf[..32].copy_from_slice(spend_pub);
+    buf[32..].copy_from_slice(view_pub);
+    let h = crate::encoding::keccak256::hash(&buf).expect("keccak256 64B");
+    let mut fp = [0u8; 8];
+    fp.copy_from_slice(&h[..8]);
+    fp
+}
+
+/// Seed-facing variant (tests + any caller holding the seed): derives the
+/// wallet's spend/view pubs exactly like the sign path (MoneroPath, account 0)
+/// and fingerprints them. `seed` must be the SAME bytes the sign path derives
+/// from (BIP-39 seed = 64B) -- derive() is length-sensitive (BIP-32 HMAC).
+pub fn wallet_fingerprint_from_seed(seed: &[u8]) -> [u8; 8] {
+    use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+    use curve25519_dalek::scalar::Scalar;
+    let path = crate::derivation::monero_reduce_scalar::MoneroPath::mainnet(0);
+    let kp = crate::derivation::monero_reduce_scalar::derive(seed, &path)
+        .expect("monero derive from seed");
+    let spend_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.spend_priv());
+    let view_sec = crate::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv());
+    let spend_pub = (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(spend_sec))
+        .compress()
+        .to_bytes();
+    let view_pub = (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(view_sec))
+        .compress()
+        .to_bytes();
+    wallet_fingerprint(&spend_pub, &view_pub)
 }
 
 /// Signing business entry with XMR wallet key image records (the tx2 wire fix:
@@ -625,6 +668,20 @@ fn sign_xmr_with_ws<'a>(
     let view_sec = zeroize::Zeroizing::new(crate::curve_primitive::ed25519::scalar_to_bytes(
         kp.view_priv(),
     ));
+    // fix37 wallet fingerprint of THIS session's wallet: retention records are
+    // bound to it on the pairing leg; records with a foreign fingerprint are
+    // ignored below (conservative filler covers).
+    let session_fp: [u8; 8] = {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        use curve25519_dalek::scalar::Scalar;
+        let spend_pub = (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(*spend_sec))
+            .compress()
+            .to_bytes();
+        let view_pub = (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(*view_sec))
+            .compress()
+            .to_bytes();
+        wallet_fingerprint(&spend_pub, &view_pub)
+    };
     // CN computed only once for the same view_sk (shared by decrypt + encrypt; the 2MB scratchpad dominates on device)
     // Audit #12 P1-02: the CN key is an owner from creation (Zeroizing); the helper returns the owner.
     // T-04 follow-up: the CN-V0 derivation borrows the overlay region in
@@ -727,7 +784,12 @@ fn sign_xmr_with_ws<'a>(
     // key image per wallet transfer position; the phone's import_key_images
     // writes every entry positionally into m_transfers). ki_span covers every
     // position the wire array must carry: each tx's selected (spent) transfer
-    // indices plus every retained pairing record index.
+    // indices. fix37: retention records NEVER stretch the span — a stale
+    // cross-wallet/cross-state record used to stretch it past the wallet's
+    // transfer count, and 0.18.5.3's import_key_images silently returns false
+    // on "key images greater than the number of transfers" (amplified by the
+    // monero_c UR entry's Status_Ok swallow, see MrCyjaneK/monero_c#197).
+    // Records beyond the span are dropped at placement time.
     let mut ki_span = 0usize;
     for slot in unsigned_tx.txes.iter().flatten() {
         for &t in slot.selected_transfers.iter() {
@@ -738,9 +800,6 @@ fn sign_xmr_with_ws<'a>(
             }
             ki_span = ki_span.max(t + 1);
         }
-    }
-    for r in ki_records {
-        ki_span = ki_span.max(r.transfer_idx as usize + 1);
     }
     if ws.ki.len() < ki_span {
         return Err(cap_err(ki_span));
@@ -772,8 +831,19 @@ fn sign_xmr_with_ws<'a>(
         ki_sv.push(KI_POISON).map_err(|_| cap_err(ki_span))?;
     }
     // Pairing-beat retention first (non-selected positions come from here).
+    // fix37: records are wallet-fingerprint-bound — a record from another
+    // wallet (plate swapped without a power cycle, records surviving in the
+    // flux workspace) or from a stale transfer-indexing state is treated as
+    // ABSENT: the conservative filler covers, and the mismatch guard below
+    // still refuses a record that contradicts a freshly derived value.
     for r in ki_records {
-        let idx = r.transfer_idx as usize; // < ki_span by construction
+        if r.wallet_fp != session_fp {
+            continue;
+        }
+        let idx = r.transfer_idx as usize;
+        if idx >= ki_span {
+            continue; // fix37 span tightening: beyond this tx's reach — dropped
+        }
         if ki_sv[idx] != KI_POISON && ki_sv[idx] != r.key_image {
             return Err(ShlosiloError::new(
                 ShlosiloErrorKind::KeyImageRecordMismatch,

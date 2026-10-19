@@ -1399,13 +1399,25 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
                                   g_pairing_ki_tmp, PAIRING_KI_MAX,
                                   &pair_n);
     if (rc == 0) {
-        /* Union-merge by wallet transfer index: a transfer's key image is
-         * immutable, so this scan only adds/updates its own slots -- a
-         * partial export scanned after a full one must not drop coverage. */
+        /* Union-merge by (wallet fingerprint, wallet transfer index): a
+         * transfer's key image is immutable, so this scan only adds/updates
+         * its own slots -- a partial export scanned after a full one must not
+         * drop coverage. fix37: the record is wallet-bound; a scan from a
+         * DIFFERENT wallet (plate swapped without a power cycle) voids the
+         * stale whole first, and same-index records of another wallet never
+         * overwrite this wallet's slot (the sign leg also filters by the
+         * session fingerprint). */
         unsigned int i, j;
+        if (pair_n > 0 && g_pairing_ki_n > 0 &&
+            memcmp(g_pairing_ki[0].wallet_fp, g_pairing_ki_tmp[0].wallet_fp,
+                   sizeof(g_pairing_ki[0].wallet_fp)) != 0) {
+            g_pairing_ki_n = 0; /* wallet changed: stale records are void */
+        }
         for (i = 0; i < pair_n && i < PAIRING_KI_MAX; i++) {
             for (j = 0; j < g_pairing_ki_n; j++) {
-                if (g_pairing_ki[j].transfer_idx == g_pairing_ki_tmp[i].transfer_idx) {
+                if (g_pairing_ki[j].transfer_idx == g_pairing_ki_tmp[i].transfer_idx &&
+                    memcmp(g_pairing_ki[j].wallet_fp, g_pairing_ki_tmp[i].wallet_fp,
+                           sizeof(g_pairing_ki[0].wallet_fp)) == 0) {
                     break;
                 }
             }

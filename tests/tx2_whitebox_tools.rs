@@ -294,9 +294,18 @@ fn control_sign_real_cake_unsigned_addkeys_stripped_signs() {
 /// positions 0..=4 come from the pairing records face — dummies stand in for
 /// the lab wallet's real records (only the selected index is source-derived).
 fn fixture_gap_records() -> Vec<shlosilo::business::sign::WalletKiRecord> {
+    // fix37: records are wallet-bound; the fp must match the signing session's
+    // wallet (same Mnemonic::from_entropy([0x22;32]) seed path as the signer).
+    use shlosilo::business::sign::wallet_fingerprint_from_seed;
+    use shlosilo::entropy::mnemonic::Mnemonic;
+    let m = Mnemonic::from_entropy(&[0x22u8; 32]).expect("mnemonic");
+    let mut seed = [0u8; 64];
+    shlosilo::business::restore_seed::restore_seed(&m, b"", &mut seed).expect("restore seed");
+    let fp = wallet_fingerprint_from_seed(&seed);
     (0..5)
         .map(|i| shlosilo::business::sign::WalletKiRecord {
             transfer_idx: i,
+            wallet_fp: fp,
             key_image: [0x10 + i as u8; 32],
         })
         .collect()

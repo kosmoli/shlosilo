@@ -192,12 +192,27 @@ fn sign_stripped_fixture(ki_records: &[WalletKiRecord]) -> (Vec<u8>, Vec<[u8; 32
     (plain.to_vec(), kis)
 }
 
+/// Wallet fingerprint of the fixture wallet: same seed path as
+/// sign_stripped_fixture (Mnemonic::from_entropy([0x22;32]) -> restore_seed ->
+/// 64B BIP-39 seed). fix37: records are wallet-bound; a record with a foreign
+/// fp is treated as absent by the sign leg.
+fn fixture_wallet_fp() -> [u8; 8] {
+    use shlosilo::business::sign::wallet_fingerprint_from_seed;
+    use shlosilo::entropy::mnemonic::Mnemonic;
+    let m = Mnemonic::from_entropy(&[0x22u8; 32]).expect("mnemonic");
+    let mut seed = [0u8; 64];
+    shlosilo::business::restore_seed::restore_seed(&m, b"", &mut seed).expect("restore seed");
+    wallet_fingerprint_from_seed(&seed)
+}
+
 /// Records for the fixture's non-selected positions 0..=4 (the sign path takes
 /// non-selected positions verbatim; only the selected index is source-derived).
 fn fixture_gap_records() -> Vec<WalletKiRecord> {
+    let fp = fixture_wallet_fp();
     (0..FIXTURE_MAX_SELECTED as u32)
         .map(|i| WalletKiRecord {
             transfer_idx: i,
+            wallet_fp: fp,
             key_image: [0x10 + i as u8; 32],
         })
         .collect()
@@ -229,6 +244,34 @@ fn key_images_wallet_transfer_indexed_with_records() {
     assert_eq!(
         kis[FIXTURE_MAX_SELECTED], src_ki,
         "selected position must carry the source-derived key image"
+    );
+}
+
+/// fix37 wallet-fingerprint binding: records carrying a FOREIGN wallet fp are
+/// treated as absent by the sign leg (a plate swap without a power cycle must
+/// not feed another wallet's key images into this wallet's wire array). The
+/// output must equal the no-records conservative fill: the foreign key image
+/// values must NOT appear anywhere in the outer array.
+#[test]
+fn foreign_fp_records_are_ignored() {
+    let mut records = fixture_gap_records();
+    for r in records.iter_mut() {
+        // a valid-looking but foreign fingerprint (fixture fp, bit-flipped)
+        r.wallet_fp[0] ^= 0xFF;
+    }
+    let (_plain, kis) = sign_stripped_fixture(&records);
+    for r in records.iter() {
+        assert_ne!(
+            kis[r.transfer_idx as usize], r.key_image,
+            "foreign-fp record at index {} must NOT land",
+            r.transfer_idx
+        );
+    }
+    // and the gap positions carry the conservative filler (same as recordless)
+    let (_plain0, kis0) = sign_stripped_fixture(&[]);
+    assert_eq!(
+        kis, kis0,
+        "foreign-fp records must produce exactly the recordless output"
     );
 }
 
@@ -273,6 +316,7 @@ fn refuse_on_record_source_mismatch() {
     let mut records = fixture_gap_records();
     records.push(WalletKiRecord {
         transfer_idx: FIXTURE_MAX_SELECTED as u32,
+        wallet_fp: fixture_wallet_fp(),
         key_image: [0xBBu8; 32], // deliberately not the derived key image
     });
 

@@ -2696,6 +2696,7 @@ mod tests {
         // Real call (with the tx2 wire-fix records retention).
         let mut retained = [crate::business::sign::WalletKiRecord {
             transfer_idx: 0xFFFF_FFFF,
+            wallet_fp: [0u8; 8],
             key_image: [0u8; 32],
         }; 8];
         let mut retained_n: c_uint = 0;

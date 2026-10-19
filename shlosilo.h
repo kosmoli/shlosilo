@@ -742,6 +742,16 @@ typedef struct UrMultipartEncoder UrMultipartEncoder;
  */
 typedef struct WalletKiRecord {
   uint32_t transfer_idx;
+  /**
+   * fix37 wallet-fingerprint binding: first 8 bytes of
+   * keccak256(spend_pub || view_pub) of the wallet this record was computed
+   * for. The sign leg ignores records whose fingerprint does not match the
+   * signing session's wallet (treated as absent — the conservative gap
+   * filler covers), so a plate swap without a power cycle or a rescan that
+   * re-indexed transfers cannot feed another wallet's key images into this
+   * wallet's wire array.
+   */
+  uint8_t wallet_fp[8];
   uint8_t key_image[32];
 } WalletKiRecord;
 
