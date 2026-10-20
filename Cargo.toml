@@ -118,6 +118,11 @@ curve25519-dalek = { version = "4", default-features = false, features = ["alloc
 monero-bulletproofs-generators = { version = "0.1", default-features = false }
 # P1-06 oracle: official-format tx parser (monero-rs) to diagnose deviations in our wire serialization
 monero = { version = "0.21" }
+# Independent Keccak-256 implementation (different crate than the runtime's
+# tiny-keccak wrapper): golden-pin cross-validation in tests/wallet_fp_golden.rs
+# recomputes keccak256(spend_pub || view_pub) through this second path so a
+# drift in `forms/encoding/keccak256` cannot go green against itself.
+sha3 = "0.10"
 
 [features]
 # Device-side BP+ generator cache FFI bridge (C flash backend). Off = no-op stub symbol.
