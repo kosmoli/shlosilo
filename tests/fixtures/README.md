@@ -81,4 +81,105 @@
   clean-checkout CI 39365890921 编译挂）——新增 fixture 后必须 `git add -f` 并
   `git ls-files` 核实真在索引里。
 
+## test0830_outputs_all.bin / test0830_cli_ki_all.bin
+
+- **来源**: monero-wallet-cli（test0830 主网测试钱包，曾收 0.001 XMR 实验金）：
+  `export_outputs all`（output export 请求容器）+ `export_key_images all`
+  （CLI 自算 key image **金标**容器）。2026-10-08 watch-only 对拍实验产出，
+  原存 `/tmp/test0830_*`（real_fixture.rs 的 ignored 材料），2026-10-20 入库。
+- **网络**: Monero mainnet
+- **大小**: 240 / 260 bytes
+- **SHA-256**: `2f3e238ae3de63452521d8311a6cdf6fb2dc52e429847bab668f2ebc3d9f59ee` /
+  `504395b804b72160668caecd755f058ab4d7474ed9a319c56ddbc1d48b3a68cb`
+- **用途**: `tests/golden_wallet2_bytes.rs` —
+  output export 金标（容器 magic 版本字节 `\x04` + 明文 epee 解析字段逐项钉值）；
+  key image export 金标（**我方计算的 key image == CLI 自算金标 32B 逐字节**；
+  容器版本字节 `\x03`；record wire parse→re-serialize 恒等；64B 伴随签名/信封
+  含随机 nonce，只验签不比字节）。
+- **隐私**: 主网测试钱包（dust 级）；spend/view 密钥内嵌
+  `tests/golden_wallet2_bytes.rs`（`TEST0830_*_SK_HEX`），按「公开 fixture 密钥
+  可内嵌进仓换覆盖」政策（tx2 先例）。⚠️ 含 spend secret——若 Kosmo 不接受，
+  撤下密钥改 env 门禁即可（测试代码已集中两个常量）。
+
+## unsigned_fc_addkeys3.bin
+
+- **来源**: `~/works/xmr-stagenet-lab/watchonly_probe/signed_rt/fc/unsigned_monero_tx`
+  —— monero-wallet-cli v0.18.5.1 `--stagenet` watch-only `transfer` 产出（真链
+  add-keys 形状：注资 tx 付两个 own subaddress → extra 带 **3 条 additional tx
+  keys**；SIGNED_TX_PARSE_FAIL_REPORT.md §9.2）。
+- **网络**: Monero stagenet
+- **大小**: 2,752 bytes
+- **SHA-256**: `78f5528192e2e9de49b5f7cd2270d450b77623808495b10f0b0d19a5defbe58f`
+- **用途**: `tests/golden_wallet2_bytes.rs` — 池 §40「additional_tx_keys 非空真链
+  情形」的 parse→re-serialize 逐字节对拍（fixture guard 断言 add_keys==3）。
+- **隐私**: stagenet 实验钱包；lab 密钥由公开 fixture 熵 `[0x22;32]` 派生（已在
+  `tests/xmr_subaddr_sign_roundtrip.rs` 公开），无真实资金。
+
+## unsigned_fa_subaddr.bin / unsigned_fb_change.bin
+
+- **来源**: 同批 `signed_rt/{fa,fb}/unsigned_monero_tx`（wallet2 CLI watch-only
+  `transfer`）：F_A = subaddress-input 形状（spend from index 1）、F_B =
+  change-input 形状（change 回 own address，主 tx key 派生）。
+- **网络**: Monero stagenet
+- **大小**: 1,970 / 1,974 bytes
+- **SHA-256**: `6fa318d3a5a3ada2b6adc29b882e4affcbbc07e59938aa1256e05df6f65e7e8f` /
+  `f0ba89f6db649899b0410508fc764d7db2e491dfcbf001799bb0f2dff4faf251`
+- **用途**: `tests/golden_wallet2_bytes.rs` — 两种真链 source 形状的
+  parse→re-serialize 对拍；fa 另作固定熵 re-sign 金标的输入。
+- **隐私**: 同 fc。
+
+## gold_signed_fa.bin
+
+- **来源**: `signed_rt/fa/gold_signed.bin` —— **monero-wallet-cli v0.18.5.1
+  `sign_transfer` 自签金标**（2026-10-16 三重对拍轮，SIGNED_TX_PARSE_FAIL_REPORT §3）。
+- **网络**: Monero stagenet
+- **大小**: 4,110 bytes
+- **SHA-256**: `a07804aeef14c995fa86859e85441b806a8bdd6dca09dc4e05fb7816d702d462`
+- **用途**: `tests/golden_wallet2_bytes.rs` — **跨实现**确定性区段逐字节对拍：
+  我方签名明文前 78B（ring 偏移 + key image）== wallet2 金标明文前 78B；
+  78B 后按设计分歧（vout output key 含随机 r），首个分歧点=78 被钉死。
+- **隐私**: 同 fc（加密于 lab view key 下；key 由公开 fixture 熵派生）。
+
+## ours_signed_fa.bin
+
+- **来源**: `signed_rt/fa/ours_signed.bin` —— 我方
+  `xmr_subaddr_sign_roundtrip::sign_real_fixture_for_wallet2_compare` 产出
+  （2026-10-16；`submit_transfer` 全流程接受）。
+- **网络**: Monero stagenet
+- **大小**: 3,937 bytes
+- **SHA-256**: `253f1a68cd815385df74c329f918fe29adcd898283f724aef2c7b041b22f9516`
+- **用途**: `tests/golden_wallet2_bytes.rs` — 固定熵 re-sign 确定性金标：
+  整笔 tx（vout keys + CLSAG 含内）前 3,745B 逐字节复现；3,745B 起为
+  `key_images` 填充策略分歧（金标=per-tx 1 条，现策略=wallet-indexed 2 条，
+  形态钉死）。跨实现对拍的「我方」一侧亦取此件。
+- **隐私**: 同 fc。
+
+## st1019_signed_container.bin / st1019_signed_plain.bin
+
+- **来源**: 2026-10-19 手机双花案取证（池 §47）：`~/works/1019-st/` 30 帧 QR 照片
+  → fountain 重组出真机容器（原 `/tmp/st1019_blob_full.bin`）+ 其解密明文
+  （原 `/tmp/st1019_plain_full.bin`，/tmp 会被清理故入库）。
+- **网络**: Monero mainnet（tx2 案真链流程）
+- **大小**: 5,865 / 5,772 bytes
+- **SHA-256**: `fbe7ef83da221037fe666497f8ea77d798e760dc18779ebee248f67e84cde55f` /
+  `99416f22dfe9fb3dca07763ea86d6eb052623ddc8bb63434f7c4f151f6a2d087`
+- **用途**: `tests/golden_wallet2_bytes.rs` — 真机流程容器
+  **decrypt == 金标明文逐字节**（信封验签 + ChaCha keystream 全链恒等）。
+  signed 明文无 parser → parse→re-serialize 面为缺口（见任务报告）。
+- **隐私**: 主网 tx2 lab 钱包产物；容器不含 spend secret；解密 view key 由公开
+  fixture 熵 `[0x22;32]` 派生（已随 `TX2_LAB_VIEW_SK` 公开）。
+
+## oracle_unsigned.bin
+
+- **来源**: wallet2 `monero-wallet-rpc` `transfer` JSON-RPC 响应截留
+  （2026-10-07，`/tmp/unsigned_resp.json` → `take_oracle.py` 抽出
+  `unsigned_txset`；amount 150000000 / fee 30580000，单输入）。
+- **网络**: Monero mainnet（DEV 钱包 A'）
+- **大小**: 2,045 bytes
+- **SHA-256**: `17ac0c377378ac3738fc55d041599cb2db7f4ac21df2e2aad4df5070369c7c97`
+- **用途**: `tests/golden_wallet2_bytes.rs` — wallet2 **RPC 路径**产出的 unsigned
+  容器 parse→re-serialize 对拍（与 CLI 路径互补）。
+- **隐私**: 主网测试钱包 A'（DEV，dust 级）；密钥 = 公开 fixture 熵
+  （`DEV_WALLET_ENTROPY`，等价于已公开的 `DEV_SPEND_SK`）。
+
 
