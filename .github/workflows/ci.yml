@@ -28,10 +28,24 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Clippy (all features, warnings denied)
         run: cargo clippy --all-targets --all-features -- -D warnings
+      # Fixture tracking gate (2026-10-20): tests/fixtures/tx2_cake_real_unsigned.bin
+      # was referenced by include_bytes! but silently swallowed by the repo-wide
+      # `*.bin` gitignore rule, so it never entered the index - the test build
+      # passed on dev trees (file on disk) and broke on every clean checkout.
+      # Every include_bytes!/include_str! literal path must be tracked by git.
+      - name: fixture tracking gate
+        run: bash scripts/check_fixtures.sh
+      # The test steps run through scripts/test_zero_on_alloc.sh, which preloads
+      # jemalloc with MALLOC_CONF=zero:true so uninitialized reads surface
+      # deterministically (fresh memory reads as 0 instead of stale heap residue).
+      - name: Install jemalloc (zero-on-alloc test wrapper)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libjemalloc2
       - name: Tests
-        run: cargo test --all-targets
+        run: bash scripts/test_zero_on_alloc.sh --all-targets --no-fail-fast
       - name: Tests (all features)
-        run: cargo test --all-targets --all-features
+        run: bash scripts/test_zero_on_alloc.sh --all-targets --all-features --no-fail-fast
       # Audit #15 P1-02: each diagnostic feature must build on its own (host).
       # Note: a host build with --no-default-features is not a supported
       # configuration (the no_std library's panic_handler collides with the

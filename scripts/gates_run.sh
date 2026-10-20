@@ -7,11 +7,19 @@
 #   pin_red_sign_real_cake_unsigned_addkeys_change_input  (tests/tx2_whitebox_tools.rs)
 #   pin_red_sign_path_change_to_own_subaddress_uses_main_txkey (tests/xmr_subaddr_sign_roundtrip.rs)
 #   pin_red_sign_three_outputs_bp_scratch_index_oob (tests/xmr_subaddr_sign_roundtrip.rs)
+#   pin_red_to_seed_returns_all_zero (tests/pin_mnemonic_to_seed.rs)
+#   pin_red_import_does_not_pollute_transfers_zero (tests/pin_import_key_images_pollution.rs)
+#   pin_red_fallback_fill_no_duplicate_selected (tests/pin_signed_key_images_wallet_indexed.rs)
+#   pin_red_single_frame_carries_real_cake_message (tests/pin_ur_single_frame_budget.rs)
+#   pin_red_details_pool_handles_nine_outputs (tests/pin_details_pool_over8.rs)
 cd ~/works/shlosilo-poc4 || exit 99
-cargo test --offline --all-targets > /tmp/g_test.log 2>&1; echo "TEST=$?"
+bash scripts/check_fixtures.sh > /tmp/g_fixt.log 2>&1; echo "FIXTURES=$?"
+# TEST/TESTALL run through the zero-on-alloc wrapper (jemalloc zero:true) so
+# uninitialized reads surface deterministically - same path as CI test steps.
+bash scripts/test_zero_on_alloc.sh --offline --all-targets --no-fail-fast > /tmp/g_test.log 2>&1; echo "TEST=$?"
 # T-04: mirror CI "Tests (all features)" — the feature-gated contract pins
 # (inv2/inv3 fptr round-trips) only compile under their features.
-cargo test --offline --all-targets --all-features > /tmp/g_testall.log 2>&1; echo "TESTALL=$?"
+bash scripts/test_zero_on_alloc.sh --offline --all-targets --all-features --no-fail-fast > /tmp/g_testall.log 2>&1; echo "TESTALL=$?"
 bash scripts/clippy.sh > /tmp/g_clippy.log 2>&1; echo "CLIPPY=$?"
 cargo check --offline --target armv7-unknown-linux-gnueabihf > /tmp/g_arm.log 2>&1; echo "ARM=$?"
 cargo check --lib --no-default-features --target thumbv7em-none-eabihf > /tmp/g_embed1.log 2>&1; echo "EMBED1=$?"
