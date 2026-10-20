@@ -63,4 +63,22 @@
 - **用途**: 单输入回归 vector + 设备固件输出对照（signed 文件是设备签名回归的期望值）。
 - **隐私**: 主网小额测试钱包数据，无真实资金。
 
+## tx2_cake_real_unsigned.bin
+
+- **来源**: 真实 Cake Wallet 构造的 unsigned 容器（tx2 案：add-keys funding tx 的 change
+  input；2026-10-17 归档，d0cd00c 取证探针同批）
+- **网络**: Monero mainnet
+- **大小**: 2,068 bytes
+- **SHA-256**: `5a20f5288bd024d0150518dc30ea94b416b4a252b0d9f1731da517e1c212aa1a`
+- **用途**: `tests/tx2_whitebox_tools.rs` 两个 CI pin 的唯一输入——
+  `pin_red_sign_real_cake_unsigned_addkeys_change_input`（MUST-RED 红钉：add-keys
+  change input 签名路拒收）+ `control_sign_real_cake_unsigned_addkeys_stripped_signs`
+  （剥 add-keys 后必过，证明 key 选择是唯一 blocker）
+- **隐私**: 加密于 `TX2_LAB_VIEW_SK`（lab 测试钱包 view key，密钥本身已内嵌
+  `tests/tx2_whitebox_tools.rs` 公开）；容器不含任何 spend secret。按「公开 fixture
+  密钥可内嵌进仓换覆盖」政策入库——pin 须 enforced 进 CI，不留 env 门禁。
+- **⚠️ 入库教训**: `.gitignore` 的 `*.bin` 规则会静默吞掉新 fixture（本文件曾因此缺席，
+  clean-checkout CI 39365890921 编译挂）——新增 fixture 后必须 `git add -f` 并
+  `git ls-files` 核实真在索引里。
+
 
