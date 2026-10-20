@@ -12,9 +12,9 @@
 //!
 //! * PINNED (deterministic, byte-compared here):
 //!   - unsigned_txset plaintext parse -> re-serialize byte identity against
-//!     wallet2-produced plaintexts (incl. the real-chain add-keys shapes) —
-//!     EXCEPT the known `construction_data.extra` gap (pool #39), whose exact
-//!     divergence shape is pinned below so any new divergence fails loudly.
+//!     wallet2-produced plaintexts (incl. the real-chain add-keys shapes and
+//!     the `construction_data.extra` field — preserved since the pool #39
+//!     fix, 2026-10-20), so any divergence fails loudly.
 //!   - wallet2 container decrypt == stored golden plaintext (envelope +
 //!     keystream fidelity against a real phone-flow container).
 //!   - key image export: our computed key images vs the CLI self-computed
@@ -41,11 +41,18 @@
 //!     derived from the signer entropy), so the vout region of wallet2 gold
 //!     vs our plaintext diverges by design. See
 //!     `golden_ours_vs_wallet2_gold_deterministic_region`.
-//!   - our signed output vs ARCHIVED golds from older signer revisions:
-//!     `r` derivation changed between revisions (see
-//!     `golden_resign_dev_1in_fresh_matches_signed_gold`), and the
-//!     `key_images` fill policy change postdates the fa gold (see
-//!     `golden_resign_fa_matches_archived_our_container`).
+//!   - our signed output vs ARCHIVED golds from older signer revisions: the
+//!     only sanctioned divergence is the `key_images` fill policy (gold =
+//!     per-tx, current writer = wallet-transfer-indexed; see
+//!     `pin_signed_key_images_wallet_indexed`). The September dev gold
+//!     (`golden_resign_dev_1in_fresh_matches_signed_gold`) is reproduced
+//!     byte-for-byte up to that array — the old "r derivation drift" note was
+//!     misattributed: the divergence WAS the pool #39 extra drop (the per-tx
+//!     context digest absorbs `extra`, and that digest feeds the derived tx
+//!     key `r`). The fa gold was regenerated 2026-10-20 with the SAME fixed
+//!     entropy after the extra fix (its 2026-10-16 revision dropped `extra`
+//!     in the digest, so its whole wire is superseded) — see
+//!     `golden_resign_fa_matches_archived_our_container`.
 //!
 //! Run: cargo test --release --test golden_wallet2_bytes (sign pins are slow
 //! in debug builds; `make test` runs them anyway).
@@ -151,23 +158,21 @@ fn monero_keys_from_entropy(entropy: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
 /// Parse a wallet2-produced unsigned plaintext into caller pools and pin the
 /// parse -> re-serialize byte identity against the wallet2 bytes.
 ///
-/// KNOWN DIVERGENCE (found by this pin; pool #39 "construction_data.extra 空"):
-/// `read_tx_construction_data` copies the `extra` bytes into the caller pool
-/// and then wraps the chunk with `SliceVec::new`, which RESETS the chunk to
-/// defaults and reports len 0 — the parsed `extra` is silently lost, so the
-/// writer re-emits `extra_len = 0` and the re-serialization is short by
-/// `varint_len + extra_len` bytes at the extra field position. Every OTHER
-/// field is byte-identical (asserted below). When the product bug is fixed the
-/// full-identity branch passes and this fallback becomes dead weight to be
-/// deleted in favor of a plain byte equality.
+/// EXTRA PRESERVED (pool #39, fixed 2026-10-20): `read_tx_construction_data`
+/// used to copy the `extra` bytes into the caller pool and then wrap the chunk
+/// with `SliceVec::new`, which RESETS the chunk to defaults and reports len 0 —
+/// the parsed `extra` was silently lost, so the writer re-emitted
+/// `extra_len = 0` and the re-serialization came out short by exactly one wire
+/// field (`varint(extra_len) || extra`, 45B on every fixture here) at the
+/// extra field position. The product now fills the payload through the
+/// SliceVec, so this helper is a plain byte equality: full identity over the
+/// parsed span INCLUDING the extra field, no divergence branch.
 ///
 /// The plaintext may additionally end with the unparsed "transfers" display
 /// segment (unsigned_txset.rs module doc); the writer does not emit it, so the
-/// byte-identity claim covers the parsed span only. Returns
-/// `(extra_divergence, trailing)` where `trailing` is the transfers-segment
-/// length (a per-fixture golden wire fact) and `extra_divergence` is the
-/// number of golden bytes the writer drops today (0 = clean full identity).
-fn roundtrip_unsigned_plain(plain: &[u8]) -> (usize, usize) {
+/// byte-identity claim covers the parsed span only. Returns the
+/// transfers-segment length (a per-fixture golden wire fact).
+fn roundtrip_unsigned_plain(plain: &[u8]) -> usize {
     let mut p_txes = core::array::from_fn::<Option<TxConstructionData<'_>>, 8, _>(|_| None);
     let mut p_src = core::array::from_fn::<Option<TxSourceEntry>, 32, _>(|_| None);
     let mut p_sd =
@@ -202,83 +207,37 @@ fn roundtrip_unsigned_plain(plain: &[u8]) -> (usize, usize) {
         out.len(),
         plain.len()
     );
-    if plain[..out.len()] == out[..] && plain.len() == out.len() {
-        // Full byte identity (no trailing segment, no divergence).
-        return (0, 0);
-    }
-    if plain[..out.len()] == out[..] {
-        // Clean identity over the parsed span; only the unparsed trailing
-        // transfers segment differs in length.
-        return (0, plain.len() - out.len());
-    }
-    // Known extra-drop divergence: `out` must equal the golden bytes with
-    // exactly one wire field — `varint(extra_len) || extra` — deleted at the
-    // first mismatch. Anything else is a NEW divergence and fails loudly.
-    let i = plain[..out.len()]
-        .iter()
-        .zip(out.iter())
-        .position(|(a, b)| a != b)
-        .expect("lengths differ but no byte mismatch?");
-    // Read the golden's extra_len varint at the divergence point.
-    let mut vlen = 0usize;
-    let mut extra_len = 0usize;
-    let mut shift = 0u32;
-    loop {
-        let b = plain[i + vlen];
-        extra_len |= ((b & 0x7F) as usize) << shift;
-        vlen += 1;
-        shift += 7;
-        if b & 0x80 == 0 {
-            break;
-        }
-        assert!(shift < 64, "malformed varint at divergence point");
-    }
-    let deleted = vlen + extra_len;
-    assert_eq!(
-        &plain[..i],
-        &out[..i],
-        "bytes before the extra field must be byte-identical"
-    );
-    // Our writer still emits its own extra field: `0x00` (varint 0, empty) —
-    // exactly the pinned gap.
-    assert_eq!(
-        out[i], 0,
-        "known gap shape: our writer must emit extra_len=0 here (it drops the \
-         parsed extra); any other value means the gap changed — update this pin"
-    );
-    let tail_len = out.len() - i - 1;
-    let tail_plain = &plain[i + deleted..i + deleted + tail_len];
-    if tail_plain != &out[i + 1..] {
-        let j = tail_plain
+    if plain[..out.len()] != out[..] {
+        // Any mismatch is a NEW divergence — the extra-drop gap is fixed and
+        // this helper no longer reconstructs it.
+        let i = plain[..out.len()]
             .iter()
-            .zip(out[i + 1..].iter())
+            .zip(out.iter())
             .position(|(a, b)| a != b)
-            .expect("tail lengths equal but no mismatch");
-        let abs = i + deleted + j;
-        let lo = j.saturating_sub(8);
-        let hi = (j + 24).min(tail_len);
+            .expect("lengths differ but no byte mismatch?");
+        let lo = i.saturating_sub(8);
+        let hi = (i + 24).min(out.len());
         panic!(
-            "NEW divergence beyond the known extra drop at plain offset {abs} \
-             (divergence field at {i}, golden extra field = {deleted}B)\n  \
+            "NEW parse -> re-serialize divergence at plain offset {i} (construction_data.extra \
+             must be preserved; the old extra-drop gap is fixed)\n  \
              plain[{}..{}]: {:02x?}\n  ours [{}..{}]: {:02x?}",
-            i + deleted + lo,
-            i + deleted + hi,
-            &tail_plain[lo..hi],
-            i + 1 + lo,
-            i + 1 + hi,
-            &out[i + 1 + lo..i + 1 + hi]
+            lo,
+            hi,
+            &plain[lo..hi],
+            lo,
+            hi,
+            &out[lo..hi]
         );
     }
-    let trailing = plain.len() - out.len() - (deleted - 1);
+    let trailing = plain.len() - out.len();
     println!(
-        "roundtrip: plain={}B reserialized={}B extra_field={}B(varint+payload) trailing={}B \
-         [KNOWN GAP: construction_data.extra dropped by the parse->re-serialize path]",
+        "roundtrip: plain={}B reserialized={}B — byte-identical over the parsed span \
+         (construction_data.extra preserved), trailing={}B transfers segment",
         plain.len(),
         out.len(),
-        deleted,
         trailing
     );
-    (deleted, trailing)
+    trailing
 }
 
 /// Decrypt a wallet2 unsigned container into its plaintext.
@@ -299,8 +258,9 @@ fn golden_plain_txset_parse_reserialize_identity() {
     let plain: &[u8] = include_bytes!("fixtures/txset_plain.bin");
     assert_eq!(
         roundtrip_unsigned_plain(plain),
-        (45, 83),
-        "golden wire facts: 45B extra field (known gap), 83B trailing transfers segment"
+        83,
+        "golden wire fact: 83B trailing transfers segment (parsed span incl. the \
+         45B extra field is byte-identical — helper asserts full identity)"
     );
 }
 
@@ -350,8 +310,9 @@ fn golden_tx2_cake_addkeys_parse_reserialize_identity() {
     );
     assert_eq!(
         roundtrip_unsigned_plain(&plain),
-        (45, 4),
-        "golden wire facts: 45B extra field (known gap), 4B trailing transfers segment"
+        4,
+        "golden wire fact: 4B trailing transfers segment (parsed span incl. the \
+         45B extra field is byte-identical — helper asserts full identity)"
     );
 }
 
@@ -372,8 +333,9 @@ fn golden_fc_addkeys3_parse_reserialize_identity() {
     let plain = unsigned_plain(enc, &view_sk);
     assert_eq!(
         roundtrip_unsigned_plain(&plain),
-        (45, 690),
-        "golden wire facts: 45B extra field (known gap), 690B trailing transfers segment"
+        690,
+        "golden wire fact: 690B trailing transfers segment (parsed span incl. the \
+         45B extra field is byte-identical — helper asserts full identity)"
     );
 }
 
@@ -385,8 +347,9 @@ fn golden_fa_subaddr_input_parse_reserialize_identity() {
     let plain = unsigned_plain(enc, &LAB_VIEW_SK);
     assert_eq!(
         roundtrip_unsigned_plain(&plain),
-        (45, 4),
-        "golden wire facts: 45B extra field (known gap), 4B trailing transfers segment"
+        4,
+        "golden wire fact: 4B trailing transfers segment (parsed span incl. the \
+         45B extra field is byte-identical — helper asserts full identity)"
     );
 }
 
@@ -398,8 +361,9 @@ fn golden_fb_change_input_parse_reserialize_identity() {
     let plain = unsigned_plain(enc, &LAB_VIEW_SK);
     assert_eq!(
         roundtrip_unsigned_plain(&plain),
-        (45, 4),
-        "golden wire facts: 45B extra field (known gap), 4B trailing transfers segment"
+        4,
+        "golden wire fact: 4B trailing transfers segment (parsed span incl. the \
+         45B extra field is byte-identical — helper asserts full identity)"
     );
 }
 
@@ -411,8 +375,9 @@ fn golden_dev_1in_fresh_parse_reserialize_identity() {
     let plain = unsigned_plain(enc, &DEV_VIEW_SK);
     assert_eq!(
         roundtrip_unsigned_plain(&plain),
-        (45, 4),
-        "golden wire facts: 45B extra field (known gap), 4B trailing transfers segment"
+        4,
+        "golden wire fact: 4B trailing transfers segment (parsed span incl. the \
+         45B extra field is byte-identical — helper asserts full identity)"
     );
 }
 
@@ -423,8 +388,9 @@ fn golden_dev_2in_parse_reserialize_identity() {
     let plain = unsigned_plain(enc, &DEV_VIEW_SK);
     assert_eq!(
         roundtrip_unsigned_plain(&plain),
-        (45, 162),
-        "golden wire facts: 45B extra field (known gap), 162B trailing transfers segment"
+        162,
+        "golden wire fact: 162B trailing transfers segment (parsed span incl. the \
+         45B extra field is byte-identical — helper asserts full identity)"
     );
 }
 
@@ -438,8 +404,9 @@ fn golden_oracle_unsigned_parse_reserialize_identity() {
     let plain = unsigned_plain(enc, &DEV_VIEW_SK);
     assert_eq!(
         roundtrip_unsigned_plain(&plain),
-        (45, 83),
-        "golden wire facts: 45B extra field (known gap), 83B trailing transfers segment"
+        83,
+        "golden wire fact: 83B trailing transfers segment (parsed span incl. the \
+         45B extra field is byte-identical — helper asserts full identity)"
     );
 }
 
@@ -713,19 +680,21 @@ fn fixture_entropies_reproduce_public_fixture_keys() {
 /// `signed_monero_tx` produced by the device (fce3d9d) + host A/B on
 /// 2026-09-15 (`submit_transfer` accepted it, chain tx 2d2c40d1…).
 ///
-/// Byte-compared: the deterministic vin region (framing + ring offsets + key
-/// image + vout count/amount/tag, 83B for this fixture) — the key image is a
-/// deterministic value, so equality pins our input_sk derivation against the
-/// wallet2-validated golden.
+/// Byte-compared: the WHOLE transaction — framing + vin (ring offsets + key
+/// image) + vout output keys + CLSAG + ptx fields — reproduces the September
+/// gold byte-for-byte up to the `key_images` array (offset 3794). This also
+/// settles the old "r derivation drift" note (pool #40): the divergence at
+/// the first vout key WAS the pool #39 extra drop — the per-tx context digest
+/// absorbs `extra`, and that digest feeds the derived tx secret key r; the
+/// September signer absorbed the field, the pre-fix signer lost it. With the
+/// extra preserved the re-sign reproduces the September output exactly.
 ///
-/// NOT byte-compared (known drift, pool #40 finding): the vout output keys and
-/// everything after offset 83. The 2026-09-15 gold embeds the tx secret key r
-/// as derived by THAT revision of the signer; the current signer derives r
-/// differently (its own output is self-deterministic and byte-reproduces the
-/// 2026-10-16 fa gold — see the fa pin — but not the September revision).
-/// The archived A/B gold is therefore stale relative to the current signer;
-/// regenerating it needs a new fixed-entropy A/B run (device + host), listed
-/// as a gap in the report.
+/// Known tail divergence (documented, shape-pinned): at offset 3794 the
+/// `key_images` outer array differs — the gold writes the per-tx key image
+/// (count 1), while the current writer applies the wallet-transfer-indexed
+/// fill policy (pin_signed_key_images_wallet_indexed: one entry per wallet
+/// transfer position — 4 here). Both are wallet2-parse-clean; the policy
+/// change postdates the gold.
 #[test]
 fn golden_resign_dev_1in_fresh_matches_signed_gold() {
     let enc: &[u8] = include_bytes!("fixtures/unsigned_txset_1in_fresh.bin");
@@ -734,10 +703,10 @@ fn golden_resign_dev_1in_fresh_matches_signed_gold() {
     let ours_plain = decrypt_signed_txset(&out, &DEV_VIEW_SK).expect("decrypt our re-sign");
     let gold_plain = decrypt_signed_txset(gold, &DEV_VIEW_SK).expect("decrypt archived gold");
     assert_eq!(
-        &ours_plain[..83],
-        &gold_plain[..83],
-        "vin region (ring offsets + key image) + vout prologue must be \
-         byte-identical to the wallet2-accepted September gold"
+        &ours_plain[..3794],
+        &gold_plain[..3794],
+        "the whole transaction (framing + vin + vout keys + CLSAG + ptx fields) must \
+         reproduce the wallet2-accepted September gold byte-for-byte"
     );
     assert_eq!(
         signed_plain_first_key_image(&ours_plain),
@@ -748,69 +717,131 @@ fn golden_resign_dev_1in_fresh_matches_signed_gold() {
         .iter()
         .zip(gold_plain.iter())
         .position(|(a, b)| a != b)
-        .expect("re-sign must not be identical to the September gold (r derivation drift)");
+        .expect("re-sign must diverge from the gold at the key_images policy boundary");
     assert_eq!(
-        first_diff, 83,
-        "the divergence must start exactly at the first vout output key \
-         (per-revision tx secret key r); any earlier divergence is a NEW drift \
+        first_diff, 3794,
+        "the only sanctioned divergence is the `key_images` fill policy at offset 3794 \
+         (gold per-tx vs ours wallet-indexed); any earlier divergence is a NEW drift \
          in the deterministic part of the signer"
+    );
+    // Tail shape: `key_images` count 0x04 (ours, wallet-indexed) vs 0x01
+    // (gold, per-tx), then the entries; everything after the array is
+    // identical shifted by the 3 extra 32B entries (96B).
+    assert_eq!(
+        gold_plain[3794], 1,
+        "gold: per-tx key_images fill (1 input)"
+    );
+    assert_eq!(
+        ours_plain[3794], 4,
+        "ours: wallet-indexed key_images fill (4 entries)"
+    );
+    assert_eq!(
+        ours_plain.len(),
+        gold_plain.len() + 96,
+        "tail delta = three extra 32B key images"
+    );
+    assert_eq!(
+        &gold_plain[3795..3827],
+        &ours_plain[3795..3827],
+        "the first key_images entry (the true per-tx image) must match byte-for-byte"
+    );
+    assert_eq!(
+        &gold_plain[3827..],
+        &ours_plain[3795 + 128..],
+        "everything after the key_images array must match shifted by the extra entries"
     );
 }
 
 /// Fixed-entropy re-sign of the stagenet fa fixture vs fixtures/ours_signed_fa.bin
 /// (the archived shlosilo output of
-/// tests/xmr_subaddr_sign_roundtrip.rs::sign_real_fixture_for_wallet2_compare,
-/// 2026-10-16). Full determinism pin: the signer is a pure function of
-/// (container, wallet entropy, signer entropy), and the whole transaction —
-/// vout output keys + CLSAG included — reproduces the archived gold
-/// byte-for-byte up to the `key_images` array.
+/// tests/xmr_subaddr_sign_roundtrip.rs::sign_real_fixture_for_wallet2_compare).
+/// Full determinism pin: the signer is a pure function of
+/// (container, wallet entropy, signer entropy), and the whole signed
+/// CONTAINER — envelope, tx_bytes (vout output keys + CLSAG), construction
+/// data (incl. the `extra` field) and the key_images tail — reproduces the
+/// gold byte-for-byte.
 ///
-/// Known tail divergence (documented, shape-pinned): from offset 3745 the
-/// `key_images` outer array differs — the archived gold (2026-10-16) writes
-/// the per-tx key image (1 entry), while the current writer applies the
-/// wallet-transfer-indexed fill policy (pin_signed_key_images_wallet_indexed:
-/// one entry per wallet transfer, gap slots filled with a derived image), so
-/// the re-sign writes 2 entries for this 2-transfer wallet (+32B). Both are
-/// wallet2-parse-clean; the policy change postdates the gold.
+/// Gold regenerated 2026-10-20 on the host with the SAME fixed entropy after
+/// the pool #39 `construction_data.extra` fix: the signed wire changed (the
+/// per-tx context digest absorbs `extra`, and that digest feeds the derived tx
+/// key `r`), and the current writer applies the wallet-transfer-indexed
+/// `key_images` fill policy (pin_signed_key_images_wallet_indexed) that
+/// postdates the previous 2026-10-16 gold. The old gold's shape pins (prefix
+/// identity up to offset 3745, per-tx 1-entry vs wallet-indexed 2-entry
+/// `key_images` tail) are retired together with that gold.
 #[test]
 fn golden_resign_fa_matches_archived_our_container() {
     let enc: &[u8] = include_bytes!("fixtures/unsigned_fa_subaddr.bin");
     let gold: &[u8] = include_bytes!("fixtures/ours_signed_fa.bin");
     let out = sign_with_fixed_entropy(enc, &LAB_WALLET_ENTROPY);
-    let ours_plain = decrypt_signed_txset(&out, &LAB_VIEW_SK).expect("decrypt our re-sign");
-    let gold_plain = decrypt_signed_txset(gold, &LAB_VIEW_SK).expect("decrypt archived gold");
     assert_eq!(
-        &ours_plain[..3745],
-        &gold_plain[..3745],
-        "the whole transaction (framing + vin + vout keys + CLSAG + ptx \
-         fields) must reproduce the archived gold byte-for-byte"
+        &out[..],
+        gold,
+        "the whole signed container must reproduce the regenerated gold byte-for-byte \
+         (same fixed entropy; construction_data.extra preserved)"
     );
+}
+
+/// Invariant pin — "signed_tx_set round-trip must be byte-identical, extra
+/// preserved" (Kosmo 2026-10-20), sign-path face: the construction data
+/// embedded in OUR signed output must carry the wallet2 `extra` verbatim. The
+/// old `SliceVec::new` wipe dropped it, so the signer echoed no payment id
+/// where wallet2's output echoes one (the historical "ours: no payment id"
+/// divergence vs wallet2). Pin: parse the unsigned
+/// fixture with the product parser, sign through the product path
+/// (`business::sign::sign_with_entropy`, device-identical) under the fixed
+/// entropy, and require the parsed `extra` payload to appear verbatim in the
+/// signed plaintext — exactly once, since our signer's own tx extra embeds a
+/// different tx pub key / payment-id echo and cannot collide with the
+/// preserved wallet2 field.
+#[test]
+fn golden_sign_path_embeds_construction_data_extra() {
+    // Parse side: the product parser must hand the extra to the model.
+    let enc: &[u8] = include_bytes!("fixtures/unsigned_fa_subaddr.bin");
+    let plain = unsigned_plain(enc, &LAB_VIEW_SK);
+    let mut p_txes = core::array::from_fn::<Option<TxConstructionData<'_>>, 8, _>(|_| None);
+    let mut p_src = core::array::from_fn::<Option<TxSourceEntry>, 32, _>(|_| None);
+    let mut p_sd =
+        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+    let mut p_sel = [0usize; 256];
+    let mut p_ex = [0u8; 8192];
+    let mut p_de =
+        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+    let mut p_su = [0u32; 256];
+    let utx = deserialize_unsigned_tx(
+        &plain,
+        UnsignedTxPools {
+            txes: &mut p_txes,
+            sources: &mut p_src,
+            splitted_dsts: &mut p_sd,
+            selected_transfers: &mut p_sel,
+            extra: &mut p_ex,
+            dests: &mut p_de,
+            subaddr_indices: &mut p_su,
+        },
+    )
+    .expect("deserialize fa fixture");
+    let d = utx.txes.iter().flatten().next().expect("single-tx fixture");
+    let extra: Vec<u8> = d.extra.to_vec();
     assert_eq!(
-        ours_plain.len(),
-        gold_plain.len() + 32,
-        "tail delta = one extra 32B key image"
+        extra.len(),
+        44,
+        "fixture wire fact: 44B extra payload (tx pub key + encrypted payment id)"
     );
-    // Tail shape: `key_images` count byte 0x02 (ours, wallet-indexed) vs
-    // 0x01 (gold, per-tx), then the entries; everything after the array is
-    // identical shifted by the extra 32B entry.
+    // Sign path: the embedded construction data must echo it.
+    let out = sign_with_fixed_entropy(enc, &LAB_WALLET_ENTROPY);
+    let signed_plain = decrypt_signed_txset(&out, &LAB_VIEW_SK).expect("decrypt our signed output");
+    let occ = signed_plain
+        .windows(extra.len())
+        .filter(|w| **w == extra[..])
+        .count();
     assert_eq!(
-        ours_plain[3745], 2,
-        "ours: wallet-indexed key_images fill (2 transfers)"
-    );
-    assert_eq!(
-        gold_plain[3745], 1,
-        "gold: per-tx key_images fill (1 input)"
-    );
-    assert_eq!(
-        &ours_plain[3746..3778],
-        &gold_plain[3746..3778],
-        "the first key_images entry must match the gold entry byte-for-byte"
-    );
-    assert_eq!(
-        &ours_plain[3745 + 1 + 64..],
-        &gold_plain[3745 + 1 + 32..],
-        "everything after the key_images array must match shifted by the \
-         extra entry"
+        occ,
+        1,
+        "the wallet2 construction_data.extra payload must appear verbatim in our signed \
+         plaintext (the construction-data field is its only copy — our own tx extra carries \
+         different values), hex: {}",
+        hex(&extra)
     );
 }
 
@@ -869,9 +900,12 @@ fn signed_plain_first_key_image(plain: &[u8]) -> [u8; 32] {
 ///   - everything past the vin: the first divergence is the vout output key,
 ///     which embeds the tx secret key r (wallet2 draws r from its RNG, ours is
 ///     derived from the fixed signer entropy). Also divergent by design:
-///     construction_data payment-id echo and the `key_images` list length
-///     (wallet2 carries the wallet-wide spent set, ours the per-tx set —
-///     SIGNED_TX_PARSE_FAIL_REPORT.md §3.1; both wallet2-parse-clean).
+///     the `key_images` list length (wallet2 carries the wallet-wide spent
+///     set, ours the wallet-indexed fill — SIGNED_TX_PARSE_FAIL_REPORT.md
+///     §3.1; both wallet2-parse-clean). The construction_data payment-id
+///     echo is NO LONGER divergent: it was the pool #39 extra drop, fixed
+///     2026-10-20 — our output now echoes the field verbatim (pinned by
+///     `golden_sign_path_embeds_construction_data_extra`).
 #[test]
 fn golden_ours_vs_wallet2_gold_deterministic_region() {
     let gold_container: &[u8] = include_bytes!("fixtures/gold_signed_fa.bin");
@@ -906,8 +940,8 @@ fn golden_ours_vs_wallet2_gold_deterministic_region() {
     );
     println!(
         "gold={}B ours={}B (Δ{}B): vin[..78] byte-identical vs wallet2 gold; \
-         divergent by design past offset 78 (random r / payment-id echo / \
-         wallet-wide key_images list)",
+         divergent by design past offset 78 (random r / wallet-indexed \
+         key_images list; construction_data extra echo now preserved)",
         gold_plain.len(),
         our_plain.len(),
         gold_plain.len().abs_diff(our_plain.len())

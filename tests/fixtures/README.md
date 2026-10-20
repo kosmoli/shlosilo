@@ -142,16 +142,20 @@
 
 ## ours_signed_fa.bin
 
-- **来源**: `signed_rt/fa/ours_signed.bin` —— 我方
-  `xmr_subaddr_sign_roundtrip::sign_real_fixture_for_wallet2_compare` 产出
-  （2026-10-16；`submit_transfer` 全流程接受）。
+- **来源**: `signed_rt/fa/ours_signed.bin` 一脉的我方产出 ——
+  `xmr_subaddr_sign_roundtrip::sign_real_fixture_for_wallet2_compare` 同路径
+  （`business::sign::sign_with_entropy`，wallet 熵 `[0x22;32]`、签名固定熵
+  `0x77×32`）host 侧重生成。**2026-10-20 重生成**（construction_data.extra
+  修复后 signed wire 变更：per-tx context digest 吸收 `extra`，该 digest 参与
+  派生 tx key `r`，故整笔 tx 全变；同时现 writer 的 `key_images` 为
+  wallet-indexed 填充）。旧件（2026-10-16，3,937 B，sha256 `253f1a68…`，
+  `submit_transfer` 全流程接受）已退役。
 - **网络**: Monero stagenet
-- **大小**: 3,937 bytes
-- **SHA-256**: `253f1a68cd815385df74c329f918fe29adcd898283f724aef2c7b041b22f9516`
+- **大小**: 4,013 bytes
+- **SHA-256**: `e582f0f9e0649bbe523f3c3c1d702cb65f34267afa71207b78103aa8e022a0d4`
 - **用途**: `tests/golden_wallet2_bytes.rs` — 固定熵 re-sign 确定性金标：
-  整笔 tx（vout keys + CLSAG 含内）前 3,745B 逐字节复现；3,745B 起为
-  `key_images` 填充策略分歧（金标=per-tx 1 条，现策略=wallet-indexed 2 条，
-  形态钉死）。跨实现对拍的「我方」一侧亦取此件。
+  **整容器逐字节恒等**（信封 + tx_bytes（vout keys + CLSAG）+ construction
+  data（含 `extra`）+ key_images 尾部）。跨实现对拍的「我方」一侧亦取此件。
 - **隐私**: 同 fc。
 
 ## st1019_signed_container.bin / st1019_signed_plain.bin

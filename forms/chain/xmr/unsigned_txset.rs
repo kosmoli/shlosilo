@@ -606,9 +606,20 @@ fn read_tx_construction_data<'a>(
     }
     let (chunk, rest) = core::mem::take(&mut *extra_rest).split_at_mut(extra_len);
     *extra_rest = rest;
-    chunk.copy_from_slice(extra_src);
     *off = extra_end;
-    let extra = crate::types::SliceVec::new(chunk);
+    // The payload must be filled in THROUGH the SliceVec. `SliceVec::new`
+    // resets the wrapped chunk to `T::default()` placeholders and starts at
+    // len 0, so the old "copy then wrap" order silently wiped the copied bytes
+    // and the parsed `extra` came back empty — the parse -> re-serialize
+    // round-trip dropped the extra field and the signer's embedded
+    // construction data lost it (signed_tx_set round-trip must be
+    // byte-identical, extra preserved). Capacity contract stays intact: the
+    // chunk is exactly `extra_len` long and `push` refuses over-capacity with
+    // an explicit error (never a silent truncation).
+    let mut extra = crate::types::SliceVec::new(chunk);
+    for b in extra_src.iter() {
+        extra.push(*b).map_err(|_| err())?;
+    }
     let unlock_time = read_u64(data, off)?;
     let use_rct = read_u8(data, off)?;
     let version = read_varint(data, off)?;
@@ -1134,6 +1145,117 @@ mod tests {
         assert_eq!(d.rct_config.bp_version, 4);
         let bytes2 = serialize_unsigned_tx(&back);
         assert_eq!(bytes, bytes2);
+    }
+
+    /// construction_data.extra must survive parse -> re-serialize (pool #39:
+    /// `SliceVec::new` resets the chunk it wraps, so filling the caller pool
+    /// BEFORE the wrap silently wiped the payload and the writer re-emitted
+    /// extra_len=0). Pin: a non-empty extra round-trips byte-identically and
+    /// comes back out of the parse with its bytes intact.
+    #[test]
+    fn construction_extra_survives_parse_reserialize() {
+        let src = TxSourceEntry {
+            outputs: heapless::Vec::from_slice(&[OutputEntry {
+                index: 7,
+                dest: [0x11u8; 32],
+                mask: [0x22u8; 32],
+            }])
+            .unwrap(),
+            real_output: 0,
+            real_out_tx_key: zeroize::Zeroizing::new([0x33u8; 32]),
+            real_out_additional_tx_keys: heapless::Vec::new(),
+            real_output_in_tx_index: 0,
+            amount: 1000,
+            rct: true,
+            mask: crate::types::SecretBytes::new([0x66u8; 32]),
+            multisig_kLRki: MultisigKLRki {
+                k: [0; 32],
+                l: [0; 32],
+                r: [0; 32],
+                ki: [0; 32],
+            },
+        };
+        let dest = TxDestinationEntry {
+            original: heapless::Vec::new(),
+            amount: 900,
+            spend_public_key: [0x44u8; 32],
+            view_public_key: [0x55u8; 32],
+            is_subaddress: false,
+            is_integrated: false,
+        };
+        let mut u_src = [None; 1];
+        let mut u_src_f = crate::types::SliceVec::new(&mut u_src);
+        u_src_f.push(Some(src)).unwrap();
+        let mut u_sd = [dest.clone()];
+        let mut u_sd_f = crate::types::SliceVec::new(&mut u_sd);
+        u_sd_f.push(dest.clone()).unwrap();
+        let mut u_sel = [0usize; 1];
+        let mut u_sel_f = crate::types::SliceVec::new(&mut u_sel);
+        u_sel_f.push(0usize).unwrap();
+        // non-empty extra filled THROUGH the SliceVec (the very contract whose
+        // violation dropped the field)
+        let mut u_extra = [0u8; 3];
+        let mut u_extra_f = crate::types::SliceVec::new(&mut u_extra);
+        u_extra_f.push(0x01).unwrap();
+        u_extra_f.push(0x02).unwrap();
+        u_extra_f.push(0x03).unwrap();
+        let mut u_dests: [TxDestinationEntry; 0] = [];
+        let mut u_sub: [u32; 0] = [];
+        let mut u_txd = [None; 1];
+        let mut u_txd_f = crate::types::SliceVec::new(&mut u_txd);
+        u_txd_f
+            .push(Some(TxConstructionData {
+                sources: u_src_f,
+                change_dts: dest.clone(),
+                splitted_dsts: u_sd_f,
+                selected_transfers: u_sel_f,
+                extra: u_extra_f,
+                unlock_time: 0,
+                use_rct: 1,
+                rct_config: RctConfig {
+                    version: 0,
+                    range_proof_type: 0,
+                    bp_version: 4,
+                },
+                dests: crate::types::SliceVec::new(&mut u_dests),
+                subaddr_account: 0,
+                subaddr_indices: crate::types::SliceVec::new(&mut u_sub),
+            }))
+            .unwrap();
+        let tx = UnsignedTx { txes: u_txd_f };
+        let bytes = serialize_unsigned_tx(&tx);
+        let mut bp_txes: [Option<TxConstructionData<'_>>; 1] = core::array::from_fn(|_| None);
+        let mut bp_src: [Option<TxSourceEntry>; 1] = core::array::from_fn(|_| None);
+        let mut bp_sd =
+            core::array::from_fn::<TxDestinationEntry, 1, _>(|_| TxDestinationEntry::default());
+        let mut bp_sel = [0usize; 1];
+        let mut bp_extra = [0u8; 512];
+        let mut bp_dests: [TxDestinationEntry; 0] = [];
+        let mut bp_sub: [u32; 0] = [];
+        let back = deserialize_unsigned_tx(
+            &bytes,
+            UnsignedTxPools {
+                txes: &mut bp_txes,
+                sources: &mut bp_src,
+                splitted_dsts: &mut bp_sd,
+                selected_transfers: &mut bp_sel,
+                extra: &mut bp_extra,
+                dests: &mut bp_dests,
+                subaddr_indices: &mut bp_sub,
+            },
+        )
+        .expect("deserialize");
+        let d = back.txes.iter().flatten().next().unwrap();
+        assert_eq!(
+            &d.extra[..],
+            &[0x01, 0x02, 0x03],
+            "parsed construction_data.extra must carry the wire payload (not a wiped, empty chunk)"
+        );
+        let bytes2 = serialize_unsigned_tx(&back);
+        assert_eq!(
+            bytes, bytes2,
+            "parse -> re-serialize must be byte-identical incl. the extra field"
+        );
     }
 
     /// encrypt_unsigned ↔ decrypt_unsigned duality.
