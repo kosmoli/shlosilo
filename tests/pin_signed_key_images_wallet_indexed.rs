@@ -351,3 +351,122 @@ fn refuse_on_record_source_mismatch() {
         "expected KeyImageRecordMismatch, got {err:?}"
     );
 }
+
+/// MUST-RED (pool §49): the conservative gap filler must NOT duplicate the
+/// selected position's TRUE key image. Today the recordless sign fills every
+/// uncovered position with the spent input's derived key image — the outer
+/// array is `[src_ki, src_ki, …, src_ki]` (`[0]==[1]` collision, and the fill
+/// equals `kis[selected]`) — so any implementation that dedupes the whole
+/// imported array (wallet2's import writes it positionally into m_transfers)
+/// misreads the fill. INTENTIONALLY RED while the collision exists; no
+/// `#[should_panic]`, no `#[ignore]`. (The sibling green contract
+/// `conservative_fallback_without_records` pins TODAY's fill semantics and is
+/// expected to change together with this bug's fix.)
+#[test]
+fn pin_red_fallback_fill_no_duplicate_selected() {
+    let (plain, kis) = sign_stripped_fixture(&[]);
+    let src_ki = ptx_key_image_from_str_field(&plain);
+    assert_eq!(
+        kis[FIXTURE_MAX_SELECTED], src_ki,
+        "selected position must carry the source-derived key image"
+    );
+    for (i, ki) in kis.iter().enumerate() {
+        if i != FIXTURE_MAX_SELECTED && *ki == src_ki {
+            panic!(
+                "PINNED RED: conservative gap filler duplicated the selected position's true key \
+                 image (pool §49): outer key_images[{i}] == key_images[{FIXTURE_MAX_SELECTED}] — \
+                 the recordless fill reuses the spent input's derived KI for every gap, so the \
+                 array collides with itself (`[0]==[1]` is the observed shape) and any \
+                 implementation that dedupes the imported array (wallet2's import_key_images \
+                 writes every entry positionally into m_transfers) misreads the fill. Fix \
+                 direction: the filler must never equal a true key image shipped in the same \
+                 array — derive a distinct per-position filler, or draw true values from a \
+                 persistent record store (LuckyFox follow-up) / refuse the gap (v2 policy)."
+            );
+        }
+    }
+}
+
+/// The fixture's `key_images_str` wire field, GOLDEN bytes (see the format
+/// verdict below): `<` + 64 lowercase hex + `>` + one ASCII space.
+const KEY_IMAGES_STR_GOLDEN: &[u8] =
+    b"<e3aa1e9884caad48528e57cef4556214d1343478b803e94b84ac904f9ba93515> ";
+
+/// Count `<` + 64 lowercase hex + `>` + ` ` items (the key_images_str item
+/// shape) over a byte buffer.
+fn count_ki_str_items(buf: &[u8]) -> usize {
+    let is_hex = |b: u8| matches!(b, b'0'..=b'9' | b'a'..=b'f');
+    let mut n = 0;
+    for i in 0..buf.len().saturating_sub(67) {
+        if buf[i] == b'<'
+            && buf[i + 65] == b'>'
+            && buf[i + 66] == b' '
+            && buf[i + 1..i + 65].iter().all(|&b| is_hex(b))
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// GREEN contract: our `key_images_str` format is byte-identical to wallet2's
+/// `ptx.key_images` reconciliation caliber (pool §50 — verified against the
+/// wallet2 source tree on 2026-10-20, /tmp/parse1853/monero):
+/// - wallet2.cpp:7989-7998 (also 10252-10267, 10608-10618): one item per tx
+///   INPUT (`tx.vin` order = our `selected_transfers` order), built as
+///   `key_images += boost::to_string(in.k_image) + " "` → each item is the key
+///   image's `operator<<` rendering followed by ONE trailing space;
+/// - crypto.h:337-339: `operator<<(key_image)` → `epee::to_hex::formatted`;
+/// - contrib/epee/src/hex.cpp:77-82: `formatted` = `'<'` + lowercase hex
+///   ("0123456789abcdef" table) + `'>'`;
+/// - boost/exception/to_string.hpp: `boost::to_string(x)` = `out << x` into a
+///   string stream (compile-probed on this host: `boost::to_string(ki)` yields
+///   `<ca88215e> `).
+///
+/// So the golden wire item is `<` + 64 LOWERCASE hex + `>` + one space, in
+/// selected (input) order, and ONLY this tx's inputs enter the string — the
+/// conservative fallback fill for other wallet transfers must NOT appear.
+/// (This fixture has ONE source, so multi-source ordering is not exercised
+/// here; the concatenation order is `zip(sources, selected_transfers)` on our
+/// side vs `tx.vin` order on wallet2's, which is the same order.)
+#[test]
+fn key_images_str_format_matches_wallet2() {
+    // Recordless sign: the outer array is full of the conservative filler —
+    // the string must still carry exactly ONE item (fallback never enters it).
+    let (plain, kis) = sign_stripped_fixture(&[]);
+
+    // 1. golden bytes present, exactly once (brackets + lowercase hex + one
+    //    trailing space pinned literal-ly).
+    let occ = plain
+        .windows(KEY_IMAGES_STR_GOLDEN.len())
+        .filter(|w| *w == KEY_IMAGES_STR_GOLDEN)
+        .count();
+    assert_eq!(
+        occ, 1,
+        "golden key_images_str item must appear byte-for-byte exactly once"
+    );
+
+    // 2. exactly ONE `<64-hex> ` item in the whole plaintext: fallback /
+    //    non-input key images must not enter the string (wallet2 builds it
+    //    from tx.vin only).
+    assert_eq!(
+        count_ki_str_items(&plain),
+        1,
+        "key_images_str must carry exactly one item (this tx's inputs only) — fallback entries leaked in"
+    );
+
+    // 3. cross-anchor: the item is the source-derived key image, which lands at
+    //    the selected position of the outer array (= selected-order caliber).
+    let src_ki = ptx_key_image_from_str_field(&plain);
+    assert_eq!(kis[FIXTURE_MAX_SELECTED], src_ki);
+    let mut item = b"<".to_vec();
+    for b in src_ki {
+        item.push(b"0123456789abcdef"[(b >> 4) as usize]);
+        item.push(b"0123456789abcdef"[(b & 0xf) as usize]);
+    }
+    item.extend_from_slice(b"> ");
+    assert_eq!(
+        item, KEY_IMAGES_STR_GOLDEN,
+        "the string item must equal `<ki_hex> ` of the selected input (wallet2 caliber)"
+    );
+}
