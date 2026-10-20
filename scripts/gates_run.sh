@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # shlosilo gate batch — bare exit codes, no trimming by change surface.
+# NOTE: TEST/TESTALL exit 1 is EXPECTED while MUST-RED pins stay red
+# (Kosmo 2026-10-20 decision: red pins keep failing on purpose, no
+# should_panic — forgetting unfixed bugs is worse than a red CI).
+# Expected-red manifest (everything else failing = real breakage):
+#   pin_red_sign_real_cake_unsigned_addkeys_change_input  (tests/tx2_whitebox_tools.rs)
+#   pin_red_sign_path_change_to_own_subaddress_uses_main_txkey (tests/xmr_subaddr_sign_roundtrip.rs)
+#   pin_red_sign_three_outputs_bp_scratch_index_oob (tests/xmr_subaddr_sign_roundtrip.rs)
 cd ~/works/shlosilo-poc4 || exit 99
 cargo test --offline --all-targets > /tmp/g_test.log 2>&1; echo "TEST=$?"
 # T-04: mirror CI "Tests (all features)" — the feature-gated contract pins
