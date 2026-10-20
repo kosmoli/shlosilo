@@ -545,6 +545,8 @@ fn sign_via_session(session: *const KeySession, payload: &[u8]) -> (i32, std::ve
         &mut actual,
         ws.as_mut_ptr(),
         need,
+        core::ptr::null(),
+        0,
     );
     (rc, out, actual)
 }

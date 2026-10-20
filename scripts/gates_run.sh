@@ -20,6 +20,9 @@ bash scripts/test_zero_on_alloc.sh --offline --all-targets --no-fail-fast > /tmp
 # T-04: mirror CI "Tests (all features)" — the feature-gated contract pins
 # (inv2/inv3 fptr round-trips) only compile under their features.
 bash scripts/test_zero_on_alloc.sh --offline --all-targets --all-features --no-fail-fast > /tmp/g_testall.log 2>&1; echo "TESTALL=$?"
+# CI "flux keysource" parity: the keysource package has its own test face
+# (qr_ffi FFI arity contracts etc.) that the root batch never compiles.
+cargo test --offline -p shlosilo-flux-keysource > /tmp/g_keysrc.log 2>&1; echo "KEYSRC=$?"
 bash scripts/clippy.sh > /tmp/g_clippy.log 2>&1; echo "CLIPPY=$?"
 cargo check --offline --target armv7-unknown-linux-gnueabihf > /tmp/g_arm.log 2>&1; echo "ARM=$?"
 cargo check --lib --no-default-features --target thumbv7em-none-eabihf > /tmp/g_embed1.log 2>&1; echo "EMBED1=$?"
