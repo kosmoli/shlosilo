@@ -175,11 +175,22 @@ impl Mnemonic {
         &self.indices[..self.len as usize]
     }
 
-    /// Phase 2.0 stub: returns a [0u8; 64] placeholder
-    /// Phase 4 real implementation: PBKDF2-HMAC-SHA512(mnemonic_sentence, "mnemonic" + passphrase, 2048 iterations)
-    pub fn to_seed(&self, _passphrase: &[u8]) -> [u8; 64] {
-        // Phase 4 real implementation: sha2::Sha512 + pbkdf2
-        [0u8; 64]
+    /// BIP-39 seed derivation: PBKDF2-HMAC-SHA512(mnemonic_sentence,
+    /// "mnemonic" + passphrase, 2048 iterations) — delegated to the production
+    /// implementation in [`crate::entropy::bip39_passphrase::mnemonic_to_seed`]
+    /// (stack-buffered, zero-alloc).
+    ///
+    /// NOTE: the key-supply path calls `bip39_passphrase::mnemonic_to_seed`
+    /// directly (its `Bip39Seed` zeroizes on drop); this compatibility surface
+    /// returns a plain array. Derivation failure panics so misuse surfaces
+    /// immediately — invalid word indices are a programmer error. (Pool §20
+    /// zero-seed trap closed 2026-10-21: the old Phase-2 stub returned
+    /// `[0u8; 64]`, silently deriving identical all-zero keys for every
+    /// mnemonic.)
+    pub fn to_seed(&self, passphrase: &[u8]) -> [u8; 64] {
+        crate::entropy::bip39_passphrase::mnemonic_to_seed(self, passphrase)
+            .expect("to_seed: mnemonic_to_seed failed (invalid mnemonic word indices?)")
+            .into_bytes()
     }
 
     /// Verify the mnemonic's checksum bits (P1-05 audit remediation, 2026-08-26)
