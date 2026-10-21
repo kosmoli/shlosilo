@@ -8,6 +8,7 @@
 //! - All four panic points: decode_witness_utxo:723 / deserialize_unsigned_tx:272 /
 //!   decode_map:356 / Vec::with_capacity:251
 //! - Real fixture compatibility (locked by p63_btc_psbt.rs, not duplicated here)
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::btc::psbt::{decode_witness_utxo, parse_psbt};
 

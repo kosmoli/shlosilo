@@ -8,6 +8,7 @@
 //! 4. Output commitment amounts match the inputs (balance)
 //!
 //! The oracle's final verdict = wallet-rpc submit_transfer / monerod tx pool acceptance.
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction;
 use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;

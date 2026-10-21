@@ -10,6 +10,7 @@
 //! In debug builds the wip::prove relation shadow additionally asserts the
 //! P-relation on BOTH signs. The real-wallet zero-count receipt stays in
 //! `xmr_sign_zero_alloc` (env-gated).
+#![cfg(feature = "alloc-fallback")]
 
 use rand_core::SeedableRng as _;
 

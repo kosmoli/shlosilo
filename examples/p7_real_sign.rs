@@ -1,5 +1,6 @@
 //! Real unsigned_txset → shlosilo signing → monerod-ready broadcast hex
 //! Usage: cargo run --release --example p7_real_sign -- /tmp/test0830_unsigned_txset /tmp/test0830_keys.hex
+#![cfg(feature = "alloc-fallback")]
 use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction;
 use shlosilo::chain::xmr::unsigned_txset::{decrypt_unsigned_txset, deserialize_unsigned_tx};
 

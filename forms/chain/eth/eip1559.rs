@@ -33,7 +33,7 @@
 //!
 //! **y_parity**: 0 or 1 (not the legacy 27/28)
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 extern crate digest;
 use crate::chain::eth::rlp;
@@ -43,7 +43,7 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
 use crate::types::SecretBytes;
 // Consumers live behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 #[allow(unused_imports)]
 use alloc::vec::Vec;
 
@@ -79,7 +79,7 @@ pub struct Eip1559SignInput<'a> {
 
 /// Signing output
 #[derive(Clone, Debug)]
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub struct Eip1559SignedTx {
     /// Full signed transaction bytes (0x02 || rlp([..., y_parity, r, s]))
     pub tx_bytes: Vec<u8>,
@@ -177,7 +177,7 @@ pub fn signing_preimage_into(tx: &Eip1559Transaction, out: &mut [u8]) -> Result<
 }
 
 /// Debug helper: returns the signing preimage bytes
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn signing_preimage(tx: &Eip1559Transaction) -> Result<Vec<u8>> {
     let need = 1 + rlp::list_head_len(tx_fields_len(tx, None)) + tx_fields_len(tx, None);
     let mut out = alloc::vec![0u8; need];
@@ -344,7 +344,7 @@ pub fn sign_eip1559_into(input: &Eip1559SignInput, out: &mut [u8]) -> Result<Eip
 }
 
 /// Test/legacy convenience (allocates). Production paths use `sign_eip1559_into`.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn sign_eip1559(input: &Eip1559SignInput) -> Result<Eip1559SignedTx> {
     let payload_len = tx_fields_len(&input.tx, None);
     let tail_budget = rlp::encoded_uint_len(1) + 33 + 33;

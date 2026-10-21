@@ -10,6 +10,7 @@
 //! Frame generation (shelled + bare) lives in
 //! `~/works/xmr-stagenet-lab/watchonly_probe/ur_frames.py` (validated against
 //! `p64_xmr_multi_input::encode_ur_frames` byte-for-byte).
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::ffi::c_abi::r3::{
     shlosilo_ur_decode_complete, shlosilo_ur_decode_feed, shlosilo_ur_decode_free,

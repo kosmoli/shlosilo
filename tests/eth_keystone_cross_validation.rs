@@ -7,6 +7,7 @@
 //!
 //! Methodology: the expected hash/RLP bytes in keystone's tests are external anchors,
 //! shlosilo's independent implementation must produce identical bytes.
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::eth::eip712;
 use shlosilo::chain::eth::rlp;

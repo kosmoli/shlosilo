@@ -27,7 +27,7 @@
 //! - Bitcoin Core 0.21+ test/functional/test_framework/script.py
 //! - Bitcoin transaction preimage algorithm (<https://en.bitcoin.it/wiki/OP_CHECKSIG>)
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 use alloc::vec::Vec;
 

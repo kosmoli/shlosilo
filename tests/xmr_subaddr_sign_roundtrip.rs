@@ -14,6 +14,7 @@
 //! `pin_red_…` is INTENTIONALLY RED (the pinned divergence, not fixed here —
 //! see ~/works/xmr-stagenet-lab/watchonly_probe/SIGNED_TX_PARSE_FAIL_REPORT.md).
 //! The two `control_…` tests are green and prove the harness is sound.
+#![cfg(feature = "alloc-fallback")]
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::scalar::Scalar;

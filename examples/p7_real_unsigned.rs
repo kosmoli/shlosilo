@@ -1,5 +1,6 @@
 //! Decrypt and parse a real unsigned_txset (from a test0830 watch-only wallet wallet-rpc transfer)
 //! Usage: cargo run --example p7_real_unsigned -- /tmp/test0830_unsigned_txset /tmp/test0830_keys.hex
+#![cfg(feature = "alloc-fallback")]
 use shlosilo::chain::xmr::unsigned_txset::{decrypt_unsigned_txset, deserialize_unsigned_tx};
 
 fn hex32(s: &str) -> [u8; 32] {

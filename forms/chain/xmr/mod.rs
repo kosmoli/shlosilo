@@ -32,7 +32,7 @@ pub mod commitment;
 /// Test-only hooks for the BP+ generator cache (`#[doc(hidden)]`, not public API).
 #[cfg(feature = "std")]
 #[doc(hidden)]
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub mod generator_cache_test_hooks;
 // Zero-alloc on every face since the pairing campaign: the CN key derivation
 // rides the caller's `cn_scratch` (`_into` cores); the Vec conveniences keep

@@ -10,7 +10,7 @@
 //! - `0xc0..0xf7`          list，payload len = b - 0xc0
 //! - `0xf8..0xff`          list，len_of_len = b - 0xf7
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 // Alloc surface: consumers behind alloc-fallback / cfg(test).
 
@@ -229,8 +229,8 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
 mod tests {
     use super::*;
     // Alloc surface: consumers behind alloc-fallback / cfg(test).
-    #[cfg(feature = "alloc-fallback")]
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
+    #[cfg(any(feature = "alloc-fallback", test))]
     use alloc::vec::Vec;
 
     fn hex_decode(s: &str) -> Vec<u8> {

@@ -37,25 +37,25 @@
 //!
 //! **Reference**: <https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki>
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 // Consumers live behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 #[allow(unused_imports)]
 use alloc::vec;
 // Consumers live behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 #[allow(unused_imports)]
 use alloc::vec::Vec;
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use crate::chain::btc::p2pkh::sign_p2pkh;
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
 #[cfg(test)]
 use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::push::{CountSink, Sink, SinkCursor};
@@ -742,9 +742,9 @@ fn decode_map_into<'a>(
 }
 
 /// Test/legacy convenience capacities for the leaking parse below.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 const PSBT_TEST_ARENA: usize = 64 * 1024;
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 const PSBT_TEST_RECS: usize = 128;
 
 /// Parse PSBT bytes into a caller-provided pool — production passes the
@@ -792,7 +792,7 @@ pub fn parse_psbt_into<'a>(
 /// pool storage (the historical `Psbt { inputs: vec![...], outputs: ... }`
 /// literal shape). Production parses via `parse_psbt_into` with caller
 /// storage. Over-cap panics loudly (test surface only).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn psbt_from_maps_leaky<'a>(
     unsigned_tx: Transaction<'a>,
     inputs: &[Vec<KeyValue<'a>>],
@@ -840,7 +840,7 @@ pub fn parse_psbt_any<'a>(
 /// Test convenience: a LEAKING parse — the pool storage is allocated and
 /// never freed. Production MUST pass caller storage via `parse_psbt_into`
 /// (the SignWs carve).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt<'_>> {
     let arena: &'static mut [u8] =
         alloc::boxed::Box::leak(alloc::vec![0u8; PSBT_TEST_ARENA].into_boxed_slice());
@@ -873,7 +873,7 @@ pub fn serialize_psbt_into(psbt: &Psbt<'_>, out: &mut [u8]) -> Result<usize> {
 }
 
 /// Test/staging convenience: one sized allocation, same bytes.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn serialize_psbt(psbt: &Psbt<'_>) -> Vec<u8> {
     let mut out = vec![0u8; serialize_psbt_len(psbt)];
     let n = serialize_psbt_into(psbt, &mut out).expect("sized buffer");
@@ -951,7 +951,7 @@ pub struct PsbtP2SHP2WPKHSignInput {
 ///
 /// Unlike P2WPKH: injects FINAL_SCRIPT_SIG (type 0x08) instead of PARTIAL_SIG.
 /// The Finalizer extracts FINAL_SCRIPT_SIG into tx.inputs[].scriptSig (final tx).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> Result<()> {
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
@@ -986,7 +986,7 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> 
 ///
 /// Note: FINAL_SCRIPTWITNESS uses the special BIP-174 format; the value is already-serialized witness bytes.
 /// shlosilo reuses the witness output (vec![sig, pk]) of the v9.3 sign_p2sh_p2wpkh.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn sign_psbt_p2sh_p2wpkh(
     psbt: &mut Psbt<'_>,
     sign_input: &PsbtP2SHP2WPKHSignInput,
@@ -1162,8 +1162,8 @@ pub fn decode_witness_utxo<'a>(
 /// (1) deserialize the full tx (legacy format, no witness — PSBT stores the non-witness serialization)
 /// (2) compute txid = dsha256(serialized) (3) compare with OutPoint.txid
 /// (4) take CTxOut indexed by vout. Any step failing → None (refuse to sign that input).
-#[cfg(feature = "alloc-fallback")]
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
+#[cfg(any(feature = "alloc-fallback", test))]
 fn get_non_witness_utxo_bound<'a>(
     input_map: KvMap<'a>,
     prev_out: &OutPoint,
@@ -1219,7 +1219,7 @@ pub fn get_utxo_any<'a>(
 }
 
 /// Get TAP_INTERNAL_KEY from input map (BIP-371 0x17)
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn get_tap_internal_key(input_map: KvMap<'_>) -> Option<[u8; 32]> {
     let kv = input_map
         .iter()
@@ -1233,7 +1233,7 @@ pub fn get_tap_internal_key(input_map: KvMap<'_>) -> Option<[u8; 32]> {
 }
 
 /// Set TAP_INTERNAL_KEY in input map
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn set_tap_internal_key(
     input_map: &mut Vec<KeyValue<'_>>,
     internal_key_x: &[u8; 32],
@@ -1248,7 +1248,7 @@ pub fn set_tap_internal_key(
 }
 
 /// Get TAP_MERKLE_ROOT from input map (BIP-371 0x18)
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn get_tap_merkle_root(input_map: KvMap<'_>) -> Option<[u8; 32]> {
     let kv = input_map
         .iter()
@@ -1263,7 +1263,7 @@ pub fn get_tap_merkle_root(input_map: KvMap<'_>) -> Option<[u8; 32]> {
 
 /// Check if input is P2TR (has P2TR witness UTXO and TAP_INTERNAL_KEY set)
 /// WITNESS_UTXO value = CTxOut: amount(8 LE) || varint(spk_len) || scriptPubKey
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn is_p2tr_input(input_map: KvMap<'_>) -> bool {
     if get_tap_internal_key(input_map).is_none() {
         return false;
@@ -1280,7 +1280,7 @@ mod tests {
     use super::psbt_from_maps_leaky;
     use super::*;
     // Alloc surface: consumers behind alloc-fallback / cfg(test).
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     use alloc::string::String;
     extern crate std;
     use std::eprintln;

@@ -19,11 +19,11 @@
 //! - `ClsagProof` public material (signature) → Copy allowed
 //! - `KeyImage` public material → Copy allowed
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 // Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::traits::IsIdentity;
@@ -277,7 +277,7 @@ pub fn derive_key_image(spend_key: &[u8; 32]) -> Result<[u8; KEY_IMAGE_LEN]> {
 /// - `key_image`: 32 bytes
 /// - `pseudo_out`: 32 bytes
 /// - `msg_hash`: 32 bytes
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn verify(
     ring: &[(CompressedPoint, CompressedPoint)],
     key_image: &[u8; KEY_IMAGE_LEN],
@@ -343,7 +343,7 @@ fn _check_is_identity() {
 mod tests {
     use super::*;
     // Alloc surface: consumers behind alloc-fallback / cfg(test).
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     use alloc::vec;
     use rand_core::OsRng;
 

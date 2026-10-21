@@ -17,7 +17,7 @@
 //! ## Cross-validation
 //! Uses BIP-327 official test vectors from `bitcoin/bips/bip-0327/vectors/`.
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;

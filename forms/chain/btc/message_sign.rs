@@ -10,7 +10,7 @@
 //! P2WPKH uses BIP-143; P2TR keypath uses BIP-341 + BIP-86 tweak.
 //! Returns the consensus-encoded witness stack (the caller adds the `smp` prefix).
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 use alloc::vec;

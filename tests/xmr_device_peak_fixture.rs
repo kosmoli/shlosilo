@@ -8,6 +8,7 @@
 //! only sign a fixture encrypted to THAT wallet - this test builds one,
 //! mirroring the device's derivation exactly (same rolls -> create_account ->
 //! from_indices -> restore_seed).
+#![cfg(feature = "alloc-fallback")]
 
 use rand_chacha::rand_core::SeedableRng;
 use shlosilo::business::sign::{sign_with_entropy, SignInput};

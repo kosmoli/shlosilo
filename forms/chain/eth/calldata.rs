@@ -5,11 +5,11 @@
 //! ERC-20：`transfer` / `approve` / `increaseAllowance` / `transferFrom`
 //! ERC-721/1155: `setApprovalForAll` fully decoded; `safeTransferFrom*` recognized by selector only.
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 // Consumers live behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 #[allow(unused_imports)]
 use alloc::string::String;
 
@@ -141,7 +141,7 @@ pub fn decode_calldata(input: &[u8]) -> Result<DecodedCalldata> {
 }
 
 /// Format a 32-byte big-endian amount per token decimals (keystone `parse_amount` behavior)
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn format_token_amount(amount: &[u8; 32], decimals: u32) -> Result<String> {
     if decimals > 77 {
         return Err(err());

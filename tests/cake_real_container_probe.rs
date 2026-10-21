@@ -20,6 +20,7 @@
 //! Disk keys: entropy = 0x22 × 32 → BIP-39 → SLIP-0010 MoneroPath (the device's
 //! KeySession). `view_sk` is pinned to the known value below — if the derivation
 //! chain ever walks differently, the probe fails before touching the container.
+#![cfg(feature = "alloc-fallback")]
 
 use std::time::{Duration, Instant};
 

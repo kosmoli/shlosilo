@@ -1,6 +1,7 @@
 //! SCRATCH dump (2026-10-17): pin the unsigned_tx_set `transfers` segment
 //! encoding + verify construction extra round-trip. Temporary — folded into the
 //! red pins / fix in the same series.
+#![cfg(feature = "alloc-fallback")]
 use shlosilo::chain::xmr::unsigned_txset::decrypt_unsigned_txset;
 
 const TX2_LAB_VIEW_SK: [u8; 32] = [

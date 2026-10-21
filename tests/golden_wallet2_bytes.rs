@@ -56,6 +56,7 @@
 //!
 //! Run: cargo test --release --test golden_wallet2_bytes (sign pins are slow
 //! in debug builds; `make test` runs them anyway).
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::key_image_export::{
     decrypt_export_payload, generate_key_image_export, KEY_IMAGE_EXPORT_MAGIC, OUTPUT_EXPORT_MAGIC,

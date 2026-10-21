@@ -6,6 +6,7 @@
 //! keystone3-firmware/rust/apps/monero src/utils/mod.rs `shlosilo_ki_fixture_test`）。
 //!
 //! Dependencies: run this test first to produce the fixture, then run the keystone-side test.
+#![cfg(feature = "alloc-fallback")]
 #![cfg(test)]
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;

@@ -6,6 +6,7 @@
 //!   (coin type 1\' = signet/testnet, address index 2 — a non-default path, the P1-02 acceptance scenario)
 //! - outputs: 1000 sat P2WPKH + 650087 sat change P2WPKH
 //! - SIGHASH_ALL
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::btc::psbt::{get_witness_utxo, parse_psbt};
 

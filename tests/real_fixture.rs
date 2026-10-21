@@ -8,6 +8,7 @@
 //! Pipeline: decrypt → verify signature → pk1/pk2 ownership → epee parse → shlosilo computes key image + signature →
 //!       KEY_IMAGE_EXPORT encrypt → read-back decrypt cross-check → byte-for-byte compare against the CLI's self-computed key image →
 //!       self-implemented verification of BOTH 64B signatures (container envelope + per-record accompanying sig).
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::key_image_export::{
     decrypt_export_payload, generate_key_image_export, KEY_IMAGE_EXPORT_MAGIC, OUTPUT_EXPORT_MAGIC,

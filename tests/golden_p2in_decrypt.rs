@@ -64,6 +64,7 @@
 //!   X7) and is out of scope here.
 //!
 //! Run: cargo test --offline --test golden_p2in_decrypt
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::signed_txset::decrypt_signed_txset;
 use shlosilo::chain::xmr::unsigned_txset::{

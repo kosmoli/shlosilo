@@ -5,6 +5,7 @@
 //! one feed, so decoded_count could JUMP OVER the exact-equality target.
 //! Any of the rotation/reverse patterns below wedged before the fix
 //! (progress pinned at the 99% cap, never complete).
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::ur::ur_multipart::{UrMultipartDecoder, UrMultipartEncoder};
 

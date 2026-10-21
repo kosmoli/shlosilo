@@ -1,4 +1,5 @@
 //! Regression tests for the exact transaction-prefix bytes committed to by CLSAG.
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::transaction::{TransactionPrefix, TxExtra, TxInput, TxOutput};
 

@@ -9,6 +9,7 @@
 //!
 //! The sigHashes in these vectors are external anchors produced by Bitcoin Core maintainers;
 //! shlosilo's independent implementation must match byte for byte.
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::btc::taproot::{
     bip341_keypath_sighash, compute_merkle_root, tap_branch_hash, tap_leaf_hash, SpentOutput,

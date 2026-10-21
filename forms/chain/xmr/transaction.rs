@@ -41,10 +41,10 @@
 //!
 //! **Reference**: <https://github.com/monero-project/monero/blob/master/src/cryptonote_basic/cryptonote_format_utils.cpp>
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 // Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
 
 use crate::chain::xmr::clsag::derive_key_image;
@@ -113,7 +113,7 @@ impl TxInput {
     /// - 32 bytes key_image
     ///
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(0x02); // txin_to_key variant tag
@@ -226,7 +226,7 @@ impl TxOutput {
     /// - varint(amount) + type + stealth_address [+ view_tag]
     ///
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         monero_encode_varint(&mut out, self.amount);
@@ -364,7 +364,7 @@ impl TxExtra {
     }
 
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         // tx_pub_key: tag 0x01 + 32B raw (official tx_extra_pub_key has no length field)
@@ -589,7 +589,7 @@ impl TransactionPrefix {
     }
 
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(self.version);
@@ -672,7 +672,7 @@ impl TransactionPrefix {
 
 /// Complete Monero transaction (prefix + RCT signatures placeholder)
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub struct Transaction {
     pub prefix: TransactionPrefix,
     /// rct_signatures bytes (Phase B/C will populate with actual RctSigBase + Prunable)
@@ -680,7 +680,7 @@ pub struct Transaction {
     pub rct_signatures: Vec<u8>,
 }
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 impl Transaction {
     pub fn new(prefix: TransactionPrefix) -> Self {
         Self {
@@ -698,7 +698,7 @@ impl Transaction {
     }
 
     /// Serialize complete tx
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = self.prefix.serialize();
         // RCT signatures serialized as varint len + bytes
@@ -870,7 +870,7 @@ pub fn monerod_scalar_to_bytes(s: &Scalar) -> [u8; 32] {
 /// Z2.2 (2026-09-24): delegates to `encode_varint_at` — the Vec and slice-cursor call
 /// shapes share one core and are byte-identical by construction
 /// (see `encode_varint_shapes_identical`).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encode_varint(out: &mut Vec<u8>, n: u64) {
     let mut tmp = [0u8; 9];
     let mut pos = 0usize;
@@ -942,7 +942,7 @@ pub fn monero_encode_varint_at(out: &mut [u8], pos: &mut usize, mut n: u64) -> R
 }
 
 /// Vec-delegating convenience (test/legacy); production writes through `monero_encode_varint_at`.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn monero_encode_varint(out: &mut Vec<u8>, mut n: u64) {
     loop {
         let b = (n & 0x7f) as u8;
@@ -992,10 +992,10 @@ mod tests {
     extern crate std;
     use super::*;
     // Alloc surface: consumers behind alloc-fallback / cfg(test).
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     use alloc::string::String;
     // Alloc surface: consumers behind alloc-fallback / cfg(test).
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     use alloc::vec;
     use std::eprintln;
 

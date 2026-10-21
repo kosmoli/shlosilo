@@ -19,6 +19,7 @@
 //! Run:
 //!   P64_ENTROPY_HEX=$(cat /tmp/p64_env | cut -d= -f2) cargo test --release \
 //!     --test p64_xmr_multi_input -- --ignored --nocapture
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::address::xmr::encode;
 use shlosilo::business::restore_seed::restore_seed;

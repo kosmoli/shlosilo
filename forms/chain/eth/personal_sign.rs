@@ -7,7 +7,7 @@
 //!
 //! Reference: <https://eips.ethereum.org/EIPS/eip-191>
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 use alloc::format;

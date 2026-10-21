@@ -13,13 +13,13 @@
 //!          pubkey = view_pub — see the dual implementation in unsigned_txset::check_monero_signature
 //! ```
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 // Alloc surface: the convenience shells + test helpers behind alloc-fallback;
 // the `_into` cores below are caller-storage (zero-alloc, incl. the CryptoNight
 // key derivation over the caller's `cn_scratch`).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
 
 use chacha20::cipher::{KeyIvInit as _, StreamCipher as _};
@@ -59,14 +59,14 @@ impl Drop for ScratchWipe<'_> {
 }
 
 /// Decrypted export payload: (pk1, pk2, zeroizing plaintext).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub type ExportPayload = ([u8; 32], [u8; 32], zeroize::Zeroizing<Vec<u8>>);
 
 /// Decrypt an export-class payload (OUTPUT/KEY_IMAGE magic share a structure).
 ///
 /// Returns `(pk1, pk2, plaintext)`; pk1/pk2 exist only for OUTPUT/KEY_IMAGE magic
 /// (unsigned/signed txset have no such section). Signature verified first (anti-tamper), then decrypted.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn decrypt_export_payload(
     data: &[u8],
     magic: &[u8],
@@ -337,7 +337,7 @@ fn generate_key_image_signature<R: RngCore + CryptoRng>(
 /// NO `is_key_image_request()` filtering (keystone computes all outputs and the CLI golden
 /// (`export_key_images`) covers all of them; filtering would break golden compatibility).
 /// The flag is advisory metadata for the hot side, not a device-side selector.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn generate_key_image_export<R: RngCore + CryptoRng>(
     view_sk: &[u8; 32],
     spend_sk: &[u8; 32],

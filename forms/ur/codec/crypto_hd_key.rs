@@ -3,7 +3,7 @@
 //! Public key export: split key / chain_code / parent fingerprint from a BIP-32 xpub (78 bytes),
 //! and encode them into a UR registry map. origin (tag 304 crypto-keypath) is written when a path is given.
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 use crate::derivation::path::DerivationPath;

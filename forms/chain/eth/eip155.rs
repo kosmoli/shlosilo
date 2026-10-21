@@ -34,7 +34,7 @@
 //! - mainnet chain_id = 1 → v = 37 or 38
 //! - The old unsigned v is 27/28 (pre-EIP-155)
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 use crate::chain::eth::rlp;
 use crate::chain::eth::sign;
@@ -42,7 +42,7 @@ use crate::encoding::keccak256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::SecretBytes;
 // Consumers live behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 #[allow(unused_imports)]
 use alloc::vec::Vec;
 
@@ -70,7 +70,7 @@ pub struct Eip155SignInput<'a> {
 
 /// Signing output
 #[derive(Clone, Debug)]
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub struct Eip155SignedTx {
     /// Full signed transaction bytes (rlp([..., v, r, s])) — no type prefix
     pub tx_bytes: Vec<u8>,
@@ -153,7 +153,7 @@ pub fn signing_preimage_into(tx: &Eip155Transaction, out: &mut [u8]) -> Result<u
 }
 
 /// Compute the signing preimage bytes
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn signing_preimage(tx: &Eip155Transaction) -> Vec<u8> {
     let need = rlp::list_head_len(preimage_len(tx)) + preimage_len(tx);
     let mut out = alloc::vec![0u8; need];
@@ -218,7 +218,7 @@ pub fn sign_eip155_into(input: &Eip155SignInput, out: &mut [u8]) -> Result<Eip15
 }
 
 /// Test/legacy convenience (allocates). Production paths use `sign_eip155_into`.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn sign_eip155(input: &Eip155SignInput) -> Result<Eip155SignedTx> {
     let payload_len = tx_base_len(&input.tx) + rlp::encoded_uint_len(u64::MAX as u128) + 33 + 33;
     let need = rlp::list_head_len(payload_len) + payload_len;

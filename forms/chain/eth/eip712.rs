@@ -26,7 +26,7 @@
 //!   - arrayN[k] of T: keccak256(encodeData(t1) || ... || encodeData(tk))
 //! ```text
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 use crate::chain::eth::sign;
 use crate::encoding::keccak256;

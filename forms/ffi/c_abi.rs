@@ -2656,7 +2656,7 @@ mod tests {
     /// T6 end-to-end through the frozen entry: session handle + valid request
     /// container → response container decrypts to exactly one key-image record
     /// whose image matches the independent recomputation.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     #[test]
     fn ffi_xmr_pairing_e2e() {
         use crate::types::key_session::KeySession;

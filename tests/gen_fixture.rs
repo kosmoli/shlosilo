@@ -7,6 +7,7 @@
 //! {2: sign_data, 3: data_type, 4: chain_id} — the old version stuffed the RLP in directly (wrong wire shape,
 //! previously masked by sign()'s fallback logic; exposed after the P1-02 network validation).
 //! The payload's leading [1] type-tag prefix is handled by ur_encode::encode, no longer assembled by hand.
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::eth::{eip1559, rlp};
 use shlosilo::encoding::cbor;

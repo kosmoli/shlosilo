@@ -34,15 +34,15 @@
 //! - <https://github.com/monero-project/monero/blob/master/src/ringct/rctTypes.h>
 
 use crate::chain::xmr::clsag::ClsagProof;
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 // Consumers live behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 #[allow(unused_imports)]
 use alloc::vec::Vec;
 
 use monero_bulletproofs::{Bulletproof, MAX_COMMITMENTS};
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use monero_ed25519::CompressedPoint;
 use monero_ed25519::{Commitment as MoneroCommitment, Scalar};
 use rand_core::{CryptoRng, RngCore};
@@ -114,7 +114,7 @@ impl<'a> RctSigBase<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(self.rct_type);
@@ -210,7 +210,7 @@ impl<'a> RctSigPrunable<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         // commitments
@@ -273,7 +273,7 @@ impl<'a> RctSig<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production writes through `serialize_into`.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut out = self.base.serialize();
         let prunable_bytes = self.prunable.serialize()?;
@@ -288,7 +288,7 @@ pub fn make_commitment(mask: &Scalar, amount: u64) -> MoneroCommitment {
 }
 
 /// Construct commitment points (VarInt count + 32 bytes each) — XMR wire format
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn serialize_commitments(commitments: &[MoneroCommitment]) -> Vec<u8> {
     let mut out = Vec::new();
     crate::chain::xmr::transaction::monero_encode_varint(&mut out, commitments.len() as u64);
@@ -335,7 +335,7 @@ pub fn prove_bulletproofs_plus<R: RngCore + CryptoRng>(
 /// - `commitments`: compressed points (32 bytes each) for verification
 ///
 /// **Output**: true if valid
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn verify_bulletproofs_plus<R: RngCore + CryptoRng>(
     rng: &mut R,
     bp: &Bulletproof,

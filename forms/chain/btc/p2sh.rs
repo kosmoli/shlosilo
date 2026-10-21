@@ -26,7 +26,7 @@
 //! - BIP-143 (Segwit sighash): <https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki>
 //! - BIP-16 (P2SH): <https://github.com/bitcoin/bips/blob/master/bip-0016.mediawiki>
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;

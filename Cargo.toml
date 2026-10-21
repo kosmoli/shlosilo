@@ -123,6 +123,17 @@ monero = { version = "0.21" }
 # recomputes keccak256(spend_pub || view_pub) through this second path so a
 # drift in `forms/encoding/keccak256` cannot go green against itself.
 sha3 = "0.10"
+# Test-face vendor alloc unification (the `--no-default-features` unit-test
+# face): the alloc-fallback product feature forwards these vendor alloc faces
+# (Clsag::verify, Bulletproof::verify, Vec: std_shims::Write), but a featureless
+# test build drops them and the unit tests fail to compile. Re-declaring the
+# same packages here as dev-deps enables the features for test/example builds
+# ONLY (resolver v2 keeps dev-dep features out of product builds), so the Z6
+# no-allocator graph probes and device faces are bit-identical. Same pattern as
+# the curve25519-dalek dev-dep above.
+monero-clsag = { version = "0.1", default-features = false, features = ["alloc-fallback"] }
+monero-bulletproofs = { path = "vendor/monero-bulletproofs", default-features = false, features = ["compile-time-generators", "alloc-fallback"] }
+std-shims = { version = "0.1.5", default-features = false, features = ["alloc"] }
 
 [features]
 # Device-side BP+ generator cache FFI bridge (C flash backend). Off = no-op stub symbol.

@@ -9,6 +9,7 @@
 //!
 //! §B.5 test model: F(keys, tx, entropy) → signed_tx is a purely deterministic function.
 //! Fixed entropy → identical bytes across runs (deterministic retry property).
+#![cfg(feature = "alloc-fallback")]
 
 use rand_chacha::rand_core::RngCore;
 use std::vec;

@@ -39,11 +39,11 @@
 //! remainder = transfers segment (the display layer skips parsing it)
 //! ```
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 // Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
 
 // Consumers live behind alloc-fallback / cfg(test); unused on the no-alloc face.
@@ -388,7 +388,7 @@ pub(crate) fn chacha_key_from_view_sk(
 /// Flow: magic check → nonce=8B → Ed25519 verification (view_pub over
 /// keccak256(nonce||ciphertext), trailing 64B) → ChaCha20-Legacy keystream.
 /// Verification failure = data tampered or view key mismatch → reject.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn decrypt_unsigned_txset(
     data: &[u8],
     view_sk: &[u8; 32],
@@ -403,7 +403,7 @@ pub fn decrypt_unsigned_txset(
 /// same as `decrypt_unsigned_txset`; the ChaCha key is injected by the caller (avoids recomputing CN).
 /// Audit #12 P1-02: plaintext is owner-wrapped — returns Zeroizing<Vec<u8>>; error/early-return
 /// paths covered by Drop; no longer returns a plain Vec.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub(crate) fn decrypt_unsigned_txset_with_chacha_key(
     data: &[u8],
     view_sk: &[u8; 32],
@@ -784,7 +784,7 @@ pub fn serialize_unsigned_tx_into(tx: &UnsignedTx<'_>, out: &mut [u8]) -> Result
 /// epee serialize (dual of `deserialize_unsigned_tx`; excludes the trailing transfers segment).
 /// Audit #12 P1-02: the output contains the mask/kLRki secret fields; returns a Zeroizing owner.
 /// Staging convenience (allocates). Production paths use `serialize_unsigned_tx_into`.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn serialize_unsigned_tx(tx: &UnsignedTx<'_>) -> zeroize::Zeroizing<Vec<u8>> {
     let mut out = Vec::new();
     write_unsigned_tx(tx, &mut out).expect("Vec sink is infallible by construction");

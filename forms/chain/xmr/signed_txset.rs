@@ -13,7 +13,7 @@
 //! - key_images_str = `<hex> ` concatenated item by item (including the trailing space)
 //! - tx_key_images item = 0x02 ‖ output one-time address ‖ key image (Hs(shared_key)·Hp)
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
@@ -24,7 +24,7 @@ use crate::chain::xmr::unsigned_txset::{TxConstructionData, TxDestinationEntry};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 
 // Alloc surface: consumers behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
 
 /// magic symmetric with the decryption side
@@ -286,7 +286,7 @@ impl SignedTxSet<'_> {
     /// Returns a Zeroizing owner (self-zeroizing; forms-internal secret duty).
     /// Staging/test convenience (allocates). Production paths use
     /// `encrypt_signed_txset_into` (fused — the plaintext never materializes).
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize(&self) -> zeroize::Zeroizing<Vec<u8>> {
         let mut res = Vec::new();
         self.write_all(&mut res)
@@ -403,7 +403,7 @@ impl SignedTxSet<'_> {
 /// ```
 ///
 /// rng usage: nonce (next_u64) + signing k — provided by the §B.5 purpose RNG.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encrypt_signed_txset(
     plain: Vec<u8>,
     view_sk: &[u8; 32],
@@ -419,7 +419,7 @@ pub fn encrypt_signed_txset(
 /// same as `encrypt_signed_txset`; the ChaCha key is injected by the caller (avoids recomputing CN).
 /// Audit #12 P1-02: accepts an owner key, returns Zeroizing (the output as a whole = ciphertext; on encryption failure
 /// path's nonce/plaintext intermediates are covered by the owner's Drop).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encrypt_signed_txset_with_chacha_key(
     plain: zeroize::Zeroizing<Vec<u8>>,
     view_sk: &[u8; 32],
@@ -456,7 +456,7 @@ pub fn encrypt_signed_txset_with_chacha_key(
 
 /// Encrypt an unsigned txset (isomorphic to `encrypt_signed_txset`, with the magic swapped to `UNSIGNED_TX_PREFIX`).
 /// For feeding self-made TxConstructionData into `business::sign` / `sign_ur_ffi`.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encrypt_unsigned_txset(
     plain: zeroize::Zeroizing<Vec<u8>>,
     view_sk: &[u8; 32],
@@ -495,7 +495,7 @@ pub fn encrypt_unsigned_txset(
 /// Decrypt a signed txset (for self-verification round-trips; aligned with keystone `decrypt_data_with_pvk`).
 ///
 /// magic check → nonce → Schnorr verification (view_pub over keccak256(nonce‖ciphertext)) → decrypt.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn decrypt_signed_txset(
     data: &[u8],
     view_sk: &[u8; 32],
@@ -543,7 +543,7 @@ mod tests {
     use super::*;
     use crate::chain::xmr::unsigned_txset::TxSourceEntry;
     // Alloc surface: consumers behind alloc-fallback / cfg(test).
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     use alloc::vec::Vec;
     use rand_chacha::rand_core::SeedableRng;
     use rand_chacha::ChaCha20Rng;

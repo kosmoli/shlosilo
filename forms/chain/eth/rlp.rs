@@ -17,9 +17,9 @@
 //! Production paths use the zero-alloc `RlpWriter` (the `encode_* -> Vec<u8>`
 //! family below is test/legacy convenience API).
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
 
 /// RLP-encode a single value (bytes)
@@ -28,7 +28,7 @@ use alloc::vec::Vec;
 /// - single bytes 1-127: returned as-is
 /// - 0-55 bytes: `[0x80 + len, ...bytes]`
 /// - >55 bytes: `[0xb7 + len_of_len, len_be, ...bytes]`
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encode_bytes(b: &[u8]) -> Vec<u8> {
     // single byte 0 → empty string (0x80)
     if b.len() == 1 && b[0] == 0x00 {
@@ -64,7 +64,7 @@ pub fn encode_bytes(b: &[u8]) -> Vec<u8> {
 /// RLP-encode uint256 / uint64 (unsigned integers)
 ///
 /// Convert the integer to big-endian bytes first (no leading zeros), then encode_bytes
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encode_uint(n: u128) -> Vec<u8> {
     if n == 0 {
         return alloc::vec![0x80]; // RLP empty string (= 0)
@@ -79,7 +79,7 @@ pub fn encode_uint(n: u128) -> Vec<u8> {
 /// RLP-encode uint256 (32-byte big-endian big integer)
 ///
 /// Strip leading zero bytes, then encode_bytes
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encode_uint256(bytes: &[u8; 32]) -> Vec<u8> {
     let mut start = 0;
     while start < 32 && bytes[start] == 0 {
@@ -92,7 +92,7 @@ pub fn encode_uint256(bytes: &[u8; 32]) -> Vec<u8> {
 }
 
 /// RLP-encode a list (each item already RLP-encoded bytes)
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encode_list(items: &[Vec<u8>]) -> Vec<u8> {
     // compute the payload first
     let payload_len: usize = items.iter().map(|i| i.len()).sum();

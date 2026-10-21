@@ -12,6 +12,7 @@
 //! wire message = 242 B `58 f0 4d 6f 6e 65 72...` = shell(240) + wallet2
 //! container; after the strip the payload must be the 240 B container whose
 //! head is `4d6f6e6572` ("Moner").
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::encoding::bytewords;
 use shlosilo::ur::ur_decode;

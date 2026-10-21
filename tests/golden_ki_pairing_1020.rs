@@ -18,6 +18,7 @@
 //!   the device response byte-for-byte);
 //! - the accompanying single-ring signatures;
 //! - the response offset echo (fix 2026-10-16).
+#![cfg(feature = "alloc-fallback")]
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::scalar::Scalar;

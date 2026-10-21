@@ -7,7 +7,7 @@
 //!
 //! The single-frame channel (small transactions emitted directly as one large QR) keeps using `ur_encode::encode` — this module only handles multipart.
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 use crate::encoding::bytewords;
@@ -132,7 +132,7 @@ impl<'a> UrMultipartEncoder<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production paths use `next_frame_into`.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn next_frame(&mut self) -> Result<alloc::string::String> {
         let mut scratch = alloc::vec![0u8; MULTIPART_PAYLOAD_MAX_LEN + 32];
         let mut out = alloc::vec![0u8; MULTIPART_FRAME_MAX_LEN];
@@ -142,7 +142,7 @@ impl<'a> UrMultipartEncoder<'a> {
     }
 
     /// Test/legacy convenience (allocates). Production paths use `next_cyclic_frame_into`.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn next_cyclic_frame(&mut self) -> Result<alloc::string::String> {
         let mut scratch = alloc::vec![0u8; MULTIPART_PAYLOAD_MAX_LEN + 32];
         let mut out = alloc::vec![0u8; MULTIPART_FRAME_MAX_LEN];
@@ -511,7 +511,7 @@ impl<'a> UrMultipartDecoder<'a> {
     /// v1: the shell hosts its own leaked workspace (same carve shape as
     /// `ur_decode_ws_place`), so `receive_frame` is allocation-free per call
     /// on every construction path.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn new() -> Self {
         let ws: &'static mut [u8] =
             alloc::boxed::Box::leak(alloc::vec![0u8; ur_decode_ws_len()].into_boxed_slice());
@@ -671,7 +671,7 @@ impl<'a> UrMultipartDecoder<'a> {
     /// semantics as `payload_into`.
     ///
     /// Test/legacy convenience (allocates). Production paths use `payload_into`.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn payload(&self) -> Result<Option<alloc::vec::Vec<u8>>> {
         let mut msg = self
             .inner
@@ -689,7 +689,7 @@ impl<'a> UrMultipartDecoder<'a> {
     }
 }
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 impl Default for UrMultipartDecoder<'_> {
     fn default() -> Self {
         Self::new()
@@ -709,7 +709,7 @@ mod tests {
 
     use super::*;
     // Alloc surface: consumers behind alloc-fallback / cfg(test).
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     use alloc::vec::Vec;
 
     /// P0-B regression (2026-09-01 re-review): upstream keystone-ur 0.1.1 mixed redundancy frames (seq > count)
@@ -924,7 +924,7 @@ mod tests {
     #[test]
     fn invalid_seq_domain_rejected() {
         // Alloc surface: consumers behind alloc-fallback / cfg(test).
-        #[cfg(feature = "alloc-fallback")]
+        #[cfg(any(feature = "alloc-fallback", test))]
         use alloc::format;
         // Valid body: Part CBOR [seq, count, msg_len, checksum, data]
         // (bytewords-minimal encoded, shape aligned with part_from_cbor\'s expectation)

@@ -2,6 +2,7 @@
 //!
 //! Audit requirement: add fuzz/property budget tests for CBOR, RLP, PSBT, UR.
 //! Goal: on arbitrary/malformed inputs the decode paths never panic, never exceed budget, and always return Result.
+#![cfg(feature = "alloc-fallback")]
 
 use proptest::prelude::*;
 use shlosilo::encoding::cbor;

@@ -25,15 +25,15 @@
 //! L1 discipline: pure functions, no I/O, no global state; seed material flows
 //! through [`SecretBytes`] and errors through [`ShlosiloError`].
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 use crate::entropy::mnemonic::{Mnemonic, WordCount};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::SecretBytes;
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::string::String;
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -142,7 +142,7 @@ impl SeedEntropy {
 /// Availability: `alloc-fallback` builds only (returns `Vec<u8>`); the
 /// zero-alloc device builds use the stack-buffer form introduced for the
 /// engraving flow (Task 8) — `decode` and `indices_to_entropy` stay no-alloc.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encode_compact(m: &Mnemonic) -> Vec<u8> {
     let mut out = alloc::vec![0u8; m.word_count().entropy_bytes()];
     let n = encode_compact_into(m, &mut out)
@@ -210,7 +210,7 @@ pub fn encode_compact_into(m: &Mnemonic, out: &mut [u8]) -> Result<usize> {
 /// Availability: `alloc-fallback` builds only (returns `String`) — same gate
 /// as [`encode_compact`]. The zero-alloc device builds use
 /// [`encode_standard_into`].
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encode_standard(m: &Mnemonic) -> String {
     let mut buf = [0u8; STANDARD_MAX_LEN];
     let n = encode_standard_into(m, &mut buf)
@@ -384,12 +384,12 @@ fn indices_to_entropy(indices: &[u16], out: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     extern crate alloc;
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     use alloc::format;
 
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     #[test]
     fn debug_is_redacted() {
         let s = SeedEntropy::from_entropy(&[0x11u8; 16]).unwrap();
@@ -571,7 +571,7 @@ mod tests {
     /// 对拍: the stack-buffer variants must be byte-equal to the alloc forms
     /// (one source of truth — the alloc forms delegate — and the contract the
     /// plate-export FFI relies on).
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     #[test]
     fn stack_encode_matches_alloc_encode() {
         for ent in [&[0x11u8; 16][..], &[0x22u8; 32][..]] {

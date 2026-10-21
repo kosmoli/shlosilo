@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::types::chain_kind::ChainKind;
 use crate::ur::ur_encode::UrTypeTag;
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 /// Transaction template (chain-agnostic)

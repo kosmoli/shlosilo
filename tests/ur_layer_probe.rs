@@ -18,6 +18,7 @@
 //!   -> failure-mode bisect probes (multipart-into-single-frame exit,
 //!      CBOR byte-string wrapping, oversize single-frame) to see which layer
 //!      produces the device's exact -21.
+#![cfg(feature = "alloc-fallback")]
 
 use rand_chacha::rand_core::SeedableRng as _;
 use shlosilo::business::xmr_pairing::{carve_pairing_ws, pairing_ws_len, process_output_export};

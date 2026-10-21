@@ -6,6 +6,7 @@
 //! Measured sections wrap ONLY the sign entry calls; fixture prep and storage
 //! provisioning happen before the counter is armed. A single allocation in a
 //! measured section fails the test.
+#![cfg(feature = "alloc-fallback")]
 
 use rand_core::SeedableRng as _;
 use std::alloc::{GlobalAlloc, Layout, System};

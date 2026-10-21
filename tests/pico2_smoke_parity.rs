@@ -13,6 +13,7 @@
 //!
 //! `gen_bench_channel_files` (ignored, run manually) writes the fixture files
 //! the channel bench script feeds to the board.
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::business;
 use shlosilo::derivation::path::DerivationPath;

@@ -16,6 +16,7 @@
 //!
 //! Run:
 //!   cargo test --release --test xmr_device_blob_verify -- --ignored --nocapture
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::business::sign::{sign_with_entropy, SignInput};
 use shlosilo::chain::xmr::signed_txset::decrypt_signed_txset;

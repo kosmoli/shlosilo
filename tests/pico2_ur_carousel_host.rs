@@ -15,6 +15,7 @@
 //!
 //! What this cannot check is the on-device rendering itself (pixels);
 //! that is what the screen + phone scan acceptance covers.
+#![cfg(feature = "alloc-fallback")]
 
 use std::fs;
 

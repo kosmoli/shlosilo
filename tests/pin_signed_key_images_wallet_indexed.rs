@@ -26,6 +26,7 @@
 //! placeholders.
 //!
 //! Keys are the PUBLISHED stagenet-lab test keys (see tests/tx2_whitebox_tools.rs).
+#![cfg(feature = "alloc-fallback")]
 
 use rand_chacha::rand_core::SeedableRng as _;
 use shlosilo::business::sign::WalletKiRecord;

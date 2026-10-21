@@ -3,16 +3,16 @@
 //! L1 pure functions: turn EIP-155 / EIP-1559 structures + v9.17 calldata decoding
 //! into confirmation-screen data. No DEX/swap recognition.
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 // Consumers live behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 #[allow(unused_imports)]
 use alloc::string::String;
 
 use crate::chain::eth::calldata::{decode_calldata, DecodedCalldata};
 // The String formatter lives behind alloc-fallback with its consumer.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use crate::chain::eth::calldata::format_token_amount;
 use crate::chain::eth::eip155::Eip155Transaction;
 use crate::chain::eth::eip1559::Eip1559Transaction;
@@ -108,7 +108,7 @@ pub fn summarize_eip155(tx: &Eip155Transaction) -> Result<EthTxSummary> {
 }
 
 /// Format a 32-byte token amount into an 18-decimal string (for tests and the confirmation screen)
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn format_eth_wei(wei: u128) -> Result<String> {
     let mut buf = [0u8; 32];
     let bytes = wei.to_be_bytes();

@@ -38,7 +38,7 @@
 //!
 //! BIP-143 Native P2WPKH official test vector (sighash + signature + full signed tx verified)
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
 #[cfg(test)]
@@ -47,14 +47,14 @@ use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
 use crate::types::SecretBytes;
 // Consumers live behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 #[allow(unused_imports)]
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec;
 // Consumers live behind alloc-fallback / cfg(test).
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 #[allow(unused_imports)]
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
 
 // --- Data structures ------------------------------------------------
@@ -107,15 +107,15 @@ pub struct TxIn<'a> {
     /// Vec-shaped on the alloc face (legacy constructors keep `vec![..]`),
     /// borrowed on the no-alloc face (always empty there). The production
     /// core writes witness through the caller's buffer.
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub witness: Vec<Vec<u8>>,
-    #[cfg(not(feature = "alloc-fallback"))]
+    #[cfg(not(any(feature = "alloc-fallback", test)))]
     pub witness: &'a [&'a [u8]],
 }
 
 impl<'a> TxIn<'a> {
     /// The empty backplane slot (no allocation).
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn empty() -> Self {
         Self {
             prev_out: OutPoint {
@@ -130,7 +130,7 @@ impl<'a> TxIn<'a> {
 
     /// Serialization (BIP-144 legacy format: outpoint + scriptSig + sequence)
     /// Includes the scriptSig length varint
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize_legacy(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(32 + 4 + 1 + self.script_sig.len() + 4);
         out.extend_from_slice(&self.prev_out.txid);
@@ -153,7 +153,7 @@ pub struct TxOut<'a> {
 
 impl<'a> TxOut<'a> {
     /// The empty backplane slot (no allocation).
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn empty() -> Self {
         Self {
             value: 0,
@@ -163,7 +163,7 @@ impl<'a> TxOut<'a> {
 }
 
 impl TxOut<'_> {
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + 1 + self.script_pubkey.len());
         out.extend_from_slice(&self.value.to_le_bytes());
@@ -187,7 +187,7 @@ pub struct Transaction<'a> {
 
 impl Transaction<'_> {
     /// BIP-144 segwit serialization (marker=0x00, flag=0x01)
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize_segwit(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&self.version.to_le_bytes());
@@ -224,7 +224,7 @@ impl Transaction<'_> {
 
 // impl block helpers (avoids clashing with Transaction method signatures)
 impl TxIn<'_> {
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     fn serialize_into(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.prev_out.txid);
         out.extend_from_slice(&self.prev_out.vout.to_le_bytes());
@@ -233,7 +233,7 @@ impl TxIn<'_> {
 }
 
 impl TxOut<'_> {
-    #[cfg(feature = "alloc-fallback")]
+    #[cfg(any(feature = "alloc-fallback", test))]
     fn serialize_into(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.value.to_le_bytes());
         encode_varint(out, self.script_pubkey.len() as u64);
@@ -242,7 +242,7 @@ impl TxOut<'_> {
 }
 
 /// BTC varint encoding (used for script_pubkey length etc.)
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn encode_varint(out: &mut Vec<u8>, n: u64) {
     let mut buf = [0u8; 9];
     let len = encode_varint_buf(&mut buf, n);
@@ -384,7 +384,7 @@ pub struct P2WPKHSignInput<'k> {
 
 /// P2WPKH signing output
 #[derive(Clone, Debug)]
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub struct P2WPKHSignedTx {
     /// Full signed transaction bytes
     pub tx_bytes: Vec<u8>,
@@ -399,7 +399,7 @@ pub struct P2WPKHSignedTx {
 /// 3. DER encoding + append the sighash byte (0x01)
 /// 4. Assemble into input.witness: [signature_with_sighash, compressed_pubkey]
 /// 5. Serialize the full transaction (BIP-144 segwit format)
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn sign_p2wpkh(
     tx: &mut Transaction,
     sign_input: &P2WPKHSignInput<'_>,

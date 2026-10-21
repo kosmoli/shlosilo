@@ -20,6 +20,7 @@
 //!
 //! ### BTC P2WPKH (BIP-143/144 segwit)
 //! Source: keystone3-firmware/rust/apps/bitcoin/src/transactions/legacy/mod.rs::test_sign_btc_p2wpkh_transaction
+#![cfg(feature = "alloc-fallback")]
 #![cfg(test)]
 extern crate alloc;
 #[allow(dead_code)]

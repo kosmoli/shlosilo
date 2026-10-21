@@ -2,7 +2,7 @@
 //!
 //! PBKDF2-HMAC-SHA512(mnemonic_sentence, "mnemonic" + passphrase, 2048)
 
-#[cfg(feature = "alloc-fallback")]
+#[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
 use crate::entropy::bip39_words;

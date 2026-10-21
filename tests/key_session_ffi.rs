@@ -26,6 +26,7 @@
 //!
 //! The ETH request fixture is reused (tests/pico2_smoke_parity.rs's UR, shared
 //! with flux/host-sim/sim_l3.c) — nothing here hand-rolls an ETH sign request.
+#![cfg(feature = "alloc-fallback")]
 
 use core::mem::MaybeUninit;
 

@@ -8,6 +8,7 @@
 //! Covers: decoder-side budget constant locking + a legal-path smoke test + the FFI exit budget.
 //! part_from_cbor's item-by-item validation (wire_len fallible / message_length budget /
 //! fragment-count-message consistency) is covered at the ur_multipart::tests unit level.
+#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::ur::ur_multipart::{UrMultipartDecoder, MULTIPART_PAYLOAD_MAX_LEN};
 
