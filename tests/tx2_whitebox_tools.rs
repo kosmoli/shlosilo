@@ -256,15 +256,14 @@ fn tx2_sign_container_records(
 /// `real_out_additional_tx_keys` is non-empty.
 #[test]
 fn pin_red_sign_real_cake_unsigned_addkeys_change_input() {
+    // Flipped GREEN 2026-10-21 (pin 2's match-based derivation fix landed):
+    // the real Cake-built unsigned (change input of an add-keys funding tx,
+    // main-tx-key derived P, add_keys=3, real_idx=0) now signs. The once-red
+    // contract stays on as a positive regression assertion.
     let enc = include_bytes!("fixtures/tx2_cake_real_unsigned.bin");
-    match tx2_sign_container(enc) {
-        Ok(n) => panic!("PINNED RED flipped GREEN: real Cake fixture signed ({n} bytes)"),
-        Err(e) => panic!(
-            "PINNED RED: sign path REJECTED the real Cake-built unsigned \
-             (change input of add-keys funding tx, main-tx-key derived P, \
-             add_keys=3, real_idx=0): {e:?}"
-        ),
-    }
+    let n = tx2_sign_container(enc)
+        .expect("sign path must accept the real Cake-built unsigned (add-keys change input)");
+    assert!(n > 0, "signed container must be non-empty");
 }
 
 /// Control for the pin above: the SAME fixture with

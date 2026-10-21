@@ -454,43 +454,45 @@ pub fn derive_input_from_source(
         .get(source.real_output as usize)
         .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let output_pubkey = real.dest;
+    let idx = source.real_output_in_tx_index;
 
-    // tx pubkey: with additional keys, use additional[internal_output_index]
-    let tx_pubkey = if !source.real_out_additional_tx_keys.is_empty() {
-        let idx = source.real_output_in_tx_index as usize;
-        source
-            .real_out_additional_tx_keys
-            .get(idx)
-            .or_else(|| source.real_out_additional_tx_keys.first())
-            .map(|z| **z)
-            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?
+    // Derivation-key SELECTION by MATCHING (2026-10-21, pin 2 — the same
+    // wallet2-faithful candidate matching as
+    // `key_image_export::compute_key_image_with_signature`): the old rule
+    // picked `additional[real_output_in_tx_index]` whenever additional keys
+    // existed, but wallet2's `is_out_to_acc_precomp` branch 1 matches the
+    // MAIN tx-key derivation against any subaddress base — exactly the
+    // change-to-own-subaddress shape (device_default.cpp change_addr branch).
+    // Candidates: the MAIN tx key first, then the indexed additional key
+    // (len==1 shortcut kept, keystone parity). The first candidate that
+    // reproduces `output_pubkey` (x·B == P) under a searched (account, minor)
+    // base wins; nothing reproduces it → error.
+    let add = &source.real_out_additional_tx_keys;
+    let keyed: Option<&[u8; 32]> = if add.is_empty() {
+        None
+    } else if add.len() == 1 {
+        Some(&*add[0])
     } else {
-        *source.real_out_tx_key
+        add.get(source.real_output_in_tx_index as usize)
+            .map(|k| &**k)
     };
+    let candidates = [Some(&*source.real_out_tx_key), keyed];
 
-    // iterate subaddr minors, verifying output_pubkey
-    for &minor in subaddr_indices {
-        let offset = calc_output_key_offset(
-            view_sec,
-            &tx_pubkey,
-            source.real_output_in_tx_index,
-            subaddr_account,
-            minor,
-        )?;
+    for key in candidates.iter().flatten() {
+        // iterate subaddr minors, verifying output_pubkey
+        for &minor in subaddr_indices {
+            let offset = calc_output_key_offset(view_sec, key, idx, subaddr_account, minor)?;
+            if let Ok(image) = derive_key_image_with_offset(spend_sec, &offset, &output_pubkey) {
+                return Ok((image, offset));
+            }
+        }
+        // main-address fallback (major=0, minor=0)
+        let offset = calc_output_key_offset(view_sec, key, idx, subaddr_account, 0)?;
         if let Ok(image) = derive_key_image_with_offset(spend_sec, &offset, &output_pubkey) {
             return Ok((image, offset));
         }
     }
-    // main-address fallback (major=0, minor=0)
-    let offset = calc_output_key_offset(
-        view_sec,
-        &tx_pubkey,
-        source.real_output_in_tx_index,
-        subaddr_account,
-        0,
-    )?;
-    let image = derive_key_image_with_offset(spend_sec, &offset, &output_pubkey)?;
-    Ok((image, offset))
+    Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
 }
 
 /// Main-address input derivation (no subaddress offset; image = spend · Hp(spend·G))
