@@ -321,9 +321,10 @@ impl<'a> AggregateRangeStatement<'a> {
         // writes straight into `a_l` (missing commitments decompose to zero,
         // matching the old `unwrap_or(&0)` path bit for bit).
         let mn = V.len() * COMMITMENT_BITS;
-        // Z5.3 C-cut D: a_l/a_r live in the caller staging regions; the
-        // witness pow2 padding is the zero tail (same values as the old
-        // WipWitness::new reserve+push padding).
+        // Z5.3 C-cut D: a_l/a_r live in the caller staging regions; the pow2
+        // witness padding follows upstream semantics: a_l tail = 0 (amount
+        // decomposition of the identity-padded commitments), a_r tail = -1
+        // (a_r = a_l - 1 over the full padded vector).
         let padded = padded_pow_of_2(mn);
         if p_al.len() < padded || p_ar.len() < padded {
             return None;
@@ -350,7 +351,11 @@ impl<'a> AggregateRangeStatement<'a> {
         for e in a_r.iter_mut() {
             *e = Scalar::ZERO;
         }
-        for i in 0..mn {
+        // Upstream semantics (dc04277 `a_r = a_l.clone() - Scalar::ONE`):
+        // the relation holds over the FULL padded vector — the pow2 tail is
+        // a_l=0, a_r=-1 (NOT zero): that tail is part of the proven statement
+        // the verifier checks. (mn is the real bit count; padded the pow2.)
+        for i in 0..padded {
             a_r[i] = a_l[i] - Scalar::ONE;
         }
 
@@ -358,7 +363,10 @@ impl<'a> AggregateRangeStatement<'a> {
 
         // Z5.3 pool cut: A-terms fill the caller scratch (sequential with the
         // compute_A_hat use below).
-        let a_terms_len = (mn * 2) + 1;
+        // Full padded witness: (0..padded) a_l + (0..padded) a_r + the alpha
+        // term. Sizing by the UNPADDED mn here overflowed for every non-pow2
+        // commitment count (3-out: 385 slots, 513 writes) — pool pin 3.
+        let a_terms_len = (padded * 2) + 1;
         if terms.len() < a_terms_len {
             return None;
         }
@@ -407,7 +415,7 @@ impl<'a> AggregateRangeStatement<'a> {
         .expect("A is a valid point as we just compressed it");
         _p2.end();
 
-        for i in 0..mn {
+        for i in 0..padded {
             a_l[i] -= z;
             a_r[i] += d_descending_y_plus_z[i];
         }
