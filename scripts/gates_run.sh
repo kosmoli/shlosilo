@@ -20,6 +20,14 @@ bash scripts/test_zero_on_alloc.sh --offline --all-targets --no-fail-fast > /tmp
 # T-04: mirror CI "Tests (all features)" — the feature-gated contract pins
 # (inv2/inv3 fptr round-trips) only compile under their features.
 bash scripts/test_zero_on_alloc.sh --offline --all-targets --all-features --no-fail-fast > /tmp/g_testall.log 2>&1; echo "TESTALL=$?"
+# Pool §46 (2026-10-21): no-default-features test face (was ~796 compile
+# errors before the cfg-widening sweep). Expected-red manifest for THIS face:
+#   pin_red_to_seed_returns_all_zero
+#   pin_red_single_frame_carries_real_cake_message
+#   pin_red_details_pool_handles_nine_outputs
+# (the other pins live in alloc-gated test files and do not compile here).
+# Failures beyond that list = real breakage.
+bash scripts/test_zero_on_alloc.sh --offline --no-default-features --all-targets --no-fail-fast > /tmp/g_testnoalloc.log 2>&1; echo "TESTNOALLOC=$?"
 # CI "flux keysource" parity: the keysource package has its own test face
 # (qr_ffi FFI arity contracts etc.) that the root batch never compiles.
 cargo test --offline -p shlosilo-flux-keysource > /tmp/g_keysrc.log 2>&1; echo "KEYSRC=$?"

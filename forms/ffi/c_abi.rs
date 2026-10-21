@@ -2559,6 +2559,7 @@ mod tests {
     /// produce byte-identical output to the ws-less shell path (the carve is
     /// behavior-transparent).
     #[test]
+    #[cfg(feature = "alloc-fallback")]
     fn ffi_ws_path_matches_shell_path() {
         const PSBT: &[u8] = include_bytes!("../../tests/fixtures/sparrow_signet_12k.psbt");
         // the sign payload is the CBOR bytes-item wrapping the PSBT (P1-01: the

@@ -46,6 +46,17 @@ jobs:
         run: bash scripts/test_zero_on_alloc.sh --all-targets --no-fail-fast
       - name: Tests (all features)
         run: bash scripts/test_zero_on_alloc.sh --all-targets --all-features --no-fail-fast
+      # Test-hygiene debt payoff (pool §46, 2026-10-21): the no-default-features
+      # test face compiles and runs (was ~796 compile errors). Expected-red on
+      # this face: pin_red_to_seed_returns_all_zero,
+      # pin_red_single_frame_carries_real_cake_message,
+      # pin_red_details_pool_handles_nine_outputs (the other pins live in
+      # alloc-gated test files and do not compile here). Failures beyond that
+      # manifest = real breakage. `always()` because the pinned-red Tests step
+      # above fails by design (B-方案 red pins) and would otherwise skip this.
+      - name: Tests (no default features)
+        if: always()
+        run: bash scripts/test_zero_on_alloc.sh --no-default-features --all-targets --no-fail-fast
       # Audit #15 P1-02: each diagnostic feature must build on its own (host).
       # Note: a host build with --no-default-features is not a supported
       # configuration (the no_std library's panic_handler collides with the

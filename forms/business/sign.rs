@@ -1559,6 +1559,7 @@ mod tests {
     /// XMR is now wired in (P1-06 wrap-up): missing entropy raises EntropyInjectionInvalid
     /// (§B.5 misuse guard; the old ChainKindUnsupported behavior has been removed)
     #[test]
+    #[cfg(feature = "alloc-fallback")]
     fn sign_xmr_requires_entropy() {
         let seed = [0u8; 64];
         let input = SignInput::Seed { seed: &seed };
@@ -1774,6 +1775,7 @@ mod tests {
 
     /// BTC end-to-end: build a P2WPKH PSBT → crypto-psbt CBOR → sign() → verify PARTIAL_SIG
     #[test]
+    #[cfg(feature = "alloc-fallback")]
     fn sign_btc_psbt_end_to_end() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
         use crate::chain::btc::psbt::{self, input_type};
@@ -1900,6 +1902,7 @@ mod tests {
 
     /// P1-02: PSBT with a non-default path (m/84'/0'/1'/0/0) → signing derives the key from that path (threading proof)
     #[test]
+    #[cfg(feature = "alloc-fallback")]
     fn sign_btc_psbt_uses_psbt_derivation_path() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
         use crate::chain::btc::psbt::{self, input_type};
@@ -1990,6 +1993,7 @@ mod tests {
 
     /// P1-02: BIP32_DERIVATION fingerprint mismatch with ours → reject (prevents signing from the wrong wallet)
     #[test]
+    #[cfg(feature = "alloc-fallback")]
     fn sign_btc_psbt_rejects_fingerprint_mismatch() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
         use crate::chain::btc::psbt::{self, input_type};
@@ -2078,6 +2082,7 @@ mod tests {
 
     /// P1-B: witness_utxo scriptPubKey not bound to the signing key (swapped to someone else's P2WPKH) → reject
     #[test]
+    #[cfg(feature = "alloc-fallback")]
     fn p1b_rejects_witness_utxo_script_mismatch() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
         use crate::chain::btc::psbt::{self, input_type};
@@ -2166,6 +2171,7 @@ mod tests {
 
     /// P1-B: no BIP32_DERIVATION record (the old default-path fallback has been removed) → reject
     #[test]
+    #[cfg(feature = "alloc-fallback")]
     fn p1b_rejects_missing_derivation_record() {
         use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut}; // keep
         use crate::chain::btc::psbt::{self, input_type};
