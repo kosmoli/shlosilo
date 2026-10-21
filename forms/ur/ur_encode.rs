@@ -22,8 +22,17 @@ fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
 
-/// Raw payload upper bound (CBOR produced by codecs)
-pub const UR_PAYLOAD_MAX_LEN: usize = 2048;
+/// Raw payload upper bound (CBOR produced by codecs).
+///
+/// Sizing (2026-10-21, pool §36 fix): 2048 under-budgeted real traffic — a
+/// real Cake `xmr-output` message is 2052 B (2026-10-19 inventory). 2176
+/// covers that plus ~one export record of headroom (~102 B/record). Beyond
+/// this the SINGLE-FRAME path is capped by QR physics anyway (one QR's
+/// alphanumeric capacity ≈ 4296 chars ≈ 2145 B of bytewords payload), so
+/// larger messages legitimately travel the multipart path (whose caps are
+/// the 16 KiB-class `ur_multipart` constants) — raising this constant further
+/// would only grow buffers, not capability.
+pub const UR_PAYLOAD_MAX_LEN: usize = 2176;
 /// Full URI upper bound: prefix + bytewords(payload+crc32) ≈ 2×payload + header
 pub const UR_URI_MAX_LEN: usize = 8192;
 
@@ -210,7 +219,11 @@ mod tests {
 
     #[test]
     fn payload_max_len() {
-        assert_eq!(UR_PAYLOAD_MAX_LEN, 2048);
+        // Contract reminder: 2176 = the 2052-B real-Cake benchmark (pool §36)
+        // + ~one record of headroom, bounded above by single-QR physics
+        // (~2145 B bytewords payload ≈ one QR alphanumeric capacity). Larger
+        // traffic rides the multipart path.
+        assert_eq!(UR_PAYLOAD_MAX_LEN, 2176);
     }
 }
 // ============================================================================

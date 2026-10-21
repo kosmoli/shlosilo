@@ -667,9 +667,18 @@
 #define JSON_MONERO_VIEWKEY_MAX_LEN 512
 
 /**
- * Raw payload upper bound (CBOR produced by codecs)
+ * Raw payload upper bound (CBOR produced by codecs).
+ *
+ * Sizing (2026-10-21, pool §36 fix): 2048 under-budgeted real traffic — a
+ * real Cake `xmr-output` message is 2052 B (2026-10-19 inventory). 2176
+ * covers that plus ~one export record of headroom (~102 B/record). Beyond
+ * this the SINGLE-FRAME path is capped by QR physics anyway (one QR's
+ * alphanumeric capacity ≈ 4296 chars ≈ 2145 B of bytewords payload), so
+ * larger messages legitimately travel the multipart path (whose caps are
+ * the 16 KiB-class `ur_multipart` constants) — raising this constant further
+ * would only grow buffers, not capability.
  */
-#define UR_PAYLOAD_MAX_LEN 2048
+#define UR_PAYLOAD_MAX_LEN 2176
 
 /**
  * Full URI upper bound: prefix + bytewords(payload+crc32) ≈ 2×payload + header
