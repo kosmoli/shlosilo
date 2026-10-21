@@ -121,7 +121,9 @@ fn parse_signed_tail(plain: &[u8]) -> (Vec<[u8; 32]>, usize) {
 
 /// Sign the add-keys-stripped fixture with the given wallet key image records;
 /// returns (signed plaintext, outer key_images).
-fn sign_stripped_fixture(ki_records: &[WalletKiRecord]) -> (Vec<u8>, Vec<[u8; 32]>) {
+fn sign_stripped_fixture(
+    ki_records: &[WalletKiRecord],
+) -> Result<(Vec<u8>, Vec<[u8; 32]>), shlosilo::error::ShlosiloError> {
     use shlosilo::business::sign::sign_with_entropy_records;
     use shlosilo::entropy::mnemonic::Mnemonic;
     use shlosilo::ur::ur_encode::UrTypeTag;
@@ -147,11 +149,10 @@ fn sign_stripped_fixture(ki_records: &[WalletKiRecord]) -> (Vec<u8>, Vec<[u8; 32
         ki_records,
         &[0x77u8; 32],
         &mut out,
-    )
-    .expect("sign with records must succeed");
+    )?;
     let plain = decrypt_signed_txset(&out[..n], &TX2_LAB_VIEW_SK).expect("decrypt signed");
     let (kis, _tki) = parse_signed_tail(&plain);
-    (plain.to_vec(), kis)
+    Ok((plain.to_vec(), kis))
 }
 
 /// Wallet fingerprint of the fixture wallet (same seed path as the sign leg).
@@ -187,6 +188,13 @@ fn true_key_image(i: usize) -> [u8; 32] {
 /// with the dummy-at-0 array, 2026-10-17).
 #[test]
 fn pin_red_import_does_not_pollute_transfers_zero() {
+    // Flipped GREEN 2026-10-21 (A案): the v2 gap policy refuses the sign when
+    // a covered position has no own true key image — NOTHING positional ships,
+    // so wallet2's positional import cannot pollute transfers[0] (pool #32).
+    // The v1 conservative filler (the spent input's derived KI at every gap)
+    // is retired; the endgames for recordless signing are the persistent
+    // record store / keystone-shape empty array (LuckyFox phase).
+    //
     // A set of pairing records that does NOT cover transfer 0.
     let fp = fixture_wallet_fp();
     let records: Vec<WalletKiRecord> = (1..=FIXTURE_MAX_SELECTED as u32 - 1)
@@ -196,32 +204,13 @@ fn pin_red_import_does_not_pollute_transfers_zero() {
             key_image: true_key_image(i as usize),
         })
         .collect();
-    let (_plain, kis) = sign_stripped_fixture(&records);
-
-    // Phone-wallet model: m_transfers with their true key images ...
-    let mut transfers = [[0u8; 32]; FIXTURE_TRANSFERS];
-    for (i, slot) in transfers.iter_mut().enumerate() {
-        *slot = true_key_image(i);
-    }
-    // ... and wallet2's import_key_images positional overwrite ("trusting
-    // imported one" — every entry lands at its array index).
-    for (i, ki) in kis.iter().enumerate() {
-        if i < FIXTURE_TRANSFERS {
-            transfers[i] = *ki;
-        }
-    }
-
-    if transfers[0] != true_key_image(0) {
-        panic!(
-            "PINNED RED: import_key_images positional overwrite polluted transfers[0] (pool §32): \
-             the outer key_images array carried an UNRELATED key image at wallet index 0 (the \
-             conservative gap filler = the spent input's derived KI, which belongs to the selected \
-             transfer), and wallet2's import writes every entry into m_transfers[ki_idx] \
-             (\"trusting imported one\", mirror-replay-proven 2026-10-17) — the phone's \
-             spent-tracking for transfer 0 is corrupted. Fix direction: every covered position of \
-             the wire array must carry that transfer's OWN true key image (persistent record store \
-             / full pairing retention, the LuckyFox follow-up), or the sign must refuse the gap \
-             (v2 'no fake fill' policy) — an unrelated filler must never be shipped."
-        );
-    }
+    let err = sign_stripped_fixture(&records)
+        .expect_err("gap without a record must refuse the sign (v2 gap policy)");
+    assert!(
+        matches!(
+            err.kind,
+            shlosilo::error::ShlosiloErrorKind::KeyImageRecordMissing
+        ),
+        "expected KeyImageRecordMissing, got {err:?}"
+    );
 }

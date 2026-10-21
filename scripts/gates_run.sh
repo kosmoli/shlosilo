@@ -1,17 +1,10 @@
 #!/usr/bin/env bash
 # shlosilo gate batch — bare exit codes, no trimming by change surface.
-# NOTE: TEST/TESTALL exit 1 is EXPECTED while MUST-RED pins stay red
-# (Kosmo 2026-10-20 decision: red pins keep failing on purpose, no
-# should_panic — forgetting unfixed bugs is worse than a red CI).
-# Expected-red manifest (everything else failing = real breakage):
-#   pin_red_sign_real_cake_unsigned_addkeys_change_input  (tests/tx2_whitebox_tools.rs)
-#   pin_red_sign_path_change_to_own_subaddress_uses_main_txkey (tests/xmr_subaddr_sign_roundtrip.rs)
-#   pin_red_sign_three_outputs_bp_scratch_index_oob (tests/xmr_subaddr_sign_roundtrip.rs)
-#   pin_red_to_seed_returns_all_zero (tests/pin_mnemonic_to_seed.rs)
-#   pin_red_import_does_not_pollute_transfers_zero (tests/pin_import_key_images_pollution.rs)
-#   pin_red_fallback_fill_no_duplicate_selected (tests/pin_signed_key_images_wallet_indexed.rs)
-#   pin_red_single_frame_carries_real_cake_message (tests/pin_ur_single_frame_budget.rs)
-#   pin_red_details_pool_handles_nine_outputs (tests/pin_details_pool_over8.rs)
+# NOTE: the MUST-RED pin suite is FULLY GREEN as of 2026-10-21 — all 8 pins
+# fixed in the red-pin batch (pool #55: to_seed, UR budget, derivation
+# matching x2, BP+ non-pow2 scratch, details pool caps, v2 gap policy x2).
+# The pin_red_* test names are historical; the expected-red manifest is now
+# EMPTY: any failing test on any face is a real failure.
 cd ~/works/shlosilo-poc4 || exit 99
 bash scripts/check_fixtures.sh > /tmp/g_fixt.log 2>&1; echo "FIXTURES=$?"
 # TEST/TESTALL run through the zero-on-alloc wrapper (jemalloc zero:true) so
@@ -21,12 +14,8 @@ bash scripts/test_zero_on_alloc.sh --offline --all-targets --no-fail-fast > /tmp
 # (inv2/inv3 fptr round-trips) only compile under their features.
 bash scripts/test_zero_on_alloc.sh --offline --all-targets --all-features --no-fail-fast > /tmp/g_testall.log 2>&1; echo "TESTALL=$?"
 # Pool §46 (2026-10-21): no-default-features test face (was ~796 compile
-# errors before the cfg-widening sweep). Expected-red manifest for THIS face:
-#   pin_red_to_seed_returns_all_zero
-#   pin_red_single_frame_carries_real_cake_message
-#   pin_red_details_pool_handles_nine_outputs
-# (the other pins live in alloc-gated test files and do not compile here).
-# Failures beyond that list = real breakage.
+# errors before the cfg-widening sweep). Expected-red manifest: EMPTY (the
+# three pins on this face were fixed in the same batch).
 bash scripts/test_zero_on_alloc.sh --offline --no-default-features --all-targets --no-fail-fast > /tmp/g_testnoalloc.log 2>&1; echo "TESTNOALLOC=$?"
 # CI "flux keysource" parity: the keysource package has its own test face
 # (qr_ffi FFI arity contracts etc.) that the root batch never compiles.

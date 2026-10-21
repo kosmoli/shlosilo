@@ -630,23 +630,45 @@ fn golden_key_image_wire_parse_reserialize_identity() {
 /// deterministic: the A/B runs (device vs host byte-identical,
 /// tests/xmr_device_blob_verify.rs) and
 /// tests/xmr_sign_reuse_determinism.rs pin that property.
-fn sign_with_fixed_entropy(container: &[u8], wallet_entropy: &[u8; 32]) -> Vec<u8> {
-    use shlosilo::business::sign::{sign_with_entropy, SignInput};
+/// Session wallet fingerprint (fix37 record binding: keccak256(spend_pub ||
+/// view_pub) truncated to 8 bytes — same seed path as the sign leg).
+fn wallet_fp_of(wallet_entropy: &[u8; 32]) -> [u8; 8] {
+    use shlosilo::business::sign::wallet_fingerprint_from_seed;
+    use shlosilo::entropy::mnemonic::Mnemonic;
+    let m = Mnemonic::from_entropy(wallet_entropy).expect("mnemonic from wallet entropy");
+    let mut seed = [0u8; 64];
+    shlosilo::business::restore_seed::restore_seed(&m, b"", &mut seed).expect("restore seed");
+    wallet_fingerprint_from_seed(&seed)
+}
+
+/// Deterministic re-sign WITH pairing records (v2 gap policy: a gap without a
+/// record refuses, so gap positions must be covered by records). Used by the
+/// archived-receipt goldens to reproduce the historical v1 fill bytes exactly:
+/// the v1 gap filler was the source-derived key image, so feeding that value
+/// as the gap records reproduces the archive while pinning the signer's
+/// determinism (the fill POLICY itself is pinned by the red-pin suite).
+fn sign_with_fixed_entropy_records(
+    container: &[u8],
+    wallet_entropy: &[u8; 32],
+    ki_records: &[shlosilo::business::sign::WalletKiRecord],
+) -> Vec<u8> {
+    use shlosilo::business::sign::{sign_with_entropy_records, SignInput};
     use shlosilo::entropy::mnemonic::Mnemonic;
     use shlosilo::ur::ur_encode::UrTypeTag;
     let m = Mnemonic::from_entropy(wallet_entropy).expect("mnemonic from wallet entropy");
     let mut out = vec![0u8; 65536];
-    let n = sign_with_entropy(
+    let n = sign_with_entropy_records(
         SignInput::Mnemonic {
             mnemonic: m,
             passphrase: b"",
         },
         UrTypeTag::XmrTxUnsigned,
         container,
+        ki_records,
         &FIXED_SIGN_ENTROPY,
         &mut out,
     )
-    .expect("sign_with_entropy");
+    .expect("sign with records must succeed");
     out.truncate(n);
     out
 }
@@ -700,9 +722,24 @@ fn fixture_entropies_reproduce_public_fixture_keys() {
 fn golden_resign_dev_1in_fresh_matches_signed_gold() {
     let enc: &[u8] = include_bytes!("fixtures/unsigned_txset_1in_fresh.bin");
     let gold: &[u8] = include_bytes!("fixtures/signed_txset_1in_fresh.bin");
-    let out = sign_with_fixed_entropy(enc, &DEV_WALLET_ENTROPY);
-    let ours_plain = decrypt_signed_txset(&out, &DEV_VIEW_SK).expect("decrypt our re-sign");
     let gold_plain = decrypt_signed_txset(gold, &DEV_VIEW_SK).expect("decrypt archived gold");
+    // v2 gap policy (2026-10-21): the recordless sign refuses gaps. The
+    // archived receipt carries the v1 fill shape (4 slots = the source-derived
+    // key image repeated), so feed exactly that value as the gap-covering
+    // records: the re-sign reproduces the archive byte-for-byte and the pin
+    // keeps measuring signer determinism (the fill POLICY is pinned by the
+    // red-pin suite).
+    let src_ki = signed_plain_first_key_image(&gold_plain);
+    let fp = wallet_fp_of(&DEV_WALLET_ENTROPY);
+    let records: Vec<shlosilo::business::sign::WalletKiRecord> = (0..4u32)
+        .map(|i| shlosilo::business::sign::WalletKiRecord {
+            transfer_idx: i,
+            wallet_fp: fp,
+            key_image: src_ki,
+        })
+        .collect();
+    let out = sign_with_fixed_entropy_records(enc, &DEV_WALLET_ENTROPY, &records);
+    let ours_plain = decrypt_signed_txset(&out, &DEV_VIEW_SK).expect("decrypt our re-sign");
     assert_eq!(
         &ours_plain[..3794],
         &gold_plain[..3794],
@@ -774,7 +811,21 @@ fn golden_resign_dev_1in_fresh_matches_signed_gold() {
 fn golden_resign_fa_matches_archived_our_container() {
     let enc: &[u8] = include_bytes!("fixtures/unsigned_fa_subaddr.bin");
     let gold: &[u8] = include_bytes!("fixtures/ours_signed_fa.bin");
-    let out = sign_with_fixed_entropy(enc, &LAB_WALLET_ENTROPY);
+    // v2 gap policy: reproduce the archived v1 fill shape via gap-covering
+    // records (see golden_resign_dev_1in_fresh_matches_signed_gold). 0..8
+    // oversupplies the span on purpose — span-excess records are dropped by
+    // the fix37 span tightening.
+    let gold_plain = decrypt_signed_txset(gold, &LAB_VIEW_SK).expect("decrypt archived gold");
+    let src_ki = signed_plain_first_key_image(&gold_plain);
+    let fp = wallet_fp_of(&LAB_WALLET_ENTROPY);
+    let records: Vec<shlosilo::business::sign::WalletKiRecord> = (0..8u32)
+        .map(|i| shlosilo::business::sign::WalletKiRecord {
+            transfer_idx: i,
+            wallet_fp: fp,
+            key_image: src_ki,
+        })
+        .collect();
+    let out = sign_with_fixed_entropy_records(enc, &LAB_WALLET_ENTROPY, &records);
     assert_eq!(
         &out[..],
         gold,
@@ -829,8 +880,22 @@ fn golden_sign_path_embeds_construction_data_extra() {
         44,
         "fixture wire fact: 44B extra payload (tx pub key + encrypted payment id)"
     );
-    // Sign path: the embedded construction data must echo it.
-    let out = sign_with_fixed_entropy(enc, &LAB_WALLET_ENTROPY);
+    // Sign path: the embedded construction data must echo it. (v2 gap policy:
+    // gap positions need covering records — dummy values, since this pin is
+    // about `extra`, not the key-image values; selected indices are excluded,
+    // they derive fresh at sign time.)
+    let sel: Vec<u32> = d.selected_transfers.iter().map(|t| *t as u32).collect();
+    let span = sel.iter().copied().max().unwrap_or(0) + 1;
+    let fp = wallet_fp_of(&LAB_WALLET_ENTROPY);
+    let records: Vec<shlosilo::business::sign::WalletKiRecord> = (0..span)
+        .filter(|i| !sel.contains(i))
+        .map(|i| shlosilo::business::sign::WalletKiRecord {
+            transfer_idx: i,
+            wallet_fp: fp,
+            key_image: [0x5Au8; 32],
+        })
+        .collect();
+    let out = sign_with_fixed_entropy_records(enc, &LAB_WALLET_ENTROPY, &records);
     let signed_plain = decrypt_signed_txset(&out, &LAB_VIEW_SK).expect("decrypt our signed output");
     let occ = signed_plain
         .windows(extra.len())

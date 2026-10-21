@@ -160,7 +160,9 @@ fn ptx_key_image_from_str_field(plain: &[u8]) -> [u8; 32] {
 
 /// Sign the add-keys-stripped fixture with the given wallet key image records;
 /// returns (signed plaintext, outer key_images).
-fn sign_stripped_fixture(ki_records: &[WalletKiRecord]) -> (Vec<u8>, Vec<[u8; 32]>) {
+fn sign_stripped_fixture(
+    ki_records: &[WalletKiRecord],
+) -> Result<(Vec<u8>, Vec<[u8; 32]>), shlosilo::error::ShlosiloError> {
     use shlosilo::business::sign::sign_with_entropy_records;
     use shlosilo::entropy::mnemonic::Mnemonic;
     use shlosilo::ur::ur_encode::UrTypeTag;
@@ -186,11 +188,10 @@ fn sign_stripped_fixture(ki_records: &[WalletKiRecord]) -> (Vec<u8>, Vec<[u8; 32
         ki_records,
         &[0x77u8; 32],
         &mut out,
-    )
-    .expect("sign with records must succeed");
+    )?;
     let plain = decrypt_signed_txset(&out[..n], &TX2_LAB_VIEW_SK).expect("decrypt signed");
     let (kis, _tki) = parse_signed_tail(&plain);
-    (plain.to_vec(), kis)
+    Ok((plain.to_vec(), kis))
 }
 
 /// Wallet fingerprint of the fixture wallet: same seed path as
@@ -226,7 +227,8 @@ fn fixture_gap_records() -> Vec<WalletKiRecord> {
 #[test]
 fn key_images_wallet_transfer_indexed_with_records() {
     let records = fixture_gap_records();
-    let (plain, kis) = sign_stripped_fixture(&records);
+    let (plain, kis) =
+        sign_stripped_fixture(&records).expect("full-coverage records: sign must succeed");
     assert_eq!(
         kis.len(),
         FIXTURE_MAX_SELECTED + 1,
@@ -248,11 +250,12 @@ fn key_images_wallet_transfer_indexed_with_records() {
     );
 }
 
-/// fix37 wallet-fingerprint binding: records carrying a FOREIGN wallet fp are
-/// treated as absent by the sign leg (a plate swap without a power cycle must
-/// not feed another wallet's key images into this wallet's wire array). The
-/// output must equal the no-records conservative fill: the foreign key image
-/// values must NOT appear anywhere in the outer array.
+/// fix37 wallet-fingerprint binding + the v2 gap policy (2026-10-21): records
+/// carrying a FOREIGN wallet fp are treated as absent by the sign leg (a plate
+/// swap without a power cycle must not feed another wallet's key images into
+/// this wallet's wire array), and an uncovered position REFUSES the sign
+/// (KeyImageRecordMissing) instead of shipping any filler. Nothing positional
+/// ships at all, so no foreign value can land.
 #[test]
 fn foreign_fp_records_are_ignored() {
     let mut records = fixture_gap_records();
@@ -260,49 +263,37 @@ fn foreign_fp_records_are_ignored() {
         // a valid-looking but foreign fingerprint (fixture fp, bit-flipped)
         r.wallet_fp[0] ^= 0xFF;
     }
-    let (_plain, kis) = sign_stripped_fixture(&records);
-    for r in records.iter() {
-        assert_ne!(
-            kis[r.transfer_idx as usize], r.key_image,
-            "foreign-fp record at index {} must NOT land",
-            r.transfer_idx
-        );
-    }
-    // and the gap positions carry the conservative filler (same as recordless)
-    let (_plain0, kis0) = sign_stripped_fixture(&[]);
-    assert_eq!(
-        kis, kis0,
-        "foreign-fp records must produce exactly the recordless output"
+    let err = sign_stripped_fixture(&records)
+        .expect_err("foreign-fp records do not cover the gaps: the sign must refuse");
+    assert!(
+        matches!(
+            err.kind,
+            shlosilo::error::ShlosiloErrorKind::KeyImageRecordMissing
+        ),
+        "expected KeyImageRecordMissing, got {err:?}"
     );
 }
 
-/// Without records (the REAL product case — Cake pairs key images once per
-/// wallet, so every later sign runs recordless) the sign fills the uncovered
-/// positions with the CONSERVATIVE filler: a derived key image of a spent
-/// input. The phone then marks those transfers spent — the balance under-
-/// counts until the next key-image re-sync, never inflates. A zero/unknown
-/// filler would instead make actually-spent transfers look unspent (balance
-/// inflation + double-spend UX), and refusing outright made every second tx
-/// un-signable (fix35 field finding, 2026-10-17).
+/// v2 gap policy (2026-10-21 Kosmo 拍板 — pool #32/#48, red pins 5/6, A案):
+/// an uncovered position REFUSES the sign (KeyImageRecordMissing). The v1
+/// conservative filler (a derived key image of a spent input stamped into
+/// every gap slot) is retired: wallet2's positional import would write each
+/// filler into a DIFFERENT transfer's slot ("trusting imported one"), which
+/// is exactly the pollution vector pins 5/6 refuse to let ship. The recordless
+/// signing endgames (persistent record store / keystone-shape empty array)
+/// are the LuckyFox phase; until then the operation is: pair first
+/// (xmr-output beat, `Outputs (all)`), then sign.
 #[test]
-fn conservative_fallback_without_records() {
-    let (plain, kis) = sign_stripped_fixture(&[]);
-    assert_eq!(
-        kis.len(),
-        FIXTURE_MAX_SELECTED + 1,
-        "array must cover 0..=max(selected_transfers)"
+fn gap_without_records_refuses() {
+    let err = sign_stripped_fixture(&[])
+        .expect_err("a recordless sign must refuse the gaps (v2 gap policy)");
+    assert!(
+        matches!(
+            err.kind,
+            shlosilo::error::ShlosiloErrorKind::KeyImageRecordMissing
+        ),
+        "expected KeyImageRecordMissing, got {err:?}"
     );
-    let src_ki = ptx_key_image_from_str_field(&plain);
-    assert_eq!(
-        kis[FIXTURE_MAX_SELECTED], src_ki,
-        "selected position must carry the source-derived key image"
-    );
-    for (i, ki) in kis.iter().enumerate().take(FIXTURE_MAX_SELECTED) {
-        assert_eq!(
-            *ki, src_ki,
-            "gap position {i} must carry the conservative spent-marker filler"
-        );
-    }
 }
 
 /// A record disagreeing with the source-derived key image at the SAME wallet
@@ -365,27 +356,20 @@ fn refuse_on_record_source_mismatch() {
 /// expected to change together with this bug's fix.)
 #[test]
 fn pin_red_fallback_fill_no_duplicate_selected() {
-    let (plain, kis) = sign_stripped_fixture(&[]);
-    let src_ki = ptx_key_image_from_str_field(&plain);
-    assert_eq!(
-        kis[FIXTURE_MAX_SELECTED], src_ki,
-        "selected position must carry the source-derived key image"
+    // Flipped GREEN 2026-10-21 (A案, pool #49): the recordless gap filler is
+    // retired — a gap without a matching-fp record REFUSES the sign, so no
+    // filler (duplicate of the selected true key image or otherwise) can ever
+    // ship. The v1 filler stamped the spent input's derived key image across
+    // every gap slot (`[0]==[1]` collision shape).
+    let err = sign_stripped_fixture(&[])
+        .expect_err("recordless sign must refuse the gaps (v2 gap policy)");
+    assert!(
+        matches!(
+            err.kind,
+            shlosilo::error::ShlosiloErrorKind::KeyImageRecordMissing
+        ),
+        "expected KeyImageRecordMissing, got {err:?}"
     );
-    for (i, ki) in kis.iter().enumerate() {
-        if i != FIXTURE_MAX_SELECTED && *ki == src_ki {
-            panic!(
-                "PINNED RED: conservative gap filler duplicated the selected position's true key \
-                 image (pool §49): outer key_images[{i}] == key_images[{FIXTURE_MAX_SELECTED}] — \
-                 the recordless fill reuses the spent input's derived KI for every gap, so the \
-                 array collides with itself (`[0]==[1]` is the observed shape) and any \
-                 implementation that dedupes the imported array (wallet2's import_key_images \
-                 writes every entry positionally into m_transfers) misreads the fill. Fix \
-                 direction: the filler must never equal a true key image shipped in the same \
-                 array — derive a distinct per-position filler, or draw true values from a \
-                 persistent record store (LuckyFox follow-up) / refuse the gap (v2 policy)."
-            );
-        }
-    }
 }
 
 /// The fixture's `key_images_str` wire field, GOLDEN bytes (see the format
@@ -432,9 +416,11 @@ fn count_ki_str_items(buf: &[u8]) -> usize {
 /// side vs `tx.vin` order on wallet2's, which is the same order.)
 #[test]
 fn key_images_str_format_matches_wallet2() {
-    // Recordless sign: the outer array is full of the conservative filler —
-    // the string must still carry exactly ONE item (fallback never enters it).
-    let (plain, kis) = sign_stripped_fixture(&[]);
+    // Sign with gap-covering records (v2 gap policy refuses recordless signs):
+    // the gap values land in the outer array but must NEVER enter the string —
+    // it carries exactly ONE item (this tx's inputs only).
+    let (plain, kis) = sign_stripped_fixture(&fixture_gap_records())
+        .expect("gap-covering records: sign must succeed");
 
     // 1. golden bytes present, exactly once (brackets + lowercase hex + one
     //    trailing space pinned literal-ly).

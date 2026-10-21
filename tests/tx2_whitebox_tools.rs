@@ -222,10 +222,6 @@ fn tx2_strip_addkeys_plain(plain: &mut Vec<u8>) {
     plain.drain(pos + 33..pos + 33 + nkeys as usize * 32);
 }
 
-fn tx2_sign_container(enc: &[u8]) -> Result<usize, shlosilo::error::ShlosiloError> {
-    tx2_sign_container_records(enc, &[])
-}
-
 /// Records-aware signer: `ki_records` = pairing-beat wallet key image
 /// retention (wallet-transfer-indexed; see tests/pin_signed_key_images_wallet_indexed.rs).
 fn tx2_sign_container_records(
@@ -260,8 +256,11 @@ fn pin_red_sign_real_cake_unsigned_addkeys_change_input() {
     // the real Cake-built unsigned (change input of an add-keys funding tx,
     // main-tx-key derived P, add_keys=3, real_idx=0) now signs. The once-red
     // contract stays on as a positive regression assertion.
+    // v2 gap policy (2026-10-21): gap positions need covering records (the
+    // recordless sign now refuses — pins 5/6). The contract under test is the
+    // derivation fix: the real Cake add-keys change input must SIGN.
     let enc = include_bytes!("fixtures/tx2_cake_real_unsigned.bin");
-    let n = tx2_sign_container(enc)
+    let n = tx2_sign_container_records(enc, &fixture_gap_records())
         .expect("sign path must accept the real Cake-built unsigned (add-keys change input)");
     assert!(n > 0, "signed container must be non-empty");
 }
