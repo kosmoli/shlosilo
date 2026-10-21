@@ -5,6 +5,7 @@
 
 pub mod create_account;
 pub mod export_readonly;
+pub mod ki_store;
 pub mod restore_seed;
 pub mod sign;
 /// Cake direct pairing receive leg. The chain layer it wraps

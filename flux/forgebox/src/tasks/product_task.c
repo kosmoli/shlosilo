@@ -1399,36 +1399,18 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
                                   g_pairing_ki_tmp, PAIRING_KI_MAX,
                                   &pair_n);
     if (rc == 0) {
-        /* Union-merge by (wallet fingerprint, wallet transfer index): a
-         * transfer's key image is immutable, so this scan only adds/updates
-         * its own slots -- a partial export scanned after a full one must not
-         * drop coverage. fix37: the record is wallet-bound; a scan from a
-         * DIFFERENT wallet (plate swapped without a power cycle) voids the
-         * stale whole first, and same-index records of another wallet never
-         * overwrite this wallet's slot (the sign leg also filters by the
-         * session fingerprint). */
-        unsigned int i, j;
-        if (pair_n > 0 && g_pairing_ki_n > 0 &&
-            memcmp(g_pairing_ki[0].wallet_fp, g_pairing_ki_tmp[0].wallet_fp,
-                   sizeof(g_pairing_ki[0].wallet_fp)) != 0) {
-            g_pairing_ki_n = 0; /* wallet changed: stale records are void */
-        }
-        for (i = 0; i < pair_n && i < PAIRING_KI_MAX; i++) {
-            for (j = 0; j < g_pairing_ki_n; j++) {
-                if (g_pairing_ki[j].transfer_idx == g_pairing_ki_tmp[i].transfer_idx &&
-                    memcmp(g_pairing_ki[j].wallet_fp, g_pairing_ki_tmp[i].wallet_fp,
-                           sizeof(g_pairing_ki[0].wallet_fp)) == 0) {
-                    break;
-                }
-            }
-            if (j >= PAIRING_KI_MAX) {
-                continue; /* retention full: sign falls back for the rest */
-            }
-            g_pairing_ki[j] = g_pairing_ki_tmp[i];
-            if (j == g_pairing_ki_n) {
-                g_pairing_ki_n++;
-            }
-        }
+        /* Union-merge by (wallet fingerprint, wallet transfer index) — the
+         * fix37 store policy lives in forms (business::ki_store: I1 wallet-
+         * change clear / I2 (fp,idx) overwrite / I3 append-or-drop / I3b
+         * batch truncation / I4 homogeneity assumption), host-tested and CI-
+         * pinned; this call is a thin array pass-through and the glue owns
+         * only the storage. A partial export scanned after a full one must
+         * not drop coverage; a scan from a DIFFERENT wallet (plate swapped
+         * without a power cycle) voids the stale store first (the sign leg
+         * additionally filters by the session fingerprint). */
+        shlosilo_ki_store_merge_ffi(g_pairing_ki, (unsigned int)PAIRING_KI_MAX,
+                                    &g_pairing_ki_n,
+                                    g_pairing_ki_tmp, pair_n);
     }
     g_sign_busy = 0;
     crash_bb_phase(CRASH_PHASE_PAIR_FFI_OUT);   /* 4 = ffi back (3 is marked

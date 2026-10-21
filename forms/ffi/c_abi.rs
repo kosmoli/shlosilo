@@ -1980,6 +1980,61 @@ pub mod r3 {
         finish_sign_ffi(result, actual_len)
     }
 
+    /// Pairing retention store merge (pool §53 extraction, 2026-10-21): the
+    /// fix37 store policy as a thin C-ABI pass-through to
+    /// [`crate::business::ki_store::merge_pairing_records`]. The policy
+    /// (I1 wallet-change clear / I2 (fp,idx) overwrite / I3 append-or-drop /
+    /// I3b batch truncation / I4 first-element homogeneity) is host-tested in
+    /// forms; the forgebox glue owns only the storage arrays — no merge
+    /// semantics live in C anymore.
+    ///
+    /// Contract:
+    /// - `store` / `store_cap`: caller array of repr(C) `WalletKiRecord`
+    ///   (L3-owned storage, zero-alloc discipline). `store == NULL` is valid
+    ///   only with `store_cap == 0`.
+    /// - `len`: in/out record count; `*len <= store_cap` on entry.
+    /// - `incoming` / `incoming_len`: the pairing-leg batch; `incoming == NULL`
+    ///   valid only with `incoming_len == 0`. An empty batch is a no-op (it
+    ///   never triggers the I1 wallet-change clear).
+    ///
+    /// Returns 0 = Ok; negative = error code (`ERR_NULL_POINTER` on a null
+    /// argument, `ERR_BUFFER_TOO_SMALL` on `*len > store_cap`).
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checks first, then from_raw_parts
+    pub extern "C" fn shlosilo_ki_store_merge_ffi(
+        store: *mut crate::business::sign::WalletKiRecord,
+        store_cap: c_uint,
+        len: *mut c_uint,
+        incoming: *const crate::business::sign::WalletKiRecord,
+        incoming_len: c_uint,
+    ) -> c_int {
+        if len.is_null()
+            || (store.is_null() && store_cap > 0)
+            || (incoming.is_null() && incoming_len > 0)
+        {
+            return ERR_NULL_POINTER;
+        }
+        // SAFETY: non-null where dereferenced (checked above); the caller
+        // guarantees `store_cap` / `incoming_len` valid repr(C) slots.
+        let store_slice: &mut [crate::business::sign::WalletKiRecord] = if store_cap == 0 {
+            &mut []
+        } else {
+            unsafe { core::slice::from_raw_parts_mut(store, store_cap as usize) }
+        };
+        let inc_slice: &[crate::business::sign::WalletKiRecord] = if incoming_len == 0 {
+            &[]
+        } else {
+            unsafe { core::slice::from_raw_parts(incoming, incoming_len as usize) }
+        };
+        let mut len_v = unsafe { *len } as usize;
+        if len_v > store_slice.len() {
+            return ERR_BUFFER_TOO_SMALL;
+        }
+        crate::business::ki_store::merge_pairing_records(store_slice, &mut len_v, inc_slice);
+        unsafe { *len = len_v as c_uint };
+        OK
+    }
+
     /// R3: release the decoder handle. Null-safe (idempotent).
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: visible to clippy once mod r3 becomes pub; free contract: single-owner
@@ -2652,6 +2707,63 @@ mod tests {
             c_uint,
             *mut c_uint,
         ) -> c_int = r3::shlosilo_xmr_pairing_ffi;
+    }
+
+    /// §53 contract pin: the frozen C-ABI signature of the store-merge entry.
+    #[test]
+    fn ffi_ki_store_merge_signature_pin() {
+        const _: extern "C" fn(
+            *mut crate::business::sign::WalletKiRecord,
+            c_uint,
+            *mut c_uint,
+            *const crate::business::sign::WalletKiRecord,
+            c_uint,
+        ) -> c_int = r3::shlosilo_ki_store_merge_ffi;
+    }
+
+    /// §53 behavior pin through the C-ABI (the 1021 real-device scenario
+    /// shape): same-wallet batch merges, a plate swap voids the store (I1),
+    /// an empty batch is a no-op, and the null/len guards hold.
+    #[test]
+    fn ffi_ki_store_merge_matches_forms_semantics() {
+        use crate::business::sign::WalletKiRecord;
+        let mk = |fp: u8, idx: u32, ki: u8| WalletKiRecord {
+            transfer_idx: idx,
+            wallet_fp: [fp; 8],
+            key_image: [ki; 32],
+        };
+        let mut store = [mk(0xEE, 0xFFFF_FFFF, 0xEE); 4];
+        let mut len: c_uint = 0;
+
+        // batch A (wallet A): two records append into the empty store.
+        let a = [mk(0xA0, 0, 0x01), mk(0xA0, 1, 0x02)];
+        let rc = r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut len, a.as_ptr(), 2);
+        assert_eq!(rc, OK);
+        assert_eq!(len, 2);
+
+        // batch B (wallet B — plate swap without a power cycle) → I1 clear.
+        let b = [mk(0xB0, 0, 0xB1)];
+        let rc = r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut len, b.as_ptr(), 1);
+        assert_eq!(rc, OK);
+        assert_eq!(len, 1);
+        assert_eq!(store[0].key_image, [0xB1; 32]);
+        // I1 drops `len` but does not scrub slots: the stale byte pattern is
+        // outside the logical store and must never be read back.
+        assert_eq!(store[1].key_image, [0x02; 32]);
+
+        // empty batch = no-op (never clears).
+        let rc =
+            r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut len, core::ptr::null(), 0);
+        assert_eq!(rc, OK);
+        assert_eq!(len, 1);
+
+        // guards
+        let rc = r3::shlosilo_ki_store_merge_ffi(core::ptr::null_mut(), 4, &mut len, a.as_ptr(), 1);
+        assert_eq!(rc, ERR_NULL_POINTER);
+        let mut bad_len: c_uint = 9;
+        let rc =
+            r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut bad_len, a.as_ptr(), 1);
+        assert_eq!(rc, ERR_BUFFER_TOO_SMALL);
     }
 
     /// T6 end-to-end through the frozen entry: session handle + valid request

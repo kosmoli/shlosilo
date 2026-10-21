@@ -1287,6 +1287,33 @@ int shlosilo_xmr_pairing_ffi(const struct KeySession *session,
                              unsigned int *ki_records_actual);
 
 /**
+ * Pairing retention store merge (pool §53 extraction, 2026-10-21): the
+ * fix37 store policy as a thin C-ABI pass-through to
+ * [`crate::business::ki_store::merge_pairing_records`]. The policy
+ * (I1 wallet-change clear / I2 (fp,idx) overwrite / I3 append-or-drop /
+ * I3b batch truncation / I4 first-element homogeneity) is host-tested in
+ * forms; the forgebox glue owns only the storage arrays — no merge
+ * semantics live in C anymore.
+ *
+ * Contract:
+ * - `store` / `store_cap`: caller array of repr(C) `WalletKiRecord`
+ *   (L3-owned storage, zero-alloc discipline). `store == NULL` is valid
+ *   only with `store_cap == 0`.
+ * - `len`: in/out record count; `*len <= store_cap` on entry.
+ * - `incoming` / `incoming_len`: the pairing-leg batch; `incoming == NULL`
+ *   valid only with `incoming_len == 0`. An empty batch is a no-op (it
+ *   never triggers the I1 wallet-change clear).
+ *
+ * Returns 0 = Ok; negative = error code (`ERR_NULL_POINTER` on a null
+ * argument, `ERR_BUFFER_TOO_SMALL` on `*len > store_cap`).
+ */
+int shlosilo_ki_store_merge_ffi(struct WalletKiRecord *store,
+                                unsigned int store_cap,
+                                unsigned int *len,
+                                const struct WalletKiRecord *incoming,
+                                unsigned int incoming_len);
+
+/**
  * R3: release the decoder handle. Null-safe (idempotent).
  */
 void shlosilo_ur_decode_free(struct UrMultipartDecoder *handle);
