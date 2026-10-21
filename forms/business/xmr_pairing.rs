@@ -25,15 +25,43 @@ use crate::chain::xmr::output_export::{ExportedTransferDetail, KEY_IMAGE_RECORD_
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::key_session::KeySession;
 
-/// Request plaintext scratch cap (decrypted request + wire staging). The
-/// encrypted request itself is budgeted upstream at `MULTIPART_PAYLOAD_MAX_LEN`;
-/// the real-wallet fixtures sit far below this (1 output ≈ 240 B ciphertext).
-const PAIRING_SCRATCH_LEN: usize = 2048;
+/// Worst-case wire size of one parsed detail record: the output/tx pubkeys and
+/// flags byte, every varint at u64 worst case (10 B), and EXTRA_KEYS_MAX
+/// additional keys. The scratch sizing derives from this so a max-size record
+/// stream cannot overflow the decrypted-request transient.
+const DETAIL_WIRE_MAX: usize = 10
+    + 32 // version varint + output pubkey
+    + 10 + 10 // internal / global output index varints
+    + 32 // tx pubkey
+    + 1 // flags
+    + 10 // amount varint
+    + 10 // additional-keys count varint
+    + 32 * crate::types::caps::EXTRA_KEYS_MAX
+    + 10 + 10; // major / minor varints
+/// Request plaintext scratch cap (decrypted request transient + response wire
+/// staging — whichever is larger). The encrypted request itself is budgeted
+/// upstream at `MULTIPART_PAYLOAD_MAX_LEN`. Derived, not tuned: request =
+/// 4-byte offset + pk1/pk2 + the header varints + worst-case records; response
+/// = 24+8 header + offset + pk1/pk2 + 96 B records + 64 B signature.
+const PAIRING_SCRATCH_LEN: usize = {
+    let request = 104 + PAIRING_DETAILS_MAX * DETAIL_WIRE_MAX;
+    let response = 164 + PAIRING_RECORDS_MAX * KEY_IMAGE_RECORD_LEN;
+    if request > response {
+        request
+    } else {
+        response
+    }
+};
 /// Output-detail pool (deployment parameter; over-cap surfaces as an explicit
-/// `Err(BufferTooSmall)`, never truncation).
-const PAIRING_DETAILS_MAX: usize = 8;
-/// Key-image record pool (one 96 B record per output).
-const PAIRING_RECORDS_MAX: usize = 8;
+/// `Err(BufferTooSmall)`, never truncation). 32 = 4x the largest observed real
+/// wallet (8 transfers, the tx2 fixture — built at the old cap); >32 transfers
+/// is a documented -20 boundary (pool §37). Dynamic/streaming sizing remains
+/// the LuckyFox-era candidate if real wallets outgrow this.
+const PAIRING_DETAILS_MAX: usize = 32;
+/// Key-image record pool (one 96 B record per output) — mirrors the details
+/// cap so every parsed output is answered. The C-side retention mirror is
+/// `PAIRING_KI_MAX` in flux/forgebox/src/tasks/product_task.c.
+const PAIRING_RECORDS_MAX: usize = 32;
 
 /// Caller-provisioned workspace for the receive leg (Z3 caller-workspace
 /// discipline — forms allocates nothing on this path). Carved from raw caller

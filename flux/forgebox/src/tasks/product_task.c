@@ -104,7 +104,7 @@ static const struct KeySession *g_key_session;
  * the full one must not drop coverage). Cross-wallet contamination is caught
  * at sign time by the selected-index mismatch guard (KeyImageRecordMismatch:
  * a wrong-wallet record cannot match the derived key image). */
-#define PAIRING_KI_MAX 8 /* mirrors forms/business/xmr_pairing.rs PAIRING_RECORDS_MAX */
+#define PAIRING_KI_MAX 32 /* mirrors forms/business/xmr_pairing.rs PAIRING_RECORDS_MAX (32 = 4x largest observed wallet; over-cap records drop to conservative fill via the merge) */
 static struct WalletKiRecord g_pairing_ki[PAIRING_KI_MAX];
 static unsigned int g_pairing_ki_n;
 static struct WalletKiRecord g_pairing_ki_tmp[PAIRING_KI_MAX];
