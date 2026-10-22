@@ -590,7 +590,12 @@ static const uint16_t k_sign_idx12[12] = {
     136, 1092, 546, 273, 136, 1092, 546, 273, 136, 1092, 546, 283
 };
 #define SIGN_ENTROPY_LEN          32
-#define SIGN_OUT_MAX              (8 * 1024)
+#define SIGN_OUT_MAX              16896 /* = shlosilo.h SIGN_OUTPUT_BUF_MAX_LEN
+ * (MULTIPART_PAYLOAD_MAX_LEN 16384 + 512): the signed container carries the
+ * ptx + key_images + tx_key_images and a 4-in/4-out sign measures 12115 B
+ * (2026-10-22 real-capture repro) -- the old 8 KiB silently refused every
+ * such sign with BufferTooSmall (-20). 16896 is also the return-leg UR
+ * payload bound, so anything larger cannot ride the xmr-txsigned QR back. */
 /* MULTIPART_PAYLOAD_MAX_LEN: the R3 reassembly budget. */
 #define UR_PAYLOAD_MAX            (16 * 1024)
 
