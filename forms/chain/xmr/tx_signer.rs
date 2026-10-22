@@ -231,7 +231,7 @@ struct OutputDerivation {
 /// `r_i = Hs("shlosilo/additional_tx_key" || r || varint(output_index))`.
 /// Receiver-visible semantics are identical (each output gets an independent
 /// r_i; only the per-output pubkeys cross the wire).
-fn derive_output_add_key(
+pub(crate) fn derive_output_add_key(
     r_bytes: &zeroize::Zeroizing<[u8; 32]>,
     index: usize,
 ) -> Result<crate::types::secret_scalar::SecretScalar> {

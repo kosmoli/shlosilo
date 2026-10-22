@@ -195,29 +195,44 @@ pub struct TxOutputSpec {
     pub payment_id: Option<[u8; 8]>,
     /// Pays to a subaddress (triggers additional tx keys; the protocol requires an independent r_i per output)
     pub is_subaddress: bool,
+    /// The change destination (wallet2 change_addr branch: skipped by the
+    /// address classification; its ECDH is r·B_self == a·R).
+    pub is_change: bool,
 }
 
 #[cfg(any(feature = "alloc-fallback", test))]
-fn resolve_tx_output(tx_secret: &[u8; 32], index: u64, spec: &TxOutputSpec) -> Result<BuiltOutput> {
+/// wallet2 `generate_output_ephemeral_keys` mirror: a subaddress destination
+/// with the additional-key table derives from the PER-OUTPUT key r_i; every
+/// other destination derives from the main tx secret (the change's r·B_self
+/// equals the oracle's a·R). The additional TABLE pubkey is one entry per
+/// vout (r_i·A_s for subaddress destinations, r_i·G otherwise).
+fn resolve_tx_output(
+    tx_secret: &[u8; 32],
+    add_secret: Option<&crate::types::secret_scalar::SecretScalar>,
+    index: u64,
+    spec: &TxOutputSpec,
+) -> Result<BuiltOutput> {
     match (spec.dest_view_pub, spec.dest_spend_pub) {
         (Some(view), Some(spend)) => {
-            let eight = eight_ra(tx_secret, &view)?;
+            let eight = match (spec.is_subaddress, add_secret) {
+                (true, Some(ri)) => ri.mul_point_cofactor(&view)?,
+                _ => eight_ra(tx_secret, &view)?,
+            };
             let tag = derive_view_tag(&eight, index);
             let stealth = stealth_address(&eight, index, &spend)?;
             let enc_pid = spec
                 .payment_id
                 .map(|pid| encrypt_payment_id(&pid, &payment_id_xor(&eight)));
-            // Subaddress: additional key = r_i · B_sub (single output reuses the main tx secret r)
-            let add_key = if spec.is_subaddress {
-                use monero_ed25519::CompressedPoint;
-                let r = DScalar::from_bytes_mod_order(*tx_secret);
-                let b_point: curve25519_dalek::EdwardsPoint = CompressedPoint::from(spend)
-                    .decompress()
-                    .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?
-                    .into();
-                Some((b_point * r).compress().to_bytes())
-            } else {
-                None
+            // Oracle: the table pubkey is one entry per VOUT whenever the
+            // table is in play (subaddress entries scale the destination's
+            // spend pub, others scale the basepoint).
+            let add_key = match add_secret {
+                Some(ri) => Some(if spec.is_subaddress {
+                    ri.mul_point(&spend)?
+                } else {
+                    ri.mul_basepoint()
+                }),
+                None => None,
             };
             Ok((
                 TxOutput::new_tagged(spec.amount, stealth, tag),
@@ -359,10 +374,59 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
 
     // 5. Build outputs + extra first (key images don't depend on msg_hash,
     //    so the full prefix can be hashed for the real CLSAG message)
-    let mut extra = TxExtra::new().with_tx_pub_key(tx_keys.public);
+    //
+    // wallet2 construct_tx_and_get_tx_key mirror (the oracle): classify the
+    // non-change destinations (dedup by address); the additional-key table is
+    // one entry per VOUT when num_sub > 0 && (num_std > 0 || num_sub > 1);
+    // the tx pubkey tweaks to r·A_s ONLY for the single-subaddress-dest shape.
+    let mut num_std = 0usize;
+    let mut num_sub = 0usize;
+    let mut single_dest_sub: Option<[u8; 32]> = None;
+    {
+        let mut seen_addr: Vec<[u8; 32]> = Vec::new();
+        for spec in outputs.iter() {
+            let (Some(_), Some(spend)) = (spec.dest_view_pub, spec.dest_spend_pub) else {
+                continue;
+            };
+            if spec.is_change || seen_addr.contains(&spend) {
+                continue;
+            }
+            seen_addr.push(spend);
+            if spec.is_subaddress {
+                num_sub += 1;
+                single_dest_sub = Some(spend);
+            } else {
+                num_std += 1;
+            }
+        }
+    }
+    let need_additional_txkeys = num_sub > 0 && (num_std > 0 || num_sub > 1);
+    let single_sub_shape = num_std == 0 && num_sub == 1;
+    let tx_pub = if single_sub_shape {
+        use monero_ed25519::CompressedPoint;
+        let r = DScalar::from_bytes_mod_order(*tx_keys.secret.expose());
+        let a_s: curve25519_dalek::EdwardsPoint =
+            CompressedPoint::from(single_dest_sub.expect("single subaddress dest classified"))
+                .decompress()
+                .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?
+                .into();
+        (a_s * r).compress().to_bytes()
+    } else {
+        tx_keys.public
+    };
+    let mut extra = TxExtra::new().with_tx_pub_key(tx_pub);
     let mut tx_outputs = Vec::with_capacity(outputs.len());
     for (i, spec) in outputs.iter().enumerate() {
-        let (out, enc_pid, add_key) = resolve_tx_output(tx_keys.secret.expose(), i as u64, spec)?;
+        let add_secret = if need_additional_txkeys {
+            Some(crate::chain::xmr::tx_signer::derive_output_add_key(
+                &zeroize::Zeroizing::new(*tx_keys.secret.expose()),
+                i,
+            )?)
+        } else {
+            None
+        };
+        let (out, enc_pid, add_key) =
+            resolve_tx_output(tx_keys.secret.expose(), add_secret.as_ref(), i as u64, spec)?;
         if extra.encrypted_payment_id.is_none() {
             if let Some(enc) = enc_pid {
                 extra = extra.with_encrypted_payment_id(enc);
@@ -671,6 +735,7 @@ mod tests {
             dest_spend_pub: None,
             payment_id: None,
             is_subaddress: false,
+            is_change: false,
         }
     }
 
@@ -759,6 +824,7 @@ mod tests {
             dest_spend_pub: None,
             payment_id: None,
             is_subaddress: false,
+            is_change: false,
         };
 
         // 8. Sign
@@ -852,6 +918,7 @@ mod tests {
             dest_spend_pub: None,
             payment_id: None,
             is_subaddress: false,
+            is_change: false,
         };
 
         let mut po = [[0u8; 32]; 4];
@@ -936,6 +1003,7 @@ mod tests {
             dest_spend_pub: None,
             payment_id: None,
             is_subaddress: false,
+            is_change: false,
         };
         let out2 = TxOutputSpec {
             amount: 1100,
@@ -945,6 +1013,7 @@ mod tests {
             dest_spend_pub: None,
             payment_id: None,
             is_subaddress: false,
+            is_change: false,
         };
 
         let mut po = [[0u8; 32]; 4];
@@ -1040,6 +1109,7 @@ mod tests {
                 dest_spend_pub: Some(dest_spend.public),
                 payment_id: Some(pid),
                 is_subaddress: false,
+                is_change: false,
             }],
             100,
             crate::chain::xmr::rct_sig::RctPools {
@@ -1136,6 +1206,7 @@ mod tests {
                 ),
                 payment_id: None,
                 is_subaddress: false,
+                is_change: false,
             }],
             100,
             crate::chain::xmr::rct_sig::RctPools {
@@ -1215,6 +1286,7 @@ mod tests {
                 dest_spend_pub: Some(dest_spend.public),
                 payment_id: None,
                 is_subaddress: false,
+                is_change: false,
             }],
             100,
             crate::chain::xmr::rct_sig::RctPools {
@@ -1246,7 +1318,7 @@ mod tests {
 
     /// v9.20c: paying a subaddress → extra carries additional_pub_keys (tag 0x03), r_i·B_i per output
     #[test]
-    fn subaddress_dest_emits_additional_pub_keys() {
+    fn single_subaddress_dest_tweaks_tx_pub_no_table() {
         let mut rng = OsRng;
         let spend_key = scalar_to_bytes(&rs(&[0x11u8; 32]).unwrap());
         let real_mask = scalar_to_bytes(&rs(&[0x22u8; 32]).unwrap());
@@ -1299,6 +1371,7 @@ mod tests {
                 dest_spend_pub: Some(dest_spend.public),
                 payment_id: None,
                 is_subaddress: true,
+                is_change: false,
             }],
             100,
             crate::chain::xmr::rct_sig::RctPools {
@@ -1313,16 +1386,26 @@ mod tests {
         )
         .unwrap();
 
+        // 2026-10-23 wallet2-oracle contract: a SINGLE subaddress destination
+        // carries NO additional-key table at all (num_sub==1 && num_std==0 →
+        // need_additional_txkeys=false) and the tx pubkey itself tweaks to
+        // r·A_s (construct_tx_and_get_tx_key single-dest-subaddress branch).
         let add_keys = &signed.transaction.prefix.extra.additional_pub_keys;
-        assert_eq!(add_keys.len(), 1);
-        // Additional key = r_i · B_sub (r_i is that output\'s per-output secret;
-        // the single-output simplified implementation reuses the main tx secret, consistent with keystone\'s should_use_additional_keys branch)
+        assert_eq!(
+            add_keys.len(),
+            0,
+            "single subaddress dest: no additional-key table"
+        );
         let r = DScalar::from_bytes_mod_order(*signed.tx_secret.expose());
         let b = DScalar::from_bytes_mod_order(*dest_spend.secret.expose());
-        let expected = (ED25519_BASEPOINT_TABLE * &(r * b)).compress().to_bytes();
-        assert_eq!(add_keys[0], expected);
+        let expected_r_tweak = (ED25519_BASEPOINT_TABLE * &(r * b)).compress().to_bytes();
+        assert_eq!(
+            signed.transaction.prefix.extra.tx_pub_key,
+            Some(expected_r_tweak),
+            "single subaddress dest: R = r·A_s"
+        );
 
-        // Non-subaddress outputs carry no additional keys
+        // Non-subaddress outputs carry no additional keys either
         let plain = signed.rct_sig.base.pseudo_outs.len(); // sanity
         assert_eq!(plain, 1);
     }
