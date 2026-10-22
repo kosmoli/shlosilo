@@ -224,23 +224,51 @@ struct OutputDerivation {
     view_tag: u8,
 }
 
-/// Derive the ECDH, shared_key and other derived values for a single output
-///
-/// Aligned with keystone transfer_key.rs::ecdhs + serai output_derivations:
-/// - non-change, non-subaddress: ecdh = r · A_v(dest)
-/// - non-change, subaddress: ecdh = r_i · A_v_sub (r_i is the additional key; shlosilo's single
-///   additional-key mode = reuse of the main r; see the tx_builder resolve_tx_output comment)
-/// - change (back to self): ecdh = view_sec · TxPub (receiver-side derivation, Keystone is_change_dest branch)
+/// Per-output additional tx-key derivation. The oracle generates a fresh
+/// random keypair per destination (`keypair::generate`); this path derives the
+/// per-output secret deterministically from the tx secret as a purpose
+/// subdomain (§B.5 discipline — no fresh RNG surface, allocation-free):
+/// `r_i = Hs("shlosilo/additional_tx_key" || r || varint(output_index))`.
+/// Receiver-visible semantics are identical (each output gets an independent
+/// r_i; only the per-output pubkeys cross the wire).
+fn derive_output_add_key(
+    r_bytes: &zeroize::Zeroizing<[u8; 32]>,
+    index: usize,
+) -> Result<crate::types::secret_scalar::SecretScalar> {
+    let mut buf = zeroize::Zeroizing::new([0u8; 64]);
+    buf[..26].copy_from_slice(b"shlosilo/additional_tx_key");
+    buf[26..58].copy_from_slice(&**r_bytes);
+    let mut len = 58usize;
+    crate::chain::xmr::transaction::monero_encode_varint_at(&mut buf[..], &mut len, index as u64)?;
+    Ok(
+        crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(hash_to_scalar(
+            &buf[..len],
+        )?),
+    )
+}
+
+/// Per-output derivation, mirroring wallet2 `generate_output_ephemeral_keys`
+/// (the oracle, cryptonote_tx_utils.cpp / device_default.cpp): a subaddress
+/// destination with additional keys derives `ecdh = r_i · B_s` from the
+/// PER-OUTPUT key r_i (never the main tx secret); everything else derives
+/// `ecdh = r · B_dest` from the main tx secret. `r_i` is the per-output secret
+/// (Some exactly when the additional-key table is in play and the dest is a
+/// subaddress). The additional TABLE pubkey is computed by the caller (one
+/// entry per vout, wallet2 rule).
 fn derive_output(
     r: &crate::types::secret_scalar::SecretScalar,
+    r_i: Option<&crate::types::secret_scalar::SecretScalar>,
     _view_sec: &[u8; 32],
     dest: &TxDestinationEntry,
     _tx_pub: &[u8; 32],
     index: usize,
 ) -> Result<OutputDerivation> {
-    // ecdh = r · A_v (both branches currently use the same formula; additional-key derivation scheduled for later)
-    // Audit #10 P1-03: whitelisted point multiplication — r is never exposed as &Scalar; decompression/multiplication happen internally
-    let ecdh_bytes = r.mul_point(&dest.view_public_key)?;
+    // Audit #10 P1-03: whitelisted point multiplication — secrets are never
+    // exposed as &Scalar; decompression/multiplication happen internally.
+    let ecdh_bytes = match (dest.is_subaddress, r_i) {
+        (true, Some(ri)) => ri.mul_point(&dest.view_public_key)?,
+        _ => r.mul_point(&dest.view_public_key)?,
+    };
     let ecdh_point: curve25519_dalek::EdwardsPoint = CompressedPoint::from(ecdh_bytes)
         .decompress()
         .ok_or_else(err)?
@@ -306,14 +334,9 @@ fn derive_output(
     let vtag_full = zeroize::Zeroizing::new(crate::encoding::keccak256::hash(&vt_data[..vt_len])?);
     let view_tag = vtag_full[0];
 
-    // For subaddresses the additional key = r·B_sub (keystone should_use_additional_keys=false path:
-    // tx_pub itself = r·B_sub. Here we follow the shlosilo tx_builder convention: the additional key records r·B_sub)
-    let additional_tx_key = if dest.is_subaddress {
-        // r·B_sub — dest.spend_public_key is exactly B_sub compressed bytes
-        Some(r.mul_point(&dest.spend_public_key)?)
-    } else {
-        None
-    };
+    // The additional TABLE pubkey is caller-owned (wallet2 pushes one entry
+    // per vout — std and change outputs included — when the table is needed).
+    let additional_tx_key = None;
 
     Ok(OutputDerivation {
         shared_key,
@@ -469,19 +492,52 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     let rct_type = resolve_rct_type(tx_data.rct_config.bp_version)?;
 
     // r is injected by the caller (§B.5: TxKey purpose subdomain derivation)
-    // With a subaddress output and no additional keys: tx_pub = r·B_sub
-    // (keystone transaction_keys has_payments_to_subaddresses branch)
-    let has_subaddress_dest = tx_data.splitted_dsts.iter().any(|d| d.is_subaddress);
-    let tx_pub_point = if has_subaddress_dest {
-        // keystone uses the B of the first subaddress output
-        let b_sub_bytes = tx_data
-            .splitted_dsts
-            .iter()
-            .find(|d| d.is_subaddress)
-            .map(|d| d.spend_public_key)
-            .unwrap();
-        // Whitelisted point multiplication takes compressed bytes directly — no decompression needed
-        r.mul_point(&b_sub_bytes)?
+    //
+    // wallet2 `construct_tx_and_get_tx_key` mirror (oracle: cryptonote_tx_utils.cpp):
+    // - classify_addresses skips the change destination and dedups by address;
+    // - need_additional_txkeys = num_sub > 0 && (num_std > 0 || num_sub > 1);
+    // - the tx pubkey tweaks to r·A_s ONLY for the single-subaddress-dest
+    //   shape (num_std == 0 && num_sub == 1); otherwise r·G.
+    // 2026-10-23 fund-loss fix: the old shape tweaked whenever any subaddress
+    // dest existed (keystone divergence) and the additional-key table was
+    // per-subaddress-dest — both broke the stock receiver lookup
+    // (is_out_to_acc_precomp indexes additional[output_index] and requires
+    // table length == vout count).
+    let is_change_dest = |d: &TxDestinationEntry| {
+        d.amount == tx_data.change_dts.amount
+            && d.spend_public_key == tx_data.change_dts.spend_public_key
+    };
+    let mut num_std = 0usize;
+    let mut num_sub = 0usize;
+    let mut single_dest_sub: Option<[u8; 32]> = None;
+    {
+        const SEEN_MAX: usize = crate::chain::xmr::transaction::PREFIX_OUTPUTS_MAX;
+        let mut seen_addr = [[0u8; 32]; SEEN_MAX];
+        let mut seen_len = 0usize;
+        for d in tx_data.splitted_dsts.iter() {
+            if is_change_dest(d) {
+                continue;
+            }
+            if seen_addr[..seen_len].contains(&d.spend_public_key) {
+                continue;
+            }
+            if seen_len < SEEN_MAX {
+                seen_addr[seen_len] = d.spend_public_key;
+                seen_len += 1;
+            }
+            if d.is_subaddress {
+                num_sub += 1;
+                single_dest_sub = Some(d.spend_public_key);
+            } else {
+                num_std += 1;
+            }
+        }
+    }
+    let need_additional_txkeys = num_sub > 0 && (num_std > 0 || num_sub > 1);
+    let single_sub_shape = num_std == 0 && num_sub == 1;
+    let tx_pub_point = if single_sub_shape {
+        // oracle: R = r·A_s (the single subaddress destination's spend pub)
+        r.mul_point(&single_dest_sub.expect("single subaddress dest classified"))?
     } else {
         r.mul_basepoint()
     };
@@ -530,8 +586,23 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     let mut outs_len = 0usize;
 
     for (i, dest) in tx_data.splitted_dsts.iter().enumerate() {
-        let is_change = dest.amount == tx_data.change_dts.amount
-            && dest.spend_public_key == tx_data.change_dts.spend_public_key;
+        let is_change = is_change_dest(dest);
+        // Oracle: one additional key per destination (change included) and one
+        // table pubkey per VOUT when the table is in play — the stock receiver
+        // indexes it by output position and requires len == vout count.
+        let r_i = if need_additional_txkeys {
+            Some(derive_output_add_key(r_bytes, i)?)
+        } else {
+            None
+        };
+        let add_pub = match r_i.as_ref() {
+            Some(ri) => Some(if dest.is_subaddress {
+                ri.mul_point(&dest.spend_public_key)?
+            } else {
+                ri.mul_basepoint()
+            }),
+            None => None,
+        };
         if is_change {
             // change uses the view_sec·TxPub path: manual derivation (derive_output's r·A_v does not apply)
             // Audit #8 P1-02: change-branch temporary buffers follow the same discipline as the main branch (Zeroizing owner)
@@ -590,7 +661,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
                     commitment_mask,
                     encrypted_amount,
                     stealth_address,
-                    additional_tx_key: None,
+                    additional_tx_key: add_pub,
                     view_tag: vt_full[0],
                 },
                 is_change: true,
@@ -599,7 +670,8 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             };
             outs_len += 1;
         } else {
-            let deriv = derive_output(&r, view_sec, dest, &tx_pub, i)?;
+            let mut deriv = derive_output(&r, r_i.as_ref(), view_sec, dest, &tx_pub, i)?;
+            deriv.additional_tx_key = add_pub;
             outs[outs_len] = OutInfo {
                 deriv,
                 is_change: false,
@@ -613,10 +685,8 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // ---- 3. extra（txpub + additional keys + payment_id XOR(change)）----
     let mut extra = TxExtra::new().with_tx_pub_key(tx_pub);
     for o in &outs[..outs_len] {
-        if !o.is_change {
-            if let Some(add) = o.deriv.additional_tx_key {
-                extra = extra.with_additional_pub_key(add)?;
-            }
+        if let Some(add) = o.deriv.additional_tx_key {
+            extra = extra.with_additional_pub_key(add)?;
         }
     }
     // splitted_dsts.len()==2 and has change → encrypted payment_id into extra (keystone extra())
@@ -1454,7 +1524,7 @@ fn output_derivation_kat() {
         is_subaddress: false,
         is_integrated: false,
     };
-    let d = derive_output(&r, &[0u8; 32], &dest, &[0u8; 32], 0).unwrap();
+    let d = derive_output(&r, None, &[0u8; 32], &dest, &[0u8; 32], 0).unwrap();
 
     // 8Ra point = 8·(r·A_v); independent recomputation (the KAT is the verifier — using dalek math directly)
     let a_v: curve25519_dalek::EdwardsPoint = CompressedPoint::from([0x22u8; 32])
@@ -1868,18 +1938,262 @@ fn subaddress_output_derivation_kat() {
         is_subaddress: true,
         is_integrated: false,
     };
-    let d = derive_output(&r, &[0u8; 32], &dest, &[0u8; 32], 0).unwrap();
-    let expect_add = r.mul_point(&dest.spend_public_key).unwrap();
-    assert_eq!(
-        d.additional_tx_key
-            .expect("subaddress must emit additional key"),
-        expect_add
+    // 2026-10-23 (wallet2 oracle contract): the additional-key TABLE is
+    // caller-owned — one entry per vout indexed by output position; the
+    // per-output secret comes from derive_output_add_key and the table pubkey
+    // is r_i·A_s (subaddress) / r_i·G (std). derive_output itself emits no
+    // table entry (the old "r·B_sub" convention broke the stock receiver).
+    let d = derive_output(&r, None, &[0u8; 32], &dest, &[0u8; 32], 0).unwrap();
+    assert!(d.additional_tx_key.is_none());
+    let r_bytes = zeroize::Zeroizing::new([0x42u8; 32]);
+    let r_0 = derive_output_add_key(&r_bytes, 0).unwrap();
+    let r_1 = derive_output_add_key(&r_bytes, 1).unwrap();
+    assert_ne!(
+        r_0.mul_basepoint(),
+        r_1.mul_basepoint(),
+        "per-output additional keys must be index-distinct"
     );
-    // the non-subaddress path emits no additional key (control, guarding against a tautological test)
+    let expect_sub = r_0.mul_point(&dest.spend_public_key).unwrap();
+    let expect_std = r_0.mul_basepoint();
+    assert_ne!(
+        expect_sub, expect_std,
+        "subaddress table entry must scale A_s, not G"
+    );
+    // the non-subaddress path emits no additional key through derive_output
+    // either (control, guarding against a tautological test)
     let dest_main = TxDestinationEntry {
         is_subaddress: false,
         ..dest
     };
-    let d_main = derive_output(&r, &[0u8; 32], &dest_main, &[0u8; 32], 0).unwrap();
+    let d_main = derive_output(&r, None, &[0u8; 32], &dest_main, &[0u8; 32], 0).unwrap();
     assert!(d_main.additional_tx_key.is_none());
+}
+
+/// 2026-10-23 fund-loss pin (the 0.0002-looked-lost incident): EVERY output of
+/// a multi-destination (D-shape) transaction must be recognizable by the
+/// STOCK wallet2 receiver rule (cryptonote_format_utils.cpp
+/// `is_out_to_acc_precomp`):
+///   branch 1 — the main tx pubkey against the receiver's (major,minor) base;
+///   branch 2 — `additional_tx_public_keys[output_index]` — hard-indexed by
+///   VOUT position, with the table length REQUIRED to equal the vout count.
+/// The pre-fix signer emitted a per-subaddress-dest table (short one entry +
+/// shifted by one), so every additional-key-derived output was invisible to
+/// its recipient forever. This pin runs the full signer over the D shape and
+/// replays the stock lookup for each output against the real wire.
+#[test]
+fn dshape_every_output_stock_recognizable() {
+    use crate::chain::xmr::subaddress::{calc_output_key_offset, derive_subaddress};
+    use crate::chain::xmr::transaction::TransactionPrefix;
+    use crate::chain::xmr::view_tag::{derive_view_tag, eight_ra};
+
+    /// Stock receiver lookup (wallet2 is_out_to_acc_precomp semantics):
+    /// branch 1 = main tx pubkey; branch 2 = additional[output_index] (an
+    /// out-of-range index fails the whole lookup).
+    #[allow(clippy::too_many_arguments)] // the stock lookup's full parameter set
+    fn stock_recognizes(
+        out_pub: &[u8; 32],
+        out_tag: u8,
+        output_index: usize,
+        receiver_view: &[u8; 32],
+        receiver_spend: &[u8; 32],
+        major: u32,
+        minor: u32,
+        tx_pub: &[u8; 32],
+        additional: &[[u8; 32]],
+    ) -> bool {
+        let try_key = |key: &[u8; 32]| -> bool {
+            let Ok(offset) =
+                calc_output_key_offset(receiver_view, key, output_index as u64, major, minor)
+            else {
+                return false;
+            };
+            let sk = curve25519_dalek::scalar::Scalar::from_bytes_mod_order(*receiver_spend)
+                + curve25519_dalek::scalar::Scalar::from_bytes_mod_order(offset);
+            let pub_prime = (curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &sk)
+                .compress()
+                .to_bytes();
+            if pub_prime != *out_pub {
+                return false;
+            }
+            // the view tag rides the same shared derivation
+            let eight = eight_ra(receiver_view, key).expect("eight");
+            derive_view_tag(&eight, output_index as u64) == out_tag
+        };
+        if try_key(tx_pub) {
+            return true;
+        }
+        // wallet2 hard rule: the output index must land inside the table
+        if output_index >= additional.len() {
+            return false;
+        }
+        try_key(&additional[output_index])
+    }
+
+    // receiver S = self (change + self-pay); T = the second recipient;
+    // H = the external hot wallet (main address).
+    let (s_spend, s_view) = test_wallet_keys();
+    let s_spend_pub =
+        crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(s_spend).mul_basepoint();
+    let s_view_pub =
+        crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(s_view).mul_basepoint();
+    let t_spend = [0x55u8; 32];
+    let t_view = [0x56u8; 32];
+    let h_spend = [0x57u8; 32];
+    let h_view = [0x58u8; 32];
+    let t_spend_pub =
+        crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(t_spend).mul_basepoint();
+    let t_view_pub =
+        crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(t_view).mul_basepoint();
+    let t_keys = derive_subaddress(&t_spend, &t_view, &t_spend_pub, &t_view_pub, 0, 6).unwrap();
+    let s_sub = derive_subaddress(&s_spend, &s_view, &s_spend_pub, &s_view_pub, 0, 1).unwrap();
+
+    let mk_dest =
+        |amount: u64, spend_pub: [u8; 32], view_pub: [u8; 32], is_sub: bool| TxDestinationEntry {
+            original: heapless::Vec::new(),
+            amount,
+            spend_public_key: spend_pub,
+            view_public_key: view_pub,
+            is_subaddress: is_sub,
+            is_integrated: false,
+        };
+    let h_dest = mk_dest(
+        200,
+        crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(h_spend).mul_basepoint(),
+        crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(h_view).mul_basepoint(),
+        false,
+    );
+    let s_sub_dest = mk_dest(200, s_sub.spend_pub, s_sub.view_pub, true);
+    let t_sub_dest = mk_dest(200, t_keys.spend_pub, t_keys.view_pub, true);
+    let change = mk_dest(300, s_spend_pub, s_view_pub, false);
+
+    // sources: one input owned by S (the change returns to S)
+    let mut t_src: [Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>; 1] =
+        core::array::from_fn(|_| None);
+    let mut t_src_f = crate::types::SliceVec::new(&mut t_src);
+    t_src_f
+        .push(Some(owned_source(
+            &s_spend,
+            &s_view,
+            1000,
+            mask_of(0x66),
+            point_of(5),
+            2,
+        )))
+        .unwrap();
+    // vout order = dest order: hot / self-pay / TEST1 / change
+    let mut t_sd =
+        core::array::from_fn::<TxDestinationEntry, 4, _>(|_| TxDestinationEntry::default());
+    let mut t_sd_f = crate::types::SliceVec::new(&mut t_sd);
+    t_sd_f.push(h_dest.clone()).unwrap();
+    t_sd_f.push(s_sub_dest.clone()).unwrap();
+    t_sd_f.push(t_sub_dest.clone()).unwrap();
+    t_sd_f.push(change.clone()).unwrap();
+    let mut t_sel = [0usize; 1];
+    let mut t_sel_f = crate::types::SliceVec::new(&mut t_sel);
+    t_sel_f.push(0usize).unwrap();
+    let mut t_extra: [u8; 0] = [];
+    let mut t_dests: [TxDestinationEntry; 0] = [];
+    let mut t_sub: [u32; 0] = [];
+    let tx_data = crate::chain::xmr::unsigned_txset::TxConstructionData {
+        sources: t_src_f,
+        change_dts: change.clone(),
+        splitted_dsts: t_sd_f,
+        selected_transfers: t_sel_f,
+        extra: crate::types::SliceVec::new(&mut t_extra),
+        unlock_time: 0,
+        use_rct: 1,
+        rct_config: crate::chain::xmr::unsigned_txset::RctConfig::default(),
+        dests: crate::types::SliceVec::new(&mut t_dests),
+        subaddr_account: 0,
+        subaddr_indices: crate::types::SliceVec::new(&mut t_sub),
+    };
+
+    use rand_chacha::rand_core::SeedableRng;
+    let rng = rand_chacha::ChaCha20Rng::from_seed([0x77u8; 32]);
+    let mut bp_rng = rng.clone();
+    let mut clsag_rng = rng.clone();
+    let r_bytes = zeroize::Zeroizing::new([0x77u8; 32]);
+    let wire = sign_tx_from_construction_with_rngs(
+        &tx_data,
+        &s_spend,
+        &s_view,
+        &r_bytes,
+        &mut bp_rng,
+        &mut clsag_rng,
+    )
+    .expect("D-shape signer must succeed");
+
+    let mut pos = 0;
+    let prefix = TransactionPrefix::deserialize(&wire, &mut pos).expect("prefix");
+    let add_table = prefix.extra.additional_pub_keys.clone();
+    assert_eq!(
+        add_table.len(),
+        prefix.outputs_len,
+        "wallet2 requires one additional pubkey per vout (lookup_acc_outs CHECK)"
+    );
+    // the main tx pubkey must be r·G (the single-subaddress tweak is a
+    // different shape and must NOT fire here)
+    let tx_pub =
+        crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*r_bytes).mul_basepoint();
+    assert_eq!(
+        prefix.extra.tx_pub_key,
+        Some(tx_pub),
+        "mixed shape: R = r·G"
+    );
+
+    // stock recognition per output
+    let mut recognized = 0usize;
+    for (i, out) in prefix.outputs[..prefix.outputs_len].iter().enumerate() {
+        let tag = out.view_tag.unwrap_or(0);
+        let ok_h = stock_recognizes(
+            &out.stealth_address,
+            tag,
+            i,
+            &h_view,
+            &h_spend,
+            0,
+            0,
+            &tx_pub,
+            &add_table,
+        );
+        let ok_s_sub = stock_recognizes(
+            &out.stealth_address,
+            tag,
+            i,
+            &s_view,
+            &s_spend,
+            0,
+            1,
+            &tx_pub,
+            &add_table,
+        );
+        let ok_t_sub = stock_recognizes(
+            &out.stealth_address,
+            tag,
+            i,
+            &t_view,
+            &t_spend,
+            0,
+            6,
+            &tx_pub,
+            &add_table,
+        );
+        let ok_s_main = stock_recognizes(
+            &out.stealth_address,
+            tag,
+            i,
+            &s_view,
+            &s_spend,
+            0,
+            0,
+            &tx_pub,
+            &add_table,
+        );
+        assert!(
+            ok_h || ok_s_sub || ok_t_sub || ok_s_main,
+            "vout{i} must be recognized by its recipient under the stock wallet2 rule              (branch 1 main key or branch 2 additional[output_index])"
+        );
+        recognized += 1;
+    }
+    assert_eq!(recognized, prefix.outputs_len);
 }
