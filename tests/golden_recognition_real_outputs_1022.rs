@@ -1,0 +1,159 @@
+//! EXTERNAL anchor for the output-derivation math (2026-10-23, the
+//! 0.0002-looked-lost incident). The derivation KATs in tx_signer snapshot
+//! the implementation's own formulas — a wrong formula passes them. This test
+//! anchors the math on REAL bytes: the cap2 signed container produced by the
+//! device (accepted on-chain as tx 1c8eef99… at block 3789771; one output's
+//! receipt was confirmed inside the real TEST2 wallet) together with the real
+//! recipient key material (test-grade, embedded per the 2026-10-20 fixture
+//! verdict).
+//!
+//! What is pinned:
+//! 1. the recipient-side derivation (calc_output_key_offset + the view tag)
+//!    reproduces the REAL output pubkeys of an on-chain transaction for the
+//!    true recipients;
+//! 2. the incident's fact set, byte-exact: the change output (vout1) is
+//!    recognized under the stock main-key branch, while the two
+//!    additional-key-derived outputs are only reachable at the PRE-FIX table's
+//!    shifted slots — the regression being the dshape pin.
+#![cfg(feature = "alloc-fallback")]
+
+use shlosilo::chain::xmr::subaddress::calc_output_key_offset;
+use shlosilo::chain::xmr::transaction::TransactionPrefix;
+use shlosilo::chain::xmr::view_tag::{derive_view_tag, eight_ra};
+
+/// Real recipient key material (test-grade; the 2026-10-20 fixture verdict:
+/// our wallets are test wallets, coverage beats secrecy).
+const TEST2_SPEND: [u8; 32] = [
+    0x12, 0x83, 0xcb, 0xd5, 0x3a, 0x57, 0x9f, 0x0e, 0x34, 0x90, 0xf3, 0xd9, 0x97, 0x8d, 0x7d, 0x42,
+    0x3f, 0x98, 0x69, 0x23, 0xb3, 0x25, 0xa2, 0x33, 0x45, 0x4f, 0xb9, 0x91, 0xd0, 0xbb, 0x28, 0x0d,
+];
+const TEST2_VIEW: [u8; 32] = [
+    0x8d, 0xea, 0xed, 0xf1, 0x13, 0x7e, 0x24, 0xb9, 0xed, 0x25, 0x38, 0xae, 0x99, 0x53, 0x2f, 0x0f,
+    0xf7, 0x71, 0x7c, 0x3c, 0x52, 0xd1, 0x16, 0x9c, 0xb0, 0x06, 0x88, 0x1c, 0x48, 0xa7, 0xbb, 0x04,
+];
+/// TEST1 = the retired 49KRW wallet (public-grade since 2026-10-20).
+const TEST1_SPEND: [u8; 32] = [
+    0xca, 0x8b, 0x0c, 0xb5, 0x6d, 0xf7, 0x93, 0x80, 0xbb, 0x47, 0x81, 0xee, 0xfd, 0xe9, 0xdf, 0x0f,
+    0x41, 0xe9, 0x8c, 0x6c, 0x3e, 0xa3, 0xd2, 0x7b, 0x9f, 0xb6, 0x18, 0x33, 0x98, 0xa3, 0x47, 0x0d,
+];
+const TEST1_VIEW: [u8; 32] = [
+    0xdb, 0x93, 0xce, 0x63, 0x2d, 0x8d, 0x31, 0xe3, 0x1b, 0xd0, 0xb4, 0xec, 0xbd, 0xbd, 0xb8, 0x33,
+    0xca, 0xe8, 0x13, 0x92, 0x8a, 0xf4, 0x02, 0xc5, 0xb7, 0xff, 0xeb, 0x85, 0x76, 0x9c, 0xf0, 0x00,
+];
+
+/// Recipient-side derivation (the wallet2 scanning math): the one-time
+/// output pubkey must equal (spend + offset)·G and the view tag must match,
+/// where offset = calc_output_key_offset(view, key, j, major, minor).
+#[allow(clippy::too_many_arguments)] // the recipient lookup's full parameter set
+fn derives_output(
+    out_pub: &[u8; 32],
+    out_tag: u8,
+    j: u64,
+    key: &[u8; 32],
+    view: &[u8; 32],
+    spend: &[u8; 32],
+    major: u32,
+    minor: u32,
+) -> bool {
+    use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+    use curve25519_dalek::scalar::Scalar;
+    let Ok(offset) = calc_output_key_offset(view, key, j, major, minor) else {
+        return false;
+    };
+    let sk = Scalar::from_bytes_mod_order(*spend) + Scalar::from_bytes_mod_order(offset);
+    let pub_prime = (ED25519_BASEPOINT_TABLE * &sk).compress().to_bytes();
+    if pub_prime != *out_pub {
+        return false;
+    }
+    let Ok(eight) = eight_ra(view, key) else {
+        return false;
+    };
+    derive_view_tag(&eight, j) == out_tag
+}
+
+/// Decrypt the device's signed container envelope
+/// (`Monero signed tx set\005` ‖ nonce ‖ ChaCha20Legacy(CN-V0(view_sk)) ‖ sig).
+fn decrypt_signed_container(cont: &[u8], view_sk: &[u8; 32]) -> Vec<u8> {
+    use chacha20::cipher::{KeyIvInit as _, StreamCipher as _};
+    let magic = b"Monero signed tx set\x05";
+    assert_eq!(&cont[..21], magic, "signed container magic");
+    let nonce = &cont[21..29];
+    let ct = &cont[29..cont.len() - 64];
+    let mut scratch = vec![0u8; shlosilo::types::caps::SIGN_WS_CN_SCRATCH];
+    let key = cuprate_cryptonight::cryptonight_hash_v0_into(view_sk, &mut scratch).expect("cn");
+    let mut cipher = chacha20::ChaCha20Legacy::new_from_slices(&key, nonce).expect("cipher");
+    let mut plain = ct.to_vec();
+    cipher.apply_keystream(&mut plain);
+    plain
+}
+
+#[test]
+fn real_onchain_outputs_reproducible_by_recipient_math() {
+    let cont = include_bytes!("fixtures/cap2_1022_signed.bin");
+    let plain = decrypt_signed_container(cont, &TEST2_VIEW);
+
+    // signed_tx_set plaintext layout (the signer's write_all mirror):
+    // u8 version | varint ptx_count | u8 ptx_version | <transaction bytes …>
+    assert_eq!(plain[0], 0x00, "signed_tx_set version");
+    assert_eq!(plain[2], 0x01, "ptx version");
+    let mut pos = 3;
+    let prefix = TransactionPrefix::deserialize(&plain, &mut pos).expect("tx prefix");
+    assert_eq!(prefix.outputs_len, 4, "cap2 has 4 outputs");
+    let tx_pub = prefix.extra.tx_pub_key.expect("tx pubkey in extra");
+    let table = &prefix.extra.additional_pub_keys;
+
+    // vout1 = the change (TEST2 main (0,0), branch 1): recognized under the
+    // stock main-key rule — and its real-world receipt is the ground truth.
+    let v1 = &prefix.outputs[1];
+    assert!(
+        derives_output(
+            &v1.stealth_address,
+            v1.view_tag.unwrap_or(0),
+            1,
+            &tx_pub,
+            &TEST2_VIEW,
+            &TEST2_SPEND,
+            0,
+            0
+        ),
+        "vout1 (change) must be derived by TEST2 under the main tx key"
+    );
+
+    // Incident fact set (pre-fix table shape: 3 entries for 4 vouts, the
+    // per-subaddress-dest slots): vout2 (TEST2 self-pay at (0,4)) and vout3
+    // (TEST1 at (0,6)) derive from table[1] / table[2] — the shifted slots
+    // the stock receiver (which indexes additional[output_index]) never
+    // checks. The dshape pin keeps new signatures on the correct shape.
+    let v2 = &prefix.outputs[2];
+    assert!(
+        derives_output(
+            &v2.stealth_address,
+            v2.view_tag.unwrap_or(0),
+            2,
+            &table[1],
+            &TEST2_VIEW,
+            &TEST2_SPEND,
+            0,
+            4
+        ),
+        "vout2 (self-pay at (0,4)) must derive from the incident's slot-1 key"
+    );
+    let v3 = &prefix.outputs[3];
+    assert!(
+        derives_output(
+            &v3.stealth_address,
+            v3.view_tag.unwrap_or(0),
+            3,
+            &table[2],
+            &TEST1_VIEW,
+            &TEST1_SPEND,
+            0,
+            6
+        ),
+        "vout3 (TEST1 at (0,6)) must derive from the incident's slot-2 key"
+    );
+
+    // vout0 is the external hot-wallet output (unknown keys here) — recorded
+    // for completeness: its slot under the pre-fix table is index 0.
+    let _v0 = &prefix.outputs[0];
+}

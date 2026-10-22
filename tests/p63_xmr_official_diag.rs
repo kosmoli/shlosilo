@@ -10,7 +10,6 @@ fn hexs(b: &[u8]) -> String {
 }
 
 #[test]
-#[ignore]
 fn diag_ring_full() {
     let mut txes = core::array::from_fn::<
         Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
@@ -81,4 +80,24 @@ fn diag_ring_full() {
             hexs(&o.mask)
         );
     }
+    // 2026-10-23 pin (was print-only): ring[real_output] must be the REAL
+    // ring member. The invariant is the RCT commitment relation — the ring
+    // entries carry commitment POINTS (cryptonote_tx_utils.h: outputs =
+    // "index + key + optional ringct commitment") while src.mask is the
+    // scalar amount mask (field comment: "ringct amount mask"), so the real
+    // member is the one whose commitment equals C = mask·G + amount·H.
+    // A mis-indexed real_output signs against a decoy and the daemon rejects
+    // the tx. Placed after the full ring printout so a failure still leaves
+    // the complete evidence.
+    let expect_c = monero_ed25519::Commitment::new(
+        shlosilo::chain::xmr::transaction::bytes_to_monerod_scalar(src.mask.expose()),
+        src.amount,
+    )
+    .commit()
+    .compress()
+    .to_bytes();
+    assert_eq!(
+        src.outputs[src.real_output as usize].mask, expect_c,
+        "ring[real_output] must carry the real output's RCT commitment (C = mask·G + amount·H)"
+    );
 }
