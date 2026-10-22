@@ -42,7 +42,7 @@ fn test_zero_inner_product() {
 #[test]
 fn test_inner_product() {
     // P = sum(g_bold * a, h_bold * b, g * u * <a, b>)
-    let generators = &generators()?;
+    let generators = &generators().expect("generators");
     let mut verifier = BulletproofsBatchVerifier::default();
     verifier.0.g_bold = vec![Scalar::ZERO.into(); 32];
     verifier.0.h_bold = vec![Scalar::ZERO.into(); 32];

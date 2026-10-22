@@ -81,6 +81,10 @@ jobs:
             --features device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi
       - name: Vendor crate tests (timing hooks)
         run: cd vendor/cryptonight && cargo test --features cn-timing --lib
+      # Z5.3 test-infra (2026-10-21): the vendored bulletproofs' own suite is
+      # the non-pow2 proof-correctness reference oracle (m=1..16 prove+verify).
+      - name: Vendor crate tests (bulletproofs reference oracle)
+        run: cd vendor/monero-bulletproofs && cargo test --release
 
   fuzz-smoke:
     name: Fuzz smoke (4 targets x 30s)

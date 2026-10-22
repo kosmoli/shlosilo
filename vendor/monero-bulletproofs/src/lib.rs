@@ -424,6 +424,13 @@ impl Bulletproof {
                 self.0 += buf.len();
                 Ok(buf.len())
             }
+            // std-form Write (std::io::Write) requires flush; the shim form
+            // has no such item. cfg-gated so the product (no-std) shape is
+            // bit-identical (vendor test-infra patch, 2026-10-21).
+            #[cfg(feature = "std")]
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         let mut c = Counter(0);
         self.write(&mut c)
@@ -458,6 +465,13 @@ impl Bulletproof {
             fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
                 self.write(data).map(|_| ())
             }
+            // std-form Write (std::io::Write) requires flush; the shim form
+            // has no such item. cfg-gated so the product (no-std) shape is
+            // bit-identical (vendor test-infra patch, 2026-10-21).
+            #[cfg(feature = "std")]
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         let mut w = SliceWriter { buf: out, pos: 0 };
         self.write(&mut w)?;
@@ -489,6 +503,13 @@ impl Bulletproof {
             // all-or-error by construction, so this is byte-equivalent.
             fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
                 self.write(data).map(|_| ())
+            }
+            // std-form Write (std::io::Write) requires flush; the shim form
+            // has no such item. cfg-gated so the product (no-std) shape is
+            // bit-identical (vendor test-infra patch, 2026-10-21).
+            #[cfg(feature = "std")]
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
             }
         }
         let mut w = SliceWriter { buf: out, pos: 0 };

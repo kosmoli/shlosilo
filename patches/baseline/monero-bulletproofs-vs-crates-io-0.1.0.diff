@@ -253,7 +253,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 09:21:28.000000000 +0800
-+++ b/Cargo.toml	2026-09-29 17:37:43.562591237 +0800
++++ b/Cargo.toml	2026-10-22 08:25:44.114787547 +0800
 @@ -35,9 +35,18 @@
  
  [features]
@@ -265,7 +265,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +# MUST provide generator table storage up front.
 +# shlosilo: transitional alloc fallback (boxed errors, Vec cold paths,
 +# dalek large-count MSM tails). Zero-heap builds disable it.
-+alloc-fallback = ["curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc"]
++alloc-fallback = ["curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc", "std-shims/alloc"]
  default = [
      "std",
      "compile-time-generators",
@@ -301,6 +301,23 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  
  [lints.clippy]
  alloc_instead_of_core = "warn"
+@@ -189,3 +200,16 @@
+ unused_import_braces = "warn"
+ unused_lifetimes = "warn"
+ unused_macro_rules = "warn"
++
++# shlosilo test-infra patch (2026-10-21): standalone `cargo test` on this tree
++# must resolve the SAME patched sibling crates the product build uses (the
++# dalek `alloc-fallback` / `generator-cache` features and the no_std shims
++# exist only in the vendored trees). [patch] in a non-root manifest is
++# IGNORED when this crate is built as a dependency — this block only shapes
++# standalone test runs. Baseline-diff tracked (T-12).
++[patch.crates-io]
++curve25519-dalek = { path = "../curve25519-dalek" }
++monero-ed25519 = { path = "../monero-ed25519" }
++monero-io = { path = "../monero-io" }
++monero-bulletproofs-generators = { path = "../monero-bulletproofs-generators" }
++std-shims = { path = "../std-shims" }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/batch_verifier.rs b/src/batch_verifier.rs
 --- a/src/batch_verifier.rs	2006-07-24 09:21:28.000000000 +0800
 +++ b/src/batch_verifier.rs	2026-09-29 17:37:43.562591237 +0800
@@ -1236,7 +1253,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-10-09 18:20:59.614401764 +0800
++++ b/src/lib.rs	2026-10-22 08:31:11.621359580 +0800
 @@ -3,41 +3,93 @@
  #![cfg_attr(not(feature = "std"), no_std)]
  #![allow(non_snake_case)]
@@ -1525,7 +1542,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        OriginalStatement::new(&commitments)
          .expect("failed to create statement despite checking amount of commitments")
          .prove(
-@@ -145,201 +215,352 @@
+@@ -145,201 +215,373 @@
            "failed to prove Bulletproof::Original despite ensuring statement/witness consistency",
          ),
      ))
@@ -1830,6 +1847,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                self.0 += buf.len();
 +                Ok(buf.len())
 +            }
++            // std-form Write (std::io::Write) requires flush; the shim form
++            // has no such item. cfg-gated so the product (no-std) shape is
++            // bit-identical (vendor test-infra patch, 2026-10-21).
++            #[cfg(feature = "std")]
++            fn flush(&mut self) -> io::Result<()> {
++                Ok(())
++            }
 +        }
 +        let mut c = Counter(0);
 +        self.write(&mut c)
@@ -1953,6 +1977,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
 +                self.write(data).map(|_| ())
 +            }
++            // std-form Write (std::io::Write) requires flush; the shim form
++            // has no such item. cfg-gated so the product (no-std) shape is
++            // bit-identical (vendor test-infra patch, 2026-10-21).
++            #[cfg(feature = "std")]
++            fn flush(&mut self) -> io::Result<()> {
++                Ok(())
++            }
 +        }
 +        let mut w = SliceWriter { buf: out, pos: 0 };
 +        self.write(&mut w)?;
@@ -1984,6 +2015,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            // all-or-error by construction, so this is byte-equivalent.
 +            fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
 +                self.write(data).map(|_| ())
++            }
++            // std-form Write (std::io::Write) requires flush; the shim form
++            // has no such item. cfg-gated so the product (no-std) shape is
++            // bit-identical (vendor test-infra patch, 2026-10-21).
++            #[cfg(feature = "std")]
++            fn flush(&mut self) -> io::Result<()> {
++                Ok(())
 +            }
 +        }
 +        let mut w = SliceWriter { buf: out, pos: 0 };
@@ -4435,8 +4473,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/plus/weighted_inner_product.rs b/src/plus/weighted_inner_product.rs
 --- a/src/plus/weighted_inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/plus/weighted_inner_product.rs	2026-09-29 17:48:03.055064675 +0800
-@@ -1,415 +1,750 @@
++++ b/src/plus/weighted_inner_product.rs	2026-10-22 08:57:14.749196878 +0800
+@@ -1,415 +1,754 @@
 +#[cfg(feature = "alloc-fallback")]
  use std_shims::{vec, vec::Vec};
  
@@ -5110,7 +5148,11 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        // exact; the wire pins hold).
 +        let mut alpha = witness.alpha;
 +        let n = witness.a.len();
-+        if n == 0 || !n.is_power_of_two() || (n / 2) * 2 != n {
++        // Upstream (dc04277) supports n == 1 (the round loop simply runs zero
++        // rounds: `while g_bold.len() > 1`); the Z5.3 scratch rewrite's extra
++        // even-length clause `(n / 2) * 2 != n` silently rejected that edge
++        // (the zero-witness test). Only n==0 / non-pow2 remain invalid.
++        if n == 0 || !n.is_power_of_two() {
 +            return None;
 +        }
 +        if round.a.len() < n {
@@ -5571,14 +5613,14 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/point_vector.rs b/src/point_vector.rs
 --- a/src/point_vector.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/point_vector.rs	2026-09-29 17:37:43.564591249 +0800
++++ b/src/point_vector.rs	2026-10-22 09:16:25.648827136 +0800
 @@ -1,4 +1,5 @@
  use core::ops::{Index, IndexMut};
 +#[cfg(feature = "alloc-fallback")]
  use std_shims::vec::Vec;
  
  use zeroize::Zeroize;
-@@ -11,49 +12,56 @@
+@@ -11,49 +12,62 @@
  use crate::core::multiexp;
  
  #[derive(Clone, PartialEq, Eq, Debug, Zeroize)]
@@ -5656,7 +5698,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +        for (point, scalar) in self.0.iter().copied().zip(vector.0.iter().copied()) {
 +            res.push((scalar, point));
 +        }
-+        multiexp(&res)
++        // Z5.3 scratch API: the core multiexp takes caller scratch; this
++        // test-only helper provisions its own (vendor test-infra patch).
++        let cap = res.len().max(1);
++        let mut storage = vec![0u8; curve25519_dalek::scratch::StrausScratch::storage_bytes(cap)];
++        let mut straus = curve25519_dalek::scratch::StrausScratch::new(&mut storage, cap)
++            .expect("straus scratch");
++        multiexp(&res, &mut straus).expect("multiexp")
 +    }
 +
 +    pub(crate) fn len(&self) -> usize {
@@ -6008,13 +6056,14 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/tests/mod.rs b/src/tests/mod.rs
 --- a/src/tests/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/tests/mod.rs	2026-09-26 08:46:13.159675929 +0800
-@@ -1,57 +1,57 @@
++++ b/src/tests/mod.rs	2026-10-22 08:41:56.089616733 +0800
+@@ -1,57 +1,107 @@
 -use rand_core::{RngCore as _, OsRng};
 +use rand_core::{OsRng, RngCore as _};
  
 -use monero_ed25519::{Scalar, Commitment};
  use crate::{batch_verifier::BatchVerifier, Bulletproof, BulletproofError};
++use curve25519_dalek::{traits::Identity as _, EdwardsPoint};
 +use monero_ed25519::{Commitment, Scalar};
  
  mod original;
@@ -6077,7 +6126,31 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                    .collect::<Vec<_>>();
 +
 +                let bp = if $plus {
-+                    Bulletproof::prove_plus(&mut OsRng, &commitments).unwrap()
++                    // Z5.3 scratch API (vendor test-infra patch).
++                    let mut terms =
++                        vec![(curve25519_dalek::Scalar::ZERO, EdwardsPoint::identity()); 2050];
++                    let mut straus_storage = vec![
++                        0u8;
++                        curve25519_dalek::scratch::StrausScratch::storage_bytes(2050)
++                    ];
++                    let mut straus =
++                        curve25519_dalek::scratch::StrausScratch::new(&mut straus_storage, 2050)
++                            .unwrap();
++                    let mut wip_storage = vec![
++                        0u8;
++                        crate::plus::weighted_inner_product::WipScratch::storage_bytes(2050)
++                    ];
++                    let mut wip =
++                        crate::plus::weighted_inner_product::WipScratch::new(&mut wip_storage, 2050)
++                            .unwrap();
++                    Bulletproof::prove_plus(
++                        &mut OsRng,
++                        &commitments,
++                        &mut terms,
++                        &mut straus,
++                        &mut wip,
++                    )
++                    .unwrap()
 +                } else {
 +                    Bulletproof::prove(&mut OsRng, &commitments).unwrap()
 +                };
@@ -6102,7 +6175,32 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            }
 +            assert_eq!(
 +                (if $plus {
-+                    Bulletproof::prove_plus(&mut OsRng, &commitments)
++                    // Z5.3 scratch API (vendor test-infra patch) — the
++                    // TooManyCommitments rejection fires before any scratch
++                    // use, but the args must exist.
++                    let mut terms =
++                        vec![(curve25519_dalek::Scalar::ZERO, EdwardsPoint::identity()); 2050];
++                    let mut straus_storage = vec![
++                        0u8;
++                        curve25519_dalek::scratch::StrausScratch::storage_bytes(2050)
++                    ];
++                    let mut straus =
++                        curve25519_dalek::scratch::StrausScratch::new(&mut straus_storage, 2050)
++                            .unwrap();
++                    let mut wip_storage = vec![
++                        0u8;
++                        crate::plus::weighted_inner_product::WipScratch::storage_bytes(2050)
++                    ];
++                    let mut wip =
++                        crate::plus::weighted_inner_product::WipScratch::new(&mut wip_storage, 2050)
++                            .unwrap();
++                    Bulletproof::prove_plus(
++                        &mut OsRng,
++                        &commitments,
++                        &mut terms,
++                        &mut straus,
++                        &mut wip,
++                    )
 +                } else {
 +                    Bulletproof::prove(&mut OsRng, &commitments)
 +                })
@@ -6116,7 +6214,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  bulletproofs_tests!(bulletproofs, bulletproofs_max, false);
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/tests/original/inner_product.rs b/src/tests/original/inner_product.rs
 --- a/src/tests/original/inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/tests/original/inner_product.rs	2026-09-29 17:37:43.565591256 +0800
++++ b/src/tests/original/inner_product.rs	2026-10-22 08:34:38.403412872 +0800
 @@ -2,75 +2,88 @@
  
  use rand_core::OsRng;
@@ -6221,7 +6319,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +#[test]
 +fn test_inner_product() {
 +    // P = sum(g_bold * a, h_bold * b, g * u * <a, b>)
-+    let generators = &generators()?;
++    let generators = &generators().expect("generators");
 +    let mut verifier = BulletproofsBatchVerifier::default();
 +    verifier.0.g_bold = vec![Scalar::ZERO.into(); 32];
 +    verifier.0.h_bold = vec![Scalar::ZERO.into(); 32];
@@ -6491,8 +6589,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/tests/plus/aggregate_range_proof.rs b/src/tests/plus/aggregate_range_proof.rs
 --- a/src/tests/plus/aggregate_range_proof.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/tests/plus/aggregate_range_proof.rs	2026-09-26 08:46:13.159705957 +0800
-@@ -1,26 +1,31 @@
++++ b/src/tests/plus/aggregate_range_proof.rs	2026-10-22 09:16:25.652827096 +0800
+@@ -1,26 +1,47 @@
 -use rand_core::{RngCore as _, OsRng};
 +use rand_core::{OsRng, RngCore as _};
  
@@ -6503,6 +6601,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    batch_verifier::BulletproofsPlusBatchVerifier,
 +    plus::aggregate_range_proof::{AggregateRangeStatement, AggregateRangeWitness},
  };
++use curve25519_dalek::{traits::Identity as _, EdwardsPoint};
 +use monero_ed25519::{Commitment, Scalar};
  
  #[test]
@@ -6518,6 +6617,18 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -    let statement = AggregateRangeStatement::new(&commitment_points).unwrap();
 -    let witness = AggregateRangeWitness::new(commitments).unwrap();
 +    let mut verifier = BulletproofsPlusBatchVerifier::default();
++    // Z5.3 scratch API (vendor test-infra patch): the prove chain takes
++    // caller scratch; provision it once and reuse across iterations (the
++    // reused-scratch zeroing fix is exercised by that reuse).
++    let mut terms = vec![(curve25519_dalek::Scalar::ZERO, EdwardsPoint::identity()); 2050];
++    let mut straus_storage =
++        vec![0u8; curve25519_dalek::scratch::StrausScratch::storage_bytes(2050)];
++    let mut straus =
++        curve25519_dalek::scratch::StrausScratch::new(&mut straus_storage, 2050).unwrap();
++    let mut wip_storage =
++        vec![0u8; crate::plus::weighted_inner_product::WipScratch::storage_bytes(2050)];
++    let mut wip =
++        crate::plus::weighted_inner_product::WipScratch::new(&mut wip_storage, 2050).unwrap();
 +    for m in 1..=16 {
 +        let mut commitments = vec![];
 +        for _ in 0..m {
@@ -6537,7 +6648,10 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -    statement.verify(&mut OsRng, &mut verifier, proof);
 -  }
 -  assert!(verifier.verify());
-+        let proof = statement.clone().prove(&mut OsRng, &witness).unwrap();
++        let proof = statement
++            .clone()
++            .prove(&mut OsRng, &witness, &mut terms, &mut straus, &mut wip)
++            .unwrap();
 +        statement.verify(&mut OsRng, &mut verifier, proof);
 +    }
 +    assert!(verifier.verify());
@@ -6554,8 +6668,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +mod weighted_inner_product;
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/tests/plus/weighted_inner_product.rs b/src/tests/plus/weighted_inner_product.rs
 --- a/src/tests/plus/weighted_inner_product.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/tests/plus/weighted_inner_product.rs	2026-09-03 13:43:46.808301133 +0800
-@@ -6,81 +6,91 @@
++++ b/src/tests/plus/weighted_inner_product.rs	2026-10-22 09:16:25.652827096 +0800
+@@ -6,81 +6,156 @@
  
  use curve25519_dalek::{traits::Identity as _, EdwardsPoint};
  
@@ -6568,7 +6682,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -  },
 +    batch_verifier::BulletproofsPlusBatchVerifier,
 +    plus::{
-+        weighted_inner_product::{WipStatement, WipWitness},
++        weighted_inner_product::{RoundBufs, WipScratch, WipStatement, WipWitness},
 +        BpPlusGenerators, GeneratorsList, PointVector, ScalarVector,
 +    },
  };
@@ -6636,21 +6750,53 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    let P = EdwardsPoint::identity();
 +    let y = Scalar::random(&mut OsRng).into();
  
-+    let generators = BpPlusGenerators::new().reduce(1);
++    let generators = BpPlusGenerators::new()
++        .expect("generator tables init")
++        .reduce(1);
      let statement = WipStatement::new(generators, P, y);
 -    let witness = WipWitness::new(a, b, alpha).unwrap();
-+    let witness = WipWitness::new(
-+        ScalarVector::new(1),
-+        ScalarVector::new(1),
-+        Scalar::ZERO.into(),
-+    )
-+    .unwrap();
++    let one_a = ScalarVector::new(1);
++    let one_b = ScalarVector::new(1);
++    let witness = WipWitness::new(&one_a.0, &one_b.0, Scalar::ZERO.into()).unwrap();
  
      let transcript = Scalar::random(&mut OsRng).into();
 -    let proof = statement.clone().prove(&mut OsRng, transcript, &witness).unwrap();
++    // Z5.3 scratch API (vendor test-infra patch): caller scratch + RoundBufs
++    // carved from a WipScratch (same split the production prove chain does).
++    let mut terms = vec![(curve25519_dalek::Scalar::ZERO, EdwardsPoint::identity()); 2048];
++    let mut straus_storage =
++        vec![0u8; curve25519_dalek::scratch::StrausScratch::storage_bytes(2048)];
++    let mut straus =
++        curve25519_dalek::scratch::StrausScratch::new(&mut straus_storage, 2048).unwrap();
++    let mut wip_storage = vec![0u8; WipScratch::storage_bytes(512)];
++    let mut wip = WipScratch::new(&mut wip_storage, 512).unwrap();
++    let WipScratch {
++        a,
++        b,
++        g,
++        h,
++        p_y,
++        p_zp,
++        ..
++    } = &mut wip;
++    let mut round = RoundBufs {
++        a,
++        b,
++        g,
++        h,
++        p_y,
++        p_zp,
++    };
 +    let proof = statement
 +        .clone()
-+        .prove(&mut OsRng, transcript, &witness)
++        .prove(
++            &mut OsRng,
++            transcript,
++            &witness,
++            &mut terms,
++            &mut straus,
++            &mut round,
++        )
 +        .unwrap();
 +
 +    let mut verifier = BulletproofsPlusBatchVerifier::default();
@@ -6664,7 +6810,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +fn test_weighted_inner_product() {
 +    // P = sum(g_bold * a, h_bold * b, g * (a * y * b), h * alpha)
 +    let mut verifier = BulletproofsPlusBatchVerifier::default();
-+    let generators = BpPlusGenerators::new();
++    let generators = BpPlusGenerators::new().expect("generator tables init");
 +    for i in [1, 2, 4, 8, 16, 32] {
 +        let generators = generators.reduce(i);
 +        let g = BpPlusGenerators::g();
@@ -6702,12 +6848,45 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            + (h * alpha);
 +
 +        let statement = WipStatement::new(generators, P, y);
-+        let witness = WipWitness::new(a, b, alpha).unwrap();
++        let witness = WipWitness::new(&a.0, &b.0, alpha).unwrap();
 +
 +        let transcript = Scalar::random(&mut OsRng).into();
++        // Z5.3 scratch API (vendor test-infra patch): caller scratch + RoundBufs
++        // carved from a WipScratch (same split the production prove chain does).
++        let mut terms = vec![(curve25519_dalek::Scalar::ZERO, EdwardsPoint::identity()); 2048];
++        let mut straus_storage =
++            vec![0u8; curve25519_dalek::scratch::StrausScratch::storage_bytes(2048)];
++        let mut straus =
++            curve25519_dalek::scratch::StrausScratch::new(&mut straus_storage, 2048).unwrap();
++        let mut wip_storage = vec![0u8; WipScratch::storage_bytes(512)];
++        let mut wip = WipScratch::new(&mut wip_storage, 512).unwrap();
++        let WipScratch {
++            a,
++            b,
++            g,
++            h,
++            p_y,
++            p_zp,
++            ..
++        } = &mut wip;
++        let mut round = RoundBufs {
++            a,
++            b,
++            g,
++            h,
++            p_y,
++            p_zp,
++        };
 +        let proof = statement
 +            .clone()
-+            .prove(&mut OsRng, transcript, &witness)
++            .prove(
++                &mut OsRng,
++                transcript,
++                &witness,
++                &mut terms,
++                &mut straus,
++                &mut round,
++            )
 +            .unwrap();
 +        statement.verify(&mut OsRng, &mut verifier, transcript, proof);
 +    }

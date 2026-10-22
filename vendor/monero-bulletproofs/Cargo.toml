@@ -42,7 +42,7 @@ prove-timing = ["std-shims/alloc"]
 # MUST provide generator table storage up front.
 # shlosilo: transitional alloc fallback (boxed errors, Vec cold paths,
 # dalek large-count MSM tails). Zero-heap builds disable it.
-alloc-fallback = ["curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc"]
+alloc-fallback = ["curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc", "std-shims/alloc"]
 default = [
     "std",
     "compile-time-generators",
@@ -200,3 +200,16 @@ unused_extern_crates = "warn"
 unused_import_braces = "warn"
 unused_lifetimes = "warn"
 unused_macro_rules = "warn"
+
+# shlosilo test-infra patch (2026-10-21): standalone `cargo test` on this tree
+# must resolve the SAME patched sibling crates the product build uses (the
+# dalek `alloc-fallback` / `generator-cache` features and the no_std shims
+# exist only in the vendored trees). [patch] in a non-root manifest is
+# IGNORED when this crate is built as a dependency — this block only shapes
+# standalone test runs. Baseline-diff tracked (T-12).
+[patch.crates-io]
+curve25519-dalek = { path = "../curve25519-dalek" }
+monero-ed25519 = { path = "../monero-ed25519" }
+monero-io = { path = "../monero-io" }
+monero-bulletproofs-generators = { path = "../monero-bulletproofs-generators" }
+std-shims = { path = "../std-shims" }

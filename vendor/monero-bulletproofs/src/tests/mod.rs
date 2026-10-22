@@ -1,6 +1,7 @@
 use rand_core::{OsRng, RngCore as _};
 
 use crate::{batch_verifier::BatchVerifier, Bulletproof, BulletproofError};
+use curve25519_dalek::{traits::Identity as _, EdwardsPoint};
 use monero_ed25519::{Commitment, Scalar};
 
 mod original;
@@ -18,7 +19,31 @@ macro_rules! bulletproofs_tests {
                     .collect::<Vec<_>>();
 
                 let bp = if $plus {
-                    Bulletproof::prove_plus(&mut OsRng, &commitments).unwrap()
+                    // Z5.3 scratch API (vendor test-infra patch).
+                    let mut terms =
+                        vec![(curve25519_dalek::Scalar::ZERO, EdwardsPoint::identity()); 2050];
+                    let mut straus_storage = vec![
+                        0u8;
+                        curve25519_dalek::scratch::StrausScratch::storage_bytes(2050)
+                    ];
+                    let mut straus =
+                        curve25519_dalek::scratch::StrausScratch::new(&mut straus_storage, 2050)
+                            .unwrap();
+                    let mut wip_storage = vec![
+                        0u8;
+                        crate::plus::weighted_inner_product::WipScratch::storage_bytes(2050)
+                    ];
+                    let mut wip =
+                        crate::plus::weighted_inner_product::WipScratch::new(&mut wip_storage, 2050)
+                            .unwrap();
+                    Bulletproof::prove_plus(
+                        &mut OsRng,
+                        &commitments,
+                        &mut terms,
+                        &mut straus,
+                        &mut wip,
+                    )
+                    .unwrap()
                 } else {
                     Bulletproof::prove(&mut OsRng, &commitments).unwrap()
                 };
@@ -43,7 +68,32 @@ macro_rules! bulletproofs_tests {
             }
             assert_eq!(
                 (if $plus {
-                    Bulletproof::prove_plus(&mut OsRng, &commitments)
+                    // Z5.3 scratch API (vendor test-infra patch) — the
+                    // TooManyCommitments rejection fires before any scratch
+                    // use, but the args must exist.
+                    let mut terms =
+                        vec![(curve25519_dalek::Scalar::ZERO, EdwardsPoint::identity()); 2050];
+                    let mut straus_storage = vec![
+                        0u8;
+                        curve25519_dalek::scratch::StrausScratch::storage_bytes(2050)
+                    ];
+                    let mut straus =
+                        curve25519_dalek::scratch::StrausScratch::new(&mut straus_storage, 2050)
+                            .unwrap();
+                    let mut wip_storage = vec![
+                        0u8;
+                        crate::plus::weighted_inner_product::WipScratch::storage_bytes(2050)
+                    ];
+                    let mut wip =
+                        crate::plus::weighted_inner_product::WipScratch::new(&mut wip_storage, 2050)
+                            .unwrap();
+                    Bulletproof::prove_plus(
+                        &mut OsRng,
+                        &commitments,
+                        &mut terms,
+                        &mut straus,
+                        &mut wip,
+                    )
                 } else {
                     Bulletproof::prove(&mut OsRng, &commitments)
                 })

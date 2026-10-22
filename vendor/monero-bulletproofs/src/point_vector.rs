@@ -50,7 +50,13 @@ impl PointVector {
         for (point, scalar) in self.0.iter().copied().zip(vector.0.iter().copied()) {
             res.push((scalar, point));
         }
-        multiexp(&res)
+        // Z5.3 scratch API: the core multiexp takes caller scratch; this
+        // test-only helper provisions its own (vendor test-infra patch).
+        let cap = res.len().max(1);
+        let mut storage = vec![0u8; curve25519_dalek::scratch::StrausScratch::storage_bytes(cap)];
+        let mut straus = curve25519_dalek::scratch::StrausScratch::new(&mut storage, cap)
+            .expect("straus scratch");
+        multiexp(&res, &mut straus).expect("multiexp")
     }
 
     pub(crate) fn len(&self) -> usize {

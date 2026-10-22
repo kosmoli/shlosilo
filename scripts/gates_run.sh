@@ -33,3 +33,10 @@ bash scripts/check_header.sh > /tmp/g_hdr.log 2>&1; echo "HDRKEEP=$?"
 cargo fmt --all -- --check > /tmp/g_fmt.log 2>&1; echo "FMT=$?"
 bash scripts/vendor_baseline_check.sh > /dev/null 2>&1; echo "BASELINE=$?"
 bash probes/noalloc/build.sh > /tmp/g_probe.log 2>&1; echo "PROBE=$?"
+# Vendor reference-oracle tests (2026-10-21, Z5.3 test-infra): the vendored
+# bulletproofs' own suite is the non-pow2 proof-correctness oracle (m=1..16
+# prove+verify); cryptonight mirrors the CI "Vendor crate tests" step (local
+# batch must cover the CI surface). Release mode: the OsRng loops take
+# minutes in debug.
+( cd vendor/cryptonight && cargo test --offline --features cn-timing --lib ) > /tmp/g_vendor_cn.log 2>&1; echo "VENDOR_CN=$?"
+( cd vendor/monero-bulletproofs && cargo test --offline --release ) > /tmp/g_vendor_bp.log 2>&1; echo "VENDOR_BP=$?" 

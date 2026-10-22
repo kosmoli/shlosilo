@@ -374,7 +374,11 @@ impl WipStatement {
         // exact; the wire pins hold).
         let mut alpha = witness.alpha;
         let n = witness.a.len();
-        if n == 0 || !n.is_power_of_two() || (n / 2) * 2 != n {
+        // Upstream (dc04277) supports n == 1 (the round loop simply runs zero
+        // rounds: `while g_bold.len() > 1`); the Z5.3 scratch rewrite's extra
+        // even-length clause `(n / 2) * 2 != n` silently rejected that edge
+        // (the zero-witness test). Only n==0 / non-pow2 remain invalid.
+        if n == 0 || !n.is_power_of_two() {
             return None;
         }
         if round.a.len() < n {

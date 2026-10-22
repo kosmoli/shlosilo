@@ -9,7 +9,7 @@ use curve25519_dalek::{traits::Identity as _, EdwardsPoint};
 use crate::{
     batch_verifier::BulletproofsPlusBatchVerifier,
     plus::{
-        weighted_inner_product::{WipStatement, WipWitness},
+        weighted_inner_product::{RoundBufs, WipScratch, WipStatement, WipWitness},
         BpPlusGenerators, GeneratorsList, PointVector, ScalarVector,
     },
 };
@@ -21,19 +21,51 @@ fn test_zero_weighted_inner_product() {
     let P = EdwardsPoint::identity();
     let y = Scalar::random(&mut OsRng).into();
 
-    let generators = BpPlusGenerators::new().reduce(1);
+    let generators = BpPlusGenerators::new()
+        .expect("generator tables init")
+        .reduce(1);
     let statement = WipStatement::new(generators, P, y);
-    let witness = WipWitness::new(
-        ScalarVector::new(1),
-        ScalarVector::new(1),
-        Scalar::ZERO.into(),
-    )
-    .unwrap();
+    let one_a = ScalarVector::new(1);
+    let one_b = ScalarVector::new(1);
+    let witness = WipWitness::new(&one_a.0, &one_b.0, Scalar::ZERO.into()).unwrap();
 
     let transcript = Scalar::random(&mut OsRng).into();
+    // Z5.3 scratch API (vendor test-infra patch): caller scratch + RoundBufs
+    // carved from a WipScratch (same split the production prove chain does).
+    let mut terms = vec![(curve25519_dalek::Scalar::ZERO, EdwardsPoint::identity()); 2048];
+    let mut straus_storage =
+        vec![0u8; curve25519_dalek::scratch::StrausScratch::storage_bytes(2048)];
+    let mut straus =
+        curve25519_dalek::scratch::StrausScratch::new(&mut straus_storage, 2048).unwrap();
+    let mut wip_storage = vec![0u8; WipScratch::storage_bytes(512)];
+    let mut wip = WipScratch::new(&mut wip_storage, 512).unwrap();
+    let WipScratch {
+        a,
+        b,
+        g,
+        h,
+        p_y,
+        p_zp,
+        ..
+    } = &mut wip;
+    let mut round = RoundBufs {
+        a,
+        b,
+        g,
+        h,
+        p_y,
+        p_zp,
+    };
     let proof = statement
         .clone()
-        .prove(&mut OsRng, transcript, &witness)
+        .prove(
+            &mut OsRng,
+            transcript,
+            &witness,
+            &mut terms,
+            &mut straus,
+            &mut round,
+        )
         .unwrap();
 
     let mut verifier = BulletproofsPlusBatchVerifier::default();
@@ -45,7 +77,7 @@ fn test_zero_weighted_inner_product() {
 fn test_weighted_inner_product() {
     // P = sum(g_bold * a, h_bold * b, g * (a * y * b), h * alpha)
     let mut verifier = BulletproofsPlusBatchVerifier::default();
-    let generators = BpPlusGenerators::new();
+    let generators = BpPlusGenerators::new().expect("generator tables init");
     for i in [1, 2, 4, 8, 16, 32] {
         let generators = generators.reduce(i);
         let g = BpPlusGenerators::g();
@@ -83,12 +115,45 @@ fn test_weighted_inner_product() {
             + (h * alpha);
 
         let statement = WipStatement::new(generators, P, y);
-        let witness = WipWitness::new(a, b, alpha).unwrap();
+        let witness = WipWitness::new(&a.0, &b.0, alpha).unwrap();
 
         let transcript = Scalar::random(&mut OsRng).into();
+        // Z5.3 scratch API (vendor test-infra patch): caller scratch + RoundBufs
+        // carved from a WipScratch (same split the production prove chain does).
+        let mut terms = vec![(curve25519_dalek::Scalar::ZERO, EdwardsPoint::identity()); 2048];
+        let mut straus_storage =
+            vec![0u8; curve25519_dalek::scratch::StrausScratch::storage_bytes(2048)];
+        let mut straus =
+            curve25519_dalek::scratch::StrausScratch::new(&mut straus_storage, 2048).unwrap();
+        let mut wip_storage = vec![0u8; WipScratch::storage_bytes(512)];
+        let mut wip = WipScratch::new(&mut wip_storage, 512).unwrap();
+        let WipScratch {
+            a,
+            b,
+            g,
+            h,
+            p_y,
+            p_zp,
+            ..
+        } = &mut wip;
+        let mut round = RoundBufs {
+            a,
+            b,
+            g,
+            h,
+            p_y,
+            p_zp,
+        };
         let proof = statement
             .clone()
-            .prove(&mut OsRng, transcript, &witness)
+            .prove(
+                &mut OsRng,
+                transcript,
+                &witness,
+                &mut terms,
+                &mut straus,
+                &mut round,
+            )
             .unwrap();
         statement.verify(&mut OsRng, &mut verifier, transcript, proof);
     }
