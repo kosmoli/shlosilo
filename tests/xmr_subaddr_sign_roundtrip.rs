@@ -11,7 +11,9 @@
 //! cryptonote_tx_utils.cpp) that rule derives the wrong input_sk and the
 //! input_pub gate rejects the input outright.
 //!
-//! `pin_red_…` is INTENTIONALLY RED (the pinned divergence, not fixed here —
+//! > STATUS 2026-10-21: both pins in this file FLIPPED GREEN (`cc777c5` derivation matching, `c3a5a00` BP+ scratch) — the red contract below is history.
+//!
+//! `pin_red_…` was INTENTIONALLY RED (the pinned divergence, not fixed here —
 //! see ~/works/xmr-stagenet-lab/watchonly_probe/SIGNED_TX_PARSE_FAIL_REPORT.md).
 //! The two `control_…` tests are green and prove the harness is sound.
 #![cfg(feature = "alloc-fallback")]
@@ -222,7 +224,7 @@ fn build_source(out_pub: [u8; 32], real_idx: u64, add_keys: &[[u8; 32]]) -> TxSo
 ///
 /// This is the tx2 (subaddress-input) regression pinned red on the SIGN path.
 #[test]
-fn pin_red_sign_path_change_to_own_subaddress_uses_main_txkey() {
+fn sign_path_change_to_own_subaddress_uses_main_txkey() {
     let spend_sk = [5u8; 32];
     let view_sk = [6u8; 32];
     let tx_pub = point(&[0x42u8; 32]); // MAIN tx key
@@ -301,7 +303,7 @@ fn control_sign_path_subaddr_via_additional_idx() {
 /// wallet2 parse); the 3-output real fixture panics
 /// "index out of bounds: the len is 385 but the index is 385".
 #[test]
-fn pin_red_sign_three_outputs_bp_scratch_index_oob() {
+fn sign_three_outputs_bp_scratch_in_bounds() {
     fn dest(amount: u64, tag: u8) -> TxDestinationEntry {
         TxDestinationEntry {
             original: heapless::Vec::new(),

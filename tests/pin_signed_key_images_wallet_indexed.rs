@@ -350,12 +350,12 @@ fn refuse_on_record_source_mismatch() {
 /// array is `[src_ki, src_ki, …, src_ki]` (`[0]==[1]` collision, and the fill
 /// equals `kis[selected]`) — so any implementation that dedupes the whole
 /// imported array (wallet2's import writes it positionally into m_transfers)
-/// misreads the fill. INTENTIONALLY RED while the collision exists; no
+/// misreads the fill. Was INTENTIONALLY RED while the collision exists; no
 /// `#[should_panic]`, no `#[ignore]`. (The sibling green contract
 /// `conservative_fallback_without_records` pins TODAY's fill semantics and is
 /// expected to change together with this bug's fix.)
 #[test]
-fn pin_red_fallback_fill_no_duplicate_selected() {
+fn gap_fill_never_ships_duplicate_selected() {
     // Flipped GREEN 2026-10-21 (A案, pool #49): the recordless gap filler is
     // retired — a gap without a matching-fp record REFUSES the sign, so no
     // filler (duplicate of the selected true key image or otherwise) can ever

@@ -192,7 +192,7 @@ fn tx2_strip_src_addkeys() {
 // (forms/chain/xmr/subaddress.rs:459) picks `additional[0]` for such inputs and
 // rejects the fixture with `EncodingInvalidFormat`, so the device can never
 // sign the most common real-chain shape. This is the real-chain twin of
-// `pin_red_sign_path_change_to_own_subaddress_uses_main_txkey`.
+// `sign_path_change_to_own_subaddress_uses_main_txkey`.
 //
 // Keys below are the PUBLISHED stagenet-lab test keys (BIP-39 entropy 0x22*32
 // → stage_disk), the same material the lab README marks as free to publish.
@@ -251,7 +251,7 @@ fn tx2_sign_container_records(
 /// the input's output key derives from the MAIN tx key while
 /// `real_out_additional_tx_keys` is non-empty.
 #[test]
-fn pin_red_sign_real_cake_unsigned_addkeys_change_input() {
+fn sign_real_cake_unsigned_addkeys_change_input() {
     // Flipped GREEN 2026-10-21 (pin 2's match-based derivation fix landed):
     // the real Cake-built unsigned (change input of an add-keys funding tx,
     // main-tx-key derived P, add_keys=3, real_idx=0) now signs. The once-red

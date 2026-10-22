@@ -12,7 +12,9 @@
 //! path (`ur_encode::encode` -> `ur_decode::decode` round trip, delivered
 //! payload byte-identical).
 //!
-//! This MUST fail today; the panic records the 2048-vs-2052 under-budget fact
+//! STATUS 2026-10-21: FLIPPED GREEN (UR cap 2176, `af557d8`) — the red contract below is history.
+//!
+//! This used to fail; the panic recorded the 2048-vs-2052 under-budget fact
 //! and the fix direction (raise `UR_PAYLOAD_MAX_LEN` to cover real messages,
 //! keep `shlosilo.h` in sync, and let the decode-side payload cap and the wire
 //! heapless caps scale with it).
@@ -30,7 +32,7 @@ const REAL_CAKE_MESSAGE_LEN: usize = 2052;
 /// Pool §36: the single-frame UR exit must carry a real 2052-byte Cake message
 /// whole. `UR_PAYLOAD_MAX_LEN` is 2048 — 4 bytes short of real traffic.
 #[test]
-fn pin_red_single_frame_carries_real_cake_message() {
+fn single_frame_carries_real_cake_message() {
     // Real-size Cake xmr-output message: container magic + deterministic filler.
     let mut payload: Vec<u8> = Vec::with_capacity(REAL_CAKE_MESSAGE_LEN);
     payload.extend_from_slice(OUTPUT_EXPORT_MAGIC);

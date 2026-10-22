@@ -7,7 +7,9 @@
 //! wallet position is a spent-tracking corruption, no matter how conservative
 //! the value looks.
 //!
-//! `pin_red_import_does_not_pollute_transfers_zero` is INTENTIONALLY RED while
+//! > STATUS 2026-10-21: FLIPPED GREEN (the v2 gap policy landed, `c61d418`) — the red contract below is history.
+//!
+//! `import_does_not_pollute_transfers_zero` was INTENTIONALLY RED while
 //! the sign leg can ship an UNRELATED key image at wallet index 0 (the
 //! conservative gap filler = the derived KI of the spent input, which belongs
 //! to the selected transfer, not to transfer 0): after importing the produced
@@ -187,7 +189,7 @@ fn true_key_image(i: usize) -> [u8; 32] {
 /// `transfers[0]`, corrupting the phone's spent-tracking (mirror-replay-proven
 /// with the dummy-at-0 array, 2026-10-17).
 #[test]
-fn pin_red_import_does_not_pollute_transfers_zero() {
+fn import_does_not_pollute_transfers_zero() {
     // Flipped GREEN 2026-10-21 (A案): the v2 gap policy refuses the sign when
     // a covered position has no own true key image — NOTHING positional ships,
     // so wallet2's positional import cannot pollute transfers[0] (pool #32).

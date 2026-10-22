@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # shlosilo gate batch — bare exit codes, no trimming by change surface.
 # NOTE: the MUST-RED pin suite is FULLY GREEN as of 2026-10-21 — all 8 pins
-# fixed in the red-pin batch (pool #55: to_seed, UR budget, derivation
-# matching x2, BP+ non-pow2 scratch, details pool caps, v2 gap policy x2).
-# The pin_red_* test names are historical; the expected-red manifest is now
-# EMPTY: any failing test on any face is a real failure.
+# fixed in the red-pin batch (pool #55) and renamed to their invariant names
+# (the pin_red_ prefix is retired). The expected-red manifest is EMPTY: any
+# failing test on any face is a real failure.
 cd ~/works/shlosilo-poc4 || exit 99
 bash scripts/check_fixtures.sh > /tmp/g_fixt.log 2>&1; echo "FIXTURES=$?"
 # TEST/TESTALL run through the zero-on-alloc wrapper (jemalloc zero:true) so

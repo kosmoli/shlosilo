@@ -13,7 +13,9 @@
 //! outputs are answered (parsed and given key images) — or at least that the
 //! request is not rejected solely by the pool cap.
 //!
-//! This MUST fail today; the panic records the cap fact (9 > 8 -> -20) and the
+//! STATUS 2026-10-21: FLIPPED GREEN (caps raised to 32, `8506319`) — the red contract below is history.
+//!
+//! This used to fail; the panic recorded the cap fact (9 > 8 -> -20) and the
 //! fix direction (raise `PAIRING_DETAILS_MAX`/`PAIRING_RECORDS_MAX` to cover
 //! real wallet output counts, or make the pool sizing dynamic).
 //!
@@ -82,7 +84,7 @@ fn build_plain(count: usize, view_sk: &[u8; 32], spend_sk: &[u8; 32]) -> Vec<u8>
 
 /// Pool §37: a 9-output export must not hard-fail on the details pool cap.
 #[test]
-fn pin_red_details_pool_handles_nine_outputs() {
+fn details_pool_handles_nine_outputs() {
     let view_sk = [6u8; 32];
     let spend_sk = [5u8; 32];
     let spend_pub = point(&spend_sk);

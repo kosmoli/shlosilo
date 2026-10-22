@@ -71,7 +71,7 @@
 - **大小**: 2,068 bytes
 - **SHA-256**: `5a20f5288bd024d0150518dc30ea94b416b4a252b0d9f1731da517e1c212aa1a`
 - **用途**: `tests/tx2_whitebox_tools.rs` 两个 CI pin 的唯一输入——
-  `pin_red_sign_real_cake_unsigned_addkeys_change_input`（MUST-RED 红钉：add-keys
+  `sign_real_cake_unsigned_addkeys_change_input`（MUST-RED 红钉：add-keys
   change input 签名路拒收）+ `control_sign_real_cake_unsigned_addkeys_stripped_signs`
   （剥 add-keys 后必过，证明 key 选择是唯一 blocker）
 - **隐私**: 加密于 `TX2_LAB_VIEW_SK`（lab 测试钱包 view key，密钥本身已内嵌

@@ -32,7 +32,7 @@
 //!     record n is paired with `m_transfers[n + offset]`, offset from the
 //!     KEY_IMAGE container's u32 LE header.
 //!
-//! The `pin_red_…` test is INTENTIONALLY RED (the pinned divergence, not
+//! The `pin_red_…` convention (2026-10-20 B-方案) meant INTENTIONALLY RED (the pinned divergence, not
 //! fixed here — see KEYIMAGE_SIG_FAIL_REPORT.md). Everything else is green.
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;

@@ -5,7 +5,9 @@
 //! it via the production `bip39_passphrase::mnemonic_to_seed`, but the stub
 //! itself is still a landmine.)
 //!
-//! `pin_red_to_seed_returns_all_zero` is INTENTIONALLY RED while the stub
+//! > STATUS 2026-10-21: FLIPPED GREEN (real BIP-39 derivation, `06fece4`) — the red contract below is history.
+//!
+//! `to_seed_derives_non_degenerate_seed` was INTENTIONALLY RED while the stub
 //! returns zeros: a VALID mnemonic must derive a NON-degenerate seed. When the
 //! real PBKDF2-HMAC-SHA512(mnemonic_sentence, "mnemonic" + passphrase, 2048)
 //! derivation lands (or the stub is deleted/panics on misuse), this pin goes
@@ -14,7 +16,7 @@
 
 /// MUST-RED: `to_seed` on a valid mnemonic must not return the all-zero stub.
 #[test]
-fn pin_red_to_seed_returns_all_zero() {
+fn to_seed_derives_non_degenerate_seed() {
     use shlosilo::entropy::mnemonic::Mnemonic;
 
     // A VALID mnemonic (24 words from 32B entropy, checksum embedded) — this
