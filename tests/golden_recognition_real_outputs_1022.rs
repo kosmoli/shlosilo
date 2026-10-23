@@ -157,3 +157,81 @@ fn real_onchain_outputs_reproducible_by_recipient_math() {
     // for completeness: its slot under the pre-fix table is index 0.
     let _v0 = &prefix.outputs[0];
 }
+
+/// FIX VERIFICATION (2026-10-23): the first device container produced by the
+/// wallet2-oracle fix firmware (identity v0.5.0-poc4+8b3a80e) — the D-shape
+/// signed tx from the user's retest. Unlike the incident fixture above, the
+/// additional-key table must now follow the stock receiver rule: one entry
+/// per VOUT, and every output must be recognizable at its true slot
+/// (branch 1 = the main tx pubkey, branch 2 = additional[output_index]).
+#[test]
+fn fixed_shape_recognizable_at_true_slots() {
+    let cont = include_bytes!("fixtures/cap3_1023_fixed_signed.bin");
+    let plain = decrypt_signed_container(cont, &TEST2_VIEW);
+    assert_eq!(plain[0], 0x00);
+    assert_eq!(plain[2], 0x01);
+    let mut pos = 3;
+    let prefix = TransactionPrefix::deserialize(&plain, &mut pos).expect("tx prefix");
+    let tx_pub = prefix.extra.tx_pub_key.expect("tx pubkey in extra");
+    let table = &prefix.extra.additional_pub_keys;
+
+    // wallet2 lookup_acc_outs CHECK: one additional pubkey per vout
+    assert_eq!(
+        table.len(),
+        prefix.outputs_len,
+        "the fixed firmware must emit one additional pubkey per vout"
+    );
+
+    // every output must be recognized under the STOCK rule at its true slot
+    let wallets: [([u8; 32], [u8; 32]); 2] = [(TEST2_VIEW, TEST2_SPEND), (TEST1_VIEW, TEST1_SPEND)];
+    let bases: [(u32, u32); 3] = [(0, 0), (0, 4), (0, 6)];
+    let mut unrecognized = 0usize;
+    for (i, out) in prefix.outputs[..prefix.outputs_len].iter().enumerate() {
+        let tag = out.view_tag.unwrap_or(0);
+        let mut ok = false;
+        for (view, spend) in &wallets {
+            for &(major, minor) in &bases {
+                // branch 1: the main tx pubkey
+                ok |= derives_output(
+                    &out.stealth_address,
+                    tag,
+                    i as u64,
+                    &tx_pub,
+                    view,
+                    spend,
+                    major,
+                    minor,
+                );
+                // branch 2: additional[output_index] (the wallet2 hard rule)
+                if (i) < table.len() {
+                    ok |= derives_output(
+                        &out.stealth_address,
+                        tag,
+                        i as u64,
+                        &table[i],
+                        view,
+                        spend,
+                        major,
+                        minor,
+                    );
+                }
+            }
+        }
+        if ok {
+            println!("vout{i}: recognized at its true slot");
+        } else {
+            println!("vout{i}: NOT recognized (external recipient?)");
+        }
+        if !ok {
+            unrecognized += 1;
+        }
+    }
+    // the D shape carries exactly one external recipient (the hot wallet,
+    // whose keys are not embedded) — every wallet-destined output must be
+    // recognized at its TRUE slot by the stock wallet2 rule.
+    assert!(
+        unrecognized <= 1,
+        "at most the one external recipient output may be unrecognized;          {unrecognized} of {} failed",
+        prefix.outputs_len
+    );
+}
