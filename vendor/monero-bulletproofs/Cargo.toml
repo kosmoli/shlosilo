@@ -42,7 +42,7 @@ prove-timing = ["std-shims/alloc"]
 # MUST provide generator table storage up front.
 # shlosilo: transitional alloc fallback (boxed errors, Vec cold paths,
 # dalek large-count MSM tails). Zero-heap builds disable it.
-alloc-fallback = ["curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc", "std-shims/alloc"]
+alloc-fallback = ["curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc", "std-shims/alloc", "monero-io/alloc"]
 default = [
     "std",
     "compile-time-generators",

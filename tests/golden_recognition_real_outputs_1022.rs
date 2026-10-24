@@ -235,3 +235,46 @@ fn fixed_shape_recognizable_at_true_slots() {
         prefix.outputs_len
     );
 }
+
+/// A/B the trailing Schnorr against wallet2's exact authentication scope:
+/// hash = keccak256(nonce || ciphertext) over everything after the magic minus
+/// the trailing 64B; challenge = Hs(hash || P || R') with P the view pubkey.
+#[test]
+fn envelope_sig_ab_cap2_vs_cap3() {
+    use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+    use curve25519_dalek::scalar::Scalar;
+    let view_point = ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(TEST2_VIEW);
+    let view_pub = view_point.compress().to_bytes();
+
+    for (tag, path) in [
+        ("cap2", "/tmp/1022-6/cap2_container.bin"),
+        ("cap3", "/tmp/1022-6/cap3_container.bin"),
+    ] {
+        let blob = std::fs::read(path).expect("container");
+        let magic = b"Monero signed tx set\x05";
+        assert_eq!(&blob[..magic.len()], magic, "{tag} magic");
+        let body = &blob[magic.len()..blob.len() - 64];
+        let hash = shlosilo::encoding::keccak256::hash(body).expect("keccak");
+        let sig = &blob[blob.len() - 64..];
+        let c = Scalar::from_bytes_mod_order(sig[..32].try_into().unwrap());
+        let r = Scalar::from_bytes_mod_order(sig[32..].try_into().unwrap());
+
+        // R' = r·G + c·P
+        let r_calc = (ED25519_BASEPOINT_TABLE * &r + view_point * c)
+            .compress()
+            .to_bytes();
+
+        let mut data = [0u8; 96];
+        data[..32].copy_from_slice(&hash);
+        data[32..64].copy_from_slice(&view_pub);
+        data[64..].copy_from_slice(&r_calc);
+        let c_check = Scalar::from_bytes_mod_order(
+            shlosilo::encoding::keccak256::hash(&data).expect("keccak"),
+        );
+        println!(
+            "{tag}: len={} c_check==c: {}",
+            blob.len(),
+            c_check.to_bytes() == sig[..32]
+        );
+    }
+}

@@ -47,6 +47,15 @@ struct ZeroizingMaskGuard {
     kind: &'static str,
 }
 impl ZeroizingMaskGuard {
+    /// Canonical vin order support (2026-10-24): the per-input secret arrays are
+    /// filled in construction order and then permuted in lockstep with the
+    /// public vin arrays by an in-place selection sort (no extra storage, no
+    /// second secret derivation).
+    fn swap(&mut self, a: usize, b: usize) {
+        assert!(a < self.len && b < self.len, "mask swap out of range");
+        self.masks.swap(a, b);
+    }
+
     #[allow(unused_variables)] // kind is used only by the cfg(test) shadow observer
     fn new(kind: &'static str) -> Self {
         Self {
@@ -796,6 +805,33 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
         ring_lens[i_track] = src.outputs.len();
     }
 
+    // ---- 5b. canonical vin order (2026-10-24 incident) ----
+    // monero's `check_tx_inputs` rejects any tx whose vin key images are not
+    // strictly DESCENDING ("transaction has unsorted inputs", blockchain.cpp:
+    // `memcmp(current, last) >= 0`). wallet2 sorts the sources by key image
+    // before signing; mirror that here. The per-source derivations above ran
+    // once in construction order (they are NOT re-run — the derivation path is
+    // not idempotent for matching probes), so the arrays are permuted in
+    // lockstep afterwards with an in-place selection sort: zero extra storage
+    // and construction-order independent output.
+    let mut vin_order: [u8; MAX_INPUTS_TRACKED] = core::array::from_fn(|i| i as u8);
+    for i in 0..tx_inputs_len {
+        let mut best = i;
+        for j in (i + 1)..tx_inputs_len {
+            if tx_inputs[j].key_image > tx_inputs[best].key_image {
+                best = j;
+            }
+        }
+        if best != i {
+            tx_inputs.swap(i, best);
+            rings.swap(i, best);
+            ring_lens.swap(i, best);
+            input_sks.swap(i, best);
+            input_real_masks.swap(i, best);
+            vin_order.swap(i, best);
+        }
+    }
+
     #[cfg(feature = "tx-phase-timing-ffi")]
     if let Some(p) = px2.as_mut() {
         p.end();
@@ -953,14 +989,17 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     let mut pseudo_outs_arr = [[0u8; 32]; MAX_INPUTS_TRACKED];
     let mut pseudo_outs_len = 0usize;
 
-    for (i, (src, ring_row)) in tx_data
-        .sources
-        .iter()
-        .flatten()
-        .zip(rings.iter().zip(ring_lens.iter()))
-        .enumerate()
-    {
-        let ring: &[(CompressedPoint, CompressedPoint)] = &(ring_row.0)[..*ring_row.1];
+    for i in 0..tx_inputs_len {
+        // canonical vin order: the per-input arrays are sorted; pick the source
+        // through the permutation so ring/mask/sk/amount all describe the same
+        // input (2026-10-24 incident fix).
+        let src = tx_data
+            .sources
+            .iter()
+            .flatten()
+            .nth(vin_order[i] as usize)
+            .ok_or_else(err)?;
+        let ring: &[(CompressedPoint, CompressedPoint)] = &rings[i][..ring_lens[i]];
         // Audit #7 Gate1 #5: pseudo_mask is a blinding scalar — owner holds it to the end
         let pseudo_mask_bytes: &[u8; 32] = pseudo_masks.get(i).ok_or_else(err)?;
         // Gate1 #2: read-only borrow; no plain stack copies created

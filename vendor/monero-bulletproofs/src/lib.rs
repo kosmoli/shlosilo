@@ -549,12 +549,21 @@ impl Bulletproof {
     }
 
     /// Read a Bulletproof+.
-    #[cfg(feature = "alloc")]
-    #[cfg(feature = "alloc")]
+    #[cfg(feature = "alloc-fallback")]
     pub fn read_plus<R: Read>(r: &mut R) -> io::Result<Bulletproof> {
         // shlosilo vendor patch (Z5.3 C-cut C): the wire reader stages into a
         // Vec (verify-side only) then copies into the proof's fixed arrays —
         // the wire ORDER and bytes are unchanged.
+        // shlosilo vendor patch (2026-10-24): the field order here was stale
+        // (L/R first) — dead code that never compiled. The wire order is the
+        // serialize_into order proven by on-chain acceptance: A, wip.A, wip.B,
+        // r_answer, s_answer, delta_answer, then L[], R[].
+        let outer_a = CompressedPoint::read(r)?;
+        let wip_a = CompressedPoint::read(r)?;
+        let wip_b = CompressedPoint::read(r)?;
+        let r_answer = Scalar::read(r)?.into();
+        let s_answer = Scalar::read(r)?.into();
+        let delta_answer = Scalar::read(r)?.into();
         let l_v = read_vec(CompressedPoint::read, Some(MAX_LR), r)?;
         let r_v = read_vec(CompressedPoint::read, Some(MAX_LR), r)?;
         let mut L =
@@ -570,13 +579,13 @@ impl Bulletproof {
             *dst = *src;
         }
         Ok(Bulletproof::Plus(PlusProof {
-            A: CompressedPoint::read(r)?,
+            A: outer_a,
             wip: WipProof {
-                A: CompressedPoint::read(r)?,
-                B: CompressedPoint::read(r)?,
-                r_answer: Scalar::read(r)?.into(),
-                s_answer: Scalar::read(r)?.into(),
-                delta_answer: Scalar::read(r)?.into(),
+                A: wip_a,
+                B: wip_b,
+                r_answer,
+                s_answer,
+                delta_answer,
                 L,
                 L_len: l_v.len(),
                 R,

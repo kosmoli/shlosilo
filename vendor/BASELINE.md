@@ -31,3 +31,19 @@
   patch 不碰密码学语义 + oracle 互验（keystone monero 源）。
 - curve25519-dalek：generator-cache 簇升级/撤除随上游；perf-bench/straus 簇随 T-11 裁定。
 - cryptonight：深度特化保持（T-13 定案）。
+
+## 变更登记
+
+### 2026-10-24 — monero-bulletproofs：BP+ 线阅读器复位 + 特征补全
+
+- `Bulletproof::read_plus` 此前是**永不编译的死代码**（`#[cfg(feature = "alloc")]`，
+  而本 crate 无 `alloc` 特性）。为支持「设备签名输出 vs 外部参照验证器」的
+  证明对拍诊断（2026-10-24 输入排序取证），改为 `alloc-fallback` 门控（零堆产品
+  构建不带该特性 → 产品面 bit-identical）。
+- 复活后发现其字段序陈旧（L/R 在前），与 `serialize_into` 的
+  在线序（A, A1(wip.A), B(wip.B), r_answer, s_answer, delta_answer, L[], R[]）
+  相反——按写侧对齐（写侧的正确性由主网接受背书）。
+- `alloc-fallback` 特性补 `monero-io/alloc`：阅读器依赖 `monero_io::read_vec`
+  （该函数由 monero-io 的 `alloc` 特性门控），独立 `cargo test` 构建此前解析不到。
+- 基线 diff 已重生成并回放（`scripts/vendor_baseline_check.sh` 全树 replay==tree）。
+
