@@ -29,7 +29,7 @@ use zeroize::Zeroize;
 /// the workspace sizing; over-cap push asserts loudly (G1, never truncate).
 const MASK_GUARD_CAP: usize = 16;
 /// Z5.3 F-cut: ring backing input bound (same bound as the mask guard).
-const MAX_INPUTS_TRACKED: usize = 16;
+pub(crate) const MAX_INPUTS_TRACKED: usize = 16;
 /// Z5.3 F-cut: CLSAG wire body bound (s[ring] + c1 + D).
 const CLSAG_WIRE_MAX: usize = 32 + (crate::types::caps::RING_MAX * 32) + 64;
 

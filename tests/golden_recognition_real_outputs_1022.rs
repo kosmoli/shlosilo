@@ -249,6 +249,7 @@ fn envelope_sig_ab_cap2_vs_cap3() {
     for (tag, path) in [
         ("cap2", "/tmp/1022-6/cap2_container.bin"),
         ("cap3", "/tmp/1022-6/cap3_container.bin"),
+        ("cap4", "/tmp/1022-6/cap4_container.bin"),
     ] {
         let blob = std::fs::read(path).expect("container");
         let magic = b"Monero signed tx set\x05";

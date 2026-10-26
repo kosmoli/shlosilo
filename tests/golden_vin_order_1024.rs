@@ -102,8 +102,9 @@ fn clone_source(
 }
 
 /// Sign the fixture through the production path. `reverse` flips the source and
-/// selected-transfer order to prove construction-order independence.
-fn signed_vins(reverse: bool) -> Vec<[u8; 32]> {
+/// selected-transfer order to prove construction-order independence. Returns
+/// the decrypted signed-tx-set plaintext.
+fn signed_plain(reverse: bool) -> zeroize::Zeroizing<Vec<u8>> {
     let mut wire = vec![0x02u8, 0x01u8];
     wire.extend_from_slice(CONSTRUCTION);
 
@@ -208,21 +209,59 @@ fn signed_vins(reverse: bool) -> Vec<[u8; 32]> {
     )
     .expect("sign the 1023 construction");
 
-    let plain = decrypt_signed_txset(&out[..n], &TEST2_VIEW_SK).expect("decrypt signed");
-    // the plaintext layout is 00 | varint ptx_count | 01 | tx | ...
+    // Forensic hook (same pattern as p63_xmr_sign.rs): dump the signed
+    // container for external replay harnesses when asked.
+    if let Ok(p) = std::env::var("SHLOSILO_SIGNED_CONTAINER_OUT") {
+        std::fs::write(p, &out[..n]).expect("dump signed container");
+    }
+
+    decrypt_signed_txset(&out[..n], &TEST2_VIEW_SK).expect("decrypt signed")
+}
+
+/// Vin key images in wire (tx) order.
+/// The plaintext layout is 00 | varint ptx_count | 01 | tx | ...
+fn vin_kis(plain: &[u8]) -> Vec<[u8; 32]> {
     let mut pos = 3usize;
-    let prefix =
-        shlosilo::chain::xmr::transaction::TransactionPrefix::deserialize(&plain, &mut pos)
-            .expect("prefix");
+    let prefix = shlosilo::chain::xmr::transaction::TransactionPrefix::deserialize(plain, &mut pos)
+        .expect("prefix");
     prefix.inputs[..prefix.inputs_len]
         .iter()
         .map(|i| i.key_image)
         .collect()
 }
 
+/// The `key_images_str` construction-data field: `<hex> ` entries in wire
+/// order (hex is lowercase, entry separator is the trailing space).
+fn key_images_str_kis(plain: &[u8]) -> Vec<[u8; 32]> {
+    let is_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 68 <= plain.len() {
+        if plain[i] == b'<'
+            && plain[i + 65] == b'>'
+            && plain[i + 66] == b' '
+            && plain[i + 1..i + 65].iter().all(|&b| is_hex(b))
+        {
+            let mut ki = [0u8; 32];
+            for k in 0..32 {
+                ki[k] = u8::from_str_radix(
+                    core::str::from_utf8(&plain[i + 1 + 2 * k..i + 3 + 2 * k]).unwrap(),
+                    16,
+                )
+                .unwrap();
+            }
+            out.push(ki);
+            i += 67;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 #[test]
 fn vins_strictly_descending_and_order_independent() {
-    let kis = signed_vins(false);
+    let kis = vin_kis(&signed_plain(false));
     assert_eq!(kis.len(), 4, "four inputs");
     for w in kis.windows(2) {
         assert!(
@@ -235,9 +274,34 @@ fn vins_strictly_descending_and_order_independent() {
 
     // construction-order independence: reversing the sources and the selected
     // transfers must produce the SAME canonical vin order.
-    let kis_rev = signed_vins(true);
+    let kis_rev = vin_kis(&signed_plain(true));
     assert_eq!(
         kis, kis_rev,
         "the signed vin order must not depend on the construction's source order"
     );
+}
+
+/// 2026-10-26 phone-silence incident: monero 0.18.5.3's
+/// `pending_tx_validation.cpp:561` compares the construction-data
+/// `key_images_str` field against the tx's vin key images LITERALLY
+/// (`ptx.key_images == ext_key_images_str`, `<hex> ` entries in vin order).
+/// A string left in construction order is rejected ("failed reconstructing
+/// key_images field") and the UI swallows the error — silent failure on the
+/// phone while desktop builds (0.18.4.6, no such check) accept the same wire.
+#[test]
+fn key_images_str_matches_vin_order_exactly() {
+    for rev in [false, true] {
+        let plain = signed_plain(rev);
+        let vins = vin_kis(&plain);
+        let str_kis = key_images_str_kis(&plain);
+        assert_eq!(
+            str_kis.len(),
+            vins.len(),
+            "one `<hex> ` entry per input (rev={rev})"
+        );
+        assert_eq!(
+            str_kis, vins,
+            "key_images_str must equal the vin-order key image string (rev={rev})"
+        );
+    }
 }

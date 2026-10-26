@@ -981,9 +981,18 @@ fn sign_xmr_with_ws<'a>(
         // transfer-indexed — source j's key image lands at wallet index
         // selected_transfers[j], not at position j (wallet2.cpp:8074 gold).
         let src_count = tx_data.sources.iter().flatten().count();
-        if src_count != tx_data.selected_transfers.len() {
+        if src_count != tx_data.selected_transfers.len()
+            || src_count > crate::chain::xmr::tx_signer::MAX_INPUTS_TRACKED
+        {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
         }
+        // Pass 1: derive each source's key image exactly once (the derivation is
+        // not idempotent — single call per source preserved) and stage it in a
+        // fixed stack array. The outer export list keeps the wallet-transfer-
+        // indexed placement (wallet2.cpp:8074 gold: one true key image per
+        // wallet transfer position).
+        let mut ki_src = [[0u8; 32]; crate::chain::xmr::tx_signer::MAX_INPUTS_TRACKED];
+        let mut n_src = 0usize;
         for (src, &sel) in tx_data
             .sources
             .iter()
@@ -997,15 +1006,8 @@ fn sign_xmr_with_ws<'a>(
                 tx_data.subaddr_account,
                 &tx_data.subaddr_indices,
             )?;
-            // Z2.3 C3b-3: `<hex> ` bytes built straight into the carved slice
-            // (was String + alloc::format!) — byte layout unchanged
-            pushb(&mut key_images_str, b'<')?;
-            for b in ki {
-                pushb(&mut key_images_str, b"0123456789abcdef"[(b >> 4) as usize])?;
-                pushb(&mut key_images_str, b"0123456789abcdef"[(b & 0xf) as usize])?;
-            }
-            pushb(&mut key_images_str, b'>')?;
-            pushb(&mut key_images_str, b' ')?;
+            ki_src[n_src] = ki;
+            n_src += 1;
             // Authoritative placement at the wallet transfer index. A record
             // already at that index must agree (misalignment guard) — the
             // source derivation wins if it never saw one.
@@ -1016,6 +1018,37 @@ fn sign_xmr_with_ws<'a>(
                 ));
             }
             ki_sv[idx] = ki;
+        }
+        // Pass 2: `key_images_str` must be in canonical vin order — strictly
+        // DESCENDING key images (memcmp), the same order tx_signer sorts the
+        // vins into (2026-10-24 unsorted-inputs fix). monero 0.18.5.3's
+        // pending_tx_validation.cpp:561 compares this string against the tx's
+        // vin order LITERALLY (2026-10-26 phone-silence incident: a
+        // construction-order string is rejected and the UI swallows the error).
+        let mut str_order = [0u8; crate::chain::xmr::tx_signer::MAX_INPUTS_TRACKED];
+        for (i, slot) in str_order[..n_src].iter_mut().enumerate() {
+            *slot = i as u8;
+        }
+        for i in 0..n_src {
+            let mut best = i;
+            for j in (i + 1)..n_src {
+                if ki_src[str_order[j] as usize] > ki_src[str_order[best] as usize] {
+                    best = j;
+                }
+            }
+            str_order.swap(i, best);
+        }
+        for &oi in str_order[..n_src].iter() {
+            let ki = ki_src[oi as usize];
+            // Z2.3 C3b-3: `<hex> ` bytes built straight into the carved slice
+            // (was String + alloc::format!) — byte layout unchanged
+            pushb(&mut key_images_str, b'<')?;
+            for b in ki {
+                pushb(&mut key_images_str, b"0123456789abcdef"[(b >> 4) as usize])?;
+                pushb(&mut key_images_str, b"0123456789abcdef"[(b & 0xf) as usize])?;
+            }
+            pushb(&mut key_images_str, b'>')?;
+            pushb(&mut key_images_str, b' ')?;
         }
 
         // tx_key_images: output one-time address + Hs(shared_key)·Hp(stealth)
