@@ -1245,7 +1245,14 @@ static void sign_run(const char *uri, const char *type,
             /* User-facing failure text is a FIXED template (2026-10-09
              * injection red line, Kosmo): no rc codes, no QR-derived
              * strings, no payload bytes on screen -- the full diagnostic
-             * dump goes to the developer console only. */
+             * dump goes to the developer console only.
+             *
+             * Split-code rule (2026-10-13 red line): one ambiguous failure
+             * phrase per class, mapped through a fixed word table; unknown
+             * codes collapse to the generic "unknown code" entry.  The old
+             * single catch-all template hid the failure class on the only
+             * diagnostic channel we have (the screen) -- 2026-10-26 the
+             * intermittent sign failure could not be triaged because of it. */
             if (rc == -34 || rc == -35) {
                 /* KeyImageRecordsMissing/Mismatch: the wallet's key image
                  * picture is out of step with the device's retention. Fixed
@@ -1253,10 +1260,29 @@ static void sign_run(const char *uri, const char *type,
                 snprintf(result, sizeof(result),
                          "sign failed\nwallet key images out of date\n"
                          "re-run the wallet key image sync, then retry");
-            } else {
+            } else if (rc == -20) {
+                /* BufferTooSmall: signed output or request exceeded a fixed
+                 * buffer (too many inputs for one transaction). */
                 snprintf(result, sizeof(result),
-                         "sign failed\nrequest could not be signed\n"
-                         "rescan, or re-import the wallet and retry");
+                         "sign failed\nrequest too large\n"
+                         "pay with fewer inputs, or split the payment");
+            } else if (rc == -21) {
+                /* EncodingError: the scanned request could not be decoded or
+                 * parsed. */
+                snprintf(result, sizeof(result),
+                         "sign failed\nrequest data not recognized\n"
+                         "re-create the payment and retry");
+            } else if (rc == -2) {
+                /* InvalidArgument: the request was parsed but rejected by
+                 * the signer's input contract. */
+                snprintf(result, sizeof(result),
+                         "sign failed\nrequest not accepted\n"
+                         "re-create the payment and retry");
+            } else {
+                /* Unmapped code -- fixed "unknown code" entry, class only. */
+                snprintf(result, sizeof(result),
+                         "sign failed\ninternal error (unknown code)\n"
+                         "reboot the device and retry");
             }
             printf("sign FAIL: rc=%d type=%s len %u head=%02x%02x%02x%02x "
                    "fr=%u dup=%u stk=%uK\r\n",
