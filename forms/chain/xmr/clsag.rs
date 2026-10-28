@@ -293,8 +293,21 @@ pub fn verify(
     let ring_compressed: Vec<[CompressedPoint; 2]> =
         ring.iter().map(|(pubk, commit)| [*pubk, *commit]).collect();
 
-    // 2. Deserialize the Clsag
-    let mut clsag_reader = clsag_bytes;
+    // 2. Deserialize the Clsag. The ClsagProof RECORD form prefixes the
+    // pseudo_out (32B): `pseudo_out ‖ s[mixin+1] ‖ c1 ‖ D` (see ClsagProof
+    // docs / sign step 8). The official CLSAG section starts after it; the
+    // pseudo_out also arrives as its own argument and is cross-checked here
+    // (record/wire consistency). [Fixed 2026-10-28: the old code parsed the
+    // record form from byte 0 — it read the pseudo_out prefix AS the proof;
+    // the wrapper roundtrip test was vacuous and never caught it.]
+    if clsag_bytes.len() < KEY_IMAGE_LEN {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    let (record_pseudo, clsag_body) = clsag_bytes.split_at(KEY_IMAGE_LEN);
+    if record_pseudo != pseudo_out {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    let mut clsag_reader = clsag_body;
     let clsag = Clsag::read(ring.len(), &mut clsag_reader)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
 
@@ -427,6 +440,7 @@ mod tests {
             &msg_hash,
             &mut rng,
         );
+        let sign_err = alloc::format!("{:?}", result.as_ref().err());
         if let Ok((clsag_proof, key_image, pseudo_out_bytes)) = result {
             // 3. verify uses [CompressedPoint; 2]
             let real_commit_pt = MoneroCommitment::new(
@@ -459,9 +473,17 @@ mod tests {
                 &msg_hash,
                 clsag_proof.to_bytes(),
             );
-            let _ = verify_result;
+            // Test-hygiene fix (2026-10-28): this roundtrip used to drop the
+            // result (`let _ = verify_result;`) and skip on sign failure —
+            // the wrapper's sign -> to_bytes -> read -> verify chain had never
+            // actually been asserted. Assert both legs now.
+            verify_result.expect("wrapper verify must pass on its own signature");
+        } else {
+            panic!(
+                "clsag sign must succeed on a valid ring (2026-10-28): {}",
+                sign_err
+            );
         }
-        // If sign fails (API incompatible), skip the assert to avoid a panic
     }
 
     /// Empty ring rejected

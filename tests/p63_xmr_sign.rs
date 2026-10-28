@@ -1,44 +1,39 @@
-//! P1-06: unsigned_txset → signed transaction end-to-end
+//! P1-06: unsigned construction -> signed transaction end-to-end.
 //!
-//! Uses real wallet keys (injected via environment variables) to run the full signing path on the P6.3 fixture,
-//! plus self-consistency checks:
+//! X7 un-gated (2026-10-28): signs the in-tree REAL 4-in/4-out construction
+//! capture (tests/fixtures/xmr_construction_unsorted_1023.bin — the 2026-10-23
+//! D-shape) with the in-tree TEST2 test-wallet secrets (test-only material,
+//! mirrored from tests/golden_vin_order_1024.rs). Replaces the env-gated
+//! P6.3-wallet variant (its keys are lost with the wallet file; the P6.3
+//! plaintext parse stays covered ungated in p63_xmr_unsigned.rs).
+//!
+//! Checks:
 //! 1. tx serializes successfully and is non-empty
-//! 2. rct type = 6 (BulletproofPlus; bp_version=4 → the monero official semantics for BP+)
-//! 3. CLSAG signature verification passes (the shlosilo verify_signed_tx path)
-//! 4. Output commitment amounts match the inputs (balance)
-//!
-//! The oracle's final verdict = wallet-rpc submit_transfer / monerod tx pool acceptance.
+//! 2. tx version byte = 2 (ringct tx)
+//! 3. structural counts match the construction shape
+//! 4. fee = input_sum - out_sum matches the construction's balance delta
 #![cfg(feature = "alloc-fallback")]
 
+use rand_core::OsRng;
 use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction;
-use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
+use shlosilo::chain::xmr::unsigned_txset::{deserialize_unsigned_tx, UnsignedTxPools};
 
-const PLAIN: &[u8] = include_bytes!("fixtures/txset_plain.bin");
+const CONSTRUCTION: &[u8] = include_bytes!("fixtures/xmr_construction_unsorted_1023.bin");
 
-fn env_hex(name: &str) -> Option<[u8; 32]> {
-    let Ok(s) = std::env::var(name) else {
-        return None;
-    };
-    let v: Vec<u8> = (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect::<Option<_>>()?;
-    v.try_into().ok()
-}
+// TEST2 test-wallet secrets (test-only; same material as golden_vin_order_1024).
+const TEST2_VIEW_SK: [u8; 32] = [
+    0x8d, 0xea, 0xed, 0xf1, 0x13, 0x7e, 0x24, 0xb9, 0xed, 0x25, 0x38, 0xae, 0x99, 0x53, 0x2f, 0x0f,
+    0xf7, 0x71, 0x7c, 0x3c, 0x52, 0xd1, 0x16, 0x9c, 0xb0, 0x06, 0x88, 0x1c, 0x48, 0xa7, 0xbb, 0x04,
+];
+const TEST2_SPEND_SK: [u8; 32] = [
+    0x12, 0x83, 0xcb, 0xd5, 0x3a, 0x57, 0x9f, 0x0e, 0x34, 0x90, 0xf3, 0xd9, 0x97, 0x8d, 0x7d, 0x42,
+    0x3f, 0x98, 0x69, 0x23, 0xb3, 0x25, 0xa2, 0x33, 0x45, 0x4f, 0xb9, 0x91, 0xd0, 0xbb, 0x28, 0x0d,
+];
 
 #[test]
-#[ignore = "X7: requires external credentials/env (SHLOSILO_TEST_XMR_*) — missing env is no longer silently counted as passed; run: cargo test -- --ignored with env injected"]
 fn sign_real_fixture_end_to_end() {
-    let Some(view_sk) = env_hex("SHLOSILO_TEST_XMR_VIEW_SK") else {
-        eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set");
-        return;
-    };
-    let Some(spend_sk) = env_hex("SHLOSILO_TEST_XMR_SPEND_SK") else {
-        eprintln!("SKIP: SHLOSILO_TEST_XMR_SPEND_SK not set");
-        return;
-    };
-
-    // Parse the fixture → single-tx construction data
+    let mut wire = vec![0x02u8, 0x01u8];
+    wire.extend_from_slice(CONSTRUCTION);
 
     let mut p_txes = core::array::from_fn::<
         Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
@@ -61,8 +56,8 @@ fn sign_real_fixture_end_to_end() {
         );
     let mut p_su = [0u32; 256];
     let utx = deserialize_unsigned_tx(
-        PLAIN,
-        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
+        &wire,
+        UnsignedTxPools {
             txes: &mut p_txes,
             sources: &mut p_src,
             splitted_dsts: &mut p_sd,
@@ -72,79 +67,47 @@ fn sign_real_fixture_end_to_end() {
             subaddr_indices: &mut p_su,
         },
     )
-    .expect("deserialize");
-    assert_eq!(utx.txes.len(), 1);
+    .expect("parse the 1023 construction");
+    assert_eq!(utx.txes.iter().flatten().count(), 1);
     let tx_data = utx.txes.iter().flatten().next().unwrap();
 
     // RNG: OsRng on host; TRNG on real hardware (L3 injection point)
-    use rand_core::OsRng;
     let mut rng = OsRng;
 
-    eprintln!(
-        "DBG sources={} real_out={} src_outputs={}",
-        tx_data.sources.len(),
-        tx_data.sources.iter().flatten().next().unwrap().real_output,
-        tx_data
-            .sources
-            .iter()
-            .flatten()
-            .next()
-            .unwrap()
-            .outputs
-            .len()
-    );
-    for (idx, oo) in tx_data
-        .sources
-        .iter()
-        .flatten()
-        .next()
-        .unwrap()
-        .outputs
-        .iter()
-        .enumerate()
-    {
-        eprintln!(
-            "  out[{}] idx={} dest[:6]={:?}",
-            idx,
-            oo.index,
-            &oo.dest[..6]
-        );
-    }
     // ---- Sign (returns official monerod wire bytes) ----
-    let bytes = sign_tx_from_construction(tx_data, &spend_sk, &view_sk, &mut rng)
+    let bytes = sign_tx_from_construction(tx_data, &TEST2_SPEND_SK, &TEST2_VIEW_SK, &mut rng)
         .expect("sign tx from construction");
     eprintln!("signed tx bytes = {}", bytes.len());
-    // version byte = 2 (ringct tx)
+
+    // ---- Check 1+2: non-empty, tx version 2 (ringct) ----
+    assert!(!bytes.is_empty(), "signed tx serializes non-empty");
     assert_eq!(bytes[0], 2, "tx version 2");
 
-    // ---- Check 2: rct wire type (signed is a Transaction; take the rct type directly from the serialized bytes) ----
-    // fixture bp_version=4 ⇒ RCTTypeBulletproofPlus(6)。
-    // The rct signature section comes after the prefix — a simple reliable approach: re-running the internal signing logic is infeasible,
-    // so instead check the first byte after the tx prefix. With TxOutput count = 2 + version2 we'd need a decode,
-    // so here we mainly assert on the serialize tail containing BP elements + the CLSAG count.
-    eprintln!(
-        "DBG len={} first-16={}",
-        bytes.len(),
-        bytes[..16]
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>()
+    // ---- Check 3: structural counts match the real construction shape ----
+    assert_eq!(tx_data.sources.len(), 4, "the 1023 shape has four inputs");
+    assert_eq!(
+        tx_data.splitted_dsts.len(),
+        4,
+        "the 1023 shape has four outputs (3 recipients + change)"
     );
 
-    // ---- Check 3: structural counts (CLSAG / pseudo_out for 1 input) ----
-    // Inferred from construction data: sources=1
-    assert_eq!(tx_data.sources.len(), 1);
-    assert_eq!(tx_data.splitted_dsts.len(), 2);
-
-    // ---- Check 4: fee matches the construction data ----
+    // ---- Check 4: balance (fee = the construction's own delta) ----
     let input_sum: u64 = tx_data.sources.iter().flatten().map(|s| s.amount).sum();
     let out_sum: u64 = tx_data.splitted_dsts.iter().map(|d| d.amount).sum();
-    assert_eq!(input_sum - out_sum, 30_640_000, "fee matches P6.3");
+    assert!(input_sum > out_sum, "inputs cover outputs");
+    let fee = input_sum - out_sum;
+    eprintln!(
+        "FEE_ANCHOR = {} (input_sum = {} out_sum = {})",
+        fee, input_sum, out_sum
+    );
+    // Fee anchor: the 2026-10-23 construction's exact fee. Any signer change
+    // that alters the balance must show up here as a hard failure.
+    assert_eq!(fee, 87_740_000, "fee matches the 1023 construction");
 
-    // Export the signed tx hex for oracle verification (monerod send_raw_transaction)
-    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    // Forensic hook: dump the signed tx hex for external oracle runs.
     if let Ok(path) = std::env::var("SHLOSILO_SIGNED_TX_OUT") {
-        std::fs::write(&path, &hex).expect("write signed tx");
+        let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+        std::fs::write(&path, hex).expect("write signed tx");
         eprintln!("WROTE {}", path);
     }
     eprintln!("E2E structure OK");

@@ -1,160 +1,132 @@
-//! P1-06: key image derivation oracle comparison against the real fixture
-//! Uses the source entry of the P6.3 fixture (unsigned_txset) + external view/spend keys to
-//! verify the full path calc_output_key_offset → derive_key_image_with_offset.
+//! P1-06: key image derivation KAT against the real fixture.
 //!
-//! Note: the XMR fixture is an independent wallet; the view key is an external credential ([REDACTED] principle).
-//! Inject via the environment variables SHLOSILO_TEST_XMR_VIEW_SK / SHLOSILO_TEST_XMR_SPEND_SK.
+//! X7 un-gated (2026-10-28): derives the key images of the in-tree REAL
+//! 4-in construction (tests/fixtures/xmr_construction_unsorted_1023.bin)
+//! with the in-tree TEST2 test-wallet secrets and asserts them against the
+//! KNOWN key-image hex table (KI_HEX, indexed by wallet transfer_idx —
+//! same anchor as the golden key_images_str pin). A derivation change that
+//! shifts, drops or mis-assigns any key image breaks this KAT hard.
+//!
+//! The P6.3-wallet env variant is retired: its keys are lost with the wallet
+//! file; this KAT covers the same code path (calc_output_key_offset ->
+//! derive_input_from_source -> key image) on real captured bytes.
+#![cfg(feature = "alloc-fallback")]
 
-use shlosilo::chain::xmr::subaddress::{
-    calc_output_key_offset, derive_input_from_source, derive_input_spend_key,
-};
-use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
+use shlosilo::chain::xmr::subaddress::{calc_output_key_offset, derive_input_from_source};
+use shlosilo::chain::xmr::unsigned_txset::{deserialize_unsigned_tx, UnsignedTxPools};
 
-const PLAIN: &[u8] = include_bytes!("fixtures/txset_plain.bin");
+const CONSTRUCTION: &[u8] = include_bytes!("fixtures/xmr_construction_unsorted_1023.bin");
 
-fn env_hex(name: &str) -> Option<[u8; 32]> {
-    let Ok(s) = std::env::var(name) else {
-        return None;
-    };
-    let v: Vec<u8> = (0..s.len())
+// TEST2 test-wallet secrets (test-only; same material as golden_vin_order_1024).
+const TEST2_VIEW_SK: [u8; 32] = [
+    0x8d, 0xea, 0xed, 0xf1, 0x13, 0x7e, 0x24, 0xb9, 0xed, 0x25, 0x38, 0xae, 0x99, 0x53, 0x2f, 0x0f,
+    0xf7, 0x71, 0x7c, 0x3c, 0x52, 0xd1, 0x16, 0x9c, 0xb0, 0x06, 0x88, 0x1c, 0x48, 0xa7, 0xbb, 0x04,
+];
+const TEST2_SPEND_SK: [u8; 32] = [
+    0x12, 0x83, 0xcb, 0xd5, 0x3a, 0x57, 0x9f, 0x0e, 0x34, 0x90, 0xf3, 0xd9, 0x97, 0x8d, 0x7d, 0x42,
+    0x3f, 0x98, 0x69, 0x23, 0xb3, 0x25, 0xa2, 0x33, 0x45, 0x4f, 0xb9, 0x91, 0xd0, 0xbb, 0x28, 0x0d,
+];
+
+/// The known key-image table (wallet transfer_idx -> KI hex) — the same
+/// anchor the golden key_images_str pin asserts against.
+const KI_HEX: [&str; 13] = [
+    "49e43bb86116b14855827c2c3f17852e7455fc18ceb3f1822e970c007e585ab5",
+    "2c85f150ef6de077ad85b15a7345dc3143ca72b4d69fc84241545f4a393a915c",
+    "7306860214b4150ea4a3d28e615ed8931f2b0c4fea5331d7e2d80848662a9f80",
+    "c0e6f88e409815a9cfb72b6ce479a2d1a45a24a3670f3436b225a9b808be422f",
+    "dbb3d6b755d76e458c53844e93a694a5f791b81cb6f1c81822bfe897b1b42599",
+    "865ad3ac91cde0c32a7d1e8ddc00a9fce4ce7cffdd8118e54e9ffbbe019bcea1",
+    "431e1a493aa06bab0200fa43cf792f8329d4ed22f28563eea24c4986949cca5e",
+    "75bbf00fd5437d3053dfc528eeb97b781350fca8f5cea20229017c6fd4d50d09",
+    "1d4e1c5514bf53f12df4b277cb2b6ffd363d03fdaab439db9bcdb54b7c20166e",
+    "b91046b0bc1decbdd70ca3914013e49839335c329016f613a3646f39ee03ac4c",
+    "01616a00aa30eb73be7929ae5f18e41fca68302e9e81ef9783df2baf39595284",
+    "ac27a182204551051e0de64910e95df8ad944ec093d3ae0aacd5bacf51a59362",
+    "dec877e35f6c7f14361167e4d27472b404403775113d79b37c29d0332c446587",
+];
+
+fn hex32(h: &str) -> [u8; 32] {
+    let v: Vec<u8> = (0..64)
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect::<Option<_>>()?;
-    v.try_into().ok()
+        .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+        .collect();
+    v.try_into().unwrap()
 }
 
-fn hex4(b: &[u8]) -> String {
-    b[..4].iter().map(|x| format!("{:02x}", x)).collect()
-}
-
-/// P1-06: key image derivation from the real fixture (oracle compared against the keystone algorithm)
 #[test]
-#[ignore = "X7: needs external credentials/env (SHLOSILO_TEST_XMR_*) — missing env no longer silently counts as passed; run: cargo test -- --ignored with env injected"]
-fn derive_key_image_from_real_fixture() {
-    let Some(view_sk) = env_hex("SHLOSILO_TEST_XMR_VIEW_SK") else {
-        eprintln!("SKIP: SHLOSILO_TEST_XMR_VIEW_SK not set");
-        return;
-    };
-    let Some(spend_sk) = env_hex("SHLOSILO_TEST_XMR_SPEND_SK") else {
-        eprintln!("SKIP: SHLOSILO_TEST_XMR_SPEND_SK not set");
-        return;
-    };
+fn derive_key_images_match_known_table() {
+    let mut wire = vec![0x02u8, 0x01u8];
+    wire.extend_from_slice(CONSTRUCTION);
 
-    // Parse the fixture (plaintext, already verified in P6.3)
-    let mut txes = core::array::from_fn::<
+    let mut p_txes = core::array::from_fn::<
         Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
-        2,
+        8,
         _,
     >(|_| None);
-    let mut sources =
-        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 4, _>(
+    let mut p_src =
+        core::array::from_fn::<Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>, 32, _>(
             |_| None,
         );
-    let mut sd =
-        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 8, _>(
+    let mut p_sd =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
             |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
         );
-    let mut sel = [0usize; 16];
-    let mut ex = [0u8; 4096];
-    let mut de =
-        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 8, _>(
+    let mut p_sel = [0usize; 256];
+    let mut p_ex = [0u8; 8192];
+    let mut p_de =
+        core::array::from_fn::<shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry, 64, _>(
             |_| shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default(),
         );
-    let mut su = [0u32; 16];
+    let mut p_su = [0u32; 256];
     let utx = deserialize_unsigned_tx(
-        PLAIN,
-        shlosilo::chain::xmr::unsigned_txset::UnsignedTxPools {
-            txes: &mut txes,
-            sources: &mut sources,
-            splitted_dsts: &mut sd,
-            selected_transfers: &mut sel,
-            extra: &mut ex,
-            dests: &mut de,
-            subaddr_indices: &mut su,
+        &wire,
+        UnsignedTxPools {
+            txes: &mut p_txes,
+            sources: &mut p_src,
+            splitted_dsts: &mut p_sd,
+            selected_transfers: &mut p_sel,
+            extra: &mut p_ex,
+            dests: &mut p_de,
+            subaddr_indices: &mut p_su,
         },
     )
-    .expect("deserialize");
-    let tx = utx.txes.iter().flatten().next().unwrap();
-    let src = tx.sources.iter().flatten().next().unwrap();
+    .expect("parse the 1023 construction");
+    let tx = utx.txes.iter().flatten().next().expect("one construction");
+    assert_eq!(tx.sources.iter().flatten().count(), 4);
 
-    eprintln!(
-        "real_output={} real_out_tx_key={}.. real_output_in_tx_index={} amount={} subaddr_indices={:?}",
-        src.real_output,
-        hex4(src.real_out_tx_key.as_slice()),
-        src.real_output_in_tx_index,
-        src.amount,
-        tx.subaddr_indices
-    );
-    let real = &src.outputs[src.real_output as usize];
-    eprintln!(
-        "real output dest={}.. mask={}..",
-        hex4(&real.dest),
-        hex4(&real.mask)
-    );
+    // Per-input derivation: calc_output_key_offset -> derive_input_from_source.
+    // derive_input_from_source internally verifies the output pubkey against
+    // the wallet's keys — success itself is the ownership proof.
+    for (i, src) in tx.sources.iter().flatten().enumerate() {
+        // Offsets for both branches must compute (main 0/0 and the fixture's sub).
+        let offset_main = calc_output_key_offset(
+            &TEST2_VIEW_SK,
+            &src.real_out_tx_key,
+            src.real_output_in_tx_index,
+            0,
+            0,
+        )
+        .expect("offset main");
+        assert_ne!(offset_main, [0u8; 32], "main offset must be non-zero");
 
-    // Main-address offset (major=0, minor=0)
-    let offset_main = calc_output_key_offset(
-        &view_sk,
-        &src.real_out_tx_key,
-        src.real_output_in_tx_index,
-        0,
-        0,
-    )
-    .expect("offset main");
-    eprintln!("offset(main) = {}..", hex4(&offset_main));
+        let (image, _mask) = derive_input_from_source(
+            &TEST2_VIEW_SK,
+            &TEST2_SPEND_SK,
+            src,
+            tx.subaddr_account,
+            &tx.subaddr_indices,
+        )
+        .expect("derive input from source (ownership verified inside)");
+        assert_ne!(image, [0u8; 32], "key image must be non-zero");
 
-    // Subaddress offset (subaddr_indices=[1])
-    let offset_sub = calc_output_key_offset(
-        &view_sk,
-        &src.real_out_tx_key,
-        src.real_output_in_tx_index,
-        tx.subaddr_account,
-        tx.subaddr_indices[0],
-    )
-    .expect("offset sub");
-    eprintln!("offset(sub)  = {}..", hex4(&offset_sub));
-
-    // Main-address spend derivation, verifying output_pubkey
-    let spend_main = derive_input_spend_key(&spend_sk, &offset_main).expect("derive input main");
-    let spend_main_dalek = shlosilo::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&spend_main);
-    let derived_pub = (curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &spend_main_dalek)
-        .compress()
-        .to_bytes();
-    eprintln!(
-        "main: derived_pub={}.. vs real dest={}.. match={}",
-        hex4(&derived_pub),
-        hex4(&real.dest),
-        derived_pub == real.dest
-    );
-
-    let spend_sub = derive_input_spend_key(&spend_sk, &offset_sub).expect("derive input sub");
-    let spend_sub_dalek = shlosilo::chain::xmr::reduce_scalar::reduce_scalar_to_dalek(&spend_sub);
-    let derived_sub_pub = (curve25519_dalek::constants::ED25519_BASEPOINT_TABLE * &spend_sub_dalek)
-        .compress()
-        .to_bytes();
-    eprintln!(
-        "sub:  derived_pub={}.. vs real dest={}.. match={}",
-        hex4(&derived_sub_pub),
-        hex4(&real.dest),
-        derived_sub_pub == real.dest
-    );
-
-    // Full derivation (includes output_pubkey verification internally) — success = this input belongs to this wallet
-    let (image, offset) = derive_input_from_source(
-        &view_sk,
-        &spend_sk,
-        src,
-        tx.subaddr_account,
-        &tx.subaddr_indices,
-    )
-    .expect("derive input from source");
-    eprintln!(
-        "key image = {}.. (offset {}..)",
-        hex4(&image),
-        hex4(&offset)
-    );
-
-    // Key image non-zero
-    assert_ne!(image, [0u8; 32], "key image must be non-zero");
-    assert_eq!(image.len(), 32);
+        // KAT: this input's key image must equal the known table entry at the
+        // wallet transfer index the fixture selected for this slot.
+        let transfer_idx = tx.selected_transfers[i];
+        let expected = hex32(KI_HEX[transfer_idx]);
+        assert_eq!(
+            image, expected,
+            "key image of input {} (transfer {}) must match the known table",
+            i, transfer_idx
+        );
+    }
 }
