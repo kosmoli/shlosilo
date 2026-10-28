@@ -99,6 +99,9 @@ pub enum ShlosiloErrorKind {
     /// misalignment guard (an off-by-one retained list would otherwise import
     /// shifted key images into the phone wallet).
     KeyImageRecordMismatch = 0x0306_0002,
+    /// PIN-3 claimability self-audit failed (2026-10-28 F7 lesson): the
+    /// receiver-side identity does not resolve for this output.
+    OutputUnclaimable = 0x0306_0003,
 
     // ─── L2a marshaling(0x04xx_xxxx) ───
     /// output_buf capacity insufficient
@@ -281,6 +284,7 @@ impl ShlosiloErrorCode {
             ShlosiloErrorKind::InvariantViolation => Self::InvariantViolation,
             ShlosiloErrorKind::KeyImageRecordMissing => Self::KeyImageRecordsMissing,
             ShlosiloErrorKind::KeyImageRecordMismatch => Self::KeyImageRecordsMismatch,
+            ShlosiloErrorKind::OutputUnclaimable => Self::InvalidArgument,
         };
         code as i32
     }

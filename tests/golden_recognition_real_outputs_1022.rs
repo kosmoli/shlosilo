@@ -279,3 +279,157 @@ fn envelope_sig_ab_cap2_vs_cap3() {
         );
     }
 }
+
+/// Count how many (wallet, base, branch) claim paths recognize a vout under
+/// the STRICT stock wallet2 receive rule (branch 1 = main tx pubkey,
+/// branch 2 = additional[output_index] hard-indexed; both gated by the view
+/// tag at the true slot).
+fn claim_count(
+    out_pub: &[u8; 32],
+    out_tag: u8,
+    i: usize,
+    tx_pub: &[u8; 32],
+    table: &[[u8; 32]],
+    wallets: &[([u8; 32], [u8; 32]); 2],
+    bases: &[(u32, u32); 3],
+) -> usize {
+    let mut n = 0usize;
+    for (view, spend) in wallets {
+        for &(major, minor) in bases {
+            if derives_output(
+                out_pub, out_tag, i as u64, tx_pub, view, spend, major, minor,
+            ) {
+                n += 1;
+            }
+            if i < table.len()
+                && derives_output(
+                    out_pub, out_tag, i as u64, &table[i], view, spend, major, minor,
+                )
+            {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// PIN-1 (2026-10-28, F7-recovery lesson): claimability must be EXACTLY ONCE.
+/// Zero claims = the F7 black-hole class (money invisible to every wallet).
+/// 2026-10-28 closed-loop note: the incident's vout2 IS claimed by a relaxed
+/// scan exactly at the case-file matrix slot (add[1], j=2) — verified live.
+/// The interim "black hole" stories (own-tx rescan skip, never-probed) were
+/// RETRACTED as instrument artifacts (signed fp comparison + mangled %02x
+/// prints) plus show_transfers' own-tx display convention (self-received
+/// outputs get no separate in-row; the money sits in unspent_outputs).
+/// Lesson: calibrate probes on a known positive before reading negatives.
+/// Two+ claims = the mis-slot class (wallet accounting becomes ambiguous).
+/// Each wallet-destined vout of a production container must have exactly one
+/// claim path; the single external-recipient output is the allowed zero.
+#[test]
+fn claims_are_exactly_once() {
+    let wallets: [([u8; 32], [u8; 32]); 2] = [(TEST2_VIEW, TEST2_SPEND), (TEST1_VIEW, TEST1_SPEND)];
+    let bases: [(u32, u32); 3] = [(0, 0), (0, 4), (0, 6)];
+    for (name, cont) in [(
+        "cap3_fixed",
+        &include_bytes!("fixtures/cap3_1023_fixed_signed.bin")[..],
+    )] {
+        let plain = decrypt_signed_container(cont, &TEST2_VIEW);
+        let mut pos = 3;
+        let prefix = TransactionPrefix::deserialize(&plain, &mut pos).expect("tx prefix");
+        let tx_pub = prefix.extra.tx_pub_key.expect("tx pubkey in extra");
+        let table = &prefix.extra.additional_pub_keys;
+        let mut zero = 0usize;
+        for (i, out) in prefix.outputs[..prefix.outputs_len].iter().enumerate() {
+            let n = claim_count(
+                &out.stealth_address,
+                out.view_tag.unwrap_or(0),
+                i,
+                &tx_pub,
+                table,
+                &wallets,
+                &bases,
+            );
+            assert!(
+                n <= 1,
+                "{name} vout{i}: {n} claim paths — mis-slot class (ambiguous accounting)"
+            );
+            if n == 0 {
+                zero += 1;
+            }
+        }
+        assert!(zero <= 1, "{name}: {zero} unclaimable vouts — F7 black-hole class (external recipient allows exactly one)");
+    }
+}
+
+/// PIN-2 (2026-10-28, F7-recovery lesson): fixture-sweep audit — every signed
+/// container in this list is checked for claimability, and NEW fixtures join
+/// the list by default. The incident container (cap2, 2026-10-22, pre-fix
+/// shifted additional-key table) is pinned as a CASE FILE: its fingerprint
+/// (one vout claimable only at shifted/zero paths at its true slot) must stay
+/// reproducible, so the guarded-against bug class stays documented in bytes.
+#[test]
+fn signed_fixtures_claim_audit() {
+    let wallets: [([u8; 32], [u8; 32]); 2] = [(TEST2_VIEW, TEST2_SPEND), (TEST1_VIEW, TEST1_SPEND)];
+    let bases: [(u32, u32); 3] = [(0, 0), (0, 4), (0, 6)];
+
+    // healthy fixtures: exactly-once claimability for every wallet-destined vout
+    for (name, cont) in [(
+        "cap3_fixed",
+        &include_bytes!("fixtures/cap3_1023_fixed_signed.bin")[..],
+    )] {
+        let plain = decrypt_signed_container(cont, &TEST2_VIEW);
+        let mut pos = 3;
+        let prefix = TransactionPrefix::deserialize(&plain, &mut pos).expect("tx prefix");
+        let tx_pub = prefix.extra.tx_pub_key.expect("tx pubkey in extra");
+        let table = &prefix.extra.additional_pub_keys;
+        let mut zero = 0usize;
+        for (i, out) in prefix.outputs[..prefix.outputs_len].iter().enumerate() {
+            let n = claim_count(
+                &out.stealth_address,
+                out.view_tag.unwrap_or(0),
+                i,
+                &tx_pub,
+                table,
+                &wallets,
+                &bases,
+            );
+            assert!(n <= 1, "{name} vout{i}: {n} claim paths — mis-slot class");
+            if n == 0 {
+                zero += 1;
+            }
+        }
+        assert!(
+            zero <= 1,
+            "{name}: {zero} unclaimable vouts — F7 black-hole class"
+        );
+    }
+
+    // case file: the incident container must keep its broken fingerprint —
+    // >=1 wallet-destined vout with ZERO true-slot claims (the shifted table).
+    let cont = include_bytes!("fixtures/cap2_1022_signed.bin");
+    let plain = decrypt_signed_container(cont, &TEST2_VIEW);
+    let mut pos = 3;
+    let prefix = TransactionPrefix::deserialize(&plain, &mut pos).expect("tx prefix");
+    let tx_pub = prefix.extra.tx_pub_key.expect("tx pubkey in extra");
+    let table = &prefix.extra.additional_pub_keys;
+    let mut zero_claims = 0usize;
+    for (i, out) in prefix.outputs[..prefix.outputs_len].iter().enumerate() {
+        let n = claim_count(
+            &out.stealth_address,
+            out.view_tag.unwrap_or(0),
+            i,
+            &tx_pub,
+            table,
+            &wallets,
+            &bases,
+        );
+        if n == 0 {
+            zero_claims += 1;
+        }
+    }
+    assert!(
+        zero_claims >= 1,
+        "the cap2 incident fixture must keep its black-hole fingerprint (>=1 zero-claim vout); \
+         if this now fails the fixture was replaced — update this pin deliberately"
+    );
+}

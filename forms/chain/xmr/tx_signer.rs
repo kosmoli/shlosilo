@@ -222,8 +222,10 @@ struct OutputDerivation {
     /// 8Ra = r·A_v·8 (or change: view_sec·tx_pub·8)
     /// Audit #9 P1-03: secret fields use a SecretBytes owner from creation (ZeroizeOnDrop;
     /// previously a plain [u8;32] Copy field copied at construction — pre-construction `?` and source copies were never erased)
-    #[allow(dead_code)] // reserved for later P2 output verification
     shared_key: crate::types::SecretBytes<32>,
+    /// 8Ra (cofactored ECDH shared point) — kept for the claimability
+    /// self-audit (PIN-3, 2026-10-28).
+    eight_ra: [u8; 32],
     commitment_mask: crate::types::SecretBytes<32>,
     encrypted_amount: [u8; 8],
     stealth_address: [u8; 32],
@@ -349,12 +351,52 @@ fn derive_output(
 
     Ok(OutputDerivation {
         shared_key,
+        eight_ra,
         commitment_mask,
         encrypted_amount,
         stealth_address,
         additional_tx_key,
         view_tag,
     })
+}
+
+/// PIN-3 (2026-10-28, F7-recovery lesson): claimability self-audit. Before an
+/// output leaves the signer, the RECEIVER-side algebraic identity must resolve
+/// for the true vout position: the shared key must be Hs(8Ra || varint(pos)),
+/// `stealth - shared*G` must equal the destination spend key, and the view tag
+/// must match derive_view_tag(8Ra, pos). This pins the two degrees of freedom
+/// the F7 bug abused (additional-key choice and index) against the wallet2
+/// receive rule — a mis-derived output can no longer leave the device.
+fn verify_claim_identity(
+    d: &OutputDerivation,
+    pos: usize,
+    dest: &TxDestinationEntry,
+) -> Result<()> {
+    use crate::chain::xmr::view_tag::derive_view_tag;
+    let unclaimable = || ShlosiloError::new(ShlosiloErrorKind::OutputUnclaimable);
+    // 1) index binding: the shared key must be the receiver's formula at pos
+    let mut od = zeroize::Zeroizing::new([0u8; 48]);
+    od[..32].copy_from_slice(&d.eight_ra);
+    let mut od_len = 32usize;
+    crate::chain::xmr::transaction::monero_encode_varint_at(&mut od[..], &mut od_len, pos as u64)?;
+    let shared = crate::types::SecretBytes::new(hash_to_scalar(&od[..od_len])?);
+    if shared.expose() != d.shared_key.expose() {
+        return Err(unclaimable());
+    }
+    // 2) view-tag binding
+    if derive_view_tag(&d.eight_ra, pos as u64) != d.view_tag {
+        return Err(unclaimable());
+    }
+    // 3) claim identity: stealth == dest.spend + shared*G
+    let b_dest: curve25519_dalek::EdwardsPoint = CompressedPoint::from(dest.spend_public_key)
+        .decompress()
+        .ok_or_else(err)?
+        .into();
+    let hs = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*shared.expose());
+    if hs.mul_basepoint_add_point(&b_dest) != d.stealth_address {
+        return Err(unclaimable());
+    }
+    Ok(())
 }
 
 /// payment_id_xor = keccak(8Ra || 0x8d)[..8]
@@ -574,6 +616,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     let outinfo_placeholder = || OutInfo {
         deriv: OutputDerivation {
             shared_key: crate::types::SecretBytes::new([0u8; 32]),
+            eight_ra: [0u8; 32],
             commitment_mask: crate::types::SecretBytes::new([0u8; 32]),
             encrypted_amount: [0u8; 8],
             stealth_address: [0u8; 32],
@@ -671,16 +714,19 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
                     encrypted_amount,
                     stealth_address,
                     additional_tx_key: add_pub,
+                    eight_ra: change_eight_ra,
                     view_tag: vt_full[0],
                 },
                 is_change: true,
                 dest: dest.clone(),
                 eight_ra_for_pid: Some(change_eight_ra),
             };
+            verify_claim_identity(&outs[outs_len].deriv, i, dest)?;
             outs_len += 1;
         } else {
             let mut deriv = derive_output(&r, r_i.as_ref(), view_sec, dest, &tx_pub, i)?;
             deriv.additional_tx_key = add_pub;
+            verify_claim_identity(&deriv, i, dest)?;
             outs[outs_len] = OutInfo {
                 deriv,
                 is_change: false,
@@ -2235,4 +2281,69 @@ fn dshape_every_output_stock_recognizable() {
         recognized += 1;
     }
     assert_eq!(recognized, prefix.outputs_len);
+}
+
+/// PIN-3 tests (2026-10-28): the claimability self-audit must pass for a
+/// well-formed derivation and bite on both F7 degrees of freedom (wrong
+/// index / wrong destination) plus tag tampering.
+#[cfg(test)]
+mod claim_identity_tests {
+    use super::*;
+
+    /// A valid curve point derived from a scalar — the derivation math
+    /// decompresses keys, so garbage bytes would fail before the audit runs.
+    fn pt(s: u8) -> [u8; 32] {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        use curve25519_dalek::scalar::Scalar;
+        (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order([s; 32]))
+            .compress()
+            .to_bytes()
+    }
+
+    fn test_dest() -> TxDestinationEntry {
+        TxDestinationEntry {
+            amount: 100,
+            spend_public_key: pt(7),
+            view_public_key: pt(9),
+            is_subaddress: true,
+            is_integrated: false,
+            ..TxDestinationEntry::default()
+        }
+    }
+
+    #[test]
+    fn well_formed_output_verifies() {
+        let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order([3u8; 32]);
+        let dest = test_dest();
+        let d = derive_output(&r, None, &[0u8; 32], &dest, &[0u8; 32], 5).unwrap();
+        verify_claim_identity(&d, 5, &dest).expect("well-formed output must verify");
+    }
+
+    #[test]
+    fn wrong_position_index_rejected() {
+        let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order([3u8; 32]);
+        let dest = test_dest();
+        let d = derive_output(&r, None, &[0u8; 32], &dest, &[0u8; 32], 5).unwrap();
+        // the F7 index axis: derived at 5, claimed at 4 -> refuse
+        assert!(verify_claim_identity(&d, 4, &dest).is_err());
+    }
+
+    #[test]
+    fn wrong_destination_rejected() {
+        let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order([3u8; 32]);
+        let dest = test_dest();
+        let d = derive_output(&r, None, &[0u8; 32], &dest, &[0u8; 32], 5).unwrap();
+        let mut other = test_dest();
+        other.spend_public_key = pt(8);
+        assert!(verify_claim_identity(&d, 5, &other).is_err());
+    }
+
+    #[test]
+    fn tampered_tag_rejected() {
+        let r = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order([3u8; 32]);
+        let dest = test_dest();
+        let mut d = derive_output(&r, None, &[0u8; 32], &dest, &[0u8; 32], 5).unwrap();
+        d.view_tag ^= 0x55;
+        assert!(verify_claim_identity(&d, 5, &dest).is_err());
+    }
 }
