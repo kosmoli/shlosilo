@@ -35,7 +35,7 @@ use crate::types::SecretBytes;
 use alloc::string::String;
 #[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Seed entropy as carried on a steel plate / QR. 12/24 words only
 /// (SeedSigner family hard limit) — the two `SecretBytes` payloads are the
@@ -294,7 +294,10 @@ pub fn decode(data: &[u8]) -> Result<SeedEntropy> {
             } else {
                 WordCount::Words24
             };
-            let mut indices = [0u16; MAX_PLATE_WORDS];
+            // Zeroizing: the index stream is mnemonic-equivalent material and
+            // must die on EVERY path (the from_indices/validate `?` returns
+            // used to leak it unwiped — pool #46 hygiene gap, fixed 2026-10-28).
+            let mut indices = Zeroizing::new([0u16; MAX_PLATE_WORDS]);
             let (groups, _) = data.as_chunks::<4>();
             for (i, chunk) in groups.iter().enumerate() {
                 let mut v: u16 = 0;
@@ -312,9 +315,9 @@ pub fn decode(data: &[u8]) -> Result<SeedEntropy> {
             indices_to_entropy(m.indices(), &mut ent[..wc.entropy_bytes()]);
             let out = SeedEntropy::from_entropy(&ent[..wc.entropy_bytes()]);
             ent.zeroize();
-            // Plaintext index copy dies here too (SecretBytes hygiene: no
-            // lingering mnemonic-equivalent material after use).
-            indices.zeroize();
+            // indices dies with the Zeroizing wrapper (every path, including
+            // the error returns above) — no lingering mnemonic-equivalent
+            // material after use.
             out
         }
         // 4. everything else

@@ -22,4 +22,13 @@ void TrngGet(void *buf, uint32_t len)
             memcpy((uint8_t *)buf + i, buf4, len - i);
         }
     }
+    /* Wipe the stack temp: buf4 holds raw TRNG blocks and must not linger
+       after return (pool #46 hygiene gap, fixed 2026-10-28). Volatile walk
+       so the compiler cannot dead-store-eliminate the wipe. */
+    {
+        volatile uint32_t *vp = buf4;
+        for (uint32_t j = 0; j < 4; j++) {
+            vp[j] = 0;
+        }
+    }
 }

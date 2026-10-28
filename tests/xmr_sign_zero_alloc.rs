@@ -122,8 +122,33 @@ fn measured<T>(f: impl FnOnce() -> T) -> (T, u64) {
 /// currently allocates 172 times per sign — the Z4-pending surface (PSBT
 /// conveniences). Kept as the measuring instrument; green when the Z4
 /// de-alloc lands. See the Z6 note in the audit ledger.
+// P2IN test-wallet secrets — TEST-ONLY material (2026-10-28 X7 un-gating per
+// the 10-20 policy: test keys/fixtures live in-tree). P2IN OWNS
+// fixtures/unsigned_txset_2in.bin (verified by decrypt+parse+ownership probe;
+// the old "A'-wallet" comment on this fixture was wrong). P2IN is a
+// native-key wallet (no BIP-39 entropy), so only the raw-key layers can
+// sign it — the entropy-bound C-ABI entries cannot (by design, 10-07).
+const P2IN_SPEND_SK: [u8; 32] = [
+    0x8d, 0x81, 0x35, 0x14, 0x80, 0xfd, 0x2b, 0xdd, 0x02, 0xbd, 0x30, 0x8d, 0x1d, 0x78, 0xd5, 0xe8,
+    0x36, 0xf7, 0x23, 0x32, 0x78, 0xeb, 0x29, 0xb3, 0xbb, 0x00, 0x64, 0xbd, 0x1a, 0xbc, 0xd7, 0x06,
+];
+const P2IN_VIEW_SK: [u8; 32] = [
+    0x26, 0xd2, 0x92, 0x48, 0x48, 0x5b, 0x24, 0x64, 0x5e, 0xc1, 0xba, 0x4a, 0xef, 0xf5, 0x01, 0xed,
+    0xad, 0x5c, 0xd7, 0x4a, 0x81, 0xf4, 0xbc, 0x4b, 0x14, 0x4a, 0x9a, 0x6f, 0x0f, 0x95, 0xdf, 0x07,
+];
+
+/// The allocation counters below are PROCESS-GLOBAL: concurrent tests leak
+/// allocations into each other's measurements. Hold this across every
+/// measured section (2026-10-28: bt went 0 -> 203 when the un-gated XMR test
+/// started racing it in the same binary).
+fn measure_serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn bt_typed_sign_zero_alloc() {
+    let _serial = measure_serial();
     use shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi;
     use shlosilo::ffi::c_abi::shlosilo_sign_ws_len;
 
@@ -186,26 +211,18 @@ fn bt_typed_sign_zero_alloc() {
 
 /// Z6-R2: the XMR sign path (BP+/CLSAG/gencache) is alloc-free when the
 /// deploy shape is used: caller storage provided (SignWs + generator tables).
-/// Env-gated like p63 (real fixture keys).
+/// Keys embedded (X7 un-gated 2026-10-28; P2IN test wallet).
 #[test]
-#[ignore = "Z6: requires SHLOSILO_TEST_XMR_* env (P2IN keys). Release form = zero-count receipt (0 allocs); debug form = relation shadow + re-sign byte-equality pin"]
 fn xmr_sign_zero_alloc() {
+    let _serial = measure_serial();
     use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into;
     use shlosilo::chain::xmr::unsigned_txset::{
         deserialize_unsigned_tx, TxConstructionData, TxDestinationEntry, TxSourceEntry,
         UnsignedTxPools,
     };
 
-    fn env_hex(name: &str) -> Option<[u8; 32]> {
-        let s = std::env::var(name).ok()?;
-        let v: Vec<u8> = (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-            .collect::<Option<_>>()?;
-        v.try_into().ok()
-    }
-    let spend_sk = env_hex("SHLOSILO_TEST_XMR_SPEND_SK").expect("env");
-    let view_sk = env_hex("SHLOSILO_TEST_XMR_VIEW_SK").expect("env");
+    let spend_sk = P2IN_SPEND_SK;
+    let view_sk = P2IN_VIEW_SK;
 
     // generator tables: caller storage (deploy shape) — provisioning BEFORE
     // the measured section; the first use fills in place (no allocation)
@@ -345,28 +362,21 @@ fn xmr_sign_zero_alloc() {
 }
 
 /// Z4 diagnosis: allocation-site histogram over one XMR sign (ignored; the
-/// backtrace capture allocates, so this measures SITES, not counts).
+/// backtrace capture allocates, so this measures SITES, not counts). Keys are
+/// embedded now — run manually with `-- --ignored`.
 #[test]
-#[ignore = "Z4 diagnosis: run manually with P2IN keys to profile alloc sites"]
+#[ignore = "Z4 diagnosis: run manually to profile alloc sites"]
 fn alloc_site_histogram() {
     provide_generators_like_device();
     // Reuse the XMR fixture flow (duplicated minimally to keep this file's
     // helpers independent of test order).
-    fn env_hex(name: &str) -> Option<[u8; 32]> {
-        let s = std::env::var(name).ok()?;
-        let v: Vec<u8> = (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-            .collect::<Option<_>>()?;
-        v.try_into().ok()
-    }
     use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into;
     use shlosilo::chain::xmr::unsigned_txset::{
         decrypt_unsigned_txset, deserialize_unsigned_tx, TxConstructionData, TxDestinationEntry,
         TxSourceEntry, UnsignedTxPools,
     };
-    let spend_sk = env_hex("SHLOSILO_TEST_XMR_SPEND_SK").expect("env");
-    let view_sk = env_hex("SHLOSILO_TEST_XMR_VIEW_SK").expect("env");
+    let spend_sk = P2IN_SPEND_SK;
+    let view_sk = P2IN_VIEW_SK;
     const ENC: &[u8] = include_bytes!("fixtures/unsigned_txset_2in.bin");
     let plain = decrypt_unsigned_txset(ENC, &view_sk).expect("decrypt");
     let mut p_txes = core::array::from_fn::<Option<TxConstructionData<'_>>, 8, _>(|_| None);
