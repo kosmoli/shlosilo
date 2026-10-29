@@ -104,7 +104,12 @@ static const struct KeySession *g_key_session;
  * the full one must not drop coverage). Cross-wallet contamination is caught
  * at sign time by the selected-index mismatch guard (KeyImageRecordMismatch:
  * a wrong-wallet record cannot match the derived key image). */
-#define PAIRING_KI_MAX 32 /* mirrors forms/business/xmr_pairing.rs PAIRING_RECORDS_MAX (32 = 4x largest observed wallet; over-cap records drop to conservative fill via the merge) */
+#define PAIRING_KI_MAX 64 /* mirrors forms/business/xmr_pairing.rs PAIRING_RECORDS_MAX
+ * (32 = 4x largest observed wallet at design time, 2026-10-21). REVISIT 2026-10-29:
+ * a Cake Outputs(all) of 38 records broke the cap -> pairing refused -20 (silent).
+ * 64 is headroom only; the real wall is the positional full-array protocol shape.
+ * Endgames (persistent store + paging vs keystone-shape keyed map) = LuckyFox C/D
+ * decision (pool #55). Over-cap refusal MUST be visibly reported. */
 static struct WalletKiRecord g_pairing_ki[PAIRING_KI_MAX];
 static unsigned int g_pairing_ki_n;
 static struct WalletKiRecord g_pairing_ki_tmp[PAIRING_KI_MAX];
@@ -123,15 +128,34 @@ static int g_no_session_prompted;
  * stops re-collecting the same doomed message in a loop -- frames are
  * dropped until the QR leaves the view (status-slot miss-clear). */
 static int g_ur_latch;
+/* Sticky scan notice (2026-10-29, the silent-pairing-failure case): the
+ * latch path RE-DRAWS this on every dropped frame, so whatever wipes the
+ * scan-page text (preview repaint / next-frame notice), the very next frame
+ * restores it -- a failure can never go silent again (拆码红线: failures
+ * must be visible). */
+static const char *g_scan_notice_l1;
+static const char *g_scan_notice_l2;
+static const char *g_scan_notice_l3;
+static void scan_notice_sticky(const char *l1, const char *l2, const char *l3)
+{
+    g_scan_notice_l1 = l1;
+    g_scan_notice_l2 = l2;
+    g_scan_notice_l3 = l3;
+    UiScanInfo(l1, l2, l3, "");
+}
 
 /* Fixed diagnostic vocabulary for pairing failures (injection red line:
  * no raw rc codes on screen). -21 = the container did not authenticate
  * under THIS wallet's keys = it is not this wallet's output. */
 static const char *pairing_fail_reason(int rc)
 {
-    /* Three diagnostic classes (2026-10-11 split, Kosmo's red line: fixed
-     * vocabulary, no internal detail): -21 container shape, -40 envelope
-     * signature, -15 pk1/pk2 ownership binding. */
+    /* Four diagnostic classes (2026-10-11 split + 2026-10-29 record-cap
+     * class, Kosmo's red line: fixed vocabulary, no internal detail):
+     * -21 container shape, -40 envelope signature, -15 pk1/pk2 ownership
+     * binding, -20 wallet too large for pairing. */
+    if (rc == -20) {
+        return "too many outputs for this device";
+    }
     if (rc == -21) {
         return "output format not recognized";
     }
@@ -1347,7 +1371,7 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
 
     if (g_key_session == NULL) {
         printf("pairing: no key session (payload %u), keep scanning\r\n", plen);
-        UiScanInfo("pairing: need key", "no key session", "keep scanning...", "");
+        scan_notice_sticky("pairing: need key", "no key session", "keep scanning...");
         ur_intake_reset();
         return;
     }
@@ -1369,7 +1393,7 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
                                   NULL, 0, NULL);
     if (rc != 0 || ws_need == 0) {
         printf("pairing: ws probe fail rc=%d need=%u\r\n", rc, ws_need);
-        UiScanInfo("pairing: ws probe FAIL", "keep scanning...", "", "");
+        scan_notice_sticky("pairing: ws probe FAIL", "keep scanning...", "");
         crash_bb_phase_clear();
         ur_intake_reset();
         return;
@@ -1392,7 +1416,7 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     if (g_sign_out == NULL || ws == NULL) {
         printf("pairing: alloc fail (out=%u ws=%u)\r\n",
                (unsigned)SIGN_OUT_MAX, ws_need);
-        UiScanInfo("pairing: alloc FAIL", "keep scanning...", "", "");
+        scan_notice_sticky("pairing: alloc FAIL", "keep scanning...", "");
         ExtFree(g_sign_out);
         g_sign_out = NULL;
         g_sign_out_len = 0;
@@ -1451,7 +1475,9 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     ExtFree(ws_raw);
     if (rc != 0 || out_len == 0 || out_len > SIGN_OUT_MAX) {
         printf("pairing: FAIL rc=%d out=%u dt=%ums\r\n", rc, out_len, (unsigned)dt);
-        UiScanInfo("pairing failed", pairing_fail_reason(rc), "move camera away, retry", "");
+        scan_notice_sticky(
+            "pairing failed", pairing_fail_reason(rc),
+            (rc == -20) ? "device limit reached" : "move camera away, retry");
         g_ur_latch = 1;
         ExtFree(g_sign_out);
         g_sign_out = NULL;
@@ -1494,7 +1520,7 @@ static int ur_single_decode(const char *text, unsigned *plen_out)
     }
     if (g_ur_payload == NULL) {
         printf("ur: single-frame payload alloc fail\r\n");
-        UiScanInfo("ur: payload alloc FAIL", "", "", "");
+        scan_notice_sticky("ur: payload alloc FAIL", "", "");
         return -1;
     }
     if (shlosilo_ur_decode_uri_ffi(text, (uint8_t *)g_ur_type,
@@ -1502,7 +1528,7 @@ static int ur_single_decode(const char *text, unsigned *plen_out)
                                   g_ur_payload, UR_PAYLOAD_MAX,
                                   &plen) != 0) {
         printf("ur: single-frame decode FAIL\r\n");
-        UiScanInfo("scan failed", "code not recognized", "", "");
+        scan_notice_sticky("scan failed", "code not recognized", "");
         ExtFree(g_ur_payload);
         g_ur_payload = NULL;
         return -1;
@@ -1616,8 +1642,13 @@ static void scan_ur_hit(const char *text)
     int progress;
 
     /* Failure latch: a doomed message already failed once -- drop frames
-     * until the QR leaves the view (the miss-clear re-arms). */
+     * until the QR leaves the view (the miss-clear re-arms).
+     * 2026-10-29: also RE-DRAW the sticky notice every frame (the silent-
+     * failure fix -- see g_scan_notice notes). */
     if (g_ur_latch) {
+        if (g_scan_notice_l1 != NULL) {
+            UiScanInfo(g_scan_notice_l1, g_scan_notice_l2, g_scan_notice_l3, "");
+        }
         return;
     }
 

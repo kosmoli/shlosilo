@@ -57,11 +57,26 @@ const PAIRING_SCRATCH_LEN: usize = {
 /// wallet (8 transfers, the tx2 fixture — built at the old cap); >32 transfers
 /// is a documented -20 boundary (pool §37). Dynamic/streaming sizing remains
 /// the LuckyFox-era candidate if real wallets outgrow this.
-const PAIRING_DETAILS_MAX: usize = 32;
+// REVISIT 2026-10-29: the 38-record live case failed HERE (the parse-side
+// cap is separate from the store/response cap) — raised to 64 in lockstep.
+// Same endgame note as PAIRING_RECORDS_MAX (pool #55 C/D decision).
+const PAIRING_DETAILS_MAX: usize = 64;
 /// Key-image record pool (one 96 B record per output) — mirrors the details
 /// cap so every parsed output is answered. The C-side retention mirror is
 /// `PAIRING_KI_MAX` in flux/forgebox/src/tasks/product_task.c.
-const PAIRING_RECORDS_MAX: usize = 32;
+/// KI pairing record cap. Origin (2026-10-21): 4x the largest observed
+/// wallet (the 1021 test wallet = 8 transfers) under the zero-heap rule of
+/// fixed static caps. REVISIT LOG (2026-10-29): a Cake `Outputs (all)` of
+/// 38 records broke the 32 cap (pairing leg refused with BufferTooSmall,
+/// surfaced to the user as a silent failure); raised to 64 for headroom.
+/// 64 only buys — real wallets hold hundreds of outputs, and the real wall is
+/// the positional full-array protocol shape itself (wallet2
+/// `import_key_images` semantics). Endgames (persistent store + paged sync
+/// vs keystone-shape empty-array + keyed map) are the LuckyFox-phase C/D
+/// decision (pool #55). Rule regardless of cap: an over-cap refusal MUST be
+/// visibly reported (拆码红线). Mirror: flux/forgebox product_task.c
+/// PAIRING_KI_MAX.
+const PAIRING_RECORDS_MAX: usize = 64;
 
 /// Caller-provisioned workspace for the receive leg (Z3 caller-workspace
 /// discipline — forms allocates nothing on this path). Carved from raw caller
