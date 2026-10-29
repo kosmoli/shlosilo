@@ -188,8 +188,15 @@ fn derive_key_images_zero_alloc() {
         core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
     let mut p_su = [0u32; 256];
 
-    let (utx, allocs_parse) = measured(|| {
-        deserialize_unsigned_tx(
+    // One locked section: warm run + measured steady-state run. First-use
+    // lazy inits (thread caches, LazyLock tables) land in the warm run by
+    // design on some platforms; the RECEIPT is the steady-state run.
+    // (CI 2026-10-29: the derive receipt caught 1 alloc under the jemalloc
+    // wrapper with cross-test parallelism — warm-up outside the lock was
+    // racy. Warm-up and measurement are now atomic under the serial lock.)
+    let ((result, allocs_parse, allocs_steady), _total) = measured(|| {
+        let before_parse = ALLOCS.load(Ordering::Relaxed);
+        let utx = deserialize_unsigned_tx(
             &wire,
             UnsignedTxPools {
                 txes: &mut p_txes,
@@ -201,50 +208,43 @@ fn derive_key_images_zero_alloc() {
                 subaddr_indices: &mut p_su,
             },
         )
-        .expect("parse 1023 construction")
-    });
-
-    // Warm-up (the established xmr_sign_zero_alloc discipline): one-time
-    // static inits (LazyLock-class table materialization) allocate on FIRST
-    // use on the alloc face; the receipt below covers the STEADY state.
-    {
-        let tx = utx.txes.iter().flatten().next().expect("one construction");
-        let src = tx.sources.iter().flatten().next().expect("one source");
-        let _ = derive_input_from_source(
-            &TEST2_VIEW_SK,
-            &TEST2_SPEND_SK,
-            src,
-            tx.subaddr_account,
-            &tx.subaddr_indices,
-        );
-    }
-
-    let (result, allocs_derive) = measured(|| {
-        let tx = utx.txes.iter().flatten().next().expect("one construction");
-        let mut kis = [[0u8; 32]; 8];
-        let mut n = 0usize;
-        for src in tx.sources.iter().flatten() {
-            let (image, _mask) = derive_input_from_source(
-                &TEST2_VIEW_SK,
-                &TEST2_SPEND_SK,
-                src,
-                tx.subaddr_account,
-                &tx.subaddr_indices,
-            )
-            .expect("derive input");
-            kis[n] = image;
-            n += 1;
-        }
-        let mut sel_arr = [0usize; 8];
-        for (slot, t) in sel_arr.iter_mut().zip(tx.selected_transfers.iter()) {
-            *slot = *t;
-        }
-        (kis, n, sel_arr)
+        .expect("parse 1023 construction");
+        let parse_allocs = ALLOCS.load(Ordering::Relaxed) - before_parse;
+        let derive_once = |utx: &shlosilo::chain::xmr::unsigned_txset::UnsignedTx<'_>| {
+            let tx = utx.txes.iter().flatten().next().expect("one construction");
+            let mut kis = [[0u8; 32]; 8];
+            let mut n = 0usize;
+            for src in tx.sources.iter().flatten() {
+                let (image, _mask) = derive_input_from_source(
+                    &TEST2_VIEW_SK,
+                    &TEST2_SPEND_SK,
+                    src,
+                    tx.subaddr_account,
+                    &tx.subaddr_indices,
+                )
+                .expect("derive input");
+                kis[n] = image;
+                n += 1;
+            }
+            let mut sel_arr = [0usize; 8];
+            for (slot, t) in sel_arr.iter_mut().zip(tx.selected_transfers.iter()) {
+                *slot = *t;
+            }
+            (kis, n, sel_arr)
+        };
+        let _ = derive_once(&utx); // warm run (first-use lazy inits land here)
+        let before = ALLOCS.load(Ordering::Relaxed);
+        let out = derive_once(&utx); // steady-state run = the receipt
+        let derive_allocs = ALLOCS.load(Ordering::Relaxed) - before;
+        (out, parse_allocs, derive_allocs)
     });
 
     let (kis, n, sel_arr) = result;
     assert_eq!(allocs_parse, 0, "parsing must be allocation-free");
-    assert_eq!(allocs_derive, 0, "derivation must be allocation-free");
+    assert_eq!(
+        allocs_steady, 0,
+        "steady-state derivation must be allocation-free"
+    );
     assert_eq!(n, 4, "the D-shape has four inputs");
     for (i, ki) in kis[..n].iter().enumerate() {
         assert_eq!(
