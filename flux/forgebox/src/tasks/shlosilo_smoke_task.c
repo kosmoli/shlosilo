@@ -580,7 +580,8 @@ static int run_checks(void)
                 {
                     /* v15 FIX: PsramMalloc (the 8MB PSRAM heap_4) — the only
                      * domain that can hold these buffers. (v12 routed them to
-                     * `RustMalloc`, which is a legacy shim: it lands in the
+                     * `RustMalloc`, which was a legacy shim — since removed,
+                     * 2026-10-28: it landed in the
                      * 450KB SRAM FreeRTOS heap, NOT the Rust allocator glue —
                      * 2.8MB ws and 576KB tables could never fit. The plain
                      * `malloc` of v9-v11 was the newlib sbrk trap instead.) */

@@ -128,24 +128,6 @@ void *ExtRealloc(void *p, size_t newSize)
     return ExtMalloc(newSize);
 }
 
-void *RustMalloc(int32_t size)
-{
-#ifdef CYPHERPUNK_VERSION
-    return ExtMalloc(size);
-#else
-    return SramMalloc(size);
-#endif
-}
-
-void RustFree(void *p)
-{
-#ifdef CYPHERPUNK_VERSION
-    ExtFree(p);
-#else
-    SramFree(p);
-#endif
-}
-
 void PrintHeapInfo(void)
 {
     printf("sram heap info:\n");
