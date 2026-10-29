@@ -246,12 +246,24 @@ fn envelope_sig_ab_cap2_vs_cap3() {
     let view_point = ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(TEST2_VIEW);
     let view_pub = view_point.compress().to_bytes();
 
-    for (tag, path) in [
-        ("cap2", "/tmp/1022-6/cap2_container.bin"),
-        ("cap3", "/tmp/1022-6/cap3_container.bin"),
-        ("cap4", "/tmp/1022-6/cap4_container.bin"),
+    // Fixtures in-tree (test constitution #4; CI-clean-checkout safe — the
+    // old absolute /tmp paths failed the fce60e2 CI run, which nobody watched
+    // for 5 days). cap4 is the recovered TRUE container (12157B, reassembled
+    // from the archived 61-part UR capture on 2026-10-29).
+    for (tag, blob) in [
+        (
+            "cap2",
+            include_bytes!("fixtures/cap2_container.bin").as_slice(),
+        ),
+        (
+            "cap3",
+            include_bytes!("fixtures/cap3_container.bin").as_slice(),
+        ),
+        (
+            "cap4",
+            include_bytes!("fixtures/cap4_signed_61.bin").as_slice(),
+        ),
     ] {
-        let blob = std::fs::read(path).expect("container");
         let magic = b"Monero signed tx set\x05";
         assert_eq!(&blob[..magic.len()], magic, "{tag} magic");
         let body = &blob[magic.len()..blob.len() - 64];
