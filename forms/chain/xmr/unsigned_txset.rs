@@ -78,7 +78,7 @@ const UNSIGNED_TXSET_MAX_PLAIN_LEN: usize = crate::ur::ur_multipart::MULTIPART_P
 /// (count × min_elem_bytes > remaining bytes = physically unparseable; reject before allocating).
 /// min_elem_bytes is the element's minimum wire size (conservative lower bound); a value of 0 is defensive
 /// treated as 1 (divide-by-zero guard; lesson from audit #7 P2-01).
-fn read_count(data: &[u8], off: &mut usize, min_elem_bytes: usize) -> Result<usize> {
+pub(crate) fn read_count(data: &[u8], off: &mut usize, min_elem_bytes: usize) -> Result<usize> {
     let v = read_varint(data, off)?;
     let count = v;
     let remaining = data.len().saturating_sub(*off);
@@ -89,7 +89,7 @@ fn read_count(data: &[u8], off: &mut usize, min_elem_bytes: usize) -> Result<usi
     Ok(count)
 }
 
-fn read_varint(data: &[u8], off: &mut usize) -> Result<u64> {
+pub(crate) fn read_varint(data: &[u8], off: &mut usize) -> Result<u64> {
     let mut value: u64 = 0;
     let mut shift = 0;
     loop {
@@ -107,7 +107,7 @@ fn read_varint(data: &[u8], off: &mut usize) -> Result<u64> {
     Ok(value)
 }
 
-fn read_u8(data: &[u8], off: &mut usize) -> Result<u8> {
+pub(crate) fn read_u8(data: &[u8], off: &mut usize) -> Result<u8> {
     let b = *data.get(*off).ok_or_else(err)?;
     *off += 1;
     Ok(b)
@@ -123,7 +123,7 @@ fn read_u32(data: &[u8], off: &mut usize) -> Result<u32> {
     Ok(u32::from_le_bytes(s.try_into().unwrap()))
 }
 
-fn read_u64(data: &[u8], off: &mut usize) -> Result<u64> {
+pub(crate) fn read_u64(data: &[u8], off: &mut usize) -> Result<u64> {
     let s = data.get(*off..*off + 8).ok_or_else(err)?;
     *off += 8;
     Ok(u64::from_le_bytes(s.try_into().unwrap()))
@@ -140,7 +140,7 @@ fn read_bytes<'a>(data: &'a [u8], off: &mut usize, len: usize) -> Result<&'a [u8
     Ok(s)
 }
 
-fn read_u8_32(data: &[u8], off: &mut usize) -> Result<[u8; 32]> {
+pub(crate) fn read_u8_32(data: &[u8], off: &mut usize) -> Result<[u8; 32]> {
     let v = read_bytes(data, off, 32)?;
     Ok(v.try_into().unwrap())
 }
@@ -446,7 +446,7 @@ pub(crate) fn decrypt_unsigned_txset_with_chacha_key(
 
 // ============ epee deserialize ============
 
-fn read_destination_entry(data: &[u8], off: &mut usize) -> Result<TxDestinationEntry> {
+pub(crate) fn read_destination_entry(data: &[u8], off: &mut usize) -> Result<TxDestinationEntry> {
     let original_len = usize::try_from(read_varint(data, off)?).map_err(|_| err())?;
     // Z3.1: leaf cap — over-cap address strings are invalid format (real Monero
     // addresses ≤ DEST_ORIGINAL_MAX), explicit Err before the read.
@@ -536,7 +536,7 @@ const MIN_TX_CONSTRUCTION_DATA_WIRE: usize = 90;
 /// Z2.3 C3c: parse-into — carve-as-you-read (each count is known when its field is
 /// reached; `split_at_mut` hands out disjoint caller-pool chunks, safe-Rust).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn read_tx_construction_data<'a>(
+pub(crate) fn read_tx_construction_data<'a>(
     data: &[u8],
     off: &mut usize,
     sources_rest: &mut &'a mut [Option<TxSourceEntry>],

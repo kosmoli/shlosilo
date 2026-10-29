@@ -1082,3 +1082,83 @@ fn verify_key_image_sig(record: &[u8], out_pub: &[u8; 32]) -> bool {
     buf[64..].copy_from_slice(&rr.compress().to_bytes());
     hs(&buf) == c.to_bytes()
 }
+
+/// Pool #52 ① (2026-10-28): signed-plaintext parse -> re-serialize identity
+/// over wallet2's OWN `sign_transfer` output (fixtures/gold_signed_fa.bin,
+/// monero-wallet-cli v0.18.5.1 stagenet). The input bytes are wallet2's
+/// writer output — byte identity proves our writer is byte-compatible with
+/// wallet2 on real data (NOT a self-roundtrip; the tx_key placeholder slot
+/// writes Scalar::ONE by design — r is not returned to the host — so this
+/// pin also proves wallet2's pending_tx tx_key slot carries the same
+/// placeholder bytes in this fixture's production path).
+#[test]
+fn golden_signed_plain_parse_reserialize_identity() {
+    use shlosilo::chain::xmr::signed_txset::{
+        decrypt_signed_txset, deserialize_signed_plain, PendingTx, SignedTxSetPools,
+        TxKeyImageEntry,
+    };
+    use shlosilo::chain::xmr::unsigned_txset::{TxDestinationEntry, TxSourceEntry};
+    let gold: &[u8] = include_bytes!("fixtures/gold_signed_fa.bin");
+    let plain = decrypt_signed_txset(gold, &LAB_VIEW_SK).expect("decrypt wallet2 signed plain");
+
+    let mut p_txes = core::array::from_fn::<Option<PendingTx<'_>>, 2, _>(|_| None);
+    let mut sel = [0u8; 64];
+    let mut ki_str = [0u8; 4096];
+    let mut dests =
+        core::array::from_fn::<TxDestinationEntry, 16, _>(|_| TxDestinationEntry::default());
+    let mut sources = core::array::from_fn::<Option<TxSourceEntry>, 32, _>(|_| None);
+    let mut splitted =
+        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+    let mut cons_sel = [0usize; 256];
+    let mut extra = [0u8; 8192];
+    let mut cons_dests =
+        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+    let mut subidx = [0u32; 256];
+    let mut key_images = [[0u8; 32]; 16];
+    let mut tx_key_images =
+        core::array::from_fn::<TxKeyImageEntry, 16, _>(|_| TxKeyImageEntry::default());
+
+    let set = deserialize_signed_plain(
+        &plain,
+        &mut SignedTxSetPools {
+            ptx: &mut p_txes,
+            sel: &mut sel,
+            ki_str: &mut ki_str,
+            dests: &mut dests,
+            sources: &mut sources,
+            splitted: &mut splitted,
+            cons_sel: &mut cons_sel,
+            extra: &mut extra,
+            cons_dests: &mut cons_dests,
+            subidx: &mut subidx,
+            key_images: &mut key_images,
+            tx_key_images: &mut tx_key_images,
+        },
+    )
+    .expect("parse wallet2 signed plain");
+
+    let mut out = vec![0u8; set.serialized_len().max(plain.len()) + 64];
+    let n = set.serialize_into(&mut out).expect("re-serialize");
+    // failure-only first-divergence diagnostic (reports the offending offset)
+    if out.get(..n) != Some(&plain[..]) {
+        let mut i0 = 0usize;
+        while i0 < n.min(plain.len()) && out[i0] == plain[i0] {
+            i0 += 1;
+        }
+        let lo = i0.saturating_sub(16);
+        std::eprintln!(
+            "GSP-DIAG n={} plain_len={} first_mismatch={} ours_tail={:02x?} plain_tail={:02x?}",
+            n,
+            plain.len(),
+            i0,
+            &out[lo..(i0 + 16).min(n)],
+            &plain[lo..(i0 + 16).min(plain.len())],
+        );
+    }
+    assert_eq!(n, plain.len(), "length identity");
+    assert_eq!(
+        &out[..n],
+        &plain[..],
+        "byte identity over wallet2's own signed plain"
+    );
+}

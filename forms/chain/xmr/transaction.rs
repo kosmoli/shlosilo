@@ -708,6 +708,116 @@ impl Transaction {
         out
     }
 
+    /// Pool #52 ① support: skip a MONERO-WIRE transaction (the shape
+    /// `pending_tx.tx` carries — prefix + structured rct signatures, no length
+    /// prefix). Layout = cryptonote::transaction::serialize + rctSig::serialize
+    /// (binary_archive): version varint, unlock varint, vin, vout, extra, then
+    /// rct_type and its type-6 (BulletproofPlus) body. Returns Err on any shape
+    /// outside what our signer emits (v2 + txin_to_key + txout_to_key + type 6).
+    #[cfg(any(feature = "alloc-fallback", test))]
+    pub(crate) fn skip_transaction_wire(data: &[u8], off: &mut usize) -> Result<()> {
+        use crate::chain::xmr::unsigned_txset::{read_count, read_u8, read_u8_32, read_varint};
+        let err = || ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat);
+        let version = read_varint(data, off)?;
+        if version != 2 {
+            return Err(err()); // our signer emits v2 only
+        }
+        let _unlock = read_varint(data, off)?;
+        // vin: txin_to_key = tag(0x02) + amount varint + key_offsets (varint count
+        // + varint each) + key image 32B
+        let n_in = read_count(data, off, 42)?;
+        if n_in > 32 {
+            return Err(err()); // ring_lens bookkeeping bound
+        }
+        let mut ring_lens = [0usize; 32];
+        for (i, slot) in ring_lens.iter_mut().enumerate().take(n_in) {
+            if read_u8(data, off)? != 2 {
+                return Err(err());
+            }
+            let _amount = read_varint(data, off)?;
+            let n_off = read_count(data, off, 1)?;
+            // the CLSAG s-array size = this input's ring size (mixin+1), consumed
+            // later WITHOUT a size prefix
+            *slot = n_off;
+            let _i = i;
+            for _ in 0..n_off {
+                let _ = read_varint(data, off)?;
+            }
+            let _ki = read_u8_32(data, off)?;
+        }
+        // vout: amount varint + target variant tag + key 32B; since the view-tag
+        // hardfork outputs are txout_to_tagged_key (tag 3) with a trailing 1B
+        // view tag — plain txout_to_key is tag 2.
+        let n_out = read_count(data, off, 34)?;
+        for _ in 0..n_out {
+            let _amount = read_varint(data, off)?;
+            match read_u8(data, off)? {
+                2 => {
+                    let _key = read_u8_32(data, off)?;
+                }
+                3 => {
+                    let _key = read_u8_32(data, off)?;
+                    let _view_tag = read_u8(data, off)?;
+                }
+                _ => return Err(err()),
+            }
+        }
+        // extra: varint length + verbatim bytes
+        let n_extra = read_count(data, off, 1)?;
+        if *off + n_extra > data.len() {
+            return Err(err());
+        }
+        *off += n_extra;
+        // rct: type 6 = BulletproofPlus aggregated
+        if read_u8(data, off)? != 6 {
+            return Err(err());
+        }
+        // base: txnFee varint, ecdhInfo (8B per out), outPk (32B per out)
+        let _txn_fee = read_varint(data, off)?;
+        for _ in 0..n_out {
+            if *off + 8 > data.len() {
+                return Err(err());
+            }
+            *off += 8;
+        }
+        for _ in 0..n_out {
+            let _commitment = read_u8_32(data, off)?;
+        }
+        // prunable: bulletproofs_plus (vector), CLSAGs (one per input), pseudoOuts
+        let n_bp = read_count(data, off, 192)?;
+        for _ in 0..n_bp {
+            // A, A1, B, r1, s1, d1 — 6 x 32B
+            for _ in 0..6 {
+                let _ = read_u8_32(data, off)?;
+            }
+            // L, R: varint count + 32B each
+            let n_l = read_count(data, off, 32)?;
+            for _ in 0..n_l {
+                let _ = read_u8_32(data, off)?;
+            }
+            let n_r = read_count(data, off, 32)?;
+            for _ in 0..n_r {
+                let _ = read_u8_32(data, off)?;
+            }
+        }
+        for (i, n_s) in ring_lens.iter().copied().enumerate().take(n_in) {
+            // CLSAG wire: s[mixin+1] WITHOUT a size prefix ("the size prefixes are
+            // not in the data" — rctTypes.h), then c1 (32B), D (32B)
+            for _ in 0..n_s {
+                let _ = read_u8_32(data, off)?;
+            }
+            let _c1 = read_u8_32(data, off)?;
+            let _d = read_u8_32(data, off)?;
+            let _ = i;
+        }
+        // pseudoOuts: exactly n_in x 32B, NO count prefix
+        // (PREPARE_CUSTOM_VECTOR_SERIALIZATION(inputs, pseudoOuts))
+        for _ in 0..n_in {
+            let _pseudo_out = read_u8_32(data, off)?;
+        }
+        Ok(())
+    }
+
     pub fn deserialize(bytes: &[u8], pos: &mut usize) -> Result<Self> {
         let prefix = TransactionPrefix::deserialize(bytes, pos)?;
         // P0-01-class hardening (2026-09-24 T-01): fallible u64 -> usize + checked_add.

@@ -253,7 +253,7 @@ impl SignedTxSet<'_> {
     /// Z2.4d-3: production never calls this — `encrypt_signed_txset_into` streams the
     /// plaintext through the keystream so it never exists as a buffer, and `serialize`
     /// returns a self-zeroizing owner. Any user of this face owns zeroization of `out`.
-    #[cfg(test)]
+    #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize_into(&self, out: &mut [u8]) -> Result<usize> {
         let mut w = crate::types::push::SinkCursor::new(out);
         self.write_all(&mut w)?;
@@ -495,6 +495,227 @@ pub fn encrypt_unsigned_txset(
 /// Decrypt a signed txset (for self-verification round-trips; aligned with keystone `decrypt_data_with_pvk`).
 ///
 /// magic check → nonce → Schnorr verification (view_pub over keccak256(nonce‖ciphertext)) → decrypt.
+#[cfg(any(feature = "alloc-fallback", test))]
+/// Pool #52 ① (2026-10-28): the READ side of the signed plaintext — the
+/// exact mirror of [`SignedTxSet::write_all`]. Parses the wallet2-compatible
+/// signed plain into caller pools. Value fields land in the caller's arenas;
+/// the embedded signed tx is delimited via `Transaction::deserialize`.
+///
+/// Golden anchor: tests/golden_wallet2_bytes.rs parses monero-wallet-cli's
+/// OWN `sign_transfer` output (fixtures/gold_signed_fa.bin) and re-serializes
+/// it byte-identically — a wallet2 byte-compatibility proof, NOT a
+/// self-roundtrip.
+///
+/// Alloc face: `Transaction::deserialize` materializes the rct tail, so this
+/// reader is alloc-fallback/test (production never re-reads its own signed
+/// plain; the reader is the oracle/test face).
+#[cfg(any(feature = "alloc-fallback", test))]
+pub struct SignedTxSetPools<'a> {
+    pub ptx: &'a mut [Option<PendingTx<'a>>],
+    pub sel: &'a mut [u8],
+    pub ki_str: &'a mut [u8],
+    pub dests: &'a mut [TxDestinationEntry],
+    pub sources: &'a mut [Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>],
+    pub splitted: &'a mut [TxDestinationEntry],
+    pub cons_sel: &'a mut [usize],
+    pub extra: &'a mut [u8],
+    pub cons_dests: &'a mut [TxDestinationEntry],
+    pub subidx: &'a mut [u32],
+    pub key_images: &'a mut [[u8; 32]],
+    pub tx_key_images: &'a mut [TxKeyImageEntry],
+}
+
+/// Parse the signed plaintext (mirror of [`SignedTxSet::write_all`]).
+#[cfg(any(feature = "alloc-fallback", test))]
+pub fn deserialize_signed_plain<'a>(
+    data: &'a [u8],
+    p: &mut SignedTxSetPools<'a>,
+) -> Result<SignedTxSet<'a>> {
+    use crate::chain::xmr::unsigned_txset::{
+        read_count, read_destination_entry, read_tx_construction_data, read_u64, read_u8,
+        read_u8_32, read_varint,
+    };
+    let err = || ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat);
+    let mut off = 0usize;
+    // Destructure into &mut &'a mut [T] bindings (the read_tx_construction_data
+    // arena-carving pattern).
+    let SignedTxSetPools {
+        ptx: ptx_r,
+        sel: sel_r,
+        ki_str: ki_str_r,
+        dests: dests_r,
+        sources: sources_r,
+        splitted: splitted_r,
+        cons_sel: cons_sel_r,
+        extra: extra_r,
+        cons_dests: cons_dests_r,
+        subidx: subidx_r,
+        key_images: kia_r,
+        tx_key_images: tkia_r,
+    } = p;
+
+    // signed_tx_set version 00
+    if read_u8(data, &mut off)? != 0 {
+        return Err(err());
+    }
+    let ptx_len = read_count(data, &mut off, 1)?;
+    if ptx_len > ptx_r.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
+
+    let mut ptx_sv = crate::types::SliceVec::new(core::mem::take(&mut *ptx_r));
+    for _ in 0..ptx_len {
+        // ptx version 1
+        if read_u8(data, &mut off)? != 1 {
+            return Err(err());
+        }
+        // tx wire blob — self-delimiting (prefix + varint-length rct tail)
+        let tx_start = off;
+        crate::chain::xmr::transaction::Transaction::skip_transaction_wire(data, &mut off)?;
+        let tx_bytes = &data[tx_start..off];
+
+        let dust = read_u64(data, &mut off)?;
+        let fee = read_u64(data, &mut off)?;
+        let dust_added_to_fee = read_u8(data, &mut off)? != 0;
+        let change_dts = read_destination_entry(data, &mut off)?;
+
+        // selected_transfers: varint-per-element on the wire, u8 values
+        let sel_len = read_count(data, &mut off, 1)?;
+        if sel_len > sel_r.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+        }
+        let (sel_chunk, sel_rest) = core::mem::take(&mut *sel_r).split_at_mut(sel_len);
+        *sel_r = sel_rest;
+        let mut selected_transfers = crate::types::SliceVec::new(sel_chunk);
+        for _ in 0..sel_len {
+            let v = read_varint(data, &mut off)?;
+            if v > u8::MAX as u64 {
+                return Err(err());
+            }
+            selected_transfers.push(v as u8).map_err(|_| err())?;
+        }
+
+        // key_images_str: verbatim bytes
+        let ki_len = read_count(data, &mut off, 1)?;
+        if ki_len > ki_str_r.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+        }
+        let (ki_chunk, ki_rest) = core::mem::take(&mut *ki_str_r).split_at_mut(ki_len);
+        *ki_str_r = ki_rest;
+        if off + ki_len > data.len() {
+            return Err(err());
+        }
+        let mut key_images_str = crate::types::SliceVec::new(ki_chunk);
+        for &b in &data[off..off + ki_len] {
+            key_images_str.push(b).map_err(|_| err())?;
+        }
+        off += ki_len;
+
+        // tx_key placeholder (Scalar::ONE on the wire; r is not returned)
+        let _tx_key = read_u8_32(data, &mut off)?;
+
+        // additional_tx_keys
+        let add_len = read_count(data, &mut off, 32)?;
+        let mut additional_tx_keys = heapless::Vec::new();
+        for _ in 0..add_len {
+            let k = read_u8_32(data, &mut off)?;
+            additional_tx_keys
+                .push(zeroize::Zeroizing::new(k))
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+        }
+
+        // dests
+        let dests_len = read_count(data, &mut off, 1)?;
+        if dests_len > dests_r.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+        }
+        let (dests_chunk, dests_rest) = core::mem::take(&mut *dests_r).split_at_mut(dests_len);
+        *dests_r = dests_rest;
+        let mut dests = crate::types::SliceVec::new(dests_chunk);
+        for _ in 0..dests_len {
+            let d = read_destination_entry(data, &mut off)?;
+            dests.push(d).map_err(|_| err())?;
+        }
+
+        // construction_data (shared reader with the unsigned face)
+        let construction_data = read_tx_construction_data(
+            data,
+            &mut off,
+            sources_r,
+            splitted_r,
+            cons_sel_r,
+            extra_r,
+            cons_dests_r,
+            subidx_r,
+        )?;
+
+        // multisig_sigs: always empty in v1
+        if read_varint(data, &mut off)? != 0 {
+            return Err(err());
+        }
+        // multisig_tx_key_entropy: 32B (writer emits zeros)
+        let _multisig_entropy = read_u8_32(data, &mut off)?;
+
+        ptx_sv
+            .push(Some(PendingTx {
+                tx_bytes,
+                dust,
+                fee,
+                dust_added_to_fee,
+                change_dts,
+                selected_transfers,
+                key_images_str,
+                additional_tx_keys,
+                dests,
+                construction_data,
+            }))
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+    }
+    let ptx = ptx_sv;
+
+    // top-level key_images
+    let ki_n = read_count(data, &mut off, 32)?;
+    if ki_n > kia_r.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
+    let (ki_chunk, ki_rest) = core::mem::take(&mut *kia_r).split_at_mut(ki_n);
+    *kia_r = ki_rest;
+    let mut key_images = crate::types::SliceVec::new(ki_chunk);
+    for _ in 0..ki_n {
+        let v = read_u8_32(data, &mut off)?;
+        key_images.push(v).map_err(|_| err())?;
+    }
+
+    // top-level tx_key_images
+    let tki_n = read_count(data, &mut off, 65)?;
+    if tki_n > tkia_r.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
+    let (tki_chunk, tki_rest) = core::mem::take(&mut *tkia_r).split_at_mut(tki_n);
+    *tkia_r = tki_rest;
+    let mut tx_key_images = crate::types::SliceVec::new(tki_chunk);
+    for _ in 0..tki_n {
+        if read_u8(data, &mut off)? != 2 {
+            return Err(err());
+        }
+        let e = TxKeyImageEntry {
+            output_pubkey: read_u8_32(data, &mut off)?,
+            key_image: read_u8_32(data, &mut off)?,
+        };
+        tx_key_images.push(e).map_err(|_| err())?;
+    }
+
+    if off != data.len() {
+        // trailing garbage = misparse
+        return Err(err());
+    }
+    Ok(SignedTxSet {
+        ptx,
+        key_images,
+        tx_key_images,
+    })
+}
+
 #[cfg(any(feature = "alloc-fallback", test))]
 pub fn decrypt_signed_txset(
     data: &[u8],
