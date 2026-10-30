@@ -5,6 +5,29 @@
 #include "assert.h"
 #include "user_memory.h"
 
+/* ---- DSE-proof secret erase (pool #22 / D2-A) ----
+ * Volatile fill loops: each store is an observable side effect through a
+ * volatile lvalue, so dead-store elimination can never drop the wipe even
+ * when the target buffer is dead afterwards (-O2/LTO). Same idiom as
+ * product_task.c seed_plate_wipe and flux/keysource se.rs::wipe_bytes. */
+
+void secure_wipe(void *p, size_t n)
+{
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    while (n--) {
+        *v++ = 0;
+    }
+}
+
+void secure_fill(void *dest, int ch, size_t count)
+{
+    volatile uint8_t *v = (volatile uint8_t *)dest;
+    uint8_t c = (uint8_t)ch;
+    while (count--) {
+        *v++ = c;
+    }
+}
+
 #define SRAM_HEAP_TRACK                 0
 #define EXT_HEAP_TRACK                  0
 

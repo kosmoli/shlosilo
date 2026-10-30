@@ -248,7 +248,7 @@ static int32_t DS28S60_WriteSecret(void)
         memcpy(&sendBuf[2], partialSecret, 32);
         ret = DS28S60_SendCmdAndGetResult(DS28S60_CMD_CPT_SECRET, sendBuf, 34, 0, NULL);
         CHECK_ERRCODE_BREAK("cpt secret", ret);
-        memset(sendBuf, 0, sizeof(sendBuf));
+        secure_wipe(sendBuf, sizeof(sendBuf));
         ret = DS28S60_WritePage(sendBuf, BINDING_DATA_PAGE);
         CHECK_ERRCODE_BREAK("clr binding page", ret);
         UserDelay(50);

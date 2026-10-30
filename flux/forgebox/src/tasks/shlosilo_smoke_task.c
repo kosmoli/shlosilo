@@ -667,7 +667,7 @@ static int run_checks(void)
     }
 
     /* 3. create account (dice entropy) — P1-04：无 seed 输出 */
-    memset(mnemonic_buf, 0, sizeof(mnemonic_buf));
+    secure_wipe(mnemonic_buf, sizeof(mnemonic_buf));
     if (shlosilo_create_account_ffi(12, 6, rolls64, sizeof(rolls64), NULL, 0,
                                     mnemonic_buf, sizeof(mnemonic_buf)) == 0) {
         log_line("create: PASS");
@@ -693,8 +693,8 @@ static int run_checks(void)
             fail++;
             log_line("export: FAIL");
         }
-        memset(export_buf, 0, sizeof(export_buf));
-        memset(path_elems, 0, sizeof(path_elems));
+        secure_wipe(export_buf, sizeof(export_buf));
+        secure_wipe(path_elems, sizeof(path_elems));
     }
 
     /* 5. sign_ur — 真实 EIP-1559 签名 + 耗时基准 */
@@ -751,8 +751,8 @@ static int run_checks(void)
 
     /* P6.4 v2-安全 §5：C L3 敏感缓冲用后清零（mnemonic 索引属敏感材料；
      * out 是公开输出，一并清零是廉价纵深；export_buf/idx12 在各自作用域清） */
-    memset(out, 0, sizeof(out));
-    memset(mnemonic_buf, 0, sizeof(mnemonic_buf));
+    secure_wipe(out, sizeof(out));
+    secure_wipe(mnemonic_buf, sizeof(mnemonic_buf));
 
         /* 7. R3 typed multipart UR roundtrip (2026-08-31) */
     log_line("r3 multipart: start...");
@@ -952,14 +952,14 @@ static int run_checks(void)
             }
             shlosilo_ur_encode_free(enc2);
             shlosilo_ur_decode_free(dec2);
-            memset(frame, 0, sizeof(frame));
+            secure_wipe(frame, sizeof(frame));
         }
 
         PsramFree(enc_ws);
         PsramFree(dec_ws);
-        memset(mp_payload, 0, sizeof(mp_payload));
-        memset(mp_out, 0, sizeof(mp_out));
-        memset(frame, 0, sizeof(frame));
+        secure_wipe(mp_payload, sizeof(mp_payload));
+        secure_wipe(mp_out, sizeof(mp_out));
+        secure_wipe(frame, sizeof(frame));
     }
 
     /* 8. XMR 1-input BP+（P6.6 MCU 峰值；idx12 自造 ring16，非真实资金） */
@@ -1054,8 +1054,8 @@ static int run_checks(void)
             fail++;
             log_line("xmr: FAIL rc=%d", rc);
         }
-        memset(xmr_out, 0, sizeof(xmr_out));
-        memset(entropy, 0, sizeof(entropy));
+        secure_wipe(xmr_out, sizeof(xmr_out));
+        secure_wipe(entropy, sizeof(entropy));
     }
 
     PsramFree(sign_ws); /* v16: sign_ws is a PsramMalloc block — never newlib-free */

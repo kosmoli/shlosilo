@@ -5,6 +5,16 @@
 #include "stdbool.h"
 #include "stddef.h"
 
+/* ---- DSE-proof secret erase (pool #22 / D2-A) ----
+ * Volatile fill loops: every store goes through a volatile lvalue, so it is
+ * an observable side effect that neither -O2 nor LTO dead-store-elimination
+ * can drop (the old memset_s was a plain memset macro - a wipe of a dead
+ * stack buffer could silently vanish). Implemented in user_memory.c;
+ * same idiom as product_task.c seed_plate_wipe and flux/keysource se.rs
+ * wipe_bytes. */
+void secure_wipe(void *p, size_t n);              /* zero fill */
+void secure_fill(void *dest, int ch, size_t count); /* byte fill */
+
 void *SramMallocTrack(size_t size, const char *file, int line, const char *func);
 void SramFreeTrack(void *p, const char *file, int line, const char *func);
 void *SramReallocTrack(void *p, size_t size, const char *file, int line, const char *func);
@@ -24,7 +34,7 @@ void PrintHeapInfo(void);
 #define snprintf_s                          snprintf
 #endif
 #ifndef memset_s
-#define memset_s(dest, destsz, ch, count)   memset(dest, ch, count)
+#define memset_s(dest, destsz, ch, count)   secure_fill((dest), (ch), (count))
 #endif
 #ifndef strcpy_s
 #define strcpy_s(dest, destsz, src)         strcpy(dest, src)

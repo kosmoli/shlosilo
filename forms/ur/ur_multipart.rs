@@ -395,10 +395,15 @@ pub unsafe fn ur_decode_ws_zeroize(base: *mut u8) {
         ] {
             let span = core::slice::from_raw_parts_mut(base.add(off), len);
             for b in span.iter_mut() {
-                *b = 0;
+                // Volatile write (DSE-proof wipe): a plain `*b = 0` here is a
+                // dead store the optimizer may drop (pool #22) - same walk as
+                // `flux/keysource` se.rs::wipe_bytes.
+                core::ptr::write_volatile(b, 0);
             }
         }
     }
+    // Keep the volatile wipes ordered against later non-volatile code.
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 /// Z3.3c: encode-handle workspace length (aligned encoder state).
