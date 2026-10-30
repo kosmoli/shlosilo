@@ -36,6 +36,7 @@ pub mod device_timing;
 pub mod encoding;
 pub mod entropy;
 pub mod error;
+pub mod failure_text;
 pub mod ffi;
 pub mod network;
 pub mod signature;

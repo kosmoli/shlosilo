@@ -274,6 +274,38 @@ fn foreign_fp_records_are_ignored() {
     );
 }
 
+/// P0-① (pool #57): the fp-mismatch refusal must reach the FIXED visible
+/// screen word end-to-end over a REAL sign run — foreign-fp records -> error
+/// kind -> C-ABI code -> the byte-exact user text. This is the "可见报错链路"
+/// pin: a mapping drift anywhere in the chain (the 2026-10-29 "-20 wearing
+/// the -34 word" class) turns it red.
+#[test]
+fn fp_mismatch_error_reaches_fixed_screen_word() {
+    use shlosilo::error::ShlosiloErrorCode;
+    use shlosilo::failure_text::sign_failure_text;
+
+    let mut records = fixture_gap_records();
+    for r in records.iter_mut() {
+        r.wallet_fp[0] ^= 0xFF;
+    }
+    let err = sign_stripped_fixture(&records)
+        .expect_err("foreign-fp records leave the gaps uncovered: the sign must refuse");
+    assert!(
+        matches!(
+            err.kind,
+            shlosilo::error::ShlosiloErrorKind::KeyImageRecordMissing
+        ),
+        "expected KeyImageRecordMissing, got {err:?}"
+    );
+    let code = ShlosiloErrorCode::from_shlosilo_error(err);
+    assert_eq!(code, -34, "the fp-mismatch refusal must map to FFI -34");
+    assert_eq!(
+        sign_failure_text(code).to_bytes(),
+        b"sign failed\nwallet key images out of date\nre-run the wallet key image sync, then retry",
+        "the refusal must surface as the fixed visible word (拆码 red line)"
+    );
+}
+
 /// v2 gap policy (2026-10-21 Kosmo 拍板 — pool #32/#48, red pins 5/6, A案):
 /// an uncovered position REFUSES the sign (KeyImageRecordMissing). The v1
 /// conservative filler (a derived key image of a spent input stamped into

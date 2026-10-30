@@ -1328,6 +1328,30 @@ int shlosilo_ki_store_merge_ffi(struct WalletKiRecord *store,
 void shlosilo_ur_decode_free(struct UrMultipartDecoder *handle);
 
 /**
+ * Fixed failure-vocabulary lookups (拆码 red line, pool #57): return the
+ * static NUL-terminated display text for a C-ABI error code. Pure value
+ * in, `'static` pointer out — no allocation, no caller buffer.
+ *
+ * Contract: the pointer is a Rust static (`c"..."` literal in
+ * `crate::failure_text`) valid for the program lifetime; the caller must
+ * NOT free it. Unmapped codes return the generic "unknown code" class
+ * entry (class only, never internal detail).
+ */
+const char *shlosilo_sign_failure_text(int code);
+
+/**
+ * Pairing failure reason line (fixed vocabulary). Same contract as
+ * `shlosilo_sign_failure_text`.
+ */
+const char *shlosilo_pairing_failure_reason(int code);
+
+/**
+ * Pairing failure hint line (fixed vocabulary, per-class next step).
+ * Same contract.
+ */
+const char *shlosilo_pairing_failure_hint(int code);
+
+/**
  * C-ABI: register the millisecond clock for CN phase timing.
  *
  * T-04 contract: typed nullable fn pointer, NULL unregisters.

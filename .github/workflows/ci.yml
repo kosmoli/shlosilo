@@ -35,6 +35,8 @@ jobs:
       # Every include_bytes!/include_str! literal path must be tracked by git.
       - name: fixture tracking gate
         run: bash scripts/check_fixtures.sh
+      - name: fp-chain coverage gate (pool #58)
+        run: bash scripts/check_fp_chain.sh
       # The test steps run through scripts/test_zero_on_alloc.sh, which preloads
       # jemalloc with MALLOC_CONF=zero:true so uninitialized reads surface
       # deterministically (fresh memory reads as 0 instead of stale heap residue).

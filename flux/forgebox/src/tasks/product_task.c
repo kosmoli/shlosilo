@@ -147,29 +147,9 @@ static void scan_notice_sticky(const char *l1, const char *l2, const char *l3)
 /* Fixed diagnostic vocabulary for pairing failures (injection red line:
  * no raw rc codes on screen). -21 = the container did not authenticate
  * under THIS wallet's keys = it is not this wallet's output. */
-static const char *pairing_fail_reason(int rc)
-{
-    /* Four diagnostic classes (2026-10-11 split + 2026-10-29 record-cap
-     * class, Kosmo's red line: fixed vocabulary, no internal detail):
-     * -21 container shape, -40 envelope signature, -15 pk1/pk2 ownership
-     * binding, -20 wallet too large for pairing. */
-    if (rc == -20) {
-        return "too many outputs for this device";
-    }
-    if (rc == -21) {
-        return "output format not recognized";
-    }
-    if (rc == -40) {
-        return "output signature check failed";
-    }
-    if (rc == -15) {
-        return "output not from this wallet";
-    }
-    if (rc == -20 || rc == -2) {
-        return "data error";
-    }
-    return "unrecognized output";
-}
+/* Pairing failure words moved to the single source of truth:
+ * forms::failure_text (pool #57), rendered through
+ * shlosilo_pairing_failure_reason / shlosilo_pairing_failure_hint. */
 /* Phase 4: console-created wallet session ('key new') — NOT flow-owned (same
  * lifetime as an SE unlock: lives until 'se lock' / sign-done close), so it
  * survives UI navigation and the plate-export flow can run against it. */
@@ -1277,37 +1257,12 @@ static void sign_run(const char *uri, const char *type,
              * single catch-all template hid the failure class on the only
              * diagnostic channel we have (the screen) -- 2026-10-26 the
              * intermittent sign failure could not be triaged because of it. */
-            if (rc == -34 || rc == -35) {
-                /* KeyImageRecordsMissing/Mismatch: the wallet's key image
-                 * picture is out of step with the device's retention. Fixed
-                 * template (2026-10-09 injection red line) -- class only. */
-                snprintf(result, sizeof(result),
-                         "sign failed\nwallet key images out of date\n"
-                         "re-run the wallet key image sync, then retry");
-            } else if (rc == -20) {
-                /* BufferTooSmall: signed output or request exceeded a fixed
-                 * buffer (too many inputs for one transaction). */
-                snprintf(result, sizeof(result),
-                         "sign failed\nrequest too large\n"
-                         "pay with fewer inputs, or split the payment");
-            } else if (rc == -21) {
-                /* EncodingError: the scanned request could not be decoded or
-                 * parsed. */
-                snprintf(result, sizeof(result),
-                         "sign failed\nrequest data not recognized\n"
-                         "re-create the payment and retry");
-            } else if (rc == -2) {
-                /* InvalidArgument: the request was parsed but rejected by
-                 * the signer's input contract. */
-                snprintf(result, sizeof(result),
-                         "sign failed\nrequest not accepted\n"
-                         "re-create the payment and retry");
-            } else {
-                /* Unmapped code -- fixed "unknown code" entry, class only. */
-                snprintf(result, sizeof(result),
-                         "sign failed\ninternal error (unknown code)\n"
-                         "reboot the device and retry");
-            }
+            /* Fixed word table (拆码 red line): the single source of truth is
+             * forms::failure_text, rendered through the FFI lookup — the
+             * mapping is pinned byte-exactly by tests/pin_failure_text.rs
+             * (pool #57: the 2026-10-29 KI-cap case let a -20 failure wear
+             * the -34 wording; the table now has a test face). */
+            snprintf(result, sizeof(result), "%s", shlosilo_sign_failure_text(rc));
             printf("sign FAIL: rc=%d type=%s len %u head=%02x%02x%02x%02x "
                    "fr=%u dup=%u stk=%uK\r\n",
                    rc, (uri != NULL) ? "single-frame" : g_ur_type, plen,
@@ -1476,8 +1431,8 @@ static void pairing_run(const uint8_t *payload, unsigned plen)
     if (rc != 0 || out_len == 0 || out_len > SIGN_OUT_MAX) {
         printf("pairing: FAIL rc=%d out=%u dt=%ums\r\n", rc, out_len, (unsigned)dt);
         scan_notice_sticky(
-            "pairing failed", pairing_fail_reason(rc),
-            (rc == -20) ? "device limit reached" : "move camera away, retry");
+            "pairing failed", shlosilo_pairing_failure_reason(rc),
+            shlosilo_pairing_failure_hint(rc));
         g_ur_latch = 1;
         ExtFree(g_sign_out);
         g_sign_out = NULL;

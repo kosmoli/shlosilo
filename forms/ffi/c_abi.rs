@@ -2051,6 +2051,33 @@ pub mod r3 {
         }
     }
 
+    /// Fixed failure-vocabulary lookups (拆码 red line, pool #57): return the
+    /// static NUL-terminated display text for a C-ABI error code. Pure value
+    /// in, `'static` pointer out — no allocation, no caller buffer.
+    ///
+    /// Contract: the pointer is a Rust static (`c"..."` literal in
+    /// `crate::failure_text`) valid for the program lifetime; the caller must
+    /// NOT free it. Unmapped codes return the generic "unknown code" class
+    /// entry (class only, never internal detail).
+    #[no_mangle]
+    pub extern "C" fn shlosilo_sign_failure_text(code: c_int) -> *const c_char {
+        crate::failure_text::sign_failure_text(code).as_ptr()
+    }
+
+    /// Pairing failure reason line (fixed vocabulary). Same contract as
+    /// `shlosilo_sign_failure_text`.
+    #[no_mangle]
+    pub extern "C" fn shlosilo_pairing_failure_reason(code: c_int) -> *const c_char {
+        crate::failure_text::pairing_failure_reason(code).as_ptr()
+    }
+
+    /// Pairing failure hint line (fixed vocabulary, per-class next step).
+    /// Same contract.
+    #[no_mangle]
+    pub extern "C" fn shlosilo_pairing_failure_hint(code: c_int) -> *const c_char {
+        crate::failure_text::pairing_failure_hint(code).as_ptr()
+    }
+
     #[cfg(test)]
     mod r3_tests {
         use super::*;
@@ -2719,6 +2746,15 @@ mod tests {
             *const crate::business::sign::WalletKiRecord,
             c_uint,
         ) -> c_int = r3::shlosilo_ki_store_merge_ffi;
+    }
+
+    /// Pool #57 contract pin: frozen signatures of the failure-vocabulary
+    /// lookups (pure code in, `'static` CStr pointer out).
+    #[test]
+    fn ffi_failure_text_signature_pins() {
+        const _: extern "C" fn(c_int) -> *const c_char = r3::shlosilo_sign_failure_text;
+        const _: extern "C" fn(c_int) -> *const c_char = r3::shlosilo_pairing_failure_reason;
+        const _: extern "C" fn(c_int) -> *const c_char = r3::shlosilo_pairing_failure_hint;
     }
 
     /// §53 behavior pin through the C-ABI (the 1021 real-device scenario

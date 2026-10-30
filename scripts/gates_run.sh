@@ -6,6 +6,9 @@
 # failing test on any face is a real failure.
 cd ~/works/shlosilo-poc4 || exit 99
 bash scripts/check_fixtures.sh > /tmp/g_fixt.log 2>&1; echo "FIXTURES=$?"
+# Pool #58: fp-chain coverage manifest (fingerprint binding + visible-failure
+# word chain pins) must stay intact — a renamed/removed/ignored pin is red.
+bash scripts/check_fp_chain.sh > /tmp/g_fpchain.log 2>&1; echo "FPCOV=$?"
 # TEST/TESTALL run through the zero-on-alloc wrapper (jemalloc zero:true) so
 # uninitialized reads surface deterministically - same path as CI test steps.
 bash scripts/test_zero_on_alloc.sh --offline --all-targets --no-fail-fast > /tmp/g_test.log 2>&1; echo "TEST=$?"
