@@ -141,6 +141,11 @@ static void scan_notice_sticky(const char *l1, const char *l2, const char *l3)
     g_scan_notice_l1 = l1;
     g_scan_notice_l2 = l2;
     g_scan_notice_l3 = l3;
+    /* The notice OWNS the status slot: reset the collection progress first,
+     * or draw_scan_live renders "scanning N%" over the notice title line
+     * (2026-10-30 real-device batch: the title was masked while l2 alone
+     * showed). Same pattern as no_session_prompt(). */
+    UiScanProgress(0);
     UiScanInfo(l1, l2, l3, "");
 }
 
@@ -1086,6 +1091,10 @@ static void ur_intake_reset(void)
     g_ur_dec_ws = NULL;
     ExtFree(g_ur_payload);
     g_ur_payload = NULL;
+    /* Teardown clears stale collection progress so a later failure line
+     * ("scan failed" etc.) is not masked by "scanning N%" in the status
+     * slot (2026-10-30, same family as the scan_notice_sticky fix). */
+    UiScanProgress(0);
 }
 
 /* Map the signed set to its output UR type: XMR travels back as the official
@@ -1607,6 +1616,12 @@ static void scan_ur_hit(const char *text)
         return;
     }
 
+    /* A processed hit starts a new scan: the previous failure notice has
+     * served its duty (2026-10-30 ruling: it persisted until this scan).
+     * Only the sticky state is cleared; the display text yields to the new
+     * scan's own lines as they are written. */
+    g_scan_notice_l1 = NULL;
+
     /* ---- First-frame classification (2026-10-09, Kosmo's two-state
      * machine): the UR type is in EVERY frame header, so decide BEFORE
      * collecting anything -- the collector only runs for types this flow
@@ -1950,15 +1965,18 @@ static void scan_step(void)
     dec = QrDecodeGetDecodeTick();
     g_scan_frames++;
 
-    /* Status-slot lifecycle (2026-10-09 Kosmo UI spec): the slot reflects
-     * what the camera CURRENTLY sees. Two consecutive no-decode frames (=
-     * the QR left the view; debounced across animation flip gaps) clear the
-     * slot to empty and re-arm the no-session prompt for the next sighting. */
+    /* Status-slot lifecycle (2026-10-30 Kosmo real-device ruling; the
+     * 2026-10-09 "slot reflects what the camera CURRENTLY sees" semantics is
+     * retired): two consecutive no-decode frames mean the QR left the view
+     * (debounced across animation flip gaps) and RE-ARM the retry state --
+     * the display lines are NOT wiped here. The old wipe killed the sticky
+     * failure notice within ~2 miss frames and made "scanning" flicker on
+     * every flip gap. Display ownership now: a failure notice persists until
+     * the next scan starts (scan_ur_hit clears it), a live collection keeps
+     * its progress line through decode gaps, the idle hint persists. */
     if (n > 0) {
         g_scan_miss = 0;
     } else if (++g_scan_miss == 2) {
-        UiScanProgress(0);
-        UiScanInfo("", "", "", "");
         g_no_session_prompted = 0;
         g_ur_latch = 0;
     }
