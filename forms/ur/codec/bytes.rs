@@ -23,10 +23,12 @@ mod tests {
     }
 
     /// Since 2026-10-12 outbound messages carry the CBOR byte-string shell
-    /// (keystone-ur Bytes / monero_c `CborLite::encodeBytes` semantics).
+    /// (keystone-ur Bytes / monero_c `CborLite::encodeBytes` semantics) —
+    /// CANONICAL head since the WP3 registry cross-check (2026-10-31):
+    /// `0x44` short form (RFC 8949 §4.2), the `44aabbccdd` ur-registry shape.
     #[test]
     fn official_data_vector_encode_shells() {
         let enc = encode(b"data").unwrap();
-        assert_eq!(enc.as_str(), "ur:bytes/hdaaiehsjyhsdedeoyln");
+        assert_eq!(enc.as_str(), "ur:bytes/fyiehsjyhsvdvadawm");
     }
 }
