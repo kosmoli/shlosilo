@@ -738,6 +738,11 @@
  */
 typedef struct KeySession KeySession;
 
+/**
+ * The full wire-tail view for one dialect.
+ */
+typedef struct TailView TailView;
+
 typedef struct UrMultipartDecoder UrMultipartDecoder;
 
 /**
@@ -776,6 +781,8 @@ typedef struct WalletKiRecord {
   uint8_t wallet_fp[8];
   uint8_t key_image[32];
 } WalletKiRecord;
+
+
 
 /**
  * C-ABI: register the millisecond clock callback (no-op when the feature is off).
