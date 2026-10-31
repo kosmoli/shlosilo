@@ -162,6 +162,10 @@ fn fixture_gap_records() -> Vec<WalletKiRecord> {
             transfer_idx: i,
             wallet_fp: fp,
             key_image: [0x11u8.wrapping_add(i as u8); 32],
+            // I13 (WP3, Kosmo decision 2026-10-31): the mapping key rides the
+            // record. Distinct per-record pattern so the pin can prove the
+            // wire carries RECORD-sourced out_pubs (not derivable ones).
+            out_pub: [0xA0u8.wrapping_add(i as u8); 32],
         })
         .collect()
 }
@@ -367,57 +371,27 @@ fn keystone_wire_is_empty_positional_plus_two_fill_map() {
         "new-outputs leg matches the Cake view (all-owned fixture)"
     );
 
-    // The retained leg (second): one entry per spent source — the real
-    // out_pub (keystone's transfer keying) + the derived input KI.
-    let mut p_txes = core::array::from_fn::<Option<PendingTx<'_>>, 2, _>(|_| None);
-    let mut sel = [0u8; 64];
-    let mut ki_str = [0u8; 4096];
-    let mut dests =
-        core::array::from_fn::<TxDestinationEntry, 16, _>(|_| TxDestinationEntry::default());
-    let mut sources = core::array::from_fn::<Option<TxSourceEntry>, 32, _>(|_| None);
-    let mut splitted =
-        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
-    let mut cons_sel = [0usize; 256];
-    let mut extra = [0u8; 8192];
-    let mut cons_dests =
-        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
-    let mut subidx = [0u32; 256];
-    let mut key_images = [[0u8; 32]; 16];
-    let mut tx_key_images =
-        core::array::from_fn::<TxKeyImageEntry, 16, _>(|_| TxKeyImageEntry::default());
-    let _set = deserialize_signed_plain(
-        &ks_plain,
-        &mut SignedTxSetPools {
-            ptx: &mut p_txes,
-            sel: &mut sel,
-            ki_str: &mut ki_str,
-            dests: &mut dests,
-            sources: &mut sources,
-            splitted: &mut splitted,
-            cons_sel: &mut cons_sel,
-            extra: &mut extra,
-            cons_dests: &mut cons_dests,
-            subidx: &mut subidx,
-            key_images: &mut key_images,
-            tx_key_images: &mut tx_key_images,
-        },
-    )
-    .expect("parse keystone plain");
-
-    let src_entries: Vec<&TxSourceEntry> = sources.iter().flatten().collect();
+    // The retained leg (second): the FULL retention set — every fp-matched
+    // record, spent or not (keystone's transfers.details loop parity,
+    // transfer.rs:1271). The out_pub KEYS come from the records themselves
+    // (I13): a spent source's derivable out_pub cannot fake this — the
+    // unspent records' pattern keys are only reachable through the record.
     assert_eq!(
         ks_tkis.len(),
-        retained_start + src_entries.len(),
-        "two-fill = every new output + every spent source (retained leg)"
+        retained_start + 5,
+        "the two-fill map must carry the FULL retention set (5 fixture records),          not just the spent source(s)"
     );
-    for (e, src) in ks_tkis[retained_start..].iter().zip(src_entries.iter()) {
-        let real = src
-            .outputs
-            .get(src.real_output as usize)
-            .expect("real ring member");
+    for (e, i) in ks_tkis[retained_start..].iter().zip(0u8..5) {
         assert_eq!(
-            e.0, real.dest,
-            "the retained leg keys on the real out_pub (keystone transfer shape)"
+            e.0,
+            [0xA0u8.wrapping_add(i); 32],
+            "retained leg keys ride the RECORDS (I13) — record {}",
+            i
+        );
+        assert_eq!(
+            e.1,
+            [0x11u8.wrapping_add(i); 32],
+            "retained leg KIs are the record KIs (transfer_idx order)"
         );
     }
 }

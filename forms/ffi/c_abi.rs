@@ -2767,6 +2767,7 @@ mod tests {
             transfer_idx: idx,
             wallet_fp: [fp; 8],
             key_image: [ki; 32],
+            out_pub: [ki; 32],
         };
         let mut store = [mk(0xEE, 0xFFFF_FFFF, 0xEE); 4];
         let mut len: c_uint = 0;
@@ -2847,6 +2848,7 @@ mod tests {
             transfer_idx: 0xFFFF_FFFF,
             wallet_fp: [0u8; 8],
             key_image: [0u8; 32],
+            out_pub: [0xFF; 32],
         }; 8];
         let mut retained_n: c_uint = 0;
         let rc = r3::shlosilo_xmr_pairing_ffi(

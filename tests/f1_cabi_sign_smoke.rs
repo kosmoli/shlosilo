@@ -262,6 +262,7 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             transfer_idx: i as u32,
             wallet_fp: fp,
             key_image: hex32(h),
+            out_pub: [i as u8; 32],
         })
         .collect();
     // Sanity: the retention table must agree with the fresh derivation on the

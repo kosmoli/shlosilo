@@ -162,6 +162,7 @@ fn run_leg(plain: &[u8], seed: u64) -> (Vec<u8>, Vec<WalletKiRecord>) {
         transfer_idx: u32::MAX,
         wallet_fp: [0u8; 8],
         key_image: [0u8; 32],
+        out_pub: [0xFF; 32],
     }; 8];
     let mut ki_written = 0usize;
     let outcome = process_output_export_with_records(
