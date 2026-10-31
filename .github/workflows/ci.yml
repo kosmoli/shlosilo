@@ -37,6 +37,8 @@ jobs:
         run: bash scripts/check_fixtures.sh
       - name: fp-chain coverage gate (pool #58)
         run: bash scripts/check_fp_chain.sh
+      - name: profile boundary gate (WP1 I1)
+        run: bash scripts/check_profile_boundary.sh
       # The test steps run through scripts/test_zero_on_alloc.sh, which preloads
       # jemalloc with MALLOC_CONF=zero:true so uninitialized reads surface
       # deterministically (fresh memory reads as 0 instead of stale heap residue).

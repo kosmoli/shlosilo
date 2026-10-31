@@ -10,6 +10,9 @@ bash scripts/check_fixtures.sh > /tmp/g_fixt.log 2>&1; echo "FIXTURES=$?"
 # Pool #58: fp-chain coverage manifest (fingerprint binding + visible-failure
 # word chain pins) must stay intact — a renamed/removed/ignored pin is red.
 bash scripts/check_fp_chain.sh > /tmp/g_fpchain.log 2>&1; echo "FPCOV=$?"
+# WP1 I1 (C4): dependency direction — the core must never reference the
+# profile layer (profile → canonical ← core only).
+bash scripts/check_profile_boundary.sh > /tmp/g_profile.log 2>&1; echo "PROFILE=$?"
 # WP1 I8 delete drill (C5 double build): the `profile-keystone` dialect
 # feature is NON-default — TEST/TESTNOALLOC/KEYSRC are the "dialect OFF"
 # variant (Cake only, green = downstream zero-awareness proof) and TESTALL
