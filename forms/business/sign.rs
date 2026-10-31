@@ -1052,12 +1052,27 @@ fn sign_xmr_with_ws<'a>(
         }
 
         // tx_key_images: output one-time address + Hs(shared_key)·Hp(stealth)
+        // wallet2 fill semantics (wallet2.cpp:8055-8070 is_out_to_acc loop):
+        // record every output BACK TO THIS WALLET — change and self-pay
+        // INCLUDED, external recipients EXCLUDED. Ownership = the
+        // m_subaddresses map test on subaddress spend pubs (derived identity;
+        // the amount is never consulted) — I12, WP1 interface freeze. The old
+        // (amount, spend_pub) skip was the inverted filter pinned by
+        // tests/tx_key_images_wallet2_view.rs (landed red 2026-10-31, GREEN
+        // since this WP2 first-batch fix).
+        let our_spend_pub = {
+            use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+            use curve25519_dalek::scalar::Scalar;
+            (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(*spend_sec))
+                .compress()
+                .to_bytes()
+        };
         for (i, dest) in tx_data.splitted_dsts.iter().enumerate() {
-            // change outputs skipped (the recipient is our own change address; keystone outputs() counts it too,
-            // but shlosilo v1 only records external receiving outputs)
-            if dest.amount == tx_data.change_dts.amount
-                && dest.spend_public_key == tx_data.change_dts.spend_public_key
-            {
+            if !crate::chain::xmr::subaddress::wallet_owns_destination(
+                &our_spend_pub,
+                &view_sec,
+                dest,
+            ) {
                 continue;
             }
             // Audit #9 P1-04: all secrets in the key-image recomputation section are owner-wrapped:

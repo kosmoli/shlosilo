@@ -171,6 +171,124 @@ pub fn derive_subaddress(
     })
 }
 
+/// wallet2 `m_subaddresses` map approximation window (the SUBADDRESS_LOOKAHEAD
+/// class used by monero_c/cupcake). The sending wallet's fill loop
+/// (wallet2.cpp:8055-8070) tests membership in its known-subaddress MAP
+/// (key = subaddress spend pubkey, (0,0) = the main address); the device
+/// signer has no map and derives this window instead. A destination outside
+/// the window is treated as foreign (wallet2 with a smaller map would do the
+/// same). A cached map is the LuckyFox-layer upgrade.
+pub const SUB_LOOKAHEAD_MAJOR: u32 = 8;
+pub const SUB_LOOKAHEAD_MINOR: u32 = 200;
+
+/// True iff the destination address belongs to THIS wallet — the wallet2
+/// `m_subaddresses` map test at construction time (cryptonote_format_utils.cpp
+/// `is_out_to_acc_precomp` reduces the output to a subaddress spend pubkey and
+/// looks it up; (0,0) is the main address). Ownership is decided by DERIVED
+/// IDENTITY (subaddress spend pub keys), never by amount matching (I12, WP1
+/// interface freeze).
+pub fn wallet_owns_destination(
+    main_spend_pub: &[u8; 32],
+    main_view_sec: &[u8; 32],
+    dest: &crate::chain::xmr::unsigned_txset::TxDestinationEntry,
+) -> bool {
+    if dest.spend_public_key == *main_spend_pub {
+        return true; // map entry (0,0): the main address
+    }
+    for major in 0..=SUB_LOOKAHEAD_MAJOR {
+        for minor in 0..=SUB_LOOKAHEAD_MINOR {
+            if major == 0 && minor == 0 {
+                continue; // (0,0) is the main address, handled above
+            }
+            if let Ok(sp) = derive_subaddress_spend_pub(main_spend_pub, main_view_sec, major, minor)
+            {
+                if sp == dest.spend_public_key {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod wallet_ownership_tests {
+    use super::*;
+    use crate::chain::xmr::unsigned_txset::TxDestinationEntry;
+
+    fn dest(spend_pub: [u8; 32], is_sub: bool) -> TxDestinationEntry {
+        TxDestinationEntry {
+            spend_public_key: spend_pub,
+            is_subaddress: is_sub,
+            ..TxDestinationEntry::default()
+        }
+    }
+
+    fn pub_of(sec: &[u8; 32]) -> [u8; 32] {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        use curve25519_dalek::scalar::Scalar;
+        (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(*sec))
+            .compress()
+            .to_bytes()
+    }
+
+    /// wallet2 m_subaddresses map semantics: the MAIN address is the (0,0)
+    /// entry (spend-key match, flag not consulted); subaddress entries are the
+    /// derived spend pubs inside the lookahead window; anything else is
+    /// foreign. No amount is ever consulted (I12).
+    #[test]
+    fn wallet_owns_destination_map_semantics() {
+        let spend_sec = [0x31u8; 32];
+        let view_sec = [0x32u8; 32];
+        let main_spend_pub = pub_of(&spend_sec);
+
+        // (0,0) map entry: the main address, matched regardless of the flag
+        assert!(wallet_owns_destination(
+            &main_spend_pub,
+            &view_sec,
+            &dest(main_spend_pub, false)
+        ));
+        assert!(wallet_owns_destination(
+            &main_spend_pub,
+            &view_sec,
+            &dest(main_spend_pub, true)
+        ));
+
+        // subaddress entries inside the window (two corners)
+        for (major, minor) in [(0u32, 6u32), (3u32, 17u32)] {
+            let sp = derive_subaddress_spend_pub(&main_spend_pub, &view_sec, major, minor)
+                .expect("sub spend pub");
+            assert!(
+                wallet_owns_destination(&main_spend_pub, &view_sec, &dest(sp, true)),
+                "our subaddress ({major},{minor}) must be owned"
+            );
+        }
+
+        // outside the window is foreign (documented approximation boundary)
+        let sp_far =
+            derive_subaddress_spend_pub(&main_spend_pub, &view_sec, 0, SUB_LOOKAHEAD_MINOR + 1)
+                .expect("sub spend pub");
+        assert!(!wallet_owns_destination(
+            &main_spend_pub,
+            &view_sec,
+            &dest(sp_far, true)
+        ));
+
+        // foreign address family: never owned
+        let foreign = pub_of(&[0x77u8; 32]);
+        assert!(!wallet_owns_destination(
+            &main_spend_pub,
+            &view_sec,
+            &dest(foreign, false)
+        ));
+        assert!(!wallet_owns_destination(
+            &main_spend_pub,
+            &view_sec,
+            &dest(foreign, true)
+        ));
+    }
+}
+
 /// Derive the Nth subaddress from (account, minor) (simplified — receiver scenario)
 ///
 /// **Returns**: 32-byte subaddress spend public key

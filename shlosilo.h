@@ -171,6 +171,19 @@
 #define ENTROPY_MIN_LEN 16
 
 /**
+ * wallet2 `m_subaddresses` map approximation window (the SUBADDRESS_LOOKAHEAD
+ * class used by monero_c/cupcake). The sending wallet's fill loop
+ * (wallet2.cpp:8055-8070) tests membership in its known-subaddress MAP
+ * (key = subaddress spend pubkey, (0,0) = the main address); the device
+ * signer has no map and derives this window instead. A destination outside
+ * the window is treated as foreign (wallet2 with a smaller map would do the
+ * same). A cached map is the LuckyFox-layer upgrade.
+ */
+#define SUB_LOOKAHEAD_MAJOR 8
+
+#define SUB_LOOKAHEAD_MINOR 200
+
+/**
  * XMR tx version: 2 = RingCT (post-fork, only valid in mainnet)
  */
 #define TX_VERSION 2

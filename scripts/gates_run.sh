@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # shlosilo gate batch — bare exit codes, no trimming by change surface.
-# NOTE: the MUST-RED pin suite is GREEN except the expected-red manifest
-# (= the tests/ pin_red_* set, grep-derived). Current manifest (1 entry,
-# 2026-10-31): pin_red_tx_key_images_wallet2_view_includes_change (I12 —
-# tx_key_images wallet2-view contract; the sign leg's inverted filter is the
-# known defect, the fix lands in WP2's first batch and the pin is renamed
-# together with it). Failures ON the manifest are known-red; any OTHER
+# NOTE: the MUST-RED pin suite is GREEN (2026-10-31): the expected-red
+# manifest (= the tests/ pin_red_* set) is EMPTY again — the I12 pin landed
+# red the same day and the WP2 first-batch fix turned it green, and it is
+# renamed to its invariant name (tests/tx_key_images_wallet2_view.rs). Any
 # failing test on any face is a real failure.
 cd ~/works/shlosilo-poc4 || exit 99
 bash scripts/check_fixtures.sh > /tmp/g_fixt.log 2>&1; echo "FIXTURES=$?"

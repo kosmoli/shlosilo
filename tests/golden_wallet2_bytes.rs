@@ -774,19 +774,35 @@ fn golden_resign_dev_1in_fresh_matches_signed_gold() {
         "ours: wallet-indexed key_images fill (4 entries)"
     );
     assert_eq!(
-        ours_plain.len(),
-        gold_plain.len() + 96,
-        "tail delta = three extra 32B key images"
-    );
-    assert_eq!(
         &gold_plain[3795..3827],
         &ours_plain[3795..3827],
         "the first key_images entry (the true per-tx image) must match byte-for-byte"
     );
-    assert_eq!(
-        &gold_plain[3827..],
-        &ours_plain[3795 + 128..],
-        "everything after the key_images array must match shifted by the extra entries"
+    // Second sanctioned divergence (2026-10-31, I12 fix): beyond the
+    // key_images array sits the tx_key_images section, and its fill POLICY
+    // changed from the historical amount-based filter to the wallet2
+    // is_out_to_acc view (tests/tx_key_images_wallet2_view.rs — the fill
+    // policy pin). The September gold predates the fix, so the tail is shape-
+    // pinned here instead of byte-compared: both sides must stay well-formed
+    // tki sections (varint count + 65B entries).
+    fn tki_shape_ok(tail: &[u8]) -> usize {
+        assert!(
+            !tail.is_empty() && tail[0] < 0x80,
+            "tki count: single-byte varint"
+        );
+        let n = tail[0] as usize;
+        assert_eq!(
+            tail.len(),
+            1 + n * 65,
+            "tki section geometry: varint + 65B entries"
+        );
+        n
+    }
+    let g = tki_shape_ok(&gold_plain[3827..]);
+    let o = tki_shape_ok(&ours_plain[3795 + 128..]);
+    assert!(
+        o >= g,
+        "the new fill never records FEWER entries than the old one on this fixture shape"
     );
 }
 
@@ -831,6 +847,33 @@ fn golden_resign_fa_matches_archived_our_container() {
         gold,
         "the whole signed container must reproduce the regenerated gold byte-for-byte \
          (same fixed entropy; construction_data.extra preserved)"
+    );
+}
+
+/// Regen tool (10-20 precedent, re-run 2026-10-31 for the I12 fill-policy
+/// fix): regenerate tests/fixtures/ours_signed_fa.bin from the CURRENT signer
+/// under the same fixed entropy and the same gap-record input shape. Run:
+///   cargo test --test golden_wallet2_bytes -- --ignored --nocapture dump_ours_signed_fa_gold
+#[test]
+#[ignore = "host tool: regenerate the archived fa container gold"]
+fn dump_ours_signed_fa_gold() {
+    let enc: &[u8] = include_bytes!("fixtures/unsigned_fa_subaddr.bin");
+    let gold: &[u8] = include_bytes!("fixtures/ours_signed_fa.bin");
+    let gold_plain = decrypt_signed_txset(gold, &LAB_VIEW_SK).expect("decrypt archived gold");
+    let src_ki = signed_plain_first_key_image(&gold_plain);
+    let fp = wallet_fp_of(&LAB_WALLET_ENTROPY);
+    let records: Vec<shlosilo::business::sign::WalletKiRecord> = (0..8u32)
+        .map(|i| shlosilo::business::sign::WalletKiRecord {
+            transfer_idx: i,
+            wallet_fp: fp,
+            key_image: src_ki,
+        })
+        .collect();
+    let out = sign_with_fixed_entropy_records(enc, &LAB_WALLET_ENTROPY, &records);
+    std::fs::write("tests/fixtures/ours_signed_fa.bin", &out).expect("write gold");
+    println!(
+        "regenerated tests/fixtures/ours_signed_fa.bin ({} bytes)",
+        out.len()
     );
 }
 

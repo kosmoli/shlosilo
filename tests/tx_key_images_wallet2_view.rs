@@ -1,4 +1,4 @@
-//! MUST-RED pin (I12, WP1 interface-freezing note §2): the sign leg's
+//! I12 pin (WP1 interface-freezing note §2): the sign leg's
 //! `tx_key_images` content must follow the wallet2 view.
 //!
 //! Oracle (wallet2.cpp:8055-8070 `export_key_images`, fill loop): an entry is
@@ -11,14 +11,15 @@
 //! INVERSE: it records external receiving outputs and SKIPS the change (the
 //! (amount, spend_pub) match). That is real-wallet bookkeeping damage (the
 //! change key image misses the cold map; external entries pollute it) and a
-//! wrong baseline for the keystone profile (which needs ALL outputs). This
-//! pin freezes the DESIRED contract and must stay RED until WP2's first
-//! implementation batch lands the fix (identity-based ownership, no amount
-//! matching — GPT review 2026-10-30 item 3).
+//! wrong baseline for the keystone profile (which needs ALL outputs).
+//! This pin froze the DESIRED contract and stayed RED until the WP2
+//! first-batch fix landed the wallet2-view fill (2026-10-31: identity-based
+//! ownership, no amount matching — GPT review 2026-10-30 item 3).
 //!
-//! Naming: `pin_red_*` = expected-red manifest entry (grep-derived). Rename
-//! (drop the pin_red_ prefix) together with the fix, per the red-pin
-//! convention (2026-10-20).
+//! Naming history: landed as `pin_red_tx_key_images_wallet2_view_includes_change`
+//! (MUST-RED, 2026-10-31, per the red-pin convention 2026-10-20) and renamed
+//! to its invariant name the same day when the WP2 first-batch fix turned it
+//! green (fix36-style: red pins carry the pin_red_ prefix only while red).
 
 #![cfg(feature = "alloc-fallback")]
 
@@ -56,13 +57,10 @@ fn wallet_keys() -> ([u8; 32], [u8; 32]) {
     )
 }
 
-fn point(sk: &[u8; 32]) -> [u8; 32] {
-    use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
-    use curve25519_dalek::scalar::Scalar;
-    (ED25519_BASEPOINT_TABLE * &Scalar::from_bytes_mod_order(*sk))
-        .compress()
-        .to_bytes()
-}
+/// One tx_key_images wire entry: (output one-time address, key image).
+type TkiEntry = ([u8; 32], [u8; 32]);
+/// (outer key_images, tx_key_images entries) parsed from the signed tail.
+type SignedTail = (Vec<[u8; 32]>, Vec<TkiEntry>);
 
 fn varint_ending_at(buf: &[u8], end: usize) -> Option<(u64, usize)> {
     let mut value: u64 = 0;
@@ -85,9 +83,9 @@ fn varint_ending_at(buf: &[u8], end: usize) -> Option<(u64, usize)> {
 /// Tail parse (same shape as tests/pin_signed_key_images_wallet_indexed.rs),
 /// extended to return the tx_key_images entries:
 /// `... ptx | varint ki_count | ki_count*32B | varint tki_count | tki_count*65B`.
-fn parse_signed_tail(plain: &[u8]) -> (Vec<[u8; 32]>, Vec<([u8; 32], [u8; 32])>) {
+fn parse_signed_tail(plain: &[u8]) -> SignedTail {
     let len = plain.len();
-    let mut candidates: Vec<(Vec<[u8; 32]>, Vec<([u8; 32], [u8; 32])>)> = Vec::new();
+    let mut candidates: Vec<SignedTail> = Vec::new();
     for tki_count in 0..=8usize {
         let entries_len = tki_count * 65;
         let Some((c1, v1_start)) = varint_ending_at(plain, len - entries_len) else {
@@ -205,7 +203,7 @@ fn sign_fixture_plain() -> Vec<u8> {
 /// of output one-time addresses owned by THIS wallet (change + self-pay),
 /// decided by DERIVED IDENTITY (never by amount matching).
 #[test]
-fn pin_red_tx_key_images_wallet2_view_includes_change() {
+fn tx_key_images_wallet2_view_includes_change() {
     let (spend_sk, view_sk) = wallet_keys();
     assert_eq!(view_sk, TX2_LAB_VIEW_SK, "derivation-chain guard");
 
@@ -262,7 +260,7 @@ fn pin_red_tx_key_images_wallet2_view_includes_change() {
 
     let ptx = set.ptx.iter().flatten().next().expect("one pending tx");
     let mut pos = 0usize;
-    let prefix = TransactionPrefix::deserialize(&ptx.tx_bytes, &mut pos).expect("tx prefix");
+    let prefix = TransactionPrefix::deserialize(ptx.tx_bytes, &mut pos).expect("tx prefix");
     let tx_pub = prefix.extra.tx_pub_key.expect("tx pub key in extra");
     let additional = &prefix.extra.additional_pub_keys;
 
@@ -280,7 +278,7 @@ fn pin_red_tx_key_images_wallet2_view_includes_change() {
             let sk = Scalar::from_bytes_mod_order(spend_sk) + Scalar::from_bytes_mod_order(off);
             (ED25519_BASEPOINT_TABLE * &sk).compress().to_bytes() == out.stealth_address
         };
-        let owned_here = try_key(&tx_pub) || additional.get(i).map(|k| try_key(k)).unwrap_or(false);
+        let owned_here = try_key(&tx_pub) || additional.get(i).map(try_key).unwrap_or(false);
         if owned_here {
             owned.insert(out.stealth_address);
         }
@@ -288,7 +286,7 @@ fn pin_red_tx_key_images_wallet2_view_includes_change() {
 
     assert_eq!(
         recorded, owned,
-        "MUST-RED (I12): tx_key_images must be the wallet2 view — every \
+        "(I12): tx_key_images must be the wallet2 view — every \
          wallet-owned output (change + self-pay) included, external \
          recipients excluded (oracle: wallet2.cpp:8055-8070 is_out_to_acc \
          fill loop; today's sign.rs inverted filter is the known defect)"
