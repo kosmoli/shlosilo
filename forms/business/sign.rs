@@ -225,6 +225,33 @@ pub fn sign_with_entropy_ws(
     ws: Option<&mut SignWs<'_>>,
     output_buf: &mut [u8],
 ) -> Result<usize> {
+    sign_with_entropy_ws_views(
+        crate::canonical::TailView::CAKE,
+        sign_input,
+        type_tag,
+        ur_payload,
+        ki_records,
+        entropy,
+        ws,
+        output_buf,
+    )
+}
+
+/// Wire-tail-view entry (WP3): the same signing flow, materializing the tail
+/// per the caller's canonical view. The profile layer maps `ProfileId` onto
+/// [`crate::canonical::TailView`] — the core consumes only canonical
+/// (I1/C1: `profile::` never appears in core code).
+#[allow(clippy::too_many_arguments)] // frozen view + the legacy arg list
+pub fn sign_with_entropy_ws_views(
+    tail: crate::canonical::TailView,
+    sign_input: SignInput<'_>,
+    type_tag: crate::ur::ur_encode::UrTypeTag,
+    ur_payload: &[u8],
+    ki_records: &[WalletKiRecord],
+    entropy: &[u8],
+    ws: Option<&mut SignWs<'_>>,
+    output_buf: &mut [u8],
+) -> Result<usize> {
     let t_total = crate::device_timing::Mark::start(crate::device_timing::STAGE_PBKDF2);
     let seed = resolve_seed(&sign_input)?;
     t_total.end();
@@ -256,13 +283,27 @@ pub fn sign_with_entropy_ws(
         }
         crate::types::chain_kind::ChainKind::Xmr => match ws {
             Some(ws) => {
-                let n =
-                    sign_xmr_with_ws(ws, seed.expose(), payload, ki_records, entropy, output_buf)?;
+                let n = sign_xmr_with_ws(
+                    tail,
+                    ws,
+                    seed.expose(),
+                    payload,
+                    ki_records,
+                    entropy,
+                    output_buf,
+                )?;
                 Ok(n)
             }
             #[cfg(feature = "alloc-fallback")]
             None => {
-                let n = sign_xmr(seed.expose(), payload, ki_records, entropy, output_buf)?;
+                let n = sign_xmr(
+                    tail,
+                    seed.expose(),
+                    payload,
+                    ki_records,
+                    entropy,
+                    output_buf,
+                )?;
                 Ok(n)
             }
             #[cfg(not(feature = "alloc-fallback"))]
@@ -648,6 +689,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
 use crate::tx_phase_hook::PhaseProbe;
 
 fn sign_xmr_with_ws<'a>(
+    tail: crate::canonical::TailView,
     ws: &mut SignWs<'a>,
     seed: &[u8],
     encrypted_unsigned: &[u8],
@@ -804,7 +846,7 @@ fn sign_xmr_with_ws<'a>(
     if ws.ki.len() < ki_span {
         return Err(cap_err(ki_span));
     }
-    if ws.tki.len() < total_dsts {
+    if ws.tki.len() < total_dsts + total_sources {
         return Err(cap_err(total_dsts));
     }
     if ws.sel.len() < total_sel {
@@ -858,6 +900,14 @@ fn sign_xmr_with_ws<'a>(
         core::mem::take(&mut ws.record_dests);
     let mut tx_bytes_rest: &mut [u8] = core::mem::take(&mut ws.tx_bytes);
 
+    // WP3 canonical staging: the retained transfer KIs (real out_pub + derived
+    // KI per spent source — keystone's two-fill second leg, transfer.rs:1271
+    // shape). Collected during pass 1, appended AFTER the new outputs (their
+    // serialization order). The full-retention parity (unspent transfers)
+    // needs out_pub on the pairing records — tracked at WP3 tail.
+    let mut retained_stage =
+        [crate::canonical::SignKiEntry::default(); crate::types::caps::SIGN_WS_SOURCES];
+    let mut retained_n = 0usize;
     // P1-03: into_iter takes ownership — construction_data is moved into PendingTx (previously
     // the deep-copying tx_data.clone(); once TxSourceEntry is not Clone, move is the only path,
     // also the audit-required "secret copies must not proliferate")
@@ -1008,6 +1058,18 @@ fn sign_xmr_with_ws<'a>(
             )?;
             ki_src[n_src] = ki;
             n_src += 1;
+            // WP3: the retained entry = the real output's one-time address +
+            // the derived KI (keystone's transfer-fill shape, transfer.rs:1271).
+            if let Some(ro) = src.outputs.get(src.real_output as usize) {
+                if retained_n < retained_stage.len() {
+                    retained_stage[retained_n] = crate::canonical::SignKiEntry {
+                        one_time_pub: ro.dest,
+                        key_image: ki,
+                        wallet_idx: None,
+                    };
+                    retained_n += 1;
+                }
+            }
             // Authoritative placement at the wallet transfer index. A record
             // already at that index must agree (misalignment guard) — the
             // source derivation wins if it never saw one.
@@ -1068,11 +1130,18 @@ fn sign_xmr_with_ws<'a>(
                 .to_bytes()
         };
         for (i, dest) in tx_data.splitted_dsts.iter().enumerate() {
-            if !crate::chain::xmr::subaddress::wallet_owns_destination(
+            let owned = crate::chain::xmr::subaddress::wallet_owns_destination(
                 &our_spend_pub,
                 &view_sec,
                 dest,
-            ) {
+            );
+            // Wire-tail view (canonical enum; I1 — no profile import here):
+            // Cake = wallet-owned only (I12), keystone = every new output.
+            let include = match tail.tx_key_images {
+                crate::canonical::TxKeyImagesView::Wallet2Owned => owned,
+                crate::canonical::TxKeyImagesView::AllPlusRetained => true,
+            };
+            if !include {
                 continue;
             }
             // Audit #9 P1-04: all secrets in the key-image recomputation section are owner-wrapped:
@@ -1167,6 +1236,18 @@ fn sign_xmr_with_ws<'a>(
             })?;
     }
 
+    // WP3 keystone two-fill tail: the retained transfer KIs go AFTER the
+    // per-tx new outputs (keystone's transfer.rs:1250-then-:1271 order).
+    if tail.tx_key_images == crate::canonical::TxKeyImagesView::AllPlusRetained {
+        for e in &retained_stage[..retained_n] {
+            tki_sv
+                .push(TxKeyImageEntry {
+                    output_pubkey: e.one_time_pub,
+                    key_image: e.key_image,
+                })
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+        }
+    }
     // Gap policy v2 (pool #32/#48, 2026-10-21 Kosmo 拍板 — red pins 5/6, A案):
     // an uncovered position REFUSES the sign (KeyImageRecordMissing). The v1
     // conservative gap filler (d22ec10 — a derived key image of a spent input
@@ -1187,9 +1268,19 @@ fn sign_xmr_with_ws<'a>(
         }
     }
 
+    // The tail materializes per the canonical view: the positional `key_images`
+    // array ships wallet-indexed on the Cake view and stays EMPTY on the
+    // keystone view (the pre-fill/records/gap validation above still ran —
+    // the sign's safety policy is view-independent).
+    let empty_ki: &mut [[u8; 32]] = &mut [];
     let set = SignedTxSet {
         ptx: ptx_sv,
-        key_images: ki_sv,
+        key_images: match tail.key_images {
+            crate::canonical::KeyImagesPositionalView::WalletIndexedFull => ki_sv,
+            crate::canonical::KeyImagesPositionalView::Empty => {
+                crate::types::SliceVec::new(empty_ki)
+            }
+        },
         tx_key_images: tki_sv,
     };
     // 4. Encrypted output (nonce + Schnorr k also on the entropy-derived stream).
@@ -1239,6 +1330,7 @@ fn sign_xmr_with_ws<'a>(
 /// (Z3.3b) — see the Z3 design doc for the proposed C shape.
 #[cfg(feature = "alloc-fallback")]
 fn sign_xmr(
+    tail: crate::canonical::TailView,
     seed: &[u8],
     encrypted_unsigned: &[u8],
     ki_records: &[WalletKiRecord],
@@ -1257,6 +1349,7 @@ fn sign_xmr(
         )
     })?;
     sign_xmr_with_ws(
+        tail,
         &mut ws,
         seed,
         encrypted_unsigned,

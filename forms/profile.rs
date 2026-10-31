@@ -55,6 +55,28 @@ pub fn key_images_positional_policy(profile: ProfileId) -> Result<KeyImagesPolic
     }
 }
 
+/// The full wire-tail view for the dialect (the canonical enums are the
+/// neutral handoff the core consumes — I1 keeps `profile::` out of core).
+pub fn tail_view(profile: ProfileId) -> Result<crate::canonical::TailView> {
+    Ok(crate::canonical::TailView {
+        key_images: match key_images_positional_policy(profile)? {
+            KeyImagesPolicy::WalletIndexedFull => {
+                crate::canonical::KeyImagesPositionalView::WalletIndexedFull
+            }
+            KeyImagesPolicy::Empty => crate::canonical::KeyImagesPositionalView::Empty,
+        },
+        tx_key_images: match profile {
+            ProfileId::CakeCupcake => crate::canonical::TxKeyImagesView::Wallet2Owned,
+            #[cfg(feature = "profile-keystone")]
+            ProfileId::Keystone => crate::canonical::TxKeyImagesView::AllPlusRetained,
+            #[cfg(not(feature = "profile-keystone"))]
+            ProfileId::Keystone => {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::FeatureNotImplemented));
+            }
+        },
+    })
+}
+
 /// The `tx_key_images` inclusion rule per dialect (WP1 I12):
 /// - Cake = the wallet2 `is_out_to_acc` view: wallet-owned outputs only
 ///   (change + self-pay INCLUDED, external EXCLUDED);

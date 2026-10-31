@@ -95,7 +95,8 @@ fn parse_signed_tail(plain: &[u8]) -> SignedTail {
             continue;
         }
         let ki_section_end = v1_start;
-        for ki_count in 1..=64usize {
+        // 0..=64: the keystone view ships an EMPTY positional array (I4).
+        for ki_count in 0..=64usize {
             let Some((c2, v2_start)) = varint_ending_at(plain, ki_section_end - ki_count * 32)
             else {
                 continue;
@@ -199,6 +200,42 @@ fn sign_fixture_plain() -> Vec<u8> {
     plain.to_vec()
 }
 
+/// The same fixture drive with an explicit wire-tail view (WP3): the canonical
+/// enum maps onto the dialect tails — Cake view by default.
+fn sign_fixture_plain_with_tail(tail: shlosilo::canonical::TailView) -> Vec<u8> {
+    use shlosilo::business::sign::{sign_with_entropy_ws_views, SignInput};
+    use shlosilo::entropy::mnemonic::Mnemonic;
+    use shlosilo::ur::ur_encode::UrTypeTag;
+
+    let enc = include_bytes!("fixtures/tx2_cake_real_unsigned.bin");
+    let mut plain = decrypt_unsigned_txset(enc, &TX2_LAB_VIEW_SK)
+        .expect("decrypt fixture")
+        .to_vec();
+    strip_add_keys(&mut plain);
+    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(0x22);
+    let patched =
+        encrypt_unsigned_txset(zeroize::Zeroizing::new(plain), &TX2_LAB_VIEW_SK, &mut rng)
+            .expect("re-encrypt");
+    let m = Mnemonic::from_entropy(&[0x22u8; 32]).expect("mnemonic");
+    let mut out = vec![0u8; 65536];
+    let n = sign_with_entropy_ws_views(
+        tail,
+        SignInput::Mnemonic {
+            mnemonic: m,
+            passphrase: b"",
+        },
+        UrTypeTag::XmrTxUnsigned,
+        &patched,
+        &fixture_gap_records(),
+        &[0x77u8; 32],
+        None,
+        &mut out,
+    )
+    .expect("sign fixture");
+    let plain = decrypt_signed_txset(&out[..n], &TX2_LAB_VIEW_SK).expect("decrypt signed");
+    plain.to_vec()
+}
+
 /// THE RED PIN: tx_key_images must equal the wallet2 view of the tx — the set
 /// of output one-time addresses owned by THIS wallet (change + self-pay),
 /// decided by DERIVED IDENTITY (never by amount matching).
@@ -291,4 +328,96 @@ fn tx_key_images_wallet2_view_includes_change() {
          recipients excluded (oracle: wallet2.cpp:8055-8070 is_out_to_acc \
          fill loop; today's sign.rs inverted filter is the known defect)"
     );
+}
+
+/// WP3 I4 wire pin: the keystone view's tail = EMPTY positional `key_images`
+/// plus the two-fill `tx_key_images` map — ALL new outputs first (external
+/// included), then the retained transfer KIs (keystone transfer.rs:1250-1271
+/// two-fill order). Cross-checked against the Cake view of the same fixture.
+#[test]
+fn keystone_wire_is_empty_positional_plus_two_fill_map() {
+    use shlosilo::canonical::{KeyImagesPositionalView, TailView, TxKeyImagesView};
+
+    let cake_plain = sign_fixture_plain();
+    let ks_plain = sign_fixture_plain_with_tail(TailView {
+        key_images: KeyImagesPositionalView::Empty,
+        tx_key_images: TxKeyImagesView::AllPlusRetained,
+    });
+    let (cake_kis, cake_tkis) = parse_signed_tail(&cake_plain);
+    let (ks_kis, ks_tkis) = parse_signed_tail(&ks_plain);
+    let _ = &cake_kis; // the outer Cake array's content is pinned by the I12 test
+
+    // I4: the positional array stays empty on the keystone view.
+    assert!(
+        ks_kis.is_empty(),
+        "I4: keystone positional key_images must be empty, got {}",
+        ks_kis.len()
+    );
+
+    // The new-outputs leg (first): byte-identical to the Cake view's map on
+    // this all-owned fixture — every new output, ownership ignored.
+    let retained_start = cake_tkis.len();
+    assert!(
+        ks_tkis.len() > retained_start,
+        "the two-fill map must carry the retained leg"
+    );
+    assert_eq!(
+        &ks_tkis[..retained_start],
+        &cake_tkis[..],
+        "new-outputs leg matches the Cake view (all-owned fixture)"
+    );
+
+    // The retained leg (second): one entry per spent source — the real
+    // out_pub (keystone's transfer keying) + the derived input KI.
+    let mut p_txes = core::array::from_fn::<Option<PendingTx<'_>>, 2, _>(|_| None);
+    let mut sel = [0u8; 64];
+    let mut ki_str = [0u8; 4096];
+    let mut dests =
+        core::array::from_fn::<TxDestinationEntry, 16, _>(|_| TxDestinationEntry::default());
+    let mut sources = core::array::from_fn::<Option<TxSourceEntry>, 32, _>(|_| None);
+    let mut splitted =
+        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+    let mut cons_sel = [0usize; 256];
+    let mut extra = [0u8; 8192];
+    let mut cons_dests =
+        core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+    let mut subidx = [0u32; 256];
+    let mut key_images = [[0u8; 32]; 16];
+    let mut tx_key_images =
+        core::array::from_fn::<TxKeyImageEntry, 16, _>(|_| TxKeyImageEntry::default());
+    let _set = deserialize_signed_plain(
+        &ks_plain,
+        &mut SignedTxSetPools {
+            ptx: &mut p_txes,
+            sel: &mut sel,
+            ki_str: &mut ki_str,
+            dests: &mut dests,
+            sources: &mut sources,
+            splitted: &mut splitted,
+            cons_sel: &mut cons_sel,
+            extra: &mut extra,
+            cons_dests: &mut cons_dests,
+            subidx: &mut subidx,
+            key_images: &mut key_images,
+            tx_key_images: &mut tx_key_images,
+        },
+    )
+    .expect("parse keystone plain");
+
+    let src_entries: Vec<&TxSourceEntry> = sources.iter().flatten().collect();
+    assert_eq!(
+        ks_tkis.len(),
+        retained_start + src_entries.len(),
+        "two-fill = every new output + every spent source (retained leg)"
+    );
+    for (e, src) in ks_tkis[retained_start..].iter().zip(src_entries.iter()) {
+        let real = src
+            .outputs
+            .get(src.real_output as usize)
+            .expect("real ring member");
+        assert_eq!(
+            e.0, real.dest,
+            "the retained leg keys on the real out_pub (keystone transfer shape)"
+        );
+    }
 }
