@@ -142,6 +142,14 @@ pub struct WalletKiRecord {
     /// wallet's wire array.
     pub wallet_fp: [u8; 8],
     pub key_image: [u8; 32],
+    /// I13 (WP3, Kosmo decision 2026-10-31): the OUTPUT one-time address this
+    /// key image belongs to — the mapping key `tx_key_images` ships under
+    /// (keystone transfer.rs:1271 fill). Was dropped at parse time before
+    /// this field existed, which capped the keystone retained leg at the
+    /// spent sources (derivable out_pubs only). `repr(C)`: appending keeps
+    /// in-order C initializers source-compatible (new tail zero-filled —
+    /// every construction site MUST set it, the pins enforce).
+    pub out_pub: [u8; 32],
 }
 
 /// Wallet fingerprint binding the pairing-beat KI retention to the wallet it
@@ -878,10 +886,33 @@ fn sign_xmr_with_ws<'a>(
     // flux workspace) or from a stale transfer-indexing state is treated as
     // ABSENT: the conservative filler covers, and the mismatch guard below
     // still refuses a record that contradicts a freshly derived value.
+    // WP3 canonical staging (I13, Kosmo decision 2026-10-31): the retained
+    // leg = the FULL fp-matched retention set — records carry their out_pub
+    // mapping key now, so every wallet transfer (spent or not) can ship under
+    // keystone's transfers.details fill shape (transfer.rs:1271). Collected
+    // in the records loop (transfer_idx order), appended AFTER the new
+    // outputs (keystone's 1250-then-1271 serialization order).
+    let mut retained_stage =
+        [crate::canonical::SignKiEntry::default(); crate::types::caps::SIGN_WS_RETAINED];
+    let mut retained_n = 0usize;
     for r in ki_records {
         if r.wallet_fp != session_fp {
             continue;
         }
+        // I13: every fp-matched record rides the retained leg (keystone's
+        // transfer-fill map) — BEFORE the span tightening below, which only
+        // bounds the positional array. Overflow refuses the sign: the pairing
+        // record pool is 64 (SIGN_WS_RETAINED), a larger batch is a contract
+        // violation, not something to silently truncate.
+        if retained_n >= retained_stage.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+        }
+        retained_stage[retained_n] = crate::canonical::SignKiEntry {
+            one_time_pub: r.out_pub,
+            key_image: r.key_image,
+            wallet_idx: Some(r.transfer_idx),
+        };
+        retained_n += 1;
         let idx = r.transfer_idx as usize;
         if idx >= ki_span {
             continue; // fix37 span tightening: beyond this tx's reach — dropped
@@ -900,14 +931,6 @@ fn sign_xmr_with_ws<'a>(
         core::mem::take(&mut ws.record_dests);
     let mut tx_bytes_rest: &mut [u8] = core::mem::take(&mut ws.tx_bytes);
 
-    // WP3 canonical staging: the retained transfer KIs (real out_pub + derived
-    // KI per spent source — keystone's two-fill second leg, transfer.rs:1271
-    // shape). Collected during pass 1, appended AFTER the new outputs (their
-    // serialization order). The full-retention parity (unspent transfers)
-    // needs out_pub on the pairing records — tracked at WP3 tail.
-    let mut retained_stage =
-        [crate::canonical::SignKiEntry::default(); crate::types::caps::SIGN_WS_SOURCES];
-    let mut retained_n = 0usize;
     // P1-03: into_iter takes ownership — construction_data is moved into PendingTx (previously
     // the deep-copying tx_data.clone(); once TxSourceEntry is not Clone, move is the only path,
     // also the audit-required "secret copies must not proliferate")
@@ -1058,18 +1081,6 @@ fn sign_xmr_with_ws<'a>(
             )?;
             ki_src[n_src] = ki;
             n_src += 1;
-            // WP3: the retained entry = the real output's one-time address +
-            // the derived KI (keystone's transfer-fill shape, transfer.rs:1271).
-            if let Some(ro) = src.outputs.get(src.real_output as usize) {
-                if retained_n < retained_stage.len() {
-                    retained_stage[retained_n] = crate::canonical::SignKiEntry {
-                        one_time_pub: ro.dest,
-                        key_image: ki,
-                        wallet_idx: None,
-                    };
-                    retained_n += 1;
-                }
-            }
             // Authoritative placement at the wallet transfer index. A record
             // already at that index must agree (misalignment guard) — the
             // source derivation wins if it never saw one.

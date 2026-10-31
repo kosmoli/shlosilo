@@ -204,6 +204,7 @@ fn import_does_not_pollute_transfers_zero() {
             transfer_idx: i,
             wallet_fp: fp,
             key_image: true_key_image(i as usize),
+            out_pub: [0x70u8.wrapping_add(i as u8); 32],
         })
         .collect();
     let err = sign_stripped_fixture(&records)

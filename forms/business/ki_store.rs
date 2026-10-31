@@ -98,6 +98,7 @@ mod tests {
             transfer_idx: idx,
             wallet_fp: fp,
             key_image: [ki; 32],
+            out_pub: [ki; 32],
         }
     }
 

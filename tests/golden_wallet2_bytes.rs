@@ -736,6 +736,7 @@ fn golden_resign_dev_1in_fresh_matches_signed_gold() {
             transfer_idx: i,
             wallet_fp: fp,
             key_image: src_ki,
+            out_pub: [i as u8; 32],
         })
         .collect();
     let out = sign_with_fixed_entropy_records(enc, &DEV_WALLET_ENTROPY, &records);
@@ -839,6 +840,7 @@ fn golden_resign_fa_matches_archived_our_container() {
             transfer_idx: i,
             wallet_fp: fp,
             key_image: src_ki,
+            out_pub: [i as u8; 32],
         })
         .collect();
     let out = sign_with_fixed_entropy_records(enc, &LAB_WALLET_ENTROPY, &records);
@@ -867,6 +869,7 @@ fn dump_ours_signed_fa_gold() {
             transfer_idx: i,
             wallet_fp: fp,
             key_image: src_ki,
+            out_pub: [i as u8; 32],
         })
         .collect();
     let out = sign_with_fixed_entropy_records(enc, &LAB_WALLET_ENTROPY, &records);
@@ -936,6 +939,7 @@ fn golden_sign_path_embeds_construction_data_extra() {
             transfer_idx: i,
             wallet_fp: fp,
             key_image: [0x5Au8; 32],
+            out_pub: [i as u8; 32],
         })
         .collect();
     let out = sign_with_fixed_entropy_records(enc, &LAB_WALLET_ENTROPY, &records);

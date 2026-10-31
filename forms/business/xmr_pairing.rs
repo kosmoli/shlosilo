@@ -298,10 +298,19 @@ pub fn process_output_export_with_records<R: RngCore + CryptoRng>(
         for (i, (image, _sig)) in ws.records[..output_count].iter().enumerate() {
             let transfer_idx = u32::try_from(offset + i as u64)
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            // I13: the mapping key rides the record. Response record i and
+            // detail i are born in the same parse pass in the same order — a
+            // missing detail refuses the retention (never a zero key).
+            let out_pub = ws
+                .details
+                .get(i)
+                .map(|d| d.pubkey)
+                .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
             ki_out[i] = crate::business::sign::WalletKiRecord {
                 transfer_idx,
                 wallet_fp: wfp,
                 key_image: *image,
+                out_pub,
             };
             *ki_written = i + 1;
         }

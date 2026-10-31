@@ -191,6 +191,7 @@ fn signed_plain(reverse: bool) -> zeroize::Zeroizing<Vec<u8>> {
             transfer_idx: i as u32,
             wallet_fp: fp,
             key_image: hex32(h),
+            out_pub: [i as u8; 32],
         })
         .collect();
 

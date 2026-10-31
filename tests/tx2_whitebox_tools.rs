@@ -306,6 +306,7 @@ fn fixture_gap_records() -> Vec<shlosilo::business::sign::WalletKiRecord> {
             transfer_idx: i,
             wallet_fp: fp,
             key_image: [0x10 + i as u8; 32],
+            out_pub: [0xA0 + i as u8; 32],
         })
         .collect()
 }

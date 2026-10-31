@@ -216,6 +216,7 @@ fn fixture_gap_records() -> Vec<WalletKiRecord> {
             transfer_idx: i,
             wallet_fp: fp,
             key_image: [0x10 + i as u8; 32],
+            out_pub: [0xA0 + i as u8; 32],
         })
         .collect()
 }
@@ -342,6 +343,7 @@ fn refuse_on_record_source_mismatch() {
         transfer_idx: FIXTURE_MAX_SELECTED as u32,
         wallet_fp: fixture_wallet_fp(),
         key_image: [0xBBu8; 32], // deliberately not the derived key image
+        out_pub: [0xCBu8; 32],
     });
 
     let enc = include_bytes!("fixtures/tx2_cake_real_unsigned.bin");

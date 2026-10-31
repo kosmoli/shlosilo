@@ -236,6 +236,7 @@ fn pairing_records_are_wallet_fp_stamped() {
         transfer_idx: u32::MAX,
         wallet_fp: [0u8; 8],
         key_image: [0u8; 32],
+        out_pub: [0xFF; 32],
     }; COUNT];
     let mut ki_written = 0usize;
 

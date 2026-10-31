@@ -231,6 +231,7 @@ fn pairing_accepts(plain: &[u8], view_sk: &[u8; 32], spend_sk: &[u8; 32]) -> boo
         transfer_idx: u32::MAX,
         wallet_fp: [0u8; 8],
         key_image: [0u8; 32],
+        out_pub: [0xFF; 32],
     }; 2];
     let mut ki_written = 0usize;
     process_output_export_with_records(

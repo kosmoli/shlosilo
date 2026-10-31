@@ -588,6 +588,13 @@
 #define SIGN_WS_SOURCES 32
 
 /**
+ * Workspace: the retained-leg staging (I13) — the FULL fp-matched retention
+ * set for the keystone two-fill map. Mirrors `WalletKiRecord` capacity
+ * (pairing-record pool, 64) — a larger retention batch refuses at the sign.
+ */
+#define SIGN_WS_RETAINED 64
+
+/**
  * Workspace: splitted destinations (flat).
  */
 #define SIGN_WS_SPLITS 64
@@ -780,6 +787,16 @@ typedef struct WalletKiRecord {
    */
   uint8_t wallet_fp[8];
   uint8_t key_image[32];
+  /**
+   * I13 (WP3, Kosmo decision 2026-10-31): the OUTPUT one-time address this
+   * key image belongs to — the mapping key `tx_key_images` ships under
+   * (keystone transfer.rs:1271 fill). Was dropped at parse time before
+   * this field existed, which capped the keystone retained leg at the
+   * spent sources (derivable out_pubs only). `repr(C)`: appending keeps
+   * in-order C initializers source-compatible (new tail zero-filled —
+   * every construction site MUST set it, the pins enforce).
+   */
+  uint8_t out_pub[32];
 } WalletKiRecord;
 
 

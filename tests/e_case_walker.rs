@@ -243,6 +243,7 @@ fn sign_e_case_request() {
             transfer_idx: i,
             wallet_fp: fp,
             key_image: ki,
+            out_pub: [i as u8; 32],
         });
     }
 

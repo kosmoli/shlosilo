@@ -106,6 +106,10 @@ pub const SIGN_WS_PLAIN: usize = 16384;
 pub const SIGN_WS_TXES: usize = 8;
 /// Workspace: source entries (flat, all txes).
 pub const SIGN_WS_SOURCES: usize = 32;
+/// Workspace: the retained-leg staging (I13) — the FULL fp-matched retention
+/// set for the keystone two-fill map. Mirrors `WalletKiRecord` capacity
+/// (pairing-record pool, 64) — a larger retention batch refuses at the sign.
+pub const SIGN_WS_RETAINED: usize = 64;
 /// Workspace: splitted destinations (flat).
 pub const SIGN_WS_SPLITS: usize = 64;
 /// Workspace: selected-transfers bytes (flat).
