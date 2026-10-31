@@ -72,10 +72,17 @@ pub fn ur_message_content(msg: &[u8]) -> &[u8] {
 }
 
 /// Outbound shell head for `content_len` bytes: `0x58` + 1-byte length up to
-/// 255 B, `0x59` + 2-byte length up to 65535 B (the short definite forms
-/// monero_c `CborLite::encodeBytes` produces for container-sized payloads).
+/// 255 B, `0x59` + 2-byte length up to 65535 B; below 24 B the canonical
+/// short head `0x40+len` (RFC 8949 §4.2 — the `44aabbccdd` shape minicbor,
+/// ur-registry and monero_c `CborLite::encodeBytes` all emit).
 pub(crate) fn shell_head(content_len: usize, out: &mut [u8; 3]) -> Result<usize> {
-    if content_len <= 0xff {
+    // Canonical CBOR (RFC 8949 §4.2 minimal encoding) — matches what
+    // minicbor/ur-registry emit (official vector `44aabbccdd`); the old
+    // always-0x58 head was a non-minimal encoding some strict decoders refuse.
+    if content_len < 24 {
+        out[0] = 0x40 + content_len as u8;
+        Ok(1)
+    } else if content_len <= 0xff {
         out[0] = 0x58;
         out[1] = content_len as u8;
         Ok(2)
@@ -113,6 +120,15 @@ pub fn ur_message_wrap_into<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Legacy non-minimal heads (the pre-canonical 0x58/0x59 wire that older
+    /// fixtures and archived QR captures carry) must still strip — the shell
+    /// decoder stays wide while the encoder emits canonical only.
+    #[test]
+    fn legacy_nonminimal_heads_still_strip() {
+        assert_eq!(ur_message_content(&[0x58, 0x04, 1, 2, 3, 4]), &[1, 2, 3, 4]);
+        assert_eq!(ur_message_content(&[0x44, 1, 2, 3, 4]), &[1, 2, 3, 4]);
+    }
 
     /// Shelled message → content; bare message → itself.
     #[test]
@@ -182,14 +198,15 @@ mod tests {
         );
     }
 
-    /// Outbound wrap shape and round trip through the strip.
+    /// Outbound wrap shape and round trip through the strip. Head is the
+    /// canonical CBOR form (RFC 8949 §4.2): short head below 24 B.
     #[test]
     fn wrap_shapes_and_round_trip() {
         let mut out: heapless::Vec<u8, 64> = heapless::Vec::new();
         ur_message_wrap_into(b"data", &mut out).unwrap();
-        assert_eq!(&out[..], &[0x58, 0x04, 0x64, 0x61, 0x74, 0x61][..]);
+        assert_eq!(&out[..], &[0x44, 0x64, 0x61, 0x74, 0x61][..]);
         assert_eq!(ur_message_content(&out), &b"data"[..]);
-        assert_eq!(ur_message_shell_len(4).unwrap(), 6);
+        assert_eq!(ur_message_shell_len(4).unwrap(), 5);
 
         let big = [0xA5u8; 300];
         let mut out: heapless::Vec<u8, 320> = heapless::Vec::new();

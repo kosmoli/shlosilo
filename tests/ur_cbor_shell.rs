@@ -165,10 +165,11 @@ fn outbound_message_carries_shell_with_container_content() {
     assert_eq!(&wire[..3], &[0x59, 0x01, 0x2c]);
     assert_eq!(ur_message_content(&wire), &big[..]);
 
-    // small payload → 0x58 + 1-byte length shell
+    // small payload → canonical short head (0x40+len; RFC 8949 §4.2 —
+    // the WP3 registry cross-check form, ur-registry vector 44aabbccdd)
     let uri = encode(UrTypeTag::Bytes, b"data").unwrap();
     let wire = wire_of(uri.as_str());
-    assert_eq!(&wire, &[0x58, 0x04, 0x64, 0x61, 0x74, 0x61][..]);
+    assert_eq!(&wire, &[0x44, 0x64, 0x61, 0x74, 0x61][..]);
     assert_eq!(ur_message_content(&wire), &b"data"[..]);
 }
 

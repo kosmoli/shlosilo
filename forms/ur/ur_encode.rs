@@ -138,6 +138,20 @@ impl UrTypeTag {
             _ => Self::Unknown,
         }
     }
+
+    /// Official BC-UR registry tag (BCR-2020-05 registry extension). Golden
+    /// anchor: `ur-registry 1.0.9` `registry_types.rs:251-254`
+    /// (xmr-output=8301, xmr-keyimage=8302, xmr-txunsigned=8303,
+    /// xmr-txsigned=8304) — the crate keystone3-firmware 3.2.0 links.
+    pub fn registry_tag(self) -> Option<u64> {
+        match self {
+            Self::XmrOutput => Some(8301),
+            Self::XmrKeyImage => Some(8302),
+            Self::XmrTxUnsigned => Some(8303),
+            Self::XmrTxSigned => Some(8304),
+            _ => None,
+        }
+    }
 }
 
 /// Single-fragment encoding: payload → CBOR byte-string shell →
@@ -177,19 +191,23 @@ mod tests {
         let d = crate::ur::ur_decode::decode("ur:bytes/iehsjyhspmwfwfia").unwrap();
         assert_eq!(d.type_tag(), UrTypeTag::Bytes);
         assert_eq!(d.as_ref(), b"data");
-        // outbound message = CBOR byte-string shell (0x58 0x04) + content
+        // outbound message = canonical CBOR byte-string shell (0x44, short
+        // form since the WP3 registry cross-check) + content
         let enc = encode(UrTypeTag::Bytes, b"data").unwrap();
-        assert_eq!(enc.as_str(), "ur:bytes/hdaaiehsjyhsdedeoyln");
+        assert_eq!(enc.as_str(), "ur:bytes/fyiehsjyhsvdvadawm");
         let d = crate::ur::ur_decode::decode(enc.as_str()).unwrap();
         assert_eq!(d.as_ref(), b"data");
     }
 
     /// Independent Python implementation: raw `[0x01, 0x02]` → shell-wrapped
-    /// `ur:bytes/hdaoadaouyjzkegm` (message = `58 02 01 02` + CRC32)
+    /// (message = `42 01 02` + CRC32). The Python oracle originally emitted
+    /// the non-minimal `58 02` head (`hdaoadaouyjzkegm`); the WP3 registry
+    /// cross-check (ur-registry `44aabbccdd`, RFC 8949 §4.2) canonicalized
+    /// the head to `42` — the payload and CRC semantics are unchanged.
     #[test]
     fn independent_oracle_bytes_vector() {
         let enc = encode(UrTypeTag::Bytes, &[0x01, 0x02]).unwrap();
-        assert_eq!(enc.as_str(), "ur:bytes/hdaoadaouyjzkegm");
+        assert_eq!(enc.as_str(), "ur:bytes/fwadaokggetitt");
         let d = crate::ur::ur_decode::decode(enc.as_str()).unwrap();
         assert_eq!(d.as_ref(), &[0x01, 0x02]);
     }
@@ -336,5 +354,40 @@ mod xmr_pairing_tag_tests {
             let r = crate::tx::tx_normalize::to_template(tag, b"x");
             assert!(r.is_err(), "tag {:?} must not become a TxTemplate", tag);
         }
+    }
+
+    /// I9/WP3 registry pin (2026-10-31): the four Monero registry tags match
+    /// `ur-registry 1.0.9` `registry_types.rs:251-254` exactly — the crate
+    /// keystone3-firmware 3.2.0 links (its monero app encodes via
+    /// `XmrKeyImage/XmrTxSigned::get_registry_type().get_type()`).
+    #[test]
+    fn registry_tags_match_ur_registry_109() {
+        assert_eq!(UrTypeTag::XmrOutput.registry_tag(), Some(8301));
+        assert_eq!(UrTypeTag::XmrKeyImage.registry_tag(), Some(8302));
+        assert_eq!(UrTypeTag::XmrTxUnsigned.registry_tag(), Some(8303));
+        assert_eq!(UrTypeTag::XmrTxSigned.registry_tag(), Some(8304));
+    }
+
+    /// I9/WP3 registry CBOR pin: our message shell IS the ur-registry
+    /// message shape. Official vector (ur-registry 1.0.9
+    /// `monero/xmr_txsigned.rs::tests::test_encode`):
+    /// `XmrTxSigned::new(0xaabbccdd).try_into()` == `44aabbccdd` — a
+    /// definite-length CBOR byte-string head (0x44 = bstr(4)) + payload,
+    /// exactly what `ur_message_wrap_into` builds. Byte-for-byte both ways.
+    #[test]
+    fn xmr_shell_matches_ur_registry_vector() {
+        let payload = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let mut wire = heapless::Vec::<u8, 8>::new();
+        crate::ur::ur_shell::ur_message_wrap_into(&payload, &mut wire).unwrap();
+        assert_eq!(
+            wire.as_slice(),
+            &[0x44, 0xAA, 0xBB, 0xCC, 0xDD],
+            "official ur-registry vector 44aabbccdd"
+        );
+        assert_eq!(
+            crate::ur::ur_shell::ur_message_content(wire.as_slice()),
+            &payload[..],
+            "strip round-trips the official shape"
+        );
     }
 }
