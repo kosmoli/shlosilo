@@ -70,25 +70,58 @@ pub fn tx_key_images_includes(profile: ProfileId, wallet_owned: bool) -> Result<
     }
 }
 
-/// Materialize the wire `tx_key_images` entries from canonical new outputs
-/// (frozen semantics: I12 for Cake, I4's all-outputs map for keystone).
+/// Materialize the wire `tx_key_images` entries from canonical sets
+/// (frozen semantics: I12 for Cake, I4 for keystone).
+///
+/// Content per dialect (keystone 3.2.0 source, transfer.rs:1250-1274):
+/// - Cake = the wallet2 `is_out_to_acc` view over the NEW outputs
+///   (wallet-owned only — change + self-pay in, external out);
+/// - keystone = **new outputs first (ALL of them, external included — the
+///   `outputs()` quirk), then the wallet's full transfer KIs** (their
+///   `transfers.details` loop — our retention set is the same truth).
+///
 /// Returns the number of entries written.
 pub fn materialize_tx_key_images(
     profile: ProfileId,
+    retained: &[SignKiEntry],
     new_outputs: &[SignKiEntry],
     out: &mut SliceVec<'_, TxKeyImageEntry>,
 ) -> Result<usize> {
     let mut written = 0usize;
-    for e in new_outputs {
-        if !tx_key_images_includes(profile, e.wallet_idx.is_some())? {
-            continue;
-        }
+    let mut push = |e: &SignKiEntry| -> Result<()> {
         out.push(TxKeyImageEntry {
             output_pubkey: e.one_time_pub,
             key_image: e.key_image,
         })
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         written += 1;
+        Ok(())
+    };
+    match profile {
+        ProfileId::CakeCupcake => {
+            // The wallet2 view NEVER carries transfer KIs — `retained` is
+            // deliberately unused on this arm.
+            let _ = retained;
+            for e in new_outputs {
+                if tx_key_images_includes(profile, e.wallet_idx.is_some())? {
+                    push(e)?;
+                }
+            }
+        }
+        #[cfg(feature = "profile-keystone")]
+        ProfileId::Keystone => {
+            // new outputs first (their per-tx loop), then the transfer KIs.
+            for e in new_outputs {
+                push(e)?;
+            }
+            for e in retained {
+                push(e)?;
+            }
+        }
+        #[cfg(not(feature = "profile-keystone"))]
+        ProfileId::Keystone => {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::FeatureNotImplemented));
+        }
     }
     Ok(written)
 }

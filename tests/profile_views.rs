@@ -4,7 +4,7 @@
 //! | pin | invariant |
 //! |-----|-----------|
 //! | `cake_view_materializes_wallet_owned_only` | I3/I12: Cake = wallet2 is_out_to_acc view |
-//! | `keystone_export_is_empty_positional_plus_keyed_map` | I4: keystone = empty positional + ALL-outputs keyed map |
+//! | `keystone_export_is_empty_positional_plus_keyed_map` | I4: keystone = empty positional + two-fill keyed map (new outputs ∪ transfer KIs) |
 //! | `profile_binding_is_explicit_and_sticky` | I5: one session byte, bound explicitly, unbound = None |
 //! | `keystone_profile_unavailable_without_feature` | I8: the delete drill — dialect-off build refuses cleanly |
 //!
@@ -33,12 +33,22 @@ fn d_shape_outputs() -> [SignKiEntry; 3] {
     [entry(0xA1, true), entry(0xB2, false), entry(0xC3, true)]
 }
 
-fn materialize(profile: ProfileId, outs: &[SignKiEntry]) -> Vec<TxKeyImageEntry> {
+fn materialize(
+    profile: ProfileId,
+    retained: &[SignKiEntry],
+    outs: &[SignKiEntry],
+) -> Vec<TxKeyImageEntry> {
     let mut slots = [TxKeyImageEntry::default(); 8];
     let mut sv = SliceVec::new(&mut slots);
-    let n = materialize_tx_key_images(profile, outs, &mut sv).expect("materialize");
+    let n = materialize_tx_key_images(profile, retained, outs, &mut sv).expect("materialize");
     assert_eq!(n, sv.len(), "written count and slice length agree");
     sv.iter().copied().collect()
+}
+
+/// The retained transfer KIs (the wallet's known outputs — keystone reads its
+/// `transfers.details` loop, we read the retention set).
+fn retained_transfers() -> [SignKiEntry; 1] {
+    [entry(0xD4, true)]
 }
 
 /// I3/I12: the Cake view is the wallet2 is_out_to_acc view — wallet-owned
@@ -46,9 +56,13 @@ fn materialize(profile: ProfileId, outs: &[SignKiEntry]) -> Vec<TxKeyImageEntry>
 #[test]
 fn cake_view_materializes_wallet_owned_only() {
     let outs = d_shape_outputs();
-    let entries = materialize(ProfileId::CakeCupcake, &outs);
+    let entries = materialize(ProfileId::CakeCupcake, &retained_transfers(), &outs);
     let pubs: Vec<[u8; 32]> = entries.iter().map(|e| e.output_pubkey).collect();
-    assert_eq!(pubs, vec![[0xA1; 32], [0xC3; 32]], "owned only, in order");
+    assert_eq!(
+        pubs,
+        vec![[0xA1; 32], [0xC3; 32]],
+        "owned new outputs only — wallet2's tx_key_images never carries transfer KIs"
+    );
     assert_eq!(
         key_images_positional_policy(ProfileId::CakeCupcake).unwrap(),
         KeyImagesPolicy::WalletIndexedFull,
@@ -65,12 +79,14 @@ fn cake_view_materializes_wallet_owned_only() {
 #[test]
 fn keystone_export_is_empty_positional_plus_keyed_map() {
     let outs = d_shape_outputs();
-    let entries = materialize(ProfileId::Keystone, &outs);
+    let entries = materialize(ProfileId::Keystone, &retained_transfers(), &outs);
     let pubs: Vec<[u8; 32]> = entries.iter().map(|e| e.output_pubkey).collect();
     assert_eq!(
         pubs,
-        vec![[0xA1; 32], [0xB2; 32], [0xC3; 32]],
-        "ALL new outputs, external included"
+        vec![[0xA1; 32], [0xB2; 32], [0xC3; 32], [0xD4; 32]],
+        "the two-fill union (transfer.rs:1250-1271): ALL new outputs first \
+         (external included, the outputs() quirk), then the wallet's \
+         transfer KIs (their transfers.details loop / our retention set)"
     );
     assert_eq!(
         key_images_positional_policy(ProfileId::Keystone).unwrap(),
