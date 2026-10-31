@@ -50,8 +50,10 @@ jobs:
         run: bash scripts/test_zero_on_alloc.sh --all-targets --all-features --no-fail-fast
       # Test-hygiene debt payoff (pool §46, 2026-10-21): the no-default-features
       # test face compiles and runs (was ~796 compile errors). Expected-red
-      # manifest: EMPTY (the red-pin batch finished 2026-10-21, all 8 pins
-      # fixed). `always()` keeps the step running regardless of earlier step
+      # manifest = tests/ pin_red_* set (grep-derived; currently 1 entry:
+      # pin_red_tx_key_images_wallet2_view_includes_change — I12, fix in WP2
+      # first batch). Manifest failures are known-red; anything else is a real
+      # failure. `always()` keeps the step running regardless of earlier step
       # outcomes.
       - name: Tests (no default features)
         if: always()
