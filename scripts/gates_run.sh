@@ -10,6 +10,10 @@ bash scripts/check_fixtures.sh > /tmp/g_fixt.log 2>&1; echo "FIXTURES=$?"
 # Pool #58: fp-chain coverage manifest (fingerprint binding + visible-failure
 # word chain pins) must stay intact — a renamed/removed/ignored pin is red.
 bash scripts/check_fp_chain.sh > /tmp/g_fpchain.log 2>&1; echo "FPCOV=$?"
+# WP1 I8 delete drill (C5 double build): the `profile-keystone` dialect
+# feature is NON-default — TEST/TESTNOALLOC/KEYSRC are the "dialect OFF"
+# variant (Cake only, green = downstream zero-awareness proof) and TESTALL
+# (--all-features) is the "dialect ON" variant. Both variants must stay green.
 # TEST/TESTALL run through the zero-on-alloc wrapper (jemalloc zero:true) so
 # uninitialized reads surface deterministically - same path as CI test steps.
 bash scripts/test_zero_on_alloc.sh --offline --all-targets --no-fail-fast > /tmp/g_test.log 2>&1; echo "TEST=$?"

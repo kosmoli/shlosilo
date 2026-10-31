@@ -154,6 +154,11 @@ std = ["rand_core/std"]
 # alloc = []  # heapless itself is no_std
 # Device-side stage timing instrumentation (diagnostic only, never in production firmware)
 device-timing = []
+# S1 protocol profiles: the keystone dialect (WP1 I8 delete drill). NON-default
+# on purpose: the default build is the "dialect off" variant (Cake only) and
+# its green test face is the downstream zero-awareness proof; `--all-features`
+# is the "on" variant (CI feature matrix = the C5 double build).
+profile-keystone = []
 
 [lib]
 # The pure-function core is the `forms` tree; flux appearances consume it.

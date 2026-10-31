@@ -29,6 +29,7 @@ extern crate alloc;
 
 pub mod address;
 pub mod business;
+pub mod canonical;
 pub mod chain;
 pub mod curve_primitive;
 pub mod derivation;
@@ -39,6 +40,7 @@ pub mod error;
 pub mod failure_text;
 pub mod ffi;
 pub mod network;
+pub mod profile;
 pub mod signature;
 pub mod tx;
 #[cfg(feature = "tx-phase-timing-ffi")]

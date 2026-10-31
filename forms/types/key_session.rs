@@ -28,6 +28,9 @@ pub struct KeySession {
     spend_sk: SecretBytes<32>,
     view_sk: SecretBytes<32>,
     path: MoneroPath,
+    /// WP1 I5/C3: the bound protocol profile as ONE byte (0 = unbound,
+    /// 1 = CakeCupcake, 2 = Keystone). Set only via `crate::profile::profile_bind`.
+    profile_id: u8,
 }
 
 /// Borrowed view of the Monero keys inside a [`KeySession`] (no copies leave the session).
@@ -97,7 +100,20 @@ impl KeySession {
             spend_sk: SecretBytes::take(&mut spend_bytes),
             view_sk: SecretBytes::take(&mut view_bytes),
             path: MoneroPath::mainnet(0),
+            profile_id: 0,
         })
+    }
+
+    /// WP1 I5: the bound profile byte (0 = unbound). Read only at the
+    /// dispatch point (`crate::profile::profile_current`).
+    pub fn profile_id(&self) -> u8 {
+        self.profile_id
+    }
+
+    /// WP1 I5: set the bound profile byte (crate-internal — the public path
+    /// is `crate::profile::profile_bind`, which availability-checks first).
+    pub(crate) fn set_profile_id(&mut self, id: u8) {
+        self.profile_id = id;
     }
 
     /// Borrow the Monero keys + derivation path (no plaintext copies).
