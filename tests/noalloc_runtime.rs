@@ -19,24 +19,47 @@ use std::sync::{Mutex, MutexGuard};
 
 struct Counting;
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-// The counter is process-global: serialize the measured tests (the same
-// lesson as xmr_sign_zero_alloc's bt 0 -> 203 pollution).
+// Cross-test contamination lesson (2026-10-30): the count must be
+// THREAD-SCOPED. The measured code runs on the test's own thread; libtest
+// harness allocations (result prints, output capture) and sibling-test prep
+// land on OTHER threads and are environmental noise by definition. A
+// process-global count raced them into the window (solo runs 10/10 green,
+// together flaky) — no locking fixes what is definitionally noise.
+// Const-initialized TLS: allocator-side access performs no lazy init (no
+// recursion into allocation); try_with survives TLS teardown.
+thread_local! {
+    static MEASURING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+// The measured windows still serialize: two concurrent windows would mix
+// their thread-gated increments into one shared tally.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        let _ = MEASURING.try_with(|m| {
+            if m.get() {
+                ALLOCS.fetch_add(1, Ordering::Relaxed);
+            }
+        });
         System.alloc(l)
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         System.dealloc(p, l)
     }
     unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        let _ = MEASURING.try_with(|m| {
+            if m.get() {
+                ALLOCS.fetch_add(1, Ordering::Relaxed);
+            }
+        });
         System.alloc_zeroed(l)
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        let _ = MEASURING.try_with(|m| {
+            if m.get() {
+                ALLOCS.fetch_add(1, Ordering::Relaxed);
+            }
+        });
         System.realloc(p, l, n)
     }
 }
@@ -47,7 +70,9 @@ static A: Counting = Counting;
 fn measured<T>(f: impl FnOnce() -> T) -> (T, u64) {
     let guard: MutexGuard<'static, ()> = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let before = ALLOCS.load(Ordering::Relaxed);
+    let _ = MEASURING.try_with(|m| m.set(true));
     let out = f();
+    let _ = MEASURING.try_with(|m| m.set(false));
     let delta = ALLOCS.load(Ordering::Relaxed) - before;
     drop(guard);
     (out, delta as u64)
@@ -108,7 +133,9 @@ fn signed_plain_parse_reserialize_zero_alloc() {
     };
     use shlosilo::chain::xmr::unsigned_txset::{TxDestinationEntry, TxSourceEntry};
 
-    // fixture materialization is allowed to allocate (Vec by contract)
+    // Fixture materialization allocates (Vec by contract); the thread-scoped
+    // counter excludes it by construction (MEASURING is off outside the
+    // measured windows on this thread).
     let plain = decrypt_signed_txset(GOLD_SIGNED, &LAB_VIEW_SK).expect("decrypt gold signed");
 
     let (result, allocs) = measured(|| {
