@@ -110,7 +110,9 @@ fn pairing_accepts_38_record_wallet() {
 /// Beyond the cap: refuse (non-zero) — the device layer must show it.
 #[test]
 fn pairing_refuses_beyond_cap() {
-    let (session, req, entropy) = build_request(65);
+    // WP4 (2026-11-03): the cap is 128 now (details pool moved with it), so
+    // the refuse probe sits one past it, not at the old 65.
+    let (session, req, entropy) = build_request(129);
     let rc = run_pairing(&session, &req, &entropy);
     assert_ne!(rc, 0, "beyond the record cap must refuse");
 }
