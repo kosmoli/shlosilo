@@ -60,7 +60,12 @@ const PAIRING_SCRATCH_LEN: usize = {
 // REVISIT 2026-10-29: the 38-record live case failed HERE (the parse-side
 // cap is separate from the store/response cap) — raised to 64 in lockstep.
 // Same endgame note as PAIRING_RECORDS_MAX (pool #55 C/D decision).
-const PAIRING_DETAILS_MAX: usize = 64;
+// WP4 (2026-11-03): 64 -> 128, kept EQUAL to PAIRING_RECORDS_MAX — the details
+// pool parses the wallet's request while the records cap bounds our answer;
+// mismatched caps would refuse a 65..128-output export on the request side
+// even though the response side accepts it (audit finding of the WP4 test
+// sweep). Pool lives in PSRAM (caller-carved PairingWs).
+const PAIRING_DETAILS_MAX: usize = 128;
 /// Key-image record pool (one 96 B record per output) — mirrors the details
 /// cap so every parsed output is answered. The C-side retention mirror is
 /// `PAIRING_KI_MAX` in flux/forgebox/src/tasks/product_task.c.

@@ -62,7 +62,7 @@ fn build_plain(count: usize, view_sk: &[u8; 32], spend_sk: &[u8; 32]) -> Vec<u8>
     encode_varint(count as u64, &mut plain); // transfers total
     encode_varint(count as u64, &mut plain); // record count
     for i in 0..count {
-        let tx_sk = [0x42u8.wrapping_add(i as u8 * 3); 32];
+        let tx_sk = [0x42u8.wrapping_add((i as u8).wrapping_mul(3)); 32];
         let tx_pub = point(&tx_sk);
         let off = calc_output_key_offset(view_sk, &tx_pub, i as u64, 0, 0).unwrap();
         let input_sk = Scalar::from_bytes_mod_order(*spend_sk) + Scalar::from_bytes_mod_order(off);
@@ -82,20 +82,18 @@ fn build_plain(count: usize, view_sk: &[u8; 32], spend_sk: &[u8; 32]) -> Vec<u8>
     plain
 }
 
-/// Pool §37: a 9-output export must not hard-fail on the details pool cap.
-#[test]
-fn details_pool_handles_nine_outputs() {
+/// Drive the deployment receive leg for `count` outputs.
+/// Ok(answered_count) on success, Err(FFI code) on refusal.
+fn run_count(count: usize) -> Result<usize, i32> {
     let view_sk = [6u8; 32];
     let spend_sk = [5u8; 32];
     let spend_pub = point(&spend_sk);
     let view_pub = point(&view_sk);
 
-    let plain = build_plain(NINE_OUTPUTS, &view_sk, &spend_sk);
+    let plain = build_plain(count, &view_sk, &spend_sk);
 
-    // Wrap into the real signed+encrypted request container
-    // (Monero output export\x04, envelope signature over keccak256(nonce||cipher)).
     let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(11);
-    let mut req_buf = vec![0u8; 16384];
+    let mut req_buf = vec![0u8; 32768];
     let mut cn = vec![0u8; shlosilo::types::caps::SIGN_WS_CN_SCRATCH];
     let req_n = encrypt_export_payload_into(
         OUTPUT_EXPORT_MAGIC,
@@ -110,13 +108,11 @@ fn details_pool_handles_nine_outputs() {
     )
     .expect("request container build");
 
-    // Deployment receive leg — this is where the details pool is carved
-    // (PAIRING_DETAILS_MAX = 8 inside PairingWs).
-    let mut out = vec![0u8; 16384];
+    let mut out = vec![0u8; 32768];
     let mut ws_raw = vec![0u8; pairing_ws_len()];
     let mut ws = carve_pairing_ws(&mut ws_raw).expect("carve pairing ws");
 
-    let outcome = match process_output_export(
+    match process_output_export(
         &view_sk,
         &spend_sk,
         &req_buf[..req_n],
@@ -124,24 +120,39 @@ fn details_pool_handles_nine_outputs() {
         &mut out,
         &mut rng,
     ) {
-        Ok(o) => o,
-        Err(e) => {
-            let code = shlosilo::error::ShlosiloErrorCode::from_shlosilo_error(e);
-            panic!(
-                "PINNED RED: a 9-output export is rejected by the details pool cap — \
-                 the pairing receive leg carves only PAIRING_DETAILS_MAX = 8 \
-                 output-detail slots (forms/business/xmr_pairing.rs), so >8 outputs \
-                 surface as BufferTooSmall = FFI {} (pool §37: >8 outputs -> -20 data \
-                 error). Fix = raise PAIRING_DETAILS_MAX / PAIRING_RECORDS_MAX to \
-                 cover real wallet output counts (or size the pool dynamically), so \
-                 this request is answered instead of hard-failing",
-                code
-            );
-        }
-    };
+        Ok(o) => Ok(o.output_count),
+        Err(e) => Err(shlosilo::error::ShlosiloErrorCode::from_shlosilo_error(e)),
+    }
+}
 
+/// Pool §37 (flipped green 2026-10-21): a 9-output export must not hard-fail.
+#[test]
+fn details_pool_handles_nine_outputs() {
     assert_eq!(
-        outcome.output_count, NINE_OUTPUTS,
-        "all nine outputs of the export must be parsed and answered with key images"
+        run_count(NINE_OUTPUTS).expect("9-output export must be answered"),
+        NINE_OUTPUTS
+    );
+}
+
+/// WP4 (2026-11-03): the cap boundary — `PAIRING_DETAILS_MAX` now equals
+/// `PAIRING_RECORDS_MAX` (128). A real wallet's 128-output export must parse
+/// AND be answered: the request side must never die below the response cap.
+#[test]
+fn details_pool_128_outputs_answered() {
+    assert_eq!(
+        run_count(128).expect("128-output export must be answered"),
+        128,
+        "every output of a 128-output export must be answered with a key image"
+    );
+}
+
+/// WP4: one past the pool refuses with the stable data error (-20
+/// BufferTooSmall) — never a silent truncation.
+#[test]
+fn details_pool_129_outputs_refused() {
+    let code = run_count(129).expect_err("129 outputs must refuse");
+    assert_eq!(
+        code, -20,
+        "over-cap refuses as BufferTooSmall (-20), got {code}"
     );
 }
