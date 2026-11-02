@@ -34,6 +34,10 @@ shlosilo = { path = "../../..", default-features = false, features = [
     "tx-phase-timing-ffi",
     "device-timing",
     "perf-bench-ffi",
+    # WP4 (2026-11-02): the Keyed wire view (keystone-ecosystem shape).
+    # REQUIRED for shlosilo_sign_session_view_ffi wire_view=1 to materialize;
+    # without it the Keystone arm is cfg'd out (FeatureNotImplemented).
+    "profile-keystone",
 ] }
 
 # RawRestoreState for the PRIMASK-based impl in lib.rs (restore-state-u8,

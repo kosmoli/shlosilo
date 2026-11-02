@@ -76,7 +76,11 @@ const PAIRING_DETAILS_MAX: usize = 64;
 /// decision (pool #55). Rule regardless of cap: an over-cap refusal MUST be
 /// visibly reported (拆码红线). Mirror: flux/forgebox product_task.c
 /// PAIRING_KI_MAX.
-const PAIRING_RECORDS_MAX: usize = 64;
+// WP4 (2026-11-02): 64 -> 128. Real-ecosystem evidence: this cap was hit at
+// 75 records by a real wallet's output history during the Feather A/B test,
+// and cup/keystone-class devices carry no such cap at all. Memory note: the
+// pairing workspace is caller-allocated in PSRAM (ExtMalloc on forgebox).
+const PAIRING_RECORDS_MAX: usize = 128;
 
 /// Caller-provisioned workspace for the receive leg (Z3 caller-workspace
 /// discipline — forms allocates nothing on this path). Carved from raw caller

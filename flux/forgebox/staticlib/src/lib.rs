@@ -156,6 +156,7 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_uri_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_sign_session_ffi as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_sign_session_view_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_session_free_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_xmr_pairing_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ki_store_merge_ffi as *const ()),

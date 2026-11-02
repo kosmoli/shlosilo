@@ -592,7 +592,7 @@
  * set for the keystone two-fill map. Mirrors `WalletKiRecord` capacity
  * (pairing-record pool, 64) — a larger retention batch refuses at the sign.
  */
-#define SIGN_WS_RETAINED 64
+#define SIGN_WS_RETAINED 128
 
 /**
  * Workspace: splitted destinations (flat).
@@ -631,13 +631,17 @@
 
 /**
  * Workspace: key images (flat).
+ * Raised 32 -> 128 (WP4): the Indexed positional array spans
+ * max(selected_transfers)+1 over the wallet's transfer space.
  */
-#define SIGN_WS_KI 32
+#define SIGN_WS_KI 128
 
 /**
  * Workspace: tx key image records (flat).
+ * Raised 128 -> 256 (WP4): the Keyed tail's two-fill union =
+ * new outputs (≤100) + retained transfers (≤128).
  */
-#define SIGN_WS_TKI 128
+#define SIGN_WS_TKI 256
 
 /**
  * Workspace: selected-transfers record bytes (flat).
@@ -798,6 +802,8 @@ typedef struct WalletKiRecord {
    */
   uint8_t out_pub[32];
 } WalletKiRecord;
+
+
 
 
 
@@ -1244,6 +1250,33 @@ int shlosilo_sign_session_ffi(const struct KeySession *session,
                               unsigned int ws_len,
                               const struct WalletKiRecord *ki_records,
                               unsigned int ki_records_len);
+
+/**
+ * WP4 (2026-11-02): session sign with an explicit wire-tail VIEW.
+ *
+ * Identical contract to [`shlosilo_sign_session_ffi`] (same arguments,
+ * same probe/capacity rules) plus one trailing discriminant:
+ * - `wire_view = 0` — INDEXED: wallet2 positional `key_images` array
+ *   (the legacy shape; byte-identical to the old entry);
+ * - `wire_view = 1` — KEYED: EMPTY positional array + `tx_key_images`
+ *   keyed map (the keystone-ecosystem shape, validated A/B on real
+ *   hardware 2026-11-02);
+ * - any other value: `EncodingInvalidFormat` (never a silent fallback).
+ */
+int shlosilo_sign_session_view_ffi(const struct KeySession *session,
+                                   const char *type_name,
+                                   const uint8_t *payload,
+                                   unsigned int payload_len,
+                                   const uint8_t *entropy_ptr,
+                                   unsigned int entropy_len,
+                                   uint8_t *output_buf,
+                                   unsigned int output_buf_len,
+                                   unsigned int *actual_len,
+                                   uint8_t *ws,
+                                   unsigned int ws_len,
+                                   const struct WalletKiRecord *ki_records,
+                                   unsigned int ki_records_len,
+                                   unsigned int wire_view);
 
 /**
  * Task 3 (2026-10-07): session reclaim — the handle lifecycle contract.

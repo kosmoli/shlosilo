@@ -21,14 +21,20 @@
 /* Button band (bottom, text labels; back left / continue right) */
 #define UI_BTN_Y0            700
 #define UI_BTN_Y1            787
+/* WP4 UX (2026-11-02): three-button bar — home | mode | camera.
+ * The middle slot (mode) is only active/drawn with a label on the QR page
+ * (wire-view switch: Indexed <-> Keyed); elsewhere its frame stays empty. */
 #define UI_BTN_L_X0          16
-#define UI_BTN_L_X1          231
-#define UI_BTN_R_X0          248
+#define UI_BTN_L_X1          165
+#define UI_BTN_M_X0          175
+#define UI_BTN_M_X1          305
+#define UI_BTN_R_X0          315
 #define UI_BTN_R_X1          463
 #define UI_BTN_T             2
 #define UI_BTN_LABEL_SCALE   2
-#define UI_BTN_LABEL_LEFT    "back"
-#define UI_BTN_LABEL_RIGHT   "continue"
+#define UI_BTN_LABEL_LEFT    "home"
+#define UI_BTN_LABEL_MODE    "wire"
+#define UI_BTN_LABEL_RIGHT   "camera"
 
 /* Footer: three diagnostic lines above the button band */
 #define UI_FOOTER_X          16

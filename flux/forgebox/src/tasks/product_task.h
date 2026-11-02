@@ -19,6 +19,10 @@ void CreateProductTask(void);
  */
 int ProductKeySeUnlock(const char *password);
 
+/* WP4 (2026-11-02): wire-view selection (0 = indexed/legacy, 1 = keyed). */
+unsigned ProductWireView(void);
+void ProductToggleWireView(void);
+
 /* Close (zeroize) the live key session, whichever source opened it (the
  * shared QR/SE teardown). Idempotent. */
 void ProductKeyLock(void);

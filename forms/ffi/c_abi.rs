@@ -1465,6 +1465,7 @@ pub mod r3 {
                 output_buf_len,
                 ws,
                 ws_need,
+                crate::canonical::TailView::CAKE,
             )
         });
         finish_sign_ffi(result, actual_len)
@@ -1533,6 +1534,11 @@ pub mod r3 {
         output_buf_len: c_uint,
         ws: *mut u8,
         ws_need: usize,
+        // WP4 (2026-11-02): the wire-tail view the signed set materializes in.
+        // Indexed (wallet2 positional array) is the legacy default; Keyed
+        // (empty positional array + tx_key_images map) is the keystone-ecosystem
+        // shape. Both are canonical views of the same signed artifact.
+        tail: crate::canonical::TailView,
     ) -> Result<usize, ShlosiloError> {
         // (1) C string → &str (≤ 64 chars is enough for a type name)
         let mut tlen = 0usize;
@@ -1649,7 +1655,8 @@ pub mod r3 {
             )
         })?;
         // (12) sign — §B.5: entropy_slice feeds the XMR signing randomness stream
-        business::sign::sign_with_entropy_ws(
+        business::sign::sign_with_entropy_ws_views(
+            tail,
             sign_input,
             tag,
             payload_slice,
@@ -1762,6 +1769,108 @@ pub mod r3 {
                 output_buf_len,
                 ws,
                 ws_need,
+                crate::canonical::TailView::CAKE,
+            )
+        });
+        finish_sign_ffi(result, actual_len)
+    }
+
+    /// WP4 (2026-11-02): session sign with an explicit wire-tail VIEW.
+    ///
+    /// Identical contract to [`shlosilo_sign_session_ffi`] (same arguments,
+    /// same probe/capacity rules) plus one trailing discriminant:
+    /// - `wire_view = 0` — INDEXED: wallet2 positional `key_images` array
+    ///   (the legacy shape; byte-identical to the old entry);
+    /// - `wire_view = 1` — KEYED: EMPTY positional array + `tx_key_images`
+    ///   keyed map (the keystone-ecosystem shape, validated A/B on real
+    ///   hardware 2026-11-02);
+    /// - any other value: `EncodingInvalidFormat` (never a silent fallback).
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
+    pub extern "C" fn shlosilo_sign_session_view_ffi(
+        session: *const KeySession, // flux-constructed; the FFI side only holds the pointer
+        type_name: *const c_char,
+        payload: *const u8,
+        payload_len: c_uint,
+        entropy_ptr: *const u8,
+        entropy_len: c_uint,
+        output_buf: *mut u8,
+        output_buf_len: c_uint,
+        actual_len: *mut c_uint,
+        ws: *mut u8,
+        ws_len: c_uint,
+        // tx2 wire fix: the pairing-beat wallet key image retention
+        // (repr(C) `WalletKiRecord` array), NULL/0 = none available. The sign
+        // path fills the container's wallet-transfer-indexed `key_images` from
+        // these; an uncovered position refuses the sign.
+        ki_records: *const crate::business::sign::WalletKiRecord,
+        ki_records_len: c_uint,
+        // WP4 (2026-11-02): wire-tail view — 0 = Indexed (wallet2 positional
+        // array, byte-identical to the legacy entry), 1 = Keyed (empty
+        // positional array + tx_key_images map, the keystone-ecosystem shape).
+        wire_view: c_uint,
+    ) -> c_int {
+        let tail = match crate::canonical::TailView::from_abi(wire_view) {
+            Some(t) => t,
+            None => {
+                write_actual_len(actual_len, 0);
+                return to_ffi_code(&ShlosiloError::new(
+                    ShlosiloErrorKind::EncodingInvalidFormat,
+                ));
+            }
+        };
+        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+                                         // Z3.3b workspace contract: ws == NULL is a PURE PROBE —
+                                         // reports the workspace requirement and returns before any
+                                         // key access, parsing, or RNG use; no output side effects.
+        if ws.is_null() {
+            write_actual_len(actual_len, shlosilo_sign_ws_len() as usize);
+            return OK;
+        }
+        // Capacity is validated BEFORE execution; under-capacity reports the
+        // required length through actual_len (documented exception to the
+        // zero-on-failure rule — the caller needs the number to resize).
+        let ws_need = shlosilo_sign_ws_len() as usize;
+        if (ws_len as usize) < ws_need {
+            write_actual_len(actual_len, ws_need);
+            return to_ffi_code(&ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(ws_need),
+            ));
+        }
+        // Gate4: required pointers rejected up front (same discipline as the
+        // typed entry — the session handle takes the mnemonic_indices slot).
+        if session.is_null() || type_name.is_null() || payload.is_null() || output_buf.is_null() {
+            return ERR_NULL_POINTER;
+        }
+        let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            // (13) wallet KI records: NULL/0 = no retention; a non-NULL
+            // pointer with count 0 is likewise empty. Layout-compatible zero
+            // copy (repr(C) WalletKiRecord); the sign path's span check bounds
+            // what the records can cover (BufferTooSmall beyond ws.ki).
+            if ki_records.is_null() && ki_records_len != 0 {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch));
+            }
+            let ki_slice: &[crate::business::sign::WalletKiRecord] = if ki_records.is_null() {
+                &[]
+            } else {
+                // SAFETY: non-null (checked above) with the caller-supplied
+                // count; the array is repr(C) WalletKiRecord (layout match).
+                unsafe { core::slice::from_raw_parts(ki_records, ki_records_len as usize) }
+            };
+            sign_typed_core(
+                SignKeySource::Session(session),
+                type_name,
+                payload,
+                payload_len,
+                ki_slice,
+                entropy_ptr,
+                entropy_len,
+                output_buf,
+                output_buf_len,
+                ws,
+                ws_need,
+                tail,
             )
         });
         finish_sign_ffi(result, actual_len)

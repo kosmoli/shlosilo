@@ -109,7 +109,11 @@ pub const SIGN_WS_SOURCES: usize = 32;
 /// Workspace: the retained-leg staging (I13) — the FULL fp-matched retention
 /// set for the keystone two-fill map. Mirrors `WalletKiRecord` capacity
 /// (pairing-record pool, 64) — a larger retention batch refuses at the sign.
-pub const SIGN_WS_RETAINED: usize = 64;
+// WP4 (2026-11-02): raised 64 -> 128 alongside the pairing-record cap —
+// the keystone-ecosystem scenario (a real wallet's outputs history) crosses
+// 64 quickly; the sign workspace lives in PSRAM (ExtMalloc), so the extra
+// slots cost heap, not SRAM.
+pub const SIGN_WS_RETAINED: usize = 128;
 /// Workspace: splitted destinations (flat).
 pub const SIGN_WS_SPLITS: usize = 64;
 /// Workspace: selected-transfers bytes (flat).
@@ -125,9 +129,13 @@ pub const SIGN_WS_PTX: usize = 8;
 /// Workspace: signed-tx wire bytes (TX_WIRE_SLOT_MAX per tx).
 pub const SIGN_WS_TX_BYTES: usize = 16 * 1024 * 8;
 /// Workspace: key images (flat).
-pub const SIGN_WS_KI: usize = 32;
+/// Raised 32 -> 128 (WP4): the Indexed positional array spans
+/// max(selected_transfers)+1 over the wallet's transfer space.
+pub const SIGN_WS_KI: usize = 128;
 /// Workspace: tx key image records (flat).
-pub const SIGN_WS_TKI: usize = 128;
+/// Raised 128 -> 256 (WP4): the Keyed tail's two-fill union =
+/// new outputs (≤100) + retained transfers (≤128).
+pub const SIGN_WS_TKI: usize = 256;
 /// Workspace: selected-transfers record bytes (flat).
 pub const SIGN_WS_SEL_OUT: usize = 256;
 /// Workspace: key-image string bytes (67 per source).

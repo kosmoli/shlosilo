@@ -48,6 +48,9 @@ int UiConfirmDecision(void);    /* 0 = pending, 1 = continue, -1 = back */
 void UiTouchReset(void);
 bool UiIsBackButton(int x, int y);
 bool UiIsContinueButton(int x, int y);
+bool UiIsModeButton(int x, int y);
+/* WP4 UX: one-shot `home` press request (welcome + zeroize). */
+int UiTakeHomeRequest(void);
 
 /* Binarized aiming preview: render one camera gray frame (640x480) into the
  * scan page. Called by the camera driver while a captured frame is valid. */

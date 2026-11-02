@@ -74,9 +74,29 @@ pub struct TailView {
 }
 
 impl TailView {
-    /// The in-sale product line's view (Cake/wallet2).
+    /// INDEXED view (wallet2 family): the positional `key_images` array ships
+    /// wallet-transfer-indexed, `tx_key_images` carries the wallet-owned
+    /// subset. The legacy product-line shape (byte-identical to pre-WP4).
     pub const CAKE: Self = TailView {
         key_images: KeyImagesPositionalView::WalletIndexedFull,
         tx_key_images: TxKeyImagesView::Wallet2Owned,
     };
+
+    /// KEYED view (keystone family): the positional `key_images` array stays
+    /// EMPTY and every KI ships in the `tx_key_images` map keyed by output
+    /// one-time address (two-fill union). Ecosystem-validated shape
+    /// (keystone cypherpunk firmware x Feather 2.8.1, 2026-11-02 A/B test).
+    pub const KEYED: Self = TailView {
+        key_images: KeyImagesPositionalView::Empty,
+        tx_key_images: TxKeyImagesView::AllPlusRetained,
+    };
+
+    /// Map the C-ABI `wire_view` discriminant: 0 = Indexed, 1 = Keyed.
+    pub fn from_abi(v: u32) -> Option<Self> {
+        match v {
+            0 => Some(Self::CAKE),
+            1 => Some(Self::KEYED),
+            _ => None,
+        }
+    }
 }

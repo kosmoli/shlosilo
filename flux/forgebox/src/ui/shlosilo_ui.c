@@ -31,6 +31,7 @@
 #include "ui_qr.h"
 #include "hal_lcd.h"
 #include "hal_touch.h"
+#include "tasks/product_task.h"
 #include "user_memory.h"
 #include "version.h"
 #include "cmsis_os.h"
@@ -100,6 +101,9 @@ static char g_crash_l3[LIVE_LINE_BYTES] = "";
 static char g_crash_l4[LIVE_LINE_BYTES] = "";
 static char g_crash_l5[LIVE_LINE_BYTES] = "";
 static int g_crash_ack;
+/* WP4 UX: `home` press request — the product task consumes it (one clear
+ * action: return to welcome AND zeroize the key session). */
+static int g_home_req;
 
 /* Payload page text (copied from the caller's buffer). */
 #define PAYLOAD_MAX 2048
@@ -473,6 +477,21 @@ void UiSetBattery(uint8_t percent, bool charging)
     ui_flush_range(UI_BATT_Y, UI_BATT_Y + UI_FONT_GLYPH_H * UI_BATT_SCALE - 1);
 }
 
+/* WP4 UX: three-slot button bar — `home` | mode (QR page only) | `camera`.
+ * The middle frame is always drawn (stable geometry); its label appears only
+ * where the slot has an action. */
+static void draw_buttons_bar(void)
+{
+    rect_outline(UI_BTN_L_X0, UI_BTN_Y0, UI_BTN_L_X1, UI_BTN_Y1, UI_BTN_T);
+    rect_outline(UI_BTN_M_X0, UI_BTN_Y0, UI_BTN_M_X1, UI_BTN_Y1, UI_BTN_T);
+    rect_outline(UI_BTN_R_X0, UI_BTN_Y0, UI_BTN_R_X1, UI_BTN_Y1, UI_BTN_T);
+    draw_button_label(UI_BTN_L_X0, UI_BTN_L_X1, UI_BTN_LABEL_LEFT);
+    draw_button_label(UI_BTN_R_X0, UI_BTN_R_X1, UI_BTN_LABEL_RIGHT);
+    if (g_page == UI_PAGE_QR) {
+        draw_button_label(UI_BTN_M_X0, UI_BTN_M_X1, UI_BTN_LABEL_MODE);
+    }
+}
+
 static void draw_footer(void)
 {
     char line[64];
@@ -569,10 +588,7 @@ static void draw_page(void)
 
     fill_rect(UI_LINE_X0, UI_LINE_Y, UI_LINE_X1 - UI_LINE_X0 + 1, 1);
 
-    rect_outline(UI_BTN_L_X0, UI_BTN_Y0, UI_BTN_L_X1, UI_BTN_Y1, UI_BTN_T);
-    rect_outline(UI_BTN_R_X0, UI_BTN_Y0, UI_BTN_R_X1, UI_BTN_Y1, UI_BTN_T);
-    draw_button_label(UI_BTN_L_X0, UI_BTN_L_X1, UI_BTN_LABEL_LEFT);
-    draw_button_label(UI_BTN_R_X0, UI_BTN_R_X1, UI_BTN_LABEL_RIGHT);
+    draw_buttons_bar();
 
     /* The scan page uses the footer strip for its status/info lines. */
     if (g_page != UI_PAGE_SCAN) {
@@ -611,6 +627,9 @@ void UiShowQrFrame(const char *text, uint32_t index, uint32_t total)
         snprintf(cap, sizeof(cap), "ur frame %u/%u",
                  (unsigned)index + 1, (unsigned)total);
         draw_text_center(UI_Q_CAP_Y, cap, 1);
+        snprintf(cap, sizeof(cap), "wire: %s",
+                 ProductWireView() ? "keyed" : "indexed");
+        draw_text_center(UI_Q_CAP_Y + 26, cap, 1);
     }
 
     /* One poll between the encode/draw work and the flush: the flush itself
@@ -618,10 +637,7 @@ void UiShowQrFrame(const char *text, uint32_t index, uint32_t total)
     UiInputPoll();
 
     fill_rect(UI_LINE_X0, UI_LINE_Y, UI_LINE_X1 - UI_LINE_X0 + 1, 1);
-    rect_outline(UI_BTN_L_X0, UI_BTN_Y0, UI_BTN_L_X1, UI_BTN_Y1, UI_BTN_T);
-    rect_outline(UI_BTN_R_X0, UI_BTN_Y0, UI_BTN_R_X1, UI_BTN_Y1, UI_BTN_T);
-    draw_button_label(UI_BTN_L_X0, UI_BTN_L_X1, UI_BTN_LABEL_LEFT);
-    draw_button_label(UI_BTN_R_X0, UI_BTN_R_X1, UI_BTN_LABEL_RIGHT);
+    draw_buttons_bar();
     draw_footer();
     ui_draw_battery();
 
@@ -715,10 +731,7 @@ void UiShowPlateQr(const uint8_t *payload, uint32_t len)
 
     UiInputPoll();
     fill_rect(UI_LINE_X0, UI_LINE_Y, UI_LINE_X1 - UI_LINE_X0 + 1, 1);
-    rect_outline(UI_BTN_L_X0, UI_BTN_Y0, UI_BTN_L_X1, UI_BTN_Y1, UI_BTN_T);
-    rect_outline(UI_BTN_R_X0, UI_BTN_Y0, UI_BTN_R_X1, UI_BTN_Y1, UI_BTN_T);
-    draw_button_label(UI_BTN_L_X0, UI_BTN_L_X1, UI_BTN_LABEL_LEFT);
-    draw_button_label(UI_BTN_R_X0, UI_BTN_R_X1, UI_BTN_LABEL_RIGHT);
+    draw_buttons_bar();
     draw_footer();
     ui_draw_battery();
 
@@ -777,6 +790,12 @@ bool UiIsContinueButton(int x, int y)
             x >= UI_BTN_R_X0 && x <= UI_BTN_R_X1);
 }
 
+bool UiIsModeButton(int x, int y)
+{
+    return (y >= UI_BTN_Y0 && y <= UI_BTN_Y1 &&
+            x >= UI_BTN_M_X0 && x <= UI_BTN_M_X1);
+}
+
 void UiSetLast(const char *text)
 {
     snprintf(g_last, sizeof(g_last), "last: %.50s", text ? text : "-");
@@ -786,36 +805,41 @@ static void handle_press(int x, int y)
 {
     char msg[56];
 
-    if (UiIsBackButton(x, y)) {
+    if (UiIsModeButton(x, y)) {
+        /* WP4: wire-view switch — QR page only. Flips Indexed <-> Keyed for
+         * the NEXT generated response (re-scan the request to apply it). */
+        if (g_page == UI_PAGE_QR) {
+            ProductToggleWireView();
+            snprintf(msg, sizeof(msg), "wire: %s (%d,%d)",
+                     ProductWireView() ? "keyed" : "indexed", x, y);
+        } else {
+            snprintf(msg, sizeof(msg), "wire: qr page only (%d,%d)", x, y);
+        }
+    } else if (UiIsBackButton(x, y)) {
+        /* WP4 UX `home`: ONE action — back to welcome AND zeroize the key
+         * session (the product task consumes g_home_req). The confirmation
+         * and crash pages keep their decision semantics, then take the same
+         * exit. */
         if (g_page == UI_PAGE_CONFIRM) {
-            /* Task 5b: reject the import - the product task closes any live
-             * key session and returns to the scan page (no navigation here). */
-            snprintf(msg, sizeof(msg), "seed confirm: reject (%d,%d)", x, y);
+            snprintf(msg, sizeof(msg), "home: reject import (%d,%d)", x, y);
             g_confirm_req = -1;
         } else if (g_page == UI_PAGE_CRASH) {
-            /* Consume the crash record: the product task erases the flash
-             * record and routes on (no navigation here). */
-            snprintf(msg, sizeof(msg), "crash: ack (%d,%d)", x, y);
+            snprintf(msg, sizeof(msg), "home: ack crash (%d,%d)", x, y);
             g_crash_ack = 1;
-        } else if (g_page == UI_PAGE_WELCOME) {
-            /* Dev entry (F3 output side): welcome back -> UR carousel demo. */
-            snprintf(msg, sizeof(msg), "back -> ur demo (%d,%d)", x, y);
-            g_page = UI_PAGE_QR;
         } else {
-            snprintf(msg, sizeof(msg), "back -> welcome (%d,%d)", x, y);
-            g_page = UI_PAGE_WELCOME;
+            snprintf(msg, sizeof(msg), "home -> welcome (zeroize) (%d,%d)", x, y);
         }
+        g_home_req = 1;
+        g_page = UI_PAGE_WELCOME;
     } else if (UiIsContinueButton(x, y)) {
+        /* WP4 UX `camera`: open the scanner — plate on welcome, wallet
+         * request anywhere else (entering SCAN auto-starts capture). */
         if (g_page == UI_PAGE_CONFIRM) {
-            /* Task 5b: accept the import - the product task opens the key
-             * session from the scanned plate bytes and routes on. */
-            snprintf(msg, sizeof(msg), "seed confirm: accept (%d,%d)", x, y);
+            snprintf(msg, sizeof(msg), "camera: accept import (%d,%d)", x, y);
             g_confirm_req = 1;
-        } else if (g_page == UI_PAGE_WELCOME || g_page == UI_PAGE_PAYLOAD) {
-            snprintf(msg, sizeof(msg), "continue -> scan (%d,%d)", x, y);
-            g_page = UI_PAGE_SCAN;
         } else {
-            snprintf(msg, sizeof(msg), "continue (scan) (%d,%d)", x, y);
+            snprintf(msg, sizeof(msg), "camera -> scan (%d,%d)", x, y);
+            g_page = UI_PAGE_SCAN;
         }
     } else {
         snprintf(msg, sizeof(msg), "tap (%d,%d)", x, y);
@@ -970,6 +994,14 @@ void UiCrashInfo(const char *l1, const char *l2, const char *l3,
         draw_page();
         ui_flush_range(0, UI_FB_H - 1);
     }
+}
+
+/* WP4 UX: consume the `home` request (one clear action: welcome + zeroize). */
+int UiTakeHomeRequest(void)
+{
+    int r = g_home_req;
+    g_home_req = 0;
+    return r;
 }
 
 int UiCrashAck(void)

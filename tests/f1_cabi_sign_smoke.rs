@@ -320,6 +320,139 @@ fn f1_sign_session_ffi_real_fixture_ok() {
         actual > 1000,
         "signed container must be non-trivial (actual={actual})"
     );
+
+    // ── WP4 (2026-11-02): the wire-VIEW entry ───────────────────────────────
+    // view=0 (Indexed) must be BYTE-IDENTICAL to the legacy entry (the old
+    // shape survives untouched); view=1 (Keyed) must differ and parse to an
+    // EMPTY positional key_images array (the keystone-ecosystem shape that
+    // the real-hardware A/B test validated); an out-of-range view refuses.
+    use shlosilo::ffi::c_abi::r3::shlosilo_sign_session_view_ffi;
+    let mut out_i = vec![0u8; OUT_CAP];
+    let mut n_i: u32 = 0;
+    let mut out_k = vec![0u8; OUT_CAP];
+    let mut n_k: u32 = 0;
+    let rc_i = shlosilo_sign_session_view_ffi(
+        session,
+        c"xmr-txunsigned".as_ptr(),
+        enc.as_ptr(),
+        enc.len() as u32,
+        FRESH_ENTROPY.as_ptr(),
+        FRESH_ENTROPY.len() as u32,
+        out_i.as_mut_ptr(),
+        out_i.len() as u32,
+        &mut n_i,
+        ws.as_mut_ptr(),
+        ws_len,
+        records.as_ptr(),
+        records.len() as u32,
+        0,
+    );
+    let rc_k = shlosilo_sign_session_view_ffi(
+        session,
+        c"xmr-txunsigned".as_ptr(),
+        enc.as_ptr(),
+        enc.len() as u32,
+        FRESH_ENTROPY.as_ptr(),
+        FRESH_ENTROPY.len() as u32,
+        out_k.as_mut_ptr(),
+        out_k.len() as u32,
+        &mut n_k,
+        ws.as_mut_ptr(),
+        ws_len,
+        records.as_ptr(),
+        records.len() as u32,
+        1,
+    );
+    let mut n_bad: u32 = 0;
+    let rc_bad = shlosilo_sign_session_view_ffi(
+        session,
+        c"xmr-txunsigned".as_ptr(),
+        enc.as_ptr(),
+        enc.len() as u32,
+        FRESH_ENTROPY.as_ptr(),
+        FRESH_ENTROPY.len() as u32,
+        out_i.as_mut_ptr(),
+        out_i.len() as u32,
+        &mut n_bad,
+        ws.as_mut_ptr(),
+        ws_len,
+        records.as_ptr(),
+        records.len() as u32,
+        7,
+    );
+    assert_eq!(rc_i, OK, "view=0 must sign");
+    assert_eq!(rc_k, OK, "view=1 must sign");
+    assert!(rc_bad < 0, "unknown wire_view must refuse (got {rc_bad})");
+    assert_eq!(
+        &out_i[..n_i as usize],
+        &out[..actual as usize],
+        "view=0 must be BYTE-IDENTICAL to the legacy entry"
+    );
+    assert_ne!(
+        &out_k[..n_k as usize],
+        &out_i[..n_i as usize],
+        "view=1 must materialize a different tail"
+    );
+    // Parse both: Indexed keeps the wallet-indexed array; Keyed empties it.
+    fn tail_ki_len(enc_out: &[u8]) -> usize {
+        use shlosilo::chain::xmr::signed_txset::{
+            decrypt_signed_txset, deserialize_signed_plain, PendingTx, SignedTxSetPools,
+            TxKeyImageEntry,
+        };
+        use shlosilo::chain::xmr::unsigned_txset::{TxDestinationEntry, TxSourceEntry};
+        let plain = decrypt_signed_txset(enc_out, &TEST2_VIEW_SK)
+            .expect("decrypt")
+            .to_vec();
+        let mut p_txes = core::array::from_fn::<Option<PendingTx<'_>>, 2, _>(|_| None);
+        let mut sel = [0u8; 64];
+        let mut ki_str = [0u8; 4096];
+        let mut dests =
+            core::array::from_fn::<TxDestinationEntry, 16, _>(|_| TxDestinationEntry::default());
+        let mut sources = core::array::from_fn::<Option<TxSourceEntry>, 32, _>(|_| None);
+        let mut splitted =
+            core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+        let mut cons_sel = [0usize; 256];
+        let mut extra = [0u8; 8192];
+        let mut cons_dests =
+            core::array::from_fn::<TxDestinationEntry, 64, _>(|_| TxDestinationEntry::default());
+        let mut subidx = [0u32; 256];
+        let mut key_images = [[0u8; 32]; 16];
+        let mut tki =
+            core::array::from_fn::<TxKeyImageEntry, 64, _>(|_| TxKeyImageEntry::default());
+        let set = deserialize_signed_plain(
+            &plain,
+            &mut SignedTxSetPools {
+                ptx: &mut p_txes,
+                sel: &mut sel,
+                ki_str: &mut ki_str,
+                dests: &mut dests,
+                sources: &mut sources,
+                splitted: &mut splitted,
+                cons_sel: &mut cons_sel,
+                extra: &mut extra,
+                cons_dests: &mut cons_dests,
+                subidx: &mut subidx,
+                key_images: &mut key_images,
+                tx_key_images: &mut tki,
+            },
+        )
+        .expect("parse signed");
+        assert!(
+            !set.tx_key_images.is_empty(),
+            "keyed map must carry the two-fill union"
+        );
+        set.key_images.len()
+    }
+    let ki_i = tail_ki_len(&out_i[..n_i as usize]);
+    let ki_k = tail_ki_len(&out_k[..n_k as usize]);
+    assert!(
+        ki_i > 0,
+        "Indexed tail keeps the positional array (got {ki_i})"
+    );
+    assert_eq!(
+        ki_k, 0,
+        "Keyed tail must ship an EMPTY positional array (got {ki_k})"
+    );
 }
 
 /// Semantic anchor (test constitution #1): the pinned raw key material must

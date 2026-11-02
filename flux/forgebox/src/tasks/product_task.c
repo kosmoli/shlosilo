@@ -104,7 +104,7 @@ static const struct KeySession *g_key_session;
  * the full one must not drop coverage). Cross-wallet contamination is caught
  * at sign time by the selected-index mismatch guard (KeyImageRecordMismatch:
  * a wrong-wallet record cannot match the derived key image). */
-#define PAIRING_KI_MAX 64 /* mirrors forms/business/xmr_pairing.rs PAIRING_RECORDS_MAX
+#define PAIRING_KI_MAX 128 /* mirrors forms/business/xmr_pairing.rs PAIRING_RECORDS_MAX (WP4: 64->128)
  * (32 = 4x largest observed wallet at design time, 2026-10-21). REVISIT 2026-10-29:
  * a Cake Outputs(all) of 38 records broke the cap -> pairing refused -20 (silent).
  * 64 is headroom only; the real wall is the positional full-array protocol shape.
@@ -215,6 +215,9 @@ static uint32_t g_ur_total = 0;
 static int g_touch_prev;
 static int g_scan_abort_req;
 static int g_ur_exit_req;
+/* WP4 UX: QR page `camera` = leave the carousel straight into a new scan
+ * (no detour through welcome). `wire` flips the view for the NEXT response. */
+static int g_ur_scan_req;
 static int g_back_press_x;
 static int g_back_press_y;
 
@@ -233,14 +236,30 @@ static void product_touch_poll(void)
         return;
     }
     down = st.touch ? 1 : 0;
-    if (down && !g_touch_prev && UiIsBackButton((int)st.x, (int)st.y)) {
-        g_back_press_x = (int)st.x;
-        g_back_press_y = (int)st.y;
-        if (g_scan == SCAN_ACTIVE) {
-            g_scan_abort_req = 1;
-        }
-        if (g_carousel == CAROUSEL_ACTIVE) {
-            g_ur_exit_req = 1;
+    if (down && !g_touch_prev) {
+        int tx = (int)st.x;
+        int ty = (int)st.y;
+
+        if (UiIsBackButton(tx, ty)) {
+            g_back_press_x = tx;
+            g_back_press_y = ty;
+            /* WP4 UX `home`: one action — leave for welcome AND zeroize the
+             * session, on every page (scan and carousel live here, the plain
+             * UI pages route through handle_press). */
+            key_session_close();
+            if (g_scan == SCAN_ACTIVE) {
+                g_scan_abort_req = 1;
+            }
+            if (g_carousel == CAROUSEL_ACTIVE) {
+                g_ur_exit_req = 1;
+            }
+        } else if (g_carousel == CAROUSEL_ACTIVE && UiIsModeButton(tx, ty)) {
+            /* `wire`: flip Indexed <-> Keyed for the NEXT generated response
+             * (the status line repaints on the next frame). */
+            ProductToggleWireView();
+        } else if (g_carousel == CAROUSEL_ACTIVE && UiIsContinueButton(tx, ty)) {
+            /* `camera`: straight back into scanning to catch the next request. */
+            g_ur_scan_req = 1;
         }
     }
     g_touch_prev = down;
@@ -436,6 +455,13 @@ static void ProductTask(void *argument)
     uint32_t last_btn = osKernelGetTickCount();
 
     while (1) {
+        /* WP4 UX `home`: whatever branch ran last, a pending home press
+         * always ends with a dead session (scan/carousel press the page-exit
+         * flags through their own paths; this is the common drain). */
+        if (UiTakeHomeRequest()) {
+            key_session_close();
+            UiGotoPage(UI_PAGE_WELCOME);
+        }
         product_status_tick();
 
         /* Crash-page latching: keep re-asserting while inside the window so
@@ -704,6 +730,25 @@ static void key_wallet_wipe(void)
  * session (old sign path runs). SE sessions and QR sessions ride this SAME
  * sign route. */
 static const struct KeySession *g_key_session = NULL;
+
+/* WP4 (2026-11-02): the signed-set wire VIEW the device materializes.
+ * 0 = INDEXED (wallet2 positional key_images array; the legacy shape),
+ * 1 = KEYED   (empty positional array + tx_key_images map; the keystone-
+ *               ecosystem shape validated by the official-firmware A/B test).
+ * Selected on the QR page's mode button; applies to the NEXT generated
+ * response (re-scan the request to apply a change). */
+static unsigned g_wire_view = 0u;
+
+unsigned ProductWireView(void)
+{
+    return g_wire_view;
+}
+
+void ProductToggleWireView(void)
+{
+    g_wire_view = g_wire_view ? 0u : 1u;
+    printf("ui: wire view -> %s\r\n", g_wire_view ? "keyed" : "indexed");
+}
 
 static const char *seed_class_name(int cls)
 {
@@ -1194,11 +1239,14 @@ static void sign_run(const char *uri, const char *type,
          * scanned key never crosses the FFI again). Routing guarantees a
          * typed (type, payload) pair here; a NULL type would be refused by
          * the entry itself (-2), never signed with a fallback key. */
-        rc = shlosilo_sign_session_ffi(g_key_session, type, payload, plen,
+        /* WP4: the view entry — g_wire_view selects Indexed (legacy,
+         * byte-identical) or Keyed (keystone-ecosystem shape). */
+        rc = shlosilo_sign_session_view_ffi(g_key_session, type, payload, plen,
                                       entropy, sizeof(entropy),
                                       g_sign_out, SIGN_OUT_MAX, &out_len,
                                       ws, ws_need,
-                                      g_pairing_ki, g_pairing_ki_n);
+                                      g_pairing_ki, g_pairing_ki_n,
+                                      g_wire_view);
     } else if (uri != NULL) {
         rc = shlosilo_sign_ur_ffi(uri, k_sign_idx12, 12, NULL, 0, 0,
                                   entropy, sizeof(entropy),
@@ -2163,6 +2211,12 @@ static void carousel_step(void)
 
     WDT_ReloadCounter();
 
+    if (g_ur_scan_req) {
+        g_ur_scan_req = 0;
+        carousel_leave("carousel -> scan");
+        UiGotoPage(UI_PAGE_SCAN);
+        return;
+    }
     if (carousel_exit_requested()) {
         carousel_leave("carousel -> welcome");
         return;
