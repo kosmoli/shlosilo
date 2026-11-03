@@ -1712,7 +1712,10 @@ int ProductSignFixtureArm(void)
  * page (see ur_type_hex). Off in production; overridden with
  * -DSHLOSILO_QR_TYPE_HEX=1 for a one-off field-diagnosis image. */
 #ifndef SHLOSILO_QR_TYPE_HEX
-#define SHLOSILO_QR_TYPE_HEX 0
+/* TEMPORARY (field diagnosis, 2026-11-04): default ON so the standard build.sh
+ * chain ships the line. Revert to 0 once the type token has been read off the
+ * device screen. */
+#define SHLOSILO_QR_TYPE_HEX 1
 #endif
 
 #define REVIEW_PAGE_LINES 4u
