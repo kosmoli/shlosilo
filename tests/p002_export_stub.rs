@@ -16,16 +16,21 @@ fn path() -> heapless::Vec<DerivationPath, 8> {
     v
 }
 
-/// The four stub protocols must all return ExportProtocolUnimplemented (audit P0-02)
+/// The remaining stub protocols must all return ExportProtocolUnimplemented (audit P0-02)
+///
+/// `CryptoAccount` left this list on 2026-11-03: it is a real implementation
+/// now (keystone-ecosystem BTC account pairing), covered positively by
+/// `business::export_readonly::tests::export_btc_account_*` and by the
+/// registry-shape pins in `tests/ur_crypto_hdkey_registry_shape.rs`.
 #[test]
 fn p0_02_stub_protocols_rejected() {
     let seed = [7u8; 64];
     let paths = path();
     let cases = [
-        ExportProtocol::CryptoAccount,
         ExportProtocol::CryptoMultiAccounts,
         ExportProtocol::JsonMoneroViewkey,
         ExportProtocol::ArweaveCryptoAccount,
+        ExportProtocol::ZcashAccounts,
     ];
     for proto in cases {
         // prefill the buffer with nonzero bytes — verify the failure path writes nothing

@@ -40,7 +40,12 @@ const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysg
 /// m/44'/0'/0'/0/0 (mainnet). 2026-10-12 outbound convention: the message
 /// carries the CBOR byte-string shell (`0x58` + len) before bytewords, so the
 /// body gains the `hd` prefix and a new CRC tail versus the pre-shell vector.
-const EXPECTED_EXPORT_UR: &str = "ur:crypto-hdkey/hdidoxaxhdclaxisyagdbdhsvarersbykegssnhesonthdetkokklomsprldoseymnpansbnwynyioaahdcxaorptnpmcmdibgcevegaetftloemsfhphdcflkswfsgmdyidchkndyprswsnfewpaycysssefxgwamtaaddyoeadlecsdwykaeykaeykaewkaewkaxahenknzovl";
+///
+/// 2026-11-03 再生成：crypto-hdkey 补齐 registry 必需字段（origin keypath 的
+/// `source_fingerprint`、`use_info` tag 305、account 级路径的 `children`）。
+/// 本条钉的是「同一固定熵 → 同一字节」的平价性质；字节随形状演进由
+/// `regenerate_export_ur`（`#[ignore]`）重出，勿手改。
+const EXPECTED_EXPORT_UR: &str = "ur:crypto-hdkey/hdjsonaxhdclaxisyagdbdhsvarersbykegssnhesonthdetkokklomsprldoseymnpansbnwynyioaahdcxaorptnpmcmdibgcevegaetftloemsfhphdcflkswfsgmdyidchkndyprswsnfewpahtaadehoeadaeaoaeamtaaddyotadlecsdwykaeykaeykaewkaewkaocytkcyltbzaxahaycysssefxgwwmlkflcl";
 
 /// The signed EIP-1559 tx hex the host-sim prints (111 bytes).
 const EXPECTED_SIGNED_HEX: &str = "02f86c0180843b9aca0084773594008252089422222222222222222222222222222222222222228203e780c080a0231db6acdbb8e2b9ce1c7c38f0eaea8520dd327b4c7b9f24627459d57a4548a9a0444004dd6f14355354be998067ad1cc1d467bb9e3d73175c5b2b1215eeba1a72";
@@ -250,4 +255,44 @@ fn gen_bench_channel_files() {
     );
     std::fs::write("/tmp/shlosilo_bench_expected.txt", &expected).expect("write expected");
     println!("{expected}");
+}
+
+/// 金标再生成器（永久保留，`#[ignore]`）：打印当前实现对本夹具 mnemonic 在
+/// `m/44'/0'/0'/0/0` 上的 crypto-hdkey UR。
+///
+/// 用法：
+/// `cargo test --offline --test pico2_smoke_parity -- --ignored --nocapture regenerate_export_ur`
+///
+/// 再生成缘由（2026-11-03）：crypto-hdkey 形状补齐 registry 必需字段——
+/// origin keypath 的 `source_fingerprint`（field 2，keystone SDK `parseHDKey`
+/// 缺它直接 throw）、`use_info`（tag 305）、`children`（tag 304，仅
+/// account 级路径发）。旧锚点是补齐前的形状，已作废；本条不变的是「同一固定
+/// 熵 → 同一字节」的平价性质，而不是那串旧字节本身。
+#[test]
+#[ignore]
+fn regenerate_export_ur() {
+    let rolls = fixture_rolls();
+    let mut mnemonic_buf = [0u8; 24];
+    business::create_account::create_account(WordCount::Words12, 6, &rolls, b"", &mut mnemonic_buf)
+        .expect("create_account");
+    let mut indices = [0u16; 12];
+    for (i, idx) in indices.iter_mut().enumerate() {
+        *idx = u16::from_le_bytes([mnemonic_buf[i * 2], mnemonic_buf[i * 2 + 1]]);
+    }
+    let mnemonic = Mnemonic::from_indices(&indices, WordCount::Words12).expect("mnemonic");
+    let mut seed = [0u8; 64];
+    business::restore_seed::restore_seed(&mnemonic, b"", &mut seed).expect("restore_seed");
+    let path = DerivationPath::from_flat([44u32 | 0x8000_0000, 0x8000_0000, 0x8000_0000, 0, 0])
+        .expect("path");
+    let mut export_out = [0u8; 2048];
+    let export_len = business::export_readonly::export_readonly(
+        business::export_readonly::ExportProtocol::CryptoHdKey,
+        &seed,
+        Network::BitcoinMainnet,
+        core::slice::from_ref(&path),
+        &mut export_out,
+    )
+    .expect("export_readonly");
+    let uri = core::str::from_utf8(&export_out[..export_len]).expect("utf8");
+    println!("EXPECTED_EXPORT_UR = \"{uri}\"");
 }

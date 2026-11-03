@@ -686,6 +686,17 @@
 #define CLSAG_PROOF_MAX (32 * (RING_MAX + 3))
 
 /**
+ * Script-expression registry tags.
+ */
+#define SCRIPT_HASH 400
+
+#define PUBLIC_KEY_HASH 403
+
+#define WITNESS_PUBLIC_KEY_HASH 404
+
+#define TAPROOT 409
+
+/**
  * JSON-encoded view key string (Feather Wallet compatible, max ~256 characters)
  */
 #define JSON_MONERO_VIEWKEY_MAX_LEN 512
