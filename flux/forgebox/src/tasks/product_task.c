@@ -1571,11 +1571,33 @@ static int ur_single_decode(const char *text, unsigned *plen_out)
  * Kosmo's red line): QR-derived strings are ATTACKER-CONTROLLED and must
  * never reach the screen verbatim -- a crafted "type" could paint arbitrary
  * UI text (fake prompts). Unknown types all display as "unknown code". */
+/* FNV-1a 32 → low 16 bits. Used only to give an UNKNOWN UR type a stable
+ * four-hex code on screen: the type token is attacker-controlled text, so the
+ * UI red line forbids echoing it verbatim, but without any handle a mismatch
+ * is undiagnosable ("unknown code" for every possible cause). The code is a
+ * pure function of the token (decoder-whitelisted charset: alnum and '-'),
+ * never of the payload, and is reproduced offline by the same hash. */
+static unsigned ur_type_code(const char *type)
+{
+    unsigned h = 2166136261u;
+
+    if (type == NULL) {
+        return 0;
+    }
+    while (*type != '\0') {
+        h ^= (unsigned)(unsigned char)*type;
+        h *= 16777619u;
+        type++;
+    }
+    return h & 0xffffu;
+}
+
 static const char *ur_type_display(const char *type)
 {
     if (type == NULL) {
         return "unknown code";
     }
+
     if (strncmp(type, "xmr-txunsigned", 14) == 0) {
         return "sign request: xmr";
     }
@@ -2037,7 +2059,17 @@ static void scan_ur_hit(const char *text)
              * not hold. Collect, report, and KEEP SCANNING so the sign
              * request (xmr-txunsigned) is caught whenever it appears. */
             char l1[48], l2[48];
-            snprintf(l1, sizeof(l1), "collected: %s", ur_type_display(g_ur_type));
+            const char *disp = ur_type_display(g_ur_type);
+            if (strcmp(disp, "unknown code") == 0) {
+                /* Unknown types carry a stable diagnostic code (see
+                 * ur_type_code) so the operator can report which one. */
+                snprintf(l1, sizeof(l1), "collected: unknown code %04x",
+                         ur_type_code(g_ur_type));
+                printf("ur: unknown type code=%04x len=%u\r\n",
+                       ur_type_code(g_ur_type), (unsigned)strlen(g_ur_type));
+            } else {
+                snprintf(l1, sizeof(l1), "collected: %s", disp);
+            }
             snprintf(l2, sizeof(l2), "not a sign request");
             printf("ur: non-sign type, keep scanning\r\n");
             UiScanInfo(l1, l2, "keep scanning...", "");
