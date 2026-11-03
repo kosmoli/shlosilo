@@ -88,7 +88,24 @@ pub enum UrTypeTag {
 }
 
 impl UrTypeTag {
+    /// Map a UR type string to its tag. **Case-insensitive**: BC-UR encoders are
+    /// free to upper-case the whole UR (QR alphanumeric mode has no lowercase —
+    /// Sparrow does exactly that), and the spec puts the case-folding burden on
+    /// the decoder.
     pub fn from_name(name: &str) -> Self {
+        // Fold once into a stack buffer; the longest canonical name is
+        // "eth-sign-request" (16 bytes), so anything longer cannot match.
+        let mut buf = [0u8; 32];
+        if name.len() > buf.len() {
+            return Self::Unknown;
+        }
+        for (i, b) in name.as_bytes().iter().enumerate() {
+            buf[i] = b.to_ascii_lowercase();
+        }
+        let name = match core::str::from_utf8(&buf[..name.len()]) {
+            Ok(s) => s,
+            Err(_) => return Self::Unknown,
+        };
         match name {
             "crypto-psbt" => Self::CryptoPsbt,
             "eth-sign-request" => Self::EthSignRequest,

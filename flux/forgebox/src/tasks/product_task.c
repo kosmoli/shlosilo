@@ -1872,7 +1872,7 @@ static void scan_ur_hit(const char *text)
         g_ur_latch = 0;
     }
 
-    if (slash2 == NULL && strncmp(text, "ur:xmr-output", 13) == 0) {
+    if (slash2 == NULL && strncasecmp(text, "ur:xmr-output", 13) == 0) {
         /* T5 beat 1 (single-frame form): a Cake pairing request. Decode the
          * (type, payload) pair and answer the pairing leg -- the session
          * check lives inside pairing_run, so a keyless device prompts and
@@ -2207,7 +2207,9 @@ static void scan_step(void)
             scan_seed_confirm(cls, (unsigned)n);
             return;
         }
-        if (cls == SEED_CLASS_UR || strncmp(g_qr_result, "ur:", 3) == 0) {
+        /* Case-insensitive: QR alphanumeric mode cannot carry lowercase, so a
+         * wallet may hand us "UR:CRYPTO-PSBT/..." (Sparrow does). */
+        if (cls == SEED_CLASS_UR || strncasecmp(g_qr_result, "ur:", 3) == 0) {
             /* QR flow into the sign page: single UR signs directly,
              * multipart frames accumulate first. */
             scan_ur_hit(g_qr_result);

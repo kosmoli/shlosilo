@@ -51,7 +51,12 @@ impl core::fmt::Debug for UrDecoded {
 
 /// UR decoding (single fragment)
 pub fn decode(uri: &str) -> Result<UrDecoded> {
-    let rest = uri.strip_prefix("ur:").ok_or_else(err)?;
+    // BC-UR strings are case-insensitive on the decode side (QR alphanumeric
+    // mode cannot carry lowercase, so encoders may upper-case the whole UR).
+    let rest = match uri.get(..3) {
+        Some(p) if p.eq_ignore_ascii_case("ur:") => &uri[3..],
+        _ => return Err(err()),
+    };
     let (type_name, body) = rest.split_once('/').ok_or_else(err)?;
     if type_name.is_empty()
         || !type_name

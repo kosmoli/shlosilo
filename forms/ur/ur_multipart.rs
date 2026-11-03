@@ -157,9 +157,13 @@ impl<'a> UrMultipartEncoder<'a> {
 /// Parse one frame URI → (type, seq, seq_count, part CBOR bytes)
 /// Shape: `ur:<type>/<seq>-<count>/<body>`; single frame (no seq segment) returns Err(NotMultipart)
 pub(crate) fn parse_frame<'a>(uri: &'a str, scratch: &'a mut [u8]) -> Result<Frame<'a>> {
-    let rest = uri
-        .strip_prefix("ur:")
-        .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
+    // Case-insensitive on purpose: QR alphanumeric mode has no lowercase, so
+    // encoders (Sparrow among them) upper-case the whole UR; the decoder owns
+    // the case folding.
+    let rest = match uri.get(..3) {
+        Some(p) if p.eq_ignore_ascii_case("ur:") => &uri[3..],
+        _ => return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor)),
+    };
     let (type_name, rest) = rest
         .split_once('/')
         .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadInvalidCbor))?;
@@ -556,12 +560,18 @@ impl<'a> UrMultipartDecoder<'a> {
         let frame = parse_frame(uri, scratch)?;
         match &self.type_name {
             None => {
+                // Normalize to lowercase: everything downstream (the C
+                // dispatch tables, UrTypeTag lookups) speaks lowercase names,
+                // and the wire may be upper-cased (see parse_frame).
                 let mut tn = heapless::String::new();
-                tn.push_str(frame.type_name)
-                    .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+                for ch in frame.type_name.chars() {
+                    let lower = ch.to_ascii_lowercase();
+                    tn.push(lower)
+                        .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+                }
                 self.type_name = Some(tn);
             }
-            Some(t) if t != frame.type_name => {
+            Some(t) if !t.eq_ignore_ascii_case(frame.type_name) => {
                 return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
             }
             _ => {}
