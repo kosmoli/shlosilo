@@ -153,6 +153,30 @@ pub(crate) fn encode_check(data: &[u8]) -> Result<Base58String> {
     encode(&with_checksum)
 }
 
+/// base58 encode into a caller buffer (T-05 shape: the public forms are `*_into`).
+///
+/// Over-cap output raises `EncodingBufferOverflow` — never truncation.
+pub fn encode_into(payload: &[u8], out: &mut [u8]) -> Result<usize> {
+    let encoded = encode(payload)?;
+    write_out(encoded.as_ref().as_bytes(), out)
+}
+
+/// base58check encode into a caller buffer (`payload || sha256d(payload)[..4]`).
+pub fn encode_check_into(payload: &[u8], out: &mut [u8]) -> Result<usize> {
+    let encoded = encode_check(payload)?;
+    write_out(encoded.as_ref().as_bytes(), out)
+}
+
+fn write_out(bytes: &[u8], out: &mut [u8]) -> Result<usize> {
+    if out.len() < bytes.len() {
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::EncodingBufferOverflow,
+        ));
+    }
+    out[..bytes.len()].copy_from_slice(bytes);
+    Ok(bytes.len())
+}
+
 /// base58 decode
 ///
 /// Algorithm: treat the string as a base58 number, working (low byte first) = working * 58 + n

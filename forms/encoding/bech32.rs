@@ -174,9 +174,10 @@ pub(crate) fn encode(hrp: &str, data: &[u8]) -> Result<Bech32String> {
 
 /// bech32m encoding (segwit v1+, spec=BECH32M_CONST)
 /// data is already 5-bit groups
-// BIP-137/350 message-signing helper — its consumer (message_sign) is
-// alloc-fallback surface.
-#[cfg(any(feature = "alloc-fallback", test))]
+///
+/// Consumers: `chain::btc::message_sign` (BIP-137/350, alloc-fallback surface)
+/// and `address::btc_script::render` (device face — a review screen must be able
+/// to show a P2TR recipient, so this encoder is no longer feature-gated).
 pub(crate) fn encode_m(hrp: &str, data: &[u8]) -> Result<Bech32String> {
     if hrp.is_empty() || hrp.len() > 90 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));

@@ -19,6 +19,7 @@
 pub mod aptos_sui;
 pub mod arweave;
 pub mod btc_legacy;
+pub mod btc_script;
 pub mod btc_segwit;
 pub mod cardano;
 pub mod eth;

@@ -50,6 +50,19 @@ impl AsRef<str> for BtcAddress {
     }
 }
 
+impl BtcAddress {
+    /// Crate-internal constructor: the caller must have produced the string
+    /// with one of our own encoders (base58check / bech32), never from
+    /// unvalidated input.
+    pub(crate) fn from_encoder_output(s: &str) -> Result<Self> {
+        let mut bytes = heapless::String::<BTC_ADDRESS_MAX_LEN>::new();
+        bytes
+            .push_str(s)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+        Ok(BtcAddress { bytes })
+    }
+}
+
 impl fmt::Display for BtcAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.bytes)
