@@ -77,7 +77,11 @@ pub fn encode(pubkey: &Secp256k1Point, _network: Network) -> Result<EthAddress> 
     // 3. last 20 bytes = address
     let mut addr_bytes = [0u8; 20];
     addr_bytes.copy_from_slice(&hash[12..32]);
-    // 4. lowercase hex
+    encode_address_bytes(&addr_bytes)
+}
+
+/// `20 raw bytes → "0x" + EIP-55 checksummed hex`
+fn encode_address_bytes(addr_bytes: &[u8; 20]) -> Result<EthAddress> {
     let mut hex_addr_lowercase = [0u8; 40];
     for (i, b) in addr_bytes.iter().enumerate() {
         let pair = byte_to_hex_lower(*b);
@@ -111,6 +115,16 @@ pub fn encode(pubkey: &Secp256k1Point, _network: Network) -> Result<EthAddress> 
     Ok(EthAddress { bytes: checksummed })
 }
 
+/// Render a raw 20-byte address (e.g. a transaction's `to` field) as EIP-55
+/// checksummed hex.
+///
+/// The review screen must show the destination exactly as wallets and block
+/// explorers do — a lowercase-only rendering invites address-poisoning on
+/// first/last-character comparison.
+pub fn encode_bytes(addr: &[u8; 20]) -> Result<EthAddress> {
+    encode_address_bytes(addr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +133,29 @@ mod tests {
     #[test]
     fn address_length() {
         assert_eq!(ETH_ADDRESS_LEN, 42);
+    }
+
+    /// EIP-55 KAT for the raw-bytes renderer (vector source: keystone3-firmware
+    /// `apps/ethereum/src/address.rs:82-101` test_checksum_address — an
+    /// independent implementation's own test suite).
+    #[test]
+    fn encode_bytes_matches_eip55_vectors() {
+        let a: [u8; 20] = [
+            0x5a, 0xae, 0xb6, 0x05, 0x3f, 0x3e, 0x94, 0xc9, 0xb9, 0xa0, 0x9f, 0x33, 0x66, 0x94,
+            0x35, 0xe7, 0xef, 0x1b, 0xea, 0xed,
+        ];
+        assert_eq!(
+            <EthAddress as AsRef<str>>::as_ref(&encode_bytes(&a).unwrap()),
+            "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
+        );
+        let b: [u8; 20] = [
+            0xfb, 0x69, 0x16, 0x09, 0x5c, 0xa1, 0xdf, 0x60, 0xbb, 0x79, 0xce, 0x92, 0xce, 0x3e,
+            0xa7, 0x4c, 0x37, 0xc5, 0xd3, 0x59,
+        ];
+        assert_eq!(
+            <EthAddress as AsRef<str>>::as_ref(&encode_bytes(&b).unwrap()),
+            "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359"
+        );
     }
 
     #[test]

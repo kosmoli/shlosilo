@@ -50,6 +50,26 @@ pub enum DecodedCalldata {
     },
 }
 
+impl DecodedCalldata {
+    /// Fixed-word description for the review screen.
+    ///
+    /// Deliberately a closed vocabulary (UI red line): the screen never prints a
+    /// selector, an address from the calldata or any other payload-derived text
+    /// for this field — only which of the known call shapes it is.
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            DecodedCalldata::Empty => "no calldata",
+            DecodedCalldata::Transfer { .. } => "erc20 transfer",
+            DecodedCalldata::Approve { .. } => "erc20 approve",
+            DecodedCalldata::IncreaseAllowance { .. } => "erc20 increase allowance",
+            DecodedCalldata::TransferFrom { .. } => "erc20 transfer from",
+            DecodedCalldata::SetApprovalForAll { .. } => "set approval for all",
+            DecodedCalldata::KnownSelector { name, .. } => name,
+            DecodedCalldata::Unknown { .. } => "unknown call",
+        }
+    }
+}
+
 const SEL_TRANSFER: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 const SEL_APPROVE: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
 const SEL_INCREASE: [u8; 4] = [0x39, 0x50, 0x93, 0x51];
