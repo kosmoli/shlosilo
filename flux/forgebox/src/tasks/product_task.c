@@ -1596,6 +1596,16 @@ static unsigned ur_type_code(const char *type)
  * unknown-type screen line: the operator reports this instead of the token. */
 static unsigned ur_type_code(const char *type);
 
+/* Diagnostic build switch: dump the decoded UR type token as hex on the scan
+ * page (see ur_type_hex). Off in production; overridden with
+ * -DSHLOSILO_QR_TYPE_HEX=1 for a one-off field-diagnosis image. */
+#ifndef SHLOSILO_QR_TYPE_HEX
+/* TEMPORARY (field diagnosis, 2026-11-04): default ON so the standard build.sh
+ * chain ships the line. Revert to 0 once the type token has been read off the
+ * device screen. */
+#define SHLOSILO_QR_TYPE_HEX 1
+#endif
+
 /* Diagnostic (SHLOSILO_QR_TYPE_HEX): render the decoded UR type token as hex.
  * Hex only — the operator can report it and we can decode it offline, while no
  * attacker-controlled text is ever drawn verbatim on screen. */
@@ -1707,16 +1717,6 @@ int ProductSignFixtureArm(void)
  * Fail-closed: when the summary cannot be built (no memory, parse failure,
  * FFI error) the request is NOT signed. A refused signature costs a retry; a
  * blind one costs the funds. */
-
-/* Diagnostic build switch: dump the decoded UR type token as hex on the scan
- * page (see ur_type_hex). Off in production; overridden with
- * -DSHLOSILO_QR_TYPE_HEX=1 for a one-off field-diagnosis image. */
-#ifndef SHLOSILO_QR_TYPE_HEX
-/* TEMPORARY (field diagnosis, 2026-11-04): default ON so the standard build.sh
- * chain ships the line. Revert to 0 once the type token has been read off the
- * device screen. */
-#define SHLOSILO_QR_TYPE_HEX 1
-#endif
 
 #define REVIEW_PAGE_LINES 4u
 
