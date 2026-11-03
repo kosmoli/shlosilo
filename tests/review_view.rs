@@ -191,3 +191,147 @@ fn unsupported_types_are_rejected() {
         assert!(r.is_err(), "{tag:?} 不该有审阅视图");
     }
 }
+
+// ───────────────────── FFI 面（平台层真正调的那条路） ─────────────────────
+
+#[test]
+fn review_ffi_packs_lines_and_meta() {
+    use core::ffi::c_uint;
+    use shlosilo::ffi::c_abi;
+    use std::ffi::CString;
+
+    let ws_need = c_abi::shlosilo_review_ws_len() as usize;
+    assert!(ws_need >= 16 * 1024, "ws 预算应含 16KiB arena");
+
+    // ws = NULL 是纯探针：只回长度，不做事
+    let mut probe: c_uint = 0;
+    let ty = CString::new("crypto-psbt").unwrap();
+    let rc = c_abi::shlosilo_review_ffi(
+        ty.as_ptr(),
+        SPARROW_PSBT.as_ptr(),
+        SPARROW_PSBT.len() as c_uint,
+        1, // testnet
+        core::ptr::null(),
+        core::ptr::null_mut(),
+        0,
+        [0u8; 16].as_mut_ptr(),
+        0,
+        &mut probe,
+        core::ptr::null_mut(),
+        core::ptr::null_mut(),
+        core::ptr::null_mut(),
+    );
+    assert_eq!(rc, 0);
+    assert_eq!(probe as usize, ws_need, "探针回报的 ws 需求应与查询一致");
+
+    // 正式调用
+    let mut ws = vec![0u8; ws_need];
+    let mut lines = [0u8; c_abi::REVIEW_LINES_BUF];
+    let mut used: c_uint = 0;
+    let mut count: c_uint = 0;
+    let mut flags: c_uint = 0;
+    let mut in_out: c_uint = 0;
+    let rc = c_abi::shlosilo_review_ffi(
+        ty.as_ptr(),
+        SPARROW_PSBT.as_ptr(),
+        SPARROW_PSBT.len() as c_uint,
+        1,
+        core::ptr::null(),
+        ws.as_mut_ptr(),
+        ws.len() as c_uint,
+        lines.as_mut_ptr(),
+        lines.len() as c_uint,
+        &mut used,
+        &mut count,
+        &mut flags,
+        &mut in_out,
+    );
+    assert_eq!(rc, 0, "review ffi 应成功");
+    assert!(count > 0);
+    // NUL 分隔的 blob：切出来的条数必须等于 count
+    let blob = &lines[..used as usize];
+    let parts: Vec<&[u8]> = blob.split(|b| *b == 0).filter(|s| !s.is_empty()).collect();
+    assert_eq!(parts.len(), count as usize, "行数与 blob 不符");
+    assert_eq!(&parts[0], b"btc send request");
+    assert_eq!(in_out >> 16, 1, "输入数");
+    assert_eq!(in_out & 0xffff, 2, "输出数");
+    assert!(flags & u32::from(flag::RBF) != 0, "flags 应带 RBF");
+
+    // 缓冲不够必须报错（不写半截）
+    let mut small = [0u8; 8];
+    let rc = c_abi::shlosilo_review_ffi(
+        ty.as_ptr(),
+        SPARROW_PSBT.as_ptr(),
+        SPARROW_PSBT.len() as c_uint,
+        1,
+        core::ptr::null(),
+        ws.as_mut_ptr(),
+        ws.len() as c_uint,
+        small.as_mut_ptr(),
+        small.len() as c_uint,
+        &mut used,
+        &mut count,
+        &mut flags,
+        &mut in_out,
+    );
+    assert_ne!(rc, 0, "行缓冲不足必须失败");
+}
+
+#[test]
+fn review_ffi_rejects_xmr_types() {
+    use core::ffi::c_uint;
+    use shlosilo::ffi::c_abi;
+    use std::ffi::CString;
+
+    let ws_need = c_abi::shlosilo_review_ws_len() as usize;
+    let mut ws = vec![0u8; ws_need];
+    let mut lines = [0u8; c_abi::REVIEW_LINES_BUF];
+    let (mut used, mut count, mut flags, mut in_out): (c_uint, c_uint, c_uint, c_uint) =
+        (0, 0, 0, 0);
+    for name in ["xmr-txunsigned", "xmr-output"] {
+        let ty = CString::new(name).unwrap();
+        let rc = c_abi::shlosilo_review_ffi(
+            ty.as_ptr(),
+            [0u8; 8].as_ptr(),
+            8,
+            0,
+            core::ptr::null(),
+            ws.as_mut_ptr(),
+            ws.len() as c_uint,
+            lines.as_mut_ptr(),
+            lines.len() as c_uint,
+            &mut used,
+            &mut count,
+            &mut flags,
+            &mut in_out,
+        );
+        assert_ne!(rc, 0, "{name} 不该有审阅面（XMR 走原流程）");
+    }
+}
+
+/// 网络由 PSBT 自己的派生 coin type 决定：signet 夹具即使调用方说 mainnet，
+/// 收款地址也必须渲染成 tb1…（否则操作员照主网前缀核对会误判）。
+#[test]
+fn network_follows_the_psbt_coin_type_not_the_caller() {
+    let mut arena = [0u8; ARENA];
+    let mut recs = [KvRec::EMPTY; RECS];
+    let view = review::build(
+        UrTypeTag::CryptoPsbt,
+        SPARROW_PSBT,
+        Network::BitcoinMainnet, // 故意说错
+        None,
+        &mut arena,
+        &mut recs,
+    )
+    .expect("review builds");
+    let l = lines(&view);
+    let addr = l
+        .iter()
+        .skip_while(|s| s.as_str() != "to:")
+        .nth(1)
+        .expect("address line");
+    assert!(
+        addr.starts_with("tb1q"),
+        "coin type 1 应压过调用方的 mainnet: {addr}"
+    );
+}

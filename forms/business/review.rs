@@ -182,6 +182,11 @@ pub fn build_btc(
         _ => payload,
     };
     let psbt = psbt::parse_psbt_any(psbt_bytes, Some(arena), Some(recs))?;
+    // The PSBT is authoritative about its own network: the derivation coin type
+    // (BIP-44 second component, 1 = testnet/signet) decides the address prefix,
+    // so a signet wallet's recipients never render as `bc1…`. The caller's
+    // value is only the fallback when no derivation is present.
+    let network = infer_network(&psbt).unwrap_or(network);
     summarize_psbt(&psbt, network, master_fingerprint)
 }
 
@@ -312,6 +317,39 @@ fn summarize_psbt(
     }
     view.lines = merged;
     Ok(view)
+}
+
+/// Network implied by the inputs' BIP-44 coin type (1 → testnet/signet).
+///
+/// Reviewed as "the PSBT tells us where it lives": wallets put the coin type in
+/// the derivation path they hand the signer, and a mismatched address prefix is
+/// exactly the kind of error the operator would mis-read.
+fn infer_network(psbt: &Psbt<'_>) -> Option<Network> {
+    for i in 0..psbt.unsigned_tx.inputs.len() {
+        let map = psbt.input_map_checked(i)?;
+        let mut coin: Option<u32> = None;
+        for kv in map.iter() {
+            if kv.key.first() != Some(&psbt::input_type::BIP32_DERIVATION) || kv.value.len() < 12 {
+                continue;
+            }
+            // value = fingerprint(4) || path elements (u32 LE each)
+            let elems = &kv.value[4..];
+            if elems.len() >= 8 {
+                coin = Some(
+                    u32::from_le_bytes([elems[4], elems[5], elems[6], elems[7]]) & 0x7fff_ffff,
+                );
+                break;
+            }
+        }
+        if let Some(c) = coin {
+            return Some(if c == 1 {
+                Network::BitcoinTestnet
+            } else {
+                Network::BitcoinMainnet
+            });
+        }
+    }
+    None
 }
 
 /// An output belongs to us when its output-map BIP32_DERIVATION carries our

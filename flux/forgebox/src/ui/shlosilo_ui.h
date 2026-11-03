@@ -18,6 +18,7 @@ typedef enum {
     UI_PAGE_QR,         /* UR carousel: animated QR frames for a wallet */
     UI_PAGE_CONFIRM,    /* Task 5b: seed-plate import confirmation */
     UI_PAGE_CRASH,      /* operator diagnostic: unconsumed "LAST CRASH" record */
+    UI_PAGE_REVIEW,     /* sign-request review: what the operator signs off on */
 } UiPage;
 
 void UiInit(void);
@@ -35,6 +36,16 @@ void UiScanProgress(uint8_t percent);
 /* Sign page summary lines (request type / payload size / key note). Set them
  * before UiGotoPage(UI_PAGE_SIGN); calling while on the sign page repaints. */
 void UiSignInfo(const char *line1, const char *line2, const char *line3);
+
+/* Review page (W0-1): four body lines + one footer line.
+ *
+ * Text comes from the forms review view — fixed vocabulary plus canonically
+ * re-encoded addresses/amounts. The platform layer never formats payload
+ * content itself. `wire` advances the page and confirms on the last one;
+ * `home` cancels (and zeroizes the session). Set the lines before
+ * UiGotoPage(UI_PAGE_REVIEW); calling it while on the review page repaints. */
+void UiReviewShow(const char *l1, const char *l2, const char *l3,
+                  const char *l4, const char *foot);
 void UiSetLast(const char *text);
 
 /* Seed-plate import confirmation (Task 5b). Set the lines before

@@ -71,6 +71,71 @@
 #define XRP_ADDRESS_MAX_LEN 64
 
 /**
+ * Maximum lines in one review view (paging budget, not a display budget).
+ */
+#define REVIEW_LINES_MAX 16
+
+/**
+ * Maximum ASCII characters per line (the platform wraps anything longer).
+ */
+#define REVIEW_LINE_MAX 48
+
+/**
+ * Outputs summarized in detail; beyond this we only say "many outputs".
+ */
+#define REVIEW_OUTPUTS_MAX 4
+
+/**
+ * Fee (in sats) above which we always warn: 0.01 BTC.
+ */
+#define HIGH_FEE_SATS 1000000
+
+/**
+ * At least one input carries no UTXO we can price → fee is a lower bound.
+ */
+#define FEE_UNKNOWN (1 << 0)
+
+/**
+ * Fee above the "clearly too much" threshold (see `HIGH_FEE_SATS`).
+ */
+#define HIGH_FEE (1 << 1)
+
+/**
+ * Fee larger than every single output amount.
+ */
+#define FEE_GT_AMOUNT (1 << 2)
+
+/**
+ * RBF-signalling input (nSequence < 0xfffffffe).
+ */
+#define RBF (1 << 3)
+
+/**
+ * Non-zero locktime (height or time).
+ */
+#define LOCKTIME (1 << 4)
+
+/**
+ * An output script we cannot render as an address.
+ */
+#define UNKNOWN_SCRIPT (1 << 5)
+
+/**
+ * A sighash other than ALL / DEFAULT (NONE, SINGLE, ANYONECANPAY).
+ */
+#define SIGHASH_UNSAFE (1 << 6)
+
+/**
+ * More outputs than we can itemize.
+ */
+#define MANY_OUTPUTS (1 << 7)
+
+/**
+ * EVM: the destination is a contract (calldata present) we cannot decode.
+ */
+#define UNKNOWN_CALLDATA (1 << 8)
+
+/**
  * Z4-7a: fixed backplane caps (the XMR H-cut precedent) — the logical
  * lengths drive serialization; over-cap is an explicit Err, never truncation.
  * Measured maxima: the sparrow 12k fixture runs 1 input / 2 outputs.
@@ -350,6 +415,18 @@
 #define SEED_QR_MODE_STANDARD 1
 
 #define SEED_QR_MODE_COMPACT 2
+
+/**
+ * Review workspace: the PSBT map pools the review parse writes into.
+ */
+#define REVIEW_WS_ARENA (16 * 1024)
+
+#define REVIEW_WS_RECS 128
+
+/**
+ * NUL-separated line blob (16 lines × 48 chars + separators, with headroom).
+ */
+#define REVIEW_LINES_BUF 1024
 
 /**
  * No phase marked yet (mirrors the C `CRASH_PHASE_NONE`).
@@ -1069,6 +1146,35 @@ int32_t shlosilo_gencache_provide_table(int32_t set,
                                         uint32_t *h_bytes,
                                         uint8_t *blob,
                                         uint32_t *blob_bytes);
+
+/**
+ * Required review workspace size (arena + records + alignment slack).
+ */
+unsigned int shlosilo_review_ws_len(void);
+
+/**
+ * Build the review view for a sign request (the data half of the confirm gate).
+ *
+ * The platform layer renders `out_lines` and MUST NOT reach a sign entry until
+ * the operator has confirmed. XMR types are rejected here by design — the
+ * Monero legs keep their shipped, wallet-validated flow.
+ *
+ * Out-params: `out_used` = bytes written to `out_lines` (NUL-separated),
+ * `out_line_count`, `out_flags` (risk bitmask), `out_in_out` = (in << 16) | out.
+ */
+int shlosilo_review_ffi(const char *type_name,
+                        const uint8_t *payload,
+                        unsigned int payload_len,
+                        unsigned int network,
+                        const uint8_t *master_fingerprint,
+                        uint8_t *ws,
+                        unsigned int ws_len,
+                        uint8_t *out_lines,
+                        unsigned int out_lines_len,
+                        unsigned int *out_used,
+                        unsigned int *out_line_count,
+                        unsigned int *out_flags,
+                        unsigned int *out_in_out);
 
 /**
  * R3: create a multipart encoder. Returns a handle (non-null) on success, null on failure.

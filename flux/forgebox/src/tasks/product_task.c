@@ -221,6 +221,16 @@ static int g_ur_scan_req;
 static int g_back_press_x;
 static int g_back_press_y;
 
+/* W0-1 review gate state (declared here: product_touch_poll samples it). */
+static int g_review_active;
+static int g_review_wire_req;
+static int g_review_cancel_req;
+static unsigned g_review_page;
+static unsigned g_review_pages;
+static unsigned g_review_count;
+static char g_review_lines[1024];
+static uint8_t *g_review_ws;
+
 /* Sample touch once; record a fresh press on `back` for whichever session is
  * active. Safe to call at any point (task context only - the touch read is a
  * ~0.2 ms I2C0 transaction, and nothing else on the bus runs concurrently). */
@@ -229,7 +239,8 @@ static void product_touch_poll(void)
     TouchStatus_t st;
     int down;
 
-    if (g_scan != SCAN_ACTIVE && g_carousel != CAROUSEL_ACTIVE) {
+    if (g_scan != SCAN_ACTIVE && g_carousel != CAROUSEL_ACTIVE &&
+        !g_review_active) {
         return;
     }
     if (TouchGetStatus(&st) != 0) {
@@ -253,6 +264,13 @@ static void product_touch_poll(void)
             if (g_carousel == CAROUSEL_ACTIVE) {
                 g_ur_exit_req = 1;
             }
+            if (g_review_active) {
+                g_review_cancel_req = 1;   /* home: cancel the review */
+            }
+        } else if (g_review_active && UiIsModeButton(tx, ty)) {
+            /* `wire` on the review page: next page, or confirm on the last
+             * one — the same key, its meaning decided by position. */
+            g_review_wire_req = 1;
         } else if (g_carousel == CAROUSEL_ACTIVE && UiIsModeButton(tx, ty)) {
             /* `wire`: flip Indexed <-> Keyed for the NEXT generated response
              * (the status line repaints on the next frame). */
@@ -1621,6 +1639,143 @@ int ProductSignFixtureArm(void)
     return 0;
 }
 
+/* ---------------- W0-1: sign-request review gate ---------------- */
+
+/* The operator must see, and explicitly confirm, what the device is about to
+ * sign. BTC/EVM requests are summarized by the forms review view
+ * (`business::review` — fixed vocabulary plus canonically re-encoded
+ * addresses/amounts) and shown four lines per page:
+ *
+ *   wire  → next page; ON THE LAST PAGE wire is the confirm key
+ *   home  → cancel + zeroize the session (the common home drain does it)
+ *
+ * XMR keeps its shipped flow: its four legs are session-bound and were
+ * validated end to end against real wallets, so gating them would change a
+ * product path rather than close a blind-signing hole.
+ *
+ * Fail-closed: when the summary cannot be built (no memory, parse failure,
+ * FFI error) the request is NOT signed. A refused signature costs a retry; a
+ * blind one costs the funds. */
+
+#define REVIEW_PAGE_LINES 4u
+
+/* Non-zero for the request types we can summarize into an operator-readable
+ * review. Everything else (XMR legs, unknown types) bypasses the gate. */
+static int review_type_gated(const char *type)
+{
+    return strncmp(type, "crypto-psbt", 11) == 0 ||
+           strncmp(type, "eth-sign-request", 16) == 0;
+}
+
+/* idx-th NUL-separated line of the blob the FFI filled. */
+static const char *review_line(unsigned idx)
+{
+    const char *p = g_review_lines;
+    unsigned n = 0;
+
+    while (n < idx) {
+        p += strlen(p) + 1;
+        n++;
+    }
+    return p;
+}
+
+static void review_render(void)
+{
+    char l[REVIEW_PAGE_LINES][48];
+    char foot[48];
+    unsigned first = g_review_page * REVIEW_PAGE_LINES;
+    unsigned k;
+    int last = (g_review_page + 1u >= g_review_pages);
+
+    for (k = 0; k < REVIEW_PAGE_LINES; k++) {
+        unsigned idx = first + k;
+        l[k][0] = '\0';
+        if (idx < g_review_count) {
+            snprintf(l[k], sizeof(l[k]), "%s", review_line(idx));
+        }
+    }
+    snprintf(foot, sizeof(foot), "%u/%u  wire: %s", g_review_page + 1u,
+             g_review_pages, last ? "sign" : "next");
+    UiReviewShow(l[0], l[1], l[2], l[3], foot);
+}
+
+/* 1 = operator confirmed (sign now), 0 = drop the request. */
+static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
+{
+    unsigned ws_need;
+    unsigned used = 0, count = 0, flags = 0, in_out = 0;
+    int rc;
+    int confirmed = 0;
+
+    if (!review_type_gated(type)) {
+        return 1;                       /* unchanged flow */
+    }
+    ws_need = shlosilo_review_ws_len();
+    g_review_ws = (uint8_t *)ExtMalloc(ws_need);
+    if (g_review_ws == NULL) {
+        printf("review: ws alloc fail (%u)\r\n", ws_need);
+        UiSetLast("review: out of memory - not signed");
+        return 0;                       /* fail closed */
+    }
+    /* network 0 is a placeholder: the coin type inside the PSBT decides the address
+     * prefix (see business::review::infer_network). */
+    rc = shlosilo_review_ffi(type, payload, plen, 0, NULL,
+                             g_review_ws, ws_need,
+                             (uint8_t *)g_review_lines, sizeof(g_review_lines),
+                             &used, &count, &flags, &in_out);
+    ExtFree(g_review_ws);
+    g_review_ws = NULL;
+    if (rc != 0 || count == 0) {
+        printf("review: summary failed rc=%d count=%u\r\n", rc, count);
+        UiSetLast("review unavailable - not signed");
+        return 0;                       /* fail closed */
+    }
+    printf("review: %u lines flags=0x%x in=%u out=%u\r\n", (unsigned)count,
+           (unsigned)flags, in_out >> 16, in_out & 0xffffu);
+
+    g_review_count = count;
+    g_review_pages = (count + REVIEW_PAGE_LINES - 1u) / REVIEW_PAGE_LINES;
+    if (g_review_pages == 0) {
+        g_review_pages = 1;
+    }
+    g_review_page = 0;
+    g_review_wire_req = 0;
+    g_review_cancel_req = 0;
+    g_touch_prev = 1;                   /* the entry tap is not a press */
+    g_review_active = 1;
+    review_render();
+
+    while (g_review_active) {
+        product_touch_poll();
+        if (g_review_cancel_req) {
+            printf("review: cancelled\r\n");
+            break;
+        }
+        if (g_review_wire_req) {
+            g_review_wire_req = 0;
+            if (g_review_page + 1u >= g_review_pages) {
+                confirmed = 1;          /* last page: wire confirms */
+                printf("review: confirmed\r\n");
+                break;
+            }
+            g_review_page++;
+            review_render();
+        }
+        WDT_ReloadCounter();            /* this loop owns the WDT while it runs */
+        osDelay(20);
+    }
+
+    g_review_active = 0;
+    g_review_wire_req = 0;
+    g_review_cancel_req = 0;
+    /* The blob can contain a recipient address — wipe it on the way out. */
+    memset(g_review_lines, 0, sizeof(g_review_lines));
+    g_review_count = 0;
+    UiTouchReset();
+    return confirmed;
+}
+
 /* No-session sign request: prompt once per state-entry + keep scanning.
  * Refinements (2026-10-09): prompt text is ASCII (UI font is ASCII-only --
  * CJK renders as '?' placeholders); re-prompts are throttled (the first-
@@ -1789,6 +1944,11 @@ static void scan_ur_hit(const char *text)
                 return;
             }
             scan_exit();
+            if (!review_gate(g_ur_type, g_ur_payload, plen)) {
+                UiGotoPage(UI_PAGE_WELCOME);
+                ur_intake_reset();
+                return;
+            }
             sign_run(NULL, g_ur_type, g_ur_payload, plen);
         }
         return;
@@ -1901,6 +2061,10 @@ static void scan_ur_hit(const char *text)
             return;
         }
         scan_exit();
+        if (!review_gate(g_ur_type, g_ur_payload, plen)) {
+            UiGotoPage(UI_PAGE_WELCOME);
+            return;
+        }
         sign_run(NULL, g_ur_type, g_ur_payload, plen);
     }
 }

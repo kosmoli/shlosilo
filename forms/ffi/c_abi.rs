@@ -2633,6 +2633,150 @@ pub unsafe extern "C" fn shlosilo_gencache_provide_table(
     OK
 }
 
+/// Review workspace: the PSBT map pools the review parse writes into.
+pub const REVIEW_WS_ARENA: usize = 16 * 1024;
+pub const REVIEW_WS_RECS: usize = 128;
+/// NUL-separated line blob (16 lines × 48 chars + separators, with headroom).
+pub const REVIEW_LINES_BUF: usize = 1024;
+
+/// Required review workspace size (arena + records + alignment slack).
+#[no_mangle]
+pub extern "C" fn shlosilo_review_ws_len() -> c_uint {
+    (REVIEW_WS_ARENA + REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>() + 8)
+        as c_uint
+}
+
+/// Build the review view for a sign request (the data half of the confirm gate).
+///
+/// The platform layer renders `out_lines` and MUST NOT reach a sign entry until
+/// the operator has confirmed. XMR types are rejected here by design — the
+/// Monero legs keep their shipped, wallet-validated flow.
+///
+/// Out-params: `out_used` = bytes written to `out_lines` (NUL-separated),
+/// `out_line_count`, `out_flags` (risk bitmask), `out_in_out` = (in << 16) | out.
+//
+// Entry contract (same as the sign family): every pointer is null-checked before
+// any `from_raw_parts`, and the C caller guarantees validity for the documented
+// lengths. Kept as a safe `extern "C"` fn so C call sites need no `unsafe`
+// wrapper — hence the allow.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[no_mangle]
+pub extern "C" fn shlosilo_review_ffi(
+    type_name: *const c_char,
+    payload: *const u8,
+    payload_len: c_uint,
+    network: c_uint,
+    master_fingerprint: *const u8,
+    ws: *mut u8,
+    ws_len: c_uint,
+    out_lines: *mut u8,
+    out_lines_len: c_uint,
+    out_used: *mut c_uint,
+    out_line_count: *mut c_uint,
+    out_flags: *mut c_uint,
+    out_in_out: *mut c_uint,
+) -> c_int {
+    write_actual_len(out_used, 0);
+    write_actual_len(out_line_count, 0);
+    write_actual_len(out_flags, 0);
+    write_actual_len(out_in_out, 0);
+    if type_name.is_null() || payload.is_null() || out_lines.is_null() {
+        return ERR_NULL_POINTER;
+    }
+    // ws == NULL is the pure probe (same contract as the sign family).
+    if ws.is_null() {
+        write_actual_len(out_used, shlosilo_review_ws_len() as usize);
+        return OK;
+    }
+    let ws_need = shlosilo_review_ws_len() as usize;
+    if (ws_len as usize) < ws_need {
+        write_actual_len(out_used, ws_need);
+        return to_ffi_code(&ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(ws_need),
+        ));
+    }
+
+    let result = ffi_catch_unwind!(|| -> Result<(usize, usize, u16, u8, u8), ShlosiloError> {
+        // type name (NUL-terminated, bounded)
+        let mut tlen = 0usize;
+        unsafe {
+            while *type_name.add(tlen) != 0 {
+                tlen += 1;
+                if tlen > 64 {
+                    return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+                }
+            }
+        }
+        let t_slice = checked_slice(type_name.cast::<u8>(), tlen, 64, false)
+            .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        let t_str = core::str::from_utf8(t_slice)
+            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        let tag = crate::ur::ur_encode::UrTypeTag::from_name(t_str);
+
+        let payload_slice = checked_slice(
+            payload,
+            payload_len as usize,
+            crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+            false,
+        )
+        .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadTooLarge))?;
+
+        // optional 4-byte master fingerprint (NULL → no change marking)
+        let mfp: Option<[u8; 4]> = if master_fingerprint.is_null() {
+            None
+        } else {
+            let s = checked_slice(master_fingerprint, 4, 4, false)
+                .ok_or_else(|| err(ShlosiloErrorKind::BufferKindMismatch))?;
+            Some([s[0], s[1], s[2], s[3]])
+        };
+
+        let net = Network::from_u8(u8::try_from(network).unwrap_or(0xff))
+            .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+
+        // carve the workspace: arena then records (records aligned)
+        let base = ws;
+        let arena: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(base, REVIEW_WS_ARENA) };
+        let recs_ptr = unsafe { base.add(REVIEW_WS_ARENA) };
+        debug_assert!((recs_ptr as usize)
+            .is_multiple_of(core::mem::align_of::<crate::chain::btc::psbt::KvRec>()));
+        let recs: &mut [crate::chain::btc::psbt::KvRec] =
+            unsafe { core::slice::from_raw_parts_mut(recs_ptr.cast(), REVIEW_WS_RECS) };
+
+        let view = business::review::build(tag, payload_slice, net, mfp.as_ref(), arena, recs)?;
+
+        // pack the lines NUL-separated into the caller buffer
+        let out = checked_slice_mut(out_lines, out_lines_len as usize, REVIEW_LINES_BUF)
+            .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
+        let mut used = 0usize;
+        let mut count = 0usize;
+        for line in view.lines() {
+            let bytes = line.as_str().as_bytes();
+            if used + bytes.len() + 1 > out.len() {
+                return Err(err(ShlosiloErrorKind::BufferTooSmall));
+            }
+            out[used..used + bytes.len()].copy_from_slice(bytes);
+            used += bytes.len();
+            out[used] = 0;
+            used += 1;
+            count += 1;
+        }
+        Ok((used, count, view.flags, view.input_count, view.output_count))
+    });
+
+    match result {
+        Ok(Ok((used, count, flags, ins, outs))) => {
+            write_actual_len(out_used, used);
+            write_actual_len(out_line_count, count);
+            write_actual_len(out_flags, flags as usize);
+            write_actual_len(out_in_out, ((ins as usize) << 16) | outs as usize);
+            OK
+        }
+        Ok(Err(e)) => to_ffi_code(&e),
+        Err(_) => ERR_PANIC,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

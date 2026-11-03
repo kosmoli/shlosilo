@@ -86,6 +86,12 @@ static uint8_t g_scan_progress;
 
 /* Sign page summary lines (set via UiSignInfo before the page is shown). */
 static char g_sign_l1[LIVE_LINE_BYTES] = "";
+/* Review page (W0-1): four body lines + footer (page indicator / wire action). */
+static char g_rv_l1[LIVE_LINE_BYTES] = "";
+static char g_rv_l2[LIVE_LINE_BYTES] = "";
+static char g_rv_l3[LIVE_LINE_BYTES] = "";
+static char g_rv_l4[LIVE_LINE_BYTES] = "";
+static char g_rv_foot[LIVE_LINE_BYTES] = "";
 static char g_sign_l2[LIVE_LINE_BYTES] = "";
 static char g_sign_l3[LIVE_LINE_BYTES] = "";
 
@@ -487,7 +493,7 @@ static void draw_buttons_bar(void)
     rect_outline(UI_BTN_R_X0, UI_BTN_Y0, UI_BTN_R_X1, UI_BTN_Y1, UI_BTN_T);
     draw_button_label(UI_BTN_L_X0, UI_BTN_L_X1, UI_BTN_LABEL_LEFT);
     draw_button_label(UI_BTN_R_X0, UI_BTN_R_X1, UI_BTN_LABEL_RIGHT);
-    if (g_page == UI_PAGE_QR) {
+    if (g_page == UI_PAGE_QR || g_page == UI_PAGE_REVIEW) {
         draw_button_label(UI_BTN_M_X0, UI_BTN_M_X1, UI_BTN_LABEL_MODE);
     }
 }
@@ -545,6 +551,18 @@ static void draw_page(void)
         draw_payload_text();
         break;
     }
+
+    case UI_PAGE_REVIEW:
+        /* W0-1: the sign-request summary. Fixed vocabulary plus canonically
+         * re-encoded addresses/amounts from the forms review view — the UI
+         * layer never formats payload content itself (injection surface). */
+        draw_text_center(UI_RV_TITLE_Y, "review", UI_RV_TITLE_SCALE);
+        draw_text_center(UI_RV_L1_Y, g_rv_l1, UI_RV_LINE_SCALE);
+        draw_text_center(UI_RV_L2_Y, g_rv_l2, UI_RV_LINE_SCALE);
+        draw_text_center(UI_RV_L3_Y, g_rv_l3, UI_RV_LINE_SCALE);
+        draw_text_center(UI_RV_L4_Y, g_rv_l4, UI_RV_LINE_SCALE);
+        draw_text_center(UI_RV_FOOT_Y, g_rv_foot, 1);
+        break;
 
     case UI_PAGE_SIGN:
         draw_text_center(UI_NG_TITLE_Y, UI_TXT_SIGN, UI_NG_TITLE_SCALE);
@@ -958,6 +976,20 @@ void UiSignInfo(const char *line1, const char *line2, const char *line3)
     snprintf(g_sign_l2, sizeof(g_sign_l2), "%s", line2 ? line2 : "");
     snprintf(g_sign_l3, sizeof(g_sign_l3), "%s", line3 ? line3 : "");
     if (g_page == UI_PAGE_SIGN && g_fb != NULL && g_band != NULL) {
+        draw_page();
+        ui_flush_range(0, UI_FB_H - 1);
+    }
+}
+
+void UiReviewShow(const char *l1, const char *l2, const char *l3,
+                  const char *l4, const char *foot)
+{
+    snprintf(g_rv_l1, sizeof(g_rv_l1), "%s", l1 ? l1 : "");
+    snprintf(g_rv_l2, sizeof(g_rv_l2), "%s", l2 ? l2 : "");
+    snprintf(g_rv_l3, sizeof(g_rv_l3), "%s", l3 ? l3 : "");
+    snprintf(g_rv_l4, sizeof(g_rv_l4), "%s", l4 ? l4 : "");
+    snprintf(g_rv_foot, sizeof(g_rv_foot), "%s", foot ? foot : "");
+    if (g_page == UI_PAGE_REVIEW && g_fb != NULL && g_band != NULL) {
         draw_page();
         ui_flush_range(0, UI_FB_H - 1);
     }

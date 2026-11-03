@@ -107,6 +107,18 @@
 /* Sign page (product XMR sign session): request summary + a fixed status
  * banner (the sign call is synchronous - the page is painted once before it
  * blocks, so no live region is needed). */
+/* Review page (W0-1): sign-request summary, one ink, text only.
+ * `wire` advances pages and turns into the confirm key on the last page. */
+#define UI_RV_TITLE_Y        40
+#define UI_RV_TITLE_SCALE    3
+#define UI_RV_L1_Y           120
+#define UI_RV_L2_Y           166
+#define UI_RV_L3_Y           212
+#define UI_RV_L4_Y           258
+#define UI_RV_FOOT_Y         330
+#define UI_RV_WARN_Y         400
+#define UI_RV_LINE_SCALE     1
+
 #define UI_NG_TITLE_Y        64
 #define UI_NG_TITLE_SCALE    4
 #define UI_NG_SUB_Y          152
