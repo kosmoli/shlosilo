@@ -836,6 +836,18 @@ static void handle_press(int x, int y)
 {
     char msg[56];
 
+    /* W0-1: the review page owns its input. product_task's review loop samples
+     * the same touch hardware with its own press-edge tracker and decides what
+     * `wire` means per page (next / confirm); the generic handler must not
+     * steal the press (camera would jump to SCAN, wire would log "qr page
+     * only"). The one exception is `home`, whose zeroize request is shared. */
+    if (g_page == UI_PAGE_REVIEW) {
+        if (UiIsBackButton(x, y)) {
+            g_home_req = 1;
+        }
+        return;
+    }
+
     if (UiIsModeButton(x, y)) {
         /* WP4: wire-view switch — QR page only. Flips Indexed <-> Keyed for
          * the NEXT generated response (re-scan the request to apply it). */
