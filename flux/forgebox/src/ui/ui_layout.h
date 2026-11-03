@@ -41,6 +41,10 @@
 #define UI_FOOTER_L1_Y       588
 #define UI_FOOTER_L2_Y       608
 #define UI_FOOTER_L3_Y       628
+/* W0-1: shlosilo build identity (v0.5.0-poc4+<git7>) — the line the operator
+ * reads to confirm which shlosilo build is actually flashed. The `fw` line
+ * above it is the vendor firmware hash, which does NOT track our commits. */
+#define UI_FOOTER_L4_Y       648
 
 /* Battery readout (top-right; text right-aligned at UI_BATT_RIGHT):
  * "NN%" normally, "NN%c" while charging. The repaint box covers the widest

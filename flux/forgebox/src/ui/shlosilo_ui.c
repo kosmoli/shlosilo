@@ -34,6 +34,7 @@
 #include "tasks/product_task.h"
 #include "user_memory.h"
 #include "version.h"
+#include "shlosilo.h"   /* shlosilo_version(): our build identity on the footer */
 #include "cmsis_os.h"
 #include <stdio.h>
 #include <string.h>
@@ -521,6 +522,18 @@ static void draw_footer(void)
     draw_text(UI_FOOTER_X, UI_FOOTER_L2_Y, line, 1);
 
     draw_text(UI_FOOTER_X, UI_FOOTER_L3_Y, g_last, 1);
+
+    /* W0-1: our own build identity. `shlosilo_version()` carries
+     * "v0.5.0-poc4+<git7>", injected by build.rs — the only on-screen way to
+     * confirm which shlosilo build is flashed (the fw line above is the vendor
+     * firmware hash and does not move with our commits). */
+    {
+        const char *v = (const char *)shlosilo_version();
+        if (v != NULL) {
+            snprintf(line, sizeof(line), "shlosilo %s", v);
+            draw_text(UI_FOOTER_X, UI_FOOTER_L4_Y, line, 1);
+        }
+    }
 }
 
 static void draw_page(void)
