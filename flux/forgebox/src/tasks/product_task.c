@@ -1592,6 +1592,35 @@ static unsigned ur_type_code(const char *type)
     return h & 0xffffu;
 }
 
+/* Stable four-hex-digit code of a UR type token (FNV-1a/16). See the
+ * unknown-type screen line: the operator reports this instead of the token. */
+static unsigned ur_type_code(const char *type);
+
+/* Diagnostic (SHLOSILO_QR_TYPE_HEX): render the decoded UR type token as hex.
+ * Hex only — the operator can report it and we can decode it offline, while no
+ * attacker-controlled text is ever drawn verbatim on screen. */
+#if SHLOSILO_QR_TYPE_HEX
+static const char *ur_type_hex(const char *type, char *out, unsigned cap)
+{
+    static const char digits[] = "0123456789abcdef";
+    unsigned i, n, w = 0;
+
+    if (type == NULL || cap < 3) {
+        return "";
+    }
+    n = (unsigned)strlen(type);
+    if (n > (cap - 1) / 2) {
+        n = (cap - 1) / 2;
+    }
+    for (i = 0; i < n; i++) {
+        out[w++] = digits[((unsigned char)type[i]) >> 4];
+        out[w++] = digits[((unsigned char)type[i]) & 0x0f];
+    }
+    out[w] = '\0';
+    return out;
+}
+#endif
+
 static const char *ur_type_display(const char *type)
 {
     if (type == NULL) {
@@ -1678,6 +1707,13 @@ int ProductSignFixtureArm(void)
  * Fail-closed: when the summary cannot be built (no memory, parse failure,
  * FFI error) the request is NOT signed. A refused signature costs a retry; a
  * blind one costs the funds. */
+
+/* Diagnostic build switch: dump the decoded UR type token as hex on the scan
+ * page (see ur_type_hex). Off in production; overridden with
+ * -DSHLOSILO_QR_TYPE_HEX=1 for a one-off field-diagnosis image. */
+#ifndef SHLOSILO_QR_TYPE_HEX
+#define SHLOSILO_QR_TYPE_HEX 0
+#endif
 
 #define REVIEW_PAGE_LINES 4u
 
@@ -2072,7 +2108,20 @@ static void scan_ur_hit(const char *text)
             }
             snprintf(l2, sizeof(l2), "not a sign request");
             printf("ur: non-sign type, keep scanning\r\n");
+#if SHLOSILO_QR_TYPE_HEX
+            {
+                char hex[48];
+                char l3[48];
+                snprintf(l3, sizeof(l3), "t=%s len=%u",
+                         ur_type_hex(g_ur_type, hex, sizeof(hex)),
+                         (unsigned)strlen(g_ur_type));
+                printf("ur: type hex %s (len %u)\r\n", hex,
+                       (unsigned)strlen(g_ur_type));
+                UiScanInfo(l1, l2, l3, "");
+            }
+#else
             UiScanInfo(l1, l2, "keep scanning...", "");
+#endif
             ur_intake_reset();
             return;
         }

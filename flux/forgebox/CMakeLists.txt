@@ -283,6 +283,15 @@ add_executable(${PROJECT_NAME}.elf ${objsrc})
 if(SMOKE_SCREEN)
     list(APPEND COMMON_DEFINITIONS SMOKE_SCREEN=1)
 endif()
+
+# Field-diagnosis switch (2026-11-04): draw the decoded UR type token as hex on
+# the scan page. Default OFF; build a one-off diagnostic image with
+#   cmake ... -DQR_TYPE_HEX_DIAG=ON
+# (the production flavour must never print payload-derived text).
+option(QR_TYPE_HEX_DIAG "Dump the decoded UR type token as hex on the scan page" OFF)
+if(QR_TYPE_HEX_DIAG)
+    list(APPEND COMMON_DEFINITIONS SHLOSILO_QR_TYPE_HEX=1)
+endif()
 target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ${COMMON_DEFINITIONS})
 target_include_directories(${PROJECT_NAME}.elf PRIVATE ${INCLUDE_DIR})
 
