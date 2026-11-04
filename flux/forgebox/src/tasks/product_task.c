@@ -128,6 +128,13 @@ static int g_no_session_prompted;
  * stops re-collecting the same doomed message in a loop -- frames are
  * dropped until the QR leaves the view (status-slot miss-clear). */
 static int g_ur_latch;
+/* Consecutive frame rejections (2026-11-04). A single damaged or out-of-budget
+ * frame must not reset a collection in progress: fountain streams re-send the
+ * same equations, so dropping one frame costs nothing, while resetting costs a
+ * full animation round — and a wallet whose stream always contains such frames
+ * (Sparrow's seq climbing past our old cap) would never complete at all.
+ * Three in a row still means "different message or broken stream" -> reset. */
+static int g_ur_reject_run;
 /* Sticky scan notice (2026-10-29, the silent-pairing-failure case): the
  * latch path RE-DRAWS this on every dropped frame, so whatever wipes the
  * scan-page text (preview repaint / next-frame notice), the very next frame
@@ -2118,7 +2125,18 @@ static void scan_ur_hit(const char *text)
         UiScanProgress(0);
     }
 
-    if (shlosilo_ur_decode_feed(g_ur_dec, text, &accepted) != 0) {
+    {
+    int feed_rc = shlosilo_ur_decode_feed(g_ur_dec, text, &accepted);
+    if (feed_rc == 0) {
+        g_ur_reject_run = 0;
+    }
+    if (feed_rc != 0 && ++g_ur_reject_run < 3) {
+        /* Tolerate an isolated bad frame: keep the session, keep collecting. */
+        printf("ur: frame dropped rc=%d (run=%d)\r\n", feed_rc, g_ur_reject_run);
+        return;
+    }
+    if (feed_rc != 0) {
+        g_ur_reject_run = 0;
         /* A rejected frame means it does not belong to the current session:
          * a message switch (the wallet UI toggles between two different
          * URs - e.g. Cake's Outputs(all)/(partial) - same type, different
@@ -2127,11 +2145,23 @@ static void scan_ur_hit(const char *text)
          * intake on the old message forever. Frames cycle, so at most one
          * animation round is lost. */
         char p[48];
-        printf("ur: frame rejected (accepted=%u), session reset\r\n", accepted);
+        char l2[48];
+        printf("ur: frame rejected (accepted=%u) rc=%d len=%u\r\n", accepted,
+               feed_rc, (unsigned)strlen(text));
+#if SHLOSILO_QR_TYPE_HEX
+        /* Field diagnosis: which check rejected the frame, and how many chars
+         * the camera actually delivered (a dense QR that the decoder only
+         * half-reads shows up here as a short len). */
+        snprintf(l2, sizeof(l2), "rejected rc %d", feed_rc);
+        snprintf(p, sizeof(p), "len %u", (unsigned)strlen(text));
+        scan_notice_sticky_n("scan failed", l2, p);
+#else
         psram_line(p, sizeof(p));
         scan_notice_sticky_n("scan failed", "code not recognized", p);
+#endif
         ur_intake_reset();
         return;
+    }
     }
     g_ur_feed_cnt++;
     if (!accepted) {

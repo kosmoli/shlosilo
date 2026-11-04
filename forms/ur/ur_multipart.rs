@@ -31,6 +31,14 @@ fn wire_len(n: u64) -> Result<usize> {
 
 /// Multipart payload limit — aligned with TxTemplate 16 KiB (same source as the v2-security §4 size guardrail)
 pub const MULTIPART_PAYLOAD_MAX_LEN: usize = 16384;
+
+/// Fountain **part number** budget (the URI's `seq` field), independent of the
+/// fragment **count**. BC-UR lets a fountain encoder keep emitting mixed parts
+/// forever, so real wallets climb past any small bound: Sparrow's animation was
+/// measured at seq 259 with count 2 (2026-11-04). Only a sanity bound belongs
+/// here — the actual DoS guards are MAX_SEQUENCE_COUNT (fragment count, u8 index
+/// domain), MAX_TOTAL_FRAMES and the retained-bytes budget.
+pub(crate) const MAX_SEQUENCE_NUMBER: usize = 1 << 20;
 /// Message budget on the wire: content + the longest definite CBOR byte-string
 /// shell head (0x5b + 8B length). Bytes-type UR messages are the CBOR
 /// serialization (shell ++ content), so the MESSAGE can exceed the content cap
@@ -193,7 +201,7 @@ pub(crate) fn parse_frame<'a>(uri: &'a str, scratch: &'a mut [u8]) -> Result<Fra
             // The seq limit is only a resource budget (guards unbounded growth during long scans), not protocol semantics.
             // Audit #5 P1-01: two layers of budget unified — seq ≤ MAX_SEQUENCE_COUNT
             // (fountain redundancy frames have seq ≤ count ≤ 256; the old 1024 vs 4096 was inconsistent)
-            if seq == 0 || count == 0 || count > MAX_SEQUENCE_COUNT || seq > MAX_SEQUENCE_COUNT {
+            if seq == 0 || count == 0 || count > MAX_SEQUENCE_COUNT || seq > MAX_SEQUENCE_NUMBER {
                 return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
             }
             let n = bytewords::decode_minimal_into(body, scratch)?;
@@ -261,7 +269,7 @@ pub(crate) fn part_from_cbor(bytes: &[u8]) -> Result<Part> {
     if sequence == 0
         || sequence_count == 0
         || sequence_count > MAX_SEQUENCE_COUNT
-        || sequence > MAX_SEQUENCE_COUNT
+        || sequence > MAX_SEQUENCE_NUMBER
     {
         return Err(err(ShlosiloErrorKind::UrPayloadInvalidCbor));
     }
