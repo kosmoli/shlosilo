@@ -149,6 +149,29 @@ static void scan_notice_sticky(const char *l1, const char *l2, const char *l3)
     UiScanInfo(l1, l2, l3, "");
 }
 
+/* Formatted variant of scan_notice_sticky: the notice is re-drawn on every
+ * dropped frame, so its text must outlive the call — file-static one-notice
+ * buffers. Every UR-intake failure goes through this: a failure that the next
+ * idle repaint can wipe is a failure the operator never sees (2026-10-29 red
+ * line, and the 2026-11-04 "nothing happens" report). */
+static char g_notice_buf[3][48];
+
+static void scan_notice_sticky_n(const char *l1, const char *l2, const char *l3)
+{
+    snprintf(g_notice_buf[0], sizeof(g_notice_buf[0]), "%s", l1 ? l1 : "");
+    snprintf(g_notice_buf[1], sizeof(g_notice_buf[1]), "%s", l2 ? l2 : "");
+    snprintf(g_notice_buf[2], sizeof(g_notice_buf[2]), "%s", l3 ? l3 : "");
+    scan_notice_sticky(g_notice_buf[0], g_notice_buf[1], g_notice_buf[2]);
+}
+
+/* "psram <free>" — the intake workspace and payload come from the PSRAM heap;
+ * if a previous session leaked it, this number is the evidence. */
+static void psram_line(char *buf, unsigned cap)
+{
+    snprintf(buf, cap, "psram %u", (unsigned)PsramGetFreeHeapSize());
+}
+
+
 /* Fixed diagnostic vocabulary for pairing failures (injection red line:
  * no raw rc codes on screen). -21 = the container did not authenticate
  * under THIS wallet's keys = it is not this wallet's output. */
@@ -1913,7 +1936,7 @@ static void scan_ur_hit(const char *text)
                     snprintf(l1, sizeof(l1), "collected: %s", ur_type_display(ftype));
                     snprintf(l2, sizeof(l2), "not a sign request");
                     printf("ur: non-consumable type '%s', skip\r\n", ftype);
-                    UiScanInfo(l1, l2, "keep scanning...", "");
+                    scan_notice_sticky_n(l1, l2, "keep scanning...");
                 }
                 return;
             }
@@ -1978,10 +2001,10 @@ static void scan_ur_hit(const char *text)
                          (unsigned)strlen(g_ur_type));
                 printf("ur: type hex %s (len %u)\r\n", hex,
                        (unsigned)strlen(g_ur_type));
-                UiScanInfo(l1, "not a sign request", l3, "");
+                scan_notice_sticky_n(l1, "not a sign request", l3);
             }
 #else
-            UiScanInfo(l1, "not a sign request", "keep scanning...", "");
+            scan_notice_sticky_n(l1, "not a sign request", "keep scanning...");
 #endif
             ur_intake_reset();
             return;
@@ -2022,10 +2045,10 @@ static void scan_ur_hit(const char *text)
                              (unsigned)strlen(g_ur_type));
                     printf("ur: type hex %s (len %u)\r\n", hex,
                            (unsigned)strlen(g_ur_type));
-                    UiScanInfo(l1, "not a sign request", l3, "");
+                    scan_notice_sticky_n(l1, "not a sign request", l3);
                 }
 #else
-                UiScanInfo(l1, "not a sign request", "keep scanning...", "");
+                scan_notice_sticky_n(l1, "not a sign request", "keep scanning...");
 #endif
                 ur_intake_reset();
                 return;
@@ -2046,15 +2069,19 @@ static void scan_ur_hit(const char *text)
         g_ur_dec_ws = (uint8_t *)ExtMalloc(ws_need);
         g_ur_payload = (uint8_t *)ExtMalloc(UR_PAYLOAD_MAX);
         if (g_ur_dec_ws == NULL || g_ur_payload == NULL) {
+            char p[48];
             printf("ur: intake ws alloc fail (%u)\r\n", ws_need);
-            UiScanInfo("ur: ws alloc fail", "", "", "");
+            psram_line(p, sizeof(p));
+            scan_notice_sticky_n("ur: ws alloc fail", p, "");
             ur_intake_reset();
             return;
         }
         g_ur_dec = shlosilo_ur_decode_new(g_ur_dec_ws, ws_need);
         if (g_ur_dec == NULL) {
+            char p[48];
             printf("ur: decoder init fail\r\n");
-            UiScanInfo("ur: decoder fail", "", "", "");
+            psram_line(p, sizeof(p));
+            scan_notice_sticky_n("ur: decoder fail", p, "");
             ur_intake_reset();
             return;
         }
@@ -2074,8 +2101,10 @@ static void scan_ur_hit(const char *text)
          * reset so the next frame starts fresh instead of wedging the
          * intake on the old message forever. Frames cycle, so at most one
          * animation round is lost. */
+        char p[48];
         printf("ur: frame rejected (accepted=%u), session reset\r\n", accepted);
-        UiScanInfo("scan failed", "code not recognized", "rescan...", "");
+        psram_line(p, sizeof(p));
+        scan_notice_sticky_n("scan failed", "code not recognized", p);
         ur_intake_reset();
         return;
     }
