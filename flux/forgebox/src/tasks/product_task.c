@@ -1660,25 +1660,25 @@ static const char *ur_type_display(const char *type)
         return "unknown code";
     }
 
-    if (strncmp(type, "xmr-txunsigned", 14) == 0) {
+    if (strncasecmp(type, "xmr-txunsigned", 14) == 0) {
         return "sign request: xmr";
     }
-    if (strncmp(type, "xmr-txsigned", 12) == 0) {
+    if (strncasecmp(type, "xmr-txsigned", 12) == 0) {
         return "signed: xmr";
     }
-    if (strncmp(type, "xmr-output", 10) == 0) {
+    if (strncasecmp(type, "xmr-output", 10) == 0) {
         return "pairing: outputs";
     }
-    if (strncmp(type, "xmr-keyimage", 12) == 0) {
+    if (strncasecmp(type, "xmr-keyimage", 12) == 0) {
         return "pairing: key images";
     }
-    if (strncmp(type, "crypto-monero-tx", 16) == 0) {
+    if (strncasecmp(type, "crypto-monero-tx", 16) == 0) {
         return "sign request: xmr";
     }
-    if (strncmp(type, "crypto-psbt", 11) == 0) {
+    if (strncasecmp(type, "crypto-psbt", 11) == 0) {
         return "sign request: btc";
     }
-    if (strncmp(type, "eth-sign-request", 16) == 0) {
+    if (strncasecmp(type, "eth-sign-request", 16) == 0) {
         return "sign request: eth";
     }
     return "unknown code";
@@ -1693,10 +1693,10 @@ static const char *ur_type_display(const char *type)
  * must survive a stray exchange-leg QR (spec: 提示 + 续扫). */
 static int ur_type_is_sign(const char *type)
 {
-    return strncmp(type, "xmr-txunsigned", 14) == 0 ||
-           strncmp(type, "crypto-monero-tx", 16) == 0 ||
-           strncmp(type, "crypto-psbt", 11) == 0 ||
-           strncmp(type, "eth-sign-request", 16) == 0;
+    return strncasecmp(type, "xmr-txunsigned", 14) == 0 ||
+           strncasecmp(type, "crypto-monero-tx", 16) == 0 ||
+           strncasecmp(type, "crypto-psbt", 11) == 0 ||
+           strncasecmp(type, "eth-sign-request", 16) == 0;
 }
 
 /* Bug A (2026-10-09): the legacy fixture-key sign path (k_sign_idx12) used to
@@ -1922,10 +1922,22 @@ static void scan_ur_hit(const char *text)
         }
         memcpy(ftype, text + 3, tn);
         ftype[tn] = '\0';
+        /* BC-UR strings are case-insensitive and QR alphanumeric mode has no
+         * lowercase, so a wallet may upper-case the whole UR (Sparrow sends
+         * "UR:CRYPTO-PSBT/..."). Fold the token ONCE, here: every comparison
+         * downstream (ur_type_is_sign / ur_type_display / the xmr-output leg)
+         * speaks lowercase. Before this fold the classifier rejected the very
+         * first frame of a keystone-ecosystem request as an unknown type and
+         * returned before the collector ever ran. */
+        for (unsigned fi = 0; fi < tn; fi++) {
+            if (ftype[fi] >= 'A' && ftype[fi] <= 'Z') {
+                ftype[fi] = (char)(ftype[fi] - 'A' + 'a');
+            }
+        }
 
         if (tn > 0) {
             int needs_keys = ur_type_is_sign(ftype) ||
-                            strncmp(ftype, "xmr-output", 10) == 0;
+                            strncasecmp(ftype, "xmr-output", 10) == 0;
             if (!needs_keys) {
                 /* Not a request this flow consumes (xmr-keyimage input,
                  * unknown exchange legs): drop at frame 1, prompt once per
@@ -1936,7 +1948,20 @@ static void scan_ur_hit(const char *text)
                     snprintf(l1, sizeof(l1), "collected: %s", ur_type_display(ftype));
                     snprintf(l2, sizeof(l2), "not a sign request");
                     printf("ur: non-consumable type '%s', skip\r\n", ftype);
+#if SHLOSILO_QR_TYPE_HEX
+                    {
+                        char hex[48];
+                        char l3[48];
+                        snprintf(l3, sizeof(l3), "t=%s len=%u",
+                                 ur_type_hex(ftype, hex, sizeof(hex)),
+                                 (unsigned)strlen(ftype));
+                        printf("ur: type hex %s (len %u)\r\n", hex,
+                               (unsigned)strlen(ftype));
+                        scan_notice_sticky_n(l1, l2, l3);
+                    }
+#else
                     scan_notice_sticky_n(l1, l2, "keep scanning...");
+#endif
                 }
                 return;
             }
