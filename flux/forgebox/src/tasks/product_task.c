@@ -1969,7 +1969,20 @@ static void scan_ur_hit(const char *text)
             char l1[48];
             snprintf(l1, sizeof(l1), "collected: %s", ur_type_display(g_ur_type));
             printf("ur: non-sign single frame (no session), keep scanning\r\n");
+#if SHLOSILO_QR_TYPE_HEX
+            {
+                char hex[48];
+                char l3[48];
+                snprintf(l3, sizeof(l3), "t=%s len=%u",
+                         ur_type_hex(g_ur_type, hex, sizeof(hex)),
+                         (unsigned)strlen(g_ur_type));
+                printf("ur: type hex %s (len %u)\r\n", hex,
+                       (unsigned)strlen(g_ur_type));
+                UiScanInfo(l1, "not a sign request", l3, "");
+            }
+#else
             UiScanInfo(l1, "not a sign request", "keep scanning...", "");
+#endif
             ur_intake_reset();
             return;
         }
@@ -2000,7 +2013,20 @@ static void scan_ur_hit(const char *text)
                 char l1[48];
                 snprintf(l1, sizeof(l1), "collected: %s", ur_type_display(g_ur_type));
                 printf("ur: non-sign single frame, keep scanning\r\n");
+#if SHLOSILO_QR_TYPE_HEX
+                {
+                    char hex[48];
+                    char l3[48];
+                    snprintf(l3, sizeof(l3), "t=%s len=%u",
+                             ur_type_hex(g_ur_type, hex, sizeof(hex)),
+                             (unsigned)strlen(g_ur_type));
+                    printf("ur: type hex %s (len %u)\r\n", hex,
+                           (unsigned)strlen(g_ur_type));
+                    UiScanInfo(l1, "not a sign request", l3, "");
+                }
+#else
                 UiScanInfo(l1, "not a sign request", "keep scanning...", "");
+#endif
                 ur_intake_reset();
                 return;
             }
@@ -2223,6 +2249,13 @@ static void scan_enter(void)
 
     UiScanInfo("camera init...", "", "", "");
     WDT_ReloadCounter();
+    /* The decode library takes the pool as scratch and does not reset it on
+     * init. After a previous session (and after scan_exit handed the window
+     * back from Rust) the pool holds stale structures, and the second session
+     * of a boot silently decoded nothing while the first one worked. Zero it
+     * before every init: the live-bytes guard above already guarantees no
+     * Rust allocation is resident in this window. */
+    memset(g_qr_pool, 0, QR_POOL_BYTES);
     int32_t ret = QrDecodeInit(g_qr_pool);
     if (ret != DecodeInitSuccess) {
         printf("scan: QrDecodeInit ret=%d\r\n", (int)ret);
