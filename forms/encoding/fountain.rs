@@ -607,12 +607,19 @@ impl<'a> FountainDecoder<'a> {
         self.message_length != 0 && self.decoded_count >= self.sequence_count
     }
 
+    /// Completion fraction, 0..=99 (100 is expressed by [`complete`]).
+    ///
+    /// Measured as **solved fragments / fragment count**: the old formula counted
+    /// received parts against `1.75 × count`, so a 2-fragment message sat at 57%
+    /// after the first accepted frame and never moved again, and a 6-fragment one
+    /// parked at 99% long before completion (2026-11-05 field report: the bar read
+    /// as "stuck"). Solved fragments only grow when the reduction actually makes
+    /// progress, which is what the operator needs to see.
     pub fn progress(&self) -> u8 {
-        if self.processed_parts_count == 0 {
+        if self.sequence_count == 0 {
             return 0;
         }
-        let percent = self.processed_parts_count as f32 / (self.sequence_count as f32 * 1.75);
-        let pct = (percent * 100.0) as usize;
+        let pct = (self.decoded_count * 100) / self.sequence_count;
         pct.min(99) as u8
     }
 
@@ -913,6 +920,27 @@ mod tests {
     // Alloc surface: consumers behind alloc-fallback / cfg(test).
     #[cfg(any(feature = "alloc-fallback", test))]
     use alloc::vec;
+
+    /// 进度条语义：按「已解出分片/分片数」算，而不是按收到的零件数。
+    ///
+    /// 真机报告（2026-11-05）：「2 分片的消息在 57% 卡住不动」「6 分片的停在
+    /// 99% 五分钟」——旧公式 processed/(count×1.75) 对任何消息都会在集齐前顶死，
+    /// 操作员读到的是「卡住」而不是「还差几片」。
+    #[test]
+    fn progress_tracks_solved_fragments() {
+        // 8 字节 / 4 字节一片 = 2 片
+        let data = b"abcdefgh";
+        let mut enc = FountainEncoder::new(data, 4).unwrap();
+        let mut dec = FountainDecoder::new();
+        let p1 = enc.next_part().unwrap();
+        assert_eq!(dec.progress(), 0, "还没喂就不该有进度");
+        assert!(dec.receive(p1).unwrap());
+        assert_eq!(dec.progress(), 50, "解出 1/2 片 = 50%");
+        let p2 = enc.next_part().unwrap();
+        assert!(dec.receive(p2).unwrap());
+        assert_eq!(dec.progress(), 99, "集齐后封顶 99（100 由 complete 表达）");
+        assert!(dec.complete());
+    }
 
     /// keystone-ur fountain.rs doctest vector 1:
     /// "Ten chars!" / max_len=4 → p1="Ten " p2="char" p3="s!\0\0"

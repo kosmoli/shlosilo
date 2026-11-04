@@ -1387,13 +1387,18 @@ static void sign_run(const char *uri, const char *type,
     key_session_close();
     ur_intake_reset();
     if (g_sign_out_len > 0 &&
-        strcmp(g_sign_out_type, "xmr-txsigned") == 0) {
+        (strcmp(g_sign_out_type, "xmr-txsigned") == 0 ||
+         strcmp(g_sign_out_type, "crypto-psbt") == 0)) {
         /* T5 beat 4: an XMR signed set goes straight to the QR carousel --
          * Cake's "scan QR code" step collects it (the rc/out/dt diagnostics
          * already went to the console above). The session is already closed
          * above, so the carousel's exit leg is a plain return to welcome. */
-        printf("sign: done -> xmr-txsigned qr (result page skipped)\r\n");
-        UiSetLast("signed - scan with Cake");
+        printf("sign: done -> %s qr (result page skipped)\r\n",
+               g_sign_out_type);
+        /* Neutral wording: no third-party brand in the operator hint. */
+        UiSetLast(strcmp(g_sign_out_type, "xmr-txsigned") == 0
+                      ? "signed - scan with Cake"
+                      : "signed - scan with wallet");
         UiGotoPage(UI_PAGE_QR);
         return;
     }
@@ -1835,7 +1840,13 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
     g_review_cancel_req = 0;
     g_touch_prev = 1;                   /* the entry tap is not a press */
     g_review_active = 1;
+    UiTouchReset();
+    /* Fill the line buffers BEFORE switching the page: UiReviewShow only
+     * repaints when the review page is already current, so without the
+     * UiGotoPage below the gate ran invisibly — the screen kept showing the
+     * frozen scan page while the loop waited for `wire` (2026-11-05). */
     review_render();
+    UiGotoPage(UI_PAGE_REVIEW);
 
     while (g_review_active) {
         product_touch_poll();
