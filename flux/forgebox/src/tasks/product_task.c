@@ -138,8 +138,8 @@ static int g_ur_reject_run;
 /* Sticky scan notice (2026-10-29, the silent-pairing-failure case): the
  * latch path RE-DRAWS this on every dropped frame, so whatever wipes the
  * scan-page text (preview repaint / next-frame notice), the very next frame
- * restores it -- a failure can never go silent again (拆码红线: failures
- * must be visible). */
+ * restores it -- a failure can never go silent again (split-code red line:
+ * failures must be visible). */
 static const char *g_scan_notice_l1;
 static const char *g_scan_notice_l2;
 static const char *g_scan_notice_l3;
@@ -900,7 +900,7 @@ void ProductKeyLock(void)
 
 /* 'key new [12|24]': generate a fresh wallet from the on-chip TRNG.
  * Entropy (16/32 bytes) -> BIP-39 Mnemonic derivation + validation through
- * the plate-export FFI (forms 件; the checksum is derived at from_entropy and
+ * the plate-export FFI (forms crate; the checksum is derived at from_entropy and
  * re-verified on encode), staged in g_key_wallet, then round-tripped through
  * the SAME import path a scanned plate takes (shlosilo_keysource_qr_open_ffi)
  * so the wallet is immediately sign-capable and the export->import loop is
@@ -1352,7 +1352,7 @@ static void sign_run(const char *uri, const char *type,
         } else {
             g_sign_out_len = 0;
             /* User-facing failure text is a FIXED template (2026-10-09
-             * injection red line, Kosmo): no rc codes, no QR-derived
+             * injection red line): no rc codes, no QR-derived
              * strings, no payload bytes on screen -- the full diagnostic
              * dump goes to the developer console only.
              *
@@ -1362,7 +1362,7 @@ static void sign_run(const char *uri, const char *type,
              * single catch-all template hid the failure class on the only
              * diagnostic channel we have (the screen) -- 2026-10-26 the
              * intermittent sign failure could not be triaged because of it. */
-            /* Fixed word table (拆码 red line): the single source of truth is
+            /* Fixed word table (split-code red line): the single source of truth is
              * forms::failure_text, rendered through the FFI lookup — the
              * mapping is pinned byte-exactly by tests/pin_failure_text.rs
              * (pool #57: the 2026-10-29 KI-cap case let a -20 failure wear
@@ -1699,7 +1699,7 @@ static const char *ur_type_display(const char *type)
  * xmr-keyimage is a device-OUT leg -- and anything unknown) is
  * prompt + keep scanning: the typed sign FFI refuses foreign types, and
  * the sign FAIL leg closes the plate session underneath -- a session
- * must survive a stray exchange-leg QR (spec: 提示 + 续扫). */
+ * must survive a stray exchange-leg QR (spec: prompt + keep scanning). */
 static int ur_type_is_sign(const char *type)
 {
     return strncasecmp(type, "xmr-txunsigned", 14) == 0 ||
@@ -1712,7 +1712,7 @@ static int ur_type_is_sign(const char *type)
  * be the silent FALLBACK whenever a sign UR was scanned with NO session --
  * the device signed with the smoke-anchor fixture key and the wallet rejected
  * the result (Cake rc=-21, wrong key). No-session sign requests now prompt
- * "import a wallet first / 请先扫盘导入" + keep scanning.
+ * "import a wallet first" prompt + keep scanning.
  *
  * The legacy path is preserved as an EXPLICIT one-shot entry instead: the
  * smoke/acceptance anchor run ('sign fixture' dev console, se_smoke.c) arms

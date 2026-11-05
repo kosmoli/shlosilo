@@ -81,10 +81,10 @@ set(INCLUDE_DIR
 )
 
 # ====== shlosilo (Rust staticlib) integration ======
-# PoC 3: shlosilo Rust 业务库集成
-# - libshlosilo.a 由 shlosilo-poc3 cargo build --release 产出
-# - 已用 arm-none-eabi-strip 删 debug info
-# - 通过 C-ABI 给 FreeRTOS task 调用（src/tasks/shlosilo_smoke_task.c）
+# PoC 3: shlosilo Rust business-library integration
+# - libshlosilo.a is produced by `shlosilo-poc3 cargo build --release`
+# - debug info already stripped with arm-none-eabi-strip
+# - called from FreeRTOS tasks through the C ABI (src/tasks/shlosilo_smoke_task.c)
 set(SHLOSILO_PATH "${CMAKE_CURRENT_SOURCE_DIR}/shlosilo")
 if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
     message(STATUS "shlosilo: integrating libshlosilo.a from ${SHLOSILO_PATH}")

@@ -1,28 +1,32 @@
-//! BTC scriptPubKey → address rendering（审阅页的显示基础）
+//! BTC scriptPubKey -> address rendering (the display basis of the review page)
 //!
-//! ## 为什么需要
+//! ## Why this is needed
 //!
-//! 审阅页必须把 PSBT 输出/输入的真实收款方显示成人能核对的地址串。现有
-//! `address/btc_segwit.rs` 是「公钥 → 自己的地址」，与「任意 scriptPubKey →
-//! 地址」是两个不同的函数（后者不需要任何密钥材料，纯结构转换）。
+//! The review page must show the real recipients of PSBT outputs/inputs as address
+//! strings a human can verify. The existing `address/btc_segwit.rs` computes
+//! "public key -> our own address", which is a different function from
+//! "arbitrary scriptPubKey -> address" (the latter needs no key material at all, it is
+//! a pure structural transformation).
 //!
-//! ## oracle 来源（外部权威，非自证）
+//! ## Oracle sources (external authority, not self-referential)
 //!
-//! 向量全部由脚本从 Bitcoin Core 的金标数据文件机读生成，**没有手抄**：
+//! Every vector was generated machine-readably by a script from Bitcoin Core's golden
+//! data files, **none copied by hand**:
 //! - `~/codebases/bitcoin/src/test/data/key_io_valid.json`
-//!   （`[address, script_hex, {chain}]`，覆盖 P2PKH / P2SH / P2WPKH /
-//!   P2WSH / P2TR × main/testnet）
+//!   (`[address, script_hex, {chain}]`, covering P2PKH / P2SH / P2WPKH /
+//!   P2WSH / P2TR across main/testnet)
 //! - `~/codebases/bitcoin/src/test/data/base58_encode_decode.json`
-//!   （纯 base58 编码 KAT）
+//!   (pure base58 encoding KATs)
 //!
-//! 生成脚本：把 key_io_valid 按脚本类型分组、每类取 main 与 testnet 各一条，
-//! chain 映射 testnet4/signet → test、regtest 跳过（我方 Network 无 bcrt）。
+//! Generation script: group key_io_valid by script type, take one main and one testnet
+//! entry per type; chain maps testnet4/signet -> test, regtest is skipped (our Network
+//! has no bcrt).
 
 use shlosilo::address::btc_script;
 use shlosilo::address::btc_segwit::BtcAddress;
 use shlosilo::network::Network;
 
-/// (scriptPubKey hex, 网络, 期望地址)
+/// (scriptPubKey hex, network, expected address)
 const VECTORS: &[(&str, &str, &str)] = &[
     (
         "76a914a31c06bd463e3923bc1aadbde48b16976c08071788ac",
@@ -91,7 +95,7 @@ fn net(s: &str) -> Network {
     }
 }
 
-/// 四类脚本 × main/test 的地址渲染（金标来自 Bitcoin Core 数据文件）
+/// Address rendering for four script types x main/test (golden data from Bitcoin Core files)
 #[test]
 fn script_pubkey_renders_to_golden_address() {
     let mut checked = 0;
@@ -109,7 +113,8 @@ fn script_pubkey_renders_to_golden_address() {
     assert_eq!(checked, VECTORS.len());
 }
 
-/// 非标准 / 截断脚本必须稳定拒绝，不许产出假地址
+/// Non-standard / truncated scripts must be rejected consistently; never emit a fake
+/// address.
 #[test]
 fn non_standard_scripts_are_rejected() {
     let cases: &[(&str, &str)] = &[
@@ -121,12 +126,12 @@ fn non_standard_scripts_are_rejected() {
             "truncated p2pkh",
         ),
         ("0014", "witness with no program"),
-        // witness v2（未知版本，不能在 v0/v1 规则下瞎编）
+        // witness v2 (unknown version; must not be invented under v0/v1 rules)
         (
             "5220a31c06bd463e3923bc1aadbde48b16976c08071788ac00",
             "witness v2",
         ),
-        // 20 字节 program 配 v1 版本（非法组合）
+        // 20-byte program with a v1 version byte (illegal combination)
         (
             "5114a31c06bd463e3923bc1aadbde48b16976c080717",
             "v1 with 20-byte program",
@@ -141,7 +146,7 @@ fn non_standard_scripts_are_rejected() {
     }
 }
 
-/// 纯 base58 编码 KAT（Bitcoin Core base58_encode_decode.json，机读生成）
+/// Pure base58 encoding KATs (Bitcoin Core base58_encode_decode.json, machine-generated)
 #[test]
 fn base58_encode_matches_bitcoin_core_vectors() {
     use shlosilo::encoding::base58;

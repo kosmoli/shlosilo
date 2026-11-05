@@ -238,7 +238,8 @@ mod tests {
         assert_eq!(result.unwrap_err().kind, ShlosiloErrorKind::BufferTooSmall);
     }
 
-    /// keystone 的 BTC 账户集：84/49/44/86 四条 account 级路径
+    /// The BTC account set used in the keystone ecosystem: 84/49/44/86, four
+    /// account-level paths
     fn account_paths() -> heapless::Vec<DerivationPath, 8> {
         let mut v = heapless::Vec::new();
         for p in ["m/84'/0'/0'", "m/49'/0'/0'", "m/44'/0'/0'", "m/86'/0'/0'"] {
@@ -262,8 +263,9 @@ mod tests {
         .expect("crypto-account export");
         let uri = core::str::from_utf8(&output_buf[..n]).unwrap();
         assert!(uri.starts_with("ur:crypto-account/"), "got {uri}");
-        // 形状由 tests/ur_crypto_hdkey_registry_shape.rs 用独立 CBOR 走查器钉死；
-        // 这里只保证产品入口把它接了出来。
+        // The shape is pinned by tests/ur_crypto_hdkey_registry_shape.rs through an
+        // independent CBOR walker; this test only checks that the product entry point
+        // wires it out.
     }
 
     #[test]
@@ -280,7 +282,10 @@ mod tests {
         )
         .expect_err("testnet account export must be rejected");
         assert_eq!(err.kind, ShlosiloErrorKind::NetworkUnrecognized);
-        assert!(output_buf.iter().all(|&b| b == 0xA5), "失败路径不得写缓冲");
+        assert!(
+            output_buf.iter().all(|&b| b == 0xA5),
+            "the failure path must not write the buffer"
+        );
     }
 
     #[test]
@@ -310,7 +315,8 @@ mod tests {
         for p in ["m/84'/0'/0'", "m/49'/0'/0'", "m/44'/0'/0'", "m/86'/0'/0'"] {
             paths.push(DerivationPath::parse(p).unwrap()).ok();
         }
-        // 第五条：超出 keystone 集合与 codec 缓冲预算 → 显式拒绝（不截断）
+        // Fifth entry: exceeds the keystone set and the codec buffer budget -> explicit
+        // rejection (no truncation)
         paths
             .push(DerivationPath::parse("m/84'/0'/1'").unwrap())
             .ok();

@@ -1,11 +1,12 @@
-//! 审阅视图（sign-request review）的数据层钉
+//! Data-layer pins for the sign-request review view.
 //!
-//! 覆盖：BTC PSBT（真实 Sparrow 夹具：fee/输入输出计数/收款方地址渲染/
-//! 未知脚本降级/缺 UTXO 的 fee 未知分支）、EVM（真实 eth-sign-request 夹具：
-//! chain/destination(EIP-55)/value + typed-data 的固定词表降级）。
+//! Covers BTC PSBT (real Sparrow fixture: fee / input and output counts / recipient
+//! address rendering / unknown-script degradation / fee-unknown branch when UTXO data
+//! is missing) and EVM (real eth-sign-request fixture: chain / destination (EIP-55) /
+//! value, plus fixed word-table degradation of typed data).
 //!
-//! 文案纪律：本文件断言的每一行要么是固定词表，要么是从解码结构重编码出来的
-//! 地址/金额——不含 payload 原文。
+//! Copy discipline: every asserted line is either a fixed word-table entry or an
+//! address/amount re-encoded from the decoded structure -- never raw payload text.
 
 use shlosilo::business::review::{self, flag};
 use shlosilo::chain::btc::psbt::KvRec;
@@ -14,7 +15,7 @@ use shlosilo::ur::ur_encode::UrTypeTag;
 
 const SPARROW_PSBT: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 
-/// 冒烟任务里那条已验证的 eth-sign-request UR（EIP-1559 转账）
+/// The eth-sign-request UR already verified in the smoke task (EIP-1559 transfer).
 const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
 
 const ARENA: usize = 16 * 1024;
@@ -43,70 +44,80 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
 
     let l = lines(&view);
     assert_eq!(l[0], "in 1 / out 2", "lines = {l:?}");
-    // 夹具 oracle（tests/p63_btc_psbt.rs 注释）：1 输入 651157 sat，
-    // 输出 1000 + 650087 sat → fee 70 sat
+    // Fixture oracle (comment in tests/p63_btc_psbt.rs): 1 input of 651157 sat,
+    // outputs 1000 + 650087 sat -> fee 70 sat
     assert_eq!(l[1], "fee 70 sats", "lines = {l:?}");
-    // 真机首测的排版教训（2026-11-05）：每行都要自解释——金额带单位、
-    // 一页放得下，不许出现裸数字或与页标题重复的抬头行。
-    // 一页上限 12 行（真机版面），且风险行必须出现在正文之上
-    assert!(l.len() <= 12, "必须一页放得下（≤12 行）: {l:?}");
-    // RBF 是操作属性不是风险：显示状态，不出 warn（加速费在现代钱包是常态）
+    // Layout constraints from the first on-device run (2026-11-05): every line must
+    // be self-explanatory -- amounts carry units, the whole view fits on one page, and
+    // no bare numbers or header lines duplicating the page title are allowed.
+    // Page cap is 12 lines (device layout), and risk lines must precede the body.
+    assert!(l.len() <= 12, "must fit on one page (<=12 lines): {l:?}");
+    // RBF is an operational property, not a risk: show the state, no warn (fee
+    // bumping is normal in modern wallets).
     assert!(
         l.iter().any(|s| s == "replaceable yes"),
-        "RBF 状态必须如实上屏（信息行）: {l:?}"
+        "RBF state must be shown as-is (info line): {l:?}"
     );
     assert!(
         !l.iter().any(|s| s.starts_with("warn: replaceable")),
-        "RBF 不应是 warn（会稀释真正的风险警告）: {l:?}"
+        "RBF must not be a warn (it dilutes real risk warnings): {l:?}"
     );
     assert!(
         !l.iter().any(|s| s == "warn: high fee"),
-        "70 sat 的手续费不该报大额: {l:?}"
+        "a 70 sat fee must not be reported as high: {l:?}"
     );
-    // 判不了就如实显示：locktime 必须以信息行出现并标注域，不许吞掉
+    // When a value cannot be judged, show it as-is: locktime must appear as an info
+    // line with its domain labelled, never swallowed.
     let lt = l
         .iter()
         .find(|s| s.starts_with("locktime "))
-        .unwrap_or_else(|| panic!("locktime 值必须上屏（交给操作员判断）: {l:?}"));
+        .unwrap_or_else(|| panic!("locktime value must be shown (operator decides): {l:?}"));
     assert!(
         lt.ends_with(" height") || lt.ends_with(" height ignored"),
-        "夹具是高度型 locktime，域标注应为 height: {lt}"
+        "fixture is a height-type locktime, domain label should be height: {lt}"
     );
-    // 风险行在正文之前，不许被挤到折叠线以下
+    // Risk lines precede the body and must not be pushed below the fold.
     let first_send = l.iter().position(|s| s.starts_with("send ")).unwrap();
     if let Some(first_warn) = l.iter().position(|s| s.starts_with("warn:")) {
-        assert!(first_warn < first_send, "风险行必须在金额行之前: {l:?}");
+        assert!(
+            first_warn < first_send,
+            "risk lines must precede amount lines: {l:?}"
+        );
     }
     assert!(l.iter().any(|s| s == "send 1000 sats"), "lines = {l:?}");
-    // 输出地址来自 Bitcoin Core 编码规则（P2WPKH on tb1）
-    // 形态：`send <amount> sats` 一行 + 下一行地址（长地址再续行）
+    // Output addresses follow Bitcoin Core encoding rules (P2WPKH on tb1).
+    // Shape: a `send <amount> sats` line followed by the address line (long addresses wrap).
     let send_rows: Vec<usize> = l
         .iter()
         .enumerate()
         .filter(|(_, s)| s.starts_with("send "))
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(send_rows.len(), 2, "两个输出都应是外部收款: {l:?}");
+    assert_eq!(
+        send_rows.len(),
+        2,
+        "both outputs should be external payments: {l:?}"
+    );
     for i in send_rows {
         let addr = &l[i + 1];
         assert!(
             addr.starts_with("tb1q") && addr.len() >= 42,
-            "收款地址没有被渲染出来: {addr}"
+            "recipient address was not rendered: {addr}"
         );
     }
-    // 金额与单位同在一行（不再出现裸数字行）
+    // Amount and unit share one line (no bare-number lines).
     assert!(
         l.iter().all(|s| s.trim().parse::<u64>().is_err()),
-        "不许出现无单位的裸金额行: {l:?}"
+        "no unit-less bare amount lines allowed: {l:?}"
     );
 
-    // 该夹具的输入 nSequence 为 RBF 信号（Sparrow 默认开启）
+    // The fixture's input nSequence signals RBF (Sparrow enables it by default).
     assert!(
         view.flags & flag::RBF != 0,
-        "RBF 未标记, flags = {:#x}",
+        "RBF not flagged, flags = {:#x}",
         view.flags
     );
-    // fee 已知 → 不得有 FEE_UNKNOWN；70 sat 远低于阈值 → 不得有 HIGH_FEE
+    // Fee known -> no FEE_UNKNOWN; 70 sat is far below the threshold -> no HIGH_FEE.
     assert_eq!(view.flags & flag::FEE_UNKNOWN, 0);
     assert_eq!(view.flags & flag::HIGH_FEE, 0);
     assert_eq!(view.flags & flag::UNKNOWN_SCRIPT, 0);
@@ -114,13 +125,15 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
     assert_eq!(view.output_count, 2);
 }
 
-/// 未知脚本必须降级成固定词，不许把脚本字节当地址显示
+/// Unknown scripts must degrade to fixed words; script bytes must never be shown as
+/// an address.
 #[test]
 fn btc_unknown_output_script_degrades_to_fixed_words() {
     let mut psbt = SPARROW_PSBT.to_vec();
-    // 把第一个输出脚本原地换成等长的 OP_RETURN（6a14 + 20 字节 = 22 字节），
-    // 长度不变，PSBT 结构仍完整。
-    let needle = [0x00u8, 0x14]; // P2WPKH 脚本头
+    // Replace the first output script in place with an equal-length OP_RETURN
+    // (6a14 + 20 bytes = 22 bytes): the length is unchanged, so the PSBT stays
+    // structurally intact.
+    let needle = [0x00u8, 0x14]; // P2WPKH script head
     let pos = psbt
         .windows(2)
         .position(|w| w == needle)
@@ -143,19 +156,21 @@ fn btc_unknown_output_script_degrades_to_fixed_words() {
     let l = lines(&view);
     assert!(
         l.iter().any(|s| s == "address unknown"),
-        "OP_RETURN 输出应降级成固定词: {l:?}"
+        "OP_RETURN output should degrade to a fixed word: {l:?}"
     );
     assert!(
         view.flags & flag::UNKNOWN_SCRIPT != 0,
-        "UNKNOWN_SCRIPT 未标记"
+        "UNKNOWN_SCRIPT not flagged"
     );
 }
 
-/// 缺 witness_utxo 时 fee 只能是下界——必须显式说 unknown，不能给个数糊过去
+/// Without witness_utxo the fee is only a lower bound -- it must say unknown
+/// explicitly instead of printing some number.
 #[test]
 fn btc_missing_utxo_reports_fee_unknown() {
-    // 直接构造一个只有 global unsigned_tx、没有输入 map 的最小 PSBT 不现实；
-    // 这里改走负面路径：截断成非法 PSBT 必须报错而不是产出半截视图。
+    // Constructing a minimal PSBT with only a global unsigned_tx and no input maps is
+    // not practical here; take the negative path instead: a truncated, invalid PSBT
+    // must error out rather than produce a half view.
     let truncated = &SPARROW_PSBT[..SPARROW_PSBT.len() / 2];
     let mut arena = [0u8; ARENA];
     let mut recs = [KvRec::EMPTY; RECS];
@@ -167,7 +182,7 @@ fn btc_missing_utxo_reports_fee_unknown() {
         &mut arena,
         &mut recs,
     );
-    assert!(r.is_err(), "截断 PSBT 必须被拒绝");
+    assert!(r.is_err(), "truncated PSBT must be rejected");
 }
 
 #[test]
@@ -190,21 +205,22 @@ fn eth_transaction_review_renders_eip55_destination() {
     assert_eq!(l[0], "eth send request", "lines = {l:?}");
     assert!(
         l.iter().any(|s| s.starts_with("chain ")),
-        "chain id 缺失: {l:?}"
+        "chain id missing: {l:?}"
     );
     let to_idx = l.iter().position(|s| s == "to:").expect("to: line");
     let addr = &l[to_idx + 1];
     assert!(
         addr.starts_with("0x") && addr.len() == 42,
-        "EIP-55 地址渲染失败: {addr}"
+        "EIP-55 address rendering failed: {addr}"
     );
     assert!(
         l.iter().any(|s| s.starts_with("value ")),
-        "value 缺失: {l:?}"
+        "value missing: {l:?}"
     );
 }
 
-/// 非审阅面（XMR / 未知类型）必须拒绝，而不是给出一个空视图让人点确认
+/// Non-review types (XMR / unknown) must be rejected rather than yielding an empty
+/// view to confirm blindly.
 #[test]
 fn unsupported_types_are_rejected() {
     let mut arena = [0u8; ARENA];
@@ -222,11 +238,11 @@ fn unsupported_types_are_rejected() {
             &mut arena,
             &mut recs,
         );
-        assert!(r.is_err(), "{tag:?} 不该有审阅视图");
+        assert!(r.is_err(), "{tag:?} must not have a review view");
     }
 }
 
-// ───────────────────── FFI 面（平台层真正调的那条路） ─────────────────────
+// --------------------- FFI surface (the path the platform layer actually calls) ---------------------
 
 #[test]
 fn review_ffi_packs_lines_and_meta() {
@@ -235,9 +251,12 @@ fn review_ffi_packs_lines_and_meta() {
     use std::ffi::CString;
 
     let ws_need = c_abi::shlosilo_review_ws_len() as usize;
-    assert!(ws_need >= 16 * 1024, "ws 预算应含 16KiB arena");
+    assert!(
+        ws_need >= 16 * 1024,
+        "ws budget should include the 16KiB arena"
+    );
 
-    // ws = NULL 是纯探针：只回长度，不做事
+    // ws = NULL is a pure probe: it reports the length only and does no work.
     let mut probe: c_uint = 0;
     let ty = CString::new("crypto-psbt").unwrap();
     let rc = c_abi::shlosilo_review_ffi(
@@ -256,9 +275,12 @@ fn review_ffi_packs_lines_and_meta() {
         core::ptr::null_mut(),
     );
     assert_eq!(rc, 0);
-    assert_eq!(probe as usize, ws_need, "探针回报的 ws 需求应与查询一致");
+    assert_eq!(
+        probe as usize, ws_need,
+        "probe ws requirement should match the query"
+    );
 
-    // 正式调用
+    // Real call
     let mut ws = vec![0u8; ws_need];
     let mut lines = [0u8; c_abi::REVIEW_LINES_BUF];
     let mut used: c_uint = 0;
@@ -280,18 +302,22 @@ fn review_ffi_packs_lines_and_meta() {
         &mut flags,
         &mut in_out,
     );
-    assert_eq!(rc, 0, "review ffi 应成功");
+    assert_eq!(rc, 0, "review ffi should succeed");
     assert!(count > 0);
-    // NUL 分隔的 blob：切出来的条数必须等于 count
+    // NUL-separated blob: the number of split entries must equal count.
     let blob = &lines[..used as usize];
     let parts: Vec<&[u8]> = blob.split(|b| *b == 0).filter(|s| !s.is_empty()).collect();
-    assert_eq!(parts.len(), count as usize, "行数与 blob 不符");
+    assert_eq!(
+        parts.len(),
+        count as usize,
+        "line count does not match the blob"
+    );
     assert_eq!(&parts[0], b"in 1 / out 2");
-    assert_eq!(in_out >> 16, 1, "输入数");
-    assert_eq!(in_out & 0xffff, 2, "输出数");
-    assert!(flags & u32::from(flag::RBF) != 0, "flags 应带 RBF");
+    assert_eq!(in_out >> 16, 1, "input count");
+    assert_eq!(in_out & 0xffff, 2, "output count");
+    assert!(flags & u32::from(flag::RBF) != 0, "flags should carry RBF");
 
-    // 缓冲不够必须报错（不写半截）
+    // An insufficient buffer must error out (no partial write).
     let mut small = [0u8; 8];
     let rc = c_abi::shlosilo_review_ffi(
         ty.as_ptr(),
@@ -308,7 +334,7 @@ fn review_ffi_packs_lines_and_meta() {
         &mut flags,
         &mut in_out,
     );
-    assert_ne!(rc, 0, "行缓冲不足必须失败");
+    assert_ne!(rc, 0, "insufficient line buffer must fail");
 }
 
 #[test]
@@ -339,12 +365,16 @@ fn review_ffi_rejects_xmr_types() {
             &mut flags,
             &mut in_out,
         );
-        assert_ne!(rc, 0, "{name} 不该有审阅面（XMR 走原流程）");
+        assert_ne!(
+            rc, 0,
+            "{name} must not have a review view (XMR uses the original flow)"
+        );
     }
 }
 
-/// 网络由 PSBT 自己的派生 coin type 决定：signet 夹具即使调用方说 mainnet，
-/// 收款地址也必须渲染成 tb1…（否则操作员照主网前缀核对会误判）。
+/// The network comes from the PSBT's own derived coin type: even when the caller says
+/// mainnet, the signet fixture's recipient address must render as tb1… (otherwise an
+/// operator checking against mainnet prefixes would misjudge it).
 #[test]
 fn network_follows_the_psbt_coin_type_not_the_caller() {
     let mut arena = [0u8; ARENA];
@@ -352,7 +382,7 @@ fn network_follows_the_psbt_coin_type_not_the_caller() {
     let view = review::build(
         UrTypeTag::CryptoPsbt,
         SPARROW_PSBT,
-        Network::BitcoinMainnet, // 故意说错
+        Network::BitcoinMainnet, // deliberately wrong
         None,
         &mut arena,
         &mut recs,
@@ -365,14 +395,15 @@ fn network_follows_the_psbt_coin_type_not_the_caller() {
         .expect("address line");
     assert!(
         addr.starts_with("tb1q"),
-        "coin type 1 应压过调用方的 mainnet: {addr}"
+        "coin type 1 should override the caller's mainnet: {addr}"
     );
 }
 
-/// 找零识别：带上本机指纹（夹具的 master fingerprint = f3b9960b，见
-/// tests/p63_btc_psbt.rs 的 BIP32_DERIVATION 注释）时，回到自己钱包的输出
-/// 必须标成 `change`，而不是和付款一样标 `send`。
-/// 这条对应真机首测的语义缺陷（两个输出都显示 `to:`）。
+/// Change detection: with our fingerprint supplied (fixture master fingerprint =
+/// f3b9960b, see the BIP32_DERIVATION comment in tests/p63_btc_psbt.rs), an output
+/// returning to our own wallet must be labelled `change`, not `send` like a payment.
+/// This pins the semantic defect seen on the first on-device run (both outputs showed
+/// `to:`).
 #[test]
 fn change_output_is_labelled_when_our_fingerprint_is_known() {
     let mfp = [0xf3u8, 0xb9, 0x96, 0x0b];
@@ -390,19 +421,20 @@ fn change_output_is_labelled_when_our_fingerprint_is_known() {
     let l = lines(&view);
     assert!(
         l.iter().any(|s| s.starts_with("change ")),
-        "带本机指纹时必须标出找零: {l:?}"
+        "change must be labelled when our fingerprint is known: {l:?}"
     );
     assert!(
         l.iter().any(|s| s.starts_with("send ")),
-        "付款输出仍应标 send: {l:?}"
+        "payment output should still be labelled send: {l:?}"
     );
 }
 
-/// locktime 的域判定（500M 分界）。
+/// locktime domain split (500M threshold).
 ///
-/// 产品原则（Kosmo 2026-11-05）：**判不了的值如实显示给操作员，不要替他过滤**。
-/// 高度型（anti-sniping 常态）与时间戳型的区别只用于「标注是哪个域」，不再用于
-/// 决定是否上屏。
+/// Product rule (2026-11-05): values that cannot be judged are shown to the operator
+/// as-is; never filter them on the operator's behalf. Height type (the usual
+/// anti-sniping case) versus timestamp type only decides **which domain to label**,
+/// not whether the line is displayed.
 #[test]
 fn locktime_domain_splits_at_the_consensus_threshold() {
     use review::LocktimeDomain;

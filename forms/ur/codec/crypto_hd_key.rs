@@ -255,29 +255,29 @@ mod tests {
         assert_eq!(fp, 0x11223344);
     }
 
-    /// testnet 路径的 coin type/network 分支（crypto-coin-info）
+    /// testnet coin type/network branch (crypto-coin-info)
     #[test]
     fn coin_info_follows_path_coin_type() {
         let p = DerivationPath::parse("m/84'/0'/0'").unwrap();
         assert_eq!(coin_info(&p), Some((0, NETWORK_MAINNET)));
         let p = DerivationPath::parse("m/84'/1'/0'").unwrap();
         assert_eq!(coin_info(&p), Some((1, NETWORK_TESTNET)));
-        // 无 coin 层（如 m/44'）→ 字段省略，不猜
+        // No coin level (e.g. m/44') -> the field is omitted, never guessed
         let p = DerivationPath::parse("m/44'").unwrap();
         assert_eq!(coin_info(&p), None);
     }
 
-    /// children 只在 account 级路径（三层全硬化）发出
+    /// children are emitted only for account-level paths (all three levels hardened)
     #[test]
     fn children_only_for_account_level_paths() {
         assert!(is_account_level(
             &DerivationPath::parse("m/84'/0'/0'").unwrap()
         ));
-        // 叶级地址路径：末层非硬化 → 不发 children
+        // Leaf address path: the last level is not hardened -> no children
         assert!(!is_account_level(
             &DerivationPath::parse("m/44'/0'/0'/0/0").unwrap()
         ));
-        // 二层 → 不是 account 级
+        // Two levels -> not account level
         assert!(!is_account_level(&DerivationPath::parse("m/0'").unwrap()));
     }
 }

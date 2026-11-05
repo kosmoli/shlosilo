@@ -921,24 +921,34 @@ mod tests {
     #[cfg(any(feature = "alloc-fallback", test))]
     use alloc::vec;
 
-    /// 进度条语义：按「已解出分片/分片数」算，而不是按收到的零件数。
+    /// Progress semantics: solved fragments divided by fragment count, not the number
+    /// of received parts.
     ///
-    /// 真机报告（2026-11-05）：「2 分片的消息在 57% 卡住不动」「6 分片的停在
-    /// 99% 五分钟」——旧公式 processed/(count×1.75) 对任何消息都会在集齐前顶死，
-    /// 操作员读到的是「卡住」而不是「还差几片」。
+    /// Field report (2026-11-05): "a 2-fragment message sticks at 57%" and "a
+    /// 6-fragment one sits at 99% for five minutes" -- the old formula
+    /// processed/(count x 1.75) saturates before completion for any message, so the
+    /// operator reads "stuck" instead of "N fragments still missing".
     #[test]
     fn progress_tracks_solved_fragments() {
-        // 8 字节 / 4 字节一片 = 2 片
+        // 8 bytes / 4 bytes per fragment = 2 fragments
         let data = b"abcdefgh";
         let mut enc = FountainEncoder::new(data, 4).unwrap();
         let mut dec = FountainDecoder::new();
         let p1 = enc.next_part().unwrap();
-        assert_eq!(dec.progress(), 0, "还没喂就不该有进度");
+        assert_eq!(
+            dec.progress(),
+            0,
+            "no frame fed yet, so there must be no progress"
+        );
         assert!(dec.receive(p1).unwrap());
-        assert_eq!(dec.progress(), 50, "解出 1/2 片 = 50%");
+        assert_eq!(dec.progress(), 50, "1 of 2 fragments solved = 50%");
         let p2 = enc.next_part().unwrap();
         assert!(dec.receive(p2).unwrap());
-        assert_eq!(dec.progress(), 99, "集齐后封顶 99（100 由 complete 表达）");
+        assert_eq!(
+            dec.progress(),
+            99,
+            "capped at 99 when all fragments are in (100 is expressed by complete)"
+        );
         assert!(dec.complete());
     }
 

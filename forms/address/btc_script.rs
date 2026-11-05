@@ -114,7 +114,7 @@ mod tests {
 
     const _: fn(&[u8], Network) -> Result<BtcAddress> = render;
 
-    /// 非 BTC 网络一律拒绝（地址前缀无从确定）
+    /// Non-BTC networks are always rejected (the address prefix cannot be determined).
     #[test]
     fn rejects_non_btc_networks() {
         let spk = [

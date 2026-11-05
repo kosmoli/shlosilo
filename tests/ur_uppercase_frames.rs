@@ -1,20 +1,24 @@
-//! BC-UR 大小写不敏感（真实 Sparrow 帧回归钉）
+//! BC-UR case insensitivity (regression pin over real Sparrow frames)
 //!
-//! Sparrow 的签名 QR 用的是 QR **alphanumeric** 模式（该模式没有小写字母），
-//! 所以整个 UR 串被编码成大写：`UR:CRYPTO-PSBT/119-2/LPCSKT…`。
-//! BC-UR 规定解码方向大小写不敏感（编码器可以全大写，解码器必须认）。
+//! Sparrow encodes signing QRs in QR **alphanumeric** mode (which has no lowercase
+//! letters), so the whole UR string is uppercased: `UR:CRYPTO-PSBT/119-2/LPCSKT…`.
+//! BC-UR requires the decode direction to be case-insensitive: an encoder may emit all
+//! caps, a decoder must accept it.
 //!
-//! 我方从 Cake/Feather 收到的全是小写（byte 模式），所以这个面从未被覆盖——
-//! 2026-11-04 真机首测 Sparrow 时，设备把 `CRYPTO-PSBT` 当成未知类型，屏上打
-//! `collected: unknown code, not a sign request`。
+//! Everything received from Cake/Feather was lowercase (byte mode), so this surface was
+//! never covered -- on the first on-device Sparrow run (2026-11-04) the device treated
+//! `CRYPTO-PSBT` as an unknown type and printed
+//! `collected: unknown code, not a sign request`.
 //!
-//! 本文件的帧是从用户拍的 Sparrow 动画里 zbar 逐帧解出来的**真字节**。
+//! The frames below are the **real bytes** zbar extracted frame by frame from a
+//! recorded Sparrow animation.
 
 use shlosilo::ur::ur_encode::UrTypeTag;
 use shlosilo::ur::ur_multipart::UrMultipartDecoder;
 
-/// Sparrow 动画里连续解出的四个 fountain 帧（seq-count = 119-2 / 121-2 /
-/// 124-2 / 126-2，即 2 个原始分片 + 冗余混合帧）
+/// Four fountain frames decoded consecutively from the Sparrow animation
+/// (seq-count = 119-2 / 121-2 / 124-2 / 126-2: 2 original fragments plus redundant
+/// mixed frames).
 const SPARROW_UPPER_FRAMES: &[&str] = &[
     "UR:CRYPTO-PSBT/119-2/LPCSKTAOCFADRNCYFPVYFZLGHDURHDCKSPNLKNIDJYZMADAEIOAOBBEYMTGDPFSEAMSTKNDRCMQZHFENMWLOZMLURNSNRDLNGOYNHPVDGHGLSSDNKOPAATRNOXTPGOFHVLVATPPYHPSNOYRLBSHFKTPKWYBKNTECIASSLNKGPSOSDPFRTAHSURAESTMDKKGWCALTLDRYLAJPTKESVDLDAEAEAEAEAXCMAEBBNNQDCEGOATJNEYFZBARSAMZTBGWENNLBWPENUTIMGSHLFEFMUYFWBDWLPFWSPLCLPKZSSEDNCSWFRHAEHNWSTKGTONDEYNFZCSAMWLFNOTASHSRELUTSDSTAJYBKPSVAJLCLWLQZPMDRUTMWCWGSPMJZBWGORYESTKDIBGHGFPBAMWTPNSBEPAVSWERTRTLSADCYSNUEMOROGYRKBEJKROMTBDTYAEAELALYADAELAAEADAELAAEADIATKJOBS",
     "UR:CRYPTO-PSBT/121-2/LPCSKKAOCFADRNCYFPVYFZLGHDURADCTJKWLASAEAEAEAEAECMAEBBEYMTGYAYHEDSVYJNBNSRMDRLHHCLVSGDTLIHEOCPADAXAAADAEAEAECPAMAOSNHTNSSNGWGOFHVLVATPHFOXEYHYREZOHGKTPKWYBKNTECKPSSMOOYFZSAECLKYNCSWFRHMTBDGHAEAELAADAEAELAAEAEAELAAEAEAEAEAXAEAEAEAECPAOAOAMNTMODKOSVDJTHYLYGEZCDSKEPSFGYNDLHPFZFMMWFXBSUOEMCXPMSNBDIYBBPYCSWFRHMTBDGHAEAELAADAEAELAAEAEAELAAEAEAEAEAAAEAEAEAECPAOAOPEGLDWNNATVLMSSTHEWZVEKNAMCMTIKEJTAEFRKKLRVOBNLYNDNTCKDITDTKTIFDCSWFRHMTBDGHAEAELAADAEAELAAEAEAELAADAEAEAEADAEAEAEAEWPNNADST",
@@ -24,7 +28,7 @@ const SPARROW_UPPER_FRAMES: &[&str] = &[
 
 const SCRATCH: usize = 4096;
 
-/// 类型名匹配必须大小写不敏感
+/// Type-name matching must be case-insensitive.
 #[test]
 fn type_tag_lookup_is_case_insensitive() {
     assert_eq!(UrTypeTag::from_name("CRYPTO-PSBT"), UrTypeTag::CryptoPsbt);
@@ -35,11 +39,13 @@ fn type_tag_lookup_is_case_insensitive() {
     assert_eq!(UrTypeTag::from_name("Crypto-Psbt"), UrTypeTag::CryptoPsbt);
 }
 
-/// 真实 Sparrow 帧：解码器必须接受大写帧头，并把类型规范化成小写交给上层
+/// Real Sparrow frames: the decoder must accept an uppercase frame header and
+/// normalize the type to lowercase for upper layers.
 ///
-/// 便利构造 `UrMultipartDecoder::new()` 只在 alloc 面存在（它内部 leak 一套
-/// 自己的 workspace）；设备面走的是调用方 workspace 那条路，由下面的
-/// `device_ffi_path_…` 覆盖——两个面都要有钉，但钉子不能跨面编译。
+/// The convenience constructor `UrMultipartDecoder::new()` exists only on the alloc
+/// surface (it leaks its own workspace internally); the device surface goes through the
+/// caller-workspace path, covered by `device_ffi_path_…` below -- both surfaces need a
+/// pin, but the pins cannot compile across surfaces.
 #[cfg(feature = "alloc-fallback")]
 #[test]
 fn sparrow_uppercase_frames_decode_to_crypto_psbt() {
@@ -52,26 +58,37 @@ fn sparrow_uppercase_frames_decode_to_crypto_psbt() {
             Err(e) => panic!("frame rejected: {e:?}\n  {f}"),
         }
     }
-    assert!(accepted > 0, "至少一帧必须被接收");
-    // 类型串必须是规范化后的小写（C 侧按小写名做分派）
+    assert!(accepted > 0, "at least one frame must be accepted");
+    // The type string must be normalized to lowercase (the C side dispatches on the
+    // lowercase name).
     assert_eq!(dec.ur_type(), Some("crypto-psbt"), "type normalization");
 
-    // 端到端：四个 fountain 帧必须把整条消息重建出来，且载荷是一份 PSBT
-    assert!(dec.complete(), "四个 fountain 帧应足以重建两条分片的消息");
+    // End to end: the four fountain frames must rebuild the whole message, and the
+    // payload must be a PSBT.
+    assert!(
+        dec.complete(),
+        "four fountain frames should rebuild the two-fragment message"
+    );
     let mut out = [0u8; 8192];
     let n = dec
         .payload_into(&mut out)
         .expect("payload_into")
         .expect("complete payload");
-    assert!(n > 100, "PSBT 载荷长度异常: {n}");
-    assert_eq!(&out[..5], b"psbt\xff", "载荷不是 PSBT（魔数不符）");
+    assert!(n > 100, "unexpected PSBT payload length: {n}");
+    assert_eq!(
+        &out[..5],
+        b"psbt\xff",
+        "payload is not a PSBT (magic mismatch)"
+    );
 }
 
-/// 设备同款路径（C 侧真正调的那串 FFI + 调用方 workspace）：
-/// 把视频里解出的全部帧逐条喂进去，任何一帧被拒都必须报出返回码。
-/// 这条钉存在的理由：2026-11-04 真机报 `scan failed / code not recognized`，
-/// 而同一批帧走 `UrMultipartDecoder::new()` 的测试路径是绿的——测试路径与
-/// 设备路径（caller-workspace carve）不是同一条，必须分开钉。
+/// Device-equivalent path (the exact FFI sequence the C side calls, with a caller
+/// workspace): feed every frame decoded from the recording one by one; any rejected
+/// frame must surface its return code.
+/// Why this pin exists: the 2026-11-04 device run reported
+/// `scan failed / code not recognized` while the same frames were green through the
+/// `UrMultipartDecoder::new()` test path -- the test path and the device path
+/// (caller-workspace carve) are not the same, so they must be pinned separately.
 #[test]
 fn device_ffi_path_accepts_every_sparrow_frame() {
     use core::ffi::c_uint;
@@ -80,7 +97,11 @@ fn device_ffi_path_accepts_every_sparrow_frame() {
 
     let all = include_str!("../tests/fixtures/sparrow_frames.txt");
     let frames: Vec<&str> = all.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert!(frames.len() >= 20, "夹具帧数异常: {}", frames.len());
+    assert!(
+        frames.len() >= 20,
+        "unexpected fixture frame count: {}",
+        frames.len()
+    );
 
     let ws_need = shlosilo::ur::ur_multipart::ur_decode_ws_len();
     let mut ws = vec![0u8; ws_need];
@@ -95,7 +116,7 @@ fn device_ffi_path_accepts_every_sparrow_frame() {
         assert_eq!(
             rc,
             0,
-            "帧 #{} 被拒 rc={} len={} seq段={}",
+            "frame #{} rejected rc={} len={} seq={}",
             i,
             rc,
             f.len(),
@@ -103,11 +124,11 @@ fn device_ffi_path_accepts_every_sparrow_frame() {
         );
         accepted_total += accepted;
     }
-    assert!(accepted_total > 0, "没有任何一帧带来新信息");
+    assert!(accepted_total > 0, "no frame carried new information");
     assert_eq!(
         c_abi::r3::shlosilo_ur_decode_complete(dec),
         1,
-        "帧齐了仍未 complete"
+        "all frames received but still not complete"
     );
 
     let mut tlen: c_uint = 0;
@@ -117,7 +138,7 @@ fn device_ffi_path_accepts_every_sparrow_frame() {
         0
     );
     let t = core::str::from_utf8(&ty[..(tlen as usize).saturating_sub(1)]).unwrap();
-    assert_eq!(t, "crypto-psbt", "类型应为规范化后的小写");
+    assert_eq!(t, "crypto-psbt", "type should be normalized to lowercase");
 
     c_abi::r3::shlosilo_ur_decode_free(dec);
 }

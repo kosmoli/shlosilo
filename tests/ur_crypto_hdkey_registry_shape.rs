@@ -1,39 +1,43 @@
-//! crypto-hdkey / crypto-account registry 形状钉（BCR-2020-006）
+//! crypto-hdkey / crypto-account registry shape pins (BCR-2020-006)
 //!
-//! ## 为什么需要这个文件
+//! ## Why this file exists
 //!
-//! keystone 生态的钱包（MetaMask / Sparrow / BlueWallet / Nunchuk 都走
-//! `@keystonehq/keystone-sdk`）解析 `crypto-hdkey` 时**强制要求** keypath 携带
-//! `source_fingerprint`：`keystone-sdk-web/src/wallet/hdKey.ts` 在
-//! `getOrigin().getSourceFingerprint() === undefined` 时直接
-//! `throw new Error("HDKey is invalid")`。缺这个字段 = 配对整条腿死掉，
-//! 且我方自测（只用自家 decoder 的 round-trip）**看不见**——两个方向一起错就恒绿。
+//! Wallets in the keystone ecosystem (MetaMask / Sparrow / BlueWallet / Nunchuk all go
+//! through `@keystonehq/keystone-sdk`) **require** the keypath to carry
+//! `source_fingerprint` when parsing `crypto-hdkey`:
+//! `keystone-sdk-web/src/wallet/hdKey.ts` does `throw new Error("HDKey is invalid")`
+//! when `getOrigin().getSourceFingerprint() === undefined`. A missing field kills the
+//! whole pairing leg, and our own tests (round-trip through our decoder only) **cannot
+//! see it** -- when encode and decode are wrong the same way, the test stays green.
 //!
-//! ## oracle 来源（外部权威，非自证）
+//! ## Oracle sources (external authority, not self-referential)
 //!
-//! `ur-registry` 1.0.9（keystone 固件 `Cargo.toml` 钉的同一 crate 版本）：
-//! - `src/crypto_hd_key.rs:15-24`    map keys：1 is_master / 2 is_private /
+//! `ur-registry` 1.0.9 (the same crate version pinned in the keystone firmware
+//! `Cargo.toml`):
+//! - `src/crypto_hd_key.rs:15-24`    map keys: 1 is_master / 2 is_private /
 //!   3 key / 4 chain_code / 5 use_info(tag 305) / 6 origin(tag 304) /
 //!   7 children(tag 304) / 8 parent_fingerprint
-//! - `src/crypto_key_path.rs:13-15`  keypath keys：1 components /
+//! - `src/crypto_key_path.rs:13-15`  keypath keys: 1 components /
 //!   **2 source_fingerprint** / 3 depth
-//! - `src/crypto_key_path.rs:313`    金标向量：
+//! - `src/crypto_key_path.rs:313`    golden vector:
 //!   `a3018a182cf51876f500f500f480f4021a782308040305`
-//!   → `{1: [44',true,118',true,0',true,0,f,<empty-array>,f], 2: 0x78230804, 3: 5}`
-//!   （components 是**扁平** `[idx, hardened, ...]`；通配符 `*` 编码成**空数组** 0x80）
-//! - `src/crypto_account.rs`         map：1 master_fingerprint / 2 [crypto-output]
-//! - `src/crypto_output.rs`          crypto-output **没有 map 外壳**：先若干
-//!   script-expression tag（400 p2sh / 403 pkh / 404 wpkh / 409 tr），再 tag(303) + hdkey
+//!   -> `{1: [44',true,118',true,0',true,0,f,<empty-array>,f], 2: 0x78230804, 3: 5}`
+//!   (components are **flat** `[idx, hardened, ...]`; the `*` wildcard encodes as an
+//!   **empty array** 0x80)
+//! - `src/crypto_account.rs`         map: 1 master_fingerprint / 2 [crypto-output]
+//! - `src/crypto_output.rs`          crypto-output has **no map shell**: a number of
+//!   script-expression tags (400 p2sh / 403 pkh / 404 wpkh / 409 tr), then tag(303) + hdkey
 //!
-//! 本文件里的 CBOR 走查器**刻意不用** `forms::encoding::cbor`：形状钉必须由一个
-//! 与实现无关的解析器判读，否则实现读错字段时钉跟着一起读错。
+//! The CBOR walker in this file **deliberately avoids** `forms::encoding::cbor`: a shape
+//! pin must be judged by a parser independent of the implementation, otherwise a field
+//! misread in the implementation makes the pin misread it the same way.
 
 use shlosilo::derivation::bip32_secp256k1::{master_fingerprint_from_seed, xpub_from_seed};
 use shlosilo::derivation::path::DerivationPath;
 use shlosilo::ur::codec::crypto_hd_key;
 use shlosilo::ur::ur_decode;
 
-// ───────────────────────── 独立 CBOR 走查器（测试侧） ─────────────────────────
+// ------------------------- standalone CBOR walker (test side) -------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 enum Cbor {
@@ -132,7 +136,7 @@ impl<'a> Reader<'a> {
 fn parse(bytes: &[u8]) -> Cbor {
     let mut r = Reader::new(bytes);
     let v = r.item();
-    assert_eq!(r.i, bytes.len(), "CBOR 有尾部残留字节（形状不符）");
+    assert_eq!(r.i, bytes.len(), "CBOR has trailing bytes (shape mismatch)");
     v
 }
 
@@ -183,7 +187,7 @@ fn map_keys(m: &Cbor) -> Vec<u64> {
         .collect()
 }
 
-// ───────────────────────── 夹具 ─────────────────────────
+// ------------------------- fixtures -------------------------
 
 fn from_hex(s: &str) -> Vec<u8> {
     assert!(s.len().is_multiple_of(2));
@@ -192,11 +196,13 @@ fn from_hex(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// 走查器自检：用 `ur-registry` 1.0.9 官方测试向量校验本文件的 CBOR 解析器。
+/// Walker self-check: validate this file's CBOR parser against the official
+/// `ur-registry` 1.0.9 test vector.
 ///
-/// 没有这一钉时，「我方实现 + 我方走查器」有可能是同一个错误的两次表达。
-/// 向量来源：`ur-registry-1.0.9/src/crypto_key_path.rs` 的 `test_encode`，
-/// 语义 = `m/44'/118'/0'/0/*` + source_fingerprint 0x78230804 + depth 5。
+/// Without this pin, "our implementation + our walker" could be the same mistake
+/// expressed twice.
+/// Vector source: `test_encode` in `ur-registry-1.0.9/src/crypto_key_path.rs`,
+/// semantics = `m/44'/118'/0'/0/*` + source_fingerprint 0x78230804 + depth 5.
 #[test]
 fn walker_agrees_with_registry_golden_vector() {
     let bytes = from_hex("a3018a182cf51876f500f500f480f4021a782308040305");
@@ -238,12 +244,12 @@ fn payload_of(uri: &str) -> Vec<u8> {
     d.as_ref().to_vec()
 }
 
-// ───────────────────────── 形状钉 ─────────────────────────
+// ------------------------- shape pins -------------------------
 
-/// W0-2 缺陷钉：origin keypath 必须携带 source_fingerprint（field 2）。
+/// W0-2 defect pin: the origin keypath must carry source_fingerprint (field 2).
 ///
-/// 现行实现只写 field 1(components) 与 field 3(depth) → keystone SDK
-/// `parseHDKey` 抛 "HDKey is invalid" → 配对不可用。
+/// Writing only field 1 (components) and field 3 (depth) makes the keystone SDK
+/// `parseHDKey` throw "HDKey is invalid", so pairing is unusable.
 #[test]
 fn crypto_hdkey_origin_carries_source_fingerprint() {
     let (mfp, xpub, path) = fixture(84);
@@ -253,18 +259,18 @@ fn crypto_hdkey_origin_carries_source_fingerprint() {
 
     let origin = untag(&map_get(&top, 6).expect("key 6 origin missing"), 304);
     let sfp = map_get(&origin, 2).expect(
-        "PINNED: crypto-keypath 缺 field 2 (source_fingerprint) —— \
-         keystone SDK parseHDKey 会 throw \"HDKey is invalid\"",
+        "PINNED: crypto-keypath is missing field 2 (source_fingerprint) -- \
+         keystone SDK parseHDKey throws \"HDKey is invalid\"",
     );
     assert_eq!(
         as_uint(&sfp),
         u64::from(u32::from_be_bytes(mfp)),
-        "source_fingerprint 必须是本机 master fingerprint"
+        "source_fingerprint must be our master fingerprint"
     );
 
-    // depth = 路径层数（field 3）
+    // depth = number of path levels (field 3)
     assert_eq!(as_uint(&map_get(&origin, 3).expect("depth")), 3);
-    // components 扁平数组：84'/0'/0' → [84,true,0,true,0,true]
+    // components are a flat array: 84'/0'/0' -> [84,true,0,true,0,true]
     let comps = map_get(&origin, 1).expect("components");
     assert_eq!(
         comps,
@@ -279,12 +285,12 @@ fn crypto_hdkey_origin_carries_source_fingerprint() {
     );
 }
 
-/// crypto-account (311)：keystone 生态 BTC 配对的入口形状。
+/// crypto-account (311): the entry shape for BTC pairing in the keystone ecosystem.
 ///
-/// 形状来自 `ur-registry` 1.0.9：`crypto_account.rs` = map{1: mfp,
-/// 2: [crypto-output]}；每个 crypto-output **无 map 外壳**，先是若干
-/// script-expression tag（400 p2sh / 403 pkh / 404 wpkh / 409 tr），
-/// 再 tag(303) + crypto-hdkey。
+/// Shape taken from `ur-registry` 1.0.9: `crypto_account.rs` = map{1: mfp,
+/// 2: [crypto-output]}; each crypto-output has **no map shell** -- first a number of
+/// script-expression tags (400 p2sh / 403 pkh / 404 wpkh / 409 tr),
+/// then tag(303) + crypto-hdkey.
 #[test]
 fn crypto_account_shape_matches_registry() {
     use shlosilo::ur::codec::crypto_account::{self, AccountOutput};
@@ -335,11 +341,11 @@ fn crypto_account_shape_matches_registry() {
         u64::from(u32::from_be_bytes(mfp))
     );
     let Cbor::Array(items) = map_get(&top, 2).expect("outputs") else {
-        panic!("field 2 必须是数组");
+        panic!("field 2 must be an array");
     };
     assert_eq!(items.len(), 4);
 
-    // 每个 output 的 tag 序列 + 内嵌 hdkey 的 origin 路径
+    // Tag sequence of each output plus the origin path of the embedded hdkey.
     let expect: [(&[u64], &str); 4] = [
         (&[403], "m/44'/0'/0'"),
         (&[400, 404], "m/49'/0'/0'"),
@@ -347,7 +353,7 @@ fn crypto_account_shape_matches_registry() {
         (&[409], "m/86'/0'/0'"),
     ];
     for (item, (tags, path)) in items.iter().zip(expect.iter()) {
-        // 剥掉 script-expression tag，最后一个是 tag(303) hdkey
+        // Strip the script-expression tags; the last one is the tag(303) hdkey.
         let mut cur = item.clone();
         let mut seen = Vec::new();
         loop {
@@ -363,12 +369,16 @@ fn crypto_account_shape_matches_registry() {
                 other => panic!("unexpected crypto-output tail {other:?}"),
             }
         }
-        assert_eq!(seen, tags.to_vec(), "script expression tag 序列不符");
-        // hdkey 必须带 origin（源指纹 + 路径）与 children
+        assert_eq!(
+            seen,
+            tags.to_vec(),
+            "script expression tag sequence mismatch"
+        );
+        // The hdkey must carry origin (source fingerprint + path) and children.
         let origin = untag(&map_get(&cur, 6).expect("origin"), 304);
         assert!(
             map_get(&origin, 2).is_some(),
-            "crypto-output 里的 hdkey 同样必须带 source_fingerprint"
+            "the hdkey inside crypto-output must carry source_fingerprint too"
         );
         let comps = map_get(&origin, 1).expect("components");
         let want = DerivationPath::parse(path).expect("path");
@@ -377,12 +387,12 @@ fn crypto_account_shape_matches_registry() {
             flat.push(Cbor::Uint(u64::from(c.value())));
             flat.push(Cbor::Bool(c.is_hardened()));
         }
-        assert_eq!(comps, Cbor::Array(flat), "{path} 的 components 不符");
-        assert!(map_get(&cur, 7).is_some(), "children 缺失");
+        assert_eq!(comps, Cbor::Array(flat), "components mismatch for {path}");
+        assert!(map_get(&cur, 7).is_some(), "children missing");
     }
 }
 
-/// 扩展键的完整字段面（keystone 实际发出的形状）。
+/// Full field set of an extended key (the shape the keystone ecosystem actually emits).
 #[test]
 fn crypto_hdkey_extended_shape_matches_registry() {
     let (mfp, xpub, path) = fixture(84);
@@ -390,13 +400,16 @@ fn crypto_hdkey_extended_shape_matches_registry() {
     let payload = payload_of(enc.as_str());
     let top = parse(&payload);
 
-    // 1 is_master：扩展键不发（只有 master key 才发 true）
+    // 1 is_master: not emitted for extended keys (only the master key emits true)
     assert!(
         map_get(&top, 1).is_none(),
-        "扩展键不应写 is_master —— keystone/registry 只在 master key 分支写 field 1"
+        "extended keys must not write is_master -- keystone/registry writes field 1 only on the master-key branch"
     );
-    // 2 is_private：公钥导出必须不发（否则钱包当私钥处理）
-    assert!(map_get(&top, 2).is_none(), "公钥导出不得携带 is_private");
+    // 2 is_private: must not be emitted for public-key export (wallets would treat it as a private key)
+    assert!(
+        map_get(&top, 2).is_none(),
+        "public-key export must not carry is_private"
+    );
     // 3 key / 4 chain_code / 8 parent_fingerprint
     assert_eq!(as_bytes(&map_get(&top, 3).expect("key")), &xpub[45..78]);
     assert_eq!(
@@ -407,11 +420,11 @@ fn crypto_hdkey_extended_shape_matches_registry() {
         as_uint(&map_get(&top, 8).expect("parent_fingerprint")),
         u64::from(u32::from_be_bytes([xpub[5], xpub[6], xpub[7], xpub[8]]))
     );
-    // 5 use_info：tag 305 {1: coin_type 0 (BTC), 2: network 0 (mainnet)}
+    // 5 use_info: tag 305 {1: coin_type 0 (BTC), 2: network 0 (mainnet)}
     let coin_info = untag(&map_get(&top, 5).expect("use_info missing"), 305);
     assert_eq!(as_uint(&map_get(&coin_info, 1).expect("coin_type")), 0);
     assert_eq!(as_uint(&map_get(&coin_info, 2).expect("network")), 0);
-    // 7 children：0/* → [0,false] + [wildcard 空数组,false]
+    // 7 children: 0/* -> [0,false] + [wildcard empty array,false]
     let children = untag(&map_get(&top, 7).expect("children missing"), 304);
     let ccomps = map_get(&children, 1).expect("children components");
     assert_eq!(
@@ -422,10 +435,10 @@ fn crypto_hdkey_extended_shape_matches_registry() {
             Cbor::Array(vec![]),
             Cbor::Bool(false),
         ]),
-        "children 必须编码成 0/*（通配符=空数组）"
+        "children must encode as 0/* (wildcard = empty array)"
     );
 
-    // 字段集合收敛断言：多写少写都要红
+    // Field-set convergence assertion: any extra or missing field fails.
     let mut keys = map_keys(&top);
     keys.sort_unstable();
     assert_eq!(keys, vec![3, 4, 5, 6, 7, 8]);

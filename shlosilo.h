@@ -1524,7 +1524,7 @@ int shlosilo_ki_store_merge_ffi(struct WalletKiRecord *store,
 void shlosilo_ur_decode_free(struct UrMultipartDecoder *handle);
 
 /**
- * Fixed failure-vocabulary lookups (拆码 red line, pool #57): return the
+ * Fixed failure-vocabulary lookups (split-code red line, pool #57): return the
  * static NUL-terminated display text for a C-ABI error code. Pure value
  * in, `'static` pointer out — no allocation, no caller buffer.
  *
