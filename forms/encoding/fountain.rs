@@ -442,7 +442,7 @@ impl<'a> FountainEncoder<'a> {
         self.make_part(self.current_sequence)
     }
 
-    /// XMR cyclic mode (aligned with keystone: after seq reaches count it loops back to 1, so software wallets can ca
+    /// XMR cyclic mode (aligned with keystone: after seq reaches count it loops back to 1, so software wallets can catch up)
     pub fn next_cyclic_part(&mut self) -> Result<Part, FountainError> {
         if self.current_sequence == self.fragment_count {
             self.current_sequence = 1;
@@ -475,8 +475,8 @@ pub(crate) enum FountainError {
 pub(crate) const MAX_SEQUENCE_COUNT: usize = 256;
 
 /// Gate4 #4 (re-reviewed 2026-09-01): total received-frame budget per session.
-/// BC-UR allows unlimited redundant frames, but decoder resources must be finite: received (buffer/queue share the
-/// are all gated on the received set; sessions beyond this cap are treated as abnormal/attacks and fail with a sta
+/// BC-UR allows unlimited redundant frames, but decoder resources must be finite: received (buffer/queue share the same origin)
+/// are all gated on the received set; sessions beyond this cap are treated as abnormal/attacks and fail with a stable error.
 pub(crate) const MAX_TOTAL_FRAMES: usize = 4096;
 
 /// Audit #5 P1-01 (open-02): elimination work budget — cumulative XOR byte cap.
