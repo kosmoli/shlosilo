@@ -44,8 +44,7 @@ void UiSignInfo(const char *line1, const char *line2, const char *line3);
  * content itself. `wire` advances the page and confirms on the last one;
  * `home` cancels (and zeroizes the session). Set the lines before
  * UiGotoPage(UI_PAGE_REVIEW); calling it while on the review page repaints. */
-void UiReviewShow(const char *l1, const char *l2, const char *l3,
-                  const char *l4, const char *foot);
+void UiReviewShow(const char *const *lines, unsigned count, const char *foot);
 void UiSetLast(const char *text);
 
 /* Seed-plate import confirmation (Task 5b). Set the lines before

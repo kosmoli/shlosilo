@@ -1148,6 +1148,20 @@ int32_t shlosilo_gencache_provide_table(int32_t set,
                                         uint32_t *blob_bytes);
 
 /**
+ * Master fingerprint of a live key session (BIP-32 fingerprint of the master
+ * public key, 4 bytes).
+ *
+ * The review gate uses it to recognise the change output; without it every
+ * output renders as a payment and the operator cannot tell spend from change
+ * (first real-device review, 2026-11-05: both outputs labelled `to:`).
+ *
+ * Contract: `session` is a flux-constructed handle; `out_len` must be >= 4.
+ */
+int shlosilo_key_session_fingerprint(const struct KeySession *session,
+                                     uint8_t *out,
+                                     unsigned int out_len);
+
+/**
  * Required review workspace size (arena + records + alignment slack).
  */
 unsigned int shlosilo_review_ws_len(void);

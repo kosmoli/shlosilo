@@ -42,29 +42,35 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
     .expect("review builds for the Sparrow fixture");
 
     let l = lines(&view);
-    assert_eq!(l[0], "btc send request", "lines = {l:?}");
-    assert_eq!(l[1], "in 1 / out 2", "lines = {l:?}");
+    assert_eq!(l[0], "in 1 / out 2", "lines = {l:?}");
     // 夹具 oracle（tests/p63_btc_psbt.rs 注释）：1 输入 651157 sat，
     // 输出 1000 + 650087 sat → fee 70 sat
-    assert_eq!(l[2], "fee 70 sats", "lines = {l:?}");
+    assert_eq!(l[1], "fee 70 sats", "lines = {l:?}");
+    // 真机首测的排版教训（2026-11-05）：每行都要自解释——金额带单位、
+    // 一页放得下，不许出现裸数字或与页标题重复的抬头行。
+    assert_eq!(l.len(), 6, "1 输入 2 输出应压到 6 行（一页）: {l:?}");
+    assert!(l.iter().any(|s| s == "send 1000 sats"), "lines = {l:?}");
     // 输出地址来自 Bitcoin Core 编码规则（P2WPKH on tb1）
-    // 形态：一行 `to:` 标签 + 下一行地址本身（地址长于 48 字符时再续行）
-    let label_idx: Vec<usize> = l
+    // 形态：`send <amount> sats` 一行 + 下一行地址（长地址再续行）
+    let send_rows: Vec<usize> = l
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.as_str() == "to:")
+        .filter(|(_, s)| s.starts_with("send "))
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(label_idx.len(), 2, "两个输出都应是外部收款: {l:?}");
-    for i in label_idx {
+    assert_eq!(send_rows.len(), 2, "两个输出都应是外部收款: {l:?}");
+    for i in send_rows {
         let addr = &l[i + 1];
         assert!(
             addr.starts_with("tb1q") && addr.len() >= 42,
             "收款地址没有被渲染出来: {addr}"
         );
     }
-    // 金额行
-    assert!(l.iter().any(|s| s.trim() == "1000"), "lines = {l:?}");
+    // 金额与单位同在一行（不再出现裸数字行）
+    assert!(
+        l.iter().all(|s| s.trim().parse::<u64>().is_err()),
+        "不许出现无单位的裸金额行: {l:?}"
+    );
 
     // 该夹具的输入 nSequence 为 RBF 信号（Sparrow 默认开启）
     assert!(
@@ -108,7 +114,7 @@ fn btc_unknown_output_script_degrades_to_fixed_words() {
 
     let l = lines(&view);
     assert!(
-        l.iter().any(|s| s == "to: unknown script"),
+        l.iter().any(|s| s == "address unknown"),
         "OP_RETURN 输出应降级成固定词: {l:?}"
     );
     assert!(
@@ -252,7 +258,7 @@ fn review_ffi_packs_lines_and_meta() {
     let blob = &lines[..used as usize];
     let parts: Vec<&[u8]> = blob.split(|b| *b == 0).filter(|s| !s.is_empty()).collect();
     assert_eq!(parts.len(), count as usize, "行数与 blob 不符");
-    assert_eq!(&parts[0], b"btc send request");
+    assert_eq!(&parts[0], b"in 1 / out 2");
     assert_eq!(in_out >> 16, 1, "输入数");
     assert_eq!(in_out & 0xffff, 2, "输出数");
     assert!(flags & u32::from(flag::RBF) != 0, "flags 应带 RBF");
@@ -327,8 +333,7 @@ fn network_follows_the_psbt_coin_type_not_the_caller() {
     let l = lines(&view);
     let addr = l
         .iter()
-        .skip_while(|s| s.as_str() != "to:")
-        .nth(1)
+        .find(|s| s.starts_with("tb1") || s.starts_with("bc1"))
         .expect("address line");
     assert!(
         addr.starts_with("tb1q"),

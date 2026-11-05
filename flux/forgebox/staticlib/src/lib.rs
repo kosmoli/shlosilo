@@ -166,6 +166,7 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_pairing_failure_hint as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_gencache_table_sizes as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_gencache_provide_table as *const ()),
+    Addr(shlosilo::ffi::c_abi::shlosilo_key_session_fingerprint as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_review_ws_len as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_review_ffi as *const ()),
     Addr(shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_set_clock as *const ()),

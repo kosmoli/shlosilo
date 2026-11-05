@@ -1753,7 +1753,7 @@ int ProductSignFixtureArm(void)
  * FFI error) the request is NOT signed. A refused signature costs a retry; a
  * blind one costs the funds. */
 
-#define REVIEW_PAGE_LINES 4u
+#define REVIEW_PAGE_LINES 12u
 
 /* Non-zero for the request types we can summarize into an operator-readable
  * review. Everything else (XMR legs, unknown types) bypasses the gate. */
@@ -1778,22 +1778,24 @@ static const char *review_line(unsigned idx)
 
 static void review_render(void)
 {
-    char l[REVIEW_PAGE_LINES][48];
+    static char l[REVIEW_PAGE_LINES][48];
     char foot[48];
     unsigned first = g_review_page * REVIEW_PAGE_LINES;
     unsigned k;
+    unsigned n = 0;
     int last = (g_review_page + 1u >= g_review_pages);
 
     for (k = 0; k < REVIEW_PAGE_LINES; k++) {
         unsigned idx = first + k;
-        l[k][0] = '\0';
-        if (idx < g_review_count) {
-            snprintf(l[k], sizeof(l[k]), "%s", review_line(idx));
+        if (idx >= g_review_count) {
+            break;
         }
+        snprintf(l[k], sizeof(l[k]), "%s", review_line(idx));
+        n++;
     }
     snprintf(foot, sizeof(foot), "%u/%u  wire: %s", g_review_page + 1u,
              g_review_pages, last ? "sign" : "next");
-    UiReviewShow(l[0], l[1], l[2], l[3], foot);
+    UiReviewShow((const char *const *)l, n, foot);
 }
 
 /* 1 = operator confirmed (sign now), 0 = drop the request. */
@@ -1816,10 +1818,21 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
     }
     /* network 0 is a placeholder: the coin type inside the PSBT decides the address
      * prefix (see business::review::infer_network). */
-    rc = shlosilo_review_ffi(type, payload, plen, 0, NULL,
-                             g_review_ws, ws_need,
-                             (uint8_t *)g_review_lines, sizeof(g_review_lines),
-                             &used, &count, &flags, &in_out);
+    {
+        /* Our own master fingerprint lets the review mark the change output
+         * instead of pretending every output is a payment. Derived from the
+         * live key session; absent session -> NULL (no marking, still safe). */
+        uint8_t fp[4];
+        const uint8_t *fp_ptr = NULL;
+        if (g_key_session != NULL &&
+            shlosilo_key_session_fingerprint(g_key_session, fp, sizeof(fp)) == 0) {
+            fp_ptr = fp;
+        }
+        rc = shlosilo_review_ffi(type, payload, plen, 0, fp_ptr,
+                                 g_review_ws, ws_need,
+                                 (uint8_t *)g_review_lines, sizeof(g_review_lines),
+                                 &used, &count, &flags, &in_out);
+    }
     ExtFree(g_review_ws);
     g_review_ws = NULL;
     if (rc != 0 || count == 0) {

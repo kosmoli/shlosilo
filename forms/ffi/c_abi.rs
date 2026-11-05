@@ -2633,6 +2633,41 @@ pub unsafe extern "C" fn shlosilo_gencache_provide_table(
     OK
 }
 
+/// Master fingerprint of a live key session (BIP-32 fingerprint of the master
+/// public key, 4 bytes).
+///
+/// The review gate uses it to recognise the change output; without it every
+/// output renders as a payment and the operator cannot tell spend from change
+/// (first real-device review, 2026-11-05: both outputs labelled `to:`).
+///
+/// Contract: `session` is a flux-constructed handle; `out_len` must be >= 4.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn shlosilo_key_session_fingerprint(
+    session: *const crate::types::key_session::KeySession,
+    out: *mut u8,
+    out_len: c_uint,
+) -> c_int {
+    if session.is_null() || out.is_null() {
+        return ERR_NULL_POINTER;
+    }
+    if (out_len as usize) < 4 {
+        return ERR_BUFFER_TOO_SMALL;
+    }
+    let result = ffi_catch_unwind!(|| -> Result<[u8; 4], ShlosiloError> {
+        let s = unsafe { &*session };
+        crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(&s.seed().expose()[..])
+    });
+    match result {
+        Ok(Ok(fp)) => {
+            unsafe { core::ptr::copy_nonoverlapping(fp.as_ptr(), out, 4) };
+            OK
+        }
+        Ok(Err(e)) => to_ffi_code(&e),
+        Err(_) => ERR_PANIC,
+    }
+}
+
 /// Review workspace: the PSBT map pools the review parse writes into.
 pub const REVIEW_WS_ARENA: usize = 16 * 1024;
 pub const REVIEW_WS_RECS: usize = 128;

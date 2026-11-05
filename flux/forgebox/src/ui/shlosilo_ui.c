@@ -87,11 +87,10 @@ static uint8_t g_scan_progress;
 
 /* Sign page summary lines (set via UiSignInfo before the page is shown). */
 static char g_sign_l1[LIVE_LINE_BYTES] = "";
-/* Review page (W0-1): four body lines + footer (page indicator / wire action). */
-static char g_rv_l1[LIVE_LINE_BYTES] = "";
-static char g_rv_l2[LIVE_LINE_BYTES] = "";
-static char g_rv_l3[LIVE_LINE_BYTES] = "";
-static char g_rv_l4[LIVE_LINE_BYTES] = "";
+/* Review page (W0-1): up to UI_RV_LINES body lines + footer (page indicator
+ * and what `wire` does here). Sized by the layout so the draw loop can walk it. */
+static char g_rv_lines[UI_RV_LINES][LIVE_LINE_BYTES];
+static unsigned g_rv_line_count;
 static char g_rv_foot[LIVE_LINE_BYTES] = "";
 static char g_sign_l2[LIVE_LINE_BYTES] = "";
 static char g_sign_l3[LIVE_LINE_BYTES] = "";
@@ -570,10 +569,12 @@ static void draw_page(void)
          * re-encoded addresses/amounts from the forms review view — the UI
          * layer never formats payload content itself (injection surface). */
         draw_text_center(UI_RV_TITLE_Y, "review", UI_RV_TITLE_SCALE);
-        draw_text_center(UI_RV_L1_Y, g_rv_l1, UI_RV_LINE_SCALE);
-        draw_text_center(UI_RV_L2_Y, g_rv_l2, UI_RV_LINE_SCALE);
-        draw_text_center(UI_RV_L3_Y, g_rv_l3, UI_RV_LINE_SCALE);
-        draw_text_center(UI_RV_L4_Y, g_rv_l4, UI_RV_LINE_SCALE);
+        for (unsigned rv_i = 0; rv_i < g_rv_line_count && rv_i < UI_RV_LINES; rv_i++) {
+            if (g_rv_lines[rv_i][0] != '\0') {
+                draw_text_center(UI_RV_BODY_Y0 + (int)rv_i * UI_RV_LINE_PITCH,
+                                 g_rv_lines[rv_i], UI_RV_LINE_SCALE);
+            }
+        }
         draw_text_center(UI_RV_FOOT_Y, g_rv_foot, 1);
         break;
 
@@ -1006,13 +1007,15 @@ void UiSignInfo(const char *line1, const char *line2, const char *line3)
     }
 }
 
-void UiReviewShow(const char *l1, const char *l2, const char *l3,
-                  const char *l4, const char *foot)
+void UiReviewShow(const char *const *lines, unsigned count, const char *foot)
 {
-    snprintf(g_rv_l1, sizeof(g_rv_l1), "%s", l1 ? l1 : "");
-    snprintf(g_rv_l2, sizeof(g_rv_l2), "%s", l2 ? l2 : "");
-    snprintf(g_rv_l3, sizeof(g_rv_l3), "%s", l3 ? l3 : "");
-    snprintf(g_rv_l4, sizeof(g_rv_l4), "%s", l4 ? l4 : "");
+    unsigned rv_n = (count > UI_RV_LINES) ? UI_RV_LINES : count;
+
+    for (unsigned rv_i = 0; rv_i < rv_n; rv_i++) {
+        snprintf(g_rv_lines[rv_i], sizeof(g_rv_lines[rv_i]), "%s",
+                 (lines != NULL && lines[rv_i] != NULL) ? lines[rv_i] : "");
+    }
+    g_rv_line_count = rv_n;
     snprintf(g_rv_foot, sizeof(g_rv_foot), "%s", foot ? foot : "");
     if (g_page == UI_PAGE_REVIEW && g_fb != NULL && g_band != NULL) {
         draw_page();

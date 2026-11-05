@@ -241,21 +241,21 @@ fn summarize_psbt(
             (Some(ours), Some(map)) => map_carries_our_fingerprint(map, ours),
             _ => false,
         };
+        // One labelled row per output: the amount carries its unit and the
+        // role (send / change) so a page never shows a bare number, and the
+        // address follows on its own line (wrapped, never truncated).
+        view.push_fmt(format_args!(
+            "{} {} sats",
+            if is_change { "change" } else { "send" },
+            out.value
+        ))?;
         match btc_script::render(spk, network) {
-            Ok(addr) => {
-                if is_change {
-                    view.push_str("change:")?;
-                } else {
-                    view.push_str("to:")?;
-                }
-                view.push_wrapped(<_ as AsRef<str>>::as_ref(&addr))?;
-            }
+            Ok(addr) => view.push_wrapped(<_ as AsRef<str>>::as_ref(&addr))?,
             Err(_) => {
                 view.flags |= flag::UNKNOWN_SCRIPT;
-                view.push_str("to: unknown script")?;
+                view.push_str("address unknown")?;
             }
         }
-        view.push_fmt(format_args!("  {}", out.value))?;
         out_lines_pushed += 2;
     }
     if out_count > REVIEW_OUTPUTS_MAX {
@@ -263,7 +263,7 @@ fn summarize_psbt(
     }
 
     // ── fee + totals (pushed first, so the summary is at the top) ──
-    let mut head: heapless::Vec<Line, 4> = heapless::Vec::new();
+    let mut head: heapless::Vec<Line, 3> = heapless::Vec::new();
     let mut push_head = |args: core::fmt::Arguments<'_>| -> Result<()> {
         use core::fmt::Write;
         let mut text = heapless::String::<REVIEW_LINE_MAX>::new();
@@ -272,7 +272,8 @@ fn summarize_psbt(
         head.push(Line { text })
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))
     };
-    push_head(format_args!("btc send request"))?;
+    // No title line: the page header already says "review"; every body line
+    // must carry information (first real-device layout review, 2026-11-05).
     push_head(format_args!("in {} / out {}", in_count, out_count))?;
     match total_in {
         Some(ti) if ti >= total_out => {

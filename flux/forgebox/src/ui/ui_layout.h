@@ -115,12 +115,14 @@
  * `wire` advances pages and turns into the confirm key on the last page. */
 #define UI_RV_TITLE_Y        40
 #define UI_RV_TITLE_SCALE    3
-#define UI_RV_L1_Y           120
-#define UI_RV_L2_Y           166
-#define UI_RV_L3_Y           212
-#define UI_RV_L4_Y           258
-#define UI_RV_FOOT_Y         330
-#define UI_RV_WARN_Y         400
+/* Body geometry (2026-11-05, first real-device layout review): a 46 px pitch
+ * spread nine short lines over three pages while two thirds of the panel sat
+ * empty. 30 px pitch fits twelve lines (the whole typical BTC review) on one
+ * page; the page indicator moves under the body instead of floating mid-screen. */
+#define UI_RV_BODY_Y0        120
+#define UI_RV_LINE_PITCH     30
+#define UI_RV_LINES          12
+#define UI_RV_FOOT_Y         ((UI_RV_BODY_Y0) + (UI_RV_LINES) * (UI_RV_LINE_PITCH) - 10)
 #define UI_RV_LINE_SCALE     1
 
 #define UI_NG_TITLE_Y        64
