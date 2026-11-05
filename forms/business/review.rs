@@ -265,7 +265,7 @@ fn summarize_psbt(
     }
 
     // ── fee + totals (pushed first, so the summary is at the top) ──
-    let mut head: heapless::Vec<Line, 4> = heapless::Vec::new();
+    let mut head: heapless::Vec<Line, 5> = heapless::Vec::new();
     let mut push_head = |args: core::fmt::Arguments<'_>| -> Result<()> {
         use core::fmt::Write;
         let mut text = heapless::String::<REVIEW_LINE_MAX>::new();
@@ -299,9 +299,14 @@ fn summarize_psbt(
             push_head(format_args!("fee unknown (input value missing)"))?;
         }
     }
-    if rbf {
-        view.flags |= flag::RBF;
-    }
+    // RBF is an OPERATIONAL property, not a security one: it only says the
+    // transaction can still be fee-bumped, which wallets advertise as "speed
+    // up" and therefore enable by default. Warning on it would fire on most
+    // transactions and dilute the warnings that matter (sighash, fee anomalies).
+    // Both states are reported instead, because the notable one is the ABSENCE:
+    // a non-replaceable transaction is locked in — if the fee is too low it
+    // cannot be fixed. The operator decides; we do not label it a risk.
+    view.flags |= if rbf { flag::RBF } else { 0 };
 
     // Locktime is REPORTED, not judged. Bitcoin Core — and therefore Sparrow —
     // stamps every transaction with the current block height (anti-fee-sniping),
@@ -322,6 +327,10 @@ fn summarize_psbt(
             push_head(format_args!("locktime {} {}", lock, domain))?;
         }
     }
+    push_head(format_args!(
+        "replaceable {}",
+        if rbf { "yes" } else { "no" }
+    ))?;
 
     // head -> warnings -> body. The warnings sit directly under the totals so
     // they are never below the fold of a one-page review.
@@ -417,7 +426,7 @@ pub fn locktime_domain(lock_time: u32) -> LocktimeDomain {
 /// a closed vocabulary (ASCII, no payload content): the operator reads "what
 /// kind of risk", not a rendered payload field. Ordering is fixed so the eye
 /// finds the same warning in the same place on every transaction.
-fn warn_lines(flags: u16) -> [Option<&'static str>; 6] {
+fn warn_lines(flags: u16) -> [Option<&'static str>; 5] {
     [
         if flags & flag::SIGHASH_UNSAFE != 0 {
             Some("warn: sighash not all")
@@ -436,11 +445,6 @@ fn warn_lines(flags: u16) -> [Option<&'static str>; 6] {
         },
         if flags & flag::UNKNOWN_CALLDATA != 0 {
             Some("warn: unknown call")
-        } else {
-            None
-        },
-        if flags & flag::RBF != 0 {
-            Some("warn: replaceable")
         } else {
             None
         },

@@ -50,9 +50,14 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
     // 一页放得下，不许出现裸数字或与页标题重复的抬头行。
     // 一页上限 12 行（真机版面），且风险行必须出现在正文之上
     assert!(l.len() <= 12, "必须一页放得下（≤12 行）: {l:?}");
+    // RBF 是操作属性不是风险：显示状态，不出 warn（加速费在现代钱包是常态）
     assert!(
-        l.iter().any(|s| s == "warn: replaceable"),
-        "RBF 输入必须上屏告警: {l:?}"
+        l.iter().any(|s| s == "replaceable yes"),
+        "RBF 状态必须如实上屏（信息行）: {l:?}"
+    );
+    assert!(
+        !l.iter().any(|s| s.starts_with("warn: replaceable")),
+        "RBF 不应是 warn（会稀释真正的风险警告）: {l:?}"
     );
     assert!(
         !l.iter().any(|s| s == "warn: high fee"),
@@ -68,9 +73,10 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
         "夹具是高度型 locktime，域标注应为 height: {lt}"
     );
     // 风险行在正文之前，不许被挤到折叠线以下
-    let first_warn = l.iter().position(|s| s.starts_with("warn:")).unwrap();
     let first_send = l.iter().position(|s| s.starts_with("send ")).unwrap();
-    assert!(first_warn < first_send, "风险行必须在金额行之前: {l:?}");
+    if let Some(first_warn) = l.iter().position(|s| s.starts_with("warn:")) {
+        assert!(first_warn < first_send, "风险行必须在金额行之前: {l:?}");
+    }
     assert!(l.iter().any(|s| s == "send 1000 sats"), "lines = {l:?}");
     // 输出地址来自 Bitcoin Core 编码规则（P2WPKH on tb1）
     // 形态：`send <amount> sats` 一行 + 下一行地址（长地址再续行）
