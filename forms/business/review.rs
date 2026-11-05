@@ -358,7 +358,11 @@ fn infer_network(psbt: &Psbt<'_>) -> Option<Network> {
 /// (a payment), which is the conservative reading for a review screen.
 fn map_carries_our_fingerprint(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> bool {
     for kv in map.iter() {
-        if kv.key.first() == Some(&psbt::input_type::BIP32_DERIVATION)
+        // OUTPUT map: BIP-174 assigns the output-side derivation a different
+        // key byte (0x02) than the input side (0x06). Using the input constant
+        // here silently matched nothing, so change outputs were reported as
+        // payments forever (caught by change_output_is_labelled_…, 2026-11-05).
+        if kv.key.first() == Some(&psbt::output_type::BIP32_DERIVATION)
             && kv.value.len() >= 4
             && kv.value[..4] == ours[..]
         {

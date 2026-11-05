@@ -340,3 +340,32 @@ fn network_follows_the_psbt_coin_type_not_the_caller() {
         "coin type 1 应压过调用方的 mainnet: {addr}"
     );
 }
+
+/// 找零识别：带上本机指纹（夹具的 master fingerprint = f3b9960b，见
+/// tests/p63_btc_psbt.rs 的 BIP32_DERIVATION 注释）时，回到自己钱包的输出
+/// 必须标成 `change`，而不是和付款一样标 `send`。
+/// 这条对应真机首测的语义缺陷（两个输出都显示 `to:`）。
+#[test]
+fn change_output_is_labelled_when_our_fingerprint_is_known() {
+    let mfp = [0xf3u8, 0xb9, 0x96, 0x0b];
+    let mut arena = [0u8; ARENA];
+    let mut recs = [KvRec::EMPTY; RECS];
+    let view = review::build(
+        UrTypeTag::CryptoPsbt,
+        SPARROW_PSBT,
+        Network::BitcoinTestnet,
+        Some(&mfp),
+        &mut arena,
+        &mut recs,
+    )
+    .expect("review builds");
+    let l = lines(&view);
+    assert!(
+        l.iter().any(|s| s.starts_with("change ")),
+        "带本机指纹时必须标出找零: {l:?}"
+    );
+    assert!(
+        l.iter().any(|s| s.starts_with("send ")),
+        "付款输出仍应标 send: {l:?}"
+    );
+}

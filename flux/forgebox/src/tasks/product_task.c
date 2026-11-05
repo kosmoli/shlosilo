@@ -1767,18 +1767,31 @@ static int review_type_gated(const char *type)
 static const char *review_line(unsigned idx)
 {
     const char *p = g_review_lines;
+    const char *end = g_review_lines + sizeof(g_review_lines);
     unsigned n = 0;
 
+    /* Bounded walk: a short or malformed blob must yield an empty line, never a
+     * read past the buffer (the review path runs on the scan task's stack right
+     * after a successful decode — an OOB walk there is a crash, and a crash is
+     * indistinguishable from a bad firmware flash for the operator). */
     while (n < idx) {
+        if (p >= end) {
+            return "";
+        }
         p += strlen(p) + 1;
         n++;
     }
-    return p;
+    return (p < end) ? p : "";
 }
 
 static void review_render(void)
 {
     static char l[REVIEW_PAGE_LINES][48];
+    /* UiReviewShow takes an ARRAY OF POINTERS. Passing the char[12][48] itself
+     * would make the callee reinterpret the first four characters of each row
+     * as an address (2026-11-05: the review page crashed the device the moment
+     * the message completed). Keep the pointers and the storage in sync here. */
+    static const char *lptr[REVIEW_PAGE_LINES];
     char foot[48];
     unsigned first = g_review_page * REVIEW_PAGE_LINES;
     unsigned k;
@@ -1791,11 +1804,12 @@ static void review_render(void)
             break;
         }
         snprintf(l[k], sizeof(l[k]), "%s", review_line(idx));
+        lptr[k] = l[k];
         n++;
     }
     snprintf(foot, sizeof(foot), "%u/%u  wire: %s", g_review_page + 1u,
              g_review_pages, last ? "sign" : "next");
-    UiReviewShow((const char *const *)l, n, foot);
+    UiReviewShow(lptr, n, foot);
 }
 
 /* 1 = operator confirmed (sign now), 0 = drop the request. */
