@@ -1,10 +1,10 @@
 /* shlosilo_smoke_task.c — P6.2c: shlosilo P6.2 smoke on forgebox-helloworld
  *
- * 干净 L3 宿主：无 keystone 业务逻辑，只验证 shlosilo FFI 全链路。
- * LCD 显示（真机无串口）：
- *   顶部   : "shlosilo P6.2"       (标题)
- *   中部   : 每步结果逐行           (PASS/FAIL)
- *   底部   : 签名耗时 ms            (性能基准)
+ * Clean L3 host: no keystone business logic, only the full shlosilo FFI chain.
+ * LCD layout (the device has no serial console):
+ *   top    : "shlosilo P6.2"           (title)
+ *   middle : one line per step result  (PASS/FAIL)
+ *   bottom : signing time in ms        (performance baseline)
  */
 
 #include "shlosilo_smoke_task.h"
@@ -104,7 +104,7 @@ static uint32_t d_alu_chain32(uint32_t iters)
 }
 
 
-/* device-timing 时钟回调：给 Rust 侧的毫秒计数（定义在文件尾） */
+/* device-timing clock callback: millisecond counter for the Rust side (defined at the end of the file) */
 /* xmr_gen_cache_flash.c */
 extern void gc_flash_init(void);
 extern const uint8_t *gc_load(const uint8_t *prefix, uint32_t prefix_len);
@@ -130,8 +130,9 @@ extern unsigned int shlosilo_sram_pool_peak_blocks(void);
  * uint32_t/uint64_t (on arm-none-eabi uint32_t is `unsigned long`). */
 
 static uint32_t smoke_tick_ms(void);
-/* SRAM 栈。XMR/ETH 热路径不能把栈放 PSRAM（QSPI 会把 sign 拖到数秒）。
- * 64KB：ETH 实测 used 35K。生成元改为循环 decompress 后不再需要 512KB。 */
+/* SRAM stack. The XMR/ETH hot paths must not keep their stack in PSRAM (QSPI
+ * stretches a sign into seconds). 64KB: ETH measured 35K used. The generator
+ * switching to loop decompression removed the need for 512KB. */
 /* 160K SRAM stack: the chunked/inline prove paths changed the stack shape
  * (a deep-prove sign fault showed a garbage-PC IBUSERR with smashed frames at
  * ~4s in). 160K fits the 450K SRAM heap. */
@@ -140,16 +141,17 @@ static uint32_t smoke_tick_ms(void);
 LV_FONT_DECLARE(openSansEnTitle);
 LV_FONT_DECLARE(openSansEnText);
 
-/* eth-sign-request fixture（P6.1e 验证过的合法 UR）
- * P1-01（2026-08-26）：payload 从「首字节 tag + raw」私有封装改为真实
- * eth-sign-request CBOR map（ur-registry 形状 {2:sign_data, 3:data_type, 4:chain_id}）。
- * 由库 encode 生成，CRC32 校验通过。*/
+/* eth-sign-request fixture (a valid UR verified in P6.1e)
+ * P1-01 (2026-08-26): the payload changed from the private "first byte tag +
+ * raw" wrapping to a real eth-sign-request CBOR map (ur-registry shape
+ * {2:sign_data, 3:data_type, 4:chain_id}). Produced by the library encoder,
+ * CRC32 verified. */
 static const char *FIXTURE_ETH_SIGN_REQUEST =
     "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmay"
     "mwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxad"
     "aaadrpceaadt";
 
-/* P6.6：idx12 自造 1-input ring16 unsigned_txset UR（host 测过 sign 3458B） */
+/* P6.6: hand-built idx12 1-input ring16 unsigned_txset UR (sign measured at 3458B on the host) */
 static const char *FIXTURE_XMR_TX_UNSIGNED =
     "ur:xmr-txunsigned/gtjljtihjpjlcxkpjtjkiniojtihiecxjykscxjkih"
     "jyahpfgrdenezeqzonlohftibejpleldinsabdjoaohgrpdeiyotdnfxoxfz"
@@ -209,10 +211,12 @@ static const char *FIXTURE_XMR_TX_UNSIGNED =
 
 static lv_obj_t *g_title = NULL;
 static lv_obj_t *g_log   = NULL;
-/* 768→2048：cn 探针 +5 行后文本逼近上限，结尾未加保护的 strcat(ALL PASS)
- * 越界写 .bss 邻居 → crash。2048→4096：perf-bench 行加入后总量超 2K。
- * 4096→6144：实验 D（cpu regs / alu / hot / blk32 共 10 行）再加余量。
- * 6144→8192：实验 E（cyccnt / alu diff / cyc×4 / selaff / maddaff / psram cfg）。 */
+/* 768->2048: after +5 lines from the cn probe the text approached the limit and
+ * the trailing unprotected strcat(ALL PASS) wrote past the end into a .bss
+ * neighbour -> crash. 2048->4096: total went over 2K once the perf-bench lines
+ * were added. 4096->6144: experiment D (cpu regs / alu / hot / blk32, 10 lines)
+ * plus headroom. 6144->8192: experiment E (cyccnt / alu diff / cyc×4 / selaff /
+ * maddaff / psram cfg). */
 static char g_logbuf[8192];
 
 /* Diagnostic noinit markers (survive warm reset; .diag_noinit in mh1903b.ld).
@@ -636,14 +640,17 @@ static int run_checks(void)
         log_line("sign ws: alloc fail (%u bytes)", ws_need);
         return 1;
     }
-    /* P1-04（2026-08-29）：seed 不跨 FFI——restore 步骤删除，新增 export
-     * (mnemonic 入口) 替代。测试项：version/cabi/create/export/sign/bad-uri */
-    /* P1-05（2026-08-26）：restore/sign 现在校验 BIP-39 checksum——旧 idx12
-     * {3,5,1,6,2,4,3,5,1,6,2,4} checksum 非法会被拒绝。改用 entropy 0x11×16
-     * 的合法 12 词索引（python BIP-39 独立验证 checksum 通过）。*/
+    /* P1-04 (2026-08-29): the seed does not cross the FFI — the restore step is
+     * removed and an export (mnemonic entry) added in its place. Test items:
+     * version/cabi/create/export/sign/bad-uri */
+    /* P1-05 (2026-08-26): restore/sign now verify the BIP-39 checksum — the old idx12
+     * {3,5,1,6,2,4,3,5,1,6,2,4} has an invalid checksum and is rejected. Switched to
+     * the valid 12-word indices of entropy 0x11×16 (checksum independently
+     * verified with python BIP-39). */
     uint16_t idx12[12] = {136, 1092, 546, 273, 136, 1092, 546, 273, 136, 1092, 546, 283};
-    /* dice rolls 是 u8/roll；idx12 是 u16 mnemonic 索引——两个不同类型，勿混用
-     * P0-01 审计整改：12 词需 ≥minimum_rolls(6,128)=64 次 d6，12 次会被拒绝 */
+    /* dice rolls are u8 per roll; idx12 is u16 mnemonic indices — two different
+     * types, do not mix them up. P0-01 audit fix: 12 words need
+     * >=minimum_rolls(6,128)=64 d6 rolls; 12 rolls is rejected */
     uint8_t rolls64[64];
     for (int i = 0; i < 64; i++) { rolls64[i] = (uint8_t)(i % 6) + 1; }
 
@@ -666,7 +673,7 @@ static int run_checks(void)
         log_line("cabi: FAIL");
     }
 
-    /* 3. create account (dice entropy) — P1-04：无 seed 输出 */
+    /* 3. create account (dice entropy) — P1-04: no seed output */
     secure_wipe(mnemonic_buf, sizeof(mnemonic_buf));
     if (shlosilo_create_account_ffi(12, 6, rolls64, sizeof(rolls64), NULL, 0,
                                     mnemonic_buf, sizeof(mnemonic_buf)) == 0) {
@@ -676,7 +683,7 @@ static int run_checks(void)
         log_line("create: FAIL");
     }
 
-    /* 4. export_readonly (mnemonic 入口，替代原 restore 步骤) */
+    /* 4. export_readonly (mnemonic entry, replaces the old restore step) */
     log_line("export: start...");
     {
         uint32_t path_elems[5] = {44u | 0x80000000u, 0u | 0x80000000u,
@@ -697,9 +704,9 @@ static int run_checks(void)
         secure_wipe(path_elems, sizeof(path_elems));
     }
 
-    /* 5. sign_ur — 真实 EIP-1559 签名 + 耗时基准 */
+    /* 5. sign_ur — real EIP-1559 signing + timing baseline */
     log_line("sign: start...");
-    /* device-timing: 注册 ms 时钟（weak 符号，production .a 为 no-op） */
+    /* device-timing: register the ms clock (weak symbol, no-op in the production .a) */
     shlosilo_timing_reset();
     shlosilo_timing_set_clock_fn(smoke_tick_ms);
     uint32_t t0 = osKernelGetTickCount();
@@ -720,8 +727,9 @@ static int run_checks(void)
         log_line("t8 yparity: %u", shlosilo_timing_get_stage(8));
         log_line("t4 rlp_ser: %u", shlosilo_timing_get_stage(4));
 
-        /* XIP cache/布局效应实验：连跑第二次（热 I-cache/D-cache）。
-         * 若 t2 显著变小 → PBKDF2 差异来自 flash XIP cache 冷启动，而非代码回退。 */
+        /* XIP cache/layout experiment: run a second time back-to-back (warm
+         * I-cache/D-cache). If t2 drops noticeably, the PBKDF2 difference comes
+         * from a cold flash XIP cache, not from a code regression. */
         shlosilo_timing_reset();
         uint32_t t0b = osKernelGetTickCount();
         int rc2 = shlosilo_sign_ur_ffi(FIXTURE_ETH_SIGN_REQUEST, idx12, 12,
@@ -739,7 +747,7 @@ static int run_checks(void)
         log_line("sign: FAIL rc=%d", rc);
     }
 
-    /* 6. bad URI 拒绝 */
+    /* 6. bad URI rejection */
     if (shlosilo_sign_ur_ffi("not-a-ur", idx12, 12, NULL, 0, 0, NULL, 0,
                              out, sizeof(out), &actual,
                              sign_ws, ws_need) != 0) {
@@ -749,8 +757,9 @@ static int run_checks(void)
         log_line("bad-uri: FAIL (accepted!)");
     }
 
-    /* P6.4 v2-安全 §5：C L3 敏感缓冲用后清零（mnemonic 索引属敏感材料；
-     * out 是公开输出，一并清零是廉价纵深；export_buf/idx12 在各自作用域清） */
+    /* P6.4 v2-security §5: wipe C L3 sensitive buffers after use (mnemonic indices
+     * are sensitive material; out is public output, but wiping it too is cheap
+     * defence in depth; export_buf/idx12 are wiped in their own scopes) */
     secure_wipe(out, sizeof(out));
     secure_wipe(mnemonic_buf, sizeof(mnemonic_buf));
 
@@ -777,7 +786,7 @@ static int run_checks(void)
             "xmr-txunsigned", mp_payload, sizeof(mp_payload), 200,
             enc_ws, enc_ws_need);
         UrMultipartDecoder *dec = shlosilo_ur_decode_new(dec_ws, dec_ws_need);
-        static uint8_t frame[1024]; /* FRAME_BUF_MAX_LEN 对齐 poc4 c_abi */
+        static uint8_t frame[1024]; /* FRAME_BUF_MAX_LEN, aligned with poc4 c_abi */
         unsigned int flen = 0;
         int mp_fail = 0;    /* 0 ok; 1 enc/feed err; 2 guard; 3 handle NULL */
         int fail_rc = 0, fail_seq = 0, fail_acc = -1;
@@ -962,7 +971,7 @@ static int run_checks(void)
         secure_wipe(frame, sizeof(frame));
     }
 
-    /* 8. XMR 1-input BP+（P6.6 MCU 峰值；idx12 自造 ring16，非真实资金） */
+    /* 8. XMR 1-input BP+ (P6.6 MCU peak; idx12 hand-built ring16, not real funds) */
     /* BP+ generator cache: register flash backend (no-op against a production
      * .a without the generator-cache-ffi feature). */
     gc_flash_init();
@@ -1063,7 +1072,7 @@ static int run_checks(void)
 }
 
 
-/* ====== CMSIS-RTOS task 创建入口 ====== */
+/* ====== CMSIS-RTOS task creation entry ====== */
 void CreateShlosiloSmokeTask(void) {
     const osThreadAttr_t smoke_attr = {
         .name = "shlosilo_smoke",
@@ -1076,13 +1085,13 @@ void CreateShlosiloSmokeTask(void) {
     }
 }
 
-/* shlosilo_panic_hook — L3 panic 显示（embedded_alloc.rs 的 panic handler 调用）
- * 恢复中断（panic 可能在 critical section 内）→ LCD 红字显示消息 → 保持 LVGL 刷新 + 喂狗
+/* shlosilo_panic_hook — L3 panic display (called by the panic handler in embedded_alloc.rs)
+ * Re-enable interrupts (the panic may happen inside a critical section) -> show the message in red on the LCD -> keep LVGL refreshing + feed the WDT
  */
 #include "mhscpu_wdt.h"
 void shlosilo_panic_hook(const uint8_t *msg, size_t len)
 {
-    __asm__ volatile("cpsie i"); /* 恢复中断，防止 panic 于 critical section 内导致 tick 停摆 */
+    __asm__ volatile("cpsie i"); /* re-enable interrupts so a panic inside a critical section cannot stall the tick */
 
     char tmp[192];
     size_t n = len < sizeof(tmp) - 1 ? len : sizeof(tmp) - 1;
@@ -1111,14 +1120,14 @@ void shlosilo_panic_hook(const uint8_t *msg, size_t len)
 
     for (;;) {
         lvgl_lock();
-        lv_task_handler();   /* 保持屏幕刷新（panic 消息可见） */
+        lv_task_handler();   /* keep the display refreshing (so the panic message stays visible) */
         lvgl_unlock();
-        WDT_ReloadCounter(); /* 喂狗防复位 */
+        WDT_ReloadCounter(); /* feed the watchdog to avoid a reset */
         osDelay(5);
     }
 }
 
-/* device-timing 时钟回调：给 Rust 侧的毫秒计数 */
+/* device-timing clock callback: millisecond counter for the Rust side */
 static uint32_t smoke_tick_ms(void);
 static uint32_t smoke_tick_ms(void)
 {
@@ -1146,7 +1155,7 @@ void ShlosiloSmokeTask(void *argument)
     g_diag_boot_count += 1;
     uint32_t prev_prog = g_diag_progress;
     diag_prog(1); /* task entry */
-    osDelay(500); /* 等 LVGL/helloworld task 初始化 */
+    osDelay(500); /* let the LVGL/helloworld task finish init */
     lvgl_lock();
     g_title = lv_label_create(lv_scr_act());
     /* r = warm boot count (climbing = reset loop), p = where the PREVIOUS
@@ -1158,7 +1167,7 @@ void ShlosiloSmokeTask(void *argument)
     lv_obj_align(g_title, LV_ALIGN_TOP_LEFT, 10, 10);
     lv_obj_set_style_text_color(g_title, lv_color_hex(0x00FF00), 0);
 
-    /* 可滚动日志容器：测试行数已超出一屏，触摸滑动查看（indev 注册于 helloworld_task） */
+    /* Scrollable log container: the test lines already exceed one screen; swipe with touch to read them (indev registered in helloworld_task) */
     lv_obj_t *scroll = lv_obj_create(lv_scr_act());
     lv_obj_set_size(scroll, 480, 800 - 60);
     lv_obj_align(scroll, LV_ALIGN_TOP_LEFT, 0, 60);
@@ -1191,7 +1200,7 @@ void ShlosiloSmokeTask(void *argument)
         log_line("FAULT bfar=%08x pc=%08x lr=%08x",
                  (unsigned)g_fault_log[3], (unsigned)g_fault_log[4],
                  (unsigned)g_fault_log[5]);
-        /* 清除，避免下次开机误报 */
+        /* clear it so the next boot does not report it again */
         for (int i = 0; i < 7; i++) {
             g_fault_log[i] = 0;
         }
@@ -1231,8 +1240,9 @@ void ShlosiloSmokeTask(void *argument)
     }
 
     diag_prog(3); /* pre touch-probe delay */
-    /* 触摸探测结果屏显（build D 诊断）。TouchInit 位bang扫 128 地址
-     * ~1s，helloworld/smoke 两任务并发，等 3s 保证探测已完成。
+    /* Touch probe result on screen (build D diagnostics). TouchInit bit-bangs a
+     * scan of 128 addresses (~1s); helloworld/smoke run concurrently, so wait 3s
+     * to guarantee the probe has finished.
      * 2026-09-30: split into 6 heartbeats so a death inside the wait window
      * leaves a visible trail (the old firmware died somewhere in here). */
     for (int w = 1; w <= 6; w++) {
@@ -1254,14 +1264,14 @@ void ShlosiloSmokeTask(void *argument)
     /* v7: persist the key numbers as soon as the battery core is done. */
     res_save_now();
 
-    /* 触摸诊断汇总：run_checks 期间(~45s)的按下次数/错误/末次坐标 */
+    /* Touch diagnostic summary: press count / errors / last coordinates during run_checks (~45s) */
     log_line("touch diag: press=%u err=%u x=%u y=%u",
              (unsigned)g_touch_diag_press, (unsigned)g_touch_diag_err,
              (unsigned)g_touch_diag_x, (unsigned)g_touch_diag_y);
 
-    /* Phase 6.6：MCU 峰值（heap_4 min-ever = 自启动以来的高水位）。
-     * PSRAM = LCD framebuffer + shlosilo Rust alloc；SRAM = FreeRTOS/LVGL。
-     * 本 smoke 含 ETH sign + multipart + XMR 1-input BP+。 */
+    /* Phase 6.6: MCU peak (heap_4 min-ever = high-water mark since boot).
+     * PSRAM = LCD framebuffer + shlosilo Rust alloc; SRAM = FreeRTOS/LVGL.
+     * This smoke covers ETH sign + multipart + XMR 1-input BP+. */
     {
         const size_t psram_total = PsramGetTotalSize();
         const size_t psram_min   = PsramGetMinimumEverFreeHeapSize();
@@ -1500,7 +1510,7 @@ void ShlosiloSmokeTask(void *argument)
         }
     }
 
-    /* panic 检测：Rust panic handler 写过 0xDEADBEEF 到 0x2000F000 */
+    /* panic check: the Rust panic handler wrote 0xDEADBEEF to 0x2000F000 */
     if (*(volatile uint32_t *)0x2000F000 == 0xDEADBEEF) {
         strcat(g_logbuf, "== RUST PANIC DETECTED ==\n");
     }

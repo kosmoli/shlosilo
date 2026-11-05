@@ -41,10 +41,11 @@ const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysg
 /// carries the CBOR byte-string shell (`0x58` + len) before bytewords, so the
 /// body gains the `hd` prefix and a new CRC tail versus the pre-shell vector.
 ///
-/// 2026-11-03 再生成：crypto-hdkey 补齐 registry 必需字段（origin keypath 的
-/// `source_fingerprint`、`use_info` tag 305、account 级路径的 `children`）。
-/// 本条钉的是「同一固定熵 → 同一字节」的平价性质；字节随形状演进由
-/// `regenerate_export_ur`（`#[ignore]`）重出，勿手改。
+/// Regenerated 2026-11-03: crypto-hdkey gained the registry-required fields
+/// (origin keypath `source_fingerprint`, `use_info` tag 305, `children` on
+/// account-level paths). This pin fixes the "same fixed entropy → same bytes"
+/// parity property; the bytes evolve with the shape and are re-emitted by
+/// `regenerate_export_ur` (`#[ignore]`) — do not hand-edit.
 const EXPECTED_EXPORT_UR: &str = "ur:crypto-hdkey/hdjsonaxhdclaxisyagdbdhsvarersbykegssnhesonthdetkokklomsprldoseymnpansbnwynyioaahdcxaorptnpmcmdibgcevegaetftloemsfhphdcflkswfsgmdyidchkndyprswsnfewpahtaadehoeadaeaoaeamtaaddyotadlecsdwykaeykaeykaewkaewkaocytkcyltbzaxahaycysssefxgwwmlkflcl";
 
 /// The signed EIP-1559 tx hex the host-sim prints (111 bytes).
@@ -257,17 +258,19 @@ fn gen_bench_channel_files() {
     println!("{expected}");
 }
 
-/// 金标再生成器（永久保留，`#[ignore]`）：打印当前实现对本夹具 mnemonic 在
-/// `m/44'/0'/0'/0/0` 上的 crypto-hdkey UR。
+/// Golden regenerator (kept permanently, `#[ignore]`): prints the crypto-hdkey
+/// UR the current implementation produces for this fixture mnemonic at
+/// `m/44'/0'/0'/0/0`.
 ///
-/// 用法：
+/// Usage:
 /// `cargo test --offline --test pico2_smoke_parity -- --ignored --nocapture regenerate_export_ur`
 ///
-/// 再生成缘由（2026-11-03）：crypto-hdkey 形状补齐 registry 必需字段——
-/// origin keypath 的 `source_fingerprint`（field 2，keystone SDK `parseHDKey`
-/// 缺它直接 throw）、`use_info`（tag 305）、`children`（tag 304，仅
-/// account 级路径发）。旧锚点是补齐前的形状，已作废；本条不变的是「同一固定
-/// 熵 → 同一字节」的平价性质，而不是那串旧字节本身。
+/// Why it was regenerated (2026-11-03): the crypto-hdkey shape gained the
+/// registry-required fields — origin keypath `source_fingerprint` (field 2; the
+/// keystone SDK `parseHDKey` throws outright without it), `use_info` (tag 305),
+/// `children` (tag 304, emitted on account-level paths only). The old anchor is
+/// the pre-fill shape and is void; what this pin holds constant is the "same
+/// fixed entropy → same bytes" parity property, not that old byte string.
 #[test]
 #[ignore]
 fn regenerate_export_ur() {

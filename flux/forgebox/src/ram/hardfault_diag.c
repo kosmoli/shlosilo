@@ -1,15 +1,19 @@
-/* hardfault_diag.c — K2-D 诊断：真 HardFault 处理器
+/* hardfault_diag.c — K2-D diagnostics: the real HardFault handler
  *
- * 此前 HardFault 落到 startup 的 weak Default_Handler（死循环）→ WDT 2s
- * 复位，故障信息全丢（export 对齐事故、cn5 后崩溃两次盲刷的教训）。
- * 这里捕获 fault：读 SCB 故障状态寄存器 + 从栈帧取 stacked PC/LR，写入
- * .diag_noinit 保留区，然后主动 WDT 复位重启。
- * 重启后 smoke task 开头读该区并把寄存器打到屏幕。
+ * Previously a HardFault fell into startup's weak Default_Handler (infinite
+ * loop) -> WDT reset after 2s, losing all fault information (the export
+ * alignment incident; the two blind reflashes after the crash on cn5).
+ * This handler captures the fault: reads the SCB fault status registers and
+ * pulls the stacked PC/LR out of the stack frame, writes them into the
+ * .diag_noinit retention area, then triggers a WDT reset on purpose.
+ * After the reboot the smoke task reads that area at startup and prints the
+ * registers to the screen.
  *
- * 2026-09-30 修复：记录区原在 0x2000F004（注释称"0x2000F000 未被 .bss
- * 占用"），实际 g_lvglCache 早已覆盖该地址，启动清 .bss 时把记录清掉——
- * 诊断从未生效过。现移入 mh1903b.ld 的 .diag_noinit（0x20098800，NOLOAD，
- * 启动不清零、WDT 暖复位保留）。
+ * 2026-09-30 fix: the record area used to live at 0x2000F004 (commented as
+ * "0x2000F000 is not taken by .bss"), but g_lvglCache had long covered that
+ * address — clearing .bss at boot wiped the record, so the diagnostics never
+ * worked. It now lives in .diag_noinit in mh1903b.ld (0x20098800, NOLOAD:
+ * not zeroed at boot, retained across a warm WDT reset).
  */
 #include <stdint.h>
 #include <string.h>
@@ -17,11 +21,11 @@
 #include "mhscpu.h"
 #include "crash_blackbox.h"
 
-/* 复位后由 smoke 读取。布局: [magic][cfsr][hfsr][bfar][pc][lr][xpsr] */
+/* Read by smoke after reset. Layout: [magic][cfsr][hfsr][bfar][pc][lr][xpsr] */
 #define FAULT_MAGIC 0x464C5444U /* 'FLTD' */
 volatile uint32_t g_fault_log[7] __attribute__((section(".diag_noinit")));
 
-/* naked: 只取 MSP 栈帧（smoke task 异常时自动压栈的 8 字） */
+/* naked: only fetch the exception stack frame (the 8 words pushed automatically when the smoke task faults) */
 __attribute__((naked)) void HardFault_Handler(void)
 {
     __asm__ volatile(
@@ -54,7 +58,7 @@ void hardfault_capture(uint32_t *stack)
      * below is only a defensive fallback for a write path that ever returns. */
     crash_bb_write_hardfault(stack);
 
-    /* 主动复位：WDT 最短窗口即可 */
+    /* Active reset: the shortest WDT window is enough */
     WDT_ModeConfig(WDT_Mode_CPUReset);
     WDT_SetReload(0x10U);
     WDT_ReloadCounter();

@@ -46,7 +46,7 @@ for p in "${PINS[@]}"; do
   fi
 done
 
-# The fixed-vocabulary single source must exist (拆码红线 word table).
+# The fixed-vocabulary single source must exist (split-code red-line word table).
 if [ ! -f forms/failure_text.rs ]; then
   echo "FPCOV: forms/failure_text.rs missing — word table lost its home" >&2
   fail=1

@@ -16,7 +16,7 @@
 //!
 //! Scope note: the QR-type vocabulary (`ur`-derived strings -> "unknown code"
 //! class words, product_task.c) is the same red line family but an input-side
-//! table; it stays on the C side for now (pool #57 附注).
+//! table; it stays on the C side for now (pool #57 note).
 
 use core::ffi::CStr;
 

@@ -71,7 +71,7 @@ impl core::fmt::Display for KeySourceError {
 /// - **QR source ([`QrKeySource`])**: the material is already in RAM when the
 ///   session opens, so `auth` is **semantically empty** — a non-empty `auth`
 ///   is accepted and ignored (never an error), exactly as the frozen QR
-///   contract requires ("QR = 无参").
+///   contract requires ("QR = parameterless").
 ///
 /// # Lifecycle
 ///
@@ -364,7 +364,7 @@ mod tests {
         assert!(!slot.is_occupied());
         let h = open_fixture(&slot);
         assert!(h.is_open());
-        drop(h); // 兜底 close: drop_in_place + ZeroizeOnDrop
+        drop(h); // fallback close: drop_in_place + ZeroizeOnDrop
         assert!(!slot.is_occupied(), "handle drop must free the slot");
     }
 
@@ -392,7 +392,7 @@ mod tests {
     fn handle_is_not_copy_or_clone() {
         // P1-03 compile-fail equivalent: adding Copy/Clone breaks this build.
         static_assertions::assert_not_impl_any!(KeySessionHandle<'static>: Copy, Clone);
-        // Drop = the fallback close (兜底): the drop glue must exist.
+        // Drop = the fallback close: the drop glue must exist.
         assert!(core::mem::needs_drop::<KeySessionHandle<'static>>());
     }
 

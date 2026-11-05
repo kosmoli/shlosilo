@@ -571,7 +571,7 @@ mod tests {
         }
     }
 
-    /// 对拍: the stack-buffer variants must be byte-equal to the alloc forms
+    /// Cross-check: the stack-buffer variants must be byte-equal to the alloc forms
     /// (one source of truth — the alloc forms delegate — and the contract the
     /// plate-export FFI relies on).
     #[cfg(any(feature = "alloc-fallback", test))]

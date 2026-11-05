@@ -1,5 +1,5 @@
 //! Collection capacity leaves for the zero-heap signing path (Z2.3, 2026-09-24,
-//! decision "选项2": leaf collections carry fixed caps; aggregate lists are
+//! decision "option 2": leaf collections carry fixed caps; aggregate lists are
 //! caller-sized slices — their capacity is a per-appearance deployment parameter,
 //! NOT a constant here).
 //!

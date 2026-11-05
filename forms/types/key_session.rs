@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn session_derives_monero_keys_from_entropy() {
-        let entropy = [0x11u8; 16]; // 12 词合法熵
+        let entropy = [0x11u8; 16]; // 12 words: valid entropy
         let s = KeySession::from_entropy(&entropy, b"").expect("session");
         let m = Mnemonic::from_entropy(&entropy).expect("mnemonic");
         let seed = mnemonic_to_seed(&m, b"").expect("seed");
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn session_rejects_non_12_24_entropy() {
-        // SeedSigner 家族只认 12/24 词（接口细节决定 §1）
+        // The SeedSigner family accepts 12/24 words only (interface-detail decision §1)
         // Boundary sweep: every length except 16 (12 words) / 32 (24 words) is
         // rejected, including the word-count boundaries of Mnemonic itself.
         for len in [0usize, 15, 17, 20, 28, 33] {
@@ -171,7 +171,7 @@ mod tests {
             // (12/24-only), not from Mnemonic's own 12/15/18/21/24 rule.
             assert_eq!(err.kind, ShlosiloErrorKind::MnemonicInvalidEntropyLength);
         }
-        assert!(KeySession::from_entropy(&[0x11u8; 32], b"").is_ok()); // 24 词 OK
+        assert!(KeySession::from_entropy(&[0x11u8; 32], b"").is_ok()); // 24 words OK
     }
 
     #[test]

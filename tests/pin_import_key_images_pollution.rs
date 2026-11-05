@@ -1,4 +1,4 @@
-//! MUST-RED pin (pool §32, 修正案 `shlosilo-设计-keyimages全量填充修正案-2026-10-17.md`):
+//! MUST-RED pin (pool §32, amendment `shlosilo-设计-keyimages全量填充修正案-2026-10-17.md`):
 //! the phone wallet's `import_key_images(signed_txs.key_images)` writes EVERY
 //! entry POSITIONALLY into `m_transfers[ki_idx]` ("trusting imported one") —
 //! a mirror-replay-proven fact (0.18.5.3: patching the outer array to
@@ -190,7 +190,7 @@ fn true_key_image(i: usize) -> [u8; 32] {
 /// with the dummy-at-0 array, 2026-10-17).
 #[test]
 fn import_does_not_pollute_transfers_zero() {
-    // Flipped GREEN 2026-10-21 (A案): the v2 gap policy refuses the sign when
+    // Flipped GREEN 2026-10-21 (option A): the v2 gap policy refuses the sign when
     // a covered position has no own true key image — NOTHING positional ships,
     // so wallet2's positional import cannot pollute transfers[0] (pool #32).
     // The v1 conservative filler (the spent input's derived KI at every gap)

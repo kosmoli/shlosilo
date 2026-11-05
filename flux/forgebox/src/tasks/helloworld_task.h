@@ -8,6 +8,6 @@ void CreateHelloWorldTask(void);
 
 #endif
 
-/* LVGL 全局锁：smoke 任务调 lv_* 前必须持有（见 helloworld_task.c） */
+/* LVGL global lock: the smoke task must hold it before calling lv_* (see helloworld_task.c) */
 void lvgl_lock(void);
 void lvgl_unlock(void);

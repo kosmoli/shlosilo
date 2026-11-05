@@ -9,18 +9,18 @@
 //! behavior (verified end-to-end by the 2026-10-21 real-device acceptance,
 //! vault `shlosilo-验收-fix37专项两场景-2026-10-21.md`):
 //!
-//! - **I1 换卡整库清**: incoming batch non-empty, store non-empty, and
-//!   `store[0].wallet_fp != incoming[0].wallet_fp` → the whole store is voided
-//!   before merging (a plate swap without a power cycle cannot leave stale
-//!   records around).
-//! - **I2 同 (fp, idx) 覆盖**: a record matching an existing slot by
+//! - **I1 card swap voids the whole store**: incoming batch non-empty, store
+//!   non-empty, and `store[0].wallet_fp != incoming[0].wallet_fp` → the whole
+//!   store is voided before merging (a plate swap without a power cycle cannot
+//!   leave stale records around).
+//! - **I2 same (fp, idx) overwrites**: a record matching an existing slot by
 //!   `(wallet_fp, transfer_idx)` overwrites that slot in place.
-//! - **I3 追加与容量**: no match → append at `len`; store full → the record is
-//!   dropped (the sign leg's conservative gap filler covers). Updates of
-//!   existing slots still happen when the store is full.
-//! - **I3b 入批截断**: at most `capacity` incoming records are considered
-//!   (mirrors the C loop bound `i < PAIRING_KI_MAX`).
-//! - **I4 齐性假定**: the wallet-change test looks at `store[0]` vs
+//! - **I3 append and capacity**: no match → append at `len`; store full → the
+//!   record is dropped (the sign leg's conservative gap filler covers). Updates
+//!   of existing slots still happen when the store is full.
+//! - **I3b incoming-batch truncation**: at most `capacity` incoming records are
+//!   considered (mirrors the C loop bound `i < PAIRING_KI_MAX`).
+//! - **I4 homogeneity assumption**: the wallet-change test looks at `store[0]` vs
 //!   `incoming[0]` only — batches are assumed homogeneous per scan.
 
 use crate::business::sign::WalletKiRecord;
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn wallet_change_voids_whole_store_then_appends() {
-        // I1 — the fix37 换卡语义: stale records are void, never mixed.
+        // I1 — the fix37 card-swap semantics: stale records are void, never mixed.
         let mut store = store3();
         let mut len = 2;
         store[0] = rec(FP_A, 0, 0x01);

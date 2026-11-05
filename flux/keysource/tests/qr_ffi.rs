@@ -593,14 +593,15 @@ fn qr_session_sign_matches_typed_entry_byte_for_byte() {
 // -- Phase 4 acceptance ③: the `se dump` zeroization forensic view --
 //
 // The device `se dump` command hexdumps exactly this workspace window (the
-// keysource ws bytes). The acceptance photo is "close 前有钥字节 / close 后
-// 全零" — asserted here byte-for-byte on the same window the firmware prints.
+// keysource ws bytes). The acceptance criterion is "key bytes present before
+// close / all zero after close" — asserted here byte-for-byte on the same
+// window the firmware prints.
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// 毒丸手法 (slot-forensics discipline, flux/keysource mod.rs): the live key
+/// Poison-pill technique (slot-forensics discipline, flux/keysource mod.rs): the live key
 /// bytes MUST be visible in the raw window before close (kills the vacuous
 /// all-zero pass and the "close does nothing" mutation), then EVERY byte of
 /// the window must read zero after close (kills "key bytes wiped but handle
@@ -641,12 +642,12 @@ fn dump_view_close_leaves_workspace_window_all_zero() {
         let (spend, view) = reference_keys(entropy);
         assert!(
             contains(&ws, &spend) && contains(&ws, &view),
-            "precondition (dump 前): live key bytes visible in the ws window"
+            "precondition (before dump): live key bytes visible in the ws window"
         );
         assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
         assert!(
             ws.iter().all(|&b| b == 0),
-            "close must leave the WHOLE ws window zero (dump 后全零): {:?}",
+            "close must leave the WHOLE ws window zero (all zero after dump): {:?}",
             &ws[..32.min(ws.len())]
         );
         // The reusable state the acceptance re-run depends on: a reopen from

@@ -291,9 +291,10 @@ fn wrong_password_is_auth_failed_one_shot_and_no_session() {
     let mut out: *const KeySession = core::ptr::null();
     assert_eq!(se_open(&mut ws, WRONG_PWD, &mut out), ERR_AUTH_FAILED);
     assert!(out.is_null(), "failed unlock must leave a NULL out-param");
-    // 错密码一次即拒，不重试: exactly ONE LoadAccountSecret call.
+    // A wrong password is rejected on the first attempt, no retry: exactly ONE
+    // LoadAccountSecret call.
     assert_eq!(shim_calls(), 1, "no retry after a rejected password");
-    // 无会话: the workspace holds nothing — close is a defined no-op and the
+    // No session: the workspace holds nothing — close is a defined no-op and the
     // right password still unlocks afterwards (no lockout state left behind).
     assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), OK);
@@ -390,8 +391,8 @@ fn second_unlock_on_busy_ws_is_slot_occupied_before_any_credential_attempt() {
     let mut out: *const KeySession = core::ptr::null();
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), OK);
     let calls_after_first = shim_calls();
-    // 解锁中再解锁 = Capacity (-23): refused BEFORE the password reaches the
-    // SE — the live session is undisturbed and no credential is burned.
+    // Unlock while already unlocked = Capacity (-23): refused BEFORE the password
+    // reaches the SE — the live session is undisturbed and no credential is burned.
     let mut out2: *const KeySession = core::ptr::null();
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out2), ERR_SLOT_OCCUPIED);
     assert!(out2.is_null());
@@ -624,7 +625,7 @@ fn trait_face_unlock_while_unlocked_is_capacity() {
     let h = src
         .open_session(core::str::from_utf8(FIXTURE_PWD).unwrap())
         .expect("unlock");
-    // 解锁中再解锁 = Capacity (checked FIRST — no second credential attempt).
+    // Unlock while already unlocked = Capacity (checked FIRST — no second credential attempt).
     let before = shim_calls();
     let err = src
         .open_session(core::str::from_utf8(FIXTURE_PWD).unwrap())

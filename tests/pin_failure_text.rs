@@ -10,7 +10,7 @@
 //! Single source of truth: `shlosilo::failure_text` (the C side renders via
 //! the FFI lookups — ki_store precedent: C keeps only glue).
 //!
-//! Chain pinned here (the "可见报错链路"):
+//! Chain pinned here (the "visible-error chain"):
 //!   ShlosiloErrorKind -> ShlosiloErrorCode (i32, L2b) -> fixed screen text.
 //! The end-to-end leg over a REAL sign run (foreign-fp records -> refusal)
 //! lives in tests/pin_signed_key_images_wallet_indexed.rs.
@@ -199,7 +199,7 @@ fn build_plain(count: usize, view_sk: &[u8; 32], spend_sk: &[u8; 32]) -> Vec<u8>
     plain
 }
 
-/// fp 覆盖率: every record produced by the pairing receive leg carries the
+/// fp coverage: every record produced by the pairing receive leg carries the
 /// wallet fingerprint of the key session it was derived under (fix37 binding),
 /// and its true wallet transfer index. No unstamped / mis-stamped record may
 /// enter retention — the sign leg's fp filter depends on this coverage.

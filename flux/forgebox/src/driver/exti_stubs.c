@@ -1,9 +1,12 @@
-/* exti_stubs.c — ForgeBox helloworld EXTI 依赖桩
+/* exti_stubs.c — ForgeBox helloworld EXTI dependency stubs
  *
- * drv_exti.c 的中断处理函数引用生产固件的四个业务 handler（tamper/SD 卡/
- * 按键/USB 插入）。helloworld 是诊断固件，没有这些子系统——提供 no-op 桩，
- * 让 EXTI 中断框架（含 PF1 触摸 INT）按 keystone 生产方式初始化。
- * tamper 事件在 helloworld 中仅打印（生产固件做擦除+重启，绝不复刻）。 */
+ * The interrupt handlers in drv_exti.c reference four business handlers from
+ * the production firmware (tamper / SD card / button / USB insertion).
+ * helloworld is a diagnostic firmware and has none of those subsystems — these
+ * no-op stubs let the EXTI interrupt framework (including the PF1 touch INT)
+ * initialise the same way the keystone production build does.
+ * In helloworld a tamper event is only printed (the production firmware erases
+ * and reboots — never replicate that). */
 
 #include <stdint.h>
 #include <stdio.h>

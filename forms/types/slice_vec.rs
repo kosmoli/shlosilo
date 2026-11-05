@@ -1,4 +1,4 @@
-//! SliceVec: caller-storage bounded vector (Z2.3, 2026-09-24, decision "选项2").
+//! SliceVec: caller-storage bounded vector (Z2.3, 2026-09-24, decision "option 2").
 //!
 //! Aggregate lists (sources / txes / ptx / dests / output details) live in
 //! **caller-provided slices** instead of heap or inline-max storage:

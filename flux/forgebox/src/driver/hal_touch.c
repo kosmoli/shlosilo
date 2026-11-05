@@ -1,7 +1,8 @@
 #include "hal_touch.h"
 
-/* drv_gsl1691.c 调试用打印在 helloworld 无 UART shell 上下文里没有实现——
- * 提供 no-op 桩以满足链接（触摸调试输出在 smoke 中无用）。 */
+/* The debug prints in drv_gsl1691.c have no implementation in the helloworld
+ * context (no UART shell) — provide a no-op stub to satisfy the link (touch
+ * debug output is useless in the smoke). */
 __attribute__((weak)) void PrintArray(const char *tag, const uint8_t *buf, uint32_t len)
 {
     (void)tag;
@@ -23,9 +24,9 @@ HalTouchOpt_t g_halTouchOpt = {0};
 static TouchPadIntCallbackFunc_t g_touchPadIntCallback;
 static volatile bool g_touchOpen = false;
 
-/* 探测结果暴露给 smoke 屏幕（printf 只到 UART，用户看不到） */
-volatile uint8_t g_touch_probe_addr = 0xFF;   /* 0xFF = 未探测 */
-volatile uint8_t g_touch_probe_ok = 0;        /* 1 = 匹配到已知 IC */
+/* Probe result exposed to the smoke screen (printf only reaches UART, which the user cannot see) */
+volatile uint8_t g_touch_probe_addr = 0xFF;   /* 0xFF = not probed */
+volatile uint8_t g_touch_probe_ok = 0;        /* 1 = matched a known IC */
 
 /// @brief Touch init.
 /// @param[in] func Interrupt callback function, called when EXTINT gpio rasing/falling.

@@ -1,9 +1,9 @@
 #!/bin/bash
-# 审计 #5 开-03:Miri 子集 harness
-# 范围:纯 Rust、无 C FFI / 无汇编 / 无外部 crate FFI 的模块
-# 用法: bash scripts/miri_subset.sh [--quick]
-# Miri 慢 ~50x;--quick 只跑核心安全边界模块
-# 注:proptest 测试需要 MIRIFLAGS disable-isolation(getcwd 取种子文件)
+# Audit #5 open item 03: Miri subset harness
+# Scope: modules that are pure Rust — no C FFI, no asm, no external-crate FFI
+# Usage: bash scripts/miri_subset.sh [--quick]
+# Miri is ~50x slower; --quick runs only the core safety-boundary modules
+# Note: proptest tests need MIRIFLAGS disable-isolation (getcwd for seed files)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -11,16 +11,16 @@ TOOLCHAIN=nightly-2026-05-22
 export MIRIFLAGS="-Zmiri-disable-isolation"
 FAIL=0
 MODULES=(
-    "types::secret_bytes"      # 审计 #5 P0-03 核心防线
-    "derivation::path"         # MAX_DEPTH 边界
-    "encoding::cbor"           # 不可信输入解码
+    "types::secret_bytes"      # audit #5 P0-03 core defense line
+    "derivation::path"         # MAX_DEPTH boundary
+    "encoding::cbor"           # untrusted-input decoding
     "encoding::base58"
-    "encoding::bytewords"      # multipart 帧编码
+    "encoding::bytewords"      # multipart frame encoding
 )
 
 if [[ "${1:-}" != "--quick" ]]; then
     MODULES+=(
-        "encoding::fountain"   # 消元/work budget
+        "encoding::fountain"   # elimination / work budget
         "entropy::mnemonic"
         "entropy::dice_rolls"
     )

@@ -1,4 +1,4 @@
-//! Task 4 test 4 — 无持久化 code-face proof: a source-level grep over the
+//! Task 4 test 4 — persistence-free code-face proof: a source-level grep over the
 //! keysource module asserting no persistence / allocation surface.
 //!
 //! Threat model: key material lives in RAM only; a powered-down device holds

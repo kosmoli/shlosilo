@@ -1,10 +1,11 @@
 #!/bin/bash
-# 审计 #5 开-03:UBSan C simulator 构建 + smoke
-# 用 clang 的 -fsanitize=undefined 编译 sim_l3,链 release .a
-# 范围声明(审计 #6 工程项 #4 修正):本脚本只插桩 C 侧 sim_l3;
-# 链入的 Rust staticlib 是预构建产物,不含 UBSan 插桩——Rust unsafe
-# C-ABI 边界的安全论证依赖代码审阅 + fuzz(target 面已覆盖)+ Miri
-# (纯 Rust 子集),本脚本不构成 Rust 侧动态 UB 证明。
+# Audit #5 open item 03: UBSan C simulator build + smoke
+# Compiles sim_l3 with clang's -fsanitize=undefined, links the release .a
+# Scope statement (audit #6 engineering item #4 correction): this script
+# instruments only the C side, sim_l3. The linked Rust staticlib is a prebuilt
+# artifact carrying no UBSan instrumentation — the safety argument for the Rust
+# unsafe C-ABI boundary rests on code review + fuzz (target coverage) + Miri
+# (pure-Rust subset); this script is NOT a dynamic-UB proof for the Rust side.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

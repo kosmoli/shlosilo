@@ -23,7 +23,7 @@
  * password length with strnlen_s(password, PASSWORD_MAX_LEN). */
 #define PASSWORD_MAX_LEN                            (128)
 
-//DS28S60 page map (keystone3 se_manager.h:9-33, 逐值照抄)
+//DS28S60 page map (keystone3 se_manager.h:9-33, every value copied verbatim)
 #define PAGE_NUM_PER_ACCOUNT                        12
 #define PAGE_INDEX_IV                               0
 #define PAGE_INDEX_ENTROPY_OR_TON_ENTROPY_H32       1

@@ -277,7 +277,7 @@ fn foreign_fp_records_are_ignored() {
 
 /// P0-① (pool #57): the fp-mismatch refusal must reach the FIXED visible
 /// screen word end-to-end over a REAL sign run — foreign-fp records -> error
-/// kind -> C-ABI code -> the byte-exact user text. This is the "可见报错链路"
+/// kind -> C-ABI code -> the byte-exact user text. This is the "visible-error chain"
 /// pin: a mapping drift anywhere in the chain (the 2026-10-29 "-20 wearing
 /// the -34 word" class) turns it red.
 #[test]
@@ -303,7 +303,7 @@ fn fp_mismatch_error_reaches_fixed_screen_word() {
     assert_eq!(
         sign_failure_text(code).to_bytes(),
         b"sign failed\nwallet key images out of date\nre-run the wallet key image sync, then retry",
-        "the refusal must surface as the fixed visible word (拆码 red line)"
+        "the refusal must surface as the fixed visible word (split-code red line)"
     );
 }
 
@@ -390,7 +390,7 @@ fn refuse_on_record_source_mismatch() {
 /// expected to change together with this bug's fix.)
 #[test]
 fn gap_fill_never_ships_duplicate_selected() {
-    // Flipped GREEN 2026-10-21 (A案, pool #49): the recordless gap filler is
+    // Flipped GREEN 2026-10-21 (option A, pool #49): the recordless gap filler is
     // retired — a gap without a matching-fp record REFUSES the sign, so no
     // filler (duplicate of the selected true key image or otherwise) can ever
     // ship. The v1 filler stamped the spent input's derived key image across

@@ -1,23 +1,28 @@
 #!/bin/bash
-# 审计 #5 开-04 + 审计 #6 工程项:cargo-fuzz 统一入口(固定 nightly 工具链)
-# 背景:cargo fuzz 默认用 stable 会因缺 -Zsanitizer 失败;必须固定 nightly。
-# GPT 第五次复审工程项 #1:工具链应统一约束,避免依赖调用者环境。
+# Audit #5 open item 04 + audit #6 engineering item: single cargo-fuzz entry point
+# (pinned nightly toolchain).
+# Background: cargo fuzz defaults to stable and fails for lack of -Zsanitizer; the
+# nightly toolchain MUST be pinned.
+# Review round 5, engineering item #1: the toolchain constraint belongs here, not in
+# the caller's environment.
 #
-# 用法:
-#   bash scripts/fuzz_run.sh              # 每 target 90s smoke(默认)
-#   bash scripts/fuzz_run.sh 300          # 每 target 300s
-#   bash scripts/fuzz_run.sh 0            # 持续运行(Ctrl-C 停)
+# Usage:
+#   bash scripts/fuzz_run.sh              # 90s smoke per target (default)
+#   bash scripts/fuzz_run.sh 300          # 300s per target
+#   bash scripts/fuzz_run.sh 0            # run continuously (Ctrl-C to stop)
 #
-# 审计 #12: 种子 corpus 入库(fuzz/seedcorpus/<target>/, 固定边界样本),
-# 运行时产物(corpus/)继续不入库——CI/干净 clone 有确定性起点, 本地不积累
-# 可变产物。fuzz_run 把种子拷入工作 corpus 目录(libFuzzer 无 -seed_corpus
-# flag;工作 corpus 持久, 种子随每次运行合并)。
+# Audit #12: the seed corpus is checked in (fuzz/seedcorpus/<target>/, fixed
+# boundary samples); runtime products (corpus/) stay out of the repo — CI and a
+# clean clone get a deterministic starting point, and no mutable artifacts
+# accumulate locally. fuzz_run copies the seeds into the working corpus dir
+# (libFuzzer has no -seed_corpus flag; the working corpus persists, so the seeds
+# are re-merged on every run).
 #
-# sanitizer 环境选项(重要):
-#   ASAN_OPTIONS=detect_leaks=0           # libFuzzer+leak 检测与 alloc 预算测试冲突时用
-#   RUST_LIB_BACKTRACE=1                 # crash 时打印 Rust backtrace
+# sanitizer environment options (important):
+#   ASAN_OPTIONS=detect_leaks=0           # for when libFuzzer+leak detection conflicts with the alloc-budget tests
+#   RUST_LIB_BACKTRACE=1                 # print a Rust backtrace on crash
 #
-# 产出:fuzz/artifacts/<target>/ 下 crash-* 文件;无 crash 退出码 0
+# Output: crash-* files under fuzz/artifacts/<target>/; exit code 0 when there is no crash
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -30,8 +35,9 @@ rc_total=0
 
 for t in "${TARGETS[@]}"; do
     echo "=== fuzz: $t (${SECS}s) ==="
-    # 种子 corpus(libFuzzer 无 -seed_corpus flag;工作 corpus 目录是持久的,
-    # 种子拷入后每次运行都包含确定性起点;corpus/ 本身不入库)
+    # Seed corpus (libFuzzer has no -seed_corpus flag; the working corpus dir is
+    # persistent, so every run includes the deterministic starting point once the
+    # seeds are copied in; corpus/ itself is not checked in)
     mkdir -p "fuzz/corpus/$t"
     if compgen -G "fuzz/seedcorpus/$t/*" > /dev/null; then
         cp fuzz/seedcorpus/"$t"/* "fuzz/corpus/$t/"

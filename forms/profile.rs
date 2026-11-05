@@ -1,6 +1,6 @@
 //! Protocol profiles — the dialect adapters (WP1 interface freeze §1).
 //!
-//! Pure translation: `原始字节 ⇄ canonical` both ways, enum + match static
+//! Pure translation: `raw bytes ⇄ canonical` both ways, enum + match static
 //! dispatch (C6: no trait object, no Box; deleting a dialect = deleting one
 //! enum variant + its translation fns + one registry line). Dependency
 //! direction (C1): `profile → canonical` — the core never imports here.

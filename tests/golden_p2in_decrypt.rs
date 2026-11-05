@@ -55,7 +55,7 @@
 //! Known gaps (not pinned, never fabricated):
 //!
 //! * signed plaintext parse -> re-serialize identity: forms has no
-//!   `signed_txset` deserializer (details pool §52 "signed 明文无
+//!   `signed_txset` deserializer (details pool §52 "signed plaintext has no
 //!   deserializer"), so only the decrypt side of the signed fixture is
 //!   byte-compared. Same gap as tests/golden_wallet2_bytes.rs Group B.
 //! * `unsigned_txset.bin` / `txset_plain.bin` (Feather wallet-rpc, P6.3):

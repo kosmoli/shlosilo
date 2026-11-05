@@ -99,7 +99,7 @@ impl ClsagProof {
 ///   - commitment_point is the **real commitment** (real_mask * H + amount * G)
 /// - `real_index`: position of the real signer in the ring (0..ring_len)
 /// - `real_mask`: mask scalar of the real commitment (32 bytes) — corresponds to ring[real_index][1]
-/// - `amount`: real amount（u64）
+/// - `amount`: real amount (u64)
 /// - `pseudo_mask`: mask scalar of the pseudo_output (32 bytes) — must be ≠ real_mask (otherwise D=0 and the signature cannot verify)
 /// - `msg_hash`: 32-byte message hash
 /// - `rng`: cryptographically secure RNG
@@ -188,7 +188,7 @@ pub fn sign<R: RngCore + CryptoRng>(
     let pseudo_mask_scalar = scalar_from_reduced_bytes(pseudo_mask)?;
     let sum_outputs = pseudo_mask_scalar;
 
-    // 6. Sign (clsag 方案 A: borrowed inputs + caller-owned output slot)
+    // 6. Sign (clsag scheme A: borrowed inputs + caller-owned output slot)
     let mut sign_out = [core::mem::MaybeUninit::uninit()];
     let filled = Clsag::sign(
         rng,

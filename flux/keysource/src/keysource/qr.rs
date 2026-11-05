@@ -72,7 +72,8 @@ impl<'s> KeySource<'s> for QrKeySource<'s> {
         if self.slot.is_occupied() {
             return Err(KeySourceError::new(KeySourceErrorKind::Capacity));
         }
-        // take() — the staged material is single-use (未入料/已消耗 → NoSession).
+        // take() — the staged material is single-use (nothing staged / already
+        // consumed → NoSession).
         // NOTE: a DecodeRejected outcome also consumes the material (take()
         // already ran) — the caller must re-scan to retry. This is the frozen
         // "consumes" contract, not a bug.
@@ -148,7 +149,7 @@ mod tests {
         let err = src.open_session("").expect_err("consumed");
         assert_eq!(err.kind, KeySourceErrorKind::NoSession);
 
-        // close 后槽位可重开 (24-word material through the same source).
+        // After close the slot can be reopened (24-word material through the same source).
         src.load(SeedEntropy::from_entropy(&FIXTURE_ENTROPY_24).expect("entropy"));
         let h2 = src.open_session("").expect("re-open");
         let (spend2, view2) = expected_keys(&FIXTURE_ENTROPY_24);

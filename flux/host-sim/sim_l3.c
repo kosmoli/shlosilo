@@ -1,13 +1,14 @@
 /*
- * shlosilo L3 模拟器骨架 — 纯 C host 程序（P6.1c）
+ * shlosilo L3 simulator skeleton — plain C host program (P6.1c)
  *
- * 模拟完整签名流程（无 SDL/GUI；QR 进/出在 P6.1d 接屏幕层时替换）：
- *   1. create_account：dice rolls → mnemonic（P1-04：seed 不再出 FFI）
- *   2. export_readonly：mnemonic → ur:crypto-hdkey（只读凭证）
- *   3. sign：mnemonic + crypto-psbt UR → 签名 PSBT
+ * Simulates the full signing flow (no SDL/GUI; QR in/out is swapped in when
+ * the screen layer lands in P6.1d):
+ *   1. create_account: dice rolls → mnemonic (P1-04: the seed no longer crosses the FFI)
+ *   2. export_readonly: mnemonic → ur:crypto-hdkey (read-only credential)
+ *   3. sign: mnemonic + crypto-psbt UR → signed PSBT
  *
- * 链接：target/release/libshlosilo.a（strip 后 3.37 MB）
- * 构建：make -C simulator-l3 或 gcc 直接编译（见底部注释）
+ * Links: target/release/libshlosilo.a (3.37 MB after strip)
+ * Build: make -C simulator-l3, or compile directly with gcc (see the footer comment)
  */
 
 #include <stdio.h>
@@ -35,10 +36,10 @@ static void hexdump(const char *label, const uint8_t *buf, unsigned len) {
     printf("\n");
 }
 
-/* ── 测试 fixture：构造一个最小 P2WPKH PSBT 并包成 crypto-psbt CBOR ── */
+/* ── Test fixture: build a minimal P2WPKH PSBT and wrap it as crypto-psbt CBOR ── */
 
 static void cbor_head(uint8_t **p, uint8_t major, uint64_t arg) {
-    (void)0; /* out_cap 由调用方保证 */
+    (void)0; /* out_cap is guaranteed by the caller */
     uint8_t m = major << 5;
     if (arg <= 23) {
         *(*p)++ = m | (uint8_t)arg;
@@ -53,7 +54,7 @@ static void cbor_head(uint8_t **p, uint8_t major, uint64_t arg) {
     }
 }
 
-/* 构造 crypto-psbt UR payload: type_tag(0x00=CryptoPsbt) || CBOR bytes(PSBT) */
+/* Build the crypto-psbt UR payload: type_tag(0x00=CryptoPsbt) || CBOR bytes(PSBT) */
 static int build_crypto_psbt_payload(const uint8_t *psbt, size_t psbt_len,
                                      uint8_t *out, size_t out_cap) {
     (void)out_cap;
@@ -65,7 +66,7 @@ static int build_crypto_psbt_payload(const uint8_t *psbt, size_t psbt_len,
     return (int)(p - out);
 }
 
-/* 最小 P2WPKH PSBT（与 business::sign::tests::sign_btc_psbt_end_to_end 同构） */
+/* Minimal P2WPKH PSBT (isomorphic to business::sign::tests::sign_btc_psbt_end_to_end) */
 static size_t build_test_psbt(const uint8_t compressed_pk[33],
                               const uint8_t pk_hash[20],
                               uint8_t *out, size_t out_cap) {
@@ -135,14 +136,14 @@ int main(void) {
     printf("=== shlosilo L3 simulator skeleton ===\n");
     printf("version: %s\n", (const char *)shlosilo_version());
 
-    /* ABI 兼容检查 */
+    /* ABI compatibility check */
     CHECK(shlosilo_cabi_check(SHLOSILO_CABI_VERSION_MAJOR,
                               SHLOSILO_CABI_VERSION_MINOR,
                               SHLOSILO_CABI_VERSION_PATCH) == 0,
           "cabi check");
 
-    /* ── Step 1: create_account（P1-04：只出 mnemonic，无 seed）── */
-    /* P0-01：12 词需 minimum_rolls(6,128)=64 次 d6 */
+    /* ── Step 1: create_account (P1-04: mnemonic only, no seed) ── */
+    /* P0-01: 12 words need minimum_rolls(6,128)=64 d6 rolls */
     uint8_t rolls[64];
     for (int i = 0; i < 64; i++) rolls[i] = (uint8_t)(i % 6) + 1;
     uint8_t mnemonic_buf[24] = {0};
@@ -158,7 +159,7 @@ int main(void) {
                               0 | 0x80000000u, 0, 0};
     uint8_t export_buf[2048];
     unsigned export_len = 0;
-    /* P1-04：mnemonic indices 直接当输入（库内现场恢复 seed） */
+    /* P1-04: mnemonic indices go straight in (the library rebuilds the seed on the spot) */
     uint16_t indices[12];
     for (int i = 0; i < 12; i++) {
         indices[i] = (uint16_t)(mnemonic_buf[i * 2] | (mnemonic_buf[i * 2 + 1] << 8));
@@ -169,16 +170,18 @@ int main(void) {
     CHECK(rc == 0, "export_readonly");
     printf("export_readonly ok: %.*s\n", (int)export_len, export_buf);
 
-    /* ── Step 3: 构造 PSBT fixture ── */
-    /* 公钥来自库内导出的 hdkey（P1-04：L3 侧无 seed 可用，也不需要）。
-       为了让 C 端独立于 Rust 测试代码，用固定测试私钥的公钥：
-       sk = 0x0101...01 的压缩公钥（与 keystone cross-validation 同源）。 */
+    /* ── Step 3: build the PSBT fixture ── */
+    /* The pubkey comes from the hdkey exported by the library (P1-04: the L3
+       side has no seed available, and does not need one). To keep the C side
+       independent of the Rust test code, use the pubkey of a fixed test key:
+       the compressed pubkey of sk = 0x0101...01 (same origin as the keystone
+       cross-validation vectors). */
     static const uint8_t test_compressed_pk[33] = {
         0x03, 0x1b, 0x84, 0xc5, 0x56, 0x7b, 0x12, 0x64, 0xa0, 0xa9,
         0x9a, 0x78, 0xe7, 0xf8, 0xd9, 0xc6, 0xd4, 0xdf, 0x3e, 0x0e,
         0xc8, 0x66, 0x0f, 0x2f, 0xce, 0x56, 0x27, 0xdd, 0xd4, 0x51,
         0xaf, 0x7f, 0x42
-    }; /* 占位：真实值由 sign() 内部从 BIP32_DERIVATION pubkey 匹配派生 */
+    }; /* placeholder: sign() derives the real value internally by matching the BIP32_DERIVATION pubkey */
     static const uint8_t test_pk_hash[20] = {
         0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
         0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42
@@ -190,7 +193,7 @@ int main(void) {
     uint8_t payload[1024];
     (void)build_crypto_psbt_payload(psbt, psbt_len, payload, sizeof(payload));
 
-    /* ── Step 4: sign via UR（P6.1d：L3 直接喂 UR 字符串）── */
+    /* ── Step 4: sign via UR (P6.1d: L3 feeds the UR string directly) ── */
     uint8_t signed_out[4096];
     unsigned actual = 0;
     /* Z3.3b: sign workspace — capacity stays a runtime query (never frozen
@@ -218,20 +221,22 @@ int main(void) {
         return 1;
     }
 
-    /* 用 export_readonly 得到的 crypto-hdkey UR 当输入会走 Unknown 拒绝——
-       这里直接用 Python/Rust 侧预生成的 crypto-psbt UR（fixture）演示 L3 形状。
-       fixture 由 tests 生成：见 docs。此处演示 decode 失败路径 + 成功路径。 */
+    /* Feeding the crypto-hdkey UR from export_readonly would be rejected as
+       Unknown — so use a crypto-psbt UR pre-generated on the Python/Rust side
+       (fixture) to exercise the L3 shape. The fixture is produced by the tests:
+       see docs. This exercises both the decode-failure and the success path. */
 
-    /* 4a. 非 UR 输入 → 错误码 */
+    /* 4a. non-UR input → error code */
     const char *bad_uri = "not-a-ur";
     rc = shlosilo_sign_ur_ffi(bad_uri, indices, 12, NULL, 0, 0, NULL, 0,
                               signed_out, sizeof(signed_out), &actual,
                               sign_ws, ws_need);
     printf("sign_ur(bad) rc=%d (expected != 0)\n", rc);
 
-    /* 4b. 真实 UR：由 sim 内部构造 payload 后无法在 C 端做 bytewords 编码，
-       所以用固定测试向量（Rust 测试生成的 eth-sign-request 单分片 UR）。
-       P6.1d 完成后此向量替换为 Sparrow/MetaMask 真实导出。 */
+    /* 4b. Real UR: the sim can build the payload internally but cannot run
+       bytewords encoding on the C side, so use a fixed test vector (a
+       single-part eth-sign-request UR produced by the Rust tests). Once P6.1d
+       lands, this vector is replaced by a real Sparrow/MetaMask export. */
     const char *fixture_uri =
         "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
     rc = shlosilo_sign_ur_ffi(fixture_uri, indices, 12, NULL, 0, 0, NULL, 0,
@@ -240,12 +245,13 @@ int main(void) {
     if (rc == 0) {
         hexdump("signed tx", signed_out, actual);
     } else {
-        printf("sign_ur(fixture) rc=%d（fixture 与 create_account 的 mnemonic 不匹配属预期，"
-               "真实流程 mnemonic 来自用户 QR）\n",
+        printf("sign_ur(fixture) rc=%d (a fixture/mnemonic mismatch against "
+               "create_account is expected; the real flow takes the mnemonic "
+               "from the scanned QR)\n",
                rc);
     }
 
-    /* P6.4 v2-安全 §5：C L3 敏感缓冲用后清零 */
+    /* P6.4 v2-security §5: wipe sensitive C L3 buffers after use */
     memset(mnemonic_buf, 0, sizeof(mnemonic_buf));
     memset(indices, 0, sizeof(indices));
 
@@ -254,9 +260,9 @@ int main(void) {
 }
 
 /*
- * 构建（推荐走本目录的 build.sh，它会先编译 forms 静态库）：
+ * Build (prefer this directory's build.sh; it compiles the forms static library first):
  *   bash flux/host-sim/build.sh
- * 等价手动命令（在仓库根目录下）：
+ * Equivalent manual commands (from the repo root):
  *   cargo build --release --lib
  *   gcc -Wall -Wextra -o flux/host-sim/sim_l3 flux/host-sim/sim_l3.c \
  *       -I. -Ltarget/release -lshlosilo -lpthread -ldl -lm

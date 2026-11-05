@@ -1,4 +1,4 @@
-//! BIP-39 passphrase：mnemonic + passphrase → 64-byte seed
+//! BIP-39 passphrase: mnemonic + passphrase → 64-byte seed
 //!
 //! PBKDF2-HMAC-SHA512(mnemonic_sentence, "mnemonic" + passphrase, 2048)
 

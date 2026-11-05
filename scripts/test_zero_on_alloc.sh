@@ -1,18 +1,21 @@
 #!/bin/bash
-# P6.4: host 测试端 zero-on-alloc（v2-安全 §3 条款4）
+# P6.4: host-test-side zero-on-alloc (v2-security §3 clause 4)
 #
-# X3 整改（2026-08-31）：原版 export MALLOC_CONF 对 glibc malloc 完全无效——
-# MALLOC_CONF 是 jemalloc 专用配置，glibc 不读取；且 jemalloc 的 zero 选项
-# 取 boolean 值（zero:true），旧值 zero:1 在 jemalloc 5 也会报
-# "Invalid conf value" 而被忽略。实证（/tmp/zerotest：污染堆后重分配）：
-#   glibc + MALLOC_CONF=zero:1          → nonzero=4096（无效，旧 bug）
-#   LD_PRELOAD jemalloc + zero:true     → nonzero=0（生效）
+# X3 remediation (2026-08-31): the original `export MALLOC_CONF` is completely
+# ineffective against glibc malloc — MALLOC_CONF is a jemalloc-only setting and
+# glibc never reads it; jemalloc's zero option also takes a boolean value
+# (zero:true), so the old value zero:1 is rejected with "Invalid conf value" on
+# jemalloc 5 and ignored. Measured (/tmp/zerotest: poison the heap, then
+# reallocate):
+#   glibc + MALLOC_CONF=zero:1          → nonzero=4096 (no effect, the old bug)
+#   LD_PRELOAD jemalloc + zero:true     → nonzero=0 (effective)
 #
-# 机制：jemalloc MALLOC_CONF=zero:true 使 malloc 返回内存清零——让
-# 「未初始化读」在 host 测试上表现出确定性行为（读到 0 而非旧密钥残留）。
+# Mechanism: jemalloc MALLOC_CONF=zero:true makes malloc return zeroed memory —
+# this gives "uninitialized read" a deterministic behavior on host tests (reads 0
+# instead of stale key material).
 #
-# 用法: bash scripts/test_zero_on_alloc.sh   （代替裸 cargo test）
-# 依赖: libjemalloc2（/lib/x86_64-linux-gnu/libjemalloc.so.2）
+# Usage: bash scripts/test_zero_on_alloc.sh   (instead of a bare cargo test)
+# Depends: libjemalloc2 (/lib/x86_64-linux-gnu/libjemalloc.so.2)
 
 JEMALLOC=/lib/x86_64-linux-gnu/libjemalloc.so.2
 if [ ! -f "$JEMALLOC" ]; then
@@ -20,7 +23,8 @@ if [ ! -f "$JEMALLOC" ]; then
     exit 2
 fi
 
-# 自检：确认 zero-on-alloc 在本机真正生效（防再次出现"配置存在但无效"）
+# Self-check: confirm zero-on-alloc is actually in effect on this machine (guards
+# against "config present but ineffective" recurring)
 if command -v cc >/dev/null 2>&1 && [ ! -x /tmp/.zero_on_alloc_selfcheck ]; then
     cat > /tmp/.zero_on_alloc_selfcheck.c <<'EOF'
 #include <stdlib.h>

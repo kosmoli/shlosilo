@@ -79,7 +79,7 @@ const PAIRING_DETAILS_MAX: usize = 128;
 /// `import_key_images` semantics). Endgames (persistent store + paged sync
 /// vs keystone-shape empty-array + keyed map) are the LuckyFox-phase C/D
 /// decision (pool #55). Rule regardless of cap: an over-cap refusal MUST be
-/// visibly reported (拆码红线). Mirror: flux/forgebox product_task.c
+/// visibly reported (split-code red line). Mirror: flux/forgebox product_task.c
 /// PAIRING_KI_MAX.
 // WP4 (2026-11-02): 64 -> 128. Real-ecosystem evidence: this cap was hit at
 // 75 records by a real wallet's output history during the Feather A/B test,

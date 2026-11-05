@@ -1,5 +1,5 @@
 //! Golden byte-comparison pins against wallet2 / monero-wallet-cli artifacts
-//! (pool item #40: "金标字节对拍缺位").
+//! (pool item #40: "golden byte comparison missing").
 //!
 //! Oracle policy: wallet2 source + monero-wallet-cli golden containers
 //! are the sole authority for protocol/wire semantics. This file pins our
@@ -267,7 +267,7 @@ fn golden_plain_txset_parse_reserialize_identity() {
 
 /// Real Cake Wallet tx2 construction (mainnet add-keys funding-tx change
 /// input): `real_out_additional_tx_keys` NON-EMPTY. This is the pool-#40
-/// "additional_tx_keys 非空真链情形" face. The plaintext of
+/// "additional_tx_keys non-empty on a real chain" face. The plaintext of
 /// fixtures/tx2_cake_real_unsigned.bin is compared byte-for-byte against our
 /// re-serialization.
 #[test]
@@ -517,7 +517,7 @@ fn golden_output_export_parses() {
 /// Deterministic (byte-compared): the 32B key image values — key image is a
 /// deterministic function of the output secret key, so our computed image
 /// must equal the CLI's self-computed golden image byte-for-byte. This is the
-/// "我们序列化器输出与金标件的逐字节对拍" pin for the key-image face.
+/// "our serializer output byte-for-byte against the golden artifact" pin for the key-image face.
 ///
 /// NOT deterministic (verified, not compared): the 64B accompanying
 /// per-record signature and the container envelope (random nonce k in the

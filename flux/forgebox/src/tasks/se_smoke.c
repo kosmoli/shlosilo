@@ -365,7 +365,7 @@ extern void ProductKeyWsDump(void) __attribute__((weak));
 extern int ProductSignFixtureArm(void) __attribute__((weak));
 
 /* 'key new [12|24]': generate a fresh wallet (TRNG entropy -> BIP-39
- * mnemonic via the forms 件) and open it as a signing session. Nothing
+ * mnemonic via the forms component) and open it as a signing session. Nothing
  * irreversible is written, so no arm gate - but the DISPLAY is a secret
  * exposure surface and that is said LOUDLY, every time (same disclosure
  * discipline as RunUnlock's password warning). */
@@ -419,7 +419,7 @@ static void __attribute__((noinline)) RunKeyPlate(const char *mode)
 
 /* 'se dump': hexdump the keysource ws window (Phase 4 acceptance ③
  * zeroization forensics). Dumps KEY BYTES to the serial console BY DESIGN -
- * the acceptance photo is "close 前有钥字节 / close 后全零" straight off this
+ * the acceptance photo is "key bytes present before close / all zeros after close" straight off this
  * output. DEBUG FIRMWARE / ACCEPTANCE ONLY. */
 static void __attribute__((noinline)) RunDump(void)
 {

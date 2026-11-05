@@ -144,7 +144,7 @@ fn signed_envelope_rejects_every_mutation_and_prefix() {
 }
 
 // ---------------------------------------------------------------------------
-// Pairing-request plaintext strict geometry (WP0-C: 严格长度校验)
+// Pairing-request plaintext strict geometry (WP0-C: strict length validation)
 // ---------------------------------------------------------------------------
 
 fn point(sk: &[u8; 32]) -> [u8; 32] {

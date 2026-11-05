@@ -94,8 +94,8 @@ fn keccak256_ind(data: &[u8]) -> [u8; 32] {
 }
 
 /// Independent wallet fingerprint: hand-built spend||view concatenation, then
-/// the independent keccak. This is the "另一个 keccak crate / 手写拼接后哈希
-/// 对照" cross-check.
+/// the independent keccak. This is the "separate keccak crate / hand-built
+/// concatenation then hash" cross-check.
 fn wallet_fp_ind(spend_pub: &[u8; 32], view_pub: &[u8; 32]) -> ([u8; 8], [u8; 32]) {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(spend_pub);
