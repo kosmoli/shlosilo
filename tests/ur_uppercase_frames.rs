@@ -36,6 +36,11 @@ fn type_tag_lookup_is_case_insensitive() {
 }
 
 /// 真实 Sparrow 帧：解码器必须接受大写帧头，并把类型规范化成小写交给上层
+///
+/// 便利构造 `UrMultipartDecoder::new()` 只在 alloc 面存在（它内部 leak 一套
+/// 自己的 workspace）；设备面走的是调用方 workspace 那条路，由下面的
+/// `device_ffi_path_…` 覆盖——两个面都要有钉，但钉子不能跨面编译。
+#[cfg(feature = "alloc-fallback")]
 #[test]
 fn sparrow_uppercase_frames_decode_to_crypto_psbt() {
     let mut dec = UrMultipartDecoder::new();
