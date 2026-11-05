@@ -1,4 +1,4 @@
-//! Fixed user-facing failure vocabulary (拆码 red line, Kosmo 2026-10-12/13).
+//! Fixed user-facing failure vocabulary (split-code red line, 2026-10-12/13).
 //!
 //! Every failure the user can see maps through a fixed word table: one
 //! ambiguous phrase per failure class, no rc codes, no QR-derived strings, no

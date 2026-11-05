@@ -1,7 +1,7 @@
 //! Golden decrypt-face pins for the real-wallet ciphertext fixtures (the
 //! "p2in" family: the money-flow wallet `489yTDD…` and its counterparties).
 //!
-//! Fixture-key policy (Kosmo, 2026-10-20): test-wallet keys may be embedded
+//! Fixture-key policy (2026-10-20): test-wallet keys may be embedded
 //! in the repository in exchange for CI-enforced coverage — the same ruling
 //! that admitted `TEST0830_*_SK_HEX` (tests/golden_wallet2_bytes.rs) and
 //! `TX2_LAB_VIEW_SK` (tests/tx2_whitebox_tools.rs). This supersedes the

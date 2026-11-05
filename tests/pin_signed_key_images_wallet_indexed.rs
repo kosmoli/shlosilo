@@ -307,7 +307,7 @@ fn fp_mismatch_error_reaches_fixed_screen_word() {
     );
 }
 
-/// v2 gap policy (2026-10-21 Kosmo 拍板 — pool #32/#48, red pins 5/6, A案):
+/// v2 gap policy (2026-10-21 — pool #32/#48, red pins 5/6, option A):
 /// an uncovered position REFUSES the sign (KeyImageRecordMissing). The v1
 /// conservative filler (a derived key image of a spent input stamped into
 /// every gap slot) is retired: wallet2's positional import would write each

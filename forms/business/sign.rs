@@ -142,7 +142,7 @@ pub struct WalletKiRecord {
     /// wallet's wire array.
     pub wallet_fp: [u8; 8],
     pub key_image: [u8; 32],
-    /// I13 (WP3, Kosmo decision 2026-10-31): the OUTPUT one-time address this
+    /// I13 (WP3, decision 2026-10-31): the OUTPUT one-time address this
     /// key image belongs to — the mapping key `tx_key_images` ships under
     /// (keystone transfer.rs:1271 fill). Was dropped at parse time before
     /// this field existed, which capped the keystone retained leg at the
@@ -886,7 +886,7 @@ fn sign_xmr_with_ws<'a>(
     // flux workspace) or from a stale transfer-indexing state is treated as
     // ABSENT: the conservative filler covers, and the mismatch guard below
     // still refuses a record that contradicts a freshly derived value.
-    // WP3 canonical staging (I13, Kosmo decision 2026-10-31): the retained
+    // WP3 canonical staging (I13, decision 2026-10-31): the retained
     // leg = the FULL fp-matched retention set — records carry their out_pub
     // mapping key now, so every wallet transfer (spent or not) can ship under
     // keystone's transfers.details fill shape (transfer.rs:1271). Collected
@@ -1259,7 +1259,7 @@ fn sign_xmr_with_ws<'a>(
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         }
     }
-    // Gap policy v2 (pool #32/#48, 2026-10-21 Kosmo 拍板 — red pins 5/6, A案):
+    // Gap policy v2 (pool #32/#48, 2026-10-21 — red pins 5/6, option A):
     // an uncovered position REFUSES the sign (KeyImageRecordMissing). The v1
     // conservative gap filler (d22ec10 — a derived key image of a spent input
     // stamped into every gap slot) is retired: wallet2's

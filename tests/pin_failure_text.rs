@@ -1,6 +1,6 @@
 //! P0-①/② (pool #57/#58, 2026-10-30): the fixed failure-vocabulary pins.
 //!
-//! 拆码红线 (Kosmo 2026-10-12/13): every user-visible failure surface is a
+//! Split-code red line (2026-10-12/13): every user-visible failure surface is a
 //! FIXED word-table entry — no rc codes, no QR-derived strings, no internal
 //! detail on screen. The KI-cap case (2026-10-29) showed a -20 failure
 //! wearing the -34 wording ("key images out of date"): the code→word

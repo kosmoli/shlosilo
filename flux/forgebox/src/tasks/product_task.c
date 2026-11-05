@@ -1603,7 +1603,7 @@ static int ur_single_decode(const char *text, unsigned *plen_out)
 }
 
 /* Map a UR type to a FIXED display name (2026-10-09 injection hardening,
- * Kosmo's red line): QR-derived strings are ATTACKER-CONTROLLED and must
+ * red line): QR-derived strings are ATTACKER-CONTROLLED and must
  * never reach the screen verbatim -- a crafted "type" could paint arbitrary
  * UI text (fake prompts). Unknown types all display as "unknown code". */
 /* FNV-1a 32 → low 16 bits. Used only to give an UNKNOWN UR type a stable
@@ -1951,7 +1951,7 @@ static void scan_ur_hit(const char *text)
      * scan's own lines as they are written. */
     g_scan_notice_l1 = NULL;
 
-    /* ---- First-frame classification (2026-10-09, Kosmo's two-state
+    /* ---- First-frame classification (2026-10-09, two-state
      * machine): the UR type is in EVERY frame header, so decide BEFORE
      * collecting anything -- the collector only runs for types this flow
      * consumes. ---- */
@@ -2413,7 +2413,7 @@ static void scan_step(void)
     dec = QrDecodeGetDecodeTick();
     g_scan_frames++;
 
-    /* Status-slot lifecycle (2026-10-30 Kosmo real-device ruling; the
+    /* Status-slot lifecycle (2026-10-30 device ruling; the
      * 2026-10-09 "slot reflects what the camera CURRENTLY sees" semantics is
      * retired): two consecutive no-decode frames mean the QR left the view
      * (debounced across animation flip gaps) and RE-ARM the retry state --
@@ -2474,7 +2474,7 @@ static void scan_step(void)
         return;
     }
 
-    /* Dev metrics removed from the product face (2026-10-10 Kosmo review:
+    /* Dev metrics removed from the product face (2026-10-10 review:
      * the frames/cam/focus rows kept covering failure messages and are
      * hunt instruments, not product UX -- bring them back behind a dev
      * toggle when a camera hunt needs them). */

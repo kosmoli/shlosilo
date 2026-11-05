@@ -1,7 +1,7 @@
 //! Golden byte-comparison pins against wallet2 / monero-wallet-cli artifacts
 //! (pool item #40: "金标字节对拍缺位").
 //!
-//! Oracle policy (Kosmo): wallet2 source + monero-wallet-cli golden containers
+//! Oracle policy: wallet2 source + monero-wallet-cli golden containers
 //! are the sole authority for protocol/wire semantics. This file pins our
 //! serializers byte-for-byte against real wallet2-produced bytes, in CI, with
 //! no env gating (fixture-key policy: public fixture keys may be embedded in
@@ -881,7 +881,7 @@ fn dump_ours_signed_fa_gold() {
 }
 
 /// Invariant pin — "signed_tx_set round-trip must be byte-identical, extra
-/// preserved" (Kosmo 2026-10-20), sign-path face: the construction data
+/// preserved" (2026-10-20), sign-path face: the construction data
 /// embedded in OUR signed output must carry the wallet2 `extra` verbatim. The
 /// old `SliceVec::new` wipe dropped it, so the signer echoed no payment id
 /// where wallet2's output echoes one (the historical "ours: no payment id"

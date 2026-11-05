@@ -177,7 +177,7 @@ pub extern "C" fn shlosilo_sign_ffi(
     ws_len: c_uint,
 ) -> c_int {
     write_actual_len(actual_len, 0); // P0-02 #4: prologue zeroes the out-param (also covers the null early-return)
-                                     // Z3.3b workspace contract (2026-09-25, Kosmo): ws == NULL is a PURE PROBE —
+                                     // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
                                      // reports the workspace requirement and returns before input parsing, key
                                      // derivation, or any RNG use; no output side effects (output_buf untouched).
     if ws.is_null() {
@@ -491,7 +491,7 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
     ws_len: c_uint,
 ) -> c_int {
     write_actual_len(actual_len, 0); // P0-02 #4: prologue zeroes the out-param
-                                     // Z3.3b workspace contract (2026-09-25, Kosmo): ws == NULL is a PURE PROBE —
+                                     // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
                                      // reports the workspace requirement and returns before input parsing, key
                                      // derivation, or any RNG use; no output side effects (output_buf untouched).
     if ws.is_null() {
@@ -786,7 +786,7 @@ pub extern "C" fn shlosilo_create_account_ffi(
 }
 
 // P1-04 (2026-08-29): shlosilo_restore_seed_ffi has been removed — once seed no longer crosses the FFI this entry
-// has no reason to exist (Kosmo's call). Mnemonic validity checking is inlined in the sign/export entries.
+// has no reason to exist. Mnemonic validity checking is inlined in the sign/export entries.
 
 /// List of supported Network u8 values (for UI dispatch at L3 startup)
 #[no_mangle]
@@ -1410,7 +1410,7 @@ pub mod r3 {
         ws_len: c_uint,
     ) -> c_int {
         write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
-                                         // Z3.3b workspace contract (2026-09-25, Kosmo): ws == NULL is a PURE PROBE —
+                                         // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
                                          // reports the workspace requirement and returns before input parsing, key
                                          // derivation, or any RNG use; no output side effects (output_buf untouched).
         if ws.is_null() {
@@ -2818,7 +2818,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::ptr::{null, null_mut};
 
-    /// Z3.3b contract 1 (Kosmo 2026-09-25): ws == NULL is a PURE PROBE —
+    /// Z3.3b contract 1 (2026-09-25): ws == NULL is a PURE PROBE —
     /// reports the workspace requirement and nothing else. Garbage in every
     /// other parameter proves the probe precedes input validation, key
     /// derivation, and any RNG use; the 0xAA sentinel proves output_buf is

@@ -875,7 +875,7 @@ typedef struct WalletKiRecord {
   uint8_t wallet_fp[8];
   uint8_t key_image[32];
   /**
-   * I13 (WP3, Kosmo decision 2026-10-31): the OUTPUT one-time address this
+   * I13 (WP3, decision 2026-10-31): the OUTPUT one-time address this
    * key image belongs to — the mapping key `tx_key_images` ships under
    * (keystone transfer.rs:1271 fill). Was dropped at parse time before
    * this field existed, which capped the keystone retained leg at the

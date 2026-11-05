@@ -162,7 +162,7 @@ fn fixture_gap_records() -> Vec<WalletKiRecord> {
             transfer_idx: i,
             wallet_fp: fp,
             key_image: [0x11u8.wrapping_add(i as u8); 32],
-            // I13 (WP3, Kosmo decision 2026-10-31): the mapping key rides the
+            // I13 (WP3, decision 2026-10-31): the mapping key rides the
             // record. Distinct per-record pattern so the pin can prove the
             // wire carries RECORD-sourced out_pubs (not derivable ones).
             out_pub: [0xA0u8.wrapping_add(i as u8); 32],
