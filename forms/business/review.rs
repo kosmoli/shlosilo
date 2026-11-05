@@ -61,10 +61,6 @@ pub mod flag {
     pub const FEE_GT_AMOUNT: u16 = 1 << 2;
     /// RBF-signalling input (nSequence < 0xfffffffe).
     pub const RBF: u16 = 1 << 3;
-    /// A **timestamp** locktime (>= 500M) with at least one non-final input:
-    /// the transaction cannot be mined before that moment. Height locktimes are
-    /// the anti-fee-sniping default and deliberately not flagged.
-    pub const LOCKTIME: u16 = 1 << 4;
     /// An output script we cannot render as an address.
     pub const UNKNOWN_SCRIPT: u16 = 1 << 5;
     /// A sighash other than ALL / DEFAULT (NONE, SINGLE, ANYONECANPAY).
@@ -269,7 +265,7 @@ fn summarize_psbt(
     }
 
     // ── fee + totals (pushed first, so the summary is at the top) ──
-    let mut head: heapless::Vec<Line, 3> = heapless::Vec::new();
+    let mut head: heapless::Vec<Line, 4> = heapless::Vec::new();
     let mut push_head = |args: core::fmt::Arguments<'_>| -> Result<()> {
         use core::fmt::Write;
         let mut text = heapless::String::<REVIEW_LINE_MAX>::new();
@@ -306,14 +302,25 @@ fn summarize_psbt(
     if rbf {
         view.flags |= flag::RBF;
     }
-    // Only a *time* lock is a risk we can state offline. Bitcoin Core — and
-    // therefore Sparrow — stamps every transaction with the current block
-    // height as nLockTime (anti-fee-sniping), so "lock_time != 0" fires on
-    // essentially every transaction and trains the operator to ignore warnings,
-    // which is exactly what the review gate exists to prevent. A height lock is
-    // additionally inert when every input is already final.
-    if locktime_is_risky(psbt.unsigned_tx.lock_time, all_inputs_final(psbt)) {
-        view.flags |= flag::LOCKTIME;
+
+    // Locktime is REPORTED, not judged. Bitcoin Core — and therefore Sparrow —
+    // stamps every transaction with the current block height (anti-fee-sniping),
+    // and offline we cannot tell that height from a deliberately future one. The
+    // honest move is to show the value and its domain so the operator can judge;
+    // suppressing it would hide a real time-lock, and warning on every tx would
+    // train the operator to ignore warnings.
+    if psbt.unsigned_tx.lock_time != 0 {
+        let lock = psbt.unsigned_tx.lock_time;
+        let domain = match locktime_domain(lock) {
+            LocktimeDomain::Height => "height",
+            LocktimeDomain::Time => "time",
+        };
+        if all_inputs_final(psbt) {
+            // nLockTime is inert when every input is final (consensus).
+            push_head(format_args!("locktime {} {} ignored", lock, domain))?;
+        } else {
+            push_head(format_args!("locktime {} {}", lock, domain))?;
+        }
     }
 
     // head -> warnings -> body. The warnings sit directly under the totals so
@@ -386,14 +393,22 @@ fn all_inputs_final(psbt: &Psbt<'_>) -> bool {
         .all(|i| i.sequence == 0xffff_ffff)
 }
 
-/// Is the locktime worth an operator warning?
-///
-/// Time locks yes (the transaction cannot be mined before that moment). Height
-/// locks no: they are the anti-fee-sniping default and we have no chain view to
-/// tell "current height" from "future height" — see the flag docs. The honest
-/// limitation: a deliberately future *height* lock is not flagged offline.
-pub fn locktime_is_risky(lock_time: u32, inputs_final: bool) -> bool {
-    lock_time >= LOCKTIME_THRESHOLD && !inputs_final
+/// Which consensus domain a non-zero `nLockTime` belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LocktimeDomain {
+    /// Block height: final once the chain passes it.
+    Height,
+    /// Unix timestamp: final once wall-clock time passes it.
+    Time,
+}
+
+/// Classify `nLockTime` (>= 500M is a timestamp, below is a height).
+pub fn locktime_domain(lock_time: u32) -> LocktimeDomain {
+    if lock_time >= LOCKTIME_THRESHOLD {
+        LocktimeDomain::Time
+    } else {
+        LocktimeDomain::Height
+    }
 }
 
 /// Fixed-vocabulary warning rows for the risk flags.
@@ -402,7 +417,7 @@ pub fn locktime_is_risky(lock_time: u32, inputs_final: bool) -> bool {
 /// a closed vocabulary (ASCII, no payload content): the operator reads "what
 /// kind of risk", not a rendered payload field. Ordering is fixed so the eye
 /// finds the same warning in the same place on every transaction.
-fn warn_lines(flags: u16) -> [Option<&'static str>; 7] {
+fn warn_lines(flags: u16) -> [Option<&'static str>; 6] {
     [
         if flags & flag::SIGHASH_UNSAFE != 0 {
             Some("warn: sighash not all")
@@ -426,11 +441,6 @@ fn warn_lines(flags: u16) -> [Option<&'static str>; 7] {
         },
         if flags & flag::RBF != 0 {
             Some("warn: replaceable")
-        } else {
-            None
-        },
-        if flags & flag::LOCKTIME != 0 {
-            Some("warn: time locked")
         } else {
             None
         },

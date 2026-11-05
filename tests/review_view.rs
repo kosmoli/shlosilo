@@ -58,9 +58,14 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
         !l.iter().any(|s| s == "warn: high fee"),
         "70 sat 的手续费不该报大额: {l:?}"
     );
+    // 判不了就如实显示：locktime 必须以信息行出现并标注域，不许吞掉
+    let lt = l
+        .iter()
+        .find(|s| s.starts_with("locktime "))
+        .unwrap_or_else(|| panic!("locktime 值必须上屏（交给操作员判断）: {l:?}"));
     assert!(
-        !l.iter().any(|s| s.starts_with("warn: time locked")),
-        "高度型 locktime（anti-sniping 常态）不该报警: {l:?}"
+        lt.ends_with(" height") || lt.ends_with(" height ignored"),
+        "夹具是高度型 locktime，域标注应为 height: {lt}"
     );
     // 风险行在正文之前，不许被挤到折叠线以下
     let first_warn = l.iter().position(|s| s.starts_with("warn:")).unwrap();
@@ -387,23 +392,16 @@ fn change_output_is_labelled_when_our_fingerprint_is_known() {
     );
 }
 
-/// locktime 判定：只报**时间戳型**时间锁，不报高度型。
+/// locktime 的域判定（500M 分界）。
 ///
-/// 真机报障（2026-11-05）：「为什么会有 locktime set？」——Bitcoin Core/Sparrow
-/// 给每笔交易写 nLockTime=当前高度（anti-fee-sniping），按「非 0 就报」等于每笔
-/// 都报，操作员很快就学会无视警告。真正的风险只有时间戳型时间锁，且仅当还有
-/// 非 final 输入时。
+/// 产品原则（Kosmo 2026-11-05）：**判不了的值如实显示给操作员，不要替他过滤**。
+/// 高度型（anti-sniping 常态）与时间戳型的区别只用于「标注是哪个域」，不再用于
+/// 决定是否上屏。
 #[test]
-fn locktime_only_flags_timestamp_locks() {
-    // 高度型（anti-sniping 常态）→ 不报
-    assert!(!review::locktime_is_risky(0, false));
-    assert!(!review::locktime_is_risky(870_123, false));
-    // 时间戳型 → 报
-    assert!(review::locktime_is_risky(500_000_000, false));
-    assert!(review::locktime_is_risky(1_900_000_000, false));
-    // 所有输入 final 时 locktime 整体失效 → 不报
-    assert!(!review::locktime_is_risky(1_900_000_000, true));
-    // 边界：恰好 500M 属于时间戳域
-    assert!(review::locktime_is_risky(500_000_000, false));
-    assert!(!review::locktime_is_risky(499_999_999, false));
+fn locktime_domain_splits_at_the_consensus_threshold() {
+    use review::LocktimeDomain;
+    assert_eq!(review::locktime_domain(870_123), LocktimeDomain::Height);
+    assert_eq!(review::locktime_domain(499_999_999), LocktimeDomain::Height);
+    assert_eq!(review::locktime_domain(500_000_000), LocktimeDomain::Time);
+    assert_eq!(review::locktime_domain(1_900_000_000), LocktimeDomain::Time);
 }
