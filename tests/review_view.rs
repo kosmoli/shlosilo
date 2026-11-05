@@ -58,6 +58,10 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
         !l.iter().any(|s| s == "warn: high fee"),
         "70 sat 的手续费不该报大额: {l:?}"
     );
+    assert!(
+        !l.iter().any(|s| s.starts_with("warn: time locked")),
+        "高度型 locktime（anti-sniping 常态）不该报警: {l:?}"
+    );
     // 风险行在正文之前，不许被挤到折叠线以下
     let first_warn = l.iter().position(|s| s.starts_with("warn:")).unwrap();
     let first_send = l.iter().position(|s| s.starts_with("send ")).unwrap();
@@ -381,4 +385,25 @@ fn change_output_is_labelled_when_our_fingerprint_is_known() {
         l.iter().any(|s| s.starts_with("send ")),
         "付款输出仍应标 send: {l:?}"
     );
+}
+
+/// locktime 判定：只报**时间戳型**时间锁，不报高度型。
+///
+/// 真机报障（2026-11-05）：「为什么会有 locktime set？」——Bitcoin Core/Sparrow
+/// 给每笔交易写 nLockTime=当前高度（anti-fee-sniping），按「非 0 就报」等于每笔
+/// 都报，操作员很快就学会无视警告。真正的风险只有时间戳型时间锁，且仅当还有
+/// 非 final 输入时。
+#[test]
+fn locktime_only_flags_timestamp_locks() {
+    // 高度型（anti-sniping 常态）→ 不报
+    assert!(!review::locktime_is_risky(0, false));
+    assert!(!review::locktime_is_risky(870_123, false));
+    // 时间戳型 → 报
+    assert!(review::locktime_is_risky(500_000_000, false));
+    assert!(review::locktime_is_risky(1_900_000_000, false));
+    // 所有输入 final 时 locktime 整体失效 → 不报
+    assert!(!review::locktime_is_risky(1_900_000_000, true));
+    // 边界：恰好 500M 属于时间戳域
+    assert!(review::locktime_is_risky(500_000_000, false));
+    assert!(!review::locktime_is_risky(499_999_999, false));
 }

@@ -61,7 +61,9 @@ pub mod flag {
     pub const FEE_GT_AMOUNT: u16 = 1 << 2;
     /// RBF-signalling input (nSequence < 0xfffffffe).
     pub const RBF: u16 = 1 << 3;
-    /// Non-zero locktime (height or time).
+    /// A **timestamp** locktime (>= 500M) with at least one non-final input:
+    /// the transaction cannot be mined before that moment. Height locktimes are
+    /// the anti-fee-sniping default and deliberately not flagged.
     pub const LOCKTIME: u16 = 1 << 4;
     /// An output script we cannot render as an address.
     pub const UNKNOWN_SCRIPT: u16 = 1 << 5;
@@ -304,7 +306,13 @@ fn summarize_psbt(
     if rbf {
         view.flags |= flag::RBF;
     }
-    if psbt.unsigned_tx.lock_time != 0 {
+    // Only a *time* lock is a risk we can state offline. Bitcoin Core — and
+    // therefore Sparrow — stamps every transaction with the current block
+    // height as nLockTime (anti-fee-sniping), so "lock_time != 0" fires on
+    // essentially every transaction and trains the operator to ignore warnings,
+    // which is exactly what the review gate exists to prevent. A height lock is
+    // additionally inert when every input is already final.
+    if locktime_is_risky(psbt.unsigned_tx.lock_time, all_inputs_final(psbt)) {
         view.flags |= flag::LOCKTIME;
     }
 
@@ -366,6 +374,28 @@ fn infer_network(psbt: &Psbt<'_>) -> Option<Network> {
     None
 }
 
+/// `nLockTime` >= this value is a unix timestamp, below it a block height
+/// (Bitcoin consensus; same constant as `chain::btc::summary`).
+const LOCKTIME_THRESHOLD: u32 = 500_000_000;
+
+/// Every input final? Then `nLockTime` is ignored by consensus entirely.
+fn all_inputs_final(psbt: &Psbt<'_>) -> bool {
+    psbt.unsigned_tx
+        .inputs
+        .iter()
+        .all(|i| i.sequence == 0xffff_ffff)
+}
+
+/// Is the locktime worth an operator warning?
+///
+/// Time locks yes (the transaction cannot be mined before that moment). Height
+/// locks no: they are the anti-fee-sniping default and we have no chain view to
+/// tell "current height" from "future height" — see the flag docs. The honest
+/// limitation: a deliberately future *height* lock is not flagged offline.
+pub fn locktime_is_risky(lock_time: u32, inputs_final: bool) -> bool {
+    lock_time >= LOCKTIME_THRESHOLD && !inputs_final
+}
+
 /// Fixed-vocabulary warning rows for the risk flags.
 ///
 /// One flag = one row, and the row is emitted only when the flag is set. Text is
@@ -400,7 +430,7 @@ fn warn_lines(flags: u16) -> [Option<&'static str>; 7] {
             None
         },
         if flags & flag::LOCKTIME != 0 {
-            Some("warn: locktime set")
+            Some("warn: time locked")
         } else {
             None
         },

@@ -111,7 +111,9 @@
 #define RBF (1 << 3)
 
 /**
- * Non-zero locktime (height or time).
+ * A **timestamp** locktime (>= 500M) with at least one non-final input:
+ * the transaction cannot be mined before that moment. Height locktimes are
+ * the anti-fee-sniping default and deliberately not flagged.
  */
 #define LOCKTIME (1 << 4)
 
