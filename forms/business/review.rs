@@ -237,16 +237,20 @@ fn summarize_psbt(
             continue;
         }
         let spk = crate::types::wire_bytes::wire_slice(&out.script_pubkey);
-        let is_change = match (master_fingerprint, psbt.output_map_checked(i)) {
-            (Some(ours), Some(map)) => map_carries_our_fingerprint(map, ours),
-            _ => false,
+        let owner = match (master_fingerprint, psbt.output_map_checked(i)) {
+            (Some(ours), Some(map)) => output_ownership(map, ours),
+            _ => Ownership::Foreign,
         };
         // One labelled row per output: the amount carries its unit and the
         // role (send / change) so a page never shows a bare number, and the
         // address follows on its own line (wrapped, never truncated).
         view.push_fmt(format_args!(
             "{} {} sats",
-            if is_change { "change" } else { "send" },
+            match owner {
+                Ownership::OwnChange => "change",
+                Ownership::OwnReceive => "to you",
+                Ownership::Foreign => "send",
+            },
             out.value
         ))?;
         match btc_script::render(spk, network) {
@@ -356,20 +360,56 @@ fn infer_network(psbt: &Psbt<'_>) -> Option<Network> {
 /// An output belongs to us when its output-map BIP32_DERIVATION carries our
 /// master fingerprint. Absent fingerprint or absent record → treated as foreign
 /// (a payment), which is the conservative reading for a review screen.
-fn map_carries_our_fingerprint(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> bool {
+/// Who owns an output, as far as the PSBT itself can tell us.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ownership {
+    /// No derivation record for us: money leaving to someone else.
+    Foreign,
+    /// Our own key on the **external** chain (`…/0/i`): a payment to one of our
+    /// own receive addresses.
+    OwnReceive,
+    /// Our own key on the **internal** chain (`…/1/i`): change coming back.
+    OwnChange,
+}
+
+/// Classify an output by the BIP-32 derivation record in its output map.
+///
+/// The chain index (second-to-last path element) is the wallet's own statement
+/// about what the output is for: 0 = receive chain, 1 = change chain. Trusting
+/// "has our fingerprint" alone lumps a self-payment together with change — the
+/// first real-device review (2026-11-05) showed both outputs labelled `change`
+/// on a payment to our own receive address.
+fn output_ownership(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> Ownership {
     for kv in map.iter() {
         // OUTPUT map: BIP-174 assigns the output-side derivation a different
         // key byte (0x02) than the input side (0x06). Using the input constant
         // here silently matched nothing, so change outputs were reported as
         // payments forever (caught by change_output_is_labelled_…, 2026-11-05).
-        if kv.key.first() == Some(&psbt::output_type::BIP32_DERIVATION)
-            && kv.value.len() >= 4
-            && kv.value[..4] == ours[..]
+        if kv.key.first() != Some(&psbt::output_type::BIP32_DERIVATION)
+            || kv.value.len() < 8
+            || kv.value[..4] != ours[..]
         {
-            return true;
+            continue;
         }
+        // value = fingerprint(4) || path elements as u32 LE each
+        let elems = &kv.value[4..];
+        let depth = elems.len() / 4;
+        if depth < 2 {
+            return Ownership::OwnReceive; // too short to tell: assume not change
+        }
+        let chain = u32::from_le_bytes([
+            elems[(depth - 2) * 4],
+            elems[(depth - 2) * 4 + 1],
+            elems[(depth - 2) * 4 + 2],
+            elems[(depth - 2) * 4 + 3],
+        ]) & 0x7fff_ffff;
+        return if chain == 1 {
+            Ownership::OwnChange
+        } else {
+            Ownership::OwnReceive
+        };
     }
-    false
+    Ownership::Foreign
 }
 
 /// EVM review: chain id, destination, value, calldata size.
