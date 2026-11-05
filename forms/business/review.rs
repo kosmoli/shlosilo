@@ -308,11 +308,20 @@ fn summarize_psbt(
         view.flags |= flag::LOCKTIME;
     }
 
-    // head lines first, then the body
+    // head -> warnings -> body. The warnings sit directly under the totals so
+    // they are never below the fold of a one-page review.
     let mut merged: heapless::Vec<Line, REVIEW_LINES_MAX> = heapless::Vec::new();
     for line in head.iter() {
         merged
             .push(line.clone())
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+    }
+    for warn in warn_lines(view.flags).into_iter().flatten() {
+        let mut text = heapless::String::<REVIEW_LINE_MAX>::new();
+        text.push_str(warn)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+        merged
+            .push(Line { text })
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
     }
     for line in view.lines.iter() {
@@ -355,6 +364,52 @@ fn infer_network(psbt: &Psbt<'_>) -> Option<Network> {
         }
     }
     None
+}
+
+/// Fixed-vocabulary warning rows for the risk flags.
+///
+/// One flag = one row, and the row is emitted only when the flag is set. Text is
+/// a closed vocabulary (ASCII, no payload content): the operator reads "what
+/// kind of risk", not a rendered payload field. Ordering is fixed so the eye
+/// finds the same warning in the same place on every transaction.
+fn warn_lines(flags: u16) -> [Option<&'static str>; 7] {
+    [
+        if flags & flag::SIGHASH_UNSAFE != 0 {
+            Some("warn: sighash not all")
+        } else {
+            None
+        },
+        if flags & flag::FEE_GT_AMOUNT != 0 {
+            Some("warn: fee over amount")
+        } else {
+            None
+        },
+        if flags & flag::HIGH_FEE != 0 {
+            Some("warn: high fee")
+        } else {
+            None
+        },
+        if flags & flag::UNKNOWN_CALLDATA != 0 {
+            Some("warn: unknown call")
+        } else {
+            None
+        },
+        if flags & flag::RBF != 0 {
+            Some("warn: replaceable")
+        } else {
+            None
+        },
+        if flags & flag::LOCKTIME != 0 {
+            Some("warn: locktime set")
+        } else {
+            None
+        },
+        if flags & flag::MANY_OUTPUTS != 0 {
+            Some("warn: outputs not listed")
+        } else {
+            None
+        },
+    ]
 }
 
 /// An output belongs to us when its output-map BIP32_DERIVATION carries our

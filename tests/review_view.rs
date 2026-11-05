@@ -48,7 +48,20 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
     assert_eq!(l[1], "fee 70 sats", "lines = {l:?}");
     // 真机首测的排版教训（2026-11-05）：每行都要自解释——金额带单位、
     // 一页放得下，不许出现裸数字或与页标题重复的抬头行。
-    assert_eq!(l.len(), 6, "1 输入 2 输出应压到 6 行（一页）: {l:?}");
+    // 一页上限 12 行（真机版面），且风险行必须出现在正文之上
+    assert!(l.len() <= 12, "必须一页放得下（≤12 行）: {l:?}");
+    assert!(
+        l.iter().any(|s| s == "warn: replaceable"),
+        "RBF 输入必须上屏告警: {l:?}"
+    );
+    assert!(
+        !l.iter().any(|s| s == "warn: high fee"),
+        "70 sat 的手续费不该报大额: {l:?}"
+    );
+    // 风险行在正文之前，不许被挤到折叠线以下
+    let first_warn = l.iter().position(|s| s.starts_with("warn:")).unwrap();
+    let first_send = l.iter().position(|s| s.starts_with("send ")).unwrap();
+    assert!(first_warn < first_send, "风险行必须在金额行之前: {l:?}");
     assert!(l.iter().any(|s| s == "send 1000 sats"), "lines = {l:?}");
     // 输出地址来自 Bitcoin Core 编码规则（P2WPKH on tb1）
     // 形态：`send <amount> sats` 一行 + 下一行地址（长地址再续行）
