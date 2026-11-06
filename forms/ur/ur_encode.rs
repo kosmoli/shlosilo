@@ -71,7 +71,12 @@ impl core::fmt::Debug for UrEncoded {
 /// Used for v2 §7 ChainKind inference — business module dispatch
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UrTypeTag {
-    CryptoPsbt,         // BTC
+    CryptoPsbt, // BTC (registry name, BCR-2020-006)
+    /// BTC PSBT under the short name the Cake family puts on the wire
+    /// (`~/codebases/cupcake/lib/coins/bitcoin/wallet.dart`: `UR("psbt", ...)`).
+    /// Same payload as `CryptoPsbt`, different name: the reply must carry the
+    /// name the request used, so the two are distinct tags, not aliases.
+    Psbt,
     EthSignRequest,     // ETH
     CryptoMoneroTx,     // XMR (compatibility alias, deprecated — official is xmr-txunsigned/signed)
     XmrTxUnsigned,      // XMR official registry 8303 (payload = full encrypted unsigned txset blob)
@@ -108,6 +113,7 @@ impl UrTypeTag {
         };
         match name {
             "crypto-psbt" => Self::CryptoPsbt,
+            "psbt" => Self::Psbt,
             "eth-sign-request" => Self::EthSignRequest,
             "crypto-monero-tx" => Self::CryptoMoneroTx,
             "xmr-txunsigned" => Self::XmrTxUnsigned,
@@ -127,6 +133,7 @@ impl UrTypeTag {
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::CryptoPsbt => "crypto-psbt",
+            Self::Psbt => "psbt",
             Self::EthSignRequest => "eth-sign-request",
             Self::CryptoMoneroTx => "crypto-monero-tx",
             Self::XmrTxUnsigned => "xmr-txunsigned",

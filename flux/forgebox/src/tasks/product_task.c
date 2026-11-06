@@ -1202,6 +1202,9 @@ static void sign_out_type_for(const char *in_type)
     } else if (strcmp(in_type, "xmr-txunsigned") == 0 ||
         strcmp(in_type, "crypto-monero-tx") == 0) {
         snprintf(g_sign_out_type, sizeof(g_sign_out_type), "xmr-txsigned");
+    } else if (strcmp(in_type, "psbt") == 0) {
+        /* Cake-family short name: answer under the same name. */
+        snprintf(g_sign_out_type, sizeof(g_sign_out_type), "psbt");
     } else if (strcmp(in_type, "crypto-psbt") == 0) {
         snprintf(g_sign_out_type, sizeof(g_sign_out_type), "crypto-psbt");
     } else {
@@ -1388,7 +1391,8 @@ static void sign_run(const char *uri, const char *type,
     ur_intake_reset();
     if (g_sign_out_len > 0 &&
         (strcmp(g_sign_out_type, "xmr-txsigned") == 0 ||
-         strcmp(g_sign_out_type, "crypto-psbt") == 0)) {
+         strcmp(g_sign_out_type, "crypto-psbt") == 0 ||
+         strcmp(g_sign_out_type, "psbt") == 0)) {
         /* T5 beat 4: an XMR signed set goes straight to the QR carousel --
          * Cake's "scan QR code" step collects it (the rc/out/dt diagnostics
          * already went to the console above). The session is already closed
@@ -1687,6 +1691,9 @@ static const char *ur_type_display(const char *type)
     if (strncasecmp(type, "crypto-psbt", 11) == 0) {
         return "sign request: btc";
     }
+    if (strcasecmp(type, "psbt") == 0) {
+        return "sign request: btc";
+    }
     if (strncasecmp(type, "eth-sign-request", 16) == 0) {
         return "sign request: eth";
     }
@@ -1705,6 +1712,7 @@ static int ur_type_is_sign(const char *type)
     return strncasecmp(type, "xmr-txunsigned", 14) == 0 ||
            strncasecmp(type, "crypto-monero-tx", 16) == 0 ||
            strncasecmp(type, "crypto-psbt", 11) == 0 ||
+           strcasecmp(type, "psbt") == 0 ||
            strncasecmp(type, "eth-sign-request", 16) == 0;
 }
 
@@ -1757,6 +1765,7 @@ int ProductSignFixtureArm(void)
 static int review_type_gated(const char *type)
 {
     return strncmp(type, "crypto-psbt", 11) == 0 ||
+           strcasecmp(type, "psbt") == 0 ||
            strncmp(type, "eth-sign-request", 16) == 0;
 }
 

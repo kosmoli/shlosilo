@@ -35,7 +35,7 @@ const PAYLOAD_MAX: usize = 16384;
 /// The legacy `UrTypeTag::from_bytes` first-byte private tag protocol is deprecated.
 pub fn to_template<'a>(type_tag: UrTypeTag, payload: &'a [u8]) -> Result<TxTemplate<'a>> {
     let chain_kind = match type_tag {
-        UrTypeTag::CryptoPsbt => ChainKind::Btc,
+        UrTypeTag::CryptoPsbt | UrTypeTag::Psbt => ChainKind::Btc,
         UrTypeTag::EthSignRequest => ChainKind::Eth,
         UrTypeTag::CryptoMoneroTx | UrTypeTag::XmrTxUnsigned | UrTypeTag::XmrTxSigned => {
             ChainKind::Xmr

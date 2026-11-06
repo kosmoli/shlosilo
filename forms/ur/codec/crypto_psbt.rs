@@ -31,7 +31,9 @@ pub fn encode(psbt: &[u8]) -> Result<UrEncoded> {
 /// are accepted: a Bytes item (legacy wrapped payload) or bare PSBT bytes.
 pub fn decode_into(uri: &str, out: &mut [u8]) -> Result<usize> {
     let d = ur_decode::decode(uri)?;
-    if d.type_tag() != UrTypeTag::CryptoPsbt {
+    // Both names carry the same payload; the tag is kept distinct so the reply
+    // can use the name the request used.
+    if !matches!(d.type_tag(), UrTypeTag::CryptoPsbt | UrTypeTag::Psbt) {
         return Err(err());
     }
     let psbt: &[u8] = match cbor::decode(d.as_ref()) {

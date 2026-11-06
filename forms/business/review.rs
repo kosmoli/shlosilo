@@ -158,7 +158,9 @@ pub fn build(
     recs: &mut [KvRec],
 ) -> Result<ReviewView> {
     match type_tag {
-        UrTypeTag::CryptoPsbt => build_btc(payload, network, master_fingerprint, arena, recs),
+        UrTypeTag::CryptoPsbt | UrTypeTag::Psbt => {
+            build_btc(payload, network, master_fingerprint, arena, recs)
+        }
         UrTypeTag::EthSignRequest => build_eth(payload),
         _ => Err(ShlosiloError::new(ShlosiloErrorKind::ChainKindUnsupported)),
     }
