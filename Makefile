@@ -56,7 +56,8 @@ host-sim:
 # link). CI rebuilds all of these from a clean checkout; this target is the
 # local equivalent.
 clean-appearances:
-	rm -rf flux/forgebox/build flux/forgebox/shlosilo flux/host-sim/sim_l3
+	rm -rf flux/forgebox/build flux/forgebox/build_simulator flux/host-sim/sim_l3
+	rm -f flux/forgebox/shlosilo/libshlosilo.a flux/forgebox/shlosilo/shlosilo.h
 	@echo "removed ignored appearance build products (rebuild: make forgebox | make host-sim)"
 
 test:
