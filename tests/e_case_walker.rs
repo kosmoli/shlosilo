@@ -4,7 +4,7 @@
 //! e_case_walker -- --ignored --nocapture`. Reassembles an `xmr-txunsigned`
 //! UR capture, decrypts the unsigned container with the TEST2 view key and
 //! prints the construction shape plus the predicted signed size against the
-//! device caps (SIGN_OUT_MAX 16896 / return-UR budget 16384).
+//! device caps (SIGN_OUT_MAX 66048 outbound / 16384 inbound reassembly).
 
 #![cfg(feature = "alloc-fallback")]
 
@@ -115,8 +115,8 @@ fn walk_e_case_request() {
     let predicted = 722 + 2131 * total_in + 711 * total_out;
     println!("predicted signed plain ≈ {predicted} B (model 722+2131·{total_in}+711·{total_out})");
     println!(
-        "caps: SIGN_OUT_MAX=16896, return-UR budget=16384 -> {}",
-        if predicted > 16896 {
+        "caps: SIGN_OUT_MAX=66048 (outbound), inbound reassembly=16384 -> {}",
+        if predicted > 66048 {
             "OVER CAP (expected sign rc=-20)"
         } else if predicted > 16384 {
             "over return-UR budget"
@@ -140,7 +140,8 @@ const FRESH_ENTROPY: [u8; 32] = [
 ];
 
 /// Re-sign the captured E-case request and measure the signed container size
-/// against SIGN_OUT_MAX 16896 (the device's -20 "request too large").
+/// against SIGN_OUT_MAX 66048 (was 16896; the E case at 21,420 B used to be
+/// refused by the device with -20 "request too large").
 #[test]
 #[ignore]
 fn sign_e_case_request() {
@@ -265,7 +266,7 @@ fn sign_e_case_request() {
                 std::fs::write(p, &sbuf[..nn]).expect("dump signed container");
             }
             println!(
-                "SIGN OK: signed container = {nn} bytes (SIGN_OUT_MAX=16896, return budget=16384)"
+                "SIGN OK: signed container = {nn} bytes (SIGN_OUT_MAX=66048, inbound reassembly=16384)"
             )
         }
         Err(e) => println!("SIGN ERR: {e:?}"),

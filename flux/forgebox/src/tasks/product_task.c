@@ -673,13 +673,19 @@ static const uint16_t k_sign_idx12[12] = {
     136, 1092, 546, 273, 136, 1092, 546, 273, 136, 1092, 546, 283
 };
 #define SIGN_ENTROPY_LEN          32
-#define SIGN_OUT_MAX              16896 /* = shlosilo.h SIGN_OUTPUT_BUF_MAX_LEN
- * (MULTIPART_PAYLOAD_MAX_LEN 16384 + 512): the signed container carries the
- * ptx + key_images + tx_key_images and a 4-in/4-out sign measures 12115 B
- * (2026-10-22 real-capture repro) -- the old 8 KiB silently refused every
- * such sign with BufferTooSmall (-20). 16896 is also the return-leg UR
- * payload bound, so anything larger cannot ride the xmr-txsigned QR back. */
-/* MULTIPART_PAYLOAD_MAX_LEN: the R3 reassembly budget. */
+#define SIGN_OUT_MAX              (64 * 1024 + 512) /* = shlosilo.h SIGN_OUTPUT_BUF_MAX_LEN
+ * (caps::SIGN_OUTBOUND_MAX). The signed container carries ptx + key_images +
+ * tx_key_images; the measured E case (9-in/2-out) is 21,420 B and the size model
+ * 722 + 2131*N_in + 711*N_out puts a 29-input spend at ~64 KiB. This is the
+ * OUTBOUND direction: we choose the fragment length, so the wallet's decoder -
+ * not our slot count - is the limit. It used to be 16896 (the inbound reassembly
+ * budget plus slack), which refused every request past ~6 inputs. */
+/* Inbound reassembly budget. NOT a memory budget: the fountain decoder completes
+ * at decoded_count >= ceil(message / fragment), and it has UR_WS_DECODED_SLOTS
+ * (256) slots. With the 130-character fragments the Cake family sends by default
+ * (bytewords minimal: 4 chars per 2 bytes => ~65 B of data per part) the ceiling
+ * is ~16.6 KiB. Raising this number alone accepts frames that can never be
+ * assembled (progress parks at 99%) - the slots must move with it. */
 #define UR_PAYLOAD_MAX            (16 * 1024)
 
 /* Multipart UR intake (QR flow into the sign page): the R3 decoder session

@@ -156,3 +156,41 @@ pub const SIGN_WS_RECORD_DESTS: usize = 64;
 /// ClsagProof serialized cap: pseudo_out (32) + s[RING_MAX] (32*16) + c1 (32) + D (32).
 /// Layout per clsag.rs sign(): `pseudo_out(32) ‖ s[mixin+1] ‖ c1 ‖ D`.
 pub const CLSAG_PROOF_MAX: usize = 32 * (RING_MAX + 3);
+
+// === QR transport limits (B-7) =============================================
+//
+// The two directions are not symmetrical, and treating them as one number is
+// how a device ends up able to *collect* a payload it can never *assemble*:
+//
+// - Inbound (a wallet -> us) is bounded by our **reassembly slots**, not by a
+//   memory budget: the fountain decoder completes at `decoded_count >=
+//   sequence_count`, and `sequence_count = ceil(消息 / 分片)`. With
+//   `UR_WS_DECODED_SLOTS = 256` and the 130-character fragments the Cake family
+//   sends by default (bytewords minimal is 4 chars per 2 bytes, so ~65 B of data
+//   per part), the ceiling is ~16.6 KiB. That is why
+//   `ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN` stays at 16384: raising it
+//   without raising the slots produces a session that never completes (progress
+//   parks at 99%) - frames are accepted one by one and the request can never be
+//   signed.
+// - Outbound (us -> a wallet) is ours to choose: we pick the fragment length, so
+//   the wallet's decoder - not our slot count - is the limit. 64 KiB covers a
+//   29-input spend under the measured size model (722 + 2131·N_in + 711·N_out).
+
+/// Largest signed artifact we emit, and therefore the caller-buffer budget the
+/// sign FFI accepts: 64 KiB of payload plus the 512-byte container slack the
+/// old `MULTIPART_PAYLOAD_MAX_LEN + 512` shape used.
+pub(crate) const SIGN_OUTBOUND_MAX: usize = 64 * 1024 + 512;
+
+#[cfg(test)]
+mod transport_limit_pins {
+    //! The C side carries these numbers literally (`UR_PAYLOAD_MAX`,
+    //! `SIGN_OUT_MAX` in flux/forgebox/src/tasks/product_task.c), so the two
+    //! faces are compared here rather than through a `pub` constant: making them
+    //! `pub` would export them into shlosilo.h and invite a second source of
+    //! truth. `tests/transport_limits.rs` pins the C side and the behaviour.
+
+    #[test]
+    fn outbound_cap_is_64k_plus_container_slack() {
+        assert_eq!(super::SIGN_OUTBOUND_MAX, 64 * 1024 + 512);
+    }
+}
