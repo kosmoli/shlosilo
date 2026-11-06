@@ -146,6 +146,9 @@ jobs:
   appearances:
     name: Flux (clean-checkout shims + hosts + gates)
     runs-on: ubuntu-latest
+    # A pathological apt mirror once turned this job into an hour of silence.
+    # Fail visibly instead: the real work here is ~3 minutes.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -181,10 +184,31 @@ jobs:
           cargo check -p shlosilo-flux-keysource --no-default-features --target thumbv7em-none-eabihf
       - name: forgebox staticlib (embedded, thumbv7em)
         run: cargo check -p shlosilo-forgebox --release --target thumbv7em-none-eabihf
+      # The C firmware build is ~95% of this job's wall time (measured: 3433 s of
+      # a 59-minute run, every other step together ~2 minutes). Cache the compiler
+      # objects: ccache keys on the preprocessed source + compiler binary + flags,
+      # so a toolchain bump misses automatically and a Rust-only or docs-only push
+      # pays seconds instead of an hour. build.sh routes C/ASM through ccache as
+      # the CMake compiler launcher whenever it is on PATH.
+      - name: ccache (MH1903 C objects)
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: forgebox-arm-none-eabi
+          max-size: 2G
       - name: forgebox full image (MH1903 C host, smoke/product callers)
+        # Measured on run 42195165186: `sudo apt-get update -qq` alone took ~64
+        # minutes while `make forgebox` took 50 seconds. The runner image ships a
+        # usable package index, so install straight from it and only pay for an
+        # update when that fails; a stale index is the rare case, an hour of
+        # mirror wait is the normal one.
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-arm-none-eabi
+          if ! command -v arm-none-eabi-gcc >/dev/null 2>&1; then
+            sudo apt-get install -y -qq gcc-arm-none-eabi \
+              || { sudo apt-get update -qq -o Acquire::ForceIPv4=true \
+                   && sudo apt-get install -y -qq gcc-arm-none-eabi; }
+          fi
+          command -v ccache >/dev/null 2>&1 || sudo apt-get install -y -qq ccache || true
+          arm-none-eabi-gcc --version | head -1
           make forgebox
           # The signed forgebox.bin needs the local forgebox CLI + signing key
           # (dev machine only); CI asserts the PRE-SIGN image instead - the C

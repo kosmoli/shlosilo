@@ -20,6 +20,10 @@
 set -e
 set -o pipefail
 
+# Parallelism: size it to the machine. The hardcoded -j16 this replaces
+# oversubscribed GitHub's 4-vCPU runners 4x, which costs more than it buys.
+JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+
 # Resolve paths regardless of the caller's cwd.
 cd "$(dirname "${BASH_SOURCE[0]}")"
 APP_ROOT="$(pwd)"
@@ -125,6 +129,15 @@ execute_build() {
     fi
 
     cmake_parm=""
+    # C objects are the long pole of this build (FreeRTOS + LVGL + vendor libs,
+    # a full rebuild per CI run). When a compiler cache is installed, route the
+    # C/ASM compile steps through it; nothing changes when it is absent.
+    if command -v ccache >/dev/null 2>&1; then
+        export CCACHE_BASEDIR="${REPO_ROOT}"
+        export CCACHE_NOHASHDIR=true
+        cmake_parm="${cmake_parm} -DCMAKE_C_COMPILER_LAUNCHER=ccache"
+        cmake_parm="${cmake_parm} -DCMAKE_ASM_COMPILER_LAUNCHER=ccache"
+    fi
     if [[ "${build_options[production]}" == true ]]; then
         cmake_parm="${cmake_parm} -DBUILD_PRODUCTION=true"
     fi
@@ -154,15 +167,15 @@ execute_build() {
         mkdir -p "$BUILD_SIMULATOR_FOLDER"
         pushd "$BUILD_SIMULATOR_FOLDER"
         cmake -G "Unix Makefiles" -DBUILD_TYPE=Simulator $cmake_parm ..
-        make -j16
+        make -j"${JOBS}"
         popd
     else
         pushd "$BUILD_FOLDER"
         cmake -G "Unix Makefiles" $cmake_parm ..
         if [[ "${build_options[log]}" == true ]]; then
-            make -j16 > makefile.log 2>&1
+            make -j"${JOBS}" > makefile.log 2>&1
         else
-            make -j16
+            make -j"${JOBS}"
         fi
         # padding is built into this script on purpose: mh1903.bin -> mh1903_full.bin
         # (4K alignment + APP_END magic). Never pad again by hand after this.
