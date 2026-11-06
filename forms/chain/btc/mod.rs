@@ -21,5 +21,4 @@ pub mod p2sh;
 pub mod p2wpkh;
 pub mod psbt;
 pub mod summary;
-#[cfg(any(feature = "alloc-fallback", test))]
 pub mod taproot;

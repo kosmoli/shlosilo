@@ -270,11 +270,11 @@ fn bip322_p2tr_sighash(internal_sk: &[u8; 32], msg: &[u8]) -> Result<[u8; 32]> {
 
     let spent = SpentOutput {
         value: 0,
-        script_pubkey: challenge,
+        script_pubkey: &challenge,
     };
     let tx_out = SpentOutput {
         value: 0,
-        script_pubkey: vec![0x6a],
+        script_pubkey: &[0x6a],
     };
     let prevouts = [(to_spend_txid, 0u32)];
     let sequences = [0u32];

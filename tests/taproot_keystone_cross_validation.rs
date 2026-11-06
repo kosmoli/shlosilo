@@ -15,9 +15,6 @@
 //! ## Oracle
 //! - keystone uses rust-bitcoin 0.32 `Psbt::sign` (standard implementation)
 //! - its signature verifying against shlosilo's computed sighash ⟺ shlosilo's BIP-341 implementation is correct
-#![cfg(feature = "alloc-fallback")]
-#![cfg(test)]
-extern crate alloc;
 
 use sha2::{Digest, Sha256};
 

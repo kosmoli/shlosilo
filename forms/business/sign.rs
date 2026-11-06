@@ -282,7 +282,7 @@ pub fn sign_with_entropy_ws_views(
                 Some(ws) => (Some(&mut *ws.psbt_arena), Some(&mut *ws.psbt_recs)),
                 None => (None, None),
             };
-            let n = sign_btc(seed.expose(), payload, output_buf, arena, recs)?;
+            let n = sign_btc(seed.expose(), payload, output_buf, arena, recs, entropy)?;
             Ok(n)
         }
         crate::types::chain_kind::ChainKind::Eth => {
@@ -1397,6 +1397,59 @@ fn read_bip32_derivation(
     parse_derivation_value(kv.value)
 }
 
+/// Sign one P2TR keypath input from the PSBT's own records (device path).
+///
+/// Ownership comes from `PSBT_IN_TAP_BIP32_DERIVATION` (0x16): its fingerprint
+/// must be ours and the path must re-derive the x-only key the record names.
+/// The BIP-341 sighash, the output-key/prevout comparison and the signature
+/// injection live in `chain/btc/psbt.rs` (same parsing face as the rest of the
+/// PSBT code, so review and signing cannot drift apart).
+fn sign_btc_taproot_input(
+    seed: &[u8],
+    psbt: &mut crate::chain::btc::psbt::Psbt<'_>,
+    idx: usize,
+    local_fp: [u8; 4],
+    entropy: &[u8],
+) -> Result<()> {
+    use crate::chain::btc::psbt as psbt_mod;
+    use crate::types::secret_bytes::SecretBytes;
+
+    let (fp, record) = psbt_mod::get_tap_bip32_derivation(
+        psbt.input_map_checked(idx)
+            .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?,
+    )
+    .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    if fp != local_fp {
+        return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+    }
+    let depth = record.depth as usize;
+    if depth > record.elements.len() {
+        return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    let path = DerivationPath::from_flat(record.elements[..depth].iter().copied())
+        .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path)?;
+    // R4 for taproot: the record names an x-only key; our derivation must be it.
+    let derived_pub = crate::curve_primitive::secp256k1::point_to_compressed(
+        &crate::curve_primitive::secp256k1::base_mul(&sk),
+    );
+    if derived_pub[1..] != record.key_x {
+        return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
+    }
+    let sk_bytes = zeroize::Zeroizing::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk));
+
+    // BIP-340 aux randomness: the caller's entropy channel when it carries a
+    // full 32 bytes, else all zeros (BIP-340 permits this; the resulting
+    // signature is then deterministic, which is what a device without an RNG
+    // should produce rather than inventing randomness).
+    let mut aux = [0u8; 32];
+    if entropy.len() >= 32 {
+        aux.copy_from_slice(&entropy[..32]);
+    }
+
+    psbt_mod::sign_psbt_p2tr_keypath_with_key(psbt, idx, &SecretBytes::new(*sk_bytes), &aux)
+}
+
 /// BTC: crypto-psbt CBOR (bare bytes item) → PSBT signing
 ///
 /// Derivation path = m/84'/0'/0'/0/0 (standard native segwit path).
@@ -1408,6 +1461,7 @@ fn sign_btc<'a>(
     output_buf: &mut [u8],
     arena: Option<&'a mut [u8]>,
     recs: Option<&'a mut [crate::chain::btc::psbt::KvRec]>,
+    entropy: &[u8],
 ) -> Result<usize> {
     use crate::chain::btc::psbt as psbt_mod;
     use crate::encoding::cbor;
@@ -1428,6 +1482,20 @@ fn sign_btc<'a>(
     let local_fp = crate::derivation::bip32_secp256k1::master_fingerprint_from_seed(seed)?;
 
     for idx in 0..psbt.unsigned_tx.inputs.len() {
+        // S2/B-3: dispatch on the spent script. A Taproot input carries its
+        // ownership record in TAP_BIP32_DERIVATION (0x16) and is signed with a
+        // Schnorr signature over the BIP-341 sighash; everything else keeps the
+        // ECDSA/BIP-143 path below.
+        let spent_spk_is_p2tr = psbt
+            .input_map_checked(idx)
+            .and_then(|m| psbt_mod::get_witness_utxo(m))
+            .map(|(_, spk)| spk.len() == 34 && spk[0] == 0x51 && spk[1] == 0x20)
+            .unwrap_or(false);
+        if spent_spk_is_p2tr {
+            sign_btc_taproot_input(seed, &mut psbt, idx, local_fp, entropy)?;
+            continue;
+        }
+
         // P1-02: BIP32_DERIVATION value = master_fingerprint(4B) + path(u32LE × depth),
         // paths are read from the PSBT rather than hardcoded; fingerprint mismatch with ours → reject;
         // fall back to the default path only when the field is absent (transitional; tightened at P6.4).

@@ -9,7 +9,6 @@
 //!
 //! The sigHashes in these vectors are external anchors produced by Bitcoin Core maintainers;
 //! shlosilo's independent implementation must match byte for byte.
-#![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::btc::taproot::{
     bip341_keypath_sighash, compute_merkle_root, tap_branch_hash, tap_leaf_hash, SpentOutput,
@@ -105,113 +104,124 @@ impl OfficialTx {
             0xffff_ffff,
         ]
     }
-    /// spent outputs (spk, amount_sats) per input
-    fn spent_outputs() -> [SpentOutput; 9] {
+    /// spent outputs (amount_sats, spk_hex) per input
+    fn spent_specs() -> [(u64, &'static str); 9] {
         [
-            SpentOutput {
-                value: 420000000,
-                script_pubkey: hex_bytes(
-                    "512053a1f6e454df1aa2776a2814a721372d6258050de330b3c6d10ee8f4e0dda343",
-                ),
-            },
-            SpentOutput {
-                value: 462000000,
-                script_pubkey: hex_bytes(
-                    "5120147c9c57132f6e7ecddba9800bb0c4449251c92a1e60371ee77557b6620f3ea3",
-                ),
-            },
-            SpentOutput {
-                value: 294000000,
-                script_pubkey: hex_bytes("76a914751e76e8199196d454941c45d1b3a323f1433bd688ac"),
-            },
-            SpentOutput {
-                value: 504000000,
-                script_pubkey: hex_bytes(
-                    "5120e4d810fd50586274face62b8a807eb9719cef49c04177cc6b76a9a4251d5450e",
-                ),
-            },
-            SpentOutput {
-                value: 630000000,
-                script_pubkey: hex_bytes(
-                    "512091b64d5324723a985170e4dc5a0f84c041804f2cd12660fa5dec09fc21783605",
-                ),
-            },
-            SpentOutput {
-                value: 378000000,
-                script_pubkey: hex_bytes("00147dd65592d0ab2fe0d0257d571abf032cd9db93dc"),
-            },
-            SpentOutput {
-                value: 672000000,
-                script_pubkey: hex_bytes(
-                    "512075169f4001aa68f15bbed28b218df1d0a62cbbcf1188c6665110c293c907b831",
-                ),
-            },
-            SpentOutput {
-                value: 546000000,
-                script_pubkey: hex_bytes(
-                    "5120712447206d7a5238acc7ff53fbe94a3b64539ad291c7cdbc490b7577e4b17df5",
-                ),
-            },
-            SpentOutput {
-                value: 588000000,
-                script_pubkey: hex_bytes(
-                    "512077e30a5522dd9f894c3f8b8bd4c4b2cf82ca7da8a3ea6a239655c39c050ab220",
-                ),
-            },
+            (
+                420000000,
+                "512053a1f6e454df1aa2776a2814a721372d6258050de330b3c6d10ee8f4e0dda343",
+            ),
+            (
+                462000000,
+                "5120147c9c57132f6e7ecddba9800bb0c4449251c92a1e60371ee77557b6620f3ea3",
+            ),
+            (
+                294000000,
+                "76a914751e76e8199196d454941c45d1b3a323f1433bd688ac",
+            ),
+            (
+                504000000,
+                "5120e4d810fd50586274face62b8a807eb9719cef49c04177cc6b76a9a4251d5450e",
+            ),
+            (
+                630000000,
+                "512091b64d5324723a985170e4dc5a0f84c041804f2cd12660fa5dec09fc21783605",
+            ),
+            (378000000, "00147dd65592d0ab2fe0d0257d571abf032cd9db93dc"),
+            (
+                672000000,
+                "512075169f4001aa68f15bbed28b218df1d0a62cbbcf1188c6665110c293c907b831",
+            ),
+            (
+                546000000,
+                "5120712447206d7a5238acc7ff53fbe94a3b64539ad291c7cdbc490b7577e4b17df5",
+            ),
+            (
+                588000000,
+                "512077e30a5522dd9f894c3f8b8bd4c4b2cf82ca7da8a3ea6a239655c39c050ab220",
+            ),
         ]
     }
-    /// tx outputs (value, spk): P2PKH 0.1 BTC + P2TR (witness v1, the program directly follows 0x0020)
-    fn tx_outputs() -> [SpentOutput; 2] {
+    /// tx outputs (value, spk_hex)
+    fn tx_output_specs() -> [(u64, &'static str); 2] {
         [
-            SpentOutput {
-                value: 0x3b9a_ca00, // 100000000 sat
-                script_pubkey: hex_bytes("76a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac"),
-            },
-            SpentOutput {
-                // Official raw tx output 1: value 0xcb407880, script len 0x20=32, spk = ac9a...
-                // (the 32 bytes of the witness v1 program, no version prefix — the official vector's raw bytes)
-                value: 0xcb40_7880,
-                script_pubkey: hex_bytes(
-                    "ac9a87f5594be208f8532db38cff670c450ed2fea8fcdefcc9a663f78bab962b",
-                ),
-            },
+            (
+                0x3b9a_ca00,
+                "76a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac",
+            ), // 1e9 sat
+            // Official raw tx output 1: value 0xcb407880, script len 0x20=32, spk = ac9a...
+            // (the 32 bytes of the witness v1 program, no version prefix — the official vector's raw bytes)
+            (
+                0xcb40_7880,
+                "ac9a87f5594be208f8532db38cff670c450ed2fea8fcdefcc9a663f78bab962b",
+            ),
         ]
     }
 }
 
-/// Build sighash inputs from the official vector
-fn official_input(idx: usize, hash_type: u8) -> TaprootSighashInput<'static> {
+/// Compute the official vector's keypath sighash for input `idx`/`hash_type`.
+///
+/// The borrowed views live for the duration of one call (the caller gets the
+/// digest, not a struct borrowing locals).
+fn official_sighash(idx: usize, hash_type: u8) -> [u8; 32] {
     use std::sync::OnceLock;
 
     static PREVOUTS: OnceLock<[([u8; 32], u32); 9]> = OnceLock::new();
     static SEQS: OnceLock<[u32; 9]> = OnceLock::new();
-    static SPENT: OnceLock<Vec<SpentOutput>> = OnceLock::new();
-    static OUTS: OnceLock<Vec<SpentOutput>> = OnceLock::new();
+    static SPENT_SPKS: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
+    static OUT_SPKS: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
 
     let prevouts = PREVOUTS.get_or_init(OfficialTx::prevouts);
     let seqs = SEQS.get_or_init(OfficialTx::sequences);
-    let spent = SPENT.get_or_init(|| OfficialTx::spent_outputs().to_vec());
-    let outs = OUTS.get_or_init(|| OfficialTx::tx_outputs().to_vec());
+    let spent_spks = SPENT_SPKS.get_or_init(|| {
+        OfficialTx::spent_specs()
+            .iter()
+            .map(|(_, h)| hex_bytes(h))
+            .collect()
+    });
+    let out_spks = OUT_SPKS.get_or_init(|| {
+        OfficialTx::tx_output_specs()
+            .iter()
+            .map(|(_, h)| hex_bytes(h))
+            .collect()
+    });
 
-    TaprootSighashInput {
+    let spent: Vec<SpentOutput<'_>> = OfficialTx::spent_specs()
+        .iter()
+        .zip(spent_spks.iter())
+        .map(|((value, _), spk)| SpentOutput {
+            value: *value,
+            script_pubkey: spk,
+        })
+        .collect();
+    let outs: Vec<SpentOutput<'_>> = OfficialTx::tx_output_specs()
+        .iter()
+        .zip(out_spks.iter())
+        .map(|((value, _), spk)| SpentOutput {
+            value: *value,
+            script_pubkey: spk,
+        })
+        .collect();
+
+    bip341_keypath_sighash(&TaprootSighashInput {
         tx_version: OfficialTx::version(),
         locktime: OfficialTx::locktime(),
         prevouts,
         sequences: seqs,
-        spent_outputs: spent,
-        tx_outputs: outs,
+        spent_outputs: &spent,
+        tx_outputs: &outs,
         input_index: idx,
         hash_type,
         annex_present: false,
         tapleaf_hash: None,
-    }
+    })
+    .unwrap()
 }
 
 /// input 0: SIGHASH_SINGLE (ht=3), expected sighash
 #[test]
 fn bip341_official_in0_single() {
-    let input = official_input(0, 3);
-    let sh = bip341_keypath_sighash(&input).unwrap();
+    let sh = official_sighash(0, 3);
     assert_eq!(
         hex_encode(&sh),
         "2514a6272f85cfa0f45eb907fcb0d121b808ed37c6ea160a5a9046ed5526d555"
@@ -221,8 +231,7 @@ fn bip341_official_in0_single() {
 /// input 1: SIGHASH_SINGLE | ANYONECANPAY (ht=131)
 #[test]
 fn bip341_official_in1_single_anyonecanpay() {
-    let input = official_input(1, 131);
-    let sh = bip341_keypath_sighash(&input).unwrap();
+    let sh = official_sighash(1, 131);
     assert_eq!(
         hex_encode(&sh),
         "325a644af47e8a5a2591cda0ab0723978537318f10e6a63d4eed783b96a71a4d"
@@ -232,8 +241,7 @@ fn bip341_official_in1_single_anyonecanpay() {
 /// input 3: SIGHASH_ALL (ht=1)
 #[test]
 fn bip341_official_in3_all() {
-    let input = official_input(3, 1);
-    let sh = bip341_keypath_sighash(&input).unwrap();
+    let sh = official_sighash(3, 1);
     assert_eq!(
         hex_encode(&sh),
         "bf013ea93474aa67815b1b6cc441d23b64fa310911d991e713cd34c7f5d46669"
@@ -243,8 +251,7 @@ fn bip341_official_in3_all() {
 /// input 4: SIGHASH_DEFAULT (ht=0)
 #[test]
 fn bip341_official_in4_default() {
-    let input = official_input(4, 0);
-    let sh = bip341_keypath_sighash(&input).unwrap();
+    let sh = official_sighash(4, 0);
     assert_eq!(
         hex_encode(&sh),
         "4f900a0bae3f1446fd48490c2958b5a023228f01661cda3496a11da502a7f7ef"
@@ -254,8 +261,7 @@ fn bip341_official_in4_default() {
 /// input 6: SIGHASH_NONE (ht=2)
 #[test]
 fn bip341_official_in6_none() {
-    let input = official_input(6, 2);
-    let sh = bip341_keypath_sighash(&input).unwrap();
+    let sh = official_sighash(6, 2);
     assert_eq!(
         hex_encode(&sh),
         "15f25c298eb5cdc7eb1d638dd2d45c97c4c59dcaec6679cfc16ad84f30876b85"
@@ -265,8 +271,7 @@ fn bip341_official_in6_none() {
 /// input 7: SIGHASH_NONE | ANYONECANPAY (ht=130)
 #[test]
 fn bip341_official_in7_none_anyonecanpay() {
-    let input = official_input(7, 130);
-    let sh = bip341_keypath_sighash(&input).unwrap();
+    let sh = official_sighash(7, 130);
     assert_eq!(
         hex_encode(&sh),
         "cd292de50313804dabe4685e83f923d2969577191a3e1d2882220dca88cbeb10"
@@ -276,8 +281,7 @@ fn bip341_official_in7_none_anyonecanpay() {
 /// input 8: SIGHASH_ALL | ANYONECANPAY (ht=129)
 #[test]
 fn bip341_official_in8_all_anyonecanpay() {
-    let input = official_input(8, 129);
-    let sh = bip341_keypath_sighash(&input).unwrap();
+    let sh = official_sighash(8, 129);
     assert_eq!(
         hex_encode(&sh),
         "cccb739eca6c13a8a89e6e5cd317ffe55669bbda23f2fd37b0f18755e008edd2"

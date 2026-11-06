@@ -1082,6 +1082,237 @@ pub fn sign_psbt_p2tr_keypath(psbt: &mut Psbt<'_>, sign_input: &PsbtP2TRSignInpu
     Ok(())
 }
 
+/// Sign a P2TR keypath input on the device path: ownership checks, BIP-341
+/// sighash assembly, Schnorr signature, `PSBT_IN_TAP_KEY_SIG` (0x13) injection.
+///
+/// Zero heap: the sighash view borrows the PSBT wire bytes, the sub-digests
+/// stream into SHA-256, and the signature goes into a stack buffer.
+///
+/// Refusals (all explicit — never a signature over a script we do not own):
+/// - the prevout is not `OP_1 <32>` (P2TR);
+/// - the prevout's witness program is not the BIP-86/BIP-341 output key of the
+///   caller's key (this is the check the reference firmware does not make: its
+///   taproot internal key is never compared with the prevout);
+/// - `PSBT_IN_TAP_INTERNAL_KEY` (0x17) disagrees with that key;
+/// - any input lacks a witness UTXO (its spent value/script feed the sighash);
+/// - the sighash type is not one BIP-341 allows;
+/// - the scriptPubKeys are too long for the one-byte length prefix in SigMsg.
+pub fn sign_psbt_p2tr_keypath_with_key(
+    psbt: &mut Psbt<'_>,
+    input_index: usize,
+    internal_sk: &crate::types::secret_bytes::SecretBytes<32>,
+    aux_rand: &[u8; 32],
+) -> Result<()> {
+    use crate::chain::btc::taproot;
+    use crate::curve_primitive::secp256k1::{
+        base_mul, point_to_compressed, scalar_from_bytes, Secp256k1Point,
+    };
+
+    if input_index >= psbt.unsigned_tx.inputs.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+
+    // 1. Prevout binding: the spent script must be P2TR.
+    let prev_out = psbt.unsigned_tx.inputs[input_index].prev_out.clone();
+    let (amount, spk) = get_utxo_any(psbt.input_map(input_index), &prev_out)
+        .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let spk = crate::types::wire_bytes::wire_slice(&spk);
+    let program = decode_p2tr_script_pubkey(spk)?;
+
+    // 2. Our internal key → BIP-86/341 output key must equal the witness program.
+    let sk = scalar_from_bytes(internal_sk.expose())?;
+    let internal_pub: Secp256k1Point = base_mul(&sk);
+    let internal_compressed = point_to_compressed(&internal_pub);
+    let mut internal_x = [0u8; 32];
+    internal_x.copy_from_slice(&internal_compressed[1..]);
+
+    let map = psbt.input_map(input_index);
+    let merkle_root = get_tap_merkle_root(map);
+    let expected = match merkle_root {
+        Some(root) => taproot::compute_output_key_scriptpath(&internal_x, &root)?,
+        None => taproot::compute_output_key(&internal_x)?,
+    };
+    let expected_compressed = point_to_compressed(&expected);
+    if expected_compressed[1..] != program[..] {
+        // the PSBT points at a taproot output that is not ours
+        return Err(ShlosiloError::new(ShlosiloErrorKind::PsbtOwnershipMismatch));
+    }
+
+    // 3. A declared internal key must be ours.
+    if let Some(declared) = get_tap_internal_key(map) {
+        if declared != internal_x {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::PsbtOwnershipMismatch));
+        }
+    }
+
+    // 4. Sighash type (BIP-371: absent = SIGHASH_DEFAULT).
+    let hash_type = taproot_sighash_type(map)?;
+
+    // 5. Assemble the BIP-341 view (all inputs' spent outputs are in the digest).
+    let sighash = taproot_sighash_for(psbt, input_index, hash_type)?;
+    let _ = amount;
+
+    // 6. Sign and inject TAP_KEY_SIG.
+    let mut sig = [0u8; taproot::SIGNATURE_MAX];
+    let sig_len = taproot::sign_p2tr_keypath_into(
+        &taproot::P2TRKeypathSignInput {
+            internal_sk: *internal_sk.expose(),
+            merkle_root,
+        },
+        &sighash,
+        aux_rand,
+        hash_type,
+        &mut sig,
+    )?;
+    let key = [input_type::TAP_KEY_SIG];
+    psbt.set_input_kv(input_index, &key, &sig[..sig_len])?;
+    Ok(())
+}
+
+/// `PSBT_IN_SIGHASH_TYPE` (0x03) for a taproot input; absent = SIGHASH_DEFAULT.
+/// Only the values BIP-341 allows are accepted.
+fn taproot_sighash_type(input_map: KvMap<'_>) -> Result<u8> {
+    let value = match input_map.get(&[input_type::SIGHASH_TYPE]) {
+        Some(v) => v,
+        None => return Ok(0x00),
+    };
+    if value.len() != 4 {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    let raw = u32::from_le_bytes(
+        value
+            .try_into()
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
+    );
+    if raw > 0xff {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    let hash_type = raw as u8;
+    match hash_type {
+        0x00 | 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83 => Ok(hash_type),
+        _ => Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
+    }
+}
+
+/// Build the BIP-341 keypath sighash view straight from the PSBT.
+///
+/// Every input must carry a witness UTXO: its value and scriptPubKey enter the
+/// digest, so a missing one is a refusal rather than a guessed zero.
+fn taproot_sighash_for(psbt: &Psbt<'_>, input_index: usize, hash_type: u8) -> Result<[u8; 32]> {
+    use crate::chain::btc::p2wpkh::{BT_TX_INPUTS_MAX, BT_TX_OUTPUTS_MAX};
+    use crate::chain::btc::taproot::{bip341_keypath_sighash, SpentOutput, TaprootSighashInput};
+    use crate::types::wire_bytes::{wire_slice, WireBytes};
+
+    let n_in = psbt.unsigned_tx.inputs.len();
+    if n_in > BT_TX_INPUTS_MAX {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+
+    // The borrowed UTXO bytes must outlive every view built from them, so they
+    // live in one place for the whole assembly.
+    let mut utxos: heapless::Vec<(u64, WireBytes<'_>), BT_TX_INPUTS_MAX> = heapless::Vec::new();
+    for i in 0..n_in {
+        let prev_out = psbt.unsigned_tx.inputs[i].prev_out.clone();
+        let utxo = get_utxo_any(psbt.input_map(i), &prev_out)
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        utxos
+            .push(utxo)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    }
+
+    let mut prevouts: heapless::Vec<([u8; 32], u32), BT_TX_INPUTS_MAX> = heapless::Vec::new();
+    let mut sequences: heapless::Vec<u32, BT_TX_INPUTS_MAX> = heapless::Vec::new();
+    for txin in &psbt.unsigned_tx.inputs {
+        prevouts
+            .push((txin.prev_out.txid, txin.prev_out.vout))
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        sequences
+            .push(txin.sequence)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    }
+
+    let mut spent: heapless::Vec<SpentOutput<'_>, BT_TX_INPUTS_MAX> = heapless::Vec::new();
+    for (value, spk) in &utxos {
+        spent
+            .push(SpentOutput {
+                value: *value,
+                script_pubkey: wire_slice(spk),
+            })
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    }
+
+    let mut outs: heapless::Vec<SpentOutput<'_>, BT_TX_OUTPUTS_MAX> = heapless::Vec::new();
+    for out in &psbt.unsigned_tx.outputs {
+        outs.push(SpentOutput {
+            value: out.value,
+            script_pubkey: wire_slice(&out.script_pubkey),
+        })
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    }
+
+    bip341_keypath_sighash(&TaprootSighashInput {
+        tx_version: psbt.unsigned_tx.version as u32,
+        locktime: psbt.unsigned_tx.lock_time,
+        prevouts: &prevouts,
+        sequences: &sequences,
+        spent_outputs: &spent,
+        tx_outputs: &outs,
+        input_index,
+        hash_type,
+        annex_present: false,
+        tapleaf_hash: None,
+    })
+}
+
+/// Read `PSBT_IN_TAP_BIP32_DERIVATION` (0x16) from an input map:
+/// value = `<compact_size num_hashes> <32-byte leaf hashes…> <fingerprint (4)> <path (u32 LE each)>`.
+///
+/// Returns the master fingerprint and the path as a caller-visible element list.
+/// The tap-flavoured record is NOT the plain `0x06` one: it starts with the leaf
+/// hash count, so parsing it with the plain reader would read the count byte as
+/// part of the fingerprint.
+pub fn get_tap_bip32_derivation(input_map: KvMap<'_>) -> Option<([u8; 4], TapDerivationPath)> {
+    let kv = input_map
+        .iter()
+        .find(|kv| kv.key.len() == 33 && kv.key[0] == input_type::TAP_BIP32_DERIVATION)?;
+    let value = kv.value;
+    let mut pos = 0usize;
+    let hashes = decode_compact_size(value, &mut pos).ok()? as usize;
+    // skip the leaf hashes: they only matter for scriptpath spends
+    pos = pos.checked_add(hashes.checked_mul(32)?)?;
+    let rest = take_bytes(value, &mut pos, 4).ok()?;
+    let mut fp = [0u8; 4];
+    fp.copy_from_slice(rest);
+    let body = value.get(pos..)?;
+    if body.len() % 4 != 0 {
+        return None;
+    }
+    let depth = body.len() / 4;
+    if depth > crate::derivation::path::MAX_DEPTH {
+        return None;
+    }
+    let mut path = TapDerivationPath {
+        depth: depth as u8,
+        elements: [0u32; crate::derivation::path::MAX_DEPTH],
+        key_x: [0u8; 32],
+    };
+    for (i, chunk) in body.as_chunks::<4>().0.iter().enumerate() {
+        path.elements[i] = u32::from_le_bytes(*chunk);
+    }
+    // the record's key payload is the x-only public key the path belongs to
+    path.key_x.copy_from_slice(&kv.key[1..33]);
+    Some((fp, path))
+}
+
+/// A taproot derivation record: master fingerprint + path + the x-only key it names.
+#[derive(Clone, Copy, Debug)]
+pub struct TapDerivationPath {
+    pub depth: u8,
+    pub elements: [u32; crate::derivation::path::MAX_DEPTH],
+    /// x-only public key carried in the record's key bytes
+    pub key_x: [u8; 32],
+}
+
 /// Sign PSBT P2TR input (BIP-371 scriptpath).
 /// Caller provides Schnorr signature for a specific leaf.
 /// Injects PSBT_IN_TAP_SCRIPT_SIG (0x14) with key = [0x14 || leaf_hash (32 bytes)].
@@ -1219,11 +1450,10 @@ pub fn get_utxo_any<'a>(
 }
 
 /// Get TAP_INTERNAL_KEY from input map (BIP-371 0x17)
-#[cfg(any(feature = "alloc-fallback", test))]
 pub fn get_tap_internal_key(input_map: KvMap<'_>) -> Option<[u8; 32]> {
     let kv = input_map
         .iter()
-        .find(|kv| kv.key == vec![input_type::TAP_INTERNAL_KEY])?;
+        .find(|kv| kv.key == [input_type::TAP_INTERNAL_KEY])?;
     if kv.value.len() != 32 {
         return None;
     }
@@ -1248,11 +1478,10 @@ pub fn set_tap_internal_key(
 }
 
 /// Get TAP_MERKLE_ROOT from input map (BIP-371 0x18)
-#[cfg(any(feature = "alloc-fallback", test))]
 pub fn get_tap_merkle_root(input_map: KvMap<'_>) -> Option<[u8; 32]> {
     let kv = input_map
         .iter()
-        .find(|kv| kv.key == vec![input_type::TAP_MERKLE_ROOT])?;
+        .find(|kv| kv.key == [input_type::TAP_MERKLE_ROOT])?;
     if kv.value.len() != 32 {
         return None;
     }
@@ -2055,15 +2284,15 @@ mod tests {
         let sequences = [psbt.unsigned_tx.inputs[0].sequence];
         let spent_outputs = [SpentOutput {
             value,
-            script_pubkey: spent_spk.to_vec(),
+            script_pubkey: &spent_spk,
         }];
-        let tx_outputs: alloc::vec::Vec<SpentOutput> = psbt
+        let tx_outputs: alloc::vec::Vec<SpentOutput<'_>> = psbt
             .unsigned_tx
             .outputs
             .iter()
             .map(|o| SpentOutput {
                 value: o.value,
-                script_pubkey: o.script_pubkey.to_vec(),
+                script_pubkey: crate::types::wire_bytes::wire_slice(&o.script_pubkey),
             })
             .collect();
         let sighash_input = TaprootSighashInput {

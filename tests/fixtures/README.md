@@ -14,6 +14,20 @@
   - `forms/ffi/c_abi.rs` — P0-C typed sign 12.4 KiB E2E(单帧超限 → multipart 路径)
 - **隐私**: 测试网隔离密钥,无真实资金;可公开提交
 
+## keystone_p2tr_keypath_288b.psbt / keystone_p2tr_keypath_signed_golden.psbt
+
+- **来源**: keystone3-firmware `rust/apps/bitcoin/src/transactions/psbt/wrapped_psbt.rs`
+  `test_taproot_sign` 的 PSBT 字面量(未签名件)与其 `assert_eq!` 期望输出(签名件),
+  逐字节导出;该 PSBT 由 rust-bitcoin 0.32 生成并签名(BIP-371 形状)
+- **网络**: Bitcoin testnet/signet(coin type 1;路径 m/86'/1'/0'/0/2;
+  单输入 P2TR keypath,spent 6,588 sat → out 6,400 sat,含 TAP_MERKLE_ROOT)
+- **大小**: 288 bytes(未签名)/ 355 bytes(参考签名产物)
+- **SHA-256**: `6529cc6290f595195a09b1ead8fcd687d7430dc5f8ab19b93eea6367d81c07c0`(unsigned)
+  / `1c725af4c1d72e329c312dd0a931348c9a8035144f5b5bb5366f819be84a7e53`(reference signed)
+- **用途**: `tests/p2tr_device_path.rs` — P2TR keypath 设备签名路径(B-3/G5):
+  设备入口签名 + 与参考实现逐字节比对 + 归属/prevout/sighash 类型拒绝面
+- **隐私**: 上游仓库公开测试向量(测试网、无私钥),可公开提交
+
 ## unsigned_txset_2in.bin
 
 - **来源**: 本地 monero-wallet-cli watch-only 转账生成(`sh_p2in_view` 钱包 →

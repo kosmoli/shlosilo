@@ -36,6 +36,7 @@ use crate::curve_primitive::secp256k1::{
     point_add, point_from_compressed, point_to_compressed, scalar_from_bytes, scalar_mul,
     scalar_to_bytes, Secp256k1Point, Secp256k1Scalar,
 };
+#[cfg(any(feature = "alloc-fallback", test))]
 use crate::encoding::bech32::encode_m;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::signature::schnorr_secp256k1::{sign as schnorr_sign, SchnorrSignature};
@@ -125,6 +126,7 @@ pub fn compute_output_key(internal_key_x: &[u8; 32]) -> Result<Secp256k1Point> {
     Ok(output_key)
 }
 
+#[cfg(any(feature = "alloc-fallback", test))]
 /// BIP-86 P2TR address from x-only public key
 ///
 /// **Input**:
@@ -166,10 +168,13 @@ pub(crate) const SIGHASH_SINGLE: u8 = 0x03;
 pub(crate) const SIGHASH_ANYONECANPAY: u8 = 0x80;
 
 /// A spent output (BIP-341 sighash needs the value + scriptPubKey of all spent outputs)
-#[derive(Clone, Debug)]
-pub struct SpentOutput {
+///
+/// The scriptPubKey is **borrowed**: the device path hands over PSBT slice bytes,
+/// so no owned buffer (and no allocator) is involved.
+#[derive(Clone, Copy, Debug)]
+pub struct SpentOutput<'a> {
     pub value: u64,
-    pub script_pubkey: alloc::vec::Vec<u8>,
+    pub script_pubkey: &'a [u8],
 }
 
 /// BIP-341 keypath sighash inputs
@@ -184,9 +189,9 @@ pub struct TaprootSighashInput<'a> {
     /// nSequence of all inputs
     pub sequences: &'a [u32],
     /// all spent outputs (value + scriptPubKey, in input order)
-    pub spent_outputs: &'a [SpentOutput],
+    pub spent_outputs: &'a [SpentOutput<'a>],
     /// transaction outputs (value + scriptPubKey)
-    pub tx_outputs: &'a [SpentOutput],
+    pub tx_outputs: &'a [SpentOutput<'a>],
     /// index of the input being signed
     pub input_index: usize,
     /// hash_type（SIGHASH_DEFAULT / ALL / NONE / SINGLE / +ANYONECANPAY）
@@ -214,8 +219,6 @@ pub struct TaprootSighashInput<'a> {
 ///
 /// **Returns**: 32-byte sighash (for BIP-340 Schnorr signing)
 pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
-    use crate::encoding::sha256;
-
     if input.input_index >= input.prevouts.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
@@ -237,49 +240,54 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    let mut msg: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(206);
+    // SigMsg is written into a fixed stack buffer: its size is bounded by the
+    // BIP-341 grammar (1 + 4 + 4 + 4·32 [sha_prevouts/amounts/spks/sequences]
+    // + 32 [sha_outputs] + 1 [spend_type] + 4 [input_index] + 32 [sha_single]
+    // + 32 [tapleaf]); the ANYONECANPAY branch inlines one spent output, whose
+    // scriptPubKey length is bounded by the check below. Zero heap: no Vec, and
+    // the four per-input digests stream straight into SHA-256 instead of being
+    // concatenated first.
+    let mut msg = SigMsg::new();
     // Control
-    msg.push(input.hash_type);
+    msg.push(input.hash_type)?;
     // Transaction data
-    msg.extend_from_slice(&input.tx_version.to_le_bytes());
-    msg.extend_from_slice(&input.locktime.to_le_bytes());
+    msg.extend(&input.tx_version.to_le_bytes())?;
+    msg.extend(&input.locktime.to_le_bytes())?;
+    let mut hasher = Sha256Std::new();
     if !is_anyonecanpay {
         // sha_prevouts: SHA256(all outpoints serialized)
-        let mut buf = alloc::vec::Vec::with_capacity(36 * input.prevouts.len());
         for (txid, vout) in input.prevouts {
-            buf.extend_from_slice(txid);
-            buf.extend_from_slice(&vout.to_le_bytes());
+            hasher.update(*txid);
+            hasher.update(vout.to_le_bytes());
         }
-        msg.extend_from_slice(&sha256::hash(&buf)?);
+        msg.extend(&hasher.finalize_reset())?;
         // sha_amounts: SHA256(all spent values, 8B LE each)
-        let mut buf = alloc::vec::Vec::with_capacity(8 * input.spent_outputs.len());
         for so in input.spent_outputs {
-            buf.extend_from_slice(&so.value.to_le_bytes());
+            hasher.update(so.value.to_le_bytes());
         }
-        msg.extend_from_slice(&sha256::hash(&buf)?);
-        // sha_scriptpubkeys: SHA256(varint(len) || spk, per spent output)
-        let mut buf = alloc::vec::Vec::new();
+        msg.extend(&hasher.finalize_reset())?;
+        // sha_scriptpubkeys: SHA256(compact_size(len) || spk, per spent output)
         for so in input.spent_outputs {
-            buf.push(so.script_pubkey.len() as u8); // P2TR spk = 35B, a single-byte varint suffices
-            buf.extend_from_slice(&so.script_pubkey);
+            let len = spk_len_byte(so.script_pubkey)?;
+            hasher.update([len]);
+            hasher.update(so.script_pubkey);
         }
-        msg.extend_from_slice(&sha256::hash(&buf)?);
+        msg.extend(&hasher.finalize_reset())?;
         // sha_sequences
-        let mut buf = alloc::vec::Vec::with_capacity(4 * input.sequences.len());
         for seq in input.sequences {
-            buf.extend_from_slice(&seq.to_le_bytes());
+            hasher.update(seq.to_le_bytes());
         }
-        msg.extend_from_slice(&sha256::hash(&buf)?);
+        msg.extend(&hasher.finalize_reset())?;
     }
     if !is_none_or_single {
         // sha_outputs: SHA256(all tx outputs, CTxOut format)
-        let mut buf = alloc::vec::Vec::new();
         for o in input.tx_outputs {
-            buf.extend_from_slice(&o.value.to_le_bytes());
-            buf.push(o.script_pubkey.len() as u8);
-            buf.extend_from_slice(&o.script_pubkey);
+            let len = spk_len_byte(o.script_pubkey)?;
+            hasher.update(o.value.to_le_bytes());
+            hasher.update([len]);
+            hasher.update(o.script_pubkey);
         }
-        msg.extend_from_slice(&sha256::hash(&buf)?);
+        msg.extend(&hasher.finalize_reset())?;
     }
     // Data about this input
     let ext_flag = if input.tapleaf_hash.is_some() {
@@ -288,18 +296,18 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
         0u8
     };
     let spend_type = (ext_flag << 1) | (input.annex_present as u8);
-    msg.push(spend_type);
+    msg.push(spend_type)?;
     if is_anyonecanpay {
         let (txid, vout) = &input.prevouts[input.input_index];
-        msg.extend_from_slice(txid);
-        msg.extend_from_slice(&vout.to_le_bytes());
+        msg.extend(txid)?;
+        msg.extend(&vout.to_le_bytes())?;
         let so = &input.spent_outputs[input.input_index];
-        msg.extend_from_slice(&so.value.to_le_bytes());
-        msg.push(so.script_pubkey.len() as u8);
-        msg.extend_from_slice(&so.script_pubkey);
-        msg.extend_from_slice(&input.sequences[input.input_index].to_le_bytes());
+        msg.extend(&so.value.to_le_bytes())?;
+        msg.push(spk_len_byte(so.script_pubkey)?)?;
+        msg.extend(so.script_pubkey)?;
+        msg.extend(&input.sequences[input.input_index].to_le_bytes())?;
     } else {
-        msg.extend_from_slice(&(input.input_index as u32).to_le_bytes());
+        msg.extend(&(input.input_index as u32).to_le_bytes())?;
     }
     // annex / single-output extensions (shlosilo currently carries no annex contents; SINGLE needs sha_single_output)
     if input.annex_present {
@@ -308,22 +316,83 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
     }
     if is_single {
         let o = &input.tx_outputs[input.input_index];
-        let mut buf = alloc::vec::Vec::with_capacity(8 + 1 + o.script_pubkey.len());
-        buf.extend_from_slice(&o.value.to_le_bytes());
-        buf.push(o.script_pubkey.len() as u8);
-        buf.extend_from_slice(&o.script_pubkey);
-        msg.extend_from_slice(&sha256::hash(&buf)?);
+        hasher.update(o.value.to_le_bytes());
+        hasher.update([spk_len_byte(o.script_pubkey)?]);
+        hasher.update(o.script_pubkey);
+        msg.extend(&hasher.finalize_reset())?;
     }
     // BIP-342 extension: with scriptpath (ext_flag=1) the tapleaf hash is appended to the end of sigmsg
     if let Some(leaf_hash) = &input.tapleaf_hash {
-        msg.extend_from_slice(leaf_hash);
+        msg.extend(leaf_hash)?;
     }
 
     // sighash = tagged_hash("TapSighash", 0x00 || sigmsg)
-    let mut epoch = alloc::vec::Vec::with_capacity(1 + msg.len());
-    epoch.push(0x00);
-    epoch.extend_from_slice(&msg);
-    Ok(tagged_hash(TAPSIGHASH_TAG, &epoch))
+    let mut epoch_hasher = Sha256Std::new();
+    let tag_hash = Sha256Std::digest(TAPSIGHASH_TAG);
+    epoch_hasher.update(tag_hash);
+    epoch_hasher.update(tag_hash);
+    epoch_hasher.update([0x00]);
+    epoch_hasher.update(msg.as_slice());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&epoch_hasher.finalize());
+    Ok(out)
+}
+
+/// One-byte compact-size length prefix for a scriptPubKey in SigMsg.
+///
+/// BIP-341 writes the length as a compact size; every script we can spend has
+/// one (22/23/25/34 bytes). A longer script is refused rather than encoded with
+/// a length byte that would silently mean something else.
+fn spk_len_byte(spk: &[u8]) -> Result<u8> {
+    if spk.len() >= 0xfd {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    Ok(spk.len() as u8)
+}
+
+/// Fixed-capacity SigMsg writer (zero heap, overflow is an error, never a
+/// truncation).
+struct SigMsg {
+    buf: [u8; SIGMSG_CAP],
+    len: usize,
+}
+
+/// Largest SigMsg the BIP-341 grammar can produce for the shapes we sign.
+/// Non-ANYONECANPAY: 1 + 4 + 4 + 128 + 32 + 1 + 4 + 32 (SINGLE) + 32 (tapleaf)
+/// = 238. ANYONECANPAY inlines one spent output (36 + 8 + 1 + spk + 4), which
+/// for the scripts we can spend stays far below this cap.
+const SIGMSG_CAP: usize = 320;
+
+impl SigMsg {
+    fn new() -> Self {
+        Self {
+            buf: [0u8; SIGMSG_CAP],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, b: u8) -> Result<()> {
+        if self.len >= SIGMSG_CAP {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        self.buf[self.len] = b;
+        self.len += 1;
+        Ok(())
+    }
+
+    fn extend(&mut self, bytes: &[u8]) -> Result<()> {
+        let end = self.len + bytes.len();
+        if end > SIGMSG_CAP {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        self.buf[self.len..end].copy_from_slice(bytes);
+        self.len = end;
+        Ok(())
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
 }
 
 /// P2TR keypath signing input
@@ -365,12 +434,13 @@ pub fn sign_taproot_keypath(
 /// The returned signature bytes can be used directly as the first witness element:
 /// - SIGHASH_DEFAULT → 64 bytes (no suffix)
 /// - other hash_type  → 65 bytes (sig || hash_type)
-pub fn sign_p2tr_keypath(
+pub fn sign_p2tr_keypath_into(
     input: &P2TRKeypathSignInput,
     sighash: &[u8; 32],
     aux_rand: &[u8; 32],
     hash_type: u8,
-) -> Result<alloc::vec::Vec<u8>> {
+    out: &mut [u8; SIGNATURE_MAX],
+) -> Result<usize> {
     use crate::curve_primitive::secp256k1::{
         base_mul, scalar_add, scalar_from_bytes, scalar_negate, scalar_to_bytes,
     };
@@ -402,12 +472,30 @@ pub fn sign_p2tr_keypath(
     let sig = schnorr_sign(&tweaked_sk, sighash, aux_rand)?;
 
     // 5. witness item: SIGHASH_DEFAULT has no suffix; the others append the hash_type byte
-    let mut out = alloc::vec::Vec::with_capacity(65);
-    out.extend_from_slice(sig.as_ref());
+    out[..64].copy_from_slice(sig.as_ref());
+    let mut len = 64;
     if hash_type != SIGHASH_DEFAULT {
-        out.push(hash_type);
+        out[64] = hash_type;
+        len = 65;
     }
-    Ok(out)
+    Ok(len)
+}
+
+/// [sig(64)] or [sig(64) || hash_type] — the only two wire shapes BIP-341 has.
+/// `pub(crate)`: Rust-internal sizing, not part of the C ABI (keeps shlosilo.h clean).
+pub(crate) const SIGNATURE_MAX: usize = 65;
+
+/// Allocating convenience wrapper (host face / transitional callers).
+#[cfg(any(feature = "alloc-fallback", test))]
+pub fn sign_p2tr_keypath(
+    input: &P2TRKeypathSignInput,
+    sighash: &[u8; 32],
+    aux_rand: &[u8; 32],
+    hash_type: u8,
+) -> Result<alloc::vec::Vec<u8>> {
+    let mut buf = [0u8; SIGNATURE_MAX];
+    let len = sign_p2tr_keypath_into(input, sighash, aux_rand, hash_type, &mut buf)?;
+    Ok(buf[..len].to_vec())
 }
 
 /// Compute tweaked private key (for signing):
@@ -445,35 +533,43 @@ pub fn tweak_private_key(internal_sk: &[u8; 32], internal_pub_x: &[u8; 32]) -> R
 /// tap_leaf_hash = SHA256(SHA256(0xc0 || compact_size(script_len) || script) || compact_size(leaf_version))
 pub fn tap_leaf_hash(script: &[u8], leaf_version: u8) -> [u8; 32] {
     // BIP-341: tapleaf_hash = tagged_hash("TapLeaf", leaf_version || compact_size(script_len) || script)
-    let mut msg = alloc::vec::Vec::with_capacity(1 + 9 + script.len());
-    msg.push(leaf_version);
-    msg.extend_from_slice(&encode_compact_size(script.len()));
-    msg.extend_from_slice(script);
-    tagged_hash(TAPLEAF_TAG, &msg)
+    // Zero heap: the tagged hash streams the three pieces instead of joining them.
+    let tag_hash = {
+        let mut h = Sha256Std::new();
+        h.update(TAPLEAF_TAG);
+        h.finalize()
+    };
+    let mut h = Sha256Std::new();
+    h.update(tag_hash);
+    h.update(tag_hash);
+    h.update([leaf_version]);
+    let mut len_prefix = [0u8; 9];
+    let n = write_compact_size(script.len(), &mut len_prefix);
+    h.update(&len_prefix[..n]);
+    h.update(script);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h.finalize());
+    out
 }
 
-/// BTC compact size encoding (BIP-174 / PSBT / BIP-341):
-/// <0xfd || u16 LE> | <0xfe || u32 LE> | <0xff || u64 LE> | single byte
-fn encode_compact_size(value: usize) -> alloc::vec::Vec<u8> {
-    // Work in the u64 domain: a 32-bit `usize` can never exceed `u32::MAX`,
-    // which would make the third test below "always true" and trip
-    // `clippy::absurd_extreme_comparisons` (denied by default) on 32-bit
-    // targets. Encoding behavior is identical on every target.
+/// Compact-size prefix into a caller buffer; returns the used length.
+fn write_compact_size(value: usize, out: &mut [u8; 9]) -> usize {
     let value = value as u64;
     if value < 0xfd {
-        alloc::vec![value as u8]
+        out[0] = value as u8;
+        1
     } else if value <= 0xffff {
-        let mut v = alloc::vec![0xfd];
-        v.extend_from_slice(&(value as u16).to_le_bytes());
-        v
+        out[0] = 0xfd;
+        out[1..3].copy_from_slice(&(value as u16).to_le_bytes());
+        3
     } else if value <= 0xffff_ffff {
-        let mut v = alloc::vec![0xfe];
-        v.extend_from_slice(&(value as u32).to_le_bytes());
-        v
+        out[0] = 0xfe;
+        out[1..5].copy_from_slice(&(value as u32).to_le_bytes());
+        5
     } else {
-        let mut v = alloc::vec![0xff];
-        v.extend_from_slice(&value.to_le_bytes());
-        v
+        out[0] = 0xff;
+        out[1..9].copy_from_slice(&value.to_le_bytes());
+        9
     }
 }
 
@@ -508,9 +604,10 @@ pub fn compute_merkle_root(leaf_hash: &[u8; 32], co_path: &[[u8; 32]]) -> [u8; 3
 /// **Output**: 32-byte tweak scalar (raw bytes, reduced mod L to use)
 pub fn taproot_script_tweak(internal_key_x: &[u8; 32], merkle_root: &[u8; 32]) -> [u8; 32] {
     // tweak = tagged_hash("TapTweak", internal_key_x || merkle_root)
-    let mut msg = alloc::vec::Vec::with_capacity(64);
-    msg.extend_from_slice(internal_key_x);
-    msg.extend_from_slice(merkle_root);
+    // Zero heap: the message is a fixed 64 bytes.
+    let mut msg = [0u8; 64];
+    msg[..32].copy_from_slice(internal_key_x);
+    msg[32..].copy_from_slice(merkle_root);
     tagged_hash(TAPTWEAK_TAG, &msg)
 }
 
@@ -562,6 +659,7 @@ pub fn tweak_private_key_scriptpath(
     Ok(scalar_to_bytes(&tweaked_scalar))
 }
 
+#[cfg(any(feature = "alloc-fallback", test))]
 /// Control block (BIP-341):
 /// control_block = [leaf_version (1 byte) || parity_bit (1 bit) || internal_key_x (32 bytes)] || merkle_path
 /// Total: 33 + 32 * merkle_depth bytes
@@ -582,7 +680,9 @@ pub fn build_control_block(
 
 /// Parse control block (returns leaf_version, parity_bit, internal_key_x, merkle_path)
 /// Returns: (leaf_version, parity_bit, internal_key_x, merkle_path)
+#[cfg(any(feature = "alloc-fallback", test))]
 type ParsedControlBlock = (u8, u8, [u8; 32], alloc::vec::Vec<[u8; 32]>);
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn parse_control_block(cb: &[u8]) -> Option<ParsedControlBlock> {
     if cb.len() < 33 {
         return None;
@@ -735,11 +835,11 @@ mod tests {
             hex_decode_vec("51202258f2d4637b2ca3fd27614868b33dee1a242b42582d5474f51730005fa99ce8");
         let spent_outputs = vec![SpentOutput {
             value: 0x19bc,
-            script_pubkey: spent_spk,
+            script_pubkey: &spent_spk,
         }];
         let tx_outputs = vec![SpentOutput {
             value: 6400,
-            script_pubkey: out_spk,
+            script_pubkey: &out_spk,
         }];
         let input = TaprootSighashInput {
             tx_version: 2,
@@ -778,11 +878,11 @@ mod tests {
             hex_decode_vec("51202258f2d4637b2ca3fd27614868b33dee1a242b42582d5474f51730005fa99ce8");
         let spent_outputs = vec![SpentOutput {
             value: 0x19bc,
-            script_pubkey: spent_spk,
+            script_pubkey: &spent_spk,
         }];
         let tx_outputs = vec![SpentOutput {
             value: 6400,
-            script_pubkey: out_spk,
+            script_pubkey: &out_spk,
         }];
         let leaf_hash =
             hex_decode_32("f87f124e735a592a8ff390a68f6f05469ba8422e246dc78b0b57cd1576ffa98c");
