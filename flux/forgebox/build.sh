@@ -24,6 +24,33 @@ set -o pipefail
 # oversubscribed GitHub's 4-vCPU runners 4x, which costs more than it buys.
 JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
+# Cross toolchain: pinned, not whatever apt happens to have. The Ubuntu package
+# is unpinned (a runner image update silently changes the compiler that builds
+# the firmware) and two distributions of the SAME version produce different
+# images - arm-none-eabi-gcc 14.2.1 from Ubuntu and from xPack differ by ~4.4 kB
+# on this tree - so local builds and CI must use the same one. See
+# docs/toolchain.md; SHLOSILO_ARM_TOOLCHAIN points at an unpacked copy and
+# SHLOSILO_ARM_TOOLCHAIN_STRICT=1 turns a mismatch into an error.
+PINNED_TOOLCHAIN_VERSION="14.2.1"
+PINNED_TOOLCHAIN="${SHLOSILO_ARM_TOOLCHAIN:-${HOME}/.local/toolchains/gnu-arm}"
+if [[ -x "${PINNED_TOOLCHAIN}/bin/arm-none-eabi-gcc" ]]; then
+    export PATH="${PINNED_TOOLCHAIN}/bin:${PATH}"
+    TC_LINE="$(arm-none-eabi-gcc --version | head -1)"
+    echo "toolchain: ${TC_LINE}"
+    if [[ "${TC_LINE}" != *" ${PINNED_TOOLCHAIN_VERSION} "* ]] || [[ "${TC_LINE}" != *"xPack"* ]]; then
+        echo "toolchain: expected the pinned xPack ${PINNED_TOOLCHAIN_VERSION} (docs/toolchain.md)" >&2
+        if [[ "${SHLOSILO_ARM_TOOLCHAIN_STRICT:-0}" == "1" ]]; then
+            exit 1
+        fi
+    fi
+else
+    echo "toolchain: UNPINNED system arm-none-eabi-gcc ($(arm-none-eabi-gcc --version | head -1))" >&2
+    echo "toolchain: install the pinned one - see docs/toolchain.md" >&2
+    if [[ "${SHLOSILO_ARM_TOOLCHAIN_STRICT:-0}" == "1" ]]; then
+        exit 1
+    fi
+fi
+
 # Resolve paths regardless of the caller's cwd.
 cd "$(dirname "${BASH_SOURCE[0]}")"
 APP_ROOT="$(pwd)"
