@@ -91,6 +91,43 @@ jobs:
       - name: Vendor crate tests (bulletproofs reference oracle)
         run: cd vendor/monero-bulletproofs && cargo test --release
 
+  zero-heap:
+    name: Zero-heap (Z6 allocation face)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: probes/noalloc
+      # The zero-heap claim has two faces and they are measured separately
+      # (probes/noalloc/README.md): the graph face below, and the reachable
+      # face in the next step. Both must stay green - a green reachable face
+      # with an alloc-linked graph would mean the production shape is drifting.
+      # Guarded in CI because the probe only ran in the local gate batch
+      # before: a regression could reach main without any CI signal.
+      - name: Graph face (the crate graph links without an allocator)
+        run: bash scripts/z6_langitem_check.sh
+      # Probes build a bare-metal staticlib in the PRODUCTION shape (no
+      # alloc-fallback, no #[global_allocator]) and link it against a C main,
+      # so any allocation reachable from the signing entry breaks the link
+      # with an undefined `__rust_alloc*`. measure.py then disassembles the
+      # linked ELF and proves no code reachable from `z6_probe_run` calls the
+      # allocator. build.sh exits 0 = REACHABLE-CLEAN, 10 = reachable debt.
+      - name: Allocation face (build + link + disassembly)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-none-eabi
+          bash probes/noalloc/build.sh
+      - name: Upload allocation-face receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: z6-noalloc-report
+          path: probes/noalloc/z6_report.json
+
   fuzz-smoke:
     name: Fuzz smoke (4 targets x 30s)
     runs-on: ubuntu-latest
