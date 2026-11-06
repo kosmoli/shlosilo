@@ -28,6 +28,28 @@
   设备入口签名 + 与参考实现逐字节比对 + 归属/prevout/sighash 类型拒绝面
 - **隐私**: 上游仓库公开测试向量(测试网、无私钥),可公开提交
 
+## core_regtest_p2sh_p2wpkh_331b.psbt
+
+- **来源**: Bitcoin Core **v31.0.0** 原生 `walletcreatefundedpsbt` 未签名产物(本地隔离
+  regtest 实例:datadir `~/works/btc-fixture-gen/regtest-data`,rpcport 18543、p2p port 18544;
+  与主网生产节点完全隔离)。钱包 `fixture` 为 watch-only 描述符钱包,导入
+  `sh(wpkh([f3b9960b/49'/1'/0'/0/0]026c59ed538e8f38787d7f80411423c87aa3ecf6207801bace9e8992ac465027e5))`
+- **网络**: Bitcoin regtest(地址/派生按 testnet 口径:coin type 1、P2SH 版本字节 0xc4、WIF 0xef)
+- **输入**: `780fe93a21fd4c0679ad508b7b2de3bb942b9a1d1ab8827e12bae6b20b6bf0a7:0`,
+  100,000 sat,P2SH-P2WPKH(`a9143bd0ce93a9ba0f29e6ceadeceb702cd215e052f287`)
+- **输出**: 99,867 sat → `bcrt1qf5a34hukrsp4uefsr2j5cfuze6gdw6kdegc52r`(同一测试种子
+  m/84'/1'/0'/0/0 的原生 P2WPKH;fee 133 sat,无找零)
+- **大小**: 331 bytes
+- **SHA-256**: `30263d2a8e8a75194ae540468f951220764ba06d292be803bc73c815ba5fa0c5`
+- **内容**: 4 条 input-map 记录 — NON_WITNESS_UTXO(0x00)/ WITNESS_UTXO(0x01)/
+  REDEEM_SCRIPT(0x04, `001464e4dbff0202485fd4d8217cc34a8d666fece529`)/ BIP32_DERIVATION(0x06);
+  output map 为空;sequence `0xfffffffd`(RBF)、locktime 0
+- **用途**: P2SH-P2WPKH(BIP49)设备签名路径的输入夹具(`sign_psbt_p2sh_p2wpkh` / BIP-143
+  scriptCode = redeemScript 路径);设备面 `parse_psbt` 已验证可解析、`get_witness_utxo`
+  读出 100,000 sat + `a914…87`
+- **隐私**: regtest 隔离链上的测试种子(entropy `f284fb6c…`、空 passphrase)派生密钥,
+  coin type 1,**无真实资金**;可公开提交
+
 ## unsigned_txset_2in.bin
 
 - **来源**: 本地 monero-wallet-cli watch-only 转账生成(`sh_p2in_view` 钱包 →

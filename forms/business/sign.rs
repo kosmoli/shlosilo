@@ -1600,6 +1600,23 @@ fn sign_btc<'a>(
             .input_map_checked(idx)
             .and_then(|m| psbt_mod::get_witness_utxo(m))
             .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        // S2/B-4: dispatch on the spent script. A native P2WPKH prevout is signed
+        // in place; a P2SH-wrapped one (BIP49) goes through the wrapper
+        // finalization, which re-derives the redeem script from this same key and
+        // refuses if it does not hash into the prevout.
+        let is_p2sh_p2wpkh = spk.len() == 23 && spk[0] == 0xa9 && spk[1] == 0x14 && spk[22] == 0x87;
+        if is_p2sh_p2wpkh {
+            psbt_mod::sign_psbt_p2sh_p2wpkh(
+                &mut psbt,
+                &psbt_mod::PsbtP2SHP2WPKHSignInput {
+                    input_index: idx,
+                    private_key: SecretBytes::new(*sk_bytes),
+                    pubkey_hash,
+                    amount,
+                },
+            )?;
+            continue;
+        }
         if spk.len() != 22 || spk[0] != 0x00 || spk[1] != 0x14 || spk[2..22] != pubkey_hash {
             return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
         }

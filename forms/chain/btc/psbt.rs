@@ -51,7 +51,6 @@ use alloc::vec::Vec;
 #[cfg(any(feature = "alloc-fallback", test))]
 use crate::chain::btc::p2pkh::sign_p2pkh;
 #[cfg(any(feature = "alloc-fallback", test))]
-use crate::chain::btc::p2sh::sign_p2sh_p2wpkh;
 #[cfg(test)]
 use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
@@ -978,15 +977,24 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> 
     Ok(())
 }
 
-/// Sign a PSBT P2SH-P2WPKH input
+/// Sign a PSBT P2SH-P2WPKH input on the device path.
+///
+/// Zero heap: the redeem script is a fixed 22-byte array, the signature goes
+/// through `p2wpkh::sign_p2wpkh_core` (the same BIP-143 path the native-P2WPKH
+/// input uses — for a wrapped input the scriptCode is exactly the P2WPKH
+/// program), and both injected values are written from stack buffers.
 ///
 /// Inject:
-/// - FINAL_SCRIPT_SIG (0x08) = push 22-byte redeemScript
-/// - FINAL_SCRIPTWITNESS (0x09) = serialized witness (item count + items)
+/// - FINAL_SCRIPT_SIG (0x07) = `0x16` ‖ redeem script (one push of 22 bytes)
+/// - FINAL_SCRIPTWITNESS (0x08) = serialized `[sig ‖ hash_type, pubkey]`
 ///
-/// Note: FINAL_SCRIPTWITNESS uses the special BIP-174 format; the value is already-serialized witness bytes.
-/// shlosilo reuses the witness output (vec![sig, pk]) of the v9.3 sign_p2sh_p2wpkh.
-#[cfg(any(feature = "alloc-fallback", test))]
+/// Refusals (a wrapper must never sign a script it does not own):
+/// - the prevout is not `OP_HASH160 <20> OP_EQUAL`;
+/// - its hash is not hash160 of the redeem script of our key;
+/// - `PSBT_IN_REDEEM_SCRIPT` (0x04) is present and disagrees with that script;
+/// - the caller's amount disagrees with the PSBT's witness UTXO (the amount is
+///   part of the BIP-143 preimage, so a mismatch means signing a different
+///   transaction than the one reviewed).
 pub fn sign_psbt_p2sh_p2wpkh(
     psbt: &mut Psbt<'_>,
     sign_input: &PsbtP2SHP2WPKHSignInput,
@@ -996,41 +1004,62 @@ pub fn sign_psbt_p2sh_p2wpkh(
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 1. Clone the unsigned tx
-    let mut tx = psbt.unsigned_tx.clone();
+    // 1. Prevout binding.
+    let prev_out = psbt.unsigned_tx.inputs[input_idx].prev_out.clone();
+    let (amount, spk) = get_utxo_any(psbt.input_map(input_idx), &prev_out)
+        .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let spk = crate::types::wire_bytes::wire_slice(&spk);
+    if amount != sign_input.amount {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::PsbtOwnershipMismatch));
+    }
 
-    // 2. Call the v9.3 sign_p2sh_p2wpkh
-    let p2sh_input = crate::chain::btc::p2sh::P2SHP2WPKHSignInput {
-        input_index: sign_input.input_index,
+    let redeem = crate::chain::btc::p2sh::p2wpkh_redeem_script(&sign_input.pubkey_hash);
+    let h = crate::encoding::sha256::hash(&redeem)?;
+    let h160 = crate::encoding::ripemd160::hash(&h)?;
+    if spk.len() != 23 || spk[0] != 0xa9 || spk[1] != 0x14 || spk[22] != 0x87 || spk[2..22] != h160
+    {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::PsbtOwnershipMismatch));
+    }
+
+    // 2. A declared redeem script must be the one we derived.
+    if let Some(declared) = psbt.input_map(input_idx).get(&[input_type::REDEEM_SCRIPT]) {
+        if declared != redeem {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::PsbtOwnershipMismatch));
+        }
+    }
+
+    // 3. Signature (BIP-143, scriptCode = the P2WPKH program inside the wrapper).
+    let p2wpkh_input = crate::chain::btc::p2wpkh::P2WPKHSignInput {
+        input_index: input_idx,
         private_key: &sign_input.private_key,
         pubkey_hash: sign_input.pubkey_hash,
-        amount: sign_input.amount,
+        amount,
     };
-    let _signed = sign_p2sh_p2wpkh(&mut tx, &p2sh_input)?;
+    let (sig_with_sighash, compressed_pk) =
+        crate::chain::btc::p2wpkh::sign_p2wpkh_core(&psbt.unsigned_tx, &p2wpkh_input)?;
 
-    // 3. Extract scriptSig → FINAL_SCRIPT_SIG
-    let script_sig = tx.inputs[input_idx].script_sig.clone();
-    let key_script_sig = [input_type::FINAL_SCRIPT_SIG];
+    // 4. Inject both finalization records.
+    let mut script_sig = [0u8; 1 + 22];
+    script_sig[0] = 0x16; // push 22 bytes
+    script_sig[1..].copy_from_slice(&redeem);
 
-    // 4. Extract witness → FINAL_SCRIPTWITNESS (serialized into a stack
-    // buffer; over-cap is an explicit error via the sink)
-    let witness = &tx.inputs[input_idx].witness;
-    let mut witness_bytes = [0u8; 256];
+    let mut witness_bytes = [0u8; 2 + 2 + 72 + 1 + 33];
     let wlen = {
         let mut sink = SinkCursor::new(&mut witness_bytes);
-        put_compact_size(&mut sink, witness.len() as u64)?;
-        for item in witness {
-            put_compact_size(&mut sink, item.len() as u64)?;
-            sink.put(item)?;
-        }
+        put_compact_size(&mut sink, 2)?; // item count
+        put_compact_size(&mut sink, sig_with_sighash.len() as u64)?;
+        sink.put(&sig_with_sighash)?;
+        put_compact_size(&mut sink, 33)?;
+        sink.put(&compressed_pk)?;
         sink.pos()
     };
-    let key_witness = [input_type::FINAL_SCRIPTWITNESS];
 
-    // 5. Inject into the PSBT input map
-    psbt.set_input_kv(input_idx, &key_script_sig, script_sig.as_ref())?;
-    psbt.set_input_kv(input_idx, &key_witness, &witness_bytes[..wlen])?;
-
+    psbt.set_input_kv(input_idx, &[input_type::FINAL_SCRIPT_SIG], &script_sig)?;
+    psbt.set_input_kv(
+        input_idx,
+        &[input_type::FINAL_SCRIPTWITNESS],
+        &witness_bytes[..wlen],
+    )?;
     Ok(())
 }
 
@@ -1891,29 +1920,55 @@ mod tests {
         assert!(sign_psbt_p2pkh(&mut psbt, &sign_input).is_err());
     }
 
-    /// Sign a PSBT P2SH-P2WPKH input → FINAL_SCRIPT_SIG + FINAL_SCRIPTWITNESS
+    /// Sign a PSBT P2SH-P2WPKH input → FINAL_SCRIPT_SIG + FINAL_SCRIPTWITNESS.
+    ///
+    /// The prevout is derived from the signing key, as the device contract
+    /// requires: the wrapper either hashes to the P2SH program of our redeem
+    /// script or it is refused. (The earlier fixture used an unrelated P2SH
+    /// program and carried no witness UTXO — that test pinned the old
+    /// blind-signing behaviour.)
     #[test]
     fn psbt_sign_p2sh_p2wpkh() {
         let mut txid = [0u8; 32];
         txid[0] = 0xab;
-        let txin = TxIn {
-            prev_out: OutPoint { txid, vout: 0 },
-            script_sig: vec![].into(),
-            sequence: 0xffffffff,
-            witness: vec![],
-        };
-        // P2SH scriptPubKey = `0xa914{20-byte-hash}87`
-        let mut redeem_hash = [0u8; 20];
-        redeem_hash[0] = 0x33;
+
+        let private_key_bytes =
+            hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
+        let mut private_key = [0u8; 32];
+        private_key.copy_from_slice(&private_key_bytes);
+
+        // our key -> pubkey hash -> redeem script -> P2SH program
+        let sk = crate::curve_primitive::secp256k1::scalar_from_bytes(&private_key).unwrap();
+        let pk = crate::curve_primitive::secp256k1::point_to_compressed(
+            &crate::curve_primitive::secp256k1::base_mul(&sk),
+        );
+        let sha = crate::encoding::sha256::hash(&pk).unwrap();
+        let pk_hash = crate::encoding::ripemd160::hash(&sha).unwrap();
+        let redeem = crate::chain::btc::p2sh::p2wpkh_redeem_script(&pk_hash);
+        let rsha = crate::encoding::sha256::hash(&redeem).unwrap();
+        let redeem_hash = crate::encoding::ripemd160::hash(&rsha).unwrap();
         let mut script_pubkey = Vec::with_capacity(23);
         script_pubkey.push(0xa9);
         script_pubkey.push(0x14);
         script_pubkey.extend_from_slice(&redeem_hash);
         script_pubkey.push(0x87);
 
+        // witness UTXO = amount || varint(23) || scriptPubKey
+        let amount = 300_000u64;
+        let mut witness_utxo_bytes = Vec::new();
+        witness_utxo_bytes.extend_from_slice(&amount.to_le_bytes());
+        witness_utxo_bytes.push(23);
+        witness_utxo_bytes.extend_from_slice(&script_pubkey);
+
+        let txin = TxIn {
+            prev_out: OutPoint { txid, vout: 0 },
+            script_sig: vec![].into(),
+            sequence: 0xffffffff,
+            witness: vec![],
+        };
         let txout = TxOut {
             value: 200_000,
-            script_pubkey: script_pubkey.into(),
+            script_pubkey: script_pubkey.clone().into(),
         };
 
         let mut psbt = psbt_from_maps_leaky(
@@ -1923,60 +1978,99 @@ mod tests {
                 outputs: bt_vec![txout],
                 lock_time: 0,
             },
-            &[Vec::new()],
+            &[vec![KeyValue {
+                key: vec![input_type::WITNESS_UTXO].into(),
+                value: witness_utxo_bytes.into(),
+            }]],
             &[Vec::new()],
         );
 
-        let private_key_bytes =
-            hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
-        let mut private_key = [0u8; 32];
-        private_key.copy_from_slice(&private_key_bytes);
         let private_key = SecretBytes::take(&mut private_key);
-
-        let pk_hash = [0x42; 20]; // consistent with sign_p2sh_p2wpkh
-
         let sign_input = PsbtP2SHP2WPKHSignInput {
             input_index: 0,
             private_key,
             pubkey_hash: pk_hash,
-            amount: 300_000,
+            amount,
         };
 
         sign_psbt_p2sh_p2wpkh(&mut psbt, &sign_input).unwrap();
 
-        // Verify FINAL_SCRIPT_SIG injection
+        // FINAL_SCRIPT_SIG = 0x16 || redeem script
         let final_scriptsig = psbt
             .input_map(0)
             .iter()
-            .find(|kv| kv.key == vec![input_type::FINAL_SCRIPT_SIG]);
-        assert!(
-            final_scriptsig.is_some(),
-            "FINAL_SCRIPT_SIG must be injected"
-        );
-        let final_scriptsig = final_scriptsig.unwrap();
-        // scriptSig = push 22 (0x16) + 0x00 + 0x14 + pubkey_hash
+            .find(|kv| kv.key == [input_type::FINAL_SCRIPT_SIG])
+            .expect("FINAL_SCRIPT_SIG must be injected");
         assert_eq!(final_scriptsig.value.len(), 23);
         assert_eq!(final_scriptsig.value[0], 0x16);
+        assert_eq!(&final_scriptsig.value[1..], &redeem[..]);
 
-        // Verify FINAL_SCRIPTWITNESS injection
+        // FINAL_SCRIPTWITNESS = [sig || SIGHASH_ALL, pubkey]
         let final_witness = psbt
             .input_map(0)
             .iter()
-            .find(|kv| kv.key == vec![input_type::FINAL_SCRIPTWITNESS]);
-        assert!(
-            final_witness.is_some(),
-            "FINAL_SCRIPTWITNESS must be injected"
+            .find(|kv| kv.key == [input_type::FINAL_SCRIPTWITNESS])
+            .expect("FINAL_SCRIPTWITNESS must be injected");
+        assert_eq!(final_witness.value[0], 2, "two witness items");
+        let sig_len = final_witness.value[1] as usize;
+        let sig = &final_witness.value[2..2 + sig_len];
+        assert_eq!(*sig.last().unwrap(), 0x01, "SIGHASH_ALL suffix");
+        let pk_len = final_witness.value[2 + sig_len] as usize;
+        assert_eq!(pk_len, 33);
+        assert_eq!(
+            &final_witness.value[3 + sig_len..3 + sig_len + 33],
+            &pk[..],
+            "the witness must carry our compressed pubkey"
         );
-        let final_witness = final_witness.unwrap();
-        // Witness serialization: <item_count><item_len><item_data>*
-        // 2 items: signature + pubkey
-        assert_eq!(final_witness.value[0], 2); // 2 witness items
-                                               // next comes varint(sig_len) + sig
-        eprintln!(
-            "FINAL_SCRIPTWITNESS ({} bytes): {}",
-            final_witness.value.len(),
-            hex_encode(final_witness.value)
+    }
+
+    /// A P2SH prevout that is not hash160 of our redeem script must be refused.
+    #[test]
+    fn psbt_sign_p2sh_p2wpkh_foreign_prevout_refused() {
+        let mut txid = [0u8; 32];
+        txid[0] = 0xab;
+        let mut script_pubkey = Vec::with_capacity(23);
+        script_pubkey.push(0xa9);
+        script_pubkey.push(0x14);
+        script_pubkey.extend_from_slice(&[0x33; 20]); // unrelated program
+        script_pubkey.push(0x87);
+
+        let amount = 300_000u64;
+        let mut witness_utxo_bytes = Vec::new();
+        witness_utxo_bytes.extend_from_slice(&amount.to_le_bytes());
+        witness_utxo_bytes.push(23);
+        witness_utxo_bytes.extend_from_slice(&script_pubkey);
+
+        let txin = TxIn {
+            prev_out: OutPoint { txid, vout: 0 },
+            script_sig: vec![].into(),
+            sequence: 0xffffffff,
+            witness: vec![],
+        };
+        let txout = TxOut {
+            value: 200_000,
+            script_pubkey: script_pubkey.clone().into(),
+        };
+        let mut psbt = psbt_from_maps_leaky(
+            Transaction {
+                version: 2,
+                inputs: bt_vec![txin],
+                outputs: bt_vec![txout],
+                lock_time: 0,
+            },
+            &[vec![KeyValue {
+                key: vec![input_type::WITNESS_UTXO].into(),
+                value: witness_utxo_bytes.into(),
+            }]],
+            &[Vec::new()],
         );
+        let sign_input = PsbtP2SHP2WPKHSignInput {
+            input_index: 0,
+            private_key: SecretBytes::new([0x01; 32]),
+            pubkey_hash: [0x42; 20],
+            amount,
+        };
+        assert!(sign_psbt_p2sh_p2wpkh(&mut psbt, &sign_input).is_err());
     }
 
     /// P2SH-P2WPKH PSBT out-of-bounds

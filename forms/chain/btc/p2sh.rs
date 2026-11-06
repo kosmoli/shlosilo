@@ -28,21 +28,33 @@
 
 #[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
+// The whole-transaction signer below builds a serialized transaction in a Vec,
+// so it stays on the alloc face; the fixed-size redeem-script helper and the
+// PSBT finalization records that the device path needs do not (`sign_psbt_p2sh_p2wpkh`
+// in chain/btc/psbt.rs assembles the same bytes into caller/stack buffers).
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec;
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
 
+#[cfg(any(feature = "alloc-fallback", test))]
 use crate::chain::btc::p2pkh::p2pkh_script_code;
 #[cfg(test)]
 use crate::chain::btc::p2wpkh::bt_vec;
+#[cfg(any(feature = "alloc-fallback", test))]
 use crate::chain::btc::p2wpkh::{segwit_sighash_p2wpkh, Transaction, SIGHASH_ALL};
+#[cfg(any(feature = "alloc-fallback", test))]
 use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
+#[cfg(any(feature = "alloc-fallback", test))]
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+#[cfg(any(feature = "alloc-fallback", test))]
 use crate::signature::ecdsa_secp256k1::{self as ecdsa};
 use crate::types::SecretBytes;
 
 /// P2SH scriptPubKey: `OP_HASH160 <20-byte-hash> OP_EQUAL`
 ///
 /// `0xa914{20-byte-hash}87`
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn p2sh_script_pubkey(redeem_script_hash: &[u8; 20]) -> Vec<u8> {
     let mut out = Vec::with_capacity(23);
     out.push(0xa9); // OP_HASH160
@@ -67,6 +79,7 @@ pub fn p2sh_script_pubkey(redeem_script_hash: &[u8; 20]) -> Vec<u8> {
 /// <0x16> = push 22 bytes (redeemScript length)
 /// <22 bytes> = 0x00 0x14 {20-byte-pubkey-hash}
 /// ```
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn p2sh_p2wpkh_script_sig(pubkey_hash: &[u8; 20]) -> Vec<u8> {
     let mut out = Vec::with_capacity(1 + 22);
     out.push(0x16); // push 22 bytes
@@ -78,7 +91,13 @@ pub fn p2sh_p2wpkh_script_sig(pubkey_hash: &[u8; 20]) -> Vec<u8> {
 
 /// P2SH-P2WPKH redeemScript (22 bytes)
 ///
-/// `0x0014{20-byte-pubkey-hash}`
+/// `0x0014{20-byte-pubkey-hash}` — fixed size, so it needs no heap and stays on
+/// the device face.
+pub fn p2wpkh_redeem_script(pubkey_hash: &[u8; 20]) -> [u8; 22] {
+    p2sh_p2wpkh_redeem_script(pubkey_hash)
+}
+
+/// Historical name of [`p2wpkh_redeem_script`] (kept for existing callers).
 pub fn p2sh_p2wpkh_redeem_script(pubkey_hash: &[u8; 20]) -> [u8; 22] {
     let mut out = [0u8; 22];
     out[0] = 0x00; // OP_0 (P2WPKH marker)
@@ -102,6 +121,7 @@ pub struct P2SHP2WPKHSignInput<'k> {
 }
 
 /// P2SH-P2WPKH signing output
+#[cfg(any(feature = "alloc-fallback", test))]
 #[derive(Clone, Debug)]
 pub struct P2SHP2WPKHSignedTx {
     /// Full BIP-144 segwit serialized transaction (marker + flag + witness)
@@ -110,6 +130,7 @@ pub struct P2SHP2WPKHSignedTx {
     pub sighash: [u8; 32],
 }
 
+#[cfg(any(feature = "alloc-fallback", test))]
 /// Sign a P2SH-P2WPKH input
 ///
 /// **Side effects**:

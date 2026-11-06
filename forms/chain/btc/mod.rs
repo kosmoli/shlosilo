@@ -16,7 +16,6 @@ pub mod multisig;
 pub mod musig2;
 #[cfg(any(feature = "alloc-fallback", test))]
 pub mod p2pkh;
-#[cfg(any(feature = "alloc-fallback", test))]
 pub mod p2sh;
 pub mod p2wpkh;
 pub mod psbt;
