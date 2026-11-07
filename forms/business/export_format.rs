@@ -100,8 +100,32 @@ fn hex32(bytes: &[u8; 32]) -> [u8; 64] {
     out
 }
 
-/// Build `format` into `out`; returns the number of bytes written.
-pub fn build(
+/// The UR type name a shape is framed with, or `None` when the shape is plain
+/// text that goes on screen as one static QR (no framing to do).
+///
+/// This is the decision the reference firmware makes the same way: a UR message
+/// that needs more than one 200-byte fragment animates, one that fits stays a
+/// single QR (`ur-parse-lib::keystone_ur_encoder::probe_encode`). The device
+/// takes this answer and hands payload + type to its frame encoder.
+pub fn ur_type(format: ExportFormat) -> Option<crate::ur::ur_encode::UrTypeTag> {
+    match format {
+        ExportFormat::UrCryptoAccount => Some(crate::ur::ur_encode::UrTypeTag::CryptoAccount),
+        ExportFormat::UrCryptoHdKey => Some(crate::ur::ur_encode::UrTypeTag::CryptoHdKey),
+        ExportFormat::UrCryptoMultiAccounts => {
+            Some(crate::ur::ur_encode::UrTypeTag::CryptoMultiAccounts)
+        }
+        ExportFormat::BitcoinXpubUri
+        | ExportFormat::MoneroJsonKeystone
+        | ExportFormat::MoneroJsonCupcake => None,
+    }
+}
+
+/// The shape's payload bytes, without any UR wrapper.
+///
+/// For the three BC-UR shapes this is the CBOR message the frame encoder
+/// fragments; for the three text shapes it is the text itself (a static QR is
+/// its only rendering).
+pub fn payload(
     format: ExportFormat,
     seed: &[u8; 64],
     network: Network,
@@ -116,7 +140,6 @@ pub fn build(
     let mfp = master_fingerprint_from_seed(seed)?;
 
     match format {
-        // 1: crypto-account with the four BTC account paths
         ExportFormat::UrCryptoAccount => {
             let paths = btc_paths(coin);
             let xpubs: [crypto_hd_key::Bip32XPub; 4] = [
@@ -125,59 +148,42 @@ pub fn build(
                 xpub_from_seed(seed, &paths[2])?,
                 xpub_from_seed(seed, &paths[3])?,
             ];
-            let s84 = crypto_account::btc_script_expressions(84)?;
-            let s49 = crypto_account::btc_script_expressions(49)?;
-            let s44 = crypto_account::btc_script_expressions(44)?;
-            let s86 = crypto_account::btc_script_expressions(86)?;
             let outputs = [
                 crypto_account::AccountOutput {
                     xpub: &xpubs[0],
                     path: &paths[0],
-                    script_expressions: s84,
+                    script_expressions: crypto_account::btc_script_expressions(84)?,
                 },
                 crypto_account::AccountOutput {
                     xpub: &xpubs[1],
                     path: &paths[1],
-                    script_expressions: s49,
+                    script_expressions: crypto_account::btc_script_expressions(49)?,
                 },
                 crypto_account::AccountOutput {
                     xpub: &xpubs[2],
                     path: &paths[2],
-                    script_expressions: s44,
+                    script_expressions: crypto_account::btc_script_expressions(44)?,
                 },
                 crypto_account::AccountOutput {
                     xpub: &xpubs[3],
                     path: &paths[3],
-                    script_expressions: s86,
+                    script_expressions: crypto_account::btc_script_expressions(86)?,
                 },
             ];
-            let enc = crypto_account::encode(&mfp, &outputs)?;
-            copy_uri(enc.as_str(), out)
+            crypto_account::encode_payload(&mfp, &outputs, out)
         }
-
-        // 2: Cake/Cupcake static URI - BIP-84 account key only
-        ExportFormat::BitcoinXpubUri => {
-            let path = DerivationPath::parse(&path_str(84, coin))?;
-            let xpub = xpub_from_seed(seed, &path)?;
-            let label = labels.label.ok_or_else(err)?;
-            btc_xpub_uri(&xpub, label, out)
-        }
-
-        // 3: crypto-hdkey - ETH account key with the reference's metadata
         ExportFormat::UrCryptoHdKey => {
             let path = eth_path(coin);
             let xpub = xpub_from_seed(seed, &path)?;
-            let enc = crypto_hd_key::encode_with_meta(
+            crypto_hd_key::encode_with_meta_payload(
                 &xpub,
                 &mfp,
-                Some(&path),
+                &path,
                 labels.key_name,
                 Some("account.standard"),
-            )?;
-            copy_uri(enc.as_str(), out)
+                out,
+            )
         }
-
-        // 4: crypto-multi-accounts - BTC account keys + ETH, as one bundle
         ExportFormat::UrCryptoMultiAccounts => {
             let paths = btc_paths(coin);
             let btc0 = xpub_from_seed(seed, &paths[0])?;
@@ -223,21 +229,25 @@ pub fn build(
                     note: Some("account.standard"),
                 },
             ];
-            let enc = crypto_multi_accounts::encode(&crypto_multi_accounts::MultiAccountsInput {
-                master_fingerprint: mfp,
-                entries: &entries,
-                key_name: labels.key_name,
-                device: labels.device,
-                device_id: labels.device_id,
-                device_version: labels.device_version,
-            })?;
-            copy_uri(enc.as_str(), out)
+            crypto_multi_accounts::encode_payload(
+                &crypto_multi_accounts::MultiAccountsInput {
+                    master_fingerprint: mfp,
+                    entries: &entries,
+                    key_name: labels.key_name,
+                    device: labels.device,
+                    device_id: labels.device_id,
+                    device_version: labels.device_version,
+                },
+                out,
+            )
         }
-
-        // 5/6: the two Monero view-key JSON shapes. Monero has its own network
-        // notion (its address byte), so the Bitcoin network argument does not
-        // reach it: the exported account is the Monero mainnet one the device
-        // signs for.
+        // Text shapes: the payload IS the text (rendered as one static QR).
+        ExportFormat::BitcoinXpubUri => {
+            let path = DerivationPath::parse(&path_str(84, coin))?;
+            let xpub = xpub_from_seed(seed, &path)?;
+            let label = labels.label.ok_or_else(err)?;
+            btc_xpub_uri(&xpub, label, out)
+        }
         ExportFormat::MoneroJsonKeystone => {
             let (addr, view) = monero_material(seed, Network::MoneroMainnet)?;
             let view_hex = core::str::from_utf8(&view).map_err(|_| err())?;
@@ -249,6 +259,27 @@ pub fn build(
             let label = labels.label.ok_or_else(err)?;
             monero_viewkey_json_cupcake(label, &addr, view_hex, labels.restore_height, out)
         }
+    }
+}
+
+/// Build `format` into `out`; returns the number of bytes written.
+pub fn build(
+    format: ExportFormat,
+    seed: &[u8; 64],
+    network: Network,
+    labels: &ExportLabels<'_>,
+    out: &mut [u8],
+) -> Result<usize> {
+    // One derivation path for both renderings: the payload is what the device
+    // fragments, and the UR string is that payload wrapped for single-QR use
+    // (the SDK gate dumps these strings).
+    match ur_type(format) {
+        Some(tag) => {
+            let n = payload(format, seed, network, labels, out)?;
+            let enc = crate::ur::ur_encode::encode(tag, &out[..n])?;
+            copy_uri(enc.as_str(), out)
+        }
+        None => payload(format, seed, network, labels, out),
     }
 }
 
@@ -282,6 +313,7 @@ pub fn format_at(idx: usize) -> Option<ExportFormat> {
 mod tests {
     use super::*;
     use alloc::vec;
+    use alloc::vec::Vec;
 
     const SEED: [u8; 64] = [0x11u8; 64];
 
@@ -324,6 +356,60 @@ mod tests {
                     assert!(!s.contains("encrypted") && !s.contains("source"));
                 }
             }
+        }
+    }
+
+    /// The reference firmware animates as soon as a UR message needs more than
+    /// one 200-byte fragment; the device reads this answer to choose between the
+    /// frame carousel and a single static QR. Pin the actual split so a payload
+    /// that silently grows across the boundary is visible.
+    #[test]
+    fn ur_payloads_are_measured_against_the_200_byte_fragment() {
+        let mut out = vec![0u8; 8192];
+        let sizes: Vec<(ExportFormat, usize)> = [
+            ExportFormat::UrCryptoAccount,
+            ExportFormat::UrCryptoHdKey,
+            ExportFormat::UrCryptoMultiAccounts,
+        ]
+        .iter()
+        .map(|f| {
+            let n =
+                payload(*f, &SEED, Network::BitcoinMainnet, &labels(), &mut out).expect("payload");
+            (*f, n)
+        })
+        .collect();
+        for (f, n) in &sizes {
+            assert!(ur_type(*f).is_some(), "{f:?} is a UR shape");
+            assert!(*n > 0);
+        }
+        // Account (4 descriptors) and the multi-account bundle are multi-part;
+        // a single ETH key is not.
+        let n_account = sizes[0].1;
+        let n_hdkey = sizes[1].1;
+        let n_multi = sizes[2].1;
+        assert!(
+            n_account > 200,
+            "crypto-account payload {n_account} B > 1 fragment"
+        );
+        assert!(
+            n_hdkey <= 200,
+            "crypto-hdkey payload {n_hdkey} B fits one fragment"
+        );
+        assert!(
+            n_multi > n_account,
+            "the bundle carries more than one account"
+        );
+        assert!(
+            n_multi > 400,
+            "multi-accounts payload {n_multi} B is 3+ fragments"
+        );
+        // Text shapes are never framed.
+        for f in [
+            ExportFormat::BitcoinXpubUri,
+            ExportFormat::MoneroJsonKeystone,
+            ExportFormat::MoneroJsonCupcake,
+        ] {
+            assert!(ur_type(f).is_none(), "{f:?} is plain text");
         }
     }
 

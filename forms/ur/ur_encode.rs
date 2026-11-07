@@ -154,6 +154,31 @@ impl UrTypeTag {
         }
     }
 
+    /// The same name as a NUL-terminated C string.
+    ///
+    /// A `&str` pointer is not a C string (Rust literals carry no terminator), so
+    /// the FFI hands out this form. One pin asserts the two agree for every tag.
+    pub fn type_name_cstr(self) -> &'static core::ffi::CStr {
+        match self {
+            Self::CryptoPsbt => c"crypto-psbt",
+            Self::Psbt => c"psbt",
+            Self::EthSignRequest => c"eth-sign-request",
+            Self::CryptoMoneroTx => c"crypto-monero-tx",
+            Self::XmrTxUnsigned => c"xmr-txunsigned",
+            Self::XmrTxSigned => c"xmr-txsigned",
+            Self::XmrOutput => c"xmr-output",
+            Self::XmrKeyImage => c"xmr-keyimage",
+            Self::SolanaSignRequest => c"solana-sign-request",
+            Self::CardanoSignRequest => c"cardano-sign-request",
+            Self::CosmosSignRequest => c"cosmos-sign-request",
+            Self::Bytes => c"bytes",
+            Self::CryptoHdKey => c"crypto-hdkey",
+            Self::CryptoAccount => c"crypto-account",
+            Self::CryptoMultiAccounts => c"crypto-multi-accounts",
+            Self::Unknown => c"unknown",
+        }
+    }
+
     /// Legacy interface compatibility: infer from the first byte (Phase 4 leftover callers)
     pub fn from_bytes(bytes: &[u8]) -> Self {
         match bytes.first().copied() {
@@ -355,6 +380,42 @@ mod xmr_tag_tests {
 // ============================================================================
 // T2 tests (2026-10-08): Cake direct pairing UR tags (xmr-output / xmr-keyimage)
 // ============================================================================
+#[cfg(test)]
+mod type_name_tests {
+    use super::UrTypeTag;
+
+    /// The C names and the Rust names are one source: the device's frame encoder
+    /// is handed the C string, the SDK gate and logs use the Rust one.
+    #[test]
+    fn cstr_type_names_match() {
+        let all = [
+            UrTypeTag::CryptoPsbt,
+            UrTypeTag::Psbt,
+            UrTypeTag::EthSignRequest,
+            UrTypeTag::CryptoMoneroTx,
+            UrTypeTag::XmrTxUnsigned,
+            UrTypeTag::XmrTxSigned,
+            UrTypeTag::XmrOutput,
+            UrTypeTag::XmrKeyImage,
+            UrTypeTag::SolanaSignRequest,
+            UrTypeTag::CardanoSignRequest,
+            UrTypeTag::CosmosSignRequest,
+            UrTypeTag::Bytes,
+            UrTypeTag::CryptoHdKey,
+            UrTypeTag::CryptoAccount,
+            UrTypeTag::CryptoMultiAccounts,
+            UrTypeTag::Unknown,
+        ];
+        for t in all {
+            assert_eq!(
+                t.type_name_cstr().to_str().expect("ascii"),
+                t.type_name(),
+                "{t:?} C name differs from the Rust name"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod xmr_pairing_tag_tests {
     use super::*;

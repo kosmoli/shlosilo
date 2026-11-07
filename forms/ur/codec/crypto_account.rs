@@ -71,12 +71,28 @@ pub fn btc_script_expressions(purpose: u32) -> Result<&'static [u64]> {
 /// `master_fingerprint` is the **root** fingerprint (an xpub only carries its
 /// parent's); outputs are emitted in caller order.
 pub fn encode(master_fingerprint: &[u8; 4], outputs: &[AccountOutput<'_>]) -> Result<UrEncoded> {
+    let mut buf = [0u8; ACCOUNT_BUF];
+    let n = encode_payload(master_fingerprint, outputs, &mut buf)?;
+    ur_encode::encode(UrTypeTag::CryptoAccount, &buf[..n])
+}
+
+/// The same CBOR message, written into a caller buffer without the UR wrapper.
+///
+/// The device hands payload + UR type to its frame encoder so a message larger
+/// than one fragment animates instead of becoming an unscannable single QR -
+/// the rule the reference firmware applies on the same hardware
+/// (`FRAGMENT_MAX_LENGTH_DEFAULT = 200`; `probe_encode` animates as soon as the
+/// payload needs more than one fragment).
+pub fn encode_payload(
+    master_fingerprint: &[u8; 4],
+    outputs: &[AccountOutput<'_>],
+    out: &mut [u8],
+) -> Result<usize> {
     if outputs.is_empty() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    let mut buf = [0u8; ACCOUNT_BUF];
     let n = {
-        let mut w = CborWriter::new(&mut buf);
+        let mut w = CborWriter::new(out);
         w.map_head(2)?;
         w.uint(MASTER_FINGERPRINT)?;
         w.uint(u64::from(u32::from_be_bytes(*master_fingerprint)))?;
@@ -91,7 +107,7 @@ pub fn encode(master_fingerprint: &[u8; 4], outputs: &[AccountOutput<'_>]) -> Re
         }
         w.pos()
     };
-    ur_encode::encode(UrTypeTag::CryptoAccount, &buf[..n])
+    Ok(n)
 }
 
 #[cfg(test)]

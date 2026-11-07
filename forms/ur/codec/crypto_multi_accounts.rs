@@ -86,16 +86,23 @@ pub struct MultiAccountsInput<'a> {
 
 /// Encode a multi-account bundle. Zero heap: one caller-sized CBOR buffer.
 pub fn encode(input: &MultiAccountsInput<'_>) -> Result<UrEncoded> {
+    // Bounded: header + per-entry ~160B (pubkey 33 + chain code 32 + two
+    // keypaths + fingerprints + name/note). 16 entries keeps a wide margin.
+    let mut buf = [0u8; 16 * 160 + 64];
+    let n = encode_payload(input, &mut buf)?;
+    ur_encode::encode(UrTypeTag::CryptoMultiAccounts, &buf[..n])
+}
+
+/// The same CBOR bundle, written into a caller buffer without the UR wrapper
+/// (the device's frame encoder fragments it when it exceeds one part).
+pub fn encode_payload(input: &MultiAccountsInput<'_>, out: &mut [u8]) -> Result<usize> {
     use crate::encoding::cbor;
 
     if input.entries.is_empty() {
         return Err(err());
     }
-    // Bounded: header + per-entry ~160B (pubkey 33 + chain code 32 + two
-    // keypaths + fingerprints + name/note). 16 entries keeps a wide margin.
-    let mut buf = [0u8; 16 * 160 + 64];
     let n = {
-        let mut w = cbor::CborWriter::new(&mut buf);
+        let mut w = cbor::CborWriter::new(out);
         let optional = usize::from(input.device.is_some())
             + usize::from(input.device_id.is_some())
             + usize::from(input.device_version.is_some());
@@ -124,7 +131,7 @@ pub fn encode(input: &MultiAccountsInput<'_>) -> Result<UrEncoded> {
         }
         w.pos()
     };
-    ur_encode::encode(UrTypeTag::CryptoMultiAccounts, &buf[..n])
+    Ok(n)
 }
 
 fn write_hdkey(

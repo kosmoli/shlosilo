@@ -114,6 +114,31 @@ pub fn encode(
     ur_encode::encode(UrTypeTag::CryptoHdKey, &buf[..n])
 }
 
+/// The CBOR message of `encode`, into a caller buffer (no UR wrapper).
+pub fn encode_payload(
+    xpub: &Bip32XPub,
+    master_fingerprint: &[u8; 4],
+    path: Option<&DerivationPath>,
+    out: &mut [u8],
+) -> Result<usize> {
+    use crate::encoding::cbor::CborWriter;
+
+    let mut w = CborWriter::new(out);
+    match path {
+        Some(path) => encode_hdkey_map(&mut w, xpub, master_fingerprint, path)?,
+        None => {
+            w.map_head(3)?;
+            w.uint(KEY_DATA)?;
+            w.bytes(&xpub[45..78])?;
+            w.uint(CHAIN_CODE)?;
+            w.bytes(&xpub[13..45])?;
+            w.uint(PARENT_FINGERPRINT)?;
+            w.uint(u64::from(parent_fingerprint(xpub)))?;
+        }
+    }
+    Ok(w.pos())
+}
+
 /// Extended-key encoding **with the human-readable metadata** the reference
 /// firmware emits for ETH: `name` (field 9) and `note` (field 10).
 ///
@@ -128,15 +153,26 @@ pub fn encode_with_meta(
     name: Option<&str>,
     note: Option<&str>,
 ) -> Result<UrEncoded> {
-    use crate::encoding::cbor;
-
     let path = match path {
         Some(p) => p,
         None => return encode(xpub, master_fingerprint, None),
     };
     let mut buf = [0u8; 384];
+    let n = encode_with_meta_payload(xpub, master_fingerprint, path, name, note, &mut buf)?;
+    crate::ur::ur_encode::encode(UrTypeTag::CryptoHdKey, &buf[..n])
+}
+
+/// The CBOR message of `encode_with_meta`, into a caller buffer (no UR wrapper).
+pub fn encode_with_meta_payload(
+    xpub: &Bip32XPub,
+    master_fingerprint: &[u8; 4],
+    path: &DerivationPath,
+    name: Option<&str>,
+    note: Option<&str>,
+    out: &mut [u8],
+) -> Result<usize> {
     let n = {
-        let mut w = cbor::CborWriter::new(&mut buf);
+        let mut w = cbor::CborWriter::new(out);
         let coin = coin_info(path);
         let children = is_account_level(path);
         let count = 4
@@ -178,7 +214,7 @@ pub fn encode_with_meta(
         }
         w.pos()
     };
-    ur_encode::encode(UrTypeTag::CryptoHdKey, &buf[..n])
+    Ok(n)
 }
 
 /// Parent fingerprint carried by the xpub bytes (field 5..9 of the BIP-32

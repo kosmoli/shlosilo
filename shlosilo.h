@@ -1600,6 +1600,35 @@ const char *shlosilo_export_format_label(unsigned int idx);
 unsigned int shlosilo_export_format_max_len(void);
 
 /**
+ * The UR type `format_id` is framed with, or NULL when the shape is plain text
+ * (one static QR, no framing).
+ *
+ * The device uses this to pick a renderer: a UR payload that needs more than one
+ * 200-byte fragment animates in the frame carousel, one that fits - and every
+ * text shape - is a single static QR. That split is the reference firmware's own
+ * rule on the same hardware.
+ */
+const char *shlosilo_export_format_ur_type(unsigned int format_id);
+
+/**
+ * Session + format id + metadata → the shape's payload bytes (no UR wrapper).
+ *
+ * For a UR shape this is the CBOR message the device fragments; for a text shape
+ * it is the text, which is only ever shown as one static QR.
+ */
+int shlosilo_export_format_payload_ffi(const struct KeySession *session,
+                                       unsigned int format_id,
+                                       unsigned int network,
+                                       const char *label,
+                                       const char *device_type,
+                                       const char *device_id,
+                                       const char *device_version,
+                                       unsigned int restore_height,
+                                       uint8_t *output_buf,
+                                       unsigned int output_buf_len,
+                                       unsigned int *actual_len);
+
+/**
  * Session + format id + metadata → the export string.
  *
  * * `format_id` — the listing index from `shlosilo_export_format_count()`

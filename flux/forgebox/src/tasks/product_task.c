@@ -202,6 +202,13 @@ static int g_pairing_qr;
  * g_pairing_qr does: the carousel must not take over, and the flow-exit gate
  * must not tear the session down under it. */
 static int g_export_qr;
+/* 1 = the export QR is a single static frame (text shape); 0 = the frame
+ * carousel is rendering a UR payload. */
+static int g_export_static;
+/* UR export payload handed to the carousel (PSRAM; freed when the page closes). */
+static uint8_t *g_export_payload;
+static uint32_t g_export_len;
+static char g_export_type[32];
 /* Set when the operator asked for an export without a live key session: the
  * device has no stored seed, so the export leg starts with a plate scan and
  * resumes at the format list once the session opens. */
@@ -214,6 +221,7 @@ static void carousel_enter(void);
 static void carousel_step(void);
 static void export_enter(void);
 static void export_step(void);
+static void export_payload_free(void);
 static void carousel_exit(void);
 static void power_button_init(void);
 static void power_button_check(void);
@@ -585,8 +593,10 @@ static void ProductTask(void *argument)
                  * Monero view key, so the QR scratch is wiped with it. */
                 if (g_export_qr != 0) {
                     g_export_qr = 0;
+                    g_export_static = 0;
                     UiWipePlateQr();
                 }
+                export_payload_free();
             }
             if (g_key_session != NULL && g_key_from_se == 0 && g_key_console == 0 &&
                 UiGetPage() != UI_PAGE_SCAN &&
@@ -605,7 +615,7 @@ static void ProductTask(void *argument)
             if (UiGetPage() == UI_PAGE_SCAN && g_scan == SCAN_IDLE) {
                 scan_enter();
             } else if (UiGetPage() == UI_PAGE_QR && g_carousel == CAROUSEL_IDLE &&
-                       g_export_qr == 0) {
+                       g_export_static == 0) {
                 carousel_enter();
             }
             if (UiGetPage() == UI_PAGE_CONFIRM) {
@@ -2562,6 +2572,17 @@ static void scan_exit(void)
  * carries the choice. Labels come straight from the library so the menu and the
  * encoder cannot disagree about what format 3 is.
  */
+static void export_payload_free(void)
+{
+    if (g_export_payload != NULL) {
+        memset(g_export_payload, 0, g_export_len);  /* a view key may be in it */
+        ExtFree(g_export_payload);
+        g_export_payload = NULL;
+    }
+    g_export_len = 0;
+    g_export_type[0] = '\0';
+}
+
 static void export_labels_load(void)
 {
     unsigned n;
@@ -2604,15 +2625,58 @@ static void export_enter(void)
     printf("export: list open (%u formats)\r\n", g_xp_label_n);
 }
 
-/* Build the selected shape and show it as one static QR frame. */
+/* Show the selected shape.
+ *
+ * The renderer follows the shape, not a guess: a UR message that needs more than
+ * one 200-byte fragment animates in the frame carousel, everything else is one
+ * static QR. That is the reference firmware's own rule on this hardware
+ * (`FRAGMENT_MAX_LENGTH_DEFAULT = 200`, `probe_encode`), so a wallet sees the
+ * same density a keystone device would send for the same payload.
+ */
 static void export_show(unsigned id)
 {
     uint32_t cap = shlosilo_export_format_max_len();
-    uint8_t *buf;
     uint32_t actual = 0;
     const char *dev = "shlosilo";
+    const char *ur_type = shlosilo_export_format_ur_type(id);
+    uint8_t *buf;
     int rc;
 
+    if (ur_type != NULL) {
+        /* UR shape: hand payload + type to the carousel (it fragments). */
+        buf = (uint8_t *)ExtMalloc(cap);
+        if (buf == NULL) {
+            UiSetLast("export: no buffer");
+            UiGotoPage(UI_PAGE_WELCOME);
+            return;
+        }
+        WDT_ReloadCounter();
+        rc = shlosilo_export_format_payload_ffi(g_key_session, id,
+                                               0 /* Bitcoin mainnet */,
+                                               dev, dev, NULL, NULL, 0,
+                                               buf, cap, &actual);
+        WDT_ReloadCounter();
+        if (rc != 0 || actual == 0 || actual >= cap) {
+            printf("export: format %u payload failed rc=%d\r\n", id, rc);
+            UiSetLast(shlosilo_sign_failure_text(rc));
+            ExtFree(buf);
+            UiGotoPage(UI_PAGE_WELCOME);
+            return;
+        }
+        printf("export: format %u (%s) -> %u bytes, %u part(s)\r\n",
+               id, ur_type, (unsigned)actual, (unsigned)((actual + 199) / 200));
+        export_payload_free();
+        g_export_payload = buf;
+        g_export_len = actual;
+        snprintf(g_export_type, sizeof(g_export_type), "%s", ur_type);
+        g_export_qr = 1;
+        g_export_static = 0;    /* the carousel runs */
+        UiGotoPage(UI_PAGE_QR);
+        UiSetLast("export: scan with wallet");
+        return;
+    }
+
+    /* Text shape: one static QR of the whole string. */
     buf = (uint8_t *)SramMalloc(cap);
     if (buf == NULL) {
         UiSetLast("export: no buffer");
@@ -2636,11 +2700,10 @@ static void export_show(unsigned id)
         return;
     }
     buf[actual] = '\0';
-    printf("export: format %u -> %u bytes\r\n", id, (unsigned)actual);
+    printf("export: format %u -> %u bytes (static)\r\n", id, (unsigned)actual);
     g_export_qr = 1;
-    /* UiShowQrFrame only renders - the page change is ours. Going through
-     * UiGotoPage first also guarantees the carousel stays away (g_export_qr
-     * gates carousel_enter). */
+    g_export_static = 1;
+    /* UiShowQrFrame only renders - the page change is ours. */
     UiGotoPage(UI_PAGE_QR);
     UiShowQrFrame((const char *)buf, 0, 1);     /* copies into QR scratch */
     memset(buf, 0, cap);                        /* the view key was in there */
@@ -2668,11 +2731,17 @@ static void carousel_enter(void)
 {
     /* The output side shows the signed set when a sign session produced one
      * (UR type mapped at sign time), else the canned demo payload. */
-    const uint8_t *payload = (g_sign_out_len > 0) ? g_sign_out : g_demo_payload;
-    unsigned payload_len =
-        (g_sign_out_len > 0) ? g_sign_out_len : (unsigned)DEMO_PAYLOAD_LEN;
-    const char *type =
-        (g_sign_out_len > 0) ? g_sign_out_type : DEMO_PAYLOAD_TYPE;
+    /* An account export owns the page when it has a UR payload: the same
+     * carousel that shows a signed set shows the export message, fragmented at
+     * the same 200-byte part size. */
+    int exporting = (g_export_qr != 0 && g_export_payload != NULL && g_export_len > 0);
+    const uint8_t *payload = exporting ? g_export_payload
+                           : (g_sign_out_len > 0) ? g_sign_out : g_demo_payload;
+    unsigned payload_len = exporting ? g_export_len
+                          : (g_sign_out_len > 0) ? g_sign_out_len
+                                                 : (unsigned)DEMO_PAYLOAD_LEN;
+    const char *type = exporting ? g_export_type
+                      : (g_sign_out_len > 0) ? g_sign_out_type : DEMO_PAYLOAD_TYPE;
 
     if (shlosilo_sram_pool_live_bytes() != 0) {
         printf("carousel: sram pool busy\r\n");

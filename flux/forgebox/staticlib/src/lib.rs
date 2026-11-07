@@ -177,6 +177,8 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::export_abi::shlosilo_export_format_count as *const ()),
     Addr(shlosilo::ffi::export_abi::shlosilo_export_format_label as *const ()),
     Addr(shlosilo::ffi::export_abi::shlosilo_export_format_max_len as *const ()),
+    Addr(shlosilo::ffi::export_abi::shlosilo_export_format_ur_type as *const ()),
+    Addr(shlosilo::ffi::export_abi::shlosilo_export_format_payload_ffi as *const ()),
     Addr(shlosilo::ffi::export_abi::shlosilo_export_format_session_ffi as *const ()),
     Addr(shlosilo::ffi::generator_cache_ffi::shlosilo_gen_cache_set_hooks as *const ()),
     Addr(shlosilo::ffi::perf_bench_ffi::shlosilo_perf_fmul as *const ()),

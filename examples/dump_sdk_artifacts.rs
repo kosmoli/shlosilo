@@ -157,5 +157,30 @@ fn main() {
         .expect("write label");
     }
 
+    // Payload sizes: the device compares these against the 200-byte fragment to
+    // decide carousel vs single QR (see business::export_format::ur_type).
+    {
+        use shlosilo::business::export_format::{payload, ur_type};
+        let mut sizes = String::new();
+        for (i, fmt) in ExportFormat::ALL.iter().enumerate() {
+            let n = payload(
+                *fmt,
+                &seed,
+                shlosilo::network::Network::BitcoinMainnet,
+                &labels,
+                &mut buf,
+            )
+            .expect("payload");
+            let ur = if ur_type(*fmt).is_some() {
+                "ur"
+            } else {
+                "text"
+            };
+            let parts = if ur == "ur" { n.div_ceil(200) } else { 1 };
+            sizes.push_str(&format!("{i} {ur} payload={n} parts={parts}\n"));
+        }
+        std::fs::write(dir.join("export_payload_sizes.txt"), sizes).expect("write sizes");
+    }
+
     println!("dumped artifacts to {}", dir.display());
 }
