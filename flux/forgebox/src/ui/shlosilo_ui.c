@@ -498,6 +498,22 @@ static void draw_buttons_bar(void)
     }
 }
 
+/* ---- S2 account export: the format list owns its cursor ---- */
+static const char *const *g_xp_labels;
+static unsigned g_xp_count;
+static unsigned g_xp_cursor;
+static int g_xp_req;    /* 0 = nothing, 1 = selected, -1 = leave */
+/* One-shot `wire` press on the welcome page asks the product task to open the
+ * export list (welcome has no other use for `wire`; the QR page keeps the
+ * indexed/keyed switch). Same pattern as UiTakeHomeRequest. */
+static int g_export_req;
+/* The QR page currently holds a STATIC single-frame payload (an account export
+ * or a one-frame UR): there is no carousel to re-render it, so a repaint would
+ * replace the code with the "preparing..." placeholder. The wire view toggle
+ * only affects the next generated response, so on a static frame it must not
+ * trigger that repaint. */
+static int g_static_qr;
+
 static void draw_footer(void)
 {
     char line[64];
@@ -603,6 +619,27 @@ static void draw_page(void)
         draw_text_center(UI_Q_AREA_Y0 + UI_Q_AREA_H / 2, "preparing...", 2);
         break;
 
+    case UI_PAGE_EXPORT_LIST: {
+        /* One row per wire shape, the cursor marked with '>'. Footer carries
+         * the position and the select hint (the reference labelled buttons by
+         * name; we label the action, so any platform's binding reads right). */
+        char foot[32];
+        draw_text_center(UI_XP_TITLE_Y, "export", UI_XP_TITLE_SCALE);
+        for (unsigned xp_i = 0; xp_i < g_xp_count && xp_i < UI_XP_ROWS; xp_i++) {
+            int y = UI_XP_ROW_Y0 + (int)xp_i * UI_XP_ROW_PITCH;
+            if (xp_i == g_xp_cursor) {
+                draw_text(UI_XP_MARK_X, y, ">", UI_XP_ROW_SCALE);
+            }
+            if (g_xp_labels != NULL && g_xp_labels[xp_i] != NULL) {
+                draw_text(UI_XP_TEXT_X, y, g_xp_labels[xp_i], UI_XP_ROW_SCALE);
+            }
+        }
+        snprintf(foot, sizeof(foot), "%u/%u  wire: select",
+                 g_xp_cursor + 1, g_xp_count);
+        draw_text_center(UI_XP_FOOT_Y, foot, 1);
+        break;
+    }
+
     case UI_PAGE_CRASH:
         /* Crash-forensics boot self-check: fixed template, one ink. */
         draw_text_center(UI_X_TITLE_Y, UI_TXT_CRASH, UI_X_TITLE_SCALE);
@@ -656,13 +693,20 @@ void UiShowQrFrame(const char *text, uint32_t index, uint32_t total)
     } else {
         ui_qr_draw(g_qr_code, &layout, g_fb, UI_FB_W, UI_FB_H);
         draw_text_center(UI_Q_TITLE_Y, UI_Q_TXT_TITLE, UI_Q_TITLE_SCALE);
-        snprintf(cap, sizeof(cap), "ur frame %u/%u",
-                 (unsigned)index + 1, (unsigned)total);
+        if (total > 1) {
+            snprintf(cap, sizeof(cap), "ur frame %u/%u",
+                     (unsigned)index + 1, (unsigned)total);
+        } else {
+            /* A one-frame payload is not an animation; say so. */
+            snprintf(cap, sizeof(cap), "static qr");
+        }
         draw_text_center(UI_Q_CAP_Y, cap, 1);
         snprintf(cap, sizeof(cap), "wire: %s",
                  ProductWireView() ? "keyed" : "indexed");
         draw_text_center(UI_Q_CAP_Y + 26, cap, 1);
     }
+
+    g_static_qr = (total <= 1) ? 1 : 0;
 
     /* One poll between the encode/draw work and the flush: the flush itself
      * polls too (UiInputPoll in ui_flush_range). */
@@ -828,6 +872,58 @@ bool UiIsModeButton(int x, int y)
             x >= UI_BTN_M_X0 && x <= UI_BTN_M_X1);
 }
 
+void UiExportListShow(const char *const *labels, unsigned count)
+{
+    g_xp_labels = labels;
+    g_xp_count = (count > UI_XP_ROWS) ? UI_XP_ROWS : count;
+    g_xp_cursor = 0;
+    g_xp_req = 0;
+    UiGotoPage(UI_PAGE_EXPORT_LIST);
+}
+
+unsigned UiExportListCursor(void)
+{
+    return g_xp_cursor;
+}
+
+int UiTakeExportRequest(void)
+{
+    int r = g_export_req;
+    g_export_req = 0;
+    return r;
+}
+
+int UiExportListTake(void)
+{
+    int r = g_xp_req;
+    g_xp_req = 0;
+    return r;
+}
+
+int UiExportListInput(int action)
+{
+    if (g_page != UI_PAGE_EXPORT_LIST || g_xp_count == 0) {
+        return -1;
+    }
+    if (action == UI_ACTION_PREV) {
+        if (g_xp_cursor == 0) {
+            g_xp_req = -1;      /* home on the first item leaves the list */
+            return -1;
+        }
+        g_xp_cursor--;
+    } else if (action == UI_ACTION_NEXT) {
+        g_xp_cursor = (g_xp_cursor + 1) % g_xp_count;
+    } else if (action == UI_ACTION_SELECT) {
+        g_xp_req = 1;
+        return 1;
+    } else {
+        return -1;
+    }
+    draw_page();
+    ui_flush_range(0, UI_FB_H - 1);
+    return 0;
+}
+
 void UiSetLast(const char *text)
 {
     snprintf(g_last, sizeof(g_last), "last: %.50s", text ? text : "-");
@@ -842,6 +938,31 @@ static void handle_press(int x, int y)
      * `wire` means per page (next / confirm); the generic handler must not
      * steal the press (camera would jump to SCAN, wire would log "qr page
      * only"). The one exception is `home`, whose zeroize request is shared. */
+    /* S2 account export: the list owns navigation; this function only maps
+     * the platform's three zones onto the three logical actions (home = prev,
+     * wire = select, camera = next). A button-only device calls
+     * UiExportListInput() from its key handler and never comes through here. */
+    if (g_page == UI_PAGE_EXPORT_LIST) {
+        int action = -1;
+        if (UiIsBackButton(x, y)) {
+            action = UI_ACTION_PREV;
+        } else if (UiIsModeButton(x, y)) {
+            action = UI_ACTION_SELECT;
+        } else if (UiIsContinueButton(x, y)) {
+            action = UI_ACTION_NEXT;
+        }
+        if (action >= 0) {
+            int rc = UiExportListInput(action);
+            snprintf(msg, sizeof(msg), "export: %s -> %u/%u",
+                     action == UI_ACTION_PREV ? "prev" :
+                     action == UI_ACTION_SELECT ? "select" : "next",
+                     g_xp_cursor + 1, g_xp_count);
+            UiSetLast(msg);
+            printf("ui: %s (rc=%d)\r\n", g_last, rc);
+        }
+        return;
+    }
+
     if (g_page == UI_PAGE_REVIEW) {
         if (UiIsBackButton(x, y)) {
             g_home_req = 1;
@@ -856,6 +977,19 @@ static void handle_press(int x, int y)
             ProductToggleWireView();
             snprintf(msg, sizeof(msg), "wire: %s (%d,%d)",
                      ProductWireView() ? "keyed" : "indexed", x, y);
+            if (g_static_qr) {
+                /* No carousel to redraw the frame: repainting here would blank
+                 * the code to the placeholder. Toggle is recorded for the next
+                 * response; the visible QR stays. */
+                UiSetLast(msg);
+                printf("ui: %s\r\n", g_last);
+                return;
+            }
+        } else if (g_page == UI_PAGE_WELCOME) {
+            /* S2 export: `connect software wallet` - the product task opens
+             * the format list (it owns the key session check). */
+            snprintf(msg, sizeof(msg), "wire: export account (%d,%d)", x, y);
+            g_export_req = 1;
         } else {
             snprintf(msg, sizeof(msg), "wire: qr page only (%d,%d)", x, y);
         }

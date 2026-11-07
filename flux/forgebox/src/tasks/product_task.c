@@ -197,9 +197,23 @@ static int g_key_console;
  * a real exit (back to welcome, any other page) falls back to the default
  * teardown. */
 static int g_pairing_qr;
+/* S2 account export: the QR page is showing a static single-frame export
+ * payload (not the carousel). While set it owns the page the same way
+ * g_pairing_qr does: the carousel must not take over, and the flow-exit gate
+ * must not tear the session down under it. */
+static int g_export_qr;
+/* Set when the operator asked for an export without a live key session: the
+ * device has no stored seed, so the export leg starts with a plate scan and
+ * resumes at the format list once the session opens. */
+static int g_export_pending;
+#define XP_LABEL_MAX 8
+static const char *g_xp_labels[XP_LABEL_MAX];
+static unsigned g_xp_label_n;
 static void seed_plate_wipe(void);
 static void carousel_enter(void);
 static void carousel_step(void);
+static void export_enter(void);
+static void export_step(void);
 static void carousel_exit(void);
 static void power_button_init(void);
 static void power_button_check(void);
@@ -507,8 +521,13 @@ static void ProductTask(void *argument)
          * always ends with a dead session (scan/carousel press the page-exit
          * flags through their own paths; this is the common drain). */
         if (UiTakeHomeRequest()) {
+            g_export_pending = 0;   /* a cancelled export never hijacks a later import */
             key_session_close();
             UiGotoPage(UI_PAGE_WELCOME);
+        }
+        /* S2 export: `wire` on the welcome page opens the format list. */
+        if (UiTakeExportRequest()) {
+            export_enter();
         }
         product_status_tick();
 
@@ -540,6 +559,9 @@ static void ProductTask(void *argument)
             carousel_step();
         } else {
             UiTick();
+            if (UiGetPage() == UI_PAGE_EXPORT_LIST) {
+                export_step();
+            }
 
             /* Task 5b: a live plate session outside the flow pages (SCAN /
              * SIGN / CONFIRM) means the flow exited -- the key dies here
@@ -559,11 +581,22 @@ static void ProductTask(void *argument)
                  * leg owns the QR page; drop it on any other page so a stale
                  * flag can never exempt a later non-pairing QR show. */
                 g_pairing_qr = 0;
+                /* Same for a static export frame; its payload may have been a
+                 * Monero view key, so the QR scratch is wiped with it. */
+                if (g_export_qr != 0) {
+                    g_export_qr = 0;
+                    UiWipePlateQr();
+                }
             }
             if (g_key_session != NULL && g_key_from_se == 0 && g_key_console == 0 &&
                 UiGetPage() != UI_PAGE_SCAN &&
                 UiGetPage() != UI_PAGE_SIGN && UiGetPage() != UI_PAGE_CONFIRM &&
-                !(g_pairing_qr != 0 && UiGetPage() == UI_PAGE_QR)) {
+                /* S2 export: the list and its static QR need the seed (the
+                 * list to derive from, the QR only to have produced it), so
+                 * they are flow-owned like the pages above. */
+                UiGetPage() != UI_PAGE_EXPORT_LIST &&
+                !(g_pairing_qr != 0 && UiGetPage() == UI_PAGE_QR) &&
+                !(g_export_qr != 0 && UiGetPage() == UI_PAGE_QR)) {
                 key_session_close();
                 seed_plate_wipe();
                 UiSetLast("key zeroized (exit)");
@@ -571,7 +604,8 @@ static void ProductTask(void *argument)
             }
             if (UiGetPage() == UI_PAGE_SCAN && g_scan == SCAN_IDLE) {
                 scan_enter();
-            } else if (UiGetPage() == UI_PAGE_QR && g_carousel == CAROUSEL_IDLE) {
+            } else if (UiGetPage() == UI_PAGE_QR && g_carousel == CAROUSEL_IDLE &&
+                       g_export_qr == 0) {
                 carousel_enter();
             }
             if (UiGetPage() == UI_PAGE_CONFIRM) {
@@ -1146,6 +1180,13 @@ static void seed_confirm_step(void)
     printf("seed: key session live (plate %u bytes)\r\n", g_seed_plate_len);
     /* Plate consumed: the session holds the derived keys now. */
     seed_plate_wipe();
+    if (g_export_pending) {
+        /* The export leg asked for this plate: resume at the format list. */
+        g_export_pending = 0;
+        UiSetLast("key session live - export");
+        export_enter();
+        return;
+    }
     UiSetLast("key session live");
     UiGotoPage(UI_PAGE_SCAN);
 }
@@ -2514,6 +2555,114 @@ static void scan_exit(void)
 }
 
 /* ---------------- UR carousel session (F3 output side) ---------------- */
+
+/* ---------------- S2 account export ("connect software wallet") -----------
+ *
+ * The six wire shapes live in forms (`business::export_format`); this side only
+ * carries the choice. Labels come straight from the library so the menu and the
+ * encoder cannot disagree about what format 3 is.
+ */
+static void export_labels_load(void)
+{
+    unsigned n;
+
+    if (g_xp_label_n != 0) {
+        return;
+    }
+    n = shlosilo_export_format_count();
+    if (n > XP_LABEL_MAX) {
+        n = XP_LABEL_MAX;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        g_xp_labels[i] = shlosilo_export_format_label(i);
+    }
+    g_xp_label_n = n;
+}
+
+static void export_enter(void)
+{
+    /* Export needs the seed, which lives in the session: without one the
+     * operator has to import a plate first. Say so instead of showing an
+     * empty menu. */
+    if (g_key_session == NULL) {
+        /* No stored seed on this device: the export leg needs the plate. Arm
+         * the resume flag and drop into the scanner; the accept path in
+         * seed_confirm_step() opens the session and comes back here. */
+        g_export_pending = 1;
+        UiSetLast("export: scan seed plate");
+        printf("export: no key session, plate scan armed\r\n");
+        UiGotoPage(UI_PAGE_SCAN);
+        return;
+    }
+    g_export_pending = 0;
+    export_labels_load();
+    if (g_xp_label_n == 0) {
+        UiSetLast("export: no formats");
+        return;
+    }
+    UiExportListShow(g_xp_labels, g_xp_label_n);
+    printf("export: list open (%u formats)\r\n", g_xp_label_n);
+}
+
+/* Build the selected shape and show it as one static QR frame. */
+static void export_show(unsigned id)
+{
+    uint32_t cap = shlosilo_export_format_max_len();
+    uint8_t *buf;
+    uint32_t actual = 0;
+    const char *dev = "shlosilo";
+    int rc;
+
+    buf = (uint8_t *)SramMalloc(cap);
+    if (buf == NULL) {
+        UiSetLast("export: no buffer");
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
+    }
+    memset(buf, 0, cap);
+    WDT_ReloadCounter();
+    rc = shlosilo_export_format_session_ffi(g_key_session, id,
+                                           0 /* Bitcoin mainnet */,
+                                           dev, dev, NULL, NULL, 0,
+                                           buf, cap, &actual);
+    WDT_ReloadCounter();
+    if (rc != 0 || actual == 0 || actual >= cap) {
+        /* Failure text is the fixed vocabulary; rc is the diagnostic channel. */
+        printf("export: format %u failed rc=%d\r\n", id, rc);
+        UiSetLast(shlosilo_sign_failure_text(rc));
+        memset(buf, 0, cap);
+        SramFree(buf);
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
+    }
+    buf[actual] = '\0';
+    printf("export: format %u -> %u bytes\r\n", id, (unsigned)actual);
+    g_export_qr = 1;
+    /* UiShowQrFrame only renders - the page change is ours. Going through
+     * UiGotoPage first also guarantees the carousel stays away (g_export_qr
+     * gates carousel_enter). */
+    UiGotoPage(UI_PAGE_QR);
+    UiShowQrFrame((const char *)buf, 0, 1);     /* copies into QR scratch */
+    memset(buf, 0, cap);                        /* the view key was in there */
+    SramFree(buf);
+    UiSetLast("export: scan with wallet");
+}
+
+/* Polled from the idle branch while the list page is up. */
+static void export_step(void)
+{
+    int r = UiExportListTake();
+
+    if (r == 0) {
+        return;
+    }
+    if (r < 0) {
+        UiSetLast("export: cancelled");
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
+    }
+    export_show(UiExportListCursor());
+}
 
 static void carousel_enter(void)
 {

@@ -1583,6 +1583,45 @@ void shlosilo_crash_phase_set_hook(void (*hook)(uint8_t));
 uint8_t shlosilo_crash_phase_get(void);
 
 /**
+ * How many export shapes the library offers (the menu length).
+ */
+unsigned int shlosilo_export_format_count(void);
+
+/**
+ * The label of shape `idx` (a NUL-terminated static string), or NULL when `idx`
+ * is out of range. The label is the wire format itself, not a wallet brand.
+ */
+const char *shlosilo_export_format_label(unsigned int idx);
+
+/**
+ * Required caller-buffer length for any export shape (the runtime query, never
+ * frozen into the ABI).
+ */
+unsigned int shlosilo_export_format_max_len(void);
+
+/**
+ * Session + format id + metadata → the export string.
+ *
+ * * `format_id` — the listing index from `shlosilo_export_format_count()`
+ * * `network` — Bitcoin mainnet/testnet for the BTC shapes; the Monero shapes
+ *   always describe the Monero mainnet account and ignore it
+ * * `label` / `device_type` / `device_id` / `device_version` — optional, used by
+ *   the shapes that carry them (pass NULL to omit)
+ * * `restore_height` — used by the cupcake-shaped Monero JSON only
+ */
+int shlosilo_export_format_session_ffi(const struct KeySession *session,
+                                       unsigned int format_id,
+                                       unsigned int network,
+                                       const char *label,
+                                       const char *device_type,
+                                       const char *device_id,
+                                       const char *device_version,
+                                       unsigned int restore_height,
+                                       uint8_t *output_buf,
+                                       unsigned int output_buf_len,
+                                       unsigned int *actual_len);
+
+/**
  * C-ABI: register the flash-backend callbacks. Call once from C init (before the first
  * XMR sign). T-04 contract: typed nullable fn pointers — NULL unregisters the slot.
  *

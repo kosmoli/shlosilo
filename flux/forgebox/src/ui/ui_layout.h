@@ -160,6 +160,20 @@
 #define UI_TXT_CONFIRM_SRC   "source: plate scan"
 
 /* QR carousel page (F3 output side: UR frames for a wallet to scan) */
+/* S2 account export: the six wire shapes as a selectable list.
+ * Rows are the format strings themselves (scale 2 = 16 px glyphs, the longest
+ * label `ur:crypto-multi-accounts` is 24 chars = 384 px, so text starts at 56
+ * and clears 480). */
+#define UI_XP_TITLE_Y        40
+#define UI_XP_TITLE_SCALE    3
+#define UI_XP_ROW_Y0         140
+#define UI_XP_ROW_PITCH      64
+#define UI_XP_ROWS           8
+#define UI_XP_ROW_SCALE      2
+#define UI_XP_MARK_X         16
+#define UI_XP_TEXT_X         56
+#define UI_XP_FOOT_Y         600
+
 #define UI_Q_TITLE_Y         36
 #define UI_Q_TITLE_SCALE     2
 #define UI_Q_TXT_TITLE       "scan with wallet"

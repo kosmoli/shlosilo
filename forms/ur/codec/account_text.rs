@@ -217,6 +217,63 @@ impl ExportFormat {
             Self::MoneroJsonCupcake => "json: monero (cupcake)",
         }
     }
+
+    /// The same label as a NUL-terminated C string.
+    ///
+    /// The FFI cannot hand a `&str` to C: Rust string literals are not
+    /// NUL-terminated, so `.as_ptr()` on one lets the C side read past its end.
+    /// The label source stays single - `screen_label_cstr` is asserted equal to
+    /// `screen_label` for every variant.
+    pub fn screen_label_cstr(self) -> &'static core::ffi::CStr {
+        match self {
+            Self::UrCryptoAccount => c"ur:crypto-account",
+            Self::BitcoinXpubUri => c"bitcoin:?xpub=&label=",
+            Self::UrCryptoHdKey => c"ur:crypto-hdkey",
+            Self::UrCryptoMultiAccounts => c"ur:crypto-multi-accounts",
+            Self::MoneroJsonKeystone => c"json: monero viewkey",
+            Self::MoneroJsonCupcake => c"json: monero (cupcake)",
+        }
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::ExportFormat;
+
+    /// The C-string labels and the display labels are one source: every variant
+    /// must agree, or the device menu and the wire format drift apart.
+    #[test]
+    fn cstr_labels_match_screen_labels() {
+        for f in ExportFormat::ALL {
+            assert_eq!(
+                f.screen_label_cstr().to_str().expect("ascii"),
+                f.screen_label(),
+                "{f:?} label mismatch"
+            );
+        }
+    }
+
+    /// The C side reads until NUL, so a label that is not terminated would run
+    /// into whatever the linker put next.
+    #[test]
+    fn labels_are_nul_terminated_and_short() {
+        for f in ExportFormat::ALL {
+            let s = f.screen_label_cstr();
+            assert!(
+                s.to_bytes().len() <= 32,
+                "{f:?} label too long for a 480px row"
+            );
+            // `to_bytes` already excludes the terminator; the with-NUL form must
+            // end in exactly one 0 and carry no interior NUL (the C side would
+            // stop early and show a truncated row).
+            let raw = s.to_bytes_with_nul();
+            assert_eq!(raw.last().copied(), Some(0), "{f:?} is NUL-terminated");
+            assert!(
+                !raw[..raw.len() - 1].contains(&0),
+                "{f:?} has an interior NUL"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

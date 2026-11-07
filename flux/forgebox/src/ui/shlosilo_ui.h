@@ -19,6 +19,7 @@ typedef enum {
     UI_PAGE_CONFIRM,    /* Task 5b: seed-plate import confirmation */
     UI_PAGE_CRASH,      /* operator diagnostic: unconsumed "LAST CRASH" record */
     UI_PAGE_REVIEW,     /* sign-request review: what the operator signs off on */
+    UI_PAGE_EXPORT_LIST, /* S2 account export: pick one of the six wire shapes */
 } UiPage;
 
 void UiInit(void);
@@ -61,6 +62,41 @@ bool UiIsContinueButton(int x, int y);
 bool UiIsModeButton(int x, int y);
 /* WP4 UX: one-shot `home` press request (welcome + zeroize). */
 int UiTakeHomeRequest(void);
+/* S2 export: one-shot `wire` press on the welcome page ("connect software
+ * wallet"). The product task consumes it and opens the format list; the UI
+ * does not touch the key session, so the session check lives there. */
+int UiTakeExportRequest(void);
+
+/* ---------------- S2 account export: format list ----------------
+ *
+ * The list is the six account-export wire shapes (`ur:crypto-account`,
+ * `bitcoin:?xpub=&label=`, ...) - the format strings themselves, not wallet
+ * brands. Three LOGICAL actions drive it, so the same library works on a
+ * touchscreen (forgebox: home/wire/camera zones) and on a button-only device
+ * (three physical keys):
+ *
+ *   UI_ACTION_PREV   - previous item; on the first item: leave the list
+ *   UI_ACTION_NEXT   - next item, wrapping at the end
+ *   UI_ACTION_SELECT - take the item under the cursor
+ *
+ * The list owns the cursor; the platform owns only the key mapping. A caller
+ * runs the list like this: UiExportListShow(...) once, then feed actions from
+ * its input loop and poll UiExportListTake() for 1 (selected: read
+ * UiExportListCursor(), then build the payload) or -1 (leave).
+ *
+ * Labels are borrowed pointers - they must outlive the page. The labels from
+ * shlosilo_export_format_label() are static, which is the intended source. */
+#define UI_ACTION_PREV   0
+#define UI_ACTION_NEXT   1
+#define UI_ACTION_SELECT 2
+
+void UiExportListShow(const char *const *labels, unsigned count);
+unsigned UiExportListCursor(void);
+/* 0 = nothing yet, 1 = selected, -1 = leave. Consumes the request. */
+int UiExportListTake(void);
+/* Feed one action in. Returns 0 = consumed (repainted), 1 = selected,
+ * -1 = leave requested / not on the list page. */
+int UiExportListInput(int action);
 
 /* Binarized aiming preview: render one camera gray frame (640x480) into the
  * scan page. Called by the camera driver while a captured frame is valid. */

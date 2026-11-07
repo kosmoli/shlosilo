@@ -22,6 +22,8 @@ pub mod cn_timing_ffi;
 /// Crash-forensics pairing-phase marker hook (device crash blackbox).
 pub mod crash_phase;
 pub mod error_code;
+/// Account-export FFI: the six "connect software wallet" shapes.
+pub mod export_abi;
 /// BP+ generator cache FFI hooks (device flash backend). See module docs.
 pub mod generator_cache_ffi;
 /// Device primitive perf-bench FFI (raw per-op costs). See module docs.
