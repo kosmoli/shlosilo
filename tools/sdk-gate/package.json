@@ -1,0 +1,13 @@
+{
+  "name": "shlosilo-sdk-gate",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Decode shlosilo artifacts with the keystone SDK (the parser real wallets use) and assert the fields a wallet needs.",
+  "scripts": {
+    "gate": "node run.mjs"
+  },
+  "dependencies": {
+    "@keystonehq/keystone-sdk": "0.12.1"
+  }
+}

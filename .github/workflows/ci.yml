@@ -143,6 +143,30 @@ jobs:
       - name: Run smoke
         run: bash scripts/fuzz_run.sh 30
 
+  # S2/B-8 (G17): the keystone SDK is the parser real wallets use, and it is
+  # strict. This job decodes artifacts the device actually produces and asserts
+  # the fields a wallet needs. Separate job on purpose: an npm hiccup must not
+  # drag the Rust gates down, and vice versa.
+  sdk-gate:
+    name: Keystone SDK gate (what a wallet can actually parse)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/sdk-gate/package-lock.json
+      - name: Install gate dependencies
+        run: npm ci --prefix tools/sdk-gate
+      - name: Dump the artifacts the device produces
+        run: cargo run --offline --quiet --example dump_sdk_artifacts -- /tmp/sdk_artifacts
+      - name: Decode them with the SDK
+        run: node tools/sdk-gate/run.mjs /tmp/sdk_artifacts
+
   appearances:
     name: Flux (clean-checkout shims + hosts + gates)
     runs-on: ubuntu-latest

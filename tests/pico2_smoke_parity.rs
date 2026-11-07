@@ -41,12 +41,16 @@ const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysg
 /// carries the CBOR byte-string shell (`0x58` + len) before bytewords, so the
 /// body gains the `hd` prefix and a new CRC tail versus the pre-shell vector.
 ///
+/// Regenerated 2026-11-06: the CBOR byte-string shell was removed from the
+/// map-type messages (`crypto-hdkey` / `crypto-account`), because BCR-2020-007
+/// defines their message as the CBOR map itself; the previous golden encoded
+/// the shell. See `tests/ur_message_shell_shape.rs` and `tools/sdk-gate`.
 /// Regenerated 2026-11-03: crypto-hdkey gained the registry-required fields
 /// (origin keypath `source_fingerprint`, `use_info` tag 305, `children` on
 /// account-level paths). This pin fixes the "same fixed entropy → same bytes"
 /// parity property; the bytes evolve with the shape and are re-emitted by
 /// `regenerate_export_ur` (`#[ignore]`) — do not hand-edit.
-const EXPECTED_EXPORT_UR: &str = "ur:crypto-hdkey/hdjsonaxhdclaxisyagdbdhsvarersbykegssnhesonthdetkokklomsprldoseymnpansbnwynyioaahdcxaorptnpmcmdibgcevegaetftloemsfhphdcflkswfsgmdyidchkndyprswsnfewpahtaadehoeadaeaoaeamtaaddyotadlecsdwykaeykaeykaewkaewkaocytkcyltbzaxahaycysssefxgwwmlkflcl";
+const EXPECTED_EXPORT_UR: &str = "ur:crypto-hdkey/onaxhdclaxisyagdbdhsvarersbykegssnhesonthdetkokklomsprldoseymnpansbnwynyioaahdcxaorptnpmcmdibgcevegaetftloemsfhphdcflkswfsgmdyidchkndyprswsnfewpahtaadehoeadaeaoaeamtaaddyotadlecsdwykaeykaeykaewkaewkaocytkcyltbzaxahaycysssefxgwhsvlcwox";
 
 /// The signed EIP-1559 tx hex the host-sim prints (111 bytes).
 const EXPECTED_SIGNED_HEX: &str = "02f86c0180843b9aca0084773594008252089422222222222222222222222222222222222222228203e780c080a0231db6acdbb8e2b9ce1c7c38f0eaea8520dd327b4c7b9f24627459d57a4548a9a0444004dd6f14355354be998067ad1cc1d467bb9e3d73175c5b2b1215eeba1a72";

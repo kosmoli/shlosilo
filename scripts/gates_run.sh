@@ -43,6 +43,12 @@ cargo check --offline --manifest-path fuzz/Cargo.toml > /tmp/g_fuzz.log 2>&1; ec
 bash scripts/check_header.sh > /tmp/g_hdr.log 2>&1; echo "HDRKEEP=$?"
 cargo fmt --all -- --check > /tmp/g_fmt.log 2>&1; echo "FMT=$?"
 bash scripts/vendor_baseline_check.sh > /dev/null 2>&1; echo "BASELINE=$?"
+# B-8 (G17): decode our artifacts with the keystone SDK - the parser real wallets
+# use. `npm ci` is offline-friendly (lockfile) but the first run needs the
+# registry; the gate itself is what must be green.
+( cd tools/sdk-gate && npm ci --silent > /tmp/g_sdkgate_npm.log 2>&1 \
+    && cd ../.. && cargo run --offline --quiet --example dump_sdk_artifacts -- /tmp/sdk_artifacts > /tmp/g_sdkgate_dump.log 2>&1 \
+    && ( cd tools/sdk-gate && node run.mjs /tmp/sdk_artifacts ) ) > /tmp/g_sdkgate.log 2>&1; echo "SDKGATE=$?"
 bash probes/noalloc/build.sh > /tmp/g_probe.log 2>&1; echo "PROBE=$?"
 # Vendor reference-oracle tests (2026-10-21, Z5.3 test-infra): the vendored
 # bulletproofs' own suite is the non-pow2 proof-correctness oracle (m=1..16

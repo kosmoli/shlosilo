@@ -14,3 +14,6 @@ probes/*/target
 /功能核心整改*复审报告*.md
 /HANDOFF-*.md
 /XMR-BENCH-RUNBOOK-*.md
+
+# sdk-gate: node dependencies are restored by `npm ci`, never committed
+tools/sdk-gate/node_modules/

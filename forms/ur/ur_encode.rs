@@ -178,6 +178,29 @@ impl UrTypeTag {
     }
 }
 
+/// Whether this type's UR **message** is a CBOR byte-string container or the
+/// CBOR item itself.
+///
+/// The byte-string shell is a transport convention for container-carrying types:
+/// BCR-2020-006 (crypto-psbt) and the Monero types put a byte container inside,
+/// and the peers (Sparrow, monero_c / Cupcake) decode with `decodeBytes`, so the
+/// shell is what they expect.
+///
+/// The key/path registries are different: BCR-2020-007 defines the crypto-hdkey
+/// and crypto-account (and eth-sign-request) message as the **CBOR map itself** -
+/// `CryptoHDKey.fromCBOR(ur.cbor)` decodes the message directly. Wrapping those
+/// puts a byte string where the registry expects a map, and a strict parser then
+/// reads the shell's bytes as map fields (the keystone SDK's `parseHDKey` dies
+/// with "getData is not a function" because `map[5]` is a byte). Our own decoder
+/// strips the shell, so the defect is invisible to a decode-side shape test -
+/// only an external parser caught it (`tools/sdk-gate`).
+fn message_is_cbor_item(type_tag: UrTypeTag) -> bool {
+    matches!(
+        type_tag,
+        UrTypeTag::CryptoHdKey | UrTypeTag::CryptoAccount | UrTypeTag::EthSignRequest
+    )
+}
+
 /// Single-fragment encoding: payload → CBOR byte-string shell →
 /// bytewords-minimal → `ur:<type>/<body>` (outbound wrap; the delivered
 /// payload is what `ur_decode` hands back after stripping).
@@ -186,8 +209,13 @@ pub fn encode(type_tag: UrTypeTag, payload: &[u8]) -> Result<UrEncoded> {
         return Err(err());
     }
     let mut wire = heapless::Vec::<u8, { UR_PAYLOAD_MAX_LEN + 3 }>::new();
-    crate::ur::ur_shell::ur_message_wrap_into(payload, &mut wire)?;
-    debug_assert_eq!(wire.len(), ur_message_shell_len(payload.len())?);
+    if message_is_cbor_item(type_tag) {
+        // The payload already IS the message (a CBOR item): no shell.
+        wire.extend_from_slice(payload).map_err(|_| err())?;
+    } else {
+        crate::ur::ur_shell::ur_message_wrap_into(payload, &mut wire)?;
+        debug_assert_eq!(wire.len(), ur_message_shell_len(payload.len())?);
+    }
     let mut uri = heapless::String::<UR_URI_MAX_LEN>::new();
     push_str(&mut uri, "ur:")?;
     push_str(&mut uri, type_tag.type_name())?;
