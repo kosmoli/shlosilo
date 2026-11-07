@@ -3,6 +3,7 @@
 //! Each codec accepts chain-agnostic inputs (Bip32XPub / TxTemplate etc.),
 //! Outputs chain-specific UR payload bytes (CBOR encoded).
 
+pub mod account_text;
 pub mod arweave_crypto_account;
 pub mod bytes;
 pub mod crypto_account;

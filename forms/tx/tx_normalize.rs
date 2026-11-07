@@ -46,6 +46,8 @@ pub fn to_template<'a>(type_tag: UrTypeTag, payload: &'a [u8]) -> Result<TxTempl
         UrTypeTag::Bytes
         | UrTypeTag::CryptoHdKey
         | UrTypeTag::CryptoAccount
+        // multi-account bundles are an export, never a sign request
+        | UrTypeTag::CryptoMultiAccounts
         // Cake direct pairing containers are not signing requests — they have
         // their own business entry (`business::xmr_pairing`), never `sign`.
         | UrTypeTag::XmrOutput
