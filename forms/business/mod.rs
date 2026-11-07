@@ -4,6 +4,7 @@
 //! Phase 4 wiring: fill in the real algorithm implementations (k256 / curve25519-dalek / monero-oxide)
 
 pub mod create_account;
+pub mod export_format;
 pub mod export_readonly;
 pub mod ki_store;
 pub mod restore_seed;

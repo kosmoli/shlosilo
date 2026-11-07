@@ -126,5 +126,36 @@ fn main() {
     let alias = ur_encode::encode(UrTypeTag::Psbt, signed).expect("ur encode alias");
     std::fs::write(dir.join("psbt_alias.ur.txt"), alias.as_str()).expect("write alias ur");
 
+    // ---- the six account-export shapes (S2 export legs) -------------------
+    // Same seed as the hdkey/account dumps above, so the node side can compare
+    // the account material across formats.
+    use shlosilo::business::export_format::{build, format_label, ExportFormat, ExportLabels};
+    let labels = ExportLabels {
+        label: Some("shlosilo-test"),
+        key_name: Some("TestDevice"),
+        device: Some("TestDevice"),
+        device_id: Some("SN-0001"),
+        device_version: Some("0.1.0"),
+        restore_height: 0,
+    };
+    let mut buf = vec![0u8; 4096];
+    for (i, fmt) in ExportFormat::ALL.iter().enumerate() {
+        let n = build(
+            *fmt,
+            &seed,
+            shlosilo::network::Network::BitcoinMainnet,
+            &labels,
+            &mut buf,
+        )
+        .unwrap_or_else(|e| panic!("format {i} failed: {e:?}"));
+        let s = core::str::from_utf8(&buf[..n]).expect("ascii");
+        std::fs::write(dir.join(format!("export_{i}.txt")), s).expect("write export");
+        std::fs::write(
+            dir.join(format!("export_{i}.label.txt")),
+            format_label(i).unwrap_or(""),
+        )
+        .expect("write label");
+    }
+
     println!("dumped artifacts to {}", dir.display());
 }

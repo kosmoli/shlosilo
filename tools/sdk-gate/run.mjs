@@ -20,6 +20,7 @@ const { KeystoneSDK, URDecoder } = sdkPkg
 // gate imports them from their dist path. The version is pinned in package.json,
 // and a moved path fails loudly here instead of silently skipping the check.
 const { parseHDKey } = await import('@keystonehq/keystone-sdk/dist/wallet/hdKey.js')
+const { parseMultiAccounts } = await import('@keystonehq/keystone-sdk/dist/wallet/multiAccounts.js')
 const { parseAccount } = await import('@keystonehq/keystone-sdk/dist/wallet/account.js')
 // A single-frame UR string becomes a UR object through the one-shot decoder.
 const UR = { fromString: s => URDecoder.decode(s) }
@@ -127,3 +128,55 @@ const sdk = new KeystoneSDK()
 }
 
 console.log(`\nSDK gate: ${checks} checks passed`)
+
+// --- 5. the six account-export shapes -----------------------------------------
+// Each shape is checked with the consumer's own parser where one is available:
+// the keystone SDK for the three BC-UR shapes, plain JSON for the two Monero
+// shapes (Feather parses them with QJsonDocument, i.e. no schema beyond the
+// field names).
+{
+  const read = f => fs.readFileSync(path.join(dir, f), 'utf8').trim()
+
+  // 1: crypto-account must expose the four BTC account descriptors
+  const acc = parseAccount(UR.fromString(read('export_0.txt')))
+  ok(acc.keys.length === 4, `crypto-account carries ${acc.keys.length} descriptors`)
+  const paths = acc.keys.map(k => k.path)
+  for (const p of ["m/84'/0'/0'", "m/49'/0'/0'", "m/44'/0'/0'", "m/86'/0'/0'"]) {
+    ok(paths.includes(p), `crypto-account carries ${p}`)
+  }
+
+  // 2: the Cake-shaped static URI
+  const uri = read('export_1.txt')
+  ok(uri.startsWith('bitcoin:?xpub='), 'bitcoin: URI carries an xpub')
+  ok(uri.includes('&label='), 'bitcoin: URI carries a label')
+  const xpub = uri.split('xpub=')[1].split('&')[0]
+  ok(xpub.startsWith('xpub'), `xpub is a mainnet account key (${xpub.slice(0, 8)}…)`)
+
+  // 3: crypto-hdkey for ETH - the SDK must resolve coin type 60
+  const eth = parseHDKey(UR.fromString(read('export_2.txt')))
+  ok(eth.path === "m/44'/60'/0'", `ETH hdkey path ${eth.path}`)
+  ok(eth.chain === 'ETH', `ETH hdkey chain resolved to ${eth.chain}`)
+
+  // 4: crypto-multi-accounts - the SDK's own multi-account parser
+  const multi = parseMultiAccounts(UR.fromString(read('export_3.txt')))
+  ok(
+    Array.isArray(multi.keys) && multi.keys.length === 5,
+    `multi-accounts carries ${multi.keys && multi.keys.length} keys (4 BTC + 1 ETH)`
+  )
+
+  // 5: keystone-shaped Monero JSON (Feather reads primaryAddress/privateViewKey)
+  const ks = JSON.parse(read('export_4.txt'))
+  ok(ks.version === 0, 'keystone JSON version 0')
+  ok(typeof ks.primaryAddress === 'string' && ks.primaryAddress.startsWith('4'), 'keystone JSON primaryAddress')
+  ok(/^[0-9a-f]{64}$/.test(ks.privateViewKey), 'keystone JSON privateViewKey is 64 hex')
+  ok(ks.restoreHeight === 0, 'keystone JSON restoreHeight is the hardcoded 0')
+  ok(ks.source === 'Keystone', 'keystone JSON source')
+  ok(ks.encrypted === false, 'keystone JSON plaintext variant')
+
+  // 6: cupcake-shaped Monero JSON (Cake pairing leg)
+  const cp = JSON.parse(read('export_5.txt'))
+  ok(typeof cp.label === 'string' && cp.label.length > 0, 'cupcake JSON carries a label')
+  ok(/^[0-9a-f]{64}$/.test(cp.privateViewKey), 'cupcake JSON privateViewKey is 64 hex')
+  ok(!('encrypted' in cp) && !('source' in cp), 'cupcake JSON has no encrypted/source')
+  ok(cp.version === 0, 'cupcake JSON version 0')
+}

@@ -21,6 +21,8 @@ const USE_INFO: u64 = 5;
 const ORIGIN: u64 = 6;
 const CHILDREN: u64 = 7;
 const PARENT_FINGERPRINT: u64 = 8;
+const NAME: u64 = 9;
+const NOTE: u64 = 10;
 const KEYPATH_COMPONENTS: u64 = 1;
 const KEYPATH_SOURCE_FINGERPRINT: u64 = 2;
 const KEYPATH_DEPTH: u64 = 3;
@@ -106,6 +108,73 @@ pub fn encode(
                 w.uint(PARENT_FINGERPRINT)?;
                 w.uint(u64::from(parent_fingerprint(xpub)))?;
             }
+        }
+        w.pos()
+    };
+    ur_encode::encode(UrTypeTag::CryptoHdKey, &buf[..n])
+}
+
+/// Extended-key encoding **with the human-readable metadata** the reference
+/// firmware emits for ETH: `name` (field 9) and `note` (field 10).
+///
+/// keystone writes both (`apps/wallets/src/metamask.rs:69-84`):
+/// `name="Keystone"`, `note="account.standard"`/`"account.ledger_legacy"`.
+/// They are optional here because they are display metadata, not wire
+/// requirements - but a wallet that groups accounts by `note` needs them.
+pub fn encode_with_meta(
+    xpub: &Bip32XPub,
+    master_fingerprint: &[u8; 4],
+    path: Option<&DerivationPath>,
+    name: Option<&str>,
+    note: Option<&str>,
+) -> Result<UrEncoded> {
+    use crate::encoding::cbor;
+
+    let path = match path {
+        Some(p) => p,
+        None => return encode(xpub, master_fingerprint, None),
+    };
+    let mut buf = [0u8; 384];
+    let n = {
+        let mut w = cbor::CborWriter::new(&mut buf);
+        let coin = coin_info(path);
+        let children = is_account_level(path);
+        let count = 4
+            + usize::from(coin.is_some())
+            + usize::from(children)
+            + usize::from(name.is_some())
+            + usize::from(note.is_some());
+        w.map_head(count)?;
+        w.uint(KEY_DATA)?;
+        w.bytes(&xpub[45..78])?;
+        w.uint(CHAIN_CODE)?;
+        w.bytes(&xpub[13..45])?;
+        if let Some((coin, network)) = coin {
+            w.uint(USE_INFO)?;
+            w.tag(TAG_CRYPTO_COIN_INFO)?;
+            w.map_head(2)?;
+            w.uint(COIN_INFO_COIN)?;
+            w.uint(coin)?;
+            w.uint(COIN_INFO_NETWORK)?;
+            w.uint(network)?;
+        }
+        w.uint(ORIGIN)?;
+        w.tag(TAG_CRYPTO_KEYPATH)?;
+        encode_keypath(&mut w, path, master_fingerprint)?;
+        if children {
+            w.uint(CHILDREN)?;
+            w.tag(TAG_CRYPTO_KEYPATH)?;
+            encode_children(&mut w)?;
+        }
+        w.uint(PARENT_FINGERPRINT)?;
+        w.uint(u64::from(parent_fingerprint(xpub)))?;
+        if let Some(name) = name {
+            w.uint(NAME)?;
+            w.text(name)?;
+        }
+        if let Some(note) = note {
+            w.uint(NOTE)?;
+            w.text(note)?;
         }
         w.pos()
     };
