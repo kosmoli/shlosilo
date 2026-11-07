@@ -163,7 +163,10 @@ jobs:
       - name: Install gate dependencies
         run: npm ci --prefix tools/sdk-gate
       - name: Dump the artifacts the device produces
-        run: cargo run --offline --quiet --example dump_sdk_artifacts -- /tmp/sdk_artifacts
+        # No --offline here: a fresh runner has no registry cache (every other
+        # step in this workflow leaves it off too; --offline is the local
+        # convention where the cache is warm).
+        run: cargo run --quiet --example dump_sdk_artifacts -- /tmp/sdk_artifacts
       - name: Decode them with the SDK
         run: node tools/sdk-gate/run.mjs /tmp/sdk_artifacts
 
