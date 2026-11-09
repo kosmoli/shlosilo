@@ -14,6 +14,10 @@ use shlosilo::network::Network;
 use shlosilo::ur::ur_encode::UrTypeTag;
 
 const SPARROW_PSBT: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
+/// The same fixture with output 0 rewritten as a P2TR output of the test wallet
+/// carrying a taproot derivation (0x16) on the change branch. Built by
+/// `tools/make_taproot_change_fixture.py`; the generator re-parses what it writes.
+const SPARROW_TAPROOT_CHANGE: &[u8] = include_bytes!("fixtures/sparrow_signet_taproot_change.psbt");
 
 /// The eth-sign-request UR already verified in the smoke task (EIP-1559 transfer).
 const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
@@ -54,6 +58,13 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
     assert!(l.len() <= 12, "must fit on one page (<=12 lines): {l:?}");
     // RBF is an operational property, not a risk: show the state, no warn (fee
     // bumping is normal in modern wallets).
+    // Fee rate is an ESTIMATE (an unsigned tx has no witness yet) and carries the
+    // `~` so it cannot be read as exact. 1 P2WPKH input + 2 P2WPKH outputs =
+    // 44 + 272 + 124 + 124 = 564 WU = 141 vB; 70 sat over that is 0.5 sat/vB.
+    assert!(
+        l.iter().any(|s| s == "fee rate ~0.5 sat/vB"),
+        "estimated fee rate line missing: {l:?}"
+    );
     assert!(
         l.iter().any(|s| s == "replaceable yes"),
         "RBF state must be shown as-is (info line): {l:?}"
@@ -426,6 +437,70 @@ fn change_output_is_labelled_when_our_fingerprint_is_known() {
     assert!(
         l.iter().any(|s| s.starts_with("send ")),
         "payment output should still be labelled send: {l:?}"
+    );
+}
+
+/// A taproot change output must be labelled `change`, and it is the 0x16 record
+/// that says so: a review build that only reads the 0x02 derivation reports the
+/// operator's own money as a fresh payment.
+#[test]
+fn taproot_change_output_is_labelled_from_the_tap_derivation() {
+    let mfp = [0xf3u8, 0xb9, 0x96, 0x0b];
+    let mut arena = [0u8; ARENA];
+    let mut recs = [KvRec::EMPTY; RECS];
+    let view = review::build(
+        UrTypeTag::CryptoPsbt,
+        SPARROW_TAPROOT_CHANGE,
+        Network::BitcoinTestnet,
+        Some(&mfp),
+        &mut arena,
+        &mut recs,
+    )
+    .expect("review builds for the taproot-change fixture");
+    let l = lines(&view);
+
+    // output 1 is ours on the change branch (m/86'/1'/0'/1/0), and its ONLY
+    // derivation record is the taproot one - so this label can come from 0x16 alone.
+    assert!(
+        l.iter().any(|s| s == "change 650087 sats"),
+        "taproot change must be labelled change: {l:?}"
+    );
+    // ... and renders as bech32m, not as the segwit the fixture originally had
+    assert!(
+        l.iter().any(|s| s.starts_with("tb1p")),
+        "P2TR output must render as bech32m: {l:?}"
+    );
+    // the payment output (output 0, a foreign address) is untouched
+    assert!(
+        l.iter().any(|s| s == "send 1000 sats"),
+        "the payment output must stay a payment: {l:?}"
+    );
+}
+
+/// A taproot-only PSBT puts its derivation paths under 0x16, so network inference
+/// must read them: with the caller saying mainnet and the PSBT's coin type saying
+/// 1, the addresses still have to render as signet.
+#[test]
+fn taproot_psbt_network_comes_from_the_tap_derivation() {
+    let mut arena = [0u8; ARENA];
+    let mut recs = [KvRec::EMPTY; RECS];
+    let view = review::build(
+        UrTypeTag::CryptoPsbt,
+        SPARROW_TAPROOT_CHANGE,
+        Network::BitcoinMainnet, // deliberately wrong: the PSBT is signet
+        None,
+        &mut arena,
+        &mut recs,
+    )
+    .expect("review builds");
+    let l = lines(&view);
+    assert!(
+        l.iter().any(|s| s.starts_with("tb1p")),
+        "P2TR address must follow the PSBT coin type, not the caller: {l:?}"
+    );
+    assert!(
+        !l.iter().any(|s| s.starts_with("bc1")),
+        "no mainnet prefix may leak into a signet PSBT: {l:?}"
     );
 }
 

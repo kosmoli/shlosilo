@@ -108,6 +108,14 @@ pub(crate) mod output_type {
     pub(crate) const WITNESS_SCRIPT: u8 = 0x01;
     pub(crate) const BIP32_DERIVATION: u8 = 0x02;
 
+    /// 0x16: Taproot BIP-32 derivation (key = [0x16 || 32-byte x-only pubkey],
+    /// value = <num leaf hashes> <hashes…> <fingerprint> <path>).
+    ///
+    /// This is the taproot twin of `BIP32_DERIVATION` (0x02). A wallet that pays
+    /// to a P2TR address of ours records the path here instead, so an ownership
+    /// check that only looks at 0x02 reports our own change as a payment.
+    pub(crate) const TAP_BIP32_DERIVATION: u8 = 0x16;
+
     // === BIP-371 Taproot PSBT output fields ===
     /// 0x65: Taproot internal key (key = [], value = 32-byte x-only internal pubkey)
     pub(crate) const TAP_INTERNAL_KEY: u8 = 0x65;
@@ -1293,6 +1301,19 @@ fn taproot_sighash_for(psbt: &Psbt<'_>, input_index: usize, hash_type: u8) -> Re
     })
 }
 
+/// Read the taproot derivation (0x16) from an OUTPUT map.
+///
+/// Same record layout as the input side (the field number is shared), exposed
+/// under an output-map name so call sites do not read as if they were looking at
+/// an input.
+pub fn get_output_tap_bip32_derivation(
+    output_map: KvMap<'_>,
+) -> Option<([u8; 4], TapDerivationPath)> {
+    // Same field number on both faces (BIP-371 reuses 0x16), but named per side so
+    // a reader can tell which map it belongs to.
+    scan_tap_derivation(output_map, output_type::TAP_BIP32_DERIVATION)
+}
+
 /// Read `PSBT_IN_TAP_BIP32_DERIVATION` (0x16) from an input map:
 /// value = `<compact_size num_hashes> <32-byte leaf hashes…> <fingerprint (4)> <path (u32 LE each)>`.
 ///
@@ -1301,9 +1322,14 @@ fn taproot_sighash_for(psbt: &Psbt<'_>, input_index: usize, hash_type: u8) -> Re
 /// hash count, so parsing it with the plain reader would read the count byte as
 /// part of the fingerprint.
 pub fn get_tap_bip32_derivation(input_map: KvMap<'_>) -> Option<([u8; 4], TapDerivationPath)> {
-    let kv = input_map
+    scan_tap_derivation(input_map, input_type::TAP_BIP32_DERIVATION)
+}
+
+/// Shared scanner for the taproot derivation record (`field` = 0x16 on both faces).
+fn scan_tap_derivation(map: KvMap<'_>, field: u8) -> Option<([u8; 4], TapDerivationPath)> {
+    let kv = map
         .iter()
-        .find(|kv| kv.key.len() == 33 && kv.key[0] == input_type::TAP_BIP32_DERIVATION)?;
+        .find(|kv| kv.key.len() == 33 && kv.key[0] == field)?;
     let value = kv.value;
     let mut pos = 0usize;
     let hashes = decode_compact_size(value, &mut pos).ok()? as usize;

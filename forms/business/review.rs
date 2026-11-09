@@ -301,6 +301,29 @@ fn summarize_psbt(
             push_head(format_args!("fee unknown (input value missing)"))?;
         }
     }
+    // Fee rate: an ESTIMATE, and labelled as one. The witness of an unsigned
+    // transaction is not written yet, so the exact vsize does not exist; we weight
+    // each input by its script type from the witness UTXO (the standard estimates:
+    // P2WPKH 272 WU, P2TR 230, P2SH-P2WPKH 364, P2PKH 592). Any input or output
+    // whose type we cannot price drops the line entirely rather than guessing.
+    if let (Some(ti), true) = (total_in, total_in.is_some()) {
+        if ti >= total_out {
+            let fee = ti - total_out;
+            if let Some(wu) = estimated_weight(psbt) {
+                let vb = wu.div_ceil(4);
+                if vb > 0 {
+                    // fee/vB in tenths, rounded (not truncated: 0.49 must not read 0.4)
+                    let tenths = (fee * 40 + u64::from(wu) / 2) / u64::from(wu);
+                    if tenths >= 10 {
+                        push_head(format_args!("fee rate ~{} sat/vB", tenths / 10))?;
+                    } else {
+                        push_head(format_args!("fee rate ~0.{} sat/vB", tenths))?;
+                    }
+                }
+            }
+        }
+    }
+
     // RBF is an OPERATIONAL property, not a security one: it only says the
     // transaction can still be fee-bumped, which wallets advertise as "speed
     // up" and therefore enable by default. Warning on it would fire on most
@@ -359,6 +382,68 @@ fn summarize_psbt(
     Ok(view)
 }
 
+/// Estimated transaction weight from the script types the PSBT discloses.
+///
+/// Standard per-input weights (witness included): P2WPKH 272, P2TR key-path 230,
+/// P2SH-P2WPKH 364, P2PKH 592. Per-output: P2WPKH 124, P2SH 128, P2TR 172,
+/// P2PKH 136. Base overhead (version, locktime, counts, segwit marker) 44.
+///
+/// `None` when any input or output has a script type we cannot price: a fee rate
+/// computed from a partial picture is worse than no fee rate.
+fn estimated_weight(psbt: &Psbt<'_>) -> Option<u32> {
+    // 44 WU of base overhead: version(8) + locktime(8) + count varints + marker/flag(2).
+    let mut wu: u32 = 44;
+    for i in 0..psbt.unsigned_tx.inputs.len() {
+        let map = psbt.input_map_checked(i)?;
+        let (_, spk) = psbt::get_witness_utxo(map)?;
+        wu = wu.checked_add(script_weight(
+            crate::types::wire_bytes::wire_slice(&spk),
+            true,
+        )?)?;
+    }
+    for out in psbt.unsigned_tx.outputs.iter() {
+        let spk = crate::types::wire_bytes::wire_slice(&out.script_pubkey);
+        wu = wu.checked_add(script_weight(spk, false)?)?;
+    }
+    Some(wu)
+}
+
+/// Weight unit cost of spending (input) or creating (output) one script type.
+fn script_weight(spk: &[u8], input: bool) -> Option<u32> {
+    let kind = match spk {
+        [0x00, 0x14, h @ ..] if h.len() == 20 => {
+            if input {
+                272
+            } else {
+                124
+            }
+        } // P2WPKH
+        [0x51, 0x20, x @ ..] if x.len() == 32 => {
+            if input {
+                230
+            } else {
+                172
+            }
+        } // P2TR key path
+        [0xa9, 0x14, h @ .., 0x87] if h.len() == 20 => {
+            if input {
+                364
+            } else {
+                128
+            }
+        } // P2SH(-P2WPKH)
+        [0x76, 0xa9, 0x14, h @ .., 0x88, 0xac] if h.len() == 20 => {
+            if input {
+                592
+            } else {
+                136
+            }
+        } // P2PKH
+        _ => return None,
+    };
+    Some(kind)
+}
+
 /// Network implied by the inputs' BIP-44 coin type (1 → testnet/signet).
 ///
 /// Reviewed as "the PSBT tells us where it lives": wallets put the coin type in
@@ -368,6 +453,16 @@ fn infer_network(psbt: &Psbt<'_>) -> Option<Network> {
     for i in 0..psbt.unsigned_tx.inputs.len() {
         let map = psbt.input_map_checked(i)?;
         let mut coin: Option<u32> = None;
+        // A taproot-only PSBT carries its paths under 0x16; reading just 0x02 would
+        // fall back to the caller's network and render a signet address as `bc1…`.
+        if coin.is_none() {
+            if let Some((_, tap)) = psbt::get_tap_bip32_derivation(map) {
+                let d = tap.depth as usize;
+                if d >= 2 {
+                    coin = Some(tap.elements[1] & 0x7fff_ffff);
+                }
+            }
+        }
         for kv in map.iter() {
             if kv.key.first() != Some(&psbt::input_type::BIP32_DERIVATION) || kv.value.len() < 12 {
                 continue;
@@ -481,6 +576,14 @@ enum Ownership {
 /// first real-device review (2026-11-05) showed both outputs labelled `change`
 /// on a payment to our own receive address.
 fn output_ownership(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> Ownership {
+    // Taproot outputs record their path under 0x16, not 0x02. Without this the
+    // change of a P2TR spend comes back as a fresh payment - the operator sees an
+    // outgoing amount that is really their own money returning.
+    if let Some((fingerprint, path)) = psbt::get_output_tap_bip32_derivation(map) {
+        if fingerprint == *ours {
+            return ownership_from_elements(&path.elements[..path.depth as usize]);
+        }
+    }
     for kv in map.iter() {
         // OUTPUT map: BIP-174 assigns the output-side derivation a different
         // key byte (0x02) than the input side (0x06). Using the input constant
@@ -495,22 +598,30 @@ fn output_ownership(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> Ownership {
         // value = fingerprint(4) || path elements as u32 LE each
         let elems = &kv.value[4..];
         let depth = elems.len() / 4;
-        if depth < 2 {
-            return Ownership::OwnReceive; // too short to tell: assume not change
+        let mut path = [0u32; crate::derivation::path::MAX_DEPTH];
+        if depth > path.len() {
+            return Ownership::OwnReceive;
         }
-        let chain = u32::from_le_bytes([
-            elems[(depth - 2) * 4],
-            elems[(depth - 2) * 4 + 1],
-            elems[(depth - 2) * 4 + 2],
-            elems[(depth - 2) * 4 + 3],
-        ]) & 0x7fff_ffff;
-        return if chain == 1 {
-            Ownership::OwnChange
-        } else {
-            Ownership::OwnReceive
-        };
+        for (i, chunk) in elems.as_chunks::<4>().0.iter().enumerate().take(depth) {
+            path[i] = u32::from_le_bytes(*chunk);
+        }
+        return ownership_from_elements(&path[..depth]);
     }
     Ownership::Foreign
+}
+
+/// Change vs receive from a derivation path: the **second-to-last** element is
+/// the chain/index component that BIP-44 fixes to 0 = receive, 1 = change.
+fn ownership_from_elements(elements: &[u32]) -> Ownership {
+    if elements.len() < 2 {
+        return Ownership::OwnReceive; // too short to tell: assume not change
+    }
+    let chain = elements[elements.len() - 2] & 0x7fff_ffff;
+    if chain == 1 {
+        Ownership::OwnChange
+    } else {
+        Ownership::OwnReceive
+    }
 }
 
 /// EVM review: chain id, destination, value, calldata size.
