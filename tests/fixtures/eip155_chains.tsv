@@ -1,0 +1,13 @@
+# chain id	name (registry)	shortName — machine-read from
+# https://github.com/ethereum-lists/chains _data/chains/eip155-<id>.json (fetched 2026-11-11)
+# format: <id>\t<name>\t<shortName>
+1	Ethereum Mainnet	eth
+10	OP Mainnet	oeth
+56	BNB Smart Chain Mainnet	bnb
+100	Gnosis	gno
+137	Polygon Mainnet	pol
+250	Fantom Opera	ftm
+324	zkSync Mainnet	zksync
+8453	Base	base
+42161	Arbitrum One	arb1
+43114	Avalanche C-Chain	avax

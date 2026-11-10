@@ -11,6 +11,7 @@
 //! **v9 formal project scope**: EIP-155 + EIP-1559 + EIP-712 + personal_sign (other EIPs deferred to v9.3+)
 
 pub mod calldata;
+pub mod chain_names;
 pub mod eip155;
 pub mod eip1559;
 #[cfg(any(feature = "alloc-fallback", test))]

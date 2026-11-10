@@ -660,7 +660,13 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
 
     let tx = from_rlp::parse_eip1559_raw(req.sign_data)?;
     view.push_str("eth send request")?;
-    view.push_fmt(format_args!("chain {}", tx.chain_id))?;
+    // Name the chain when we know it: `chain 1` alone does not tell the operator
+    // which network they are spending on, and a wrong-network send is not
+    // recoverable. Unknown ids are printed raw - we do not guess a name.
+    match crate::chain::eth::chain_names::chain_name(tx.chain_id) {
+        Some(name) => view.push_fmt(format_args!("chain {} {}", tx.chain_id, name))?,
+        None => view.push_fmt(format_args!("chain {}", tx.chain_id))?,
+    }
     match tx.destination {
         Some(dest) => {
             let rendered = eth::encode_bytes(&dest)?;
