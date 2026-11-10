@@ -323,13 +323,13 @@ fn summarize_psbt(
             if let Some(wu) = estimated_weight(psbt) {
                 let vb = wu.div_ceil(4);
                 if vb > 0 {
-                    let tenths = fee_rate_tenths(fee, wu);
-                    // Always one decimal: a truncated integer reported 1.317 sat/vB
-                    // as "1", which reads as a rate five times lower than reality.
+                    let hundredths = fee_rate_hundredths(fee, wu);
+                    // Two decimals, matching what wallets display: a whole-number
+                    // truncation once reported 1.317 sat/vB as "1".
                     push_head(format_args!(
-                        "fee rate ~{}.{} sat/vB",
-                        tenths / 10,
-                        tenths % 10
+                        "fee rate ~{}.{:02} sat/vB",
+                        hundredths / 100,
+                        hundredths % 100
                     ))?;
                 }
             }
@@ -394,18 +394,24 @@ fn summarize_psbt(
     Ok(view)
 }
 
-/// Fee rate in tenths of a sat/vB, rounded.
+/// Fee rate in **hundredths** of a sat/vB, rounded.
 ///
-/// Integer arithmetic on purpose (no_std, no floats, deterministic): `fee * 10` is
-/// computed in weight units so the division rounds once. Validated against three
-/// real transactions on chain: (55 sat, 446 WU) -> 5 = 0.5 sat/vB,
-/// (218 sat, 664 WU) -> 13 = 1.3 sat/vB, (105 sat, 860 WU) -> 5 = 0.5 sat/vB.
-pub fn fee_rate_tenths(fee: u64, wu: u32) -> u64 {
+/// Two decimals because that is the resolution wallets show (Sparrow prints 1.45)
+/// and the operator compares our line against theirs: `1.4` next to their `1.45`
+/// reads as a disagreement when it is only rounding.
+///
+/// Integer arithmetic on purpose (no_std, no floats, deterministic): `fee * 100` is
+/// carried in weight units so the division rounds exactly once. Calibrated against
+/// real transactions on chain: (105 sat, 860 WU) -> 12 = 0.12? no: 100ths,
+/// (55 sat, 446 WU) -> 49 = 0.49 (chain 0.495), (218 sat, 664 WU) -> 131 = 1.31
+/// (chain 1.317), (225 sat, ~155 vB) -> 145 = 1.45 (operator's mainnet run).
+pub fn fee_rate_hundredths(fee: u64, wu: u32) -> u64 {
     let wu = u64::from(wu);
     if wu == 0 {
         return 0;
     }
-    (fee * 40 + wu / 2) / wu
+    // fee / (wu/4) * 100 = fee * 400 / wu
+    (fee * 400 + wu / 2) / wu
 }
 
 /// Estimated transaction weight from the script types the PSBT discloses.

@@ -64,7 +64,7 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
     // `~` so it cannot be read as exact. 1 P2WPKH input + 2 P2WPKH outputs =
     // 44 + 272 + 124 + 124 = 564 WU = 141 vB; 70 sat over that is 0.5 sat/vB.
     assert!(
-        l.iter().any(|s| s == "fee rate ~0.5 sat/vB"),
+        l.iter().any(|s| s == "fee rate ~0.50 sat/vB"),
         "estimated fee rate line missing: {l:?}"
     );
     assert!(
@@ -569,20 +569,21 @@ fn taproot_psbt_network_comes_from_the_tap_derivation() {
 /// The last one printed "~1" before this pin existed: 1.317 sat/vB truncated to an
 /// integer reads as a fifth of the real rate.
 #[test]
-fn fee_rate_is_reported_with_one_decimal_and_matches_on_chain_values() {
-    // (fee sats, estimated weight units, expected "whole.tenth" text)
+fn fee_rate_is_reported_with_two_decimals_and_matches_on_chain_values() {
+    // (fee sats, estimated weight units, on-chain rate) — two decimals because the
+    // operator compares our line against the wallet's (Sparrow shows 1.45).
     let cases: [(u64, u32, &str); 3] = [
-        (105, 860, "0.5"), // signet 5543c693…
-        (55, 446, "0.5"),  // mainnet 4eeb2afc…
-        (218, 664, "1.3"), // mainnet de943cdd…
+        (105, 860, "0.49"), // signet 5543c693…   chain 0.495
+        (55, 446, "0.49"),  // mainnet 4eeb2afc…  chain 0.495
+        (218, 664, "1.31"), // mainnet de943cdd…  chain 1.317
     ];
     for (fee, wu, expected) in cases {
-        let tenths = review::fee_rate_tenths(fee, wu);
-        let text = std::format!("{}.{}", tenths / 10, tenths % 10);
+        let hundredths = review::fee_rate_hundredths(fee, wu);
+        let text = std::format!("{}.{:02}", hundredths / 100, hundredths % 100);
         assert_eq!(text, expected, "fee {fee} over {wu} WU");
     }
     // a zero-weight estimate must not divide by zero
-    assert_eq!(review::fee_rate_tenths(100, 0), 0);
+    assert_eq!(review::fee_rate_hundredths(100, 0), 0);
 }
 
 /// locktime domain split (500M threshold).
