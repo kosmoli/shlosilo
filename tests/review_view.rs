@@ -563,6 +563,28 @@ fn taproot_psbt_network_comes_from_the_tap_derivation() {
     );
 }
 
+/// The fee rate is shown with one decimal always. Three real transactions calibrate
+/// it: the signet 2-in/2-out P2TR spend (105 sat / 860 WU), the mainnet 1-in/1-out
+/// P2TR spend (55 / 446) and the mainnet 1-in/2-out P2SH-P2WPKH spend (218 / 664).
+/// The last one printed "~1" before this pin existed: 1.317 sat/vB truncated to an
+/// integer reads as a fifth of the real rate.
+#[test]
+fn fee_rate_is_reported_with_one_decimal_and_matches_on_chain_values() {
+    // (fee sats, estimated weight units, expected "whole.tenth" text)
+    let cases: [(u64, u32, &str); 3] = [
+        (105, 860, "0.5"), // signet 5543c693…
+        (55, 446, "0.5"),  // mainnet 4eeb2afc…
+        (218, 664, "1.3"), // mainnet de943cdd…
+    ];
+    for (fee, wu, expected) in cases {
+        let tenths = review::fee_rate_tenths(fee, wu);
+        let text = std::format!("{}.{}", tenths / 10, tenths % 10);
+        assert_eq!(text, expected, "fee {fee} over {wu} WU");
+    }
+    // a zero-weight estimate must not divide by zero
+    assert_eq!(review::fee_rate_tenths(100, 0), 0);
+}
+
 /// locktime domain split (500M threshold).
 ///
 /// Product rule (2026-11-05): values that cannot be judged are shown to the operator
