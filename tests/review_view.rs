@@ -14,10 +14,12 @@ use shlosilo::network::Network;
 use shlosilo::ur::ur_encode::UrTypeTag;
 
 const SPARROW_PSBT: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
-/// The same fixture with output 0 rewritten as a P2TR output of the test wallet
-/// carrying a taproot derivation (0x16) on the change branch. Built by
-/// `tools/make_taproot_change_fixture.py`; the generator re-parses what it writes.
-const SPARROW_TAPROOT_CHANGE: &[u8] = include_bytes!("fixtures/sparrow_signet_taproot_change.psbt");
+/// A real Sparrow taproot PSBT from the B-3 round trip: 2 P2TR inputs, 2 P2TR
+/// outputs. The output-side derivations are under 0x07
+/// (`PSBT_OUT_TAP_BIP32_DERIVATION`) - `m/86'/1'/0'/0/3` on the 500 sat output and
+/// `m/86'/1'/0'/1/0` on the 398 sat one - and both inputs carry ONLY the
+/// input-side 0x16. This is the PSBT whose review showed two `send` lines.
+const SPARROW_P2TR_2IN2OUT: &[u8] = include_bytes!("fixtures/sparrow_signet_b3_p2tr_2in2out.psbt");
 
 /// The eth-sign-request UR already verified in the smoke task (EIP-1559 transfer).
 const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
@@ -440,40 +442,97 @@ fn change_output_is_labelled_when_our_fingerprint_is_known() {
     );
 }
 
-/// A taproot change output must be labelled `change`, and it is the 0x16 record
-/// that says so: a review build that only reads the 0x02 derivation reports the
-/// operator's own money as a fresh payment.
+/// Taproot outputs record their derivation under 0x07 (`PSBT_OUT_TAP_BIP32_
+/// DERIVATION`), not under the segwit 0x02 and not under the input-side 0x16. A
+/// review that only reads 0x02 shows both outputs of this real PSBT as payments.
 #[test]
-fn taproot_change_output_is_labelled_from_the_tap_derivation() {
+fn taproot_outputs_are_labelled_from_the_output_tap_derivation() {
     let mfp = [0xf3u8, 0xb9, 0x96, 0x0b];
     let mut arena = [0u8; ARENA];
     let mut recs = [KvRec::EMPTY; RECS];
     let view = review::build(
         UrTypeTag::CryptoPsbt,
-        SPARROW_TAPROOT_CHANGE,
+        SPARROW_P2TR_2IN2OUT,
         Network::BitcoinTestnet,
         Some(&mfp),
         &mut arena,
         &mut recs,
     )
-    .expect("review builds for the taproot-change fixture");
+    .expect("review builds for the real taproot fixture");
     let l = lines(&view);
 
-    // output 1 is ours on the change branch (m/86'/1'/0'/1/0), and its ONLY
-    // derivation record is the taproot one - so this label can come from 0x16 alone.
+    // m/86'/1'/0'/1/0 - chain index 1 = change
     assert!(
-        l.iter().any(|s| s == "change 650087 sats"),
+        l.iter().any(|s| s == "change 398 sats"),
         "taproot change must be labelled change: {l:?}"
     );
-    // ... and renders as bech32m, not as the segwit the fixture originally had
+    // m/86'/1'/0'/0/3 - chain index 0, our own receive address: a self-payment,
+    // which is neither a payment to a stranger nor change
     assert!(
-        l.iter().any(|s| s.starts_with("tb1p")),
-        "P2TR output must render as bech32m: {l:?}"
+        l.iter().any(|s| s == "to you 500 sats"),
+        "our own receive output must read to you: {l:?}"
     );
-    // the payment output (output 0, a foreign address) is untouched
     assert!(
-        l.iter().any(|s| s == "send 1000 sats"),
-        "the payment output must stay a payment: {l:?}"
+        !l.iter().any(|s| s.starts_with("send ")),
+        "nothing in this PSBT leaves the wallet: {l:?}"
+    );
+    // both outputs are P2TR, so both addresses are bech32m
+    assert_eq!(
+        l.iter().filter(|s| s.starts_with("tb1p")).count(),
+        2,
+        "both outputs must render as bech32m: {l:?}"
+    );
+}
+
+/// Taproot's 0x00 sighash byte is SIGHASH_DEFAULT, i.e. ALL. Flagging it would put
+/// `warn: sighash not all` on every taproot PSBT - a false alarm that costs the
+/// operator's attention for nothing.
+#[test]
+fn taproot_default_sighash_is_not_a_warning() {
+    let mfp = [0xf3u8, 0xb9, 0x96, 0x0b];
+    let mut arena = [0u8; ARENA];
+    let mut recs = [KvRec::EMPTY; RECS];
+    let view = review::build(
+        UrTypeTag::CryptoPsbt,
+        SPARROW_P2TR_2IN2OUT,
+        Network::BitcoinTestnet,
+        Some(&mfp),
+        &mut arena,
+        &mut recs,
+    )
+    .expect("review builds");
+    let l = lines(&view);
+    assert!(
+        !l.iter().any(|s| s.contains("sighash")),
+        "SIGHASH_DEFAULT must not be flagged: {l:?}"
+    );
+
+    // ... but a genuine non-ALL sighash still warns: flip both inputs' 0x03 record
+    // to SIGHASH_NONE (0x02) in a copy of the same real fixture.
+    let mut patched = SPARROW_P2TR_2IN2OUT.to_vec();
+    let mut hits = 0;
+    for i in 0..patched.len().saturating_sub(6) {
+        if patched[i..i + 4] == [0x03, 0x04, 0x00, 0x00] && patched[i + 4..i + 6] == [0x00, 0x00] {
+            patched[i + 2] = 0x02; // value = 0x02 = SIGHASH_NONE
+            hits += 1;
+        }
+    }
+    assert_eq!(hits, 2, "expected to patch both inputs' sighash records");
+    let mut arena2 = [0u8; ARENA];
+    let mut recs2 = [KvRec::EMPTY; RECS];
+    let view2 = review::build(
+        UrTypeTag::CryptoPsbt,
+        &patched,
+        Network::BitcoinTestnet,
+        Some(&mfp),
+        &mut arena2,
+        &mut recs2,
+    )
+    .expect("review builds for the patched copy");
+    assert!(
+        lines(&view2).iter().any(|s| s.contains("sighash")),
+        "SIGHASH_NONE must still be flagged: {:?}",
+        lines(&view2)
     );
 }
 
@@ -486,7 +545,7 @@ fn taproot_psbt_network_comes_from_the_tap_derivation() {
     let mut recs = [KvRec::EMPTY; RECS];
     let view = review::build(
         UrTypeTag::CryptoPsbt,
-        SPARROW_TAPROOT_CHANGE,
+        SPARROW_P2TR_2IN2OUT,
         Network::BitcoinMainnet, // deliberately wrong: the PSBT is signet
         None,
         &mut arena,

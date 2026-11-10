@@ -108,13 +108,19 @@ pub(crate) mod output_type {
     pub(crate) const WITNESS_SCRIPT: u8 = 0x01;
     pub(crate) const BIP32_DERIVATION: u8 = 0x02;
 
-    /// 0x16: Taproot BIP-32 derivation (key = [0x16 || 32-byte x-only pubkey],
-    /// value = <num leaf hashes> <hashes…> <fingerprint> <path>).
+    /// 0x07: Taproot BIP-32 derivation (key = `[0x07 || 32-byte x-only pubkey]`,
+    /// value = `<num leaf hashes> <hashes…> <fingerprint> <path>`).
     ///
-    /// This is the taproot twin of `BIP32_DERIVATION` (0x02). A wallet that pays
-    /// to a P2TR address of ours records the path here instead, so an ownership
-    /// check that only looks at 0x02 reports our own change as a payment.
-    pub(crate) const TAP_BIP32_DERIVATION: u8 = 0x16;
+    /// This is the taproot twin of `BIP32_DERIVATION` (0x02) on the OUTPUT side.
+    /// A wallet paying to a P2TR address of ours records the path here instead, so
+    /// an ownership check that only looks at 0x02 reports our own change as a
+    /// payment.
+    ///
+    /// The output-side field number is NOT the input-side one (0x16): Bitcoin Core
+    /// `src/psbt.h` has `PSBT_OUT_TAP_BIP32_DERIVATION = 0x07` and
+    /// `PSBT_IN_TAP_BIP32_DERIVATION = 0x16`. Reading 0x16 on an output map matches
+    /// nothing at all, silently - which is how the first version of this fix shipped.
+    pub(crate) const TAP_BIP32_DERIVATION: u8 = 0x07;
 
     // === BIP-371 Taproot PSBT output fields ===
     /// 0x65: Taproot internal key (key = [], value = 32-byte x-only internal pubkey)

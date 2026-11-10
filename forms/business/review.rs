@@ -217,14 +217,25 @@ fn summarize_psbt(
         if psbt.unsigned_tx.inputs[i].sequence < 0xffff_fffe {
             rbf = true;
         }
-        // A sighash other than ALL (0x01) needs the operator's eyes: NONE and
-        // SINGLE let the coordinator rewrite outputs after our signature.
+        // A sighash other than ALL needs the operator's eyes: NONE and SINGLE let
+        // the coordinator rewrite outputs after our signature.
+        //
+        // Taproot is the exception: BIP-341 defines 0x00 as SIGHASH_DEFAULT, which
+        // means exactly ALL (every wallet emits it), so flagging it would fire on
+        // every taproot PSBT and train the operator to ignore the line. 0x00 stays
+        // unsafe for a non-taproot input, where it is not a legal sighash at all.
+        let taproot = map
+            .iter()
+            .any(|kv| kv.key.first() == Some(&psbt::input_type::TAP_INTERNAL_KEY));
         let sighash = map
             .iter()
             .find(|kv| kv.key.first() == Some(&psbt::input_type::SIGHASH_TYPE))
             .and_then(|kv| kv.value.first().copied());
-        if sighash.is_some_and(|v| v != 0x01) {
-            view.flags |= flag::SIGHASH_UNSAFE;
+        if let Some(v) = sighash {
+            let all = v == 0x01 || (taproot && v == 0x00);
+            if !all {
+                view.flags |= flag::SIGHASH_UNSAFE;
+            }
         }
     }
 

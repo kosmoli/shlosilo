@@ -14,6 +14,22 @@
   - `forms/ffi/c_abi.rs` — P0-C typed sign 12.4 KiB E2E(单帧超限 → multipart 路径)
 - **隐私**: 测试网隔离密钥,无真实资金;可公开提交
 
+## sparrow_signet_b3_p2tr_2in2out.psbt
+
+- **来源**: Sparrow wallet 在真机上为 B-3 往返导出的真实 PSBT(操作员 2026-11-10 实测,
+  设备固件 `bbe3bbf`;原件留在 `~/works/TMP/B-3.psbt`,这里逐字节拷贝)
+- **网络**: Bitcoin signet(2 输入 / 2 输出全 P2TR,inputs seq=0xfffffffd(RBF),
+  locktime 330263;in 501+502 sat → out 500 + 398 sat,fee 105 sat)
+- **大小**: 774 bytes
+- **SHA-256**: `739ffc0263b5acbe61353f813e3ac77d00ed33fcd686c2252b507a616d566317`
+- **价值**: 第一个**真实钱包**产出的 taproot PSBT fixture。两处只有真钱包才会给的细节:
+  - 输出侧 taproot 派生记在 **0x07**(`PSBT_OUT_TAP_BIP32_DERIVATION`),不是输入侧的 0x16;
+    两个输出的路径分别是 `m/86'/1'/0'/0/3`(收款链)和 `m/86'/1'/0'/1/0`(**找零链**)
+  - 输入侧**只带 0x16**(`PSBT_IN_TAP_BIP32_DERIVATION`),没有 segwit 的 0x06 ——
+    所以币种推断也必须读 0x16,否则 signet 地址会渲染成 `bc1…`
+- **用途**: `tests/review_view.rs` — taproot 找零标签 + 币种推断 + fee rate 的钉子
+- **隐私**: 测试网隔离密钥(f3b9960b),无真实资金;可公开提交
+
 ## keystone_p2tr_keypath_288b.psbt / keystone_p2tr_keypath_signed_golden.psbt
 
 - **来源**: keystone3-firmware `rust/apps/bitcoin/src/transactions/psbt/wrapped_psbt.rs`
