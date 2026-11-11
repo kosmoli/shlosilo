@@ -423,8 +423,14 @@ pub fn fee_rate_hundredths(fee: u64, wu: u32) -> u64 {
 /// `None` when any input or output has a script type we cannot price: a fee rate
 /// computed from a partial picture is worse than no fee rate.
 fn estimated_weight(psbt: &Psbt<'_>) -> Option<u32> {
-    // 44 WU of base overhead: version(8) + locktime(8) + count varints + marker/flag(2).
-    let mut wu: u32 = 44;
+    // Base overhead = 10 bytes × 4 + 2 (segwit marker/flag) = 42 WU:
+    // version 4 + locktime 4 + the two count varints 1+1 = 10 base bytes, plus the
+    // marker/flag pair that exists only in the witness serialization.
+    //
+    // 44 was an over-estimate that cost a full sat/vB step on small transactions:
+    // 192 sat over a 1-in/2-out nested-segwit tx read `~1.16` while Sparrow showed
+    // 1.17 (operator report, 2026-11-11). With 42 those agree.
+    let mut wu: u32 = 42;
     for i in 0..psbt.unsigned_tx.inputs.len() {
         let map = psbt.input_map_checked(i)?;
         let (_, spk) = psbt::get_witness_utxo(map)?;

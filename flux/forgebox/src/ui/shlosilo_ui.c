@@ -54,7 +54,16 @@
 #define UI_BAND_ROWS  40
 #define UI_BAND_BYTES (UI_FB_W * UI_BAND_ROWS * 2)
 
-#define LIVE_LINE_BYTES 40
+/* Per-line storage for the status and review text.
+ *
+ * MUST be >= the review data layer's line budget: `business::review` emits lines of
+ * up to 48 characters (`REVIEW_LINE_MAX`), and the UI used to hold only 40, so every
+ * long line was silently cut with snprintf - a 42-character bech32 address lost its
+ * last three characters on screen (2026-11-11 operator report: "...8vd67lf" shown as
+ * "...8vd67"). 56 = 48 + the NUL + headroom. `ui_rv_line_fits()` below keeps the two
+ * ends from drifting apart again. */
+#define LIVE_LINE_BYTES 56
+#define REVIEW_LINE_BUDGET 48 /* mirrors business::review::REVIEW_LINE_MAX */
 
 /* Input poll hook (see shlosilo_ui.h): invoked from every synchronous wait
  * so the product task keeps sampling touch while the UI is blocked. */
@@ -1141,13 +1150,25 @@ void UiSignInfo(const char *line1, const char *line2, const char *line3)
     }
 }
 
+/* The two ends of the review text contract live in different layers (forms emits up
+ * to REVIEW_LINE_BUDGET, the UI stores it here): assert the UI side is big enough so a
+ * later shrink cannot silently truncate addresses again. */
+_Static_assert(LIVE_LINE_BYTES > REVIEW_LINE_BUDGET,
+               "review line storage must hold REVIEW_LINE_BUDGET chars + NUL");
+
 void UiReviewShow(const char *const *lines, unsigned count, const char *foot)
 {
     unsigned rv_n = (count > UI_RV_LINES) ? UI_RV_LINES : count;
 
     for (unsigned rv_i = 0; rv_i < rv_n; rv_i++) {
-        snprintf(g_rv_lines[rv_i], sizeof(g_rv_lines[rv_i]), "%s",
-                 (lines != NULL && lines[rv_i] != NULL) ? lines[rv_i] : "");
+        const char *src = (lines != NULL && lines[rv_i] != NULL) ? lines[rv_i] : "";
+        /* Fail visibly instead of eating characters: a line longer than the buffer
+         * would be cut silently, and a truncated address is worse than none. */
+        if (strlen(src) >= sizeof(g_rv_lines[rv_i])) {
+            printf("ui: review line %u truncated (%u > %u)\r\n",
+                   rv_i, (unsigned)strlen(src), (unsigned)sizeof(g_rv_lines[rv_i]));
+        }
+        snprintf(g_rv_lines[rv_i], sizeof(g_rv_lines[rv_i]), "%s", src);
     }
     g_rv_line_count = rv_n;
     snprintf(g_rv_foot, sizeof(g_rv_foot), "%s", foot ? foot : "");

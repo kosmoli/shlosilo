@@ -570,12 +570,16 @@ fn taproot_psbt_network_comes_from_the_tap_derivation() {
 /// integer reads as a fifth of the real rate.
 #[test]
 fn fee_rate_is_reported_with_two_decimals_and_matches_on_chain_values() {
-    // (fee sats, estimated weight units, on-chain rate) — two decimals because the
-    // operator compares our line against the wallet's (Sparrow shows 1.45).
-    let cases: [(u64, u32, &str); 3] = [
-        (105, 860, "0.49"), // signet 5543c693…   chain 0.495
-        (55, 446, "0.49"),  // mainnet 4eeb2afc…  chain 0.495
-        (218, 664, "1.31"), // mainnet de943cdd…  chain 1.317
+    // (fee sats, estimated weight units, expected text). Weights use the model's
+    // base overhead of 42 WU (10.5 vB: 10 base bytes + segwit marker/flag), so the
+    // numbers are what the review page would print for those real transactions.
+    let cases: [(u64, u32, &str); 4] = [
+        (105, 846, "0.50"), // signet 2-in/2-out P2TR (chain 0.495)
+        (55, 444, "0.50"),  // mainnet 1-in/1-out P2TR (chain 0.495)
+        (218, 658, "1.33"), // mainnet 1-in/2-out P2SH-P2WPKH (chain 1.317)
+        // operator's nested-segwit spend: Sparrow showed 1.17, and the 42 WU base
+        // is what makes the two agree (44 read 1.16)
+        (192, 658, "1.17"),
     ];
     for (fee, wu, expected) in cases {
         let hundredths = review::fee_rate_hundredths(fee, wu);
