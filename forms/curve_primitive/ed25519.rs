@@ -89,12 +89,23 @@ pub fn generator() -> Ed25519Point {
 /// bytes read as a scalar — that older doc here was wrong.
 ///
 /// Correct for seed-based chains (SOL/APTOS/etc.). For **Monero-style raw
-/// scalars**, use `curve25519_dalek` directly:
-/// `ED25519_BASEPOINT_TABLE * Scalar::from_bytes_mod_order(bytes)`
-/// (pattern: `tests/xmr_device_peak_fixture.rs`, `tests/p64_xmr_multi_input.rs`).
+/// scalars** use [`base_mul_raw`] — the distinction is not cosmetic: an XMR address
+/// built with the seed form embeds a view key no wallet can match, which is exactly
+/// how the Monero export shipped broken until Feather and Cake both refused it.
 pub fn base_mul(s: &Ed25519Scalar) -> Ed25519Point {
     let vk = s.inner.verifying_key();
     Ed25519Point { inner: vk }
+}
+
+/// Raw scalar × base point — **Monero semantics** (`s * G`, scalar used as-is).
+///
+/// Takes the canonical little-endian scalar bytes (Monero's reduced private key) and
+/// multiplies them directly, the same primitive the XMR signing path uses
+/// (`SecretScalar::mul_basepoint`). An address built from this agrees with the
+/// signatures this device produces and with every wallet's `keyValid` check.
+pub fn base_mul_raw(scalar: &[u8; SCALAR_LEN]) -> Result<Ed25519Point> {
+    let s = crate::types::secret_scalar::SecretScalar::from_bytes_mod_order(*scalar);
+    point_from_compressed(&s.mul_basepoint())
 }
 
 /// Zero scalar (for accumulator initialization)

@@ -2357,7 +2357,13 @@ static void scan_ur_hit(const char *text)
         }
         scan_exit();
         if (!review_gate(g_ur_type, g_ur_payload, plen)) {
+            /* Cancelled at the review page: the decoder still holds the COMPLETE
+             * message and g_ur_payload still holds its bytes. Leaving both alive
+             * made the next request reuse this message - the review page kept
+             * showing the cancelled transaction (2026-11-11 operator report), and
+             * `wire` on the last page would have signed THAT one. */
             UiGotoPage(UI_PAGE_WELCOME);
+            ur_intake_reset();
             return;
         }
         sign_run(NULL, g_ur_type, g_ur_payload, plen);
@@ -2391,6 +2397,11 @@ static void scan_enter(void)
     char l1[40];
 
     g_no_session_prompted = 0;  /* fresh scan re-arms the prompt */
+    /* A scan session is a new request: drop any completed-but-unused message from
+     * the previous one. Without this a cancelled review leaves a complete decoder
+     * behind and the next wallet request is judged "already collected", so the
+     * device re-renders (and would sign) the OLD transaction. */
+    ur_intake_reset();
 
     if (g_qr_pool == NULL) {
 #if QR_POOL_IN_SRAM

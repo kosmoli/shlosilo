@@ -17,7 +17,7 @@
 //! | 6 | `MoneroJsonCupcake` | Cake pairing leg |
 
 use crate::address::xmr as xmr_address;
-use crate::curve_primitive::ed25519::{base_mul, scalar_to_bytes};
+use crate::curve_primitive::ed25519::{base_mul_raw, scalar_to_bytes};
 use crate::derivation::bip32_secp256k1::{master_fingerprint_from_seed, xpub_from_seed};
 use crate::derivation::monero_reduce_scalar::{self, MoneroPath};
 use crate::derivation::path::DerivationPath;
@@ -82,8 +82,11 @@ fn monero_material(seed: &[u8; 64], network: Network) -> Result<(heapless::Strin
     // Monero has one network/account notion here; `MoneroPath::mainnet(0)` is the
     // account-0 path the rest of the crate uses.
     let kp = monero_reduce_scalar::derive(seed, &MoneroPath::mainnet(0))?;
-    let spend_pub = base_mul(kp.spend_priv());
-    let view_pub = base_mul(kp.view_priv());
+    // Monero semantics: pub = s*G with the reduced scalar used as-is. The Ed25519
+    // keygen primitive (`base_mul`) hashes and clamps, which yields an address whose
+    // embedded view key no wallet can match - Feather and Cake both refused it.
+    let spend_pub = base_mul_raw(&scalar_to_bytes(kp.spend_priv()))?;
+    let view_pub = base_mul_raw(&scalar_to_bytes(kp.view_priv()))?;
     let addr = xmr_address::encode(&spend_pub, &view_pub, network)?;
     let mut s: heapless::String<112> = heapless::String::new();
     s.push_str(addr.as_ref()).map_err(|_| err())?;
