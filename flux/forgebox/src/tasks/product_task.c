@@ -866,6 +866,29 @@ static const char *seed_class_name(int cls)
  * exit leg (sign done, confirm reject, flow exit to welcome, se lock). Both
  * close entries run over the shared workspace: they are the same function
  * inside, the second call is the idempotent no-op. */
+/* The single teardown funnel for KEY-BEARING state. Called on every exit leg
+ * (home from any page, sign done, flow exit, import reject).
+ *
+ * IN the zeroize budget (things whose disclosure gives spending power):
+ *   - the KeySession and the key material derived from it (the Rust side zeroizes
+ *     on drop; the pointer is nulled here so no stale handle survives),
+ *   - the seed-plate QR scratch (`UiWipePlateQr`: the plate is a plaintext seed),
+ *   - the generated wallet structure (`key_wallet_wipe`).
+ *
+ * NOT in the budget (deliberately, and each for its own reason):
+ *   - the UR intake (`g_ur_dec` / `g_ur_dec_ws` / `g_ur_payload`, PSRAM): a wallet's
+ *     request is public data, not a key. It must still be dropped per REQUEST, not
+ *     per session - see `ur_intake_reset`, which wipes and frees it, and which the
+ *     review-cancel path and every new scan session now call. Leaving it to session
+ *     teardown was the 2026-11-11 defect: a cancelled review kept the completed
+ *     message alive and the next request was answered from it.
+ *   - the pairing key-image retention (`g_pairing_ki`): key images are derivable
+ *     from the seed, not secret, and immutable per transfer - the retention
+ *     deliberately survives a session so a second scan keeps its coverage. The
+ *     sign-side selected-index guard rejects wrong-wallet records.
+ *   - the review line buffer (wiped by the review gate on its own way out, since it
+ *     holds recipient addresses of the request being reviewed).
+ */
 static void key_session_close(void)
 {
     if (g_key_session != NULL) {
@@ -1231,14 +1254,40 @@ static void scan_seed_confirm(int cls, unsigned n)
     g_touch_prev = 1;
 }
 
+/* Volatile walk so the compiler cannot drop the wipe (same discipline as
+ * seed_plate_wipe: a plain memset can be removed as dead stores). */
+static void wipe_volatile_bytes(void *buf, unsigned n)
+{
+    volatile uint8_t *p = (volatile uint8_t *)buf;
+    unsigned i;
+    for (i = 0; i < n; i++) {
+        p[i] = 0;
+    }
+}
+
+/* Drop every trace of the request intake: the decoder object, its workspace and the
+ * received request bytes.
+ *
+ * The payload is wallet-supplied (a PSBT, not key material), so it is not part of the
+ * key zeroize budget - but it IS device state and it IS address data, and `ExtFree`
+ * only returns the block to the PSRAM heap without clearing it. Wiping before the
+ * free keeps the same rule the review line buffer already follows ("the blob can
+ * contain a recipient address") and stops a later allocation from reading it back.
+ */
 static void ur_intake_reset(void)
 {
     if (g_ur_dec != NULL) {
         shlosilo_ur_decode_free(g_ur_dec);
         g_ur_dec = NULL;
     }
+    if (g_ur_dec_ws != NULL) {
+        wipe_volatile_bytes(g_ur_dec_ws, shlosilo_ur_decode_ws_len());
+    }
     ExtFree(g_ur_dec_ws);
     g_ur_dec_ws = NULL;
+    if (g_ur_payload != NULL) {
+        wipe_volatile_bytes(g_ur_payload, UR_PAYLOAD_MAX);
+    }
     ExtFree(g_ur_payload);
     g_ur_payload = NULL;
     /* Teardown clears stale collection progress so a later failure line
