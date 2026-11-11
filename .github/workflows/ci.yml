@@ -118,8 +118,18 @@ jobs:
       # allocator. build.sh exits 0 = REACHABLE-CLEAN, 10 = reachable debt.
       - name: Allocation face (build + link + disassembly)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-arm-none-eabi
+          # The Ubuntu mirror flakes (run 43042531362: "Temporary failure resolving
+          # 'security.ubuntu.com'"), and a single DNS hiccup must not read as an
+          # allocation-face regression. Retry, then fail loudly if it really is down.
+          for attempt in 1 2 3; do
+            sudo apt-get update -qq && sudo apt-get install -y -qq gcc-arm-none-eabi && break
+            echo "apt attempt ${attempt} failed; retrying in $((attempt * 15))s" >&2
+            sleep $((attempt * 15))
+            if [ "${attempt}" = "3" ]; then
+              echo "apt is unavailable after 3 attempts - this is infrastructure, not the allocation face" >&2
+              exit 1
+            fi
+          done
           bash probes/noalloc/build.sh
       - name: Upload allocation-face receipt
         if: always()
@@ -217,7 +227,14 @@ jobs:
       # so a toolchain bump misses automatically and a Rust-only or docs-only push
       # pays seconds instead of an hour. build.sh routes C/ASM through ccache as
       # the CMake compiler launcher whenever it is on PATH.
+      # A cache is an optimisation, never a gate: ccache-action installs ccache
+      # through apt, and a runner whose package mirror is unreachable turned that
+      # into a red job while every build step behind it was skipped (run
+      # 43042531362: "Failed to install ccache via package manager", after the apt
+      # mirror stopped resolving). build.sh only routes through ccache when it is on
+      # PATH, so without it the build still runs - just uncached.
       - name: ccache (MH1903 C objects)
+        continue-on-error: true
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: forgebox-arm-none-eabi
