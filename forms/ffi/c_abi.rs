@@ -1348,7 +1348,17 @@ pub mod r3 {
             let ustr = core::str::from_utf8(uslice).map_err(|_| err_type_name())?;
             // Same recognition order as `ur_decode::decode` (which this wraps),
             // with the type name extracted for the caller.
-            let rest = ustr.strip_prefix("ur:").ok_or_else(err_type_name)?;
+            //
+            // The prefix check is CASE-INSENSITIVE on purpose: QR alphanumeric mode
+            // has no lowercase, so wallets emit `UR:CRYPTO-PSBT/...` and the whole
+            // string arrives uppercase. `strip_prefix("ur:")` refused exactly that
+            // shape - a single-part uppercase UR came back as "code not recognized"
+            // on the device (2026-11-11: the ETH fixture QR) while the multipart path,
+            // which folds case, was fine.
+            let rest = match ustr.get(..3) {
+                Some(p) if p.eq_ignore_ascii_case("ur:") => &ustr[3..],
+                _ => return Err(err_type_name()),
+            };
             let (type_name, body) = rest.split_once('/').ok_or_else(err_type_name)?;
             if type_name.is_empty()
                 || !type_name
