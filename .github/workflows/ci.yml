@@ -44,8 +44,15 @@ jobs:
       # deterministically (fresh memory reads as 0 instead of stale heap residue).
       - name: Install jemalloc (zero-on-alloc test wrapper)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libjemalloc2
+          # Same mirror flakiness as the other jobs; retry before giving up, and
+          # say plainly that a failure here is infrastructure - the gate itself
+          # cannot silently run without the zero-fill allocator.
+          for attempt in 1 2 3; do
+            sudo apt-get update -qq && sudo apt-get install -y -qq libjemalloc2 && break
+            echo "apt attempt ${attempt} failed; retrying" >&2
+            sleep $((attempt * 15))
+            [ "${attempt}" = "3" ] && { echo "libjemalloc2 unavailable (mirror down) - infrastructure, not a test failure" >&2; exit 1; }
+          done
       - name: Tests
         run: bash scripts/test_zero_on_alloc.sh --all-targets --no-fail-fast
       - name: Tests (all features)
@@ -116,20 +123,32 @@ jobs:
       # with an undefined `__rust_alloc*`. measure.py then disassembles the
       # linked ELF and proves no code reachable from `z6_probe_run` calls the
       # allocator. build.sh exits 0 = REACHABLE-CLEAN, 10 = reachable debt.
+      # The cross compiler comes from the same pinned tarball the appearance job
+      # uses, not from apt: the Ubuntu mirror went down twice in one afternoon
+      # (runs 43042531362 / 43045888000: "Temporary failure resolving
+      # 'security.ubuntu.com'") and both times this job, which only needs to
+      # disassemble a linked ELF, was reported as an allocation-face failure.
+      - name: ARM GNU toolchain (pinned tarball, cached)
+        id: armtc_zh
+        uses: actions/cache@v4
+        with:
+          path: ~/gnu-arm
+          key: xpack-arm-none-eabi-gcc-14.2.1-1.1-linux-x64
+      - name: Fetch the ARM GNU toolchain when the cache missed
+        if: steps.armtc_zh.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          url=https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v14.2.1-1.1/xpack-arm-none-eabi-gcc-14.2.1-1.1-linux-x64.tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/armtc.tar.gz "$url"
+          curl -fsSL --retry 3 -o /tmp/armtc.tar.gz.sha "$url.sha"
+          echo "$(awk '{print $1}' /tmp/armtc.tar.gz.sha)  /tmp/armtc.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/gnu-arm"
+          tar -xzf /tmp/armtc.tar.gz -C "$HOME/gnu-arm" --strip-components=1
       - name: Allocation face (build + link + disassembly)
         run: |
-          # The Ubuntu mirror flakes (run 43042531362: "Temporary failure resolving
-          # 'security.ubuntu.com'"), and a single DNS hiccup must not read as an
-          # allocation-face regression. Retry, then fail loudly if it really is down.
-          for attempt in 1 2 3; do
-            sudo apt-get update -qq && sudo apt-get install -y -qq gcc-arm-none-eabi && break
-            echo "apt attempt ${attempt} failed; retrying in $((attempt * 15))s" >&2
-            sleep $((attempt * 15))
-            if [ "${attempt}" = "3" ]; then
-              echo "apt is unavailable after 3 attempts - this is infrastructure, not the allocation face" >&2
-              exit 1
-            fi
-          done
+          export PATH="$HOME/gnu-arm/bin:$PATH"
+          echo "$HOME/gnu-arm/bin" >> "$GITHUB_PATH"
+          export SHLOSILO_ARM_TOOLCHAIN="$HOME/gnu-arm"
           bash probes/noalloc/build.sh
       - name: Upload allocation-face receipt
         if: always()
@@ -295,11 +314,13 @@ jobs:
           cargo clippy -p shlosilo-host-sim --release -- -D warnings
       - name: pico2 image + UF2 pack (thumbv8m)
         run: |
-          # elf2uf2-rs pulls in libudev-sys for USB autodetect; the runner
-          # image does not ship the dev package (local dev machines have it).
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libudev-dev
-          cargo install elf2uf2-rs --version 2.2.0 --locked
+          # No apt and no elf2uf2-rs: `make pico2-uf2` packs with
+          # flux/pico2/pack_uf2.py, which exists precisely because elf2uf2-rs
+          # tags RP2040 family IDs and would be rejected by the RP2350 bootrom.
+          # The old `apt-get install libudev-dev` + `cargo install elf2uf2-rs`
+          # lines were leftovers from before that script and only gave this job
+          # an apt dependency (run 43045888000 failed on it: the mirror stopped
+          # resolving).
           make pico2-uf2
           ls -la target/thumbv8m.main-none-eabihf/release/shlosilo-pico2.uf2
       # Audit #17 P1-01: the fixed-entropy XMR command (xmrseed), the
