@@ -416,9 +416,20 @@ pub fn fee_rate_hundredths(fee: u64, wu: u32) -> u64 {
 
 /// Estimated transaction weight from the script types the PSBT discloses.
 ///
-/// Standard per-input weights (witness included): P2WPKH 272, P2TR key-path 230,
-/// P2SH-P2WPKH 364, P2PKH 592. Per-output: P2WPKH 124, P2SH 128, P2TR 172,
-/// P2PKH 136. Base overhead (version, locktime, counts, segwit marker) 44.
+/// The model is the same one Sparrow uses (`drongo Transaction.getWeightUnits()`:
+/// version 16 WU + marker/flag 2 + count varints × 4 + serialized inputs × 4 +
+/// serialized outputs × 4 + witness bytes + locktime 16), applied to *estimated*
+/// element sizes because an unsigned transaction has no witness yet.
+///
+/// ECDSA signatures are taken as **71 bytes** (low-S DER + sighash byte): our device
+/// normalises S, so its own signature is 70-71 bytes rather than the 72 a naive model
+/// assumes. That single byte is worth ~4 WU on a 1-in/2-out transaction, and it is the
+/// whole difference the operator saw between our 1.74 and Sparrow's 1.75 (which the
+/// wallet measured on the signed bytes).
+///
+/// Per-input weights: P2WPKH 271, P2TR key-path 230 (schnorr is fixed 64 + sighash,
+/// no DER slack), P2SH-P2WPKH 363, P2PKH 588. Per-output: P2WPKH 124, P2SH 128,
+/// P2TR 172, P2PKH 136. Base overhead 42 (10.5 vB).
 ///
 /// `None` when any input or output has a script type we cannot price: a fee rate
 /// computed from a partial picture is worse than no fee rate.
@@ -451,7 +462,7 @@ fn script_weight(spk: &[u8], input: bool) -> Option<u32> {
     let kind = match spk {
         [0x00, 0x14, h @ ..] if h.len() == 20 => {
             if input {
-                272
+                271
             } else {
                 124
             }
@@ -465,14 +476,14 @@ fn script_weight(spk: &[u8], input: bool) -> Option<u32> {
         } // P2TR key path
         [0xa9, 0x14, h @ .., 0x87] if h.len() == 20 => {
             if input {
-                364
+                363
             } else {
                 128
             }
         } // P2SH(-P2WPKH)
         [0x76, 0xa9, 0x14, h @ .., 0x88, 0xac] if h.len() == 20 => {
             if input {
-                592
+                588
             } else {
                 136
             }

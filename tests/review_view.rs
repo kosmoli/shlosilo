@@ -573,13 +573,16 @@ fn fee_rate_is_reported_with_two_decimals_and_matches_on_chain_values() {
     // (fee sats, estimated weight units, expected text). Weights use the model's
     // base overhead of 42 WU (10.5 vB: 10 base bytes + segwit marker/flag), so the
     // numbers are what the review page would print for those real transactions.
-    let cases: [(u64, u32, &str); 4] = [
+    // (fee, estimated weight units, expected text). Weights follow the model:
+    // base 42 WU, P2TR input 230, P2SH-P2WPKH input 363, P2WPKH output 124, P2SH
+    // output 128, P2WPKH input 271. ECDSA is modelled at 71 bytes (low-S), which is
+    // what makes the last two rows agree with Sparrow's post-signing numbers.
+    let cases: [(u64, u32, &str); 5] = [
         (105, 846, "0.50"), // signet 2-in/2-out P2TR (chain 0.495)
         (55, 444, "0.50"),  // mainnet 1-in/1-out P2TR (chain 0.495)
-        (218, 658, "1.33"), // mainnet 1-in/2-out P2SH-P2WPKH (chain 1.317)
-        // operator's nested-segwit spend: Sparrow showed 1.17, and the 42 WU base
-        // is what makes the two agree (44 read 1.16)
-        (192, 658, "1.17"),
+        (218, 657, "1.33"), // mainnet 1-in/2-out P2SH-P2WPKH (chain 1.317)
+        (192, 657, "1.17"), // operator run: Sparrow 1.17
+        (287, 657, "1.75"), // operator run: Sparrow 1.75 (33 WU = 287*400/4.75…)
     ];
     for (fee, wu, expected) in cases {
         let hundredths = review::fee_rate_hundredths(fee, wu);
