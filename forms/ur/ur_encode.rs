@@ -223,7 +223,7 @@ impl UrTypeTag {
 /// with "getData is not a function" because `map[5]` is a byte). Our own decoder
 /// strips the shell, so the defect is invisible to a decode-side shape test -
 /// only an external parser caught it (`tools/sdk-gate`).
-fn message_is_cbor_item(type_tag: UrTypeTag) -> bool {
+pub(crate) fn message_is_cbor_item(type_tag: UrTypeTag) -> bool {
     matches!(
         type_tag,
         UrTypeTag::CryptoHdKey

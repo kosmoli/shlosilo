@@ -387,6 +387,14 @@ impl<'a> FountainEncoder<'a> {
         })
     }
 
+    /// The CBOR shell bytes this encoder prepends to the message (empty for
+    /// bare-item UR types). Test-facing only: the multipart wrapper decides it,
+    /// and only `ur_multipart`'s unit tests read it back.
+    #[cfg(test)]
+    pub(crate) fn message_prefix(&self) -> &[u8] {
+        &self.prefix[..self.prefix_len]
+    }
+
     pub fn fragment_count(&self) -> usize {
         self.fragment_count
     }

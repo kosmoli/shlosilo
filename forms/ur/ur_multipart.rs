@@ -15,6 +15,7 @@ use crate::encoding::fountain::{
     FountainDecoder, FountainEncoder, FountainWs, IdxSet, Part, MAX_SEQUENCE_COUNT,
 };
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::ur::ur_encode::UrTypeTag;
 
 fn err(kind: ShlosiloErrorKind) -> ShlosiloError {
     ShlosiloError::new(kind)
@@ -84,9 +85,25 @@ impl<'a> UrMultipartEncoder<'a> {
         // outbound must therefore be shelled exactly like single-frame
         // outbound (the earlier "fountain vectors use bare messages" reading
         // was the fountain-layer test corpus, not a type convention).
+        //
+        // The key/path registries are the exception, and the rule is the SAME
+        // one `ur_encode::message_is_cbor_item` applies to single frames: the
+        // message IS the CBOR map, so shelling it puts a byte string where the
+        // peer expects a map. This wrapper used to shell unconditionally, which
+        // is why Sparrow rejected our animated `crypto-account` export with
+        // "invalid CBOR in UR" while the identical payload as a single QR was
+        // accepted (2026-11-12, reproduced against hummingbird's own decoder:
+        // "class ByteString cannot be cast to class Map").
         let mut head = [0u8; 3];
-        let hn = crate::ur::ur_shell::shell_head(payload.len(), &mut head)
-            .map_err(|_| err(ShlosiloErrorKind::UrPayloadTooLarge))?;
+        let hn = match UrTypeTag::from_name(type_name) {
+            // Unknown names keep the bytes-type shell: that is the only reading
+            // with a track record on this path (xmr-* and crypto-psbt).
+            UrTypeTag::Unknown => crate::ur::ur_shell::shell_head(payload.len(), &mut head)
+                .map_err(|_| err(ShlosiloErrorKind::UrPayloadTooLarge))?,
+            tag if crate::ur::ur_encode::message_is_cbor_item(tag) => 0,
+            _ => crate::ur::ur_shell::shell_head(payload.len(), &mut head)
+                .map_err(|_| err(ShlosiloErrorKind::UrPayloadTooLarge))?,
+        };
         Ok(Self {
             inner: FountainEncoder::new_with_prefix(&head[..hn], payload, max_fragment_len)
                 .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?,
@@ -991,5 +1008,54 @@ mod tests {
     fn invalid_type_rejected() {
         assert!(UrMultipartEncoder::new("bad type!", b"data", 4).is_err());
         assert!(UrMultipartEncoder::new("", b"data", 4).is_err());
+    }
+
+    /// The multipart message must be shelled for container types and BARE for the
+    /// key/path registries - the same split `ur_encode` makes for single frames.
+    ///
+    /// Shelling a map type is invisible to us (our decoder strips a complete shell)
+    /// but a strict peer rejects it: Sparrow refused our animated crypto-account
+    /// export with "invalid CBOR in UR", and hummingbird's own decoder said why -
+    /// "class co.nstant.in.cbor.model.ByteString cannot be cast to class
+    /// co.nstant.in.cbor.model.Map" (2026-11-12). The same payload as a single QR
+    /// was accepted, because only the fragmenting path wrapped it.
+    #[test]
+    fn fragmenting_shells_container_types_only() {
+        let payload = [0xa2u8, 0x01, 0x1a, 0xf3, 0xb9, 0x96, 0x0b, 0x02, 0x80];
+        for bare in [
+            "crypto-account",
+            "crypto-hdkey",
+            "crypto-multi-accounts",
+            "eth-sign-request",
+            "CRYPTO-ACCOUNT",
+        ] {
+            let enc = UrMultipartEncoder::new(bare, &payload, 100).unwrap();
+            assert_eq!(
+                enc.inner.message_prefix(),
+                &[] as &[u8],
+                "{bare}: the message is the CBOR item, nothing may be prepended"
+            );
+        }
+        for container in ["crypto-psbt", "xmr-output", "crypto-monero-tx", "bytes"] {
+            let enc = UrMultipartEncoder::new(container, &payload, 100).unwrap();
+            let prefix = enc.inner.message_prefix();
+            assert_eq!(
+                prefix.len(),
+                1,
+                "{container}: a 9-byte payload shells as 0x49"
+            );
+            assert_eq!(prefix[0], 0x40 | payload.len() as u8, "{container}");
+        }
+    }
+
+    /// A longer payload needs the 3-byte (0x59) shell head, so the container types
+    /// keep the same shape the Monero multipart path was validated against.
+    #[test]
+    fn fragmenting_shell_head_matches_payload_length() {
+        let payload = alloc::vec![0x55u8; 300];
+        let enc = UrMultipartEncoder::new("crypto-psbt", &payload, 200).unwrap();
+        assert_eq!(enc.inner.message_prefix(), &[0x59, 0x01, 0x2c]);
+        let enc = UrMultipartEncoder::new("crypto-account", &payload, 200).unwrap();
+        assert_eq!(enc.inner.message_prefix(), &[] as &[u8]);
     }
 }
