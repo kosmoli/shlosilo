@@ -57,6 +57,36 @@ fn sign_failure_text_matches_fixed_vocabulary() {
         sign_failure_text(-2).to_bytes(),
         b"sign failed\nrequest not accepted\nre-create the payment and retry"
     );
+    // The BTC/EVM sign path's own failure classes (2026-11-12): before this
+    // they all collapsed to "unknown code", so a real-device failure told us
+    // nothing at all.
+    assert_eq!(
+        sign_failure_text(-30).to_bytes(),
+        b"sign failed\nrequest container damaged\nre-scan the request"
+    );
+    assert_eq!(
+        sign_failure_text(-32).to_bytes(),
+        b"sign failed\nrequest path not supported\nuse a standard account from this wallet"
+    );
+    assert_eq!(
+        sign_failure_text(-12).to_bytes(),
+        b"sign failed\nnetwork not recognized\ncheck the wallet network setting"
+    );
+    for code in [-10, -13, -14] {
+        assert_eq!(
+            sign_failure_text(code).to_bytes(),
+            b"sign failed\nrequest type not supported\nuse a single-key account",
+            "code {code} must carry the unsupported-shape class"
+        );
+    }
+    assert_eq!(
+        sign_failure_text(-40).to_bytes(),
+        b"sign failed\ndevice could not complete the signature\nretry once, then report the device"
+    );
+    assert_eq!(
+        sign_failure_text(-15).to_bytes(),
+        b"sign failed\nrequest not from this wallet\nuse the wallet this device was set up for"
+    );
     // unmapped codes collapse to the generic "unknown code" entry (class only)
     assert_eq!(
         sign_failure_text(-1).to_bytes(),

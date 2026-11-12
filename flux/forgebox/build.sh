@@ -191,6 +191,12 @@ execute_build() {
         cmake_parm="${cmake_parm} -DDEBUG_MEMORY=true"
     fi
 
+    # Field-diagnosis flavor: SHLOSILO_SIGN_FAIL_HEX=1 in the environment turns
+    # on the raw-code line on the result page (see CMakeLists SIGN_FAIL_HEX).
+    if [[ "${SHLOSILO_SIGN_FAIL_HEX:-0}" != "0" ]]; then
+        cmake_parm="${cmake_parm} -DSIGN_FAIL_HEX=true"
+    fi
+
     if [[ "${build_options[simulator]}" == true ]]; then
         mkdir -p "$BUILD_SIMULATOR_FOLDER"
         pushd "$BUILD_SIMULATOR_FOLDER"

@@ -1307,6 +1307,24 @@ fn taproot_sighash_for(psbt: &Psbt<'_>, input_index: usize, hash_type: u8) -> Re
     })
 }
 
+/// A BIP-32 derivation record whose master fingerprint is all zeros.
+///
+/// Wallets that hold no seed of their own cannot know our master fingerprint, so
+/// they stamp the record with `00000000` instead of a value they do not have.
+/// Cake Wallet's view-only airgap path does exactly this when it builds a PSBT
+/// after importing a bare `bitcoin:?xpub=` URI
+/// (`cw_bitcoin/lib/bitcoin_wallet.dart:599`,
+/// `masterFingerprint: Uint8List.fromList([0, 0, 0, 0])`), and the PSBT it shows
+/// is then refused by a strict fingerprint match even though the derivation
+/// record names our own public key at our own path.
+///
+/// Ownership is proven by re-deriving the public key from the seed at the stated
+/// path and comparing it to the record's key; the fingerprint is a hint. A
+/// zeroed hint means "unspecified", not "someone else".
+pub fn fingerprint_is_unspecified(fp: [u8; 4]) -> bool {
+    fp == [0u8; 4]
+}
+
 /// Read the taproot derivation (0x16) from an OUTPUT map.
 ///
 /// Same record layout as the input side (the field number is shared), exposed

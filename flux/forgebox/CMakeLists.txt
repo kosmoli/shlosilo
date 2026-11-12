@@ -30,6 +30,16 @@ endif()
 # ON:  boot into the LVGL smoke diagnostics screen (build.sh smoke).
 option(SMOKE_SCREEN "boot into the LVGL smoke diagnostics screen" OFF)
 
+# Field-diagnosis flavor (off in every reference build): append the raw
+# sign-failure code in hex to the result page. The shipping vocabulary carries
+# class words only; when a code has no entry, "unknown code" is undiagnosable on
+# the one channel a device has - the screen. Same precedent as
+# SHLOSILO_QR_TYPE_HEX. Enable with SHLOSILO_SIGN_FAIL_HEX=1 in build.sh's env.
+option(SIGN_FAIL_HEX "append the raw failure code to the result page" OFF)
+if(SIGN_FAIL_HEX)
+  add_compile_options(-DSHLOSILO_SIGN_FAIL_HEX=1)
+endif()
+
 set(COMMON_DEFINITIONS
     USE_STDPERIPH_DRIVER
     USE_FULL_ASSERT

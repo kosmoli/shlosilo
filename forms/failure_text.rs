@@ -57,6 +57,54 @@ re-create the payment and retry"
 request not accepted
 re-create the payment and retry"
         }
+        // InvalidUrPayload: the UR container itself was torn (fountain
+        // reassembly produced a message that is not our container).
+        x if x == ShlosiloErrorCode::InvalidUrPayload as i32 => {
+            c"sign failed
+request container damaged
+re-scan the request"
+        }
+        // InvalidDerivationPath: the request asked for a path this device does
+        // not derive (foreign purpose / wrong account depth). Retrying the same
+        // request cannot help, so the hint must send the user back to the wallet.
+        x if x == ShlosiloErrorCode::InvalidDerivationPath as i32 => {
+            c"sign failed
+request path not supported
+use a standard account from this wallet"
+        }
+        // UnsupportedNetwork: the request's network does not match the wallet's.
+        x if x == ShlosiloErrorCode::UnsupportedNetwork as i32 => {
+            c"sign failed
+network not recognized
+check the wallet network setting"
+        }
+        // UnsupportedChainKind / MultisigNotSupported / FeatureNotImplemented:
+        // a shape this firmware does not sign yet (e.g. a multisig account or a
+        // script-path spend). One class, one phrase - the user's next move is
+        // the same for all three.
+        x if x == ShlosiloErrorCode::UnsupportedChainKind as i32
+            || x == ShlosiloErrorCode::MultisigNotSupported as i32
+            || x == ShlosiloErrorCode::FeatureNotImplemented as i32 =>
+        {
+            c"sign failed
+request type not supported
+use a single-key account"
+        }
+        // CryptoError: the signing math itself failed (bad request key material
+        // or an internal fault). A retry is worth one attempt.
+        x if x == ShlosiloErrorCode::CryptoError as i32 => {
+            c"sign failed
+device could not complete the signature
+retry once, then report the device"
+        }
+        // PsbtOwnershipRejected: the request's derivation records name a
+        // different wallet. Distinct from "network not recognized" - this is
+        // about WHOSE keys, not which chain.
+        x if x == ShlosiloErrorCode::PsbtOwnershipRejected as i32 => {
+            c"sign failed
+request not from this wallet
+use the wallet this device was set up for"
+        }
         // Unmapped code -- fixed "unknown code" entry, class only.
         _ => {
             c"sign failed

@@ -629,7 +629,7 @@ fn output_ownership(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> Ownership {
     // change of a P2TR spend comes back as a fresh payment - the operator sees an
     // outgoing amount that is really their own money returning.
     if let Some((fingerprint, path)) = psbt::get_output_tap_bip32_derivation(map) {
-        if fingerprint == *ours {
+        if fingerprint == *ours || psbt::fingerprint_is_unspecified(fingerprint) {
             return ownership_from_elements(&path.elements[..path.depth as usize]);
         }
     }
@@ -638,10 +638,13 @@ fn output_ownership(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> Ownership {
         // key byte (0x02) than the input side (0x06). Using the input constant
         // here silently matched nothing, so change outputs were reported as
         // payments forever (caught by change_output_is_labelled_…, 2026-11-05).
-        if kv.key.first() != Some(&psbt::output_type::BIP32_DERIVATION)
-            || kv.value.len() < 8
-            || kv.value[..4] != ours[..]
-        {
+        if kv.key.first() != Some(&psbt::output_type::BIP32_DERIVATION) || kv.value.len() < 8 {
+            continue;
+        }
+        // A zeroed fingerprint is "unspecified", not "foreign": without this a
+        // Cake-built PSBT labelled its own change as an outgoing payment.
+        let rec_fp = [kv.value[0], kv.value[1], kv.value[2], kv.value[3]];
+        if rec_fp != *ours && !psbt::fingerprint_is_unspecified(rec_fp) {
             continue;
         }
         // value = fingerprint(4) || path elements as u32 LE each

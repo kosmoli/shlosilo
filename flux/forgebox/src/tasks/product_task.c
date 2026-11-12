@@ -670,6 +670,15 @@ static uint8_t *g_gen_g;
 static uint8_t *g_gen_h;
 static uint8_t *g_gen_blob;
 
+/* Diagnostic build switch (field diagnosis only): append the raw failure code
+ * in hex to the result page. The shipping vocabulary never carries codes (split
+ * -code red line), but when the code is one the word table does not map, the
+ * screen is the ONLY diagnostic channel and "unknown code" is undiagnosable.
+ * Same precedent as SHLOSILO_QR_TYPE_HEX: hex, one-off image, off by default. */
+#ifndef SHLOSILO_SIGN_FAIL_HEX
+#define SHLOSILO_SIGN_FAIL_HEX 0
+#endif
+
 static void gencache_prepare(void)
 {
     uint32_t g_sz = 0, h_sz = 0, b_sz = 0;
@@ -1477,6 +1486,17 @@ static void sign_run(const char *uri, const char *type,
              * (pool #57: the 2026-10-29 KI-cap case let a -20 failure wear
              * the -34 wording; the table now has a test face). */
             snprintf(result, sizeof(result), "%s", shlosilo_sign_failure_text(rc));
+#if SHLOSILO_SIGN_FAIL_HEX
+            {
+                /* Field-diagnosis builds only: the raw code, so a photo of the
+                 * result page identifies the class even when the word table has
+                 * no entry for it. */
+                char tail[24];
+                snprintf(tail, sizeof(tail), "\ncode %04x",
+                         (unsigned)(rc) & 0xffffu);
+                strncat(result, tail, sizeof(result) - strlen(result) - 1);
+            }
+#endif
             printf("sign FAIL: rc=%d type=%s len %u head=%02x%02x%02x%02x "
                    "fr=%u dup=%u stk=%uK\r\n",
                    rc, (uri != NULL) ? "single-frame" : g_ur_type, plen,

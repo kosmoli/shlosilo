@@ -1419,8 +1419,11 @@ fn sign_btc_taproot_input(
             .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?,
     )
     .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-    if fp != local_fp {
-        return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+    if fp != local_fp && !psbt_mod::fingerprint_is_unspecified(fp) {
+        // Ownership, not network: the record names a fingerprint that is neither
+        // ours nor the "unspecified" placeholder. -12 here told the user the
+        // network was wrong (2026-11-12).
+        return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
     }
     let depth = record.depth as usize;
     if depth > record.elements.len() {
@@ -1506,8 +1509,10 @@ fn sign_btc<'a>(
                 .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?,
         )
         .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-        if _fp0 != local_fp {
-            return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+        // Cake's view-only airgap PSBT stamps 00000000 (it never learned our
+        // fingerprint); the ownership proof is the pubkey re-derivation below.
+        if _fp0 != local_fp && !psbt_mod::fingerprint_is_unspecified(_fp0) {
+            return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
         }
         let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path_used)?;
         // Z2.2 (2026-09-24): key-material stack copy zeroized on drop.
@@ -1562,8 +1567,8 @@ fn sign_btc<'a>(
         }
         let mut pubkey_hash: Option<[u8; 20]> = None;
         for (fp, path, pk) in &records {
-            if *fp != local_fp {
-                return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+            if *fp != local_fp && !psbt_mod::fingerprint_is_unspecified(*fp) {
+                return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
             }
             let rec_sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, path)?;
             let rec_pub = crate::curve_primitive::secp256k1::point_to_compressed(
@@ -2300,9 +2305,12 @@ mod tests {
             &ur_payload,
             &mut output_buf,
         );
+        // Ownership class, not network: a record naming someone else's fingerprint
+        // says nothing about which chain this is. The old -12 mapping sent the
+        // operator to the wrong setting entirely (2026-11-12).
         assert_eq!(
             result.unwrap_err().kind,
-            ShlosiloErrorKind::NetworkUnrecognized
+            ShlosiloErrorKind::PsbtOwnershipMismatch
         );
     }
 
