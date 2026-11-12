@@ -87,13 +87,23 @@ fn the_psbt_dialect_finalizes_every_signed_input() {
     assert_eq!(w[pk_off], 33, "second item is a compressed pubkey");
     assert_eq!(w.len(), pk_off + 1 + 33, "nothing trailing");
 
-    // The raw signature stays visible too (audit trail, and Sparrow tolerance).
+    // BIP-174 §Input Finalizer: once the witness exists the partial signature is
+    // redundant and must not be left behind ("All other data except the UTXO and
+    // unknown fields should be cleared"), and BIP-371 says the same for
+    // TAP_KEY_SIG. A PSBT that carries both a partial and a final record for the
+    // same key contradicts its own state.
     assert!(
-        parsed
+        !parsed
             .input_map(0)
             .iter()
             .any(|kv| kv.key.first() == Some(&PARTIAL_SIG)),
-        "PARTIAL_SIG is kept alongside the final record"
+        "the finalized dialect must not keep PARTIAL_SIG"
+    );
+    // The signature is not lost by that cleanup - it is inside the witness.
+    let sig_from_witness = &w[2..2 + sig_len];
+    assert!(
+        sig_from_witness.len() >= 70,
+        "signature moved into the witness"
     );
 }
 
@@ -124,7 +134,66 @@ fn the_psbt_dialect_finalizes_a_taproot_input() {
         let len = w[1] as usize;
         assert!(len == 64 || len == 65, "Schnorr sig, got {len}");
         assert_eq!(w.len(), 2 + len);
+        // BIP-341: SIGHASH_DEFAULT is expressed by OMITTING the byte, never by a
+        // trailing 0x00 - a 65-byte signature ending in 0x00 is invalid.
+        if len == 65 {
+            assert_ne!(
+                w[2 + 64],
+                0x00,
+                "65-byte sig must not end with SIGHASH_DEFAULT"
+            );
+        }
     }
+}
+
+/// Completeness is per script type, not "any final field present".
+///
+/// A P2SH-P2WPKH input needs BOTH `FINAL_SCRIPTSIG` (0x07, the redeem push) and
+/// `FINAL_SCRIPTWITNESS` (0x08, sig + pubkey). An input that arrives carrying
+/// only 0x07 is NOT finished, and a finalizer that skips on "any final record
+/// exists" would leave it unextractable forever.
+#[test]
+#[cfg(feature = "alloc-fallback")]
+fn a_p2sh_input_with_only_a_scriptsig_still_gets_its_witness() {
+    const P2SH_FIXTURE: &[u8] = include_bytes!("fixtures/core_regtest_p2sh_p2wpkh_331b.psbt");
+    let parsed = psbt::parse_psbt(P2SH_FIXTURE).expect("p2sh fixture parses");
+    let mut psbt = parsed;
+
+    let pk = [0x02u8; 33];
+    let mut partial_key = vec![PARTIAL_SIG];
+    partial_key.extend_from_slice(&pk);
+    let dummy_sig = [0x30u8; 72];
+    let dummy_scriptsig = [0x16u8; 23];
+
+    psbt.set_input_kv(0, &partial_key, &dummy_sig)
+        .expect("partial sig placement");
+    psbt.set_input_kv(0, &[FINAL_SCRIPT_SIG], &dummy_scriptsig)
+        .expect("scriptSig placement");
+
+    psbt::finalize_signed_inputs(&mut psbt).expect("finalize");
+
+    let w = psbt
+        .input_map(0)
+        .get(&[FINAL_SCRIPTWITNESS])
+        .expect("a scriptSig alone does not complete a P2SH-P2WPKH input");
+    assert_eq!(w[0], 0x02, "two witness items");
+    assert_eq!(w[1] as usize, dummy_sig.len());
+    let pk_off = 2 + dummy_sig.len();
+    assert_eq!(w[pk_off], 33);
+    assert_eq!(&w[pk_off + 1..], &pk[..]);
+
+    // The scriptSig that was already there must not be overwritten.
+    let ss = psbt
+        .input_map(0)
+        .get(&[FINAL_SCRIPT_SIG])
+        .expect("scriptSig kept");
+    assert_eq!(ss, &dummy_scriptsig[..], "existing 0x07 is left untouched");
+
+    // And the partial record is gone.
+    assert!(psbt
+        .input_map(0)
+        .iter()
+        .all(|kv| kv.key.first() != Some(&PARTIAL_SIG)));
 }
 
 /// Walk the finalized PSBT the way Cake does (Transaction Extractor) and check

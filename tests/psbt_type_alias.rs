@@ -249,17 +249,28 @@ fn both_names_sign_the_same_request_in_two_dialects() {
             assert_eq!(x.value, y.value);
             assert_eq!(x.script_pubkey, y.script_pubkey);
         }
-        // Same partial signature (BIP-174 input field 0x02).
-        let partial = |p: &shlosilo::chain::btc::psbt::Psbt<'_>| {
-            p.input_map(0)
+        // Same ECDSA signature. The partial dialect carries it in 0x02; the
+        // finalized one moved it into the witness (and dropped the 0x02 record),
+        // so both are read out and compared.
+        let sig_of = |p: &shlosilo::chain::btc::psbt::Psbt<'_>| -> Vec<u8> {
+            if let Some(kv) = p
+                .input_map(0)
                 .iter()
                 .find(|kv| kv.key.first() == Some(&0x02u8))
-                .map(|kv| kv.value.to_vec())
-                .expect("PARTIAL_SIG present")
+            {
+                kv.value.to_vec()
+            } else {
+                let w = p
+                    .input_map(0)
+                    .get(&[0x08u8])
+                    .expect("finalized dialect carries the witness");
+                let sig_len = w[1] as usize;
+                w[2..2 + sig_len].to_vec()
+            }
         };
         assert_eq!(
-            partial(&pa),
-            partial(&pb),
+            sig_of(&pa),
+            sig_of(&pb),
             "the ECDSA signature must not depend on the type name"
         );
         // Only the finished one carries the final witness (0x08).

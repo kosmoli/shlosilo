@@ -363,6 +363,28 @@ impl<'a> MapPool<'a> {
         self.map_lens[idx] += 1;
         Ok(())
     }
+
+    /// Drop one entry of map `idx` by key (BIP-174 Finalizer cleanup).
+    ///
+    /// The arena bytes are not reclaimed (that is the pool's standing contract -
+    /// capacity is a deployment parameter, and a shrunken record list is all the
+    /// serializer reads). Removing an absent key is a no-op.
+    fn remove_kv(&mut self, idx: usize, key: &[u8]) -> Result<()> {
+        let start: usize = self.map_lens[..idx].iter().map(|&l| l as usize).sum();
+        let len = self.map_lens[idx] as usize;
+        for i in start..start + len {
+            let k = KvMap::pool_slice(self.wire, &self.arena[..self.arena_used], self.recs[i].key);
+            if k == key {
+                for j in i..self.recs_len - 1 {
+                    self.recs[j] = self.recs[j + 1];
+                }
+                self.recs_len -= 1;
+                self.map_lens[idx] -= 1;
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The parsed PSBT: the unsigned tx plus its map pool.
@@ -399,6 +421,11 @@ impl<'a> Psbt<'a> {
     /// Replace-or-append one entry of input map `i` (PSBT: one value per key).
     pub fn set_input_kv(&mut self, i: usize, key: &[u8], value: &[u8]) -> Result<()> {
         self.pool.set_kv(1 + i, key, value)
+    }
+
+    /// Drop one entry of input map `i` (the BIP-174 Finalizer cleanup step).
+    pub fn remove_input_kv(&mut self, i: usize, key: &[u8]) -> Result<()> {
+        self.pool.remove_kv(1 + i, key)
     }
 
     /// Replace-or-append one entry of output map `i`.
@@ -962,9 +989,9 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt<'_>, sign_input: &PsbtSignInput) -> Resu
 ///
 /// Zero heap: both values are built in fixed stack buffers.
 pub fn finalize_signed_inputs(psbt: &mut Psbt<'_>) -> Result<()> {
-    /// What one input needs, copied out so the map borrow ends before we write.
+    /// What one input still needs, copied out so no map borrow survives the write.
     enum Plan {
-        Skip,
+        Done,
         Taproot {
             sig: [u8; crate::chain::btc::taproot::SIGNATURE_MAX],
             sig_len: usize,
@@ -973,30 +1000,29 @@ pub fn finalize_signed_inputs(psbt: &mut Psbt<'_>) -> Result<()> {
             sig: [u8; 73],
             sig_len: usize,
             pk: [u8; 33],
-            p2sh: bool,
+            need_script_sig: bool,
         },
     }
 
     let inputs = psbt.unsigned_tx.inputs.len();
     for i in 0..inputs {
-        // ---- read phase: no borrow survives this block ----
+        // ---- read phase ----
         let plan = {
             let map = psbt.input_map(i);
-            // Already finalized (our P2SH-P2WPKH path writes both records itself).
-            if map.get(&[input_type::FINAL_SCRIPTWITNESS]).is_some()
-                || map.get(&[input_type::FINAL_SCRIPT_SIG]).is_some()
-            {
-                Plan::Skip
-            } else {
-                let prev_out = psbt.unsigned_tx.inputs[i].prev_out.clone();
-                match get_utxo_any(map, &prev_out) {
-                    None => Plan::Skip,
-                    Some((_, spk)) => {
-                        let spk = crate::types::wire_bytes::wire_slice(&spk);
-                        if spk.len() == 34 && spk[0] == 0x51 && spk[1] == 0x20 {
-                            // Taproot keypath.
+            let has_witness = map.get(&[input_type::FINAL_SCRIPTWITNESS]).is_some();
+            let has_script_sig = map.get(&[input_type::FINAL_SCRIPT_SIG]).is_some();
+            let prev_out = psbt.unsigned_tx.inputs[i].prev_out.clone();
+            match get_utxo_any(map, &prev_out) {
+                None => Plan::Done,
+                Some((_, spk)) => {
+                    let spk = crate::types::wire_bytes::wire_slice(&spk);
+                    // Taproot keypath: a one-item witness is the whole completion.
+                    if spk.len() == 34 && spk[0] == 0x51 && spk[1] == 0x20 {
+                        if has_witness {
+                            Plan::Done
+                        } else {
                             match map.get(&[input_type::TAP_KEY_SIG]) {
-                                None => Plan::Skip,
+                                None => Plan::Done, // not signed by us
                                 Some(sig) => {
                                     if sig.len() > crate::chain::btc::taproot::SIGNATURE_MAX {
                                         return Err(ShlosiloError::new(
@@ -1011,13 +1037,25 @@ pub fn finalize_signed_inputs(psbt: &mut Psbt<'_>) -> Result<()> {
                                     }
                                 }
                             }
+                        }
+                    } else {
+                        // P2SH-P2WPKH needs BOTH records; a witness alone is not
+                        // "complete" there, and a scriptSig alone is not either
+                        // (BIP-174: the extractor wants 0x07 and 0x08 where they
+                        // apply). Completeness is per script type, not "any final
+                        // field present" - the earlier shortcut would have skipped
+                        // a P2SH input that carried only 0x07.
+                        let is_p2sh =
+                            spk.len() == 23 && spk[0] == 0xa9 && spk[1] == 0x14 && spk[22] == 0x87;
+                        let complete = if is_p2sh {
+                            has_witness && has_script_sig
                         } else {
-                            // P2WPKH / P2SH-P2WPKH.
-                            let p2sh = spk.len() == 23
-                                && spk[0] == 0xa9
-                                && spk[1] == 0x14
-                                && spk[22] == 0x87;
-                            let mut found = Plan::Skip;
+                            has_witness
+                        };
+                        if complete {
+                            Plan::Done
+                        } else {
+                            let mut found = Plan::Done;
                             for kv in map.iter() {
                                 if kv.key.first() != Some(&input_type::PARTIAL_SIG)
                                     || kv.key.len() != 34
@@ -1037,7 +1075,7 @@ pub fn finalize_signed_inputs(psbt: &mut Psbt<'_>) -> Result<()> {
                                     sig,
                                     sig_len: kv.value.len(),
                                     pk,
-                                    p2sh,
+                                    need_script_sig: is_p2sh && !has_script_sig,
                                 };
                                 break;
                             }
@@ -1050,7 +1088,7 @@ pub fn finalize_signed_inputs(psbt: &mut Psbt<'_>) -> Result<()> {
 
         // ---- write phase ----
         match plan {
-            Plan::Skip => {}
+            Plan::Done => {}
             Plan::Taproot { sig, sig_len } => {
                 let mut witness = [0u8; 2 + crate::chain::btc::taproot::SIGNATURE_MAX];
                 let wlen = {
@@ -1061,12 +1099,14 @@ pub fn finalize_signed_inputs(psbt: &mut Psbt<'_>) -> Result<()> {
                     sink.pos()
                 };
                 psbt.set_input_kv(i, &[input_type::FINAL_SCRIPTWITNESS], &witness[..wlen])?;
+                // BIP-371: the finalizer removes TAP_KEY_SIG once the witness is built.
+                psbt.remove_input_kv(i, &[input_type::TAP_KEY_SIG])?;
             }
             Plan::Segwit {
                 sig,
                 sig_len,
                 pk,
-                p2sh,
+                need_script_sig,
             } => {
                 let mut witness = [0u8; 2 + 1 + 73 + 1 + 33];
                 let wlen = {
@@ -1080,7 +1120,7 @@ pub fn finalize_signed_inputs(psbt: &mut Psbt<'_>) -> Result<()> {
                 };
                 psbt.set_input_kv(i, &[input_type::FINAL_SCRIPTWITNESS], &witness[..wlen])?;
 
-                if p2sh {
+                if need_script_sig {
                     let h = crate::encoding::sha256::hash(&pk)?;
                     let h160 = crate::encoding::ripemd160::hash(&h)?;
                     let redeem = crate::chain::btc::p2sh::p2wpkh_redeem_script(&h160);
@@ -1089,6 +1129,21 @@ pub fn finalize_signed_inputs(psbt: &mut Psbt<'_>) -> Result<()> {
                     script_sig[1..].copy_from_slice(&redeem);
                     psbt.set_input_kv(i, &[input_type::FINAL_SCRIPT_SIG], &script_sig)?;
                 }
+
+                // BIP-174 Finalizer cleanup: the signature now lives in the
+                // witness, and the scripts only existed to explain it. Keeping
+                // them would leave a PSBT that contradicts its own final state
+                // (and duplicates ~72 bytes in every QR frame). Derivation
+                // metadata (0x06/0x16) is deliberately kept - it is not in
+                // conflict with a finalized state and it is how an operator
+                // traces an account path from the returned file (documented
+                // deviation from BIP-174's broader "should clear").
+                let mut partial_key = [0u8; 34];
+                partial_key[0] = input_type::PARTIAL_SIG;
+                partial_key[1..].copy_from_slice(&pk);
+                psbt.remove_input_kv(i, &partial_key)?;
+                psbt.remove_input_kv(i, &[input_type::REDEEM_SCRIPT])?;
+                psbt.remove_input_kv(i, &[input_type::WITNESS_SCRIPT])?;
             }
         }
     }
