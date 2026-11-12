@@ -1025,7 +1025,6 @@ mod tests {
         for bare in [
             "crypto-account",
             "crypto-hdkey",
-            "crypto-multi-accounts",
             "eth-sign-request",
             "CRYPTO-ACCOUNT",
         ] {

@@ -1,6 +1,6 @@
 //! P0-02 audit remediation (2026-08-25): unimplemented export protocols must return errors, not fake success
 //!
-//! Audit finding: CryptoAccount / CryptoMultiAccounts / JsonMoneroViewkey /
+//! Audit finding: CryptoAccount / JsonMoneroViewkey /
 //! ArweaveCryptoAccount returned stub_len without writing output_buf — the caller's buffer's old contents
 //! would be output as the "export result" (information leak).
 
@@ -27,7 +27,6 @@ fn p0_02_stub_protocols_rejected() {
     let seed = [7u8; 64];
     let paths = path();
     let cases = [
-        ExportProtocol::CryptoMultiAccounts,
         ExportProtocol::JsonMoneroViewkey,
         ExportProtocol::ArweaveCryptoAccount,
         ExportProtocol::ZcashAccounts,

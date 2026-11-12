@@ -14,8 +14,6 @@ pub enum ExportProtocol {
     CryptoHdKey,
     /// BTC BIP44 account export
     CryptoAccount,
-    /// BTC + ETH multi-path
-    CryptoMultiAccounts,
     /// XMR view key JSON (Feather Wallet compatible)
     JsonMoneroViewkey,
     /// Arweave public key + derivation path

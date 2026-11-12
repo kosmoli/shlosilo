@@ -107,7 +107,6 @@ pub use crate::address::{
 pub use crate::ur::{
     codec::{
         crypto_hd_key::Bip32XPub,
-        crypto_multi_accounts::MultiAccountsInput,
         json_monero_viewkey::{JsonMoneroViewkey, JSON_MONERO_VIEWKEY_MAX_LEN},
     },
     ur_decode::UrDecoded,

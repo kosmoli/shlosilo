@@ -23,8 +23,9 @@ use crate::ffi::error_code::{to_ffi_code, ERR_NULL_POINTER, OK};
 use crate::network::Network;
 use crate::types::key_session::KeySession;
 
-/// Largest export payload the six shapes can produce (a multi-account bundle at
-/// ~5 entries is well under 1 KiB; the cap leaves room for long device strings).
+/// Largest export payload the five shapes can produce (the four-descriptor
+/// crypto-account bundle is the widest at ~516 B; the cap leaves room for long
+/// device strings).
 const EXPORT_BUF_MAX: usize = 4096;
 
 fn write_actual_len(p: *mut c_uint, v: usize) {
@@ -297,7 +298,7 @@ mod tests {
 
     #[test]
     fn count_and_labels_come_from_one_source() {
-        assert_eq!(shlosilo_export_format_count(), 6);
+        assert_eq!(shlosilo_export_format_count(), 5);
         let first = shlosilo_export_format_label(0);
         assert!(!first.is_null());
         let s = unsafe { CStr::from_ptr(first) }
@@ -305,7 +306,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(s, "ur:crypto-account");
-        assert!(shlosilo_export_format_label(6).is_null());
+        assert!(shlosilo_export_format_label(5).is_null());
         assert_eq!(shlosilo_export_format_max_len() as usize, EXPORT_BUF_MAX);
     }
 
@@ -313,7 +314,7 @@ mod tests {
     fn every_format_round_trips_through_the_entry() {
         let (mut slot, _) = session_slot();
         let session = place(&mut slot);
-        for id in 0..6u32 {
+        for id in 0..5u32 {
             let (rc, s) = export(session, id);
             assert_eq!(rc, OK, "format {id} failed");
             assert!(!s.is_empty(), "format {id} produced nothing");
@@ -368,19 +369,18 @@ mod tests {
 
     /// The device's renderer choice: UR shapes report a type, text shapes do not,
     /// and the payload lengths land where the reference firmware's fragment rule
-    /// puts them (account 3 parts, ETH key 1 part, bundle 4 parts).
+    /// puts them (account 3 parts, ETH key 1 part, text shapes unframed).
     #[test]
     fn ur_types_and_payload_sizes_drive_the_renderer() {
         let (mut slot, _) = session_slot();
         let session = place(&mut slot);
         let mut out = vec![0u8; EXPORT_BUF_MAX];
-        let expected: [(u32, bool, u32); 6] = [
+        let expected: [(u32, bool, u32); 5] = [
             (0, true, 3),  // crypto-account: 3 frames
             (1, false, 0), // xpub URI: text
             (2, true, 1),  // ETH hdkey: one frame
-            (3, true, 4),  // multi-accounts: 4 frames
-            (4, false, 0), // monero json (keystone): text
-            (5, false, 0), // monero json (cupcake): text
+            (3, false, 0), // monero json (keystone): text
+            (4, false, 0), // monero json (cupcake): text
         ];
         for (id, is_ur, parts) in expected {
             let tag = shlosilo_export_format_ur_type(id);

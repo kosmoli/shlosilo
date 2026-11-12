@@ -162,7 +162,7 @@
 /* QR carousel page (F3 output side: UR frames for a wallet to scan) */
 /* S2 account export: the six wire shapes as a selectable list.
  * Rows are the format strings themselves (scale 2 = 16 px glyphs, the longest
- * label `ur:crypto-multi-accounts` is 24 chars = 384 px, so text starts at 56
+ * label `json: monero (cupcake)` is 22 chars = 352 px, so text starts at 56
  * and clears 480). */
 #define UI_XP_TITLE_Y        40
 #define UI_XP_TITLE_SCALE    3

@@ -683,9 +683,8 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
         let protocol = match protocol {
             0 => business::export_readonly::ExportProtocol::CryptoHdKey,
             1 => business::export_readonly::ExportProtocol::CryptoAccount,
-            2 => business::export_readonly::ExportProtocol::CryptoMultiAccounts,
-            3 => business::export_readonly::ExportProtocol::JsonMoneroViewkey,
-            4 => business::export_readonly::ExportProtocol::ArweaveCryptoAccount,
+            2 => business::export_readonly::ExportProtocol::JsonMoneroViewkey,
+            3 => business::export_readonly::ExportProtocol::ArweaveCryptoAccount,
             _ => return Err(err(ShlosiloErrorKind::ExportProtocolUnimplemented)),
         };
 

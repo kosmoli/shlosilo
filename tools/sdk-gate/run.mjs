@@ -20,7 +20,6 @@ const { KeystoneSDK, URDecoder } = sdkPkg
 // gate imports them from their dist path. The version is pinned in package.json,
 // and a moved path fails loudly here instead of silently skipping the check.
 const { parseHDKey } = await import('@keystonehq/keystone-sdk/dist/wallet/hdKey.js')
-const { parseMultiAccounts } = await import('@keystonehq/keystone-sdk/dist/wallet/multiAccounts.js')
 const { parseAccount } = await import('@keystonehq/keystone-sdk/dist/wallet/account.js')
 // A single-frame UR string becomes a UR object through the one-shot decoder.
 const UR = { fromString: s => URDecoder.decode(s) }
@@ -157,15 +156,8 @@ console.log(`\nSDK gate: ${checks} checks passed`)
   ok(eth.path === "m/44'/60'/0'", `ETH hdkey path ${eth.path}`)
   ok(eth.chain === 'ETH', `ETH hdkey chain resolved to ${eth.chain}`)
 
-  // 4: crypto-multi-accounts - the SDK's own multi-account parser
-  const multi = parseMultiAccounts(UR.fromString(read('export_3.txt')))
-  ok(
-    Array.isArray(multi.keys) && multi.keys.length === 5,
-    `multi-accounts carries ${multi.keys && multi.keys.length} keys (4 BTC + 1 ETH)`
-  )
-
-  // 5: keystone-shaped Monero JSON (Feather reads primaryAddress/privateViewKey)
-  const ks = JSON.parse(read('export_4.txt'))
+  // 4: keystone-shaped Monero JSON (Feather reads primaryAddress/privateViewKey)
+  const ks = JSON.parse(read('export_3.txt'))
   ok(ks.version === 0, 'keystone JSON version 0')
   ok(typeof ks.primaryAddress === 'string' && ks.primaryAddress.startsWith('4'), 'keystone JSON primaryAddress')
   ok(/^[0-9a-f]{64}$/.test(ks.privateViewKey), 'keystone JSON privateViewKey is 64 hex')
@@ -173,8 +165,8 @@ console.log(`\nSDK gate: ${checks} checks passed`)
   ok(ks.source === 'Keystone', 'keystone JSON source')
   ok(ks.encrypted === false, 'keystone JSON plaintext variant')
 
-  // 6: cupcake-shaped Monero JSON (Cake pairing leg)
-  const cp = JSON.parse(read('export_5.txt'))
+  // 5: cupcake-shaped Monero JSON (Cake pairing leg)
+  const cp = JSON.parse(read('export_4.txt'))
   ok(typeof cp.label === 'string' && cp.label.length > 0, 'cupcake JSON carries a label')
   ok(/^[0-9a-f]{64}$/.test(cp.privateViewKey), 'cupcake JSON privateViewKey is 64 hex')
   ok(!('encrypted' in cp) && !('source' in cp), 'cupcake JSON has no encrypted/source')

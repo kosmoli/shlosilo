@@ -1,20 +1,22 @@
-//! Build any of the six account-export shapes from a seed (S2 export legs).
+//! Build any of the five account-export shapes from a seed (S2 export legs).
 //!
 //! This is the layer between "the operator picked a format on the screen" and
 //! the wire encoders: it derives whatever that format needs and writes it into
 //! a caller buffer. Everything here is pure (seed in, bytes out) so the host
 //! tests can pin each shape without a device.
 //!
-//! The six shapes and who consumes them:
+//! The five shapes and who consumes them (all BC-UR standard registry types or
+//! plain text; `crypto-multi-accounts` is deliberately absent - it is a Keystone
+//! registry extension (tag 1103, `ur-registry`'s `src/extend/`), not BC-UR, and
+//! only Keystone's own apps read it).
 //!
 //! | # | `ExportFormat` | consumer |
 //! |---|---|---|
 //! | 1 | `UrCryptoAccount` | keystone-ecosystem BTC wallets (4 script paths in one UR) |
 //! | 2 | `BitcoinXpubUri` | Cake / Cupcake (BIP-84 account key in a static URI) |
 //! | 3 | `UrCryptoHdKey` | keystone-ecosystem ETH wallets (MetaMask / Rabby) |
-//! | 4 | `UrCryptoMultiAccounts` | aggregated wallets (OKX / Bitget / Nexus) |
-//! | 5 | `MoneroJsonKeystone` | Feather |
-//! | 6 | `MoneroJsonCupcake` | Cake pairing leg |
+//! | 4 | `MoneroJsonKeystone` | Feather |
+//! | 5 | `MoneroJsonCupcake` | Cake pairing leg |
 
 use crate::address::xmr as xmr_address;
 use crate::curve_primitive::ed25519::{base_mul_raw, scalar_to_bytes};
@@ -29,7 +31,7 @@ pub use crate::ur::codec::account_text::ExportFormat;
 use crate::ur::codec::account_text::{
     btc_xpub_uri, monero_viewkey_json_cupcake, monero_viewkey_json_keystone,
 };
-use crate::ur::codec::{crypto_account, crypto_hd_key, crypto_multi_accounts};
+use crate::ur::codec::{crypto_account, crypto_hd_key};
 
 fn err() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
@@ -49,7 +51,7 @@ pub struct ExportLabels<'a> {
     pub restore_height: u64,
 }
 
-/// The BTC account paths exported by `crypto-account` and `crypto-multi-accounts`.
+/// The BTC account paths exported by `crypto-account`.
 ///
 /// The reference firmware hands all four to the wallet in one QR
 /// (`keystone3-firmware/src/ui/gui_wallet/multi/web3/gui_wallet.c:119-124`) and
@@ -114,9 +116,6 @@ pub fn ur_type(format: ExportFormat) -> Option<crate::ur::ur_encode::UrTypeTag> 
     match format {
         ExportFormat::UrCryptoAccount => Some(crate::ur::ur_encode::UrTypeTag::CryptoAccount),
         ExportFormat::UrCryptoHdKey => Some(crate::ur::ur_encode::UrTypeTag::CryptoHdKey),
-        ExportFormat::UrCryptoMultiAccounts => {
-            Some(crate::ur::ur_encode::UrTypeTag::CryptoMultiAccounts)
-        }
         ExportFormat::BitcoinXpubUri
         | ExportFormat::MoneroJsonKeystone
         | ExportFormat::MoneroJsonCupcake => None,
@@ -184,63 +183,6 @@ pub fn payload(
                 &path,
                 labels.key_name,
                 Some("account.standard"),
-                out,
-            )
-        }
-        ExportFormat::UrCryptoMultiAccounts => {
-            let paths = btc_paths(coin);
-            let btc0 = xpub_from_seed(seed, &paths[0])?;
-            let btc1 = xpub_from_seed(seed, &paths[1])?;
-            let btc2 = xpub_from_seed(seed, &paths[2])?;
-            let btc3 = xpub_from_seed(seed, &paths[3])?;
-            let epath = eth_path(coin);
-            let expub = xpub_from_seed(seed, &epath)?;
-            let entries = [
-                crypto_multi_accounts::MultiAccountEntry {
-                    xpub: &btc0,
-                    path: &paths[0],
-                    standard_children: true,
-                    include_chain_code: true,
-                    note: None,
-                },
-                crypto_multi_accounts::MultiAccountEntry {
-                    xpub: &btc1,
-                    path: &paths[1],
-                    standard_children: true,
-                    include_chain_code: true,
-                    note: None,
-                },
-                crypto_multi_accounts::MultiAccountEntry {
-                    xpub: &btc2,
-                    path: &paths[2],
-                    standard_children: true,
-                    include_chain_code: true,
-                    note: None,
-                },
-                crypto_multi_accounts::MultiAccountEntry {
-                    xpub: &btc3,
-                    path: &paths[3],
-                    standard_children: true,
-                    include_chain_code: true,
-                    note: None,
-                },
-                crypto_multi_accounts::MultiAccountEntry {
-                    xpub: &expub,
-                    path: &epath,
-                    standard_children: true,
-                    include_chain_code: true,
-                    note: Some("account.standard"),
-                },
-            ];
-            crypto_multi_accounts::encode_payload(
-                &crypto_multi_accounts::MultiAccountsInput {
-                    master_fingerprint: mfp,
-                    entries: &entries,
-                    key_name: labels.key_name,
-                    device: labels.device,
-                    device_id: labels.device_id,
-                    device_version: labels.device_version,
-                },
                 out,
             )
         }
@@ -347,9 +289,6 @@ mod tests {
                     assert!(s.contains("&label=test-wallet"));
                 }
                 ExportFormat::UrCryptoHdKey => assert!(s.starts_with("ur:crypto-hdkey/")),
-                ExportFormat::UrCryptoMultiAccounts => {
-                    assert!(s.starts_with("ur:crypto-multi-accounts/"))
-                }
                 ExportFormat::MoneroJsonKeystone => {
                     assert!(s.starts_with("{\"encrypted\":false,\"primaryAddress\":\"4"));
                     assert!(s.contains("\"source\":\"Keystone\""));
@@ -369,27 +308,22 @@ mod tests {
     #[test]
     fn ur_payloads_are_measured_against_the_200_byte_fragment() {
         let mut out = vec![0u8; 8192];
-        let sizes: Vec<(ExportFormat, usize)> = [
-            ExportFormat::UrCryptoAccount,
-            ExportFormat::UrCryptoHdKey,
-            ExportFormat::UrCryptoMultiAccounts,
-        ]
-        .iter()
-        .map(|f| {
-            let n =
-                payload(*f, &SEED, Network::BitcoinMainnet, &labels(), &mut out).expect("payload");
-            (*f, n)
-        })
-        .collect();
+        let sizes: Vec<(ExportFormat, usize)> =
+            [ExportFormat::UrCryptoAccount, ExportFormat::UrCryptoHdKey]
+                .iter()
+                .map(|f| {
+                    let n = payload(*f, &SEED, Network::BitcoinMainnet, &labels(), &mut out)
+                        .expect("payload");
+                    (*f, n)
+                })
+                .collect();
         for (f, n) in &sizes {
             assert!(ur_type(*f).is_some(), "{f:?} is a UR shape");
             assert!(*n > 0);
         }
-        // Account (4 descriptors) and the multi-account bundle are multi-part;
-        // a single ETH key is not.
+        // The account bundle (4 descriptors) is multi-part; a single ETH key is not.
         let n_account = sizes[0].1;
         let n_hdkey = sizes[1].1;
-        let n_multi = sizes[2].1;
         assert!(
             n_account > 200,
             "crypto-account payload {n_account} B > 1 fragment"
@@ -397,14 +331,6 @@ mod tests {
         assert!(
             n_hdkey <= 200,
             "crypto-hdkey payload {n_hdkey} B fits one fragment"
-        );
-        assert!(
-            n_multi > n_account,
-            "the bundle carries more than one account"
-        );
-        assert!(
-            n_multi > 400,
-            "multi-accounts payload {n_multi} B is 3+ fragments"
         );
         // Text shapes are never framed.
         for f in [
@@ -417,12 +343,12 @@ mod tests {
     }
 
     #[test]
-    fn six_labels_in_listing_order() {
-        assert_eq!(format_count(), 6);
+    fn five_labels_in_listing_order() {
+        assert_eq!(format_count(), 5);
         assert_eq!(format_label(0), Some("ur:crypto-account"));
         assert_eq!(format_label(1), Some("bitcoin:?xpub=&label="));
-        assert_eq!(format_label(5), Some("json: monero (cupcake)"));
-        assert_eq!(format_label(6), None);
+        assert_eq!(format_label(4), Some("json: monero (cupcake)"));
+        assert_eq!(format_label(5), None);
     }
 
     #[test]
@@ -442,7 +368,6 @@ mod tests {
         for f in [
             ExportFormat::UrCryptoAccount,
             ExportFormat::UrCryptoHdKey,
-            ExportFormat::UrCryptoMultiAccounts,
             ExportFormat::MoneroJsonKeystone,
         ] {
             assert!(build(f, &SEED, Network::BitcoinMainnet, &empty, &mut out).is_ok());

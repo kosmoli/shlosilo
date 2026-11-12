@@ -185,21 +185,18 @@ pub enum ExportFormat {
     BitcoinXpubUri,
     /// 3: BC-UR `crypto-hdkey` - keystone ecosystem ETH (BIP-44 standard)
     UrCryptoHdKey,
-    /// 4: BC-UR `crypto-multi-accounts` - aggregated wallets (OKX / Bitget / Nexus)
-    UrCryptoMultiAccounts,
-    /// 5: keystone-shape Monero view-key JSON - Feather
+    /// 4: keystone-shape Monero view-key JSON - Feather
     MoneroJsonKeystone,
-    /// 6: cupcake-shape Monero view-key JSON - Cake pairing leg
+    /// 5: cupcake-shape Monero view-key JSON - Cake pairing leg
     MoneroJsonCupcake,
 }
 
 impl ExportFormat {
     /// Every format, in listing order.
-    pub const ALL: [ExportFormat; 6] = [
+    pub const ALL: [ExportFormat; 5] = [
         ExportFormat::UrCryptoAccount,
         ExportFormat::BitcoinXpubUri,
         ExportFormat::UrCryptoHdKey,
-        ExportFormat::UrCryptoMultiAccounts,
         ExportFormat::MoneroJsonKeystone,
         ExportFormat::MoneroJsonCupcake,
     ];
@@ -212,7 +209,6 @@ impl ExportFormat {
             Self::UrCryptoAccount => "ur:crypto-account",
             Self::BitcoinXpubUri => "bitcoin:?xpub=&label=",
             Self::UrCryptoHdKey => "ur:crypto-hdkey",
-            Self::UrCryptoMultiAccounts => "ur:crypto-multi-accounts",
             Self::MoneroJsonKeystone => "json: monero viewkey",
             Self::MoneroJsonCupcake => "json: monero (cupcake)",
         }
@@ -229,7 +225,6 @@ impl ExportFormat {
             Self::UrCryptoAccount => c"ur:crypto-account",
             Self::BitcoinXpubUri => c"bitcoin:?xpub=&label=",
             Self::UrCryptoHdKey => c"ur:crypto-hdkey",
-            Self::UrCryptoMultiAccounts => c"ur:crypto-multi-accounts",
             Self::MoneroJsonKeystone => c"json: monero viewkey",
             Self::MoneroJsonCupcake => c"json: monero (cupcake)",
         }
@@ -281,13 +276,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn six_formats_in_listing_order() {
-        assert_eq!(ExportFormat::ALL.len(), 6);
-        let labels: heapless::Vec<&str, 6> =
+    fn five_formats_in_listing_order() {
+        // Five, not six: `crypto-multi-accounts` was dropped on 2026-11-12 - it is
+        // a Keystone registry extension, not a BC-UR type, and only Keystone's own
+        // apps read it. Every shape left here is standard BC-UR or plain text.
+        assert_eq!(ExportFormat::ALL.len(), 5);
+        let labels: heapless::Vec<&str, 5> =
             ExportFormat::ALL.iter().map(|f| f.screen_label()).collect();
         assert_eq!(labels[0], "ur:crypto-account");
         assert_eq!(labels[1], "bitcoin:?xpub=&label=");
-        assert_eq!(labels[5], "json: monero (cupcake)");
+        assert_eq!(labels[4], "json: monero (cupcake)");
+        for l in &labels {
+            assert!(!l.contains("multi-accounts"), "dropped shape still listed");
+        }
     }
 
     #[test]

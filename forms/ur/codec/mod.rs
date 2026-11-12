@@ -8,7 +8,6 @@ pub mod arweave_crypto_account;
 pub mod bytes;
 pub mod crypto_account;
 pub mod crypto_hd_key;
-pub mod crypto_multi_accounts;
 #[cfg(any(feature = "alloc-fallback", test))]
 pub mod crypto_psbt;
 pub mod eth_sign_request;

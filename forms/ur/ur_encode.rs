@@ -89,8 +89,6 @@ pub enum UrTypeTag {
     Bytes,       // opaque bytes (tests / passthrough)
     CryptoHdKey, // crypto-hdkey
     CryptoAccount, // crypto-account
-    /// crypto-multi-accounts (tag 1103): the aggregated-wallet account bundle
-    CryptoMultiAccounts,
     Unknown,
 }
 
@@ -128,7 +126,6 @@ impl UrTypeTag {
             "bytes" => Self::Bytes,
             "crypto-hdkey" => Self::CryptoHdKey,
             "crypto-account" => Self::CryptoAccount,
-            "crypto-multi-accounts" => Self::CryptoMultiAccounts,
             _ => Self::Unknown,
         }
     }
@@ -149,7 +146,6 @@ impl UrTypeTag {
             Self::Bytes => "bytes",
             Self::CryptoHdKey => "crypto-hdkey",
             Self::CryptoAccount => "crypto-account",
-            Self::CryptoMultiAccounts => "crypto-multi-accounts",
             Self::Unknown => "unknown",
         }
     }
@@ -174,7 +170,6 @@ impl UrTypeTag {
             Self::Bytes => c"bytes",
             Self::CryptoHdKey => c"crypto-hdkey",
             Self::CryptoAccount => c"crypto-account",
-            Self::CryptoMultiAccounts => c"crypto-multi-accounts",
             Self::Unknown => c"unknown",
         }
     }
@@ -226,10 +221,7 @@ impl UrTypeTag {
 pub(crate) fn message_is_cbor_item(type_tag: UrTypeTag) -> bool {
     matches!(
         type_tag,
-        UrTypeTag::CryptoHdKey
-            | UrTypeTag::CryptoAccount
-            | UrTypeTag::CryptoMultiAccounts
-            | UrTypeTag::EthSignRequest
+        UrTypeTag::CryptoHdKey | UrTypeTag::CryptoAccount | UrTypeTag::EthSignRequest
     )
 }
 
@@ -403,7 +395,6 @@ mod type_name_tests {
             UrTypeTag::Bytes,
             UrTypeTag::CryptoHdKey,
             UrTypeTag::CryptoAccount,
-            UrTypeTag::CryptoMultiAccounts,
             UrTypeTag::Unknown,
         ];
         for t in all {
