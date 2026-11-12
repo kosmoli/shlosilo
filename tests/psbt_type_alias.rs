@@ -188,17 +188,100 @@ fn both_names_normalize_to_btc() {
     }
 }
 
-/// 3. The alias must not change what is signed.
+/// 3. The alias changes the DIALECT, not the signature.
+///
+/// Until 2026-11-12 this asserted byte equality. It was wrong: the two names
+/// mark two different peers, and those peers disagree about who finalizes.
+/// Sparrow (`crypto-psbt`) runs the BIP-174 extractor itself and wants the
+/// partial records; Cake/Cupcake (`psbt`) hands the result straight to its own
+/// extractor, which reads `PSBT_IN_FINAL_SCRIPTWITNESS` with no fallback and
+/// throws `Exception: 08` when it is missing (real device, 2026-11-12). So the
+/// short name now finalizes and the registry name does not.
+///
+/// What must still hold: the same request signed under either name produces the
+/// same signature, the same unsigned transaction, and outputs that differ only
+/// by the final records.
 #[test]
-fn both_names_sign_the_same_bytes() {
+fn both_names_sign_the_same_request_in_two_dialects() {
     let a = device_sign(UrTypeTag::CryptoPsbt, PSBT);
     let b = device_sign(UrTypeTag::Psbt, PSBT);
-    assert_eq!(
+    assert!(a.len() > PSBT.len(), "signed PSBT must carry the signature");
+    assert!(
+        b.len() > a.len(),
+        "the finalized dialect is strictly larger ({} vs {})",
+        b.len(),
+        a.len()
+    );
+    assert_ne!(
         Sha256::digest(&a),
         Sha256::digest(&b),
-        "the same request under either name must produce the same signed PSBT"
+        "the dialects must differ on the wire"
     );
-    assert!(a.len() > PSBT.len(), "signed PSBT must carry the signature");
+
+    // Structural comparison needs the alloc-face convenience parser; on the
+    // device face the size delta is the pin (the finalized dialect strictly adds
+    // one final-witness record per input).
+    #[cfg(feature = "alloc-fallback")]
+    {
+        let pa = shlosilo::chain::btc::psbt::parse_psbt(&a).expect("crypto-psbt re-parse");
+        let pb = shlosilo::chain::btc::psbt::parse_psbt(&b).expect("psbt re-parse");
+
+        // Same unsigned transaction on both sides — the signature target is identical.
+        // Both sides must describe the same transaction: same prevouts, same outputs.
+        assert_eq!(pa.unsigned_tx.inputs.len(), pb.unsigned_tx.inputs.len());
+        for (x, y) in pa
+            .unsigned_tx
+            .inputs
+            .iter()
+            .zip(pb.unsigned_tx.inputs.iter())
+        {
+            assert_eq!(x.prev_out.txid, y.prev_out.txid);
+            assert_eq!(x.prev_out.vout, y.prev_out.vout);
+            assert_eq!(x.sequence, y.sequence);
+        }
+        assert_eq!(pa.unsigned_tx.outputs.len(), pb.unsigned_tx.outputs.len());
+        for (x, y) in pa
+            .unsigned_tx
+            .outputs
+            .iter()
+            .zip(pb.unsigned_tx.outputs.iter())
+        {
+            assert_eq!(x.value, y.value);
+            assert_eq!(x.script_pubkey, y.script_pubkey);
+        }
+        // Same partial signature (BIP-174 input field 0x02).
+        let partial = |p: &shlosilo::chain::btc::psbt::Psbt<'_>| {
+            p.input_map(0)
+                .iter()
+                .find(|kv| kv.key.first() == Some(&0x02u8))
+                .map(|kv| kv.value.to_vec())
+                .expect("PARTIAL_SIG present")
+        };
+        assert_eq!(
+            partial(&pa),
+            partial(&pb),
+            "the ECDSA signature must not depend on the type name"
+        );
+        // Only the finished one carries the final witness (0x08).
+        assert!(
+            pa.input_map(0).get(&[0x08u8]).is_none(),
+            "crypto-psbt stays partial for Sparrow"
+        );
+        assert!(
+            pb.input_map(0).get(&[0x08u8]).is_some(),
+            "psbt carries the final witness for Cake/Cupcake"
+        );
+    }
+    #[cfg(not(feature = "alloc-fallback"))]
+    {
+        assert!(
+            b.len() > a.len(),
+            "the finalized dialect adds final records ({} vs {})",
+            b.len(),
+            a.len()
+        );
+        assert!(a.starts_with(b"psbt\xff") && b.starts_with(b"psbt\xff"));
+    }
 }
 
 /// 4. Firmware type table: every place that decides what a scanned type means

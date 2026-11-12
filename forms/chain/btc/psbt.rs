@@ -941,6 +941,160 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt<'_>, sign_input: &PsbtSignInput) -> Resu
     Ok(())
 }
 
+/// The BIP-174 §Finalizer step for the inputs this device just signed.
+///
+/// Two peer dialects read our signed PSBT differently:
+///
+/// - **Sparrow** (the `crypto-psbt` type) reads `PARTIAL_SIG` (0x02) /
+///   `TAP_KEY_SIG` (0x13) and runs the extractor itself, so a partial PSBT is
+///   exactly right.
+/// - **Cake / Cupcake** (the legacy `psbt` type) hands the returned PSBT straight
+///   to its Transaction Extractor, which reads `PSBT_IN_FINAL_SCRIPTWITNESS`
+///   (0x08) unconditionally once the input has a witness UTXO:
+///   `ledger-bitcoin/src/psbt/map_extension.dart` throws `Exception(Key(0x08))`
+///   when that key is missing, which is the literal `Exception: 08` a real Cake
+///   import showed on 2026-11-12.
+///
+/// So for that dialect the device must finish the job: same signatures, moved
+/// into the final fields, plus the wrapper scriptSig for P2SH-P2WPKH. The
+/// partial records stay in place: they are harmless, and they keep the raw
+/// signatures visible to anything auditing the result.
+///
+/// Zero heap: both values are built in fixed stack buffers.
+pub fn finalize_signed_inputs(psbt: &mut Psbt<'_>) -> Result<()> {
+    /// What one input needs, copied out so the map borrow ends before we write.
+    enum Plan {
+        Skip,
+        Taproot {
+            sig: [u8; crate::chain::btc::taproot::SIGNATURE_MAX],
+            sig_len: usize,
+        },
+        Segwit {
+            sig: [u8; 73],
+            sig_len: usize,
+            pk: [u8; 33],
+            p2sh: bool,
+        },
+    }
+
+    let inputs = psbt.unsigned_tx.inputs.len();
+    for i in 0..inputs {
+        // ---- read phase: no borrow survives this block ----
+        let plan = {
+            let map = psbt.input_map(i);
+            // Already finalized (our P2SH-P2WPKH path writes both records itself).
+            if map.get(&[input_type::FINAL_SCRIPTWITNESS]).is_some()
+                || map.get(&[input_type::FINAL_SCRIPT_SIG]).is_some()
+            {
+                Plan::Skip
+            } else {
+                let prev_out = psbt.unsigned_tx.inputs[i].prev_out.clone();
+                match get_utxo_any(map, &prev_out) {
+                    None => Plan::Skip,
+                    Some((_, spk)) => {
+                        let spk = crate::types::wire_bytes::wire_slice(&spk);
+                        if spk.len() == 34 && spk[0] == 0x51 && spk[1] == 0x20 {
+                            // Taproot keypath.
+                            match map.get(&[input_type::TAP_KEY_SIG]) {
+                                None => Plan::Skip,
+                                Some(sig) => {
+                                    if sig.len() > crate::chain::btc::taproot::SIGNATURE_MAX {
+                                        return Err(ShlosiloError::new(
+                                            ShlosiloErrorKind::EncodingInvalidFormat,
+                                        ));
+                                    }
+                                    let mut buf = [0u8; crate::chain::btc::taproot::SIGNATURE_MAX];
+                                    buf[..sig.len()].copy_from_slice(sig);
+                                    Plan::Taproot {
+                                        sig: buf,
+                                        sig_len: sig.len(),
+                                    }
+                                }
+                            }
+                        } else {
+                            // P2WPKH / P2SH-P2WPKH.
+                            let p2sh = spk.len() == 23
+                                && spk[0] == 0xa9
+                                && spk[1] == 0x14
+                                && spk[22] == 0x87;
+                            let mut found = Plan::Skip;
+                            for kv in map.iter() {
+                                if kv.key.first() != Some(&input_type::PARTIAL_SIG)
+                                    || kv.key.len() != 34
+                                {
+                                    continue;
+                                }
+                                if kv.value.len() > 73 {
+                                    return Err(ShlosiloError::new(
+                                        ShlosiloErrorKind::EncodingInvalidFormat,
+                                    ));
+                                }
+                                let mut sig = [0u8; 73];
+                                sig[..kv.value.len()].copy_from_slice(kv.value);
+                                let mut pk = [0u8; 33];
+                                pk.copy_from_slice(&kv.key[1..34]);
+                                found = Plan::Segwit {
+                                    sig,
+                                    sig_len: kv.value.len(),
+                                    pk,
+                                    p2sh,
+                                };
+                                break;
+                            }
+                            found
+                        }
+                    }
+                }
+            }
+        };
+
+        // ---- write phase ----
+        match plan {
+            Plan::Skip => {}
+            Plan::Taproot { sig, sig_len } => {
+                let mut witness = [0u8; 2 + crate::chain::btc::taproot::SIGNATURE_MAX];
+                let wlen = {
+                    let mut sink = SinkCursor::new(&mut witness);
+                    put_compact_size(&mut sink, 1)?;
+                    put_compact_size(&mut sink, sig_len as u64)?;
+                    sink.put(&sig[..sig_len])?;
+                    sink.pos()
+                };
+                psbt.set_input_kv(i, &[input_type::FINAL_SCRIPTWITNESS], &witness[..wlen])?;
+            }
+            Plan::Segwit {
+                sig,
+                sig_len,
+                pk,
+                p2sh,
+            } => {
+                let mut witness = [0u8; 2 + 1 + 73 + 1 + 33];
+                let wlen = {
+                    let mut sink = SinkCursor::new(&mut witness);
+                    put_compact_size(&mut sink, 2)?;
+                    put_compact_size(&mut sink, sig_len as u64)?;
+                    sink.put(&sig[..sig_len])?;
+                    put_compact_size(&mut sink, 33)?;
+                    sink.put(&pk)?;
+                    sink.pos()
+                };
+                psbt.set_input_kv(i, &[input_type::FINAL_SCRIPTWITNESS], &witness[..wlen])?;
+
+                if p2sh {
+                    let h = crate::encoding::sha256::hash(&pk)?;
+                    let h160 = crate::encoding::ripemd160::hash(&h)?;
+                    let redeem = crate::chain::btc::p2sh::p2wpkh_redeem_script(&h160);
+                    let mut script_sig = [0u8; 1 + 22];
+                    script_sig[0] = 0x16;
+                    script_sig[1..].copy_from_slice(&redeem);
+                    psbt.set_input_kv(i, &[input_type::FINAL_SCRIPT_SIG], &script_sig)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// PSBT signing input (P2PKH-specific, no amount needed)
 ///
 /// P1-03: the private key uses `SecretBytes<32>`.

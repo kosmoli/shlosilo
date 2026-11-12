@@ -282,7 +282,16 @@ pub fn sign_with_entropy_ws_views(
                 Some(ws) => (Some(&mut *ws.psbt_arena), Some(&mut *ws.psbt_recs)),
                 None => (None, None),
             };
-            let n = sign_btc(seed.expose(), payload, output_buf, arena, recs, entropy)?;
+            let finalize = matches!(type_tag, crate::ur::ur_encode::UrTypeTag::Psbt);
+            let n = sign_btc(
+                seed.expose(),
+                payload,
+                output_buf,
+                arena,
+                recs,
+                entropy,
+                finalize,
+            )?;
             Ok(n)
         }
         crate::types::chain_kind::ChainKind::Eth => {
@@ -1465,6 +1474,7 @@ fn sign_btc<'a>(
     arena: Option<&'a mut [u8]>,
     recs: Option<&'a mut [crate::chain::btc::psbt::KvRec]>,
     entropy: &[u8],
+    finalize: bool,
 ) -> Result<usize> {
     use crate::chain::btc::psbt as psbt_mod;
     use crate::encoding::cbor;
@@ -1635,6 +1645,13 @@ fn sign_btc<'a>(
                 amount,
             },
         )?;
+    }
+
+    // Dialect split: the legacy `psbt` type (Cake/Cupcake) extracts the final
+    // transaction itself and needs BIP-174 final records; `crypto-psbt`
+    // (Sparrow) finalizes on its own and expects the partial records only.
+    if finalize {
+        psbt_mod::finalize_signed_inputs(&mut psbt)?;
     }
 
     psbt_mod::serialize_psbt_into(&psbt, output_buf)
