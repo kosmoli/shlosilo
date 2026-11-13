@@ -1684,15 +1684,35 @@ fn sign_btc<'a>(
         });
         let Some((amount, spk)) = utxo else {
             // No prevout data at all. A compliant wallet never does this for a
-            // non-witness input, and without it we cannot tell what script we are
-            // satisfying — so the script type is unknowable and we refuse by
-            // default. The one exception is the Cake `psbt` dialect, whose
-            // watch-only wallet ships `NON_WITNESS_UTXO` with an empty value
-            // (measured 2026-11-14): there the record pubkey already proved the key
-            // is ours, so we sign the legacy template and let the review flag it
-            // (`prevout not supplied`, fee unknown). A wrong template only yields a
-            // signature the network rejects.
-            if !finalize {
+            // non-witness input, and without it we cannot tell which script we are
+            // satisfying. The rule is uniform (it does not key off the UR type name,
+            // which is only a wire alias and not a wallet capability): sign the legacy
+            // P2PKH template only when nothing in the input map hints at any other
+            // one — no witness UTXO (0x01), no redeem script (0x04), no taproot
+            // records (0x13/0x16/0x17/0x18). The record pubkey has already proved the
+            // key is ours (`resolve_owned_key` above), a wrong template only produces a
+            // signature the network rejects, and the review page carries
+            // `warn: prevout not supplied` plus an unknown fee so the operator knows the
+            // device could not verify the input's ownership.
+            let hint_of_other_template = psbt
+                .input_map_checked(idx)
+                .map(|m| {
+                    m.iter().any(|kv| {
+                        matches!(
+                            kv.key.first(),
+                            Some(
+                                &psbt_mod::input_type::WITNESS_UTXO
+                                    | &psbt_mod::input_type::REDEEM_SCRIPT
+                                    | &0x13u8
+                                    | &0x16u8
+                                    | &0x17u8
+                                    | &0x18u8
+                            )
+                        )
+                    })
+                })
+                .unwrap_or(false);
+            if hint_of_other_template {
                 return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
             }
             psbt_mod::sign_psbt_p2pkh_without_prevout(

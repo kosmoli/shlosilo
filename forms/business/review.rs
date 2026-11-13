@@ -69,6 +69,9 @@ pub mod flag {
     pub const MANY_OUTPUTS: u16 = 1 << 7;
     /// EVM: the destination is a contract (calldata present) we cannot decode.
     pub const UNKNOWN_CALLDATA: u16 = 1 << 8;
+    /// At least one input arrived with no prevout data at all, so the device could
+    /// not verify that the input is ours (the signature is only usable if it is).
+    pub const PREVOUT_UNSUPPLIED: u16 = 1 << 9;
 }
 
 /// Fee (in sats) above which we always warn: 0.01 BTC.
@@ -216,7 +219,12 @@ fn summarize_psbt(
             Some((amount, _spk)) => {
                 total_in = total_in.and_then(|acc| acc.checked_add(amount));
             }
-            None => total_in = None,
+            None => {
+                // No prevout at all: we cannot verify this input is ours, and the fee
+                // is unknowable. Both facts go to the operator (see PREVOUT_UNSUPPLIED).
+                total_in = None;
+                view.flags |= flag::PREVOUT_UNSUPPLIED;
+            }
         }
         if psbt.unsigned_tx.inputs[i].sequence < 0xffff_fffe {
             rbf = true;
@@ -592,8 +600,15 @@ pub fn locktime_domain(lock_time: u32) -> LocktimeDomain {
 /// a closed vocabulary (ASCII, no payload content): the operator reads "what
 /// kind of risk", not a rendered payload field. Ordering is fixed so the eye
 /// finds the same warning in the same place on every transaction.
-fn warn_lines(flags: u16) -> [Option<&'static str>; 5] {
+fn warn_lines(flags: u16) -> [Option<&'static str>; 6] {
     [
+        // Ownership first: everything below assumes we already know the input is
+        // ours. Missing prevout data is the one case where we do not.
+        if flags & flag::PREVOUT_UNSUPPLIED != 0 {
+            Some("warn: prevout not supplied")
+        } else {
+            None
+        },
         if flags & flag::SIGHASH_UNSAFE != 0 {
             Some("warn: sighash not all")
         } else {

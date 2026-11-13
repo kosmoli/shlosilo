@@ -131,6 +131,12 @@
 #define UNKNOWN_CALLDATA (1 << 8)
 
 /**
+ * At least one input arrived with no prevout data at all, so the device could
+ * not verify that the input is ours (the signature is only usable if it is).
+ */
+#define PREVOUT_UNSUPPLIED (1 << 9)
+
+/**
  * Z4-7a: fixed backplane caps (the XMR H-cut precedent) — the logical
  * lengths drive serialization; over-cap is an explicit Err, never truncation.
  * Measured maxima: the sparrow 12k fixture runs 1 input / 2 outputs.

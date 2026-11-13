@@ -116,14 +116,90 @@ fn cake_legacy_psbt_signs_as_legacy_p2pkh() {
     );
 }
 
-/// The strict dialect keeps refusing a request that names no prevout: only the
-/// wallet's own dialect may trade that check away.
+/// The no-prevout rule is keyed on the input's *shape*, not on the UR type name:
+/// the same request signs under either alias, because the alias is only a wire
+/// name and says nothing about what the wallet could send.
 #[test]
-fn crypto_psbt_dialect_still_refuses_missing_prevout() {
+fn crypto_psbt_alias_signs_the_same_request() {
     let payload = real_payload();
-    let err = sign_with(UrTypeTag::CryptoPsbt, &payload).expect_err("must refuse");
+    let n = sign_with(UrTypeTag::CryptoPsbt, &payload).expect("alias signs too");
+    assert_eq!(n, 265, "same 0x07 record, same length");
+}
+
+/// …but an input that hints at another template (a redeem script, a witness UTXO,
+/// taproot records) with no prevout is refused: there the script type really is
+/// unknowable, and guessing it would be blind signing.
+#[test]
+fn no_prevout_is_refused_when_another_template_is_hinted() {
+    use shlosilo::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+    use shlosilo::chain::btc::psbt::{psbt_from_maps_leaky, serialize_psbt, KeyValue};
+
+    // Our test seed's BIP-84 first key, and its derivation record.
+    let pubkey: [u8; 33] = [
+        0x02, 0x94, 0xb2, 0x10, 0x02, 0x5b, 0x91, 0x94, 0x62, 0x44, 0x76, 0x2f, 0x23, 0x2d, 0x2d,
+        0xa9, 0x23, 0xe1, 0x10, 0xc4, 0x90, 0x2e, 0xcb, 0x73, 0x4a, 0xb2, 0x81, 0xf4, 0xe0, 0x1c,
+        0x9e, 0xf8, 0x9f,
+    ];
+    let mut deriv = vec![0xf3, 0xb9, 0x96, 0x0b];
+    for c in [84u32 | 0x8000_0000, 0x8000_0000, 0x8000_0000, 0, 0] {
+        deriv.extend_from_slice(&c.to_le_bytes());
+    }
+    let mut dkey = vec![0x06u8];
+    dkey.extend_from_slice(&pubkey);
+
+    let mut txid = [0u8; 32];
+    txid[0] = 0xab;
+    let tx = Transaction {
+        version: 2,
+        inputs: {
+            let mut v = heapless::Vec::new();
+            v.push(TxIn {
+                prev_out: OutPoint { txid, vout: 0 },
+                script_sig: shlosilo::types::wire_bytes::wire_from(&[]),
+                sequence: 0xffff_ffff,
+                witness: shlosilo::types::wire_bytes::witness_empty(),
+            })
+            .unwrap();
+            v
+        },
+        outputs: {
+            let mut v = heapless::Vec::new();
+            v.push(TxOut {
+                value: 1000,
+                script_pubkey: shlosilo::types::wire_bytes::wire_from(&[
+                    0x00, 0x14, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+                    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+                ]),
+            })
+            .unwrap();
+            v
+        },
+        lock_time: 0,
+    };
+    // No prevout of any kind, but a redeem script → P2SH is the likelier template.
+    let psbt = psbt_from_maps_leaky(
+        tx,
+        &[vec![
+            KeyValue {
+                key: dkey.into(),
+                value: deriv.into(),
+            },
+            KeyValue {
+                key: vec![0x04].into(),
+                value: vec![
+                    0x00, 0x14, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+                    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+                ]
+                .into(),
+            },
+        ]],
+        &[Vec::new()],
+    );
+    let bytes = serialize_psbt(&psbt);
+    let err = sign_with(UrTypeTag::Psbt, &bytes).expect_err("must refuse");
     assert_eq!(
         err.kind,
-        shlosilo::error::ShlosiloErrorKind::EncodingInvalidFormat
+        shlosilo::error::ShlosiloErrorKind::EncodingInvalidFormat,
+        "a hinted template with no prevout is unknowable, not guessable"
     );
 }
