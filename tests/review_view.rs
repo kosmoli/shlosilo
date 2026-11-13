@@ -582,12 +582,18 @@ fn fee_rate_is_reported_with_two_decimals_and_matches_on_chain_values() {
     // base 42 WU, P2TR input 230, P2SH-P2WPKH input 363, P2WPKH output 124, P2SH
     // output 128, P2WPKH input 271. ECDSA is modelled at 71 bytes (low-S), which is
     // what makes the last two rows agree with Sparrow's post-signing numbers.
-    let cases: [(u64, u32, &str); 5] = [
+    let cases: [(u64, u32, &str); 6] = [
         (105, 846, "0.50"), // signet 2-in/2-out P2TR (chain 0.495)
         (55, 444, "0.50"),  // mainnet 1-in/1-out P2TR (chain 0.495)
         (218, 657, "1.33"), // mainnet 1-in/2-out P2SH-P2WPKH (chain 1.317)
         (192, 657, "1.17"), // operator run: Sparrow 1.17
         (287, 657, "1.75"), // operator run: Sparrow 1.75 (33 WU = 287*400/4.75…)
+        // Real mainnet legacy spend, 2026-11-14 (B-9 acceptance):
+        // txid 3c780516…941d98, 1 P2PKH input (592 WU) + 1 P2WPKH output (124 WU),
+        // no witness section anywhere → base 40 WU; chain weight = 756, vsize = 189,
+        // fee 752 → 752/189 = 3.9788. The single case that pins "no marker/flag for
+        // an all-legacy spend" and "a legacy signature byte costs 4 WU".
+        (752, 756, "3.98"),
     ];
     for (fee, wu, expected) in cases {
         let hundredths = review::fee_rate_hundredths(fee, wu);
@@ -642,8 +648,11 @@ fn btc_legacy_p2pkh_review_shows_fee_and_rate() {
     );
     // A priced input lets the estimated fee rate appear; without the 0x00 read the
     // line would silently disappear.
+    // Exact line: the regtest fixture is 1 P2PKH in (592 WU) + 1 P2PKH out (136 WU)
+    // over a base of 40 WU (no witness section) = 768 WU; 400*10000/768 = 5208
+    // hundredths. A marker/flag charge or a 588-WU input would move this line.
     assert!(
-        l.iter().any(|line| line.starts_with("fee rate ~")),
-        "legacy inputs must still get a fee-rate line: {l:?}"
+        l.iter().any(|line| line == "fee rate ~52.08 sat/vB"),
+        "legacy fee rate must price the legacy weights: {l:?}"
     );
 }

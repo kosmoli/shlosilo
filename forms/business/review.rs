@@ -438,24 +438,32 @@ pub fn fee_rate_hundredths(fee: u64, wu: u32) -> u64 {
 /// `None` when any input or output has a script type we cannot price: a fee rate
 /// computed from a partial picture is worse than no fee rate.
 fn estimated_weight(psbt: &Psbt<'_>) -> Option<u32> {
-    // Base overhead = 10 bytes × 4 + 2 (segwit marker/flag) = 42 WU:
-    // version 4 + locktime 4 + the two count varints 1+1 = 10 base bytes, plus the
-    // marker/flag pair that exists only in the witness serialization.
+    // Base overhead = 10 bytes × 4 = 40 WU (version 4 + locktime 4 + the two count
+    // varints 1+1), plus the 2 WU marker/flag pair **only when the transaction has a
+    // witness section at all**. A spend whose inputs are all legacy P2PKH serializes
+    // without marker/flag, so charging 42 was 2 WU of pure fiction — measured on a
+    // real mainnet legacy spend (2026-11-14): 1 P2PKH in / 1 P2WPKH out weighs 756 WU
+    // (vs 756 with 40 + 592 + 124, 758 with 42 + 588 + 124).
     //
     // 44 was an over-estimate that cost a full sat/vB step on small transactions:
     // 192 sat over a 1-in/2-out nested-segwit tx read `~1.16` while Sparrow showed
     // 1.17 (operator report, 2026-11-11). With 42 those agree.
-    let mut wu: u32 = 42;
+    let mut wu: u32 = 40;
+    let mut any_witness_input = false;
     for i in 0..psbt.unsigned_tx.inputs.len() {
         let map = psbt.input_map_checked(i)?;
         // 0x00 (NON_WITNESS_UTXO) accepts legacy inputs as well; without it the
         // fee-rate line would vanish for every P2PKH request.
         let prev_out = psbt.unsigned_tx.inputs[i].prev_out.clone();
         let (_, spk) = psbt::get_utxo_any(map, &prev_out)?;
-        wu = wu.checked_add(script_weight(
-            crate::types::wire_bytes::wire_slice(&spk),
-            true,
-        )?)?;
+        let spk = crate::types::wire_bytes::wire_slice(&spk);
+        if !matches!(spk, [0x76, 0xa9, 0x14, _h @ .., 0x88, 0xac] if _h.len() == 20) {
+            any_witness_input = true;
+        }
+        wu = wu.checked_add(script_weight(spk, true)?)?;
+    }
+    if any_witness_input {
+        wu = wu.checked_add(2)?;
     }
     for out in psbt.unsigned_tx.outputs.iter() {
         let spk = crate::types::wire_bytes::wire_slice(&out.script_pubkey);
@@ -490,7 +498,12 @@ fn script_weight(spk: &[u8], input: bool) -> Option<u32> {
         } // P2SH(-P2WPKH)
         [0x76, 0xa9, 0x14, h @ .., 0x88, 0xac] if h.len() == 20 => {
             if input {
-                588
+                // 148 serialized bytes: outpoint 36 + scriptSig len 1 + scriptSig 107
+                // + sequence 4. The scriptSig is `<push 72-byte sig><push 33-byte key>`,
+                // i.e. the sig element is modelled at its low-S maximum (DER 71 +
+                // hash type) rather than the 71 a witness element gets away with:
+                // a legacy signature byte costs 4 WU (base serialization), not 1.
+                592
             } else {
                 136
             }
