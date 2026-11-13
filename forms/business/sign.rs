@@ -1501,7 +1501,10 @@ fn sign_btc<'a>(
         // ECDSA/BIP-143 path below.
         let spent_spk_is_p2tr = psbt
             .input_map_checked(idx)
-            .and_then(|m| psbt_mod::get_witness_utxo(m))
+            .and_then(|m| {
+                let prev_out = psbt.unsigned_tx.inputs[idx].prev_out.clone();
+                psbt_mod::get_utxo_any(m, &prev_out)
+            })
             .map(|(_, spk)| spk.len() == 34 && spk[0] == 0x51 && spk[1] == 0x20)
             .unwrap_or(false);
         if spent_spk_is_p2tr {
@@ -1611,9 +1614,16 @@ fn sign_btc<'a>(
         // P1-B: witness utxo binding — the amount and scriptPubKey must belong to this very input,
         // and the scriptPubKey must be P2WPKH (OP_0 PUSH20) with HASH160 == our pubkey_hash
         // (the prevout txid points to that script on-chain, indirectly anchoring the signed input to this key).
+        // BIP-174: a non-witness input carries NON_WITNESS_UTXO (0x00) — the whole
+        // previous transaction — because the legacy sighash needs the spent script
+        // and the txid binding. `get_utxo_any` reads 0x01 first and falls back to
+        // 0x00 with full txid/vout verification, so both wallet shapes work.
         let (amount, spk) = psbt
             .input_map_checked(idx)
-            .and_then(|m| psbt_mod::get_witness_utxo(m))
+            .and_then(|m| {
+                let prev_out = psbt.unsigned_tx.inputs[idx].prev_out.clone();
+                psbt_mod::get_utxo_any(m, &prev_out)
+            })
             .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
         // S2/B-4: dispatch on the spent script. A native P2WPKH prevout is signed
         // in place; a P2SH-wrapped one (BIP49) goes through the wrapper
@@ -1628,6 +1638,24 @@ fn sign_btc<'a>(
                     private_key: SecretBytes::new(*sk_bytes),
                     pubkey_hash,
                     amount,
+                },
+            )?;
+            continue;
+        }
+        // S2/B-9: a legacy P2PKH prevout (`76a914…88ac`) signs the pre-BIP-143
+        // digest. The spent script must hash to the key derived above — the
+        // signer re-checks that binding and refuses a foreign prevout. A legacy
+        // input carries no witness, so only FINAL_SCRIPT_SIG is written.
+        if crate::chain::btc::p2pkh::is_p2pkh_spk(
+            crate::types::wire_bytes::wire_slice(&spk),
+            &pubkey_hash,
+        ) {
+            psbt_mod::sign_psbt_p2pkh(
+                &mut psbt,
+                &psbt_mod::PsbtP2PKHSignInput {
+                    input_index: idx,
+                    private_key: SecretBytes::new(*sk_bytes),
+                    pubkey_hash,
                 },
             )?;
             continue;

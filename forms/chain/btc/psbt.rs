@@ -49,13 +49,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 #[cfg(any(feature = "alloc-fallback", test))]
-use crate::chain::btc::p2pkh::sign_p2pkh;
-#[cfg(any(feature = "alloc-fallback", test))]
 #[cfg(test)]
 use crate::chain::btc::p2wpkh::bt_vec;
 use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
-#[cfg(any(feature = "alloc-fallback", test))]
-use crate::encoding::sha256;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::push::{CountSink, Sink, SinkCursor};
 use crate::types::SecretBytes;
@@ -1169,33 +1165,51 @@ pub struct PsbtP2SHP2WPKHSignInput {
     pub amount: u64,
 }
 
-/// Sign a PSBT P2PKH input
+/// Sign a PSBT P2PKH (legacy) input on the device path.
 ///
-/// Unlike P2WPKH: injects FINAL_SCRIPT_SIG (type 0x08) instead of PARTIAL_SIG.
-/// The Finalizer extracts FINAL_SCRIPT_SIG into tx.inputs[].scriptSig (final tx).
-#[cfg(any(feature = "alloc-fallback", test))]
+/// Legacy inputs sign the pre-BIP-143 digest (see `chain/btc/p2pkh.rs`), so no
+/// amount is needed — the spent value never enters the preimage.
+///
+/// Ownership: the spent scriptPubKey must be `76a914<hash>88ac` where `<hash>`
+/// is this caller's pubkey hash. The key-to-record binding is established one
+/// layer up (`sign_btc` re-derives every BIP32_DERIVATION record); refusing here
+/// keeps a crafted PSBT from making us sign an output locked to another key.
+///
+/// Injects FINAL_SCRIPT_SIG (0x07) = `<push sig ‖ hash type><push pubkey>`.
+/// A legacy input carries no witness, so 0x08 is deliberately left unset.
+///
+/// Zero heap: the sighash streams, the DER signature is a fixed 72-byte vector,
+/// the scriptSig a stack array.
 pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> Result<()> {
+    use crate::chain::btc::p2pkh as p2pkh_mod;
+
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // 1. Clone the unsigned tx for sighash computation + scriptSig injection
-    let mut tx = psbt.unsigned_tx.clone();
+    // 1. Prevout binding: the spent script must lock to this very key.
+    let prev_out = psbt.unsigned_tx.inputs[input_idx].prev_out.clone();
+    let (_amount, spk) = get_utxo_any(psbt.input_map(input_idx), &prev_out)
+        .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let spk = crate::types::wire_bytes::wire_slice(&spk);
+    if !p2pkh_mod::is_p2pkh_spk(spk, &sign_input.pubkey_hash) {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::PsbtOwnershipMismatch));
+    }
 
-    // 2. Call the v9.3 sign_p2pkh
-    let p2pkh_input = crate::chain::btc::p2pkh::P2PKHSignInput {
-        input_index: sign_input.input_index,
+    // 2. Legacy sighash + ECDSA over the unsigned tx, read-only.
+    let p2pkh_input = p2pkh_mod::P2PKHSignInput {
+        input_index: input_idx,
         private_key: &sign_input.private_key,
         pubkey_hash: sign_input.pubkey_hash,
     };
-    let _signed = sign_p2pkh(&mut tx, &p2pkh_input)?;
+    let (sig_with_sighash, pubkey) = p2pkh_mod::sign_p2pkh_core(&psbt.unsigned_tx, &p2pkh_input)?;
 
-    // 3. Extract scriptSig → inject FINAL_SCRIPT_SIG (0x08)
-    let script_sig = tx.inputs[input_idx].script_sig.clone();
+    // 3. scriptSig = `<push sig><push pubkey>` into a stack buffer.
+    let mut script_sig = [0u8; p2pkh_mod::P2PKH_SCRIPTSIG_MAX];
+    let n = p2pkh_mod::write_p2pkh_script_sig(&sig_with_sighash, &pubkey, &mut script_sig)?;
 
-    let key = [input_type::FINAL_SCRIPT_SIG];
-    psbt.set_input_kv(input_idx, &key, script_sig.as_ref())?;
+    psbt.set_input_kv(input_idx, &[input_type::FINAL_SCRIPT_SIG], &script_sig[..n])?;
 
     Ok(())
 }
@@ -1681,25 +1695,113 @@ pub fn decode_witness_utxo<'a>(
 /// (1) deserialize the full tx (legacy format, no witness — PSBT stores the non-witness serialization)
 /// (2) compute txid = dsha256(serialized) (3) compare with OutPoint.txid
 /// (4) take CTxOut indexed by vout. Any step failing → None (refuse to sign that input).
-#[cfg(any(feature = "alloc-fallback", test))]
-#[cfg(any(feature = "alloc-fallback", test))]
-fn get_non_witness_utxo_bound<'a>(
-    input_map: KvMap<'a>,
-    prev_out: &OutPoint,
-) -> Option<(u64, crate::types::wire_bytes::WireBytes<'a>)> {
-    let value = input_map.get(&[input_type::NON_WITNESS_UTXO])?;
-    let full_tx = deserialize_unsigned_tx(value).ok()?;
+/// Spent output of a `NON_WITNESS_UTXO` (0x00) full transaction, zero-heap.
+///
+/// BIP-174 puts the **whole previous transaction in network serialization** in
+/// this field — and a real wallet's funding transaction is usually a segwit
+/// spend, so the serialization carries the marker/flag and a witness stack. Two
+/// consequences the old implementation got wrong:
+///
+/// - it parsed with the PSBT unsigned-tx reader (legacy only), so any segwit
+///   funding transaction was rejected — which is why only 0x01 inputs ever
+///   worked, and why legacy P2PKH inputs (which have no witness and therefore
+///   no 0x01 UTXO from a compliant wallet) could not be signed at all;
+/// - it built and re-serialized a whole `Transaction` to recompute the txid,
+///   which is an alloc-face operation (the device face returned `None`).
+///
+/// This walker streams the non-witness parts into SHA-256 (that is exactly the
+/// txid preimage: version, inputs, outputs, locktime — witness excluded) while
+/// recording the `vout`-th output's spans, and validates the txid against the
+/// input's prevout. No allocation, no temporary transaction.
+fn non_witness_utxo_out<'a>(full_tx: &'a [u8], prev_out: &OutPoint) -> Option<(u64, &'a [u8])> {
+    use sha2::Digest as _;
 
-    // txid binding: serialize back (using the same legacy serialization) → dsha256
-    let mut ser = Vec::new();
-    write_unsigned_tx(&mut ser, &full_tx).ok()?;
-    let txid: [u8; 32] = sha256::hash_twice(&ser).ok()?;
-
-    if txid != prev_out.txid {
-        return None; // a malicious full-tx claiming a UTXO that is not its own — reject
+    if full_tx.len() < 10 {
+        return None;
     }
-    let txout = full_tx.outputs.get(prev_out.vout as usize)?;
-    Some((txout.value, txout.script_pubkey.clone()))
+    let mut pos = 0usize;
+    let mut hasher = sha2::Sha256::new();
+
+    // version
+    let version = take_bytes(full_tx, &mut pos, 4).ok()?;
+    hasher.update(version);
+
+    // optional segwit marker/flag (0x00 0x01) — not part of the txid
+    let segwit = full_tx.get(4) == Some(&0x00) && full_tx.get(5) == Some(&0x01);
+    if segwit {
+        pos = 6;
+    }
+
+    // inputs — the compact-size count is part of the txid preimage too
+    let count_start = pos;
+    let n_in = decode_compact_size(full_tx, &mut pos).ok()?;
+    hasher.update(&full_tx[count_start..pos]);
+    if !count_physically_feasible(n_in as usize, full_tx.len().saturating_sub(pos), 41) {
+        return None;
+    }
+    for _ in 0..n_in {
+        let start = pos;
+        take_bytes(full_tx, &mut pos, 36).ok()?; // outpoint
+        let script_len = decode_compact_size(full_tx, &mut pos).ok()? as usize;
+        take_bytes(full_tx, &mut pos, script_len).ok()?;
+        take_bytes(full_tx, &mut pos, 4).ok()?; // sequence
+        hasher.update(&full_tx[start..pos]);
+    }
+
+    // outputs — record the requested one (count is part of the preimage)
+    let count_start = pos;
+    let n_out = decode_compact_size(full_tx, &mut pos).ok()?;
+    hasher.update(&full_tx[count_start..pos]);
+    if prev_out.vout as u64 >= n_out {
+        return None;
+    }
+    let mut hit: Option<(u64, &[u8])> = None;
+    for i in 0..n_out {
+        let start = pos;
+        let value_bytes = take_bytes(full_tx, &mut pos, 8).ok()?;
+        let script_len = decode_compact_size(full_tx, &mut pos).ok()? as usize;
+        let script = take_bytes(full_tx, &mut pos, script_len).ok()?;
+        hasher.update(&full_tx[start..pos]);
+        if i == prev_out.vout as u64 {
+            let mut v = [0u8; 8];
+            v.copy_from_slice(value_bytes);
+            hit = Some((u64::from_le_bytes(v), script));
+        }
+    }
+
+    // Witness section: BIP-144 serializes every input's witness stack here —
+    // AFTER all outputs and before the locktime — and none of it is part of the
+    // txid preimage. (Getting this order wrong makes the walker read an output
+    // value as a witness item count and bail out.)
+    if segwit {
+        for _ in 0..n_in {
+            let items = decode_compact_size(full_tx, &mut pos).ok()?;
+            if items > full_tx.len() as u64 {
+                return None;
+            }
+            for _ in 0..items {
+                let len = decode_compact_size(full_tx, &mut pos).ok()? as usize;
+                take_bytes(full_tx, &mut pos, len).ok()?;
+            }
+        }
+    }
+
+    // locktime
+    let locktime = take_bytes(full_tx, &mut pos, 4).ok()?;
+    hasher.update(locktime);
+
+    if pos != full_tx.len() {
+        return None; // trailing bytes: not this transaction's serialization
+    }
+
+    // txid binding — a full tx claiming a UTXO that is not its own is refused
+    let once = hasher.finalize();
+    let txid: [u8; 32] = sha2::Sha256::digest(once).into();
+    if txid != prev_out.txid {
+        return None;
+    }
+
+    hit
 }
 
 /// Get the spent output (value, spk) from an input map's WITNESS_UTXO field
@@ -1724,17 +1826,13 @@ pub fn get_utxo_any<'a>(
     if let Some(utxo) = get_witness_utxo(input_map) {
         return Some(utxo);
     }
-    // NON_WITNESS_UTXO: full-tx + txid binding + vout indexing (legacy
-    // inputs; the p2wpkh production face only reads WITNESS_UTXO)
-    #[cfg(feature = "alloc-fallback")]
-    {
-        get_non_witness_utxo_bound(input_map, prev_out)
-    }
-    #[cfg(not(feature = "alloc-fallback"))]
-    {
-        let _ = prev_out;
-        None
-    }
+    // NON_WITNESS_UTXO: full-tx walker + txid binding + vout indexing. This is
+    // the shape a compliant wallet sends for a legacy input (BIP-174 forbids
+    // reading the amount anywhere else for a non-witness input), so the device
+    // face needs it too — the walker is zero-heap.
+    let full_tx = input_map.get(&[input_type::NON_WITNESS_UTXO])?;
+    let (value, script) = non_witness_utxo_out(full_tx, prev_out)?;
+    Some((value, crate::types::wire_bytes::wire_from(script)))
 }
 
 /// Get TAP_INTERNAL_KEY from input map (BIP-371 0x17)
@@ -2084,7 +2182,20 @@ mod tests {
     /// Sign a PSBT P2PKH input → FINAL_SCRIPT_SIG
     #[test]
     fn psbt_sign_p2pkh() {
-        // Simplified P2PKH test
+        // The spent script must lock to the signing key: derive the pubkey from
+        // the test private key, hash it, and hand the signer that very prevout.
+        let private_key_bytes =
+            hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
+        let mut private_key = [0u8; 32];
+        private_key.copy_from_slice(&private_key_bytes);
+        let sk = crate::curve_primitive::secp256k1::scalar_from_bytes(&private_key).unwrap();
+        let pk = crate::curve_primitive::secp256k1::point_to_compressed(
+            &crate::curve_primitive::secp256k1::base_mul(&sk),
+        );
+        let h = crate::encoding::sha256::hash(&pk).unwrap();
+        let mut pk_hash = [0u8; 20];
+        pk_hash.copy_from_slice(&crate::encoding::ripemd160::hash(&h).unwrap());
+
         let mut txid = [0u8; 32];
         txid[0] = 0xab;
         let txin = TxIn {
@@ -2093,21 +2204,17 @@ mod tests {
             sequence: 0xffffffff,
             witness: vec![],
         };
-        // P2PKH scriptPubKey = `0x76a914{20-byte pubkey-hash}88ac`
-        let mut pk_hash = [0u8; 20];
-        pk_hash[0] = 0x42;
-        let mut script_pubkey = Vec::with_capacity(25);
-        script_pubkey.push(0x76);
-        script_pubkey.push(0xa9);
-        script_pubkey.push(0x14);
-        script_pubkey.extend_from_slice(&pk_hash);
-        script_pubkey.push(0x88);
-        script_pubkey.push(0xac);
-
+        let spk = crate::chain::btc::p2pkh::p2pkh_script_code(&pk_hash);
         let txout = TxOut {
             value: 100_000,
-            script_pubkey: script_pubkey.into(),
+            script_pubkey: spk.to_vec().into(),
         };
+
+        // WITNESS_UTXO (0x01) = amount (u64 LE) ‖ varint(len) ‖ script
+        let mut wu = Vec::new();
+        wu.extend_from_slice(&100_000u64.to_le_bytes());
+        wu.push(spk.len() as u8);
+        wu.extend_from_slice(&spk);
 
         let mut psbt = psbt_from_maps_leaky(
             Transaction {
@@ -2116,16 +2223,14 @@ mod tests {
                 outputs: bt_vec![txout],
                 lock_time: 0,
             },
-            &[Vec::new()],
+            &[vec![KeyValue {
+                key: vec![input_type::WITNESS_UTXO].into(),
+                value: wu.into(),
+            }]],
             &[Vec::new()],
         );
 
-        let private_key_bytes =
-            hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
-        let mut private_key = [0u8; 32];
-        private_key.copy_from_slice(&private_key_bytes);
         let private_key = SecretBytes::take(&mut private_key);
-
         let sign_input = PsbtP2PKHSignInput {
             input_index: 0,
             private_key,
@@ -2134,26 +2239,115 @@ mod tests {
 
         sign_psbt_p2pkh(&mut psbt, &sign_input).unwrap();
 
-        // Verify FINAL_SCRIPT_SIG injection
+        // FINAL_SCRIPT_SIG (0x07) must be injected, FINAL_SCRIPTWITNESS (0x08) not.
         let final_scriptsig = psbt
             .input_map(0)
             .iter()
             .find(|kv| kv.key == vec![input_type::FINAL_SCRIPT_SIG]);
+        let final_scriptsig = final_scriptsig.expect("FINAL_SCRIPT_SIG must be injected");
         assert!(
-            final_scriptsig.is_some(),
-            "FINAL_SCRIPT_SIG must be injected"
+            psbt.input_map(0)
+                .iter()
+                .all(|kv| kv.key != vec![input_type::FINAL_SCRIPTWITNESS]),
+            "a legacy input must not carry FINAL_SCRIPTWITNESS"
         );
-        let final_scriptsig = final_scriptsig.unwrap();
-        // The value is the scriptSig: <push sig><push pk>
-        assert!(final_scriptsig.value.len() > 33); // sig + compressed pk
-                                                   // the scriptSig should end with the compressed pubkey (33 bytes)
-        let pk_bytes = &final_scriptsig.value[final_scriptsig.value.len() - 33..];
-        assert!(pk_bytes[0] == 0x02 || pk_bytes[0] == 0x03);
+        // `<push sig><push 33-byte pubkey>`: the sig push length is the first byte.
+        let sig_len = final_scriptsig.value[0] as usize;
+        assert!((70..=72).contains(&sig_len), "DER+hash-type push length");
+        assert_eq!(final_scriptsig.value[sig_len + 1], 33);
+        let pk_bytes = &final_scriptsig.value[sig_len + 2..];
+        assert_eq!(pk_bytes, &pk[..], "scriptSig must carry our pubkey");
+        // SIGHASH_ALL trailer.
+        assert_eq!(final_scriptsig.value[sig_len], 0x01);
 
         eprintln!(
             "FINAL_SCRIPT_SIG ({} bytes): {}",
             final_scriptsig.value.len(),
             hex_encode(final_scriptsig.value)
+        );
+    }
+
+    /// NON_WITNESS_UTXO (0x00) walker, pinned on a real Bitcoin Core funding
+    /// transaction: a segwit-serialized tx (marker/flag + witness section after
+    /// the outputs) whose txid must bind to the input's prevout.
+    #[test]
+    fn non_witness_utxo_walker_binds_txid() {
+        let fix = include_bytes!("../../../tests/fixtures/core_regtest_p2pkh_1in1out.psbt");
+        let psbt = parse_psbt(fix).expect("fixture parses");
+        let prev_out = psbt.unsigned_tx.inputs[0].prev_out.clone();
+        let full_tx = psbt
+            .input_map(0)
+            .get(&[input_type::NON_WITNESS_UTXO])
+            .expect("fixture carries a full previous transaction");
+
+        let (value, spk) = non_witness_utxo_out(full_tx, &prev_out).expect("walker must bind");
+        assert_eq!(value, 50_000_000);
+        assert_eq!(
+            hex_encode(spk),
+            "76a9144d3b1adf961c035e65301aa54c2782ce90d76acd88ac"
+        );
+
+        // Same bytes, wrong prevout txid → refused (no blind trust in the field).
+        let mut wrong = prev_out.clone();
+        wrong.txid[0] ^= 0xff;
+        assert!(non_witness_utxo_out(full_tx, &wrong).is_none());
+
+        // vout out of range → refused.
+        let mut bad_vout = prev_out.clone();
+        bad_vout.vout = 99;
+        assert!(non_witness_utxo_out(full_tx, &bad_vout).is_none());
+    }
+
+    /// A prevout that does not lock to the caller's key is refused, and nothing
+    /// is written (fail-closed, no partial output).
+    #[test]
+    fn psbt_sign_p2pkh_refuses_foreign_prevout() {
+        let mut private_key = [0u8; 32];
+        private_key[31] = 1;
+        let foreign = crate::chain::btc::p2pkh::p2pkh_script_code(&[0x11; 20]);
+
+        let mut wu = Vec::new();
+        wu.extend_from_slice(&100_000u64.to_le_bytes());
+        wu.push(foreign.len() as u8);
+        wu.extend_from_slice(&foreign);
+
+        let mut psbt = psbt_from_maps_leaky(
+            Transaction {
+                version: 1,
+                inputs: bt_vec![TxIn {
+                    prev_out: OutPoint {
+                        txid: [0x33; 32],
+                        vout: 0
+                    },
+                    script_sig: vec![].into(),
+                    sequence: 0xffffffff,
+                    witness: vec![],
+                }],
+                outputs: bt_vec![TxOut {
+                    value: 90_000,
+                    script_pubkey: foreign.to_vec().into(),
+                }],
+                lock_time: 0,
+            },
+            &[vec![KeyValue {
+                key: vec![input_type::WITNESS_UTXO].into(),
+                value: wu.into(),
+            }]],
+            &[Vec::new()],
+        );
+
+        let sign_input = PsbtP2PKHSignInput {
+            input_index: 0,
+            private_key: SecretBytes::take(&mut private_key),
+            pubkey_hash: [0x22; 20],
+        };
+        let err = sign_psbt_p2pkh(&mut psbt, &sign_input).unwrap_err();
+        assert_eq!(err.kind, ShlosiloErrorKind::PsbtOwnershipMismatch);
+        assert!(
+            psbt.input_map(0)
+                .iter()
+                .all(|kv| kv.key != vec![input_type::FINAL_SCRIPT_SIG]),
+            "a refused input must not carry a scriptSig"
         );
     }
 

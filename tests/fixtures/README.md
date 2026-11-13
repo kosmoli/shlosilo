@@ -238,4 +238,33 @@
 - **隐私**: 主网测试钱包 A'（DEV，dust 级）；密钥 = 公开 fixture 熵
   （`DEV_WALLET_ENTROPY`，等价于已公开的 `DEV_SPEND_SK`）。
 
+## core_regtest_p2pkh_{1in1out,2in1out,abhash_1in1out}.psbt (B-9)
 
+- **来源**: 隔离 regtest 实例现造（Bitcoin Core v31.0.0，datadir
+  `~/works/shlosilo-acceptance/b9-legacy-p2pkh/regtest`，RPC 18543；**未触碰**生产主网节点
+  与 signet 节点）。资助交易付款给项目测试种子 `m/84'/1'/0'/0/{0,11}` 的 **P2PKH** 地址
+  （`mnZK8WZnbLaGEyk625peoLc3vyvSiSi9WM` / `mfzHzLLrD6WcPJjya2aVvTnrMThXRYGQfD`），
+  花费交易由 Core 自己 `signrawtransactionwithkey` 签名 → 该签名即金标。
+  造件脚本：`build_fixtures.sh` / `build_fixture_c.sh` / `build_psbt_fixtures.py`（同目录，
+  与本文件同级归档在 `~/works/shlosilo-acceptance/b9-legacy-p2pkh/`）。
+- **网络**: Bitcoin regtest；花费版本 2、locktime 0、输入 sequence `0xfffffffd`。
+- **大小 / SHA-256**:
+  - `1in1out`: 387 B `0f9b76dca5e40d6e7b0b6f75bcd6b18d7437da5909714c526233549d79dc37c1`
+  - `2in1out`: 332 B `1604033447c0d0d3a881f675254b4e69bc648246212fb8b470d6604dff63a7e7`
+  - `abhash_1in1out`: 387 B `2e36c8ec6d1b51204ed04ae2ed39ea3662f3d94074423a5355eb317936249191`
+- **形状（故意各不相同，覆盖钱包真实给法）**:
+  - `1in1out` — 输入带 **NON_WITNESS_UTXO (0x00)**，内含完整的 **segwit 序列化**资助交易
+    （marker/flag + witness 段排在 outputs 之后）；legacy 输入的 BIP-174 正规形状。
+  - `2in1out` — 同一把键的两个 UTXO，输入带 **WITNESS_UTXO (0x01)**；legacy preimage 无
+    `hashPrevouts`，BIP-143 形状的实现在这一条与单输入那条之间必有一条过不去。
+  - `abhash_1in1out` — spent pubkey hash = `052babcd1f24c1d0aaf940396efcc40f333a80c4`
+    （**含 0xab**）。这是唯一能分辨「opcode 级删 OP_CODESEPARATOR」与「按字节删」的形状：
+    按字节删会把 push 内的 0xab 一起吃掉，签出不同 digest，节点必拒。
+- **金标（Core 的签名交易，逐字节对照）**: 见 `tests/btc_legacy_p2pkh_core_gold.rs` 里的
+  `GOLD_1IN1OUT` / `GOLD_2IN1OUT` / `GOLD_ABHASH` 常量（Core 用 RFC 6979 确定性 nonce，
+  与我方 `ecdsa_secp256k1` 同法，所以断言是**逐字节相等**而非仅验签）。
+  金标 txid: `def876c2…5494f98` / `b3c5ecba…7cf…` / 见常量。
+- **用途**: `tests/btc_legacy_p2pkh_core_gold.rs` — B-9 legacy P2PKH 零堆签名的共识 oracle；
+  `forms/chain/btc/psbt.rs` 的 `non_witness_utxo_walker_binds_txid` — 0x00 走查器（txid 绑定 /
+  vout 越界 / 篡改拒绝）。
+- **隐私**: regtest 隔离密钥（项目测试种子，同 `f3b9960b`），无真实资金；可公开提交。

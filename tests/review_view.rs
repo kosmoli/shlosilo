@@ -21,6 +21,11 @@ const SPARROW_PSBT: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 /// input-side 0x16. This is the PSBT whose review showed two `send` lines.
 const SPARROW_P2TR_2IN2OUT: &[u8] = include_bytes!("fixtures/sparrow_signet_b3_p2tr_2in2out.psbt");
 
+/// B-9: a legacy (P2PKH) PSBT as Bitcoin Core builds it — the spent output is a
+/// P2PKH script and the input carries the whole previous transaction (0x00), not a
+/// witness UTXO. The operator must still see the fee and the fee rate for these.
+const LEGACY_P2PKH_1IN1OUT: &[u8] = include_bytes!("fixtures/core_regtest_p2pkh_1in1out.psbt");
+
 /// The eth-sign-request UR already verified in the smoke task (EIP-1559 transfer).
 const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
 
@@ -606,4 +611,39 @@ fn locktime_domain_splits_at_the_consensus_threshold() {
     assert_eq!(review::locktime_domain(499_999_999), LocktimeDomain::Height);
     assert_eq!(review::locktime_domain(500_000_000), LocktimeDomain::Time);
     assert_eq!(review::locktime_domain(1_900_000_000), LocktimeDomain::Time);
+}
+
+/// B-9: a legacy P2PKH spend reviews like any other BTC request — fee, recipient
+/// and fee rate all come from the NON_WITNESS_UTXO (0x00) field.
+#[test]
+fn btc_legacy_p2pkh_review_shows_fee_and_rate() {
+    let mut arena = [0u8; ARENA];
+    let mut recs = [KvRec::EMPTY; RECS];
+    let view = review::build(
+        UrTypeTag::CryptoPsbt,
+        LEGACY_P2PKH_1IN1OUT,
+        Network::BitcoinTestnet,
+        None,
+        &mut arena,
+        &mut recs,
+    )
+    .expect("review builds for a legacy P2PKH PSBT");
+
+    let l = lines(&view);
+    assert_eq!(l[0], "in 1 / out 1", "lines = {l:?}");
+    // regtest fixture: 50,000,000 sat in, 49,990,000 sat out -> fee 10,000 sat
+    assert_eq!(l[1], "fee 10000 sats", "lines = {l:?}");
+    // Recipient is the P2PKH address of m/84'/1'/0'/0/1 (base58check, testnet
+    // version byte) — the script type we could not sign before B-9.
+    let joined = l.join("\n");
+    assert!(
+        joined.contains("mutD9G5aGKvbLXTPmrPEAK72LUhcwP6hiM"),
+        "recipient address must render: {l:?}"
+    );
+    // A priced input lets the estimated fee rate appear; without the 0x00 read the
+    // line would silently disappear.
+    assert!(
+        l.iter().any(|line| line.starts_with("fee rate ~")),
+        "legacy inputs must still get a fee-rate line: {l:?}"
+    );
 }

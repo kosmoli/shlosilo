@@ -208,7 +208,11 @@ fn summarize_psbt(
         let map = psbt
             .input_map_checked(i)
             .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-        match psbt::get_witness_utxo(map) {
+        // `get_utxo_any`, not `get_witness_utxo`: a legacy (P2PKH) input carries
+        // NON_WITNESS_UTXO (0x00) instead of a witness UTXO, and the operator must
+        // still see the fee total for exactly those requests.
+        let prev_out = psbt.unsigned_tx.inputs[i].prev_out.clone();
+        match psbt::get_utxo_any(map, &prev_out) {
             Some((amount, _spk)) => {
                 total_in = total_in.and_then(|acc| acc.checked_add(amount));
             }
@@ -444,7 +448,10 @@ fn estimated_weight(psbt: &Psbt<'_>) -> Option<u32> {
     let mut wu: u32 = 42;
     for i in 0..psbt.unsigned_tx.inputs.len() {
         let map = psbt.input_map_checked(i)?;
-        let (_, spk) = psbt::get_witness_utxo(map)?;
+        // 0x00 (NON_WITNESS_UTXO) accepts legacy inputs as well; without it the
+        // fee-rate line would vanish for every P2PKH request.
+        let prev_out = psbt.unsigned_tx.inputs[i].prev_out.clone();
+        let (_, spk) = psbt::get_utxo_any(map, &prev_out)?;
         wu = wu.checked_add(script_weight(
             crate::types::wire_bytes::wire_slice(&spk),
             true,
