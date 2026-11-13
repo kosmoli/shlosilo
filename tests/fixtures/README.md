@@ -268,3 +268,22 @@
   `forms/chain/btc/psbt.rs` 的 `non_witness_utxo_walker_binds_txid` — 0x00 走查器（txid 绑定 /
   vout 越界 / 篡改拒绝）。
 - **隐私**: regtest 隔离密钥（项目测试种子，同 `f3b9960b`），无真实资金；可公开提交。
+
+## cake_legacy_frames.txt (B-9 真机取证)
+
+- **来源**: 2026-11-14 用户实机测试的 Cake Wallet `ur:psbt` 两帧屏幕照片，
+  经 `zbarimg --raw` 解出（`~/works/shlosilo-acceptance/b9-legacy-p2pkh/` 留有
+  逐帧文本与 PSBT 走查脚本）。设备当时固件 `0733482`（B-9 之前）拒签，报
+  `sign failed / request not from this wallet / code fff1`（rc = -15 = `PsbtOwnershipRejected`）。
+- **请求形状（真实钱包的非标准两处）**:
+  - `BIP32_DERIVATION` 声明 `m/44'/0'/0'/0/0` + 指纹 `00000000`，但该记录里的
+    **公钥 `0294b210…9ef89f` 其实是测试种子 `m/84'/0'/0'/0/0` 的键** —— Cake 的
+    watch-only 钱包只持有我们导出的 BIP-84 账户键，却按自己的用途层级写路径标签。
+  - `NON_WITNESS_UTXO (0x00)` **存在但值为 0 字节**（BIP-174 要求整笔前序交易），
+    所以请求本身不含任何 prevout 信息。
+- **大小 / SHA-256**: 422 bytes / `fe24d773586a187b85b29f7ac9e222134bed9fbc3d7481dabdafae2de183c849`
+  （两帧文本，payload 重组后 163 bytes）
+- **用途**: `tests/cake_legacy_p2pkh_real.rs` — ①Cake 方言必须签得出来（265 B，含
+  `FINAL_SCRIPT_SIG` 0x07、无 0x08、scriptSig 携带记录里那把公钥）；②严格方言
+  `crypto-psbt` 仍拒同一份畸形请求（`EncodingInvalidFormat`）。
+- **隐私**: 只是已签未广播的请求 + 测试种子键；无真实资金。

@@ -1197,6 +1197,36 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> 
         return Err(ShlosiloError::new(ShlosiloErrorKind::PsbtOwnershipMismatch));
     }
 
+    sign_psbt_p2pkh_body(psbt, sign_input)
+}
+
+/// Same signing step, **without** the prevout binding.
+///
+/// Reachable only for the Cake `psbt` dialect, when an input arrives with no
+/// prevout data at all (`NON_WITNESS_UTXO` present but empty — measured
+/// 2026-11-14 from a real Cake watch-only wallet). BIP-174 requires the full
+/// previous transaction for a non-witness input, so such a request is malformed
+/// and tells us nothing about the spent script; the caller must have established
+/// that the record's pubkey is a key we own before coming here.
+///
+/// What stays enforced: we sign only with a key the request names and we own. A
+/// wrong script template (should the prevout really have been segwit) yields a
+/// signature the network rejects — never a leak or a spend of someone else's coin.
+pub fn sign_psbt_p2pkh_without_prevout(
+    psbt: &mut Psbt<'_>,
+    sign_input: &PsbtP2PKHSignInput,
+) -> Result<()> {
+    if sign_input.input_index >= psbt.unsigned_tx.inputs.len() {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    sign_psbt_p2pkh_body(psbt, sign_input)
+}
+
+fn sign_psbt_p2pkh_body(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> Result<()> {
+    use crate::chain::btc::p2pkh as p2pkh_mod;
+
+    let input_idx = sign_input.input_index;
+
     // 2. Legacy sighash + ECDSA over the unsigned tx, read-only.
     let p2pkh_input = p2pkh_mod::P2PKHSignInput {
         input_index: input_idx,

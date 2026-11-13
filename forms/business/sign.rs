@@ -1467,6 +1467,79 @@ fn sign_btc_taproot_input(
 /// Derivation path = m/84'/0'/0'/0/0 (standard native segwit path).
 /// Each input derives its private key from the path hinted by BIP32_DERIVATION;
 /// Without a hint, always take the default path.
+/// Every purpose we hand out an account key for. A watch-only wallet derives
+/// under whichever account key it received and *labels* the address path with its
+/// own purpose level, so the same suffix has to be tried under each of these.
+const OWNED_PURPOSES: [u32; 4] = [
+    84 | 0x8000_0000,
+    49 | 0x8000_0000,
+    44 | 0x8000_0000,
+    86 | 0x8000_0000,
+];
+
+/// Resolve a PSBT derivation record to a key **we** own.
+///
+/// The record's pubkey is the binding; its path is a label. A wallet that holds
+/// only an account key derives children under that account and then writes the
+/// path it believes it is using: Cake hands us a legacy address built from our
+/// BIP-84 account key labelled `m/44'/0'/0'/0/i` (measured 2026-11-14 — the
+/// pubkey in that record is `m/84'/0'/0'/0/0`'s). Deriving from the declared path
+/// alone therefore rejects a request that is ours.
+///
+/// Bounded: the declared path, then the same suffix under each exported purpose.
+/// A record whose pubkey no candidate reproduces is refused, so a mislabelled
+/// path can only stop a legitimate request — never make us sign with a key the
+/// record does not name.
+fn resolve_owned_key(
+    seed: &[u8],
+    path: &DerivationPath,
+    record_pub: &[u8; 33],
+) -> Result<Option<[u8; 32]>> {
+    if let Some(k) = key_at_path_if_matches(seed, path, record_pub)? {
+        return Ok(Some(k));
+    }
+    let declared = path.as_slice();
+    if declared.len() < 2 {
+        return Ok(None);
+    }
+    for purpose in OWNED_PURPOSES {
+        if declared[0].0 == purpose {
+            continue;
+        }
+        // BIP-32 paths cap at 16 components (same bound the keypath codecs use)
+        let mut buf = [0u32; 16];
+        let n = declared.len().min(buf.len());
+        for (i, idx) in declared.iter().take(n).enumerate() {
+            buf[i] = if i == 0 { purpose } else { idx.0 };
+        }
+        let Ok(candidate) = DerivationPath::from_flat(buf[..n].iter().copied()) else {
+            continue;
+        };
+        if let Some(k) = key_at_path_if_matches(seed, &candidate, record_pub)? {
+            return Ok(Some(k));
+        }
+    }
+    Ok(None)
+}
+
+fn key_at_path_if_matches(
+    seed: &[u8],
+    path: &DerivationPath,
+    record_pub: &[u8; 33],
+) -> Result<Option<[u8; 32]>> {
+    let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, path)?;
+    let pk = crate::curve_primitive::secp256k1::point_to_compressed(
+        &crate::curve_primitive::secp256k1::base_mul(&sk),
+    );
+    if pk.as_slice() == record_pub {
+        Ok(Some(crate::curve_primitive::secp256k1::scalar_to_bytes(
+            &sk,
+        )))
+    } else {
+        Ok(None)
+    }
+}
+
 fn sign_btc<'a>(
     seed: &[u8],
     cbor_payload: &'a [u8],
@@ -1527,18 +1600,6 @@ fn sign_btc<'a>(
         if _fp0 != local_fp && !psbt_mod::fingerprint_is_unspecified(_fp0) {
             return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
         }
-        let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path_used)?;
-        // Z2.2 (2026-09-24): key-material stack copy zeroized on drop.
-        let sk_bytes =
-            zeroize::Zeroizing::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk));
-
-        // R4 ownership binding: the derived public key must match the pubkey carried by the PSBT BIP32_DERIVATION.
-        // without this equality assertion, a malicious/crafted PSBT could get the device to sign inputs that "succeed but are unusable"
-        // (HASH160 match ≠ the hash actually came from the private key we are about to use — a collision or ledger inconsistency can bypass this).
-        let derived_pub = crate::curve_primitive::secp256k1::point_to_compressed(
-            &crate::curve_primitive::secp256k1::base_mul(&sk),
-        );
-
         // P1-B (2026-09-01 re-review): all BIP32_DERIVATION records strictly verified.
         // every record's (fingerprint, path, pubkey) must pass three checks:
         //   fingerprint == ours; path-derived public key == the pubkey carried by the record;
@@ -1574,38 +1635,37 @@ fn sign_btc<'a>(
         if records.is_empty() {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
-        // R4 semantics preserved: assert the signing key's derived pubkey equals the first record's pubkey
-        if derived_pub.as_slice() != records[0].2 {
-            return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
-        }
+        // R4 ownership binding, B-9 correction: the record's **pubkey** is the
+        // binding, not its path string. A wallet holding only an account key
+        // derives under that account and labels the path with its own purpose
+        // level (measured: Cake labels a legacy address built from our BIP-84
+        // account key as m/44'/0'/0'/0/i, while the pubkey is 84'/0'/0'/0/0's).
+        // `resolve_owned_key` tries the declared path, then the same suffix under
+        // every purpose we export; a pubkey no candidate reproduces is refused, so
+        // we still never sign with a key the PSBT does not name.
+        let key_bytes = resolve_owned_key(seed, &path_used, &records[0].2)?
+            .ok_or_else(|| err(ShlosiloErrorKind::PsbtOwnershipMismatch))?;
+        // Z2.2 (2026-09-24): key-material stack copy zeroized on drop.
+        let sk_bytes = zeroize::Zeroizing::new(key_bytes);
+
         let mut pubkey_hash: Option<[u8; 20]> = None;
         for (fp, path, pk) in &records {
             if *fp != local_fp && !psbt_mod::fingerprint_is_unspecified(*fp) {
                 return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
             }
-            let rec_sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, path)?;
-            let rec_pub = crate::curve_primitive::secp256k1::point_to_compressed(
-                &crate::curve_primitive::secp256k1::base_mul(&rec_sk),
-            );
-            if rec_pub.as_slice() != *pk {
+            // Every record must name a key we own (same bounded lookup).
+            if resolve_owned_key(seed, path, pk)?.is_none() {
                 return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
             }
-            // consistency with the (path, sk) actually used to sign this input: the record path must equal the signing path
             let h = crate::encoding::sha256::hash(pk)?;
             let h20 = crate::encoding::ripemd160::hash(&h)?;
             match &pubkey_hash {
                 Some(prev) if *prev != h20 => {
-                    // multiple records pointing to different pubkeys = not P2WPKH single-sig semantics
+                    // multiple records pointing to different pubkeys = not single-sig semantics
                     return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
                 }
                 Some(_) => {}
-                None => {
-                    pubkey_hash = Some(h20);
-                    // the signing key uses the first record path that passes verification (aligned with derived_pub)
-                    if *path != path_used {
-                        return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
-                    }
-                }
+                None => pubkey_hash = Some(h20),
             }
         }
         let pubkey_hash =
@@ -1618,13 +1678,33 @@ fn sign_btc<'a>(
         // previous transaction — because the legacy sighash needs the spent script
         // and the txid binding. `get_utxo_any` reads 0x01 first and falls back to
         // 0x00 with full txid/vout verification, so both wallet shapes work.
-        let (amount, spk) = psbt
-            .input_map_checked(idx)
-            .and_then(|m| {
-                let prev_out = psbt.unsigned_tx.inputs[idx].prev_out.clone();
-                psbt_mod::get_utxo_any(m, &prev_out)
-            })
-            .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        let utxo = psbt.input_map_checked(idx).and_then(|m| {
+            let prev_out = psbt.unsigned_tx.inputs[idx].prev_out.clone();
+            psbt_mod::get_utxo_any(m, &prev_out)
+        });
+        let Some((amount, spk)) = utxo else {
+            // No prevout data at all. A compliant wallet never does this for a
+            // non-witness input, and without it we cannot tell what script we are
+            // satisfying — so the script type is unknowable and we refuse by
+            // default. The one exception is the Cake `psbt` dialect, whose
+            // watch-only wallet ships `NON_WITNESS_UTXO` with an empty value
+            // (measured 2026-11-14): there the record pubkey already proved the key
+            // is ours, so we sign the legacy template and let the review flag it
+            // (`prevout not supplied`, fee unknown). A wrong template only yields a
+            // signature the network rejects.
+            if !finalize {
+                return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+            }
+            psbt_mod::sign_psbt_p2pkh_without_prevout(
+                &mut psbt,
+                &psbt_mod::PsbtP2PKHSignInput {
+                    input_index: idx,
+                    private_key: SecretBytes::new(*sk_bytes),
+                    pubkey_hash,
+                },
+            )?;
+            continue;
+        };
         // S2/B-4: dispatch on the spent script. A native P2WPKH prevout is signed
         // in place; a P2SH-wrapped one (BIP49) goes through the wrapper
         // finalization, which re-derives the redeem script from this same key and
