@@ -1683,65 +1683,16 @@ fn sign_btc<'a>(
             psbt_mod::get_utxo_any(m, &prev_out)
         });
         let Some((amount, spk)) = utxo else {
-            // No prevout data at all. A compliant wallet never does this for a
-            // non-witness input, and without it we cannot tell which script we are
-            // satisfying. The rule is uniform (it does not key off the UR type name,
-            // which is only a wire alias and not a wallet capability): sign the legacy
-            // P2PKH template only when nothing in the input map hints at any other
-            // one — no witness UTXO (0x01), no redeem script (0x04), no taproot
-            // records (0x13/0x16/0x17/0x18). The record pubkey has already proved the
-            // key is ours (`resolve_owned_key` above), a wrong template only produces a
-            // signature the network rejects, and the review page carries
-            // `warn: prevout not supplied` plus an unknown fee so the operator knows the
-            // device could not verify the input's ownership.
-            let hint_of_other_template = psbt
-                .input_map_checked(idx)
-                .map(|m| {
-                    m.iter().any(|kv| {
-                        matches!(
-                            kv.key.first(),
-                            Some(
-                                &psbt_mod::input_type::WITNESS_UTXO
-                                    | &psbt_mod::input_type::REDEEM_SCRIPT
-                                    | &0x13u8
-                                    | &0x16u8
-                                    | &0x17u8
-                                    | &0x18u8
-                            )
-                        )
-                    })
-                })
-                .unwrap_or(false);
-            if hint_of_other_template {
-                return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
-            }
-            psbt_mod::sign_psbt_p2pkh_without_prevout(
-                &mut psbt,
-                &psbt_mod::PsbtP2PKHSignInput {
-                    input_index: idx,
-                    private_key: SecretBytes::new(*sk_bytes),
-                    pubkey_hash,
-                },
-            )?;
-            continue;
+            // No prevout data for this input. We cannot tell which script we would
+            // be satisfying (nor compute the fee), so the request is refused with a
+            // dedicated code: the wallet failed to fetch the previous transaction
+            // (a failing upstream node is the observed cause), and guessing a
+            // template on its behalf would be signing something we cannot describe.
+            // The review page shows `warn: prevout not supplied`, and the failure
+            // word table maps this code to "request input data missing".
+            return Err(err(ShlosiloErrorKind::PrevoutMissing));
         };
-        // S2/B-4: dispatch on the spent script. A native P2WPKH prevout is signed
-        // in place; a P2SH-wrapped one (BIP49) goes through the wrapper
-        // finalization, which re-derives the redeem script from this same key and
-        // refuses if it does not hash into the prevout.
-        let is_p2sh_p2wpkh = spk.len() == 23 && spk[0] == 0xa9 && spk[1] == 0x14 && spk[22] == 0x87;
-        if is_p2sh_p2wpkh {
-            psbt_mod::sign_psbt_p2sh_p2wpkh(
-                &mut psbt,
-                &psbt_mod::PsbtP2SHP2WPKHSignInput {
-                    input_index: idx,
-                    private_key: SecretBytes::new(*sk_bytes),
-                    pubkey_hash,
-                    amount,
-                },
-            )?;
-            continue;
-        }
+
         // S2/B-9: a legacy P2PKH prevout (`76a914…88ac`) signs the pre-BIP-143
         // digest. The spent script must hash to the key derived above — the
         // signer re-checks that binding and refuses a foreign prevout. A legacy
@@ -1756,6 +1707,22 @@ fn sign_btc<'a>(
                     input_index: idx,
                     private_key: SecretBytes::new(*sk_bytes),
                     pubkey_hash,
+                },
+            )?;
+            continue;
+        }
+        // S2/B-4: a P2SH-wrapped P2WPKH prevout (BIP49) goes through the wrapper
+        // finalization, which re-derives the redeem script from this same key and
+        // refuses if it does not hash into the prevout.
+        let is_p2sh_p2wpkh = spk.len() == 23 && spk[0] == 0xa9 && spk[1] == 0x14 && spk[22] == 0x87;
+        if is_p2sh_p2wpkh {
+            psbt_mod::sign_psbt_p2sh_p2wpkh(
+                &mut psbt,
+                &psbt_mod::PsbtP2SHP2WPKHSignInput {
+                    input_index: idx,
+                    private_key: SecretBytes::new(*sk_bytes),
+                    pubkey_hash,
+                    amount,
                 },
             )?;
             continue;

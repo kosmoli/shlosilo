@@ -87,6 +87,13 @@ fn sign_failure_text_matches_fixed_vocabulary() {
         sign_failure_text(-15).to_bytes(),
         b"sign failed\nrequest not from this wallet\nuse the wallet this device was set up for"
     );
+    // -16: the request carried no prevout for an input (the wallet could not
+    // fetch the previous transaction). Distinct from ownership: there we know the
+    // keys are not ours, here we cannot know anything about the input.
+    assert_eq!(
+        sign_failure_text(-16).to_bytes(),
+        b"sign failed\nrequest input data missing\nre-create the payment and retry"
+    );
     // unmapped codes collapse to the generic "unknown code" entry (class only)
     assert_eq!(
         sign_failure_text(-1).to_bytes(),

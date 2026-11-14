@@ -105,6 +105,15 @@ retry once, then report the device"
 request not from this wallet
 use the wallet this device was set up for"
         }
+        // PrevoutMissing: an input arrived with no prevout data, so the device
+        // cannot tell which script it would be satisfying. Not a normal request
+        // shape (the wallet could not fetch the previous transaction); the user's
+        // move is to re-create the payment, not to retry this one.
+        x if x == ShlosiloErrorCode::PrevoutMissing as i32 => {
+            c"sign failed
+request input data missing
+re-create the payment and retry"
+        }
         // Unmapped code -- fixed "unknown code" entry, class only.
         _ => {
             c"sign failed

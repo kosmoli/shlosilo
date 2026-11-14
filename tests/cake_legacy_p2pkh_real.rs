@@ -12,13 +12,14 @@
 //!    previous transaction for a non-witness input; Cake ships zero bytes, so
 //!    nothing tells us which script we are satisfying.
 //!
-//! The pins below keep both tolerances honest: the Cake dialect signs (with the
-//! record pubkey proving the key is ours), and the strict `crypto-psbt` dialect
-//! still refuses the same malformed request.
+//! The pins below fix the contract we settled on (2026-11-14): a request with no
+//! prevout data is **refused** with a dedicated code, under either dialect. The
+//! shape only appears when the wallet could not fetch the previous transaction,
+//! which is not a normal flow, so the device does not guess a script template on
+//! the wallet's behalf — it says "request input data missing" and stops.
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::business::sign::{sign, SignInput};
-use shlosilo::chain::btc::psbt::parse_psbt;
 use shlosilo::encoding::cbor;
 use shlosilo::entropy::mnemonic::Mnemonic;
 use shlosilo::ur::ur_encode::UrTypeTag;
@@ -69,137 +70,52 @@ fn sign_with(tag: UrTypeTag, payload: &[u8]) -> shlosilo::error::Result<usize> {
 }
 
 #[test]
-fn cake_legacy_psbt_signs_as_legacy_p2pkh() {
+fn cake_legacy_psbt_is_refused_as_missing_input_data() {
     let payload = real_payload();
-    let n = sign_with(UrTypeTag::Psbt, &payload).expect("Cake dialect signs the real request");
-    assert_eq!(n, 265, "163 B request + one 0x07 record");
-
-    let mut out = vec![0u8; payload.len() + 1024];
-    let n2 = sign(
-        SignInput::Mnemonic {
-            mnemonic: test_mnemonic(),
-            passphrase: b"",
-        },
-        UrTypeTag::Psbt,
-        &cbor::encode_bytes(&payload),
-        &mut out,
-    )
-    .expect("sign");
-    assert_eq!(n, n2);
-
-    let psbt = parse_psbt(&out[..n]).expect("signed output parses");
-    let map = psbt.input_map(0);
-    let script_sig = map
-        .iter()
-        .find(|kv| kv.key.first() == Some(&0x07u8))
-        .map(|kv| kv.value.to_vec())
-        .expect("FINAL_SCRIPT_SIG (0x07) must be present");
-    assert!(
-        map.iter().all(|kv| kv.key.first() != Some(&0x08u8)),
-        "a legacy input must not carry FINAL_SCRIPTWITNESS"
-    );
-    // <push sig><push pubkey>: push length, DER+hash type, then the 33-byte key.
-    let sig_len = script_sig[0] as usize;
-    assert!((70..=72).contains(&sig_len), "DER+hashtype push length");
-    assert_eq!(script_sig[sig_len + 1], 33);
-    assert_eq!(script_sig[1], 0x30, "DER sequence tag");
-    assert_eq!(script_sig[sig_len], 0x01, "SIGHASH_ALL trailer");
-    // The pubkey must be the one Cake named — i.e. our BIP-84 first key.
-    assert_eq!(
-        &script_sig[sig_len + 2..],
-        &[
-            0x02, 0x94, 0xb2, 0x10, 0x02, 0x5b, 0x91, 0x94, 0x62, 0x44, 0x76, 0x2f, 0x23, 0x2d,
-            0x2d, 0xa9, 0x23, 0xe1, 0x10, 0xc4, 0x90, 0x2e, 0xcb, 0x73, 0x4a, 0xb2, 0x81, 0xf4,
-            0xe0, 0x1c, 0x9e, 0xf8, 0x9f
-        ][..],
-        "scriptSig must carry the pubkey the request names"
-    );
-}
-
-/// The no-prevout rule is keyed on the input's *shape*, not on the UR type name:
-/// the same request signs under either alias, because the alias is only a wire
-/// name and says nothing about what the wallet could send.
-#[test]
-fn crypto_psbt_alias_signs_the_same_request() {
-    let payload = real_payload();
-    let n = sign_with(UrTypeTag::CryptoPsbt, &payload).expect("alias signs too");
-    assert_eq!(n, 265, "same 0x07 record, same length");
-}
-
-/// …but an input that hints at another template (a redeem script, a witness UTXO,
-/// taproot records) with no prevout is refused: there the script type really is
-/// unknowable, and guessing it would be blind signing.
-#[test]
-fn no_prevout_is_refused_when_another_template_is_hinted() {
-    use shlosilo::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
-    use shlosilo::chain::btc::psbt::{psbt_from_maps_leaky, serialize_psbt, KeyValue};
-
-    // Our test seed's BIP-84 first key, and its derivation record.
-    let pubkey: [u8; 33] = [
-        0x02, 0x94, 0xb2, 0x10, 0x02, 0x5b, 0x91, 0x94, 0x62, 0x44, 0x76, 0x2f, 0x23, 0x2d, 0x2d,
-        0xa9, 0x23, 0xe1, 0x10, 0xc4, 0x90, 0x2e, 0xcb, 0x73, 0x4a, 0xb2, 0x81, 0xf4, 0xe0, 0x1c,
-        0x9e, 0xf8, 0x9f,
-    ];
-    let mut deriv = vec![0xf3, 0xb9, 0x96, 0x0b];
-    for c in [84u32 | 0x8000_0000, 0x8000_0000, 0x8000_0000, 0, 0] {
-        deriv.extend_from_slice(&c.to_le_bytes());
+    for tag in [UrTypeTag::Psbt, UrTypeTag::CryptoPsbt] {
+        let err = sign_with(tag, &payload).expect_err("must refuse");
+        assert_eq!(
+            err.kind,
+            shlosilo::error::ShlosiloErrorKind::PrevoutMissing,
+            "{tag:?} must refuse with the dedicated code, not a generic one"
+        );
+        // …and the operator-facing text is the fixed template for that code.
+        let code = shlosilo::error::ShlosiloErrorCode::PrevoutMissing as i32;
+        let text = shlosilo::failure_text::sign_failure_text(code)
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            text,
+            "sign failed\nrequest input data missing\nre-create the payment and retry"
+        );
     }
-    let mut dkey = vec![0x06u8];
-    dkey.extend_from_slice(&pubkey);
+}
 
-    let mut txid = [0u8; 32];
-    txid[0] = 0xab;
-    let tx = Transaction {
-        version: 2,
-        inputs: {
-            let mut v = heapless::Vec::new();
-            v.push(TxIn {
-                prev_out: OutPoint { txid, vout: 0 },
-                script_sig: shlosilo::types::wire_bytes::wire_from(&[]),
-                sequence: 0xffff_ffff,
-                witness: shlosilo::types::wire_bytes::witness_empty(),
-            })
-            .unwrap();
-            v
-        },
-        outputs: {
-            let mut v = heapless::Vec::new();
-            v.push(TxOut {
-                value: 1000,
-                script_pubkey: shlosilo::types::wire_bytes::wire_from(&[
-                    0x00, 0x14, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
-                    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
-                ]),
-            })
-            .unwrap();
-            v
-        },
-        lock_time: 0,
-    };
-    // No prevout of any kind, but a redeem script → P2SH is the likelier template.
-    let psbt = psbt_from_maps_leaky(
-        tx,
-        &[vec![
-            KeyValue {
-                key: dkey.into(),
-                value: deriv.into(),
-            },
-            KeyValue {
-                key: vec![0x04].into(),
-                value: vec![
-                    0x00, 0x14, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-                    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-                ]
-                .into(),
-            },
-        ]],
-        &[Vec::new()],
-    );
-    let bytes = serialize_psbt(&psbt);
-    let err = sign_with(UrTypeTag::Psbt, &bytes).expect_err("must refuse");
-    assert_eq!(
-        err.kind,
-        shlosilo::error::ShlosiloErrorKind::EncodingInvalidFormat,
-        "a hinted template with no prevout is unknowable, not guessable"
+/// The review page still renders for this request (so the operator sees what was
+/// asked) and carries the ownership warning plus an unknown fee.
+#[test]
+fn cake_legacy_psbt_review_warns_about_missing_prevout() {
+    use shlosilo::chain::btc::psbt::KvRec;
+    use shlosilo::network::Network;
+    let payload = real_payload();
+    let mut arena = vec![0u8; 16 * 1024];
+    let mut recs = vec![KvRec::EMPTY; 256];
+    let view = shlosilo::business::review::build(
+        UrTypeTag::Psbt,
+        &payload,
+        Network::BitcoinTestnet,
+        None,
+        &mut arena,
+        &mut recs,
+    )
+    .expect("review builds");
+    let lines: Vec<String> = view
+        .lines()
+        .iter()
+        .map(|l| l.as_str().to_string())
+        .collect();
+    assert!(
+        lines.iter().any(|l| l == "warn: prevout not supplied"),
+        "lines = {lines:?}"
     );
 }

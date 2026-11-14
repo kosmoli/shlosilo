@@ -116,6 +116,12 @@ pub enum ShlosiloErrorKind {
     BufferKindMismatch = 0x0401_0002,
     /// R4: PSBT ownership binding failure — BIP32_DERIVATION pubkey ≠ derived public key
     PsbtOwnershipMismatch = 0x0403_0001,
+    /// The request carried no prevout data for an input, so the spent script
+    /// (and thus the template we would sign) is unknowable. Not a normal
+    /// request shape: it appears when the wallet could not fetch the previous
+    /// transaction (a failing upstream node), and the device refuses rather
+    /// than guessing a script type.
+    PrevoutMissing = 0x0403_0002,
 
     // ─── Invariant violations (0x05xx_xxxx) ───
     /// Internal impossible state (unreachable triggered)
@@ -226,6 +232,8 @@ pub enum ShlosiloErrorCode {
     MultisigNotSupported = -13,
     FeatureNotImplemented = -14,
     PsbtOwnershipRejected = -15,
+    /// Request input data missing (no prevout for an input) — see the kind.
+    PrevoutMissing = -16,
     BufferTooSmall = -20,
     EncodingError = -21,
     InvalidUrPayload = -30,
@@ -256,6 +264,7 @@ impl ShlosiloErrorCode {
             | ShlosiloErrorKind::EncodingInvalidChecksum => Self::EncodingError,
             ShlosiloErrorKind::BufferKindMismatch => Self::InvalidArgument,
             ShlosiloErrorKind::PsbtOwnershipMismatch => Self::PsbtOwnershipRejected,
+            ShlosiloErrorKind::PrevoutMissing => Self::PrevoutMissing,
             ShlosiloErrorKind::UrPayloadInvalidCbor | ShlosiloErrorKind::UrPayloadUnknownType => {
                 Self::InvalidUrPayload
             }
