@@ -504,3 +504,39 @@ fn refusal_leaves_the_output_buffer_untouched() {
         "no partial output on the failure path"
     );
 }
+
+/// A watch-only wallet that holds a single account key relabels the purpose level to
+/// match the address type it offers (measured: Cake labels a BIP-84-key legacy address
+/// as `m/44'/0'/0'/0/i`). The taproot record is no exception — and since the record's
+/// x-only key is the real binding, a relabelled path must still sign.
+///
+/// Here the fixture's `m/86'/1'/0'/0/2` is rewritten to `m/44'/1'/0'/0/2`, i.e. the
+/// key that owns the input is no longer derivable from the declared path. The sighash
+/// does not depend on the record, so the signature must be BYTE-IDENTICAL to
+/// rust-bitcoin's: a path-keyed ownership check fails this, a pubkey-keyed one passes.
+#[test]
+fn relabelled_purpose_still_signs_the_same_key() {
+    let mut relabelled = UNSIGNED.to_vec();
+    let purpose_86 = [0x56u8, 0x00, 0x00, 0x80]; // 86 | 0x80000000, little endian
+    let purpose_44 = [0x2cu8, 0x00, 0x00, 0x80]; // 44 | 0x80000000
+    let hits: Vec<usize> = relabelled
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == purpose_86)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "the fixture must carry exactly one 86' path word"
+    );
+    relabelled[hits[0]..hits[0] + 4].copy_from_slice(&purpose_44);
+
+    let signed = device_sign(&relabelled).expect("relabelled path must still sign");
+    let sig = input_map_entry(&signed, 0x13).expect("TAP_KEY_SIG must be injected");
+    assert_eq!(
+        sig,
+        hex_decode(KEYSTONE_SIG_HEX),
+        "same key + same sighash => identical deterministic signature"
+    );
+}

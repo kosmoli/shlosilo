@@ -1440,15 +1440,14 @@ fn sign_btc_taproot_input(
     }
     let path = DerivationPath::from_flat(record.elements[..depth].iter().copied())
         .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-    let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path)?;
-    // R4 for taproot: the record names an x-only key; our derivation must be it.
-    let derived_pub = crate::curve_primitive::secp256k1::point_to_compressed(
-        &crate::curve_primitive::secp256k1::base_mul(&sk),
-    );
-    if derived_pub[1..] != record.key_x {
-        return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
-    }
-    let sk_bytes = zeroize::Zeroizing::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk));
+    // R4 for taproot: the record's x-only key is the binding, and the declared path
+    // is only a label — a watch-only wallet that holds a single account key
+    // relabels the purpose level to match the address type it offered, so deriving
+    // from the path alone would reject our own key (same class as the 44'/84'
+    // relabelling measured on legacy inputs, 2026-11-14).
+    let key_bytes = resolve_owned_key(seed, &path, RecordPub::XOnly(&record.key_x))?
+        .ok_or_else(|| err(ShlosiloErrorKind::PsbtOwnershipMismatch))?;
+    let sk_bytes = zeroize::Zeroizing::new(key_bytes);
 
     // BIP-340 aux randomness: the caller's entropy channel when it carries a
     // full 32 bytes, else all zeros (BIP-340 permits this; the resulting
@@ -1490,13 +1489,62 @@ const OWNED_PURPOSES: [u32; 4] = [
 /// A record whose pubkey no candidate reproduces is refused, so a mislabelled
 /// path can only stop a legitimate request — never make us sign with a key the
 /// record does not name.
+/// The pubkey form a derivation record names: a full compressed key (0x06
+/// records) or an x-only key (0x16 TAP_BIP32_DERIVATION).
+enum RecordPub<'a> {
+    Full(&'a [u8; 33]),
+    XOnly(&'a [u8; 32]),
+}
+
+fn key_at_path_if_matches(
+    seed: &[u8],
+    path: &DerivationPath,
+    want: RecordPub<'_>,
+) -> Result<Option<[u8; 32]>> {
+    let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, path)?;
+    let pk = crate::curve_primitive::secp256k1::point_to_compressed(
+        &crate::curve_primitive::secp256k1::base_mul(&sk),
+    );
+    let hit = match want {
+        RecordPub::Full(full) => pk.as_slice() == full,
+        // An x-only record names the key's x coordinate, so parity is irrelevant:
+        // a taproot spend of the same key still belongs to it.
+        RecordPub::XOnly(x) => &pk[1..] == x,
+    };
+    if hit {
+        Ok(Some(crate::curve_primitive::secp256k1::scalar_to_bytes(
+            &sk,
+        )))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Resolve a PSBT derivation record to a key **we** own.
+///
+/// The record's pubkey is the binding; its path is a label. A wallet that holds only
+/// one account key derives children under that account and then writes the path it
+/// believes it is using: a watch-only wallet hands us a legacy address built from our
+/// BIP-84 account key labelled `m/44'/0'/0'/0/i` (measured 2026-11-14 — the pubkey in
+/// that record is `m/84'/0'/0'/0/0`'s), and the same relabelling applies to the other
+/// address types it offers. Deriving from the declared path alone therefore rejects a
+/// request that is ours.
+///
+/// Bounded: the declared path first, then the same suffix under each exported purpose.
+/// A record whose pubkey no candidate reproduces is refused, so a mislabelled path can
+/// only stop a legitimate request — never make us sign with a key the record does not
+/// name.
 fn resolve_owned_key(
     seed: &[u8],
     path: &DerivationPath,
-    record_pub: &[u8; 33],
+    want: RecordPub<'_>,
 ) -> Result<Option<[u8; 32]>> {
-    if let Some(k) = key_at_path_if_matches(seed, path, record_pub)? {
-        return Ok(Some(k));
+    let first = match &want {
+        RecordPub::Full(f) => key_at_path_if_matches(seed, path, RecordPub::Full(f))?,
+        RecordPub::XOnly(x) => key_at_path_if_matches(seed, path, RecordPub::XOnly(x))?,
+    };
+    if first.is_some() {
+        return Ok(first);
     }
     let declared = path.as_slice();
     if declared.len() < 2 {
@@ -1515,29 +1563,15 @@ fn resolve_owned_key(
         let Ok(candidate) = DerivationPath::from_flat(buf[..n].iter().copied()) else {
             continue;
         };
-        if let Some(k) = key_at_path_if_matches(seed, &candidate, record_pub)? {
-            return Ok(Some(k));
+        let hit = match &want {
+            RecordPub::Full(f) => key_at_path_if_matches(seed, &candidate, RecordPub::Full(f))?,
+            RecordPub::XOnly(x) => key_at_path_if_matches(seed, &candidate, RecordPub::XOnly(x))?,
+        };
+        if hit.is_some() {
+            return Ok(hit);
         }
     }
     Ok(None)
-}
-
-fn key_at_path_if_matches(
-    seed: &[u8],
-    path: &DerivationPath,
-    record_pub: &[u8; 33],
-) -> Result<Option<[u8; 32]>> {
-    let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, path)?;
-    let pk = crate::curve_primitive::secp256k1::point_to_compressed(
-        &crate::curve_primitive::secp256k1::base_mul(&sk),
-    );
-    if pk.as_slice() == record_pub {
-        Ok(Some(crate::curve_primitive::secp256k1::scalar_to_bytes(
-            &sk,
-        )))
-    } else {
-        Ok(None)
-    }
 }
 
 fn sign_btc<'a>(
@@ -1643,7 +1677,7 @@ fn sign_btc<'a>(
         // `resolve_owned_key` tries the declared path, then the same suffix under
         // every purpose we export; a pubkey no candidate reproduces is refused, so
         // we still never sign with a key the PSBT does not name.
-        let key_bytes = resolve_owned_key(seed, &path_used, &records[0].2)?
+        let key_bytes = resolve_owned_key(seed, &path_used, RecordPub::Full(&records[0].2))?
             .ok_or_else(|| err(ShlosiloErrorKind::PsbtOwnershipMismatch))?;
         // Z2.2 (2026-09-24): key-material stack copy zeroized on drop.
         let sk_bytes = zeroize::Zeroizing::new(key_bytes);
@@ -1654,7 +1688,7 @@ fn sign_btc<'a>(
                 return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
             }
             // Every record must name a key we own (same bounded lookup).
-            if resolve_owned_key(seed, path, pk)?.is_none() {
+            if resolve_owned_key(seed, path, RecordPub::Full(pk))?.is_none() {
                 return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
             }
             let h = crate::encoding::sha256::hash(pk)?;
