@@ -91,16 +91,17 @@ fn cake_legacy_psbt_is_refused_as_missing_input_data() {
     }
 }
 
-/// The review page still renders for this request (so the operator sees what was
-/// asked) and carries the ownership warning plus an unknown fee.
+/// The review refuses the request outright (it can never be signed), so the
+/// platform never shows a confirm page for it — the operator gets the failure
+/// text "request input data missing" and returns to welcome with `home`.
 #[test]
-fn cake_legacy_psbt_review_warns_about_missing_prevout() {
+fn cake_legacy_psbt_review_refuses_before_any_confirmation() {
     use shlosilo::chain::btc::psbt::KvRec;
     use shlosilo::network::Network;
     let payload = real_payload();
     let mut arena = vec![0u8; 16 * 1024];
     let mut recs = vec![KvRec::EMPTY; 256];
-    let view = shlosilo::business::review::build(
+    let err = shlosilo::business::review::build(
         UrTypeTag::Psbt,
         &payload,
         Network::BitcoinTestnet,
@@ -108,14 +109,7 @@ fn cake_legacy_psbt_review_warns_about_missing_prevout() {
         &mut arena,
         &mut recs,
     )
-    .expect("review builds");
-    let lines: Vec<String> = view
-        .lines()
-        .iter()
-        .map(|l| l.as_str().to_string())
-        .collect();
-    assert!(
-        lines.iter().any(|l| l == "warn: prevout not supplied"),
-        "lines = {lines:?}"
-    );
+    .err()
+    .expect("review must refuse");
+    assert_eq!(err.kind, shlosilo::error::ShlosiloErrorKind::PrevoutMissing);
 }

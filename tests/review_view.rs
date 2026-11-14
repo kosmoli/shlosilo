@@ -10,6 +10,7 @@
 
 use shlosilo::business::review::{self, flag};
 use shlosilo::chain::btc::psbt::KvRec;
+use shlosilo::error::ShlosiloErrorKind;
 use shlosilo::network::Network;
 use shlosilo::ur::ur_encode::UrTypeTag;
 
@@ -203,22 +204,24 @@ fn btc_unknown_output_script_degrades_to_fixed_words() {
 /// Without witness_utxo the fee is only a lower bound -- it must say unknown
 /// explicitly instead of printing some number.
 #[test]
-fn btc_missing_utxo_reports_fee_unknown() {
-    // Constructing a minimal PSBT with only a global unsigned_tx and no input maps is
-    // not practical here; take the negative path instead: a truncated, invalid PSBT
-    // must error out rather than produce a half view.
-    let truncated = &SPARROW_PSBT[..SPARROW_PSBT.len() / 2];
+fn btc_missing_utxo_makes_the_review_refuse() {
+    // A request whose input carries no prevout cannot be signed, so the review
+    // must not present it for confirmation (product rule: never ask the operator
+    // to authorise the impossible). It refuses with the dedicated code, which the
+    // platform renders as "request input data missing".
     let mut arena = [0u8; ARENA];
     let mut recs = [KvRec::EMPTY; RECS];
-    let r = review::build(
+    let err = review::build(
         UrTypeTag::CryptoPsbt,
-        truncated,
+        CAKE_LEGACY_PSBT,
         Network::BitcoinTestnet,
         None,
         &mut arena,
         &mut recs,
-    );
-    assert!(r.is_err(), "truncated PSBT must be rejected");
+    )
+    .err()
+    .expect("review must refuse a request it cannot sign");
+    assert_eq!(err.kind, ShlosiloErrorKind::PrevoutMissing);
 }
 
 #[test]
@@ -666,29 +669,6 @@ fn btc_legacy_p2pkh_review_shows_fee_and_rate() {
     );
     // A priced input lets the estimated fee rate appear; without the 0x00 read the
     // line would silently disappear.
-    // A request whose input carries no prevout data must say so: the operator has to
-    // know the device could not verify that the input belongs to this wallet.
-    let mut arena2 = [0u8; ARENA];
-    let mut recs2 = [KvRec::EMPTY; RECS];
-    let cake = review::build(
-        UrTypeTag::Psbt,
-        CAKE_LEGACY_PSBT,
-        Network::BitcoinTestnet,
-        None,
-        &mut arena2,
-        &mut recs2,
-    )
-    .expect("review builds for the real Cake request");
-    let cl = lines(&cake);
-    assert!(
-        cl.iter().any(|l| l == "warn: prevout not supplied"),
-        "missing prevout must be visible: {cl:?}"
-    );
-    assert!(
-        cl.iter().any(|l| l.starts_with("fee ")),
-        "fee line still shown (as unknown): {cl:?}"
-    );
-
     // Exact line: the regtest fixture is 1 P2PKH in (592 WU) + 1 P2PKH out (136 WU)
     // over a base of 40 WU (no witness section) = 768 WU; 400*10000/768 = 5208
     // hundredths. A marker/flag charge or a 588-WU input would move this line.

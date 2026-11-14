@@ -1983,6 +1983,18 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
     g_review_ws = NULL;
     if (rc != 0 || count == 0) {
         printf("review: summary failed rc=%d count=%u\r\n", rc, count);
+        if (rc != 0) {
+            /* A request the device already knows it cannot sign (e.g. a PSBT whose
+             * input carries no prevout, so the spent script is unknowable) must not
+             * be offered for confirmation: asking the operator to authorise an
+             * action that can only fail is worse than saying why up front. Show the
+             * fixed failure text for this code - the same template the sign path
+             * uses - and let `home` take the operator back to welcome. (This is
+             * fail-fast, not a review-side warning: nothing below can succeed.) */
+            const char *why = shlosilo_sign_failure_text(rc);
+            UiSetPayload(why, (uint32_t)strlen(why));
+            return -1;                  /* result page is up; caller must not sign */
+        }
         UiSetLast("review unavailable - not signed");
         return 0;                       /* fail closed */
     }
@@ -2256,9 +2268,12 @@ static void scan_ur_hit(const char *text)
                 return;
             }
             scan_exit();
-            if (!review_gate(g_ur_type, g_ur_payload, plen)) {
-                UiGotoPage(UI_PAGE_WELCOME);
+            int gate = review_gate(g_ur_type, g_ur_payload, plen);
+            if (gate <= 0) {
                 ur_intake_reset();
+                if (gate == 0) {
+                    UiGotoPage(UI_PAGE_WELCOME);
+                }
                 return;
             }
             sign_run(NULL, g_ur_type, g_ur_payload, plen);
@@ -2425,14 +2440,17 @@ static void scan_ur_hit(const char *text)
             return;
         }
         scan_exit();
-        if (!review_gate(g_ur_type, g_ur_payload, plen)) {
+        int gate = review_gate(g_ur_type, g_ur_payload, plen);
+        if (gate <= 0) {
             /* Cancelled at the review page: the decoder still holds the COMPLETE
              * message and g_ur_payload still holds its bytes. Leaving both alive
              * made the next request reuse this message - the review page kept
              * showing the cancelled transaction (2026-11-11 operator report), and
              * `wire` on the last page would have signed THAT one. */
-            UiGotoPage(UI_PAGE_WELCOME);
             ur_intake_reset();
+            if (gate == 0) {
+                UiGotoPage(UI_PAGE_WELCOME);
+            }
             return;
         }
         sign_run(NULL, g_ur_type, g_ur_payload, plen);
