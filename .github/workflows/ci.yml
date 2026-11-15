@@ -178,7 +178,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
@@ -330,15 +330,20 @@ jobs:
           cargo clippy -p shlosilo-pico2 --release --target thumbv8m.main-none-eabihf --all-features -- -D warnings
           cargo clippy -p shlosilo-forgebox --release --target thumbv7em-none-eabihf -- -D warnings
           cargo clippy -p shlosilo-host-sim --release -- -D warnings
+      # `make pico2-uf2` still feeds the ELF through elf2uf2-rs and then rewrites
+      # the block family IDs in flux/pico2/pack_uf2.py (elf2uf2-rs tags every
+      # block with the RP2040 family, which the RP2350 bootrom rejects, and it
+      # cannot emit the RP2350-E10 abs block). The tool therefore has to be
+      # present: this step used to be dropped along with the apt lines, and the
+      # pack gate stayed red-unnoticed behind a clippy failure until the run on
+      # 637ace4 reached it (`FileNotFoundError: 'elf2uf2-rs'`).
+      # Pinned, and built with --no-default-features so it does NOT drag in
+      # libudev/serialport: only the ELF->UF2 conversion is used here, never the
+      # `-d` drive-copy mode that needs the udev dependency.
+      - name: elf2uf2-rs (pinned, no udev)
+        run: cargo install elf2uf2-rs --version 2.2.0 --locked --no-default-features
       - name: pico2 image + UF2 pack (thumbv8m)
         run: |
-          # No apt and no elf2uf2-rs: `make pico2-uf2` packs with
-          # flux/pico2/pack_uf2.py, which exists precisely because elf2uf2-rs
-          # tags RP2040 family IDs and would be rejected by the RP2350 bootrom.
-          # The old `apt-get install libudev-dev` + `cargo install elf2uf2-rs`
-          # lines were leftovers from before that script and only gave this job
-          # an apt dependency (run 43045888000 failed on it: the mirror stopped
-          # resolving).
           make pico2-uf2
           ls -la target/thumbv8m.main-none-eabihf/release/shlosilo-pico2.uf2
       # Audit #17 P1-01: the fixed-entropy XMR command (xmrseed), the
