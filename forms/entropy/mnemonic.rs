@@ -122,7 +122,7 @@ impl Mnemonic {
         entropy_buf[..entropy.len()].copy_from_slice(entropy);
         entropy_buf[entropy.len()] = checksum_byte;
 
-        for word_idx in 0..word_count.as_usize() {
+        for slot in mnemonic.indices.iter_mut().take(word_count.as_usize()) {
             let mut value: u16 = 0;
             for _bit in 0..11 {
                 if bit_idx >= total_bits {
@@ -134,7 +134,7 @@ impl Mnemonic {
                 value = (value << 1) | (bit_val as u16);
                 bit_idx += 1;
             }
-            mnemonic.indices[word_idx] = value;
+            *slot = value;
         }
 
         Ok(mnemonic)
