@@ -7,6 +7,9 @@
 # failing test on any face is a real failure.
 cd ~/works/shlosilo-poc4 || exit 99
 bash scripts/check_fixtures.sh > /tmp/g_fixt.log 2>&1; echo "FIXTURES=$?"
+# Dependency versions: every resolvable Cargo.lock must be current (`--locked`); CI
+# passes the same flag to its cargo commands and re-checks the locks after the build.
+bash scripts/check_locks.sh > /tmp/g_locks.log 2>&1; echo "LOCKS=$?"
 # Pool #58: fp-chain coverage manifest (fingerprint binding + visible-failure
 # word chain pins) must stay intact — a renamed/removed/ignored pin is red.
 bash scripts/check_fp_chain.sh > /tmp/g_fpchain.log 2>&1; echo "FPCOV=$?"

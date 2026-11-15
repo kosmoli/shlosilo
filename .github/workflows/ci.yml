@@ -32,6 +32,11 @@ jobs:
           echo "rust-toolchain.toml=$want  ci.yml=$RUST_TOOLCHAIN  rustc=$have"
           test "$want" = "$RUST_TOOLCHAIN" || { echo "::error::rust-toolchain.toml ($want) and ci.yml ($RUST_TOOLCHAIN) disagree"; exit 1; }
           test "$want" = "$have" || { echo "::error::the active rustc ($have) is not the pinned $want"; exit 1; }
+      # Dependency versions are pinned by the committed locks; cargo rewrites them
+      # silently otherwise. This also covers the make/script paths below, where a
+      # flag cannot be injected (`--locked` is passed explicitly wherever possible).
+      - name: Cargo.lock pinned (every tracked manifest)
+        run: bash scripts/check_locks.sh
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all -- --check
@@ -39,9 +44,9 @@ jobs:
       # set, so the diagnostic-feature code paths (and their clippy lints) were
       # never compiled. `--all-features` closes that hole.
       - name: Clippy (all targets, warnings denied)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Clippy (all features, warnings denied)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       # Fixture tracking gate (2026-10-20): tests/fixtures/tx2_cake_real_unsigned.bin
       # was referenced by include_bytes! but silently swallowed by the repo-wide
       # `*.bin` gitignore rule, so it never entered the index - the test build
@@ -89,7 +94,7 @@ jobs:
         run: |
           for f in device-timing generator-cache-ffi perf-bench-ffi prove-timing-ffi cn-timing-ffi tx-phase-timing-ffi; do
             echo "::group::--features $f"
-            cargo check --features "$f"
+            cargo check --locked --features "$f"
             echo "::endgroup::"
           done
       # Platform switch (2026-09-23): the production carrier is LuckyFox Pico Mini
@@ -98,19 +103,24 @@ jobs:
       # cross-target lint: c_char is u8 on ARM, so pointer-cast lints surface only on
       # this target (the same class the flux-crate gate below caught historically).
       - name: LuckyFox gate (armv7-unknown-linux-gnueabihf)
-        run: cargo clippy --all-targets --target armv7-unknown-linux-gnueabihf -- -D warnings
+        run: cargo clippy --locked --all-targets --target armv7-unknown-linux-gnueabihf -- -D warnings
       - name: Embedded checks (thumbv7em)
         run: |
           rustup target add thumbv7em-none-eabihf
-          cargo check --lib --no-default-features --target thumbv7em-none-eabihf
-          cargo check --lib --no-default-features --target thumbv7em-none-eabihf \
+          cargo check --locked --lib --no-default-features --target thumbv7em-none-eabihf
+          cargo check --locked --lib --no-default-features --target thumbv7em-none-eabihf \
             --features device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi
       - name: Vendor crate tests (timing hooks)
-        run: cd vendor/cryptonight && cargo test --features cn-timing --lib
+        run: cd vendor/cryptonight && cargo test --locked --features cn-timing --lib
       # Z5.3 test-infra (2026-10-21): the vendored bulletproofs' own suite is
       # the non-pow2 proof-correctness reference oracle (m=1..16 prove+verify).
       - name: Vendor crate tests (bulletproofs reference oracle)
-        run: cd vendor/monero-bulletproofs && cargo test --release
+        run: cd vendor/monero-bulletproofs && cargo test --locked --release
+      # Nothing above may rewrite a lock: if it did, the job measured a different
+      # dependency set than the reviewed one.
+      - name: Cargo.lock unchanged by the build
+        run: bash scripts/check_locks.sh --diff
+
 
   zero-heap:
     name: Zero-heap (Z6 allocation face)
@@ -212,7 +222,7 @@ jobs:
         # No --offline here: a fresh runner has no registry cache (every other
         # step in this workflow leaves it off too; --offline is the local
         # convention where the cache is warm).
-        run: cargo run --quiet --example dump_sdk_artifacts -- /tmp/sdk_artifacts
+        run: cargo run --locked --quiet --example dump_sdk_artifacts -- /tmp/sdk_artifacts
       - name: Decode them with the SDK
         run: node tools/sdk-gate/run.mjs /tmp/sdk_artifacts
 
@@ -254,10 +264,10 @@ jobs:
         run: bash scripts/vendor_baseline_check.sh
       - name: flux keysource (host tests + no-alloc embedded face)
         run: |
-          cargo test -p shlosilo-flux-keysource
-          cargo check -p shlosilo-flux-keysource --no-default-features --target thumbv7em-none-eabihf
+          cargo test --locked -p shlosilo-flux-keysource
+          cargo check --locked -p shlosilo-flux-keysource --no-default-features --target thumbv7em-none-eabihf
       - name: forgebox staticlib (embedded, thumbv7em)
-        run: cargo check -p shlosilo-forgebox --release --target thumbv7em-none-eabihf
+        run: cargo check --locked -p shlosilo-forgebox --release --target thumbv7em-none-eabihf
       # The C firmware build is ~95% of this job's wall time (measured: 3433 s of
       # a 59-minute run, every other step together ~2 minutes). Cache the compiler
       # objects: ccache keys on the preprocessed source + compiler binary + flags,
@@ -327,9 +337,9 @@ jobs:
       # linted with --all-features to cover the bench/perf surface.
       - name: "Flux crates: clippy (embedded + host targets, warnings denied)"
         run: |
-          cargo clippy -p shlosilo-pico2 --release --target thumbv8m.main-none-eabihf --all-features -- -D warnings
-          cargo clippy -p shlosilo-forgebox --release --target thumbv7em-none-eabihf -- -D warnings
-          cargo clippy -p shlosilo-host-sim --release -- -D warnings
+          cargo clippy --locked -p shlosilo-pico2 --release --target thumbv8m.main-none-eabihf --all-features -- -D warnings
+          cargo clippy --locked -p shlosilo-forgebox --release --target thumbv7em-none-eabihf -- -D warnings
+          cargo clippy --locked -p shlosilo-host-sim --release -- -D warnings
       # `make pico2-uf2` still feeds the ELF through elf2uf2-rs and then rewrites
       # the block family IDs in flux/pico2/pack_uf2.py (elf2uf2-rs tags every
       # block with the RP2040 family, which the RP2350 bootrom rejects, and it
@@ -353,3 +363,7 @@ jobs:
       # control on the bench build).
       - name: pico2 build flavors (fixed entropy is bench-only)
         run: bash scripts/check_pico2_flavors.sh
+      # Nothing above may rewrite a lock: if it did, the job measured a different
+      # dependency set than the reviewed one.
+      - name: Cargo.lock unchanged by the build
+        run: bash scripts/check_locks.sh --diff
