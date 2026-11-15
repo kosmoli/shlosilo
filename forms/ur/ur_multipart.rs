@@ -31,7 +31,7 @@ fn wire_len(n: u64) -> Result<usize> {
 }
 
 /// Multipart payload limit — aligned with TxTemplate 16 KiB (same source as the v2-security §4 size guardrail)
-pub const MULTIPART_PAYLOAD_MAX_LEN: usize = 16384;
+pub const MULTIPART_PAYLOAD_MAX_LEN: usize = 65536;
 
 /// Fountain **part number** budget (the URI's `seq` field), independent of the
 /// fragment **count**. BC-UR lets a fountain encoder keep emitting mixed parts

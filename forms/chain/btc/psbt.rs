@@ -51,7 +51,9 @@ use alloc::vec::Vec;
 #[cfg(any(feature = "alloc-fallback", test))]
 #[cfg(test)]
 use crate::chain::btc::p2wpkh::bt_vec;
-use crate::chain::btc::p2wpkh::{OutPoint, Transaction, TxIn, TxOut};
+use crate::chain::btc::p2wpkh::{
+    OutPoint, Transaction, TxIn, TxOut, BT_TX_INPUTS_MAX, BT_TX_OUTPUTS_MAX,
+};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::types::push::{CountSink, Sink, SinkCursor};
 use crate::types::SecretBytes;
@@ -232,7 +234,10 @@ impl<'a> KvMap<'a> {
 /// Z4-7b: the PSBT map pool — records + arena + the wire base. Logical map
 /// order is `global, inputs…, outputs…`. Capacities are runtime queries
 /// (`shlosilo_sign_ws_len`); over-cap is an explicit Err, never truncation.
-pub const PSBT_MAPS_MAX: usize = 2 + 16 + 64;
+/// 2 globals + up to BT_TX_INPUTS_MAX input maps + up to BT_TX_OUTPUTS_MAX
+/// output maps. Raised with the input cap (2026-11-15, B-7): the old 2+16+64 = 82
+/// could not even hold a 43-input request (2+43+43 = 88 maps).
+pub const PSBT_MAPS_MAX: usize = 2 + 64 + 64;
 
 pub struct MapPool<'a> {
     wire: &'a [u8],
@@ -260,7 +265,12 @@ impl<'a> MapPool<'a> {
     /// Begin the next map in wire order; returns its index.
     fn start_map(&mut self) -> Result<usize> {
         if self.maps_started >= PSBT_MAPS_MAX {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+            // Capacity, not format: the request is well-formed, it just has more
+            // maps than this device models. It must reach the user as
+            // "request too large" (BufferTooSmall), never as "request data not
+            // recognized" - that wording sends the operator to the wallet for a
+            // bug that lives in our limits (B-7, 2026-11-15).
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
         }
         let idx = self.maps_started;
         self.maps_started += 1;
@@ -678,7 +688,9 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
                 sequence,
                 witness: crate::types::wire_bytes::witness_empty(),
             })
-            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            // The wire model holds BT_TX_INPUTS_MAX inputs: going past it is a
+            // capacity failure, not a malformed request (B-7, 2026-11-15).
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
     }
 
     // outputs count
@@ -711,7 +723,7 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
                 value,
                 script_pubkey,
             })
-            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
     }
 
     // lock_time (4 bytes)
@@ -807,6 +819,16 @@ pub fn parse_psbt_into<'a>(
     let tx_wire = decode_map_into(&mut pool, bytes, &mut pos)?
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let unsigned_tx = deserialize_unsigned_tx(tx_wire)?;
+
+    // Capacity, not format (B-7, 2026-11-15): a request with more inputs/outputs
+    // than this device models is perfectly well-formed. Refusing it here - before
+    // the map walk, which would otherwise trip on the truncated remainder and
+    // report EncodingInvalidFormat - is what lets the screen say "request too
+    // large" instead of "request data not recognized".
+    if unsigned_tx.inputs.len() > BT_TX_INPUTS_MAX || unsigned_tx.outputs.len() > BT_TX_OUTPUTS_MAX
+    {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
 
     // input maps / output maps
     for _ in 0..unsigned_tx.inputs.len() {
@@ -1479,7 +1501,8 @@ fn taproot_sighash_for(psbt: &Psbt<'_>, input_index: usize, hash_type: u8) -> Re
 
     let n_in = psbt.unsigned_tx.inputs.len();
     if n_in > BT_TX_INPUTS_MAX {
-        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        // Same rule as start_map(): an oversized request is a capacity failure.
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
     }
 
     // The borrowed UTXO bytes must outlive every view built from them, so they

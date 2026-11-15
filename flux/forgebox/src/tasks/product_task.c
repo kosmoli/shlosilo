@@ -87,6 +87,7 @@ static void ProductTask(void *argument);
 static void scan_enter(void);
 static void scan_step(void);
 static void scan_exit(void);
+static void hold_failure_page(void);
 static void seed_confirm_step(void);
 static void key_session_close(void);
 /* Task 5b seed-flow state (full definition below with the seed helpers;
@@ -735,11 +736,14 @@ static const uint16_t k_sign_idx12[12] = {
  * budget plus slack), which refused every request past ~6 inputs. */
 /* Inbound reassembly budget. NOT a memory budget: the fountain decoder completes
  * at decoded_count >= ceil(message / fragment), and it has UR_WS_DECODED_SLOTS
- * (256) slots. With the 130-character fragments the Cake family sends by default
- * (bytewords minimal: 4 chars per 2 bytes => ~65 B of data per part) the ceiling
- * is ~16.6 KiB. Raising this number alone accepts frames that can never be
- * assembled (progress parks at 99%) - the slots must move with it. */
-#define UR_PAYLOAD_MAX            (16 * 1024)
+ * slots. With the 130-character fragments wallets send by default (bytewords
+ * minimal: 4 chars per 2 bytes => ~65 B of data per part) the ceiling is
+ * slots x 65 B. Raised together with the slots on 2026-11-15 (B-7): a real
+ * 43-input Sparrow PSBT measured 61,138 B and needed ~941 parts, so the old
+ * 256-slot / 16 KiB pair could neither assemble nor hold it. Now 1024 slots
+ * (~65 KiB of parts) + 64 KiB here, which keeps the two numbers in step.
+ * The buffer itself comes from ExtMalloc (PSRAM), so this costs no SRAM. */
+#define UR_PAYLOAD_MAX            (64 * 1024)
 
 /* Multipart UR intake (QR flow into the sign page): the R3 decoder session
  * lives from the first scanned frame to completion/abort. */
@@ -1534,6 +1538,11 @@ static void sign_run(const char *uri, const char *type,
     }
     printf("sign: done -> result page\r\n");
     UiSetPayload(result, (uint32_t)strlen(result));
+    if (g_sign_out_len == 0) {
+        /* No signed artifact: this is the failure template on screen, and the scan
+         * loop would repaint over it (B-7, 2026-11-15). Hold it until `home`. */
+        hold_failure_page();
+    }
 }
 
 /* ---------------- Cake pairing leg (T5): xmr-output -> xmr-keyimage ---------------- */
@@ -2273,7 +2282,11 @@ static void scan_ur_hit(const char *text)
                 ur_intake_reset();
                 if (gate == 0) {
                     UiGotoPage(UI_PAGE_WELCOME);
+                    return;
                 }
+                /* gate < 0: review_gate put the fixed failure text on the
+                 * result page; keep it there until `home` (B-7, 2026-11-15). */
+                hold_failure_page();
                 return;
             }
             sign_run(NULL, g_ur_type, g_ur_payload, plen);
@@ -2372,8 +2385,17 @@ static void scan_ur_hit(const char *text)
             shlosilo_ur_decode_payload(g_ur_dec, g_ur_payload,
                                        UR_PAYLOAD_MAX, &plen) != 0) {
             printf("ur: complete but extract fail (t=%u p=%u)\r\n", tlen, plen);
-            UiScanInfo("scan failed", "request unreadable", "", "");
+            /* Capacity, not corruption: the message reassembled fine but does not
+             * fit this device's payload budget. Say it in the fixed vocabulary
+             * (BufferTooSmall -> "request too large") and hold the page. */
+            {
+                /* -20 = ShlosiloErrorCode::BufferTooSmall (forms/error.rs); the C
+                 * header documents the numeric code, the enum symbol is Rust-only. */
+                const char *why = shlosilo_sign_failure_text(-20);
+                UiSetPayload(why, (uint32_t)strlen(why));
+            }
             ur_intake_reset();
+            hold_failure_page();
             return;
         }
         printf("ur: complete type=%s payload=%u\r\n", g_ur_type, plen);
@@ -2660,6 +2682,37 @@ static void scan_exit(void)
      * known-good bus configuration before the next touch read. */
     I2cInit();
     UiTouchReset();
+}
+
+/* A failure the operator must actually SEE (B-7, 2026-11-15).
+ *
+ * The scan loop repaints UI_PAGE_SCAN on every step, so a failure page put up
+ * from inside scan_step() was overwritten a frame later: in the B-7 run the
+ * operator got a single flash of "request too large" and the evidence was gone.
+ * Take the scan session down first, then own the task until `home` is pressed -
+ * the failure stays on screen, and the next scan starts from a clean state. */
+static void hold_failure_page(void)
+{
+    TouchStatus_t st;
+    int prev = 1;
+
+    if (g_scan == SCAN_ACTIVE) {
+        scan_exit();
+    }
+    for (;;) {
+        if (TouchGetStatus(&st) == 0) {
+            int down = st.touch ? 1 : 0;
+            if (down && !prev && UiIsBackButton((int)st.x, (int)st.y)) {
+                g_back_press_x = (int)st.x;
+                g_back_press_y = (int)st.y;
+                key_session_close();
+                UiGotoPage(UI_PAGE_WELCOME);
+                return;
+            }
+            prev = down;
+        }
+        osDelay(UI_POLL_MS);
+    }
 }
 
 /* ---------------- UR carousel session (F3 output side) ---------------- */

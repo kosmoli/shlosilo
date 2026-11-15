@@ -21,7 +21,7 @@ use std::ffi::CString;
 
 const PRODUCT_TASK_C: &str = include_str!("../flux/forgebox/src/tasks/product_task.c");
 
-const INBOUND: usize = 16 * 1024;
+const INBOUND: usize = 64 * 1024;
 const OUTBOUND: usize = 64 * 1024 + 512;
 
 fn hex_decode(s: &str) -> Vec<u8> {
@@ -80,11 +80,11 @@ fn inbound_cap_is_the_slot_derived_value_on_both_sides() {
     let rust_inbound = shlosilo::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN;
     assert_eq!(
         rust_inbound, INBOUND,
-        "inbound reassembly cap: 256 decode slots x ~65 B sender fragments"
+        "inbound reassembly cap: 1024 decode slots x ~65 B sender fragments"
     );
     // Firmware side.
     assert!(
-        PRODUCT_TASK_C.contains("#define UR_PAYLOAD_MAX            (16 * 1024)"),
+        PRODUCT_TASK_C.contains("#define UR_PAYLOAD_MAX            (64 * 1024)"),
         "the firmware's inbound buffer must match the Rust cap (otherwise a payload \
          is collected that the signer then refuses)"
     );

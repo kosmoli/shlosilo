@@ -134,8 +134,10 @@
  * Z4-7a: fixed backplane caps (the XMR H-cut precedent) — the logical
  * lengths drive serialization; over-cap is an explicit Err, never truncation.
  * Measured maxima: the sparrow 12k fixture runs 1 input / 2 outputs.
+ * Raised 16 -> 64 (2026-11-15, B-7): a real Sparrow consolidation spent 43
+ * inputs; 16 refused it with an encoding error that blamed the wallet.
  */
-#define BT_TX_INPUTS_MAX 16
+#define BT_TX_INPUTS_MAX 64
 
 #define BT_TX_OUTPUTS_MAX 64
 
@@ -143,8 +145,11 @@
  * Z4-7b: the PSBT map pool — records + arena + the wire base. Logical map
  * order is `global, inputs…, outputs…`. Capacities are runtime queries
  * (`shlosilo_sign_ws_len`); over-cap is an explicit Err, never truncation.
+ * 2 globals + up to BT_TX_INPUTS_MAX input maps + up to BT_TX_OUTPUTS_MAX
+ * output maps. Raised with the input cap (2026-11-15, B-7): the old 2+16+64 = 82
+ * could not even hold a 43-input request (2+43+43 = 88 maps).
  */
-#define PSBT_MAPS_MAX ((2 + 16) + 64)
+#define PSBT_MAPS_MAX ((2 + 64) + 64)
 
 #define UNSIGNED_TX 0
 
@@ -727,13 +732,23 @@
 
 /**
  * Workspace: UR decode — decoded-parts slots (FountainWs pool).
+ *
+ * Raised 256 -> 1024 (2026-11-15, B-7): the slot count is what bounds the
+ * inbound payload (`UR_WS_DECODED_SLOTS x sender-fragment size`), and a
+ * real 43-input PSBT from Sparrow measured 61,138 B. With the 130-character
+ * fragments wallets send by default (~65 B of data per part) that request
+ * needs ~941 parts, so 256 slots could never assemble it while the payload
+ * buffer said 16 KiB was fine. Both numbers move together (see the B-7 block
+ * below): 1024 slots x 65 B = 65 KiB >= the 64 KiB inbound cap.
  */
-#define UR_WS_DECODED_SLOTS 256
+#define UR_WS_DECODED_SLOTS 1024
 
 /**
  * Workspace: UR decode — work-buffer slots.
+ * Raised 256 -> 1024 with the decoded slots: the fountain solver needs one
+ * work buffer per part it can hold.
  */
-#define UR_WS_BUFFER_SLOTS 256
+#define UR_WS_BUFFER_SLOTS 1024
 
 /**
  * Workspace: UR decode — cascade queue slots.
@@ -795,7 +810,7 @@
 /**
  * Multipart payload limit — aligned with TxTemplate 16 KiB (same source as the v2-security §4 size guardrail)
  */
-#define MULTIPART_PAYLOAD_MAX_LEN 16384
+#define MULTIPART_PAYLOAD_MAX_LEN 65536
 
 /**
  * Message budget on the wire: content + the longest definite CBOR byte-string

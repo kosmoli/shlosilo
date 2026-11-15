@@ -32,7 +32,7 @@ fn p102_valid_multipart_roundtrip() {
 /// Budget constant declarations unchanged (locked audit alignment: 16 KiB payload / 40 KiB frame)
 #[test]
 fn p102_budget_constants() {
-    assert_eq!(MULTIPART_PAYLOAD_MAX_LEN, 16384);
+    assert_eq!(MULTIPART_PAYLOAD_MAX_LEN, 65536);
     assert_eq!(shlosilo::ur::ur_multipart::MULTIPART_FRAME_MAX_LEN, 40960);
 }
 
@@ -100,10 +100,19 @@ fn p102_duplicate_frames_do_not_consume_budget() {
     }
 }
 
-/// Legal sessions are not collateral damage when the retained budget nears its cap (16KB payload = half the budget)
+/// Legal sessions are not collateral damage when the retained budget nears its cap.
+///
+/// The payload here is the largest one a *session* can actually complete: the
+/// fountain index domain (`MAX_SEQUENCE_COUNT = 256`) caps a message at 256 parts,
+/// so 200-byte parts top out at 51,200 B. `MULTIPART_PAYLOAD_MAX_LEN` (64 KiB) is the
+/// buffer budget, not the session budget - a 64 KiB message would need 328 parts and
+/// the encoder refuses it, which is the honest answer (B-7, 2026-11-15).
 #[test]
 fn p102_max_payload_session_within_budget() {
-    let payload: std::vec::Vec<u8> = vec![0u8; MULTIPART_PAYLOAD_MAX_LEN];
+    // 250 parts x 200 B: the shell prefix and fragment rounding eat into the
+    // 256-part domain, so leave a little headroom rather than sit exactly on it.
+    let payload: std::vec::Vec<u8> = vec![0u8; 250 * 200];
+    assert!(payload.len() <= MULTIPART_PAYLOAD_MAX_LEN);
     let mut enc =
         shlosilo::ur::ur_multipart::UrMultipartEncoder::new("bytes", &payload, 200).unwrap();
     let mut dec = UrMultipartDecoder::new();

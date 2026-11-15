@@ -72,7 +72,9 @@ pub struct OutPoint {
 /// Z4-7a: fixed backplane caps (the XMR H-cut precedent) — the logical
 /// lengths drive serialization; over-cap is an explicit Err, never truncation.
 /// Measured maxima: the sparrow 12k fixture runs 1 input / 2 outputs.
-pub const BT_TX_INPUTS_MAX: usize = 16;
+/// Raised 16 -> 64 (2026-11-15, B-7): a real Sparrow consolidation spent 43
+/// inputs; 16 refused it with an encoding error that blamed the wallet.
+pub const BT_TX_INPUTS_MAX: usize = 64;
 pub const BT_TX_OUTPUTS_MAX: usize = 64;
 
 /// Z4-7a: `vec![a, b]`-shaped construction for the capped model vectors —

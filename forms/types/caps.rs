@@ -141,9 +141,19 @@ pub const SIGN_WS_SEL_OUT: usize = 256;
 /// Workspace: key-image string bytes (67 per source).
 pub const SIGN_WS_KSTR: usize = 67 * 32;
 /// Workspace: UR decode — decoded-parts slots (FountainWs pool).
-pub const UR_WS_DECODED_SLOTS: usize = 256;
+///
+/// Raised 256 -> 1024 (2026-11-15, B-7): the slot count is what bounds the
+/// inbound payload (`UR_WS_DECODED_SLOTS x sender-fragment size`), and a
+/// real 43-input PSBT from Sparrow measured 61,138 B. With the 130-character
+/// fragments wallets send by default (~65 B of data per part) that request
+/// needs ~941 parts, so 256 slots could never assemble it while the payload
+/// buffer said 16 KiB was fine. Both numbers move together (see the B-7 block
+/// below): 1024 slots x 65 B = 65 KiB >= the 64 KiB inbound cap.
+pub const UR_WS_DECODED_SLOTS: usize = 1024;
 /// Workspace: UR decode — work-buffer slots.
-pub const UR_WS_BUFFER_SLOTS: usize = 256;
+/// Raised 256 -> 1024 with the decoded slots: the fountain solver needs one
+/// work buffer per part it can hold.
+pub const UR_WS_BUFFER_SLOTS: usize = 1024;
 /// Workspace: UR decode — cascade queue slots.
 pub const UR_WS_QUEUE_SLOTS: usize = 256;
 /// Workspace: UR decode — received-sequence slots (the full fountain sequence
@@ -164,14 +174,15 @@ pub const CLSAG_PROOF_MAX: usize = 32 * (RING_MAX + 3);
 //
 // - Inbound (a wallet -> us) is bounded by our **reassembly slots**, not by a
 //   memory budget: the fountain decoder completes at `decoded_count >=
-//   sequence_count`, and `sequence_count = ceil(消息 / 分片)`. With
-//   `UR_WS_DECODED_SLOTS = 256` and the 130-character fragments the Cake family
-//   sends by default (bytewords minimal is 4 chars per 2 bytes, so ~65 B of data
-//   per part), the ceiling is ~16.6 KiB. That is why
-//   `ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN` stays at 16384: raising it
-//   without raising the slots produces a session that never completes (progress
-//   parks at 99%) - frames are accepted one by one and the request can never be
-//   signed.
+//   sequence_count`, and `sequence_count = ceil(message / fragment)`. With
+//   `UR_WS_DECODED_SLOTS = 1024` and the 130-character fragments wallets send by
+//   default (bytewords minimal is 4 chars per 2 bytes, so ~65 B of data per part)
+//   the ceiling is ~65 KiB, which is why `ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN`
+//   is 65536: raising one without the other produces a session that never
+//   completes (progress parks at 99%) - frames are accepted one by one and the
+//   request can never be signed. History: both were 256/16384 until a real
+//   43-input PSBT (61,138 B, `tests/fixtures/psbt_43_inputs_signet.psbt`) showed
+//   the pair could not cover a 40-UTXO consolidation.
 // - Outbound (us -> a wallet) is ours to choose: we pick the fragment length, so
 //   the wallet's decoder - not our slot count - is the limit. 64 KiB covers a
 //   29-input spend under the measured size model (722 + 2131·N_in + 711·N_out).
