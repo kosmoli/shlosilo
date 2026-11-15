@@ -1,0 +1,17 @@
+# Single source of truth for the Rust toolchain (2026-11-15).
+#
+# Why pinned: CI used `dtolnay/rust-toolchain@stable`, so every upstream stable
+# release silently re-lints the whole tree. The 2026-11-12 run went red on
+# `clippy::needless_range_loop` in forms/entropy/mnemonic.rs purely because CI had
+# moved to 1.100.0 while the tree had only ever been checked with 1.98.1 — the
+# code was fine, the moving target was not. Bumping this file is now a deliberate,
+# reviewed change; the `toolchain pin` gate in ci.yml fails if ci.yml and this file
+# disagree.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+targets = [
+  "thumbv7em-none-eabihf",     # forgebox (MH1903, Cortex-M7)
+  "thumbv8m.main-none-eabihf", # pico2 (RP2350, Cortex-M33)
+  "armv7-unknown-linux-gnueabihf", # LuckyFox (RV1103 Linux userspace)
+]

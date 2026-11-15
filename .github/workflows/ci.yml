@@ -7,6 +7,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned Rust toolchain (see rust-toolchain.toml, which local dev uses). Never
+  # use the moving `stable` channel here: an upstream release silently re-lints
+  # the tree (2026-11-12 red run) and the failure has nothing to do with our code.
+  RUST_TOOLCHAIN: "1.100.0"
 
 jobs:
   test:
@@ -14,10 +18,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy, rustfmt
           targets: armv7-unknown-linux-gnueabihf
+      # The pin itself must stay honest: if ci.yml and rust-toolchain.toml drift
+      # apart, local runs and CI stop measuring the same lints.
+      - name: toolchain pin (ci.yml vs rust-toolchain.toml)
+        run: |
+          want=$(grep -E '^channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          have=$(rustc --version | cut -d' ' -f2)
+          echo "rust-toolchain.toml=$want  ci.yml=$RUST_TOOLCHAIN  rustc=$have"
+          test "$want" = "$RUST_TOOLCHAIN" || { echo "::error::rust-toolchain.toml ($want) and ci.yml ($RUST_TOOLCHAIN) disagree"; exit 1; }
+          test "$want" = "$have" || { echo "::error::the active rustc ($have) is not the pinned $want"; exit 1; }
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all -- --check
@@ -103,8 +117,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: thumbv7em-none-eabihf
       - uses: Swatinem/rust-cache@v2
         with:
@@ -182,7 +197,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -207,8 +224,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
           targets: thumbv7em-none-eabihf,thumbv8m.main-none-eabihf
       - uses: Swatinem/rust-cache@v2
