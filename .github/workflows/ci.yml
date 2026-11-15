@@ -37,6 +37,11 @@ jobs:
       # flag cannot be injected (`--locked` is passed explicitly wherever possible).
       - name: Cargo.lock pinned (every tracked manifest)
         run: bash scripts/check_locks.sh
+      # forms/ is shared by every carrier: a panic there kills all of them, and a
+      # capacity failure is recoverable (the wallet can spend fewer coins). Panic
+      # macros are budget 0; unwrap/expect are ratcheted in the script.
+      - name: no-panic gate (forms/ production code)
+        run: python3 scripts/check_no_panic.py
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all -- --check

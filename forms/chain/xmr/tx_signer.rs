@@ -510,6 +510,24 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     Ok(out)
 }
 
+/// Number of populated sources in a construction record.
+fn source_count(tx_data: &TxConstructionData) -> usize {
+    tx_data.sources.iter().flatten().count()
+}
+
+/// The signer's fixed tables: `PREFIX_INPUTS_MAX` inputs, `PREFIX_OUTPUTS_MAX`
+/// outputs. Exceeding either is a **recoverable capacity error** - the wallet can
+/// hand over a smaller spend - and must be reported as such (BufferTooSmall ->
+/// "request too large" on screen). It used to `assert!` inside the build loop,
+/// which panicked the whole device on the 17th input (2026-11-15).
+pub(crate) fn check_table_caps(inputs: usize, outputs: usize) -> Result<()> {
+    use crate::chain::xmr::transaction::{PREFIX_INPUTS_MAX, PREFIX_OUTPUTS_MAX};
+    if inputs > PREFIX_INPUTS_MAX || outputs > PREFIX_OUTPUTS_MAX {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
+    Ok(())
+}
+
 /// Core signing into a caller-workspace slot (Z3.2b). `out` receives the
 /// official monerod wire directly; over-slot raises explicit BufferTooSmall
 /// (RequiredLength), never truncation.
@@ -540,6 +558,11 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     if tx_data.splitted_dsts.is_empty() || tx_data.sources.is_empty() {
         return Err(err());
     }
+    // Capacity, not corruption (2026-11-15): a request with more sources/outputs
+    // than the fixed tables hold is RECOVERABLE - the wallet can re-select fewer
+    // coins - so it must come back as BufferTooSmall ("request too large"), never
+    // as a panic. `check_table_caps` is the pinned contract for both counts.
+    check_table_caps(source_count(tx_data), tx_data.splitted_dsts.len())?;
     let rct_type = resolve_rct_type(tx_data.rct_config.bp_version)?;
 
     // r is injected by the caller (§B.5: TxKey purpose subdomain derivation)
@@ -766,10 +789,9 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
         core::array::from_fn(|_| TxOutput::new_tagged(0, [0u8; 32], 0));
     let mut tx_outputs_len = 0usize;
     for o in &outs[..outs_len] {
-        assert!(
-            tx_outputs_len < crate::chain::xmr::transaction::PREFIX_OUTPUTS_MAX,
-            "too many outputs"
-        );
+        if tx_outputs_len >= crate::chain::xmr::transaction::PREFIX_OUTPUTS_MAX {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+        }
         tx_outputs[tx_outputs_len] = TxOutput::new_tagged(
             0, // in an RCT tx's wire/prefix, vout amounts are always 0 (real amounts live in ecdhInfo)
             o.deriv.stealth_address,
@@ -817,10 +839,11 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             tx_data.subaddr_account,
             &tx_data.subaddr_indices,
         )?;
-        assert!(
-            tx_inputs_len < crate::chain::xmr::transaction::PREFIX_INPUTS_MAX,
-            "too many inputs"
-        );
+        if tx_inputs_len >= crate::chain::xmr::transaction::PREFIX_INPUTS_MAX {
+            // Unreachable behind check_table_caps(); kept as a non-panicking guard
+            // because `forms` code must never abort the device (2026-11-15 red line).
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+        }
         tx_inputs[tx_inputs_len] = TxInput::new(offs.clone(), key_image);
         tx_inputs_len += 1;
         // key_offset is derived and consumed immediately (no intermediate Vec); zeroized in place after push_take
@@ -2345,5 +2368,50 @@ mod claim_identity_tests {
         let mut d = derive_output(&r, None, &[0u8; 32], &dest, &[0u8; 32], 5).unwrap();
         d.view_tag ^= 0x55;
         assert!(verify_claim_identity(&d, 5, &dest).is_err());
+    }
+}
+
+#[cfg(test)]
+mod capacity_pins {
+    use super::*;
+    use crate::chain::xmr::transaction::{PREFIX_INPUTS_MAX, PREFIX_OUTPUTS_MAX};
+
+    /// The fixed tables must refuse oversize, not abort (2026-11-15).
+    ///
+    /// Before this pin the 17th input walked into `assert!(.., "too many inputs")`
+    /// inside the build loop and panicked the device. The refusal is now a
+    /// `BufferTooSmall` at the entry, which the screen renders as "request too
+    /// large" - a recoverable answer (the wallet can spend fewer coins).
+    #[test]
+    fn table_caps_refuse_instead_of_panicking() {
+        assert!(check_table_caps(PREFIX_INPUTS_MAX, PREFIX_OUTPUTS_MAX).is_ok());
+        assert!(check_table_caps(1, 1).is_ok());
+
+        let too_many_inputs = check_table_caps(PREFIX_INPUTS_MAX + 1, 1);
+        assert_eq!(
+            too_many_inputs.err().map(|e| e.kind),
+            Some(ShlosiloErrorKind::BufferTooSmall),
+            "one input past the table must be a capacity error"
+        );
+
+        let too_many_outputs = check_table_caps(1, PREFIX_OUTPUTS_MAX + 1);
+        assert_eq!(
+            too_many_outputs.err().map(|e| e.kind),
+            Some(ShlosiloErrorKind::BufferTooSmall),
+            "one output past the table must be a capacity error"
+        );
+    }
+
+    /// ...and that error code is the one the screen words as "request too large".
+    #[test]
+    fn the_refusal_uses_the_request_too_large_wording() {
+        let code = crate::error::ShlosiloErrorCode::BufferTooSmall as i32;
+        let text = crate::failure_text::sign_failure_text(code)
+            .to_str()
+            .unwrap_or("");
+        assert!(
+            text.contains("request too large"),
+            "BufferTooSmall must say 'request too large', got: {text}"
+        );
     }
 }

@@ -160,14 +160,21 @@ impl Mnemonic {
         Ok(mnemonic)
     }
 
+    /// The word count this mnemonic was built with.
+    ///
+    /// Every constructor validates `len`, so the mapping is total in practice; the
+    /// fallback returns the smallest count instead of `unreachable!()` because
+    /// `forms` must never abort the device (2026-11-15 red line) and this value
+    /// only feeds size maths downstream (`entropy_bytes`, SeedQR chunking).
     pub fn word_count(&self) -> WordCount {
         match self.len {
-            12 => WordCount::Words12,
             15 => WordCount::Words15,
             18 => WordCount::Words18,
             21 => WordCount::Words21,
             24 => WordCount::Words24,
-            _ => unreachable!("invalid mnemonic length"),
+            // 12 is the smallest legal entropy (128 bit); also the safe floor for a
+            // record whose length byte was never set.
+            _ => WordCount::Words12,
         }
     }
 
