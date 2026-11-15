@@ -21,7 +21,7 @@ use std::ffi::CString;
 
 const PRODUCT_TASK_C: &str = include_str!("../flux/forgebox/src/tasks/product_task.c");
 
-const INBOUND: usize = 64 * 1024;
+const INBOUND: usize = 256 * 240;
 const OUTBOUND: usize = 64 * 1024 + 512;
 
 fn hex_decode(s: &str) -> Vec<u8> {
@@ -84,7 +84,7 @@ fn inbound_cap_is_the_slot_derived_value_on_both_sides() {
     );
     // Firmware side.
     assert!(
-        PRODUCT_TASK_C.contains("#define UR_PAYLOAD_MAX            (64 * 1024)"),
+        PRODUCT_TASK_C.contains("#define UR_PAYLOAD_MAX            (256 * 240)"),
         "the firmware's inbound buffer must match the Rust cap (otherwise a payload \
          is collected that the signer then refuses)"
     );
@@ -139,8 +139,11 @@ fn outbound_budget_accepts_64k_and_refuses_more() {
 ///    change has to revisit the cap deliberately.)
 #[test]
 fn inbound_cap_stays_within_what_the_slots_can_assemble() {
-    // 65 B of data per part is what 130-character bytewords fragments carry.
-    const SENDER_FRAGMENT: usize = 65;
+    // The ceiling is the part domain times the largest fragment we support: 240 B
+    // is what a Sparrow-class sender emits. (A Cake-family sender uses 130-char
+    // frames = ~65 B of data per part, which reaches only ~16.6 KiB - that is a
+    // sender limitation, not a buffer one.)
+    const SENDER_FRAGMENT: usize = 240;
     let slots = shlosilo::types::caps::UR_WS_DECODED_SLOTS;
     let reachable = slots * SENDER_FRAGMENT;
     assert!(

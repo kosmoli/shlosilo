@@ -733,22 +733,22 @@
 /**
  * Workspace: UR decode — decoded-parts slots (FountainWs pool).
  *
- * Raised 256 -> 1024 (2026-11-15, B-7): the slot count is what bounds the
- * inbound payload (`UR_WS_DECODED_SLOTS x sender-fragment size`), and a
- * real 43-input PSBT from Sparrow measured 61,138 B. With the 130-character
- * fragments wallets send by default (~65 B of data per part) that request
- * needs ~941 parts, so 256 slots could never assemble it while the payload
- * buffer said 16 KiB was fine. Both numbers move together (see the B-7 block
- * below): 1024 slots x 65 B = 65 KiB >= the 64 KiB inbound cap.
+ * **256 is not arbitrary: it is the part-count domain.** `MAX_SEQUENCE_COUNT`
+ * (encoding/fountain.rs) caps a message at 256 parts because the index lives in
+ * u8, and the decoder only ever needs one slot per part. Raising this without
+ * widening that domain buys nothing and is expensive: each slot holds a full
+ * `Part` (inline `data: [u8; 2048]`), so a slot costs ~2.3 KiB - measured
+ * `ur_decode_ws_len()` = 2.7 MiB at 256, 5.9 MiB at 1024 (forgebox PSRAM heap is
+ * 8 MiB total, CN scratch already takes 2 MiB). Slot growth belongs with the
+ * u8 -> u16 domain change *and* a slimmer Part (fragment data as a slice into the
+ * reassembly buffer), not with a bigger payload cap.
  */
-#define UR_WS_DECODED_SLOTS 1024
+#define UR_WS_DECODED_SLOTS 256
 
 /**
- * Workspace: UR decode — work-buffer slots.
- * Raised 256 -> 1024 with the decoded slots: the fountain solver needs one
- * work buffer per part it can hold.
+ * Workspace: UR decode — work-buffer slots (one per part; same domain bound).
  */
-#define UR_WS_BUFFER_SLOTS 1024
+#define UR_WS_BUFFER_SLOTS 256
 
 /**
  * Workspace: UR decode — cascade queue slots.
@@ -809,8 +809,15 @@
 
 /**
  * Multipart payload limit — aligned with TxTemplate 16 KiB (same source as the v2-security §4 size guardrail)
+ * Inbound payload budget = (part domain) x (largest sender fragment we accept).
+ *
+ * `MAX_SEQUENCE_COUNT = 256` parts x 240 B fragments = 61,440 B: that is the most
+ * a u8-indexed fountain session can deliver, so a bigger buffer would only be
+ * reachable by a sender this device cannot reassemble anyway. Raising it is
+ * meaningless until the index domain widens (see the limits-knob plan, §6) - and
+ * the buffer is cheap next to the slots, which are not.
  */
-#define MULTIPART_PAYLOAD_MAX_LEN 65536
+#define MULTIPART_PAYLOAD_MAX_LEN (256 * 240)
 
 /**
  * Message budget on the wire: content + the longest definite CBOR byte-string

@@ -32,7 +32,7 @@ fn p102_valid_multipart_roundtrip() {
 /// Budget constant declarations unchanged (locked audit alignment: 16 KiB payload / 40 KiB frame)
 #[test]
 fn p102_budget_constants() {
-    assert_eq!(MULTIPART_PAYLOAD_MAX_LEN, 65536);
+    assert_eq!(MULTIPART_PAYLOAD_MAX_LEN, 256 * 240);
     assert_eq!(shlosilo::ur::ur_multipart::MULTIPART_FRAME_MAX_LEN, 40960);
 }
 

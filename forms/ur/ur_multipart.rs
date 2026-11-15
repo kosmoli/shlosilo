@@ -31,7 +31,14 @@ fn wire_len(n: u64) -> Result<usize> {
 }
 
 /// Multipart payload limit — aligned with TxTemplate 16 KiB (same source as the v2-security §4 size guardrail)
-pub const MULTIPART_PAYLOAD_MAX_LEN: usize = 65536;
+/// Inbound payload budget = (part domain) x (largest sender fragment we accept).
+///
+/// `MAX_SEQUENCE_COUNT = 256` parts x 240 B fragments = 61,440 B: that is the most
+/// a u8-indexed fountain session can deliver, so a bigger buffer would only be
+/// reachable by a sender this device cannot reassemble anyway. Raising it is
+/// meaningless until the index domain widens (see the limits-knob plan, §6) - and
+/// the buffer is cheap next to the slots, which are not.
+pub const MULTIPART_PAYLOAD_MAX_LEN: usize = 256 * 240;
 
 /// Fountain **part number** budget (the URI's `seq` field), independent of the
 /// fragment **count**. BC-UR lets a fountain encoder keep emitting mixed parts

@@ -743,7 +743,7 @@ static const uint16_t k_sign_idx12[12] = {
  * 256-slot / 16 KiB pair could neither assemble nor hold it. Now 1024 slots
  * (~65 KiB of parts) + 64 KiB here, which keeps the two numbers in step.
  * The buffer itself comes from ExtMalloc (PSRAM), so this costs no SRAM. */
-#define UR_PAYLOAD_MAX            (64 * 1024)
+#define UR_PAYLOAD_MAX            (256 * 240) /* = MULTIPART_PAYLOAD_MAX_LEN: 256 parts x 240 B */
 
 /* Multipart UR intake (QR flow into the sign page): the R3 decoder session
  * lives from the first scanned frame to completion/abort. */
