@@ -36,6 +36,10 @@
 #include "shlosilo_ui.h"
 #include "ui_layout.h"
 #include "shlosilo.h"
+/* Generated projection of shlosilo's platform resource profile (build.rs writes it next
+ * to shlosilo.h for this carrier only). The C side never chooses these numbers; it
+ * mirrors them, and the fingerprint below proves both halves came from one profile. */
+#include "shlosilo_limits.h"
 #include "crash_blackbox.h"
 #include "crash_noinit.h"
 #include "crash_store.h"
@@ -104,13 +108,14 @@ static const struct KeySession *g_key_session;
  * by transfer index across pairing scans (scanning the partial export after
  * the full one must not drop coverage). Cross-wallet contamination is caught
  * at sign time by the selected-index mismatch guard (KeyImageRecordMismatch:
- * a wrong-wallet record cannot match the derived key image). */
-#define PAIRING_KI_MAX 128 /* mirrors forms/business/xmr_pairing.rs PAIRING_RECORDS_MAX (WP4: 64->128)
- * (32 = 4x largest observed wallet at design time, 2026-10-21). REVISIT 2026-10-29:
+ * a wrong-wallet record cannot match the derived key image).
  * a Cake Outputs(all) of 38 records broke the cap -> pairing refused -20 (silent).
  * 64 is headroom only; the real wall is the positional full-array protocol shape.
  * Endgames (persistent store + paging vs keystone-shape keyed map) = LuckyFox C/D
- * decision (pool #55). Over-cap refusal MUST be visibly reported. */
+ * decision (pool #55). Over-cap refusal MUST be visibly reported.
+ * The number itself comes from the Rust profile (mirrors PAIRING_RECORDS_MAX via the
+ * generated shlosilo_limits.h) - never set it here. */
+#define PAIRING_KI_MAX SHLOSILO_LIMITS_PAIRING_RECORDS_MAX
 static struct WalletKiRecord g_pairing_ki[PAIRING_KI_MAX];
 static unsigned int g_pairing_ki_n;
 static struct WalletKiRecord g_pairing_ki_tmp[PAIRING_KI_MAX];
@@ -478,12 +483,37 @@ static void crash_page_show(void)
     UiGotoPage(UI_PAGE_CRASH);
 }
 
+/* One firmware image, one resource profile: the Rust staticlib and this translation
+ * unit must have been generated from the same `limits/<profile>.toml`. If they were not,
+ * every FFI buffer length in this file is a guess, so refuse to run rather than sign
+ * with mismatched ceilings. The operator sees a fixed line; the numbers go to the
+ * console. */
+static int limits_profile_matches(void)
+{
+    uint64_t lib = shlosilo_limits_fingerprint();
+    if (lib == (uint64_t)SHLOSILO_LIMITS_FINGERPRINT) {
+        return 1;
+    }
+    printf("limits: PROFILE MISMATCH lib=0x%016llx header=0x%016llx (profile %s)\r\n",
+           (unsigned long long)lib,
+           (unsigned long long)SHLOSILO_LIMITS_FINGERPRINT,
+           SHLOSILO_LIMITS_PROFILE);
+    return 0;
+}
+
 static void ProductTask(void *argument)
 {
     (void)argument;
 
     printf("product UI task started\r\n");
     WDT_ReloadCounter();
+    if (!limits_profile_matches()) {
+        UiSetLast("limits profile mismatch - rebuild");
+        for (;;) {
+            WDT_ReloadCounter();
+            osDelay(1000);
+        }
+    }
     fault_record_peek();
     /* Crash forensics: the Rust side forwards its per-output-loop phase
      * marker (forms/ffi/crash_phase.rs) into the same flash record area. */
@@ -743,7 +773,8 @@ static const uint16_t k_sign_idx12[12] = {
  * 256-slot / 16 KiB pair could neither assemble nor hold it. Now 1024 slots
  * (~65 KiB of parts) + 64 KiB here, which keeps the two numbers in step.
  * The buffer itself comes from ExtMalloc (PSRAM), so this costs no SRAM. */
-#define UR_PAYLOAD_MAX            (256 * 240) /* = MULTIPART_PAYLOAD_MAX_LEN: 256 parts x 240 B */
+/* Inbound UR payload budget: mirrors MULTIPART_PAYLOAD_MAX_LEN from the Rust profile. */
+#define UR_PAYLOAD_MAX            SHLOSILO_LIMITS_UR_PAYLOAD_MAX
 
 /* Multipart UR intake (QR flow into the sign page): the R3 decoder session
  * lives from the first scanned frame to completion/abort. */

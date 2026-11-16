@@ -84,9 +84,9 @@ fn inbound_cap_is_the_slot_derived_value_on_both_sides() {
     );
     // Firmware side.
     assert!(
-        PRODUCT_TASK_C.contains("#define UR_PAYLOAD_MAX            (256 * 240)"),
-        "the firmware's inbound buffer must match the Rust cap (otherwise a payload \
-         is collected that the signer then refuses)"
+        PRODUCT_TASK_C.contains("#define UR_PAYLOAD_MAX            SHLOSILO_LIMITS_UR_PAYLOAD_MAX"),
+        "the firmware's inbound buffer must come from the generated profile projection \
+         (otherwise a payload is collected that the signer then refuses)"
     );
 }
 

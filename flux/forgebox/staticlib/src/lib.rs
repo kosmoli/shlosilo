@@ -135,6 +135,7 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::c_abi::shlosilo_sign_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_sign_ws_len as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_ur_encode_ws_len as *const ()),
+    Addr(shlosilo::ffi::c_abi::shlosilo_limits_fingerprint as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_ur_decode_ws_len as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_seed_qr_probe_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_seed_qr_encode_ffi as *const ()),

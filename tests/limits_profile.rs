@@ -60,16 +60,28 @@ fn psbt_map_table_covers_inputs_and_outputs() {
     const _: () = assert!(PSBT_MAPS_MAX >= limits::PSBT_MAPS_MIN);
 }
 
-/// The firmware's C-side mirror must equal the Rust ceiling it mirrors (phase 1 keeps
-/// the literal; phase 2 replaces it with the generated projection).
+/// The firmware's C side must take its ceilings from the generated projection, not from
+/// literals it maintains by hand (that mirror is what used to drift).
 #[test]
-fn the_firmware_mirror_matches_the_profile() {
+fn the_firmware_reads_the_generated_projection() {
     let c = include_str!("../flux/forgebox/src/tasks/product_task.c");
-    let expected = "#define UR_PAYLOAD_MAX            (256 * 240) /* = MULTIPART_PAYLOAD_MAX_LEN: 256 parts x 240 B */";
     assert!(
-        c.contains(expected),
-        "the C inbound buffer must equal the profile's ur_payload_max ({MULTIPART_PAYLOAD_MAX_LEN})"
+        c.contains("#include \"shlosilo_limits.h\""),
+        "the C carrier must include the profile projection"
     );
+    assert!(
+        c.contains("#define UR_PAYLOAD_MAX            SHLOSILO_LIMITS_UR_PAYLOAD_MAX"),
+        "UR_PAYLOAD_MAX must mirror the profile, not a literal"
+    );
+    assert!(
+        c.contains("#define PAIRING_KI_MAX SHLOSILO_LIMITS_PAIRING_RECORDS_MAX"),
+        "PAIRING_KI_MAX must mirror the profile too"
+    );
+    assert!(
+        c.contains("shlosilo_limits_fingerprint"),
+        "the carrier must compare the library fingerprint at startup"
+    );
+    // And the numbers themselves still have to agree with the Rust profile.
     assert_eq!(MULTIPART_PAYLOAD_MAX_LEN, 256 * 240);
 }
 

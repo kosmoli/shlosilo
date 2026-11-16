@@ -971,6 +971,18 @@ unsigned int shlosilo_sign_ws_len(void);
 unsigned int shlosilo_ur_encode_ws_len(void);
 
 /**
+ * Identity of the platform resource profile this library was built with.
+ *
+ * A C platform layer generated from the same profile carries the same value in
+ * `shlosilo_limits.h`; comparing them at startup catches the one failure that is
+ * otherwise silent - a Rust staticlib and a C translation unit built from different
+ * profiles, i.e. two different ideas of how large an FFI buffer has to be. Not a
+ * security boundary (an attacker does not need to forge it), just a build-mistake
+ * detector.
+ */
+uint64_t shlosilo_limits_fingerprint(void);
+
+/**
  * Z3.3c: decode-handle workspace capacity query (pools + handle, alignment
  * slop included). Pure: no state, no side effects. Same layout source as the
  * placement carve (contract 3).

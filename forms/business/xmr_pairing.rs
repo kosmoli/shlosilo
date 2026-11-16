@@ -85,7 +85,10 @@ const PAIRING_DETAILS_MAX: usize = 128;
 // 75 records by a real wallet's output history during the Feather A/B test,
 // and cup/keystone-class devices carry no such cap at all. Memory note: the
 // pairing workspace is caller-allocated in PSRAM (ExtMalloc on forgebox).
-const PAIRING_RECORDS_MAX: usize = 128;
+/// Ceiling on key-image records per pairing response. Platform profile knob
+/// (`limits/<profile>.toml`): the response buffer is sized from it, and the forgebox
+/// C side reads the same number from the generated header.
+const PAIRING_RECORDS_MAX: usize = crate::limits::PAIRING_RECORDS_MAX;
 
 /// Caller-provisioned workspace for the receive leg (Z3 caller-workspace
 /// discipline — forms allocates nothing on this path). Carved from raw caller

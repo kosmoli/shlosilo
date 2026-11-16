@@ -11,3 +11,5 @@ ur_ws_queue_slots = 8  # UR fountain cascade-queue slots
 ur_ws_received_slots = 32  # UR received-sequence slots (fountain sequence space)
 ur_payload_max = 2048  # Inbound UR payload bytes (keep <= slots x max sender fragment)
 sign_ws_bp_chunk_max = 4  # BP+ multiexp chunk terms ceiling (runtime knob clamps to this)
+pairing_records_max = 4  # XMR pairing: key-image records per response (mirrors the Rust ceiling)
+c_header = 0  # 1 = also emit the C projection header (only the C-driven carrier needs it)
