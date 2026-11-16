@@ -1187,9 +1187,6 @@ int shlosilo_key_session_fingerprint(const struct KeySession *session,
                                      uint8_t *out,
                                      unsigned int out_len);
 
-/**
- * Required review workspace size (arena + records + alignment slack).
- */
 unsigned int shlosilo_review_ws_len(void);
 
 /**

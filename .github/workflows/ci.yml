@@ -42,6 +42,10 @@ jobs:
       # macros are budget 0; unwrap/expect are ratcheted in the script.
       - name: no-panic gate (forms/ production code)
         run: python3 scripts/check_no_panic.py
+      # Budget report from the production layout functions: what this profile costs, and
+      # whether it fits the heap it declares (exit 2 = over budget).
+      - name: resource budget report (host profile)
+        run: bash scripts/limits_report.sh host
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all -- --check

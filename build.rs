@@ -82,8 +82,16 @@ fn emit_limits() {
         "sign_ws_bp_chunk_max",
         "pairing_records_max",
         "c_header",
+        "psram_budget_bytes",
+        "stack_budget_bytes",
     ];
     println!("cargo:rerun-if-env-changed=SHLOSILO_LIMITS");
+    // The budget report states where it was computed: a host report is not a device
+    // report, because `size_of::<usize>()` differs.
+    println!(
+        "cargo:rustc-env=SHLOSILO_TARGET={}",
+        std::env::var("TARGET").unwrap_or_else(|_| "unknown".into())
+    );
 
     let target = std::env::var("TARGET").unwrap_or_default();
     let bare_metal = target.contains("none-eabi") || target.contains("none-eabihf");

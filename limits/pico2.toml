@@ -13,3 +13,5 @@ ur_payload_max = 61440  # Inbound UR payload bytes (keep <= slots x max sender f
 sign_ws_bp_chunk_max = 36  # BP+ multiexp chunk terms ceiling (runtime knob clamps to this)
 pairing_records_max = 128  # XMR pairing: key-image records per response (mirrors the Rust ceiling)
 c_header = 0  # 1 = also emit the C projection header (only the C-driven carrier needs it)
+psram_budget_bytes = 8388608  # heap the workspaces may use at peak
+stack_budget_bytes = 276480  # task/thread stack the carrier grants

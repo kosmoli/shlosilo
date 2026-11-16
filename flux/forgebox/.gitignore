@@ -21,3 +21,4 @@ pyenv
 # shlosilo forms artifacts (built by build.sh from the repo root crate; never committed)
 /shlosilo/libshlosilo.a
 /shlosilo/shlosilo.h
+/shlosilo/shlosilo_limits.h

@@ -2700,10 +2700,16 @@ pub const REVIEW_WS_RECS: usize = 128;
 pub const REVIEW_LINES_BUF: usize = 1024;
 
 /// Required review workspace size (arena + records + alignment slack).
+///
+/// Kept as a plain fn so the budget report can call the same arithmetic without going
+/// through the C ABI.
+pub fn review_ws_len() -> usize {
+    REVIEW_WS_ARENA + REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>() + 8
+}
+
 #[no_mangle]
 pub extern "C" fn shlosilo_review_ws_len() -> c_uint {
-    (REVIEW_WS_ARENA + REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>() + 8)
-        as c_uint
+    review_ws_len() as c_uint
 }
 
 /// Build the review view for a sign request (the data half of the confirm gate).

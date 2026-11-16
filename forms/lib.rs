@@ -40,6 +40,7 @@ pub mod error;
 pub mod failure_text;
 pub mod ffi;
 pub mod limits;
+pub mod limits_report;
 pub mod network;
 pub mod profile;
 pub mod signature;

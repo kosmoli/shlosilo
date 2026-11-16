@@ -13,6 +13,9 @@ bash scripts/check_locks.sh > /tmp/g_locks.log 2>&1; echo "LOCKS=$?"
 # forms/ must answer every input with a Result: panic-class macros are budget 0
 # (recoverable failures like an oversized request are BufferTooSmall, never abort).
 python3 scripts/check_no_panic.py > /tmp/g_nopanic.log 2>&1; echo "NOPANIC=$?"
+# Resource budget report for the host profile: proves the report is producible from the
+# production layout functions and fits the declared heap (exit 2 = over budget).
+bash scripts/limits_report.sh host > /tmp/g_limitsreport.log 2>&1; echo "LIMITSREPORT=$?"
 # Pool #58: fp-chain coverage manifest (fingerprint binding + visible-failure
 # word chain pins) must stay intact — a renamed/removed/ignored pin is red.
 bash scripts/check_fp_chain.sh > /tmp/g_fpchain.log 2>&1; echo "FPCOV=$?"
