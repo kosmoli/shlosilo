@@ -79,6 +79,7 @@ fn emit_limits() {
         "ur_ws_received_slots",
         "ur_payload_max",
         "ur_encode_fragment_len",
+        "ur_inbound_fragment_max",
         "sign_ws_bp_chunk_max",
         "pairing_records_max",
         "xmr_inputs_max",
@@ -193,6 +194,16 @@ fn emit_limits() {
     if encode_fragment_len == 0 || encode_fragment_len > 480 {
         panic!(
             "{path}: ur_encode_fragment_len ({encode_fragment_len}) must be 1..=480 (bytewords at 2 chars/byte inside the carrier's 1024-char frame buffer)"
+        );
+    }
+    // Inbound fragment ceiling: the equation arena is buffer_slots x this, and an
+    // oversized part is refused rather than truncated. It must cover our own outbound
+    // fragment length (the same `Part` wire type carries both directions) and stay at or
+    // below the hard 2 KiB wire cap.
+    let inbound_frag = get("ur_inbound_fragment_max");
+    if inbound_frag < encode_fragment_len || inbound_frag > 2048 {
+        panic!(
+            "{path}: ur_inbound_fragment_max ({inbound_frag}) must be between ur_encode_fragment_len ({encode_fragment_len}) and 2048"
         );
     }
     let payload_max = get("ur_payload_max");

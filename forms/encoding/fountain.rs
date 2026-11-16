@@ -539,9 +539,15 @@ impl IdxKey {
     }
 }
 
-/// Largest fragment we will hold in an arena slot (phase 5b keeps `PART_DATA_MAX`;
-/// phase 5c turns this into a profile value once the structure has settled).
-pub(crate) const FRAGMENT_MAX: usize = PART_DATA_MAX;
+/// Largest fragment we will hold in an arena slot.
+///
+/// Phase 5c: this is a **platform value** now (`ur_inbound_fragment_max`), not the wire
+/// cap. `Part.data` keeps its 2 KiB capacity because the same type carries our outbound
+/// frames (`ur_encode_fragment_len <= ur_inbound_fragment_max`, enforced by build.rs);
+/// the arena only has to fit what a **peer** sends. The wallets in our interop set send
+/// 65 B fragments (Cake/Sparrow) and Keystone's default `max_fragment_length` is 200, so
+/// 256 is 4x the largest observed and still 8x smaller than the old slot.
+pub(crate) const FRAGMENT_MAX: usize = crate::limits::UR_INBOUND_FRAGMENT_MAX;
 
 /// Message-arena size. `fragment_length × sequence_count` can exceed the payload by up
 /// to one whole fragment (the sender pads the last one), and `sequence_count` tops out at
@@ -1225,7 +1231,9 @@ mod tests {
     /// the enforcement point on the next elimination.
     #[test]
     fn xor_work_budget_enforced() {
-        let frag = 2048;
+        // Phase 5c: the arena slot is the profile's inbound ceiling, so the synthetic
+        // fragment must fit inside it (the budget math below is fragment-size agnostic).
+        let frag = core::cmp::min(2048, FRAGMENT_MAX);
         let count = 8;
         let message = vec![0xABu8; frag * count];
         let enc = FountainEncoder::new(&message, frag).unwrap();

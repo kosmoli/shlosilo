@@ -27,9 +27,9 @@ fn the_dedup_key_is_fixed_width() {
 
 #[test]
 fn the_decode_workspace_ratchet_only_moves_down() {
-    // 864,807 B after 5b (2,797,831 before 5a, 1,880,327 after 5a). Raise this only
-    // with a measured reason.
-    const CEILING: usize = 900_000;
+    // 471,600 B after 5c; 864,807 after 5b, 1,880,327 after 5a, 2,797,831 before phase 5.
+    // Raise this only with a measured reason.
+    const CEILING: usize = 500_000;
     let ws = ur_decode_ws_len();
     assert!(
         ws <= CEILING,
@@ -43,7 +43,8 @@ fn the_dominant_cost_is_now_the_equation_arena() {
     // (2,048 B) plus the message arena. Phase 5c lowers FRAGMENT_MAX from the profile,
     // which is where the next megabyte-class saving lives - this pin keeps the accounting
     // pointing at the real component.
-    let equations = shlosilo::types::caps::UR_WS_BUFFER_SLOTS * 2048;
+    let equations =
+        shlosilo::types::caps::UR_WS_BUFFER_SLOTS * shlosilo::limits::UR_INBOUND_FRAGMENT_MAX;
     assert!(
         ur_decode_ws_len() >= equations,
         "equation arena ({equations} B) must be inside the workspace"
@@ -54,6 +55,27 @@ fn the_dominant_cost_is_now_the_equation_arena() {
         "Part grew: {size}",
         size = core::mem::size_of::<Part>()
     );
+}
+
+/// 5c: the arena slot width is a platform value, and it must cover our own outbound
+/// fragment length (the same `Part` wire type carries both directions). build.rs enforces
+/// the same inequality; this keeps the reason next to the number.
+#[test]
+fn the_arena_slot_covers_what_we_send_and_what_peers_send() {
+    let inbound = shlosilo::limits::UR_INBOUND_FRAGMENT_MAX;
+    assert!(
+        inbound >= shlosilo::limits::UR_ENCODE_FRAGMENT_LEN,
+        "inbound slot ({inbound}) is narrower than our outbound fragment"
+    );
+    // Interop evidence: Cake sends ~65 B fragments, Keystone's default
+    // max_fragment_length is 200, and our Sparrow-shaped parity fixture
+    // (`tests/pico2_smoke_parity.rs`) cuts 400 B fragments. A real Sparrow frame length
+    // has never been measured on device - pool #71 - so the ceiling covers the fixture.
+    assert!(
+        inbound >= 400,
+        "inbound slot ({inbound}) would reject our Sparrow-shaped fixture"
+    );
+    assert!(inbound <= 2048, "beyond the wire type's capacity");
 }
 
 #[test]
