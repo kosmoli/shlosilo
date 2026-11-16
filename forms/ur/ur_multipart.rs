@@ -348,6 +348,9 @@ pub struct UrDecodeWsLayout {
     pub buffer: usize,
     pub queue: usize,
     pub received: usize,
+    /// Fragment arenas (5b).
+    pub message: usize,
+    pub equations: usize,
     /// Frame CBOR scratch (v1: per-call allocations out of the UR receive path).
     pub scratch: usize,
     pub handle: usize,
@@ -363,16 +366,17 @@ fn ur_next(off: &mut usize, align: usize, size: usize) -> usize {
 impl UrDecodeWsLayout {
     pub fn compute() -> Self {
         use crate::types::caps as c;
-        type EP = Option<(usize, Part)>;
-        type BP = Option<(IdxSet, Part)>;
+        // Phase 5b: pools carry metadata only; fragment bytes live in two arenas.
+        type DP = Option<usize>;
+        type BP = Option<(IdxSet, usize)>;
         type RS = Option<IdxKey>;
         let align =
-            core::mem::align_of::<UrMultipartDecoder<'static>>().max(core::mem::align_of::<EP>());
+            core::mem::align_of::<UrMultipartDecoder<'static>>().max(core::mem::align_of::<BP>());
         let mut off = 0usize;
         let decoded = ur_next(
             &mut off,
-            core::mem::align_of::<EP>(),
-            core::mem::size_of::<EP>() * c::UR_WS_DECODED_SLOTS,
+            core::mem::align_of::<DP>(),
+            core::mem::size_of::<DP>() * c::UR_WS_DECODED_SLOTS,
         );
         let buffer = ur_next(
             &mut off,
@@ -381,13 +385,21 @@ impl UrDecodeWsLayout {
         );
         let queue = ur_next(
             &mut off,
-            core::mem::align_of::<EP>(),
-            core::mem::size_of::<EP>() * c::UR_WS_QUEUE_SLOTS,
+            core::mem::align_of::<DP>(),
+            core::mem::size_of::<DP>() * c::UR_WS_QUEUE_SLOTS,
         );
         let received = ur_next(
             &mut off,
             core::mem::align_of::<RS>(),
             core::mem::size_of::<RS>() * c::UR_WS_RECEIVED_SLOTS,
+        );
+        // Fragment arenas (phase 5b): `message` holds the reassembled originals,
+        // `equations` the unsolved XOR accumulations.
+        let message = ur_next(&mut off, 1, crate::encoding::fountain::message_arena_len());
+        let equations = ur_next(
+            &mut off,
+            1,
+            crate::encoding::fountain::equation_arena_len(c::UR_WS_BUFFER_SLOTS),
         );
         let scratch = ur_next(&mut off, 1, crate::ur::ur_multipart::PART_CBOR_SCRATCH_MAX);
         let handle = ur_next(
@@ -405,6 +417,8 @@ impl UrDecodeWsLayout {
             buffer,
             queue,
             received,
+            message,
+            equations,
             scratch,
             handle,
             total,
@@ -502,31 +516,33 @@ pub fn ur_decode_ws_place(buf: &mut [u8]) -> Option<*mut UrMultipartDecoder<'sta
                 core::slice::from_raw_parts_mut(p, $n)
             }};
         }
-        let decoded = init_slots!(
-            base.add(l.decoded),
-            c::UR_WS_DECODED_SLOTS,
-            Option<(usize, Part)>
-        );
+        let decoded = init_slots!(base.add(l.decoded), c::UR_WS_DECODED_SLOTS, Option<usize>);
         let buffer = init_slots!(
             base.add(l.buffer),
             c::UR_WS_BUFFER_SLOTS,
-            Option<(IdxSet, Part)>
+            Option<(IdxSet, usize)>
         );
-        let queue = init_slots!(
-            base.add(l.queue),
-            c::UR_WS_QUEUE_SLOTS,
-            Option<(usize, Part)>
-        );
+        let queue = init_slots!(base.add(l.queue), c::UR_WS_QUEUE_SLOTS, Option<usize>);
         let received = init_slots!(
             base.add(l.received),
             c::UR_WS_RECEIVED_SLOTS,
             Option<IdxKey>
+        );
+        let message = core::slice::from_raw_parts_mut(
+            base.add(l.message),
+            crate::encoding::fountain::message_arena_len(),
+        );
+        let equations = core::slice::from_raw_parts_mut(
+            base.add(l.equations),
+            crate::encoding::fountain::equation_arena_len(c::UR_WS_BUFFER_SLOTS),
         );
         let ws = FountainWs {
             decoded,
             buffer,
             queue,
             received,
+            message,
+            equations,
         };
         let mut dec = UrMultipartDecoder::with_ws(ws);
         dec.ws_base = base as usize;

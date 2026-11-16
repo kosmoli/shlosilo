@@ -539,27 +539,72 @@ impl IdxKey {
     }
 }
 
+/// Largest fragment we will hold in an arena slot (phase 5b keeps `PART_DATA_MAX`;
+/// phase 5c turns this into a profile value once the structure has settled).
+pub(crate) const FRAGMENT_MAX: usize = PART_DATA_MAX;
+
+/// Message-arena size. `fragment_length × sequence_count` can exceed the payload by up
+/// to one whole fragment (the sender pads the last one), and `sequence_count` tops out at
+/// `MAX_SEQUENCE_COUNT`.
+pub(crate) fn message_arena_len() -> usize {
+    crate::limits::UR_PAYLOAD_MAX + MAX_SEQUENCE_COUNT
+}
+
+/// Equation-arena size: one fixed-width slot per buffer entry.
+pub(crate) fn equation_arena_len(buffer_slots: usize) -> usize {
+    buffer_slots * FRAGMENT_MAX
+}
+
+fn frag_at(buf: &[u8], index: usize, fl: usize) -> &[u8] {
+    &buf[index * fl..index * fl + fl]
+}
+
+fn frag_at_mut(buf: &mut [u8], index: usize, fl: usize) -> &mut [u8] {
+    let (o, e) = (index * fl, index * fl + fl);
+    &mut buf[o..e]
+}
+
 /// Caller-provided workspace for the fountain decoder (Z2.4c-3 C-class policy).
+///
+/// Phase 5b: the pools hold **metadata only**. Fragment bytes live in two arenas:
+///
+/// - `message`: reassembled **original** fragments, fragment `i` at `i * fragment_length`.
+///   That prefix *is* the combined message, so `message_into` is one copy, not a scatter.
+/// - `equations`: not-yet-solved **XOR accumulations**, one fixed `FRAGMENT_MAX` slot per
+///   buffer entry.
+///
+/// They stay separate on purpose (design note §6.2): a solved original has a known
+/// position, an unsolved equation does not, so they cannot share storage.
+///
+/// Sizing: `message` ≥ `MULTIPART_PAYLOAD_MAX_LEN + MAX_SEQUENCE_COUNT` (fragment padding
+/// can add up to one whole fragment), `equations` = buffer slots × `FRAGMENT_MAX`.
 /// Sizing guidance: `decoded` ≥ sequence_count; `buffer`/`queue`/`received` cover the
 /// session frame budget in the worst case (flux-specific). Pool exhaustion surfaces as
 /// BudgetExceeded (session-abnormal semantics, matching the budget family).
 pub struct FountainWs<'a> {
-    pub decoded: &'a mut [Option<(usize, Part)>],
-    pub buffer: &'a mut [Option<(IdxSet, Part)>],
-    pub queue: &'a mut [Option<(usize, Part)>],
+    /// Recovered fragment indices (their bytes are in `message`).
+    pub decoded: &'a mut [Option<usize>],
+    /// Unsolved equation: (fragment index set, data length); bytes at slot × FRAGMENT_MAX.
+    pub buffer: &'a mut [Option<(IdxSet, usize)>],
+    /// Indices whose cascade has not been applied yet.
+    pub queue: &'a mut [Option<usize>],
     pub received: &'a mut [Option<IdxKey>],
+    pub message: &'a mut [u8],
+    pub equations: &'a mut [u8],
 }
 
 /// Fountain decoder: set-cover greedy reassembly (aligned with keystone-ur Decoder semantics).
 /// Z2.4c-3: retained state lives in caller-provided pool slices (was BTreeMap/BTreeSet/VecDeque);
-/// pool-slot scans replace the transient key collects. Cascade order is pool-slot order rather
-/// than strict FIFO — GF(2) elimination is commutative, so reassembly, dedup, progress and all
+/// pool-slot scans replace the transient key collects. Cascade order is pool-slot order
+/// rather than strict FIFO — GF(2) elimination is commutative, so reassembly, dedup, progress and all
 /// budget totals are unaffected.
 pub(crate) struct FountainDecoder<'a> {
-    decoded: &'a mut [Option<(usize, Part)>],
-    buffer: &'a mut [Option<(IdxSet, Part)>],
-    queue: &'a mut [Option<(usize, Part)>],
+    decoded: &'a mut [Option<usize>],
+    buffer: &'a mut [Option<(IdxSet, usize)>],
+    queue: &'a mut [Option<usize>],
     received: &'a mut [Option<IdxKey>],
+    message: &'a mut [u8],
+    equations: &'a mut [u8],
     decoded_count: usize,
     received_count: usize,
     sequence_count: usize,
@@ -578,19 +623,26 @@ impl<'a> FountainDecoder<'a> {
     #[cfg(any(feature = "alloc-fallback", test))]
     pub fn new() -> FountainDecoder<'static> {
         use crate::types::caps as c;
-        let decoded: &'static mut [Option<(usize, Part)>] =
+        let decoded: &'static mut [Option<usize>] =
             alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_DECODED_SLOTS].into_boxed_slice());
-        let buffer: &'static mut [Option<(IdxSet, Part)>] =
+        let buffer: &'static mut [Option<(IdxSet, usize)>] =
             alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_BUFFER_SLOTS].into_boxed_slice());
-        let queue: &'static mut [Option<(usize, Part)>] =
+        let queue: &'static mut [Option<usize>] =
             alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_QUEUE_SLOTS].into_boxed_slice());
         let received: &'static mut [Option<IdxKey>] =
             alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_RECEIVED_SLOTS].into_boxed_slice());
+        let message: &'static mut [u8] =
+            alloc::boxed::Box::leak(alloc::vec![0u8; message_arena_len()].into_boxed_slice());
+        let equations: &'static mut [u8] = alloc::boxed::Box::leak(
+            alloc::vec![0u8; equation_arena_len(c::UR_WS_BUFFER_SLOTS)].into_boxed_slice(),
+        );
         FountainDecoder::with_ws(FountainWs {
             decoded,
             buffer,
             queue,
             received,
+            message,
+            equations,
         })
     }
 
@@ -613,6 +665,8 @@ impl<'a> FountainDecoder<'a> {
             buffer: ws.buffer,
             queue: ws.queue,
             received: ws.received,
+            message: ws.message,
+            equations: ws.equations,
             decoded_count: 0,
             received_count: 0,
             sequence_count: 0,
@@ -682,8 +736,19 @@ impl<'a> FountainDecoder<'a> {
         if part.sequence_count == 0 || part.data.is_empty() || part.message_length == 0 {
             return Err(FountainError::EmptyPart);
         }
-        // X1 same-origin budget: sequence_count cap (prevents wire-controlled overrun from exhausting resources)
-        if part.sequence_count > MAX_SEQUENCE_COUNT {
+        // The arena slot is FRAGMENT_MAX wide; an oversized fragment must be refused
+        // here rather than truncated into a neighbour's slot.
+        if part.data.len() > FRAGMENT_MAX {
+            return Err(FountainError::InvalidFragmentLen);
+        }
+        // Budget-family caps (the pinned contract for sequence_count is BudgetExceeded):
+        // the message arena is sized for UR_PAYLOAD_MAX, so a larger claim cannot land.
+        if part.sequence_count > MAX_SEQUENCE_COUNT
+            || part.message_length > crate::limits::UR_PAYLOAD_MAX
+        {
+            return Err(FountainError::BudgetExceeded);
+        }
+        if self.received_count >= MAX_TOTAL_FRAMES {
             return Err(FountainError::BudgetExceeded);
         }
 
@@ -732,7 +797,17 @@ impl<'a> FountainDecoder<'a> {
     }
 
     fn decoded_contains(&self, index: usize) -> bool {
-        self.decoded.iter().flatten().any(|(idx, _)| *idx == index)
+        self.decoded.iter().flatten().any(|i| *i == index)
+    }
+
+    /// Store a solved original fragment in the message arena.
+    fn store_original(&mut self, index: usize, data: &[u8]) -> Result<(), FountainError> {
+        let fl = self.fragment_length;
+        if data.len() != fl || (index + 1) * fl > self.message.len() {
+            return Err(FountainError::OutputTooSmall);
+        }
+        frag_at_mut(self.message, index, fl).copy_from_slice(data);
+        Ok(())
     }
 
     fn process_simple(&mut self, part: Part) -> Result<(), FountainError> {
@@ -744,33 +819,35 @@ impl<'a> FountainDecoder<'a> {
         if self.decoded_contains(index) {
             return Ok(());
         }
+        self.store_original(index, &part.data)?;
         let slot = self
             .decoded
             .iter_mut()
             .find(|s| s.is_none())
             .ok_or(FountainError::BudgetExceeded)?;
-        *slot = Some((index, part.clone()));
+        *slot = Some(index);
         self.decoded_count += 1;
         let q = self
             .queue
             .iter_mut()
             .find(|s| s.is_none())
             .ok_or(FountainError::BudgetExceeded)?;
-        *q = Some((index, part));
+        *q = Some(index);
         self.process_queue()?;
         Ok(())
     }
 
     fn process_queue(&mut self) -> Result<(), FountainError> {
         while let Some(qpos) = self.queue.iter().position(|s| s.is_some()) {
-            let (index, simple) = self.queue[qpos].take().ok_or(FountainError::ExpectedItem)?;
+            let index = self.queue[qpos].take().ok_or(FountainError::ExpectedItem)?;
             let index_u8 = index as u8;
+            let fl = self.fragment_length;
             for bpos in 0..self.buffer.len() {
                 let hit = matches!(&self.buffer[bpos], Some((key, _)) if key.contains(&index_u8));
                 if !hit {
                     continue;
                 }
-                let (key, mut part) = self.buffer[bpos]
+                let (key, len) = self.buffer[bpos]
                     .take()
                     .ok_or(FountainError::ExpectedItem)?;
                 let mut new_key = IdxSet::new();
@@ -779,31 +856,46 @@ impl<'a> FountainDecoder<'a> {
                         new_key.push(i).map_err(|_| FountainError::BudgetExceeded)?;
                     }
                 }
-                self.work_used += part.data.len();
+                self.work_used += len;
                 if self.work_used > MAX_XOR_WORK_BYTES {
                     return Err(FountainError::BudgetExceeded);
                 }
-                xor_into(&mut part.data, &simple.data);
+                // equation XOR the solved original: two disjoint arenas.
+                let base = bpos * FRAGMENT_MAX;
+                let (equations, message) = (&mut *self.equations, &*self.message);
+                xor_into(&mut equations[base..base + fl], frag_at(message, index, fl));
                 if new_key.len() == 1 {
                     let only = new_key[0] as usize;
                     if self.decoded_contains(only) {
                         continue;
+                    }
+                    // Move the solved bytes from the equation arena to the message arena.
+                    // Two disjoint fields, so no temporary buffer (and none would be
+                    // available: this path also builds without an allocator).
+                    if (only + 1) * fl > self.message.len() {
+                        return Err(FountainError::OutputTooSmall);
+                    }
+                    let base = bpos * FRAGMENT_MAX;
+                    {
+                        let src = &self.equations[base..base + fl];
+                        let msg_off = only * fl;
+                        self.message[msg_off..msg_off + fl].copy_from_slice(src);
                     }
                     let slot = self
                         .decoded
                         .iter_mut()
                         .find(|s| s.is_none())
                         .ok_or(FountainError::BudgetExceeded)?;
-                    *slot = Some((only, part.clone()));
+                    *slot = Some(only);
                     self.decoded_count += 1;
                     let q = self
                         .queue
                         .iter_mut()
                         .find(|s| s.is_none())
                         .ok_or(FountainError::BudgetExceeded)?;
-                    *q = Some((only, part));
+                    *q = Some(only);
                 } else {
-                    self.buffer[bpos] = Some((new_key, part));
+                    self.buffer[bpos] = Some((new_key, len));
                 }
             }
         }
@@ -811,6 +903,7 @@ impl<'a> FountainDecoder<'a> {
     }
 
     fn process_complex(&mut self, mut part: Part, raw: &[u8]) -> Result<(), FountainError> {
+        let fl = self.fragment_length;
         let mut indexes = IdxSet::new();
         indexes
             .extend_from_slice(raw)
@@ -820,12 +913,7 @@ impl<'a> FountainDecoder<'a> {
         // any work accounting (preserved from the original control flow).
         let mut to_remove = IdxSet::new();
         for &x in indexes.iter() {
-            if self
-                .decoded
-                .iter()
-                .flatten()
-                .any(|(idx, _)| *idx == x as usize)
-            {
+            if self.decoded.iter().flatten().any(|i| *i == x as usize) {
                 to_remove
                     .push(x)
                     .map_err(|_| FountainError::BudgetExceeded)?;
@@ -844,44 +932,43 @@ impl<'a> FountainDecoder<'a> {
                 indexes[j] = indexes[j + 1];
             }
             indexes.pop();
-            let decoded_part = self
-                .decoded
-                .iter()
-                .flatten()
-                .find(|(idx, _)| *idx == remove as usize)
-                .map(|(_, p)| p)
-                .ok_or(FountainError::ExpectedItem)?;
             self.work_used += part.data.len();
             if self.work_used > MAX_XOR_WORK_BYTES {
                 return Err(FountainError::BudgetExceeded);
             }
-            xor_into(&mut part.data, &decoded_part.data);
+            xor_into(&mut part.data, frag_at(self.message, remove as usize, fl));
         }
         if indexes.len() == 1 {
             let only = indexes[0] as usize;
             if self.decoded_contains(only) {
                 return Ok(());
             }
+            self.store_original(only, &part.data)?;
             let slot = self
                 .decoded
                 .iter_mut()
                 .find(|s| s.is_none())
                 .ok_or(FountainError::BudgetExceeded)?;
-            *slot = Some((only, part.clone()));
+            *slot = Some(only);
             self.decoded_count += 1;
             let q = self
                 .queue
                 .iter_mut()
                 .find(|s| s.is_none())
                 .ok_or(FountainError::BudgetExceeded)?;
-            *q = Some((only, part));
+            *q = Some(only);
         } else {
-            let slot = self
+            let bpos = self
                 .buffer
-                .iter_mut()
-                .find(|s| s.is_none())
+                .iter()
+                .position(|s| s.is_none())
                 .ok_or(FountainError::BudgetExceeded)?;
-            *slot = Some((indexes, part));
+            let base = bpos * FRAGMENT_MAX;
+            if base + part.data.len() > self.equations.len() {
+                return Err(FountainError::OutputTooSmall);
+            }
+            self.buffer[bpos] = Some((indexes, part.data.len()));
+            self.equations[base..base + part.data.len()].copy_from_slice(&part.data);
         }
         Ok(())
     }
@@ -897,17 +984,12 @@ impl<'a> FountainDecoder<'a> {
         if out.len() < total {
             return Err(FountainError::OutputTooSmall);
         }
-        for idx in 0..self.sequence_count {
-            let part = self
-                .decoded
-                .iter()
-                .flatten()
-                .find(|(i, _)| *i == idx)
-                .map(|(_, p)| p)
-                .ok_or(FountainError::ExpectedItem)?;
-            out[idx * self.fragment_length..(idx + 1) * self.fragment_length]
-                .copy_from_slice(&part.data);
+        // Every index below sequence_count has been solved into its own slot, so the
+        // arena prefix is already the combined message (phase 5b: one copy, no scatter).
+        if self.message.len() < total {
+            return Err(FountainError::ExpectedItem);
         }
+        out[..total].copy_from_slice(&self.message[..total]);
         let pad = &out[self.message_length..total];
         if pad.iter().any(|&x| x != 0) {
             return Err(FountainError::InvalidPadding);
@@ -915,7 +997,6 @@ impl<'a> FountainDecoder<'a> {
         Ok(Some(self.message_length))
     }
 
-    /// Test/legacy convenience (allocates). Production reassembly uses `message_into`.
     /// Message length without materializing (v1 contract 4).
     /// Buffer CAPACITY `message_into` needs (message + fragment padding) —
     /// the number the BufferTooSmall path reports for retry (contract 4).
@@ -934,18 +1015,12 @@ impl<'a> FountainDecoder<'a> {
         if !self.complete() {
             return Ok(None);
         }
-        let mut combined = Vec::with_capacity(self.fragment_length * self.sequence_count);
-        for idx in 0..self.sequence_count {
-            let part = self
-                .decoded
-                .iter()
-                .flatten()
-                .find(|(i, _)| *i == idx)
-                .map(|(_, p)| p)
-                .ok_or(FountainError::ExpectedItem)?;
-            combined.extend_from_slice(&part.data);
-        }
-        let pad = &combined
+        let total = self.fragment_length * self.sequence_count;
+        let combined = self
+            .message
+            .get(..total)
+            .ok_or(FountainError::ExpectedItem)?;
+        let pad = combined
             .get(self.message_length..)
             .ok_or(FountainError::ExpectedItem)?;
         if pad.iter().any(|&x| x != 0) {
@@ -1185,12 +1260,7 @@ mod tests {
             let (raw, rn) = part.indexes_raw();
             let clean = raw[..rn].contains(&2)
                 && raw[..rn].iter().all(|&i| {
-                    i == 2
-                        || !dec
-                            .decoded
-                            .iter()
-                            .flatten()
-                            .any(|(idx, _)| *idx == i as usize)
+                    i == 2 || !dec.decoded.iter().flatten().any(|idx| *idx == i as usize)
                 });
             if rn >= 2 && clean {
                 assert!(dec.receive(part).unwrap());

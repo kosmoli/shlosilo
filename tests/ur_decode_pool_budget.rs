@@ -27,8 +27,9 @@ fn the_dedup_key_is_fixed_width() {
 
 #[test]
 fn the_decode_workspace_ratchet_only_moves_down() {
-    // 1,880,327 B after 5a (was 2,797,831 B). Raise this only with a measured reason.
-    const CEILING: usize = 1_900_000;
+    // 864,807 B after 5b (2,797,831 before 5a, 1,880,327 after 5a). Raise this only
+    // with a measured reason.
+    const CEILING: usize = 900_000;
     let ws = ur_decode_ws_len();
     assert!(
         ws <= CEILING,
@@ -37,12 +38,21 @@ fn the_decode_workspace_ratchet_only_moves_down() {
 }
 
 #[test]
-fn the_dominant_cost_is_still_the_slots_not_the_keys() {
-    // Guard against optimizing the wrong thing: `Part` is 2,088 B and sits in three
-    // pools. If this ever stops being true the rest of the accounting needs a re-measure.
+fn the_dominant_cost_is_now_the_equation_arena() {
+    // After 5b the pools are metadata; the bytes are 256 equation slots x FRAGMENT_MAX
+    // (2,048 B) plus the message arena. Phase 5c lowers FRAGMENT_MAX from the profile,
+    // which is where the next megabyte-class saving lives - this pin keeps the accounting
+    // pointing at the real component.
+    let equations = shlosilo::types::caps::UR_WS_BUFFER_SLOTS * 2048;
     assert!(
-        core::mem::size_of::<Part>() >= 2048,
-        "Part shrank unexpectedly - re-measure before trusting the pool budget"
+        ur_decode_ws_len() >= equations,
+        "equation arena ({equations} B) must be inside the workspace"
+    );
+    // `Part` is still the greedy wire type; it must not grow its inline fragment buffer.
+    assert!(
+        core::mem::size_of::<Part>() <= 2100,
+        "Part grew: {size}",
+        size = core::mem::size_of::<Part>()
     );
 }
 
