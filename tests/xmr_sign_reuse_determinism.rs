@@ -25,6 +25,29 @@ const DEV_VIEW_SK: [u8; 32] = [
     0xd5, 0xf3, 0xc2, 0xdb, 0x02, 0xcb, 0x55, 0x5c, 0x24, 0x4b, 0x07, 0x6e, 0xfa, 0x5a, 0x9a, 0x0f,
 ];
 
+/// Alloc-provisioned tables for one signing call (test-side mirror of the `SignWs` carve).
+type InputTablesBuf = (
+    Vec<
+        [(
+            monero_ed25519::CompressedPoint,
+            monero_ed25519::CompressedPoint,
+        ); shlosilo::types::caps::RING_MAX],
+    >,
+    Vec<shlosilo::chain::xmr::transaction::TxInput>,
+    Vec<usize>,
+);
+
+/// Alloc-provisioned per-input tables (phase 4a: the signer takes them from the caller).
+fn input_tables() -> InputTablesBuf {
+    let zero = monero_ed25519::CompressedPoint::from([0u8; 32]);
+    let cap = shlosilo::limits::XMR_INPUTS_MAX;
+    (
+        vec![[(zero, zero); shlosilo::types::caps::RING_MAX]; cap],
+        vec![shlosilo::chain::xmr::transaction::TxInput::new(heapless::Vec::new(), [0u8; 32]); cap],
+        vec![0usize; cap],
+    )
+}
+
 #[test]
 fn xmr_sign_reuse_determinism() {
     use shlosilo::chain::xmr::tx_signer::sign_tx_from_construction_with_rngs_into;
@@ -95,6 +118,7 @@ fn xmr_sign_reuse_determinism() {
     .expect("wip storage");
 
     // sign #1
+    let (mut tables_rings, mut tables_inputs, mut tables_lens) = input_tables();
     let mut bp_rng = rand_chacha::ChaCha20Rng::from_seed([0xB1u8; 32]);
     let mut clsag_rng = rand_chacha::ChaCha20Rng::from_seed([0xC1u8; 32]);
     let n1 = sign_tx_from_construction_with_rngs_into(
@@ -105,6 +129,11 @@ fn xmr_sign_reuse_determinism() {
         &mut bp_rng,
         &mut clsag_rng,
         &mut out,
+        shlosilo::chain::xmr::tx_signer::InputTables {
+            rings: &mut tables_rings,
+            tx_inputs: &mut tables_inputs,
+            ring_lens: &mut tables_lens,
+        },
         &mut bp_terms,
         &mut bp_straus,
         &mut wip_scratch,
@@ -127,6 +156,7 @@ fn xmr_sign_reuse_determinism() {
     }
 
     // sign #2: identical RNG seeds, SAME scratch stack (the reuse under test).
+    let (mut tables_rings, mut tables_inputs, mut tables_lens) = input_tables();
     let mut bp_rng = rand_chacha::ChaCha20Rng::from_seed([0xB1u8; 32]);
     let mut clsag_rng = rand_chacha::ChaCha20Rng::from_seed([0xC1u8; 32]);
     let n2 = sign_tx_from_construction_with_rngs_into(
@@ -137,6 +167,11 @@ fn xmr_sign_reuse_determinism() {
         &mut bp_rng,
         &mut clsag_rng,
         &mut out,
+        shlosilo::chain::xmr::tx_signer::InputTables {
+            rings: &mut tables_rings,
+            tx_inputs: &mut tables_inputs,
+            ring_lens: &mut tables_lens,
+        },
         &mut bp_terms,
         &mut bp_straus,
         &mut wip_scratch,
@@ -211,6 +246,7 @@ fn poisoned_scratch_matches_zero_scratch() {
             shlosilo::types::caps::SIGN_WS_BP_TERMS,
         )
         .expect("wip storage");
+        let (mut tables_rings, mut tables_inputs, mut tables_lens) = input_tables();
         let mut bp_rng = rand_chacha::ChaCha20Rng::from_seed([0xB1u8; 32]);
         let mut clsag_rng = rand_chacha::ChaCha20Rng::from_seed([0xC1u8; 32]);
         let n = sign_tx_from_construction_with_rngs_into(
@@ -221,6 +257,11 @@ fn poisoned_scratch_matches_zero_scratch() {
             &mut bp_rng,
             &mut clsag_rng,
             out,
+            shlosilo::chain::xmr::tx_signer::InputTables {
+                rings: &mut tables_rings,
+                tx_inputs: &mut tables_inputs,
+                ring_lens: &mut tables_lens,
+            },
             &mut bp_terms,
             &mut bp_straus,
             &mut wip_scratch,

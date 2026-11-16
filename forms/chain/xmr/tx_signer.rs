@@ -29,7 +29,10 @@ use zeroize::Zeroize;
 /// the workspace sizing; over-cap push asserts loudly (G1, never truncate).
 const MASK_GUARD_CAP: usize = 16;
 /// Z5.3 F-cut: ring backing input bound (same bound as the mask guard).
-pub(crate) const MAX_INPUTS_TRACKED: usize = 16;
+/// Input tables the signer builds per transaction (`rings`, `tx_inputs`,
+/// `ring_lens`), caller-carved: sized by the platform profile so the task stack no
+/// longer grows with the input ceiling.
+pub(crate) const MAX_INPUTS_TRACKED: usize = crate::limits::XMR_INPUTS_MAX;
 /// Z5.3 F-cut: CLSAG wire body bound (s[ring] + c1 + D).
 const CLSAG_WIRE_MAX: usize = 32 + (crate::types::caps::RING_MAX * 32) + 64;
 
@@ -501,6 +504,24 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         crate::types::caps::SIGN_WS_BP_TERMS,
     )
     .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    // Transitional wrapper (alloc-fallback / tests): provision the per-input tables
+    // here exactly as the workspace carve does, so the core has one input shape.
+    type RingRow = [(CompressedPoint, CompressedPoint); crate::types::caps::RING_MAX];
+    let zero = CompressedPoint::from([0u8; 32]);
+    let mut rings_buf = alloc::vec![[(zero, zero); crate::types::caps::RING_MAX];
+        crate::limits::XMR_INPUTS_MAX];
+    let mut tx_inputs_buf = alloc::vec![TxInput::new(heapless::Vec::new(), [0u8; 32]);
+        crate::limits::XMR_INPUTS_MAX];
+    let mut ring_lens_buf = alloc::vec![0usize; crate::limits::XMR_INPUTS_MAX];
+    let rows: &mut [RingRow] = {
+        // SAFETY: `vec![vec![...]]` is exactly `[cap][RING_MAX]` of the same element type.
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                rings_buf.as_mut_ptr().cast::<RingRow>(),
+                rings_buf.len(),
+            )
+        }
+    };
     let n = sign_tx_from_construction_with_rngs_into(
         tx_data,
         spend_sec,
@@ -509,12 +530,33 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
         bp_rng,
         clsag_rng,
         &mut staging,
+        InputTables {
+            rings: rows,
+            tx_inputs: &mut tx_inputs_buf,
+            ring_lens: &mut ring_lens_buf,
+        },
         &mut multiexp_terms,
         &mut straus_scratch,
         &mut wip_scratch,
     )?;
     out.extend_from_slice(&staging[..n]);
     Ok(out)
+}
+
+/// Caller-carved backing for the three per-input tables.
+///
+/// Every slice is fully initialized by the carve before it is handed here (rings to
+/// zero points, `tx_inputs` to empty inputs, `ring_lens` to 0), so this struct carries
+/// plain `&mut` slices rather than `MaybeUninit`: initialise-on-carve costs one pass
+/// over `XMR_INPUTS_MAX` slots and removes an unsafe read-before-write contract from
+/// the signing core.
+pub struct InputTables<'a> {
+    /// `[cap][RING_MAX]` of (dest one-time address, on-chain commitment point).
+    pub rings: &'a mut [[(CompressedPoint, CompressedPoint); crate::types::caps::RING_MAX]],
+    /// `[cap]` of (relative key offsets, key image) in construction order.
+    pub tx_inputs: &'a mut [crate::chain::xmr::transaction::TxInput],
+    /// `[cap]` ring length per input.
+    pub ring_lens: &'a mut [usize],
 }
 
 /// Number of populated sources in a construction record.
@@ -554,6 +596,7 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     bp_rng: &mut B,
     clsag_rng: &mut C,
     out: &mut [u8],
+    tables: InputTables<'_>,
     multiexp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
     straus: &mut curve25519_dalek::scratch::StrausScratch,
     wip: &mut monero_bulletproofs::WipScratch,
@@ -808,20 +851,20 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     }
 
     // ---- 5. inputs: key_offsets(relative) + key images ----
-    let mut tx_inputs: [TxInput; crate::chain::xmr::transaction::PREFIX_INPUTS_MAX] =
-        core::array::from_fn(|_| TxInput::new(heapless::Vec::new(), [0u8; 32]));
+    // Caller-carved tables (phase 4a): the three per-input arrays no longer live on the
+    // task stack. The carve initialised every slot, so they are plain slices.
+    let InputTables {
+        rings,
+        tx_inputs,
+        ring_lens,
+    } = tables;
     let mut tx_inputs_len = 0usize;
     // Audit #6 re-review Gate1 #4: empty sources already rejected at function entry; n>=1 enters the secret
     // owner setup. Multi-input follows the genRctSimple chain; no hard rejection here anymore.
     let mut input_real_masks = ZeroizingMaskGuard::new("real_mask");
     // Z5.3 F-cut: fixed ring backing (the Vec-of-Vecs grew per input and
     // per ring member). Over-cap asserts loudly (G1).
-    let mut rings: [[(CompressedPoint, CompressedPoint); crate::types::caps::RING_MAX];
-        MAX_INPUTS_TRACKED] = [[(
-        CompressedPoint::from([0u8; 32]),
-        CompressedPoint::from([0u8; 32]),
-    ); crate::types::caps::RING_MAX]; MAX_INPUTS_TRACKED];
-    let mut ring_lens = [0usize; MAX_INPUTS_TRACKED];
+    // (rings / ring_lens come from `tables`, carved and initialised by the caller.)
     // Audit #7 Gate1 #4: key_offset is a secret used to build the one-time spend key —
     // never lands in a Vec; input_sk is derived immediately inside the loop into a ZeroizingGuard (owner holds it to the end)
     let mut input_sks = ZeroizingMaskGuard::new("input_sk");
@@ -872,14 +915,14 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
           // ring members: (dest one-time address, on-chain commitment C point bytes).
           // OutputEntry.mask = the on-chain outPk commitment (not a blinding factor), used directly as a point;
           // monerod verify reads the same C from the chain — both sides' inputs must match byte for byte.
-        assert!(
-            i_track < MAX_INPUTS_TRACKED,
-            "too many inputs for ring backing"
-        );
-        assert!(
-            src.outputs.len() <= crate::types::caps::RING_MAX,
-            "ring exceeds RING_MAX"
-        );
+          // Both bounds are enforced up front by check_table_caps (input count) and by the
+          // ring protocol cap; they stay non-panicking because `forms` must never abort.
+        if i_track >= ring_lens.len() {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+        }
+        if src.outputs.len() > crate::types::caps::RING_MAX {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
         for (j, o) in src.outputs.iter().enumerate() {
             rings[i_track][j] = (CompressedPoint::from(o.dest), CompressedPoint::from(o.mask));
         }

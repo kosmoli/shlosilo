@@ -73,6 +73,13 @@ pub struct TxInput {
 }
 
 impl TxInput {
+    /// Empty input: no key offsets, zeroed key image. Const so static/workspace
+    /// provisioning can spell "initialised" without an allocator.
+    pub const EMPTY: Self = Self {
+        key_offsets: heapless::Vec::new(),
+        key_image: [0u8; 32],
+    };
+
     /// Construct a RingCT `txin_to_key` input.
     pub fn new(key_offsets: heapless::Vec<u64, RING_MAX>, key_image: [u8; 32]) -> Self {
         Self {
@@ -489,6 +496,8 @@ impl TxExtra {
 /// owns sized storage on both the sign and deserialize paths; over-cap is an
 /// explicit Err (G1). The logical lengths drive serialization.
 pub const PREFIX_INPUTS_MAX: usize = 16;
+// The platform profile is the source of truth for this ceiling; drift is a build error.
+const _: () = assert!(PREFIX_INPUTS_MAX == crate::limits::XMR_INPUTS_MAX);
 pub const PREFIX_OUTPUTS_MAX: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -726,10 +735,11 @@ impl Transaction {
         // vin: txin_to_key = tag(0x02) + amount varint + key_offsets (varint count
         // + varint each) + key image 32B
         let n_in = read_count(data, off, 42)?;
-        if n_in > 32 {
+        // One ceiling for the whole pipeline: the same profile value the signer's tables use.
+        if n_in > PREFIX_INPUTS_MAX {
             return Err(err()); // ring_lens bookkeeping bound
         }
-        let mut ring_lens = [0usize; 32];
+        let mut ring_lens = [0usize; PREFIX_INPUTS_MAX];
         for (i, slot) in ring_lens.iter_mut().enumerate().take(n_in) {
             if read_u8(data, off)? != 2 {
                 return Err(err());

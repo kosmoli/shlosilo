@@ -35,6 +35,10 @@ fn host_profile_is_the_zero_diff_baseline() {
     assert_eq!(UR_WS_RECEIVED_SLOTS, 4096);
     assert_eq!(MULTIPART_PAYLOAD_MAX_LEN, 61_440);
     assert_eq!(shlosilo::types::caps::SIGN_WS_BP_CHUNK_MAX, 36);
+    // Phase 4a baseline: the signer's input tables are sized by this ceiling, and the
+    // migration is only "zero behaviour change" while it stays at the pre-4a value.
+    // Raising it (24) is a separate, separately verified change.
+    assert_eq!(limits::XMR_INPUTS_MAX, 16);
 }
 
 /// The inbound buffer may never exceed what the part domain can assemble.

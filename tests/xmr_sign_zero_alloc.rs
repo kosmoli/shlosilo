@@ -209,6 +209,30 @@ fn bt_typed_sign_zero_alloc() {
     assert_eq!(events, 0, "Z6: the BT sign path allocated {events} time(s)");
 }
 
+/// Alloc-provisioned tables for one signing call (test-side mirror of the `SignWs` carve).
+type InputTablesBuf = (
+    Vec<
+        [(
+            monero_ed25519::CompressedPoint,
+            monero_ed25519::CompressedPoint,
+        ); shlosilo::types::caps::RING_MAX],
+    >,
+    Vec<shlosilo::chain::xmr::transaction::TxInput>,
+    Vec<usize>,
+);
+
+/// Alloc-provisioned input tables, matching what `carve_sign_ws` does on device
+/// (phase 4a: the signer takes them from the caller instead of owning stack arrays).
+fn input_tables() -> InputTablesBuf {
+    let zero = monero_ed25519::CompressedPoint::from([0u8; 32]);
+    let cap = shlosilo::limits::XMR_INPUTS_MAX;
+    (
+        vec![[(zero, zero); shlosilo::types::caps::RING_MAX]; cap],
+        vec![shlosilo::chain::xmr::transaction::TxInput::new(heapless::Vec::new(), [0u8; 32]); cap],
+        vec![0usize; cap],
+    )
+}
+
 /// Z6-R2: the XMR sign path (BP+/CLSAG/gencache) is alloc-free when the
 /// deploy shape is used: caller storage provided (SignWs + generator tables).
 /// Keys embedded (X7 un-gated 2026-10-28; P2IN test wallet).
@@ -306,6 +330,7 @@ fn xmr_sign_zero_alloc() {
     )
     .expect("wip storage");
 
+    let (mut rings_buf, mut tx_inputs_buf, mut ring_lens_buf) = input_tables();
     let n = sign_tx_from_construction_with_rngs_into(
         tx_data,
         &spend_sk,
@@ -314,6 +339,11 @@ fn xmr_sign_zero_alloc() {
         &mut bp_rng,
         &mut clsag_rng,
         &mut out,
+        shlosilo::chain::xmr::tx_signer::InputTables {
+            rings: &mut rings_buf,
+            tx_inputs: &mut tx_inputs_buf,
+            ring_lens: &mut ring_lens_buf,
+        },
         &mut bp_terms,
         &mut bp_straus,
         &mut wip_scratch,
@@ -337,6 +367,11 @@ fn xmr_sign_zero_alloc() {
             &mut bp_rng,
             &mut clsag_rng,
             &mut out,
+            shlosilo::chain::xmr::tx_signer::InputTables {
+                rings: &mut rings_buf,
+                tx_inputs: &mut tx_inputs_buf,
+                ring_lens: &mut ring_lens_buf,
+            },
             &mut bp_terms,
             &mut bp_straus,
             &mut wip_scratch,
@@ -437,6 +472,7 @@ fn alloc_site_histogram() {
 
     CAPTURED.store(0, Ordering::Relaxed);
     CAPTURING.store(true, Ordering::Relaxed);
+    let (mut rings_buf, mut tx_inputs_buf, mut ring_lens_buf) = input_tables();
     let _ = sign_tx_from_construction_with_rngs_into(
         tx_data,
         &spend_sk,
@@ -445,6 +481,11 @@ fn alloc_site_histogram() {
         &mut bp_rng,
         &mut clsag_rng,
         &mut out,
+        shlosilo::chain::xmr::tx_signer::InputTables {
+            rings: &mut rings_buf,
+            tx_inputs: &mut tx_inputs_buf,
+            ring_lens: &mut ring_lens_buf,
+        },
         &mut bp_terms,
         &mut bp_straus,
         &mut wip_scratch,

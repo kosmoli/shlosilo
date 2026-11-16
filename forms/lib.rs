@@ -61,6 +61,9 @@ pub use business::{
 pub use curve25519_dalek;
 pub use entropy::mnemonic::WordCount;
 pub use monero_bulletproofs;
+/// Compressed points are part of the public signing surface (`InputTables`), so the
+/// carrying crate is re-exported rather than forcing every caller onto our dep list.
+pub use monero_ed25519;
 
 // Public Layer A types (Phase 2.1 stub — Phase 4 real algorithm integration)
 pub use crate::curve_primitive::{

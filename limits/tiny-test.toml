@@ -15,3 +15,4 @@ pairing_records_max = 4  # XMR pairing: key-image records per response (mirrors 
 c_header = 0  # 1 = also emit the C projection header (only the C-driven carrier needs it)
 psram_budget_bytes = 262144  # heap the workspaces may use at peak
 stack_budget_bytes = 32768  # task/thread stack the carrier grants
+xmr_inputs_max = 4  # XMR inputs the signer's fixed tables hold (stack-sized until phase 4a lands)

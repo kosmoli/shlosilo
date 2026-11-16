@@ -373,6 +373,13 @@ pub struct SignWs<'a> {
     pub bp_overlay: OverlayRegion<'a>,
     /// Z4-7d: PSBT map pool (records + payload arena).
     pub psbt_recs: &'a mut [crate::chain::btc::psbt::KvRec],
+    /// Phase 4a: per-input signer tables (see `layout`), initialised by the carve.
+    pub rings: &'a mut [[(
+        monero_ed25519::CompressedPoint,
+        monero_ed25519::CompressedPoint,
+    ); crate::types::caps::RING_MAX]],
+    pub tx_inputs: &'a mut [crate::chain::xmr::transaction::TxInput],
+    pub ring_lens: &'a mut [usize],
     pub psbt_arena: &'a mut [u8],
 }
 
@@ -440,7 +447,12 @@ impl<'a> OverlayRegion<'a> {
 /// carved capacity come from this one computation; `sign_ws_layout_consistency`
 /// pins the pairing.
 pub struct SignWsLayout {
+    /// Bytes the caller must provide (`regions` + worst-case base shift).
     pub total: usize,
+    /// Bytes the carve writes starting at the *aligned* base: `total` minus the shift
+    /// allowance. Kept separate so a caller that allocates exactly `total` always fits,
+    /// whatever alignment its buffer starts at.
+    regions: usize,
     plain: usize,
     txes: usize,
     sources: usize,
@@ -462,7 +474,20 @@ pub struct SignWsLayout {
     pub bp_wip: usize,
     pub psbt_recs: usize,
     pub psbt_arena: usize,
+    // Phase 4a: per-input signing tables, caller-carved so the task stack does not grow
+    // with the input ceiling (`limits::XMR_INPUTS_MAX`).
+    pub rings: usize,
+    pub tx_inputs: usize,
+    pub ring_lens: usize,
 }
+
+/// Alignment the workspace **base** must have. `ws_next` computes offsets as if the
+/// buffer started here, so the carve aligns the base up to it and `total` carries the
+/// worst-case slack. Without this, a caller whose buffer starts at an odd address
+/// (stack slice, offset sub-slice) would get misaligned typed spans - undefined
+/// behaviour, and the `tables_are_aligned_for_any_buffer_offset` pin aborted on it
+/// before the fix.
+pub(crate) const SIGN_WS_BASE_ALIGN: usize = 16;
 
 fn ws_next(off: &mut usize, align: usize, size: usize) -> usize {
     let start = (*off + align - 1) & !(align - 1);
@@ -477,6 +502,8 @@ impl SignWsLayout {
             TxConstructionData, TxDestinationEntry, TxSourceEntry,
         };
         use crate::types::caps as c;
+        // Offsets are computed from an origin the carve aligns up to SIGN_WS_BASE_ALIGN;
+        // the worst-case shift is carried by `total` (see the tail below).
         let mut off = 0usize;
         let plain = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_PLAIN);
         let txes = ws_next(
@@ -563,10 +590,41 @@ impl SignWsLayout {
             core::mem::size_of::<crate::chain::btc::psbt::KvRec>() * c::SIGN_WS_PSBT_RECS,
         );
         let psbt_arena = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_PSBT_ARENA);
-        // trailing pad so the total itself satisfies the widest alignment
-        let total = ws_next(&mut off, core::mem::align_of::<usize>(), 0);
+        // Phase 4a: the three per-input tables (previously stack arrays in the signer).
+        let rings = ws_next(
+            &mut off,
+            core::mem::align_of::<
+                [(
+                    monero_ed25519::CompressedPoint,
+                    monero_ed25519::CompressedPoint,
+                ); c::RING_MAX],
+            >(),
+            core::mem::size_of::<
+                [(
+                    monero_ed25519::CompressedPoint,
+                    monero_ed25519::CompressedPoint,
+                ); c::RING_MAX],
+            >() * crate::limits::XMR_INPUTS_MAX,
+        );
+        let tx_inputs = ws_next(
+            &mut off,
+            core::mem::align_of::<crate::chain::xmr::transaction::TxInput>(),
+            core::mem::size_of::<crate::chain::xmr::transaction::TxInput>()
+                * crate::limits::XMR_INPUTS_MAX,
+        );
+        let ring_lens = ws_next(
+            &mut off,
+            core::mem::align_of::<usize>(),
+            core::mem::size_of::<usize>() * crate::limits::XMR_INPUTS_MAX,
+        );
+        // Trailing pad so the total satisfies the widest alignment, plus the worst-case
+        // base shift: the capacity query must be a *sufficient* number, or a caller that
+        // allocates exactly `total` could fail to carve an unaligned buffer.
+        let regions = ws_next(&mut off, core::mem::align_of::<usize>(), 0);
+        let total = regions + (SIGN_WS_BASE_ALIGN - 1);
         SignWsLayout {
             total,
+            regions,
             plain,
             txes,
             sources,
@@ -588,6 +646,9 @@ impl SignWsLayout {
             bp_wip,
             psbt_recs,
             psbt_arena,
+            rings,
+            tx_inputs,
+            ring_lens,
         }
     }
 }
@@ -610,8 +671,17 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     if buf.len() < l.total {
         return None;
     }
-    buf[..l.total].fill(0);
-    let base: *mut u8 = buf.as_mut_ptr();
+    // Align the base up to SIGN_WS_BASE_ALIGN; `total` includes the worst-case slack, so
+    // this can never run past the caller's buffer.
+    let raw = buf.as_mut_ptr() as usize;
+    let aligned = (raw + SIGN_WS_BASE_ALIGN - 1) & !(SIGN_WS_BASE_ALIGN - 1);
+    if aligned + l.regions > raw + buf.len() {
+        return None;
+    }
+    let base: *mut u8 = aligned as *mut u8;
+    // Zero the workspace we hand out (from the aligned base, for the layout's length).
+    // SAFETY: the bounds were just checked above; the span is inside `buf`.
+    unsafe { core::ptr::write_bytes(base, 0u8, l.regions) };
     // SAFETY: offsets come from SignWsLayout::compute (the same computation the
     // capacity query reports — contract 3); each span is alignment-padded there
     // and disjoint by construction; every element is initialized below before
@@ -670,6 +740,32 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     let psbt_recs: &mut [crate::chain::btc::psbt::KvRec] =
         unsafe { at(base, l.psbt_recs, c::SIGN_WS_PSBT_RECS) };
     let psbt_arena: &mut [u8] = unsafe { at(base, l.psbt_arena, c::SIGN_WS_PSBT_ARENA) };
+    // Phase 4a: initialise-on-carve, never read-before-write. A single pass over the
+    // input ceiling buys plain `&mut` slices in the signing core instead of a
+    // MaybeUninit contract.
+    type RingRow = [(
+        monero_ed25519::CompressedPoint,
+        monero_ed25519::CompressedPoint,
+    ); crate::types::caps::RING_MAX];
+    let rings: &mut [RingRow] = unsafe { at(base, l.rings, crate::limits::XMR_INPUTS_MAX) };
+    for row in rings.iter_mut() {
+        let zero = monero_ed25519::CompressedPoint::from([0u8; 32]);
+        for slot in row.iter_mut() {
+            unsafe { core::ptr::write(slot, (zero, zero)) };
+        }
+    }
+    let tx_inputs: &mut [crate::chain::xmr::transaction::TxInput] =
+        unsafe { at(base, l.tx_inputs, crate::limits::XMR_INPUTS_MAX) };
+    for slot in tx_inputs.iter_mut() {
+        unsafe {
+            core::ptr::write(
+                slot,
+                crate::chain::xmr::transaction::TxInput::new(heapless::Vec::new(), [0u8; 32]),
+            )
+        };
+    }
+    let ring_lens: &mut [usize] = unsafe { at(base, l.ring_lens, crate::limits::XMR_INPUTS_MAX) };
+    ring_lens.fill(0);
     Some(SignWs {
         plain,
         txes,
@@ -690,6 +786,9 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         bp_overlay,
         psbt_recs,
         psbt_arena,
+        rings,
+        tx_inputs,
+        ring_lens,
     })
 }
 
@@ -1010,6 +1109,11 @@ fn sign_xmr_with_ws<'a>(
         let (tx_slot, r) = core::mem::take(&mut tx_bytes_rest).split_at_mut(TX_BYTES_SLOT_MAX);
         tx_bytes_rest = r;
         let mut ws_bp_terms = core::mem::take(&mut ws.bp_terms);
+        // Phase 4a: take the per-input tables out of the workspace for this tx (same
+        // take-split idiom as tx_bytes/bp_terms, so the 'a lifetime survives).
+        let ws_rings = core::mem::take(&mut ws.rings);
+        let ws_tx_inputs = core::mem::take(&mut ws.tx_inputs);
+        let ws_ring_lens = core::mem::take(&mut ws.ring_lens);
         let bp_terms_slot = &mut ws_bp_terms;
         // T-04 follow-up: BP+ prove phase — the borrow checker keeps the CN
         // phase guard from overlapping this borrow (phase exclusivity is
@@ -1045,6 +1149,11 @@ fn sign_xmr_with_ws<'a>(
             &mut bp_rng,
             &mut rng,
             tx_slot,
+            crate::chain::xmr::tx_signer::InputTables {
+                rings: &mut *ws_rings,
+                tx_inputs: &mut *ws_tx_inputs,
+                ring_lens: &mut *ws_ring_lens,
+            },
             bp_terms_slot,
             &mut bp_straus,
             &mut bp_wip,

@@ -81,6 +81,7 @@ fn emit_limits() {
         "ur_payload_max",
         "sign_ws_bp_chunk_max",
         "pairing_records_max",
+        "xmr_inputs_max",
         "c_header",
         "psram_budget_bytes",
         "stack_budget_bytes",

@@ -48,6 +48,33 @@ pub extern "C" fn z6_probe_run() {
             shlosilo::curve25519_dalek::Scalar::ZERO,
             shlosilo::curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
         ); 2050];
+        // Phase 4a: the per-input tables are caller-owned now. Same static deploy shape
+        // as the rest of the probe (never executed; the linker keeps the code and the
+        // disassembly proves the reachable path allocates nothing).
+        // A `static` cannot call `CompressedPoint::from`, so it is declared as raw bytes
+        // and viewed as the ring row type: all-zero bytes ARE the zero point.
+        static mut RINGS_BYTES: [u8; core::mem::size_of::<
+            [(shlosilo::monero_ed25519::CompressedPoint, shlosilo::monero_ed25519::CompressedPoint);
+                shlosilo::types::caps::RING_MAX]>()
+            * shlosilo::limits::XMR_INPUTS_MAX] = [0u8; core::mem::size_of::<
+            [(shlosilo::monero_ed25519::CompressedPoint, shlosilo::monero_ed25519::CompressedPoint);
+                shlosilo::types::caps::RING_MAX]>()
+            * shlosilo::limits::XMR_INPUTS_MAX];
+        let rings: &mut [[(
+            shlosilo::monero_ed25519::CompressedPoint,
+            shlosilo::monero_ed25519::CompressedPoint,
+        ); shlosilo::types::caps::RING_MAX]; shlosilo::limits::XMR_INPUTS_MAX] =
+            core::slice::from_raw_parts_mut(
+                RINGS_BYTES.as_mut_ptr().cast(),
+                shlosilo::limits::XMR_INPUTS_MAX,
+            )
+            .try_into()
+            .expect("rings view");
+        static mut TX_INPUTS: [shlosilo::chain::xmr::transaction::TxInput;
+            shlosilo::limits::XMR_INPUTS_MAX] = [shlosilo::chain::xmr::transaction::TxInput::EMPTY;
+            shlosilo::limits::XMR_INPUTS_MAX];
+        static mut RING_LENS: [usize; shlosilo::limits::XMR_INPUTS_MAX] =
+            [0usize; shlosilo::limits::XMR_INPUTS_MAX];
         static mut STRAUS_STORAGE: [u8; 5772864] = [0u8; 5772864];
         // 2050 * 960 = WipScratch::storage_bytes(2050)
         static mut WIP_STORAGE: [u8; 1968000] = [0u8; 1968000];
@@ -64,6 +91,11 @@ pub extern "C" fn z6_probe_run() {
             &mut bp_rng,
             &mut clsag_rng,
             &mut OUT,
+            shlosilo::chain::xmr::tx_signer::InputTables {
+                rings,
+                tx_inputs: &mut TX_INPUTS,
+                ring_lens: &mut RING_LENS,
+            },
             &mut TERMS,
             &mut straus,
             &mut shlosilo::monero_bulletproofs::WipScratch::new(&mut WIP_STORAGE, 2050).unwrap(),

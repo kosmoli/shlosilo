@@ -3067,6 +3067,17 @@ async fn run_sign_xmr() {
         shlosilo::chain::btc::psbt::KvRec::EMPTY;
         shlosilo::types::caps::SIGN_WS_PSBT_RECS
     ];
+    // Phase 4a: the per-input signing tables now live in the workspace too.
+    let zero_pt = shlosilo::monero_ed25519::CompressedPoint::from([0u8; 32]);
+    let mut ws_rings = alloc::vec![
+        [(zero_pt, zero_pt); shlosilo::types::caps::RING_MAX];
+        shlosilo::limits::XMR_INPUTS_MAX
+    ];
+    let mut ws_tx_inputs = alloc::vec![
+        shlosilo::chain::xmr::transaction::TxInput::EMPTY;
+        shlosilo::limits::XMR_INPUTS_MAX
+    ];
+    let mut ws_ring_lens = alloc::vec![0usize; shlosilo::limits::XMR_INPUTS_MAX];
     let mut ws_psbt_arena = alloc::vec![0u8; shlosilo::types::caps::SIGN_WS_PSBT_ARENA];
     let mut ws = shlosilo::business::sign::SignWs {
         plain: &mut ws_plain,
@@ -3088,6 +3099,9 @@ async fn run_sign_xmr() {
         bp_overlay: shlosilo::business::sign::OverlayRegion::new(&mut ws_bp_overlay_raw),
         psbt_recs: &mut ws_psbt_recs,
         psbt_arena: &mut ws_psbt_arena,
+        rings: &mut ws_rings,
+        tx_inputs: &mut ws_tx_inputs,
+        ring_lens: &mut ws_ring_lens,
     };
     let t0 = Instant::now();
     match shlosilo::business::sign::sign_with_entropy_ws(
