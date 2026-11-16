@@ -1238,6 +1238,15 @@ int shlosilo_ur_encode_next(struct UrMultipartEncoder *handle,
                             unsigned int *actual_len);
 
 /**
+ * R3: how many distinct fragments this encoder will emit (the cyclic stream repeats
+ * them). The on-screen "frame n/M" must come from here: re-deriving it in the carrier
+ * as ceil(payload_len / fragment) disagrees with the real count by the CBOR byte-string
+ * shell and the fountain padding, and then the label lies about the animation.
+ * Returns 0 for a null handle.
+ */
+unsigned int shlosilo_ur_encode_fragment_count(struct UrMultipartEncoder *handle);
+
+/**
  * R3: XMR cyclic catch-up frames (seq wraps back to 1 at the top, looping forever so software wallets can catch up)
  *
  * frame_buf_len must be at least 1024 (FRAME_BUF_MAX_LEN); shorter buffers are

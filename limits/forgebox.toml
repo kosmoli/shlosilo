@@ -16,3 +16,4 @@ c_header = 1  # 1 = also emit the C projection header (only the C-driven carrier
 psram_budget_bytes = 8384512  # heap the workspaces may use at peak
 stack_budget_bytes = 196608  # task/thread stack the carrier grants
 xmr_inputs_max = 16  # XMR inputs the signer's fixed tables hold (stack-sized until phase 4a lands)
+ur_encode_fragment_len = 200  # outbound UR fragment (bytes of payload per frame)

@@ -146,6 +146,7 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::c_abi::shlosilo_supported_protocols_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_begin as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_next as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_fragment_count as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_next_cyclic as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_free as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_new as *const ()),

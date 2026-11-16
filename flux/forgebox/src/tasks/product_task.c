@@ -2953,8 +2953,12 @@ static void carousel_enter(void)
         UiGotoPage(UI_PAGE_WELCOME);
         return;
     }
+    /* Fragment length is a platform knob (the carrier owns the screen): the project
+     * value comes from limits/<profile>.toml via shlosilo_limits.h, so the encoder and
+     * the frame label below can never disagree about it. */
     g_ur_enc = shlosilo_ur_encode_begin(type, payload,
-                                        payload_len, 200,
+                                        payload_len,
+                                        (unsigned)SHLOSILO_LIMITS_UR_ENCODE_FRAGMENT_LEN,
                                         g_ur_enc_ws, enc_ws_need);
     if (g_ur_enc == NULL) {
         ExtFree(g_ur_enc_ws);
@@ -2966,7 +2970,24 @@ static void carousel_enter(void)
         UiGotoPage(UI_PAGE_WELCOME);
         return;
     }
-    g_ur_total = (payload_len + 199) / 200;
+    /* ONE formula: the encoder's own fragment count. This used to be
+     * (payload_len + 199) / 200, which ignored the CBOR byte-string shell and the
+     * fountain padding, so the on-screen "ur frame n/M" could be off by one. */
+    g_ur_total = shlosilo_ur_encode_fragment_count(g_ur_enc);
+    if (g_ur_total == 0) {
+        /* Same shape as the begin-failure leg above: release and go home, do not
+         * animate a zero-frame carousel. */
+        shlosilo_ur_encode_free(g_ur_enc);
+        g_ur_enc = NULL;
+        ExtFree(g_ur_enc_ws);
+        g_ur_enc_ws = NULL;
+        printf("carousel: fragment count 0\r\n");
+        UiSetLast("ur: encoder fail");
+        g_carousel = CAROUSEL_FAILED;
+        g_pairing_qr = 0;
+        UiGotoPage(UI_PAGE_WELCOME);
+        return;
+    }
     g_ur_shown = 0;
     /* The entry tap may still be resting on `back`: treat the contact as
      * already seen so exiting needs a fresh press. */

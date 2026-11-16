@@ -27,7 +27,7 @@ unsafe impl Sync for Addr {}
 // encoder -> frame stream -> decoder round-trip at the firmware's buffer
 // size, plus the FRAME_BUF_MAX_LEN contract check).
 #[used]
-static KEEP_FFI: [Addr; 17] = [
+static KEEP_FFI: [Addr; 18] = [
     Addr(shlosilo::ffi::c_abi::shlosilo_create_account_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_export_readonly_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_sign_ur_ffi as *const ()),
@@ -39,6 +39,7 @@ static KEEP_FFI: [Addr; 17] = [
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_begin as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_next as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_next_cyclic as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_fragment_count as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_free as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_new as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_feed as *const ()),

@@ -79,6 +79,7 @@ fn emit_limits() {
         "ur_ws_queue_slots",
         "ur_ws_received_slots",
         "ur_payload_max",
+        "ur_encode_fragment_len",
         "sign_ws_bp_chunk_max",
         "pairing_records_max",
         "xmr_inputs_max",
@@ -168,6 +169,15 @@ fn emit_limits() {
     // domain can deliver (255 parts' worth of the largest fragment we accept).
     // Getting this wrong is how a device ends up collecting a payload it can never
     // assemble (B-7, 2026-11-15).
+    // The outbound frame is spelled as bytewords (2 chars per byte) inside a
+    // `ur:<type>/<n>-<m>/<text>` wrapper; the carrier's frame buffer is 1024 chars.
+    // A fragment that cannot render is a device-side truncation, so refuse it here.
+    let encode_fragment_len = get("ur_encode_fragment_len");
+    if encode_fragment_len == 0 || encode_fragment_len > 480 {
+        panic!(
+            "{path}: ur_encode_fragment_len ({encode_fragment_len}) must be 1..=480 (bytewords at 2 chars/byte inside the carrier's 1024-char frame buffer)"
+        );
+    }
     let payload_max = get("ur_payload_max");
     let assembled_max = get("ur_ws_decoded_slots") * 240;
     assert!(

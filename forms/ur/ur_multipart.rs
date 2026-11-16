@@ -54,6 +54,9 @@ pub const MULTIPART_MESSAGE_MAX_LEN: usize = MULTIPART_PAYLOAD_MAX_LEN + 9;
 pub const MULTIPART_FRAME_MAX_LEN: usize = 40960;
 /// Single-frame payload limit (the single-frame large-QR channel goes through ur_encode::encode; only fragmentation here)
 pub const DEFAULT_FRAGMENT_LEN: usize = 200;
+// The carrier picks the fragment length (it owns the screen), so the profile is the
+// source of truth; drift between the two is a build error.
+const _: () = assert!(DEFAULT_FRAGMENT_LEN == crate::limits::UR_ENCODE_FRAGMENT_LEN);
 /// Z2.4c-4: part-CBOR decode scratch (fragment payload + CBOR wrapper headroom)
 pub(crate) const PART_CBOR_SCRATCH_MAX: usize = crate::encoding::fountain::PART_DATA_MAX + 64;
 

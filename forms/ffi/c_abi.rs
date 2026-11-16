@@ -1011,6 +1011,28 @@ pub mod r3 {
         }
     }
 
+    /// R3: how many distinct fragments this encoder will emit (the cyclic stream repeats
+    /// them). The on-screen "frame n/M" must come from here: re-deriving it in the carrier
+    /// as ceil(payload_len / fragment) disagrees with the real count by the CBOR byte-string
+    /// shell and the fountain padding, and then the label lies about the animation.
+    /// Returns 0 for a null handle.
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub extern "C" fn shlosilo_ur_encode_fragment_count(
+        handle: *mut UrMultipartEncoder<'static>,
+    ) -> c_uint {
+        if handle.is_null() {
+            return 0;
+        }
+        let result = ffi_catch_unwind!(|| -> c_uint {
+            // SAFETY: a non-null handle comes from shlosilo_ur_encode_begin and stays valid
+            // until shlosilo_ur_encode_free (L3 contract); no aliasing mutable borrow here.
+            let enc = unsafe { &*handle };
+            enc.fragment_count() as c_uint
+        });
+        result.unwrap_or_default()
+    }
+
     /// R3: XMR cyclic catch-up frames (seq wraps back to 1 at the top, looping forever so software wallets can catch up)
     ///
     /// frame_buf_len must be at least 1024 (FRAME_BUF_MAX_LEN); shorter buffers are
