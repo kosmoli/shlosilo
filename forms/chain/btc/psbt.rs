@@ -235,13 +235,11 @@ impl<'a> KvMap<'a> {
 /// order is `global, inputs…, outputs…`. Capacities are runtime queries
 /// (`shlosilo_sign_ws_len`); over-cap is an explicit Err, never truncation.
 /// PSBT map slots = 1 global + up to `BT_TX_INPUTS_MAX` input maps + up to
-/// `BT_TX_OUTPUTS_MAX` output maps. Explicit in the platform profile for now; the
-/// derivation (`PSBT_MAPS_MIN`, emitted by build.rs) lands as the single source in
-/// phase 2 of the limits-knob plan.
-pub const PSBT_MAPS_MAX: usize = 130;
-// The platform profile (`limits/<profile>.toml`) is the source of truth:
-// any drift between this constant and the generated ceiling is a build error.
-const _: () = assert!(PSBT_MAPS_MAX == crate::limits::PSBT_MAPS_MAX);
+/// `BT_TX_OUTPUTS_MAX` output maps. build.rs derives it from those two ceilings, so
+/// this is an alias, not a second copy: shrinking an input ceiling shrinks the map
+/// array too. `pub(crate)` because the C projection of this number lives in the
+/// generated limits header, and a second define in `shlosilo.h` would be a second home.
+pub(crate) const PSBT_MAPS_MAX: usize = crate::limits::PSBT_MAPS_MAX;
 
 pub struct MapPool<'a> {
     wire: &'a [u8],

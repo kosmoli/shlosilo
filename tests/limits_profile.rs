@@ -11,8 +11,8 @@
 //! 43-input request).
 
 use shlosilo::chain::btc::p2wpkh::{BT_TX_INPUTS_MAX, BT_TX_OUTPUTS_MAX};
-use shlosilo::chain::btc::psbt::PSBT_MAPS_MAX;
 use shlosilo::limits;
+use shlosilo::limits::PSBT_MAPS_MAX;
 use shlosilo::types::caps::{
     UR_WS_BUFFER_SLOTS, UR_WS_DECODED_SLOTS, UR_WS_QUEUE_SLOTS, UR_WS_RECEIVED_SLOTS,
 };
@@ -28,7 +28,13 @@ fn host_profile_is_the_zero_diff_baseline() {
     );
     assert_eq!(BT_TX_INPUTS_MAX, 64);
     assert_eq!(BT_TX_OUTPUTS_MAX, 64);
-    assert_eq!(PSBT_MAPS_MAX, 130);
+    assert_eq!(
+        PSBT_MAPS_MAX,
+        1 + limits::BT_TX_INPUTS_MAX + limits::BT_TX_OUTPUTS_MAX,
+        "derived by build.rs from the two ceilings, not configured"
+    );
+    // The C side reads this from the header; the value must equal the derivation.
+    assert_eq!(PSBT_MAPS_MAX, limits::PSBT_MAPS_MAX);
     assert_eq!(UR_WS_DECODED_SLOTS, 256);
     assert_eq!(UR_WS_BUFFER_SLOTS, 256);
     assert_eq!(UR_WS_QUEUE_SLOTS, 256);

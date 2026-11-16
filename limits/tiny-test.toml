@@ -4,7 +4,6 @@
 [limits]
 bt_tx_inputs_max = 2  # BTC PSBT inputs the wire model holds (hard cap; over-cap -> BufferTooSmall)
 bt_tx_outputs_max = 2  # BTC PSBT outputs the wire model holds
-psbt_maps_max = 5  # PSBT map slots (1 global + N in + N out; kept explicit until the derivation lands in phase 2)
 ur_ws_decoded_slots = 8  # UR fountain decoded-part slots (1 per part; part domain bound)
 ur_ws_buffer_slots = 8  # UR fountain work-buffer slots
 ur_ws_queue_slots = 8  # UR fountain cascade-queue slots

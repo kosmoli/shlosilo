@@ -205,18 +205,22 @@ pub const CLSAG_PROOF_MAX: usize = 32 * (RING_MAX + 3);
 /// Largest signed artifact we emit, and therefore the caller-buffer budget the
 /// sign FFI accepts: 64 KiB of payload plus the 512-byte container slack the
 /// old `MULTIPART_PAYLOAD_MAX_LEN + 512` shape used.
-pub(crate) const SIGN_OUTBOUND_MAX: usize = 64 * 1024 + 512;
+/// ABI-visible name (cbindgen exports it as `SIGN_OUTPUT_BUF_MAX_LEN`), because the
+/// carrier sizes its outbound buffer from it. Keeping it `pub(crate)` made the C side
+/// carry a second copy of the same arithmetic - the exact "one number, two homes"
+/// failure the limits knobs exist to remove.
+pub const SIGN_OUTPUT_BUF_MAX_LEN: usize = 64 * 1024 + 512;
 
 #[cfg(test)]
 mod transport_limit_pins {
-    //! The C side carries these numbers literally (`UR_PAYLOAD_MAX`,
-    //! `SIGN_OUT_MAX` in flux/forgebox/src/tasks/product_task.c), so the two
-    //! faces are compared here rather than through a `pub` constant: making them
-    //! `pub` would export them into shlosilo.h and invite a second source of
-    //! truth. `tests/transport_limits.rs` pins the C side and the behaviour.
+    //! Capacity numbers the C side must agree with. They are exported (`pub`) on
+    //! purpose: the projection in `shlosilo.h` is the single source, and a literal
+    //! copied into `product_task.c` would be the second one. `UR_PAYLOAD_MAX` comes
+    //! from the generated limits header, `SIGN_OUT_MAX` from `SIGN_OUTPUT_BUF_MAX_LEN`;
+    //! `tests/transport_limits.rs` pins both faces and the behaviour.
 
     #[test]
     fn outbound_cap_is_64k_plus_container_slack() {
-        assert_eq!(super::SIGN_OUTBOUND_MAX, 64 * 1024 + 512);
+        assert_eq!(super::SIGN_OUTPUT_BUF_MAX_LEN, 64 * 1024 + 512);
     }
 }

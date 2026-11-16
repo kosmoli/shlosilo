@@ -757,13 +757,16 @@ static const uint16_t k_sign_idx12[12] = {
     136, 1092, 546, 273, 136, 1092, 546, 273, 136, 1092, 546, 283
 };
 #define SIGN_ENTROPY_LEN          32
-#define SIGN_OUT_MAX              (64 * 1024 + 512) /* = shlosilo.h SIGN_OUTPUT_BUF_MAX_LEN
- * (caps::SIGN_OUTBOUND_MAX). The signed container carries ptx + key_images +
- * tx_key_images; the measured E case (9-in/2-out) is 21,420 B and the size model
- * 722 + 2131*N_in + 711*N_out puts a 29-input spend at ~64 KiB. This is the
- * OUTBOUND direction: we choose the fragment length, so the wallet's decoder -
- * not our slot count - is the limit. It used to be 16896 (the inbound reassembly
- * budget plus slack), which refused every request past ~6 inputs. */
+#define SIGN_OUT_MAX              SIGN_OUTPUT_BUF_MAX_LEN /* shlosilo.h, from caps.rs
+ * (64 KiB + 512 B container slack). One arithmetic, one home: this used to repeat
+ * the expression, so a change on the Rust side would have left the carrier sizing
+ * a smaller buffer than the FFI contract allows.
+ * The signed container carries ptx + key_images + tx_key_images; the measured E case
+ * (9-in/2-out) is 21,420 B and the size model 722 + 2131*N_in + 711*N_out puts a
+ * 29-input spend at ~64 KiB. This is the OUTBOUND direction: we choose the fragment
+ * length, so the wallet's decoder - not our slot count - is the limit. It used to be
+ * 16896 (the inbound reassembly budget plus slack), which refused every request past
+ * ~6 inputs. */
 /* Inbound reassembly budget. NOT a memory budget: the fountain decoder completes
  * at decoded_count >= ceil(message / fragment), and it has UR_WS_DECODED_SLOTS
  * slots. With the 130-character fragments wallets send by default (bytewords

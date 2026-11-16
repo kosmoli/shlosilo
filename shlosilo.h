@@ -142,17 +142,6 @@
 
 #define BT_TX_OUTPUTS_MAX 64
 
-/**
- * Z4-7b: the PSBT map pool — records + arena + the wire base. Logical map
- * order is `global, inputs…, outputs…`. Capacities are runtime queries
- * (`shlosilo_sign_ws_len`); over-cap is an explicit Err, never truncation.
- * PSBT map slots = 1 global + up to `BT_TX_INPUTS_MAX` input maps + up to
- * `BT_TX_OUTPUTS_MAX` output maps. Explicit in the platform profile for now; the
- * derivation (`PSBT_MAPS_MIN`, emitted by build.rs) lands as the single source in
- * phase 2 of the limits-knob plan.
- */
-#define PSBT_MAPS_MAX 130
-
 #define UNSIGNED_TX 0
 
 /**
@@ -773,6 +762,17 @@
  * Layout per clsag.rs sign(): `pseudo_out(32) ‖ s[mixin+1] ‖ c1 ‖ D`.
  */
 #define CLSAG_PROOF_MAX (32 * (RING_MAX + 3))
+
+/**
+ * Largest signed artifact we emit, and therefore the caller-buffer budget the
+ * sign FFI accepts: 64 KiB of payload plus the 512-byte container slack the
+ * old `MULTIPART_PAYLOAD_MAX_LEN + 512` shape used.
+ * ABI-visible name (cbindgen exports it as `SIGN_OUTPUT_BUF_MAX_LEN`), because the
+ * carrier sizes its outbound buffer from it. Keeping it `pub(crate)` made the C side
+ * carry a second copy of the same arithmetic - the exact "one number, two homes"
+ * failure the limits knobs exist to remove.
+ */
+#define SIGN_OUTPUT_BUF_MAX_LEN ((64 * 1024) + 512)
 
 /**
  * Script-expression registry tags.

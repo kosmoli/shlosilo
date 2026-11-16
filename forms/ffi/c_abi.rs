@@ -67,8 +67,8 @@ const LEGACY_PSBT_MAX_LEN: usize = 2048;
 /// Audit #5 P0-03: output-side budget — signature output ≤ payload + 512 overhead (unified at the 16KiB scale)
 /// Caller-buffer budget for a signed artifact. Deliberately NOT tied to the
 ///(inbound) reassembly cap: the outbound direction is bounded by our own fragment
-/// choice, see `types::caps::SIGN_OUTBOUND_MAX`.
-const SIGN_OUTPUT_BUF_MAX_LEN: usize = crate::types::caps::SIGN_OUTBOUND_MAX;
+/// choice, see `types::caps::SIGN_OUTPUT_BUF_MAX_LEN`.
+use crate::types::caps::SIGN_OUTPUT_BUF_MAX_LEN;
 /// export_readonly output upper bound (a CryptoHDKey UR is ≈ 500B; unified with sign output to guard against over-declared capacity)
 const EXPORT_OUTPUT_BUF_MAX_LEN: usize = crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN + 512;
 /// mnemonic output buffer (create_account: 24 words × 2B)

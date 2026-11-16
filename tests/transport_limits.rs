@@ -93,13 +93,14 @@ fn inbound_cap_is_the_slot_derived_value_on_both_sides() {
 /// 2. The outbound cap is 64 KiB + slack on both sides.
 #[test]
 fn outbound_cap_is_64k_on_both_sides() {
+    // The carrier must take the number from the header projection, not repeat the
+    // arithmetic: one expression, one home.
     assert!(
-        PRODUCT_TASK_C.contains("#define SIGN_OUT_MAX              (64 * 1024 + 512)"),
-        "the firmware's signed-artifact buffer must be the outbound cap"
+        PRODUCT_TASK_C.contains("#define SIGN_OUT_MAX              SIGN_OUTPUT_BUF_MAX_LEN"),
+        "the firmware's signed-artifact buffer must come from shlosilo.h"
     );
-    // The FFI budget gate accepts exactly this many bytes (checked below); the
-    // constant itself lives in caps.rs and is not exported, so the behavioural
-    // test is what ties the two together.
+    // ...and the projected constant is the outbound cap the FFI budget gate accepts.
+    assert_eq!(OUTBOUND, shlosilo::types::caps::SIGN_OUTPUT_BUF_MAX_LEN);
     assert_eq!(OUTBOUND, 64 * 1024 + 512);
 }
 
