@@ -51,9 +51,15 @@ impl ZeroizingMaskGuard {
     /// filled in construction order and then permuted in lockstep with the
     /// public vin arrays by an in-place selection sort (no extra storage, no
     /// second secret derivation).
-    fn swap(&mut self, a: usize, b: usize) {
-        assert!(a < self.len && b < self.len, "mask swap out of range");
+    /// Returns false when an index is out of range. Callers treat that as an internal
+    /// invariant violation and refuse the request; `forms` must never abort the device
+    /// (2026-11-15 red line), and the vin-order sort's bounds make this unreachable.
+    fn swap(&mut self, a: usize, b: usize) -> bool {
+        if a >= self.len || b >= self.len {
+            return false;
+        }
         self.masks.swap(a, b);
+        true
     }
 
     #[allow(unused_variables)] // kind is used only by the cfg(test) shadow observer
@@ -67,14 +73,15 @@ impl ZeroizingMaskGuard {
     }
     /// Take-over semantics: after copying into the owner, **immediately zero the caller's buffer** — audit #8 P1-01,
     /// eliminating the "second live copy caused by [u8;32] being Copy"
-    fn push_take(&mut self, mask: &mut [u8; 32]) {
-        assert!(
-            self.len < self.masks.len(),
-            "ZeroizingMaskGuard over capacity"
-        );
+    /// Returns false when the guard is full (caller maps it to `BufferTooSmall`).
+    fn push_take(&mut self, mask: &mut [u8; 32]) -> bool {
+        if self.len >= self.masks.len() {
+            return false;
+        }
         self.masks[self.len] = *mask;
         self.len += 1;
         mask.zeroize();
+        true
     }
     /// Read-only borrow — data is never taken away; zeroization is fully handled by Drop
     /// (audit #6 re-review P1-01: into_inner would release protection before the last error-path segment)
@@ -849,17 +856,22 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
         // key_offset is derived and consumed immediately (no intermediate Vec); zeroized in place after push_take
         let mut input_sk =
             crate::chain::xmr::subaddress::derive_input_spend_key(spend_sec, &key_offset)?;
-        input_sks.push_take(&mut input_sk); // input_sk taken over in place into the owner
+        if !input_sks.push_take(&mut input_sk) {
+            // Guard full: capacity, reported like every other over-cap refusal.
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+        } // input_sk taken over in place into the owner
         key_offset.zeroize(); // in place (mut declared at the binding; no shadow Copy)
                               // P1-03 + audit #8 P1-01: mask written into a local buffer then taken over in place via push_take
                               // (after push the caller's buffer is zeroized immediately; no second live copy exists)
         let mut mask_copy = [0u8; 32];
         src.mask.write_into(&mut mask_copy);
-        input_real_masks.push_take(&mut mask_copy); // TxSourceEntry.mask = the real output's true blinding factor
-                                                    // (OutputEntry.mask is the on-chain C point; treating real_entry.mask as a blinding to recompute is wrong)
-                                                    // ring members: (dest one-time address, on-chain commitment C point bytes).
-                                                    // OutputEntry.mask = the on-chain outPk commitment (not a blinding factor), used directly as a point;
-                                                    // monerod verify reads the same C from the chain — both sides' inputs must match byte for byte.
+        if !input_real_masks.push_take(&mut mask_copy) {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+        } // TxSourceEntry.mask = the real output's true blinding factor
+          // (OutputEntry.mask is the on-chain C point; treating real_entry.mask as a blinding to recompute is wrong)
+          // ring members: (dest one-time address, on-chain commitment C point bytes).
+          // OutputEntry.mask = the on-chain outPk commitment (not a blinding factor), used directly as a point;
+          // monerod verify reads the same C from the chain — both sides' inputs must match byte for byte.
         assert!(
             i_track < MAX_INPUTS_TRACKED,
             "too many inputs for ring backing"
@@ -895,9 +907,14 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             tx_inputs.swap(i, best);
             rings.swap(i, best);
             ring_lens.swap(i, best);
-            input_sks.swap(i, best);
-            input_real_masks.swap(i, best);
+            // vin_order is a plain array (infallible swap); the secret guards report
+            // bounds violations instead of panicking.
             vin_order.swap(i, best);
+            if !input_sks.swap(i, best) || !input_real_masks.swap(i, best) {
+                // Bounds are i, best < tx_inputs_len == the number of pushes, so this is
+                // unreachable; refusing beats aborting (forms red line).
+                return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+            }
         }
     }
 

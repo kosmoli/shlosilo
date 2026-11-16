@@ -526,7 +526,10 @@ impl<'a> Decoder<'a> {
                 22 => Ok(Cbor::Null),
                 _ => Err(err()), // float not supported
             },
-            _ => unreachable!(),
+            // Major type 7 already matched above; anything else cannot come out of a
+            // 3-bit field, but a non-panicking arm keeps the "forms never aborts" rule
+            // structural rather than argued (2026-11-15 red line).
+            _ => Err(err()),
         }
     }
 }
