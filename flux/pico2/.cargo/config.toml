@@ -9,3 +9,9 @@ target = "thumbv8m.main-none-eabihf"
 
 [env]
 DEFMT_LOG = "debug"
+
+# Platform resource profile for this carrier (see limits/pico2.toml and the
+# limits-knob design note). Set here rather than in the Makefile so every entry
+# point - make, cargo build, CI - picks up the same profile.
+[env]
+SHLOSILO_LIMITS = "pico2"

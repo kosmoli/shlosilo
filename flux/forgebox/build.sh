@@ -121,7 +121,7 @@ build_shlosilo() {
     # The core crate is rlib-only; the staticlib is bundled by the
     # flux/forgebox/staticlib shim package, so no other consumer of the crate
     # is ever forced through a staticlib unit.
-    ( cd "$REPO_ROOT" && cargo build -p shlosilo-forgebox --release --target "$SHLOSILO_TARGET" )
+    ( cd "$REPO_ROOT" && SHLOSILO_LIMITS=forgebox cargo build -p shlosilo-forgebox --release --target "$SHLOSILO_TARGET" )
     mkdir -p "$APP_ROOT/shlosilo"
     arm-none-eabi-strip --strip-debug "$lib" -o "$APP_ROOT/shlosilo/libshlosilo.a"
     echo "    staticlib -> shlosilo/libshlosilo.a ($(stat -c%s "$APP_ROOT/shlosilo/libshlosilo.a") bytes)"

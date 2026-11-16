@@ -112,8 +112,10 @@ jobs:
       - name: Embedded checks (thumbv7em)
         run: |
           rustup target add thumbv7em-none-eabihf
-          cargo check --locked --lib --no-default-features --target thumbv7em-none-eabihf
-          cargo check --locked --lib --no-default-features --target thumbv7em-none-eabihf \
+          # A bare-metal target must name a profile (build.rs refuses to default to host);
+          # the generic embedded checks use the smallest real carrier.
+          SHLOSILO_LIMITS=pico2 cargo check --locked --lib --no-default-features --target thumbv7em-none-eabihf
+          SHLOSILO_LIMITS=pico2 cargo check --locked --lib --no-default-features --target thumbv7em-none-eabihf \
             --features device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi
       - name: Vendor crate tests (timing hooks)
         run: cd vendor/cryptonight && cargo test --locked --features cn-timing --lib
@@ -179,7 +181,7 @@ jobs:
           export PATH="$HOME/gnu-arm/bin:$PATH"
           echo "$HOME/gnu-arm/bin" >> "$GITHUB_PATH"
           export SHLOSILO_ARM_TOOLCHAIN="$HOME/gnu-arm"
-          bash probes/noalloc/build.sh
+          SHLOSILO_LIMITS=pico2 bash probes/noalloc/build.sh
       - name: Upload allocation-face receipt
         if: always()
         uses: actions/upload-artifact@v4
@@ -270,9 +272,9 @@ jobs:
       - name: flux keysource (host tests + no-alloc embedded face)
         run: |
           cargo test --locked -p shlosilo-flux-keysource
-          cargo check --locked -p shlosilo-flux-keysource --no-default-features --target thumbv7em-none-eabihf
+          SHLOSILO_LIMITS=pico2 cargo check --locked -p shlosilo-flux-keysource --no-default-features --target thumbv7em-none-eabihf
       - name: forgebox staticlib (embedded, thumbv7em)
-        run: cargo check --locked -p shlosilo-forgebox --release --target thumbv7em-none-eabihf
+        run: SHLOSILO_LIMITS=forgebox cargo check --locked -p shlosilo-forgebox --release --target thumbv7em-none-eabihf
       # The C firmware build is ~95% of this job's wall time (measured: 3433 s of
       # a 59-minute run, every other step together ~2 minutes). Cache the compiler
       # objects: ccache keys on the preprocessed source + compiler binary + flags,
@@ -342,8 +344,8 @@ jobs:
       # linted with --all-features to cover the bench/perf surface.
       - name: "Flux crates: clippy (embedded + host targets, warnings denied)"
         run: |
-          cargo clippy --locked -p shlosilo-pico2 --release --target thumbv8m.main-none-eabihf --all-features -- -D warnings
-          cargo clippy --locked -p shlosilo-forgebox --release --target thumbv7em-none-eabihf -- -D warnings
+          SHLOSILO_LIMITS=pico2 cargo clippy --locked -p shlosilo-pico2 --release --target thumbv8m.main-none-eabihf --all-features -- -D warnings
+          SHLOSILO_LIMITS=forgebox cargo clippy --locked -p shlosilo-forgebox --release --target thumbv7em-none-eabihf -- -D warnings
           cargo clippy --locked -p shlosilo-host-sim --release -- -D warnings
       # `make pico2-uf2` still feeds the ELF through elf2uf2-rs and then rewrites
       # the block family IDs in flux/pico2/pack_uf2.py (elf2uf2-rs tags every

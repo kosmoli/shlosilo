@@ -38,9 +38,12 @@ bash scripts/test_zero_on_alloc.sh --offline --no-default-features --all-targets
 cargo test --offline -p shlosilo-flux-keysource > /tmp/g_keysrc.log 2>&1; echo "KEYSRC=$?"
 bash scripts/clippy.sh > /tmp/g_clippy.log 2>&1; echo "CLIPPY=$?"
 cargo check --offline --target armv7-unknown-linux-gnueabihf > /tmp/g_arm.log 2>&1; echo "ARM=$?"
-cargo check --lib --no-default-features --target thumbv7em-none-eabihf > /tmp/g_embed1.log 2>&1; echo "EMBED1=$?"
-cargo check --lib --no-default-features --target thumbv7em-none-eabihf --features device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi > /tmp/g_embed2.log 2>&1; echo "EMBED2=$?"
-cargo clippy --offline --target thumbv8m.main-none-eabihf --manifest-path flux/pico2/Cargo.toml --all-features -- -D warnings > /tmp/g_pico2.log 2>&1; echo "PICO2=$?"
+# The embedded faces are compile-surface checks, not carrier builds: name the smallest
+# real bare-metal profile so build.rs does not have to guess (it refuses to default
+# to host for a bare-metal target).
+SHLOSILO_LIMITS=pico2 cargo check --lib --no-default-features --target thumbv7em-none-eabihf > /tmp/g_embed1.log 2>&1; echo "EMBED1=$?"
+SHLOSILO_LIMITS=pico2 cargo check --lib --no-default-features --target thumbv7em-none-eabihf --features device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi > /tmp/g_embed2.log 2>&1; echo "EMBED2=$?"
+SHLOSILO_LIMITS=pico2 cargo clippy --offline --target thumbv8m.main-none-eabihf --manifest-path flux/pico2/Cargo.toml --all-features -- -D warnings > /tmp/g_pico2.log 2>&1; echo "PICO2=$?"
 bash flux/host-sim/build.sh > /tmp/g_hostsim.log 2>&1; echo "HOSTSIM_BUILD=$?"
 timeout 60 flux/host-sim/sim_l3 > /tmp/g_sim.log 2>&1; echo "HOSTSIM_RUN=$?"
 grep -c "signed tx (111 bytes)" /tmp/g_sim.log; grep -c "all steps completed" /tmp/g_sim.log

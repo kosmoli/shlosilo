@@ -1,0 +1,13 @@
+# Platform resource profile: forgebox
+# Source of truth for the resource knobs. Runtime setters clamp to these
+# ceilings; anything that sizes a stack array is fixed here at build time.
+[limits]
+bt_tx_inputs_max = 64  # BTC PSBT inputs the wire model holds (hard cap; over-cap -> BufferTooSmall)
+bt_tx_outputs_max = 64  # BTC PSBT outputs the wire model holds
+psbt_maps_max = 130  # PSBT map slots (1 global + N in + N out; kept explicit until the derivation lands in phase 2)
+ur_ws_decoded_slots = 256  # UR fountain decoded-part slots (1 per part; part domain bound)
+ur_ws_buffer_slots = 256  # UR fountain work-buffer slots
+ur_ws_queue_slots = 256  # UR fountain cascade-queue slots
+ur_ws_received_slots = 4096  # UR received-sequence slots (fountain sequence space)
+ur_payload_max = 61440  # Inbound UR payload bytes (keep <= slots x max sender fragment)
+sign_ws_bp_chunk_max = 36  # BP+ multiexp chunk terms ceiling (runtime knob clamps to this)

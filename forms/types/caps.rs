@@ -27,6 +27,9 @@ pub const SIGN_WS_BP_TERMS: usize = 2050;
 /// `set_bp_multiexp_chunk_terms` clamps to this cap (a larger chunk would
 /// make `StrausScratch::new` fail loudly at prove time).
 pub const SIGN_WS_BP_CHUNK_MAX: usize = 36;
+// The platform profile (`limits/<profile>.toml`) is the source of truth:
+// any drift between this constant and the generated ceiling is a build error.
+const _: () = assert!(SIGN_WS_BP_CHUNK_MAX == crate::limits::SIGN_WS_BP_CHUNK_MAX);
 pub const SIGN_WS_BP_STRAUS_BYTES: usize =
     SIGN_WS_BP_CHUNK_MAX * (16 * 160) + SIGN_WS_BP_CHUNK_MAX * 256 + 64;
 /// CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB).
@@ -140,25 +143,37 @@ pub const SIGN_WS_TKI: usize = 256;
 pub const SIGN_WS_SEL_OUT: usize = 256;
 /// Workspace: key-image string bytes (67 per source).
 pub const SIGN_WS_KSTR: usize = 67 * 32;
-/// Workspace: UR decode — decoded-parts slots (FountainWs pool).
-///
-/// **256 is not arbitrary: it is the part-count domain.** `MAX_SEQUENCE_COUNT`
-/// (encoding/fountain.rs) caps a message at 256 parts because the index lives in
-/// u8, and the decoder only ever needs one slot per part. Raising this without
-/// widening that domain buys nothing and is expensive: each slot holds a full
-/// `Part` (inline `data: [u8; 2048]`), so a slot costs ~2.3 KiB - measured
-/// `ur_decode_ws_len()` = 2.7 MiB at 256, 5.9 MiB at 1024 (forgebox PSRAM heap is
-/// 8 MiB total, CN scratch already takes 2 MiB). Slot growth belongs with the
-/// u8 -> u16 domain change *and* a slimmer Part (fragment data as a slice into the
-/// reassembly buffer), not with a bigger payload cap.
-pub const UR_WS_DECODED_SLOTS: usize = 256;
 /// Workspace: UR decode — work-buffer slots (one per part; same domain bound).
 pub const UR_WS_BUFFER_SLOTS: usize = 256;
-/// Workspace: UR decode — cascade queue slots.
+// The platform profile (`limits/<profile>.toml`) is the source of truth:
+// any drift between this constant and the generated ceiling is a build error.
+const _: () = assert!(UR_WS_BUFFER_SLOTS == crate::limits::UR_WS_BUFFER_SLOTS);
+/// Workspace: UR decode — decoded-parts slots (FountainWs pool).
+///
+/// **Bounded by the part domain, not chosen freely.** `MAX_SEQUENCE_COUNT`
+/// (encoding/fountain.rs) caps a message at 256 parts because the index lives in u8,
+/// and the decoder needs one slot per part. Raising this without widening that domain
+/// buys nothing and is expensive: each slot holds a full `Part` (inline
+/// `data: [u8; 2048]`) - measured `ur_decode_ws_len()` = 2.7 MiB at 256 and 5.9 MiB at
+/// 1024, against a forgebox PSRAM heap of 8.38 MB that already gives 2 MiB to the CN
+/// scratch. Slot growth belongs with the u8 -> u16 domain change *and* a slimmer Part,
+/// not with a bigger payload cap. Value comes from the platform profile
+/// (`limits/<profile>.toml`).
+pub const UR_WS_DECODED_SLOTS: usize = 256;
+// The platform profile (`limits/<profile>.toml`) is the source of truth:
+// any drift between this constant and the generated ceiling is a build error.
+const _: () = assert!(UR_WS_DECODED_SLOTS == crate::limits::UR_WS_DECODED_SLOTS);
+/// Workspace: UR decode — cascade queue slots (platform profile).
 pub const UR_WS_QUEUE_SLOTS: usize = 256;
-/// Workspace: UR decode — received-sequence slots (the full fountain sequence
-/// space: MAX_TOTAL_FRAMES).
+// The platform profile (`limits/<profile>.toml`) is the source of truth:
+// any drift between this constant and the generated ceiling is a build error.
+const _: () = assert!(UR_WS_QUEUE_SLOTS == crate::limits::UR_WS_QUEUE_SLOTS);
+/// Workspace: UR decode — received-sequence slots (the full fountain sequence space:
+/// MAX_TOTAL_FRAMES). Platform profile.
 pub const UR_WS_RECEIVED_SLOTS: usize = 4096;
+// The platform profile (`limits/<profile>.toml`) is the source of truth:
+// any drift between this constant and the generated ceiling is a build error.
+const _: () = assert!(UR_WS_RECEIVED_SLOTS == crate::limits::UR_WS_RECEIVED_SLOTS);
 
 /// Workspace: records-face destinations (flat).
 pub const SIGN_WS_RECORD_DESTS: usize = 64;

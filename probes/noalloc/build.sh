@@ -12,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 TARGET=thumbv7em-none-eabihf
-cargo build --release --target "$TARGET" --manifest-path Cargo.toml
+SHLOSILO_LIMITS="${SHLOSILO_LIMITS:-pico2}" cargo build --release --target "$TARGET" --manifest-path Cargo.toml
 
 LIB=target/$TARGET/release/libz6_noalloc_probe.a
 [ -f "$LIB" ] || { echo "missing $LIB"; exit 1; }

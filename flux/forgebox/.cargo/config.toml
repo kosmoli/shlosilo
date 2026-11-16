@@ -1,0 +1,5 @@
+# Platform resource profile for this carrier (see limits/forgebox.toml and the
+# limits-knob design note). The C header projection lands in phase 2; for now the
+# profile only feeds the Rust-side ceilings.
+[env]
+SHLOSILO_LIMITS = "forgebox"

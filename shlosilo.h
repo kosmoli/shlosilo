@@ -134,8 +134,9 @@
  * Z4-7a: fixed backplane caps (the XMR H-cut precedent) — the logical
  * lengths drive serialization; over-cap is an explicit Err, never truncation.
  * Measured maxima: the sparrow 12k fixture runs 1 input / 2 outputs.
- * Raised 16 -> 64 (2026-11-15, B-7): a real Sparrow consolidation spent 43
- * inputs; 16 refused it with an encoding error that blamed the wallet.
+ * Raised 16 -> 64 (2026-11-15, B-7): a real Sparrow consolidation spent 43 inputs;
+ * 16 refused it with an encoding error that blamed the wallet. Now a platform knob
+ * (`limits/<profile>.toml`), because this cap sizes a `heapless::Vec` on the stack.
  */
 #define BT_TX_INPUTS_MAX 64
 
@@ -145,11 +146,12 @@
  * Z4-7b: the PSBT map pool — records + arena + the wire base. Logical map
  * order is `global, inputs…, outputs…`. Capacities are runtime queries
  * (`shlosilo_sign_ws_len`); over-cap is an explicit Err, never truncation.
- * 2 globals + up to BT_TX_INPUTS_MAX input maps + up to BT_TX_OUTPUTS_MAX
- * output maps. Raised with the input cap (2026-11-15, B-7): the old 2+16+64 = 82
- * could not even hold a 43-input request (2+43+43 = 88 maps).
+ * PSBT map slots = 1 global + up to `BT_TX_INPUTS_MAX` input maps + up to
+ * `BT_TX_OUTPUTS_MAX` output maps. Explicit in the platform profile for now; the
+ * derivation (`PSBT_MAPS_MIN`, emitted by build.rs) lands as the single source in
+ * phase 2 of the limits-knob plan.
  */
-#define PSBT_MAPS_MAX ((2 + 64) + 64)
+#define PSBT_MAPS_MAX 130
 
 #define UNSIGNED_TX 0
 
@@ -731,33 +733,33 @@
 #define SIGN_WS_KSTR (67 * 32)
 
 /**
- * Workspace: UR decode — decoded-parts slots (FountainWs pool).
- *
- * **256 is not arbitrary: it is the part-count domain.** `MAX_SEQUENCE_COUNT`
- * (encoding/fountain.rs) caps a message at 256 parts because the index lives in
- * u8, and the decoder only ever needs one slot per part. Raising this without
- * widening that domain buys nothing and is expensive: each slot holds a full
- * `Part` (inline `data: [u8; 2048]`), so a slot costs ~2.3 KiB - measured
- * `ur_decode_ws_len()` = 2.7 MiB at 256, 5.9 MiB at 1024 (forgebox PSRAM heap is
- * 8 MiB total, CN scratch already takes 2 MiB). Slot growth belongs with the
- * u8 -> u16 domain change *and* a slimmer Part (fragment data as a slice into the
- * reassembly buffer), not with a bigger payload cap.
- */
-#define UR_WS_DECODED_SLOTS 256
-
-/**
  * Workspace: UR decode — work-buffer slots (one per part; same domain bound).
  */
 #define UR_WS_BUFFER_SLOTS 256
 
 /**
- * Workspace: UR decode — cascade queue slots.
+ * Workspace: UR decode — decoded-parts slots (FountainWs pool).
+ *
+ * **Bounded by the part domain, not chosen freely.** `MAX_SEQUENCE_COUNT`
+ * (encoding/fountain.rs) caps a message at 256 parts because the index lives in u8,
+ * and the decoder needs one slot per part. Raising this without widening that domain
+ * buys nothing and is expensive: each slot holds a full `Part` (inline
+ * `data: [u8; 2048]`) - measured `ur_decode_ws_len()` = 2.7 MiB at 256 and 5.9 MiB at
+ * 1024, against a forgebox PSRAM heap of 8.38 MB that already gives 2 MiB to the CN
+ * scratch. Slot growth belongs with the u8 -> u16 domain change *and* a slimmer Part,
+ * not with a bigger payload cap. Value comes from the platform profile
+ * (`limits/<profile>.toml`).
+ */
+#define UR_WS_DECODED_SLOTS 256
+
+/**
+ * Workspace: UR decode — cascade queue slots (platform profile).
  */
 #define UR_WS_QUEUE_SLOTS 256
 
 /**
- * Workspace: UR decode — received-sequence slots (the full fountain sequence
- * space: MAX_TOTAL_FRAMES).
+ * Workspace: UR decode — received-sequence slots (the full fountain sequence space:
+ * MAX_TOTAL_FRAMES). Platform profile.
  */
 #define UR_WS_RECEIVED_SLOTS 4096
 
@@ -809,15 +811,10 @@
 
 /**
  * Multipart payload limit — aligned with TxTemplate 16 KiB (same source as the v2-security §4 size guardrail)
- * Inbound payload budget = (part domain) x (largest sender fragment we accept).
- *
- * `MAX_SEQUENCE_COUNT = 256` parts x 240 B fragments = 61,440 B: that is the most
- * a u8-indexed fountain session can deliver, so a bigger buffer would only be
- * reachable by a sender this device cannot reassemble anyway. Raising it is
- * meaningless until the index domain widens (see the limits-knob plan, §6) - and
- * the buffer is cheap next to the slots, which are not.
+ * Inbound payload budget: the platform profile's `ur_payload_max`, which `build.rs`
+ * keeps under `UR_WS_DECODED_SLOTS x 240 B` (the part domain's real ceiling).
  */
-#define MULTIPART_PAYLOAD_MAX_LEN (256 * 240)
+#define MULTIPART_PAYLOAD_MAX_LEN 61440
 
 /**
  * Message budget on the wire: content + the longest definite CBOR byte-string

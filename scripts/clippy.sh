@@ -27,14 +27,22 @@ run() {
   "$@"
 }
 
+# Platform resource profile per invocation: cargo's `[env]` discovery is
+# cwd-based, so the carrier configs only apply when the build runs inside the
+# carrier directory. These gates run from the repo root, so name the profile
+# explicitly - a bare-metal target with no profile fails the build on purpose.
+HOST=SHLOSILO_LIMITS=host
+PICO2=SHLOSILO_LIMITS=pico2
+FORGEBOX=SHLOSILO_LIMITS=forgebox
+
 # Core crate, host (CI `test` job: "Clippy (all targets)" x2).
-run cargo clippy --all-targets -- -D warnings
-run cargo clippy --all-targets --all-features -- -D warnings
+run env $HOST cargo clippy --all-targets -- -D warnings
+run env $HOST cargo clippy --all-targets --all-features -- -D warnings
 
 # Appearance bundles, real targets (CI `appearances` job: "Appearance
 # crates: clippy"). pico2 covers the bench/perf surface via --all-features.
-run cargo clippy -p shlosilo-pico2 --release --target thumbv8m.main-none-eabihf --all-features -- -D warnings
-run cargo clippy -p shlosilo-forgebox --release --target thumbv7em-none-eabihf -- -D warnings
-run cargo clippy -p shlosilo-host-sim --release -- -D warnings
+run env $PICO2 cargo clippy -p shlosilo-pico2 --release --target thumbv8m.main-none-eabihf --all-features -- -D warnings
+run env $FORGEBOX cargo clippy -p shlosilo-forgebox --release --target thumbv7em-none-eabihf -- -D warnings
+run env $HOST cargo clippy -p shlosilo-host-sim --release -- -D warnings
 
 echo "==> all green"

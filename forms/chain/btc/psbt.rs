@@ -234,10 +234,14 @@ impl<'a> KvMap<'a> {
 /// Z4-7b: the PSBT map pool — records + arena + the wire base. Logical map
 /// order is `global, inputs…, outputs…`. Capacities are runtime queries
 /// (`shlosilo_sign_ws_len`); over-cap is an explicit Err, never truncation.
-/// 2 globals + up to BT_TX_INPUTS_MAX input maps + up to BT_TX_OUTPUTS_MAX
-/// output maps. Raised with the input cap (2026-11-15, B-7): the old 2+16+64 = 82
-/// could not even hold a 43-input request (2+43+43 = 88 maps).
-pub const PSBT_MAPS_MAX: usize = 2 + 64 + 64;
+/// PSBT map slots = 1 global + up to `BT_TX_INPUTS_MAX` input maps + up to
+/// `BT_TX_OUTPUTS_MAX` output maps. Explicit in the platform profile for now; the
+/// derivation (`PSBT_MAPS_MIN`, emitted by build.rs) lands as the single source in
+/// phase 2 of the limits-knob plan.
+pub const PSBT_MAPS_MAX: usize = 130;
+// The platform profile (`limits/<profile>.toml`) is the source of truth:
+// any drift between this constant and the generated ceiling is a build error.
+const _: () = assert!(PSBT_MAPS_MAX == crate::limits::PSBT_MAPS_MAX);
 
 pub struct MapPool<'a> {
     wire: &'a [u8],
