@@ -9,7 +9,9 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 log="$(mktemp /tmp/z6_langitem.XXXXXX.log)"
-if cargo build --release --target thumbv7em-none-eabihf \
+# The bare-metal target needs an explicit limits profile; this probe is a compile-surface
+# check, not a carrier build, so it uses the smallest real carrier.
+if SHLOSILO_LIMITS="${SHLOSILO_LIMITS:-pico2}" cargo build --release --target thumbv7em-none-eabihf \
      --manifest-path probes/noalloc/Cargo.toml --no-default-features \
      > "$log" 2>&1; then
     echo "GRAPH-CLEAN: the crate graph needs no allocator"
