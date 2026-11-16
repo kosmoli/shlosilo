@@ -12,7 +12,7 @@ extern crate alloc;
 
 use crate::encoding::bytewords;
 use crate::encoding::fountain::{
-    FountainDecoder, FountainEncoder, FountainWs, IdxSet, Part, MAX_SEQUENCE_COUNT,
+    FountainDecoder, FountainEncoder, FountainWs, IdxKey, IdxSet, Part, MAX_SEQUENCE_COUNT,
 };
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::ur::ur_encode::UrTypeTag;
@@ -365,7 +365,7 @@ impl UrDecodeWsLayout {
         use crate::types::caps as c;
         type EP = Option<(usize, Part)>;
         type BP = Option<(IdxSet, Part)>;
-        type RS = Option<IdxSet>;
+        type RS = Option<IdxKey>;
         let align =
             core::mem::align_of::<UrMultipartDecoder<'static>>().max(core::mem::align_of::<EP>());
         let mut off = 0usize;
@@ -520,7 +520,7 @@ pub fn ur_decode_ws_place(buf: &mut [u8]) -> Option<*mut UrMultipartDecoder<'sta
         let received = init_slots!(
             base.add(l.received),
             c::UR_WS_RECEIVED_SLOTS,
-            Option<IdxSet>
+            Option<IdxKey>
         );
         let ws = FountainWs {
             decoded,

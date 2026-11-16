@@ -4,7 +4,7 @@
 // with_ws, the production shape): the `new()` leak-staging constructor is ffi
 // only and trips LeakSanitizer per iteration by design.
 use libfuzzer_sys::fuzz_target;
-use shlosilo::encoding::fountain::{FountainWs, IdxSet, Part};
+use shlosilo::encoding::fountain::{FountainWs, IdxKey, IdxSet, Part};
 use shlosilo::ur::ur_multipart::UrMultipartDecoder;
 
 fuzz_target!(|data: &[u8]| {
@@ -14,7 +14,7 @@ fuzz_target!(|data: &[u8]| {
     let mut decoded = core::array::from_fn::<Option<(usize, Part)>, 8, _>(|_| None);
     let mut buffer = core::array::from_fn::<Option<(IdxSet, Part)>, 8, _>(|_| None);
     let mut queue = core::array::from_fn::<Option<(usize, Part)>, 8, _>(|_| None);
-    let mut received = core::array::from_fn::<Option<IdxSet>, 8, _>(|_| None);
+    let mut received = core::array::from_fn::<Option<IdxKey>, 8, _>(|_| None);
     let mut dec = UrMultipartDecoder::with_ws(FountainWs {
         decoded: &mut decoded,
         buffer: &mut buffer,

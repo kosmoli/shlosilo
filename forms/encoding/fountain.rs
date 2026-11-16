@@ -496,6 +496,49 @@ pub(crate) const MAX_XOR_WORK_BYTES: usize = 16 * 1024 * 1024;
 /// Equation key: fragment index set (u8 domain — fragment_count ≤ MAX_SEQUENCE_COUNT = 256).
 pub type IdxSet = heapless::Vec<u8, { MAX_SEQUENCE_COUNT }>;
 
+/// Words in the fixed-width index-set key: one bit per possible source fragment.
+///
+/// `MAX_SEQUENCE_COUNT = 256` index values ⇒ 256 bits ⇒ 4 words. This replaces the
+/// `IdxSet` (264 B: a 256-byte inline array plus length and padding) **in the dedup
+/// pool only** - 4,096 slots of 264 B were 1,114,112 B of the 2.8 MB decode workspace,
+/// spent on remembering which fragment combinations had already been seen.
+///
+/// Why not "one bit per sequence number" (512 B total): `choose_fragments` maps a
+/// sequence to a set, and two different sequences CAN produce the same set. Dedup is
+/// defined on set identity, so keying on the sequence would change behaviour. Keeping
+/// the set, fixed-width, is the equivalence-preserving shrink.
+pub(crate) const IDXKEY_WORDS: usize = MAX_SEQUENCE_COUNT.div_ceil(64);
+
+/// Fixed-width index-set key (bitset + degree). Equality only - the decoder asks
+/// "have I seen this combination", never "which fragments".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct IdxKey {
+    words: [u64; IDXKEY_WORDS],
+    /// Degree, kept so a corrupted/duplicate comparison can never collide a
+    /// 0-degree key with the empty sentinel.
+    degree: u8,
+}
+
+impl IdxKey {
+    /// Build from the raw fragment indices (each < MAX_SEQUENCE_COUNT).
+    pub fn from_indexes(raw: &[u8]) -> Self {
+        let mut words = [0u64; IDXKEY_WORDS];
+        for &i in raw {
+            let (w, b) = (usize::from(i) / 64, usize::from(i) % 64);
+            // Indices are produced by `choose_fragments_into` from a fragment_count that
+            // is validated ≤ MAX_SEQUENCE_COUNT, so this cannot be out of range; the
+            // guard keeps forms panic-free if that ever changes.
+            if w < IDXKEY_WORDS {
+                words[w] |= 1u64 << b;
+            }
+        }
+        Self {
+            words,
+            degree: raw.len().min(u8::MAX as usize) as u8,
+        }
+    }
+}
+
 /// Caller-provided workspace for the fountain decoder (Z2.4c-3 C-class policy).
 /// Sizing guidance: `decoded` ≥ sequence_count; `buffer`/`queue`/`received` cover the
 /// session frame budget in the worst case (flux-specific). Pool exhaustion surfaces as
@@ -504,7 +547,7 @@ pub struct FountainWs<'a> {
     pub decoded: &'a mut [Option<(usize, Part)>],
     pub buffer: &'a mut [Option<(IdxSet, Part)>],
     pub queue: &'a mut [Option<(usize, Part)>],
-    pub received: &'a mut [Option<IdxSet>],
+    pub received: &'a mut [Option<IdxKey>],
 }
 
 /// Fountain decoder: set-cover greedy reassembly (aligned with keystone-ur Decoder semantics).
@@ -516,7 +559,7 @@ pub(crate) struct FountainDecoder<'a> {
     decoded: &'a mut [Option<(usize, Part)>],
     buffer: &'a mut [Option<(IdxSet, Part)>],
     queue: &'a mut [Option<(usize, Part)>],
-    received: &'a mut [Option<IdxSet>],
+    received: &'a mut [Option<IdxKey>],
     decoded_count: usize,
     received_count: usize,
     sequence_count: usize,
@@ -541,7 +584,7 @@ impl<'a> FountainDecoder<'a> {
             alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_BUFFER_SLOTS].into_boxed_slice());
         let queue: &'static mut [Option<(usize, Part)>] =
             alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_QUEUE_SLOTS].into_boxed_slice());
-        let received: &'static mut [Option<IdxSet>] =
+        let received: &'static mut [Option<IdxKey>] =
             alloc::boxed::Box::leak(alloc::vec![None; c::UR_WS_RECEIVED_SLOTS].into_boxed_slice());
         FountainDecoder::with_ws(FountainWs {
             decoded,
@@ -654,9 +697,8 @@ impl<'a> FountainDecoder<'a> {
         }
 
         let (raw, rn) = part.indexes_raw();
-        let mut key = IdxSet::new();
-        key.extend_from_slice(&raw[..rn])
-            .map_err(|_| FountainError::BudgetExceeded)?;
+        // Fixed-width key (5a): same set identity, 33 B instead of 264 B.
+        let key = IdxKey::from_indexes(&raw[..rn]);
         if self.received.iter().flatten().any(|k| k == &key) {
             return Ok(false);
         }
