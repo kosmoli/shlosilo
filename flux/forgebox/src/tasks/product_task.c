@@ -286,7 +286,10 @@ static int g_review_cancel_req;
 static unsigned g_review_page;
 static unsigned g_review_pages;
 static unsigned g_review_count;
-static char g_review_lines[1024];
+/* Sized from the row budget: a 43-input PSBT needs more rows than the old 16 x 48
+ * fit, and running out here surfaced as "request too large" *after* the whole
+ * request had been scanned and decoded (2026-11-17). */
+static char g_review_lines[SHLOSILO_LIMITS_REVIEW_LINES_MAX * (REVIEW_LINE_MAX + 1) + 1];
 static uint8_t *g_review_ws;
 
 /* Sample touch once; record a fresh press on `back` for whichever session is
@@ -2069,6 +2072,10 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
              * fail-fast, not a review-side warning: nothing below can succeed.) */
             const char *why = shlosilo_sign_failure_text(rc);
             UiSetPayload(why, (uint32_t)strlen(why));
+            /* Hold it: returning to the caller used to bounce straight back to welcome,
+             * so the only screen a failed run produces was visible for a single frame and
+             * could not be photographed (2026-11-17, three device rounds lost to it). */
+            hold_failure_page();
             return -1;                  /* result page is up; caller must not sign */
         }
         UiSetLast("review unavailable - not signed");

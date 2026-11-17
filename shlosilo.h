@@ -71,11 +71,6 @@
 #define XRP_ADDRESS_MAX_LEN 64
 
 /**
- * Maximum lines in one review view (paging budget, not a display budget).
- */
-#define REVIEW_LINES_MAX 16
-
-/**
  * Maximum ASCII characters per line (the platform wraps anything longer).
  */
 #define REVIEW_LINE_MAX 48

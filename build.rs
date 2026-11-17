@@ -81,6 +81,7 @@ fn emit_limits() {
         "ur_encode_fragment_len",
         "ur_inbound_fragment_max",
         "ur_source_fragments_max",
+        "review_lines_max",
         "sign_ws_bp_chunk_max",
         "pairing_records_max",
         "xmr_inputs_max",

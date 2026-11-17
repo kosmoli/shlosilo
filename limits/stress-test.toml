@@ -18,3 +18,4 @@ xmr_inputs_max = 64  # XMR inputs the signer's fixed tables hold (stack-sized un
 ur_encode_fragment_len = 200  # outbound UR fragment (bytes of payload per frame)
 ur_inbound_fragment_max = 1024  # largest inbound UR fragment we hold (arena slot width); see pool #71
 ur_source_fragments_max = 4096  # source fragments per session (u16 domain)
+review_lines_max = 64  # review-page rows (paging budget; a 43-input PSBT needs > 16)

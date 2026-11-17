@@ -44,7 +44,7 @@ use crate::network::Network;
 use crate::ur::ur_encode::UrTypeTag;
 
 /// Maximum lines in one review view (paging budget, not a display budget).
-pub const REVIEW_LINES_MAX: usize = 16;
+pub const REVIEW_LINES_MAX: usize = crate::limits::REVIEW_LINES_MAX;
 /// Maximum ASCII characters per line (the platform wraps anything longer).
 pub const REVIEW_LINE_MAX: usize = 48;
 /// Outputs summarized in detail; beyond this we only say "many outputs".
