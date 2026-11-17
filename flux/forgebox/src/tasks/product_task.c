@@ -1466,14 +1466,18 @@ static void sign_run(const char *uri, const char *type,
     dt = osKernelGetTickCount() - t0;
     g_sign_busy = 0;
     ExtFree(ws);
+    /* Stack readings, hoisted: the success `last:` line and the failure text both
+     * carry them (phase 7 measurement). */
+    const unsigned hwm_w = (unsigned)uxTaskGetStackHighWaterMark(NULL);
+    const unsigned used_k =
+        (PRODUCT_TASK_STACK_BYTES - hwm_w * (unsigned)sizeof(StackType_t)) / 1024u;
 
     /* Diagnostic footnote: stack high-water mark across the sign (the A
      * acceptance reading). HWM = minimum ever free stack in words. */
     {
-        unsigned hwm_w = (unsigned)uxTaskGetStackHighWaterMark(NULL);
-        unsigned used_k =
-            (PRODUCT_TASK_STACK_BYTES - hwm_w * (unsigned)sizeof(StackType_t))
-            / 1024u;
+        /* function-scope: the success `last:` line and the failure text both carry it */
+    }
+    {
         printf("sign: rc=%d out=%u dt=%ums stk used ~%uK (hwm %uW)\r\n",
                rc, out_len, (unsigned)dt, used_k, hwm_w);
         if (rc == 0 && out_len > 0) {
@@ -1570,14 +1574,36 @@ static void sign_run(const char *uri, const char *type,
          * above, so the carousel's exit leg is a plain return to welcome. */
         printf("sign: done -> %s qr (result page skipped)\r\n",
                g_sign_out_type);
-        /* Neutral wording: no third-party brand in the operator hint. */
-        UiSetLast(strcmp(g_sign_out_type, "xmr-txsigned") == 0
-                      ? "signed - scan with Cake"
-                      : "signed - scan with wallet");
+        /* Phase 7 measurement: the result page is skipped on success (the QR has the
+         * screen), so the UR intake numbers ride the `last:` line instead - photo the
+         * QR page and the fragment length is readable. */
+        {
+            char l3[48];
+            snprintf(l3, sizeof(l3), "fr %u frag %u stk %uK",
+                     g_ur_feed_cnt,
+                     (unsigned)(g_ur_dec != NULL
+                                    ? shlosilo_ur_decode_fragment_len(g_ur_dec)
+                                    : 0u),
+                     used_k);
+            UiSetLast(l3);
+        }
         UiGotoPage(UI_PAGE_QR);
         return;
     }
     printf("sign: done -> result page\r\n");
+    /* Phase 7: the failure text is the only screen a failed run produces, so the intake
+     * numbers go WITH it - a photo of this page then carries fr/dup/frag/stk, which is
+     * exactly what a capacity diagnosis needs. */
+    if (g_sign_out_len == 0) {
+        char tail[96];
+        snprintf(tail, sizeof(tail), "\nfr %u dup %u frag %u\nstk %uK hwm %uW",
+                 g_ur_feed_cnt, g_ur_dup_cnt,
+                 (unsigned)(g_ur_dec != NULL
+                                ? shlosilo_ur_decode_fragment_len(g_ur_dec)
+                                : 0u),
+                 used_k, hwm_w);
+        strncat(result, tail, sizeof(result) - strlen(result) - 1);
+    }
     UiSetPayload(result, (uint32_t)strlen(result));
     if (g_sign_out_len == 0) {
         /* No signed artifact: this is the failure template on screen, and the scan
