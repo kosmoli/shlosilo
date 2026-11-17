@@ -22,7 +22,7 @@ use std::ffi::CString;
 const PRODUCT_TASK_C: &str = include_str!("../flux/forgebox/src/tasks/product_task.c");
 
 const INBOUND: usize = 256 * 240;
-const OUTBOUND: usize = 64 * 1024 + 512;
+const OUTBOUND: usize = shlosilo::types::caps::SIGN_OUTPUT_BUF_MAX_LEN;
 
 fn hex_decode(s: &str) -> Vec<u8> {
     let clean: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
@@ -96,12 +96,14 @@ fn outbound_cap_is_64k_on_both_sides() {
     // The carrier must take the number from the header projection, not repeat the
     // arithmetic: one expression, one home.
     assert!(
-        PRODUCT_TASK_C.contains("#define SIGN_OUT_MAX              SIGN_OUTPUT_BUF_MAX_LEN"),
-        "the firmware's signed-artifact buffer must come from shlosilo.h"
+        PRODUCT_TASK_C
+            .contains("#define SIGN_OUT_MAX              SHLOSILO_LIMITS_SIGN_OUTPUT_BYTES"),
+        "the firmware's signed-artifact buffer must come from the generated limits header"
     );
     // ...and the projected constant is the outbound cap the FFI budget gate accepts.
     assert_eq!(OUTBOUND, shlosilo::types::caps::SIGN_OUTPUT_BUF_MAX_LEN);
-    assert_eq!(OUTBOUND, 64 * 1024 + 512);
+    // Derived: the request plus the fields signing appends (16 KiB of headroom).
+    assert_eq!(OUTBOUND, shlosilo::limits::UR_PAYLOAD_MAX + 16 * 1024);
 }
 
 /// 3. The budget gate: a 64 KiB buffer reaches the mnemonic check (i.e. the

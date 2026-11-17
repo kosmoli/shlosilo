@@ -194,7 +194,7 @@ pub const CLSAG_PROOF_MAX: usize = 32 * (RING_MAX + 3);
 /// carrier sizes its outbound buffer from it. Keeping it `pub(crate)` made the C side
 /// carry a second copy of the same arithmetic - the exact "one number, two homes"
 /// failure the limits knobs exist to remove.
-pub const SIGN_OUTPUT_BUF_MAX_LEN: usize = 64 * 1024 + 512;
+pub const SIGN_OUTPUT_BUF_MAX_LEN: usize = crate::limits::SIGN_OUTPUT_BYTES;
 
 #[cfg(test)]
 mod transport_limit_pins {
@@ -206,6 +206,9 @@ mod transport_limit_pins {
 
     #[test]
     fn outbound_cap_is_64k_plus_container_slack() {
-        assert_eq!(super::SIGN_OUTPUT_BUF_MAX_LEN, 64 * 1024 + 512);
+        assert_eq!(
+            super::SIGN_OUTPUT_BUF_MAX_LEN,
+            crate::limits::SIGN_OUTPUT_BYTES
+        );
     }
 }

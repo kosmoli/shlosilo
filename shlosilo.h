@@ -689,17 +689,6 @@
 #define CLSAG_PROOF_MAX (32 * (RING_MAX + 3))
 
 /**
- * Largest signed artifact we emit, and therefore the caller-buffer budget the
- * sign FFI accepts: 64 KiB of payload plus the 512-byte container slack the
- * old `MULTIPART_PAYLOAD_MAX_LEN + 512` shape used.
- * ABI-visible name (cbindgen exports it as `SIGN_OUTPUT_BUF_MAX_LEN`), because the
- * carrier sizes its outbound buffer from it. Keeping it `pub(crate)` made the C side
- * carry a second copy of the same arithmetic - the exact "one number, two homes"
- * failure the limits knobs exist to remove.
- */
-#define SIGN_OUTPUT_BUF_MAX_LEN ((64 * 1024) + 512)
-
-/**
  * Script-expression registry tags.
  */
 #define SCRIPT_HASH 400

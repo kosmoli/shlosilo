@@ -757,7 +757,7 @@ static const uint16_t k_sign_idx12[12] = {
     136, 1092, 546, 273, 136, 1092, 546, 273, 136, 1092, 546, 283
 };
 #define SIGN_ENTROPY_LEN          32
-#define SIGN_OUT_MAX              SIGN_OUTPUT_BUF_MAX_LEN /* shlosilo.h, from caps.rs
+#define SIGN_OUT_MAX              SHLOSILO_LIMITS_SIGN_OUTPUT_BYTES /* limits profile
  * (64 KiB + 512 B container slack). One arithmetic, one home: this used to repeat
  * the expression, so a change on the Rust side would have left the carrier sizing
  * a smaller buffer than the FFI contract allows.

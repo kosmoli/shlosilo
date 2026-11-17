@@ -272,7 +272,10 @@ impl<'a> MapPool<'a> {
             // "request too large" (BufferTooSmall), never as "request data not
             // recognized" - that wording sends the operator to the wallet for a
             // bug that lives in our limits (B-7, 2026-11-15).
-            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+            return Err(ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(self.maps_started + 1),
+            ));
         }
         let idx = self.maps_started;
         self.maps_started += 1;
@@ -296,9 +299,11 @@ impl<'a> MapPool<'a> {
     /// Parse-time append (the caller performs the duplicate-key check).
     /// Payload bytes are NOT copied — the record points into the wire.
     fn push_wire(&mut self, idx: usize, key: &'a [u8], value: &'a [u8]) -> Result<()> {
-        let cap = ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall);
         if self.recs_len >= self.recs.len() {
-            return Err(cap);
+            return Err(ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(self.recs_len + 1),
+            ));
         }
         let base = self.wire.len() as u32;
         let k_off = (key.as_ptr() as usize - self.wire.as_ptr() as usize) as u32;
@@ -327,9 +332,18 @@ impl<'a> MapPool<'a> {
         let base = self.wire.len() as u32;
         let start: usize = self.map_lens[..idx].iter().map(|&l| l as usize).sum();
         let len = self.map_lens[idx] as usize;
+        // Both closures must REFUSE rather than index past the arena: `copy_from_slice`
+        // on an out-of-range slice panics, and forms never aborts. The requirement is
+        // carried so the caller learns the size instead of a bare "too small".
         let place_key = |pool: &mut Self| -> Result<u32> {
             let off = base + pool.arena_used as u32;
             let end = pool.arena_used.checked_add(key.len()).ok_or(cap)?;
+            if end > pool.arena.len() {
+                return Err(ShlosiloError::with_context(
+                    ShlosiloErrorKind::BufferTooSmall,
+                    crate::error::ErrorContext::RequiredLength(end + self.wire.len()),
+                ));
+            }
             pool.arena[pool.arena_used..end].copy_from_slice(key);
             pool.arena_used = end;
             Ok(off)
@@ -337,6 +351,12 @@ impl<'a> MapPool<'a> {
         let place_val = |pool: &mut Self| -> Result<u32> {
             let off = base + pool.arena_used as u32;
             let end = pool.arena_used.checked_add(value.len()).ok_or(cap)?;
+            if end > pool.arena.len() {
+                return Err(ShlosiloError::with_context(
+                    ShlosiloErrorKind::BufferTooSmall,
+                    crate::error::ErrorContext::RequiredLength(end + self.wire.len()),
+                ));
+            }
             pool.arena[pool.arena_used..end].copy_from_slice(value);
             pool.arena_used = end;
             Ok(off)
@@ -693,7 +713,12 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
             // The wire model holds BT_TX_INPUTS_MAX inputs: going past it is a
             // capacity failure, not a malformed request (B-7, 2026-11-15).
             // site 695
-            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+            .map_err(|_| {
+                ShlosiloError::with_context(
+                    ShlosiloErrorKind::BufferTooSmall,
+                    crate::error::ErrorContext::ActualLength(inputs.len()),
+                )
+            })?;
     }
 
     // outputs count
@@ -795,9 +820,9 @@ fn decode_map_into<'a>(
 
 /// Test/legacy convenience capacities for the leaking parse below.
 #[cfg(any(feature = "alloc-fallback", test))]
-const PSBT_TEST_ARENA: usize = 64 * 1024;
+const PSBT_TEST_ARENA: usize = crate::types::caps::SIGN_WS_PSBT_ARENA;
 #[cfg(any(feature = "alloc-fallback", test))]
-const PSBT_TEST_RECS: usize = 128;
+const PSBT_TEST_RECS: usize = crate::types::caps::SIGN_WS_PSBT_RECS;
 
 /// Parse PSBT bytes into a caller-provided pool — production passes the
 /// SignWs carve; tests pass local storage. Same API either way.

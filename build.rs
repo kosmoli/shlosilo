@@ -191,6 +191,10 @@ fn emit_limits() {
         .map(|(_, v)| v)
         .expect("schema check above guarantees presence");
     values.push(("psbt_arena_bytes", payload_cap + 16 * 1024));
+    // The signed artifact is the request PLUS the fields signing appends, so its cap
+    // follows the same headroom: the real 43-input request goes 61,138 -> 65,671 B, only
+    // 377 B short of the old flat 64 KiB + 512. Same derivation as the arena.
+    values.push(("sign_output_bytes", payload_cap + 16 * 1024));
 
     let get = |name: &str| -> u64 {
         *values
