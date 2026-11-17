@@ -110,7 +110,7 @@ impl Xoshiro256 {
 /// `ur_source_fragments_max`. Cost: 2 B + 8 B per entry (10 B), so 256 entries ≈ 2.5 KiB
 /// and a 4,096-fragment profile ≈ 40 KiB - which is why the sampler is built per call
 /// today and must move into the caller's workspace before any profile takes that step.
-pub(crate) struct Weighted {
+pub struct Weighted {
     aliases: [u16; MAX_SEQUENCE_COUNT],
     probs: [f64; MAX_SEQUENCE_COUNT],
     len: usize,
@@ -119,7 +119,7 @@ pub(crate) struct Weighted {
 impl Weighted {
     /// Sampler for the degree distribution w_i = 1/i (i = 1..=count) — the only
     /// distribution the fountain uses.
-    pub(crate) fn new_inverse(count: usize) -> Self {
+    pub fn new_inverse(count: usize) -> Self {
         let mut w = [0f64; MAX_SEQUENCE_COUNT];
         for (i, x) in w[..count].iter_mut().enumerate() {
             *x = 1.0 / (i + 1) as f64;
@@ -127,7 +127,7 @@ impl Weighted {
         Self::from_weights(&w[..count])
     }
 
-    pub(crate) fn from_weights(weights: &[f64]) -> Self {
+    pub fn from_weights(weights: &[f64]) -> Self {
         debug_assert!(!weights.is_empty());
         let count = weights.len();
         let summed: f64 = weights.iter().sum();
@@ -255,16 +255,27 @@ impl Part {
     /// Z2.4c-2: zero-heap — returns (index set as u8 array, degree). fragment_count ≤
     /// MAX_SEQUENCE_COUNT = 256 so the u8 domain 0..=255 is exact. Infallible by
     /// construction (degree ≤ sequence_count ≤ 256 = array length).
-    pub fn indexes_raw(&self) -> ([u16; MAX_SEQUENCE_COUNT], usize) {
-        let sampler = Weighted::new_inverse(self.sequence_count.max(1));
-        let mut raw = [0u16; MAX_SEQUENCE_COUNT];
-        let n = choose_fragments_into(
+    /// Write this part's covered fragment indices into `out`; returns the degree.
+    ///
+    /// The alias sampler is **the caller's**: building one per call costs 10 B × the
+    /// fragment capacity on the stack (2.5 KiB at 256, ~40 KiB at 4,096), which is why the
+    /// decoder keeps one in its workspace and the encoder keeps one in its own.
+    pub fn indexes_into(&self, sampler: &Weighted, out: &mut [u16]) -> usize {
+        choose_fragments_into(
             self.sequence,
             self.sequence_count,
             self.checksum,
-            &sampler,
-            &mut raw,
-        );
+            sampler,
+            out,
+        )
+    }
+
+    /// Convenience for tests and one-shot callers (builds a sampler on the stack).
+    #[cfg(any(feature = "alloc-fallback", test))]
+    pub fn indexes_raw(&self) -> ([u16; MAX_SEQUENCE_COUNT], usize) {
+        let sampler = Weighted::new_inverse(self.sequence_count.max(1));
+        let mut raw = [0u16; MAX_SEQUENCE_COUNT];
+        let n = self.indexes_into(&sampler, &mut raw);
         (raw, n)
     }
 
@@ -337,6 +348,8 @@ pub(crate) struct FountainEncoder<'a> {
     checksum: u32,
     current_sequence: usize,
     sampler: Weighted,
+    /// Per-frame index scratch (workspace-inline; see `make_part`).
+    idx_scratch: [u16; MAX_SEQUENCE_COUNT],
 }
 
 impl<'a> FountainEncoder<'a> {
@@ -389,6 +402,7 @@ impl<'a> FountainEncoder<'a> {
             checksum: crate::encoding::bytewords::crc32_concat(prefix, message),
             current_sequence: 0,
             sampler: Weighted::new_inverse(fragment_count),
+            idx_scratch: [0u16; MAX_SEQUENCE_COUNT],
         })
     }
 
@@ -427,8 +441,10 @@ impl<'a> FountainEncoder<'a> {
         }
     }
 
-    fn make_part(&self, sequence: usize) -> Result<Part, FountainError> {
-        let mut idx = [0u16; MAX_SEQUENCE_COUNT];
+    fn make_part(&mut self, sequence: usize) -> Result<Part, FountainError> {
+        // The index scratch is a field, not a local: at a 4,096-fragment profile a local
+        // array would be 8 KiB of stack per frame (the encoder is workspace-placed).
+        let mut idx = core::mem::replace(&mut self.idx_scratch, [0u16; MAX_SEQUENCE_COUNT]);
         let n = choose_fragments_into(
             sequence,
             self.fragment_count,
@@ -441,6 +457,7 @@ impl<'a> FountainEncoder<'a> {
         for &item in &idx[..n] {
             self.xor_fragment_into(item as usize, &mut data);
         }
+        self.idx_scratch = idx;
         Ok(Part {
             sequence,
             sequence_count: self.fragment_count,
@@ -613,6 +630,9 @@ pub struct FountainWs<'a> {
     pub received: &'a mut [Option<IdxKey>],
     pub message: &'a mut [u8],
     pub equations: &'a mut [u8],
+    /// Per-session alias sampler scratch (built once when the first part fixes the
+    /// fragment count) and the index scratch `indexes_into` writes into.
+    pub index_scratch: &'a mut [u16],
 }
 
 /// Fountain decoder: set-cover greedy reassembly (aligned with keystone-ur Decoder semantics).
@@ -627,6 +647,10 @@ pub(crate) struct FountainDecoder<'a> {
     received: &'a mut [Option<IdxKey>],
     message: &'a mut [u8],
     equations: &'a mut [u8],
+    index_scratch: &'a mut [u16],
+    /// Built once per session (10 B × fragment capacity would be stack-resident if it were
+    /// constructed per part). Empty until the first part fixes `sequence_count`.
+    sampler: Weighted,
     decoded_count: usize,
     received_count: usize,
     sequence_count: usize,
@@ -658,6 +682,8 @@ impl<'a> FountainDecoder<'a> {
         let equations: &'static mut [u8] = alloc::boxed::Box::leak(
             alloc::vec![0u8; equation_arena_len(c::UR_WS_BUFFER_SLOTS)].into_boxed_slice(),
         );
+        let index_scratch: &'static mut [u16] =
+            alloc::boxed::Box::leak(alloc::vec![0u16; MAX_SEQUENCE_COUNT].into_boxed_slice());
         FountainDecoder::with_ws(FountainWs {
             decoded,
             buffer,
@@ -665,6 +691,7 @@ impl<'a> FountainDecoder<'a> {
             received,
             message,
             equations,
+            index_scratch,
         })
     }
 
@@ -689,6 +716,8 @@ impl<'a> FountainDecoder<'a> {
             received: ws.received,
             message: ws.message,
             equations: ws.equations,
+            index_scratch: ws.index_scratch,
+            sampler: Weighted::new_inverse(1),
             decoded_count: 0,
             received_count: 0,
             sequence_count: 0,
@@ -779,13 +808,19 @@ impl<'a> FountainDecoder<'a> {
             self.message_length = part.message_length;
             self.checksum = part.checksum;
             self.fragment_length = part.data.len();
+            // One sampler per session: building it per part would put its tables on the
+            // stack (see `Weighted`), which is a device bomb at large capacities.
+            self.sampler = Weighted::new_inverse(self.sequence_count.max(1));
         } else if !self.validate(&part) {
             return Err(FountainError::InconsistentPart);
         }
 
-        let (raw, rn) = part.indexes_raw();
+        if self.index_scratch.len() < self.sequence_count {
+            return Err(FountainError::BudgetExceeded);
+        }
+        let rn = part.indexes_into(&self.sampler, self.index_scratch);
         // Fixed-width key (5a): same set identity, 33 B instead of 264 B.
-        let key = IdxKey::from_indexes(&raw[..rn]);
+        let key = IdxKey::from_indexes(&self.index_scratch[..rn]);
         if self.received.iter().flatten().any(|k| k == &key) {
             return Ok(false);
         }
@@ -802,9 +837,15 @@ impl<'a> FountainDecoder<'a> {
         self.received_count += 1;
 
         if rn == 1 {
-            self.process_simple(part)?;
+            // Degree 1 can come from a systematic frame (index = sequence-1) *or* from a
+            // mixed frame whose draw collapsed to one fragment -- so the index is read
+            // from the sampler output, never inferred from `sequence`.
+            let index = self.index_scratch[0] as usize;
+            self.process_simple(part, index)?;
         } else {
-            self.process_complex(part, &raw[..rn])?;
+            let indexes: IdxSet = IdxSet::from_slice(&self.index_scratch[..rn])
+                .map_err(|_| FountainError::BudgetExceeded)?;
+            self.process_complex(part, indexes)?;
         }
         self.processed_parts_count += 1;
         Ok(true)
@@ -832,9 +873,7 @@ impl<'a> FountainDecoder<'a> {
         Ok(())
     }
 
-    fn process_simple(&mut self, part: Part) -> Result<(), FountainError> {
-        let (raw, _) = part.indexes_raw();
-        let index = raw[0] as usize;
+    fn process_simple(&mut self, part: Part, index: usize) -> Result<(), FountainError> {
         // Idempotence guard: the cascade may have already resolved this index
         // (a reduced combo landing before its systematic). A second entry
         // would inflate decoded_count and fill a slot with a duplicate.
@@ -924,12 +963,12 @@ impl<'a> FountainDecoder<'a> {
         Ok(())
     }
 
-    fn process_complex(&mut self, mut part: Part, raw: &[u16]) -> Result<(), FountainError> {
+    fn process_complex(
+        &mut self,
+        mut part: Part,
+        mut indexes: IdxSet,
+    ) -> Result<(), FountainError> {
         let fl = self.fragment_length;
-        let mut indexes = IdxSet::new();
-        indexes
-            .extend_from_slice(raw)
-            .map_err(|_| FountainError::BudgetExceeded)?;
         // Pass 1: which indexes are already decoded (in derivation order — the XOR order below
         // matches the original Vec-based to_remove loop exactly). All-decoded is a no-op BEFORE
         // any work accounting (preserved from the original control flow).
@@ -1252,7 +1291,7 @@ mod tests {
         let frag = core::cmp::min(2048, FRAGMENT_MAX);
         let count = 8;
         let message = vec![0xABu8; frag * count];
-        let enc = FountainEncoder::new(&message, frag).unwrap();
+        let mut enc = FountainEncoder::new(&message, frag).unwrap();
         let mut dec = FountainDecoder::new();
 
         // Buffer a mixed part covering idx 0 plus only-undecoded others (nothing decoded yet).

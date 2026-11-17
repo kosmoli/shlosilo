@@ -26,10 +26,7 @@ pub const SIGN_WS_BP_TERMS: usize = 2050;
 /// the 8MB PSRAM heap on forgebox ("sign ws: alloc fail (10575072 bytes)").
 /// `set_bp_multiexp_chunk_terms` clamps to this cap (a larger chunk would
 /// make `StrausScratch::new` fail loudly at prove time).
-pub const SIGN_WS_BP_CHUNK_MAX: usize = 36;
-// The platform profile (`limits/<profile>.toml`) is the source of truth:
-// any drift between this constant and the generated ceiling is a build error.
-const _: () = assert!(SIGN_WS_BP_CHUNK_MAX == crate::limits::SIGN_WS_BP_CHUNK_MAX);
+pub const SIGN_WS_BP_CHUNK_MAX: usize = crate::limits::SIGN_WS_BP_CHUNK_MAX;
 pub const SIGN_WS_BP_STRAUS_BYTES: usize =
     SIGN_WS_BP_CHUNK_MAX * (16 * 160) + SIGN_WS_BP_CHUNK_MAX * 256 + 64;
 /// CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB).
@@ -144,10 +141,7 @@ pub const SIGN_WS_SEL_OUT: usize = 256;
 /// Workspace: key-image string bytes (67 per source).
 pub const SIGN_WS_KSTR: usize = 67 * 32;
 /// Workspace: UR decode — work-buffer slots (one per part; same domain bound).
-pub const UR_WS_BUFFER_SLOTS: usize = 256;
-// The platform profile (`limits/<profile>.toml`) is the source of truth:
-// any drift between this constant and the generated ceiling is a build error.
-const _: () = assert!(UR_WS_BUFFER_SLOTS == crate::limits::UR_WS_BUFFER_SLOTS);
+pub const UR_WS_BUFFER_SLOTS: usize = crate::limits::UR_WS_BUFFER_SLOTS;
 /// Workspace: UR decode — decoded-parts slots (FountainWs pool).
 ///
 /// **Bounded by the part domain, not chosen freely.** `MAX_SEQUENCE_COUNT`
@@ -159,21 +153,12 @@ const _: () = assert!(UR_WS_BUFFER_SLOTS == crate::limits::UR_WS_BUFFER_SLOTS);
 /// scratch. Slot growth belongs with the u8 -> u16 domain change *and* a slimmer Part,
 /// not with a bigger payload cap. Value comes from the platform profile
 /// (`limits/<profile>.toml`).
-pub const UR_WS_DECODED_SLOTS: usize = 256;
-// The platform profile (`limits/<profile>.toml`) is the source of truth:
-// any drift between this constant and the generated ceiling is a build error.
-const _: () = assert!(UR_WS_DECODED_SLOTS == crate::limits::UR_WS_DECODED_SLOTS);
+pub const UR_WS_DECODED_SLOTS: usize = crate::limits::UR_WS_DECODED_SLOTS;
 /// Workspace: UR decode — cascade queue slots (platform profile).
-pub const UR_WS_QUEUE_SLOTS: usize = 256;
-// The platform profile (`limits/<profile>.toml`) is the source of truth:
-// any drift between this constant and the generated ceiling is a build error.
-const _: () = assert!(UR_WS_QUEUE_SLOTS == crate::limits::UR_WS_QUEUE_SLOTS);
+pub const UR_WS_QUEUE_SLOTS: usize = crate::limits::UR_WS_QUEUE_SLOTS;
 /// Workspace: UR decode — received-sequence slots (the full fountain sequence space:
 /// MAX_TOTAL_FRAMES). Platform profile.
-pub const UR_WS_RECEIVED_SLOTS: usize = 4096;
-// The platform profile (`limits/<profile>.toml`) is the source of truth:
-// any drift between this constant and the generated ceiling is a build error.
-const _: () = assert!(UR_WS_RECEIVED_SLOTS == crate::limits::UR_WS_RECEIVED_SLOTS);
+pub const UR_WS_RECEIVED_SLOTS: usize = crate::limits::UR_WS_RECEIVED_SLOTS;
 
 /// Workspace: records-face destinations (flat).
 pub const SIGN_WS_RECORD_DESTS: usize = 64;

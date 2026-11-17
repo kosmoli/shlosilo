@@ -75,14 +75,8 @@ pub struct OutPoint {
 /// Raised 16 -> 64 (2026-11-15, B-7): a real Sparrow consolidation spent 43 inputs;
 /// 16 refused it with an encoding error that blamed the wallet. Now a platform knob
 /// (`limits/<profile>.toml`), because this cap sizes a `heapless::Vec` on the stack.
-pub const BT_TX_INPUTS_MAX: usize = 64;
-// The platform profile (`limits/<profile>.toml`) is the source of truth:
-// any drift between this constant and the generated ceiling is a build error.
-const _: () = assert!(BT_TX_INPUTS_MAX == crate::limits::BT_TX_INPUTS_MAX);
-pub const BT_TX_OUTPUTS_MAX: usize = 64;
-// The platform profile (`limits/<profile>.toml`) is the source of truth:
-// any drift between this constant and the generated ceiling is a build error.
-const _: () = assert!(BT_TX_OUTPUTS_MAX == crate::limits::BT_TX_OUTPUTS_MAX);
+pub const BT_TX_INPUTS_MAX: usize = crate::limits::BT_TX_INPUTS_MAX;
+pub const BT_TX_OUTPUTS_MAX: usize = crate::limits::BT_TX_OUTPUTS_MAX;
 
 /// Z4-7a: `vec![a, b]`-shaped construction for the capped model vectors —
 /// push + unwrap, so over-cap fails loudly instead of truncating (a bare

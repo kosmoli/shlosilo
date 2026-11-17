@@ -495,9 +495,7 @@ impl TxExtra {
 /// Z5.3 H-cut: fixed-capacity input/output backing (was Vec) — the prefix
 /// owns sized storage on both the sign and deserialize paths; over-cap is an
 /// explicit Err (G1). The logical lengths drive serialization.
-pub const PREFIX_INPUTS_MAX: usize = 16;
-// The platform profile is the source of truth for this ceiling; drift is a build error.
-const _: () = assert!(PREFIX_INPUTS_MAX == crate::limits::XMR_INPUTS_MAX);
+pub const PREFIX_INPUTS_MAX: usize = crate::limits::XMR_INPUTS_MAX;
 pub const PREFIX_OUTPUTS_MAX: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -18,6 +18,7 @@ fuzz_target!(|data: &[u8]| {
     let mut received = core::array::from_fn::<Option<IdxKey>, 8, _>(|_| None);
     let mut message = [0u8; 512];
     let mut equations = [0u8; 8 * 64];
+    let mut index_scratch = [0u16; 16];
     let mut dec = UrMultipartDecoder::with_ws(FountainWs {
         decoded: &mut decoded,
         buffer: &mut buffer,
@@ -25,6 +26,7 @@ fuzz_target!(|data: &[u8]| {
         received: &mut received,
         message: &mut message,
         equations: &mut equations,
+        index_scratch: &mut index_scratch,
     });
     // Deliberate result discard: the fuzz invariant is "no panic/leak on any
     // input" — Err here is the overload/format contract, exactly what we want.

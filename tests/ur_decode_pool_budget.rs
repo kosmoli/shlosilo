@@ -18,20 +18,38 @@ fn the_dedup_key_is_fixed_width() {
     // 4 u64 words (32 B) + degree = 33 B, padded to 40 B, + 8 B for the Option
     // discriminant = 48 B. Against the 264 B `IdxSet` it replaces, 4,096 slots go from
     // 1,114,112 B to 196,608 B.
+    // Width follows the source-fragment ceiling: MAX_SEQUENCE_COUNT/64 words + degree.
+    // At 1,024 fragments that is 16 words = 128 B (+8 B degree, +8 B Option) = 144 B, and
+    // 4,096 slots cost 589,824 B - which is why the ceiling cannot be raised much further
+    // without reworking this pool.
+    let cap = shlosilo::limits::UR_SOURCE_FRAGMENTS_MAX;
+    let expected = cap.div_ceil(64) * 8 + 16;
     let key = core::mem::size_of::<Option<IdxKey>>();
     assert!(
-        key <= 48,
-        "dedup key grew to {key} B; the pool is 4096 slots, so every 8 B costs 32 KiB"
+        key <= expected,
+        "dedup key grew to {key} B (expected <= {expected} for a {cap}-fragment ceiling)"
+    );
+    assert!(
+        cap <= 1024,
+        "a {cap}-fragment ceiling makes the dedup pool exceed the sign peak; rework this          pool before raising it"
     );
 }
 
 #[test]
 fn the_decode_workspace_ratchet_only_moves_down() {
-    // 537,127 B after the phase-6 u16 index domain (471,591 before it: buffered equation
-    // keys double from 264 to 520 B each, 256 slots = +65,536). 864,807 after 5b,
-    // 1,880,327 after 5a, 2,797,831 before phase 5. Raise only with a measured reason.
-    const CEILING: usize = 560_000;
+    // Phase 6 raised the source-fragment ceiling to 1,024 so a real 61 KB request at
+    // 65 B/fragment (941 fragments) fits: 1,336,639 B. The meaningful bound is not an
+    // absolute number, though - the carrier frees the decode workspace before signing, so
+    // decode only has to stay under the sign peak to keep the lifecycle peak unchanged.
+    let sign = shlosilo::business::sign::SignWsLayout::compute().total;
     let ws = ur_decode_ws_len();
+    assert!(
+        ws <= sign,
+        "decode workspace {ws} B exceeds the sign peak {sign} B: the lifecycle peak grows"
+    );
+    // Absolute ratchet for the case where sign itself grows and quietly hides a decode
+    // regression. Raise only with a measured reason.
+    const CEILING: usize = 1_400_000;
     assert!(
         ws <= CEILING,
         "decode workspace {ws} B exceeds the {CEILING} B ratchet"

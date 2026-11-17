@@ -86,11 +86,22 @@ fn the_real_request_round_trips_when_the_sender_keeps_parts_within_the_domain() 
 }
 
 #[test]
-fn a_sender_that_needs_more_than_256_parts_is_refused() {
-    // 200-byte parts need 306 parts for this request: past MAX_SEQUENCE_COUNT, so
-    // the encoder refuses instead of emitting a stream no decoder can finish.
-    // This is the ceiling that keeps 40-UTXO consolations out today.
-    assert!(UrMultipartEncoder::new("crypto-psbt", PSBT, 200).is_err());
+fn the_fragment_ceiling_covers_the_largest_payload_the_profile_accepts() {
+    // Phase 6 raised the source-fragment ceiling to 1,024, so the 200-byte-part stream for
+    // this 61 KB request (306 parts) is now inside the domain - the old pin here asserted
+    // it was refused, which was pinning a ceiling that also made our own 64 KiB outbound
+    // unencodable. The invariant that must hold instead: whatever payload the profile
+    // accepts, the fragment count it implies fits the ceiling. build.rs enforces the same
+    // inequality, so a profile cannot be internally inconsistent.
+    let needed = shlosilo::limits::UR_PAYLOAD_MAX.div_ceil(200);
+    assert!(
+        needed <= shlosilo::limits::UR_SOURCE_FRAGMENTS_MAX,
+        "{needed} parts at 200 B exceeds the ceiling {}",
+        shlosilo::limits::UR_SOURCE_FRAGMENTS_MAX
+    );
+    // ...and a payload past the profile's own cap is still refused.
+    let oversized = std::vec![0u8; shlosilo::limits::UR_PAYLOAD_MAX + 1];
+    assert!(UrMultipartEncoder::new("crypto-psbt", &oversized, 200).is_err());
 }
 
 #[test]

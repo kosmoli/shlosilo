@@ -130,18 +130,6 @@
  */
 #define UNKNOWN_CALLDATA (1 << 8)
 
-/**
- * Z4-7a: fixed backplane caps (the XMR H-cut precedent) — the logical
- * lengths drive serialization; over-cap is an explicit Err, never truncation.
- * Measured maxima: the sparrow 12k fixture runs 1 input / 2 outputs.
- * Raised 16 -> 64 (2026-11-15, B-7): a real Sparrow consolidation spent 43 inputs;
- * 16 refused it with an encoding error that blamed the wallet. Now a platform knob
- * (`limits/<profile>.toml`), because this cap sizes a `heapless::Vec` on the stack.
- */
-#define BT_TX_INPUTS_MAX 64
-
-#define BT_TX_OUTPUTS_MAX 64
-
 #define UNSIGNED_TX 0
 
 /**
@@ -243,14 +231,6 @@
  * XMR tx version: 2 = RingCT (post-fork, only valid in mainnet)
  */
 #define TX_VERSION 2
-
-/**
- * Monero transaction prefix (BIP format, before RCT signatures)
- * Z5.3 H-cut: fixed-capacity input/output backing (was Vec) — the prefix
- * owns sized storage on both the sign and deserialize paths; over-cap is an
- * explicit Err (G1). The logical lengths drive serialization.
- */
-#define PREFIX_INPUTS_MAX 16
 
 #define PREFIX_OUTPUTS_MAX 64
 
@@ -550,21 +530,6 @@
  */
 #define SIGN_WS_BP_TERMS 2050
 
-/**
- * Z5.3 D-cut: the Straus scratch byte pool (byte expression of the vendor's
- * `StrausScratch::storage_bytes(SIGN_WS_BP_CHUNK_MAX)`; a pin test asserts the
- * two agree — same source-of-truth discipline as the Z3.3b ws layout).
- *
- * T-04 follow-up (2026-09-30): sized for the CHUNK capacity, not the terms
- * bound. The chunked multiexp feeds `multiexp_chunk_terms()` terms at a time
- * (default 36, per-platform deployment), so a terms-cap-sized pool was 57x
- * larger than the live working set (5.77MB -> ~99KB) and pushed the ws past
- * the 8MB PSRAM heap on forgebox ("sign ws: alloc fail (10575072 bytes)").
- * `set_bp_multiexp_chunk_terms` clamps to this cap (a larger chunk would
- * make `StrausScratch::new` fail loudly at prove time).
- */
-#define SIGN_WS_BP_CHUNK_MAX 36
-
 #define SIGN_WS_BP_STRAUS_BYTES (((SIGN_WS_BP_CHUNK_MAX * (16 * 160)) + (SIGN_WS_BP_CHUNK_MAX * 256)) + 64)
 
 /**
@@ -722,37 +687,6 @@
 #define SIGN_WS_KSTR (67 * 32)
 
 /**
- * Workspace: UR decode — work-buffer slots (one per part; same domain bound).
- */
-#define UR_WS_BUFFER_SLOTS 256
-
-/**
- * Workspace: UR decode — decoded-parts slots (FountainWs pool).
- *
- * **Bounded by the part domain, not chosen freely.** `MAX_SEQUENCE_COUNT`
- * (encoding/fountain.rs) caps a message at 256 parts because the index lives in u8,
- * and the decoder needs one slot per part. Raising this without widening that domain
- * buys nothing and is expensive: each slot holds a full `Part` (inline
- * `data: [u8; 2048]`) - measured `ur_decode_ws_len()` = 2.7 MiB at 256 and 5.9 MiB at
- * 1024, against a forgebox PSRAM heap of 8.38 MB that already gives 2 MiB to the CN
- * scratch. Slot growth belongs with the u8 -> u16 domain change *and* a slimmer Part,
- * not with a bigger payload cap. Value comes from the platform profile
- * (`limits/<profile>.toml`).
- */
-#define UR_WS_DECODED_SLOTS 256
-
-/**
- * Workspace: UR decode — cascade queue slots (platform profile).
- */
-#define UR_WS_QUEUE_SLOTS 256
-
-/**
- * Workspace: UR decode — received-sequence slots (the full fountain sequence space:
- * MAX_TOTAL_FRAMES). Platform profile.
- */
-#define UR_WS_RECEIVED_SLOTS 4096
-
-/**
  * Workspace: records-face destinations (flat).
  */
 #define SIGN_WS_RECORD_DESTS 64
@@ -810,13 +744,6 @@
 #define UR_URI_MAX_LEN 8192
 
 /**
- * Multipart payload limit — aligned with TxTemplate 16 KiB (same source as the v2-security §4 size guardrail)
- * Inbound payload budget: the platform profile's `ur_payload_max`, which `build.rs`
- * keeps under `UR_WS_DECODED_SLOTS x 240 B` (the part domain's real ceiling).
- */
-#define MULTIPART_PAYLOAD_MAX_LEN 61440
-
-/**
  * Message budget on the wire: content + the longest definite CBOR byte-string
  * shell head (0x5b + 8B length). Bytes-type UR messages are the CBOR
  * serialization (shell ++ content), so the MESSAGE can exceed the content cap
@@ -828,11 +755,6 @@
  * Single-frame string limit: bytewords ≈ 2×data; data ≤ fragment (≤ payload) → 2×16 KiB margin
  */
 #define MULTIPART_FRAME_MAX_LEN 40960
-
-/**
- * Single-frame payload limit (the single-frame large-QR channel goes through ur_encode::encode; only fragmentation here)
- */
-#define DEFAULT_FRAGMENT_LEN 200
 
 /**
  * Stateful multipart decoder. Feed frames one by one with `receive_frame()`, drive the UI with `progress()`,

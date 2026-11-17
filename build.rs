@@ -207,6 +207,21 @@ fn emit_limits() {
             "{path}: ur_inbound_fragment_max ({inbound_frag}) must be between ur_encode_fragment_len ({encode_fragment_len}) and 2048"
         );
     }
+    // The payload ceiling must be *reachable*: a 64 KiB payload at the configured fragment
+    // length needs ceil(payload/fragment) source fragments, and a profile that cannot
+    // represent that many cannot emit its own maximum (or decode a peer's real request).
+    let payload_max_pending = *values
+        .iter()
+        .find(|(k, _)| *k == "ur_payload_max")
+        .map(|(_, v)| v)
+        .expect("schema check above guarantees presence");
+    let needed_fragments = payload_max_pending.div_ceil(encode_fragment_len);
+    if needed_fragments > get("ur_source_fragments_max") {
+        panic!(
+            "{path}: ur_payload_max ({payload_max_pending}) at ur_encode_fragment_len ({encode_fragment_len}) needs {needed_fragments} source fragments, but ur_source_fragments_max is {}",
+            get("ur_source_fragments_max")
+        );
+    }
     let payload_max = get("ur_payload_max");
     let assembled_max = get("ur_ws_decoded_slots") * 240;
     assert!(

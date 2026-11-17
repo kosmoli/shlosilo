@@ -33,10 +33,9 @@ fn wire_len(n: u64) -> Result<usize> {
 /// Multipart payload limit — aligned with TxTemplate 16 KiB (same source as the v2-security §4 size guardrail)
 /// Inbound payload budget: the platform profile's `ur_payload_max`, which `build.rs`
 /// keeps under `UR_WS_DECODED_SLOTS x 240 B` (the part domain's real ceiling).
-pub const MULTIPART_PAYLOAD_MAX_LEN: usize = 61440;
+pub const MULTIPART_PAYLOAD_MAX_LEN: usize = crate::limits::UR_PAYLOAD_MAX;
 // The platform profile (`limits/<profile>.toml`) is the source of truth:
 // any drift between this constant and the generated ceiling is a build error.
-const _: () = assert!(MULTIPART_PAYLOAD_MAX_LEN == crate::limits::UR_PAYLOAD_MAX);
 
 /// Fountain **part number** budget (the URI's `seq` field), independent of the
 /// fragment **count**. BC-UR lets a fountain encoder keep emitting mixed parts
@@ -53,10 +52,8 @@ pub const MULTIPART_MESSAGE_MAX_LEN: usize = MULTIPART_PAYLOAD_MAX_LEN + 9;
 /// Single-frame string limit: bytewords ≈ 2×data; data ≤ fragment (≤ payload) → 2×16 KiB margin
 pub const MULTIPART_FRAME_MAX_LEN: usize = 40960;
 /// Single-frame payload limit (the single-frame large-QR channel goes through ur_encode::encode; only fragmentation here)
-pub const DEFAULT_FRAGMENT_LEN: usize = 200;
-// The carrier picks the fragment length (it owns the screen), so the profile is the
-// source of truth; drift between the two is a build error.
-const _: () = assert!(DEFAULT_FRAGMENT_LEN == crate::limits::UR_ENCODE_FRAGMENT_LEN);
+pub const DEFAULT_FRAGMENT_LEN: usize = crate::limits::UR_ENCODE_FRAGMENT_LEN;
+
 /// Z2.4c-4: part-CBOR decode scratch (fragment payload + CBOR wrapper headroom)
 pub(crate) const PART_CBOR_SCRATCH_MAX: usize = crate::encoding::fountain::PART_DATA_MAX + 64;
 
@@ -351,6 +348,8 @@ pub struct UrDecodeWsLayout {
     /// Fragment arenas (5b).
     pub message: usize,
     pub equations: usize,
+    /// Index/sampler scratch (6b).
+    pub index_scratch: usize,
     /// Frame CBOR scratch (v1: per-call allocations out of the UR receive path).
     pub scratch: usize,
     pub handle: usize,
@@ -401,6 +400,12 @@ impl UrDecodeWsLayout {
             1,
             crate::encoding::fountain::equation_arena_len(c::UR_WS_BUFFER_SLOTS),
         );
+        // Sampler/index scratch (phase 6b): u16 per possible source fragment.
+        let index_scratch = ur_next(
+            &mut off,
+            core::mem::align_of::<u16>(),
+            core::mem::size_of::<u16>() * crate::limits::UR_SOURCE_FRAGMENTS_MAX,
+        );
         let scratch = ur_next(&mut off, 1, crate::ur::ur_multipart::PART_CBOR_SCRATCH_MAX);
         let handle = ur_next(
             &mut off,
@@ -419,6 +424,7 @@ impl UrDecodeWsLayout {
             received,
             message,
             equations,
+            index_scratch,
             scratch,
             handle,
             total,
@@ -536,6 +542,10 @@ pub fn ur_decode_ws_place(buf: &mut [u8]) -> Option<*mut UrMultipartDecoder<'sta
             base.add(l.equations),
             crate::encoding::fountain::equation_arena_len(c::UR_WS_BUFFER_SLOTS),
         );
+        let index_scratch = core::slice::from_raw_parts_mut(
+            base.add(l.index_scratch) as *mut u16,
+            crate::limits::UR_SOURCE_FRAGMENTS_MAX,
+        );
         let ws = FountainWs {
             decoded,
             buffer,
@@ -543,6 +553,7 @@ pub fn ur_decode_ws_place(buf: &mut [u8]) -> Option<*mut UrMultipartDecoder<'sta
             received,
             message,
             equations,
+            index_scratch,
         };
         let mut dec = UrMultipartDecoder::with_ws(ws);
         dec.ws_base = base as usize;
@@ -1011,8 +1022,9 @@ mod tests {
 
         // seq=0 → Err (genuinely illegal domain)
         assert!(parse_frame_t(&format!("ur:bytes/0-2/{}", body)).is_err());
-        // count over limit (> MAX_SEQUENCE_COUNT=256) → Err
-        assert!(parse_frame_t(&format!("ur:bytes/1-999/{}", body)).is_err());
+        // count over the configured ceiling (`ur_source_fragments_max`) → Err
+        let over = MAX_SEQUENCE_COUNT + 1;
+        assert!(parse_frame_t(&format!("ur:bytes/1-{over}/{}", body)).is_err());
         // Invalid bytewords body (the real failure cause of the original test) → Err, but a body error, not a seq error
         assert!(parse_frame_t("ur:bytes/3-2/aaaa").is_err());
         // Single-frame shape (no seq segment) → Err (single frames should go through ur_decode::decode)
