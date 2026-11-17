@@ -709,6 +709,15 @@ impl<'a> UrMultipartDecoder<'a> {
         self.inner.complete()
     }
 
+    /// Fragment length this session fixed on its first accepted part (0 before that).
+    ///
+    /// Field measurement hook (pool #71): the inbound fragment length is what a peer
+    /// chooses, and the profile's arena slot must cover it. Reading it back on the device
+    /// is how we learn the real value instead of guessing.
+    pub fn fragment_length(&self) -> usize {
+        self.inner.fragment_length()
+    }
+
     /// P0-C (2026-09-01): UR type of the completed frame sequence (recorded from the first frame; mixed frames across types already rejected).
     /// L3 routes typed sign based on this; None = no frames received yet.
     pub fn ur_type(&self) -> Option<&str> {

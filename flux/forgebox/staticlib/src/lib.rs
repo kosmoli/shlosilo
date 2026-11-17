@@ -152,6 +152,7 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_new as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_feed as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_progress as *const ()),
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_fragment_len as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_complete as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_payload as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_type as *const ()),

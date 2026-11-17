@@ -753,6 +753,11 @@ impl<'a> FountainDecoder<'a> {
         self.work_used = 0;
     }
 
+    /// Fragment length fixed by the first accepted part (0 before that).
+    pub fn fragment_length(&self) -> usize {
+        self.fragment_length
+    }
+
     pub fn complete(&self) -> bool {
         // `>=`, not `==`: a single feed can resolve several slots through the
         // reduction cascade when combo parts arrive before their systematics,

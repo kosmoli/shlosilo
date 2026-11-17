@@ -1501,6 +1501,9 @@ static void sign_run(const char *uri, const char *type,
                      "stk used ~%uK (hwm %uW of %uK)",
                      out_len, (unsigned)dt, g_sign_out_type,
                      g_ur_feed_cnt, g_ur_dup_cnt,
+                     (unsigned)(g_ur_dec != NULL
+                                    ? shlosilo_ur_decode_fragment_len(g_ur_dec)
+                                    : 0u),
                      (unsigned)(g_ur_collect_ms / 1000u),
                      (unsigned)((g_ur_collect_ms / 100u) % 10u),
                      used_k, hwm_w,
@@ -1536,13 +1539,17 @@ static void sign_run(const char *uri, const char *type,
             }
 #endif
             printf("sign FAIL: rc=%d type=%s len %u head=%02x%02x%02x%02x "
-                   "fr=%u dup=%u stk=%uK\r\n",
+                   "fr=%u dup=%u frag=%u stk=%uK\r\n",
                    rc, (uri != NULL) ? "single-frame" : g_ur_type, plen,
                    (plen > 0) ? g_ur_payload[0] : 0u,
                    (plen > 1) ? g_ur_payload[1] : 0u,
                    (plen > 2) ? g_ur_payload[2] : 0u,
                    (plen > 3) ? g_ur_payload[3] : 0u,
-                   g_ur_feed_cnt, g_ur_dup_cnt, used_k);
+                   g_ur_feed_cnt, g_ur_dup_cnt,
+                   (unsigned)(g_ur_dec != NULL
+                                  ? shlosilo_ur_decode_fragment_len(g_ur_dec)
+                                  : 0u),
+                   used_k);
         }
         snprintf(l3, sizeof(l3), "stk used ~%uK", used_k);
         UiSetLast(l3);

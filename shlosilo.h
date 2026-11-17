@@ -1203,6 +1203,14 @@ int shlosilo_ur_decode_feed(struct UrMultipartDecoder *handle,
 int shlosilo_ur_decode_progress(struct UrMultipartDecoder *handle);
 
 /**
+ * R3: fragment length the current session fixed on its first accepted part (0 before
+ * that). Exists so the carrier can report what a *peer* actually sends (pool #71):
+ * the profile's arena slot has to cover it, and a guess that is too small fails a
+ * whole session.
+ */
+unsigned int shlosilo_ur_decode_fragment_len(struct UrMultipartDecoder *handle);
+
+/**
  * R3: whether decoding is complete
  */
 int shlosilo_ur_decode_complete(struct UrMultipartDecoder *handle);

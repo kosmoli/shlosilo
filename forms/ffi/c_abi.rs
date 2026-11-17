@@ -1194,6 +1194,21 @@ pub mod r3 {
         }
     }
 
+    /// R3: fragment length the current session fixed on its first accepted part (0 before
+    /// that). Exists so the carrier can report what a *peer* actually sends (pool #71):
+    /// the profile's arena slot has to cover it, and a guess that is too small fails a
+    /// whole session.
+    #[no_mangle]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub extern "C" fn shlosilo_ur_decode_fragment_len(handle: *mut UrMultipartDecoder) -> c_uint {
+        if handle.is_null() {
+            return 0;
+        }
+        let result =
+            ffi_catch_unwind!(|| -> c_uint { unsafe { &*handle }.fragment_length() as c_uint });
+        result.unwrap_or_default()
+    }
+
     /// R3: whether decoding is complete
     #[no_mangle]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
