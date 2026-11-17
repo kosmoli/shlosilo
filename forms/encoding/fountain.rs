@@ -77,10 +77,10 @@ impl Xoshiro256 {
     /// draws map to a different permutation — so the remove-and-append shape is kept
     /// bit-exact; Z2.4c-2 runs it on fixed arrays instead of Vec.) `out` receives the
     /// permutation of 0..count.
-    fn shuffled_into(&mut self, count: usize, out: &mut [u8]) {
-        let mut items = [0u8; 256];
+    fn shuffled_into(&mut self, count: usize, out: &mut [u16]) {
+        let mut items = [0u16; MAX_SEQUENCE_COUNT];
         for (i, slot) in items[..count].iter_mut().enumerate() {
-            *slot = i as u8;
+            *slot = i as u16;
         }
         let mut remaining = count;
         for slot in out[..count].iter_mut() {
@@ -105,9 +105,14 @@ impl Xoshiro256 {
 /// Vose's alias method (aligned with keystone-ur sampler.rs, including the f64 path).
 /// Z2.4c-2: fixed inline tables (was Vec); count ≤ MAX_SEQUENCE_COUNT = 256 so the
 /// alias index domain is u8 (0..=255).
+///
+/// Phase 6: the alias index domain is u16 and the tables are sized by the profile's
+/// `ur_source_fragments_max`. Cost: 2 B + 8 B per entry (10 B), so 256 entries ≈ 2.5 KiB
+/// and a 4,096-fragment profile ≈ 40 KiB - which is why the sampler is built per call
+/// today and must move into the caller's workspace before any profile takes that step.
 pub(crate) struct Weighted {
-    aliases: [u8; 256],
-    probs: [f64; 256],
+    aliases: [u16; MAX_SEQUENCE_COUNT],
+    probs: [f64; MAX_SEQUENCE_COUNT],
     len: usize,
 }
 
@@ -115,7 +120,7 @@ impl Weighted {
     /// Sampler for the degree distribution w_i = 1/i (i = 1..=count) — the only
     /// distribution the fountain uses.
     pub(crate) fn new_inverse(count: usize) -> Self {
-        let mut w = [0f64; 256];
+        let mut w = [0f64; MAX_SEQUENCE_COUNT];
         for (i, x) in w[..count].iter_mut().enumerate() {
             *x = 1.0 / (i + 1) as f64;
         }
@@ -127,32 +132,32 @@ impl Weighted {
         let count = weights.len();
         let summed: f64 = weights.iter().sum();
         debug_assert!(summed > 0.0);
-        let mut w = [0f64; 256];
+        let mut w = [0f64; MAX_SEQUENCE_COUNT];
         for (dst, &src) in w[..count].iter_mut().zip(weights.iter()) {
             *dst = src * count as f64 / summed;
         }
 
         // partition: small/large
-        let mut small = [0u8; 256];
+        let mut small = [0u16; MAX_SEQUENCE_COUNT];
         let mut small_len = 0usize;
-        let mut large = [0u8; 256];
+        let mut large = [0u16; MAX_SEQUENCE_COUNT];
         let mut large_len = 0usize;
         // keystone-ur order: j from 1..=count, count-j; partition predicate w[j] < 1.0 → small
         // Equivalent implementation: for j in (0..count).rev() — keeps the same fill order as upstream
         for j in (0..count).rev() {
             if w[j] < 1.0 {
-                small[small_len] = j as u8;
+                small[small_len] = j as u16;
                 small_len += 1;
             } else {
-                large[large_len] = j as u8;
+                large[large_len] = j as u16;
                 large_len += 1;
             }
         }
         // Upstream: (1..=count).map(|j| count - j) = [count-1, count-2, .., 0] reversed;
         // after partition s/l keep that reversed order. The for j in (0..count).rev() above produces the same order.
 
-        let mut probs = [0f64; 256];
-        let mut aliases = [0u8; 256];
+        let mut probs = [0f64; MAX_SEQUENCE_COUNT];
+        let mut aliases = [0u16; MAX_SEQUENCE_COUNT];
 
         while small_len > 0 && large_len > 0 {
             let a = small[small_len - 1] as usize;
@@ -160,13 +165,13 @@ impl Weighted {
             let g = large[large_len - 1] as usize;
             large_len -= 1;
             probs[a] = w[a];
-            aliases[a] = g as u8;
+            aliases[a] = g as u16;
             w[g] += w[a] - 1.0;
             if w[g] < 1.0 {
-                small[small_len] = g as u8;
+                small[small_len] = g as u16;
                 small_len += 1;
             } else {
-                large[large_len] = g as u8;
+                large[large_len] = g as u16;
                 large_len += 1;
             }
         }
@@ -250,9 +255,9 @@ impl Part {
     /// Z2.4c-2: zero-heap — returns (index set as u8 array, degree). fragment_count ≤
     /// MAX_SEQUENCE_COUNT = 256 so the u8 domain 0..=255 is exact. Infallible by
     /// construction (degree ≤ sequence_count ≤ 256 = array length).
-    pub fn indexes_raw(&self) -> ([u8; MAX_SEQUENCE_COUNT], usize) {
+    pub fn indexes_raw(&self) -> ([u16; MAX_SEQUENCE_COUNT], usize) {
         let sampler = Weighted::new_inverse(self.sequence_count.max(1));
-        let mut raw = [0u8; MAX_SEQUENCE_COUNT];
+        let mut raw = [0u16; MAX_SEQUENCE_COUNT];
         let n = choose_fragments_into(
             self.sequence,
             self.sequence_count,
@@ -287,10 +292,10 @@ pub(crate) fn choose_fragments_into(
     fragment_count: usize,
     checksum: u32,
     sampler: &Weighted,
-    out: &mut [u8],
+    out: &mut [u16],
 ) -> usize {
     if sequence <= fragment_count {
-        out[0] = (sequence - 1) as u8;
+        out[0] = (sequence - 1) as u16;
         return 1;
     }
     let mut seed = [0u8; 8];
@@ -298,7 +303,7 @@ pub(crate) fn choose_fragments_into(
     seed[4..8].copy_from_slice(&checksum.to_be_bytes());
     let mut xoshiro = Xoshiro256::from_seed_bytes(&seed);
     let degree = xoshiro.choose_degree(sampler);
-    let mut shuffled = [0u8; 256];
+    let mut shuffled = [0u16; MAX_SEQUENCE_COUNT];
     xoshiro.shuffled_into(fragment_count, &mut shuffled[..fragment_count]);
     out[..degree].copy_from_slice(&shuffled[..degree]);
     degree
@@ -423,7 +428,7 @@ impl<'a> FountainEncoder<'a> {
     }
 
     fn make_part(&self, sequence: usize) -> Result<Part, FountainError> {
-        let mut idx = [0u8; MAX_SEQUENCE_COUNT];
+        let mut idx = [0u16; MAX_SEQUENCE_COUNT];
         let n = choose_fragments_into(
             sequence,
             self.fragment_count,
@@ -480,7 +485,13 @@ pub(crate) enum FountainError {
 
 /// Decoder-side budget (same discipline origin as X1): cap = fragment count cap.
 /// TxTemplate 16 KiB / minimum frame 200B → at most ~82 fragments; 256 leaves ample margin.
-pub(crate) const MAX_SEQUENCE_COUNT: usize = 256;
+/// Source fragments per session. **Capacity**, from the platform profile.
+///
+/// Phase 6: the index domain is u16 (no `as u8` truncation anywhere in the fountain), and
+/// how many fragments a platform will carry is a separate, per-platform decision. Raising
+/// this number also widens every index array and the alias sampler, so it is not free -
+/// see the sampler budget note on [`Weighted`].
+pub(crate) const MAX_SEQUENCE_COUNT: usize = crate::limits::UR_SOURCE_FRAGMENTS_MAX;
 
 /// Gate4 #4 (re-reviewed 2026-09-01): total received-frame budget per session.
 /// BC-UR allows unlimited redundant frames, but decoder resources must be finite: received (buffer/queue share the same origin)
@@ -494,7 +505,7 @@ pub(crate) const MAX_TOTAL_FRAMES: usize = 4096;
 pub(crate) const MAX_XOR_WORK_BYTES: usize = 16 * 1024 * 1024;
 
 /// Equation key: fragment index set (u8 domain — fragment_count ≤ MAX_SEQUENCE_COUNT = 256).
-pub type IdxSet = heapless::Vec<u8, { MAX_SEQUENCE_COUNT }>;
+pub type IdxSet = heapless::Vec<u16, { MAX_SEQUENCE_COUNT }>;
 
 /// Words in the fixed-width index-set key: one bit per possible source fragment.
 ///
@@ -521,7 +532,7 @@ pub struct IdxKey {
 
 impl IdxKey {
     /// Build from the raw fragment indices (each < MAX_SEQUENCE_COUNT).
-    pub fn from_indexes(raw: &[u8]) -> Self {
+    pub fn from_indexes(raw: &[u16]) -> Self {
         let mut words = [0u64; IDXKEY_WORDS];
         for &i in raw {
             let (w, b) = (usize::from(i) / 64, usize::from(i) % 64);
@@ -554,6 +565,11 @@ pub(crate) const FRAGMENT_MAX: usize = crate::limits::UR_INBOUND_FRAGMENT_MAX;
 /// `MAX_SEQUENCE_COUNT`.
 pub(crate) fn message_arena_len() -> usize {
     crate::limits::UR_PAYLOAD_MAX + MAX_SEQUENCE_COUNT
+}
+
+/// Source-fragment capacity in force for this build (the profile's value).
+pub fn source_fragments_max() -> usize {
+    MAX_SEQUENCE_COUNT
 }
 
 /// Equation-arena size: one fixed-width slot per buffer entry.
@@ -846,10 +862,10 @@ impl<'a> FountainDecoder<'a> {
     fn process_queue(&mut self) -> Result<(), FountainError> {
         while let Some(qpos) = self.queue.iter().position(|s| s.is_some()) {
             let index = self.queue[qpos].take().ok_or(FountainError::ExpectedItem)?;
-            let index_u8 = index as u8;
+            let index_idx = index as u16;
             let fl = self.fragment_length;
             for bpos in 0..self.buffer.len() {
-                let hit = matches!(&self.buffer[bpos], Some((key, _)) if key.contains(&index_u8));
+                let hit = matches!(&self.buffer[bpos], Some((key, _)) if key.contains(&index_idx));
                 if !hit {
                     continue;
                 }
@@ -858,7 +874,7 @@ impl<'a> FountainDecoder<'a> {
                     .ok_or(FountainError::ExpectedItem)?;
                 let mut new_key = IdxSet::new();
                 for &i in key.iter() {
-                    if i != index_u8 {
+                    if i != index_idx {
                         new_key.push(i).map_err(|_| FountainError::BudgetExceeded)?;
                     }
                 }
@@ -908,7 +924,7 @@ impl<'a> FountainDecoder<'a> {
         Ok(())
     }
 
-    fn process_complex(&mut self, mut part: Part, raw: &[u8]) -> Result<(), FountainError> {
+    fn process_complex(&mut self, mut part: Part, raw: &[u16]) -> Result<(), FountainError> {
         let fl = self.fragment_length;
         let mut indexes = IdxSet::new();
         indexes

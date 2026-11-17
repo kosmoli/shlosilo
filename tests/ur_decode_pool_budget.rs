@@ -27,9 +27,10 @@ fn the_dedup_key_is_fixed_width() {
 
 #[test]
 fn the_decode_workspace_ratchet_only_moves_down() {
-    // 471,600 B after 5c; 864,807 after 5b, 1,880,327 after 5a, 2,797,831 before phase 5.
-    // Raise this only with a measured reason.
-    const CEILING: usize = 500_000;
+    // 537,127 B after the phase-6 u16 index domain (471,591 before it: buffered equation
+    // keys double from 264 to 520 B each, 256 slots = +65,536). 864,807 after 5b,
+    // 1,880,327 after 5a, 2,797,831 before phase 5. Raise only with a measured reason.
+    const CEILING: usize = 560_000;
     let ws = ur_decode_ws_len();
     assert!(
         ws <= CEILING,
