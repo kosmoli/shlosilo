@@ -692,6 +692,7 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
             })
             // The wire model holds BT_TX_INPUTS_MAX inputs: going past it is a
             // capacity failure, not a malformed request (B-7, 2026-11-15).
+            // site 695
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
     }
 
@@ -725,6 +726,7 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
                 value,
                 script_pubkey,
             })
+            // site 728
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
     }
 

@@ -25,8 +25,14 @@ pub struct TxTemplate<'a> {
     pub derivation_path: crate::derivation::path::DerivationPath,
 }
 
-/// explicit payload cap: real PSBT 12KB + headroom. Above it raises UrPayloadTooLarge (silent truncation forbidden).
-const PAYLOAD_MAX: usize = 16384;
+/// Explicit payload cap. Above it raises UrPayloadTooLarge (silent truncation forbidden).
+///
+/// This used to be a hard-coded 16,384 ("real PSBT 12 KB + headroom"), which refused every
+/// request the UR layer had just finished reassembling if it happened to be bigger than one
+/// old sample - the real 43-input Sparrow request is 61,138 B and died here with
+/// `request too large` on the device (2026-11-16). The bound now comes from the platform
+/// profile: whatever the reassembler accepts is signable, and nothing bigger can arrive.
+const PAYLOAD_MAX: usize = crate::limits::UR_PAYLOAD_MAX;
 
 /// UR payload → TxTemplate
 ///

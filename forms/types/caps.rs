@@ -61,8 +61,8 @@ pub const SIGN_WS_BP_WIP_BYTES: usize = SIGN_WS_BP_TERMS * 960;
 /// Z4-7d: PSBT map pool — record pool + payload arena. The map store's home is
 /// caller memory (SignWs); `shlosilo_sign_ws_len` reports the capacity
 /// (runtime query, never fixed into the ABI). Over-cap is an explicit Err.
-pub const SIGN_WS_PSBT_ARENA: usize = 64 * 1024;
-pub const SIGN_WS_PSBT_RECS: usize = 128;
+pub const SIGN_WS_PSBT_ARENA: usize = crate::limits::PSBT_ARENA_BYTES;
+pub const SIGN_WS_PSBT_RECS: usize = crate::limits::PSBT_RECS_MAX;
 /// Z4-7e: BIP32_DERIVATION records per input map (measured: 1 in the fixture;
 /// >cap is an explicit Err — single-sig rejects multisig records anyway).
 pub const BT_BIP32_RECORDS_MAX: usize = 16;
