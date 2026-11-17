@@ -82,7 +82,7 @@ fn which_stage_refuses_the_real_request() {
             // `tx_normalize::PAYLOAD_MAX` and the flat 128 PSBT record ceiling); at least
             // one more sits inside the BTC sign path. When it is found, this assertion is
             // the signal to record the acceptance, not a nuisance to delete.
-            println!("SIGN still refused: {:?}", e.kind);
+            println!("SIGN still refused: {:?} context={:?}", e.kind, e.context);
             assert_eq!(
                 e.kind,
                 shlosilo::error::ShlosiloErrorKind::BufferTooSmall,

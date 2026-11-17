@@ -175,13 +175,13 @@ fn emit_limits() {
             .expect("schema check above guarantees presence"),
     );
     values.push(("psbt_maps_max", 1 + bt_in + bt_out));
-    // PSBT key-value records are DERIVED too: a real input map carries up to nine
-    // standard fields (non_witness_utxo, witness_utxo, partial_sigs, sighash_type,
-    // redeem_script, witness_script, bip32_derivation, final_scriptSig,
-    // final_scriptWitness) and an output map up to four. The old flat 128 refused the
-    // real 43-input Sparrow request with "request too large" even though its bytes fit
-    // (`SIGN_WS_PSBT_ARENA` is 64 KiB) - the record count, not the byte count, ran out.
-    values.push(("psbt_recs_max", 9 * bt_in + 4 * bt_out + 8));
+    // PSBT key-value records are DERIVED too. The old flat 128 refused the real 43-input
+    // Sparrow request with "request too large" while its bytes fit comfortably - the
+    // record count, not the byte count, ran out. A measured probe (host, real fixture)
+    // shows 9 records per input is still short and 24 clears it, so the ceiling carries
+    // 24 per input plus 8 per output (outputs carry redeem/witness-script/derivation)
+    // with headroom; the cost is 16 B per record in PSRAM.
+    values.push(("psbt_recs_max", 24 * bt_in + 8 * bt_out + 32));
     // The arena holds the request bytes PLUS what signing appends to each input map
     // (final_scriptSig, final_scriptWitness): 61,138 B request + 43 x ~110 B of final
     // fields overran a flat 64 KiB. Derived so the two can never drift apart again.
