@@ -794,6 +794,11 @@ static char g_ur_type[32];
 static uint32_t g_ur_t0_ms;
 static unsigned g_ur_feed_cnt;
 static unsigned g_ur_dup_cnt;
+/* Inbound UR fragment length fixed by the first accepted frame (0 = unknown). Kept past
+ * the intake reset so the review page - the screen a successful run leaves behind - can
+ * report it: this is the number that tells us what a peer actually sends (pool #71), and
+ * `ur_inbound_fragment_max` is currently sized from indirect evidence. */
+static unsigned g_ur_frag_len;
 static unsigned g_ur_collect_ms;
 
 /* Sign result (feeds the output carousel on the QR page). */
@@ -2084,6 +2089,17 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
     printf("review: %u lines flags=0x%x in=%u out=%u\r\n", (unsigned)count,
            (unsigned)flags, in_out >> 16, in_out & 0xffffu);
 
+    /* Phase 7 readout: the inbound fragment length and frame count ride the status line of
+     * the review page, which is the screen a *successful* run leaves on the device. That is
+     * the only place an operator can photograph them - the sign path goes straight to the
+     * QR carousel - and they are what `ur_inbound_fragment_max` should be sized from
+     * (pool #71) instead of from indirect evidence. */
+    {
+        char d[40];
+        snprintf(d, sizeof(d), "fr %u frag %u stk %uK", g_ur_feed_cnt, g_ur_frag_len,
+                 (unsigned)((PRODUCT_TASK_STACK_BYTES - (unsigned)uxTaskGetStackHighWaterMark(NULL) * (unsigned)sizeof(StackType_t)) / 1024u));
+        UiSetLast(d);
+    }
     g_review_count = count;
     g_review_pages = (count + REVIEW_PAGE_LINES - 1u) / REVIEW_PAGE_LINES;
     if (g_review_pages == 0) {
@@ -2472,7 +2488,9 @@ static void scan_ur_hit(const char *text)
             hold_failure_page();
             return;
         }
-        printf("ur: complete type=%s payload=%u\r\n", g_ur_type, plen);
+        g_ur_frag_len = shlosilo_ur_decode_fragment_len(g_ur_dec);
+        printf("ur: complete type=%s payload=%u frag=%u\r\n", g_ur_type, plen,
+               g_ur_frag_len);
         g_ur_collect_ms = osKernelGetTickCount() - g_ur_t0_ms;
         printf("ur: collected in %u ms (%u fr, %u dup)\r\n",
                (unsigned)g_ur_collect_ms, g_ur_feed_cnt, g_ur_dup_cnt);
