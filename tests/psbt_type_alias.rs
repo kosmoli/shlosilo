@@ -295,66 +295,62 @@ fn both_names_sign_the_same_request_in_two_dialects() {
     }
 }
 
-/// 4. Firmware type table: every place that decides what a scanned type means
-///    must know `psbt`. Source scan because those functions live in C; the
-///    behavioural check is the device acceptance run.
+/// 4. Type table: every place that decides what a scanned type means must know
+///    `psbt`.
+///
+///    These four questions used to be `strcmp` chains in `product_task.c`, so this
+///    pin had to grep that file. They now live in `forms/ur/type_table.rs`, which
+///    makes the pin behavioural — and one C-side assertion keeps the host from
+///    growing a second copy of the chain.
 #[test]
 fn firmware_type_table_knows_the_alias() {
-    fn body<'a>(src: &'a str, signature: &str) -> &'a str {
-        let at = src
-            .find(signature)
-            .unwrap_or_else(|| panic!("{signature} not found in product_task.c"));
-        let mut depth = 0usize;
-        let mut started = false;
-        for (i, ch) in src[at..].char_indices() {
-            match ch {
-                '{' => {
-                    depth += 1;
-                    started = true;
-                }
-                '}' => {
-                    depth -= 1;
-                    if started && depth == 0 {
-                        return &src[at..at + i];
-                    }
-                }
-                _ => {}
-            }
-        }
-        panic!("unbalanced braces after {signature}");
-    }
+    use shlosilo::ur::type_table;
 
-    // (a) output name: a `psbt` request must come back as `psbt`
-    let out = body(PRODUCT_TASK_C, "static void sign_out_type_for(");
-    assert!(
-        out.contains("\"psbt\""),
-        "sign_out_type_for must echo the psbt name"
+    // (a) output name: a `psbt` request must come back as `psbt`; the registry
+    //     name answers as itself (the reply carries the request's name)
+    assert_eq!(
+        type_table::reply_type("psbt"),
+        "psbt",
+        "the Cake-family short name must be echoed back"
     );
+    assert_eq!(type_table::reply_type("crypto-psbt"), "crypto-psbt");
 
     // (b) sign whitelist: otherwise the request never reaches the signer
-    let is_sign = body(PRODUCT_TASK_C, "static int ur_type_is_sign(");
-    assert!(
-        is_sign.contains("\"psbt\""),
-        "ur_type_is_sign must accept psbt"
-    );
+    assert!(type_table::is_sign("psbt"));
+    assert!(type_table::is_sign("crypto-psbt"));
 
     // (c) review gate: a BTC PSBT must not skip the operator review
-    let gate = body(PRODUCT_TASK_C, "static int review_type_gated(");
-    assert!(
-        gate.contains("\"psbt\""),
-        "review_type_gated must cover psbt"
-    );
+    assert!(type_table::review_gated("psbt"));
+    assert!(type_table::review_gated("crypto-psbt"));
 
     // (d) operator-facing text: fixed phrase, never the raw type string
-    let display = body(PRODUCT_TASK_C, "static const char *ur_type_display(");
-    assert!(
-        display.contains("\"psbt\""),
-        "ur_type_display must map psbt to a fixed phrase"
+    assert_eq!(type_table::display(Some("psbt")), "sign request: btc");
+    assert_eq!(
+        type_table::display(Some("crypto-psbt")),
+        "sign request: btc"
     );
 
-    // (e) the signed-UR exit leg keys on the output type by name
+    // (e) the signed-UR exit leg keys on the output type by name (still C)
     assert!(
         PRODUCT_TASK_C.contains("strcmp(g_sign_out_type, \"psbt\") == 0"),
         "the signed-UR carousel must include the psbt output type"
+    );
+
+    // (f) one home: the four questions go through the FFI, and no second
+    //     case-folding chain survives in the C host
+    for call in [
+        "shlosilo_ur_type_is_sign_ffi",
+        "shlosilo_ur_type_review_gated_ffi",
+        "shlosilo_ur_type_display_ffi",
+        "shlosilo_ur_type_reply_ffi",
+    ] {
+        assert!(
+            PRODUCT_TASK_C.contains(call),
+            "{call} must be the host's only source for that answer"
+        );
+    }
+    assert!(
+        !PRODUCT_TASK_C.contains("strncasecmp(type,"),
+        "the type classification must not be duplicated in C"
     );
 }

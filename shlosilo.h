@@ -1674,6 +1674,40 @@ void shlosilo_tx_phase_reset(void);
 uint32_t shlosilo_tx_phase_phase(uint8_t phase);
 
 /**
+ * Non-zero when `type` reaches the sign dispatcher.
+ *
+ * # Safety
+ * See [`type_str`].
+ */
+int shlosilo_ur_type_is_sign_ffi(const uint8_t *ptr, unsigned int len);
+
+/**
+ * Non-zero when `type` goes through the operator review gate.
+ *
+ * # Safety
+ * See [`type_str`].
+ */
+int shlosilo_ur_type_review_gated_ffi(const uint8_t *ptr, unsigned int len);
+
+/**
+ * The fixed on-screen phrase for `type` (a NUL-terminated static string; the
+ * caller must NOT free it).
+ *
+ * # Safety
+ * See [`type_str`].
+ */
+const char *shlosilo_ur_type_display_ffi(const uint8_t *ptr, unsigned int len);
+
+/**
+ * The UR type the device answers under, given the inbound type (a NUL-terminated
+ * static string; the caller must NOT free it).
+ *
+ * # Safety
+ * See [`type_str`].
+ */
+const char *shlosilo_ur_type_reply_ffi(const uint8_t *ptr, unsigned int len);
+
+/**
  * extern "C" returning the version string (C side strdups it before use)
  */
 const uint8_t *shlosilo_version(void);

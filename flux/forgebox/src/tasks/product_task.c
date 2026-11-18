@@ -1356,21 +1356,16 @@ static void ur_intake_reset(void)
  * receive leg reuses the same mapping face -- an `xmr-output` request is
  * answered with the `xmr-keyimage` container (registry type for the key-image
  * export). */
+/* Answer under the name the request used. The mapping itself lives in forms
+ * (`ur::type_table::reply_type`) — one table, host-tested, so adding an alias is
+ * not a four-place edit in C. Whole-string matching there: `crypto-psbt-extend`
+ * classifies as a BTC sign request but still answers as `bytes`. */
 static void sign_out_type_for(const char *in_type)
 {
-    if (strcmp(in_type, "xmr-output") == 0) {
-        snprintf(g_sign_out_type, sizeof(g_sign_out_type), "xmr-keyimage");
-    } else if (strcmp(in_type, "xmr-txunsigned") == 0 ||
-        strcmp(in_type, "crypto-monero-tx") == 0) {
-        snprintf(g_sign_out_type, sizeof(g_sign_out_type), "xmr-txsigned");
-    } else if (strcmp(in_type, "psbt") == 0) {
-        /* Cake-family short name: answer under the same name. */
-        snprintf(g_sign_out_type, sizeof(g_sign_out_type), "psbt");
-    } else if (strcmp(in_type, "crypto-psbt") == 0) {
-        snprintf(g_sign_out_type, sizeof(g_sign_out_type), "crypto-psbt");
-    } else {
-        snprintf(g_sign_out_type, sizeof(g_sign_out_type), "bytes");
-    }
+    const char *reply = shlosilo_ur_type_reply_ffi(
+        (const uint8_t *)in_type, in_type ? (unsigned)strlen(in_type) : 0u);
+
+    snprintf(g_sign_out_type, sizeof(g_sign_out_type), "%s", reply);
 }
 
 /* device-timing clock callback (smoke parity: registers the ms source for
@@ -1877,37 +1872,14 @@ static const char *ur_type_hex(const char *type, char *out, unsigned cap)
 }
 #endif
 
+/* Fixed screen phrase for a type. The vocabulary lives in forms
+ * (`ur::type_table::display`): it is a closed set, so an unknown type says
+ * "unknown code" and never echoes what the sender sent (2026-10-10 red line).
+ * NULL = no type recorded yet -> same class phrase. */
 static const char *ur_type_display(const char *type)
 {
-    if (type == NULL) {
-        return "unknown code";
-    }
-
-    if (strncasecmp(type, "xmr-txunsigned", 14) == 0) {
-        return "sign request: xmr";
-    }
-    if (strncasecmp(type, "xmr-txsigned", 12) == 0) {
-        return "signed: xmr";
-    }
-    if (strncasecmp(type, "xmr-output", 10) == 0) {
-        return "pairing: outputs";
-    }
-    if (strncasecmp(type, "xmr-keyimage", 12) == 0) {
-        return "pairing: key images";
-    }
-    if (strncasecmp(type, "crypto-monero-tx", 16) == 0) {
-        return "sign request: xmr";
-    }
-    if (strncasecmp(type, "crypto-psbt", 11) == 0) {
-        return "sign request: btc";
-    }
-    if (strcasecmp(type, "psbt") == 0) {
-        return "sign request: btc";
-    }
-    if (strncasecmp(type, "eth-sign-request", 16) == 0) {
-        return "sign request: eth";
-    }
-    return "unknown code";
+    return shlosilo_ur_type_display_ffi((const uint8_t *)type,
+                                        type ? (unsigned)strlen(type) : 0u);
 }
 
 /* Sign-face type whitelist, shared by the single-frame and multipart
@@ -1919,11 +1891,8 @@ static const char *ur_type_display(const char *type)
  * must survive a stray exchange-leg QR (spec: prompt + keep scanning). */
 static int ur_type_is_sign(const char *type)
 {
-    return strncasecmp(type, "xmr-txunsigned", 14) == 0 ||
-           strncasecmp(type, "crypto-monero-tx", 16) == 0 ||
-           strncasecmp(type, "crypto-psbt", 11) == 0 ||
-           strcasecmp(type, "psbt") == 0 ||
-           strncasecmp(type, "eth-sign-request", 16) == 0;
+    return shlosilo_ur_type_is_sign_ffi((const uint8_t *)type,
+                                        type ? (unsigned)strlen(type) : 0u) != 0;
 }
 
 /* Bug A (2026-10-09): the legacy fixture-key sign path (k_sign_idx12) used to
@@ -1974,9 +1943,8 @@ int ProductSignFixtureArm(void)
  * review. Everything else (XMR legs, unknown types) bypasses the gate. */
 static int review_type_gated(const char *type)
 {
-    return strncmp(type, "crypto-psbt", 11) == 0 ||
-           strcasecmp(type, "psbt") == 0 ||
-           strncmp(type, "eth-sign-request", 16) == 0;
+    return shlosilo_ur_type_review_gated_ffi((const uint8_t *)type,
+                                             type ? (unsigned)strlen(type) : 0u) != 0;
 }
 
 /* idx-th NUL-separated line of the blob the FFI filled. */

@@ -31,4 +31,6 @@ pub mod perf_bench_ffi;
 /// BP+ prove-phase timing FFI (device perf decomposition). See module docs.
 pub mod prove_timing_ffi;
 pub mod tx_phase_ffi;
+/// UR type-classification FFI (the product flow's type policy table).
+pub mod type_table_abi;
 pub mod version;
