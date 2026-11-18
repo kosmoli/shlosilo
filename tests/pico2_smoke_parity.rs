@@ -66,7 +66,7 @@ const SPARROW_ENTROPY: [u8; 16] = [
 
 /// Fragment length for the multipart UR fed to the board (bytes of payload
 /// per frame; each frame is ~2x that in bytewords).
-const SPARROW_FRAGMENT_LEN: usize = 400;
+const SPARROW_FRAGMENT_LEN: usize = 256;
 
 /// Signed Sparrow PSBT: length and SHA-256, pinned from the host run
 /// (deterministic: RFC-6979 + fixed fixture). The board must print the same.

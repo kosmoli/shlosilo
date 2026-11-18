@@ -86,13 +86,16 @@ fn the_arena_slot_covers_what_we_send_and_what_peers_send() {
         inbound >= shlosilo::limits::UR_ENCODE_FRAGMENT_LEN,
         "inbound slot ({inbound}) is narrower than our outbound fragment"
     );
-    // Interop evidence: Cake sends ~65 B fragments, Keystone's default
-    // max_fragment_length is 200, and our Sparrow-shaped parity fixture
-    // (`tests/pico2_smoke_parity.rs`) cuts 400 B fragments. A real Sparrow frame length
-    // has never been measured on device - pool #71 - so the ceiling covers the fixture.
+    // Measured on device (pool #71, 2026-11-17): Sparrow sends **80 B** fragments, and both
+    // A/B arms reported `frag 80`. Cake is ~65 B. Keystone's default max_fragment_length is
+    // 200, so the ceiling has to clear that with margin - 256 does (3.2x the measured peer).
     assert!(
-        inbound >= 400,
-        "inbound slot ({inbound}) would reject our Sparrow-shaped fixture"
+        inbound >= 200,
+        "inbound slot ({inbound}) would reject a Keystone-default fragment"
+    );
+    assert!(
+        inbound >= 2 * 80,
+        "inbound slot ({inbound}) leaves no margin over the measured 80 B peer"
     );
     assert!(inbound <= 2048, "beyond the wire type's capacity");
 }

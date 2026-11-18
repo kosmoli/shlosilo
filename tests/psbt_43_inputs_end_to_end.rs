@@ -32,9 +32,12 @@ const ENTROPY: [u8; 16] = [
 #[test]
 fn the_real_43_input_request_decodes_and_signs() {
     // Stage 1: decode the multipart stream at a peer-like fragment length.
+    // Stay inside the device's inbound fragment ceiling; the exact value is a platform
+    // profile number now, and the real peer (Sparrow) was measured at 80 B.
+    let frag = core::cmp::min(400, shlosilo::limits::UR_INBOUND_FRAGMENT_MAX);
     let mut enc =
-        shlosilo::ur::ur_multipart::UrMultipartEncoder::new("crypto-psbt", REAL_PSBT, 400)
-            .expect("encode at 400 B fragments");
+        shlosilo::ur::ur_multipart::UrMultipartEncoder::new("crypto-psbt", REAL_PSBT, frag)
+            .expect("encode");
     let n = enc.fragment_count();
     assert!(
         n <= shlosilo::limits::UR_SOURCE_FRAGMENTS_MAX,

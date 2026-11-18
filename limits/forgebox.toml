@@ -16,6 +16,6 @@ psram_budget_bytes = 8384512  # heap the workspaces may use at peak
 stack_budget_bytes = 196608  # task/thread stack the carrier grants
 xmr_inputs_max = 16  # XMR inputs the signer's fixed tables hold (stack-sized until phase 4a lands)
 ur_encode_fragment_len = 200  # outbound UR fragment (bytes of payload per frame)
-ur_inbound_fragment_max = 512  # largest inbound UR fragment we hold (arena slot width); see pool #71
+ur_inbound_fragment_max = 256  # arena slot width; measured peer value = 80 B (Sparrow, 2026-11-17), Keystone default 200
 ur_source_fragments_max = 1024  # source fragments per session (u16 domain)
 review_lines_max = 32  # review-page rows (paging budget; a 43-input PSBT needs > 16)
