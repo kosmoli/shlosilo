@@ -2773,6 +2773,11 @@ static void hold_failure_page(void)
     if (g_scan == SCAN_ACTIVE) {
         scan_exit();
     }
+    /* This loop never yields to the product loop, which is the only watchdog feeder in
+     * this flavor - so holding a page without this guard reboots the board after ~2 s
+     * (2026-11-17: the review-failure page held, then the device reset instead of waiting
+     * for `home`). `g_sign_busy` makes the guard task feed while we sit here. */
+    g_sign_busy = 1;
     for (;;) {
         if (TouchGetStatus(&st) == 0) {
             int down = st.touch ? 1 : 0;
@@ -2780,6 +2785,7 @@ static void hold_failure_page(void)
                 g_back_press_x = (int)st.x;
                 g_back_press_y = (int)st.y;
                 key_session_close();
+                g_sign_busy = 0;
                 UiGotoPage(UI_PAGE_WELCOME);
                 return;
             }

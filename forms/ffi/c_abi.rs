@@ -2731,10 +2731,15 @@ pub extern "C" fn shlosilo_key_session_fingerprint(
 }
 
 /// Review workspace: the PSBT map pools the review parse writes into.
-pub const REVIEW_WS_ARENA: usize = 16 * 1024;
-pub const REVIEW_WS_RECS: usize = 128;
-/// NUL-separated line blob (16 lines × 48 chars + separators, with headroom).
-pub const REVIEW_LINES_BUF: usize = 1024;
+/// The review gate re-parses the request into its own pools, so they must cover what the
+/// sign path accepts - otherwise a request scans completely, signs fine in principle, and
+/// is refused here with `request too large` (2026-11-17: the flat 16 KiB / 128 refused the
+/// real 61 KB / 43-input request).
+pub const REVIEW_WS_ARENA: usize = crate::limits::PSBT_ARENA_BYTES;
+pub const REVIEW_WS_RECS: usize = crate::limits::PSBT_RECS_MAX;
+/// NUL-separated line blob: the platform's row budget x (line + separator).
+pub const REVIEW_LINES_BUF: usize =
+    crate::limits::REVIEW_LINES_MAX * (crate::business::review::REVIEW_LINE_MAX + 1) + 1;
 
 /// Required review workspace size (arena + records + alignment slack).
 ///

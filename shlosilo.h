@@ -383,18 +383,6 @@
 #define SEED_QR_MODE_COMPACT 2
 
 /**
- * Review workspace: the PSBT map pools the review parse writes into.
- */
-#define REVIEW_WS_ARENA (16 * 1024)
-
-#define REVIEW_WS_RECS 128
-
-/**
- * NUL-separated line blob (16 lines × 48 chars + separators, with headroom).
- */
-#define REVIEW_LINES_BUF 1024
-
-/**
  * No phase marked yet (mirrors the C `CRASH_PHASE_NONE`).
  */
 #define CRASH_PHASE_NONE 255
