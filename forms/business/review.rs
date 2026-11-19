@@ -709,6 +709,91 @@ fn ownership_from_elements(elements: &[u32]) -> Ownership {
 }
 
 /// EVM review: chain id, destination, value, calldata size.
+/// Render a decoded EVM call so the operator sees WHO and HOW MUCH, not just a method
+/// name.
+///
+/// ETH-10 (external audit 2026-11-19): the review page printed `call erc20 transfer` and
+/// nothing else. Two different recipients — or an `approve` of 1 unit versus an unlimited
+/// allowance — produced byte-identical screens, so the confirmation gate could not tell a
+/// payment from a different payment. Amounts are printed as RAW integers (hex, or the
+/// words "unlimited" for 2^256-1); token decimals are not guessed, because a wrong decimal
+/// point is worse than no decimal point.
+fn push_decoded_calldata(
+    view: &mut ReviewView,
+    decoded: &crate::chain::eth::calldata::DecodedCalldata,
+) -> Result<()> {
+    use crate::chain::eth::calldata::DecodedCalldata as D;
+
+    /// 20-byte address → the same EIP-55 checksummed form the destination line uses.
+    fn push_addr(view: &mut ReviewView, label: &str, addr: &[u8; 20]) -> Result<()> {
+        let rendered = crate::address::eth::encode_bytes(addr)?;
+        view.push_str(label)?;
+        view.push_wrapped(<_ as AsRef<str>>::as_ref(&rendered))
+    }
+
+    /// 256-bit big-endian → "unlimited" for 2^256-1, else 0x-hex without leading zeros.
+    fn push_amount(view: &mut ReviewView, label: &str, amount: &[u8; 32]) -> Result<()> {
+        view.push_str(label)?;
+        if amount.iter().all(|&b| b == 0xff) {
+            return view.push_str("unlimited");
+        }
+        let first = amount
+            .iter()
+            .position(|&b| b != 0)
+            .unwrap_or(amount.len() - 1);
+        let mut text = heapless::String::<REVIEW_LINE_MAX>::new();
+        use core::fmt::Write as _;
+        text.push_str("0x")
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+        for &b in &amount[first..] {
+            write!(&mut text, "{b:02x}")
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+        }
+        view.push_wrapped(text.as_str())
+    }
+
+    match decoded {
+        D::Empty => view.push_str("call: no calldata"),
+        D::Transfer { to, amount } => {
+            view.push_str("erc20 transfer")?;
+            push_addr(view, "recipient", to)?;
+            push_amount(view, "amount", amount)
+        }
+        D::Approve { spender, amount } => {
+            view.push_str("erc20 approve")?;
+            push_addr(view, "spender", spender)?;
+            push_amount(view, "allowance", amount)
+        }
+        D::IncreaseAllowance { spender, added } => {
+            view.push_str("erc20 increase allowance")?;
+            push_addr(view, "spender", spender)?;
+            push_amount(view, "added", added)
+        }
+        D::TransferFrom { from, to, amount } => {
+            view.push_str("erc20 transfer from")?;
+            push_addr(view, "from", from)?;
+            push_addr(view, "recipient", to)?;
+            push_amount(view, "amount", amount)
+        }
+        D::SetApprovalForAll { operator, approved } => {
+            view.push_str("set approval for all")?;
+            push_addr(view, "operator", operator)?;
+            view.push_str(if *approved {
+                "approved: yes"
+            } else {
+                "approved: no"
+            })
+        }
+        // Selector recognised, arguments NOT split: say so instead of implying a full
+        // decode (an NFT transfer and an NFT approval must not look the same).
+        D::KnownSelector { name, .. } => {
+            view.push_str(name)?;
+            view.push_str("args not decoded")
+        }
+        D::Unknown { .. } => view.push_str("call: unknown contract"),
+    }
+}
+
 pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
     use crate::chain::eth::from_rlp;
     use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
@@ -756,7 +841,15 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
     } else {
         view.push_fmt(format_args!("data {} bytes", calldata.len()))?;
         match crate::chain::eth::calldata::decode_calldata(calldata) {
-            Ok(decoded) => view.push_fmt(format_args!("call {}", decoded.kind_str()))?,
+            Ok(decoded) => {
+                if matches!(
+                    decoded,
+                    crate::chain::eth::calldata::DecodedCalldata::Unknown { .. }
+                ) {
+                    view.flags |= flag::UNKNOWN_CALLDATA;
+                }
+                push_decoded_calldata(&mut view, &decoded)?;
+            }
             Err(_) => {
                 view.flags |= flag::UNKNOWN_CALLDATA;
                 view.push_str("call: unknown contract")?;
@@ -764,4 +857,64 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
         }
     }
     Ok(view)
+}
+
+#[cfg(test)]
+mod calldata_render_pins {
+    use super::*;
+
+    /// ETH-10 (external audit 2026-11-19): the confirmation page must distinguish
+    /// payments. Before this pin it printed only `call erc20 transfer`, so two different
+    /// recipients — or an approve of 1 vs. an unlimited allowance — were the same screen.
+    #[test]
+    fn eth_calldata_rendering_distinguishes_who_and_how_much() {
+        use crate::chain::eth::calldata::DecodedCalldata as D;
+
+        fn render(d: &D) -> alloc::string::String {
+            let mut v = ReviewView::new();
+            push_decoded_calldata(&mut v, d).expect("fits");
+            let mut out = alloc::string::String::new();
+            for line in v.lines() {
+                out.push_str(line.as_str());
+                out.push('|');
+            }
+            out
+        }
+
+        let mut a = [0u8; 20];
+        a[19] = 0x11;
+        let mut b = [0u8; 20];
+        b[19] = 0x22;
+        let mut one = [0u8; 32];
+        one[31] = 1;
+        let unlimited = [0xffu8; 32];
+
+        let ta = render(&D::Transfer { to: a, amount: one });
+        let tb = render(&D::Transfer { to: b, amount: one });
+        assert_ne!(ta, tb, "two recipients rendered identically");
+
+        let ap = render(&D::Approve {
+            spender: a,
+            amount: one,
+        });
+        assert_ne!(ta, ap);
+        assert!(ta.contains("erc20 transfer"), "{ta}");
+        assert!(ap.contains("erc20 approve"), "{ap}");
+
+        let un = render(&D::Approve {
+            spender: a,
+            amount: unlimited,
+        });
+        assert!(
+            un.contains("unlimited"),
+            "unlimited allowance not called out: {un}"
+        );
+        assert_ne!(un, ap, "1 unit and 2^256-1 rendered identically");
+
+        let ks = render(&D::KnownSelector {
+            name: "nft transfer",
+            selector: [1, 2, 3, 4],
+        });
+        assert!(ks.contains("args not decoded"), "{ks}");
+    }
 }
