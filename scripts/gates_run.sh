@@ -50,6 +50,10 @@ cargo check --offline --target armv7-unknown-linux-gnueabihf > /tmp/g_arm.log 2>
 SHLOSILO_LIMITS=pico2 cargo check --lib --no-default-features --target thumbv7em-none-eabihf > /tmp/g_embed1.log 2>&1; echo "EMBED1=$?"
 SHLOSILO_LIMITS=pico2 cargo check --lib --no-default-features --target thumbv7em-none-eabihf --features device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi > /tmp/g_embed2.log 2>&1; echo "EMBED2=$?"
 SHLOSILO_LIMITS=pico2 cargo clippy --offline --target thumbv8m.main-none-eabihf --manifest-path flux/pico2/Cargo.toml --all-features -- -D warnings > /tmp/g_pico2.log 2>&1; echo "PICO2=$?"
+# pico2 build-flavor face (audit #17 P1-01, extended 2026-11-19 with the A4-01/A4-02 canaries):
+# builds production + bench + perf flavors and asserts the bench-only surface is absent from
+# production, present in bench, AND that the production no-session refusal really exists.
+bash scripts/check_pico2_flavors.sh > /tmp/g_pico2flavors.log 2>&1; echo "PICO2FLAVORS=$?"
 bash flux/host-sim/build.sh > /tmp/g_hostsim.log 2>&1; echo "HOSTSIM_BUILD=$?"
 timeout 60 flux/host-sim/sim_l3 > /tmp/g_sim.log 2>&1; echo "HOSTSIM_RUN=$?"
 grep -c "signed tx (111 bytes)" /tmp/g_sim.log; grep -c "all steps completed" /tmp/g_sim.log

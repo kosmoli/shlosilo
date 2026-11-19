@@ -36,7 +36,6 @@ use embassy_usb_logger::ReceiverHandler;
 use shlosilo::business::sign::SignInput;
 use shlosilo::encoding::sha256;
 use shlosilo::entropy::mnemonic::{Mnemonic, WordCount};
-use shlosilo::error::{ShlosiloError, ShlosiloErrorKind};
 use shlosilo::ur::ur_decode;
 use shlosilo::ur::ur_encode::UrTypeTag;
 use shlosilo::ur::ur_multipart::{UrMultipartDecoder, UrMultipartEncoder};
@@ -216,6 +215,8 @@ impl ConsoleState {
         match cmd {
             b"help" => self.cmd_help(),
             b"version" => self.cmd_version(),
+            // Bench-only (A4-02): the fixture report command does not exist in production.
+            #[cfg(feature = "bench")]
             b"smoke" => self.cmd_smoke(),
             b"panel" => self.cmd_panel(),
             b"lcd" => self.cmd_lcd(args),
@@ -404,6 +405,10 @@ impl ConsoleState {
         log::info!("[ver] {v} (cabi {cabi}) build={}", BUILD_FLAVOR);
     }
 
+    /// `smoke` — the fixture parity report. Bench-only: A4-02 (external audit 2026-11-19),
+    /// the report carries the fixture mnemonic's word indices and is served on a cycle, so it
+    /// belongs to the bench flavor like the rest of the fixture surface.
+    #[cfg(feature = "bench")]
     fn cmd_smoke(&self) {
         match sign_smoke::report() {
             Some(r) => log::info!("{r}"),
@@ -1925,12 +1930,12 @@ impl ConsoleState {
             _ => {}
         }
 
-        let mnemonic = match self.session_mnemonic() {
-            Ok(m) => m,
-            Err(e) => {
-                log::info!("[err] session mnemonic: {:?}", e.kind);
-                return None;
-            }
+        let Some(mnemonic) = self.session_mnemonic() else {
+            // Production face: signing requires a session the user created. The word is a
+            // canary (see scripts/check_pico2_flavors.sh) so the refusal provably exists in
+            // the production image and provably does not in the bench one.
+            log::info!("[err] sign: no session");
+            return None;
         };
         let input = SignInput::Mnemonic {
             mnemonic,
@@ -1965,16 +1970,33 @@ impl ConsoleState {
         None
     }
 
-    fn session_mnemonic(&self) -> Result<Mnemonic, ShlosiloError> {
+    /// The mnemonic the `sign` command signs with.
+    ///
+    /// A4-01 (external audit 2026-11-19): with no session this used to fall back to the
+    /// dice-fixture demo mnemonic **unconditionally**, so the same binary offered a signing
+    /// path that never involved a user-created session. The fallback is a bench convenience
+    /// (it is what makes pico2's output diffable against `flux/host-sim`), so it now exists
+    /// only in the `bench` flavor; a production build answers "no session" instead.
+    ///
+    /// The fixture key is derived from public fixed dice rolls, so nothing secret was ever
+    /// exposed — the defect is the missing compile-time boundary, not a key leak.
+    fn session_mnemonic(&self) -> Option<Mnemonic> {
         match &self.session {
             Some((indices, count)) => {
                 let count = *count as usize;
-                let wc = WordCount::try_from_count(count).ok_or_else(|| {
-                    ShlosiloError::new(ShlosiloErrorKind::MnemonicInvalidWordCount)
-                })?;
-                Mnemonic::from_indices(&indices[..count], wc)
+                let wc = WordCount::try_from_count(count)?;
+                Mnemonic::from_indices(&indices[..count], wc).ok()
             }
-            None => sign_smoke::fixture_mnemonic(),
+            None => {
+                #[cfg(feature = "bench")]
+                {
+                    sign_smoke::fixture_mnemonic().ok()
+                }
+                #[cfg(not(feature = "bench"))]
+                {
+                    None
+                }
+            }
         }
     }
 }
@@ -2950,12 +2972,9 @@ async fn run_sign_xmr() {
         log::info!("[err] xmr: no pending request");
         return;
     };
-    let mnemonic = match mnemonic {
-        Ok(m) => m,
-        Err(e) => {
-            log::info!("[err] xmr session mnemonic: {:?}", e.kind);
-            return;
-        }
+    let Some(mnemonic) = mnemonic else {
+        log::info!("[err] xmr: no session");
+        return;
     };
 
     // The XMR path's CN scratchpad is 2 MiB: it can only come from PSRAM,

@@ -543,6 +543,11 @@ async fn usb_console_task(driver: Driver<'static, USB>) {
     // compute once, store the report; `console_report_task` serves it on a
     // cycle. Nothing is logged inline here - boot-time output is not
     // reliably delivered to a host that attaches later.
+    //
+    // Bench-only (A4-02, external audit 2026-11-19): the report carries the fixture
+    // mnemonic's word indices. The fixture key comes from public fixed dice rolls, so
+    // nothing secret leaked — but the fixture surface has no business in a production image.
+    #[cfg(feature = "bench")]
     let _ = sign_smoke::run(heap_stats);
 
     // Both futures are divergent; the task only ends if the device were to
@@ -582,6 +587,7 @@ async fn console_report_task() {
         if let Some(line) = fault::report() {
             log::info!("{line}");
         }
+        #[cfg(feature = "bench")]
         if tick.is_multiple_of(4) {
             match sign_smoke::report() {
                 Some(r) => log::info!("{r}"),

@@ -31,6 +31,7 @@ use shlosilo::ur::ur_decode;
 
 /// Fixed dice-roll fixture (matches flux/host-sim/sim_l3.c): 64 x d6,
 /// [1..6] cycling. 64 rolls exceed the 128-bit floor for a 12-word mnemonic.
+#[cfg(feature = "bench")]
 fn fixture_rolls() -> [u8; 64] {
     let mut rolls = [0u8; 64];
     for (i, r) in rolls.iter_mut().enumerate() {
@@ -41,6 +42,7 @@ fn fixture_rolls() -> [u8; 64] {
 
 /// The dice-fixture mnemonic (create_account on the fixed rolls). Also the
 /// console channel's default session key.
+#[cfg(feature = "bench")]
 pub(crate) fn fixture_mnemonic() -> Result<Mnemonic, ShlosiloError> {
     let rolls = fixture_rolls();
     let mut mnemonic_buf = [0u8; 24];
@@ -66,6 +68,9 @@ const REPORT_CAP: usize = 1024;
 
 /// The stored report: written exactly once at boot, then read by the
 /// reporting task on every cycle.
+///
+/// Bench-only (A4-02): the payload is the fixture parity report.
+#[cfg(feature = "bench")]
 struct Report {
     len: AtomicUsize,
     buf: UnsafeCell<[u8; REPORT_CAP]>,
@@ -75,13 +80,16 @@ struct Report {
 // Release only after the bytes are in place; readers load `len` with Acquire
 // and then read exactly that many bytes. No reader exists before boot
 // completes, and the content is immutable afterwards.
+#[cfg(feature = "bench")]
 unsafe impl Sync for Report {}
 
+#[cfg(feature = "bench")]
 static REPORT: Report = Report {
     len: AtomicUsize::new(0),
     buf: UnsafeCell::new([0u8; REPORT_CAP]),
 };
 
+#[cfg(feature = "bench")]
 fn store(s: &str) {
     let n = core::cmp::min(s.len(), REPORT_CAP);
     // SAFETY: the single writer runs at boot; no concurrent readers exist
@@ -93,6 +101,7 @@ fn store(s: &str) {
 
 /// The stored report, or `None` if the smoke has not finished (never happens
 /// after the boot second; the reporting task handles it anyway).
+#[cfg(feature = "bench")]
 pub fn report() -> Option<&'static str> {
     let n = REPORT.len.load(Ordering::Acquire);
     if n == 0 {
@@ -145,6 +154,7 @@ pub(crate) fn to_hex<'a>(bytes: &[u8], out: &'a mut [u8]) -> &'a str {
 /// Run the three-step fixture flow once and store the report. `heap_probe`
 /// reports (used, free, peak) from the caller's allocator so the report can
 /// carry heap figures without this module knowing the allocator.
+#[cfg(feature = "bench")]
 pub fn run(heap_probe: fn() -> (usize, usize, usize)) -> Result<(), ShlosiloError> {
     let mut scratch = [0u8; REPORT_CAP];
     let mut w = BufWriter::new(&mut scratch);
@@ -156,6 +166,7 @@ pub fn run(heap_probe: fn() -> (usize, usize, usize)) -> Result<(), ShlosiloErro
     result
 }
 
+#[cfg(feature = "bench")]
 fn run_inner(
     w: &mut BufWriter<'_>,
     heap_probe: fn() -> (usize, usize, usize),

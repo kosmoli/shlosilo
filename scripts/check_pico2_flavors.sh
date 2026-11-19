@@ -39,7 +39,14 @@ CANARIES=(xmrseed trngdump trngrst trngprobe trngemb "fixed entropy set" "sessio
           trngraw trngrawout trngcheck trngtrace "[traw]" "[tchk]" "[ttr]" "[temp]" \
           "[cam] XCLK" "[cam] sensor id" "[cam] focus: " "[cam] scanzoom: zoom x" \
           "[cam] preview: " "[cam] PGM " "[cam] IN-PINS" \
-          "[cam] sensor = " "[cam] MT9V034")
+          "[cam] sensor = " "[cam] MT9V034" \
+          "[smoke] create_account ok" "[smoke] sign ok" "[smoke] heap used/free/peak")
+
+# Production-side strings: these must EXIST in the production image (second positive
+# control, A4-01). The bench flavor signs with the dice-fixture mnemonic when no session
+# exists; production must instead refuse, and "refuses" is only worth anything if the
+# refusal is really compiled in.
+PROD_REQUIRED=("[err] sign: no session")
 
 if ! command -v strings >/dev/null 2>&1; then
   echo "ERROR: strings (binutils) not found" >&2
@@ -56,6 +63,14 @@ for c in "${CANARIES[@]}"; do
   fi
 done
 echo "    clean: no bench-only commands in the production image"
+for c in "${PROD_REQUIRED[@]}"; do
+  if [[ "$PROD_STRINGS" != *"$c"* ]]; then
+    echo "ERROR: production pico2 image lacks the no-session refusal: $c" >&2
+    exit 1
+  fi
+done
+echo "    ok: production refuses to sign without a session"
+
 
 echo "==> bench build (--features bench)"
 (cd flux/pico2 && cargo build --release --features bench)
