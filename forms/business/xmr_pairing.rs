@@ -254,7 +254,17 @@ pub fn process_output_export<R: RngCore + CryptoRng>(
     out: &mut [u8],
     rng: &mut R,
 ) -> Result<OutputExportOutcome> {
-    process_output_export_with_records(view_sk, spend_sk, payload, ws, out, rng, &mut [], &mut 0)
+    process_output_export_with_records(
+        view_sk,
+        spend_sk,
+        payload,
+        ws,
+        out,
+        rng,
+        &mut [],
+        &mut 0,
+        None,
+    )
 }
 
 /// Records-retention face (tx2 wire fix): in addition to the response
@@ -277,6 +287,7 @@ pub fn process_output_export_with_records<R: RngCore + CryptoRng>(
     rng: &mut R,
     ki_out: &mut [crate::business::sign::WalletKiRecord],
     ki_written: &mut usize,
+    trace: crate::types::phase_trace::PhaseTrace,
 ) -> Result<OutputExportOutcome> {
     use zeroize::Zeroize as _;
     // The fused chain core: decrypt (signature first) → parse → pk1/pk2
@@ -293,6 +304,7 @@ pub fn process_output_export_with_records<R: RngCore + CryptoRng>(
         out,
         rng,
         ws.cn_scratch,
+        trace,
     )?;
     // forms wipe duty: the scratch staged the response wire records (public
     // material) — wipe regardless before the workspace leaves this function.
@@ -359,6 +371,7 @@ pub fn process_output_export_with_records<R: RngCore + CryptoRng>(
 /// (`KeySession::monero`) — the FFI layer calls this so plaintext key bytes
 /// never cross the boundary. `ki_out`/`ki_written` see
 /// [`process_output_export_with_records`].
+#[allow(clippy::too_many_arguments)] // caller-storage session face; the trace parameter is the ABI boundary's business
 pub fn process_output_export_session<R: RngCore + CryptoRng>(
     session: &KeySession,
     payload: &[u8],
@@ -367,6 +380,7 @@ pub fn process_output_export_session<R: RngCore + CryptoRng>(
     rng: &mut R,
     ki_out: &mut [crate::business::sign::WalletKiRecord],
     ki_written: &mut usize,
+    trace: crate::types::phase_trace::PhaseTrace,
 ) -> Result<OutputExportOutcome> {
     let keys = session.monero();
     process_output_export_with_records(
@@ -378,6 +392,7 @@ pub fn process_output_export_session<R: RngCore + CryptoRng>(
         rng,
         ki_out,
         ki_written,
+        trace,
     )
 }
 
@@ -630,6 +645,7 @@ pub(crate) mod tests {
             &mut rng_from(3),
             &mut [],
             &mut 0,
+            None,
         )
         .unwrap();
         let b = process_output_export(

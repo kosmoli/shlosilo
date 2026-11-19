@@ -286,6 +286,7 @@ fn pairing_records_are_wallet_fp_stamped() {
         &mut rng,
         &mut ki_out,
         &mut ki_written,
+        None,
     )
     .expect("pairing receive leg must succeed");
 

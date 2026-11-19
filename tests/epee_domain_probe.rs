@@ -269,6 +269,7 @@ fn run_variant(
             &mut rng,
             &mut [],
             &mut 0,
+            None,
         ) {
             Ok(o) => {
                 actual = o.written as core::ffi::c_uint;

@@ -243,6 +243,7 @@ fn pairing_accepts(plain: &[u8], view_sk: &[u8; 32], spend_sk: &[u8; 32]) -> boo
         &mut rng,
         &mut ki_out,
         &mut ki_written,
+        None,
     )
     .is_ok()
 }

@@ -17,14 +17,19 @@
 //! - `uint8_t shlosilo_crash_phase_get(void)` — last marked phase (0xFF when
 //!   none).
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
+// The ladder's numbers live in the leaf module `types::phase_trace` (the layer `chain` can
+// name without a reverse dependency). The C-facing names must stay **literals** here:
+// cbindgen only emits `#define` for literal values, and the forgebox host switches on
+// `CRASH_PHASE_*` from `shlosilo.h`. The compile-time assertions below make any drift from
+// the leaf module a build error instead of a silent second truth.
 /// No phase marked yet (mirrors the C `CRASH_PHASE_NONE`).
 pub const CRASH_PHASE_NONE: u8 = 0xFF;
 /// 3 = immediately before the per-output key-image loop.
 pub const CRASH_PHASE_PAIR_LOOP: u8 = 3;
-/// Fine ladder (2026-10-15): the device wedges somewhere in the pairing
-/// prologue; host runs it in 25 ms. These marks paint the death point.
+/// Fine ladder (2026-10-15): the device wedges somewhere in the pairing prologue; host runs
+/// it in 25 ms. These marks paint the death point.
 pub const CRASH_PHASE_DECRYPT_IN: u8 = 5;
 pub const CRASH_PHASE_SIG_VERIFY: u8 = 6;
 pub const CRASH_PHASE_SIG_OK: u8 = 10;
@@ -32,21 +37,37 @@ pub const CRASH_PHASE_CN_DONE: u8 = 7;
 pub const CRASH_PHASE_OWNERSHIP: u8 = 8;
 pub const CRASH_PHASE_PARSED: u8 = 9;
 
+const _: () = assert!(CRASH_PHASE_NONE == crate::types::phase_trace::PHASE_NONE);
+const _: () = assert!(CRASH_PHASE_PAIR_LOOP == crate::types::phase_trace::PHASE_PAIR_LOOP);
+const _: () = assert!(CRASH_PHASE_DECRYPT_IN == crate::types::phase_trace::PHASE_DECRYPT_IN);
+const _: () = assert!(CRASH_PHASE_SIG_VERIFY == crate::types::phase_trace::PHASE_SIG_VERIFY);
+const _: () = assert!(CRASH_PHASE_SIG_OK == crate::types::phase_trace::PHASE_SIG_OK);
+const _: () = assert!(CRASH_PHASE_CN_DONE == crate::types::phase_trace::PHASE_CN_DONE);
+const _: () = assert!(CRASH_PHASE_OWNERSHIP == crate::types::phase_trace::PHASE_OWNERSHIP);
+const _: () = assert!(CRASH_PHASE_PARSED == crate::types::phase_trace::PHASE_PARSED);
+
 /// C-side phase callback: `void hook(uint8_t phase)`.
 pub type CrashPhaseHookC = extern "C" fn(u8);
 
 static PHASE: AtomicU8 = AtomicU8::new(CRASH_PHASE_NONE);
 
-#[allow(static_mut_refs)]
-static mut HOOK: Option<CrashPhaseHookC> = None;
+/// No hook registered. `usize` because a C fn pointer is stored here as an integer: the slot
+/// must be atomically readable/writable without `static mut` (external audit 2026-11-19
+/// A2-10 — the crate forbids `static mut`, and this module was the leftover).
+const NO_HOOK: usize = 0;
+static HOOK: AtomicUsize = AtomicUsize::new(NO_HOOK);
 
 /// Mark a pairing phase. Updates the local atomic first (so `mark` stays
 /// observable even if the host hook re-enters), then forwards to the host.
 pub fn mark(phase: u8) {
     PHASE.store(phase, Ordering::SeqCst);
-    #[allow(static_mut_refs)]
-    let hook = unsafe { HOOK };
-    if let Some(f) = hook {
+    let raw = HOOK.load(Ordering::SeqCst);
+    if raw != NO_HOOK {
+        // SAFETY: the slot is only ever written by `shlosilo_crash_phase_set_hook`, which
+        // stores either `NO_HOOK` or a fn pointer widened to `usize`; `Option<extern "C"
+        // fn(u8)>` is null-pointer-optimized, so `Some(f)` is exactly `f as usize` with the
+        // non-null guarantee the C ABI contract states.
+        let f: CrashPhaseHookC = unsafe { core::mem::transmute::<usize, CrashPhaseHookC>(raw) };
         f(phase);
     }
 }
@@ -62,10 +83,12 @@ pub fn mark(phase: u8) {
 /// - `hook`, when non-NULL, must be a valid `extern "C" fn(u8)` for the whole time the crash-phase marker may call it (registering NULL unregisters the slot; the last registration wins).
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_crash_phase_set_hook(hook: Option<extern "C" fn(u8)>) {
-    #[allow(static_mut_refs)]
-    unsafe {
-        HOOK = hook;
-    }
+    // `Option<fn(..)>` is null-pointer-optimized: `Some(f) as usize` is non-zero, `None` is 0.
+    let raw = match hook {
+        Some(f) => f as usize,
+        None => NO_HOOK,
+    };
+    HOOK.store(raw, Ordering::SeqCst);
 }
 
 /// Last marked phase (0xFF = none). C-side marks that bypass `mark` live in
@@ -79,15 +102,15 @@ pub extern "C" fn shlosilo_crash_phase_get() -> u8 {
 mod tests {
     use super::*;
 
-    /// Shared sink for the single test below (the hook slot is `static mut`).
+    /// Shared sink for the single test below (the slot is a process-global registration).
     static SEEN: AtomicU8 = AtomicU8::new(0xAA);
 
     extern "C" fn record(phase: u8) {
         SEEN.store(phase, Ordering::SeqCst);
     }
 
-    /// Single test on purpose (mirrors T-04): the hook slot is `static mut`,
-    /// so parallel tests would race the registration.
+    /// Single test on purpose (mirrors T-04): the registration slot is process-global,
+    /// so two parallel tests would race each other's hook.
     #[test]
     fn phase_hook_marks_forwards_and_unregisters() {
         // fresh state

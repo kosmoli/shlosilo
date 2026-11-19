@@ -76,7 +76,7 @@ pub fn decrypt_export_payload(
     let mut scratch = zeroize::Zeroizing::new(alloc::vec![0u8; data.len()]);
     let mut cn_scratch = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
     let (pk1, pk2, n) =
-        decrypt_export_payload_into(data, magic, view_sk, &mut scratch, &mut cn_scratch)?;
+        decrypt_export_payload_into(data, magic, view_sk, &mut scratch, &mut cn_scratch, None)?;
     Ok((pk1, pk2, zeroize::Zeroizing::new(scratch[..n].to_vec())))
 }
 
@@ -90,12 +90,16 @@ pub fn decrypt_export_payload(
 /// `types::caps::SIGN_WS_CN_SCRATCH`, u128-aligned — see
 /// `unsigned_txset::chacha_key_from_view_sk`); it is secret-bearing and wiped
 /// by the CN core on every exit path.
+/// `trace` receives the crash-forensics phase ladder (see
+/// `types::phase_trace`); `None` = nobody is watching. It is a parameter, not a
+/// global, so this layer never depends on `ffi` (external audit 2026-11-19 A3a-18).
 pub fn decrypt_export_payload_into(
     data: &[u8],
     magic: &[u8],
     view_sk: &[u8; 32],
     scratch: &mut [u8],
     cn_scratch: &mut [u8],
+    trace: crate::types::phase_trace::PhaseTrace,
 ) -> Result<([u8; 32], [u8; 32], usize)> {
     use zeroize::Zeroize;
     if data.len() < magic.len() + NONCE_LEN + SIG_LEN {
@@ -115,7 +119,7 @@ pub fn decrypt_export_payload_into(
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
     let view_pub = (ED25519_BASEPOINT_TABLE * &v_scalar).compress().to_bytes();
     let msg_hash = keccak256::hash(raw_data)?;
-    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_SIG_VERIFY);
+    crate::types::phase_trace::mark(trace, crate::types::phase_trace::PHASE_SIG_VERIFY);
     if !check_monero_signature(&msg_hash, &view_pub, sig)? {
         // Signature failure is a distinct diagnostic class from a malformed
         // container (2026-10-11 split for on-device diagnosis): -40 vs -21.
@@ -123,14 +127,14 @@ pub fn decrypt_export_payload_into(
             crate::error::ShlosiloErrorKind::CryptoEd25519SignFailed,
         ));
     }
-    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_SIG_OK);
+    crate::types::phase_trace::mark(trace, crate::types::phase_trace::PHASE_SIG_OK);
 
     // 2. ChaCha20-Legacy decryption into the caller scratch
     // Z2.2 (2026-09-24): ChaCha key material zeroized on drop.
     // Zero-alloc (pairing): CN-V0 derives over the caller's `cn_scratch` —
     // same wiring as `unsigned_txset::chacha_key_from_view_sk`.
     let key = crate::chain::xmr::unsigned_txset::chacha_key_from_view_sk(view_sk, cn_scratch)?;
-    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_CN_DONE);
+    crate::types::phase_trace::mark(trace, crate::types::phase_trace::PHASE_CN_DONE);
     let mut cipher =
         chacha20::ChaCha20Legacy::new_from_slices(key.as_slice(), nonce).map_err(|_| err())?;
     let ct = &raw_data[NONCE_LEN..];
@@ -361,6 +365,7 @@ pub fn generate_key_image_export<R: RngCore + CryptoRng>(
         &mut out,
         rng,
         &mut cn_scratch,
+        None,
     )?;
     out.truncate(n);
     Ok(out)
@@ -386,6 +391,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     out: &mut [u8],
     rng: &mut R,
     cn_scratch: &mut [u8],
+    trace: crate::types::phase_trace::PhaseTrace,
 ) -> Result<(usize, u64)> {
     use crate::types::push::SinkCursor;
     use zeroize::Zeroize as _;
@@ -393,13 +399,14 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     // path (the foreign-pk / parse `?` below included).
     let scratch = ScratchWipe(scratch);
     // 1. Decrypt the OUTPUT_EXPORT payload into the scratch, validate pk1/pk2 ownership
-    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_DECRYPT_IN);
+    crate::types::phase_trace::mark(trace, crate::types::phase_trace::PHASE_DECRYPT_IN);
     let (pk1, pk2, req_len) = decrypt_export_payload_into(
         request_payload,
         OUTPUT_EXPORT_MAGIC,
         view_sk,
         scratch.0,
         cn_scratch,
+        trace,
     )?;
 
     // Secret-bearing scalar stack copies are Zeroizing so they are wiped on
@@ -411,7 +418,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     let v_scalar = Scalar::from_bytes_mod_order(*view_sk);
     let view_pub = (ED25519_BASEPOINT_TABLE * &v_scalar).compress().to_bytes();
 
-    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_OWNERSHIP);
+    crate::types::phase_trace::mark(trace, crate::types::phase_trace::PHASE_OWNERSHIP);
     // Ownership validation (keystone panics — we return an error code; a signer must not panic)
     // Kind reuse: `PsbtOwnershipMismatch` is the stable code for "ownership
     // binding failure" (-15) — here the XMR pk1/pk2 binding, distinct from a
@@ -423,7 +430,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     }
 
     // 2. Parse the outputs (Z2.3 C3b-1: details list into caller storage)
-    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_PARSED);
+    crate::types::phase_trace::mark(trace, crate::types::phase_trace::PHASE_PARSED);
     let details = ExportedTransferDetails::from_bytes(&scratch.0[..req_len], details_out)?;
     // request plaintext transient done with — wiped before anything else happens
     scratch.0.zeroize();
@@ -438,7 +445,7 @@ pub fn generate_key_image_export_into<R: RngCore + CryptoRng>(
     // Crash-forensics phase marker (3 = before the per-output loop): the
     // device blackbox needs this point because the heavy key-image work below
     // is where the pairing leg wedges. No-op without a registered host hook.
-    crate::ffi::crash_phase::mark(crate::ffi::crash_phase::CRASH_PHASE_PAIR_LOOP);
+    crate::types::phase_trace::mark(trace, crate::types::phase_trace::PHASE_PAIR_LOOP);
     for (i, detail) in details.details.iter().enumerate() {
         let rec = compute_key_image_with_signature(view_sk, &spend_sk_scalar, detail, rng)?;
         records_out[i] = rec;
@@ -555,6 +562,73 @@ mod tests {
         let sk_b = sk.to_bytes();
         let pk = (ED25519_BASEPOINT_TABLE * &sk).compress().to_bytes();
         (sk_b, pk, sk_b, pk) // (spend_sk, spend_pub, view_sk, view_pub)
+    }
+
+    /// A3a-18 (external audit 2026-11-19): the phase ladder reaches an observer passed as a
+    /// parameter, in the order the device blackbox expects — and a `None` trace is silent.
+    /// This is what replaced the 7 direct `ffi::crash_phase::mark` calls in this file.
+    #[test]
+    fn phase_trace_is_injected_and_ordered() {
+        use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+        static SEEN: AtomicU8 = AtomicU8::new(0xFF);
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+        fn observe(p: u8) {
+            SEEN.store(p, Ordering::SeqCst);
+            COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let (_, spend_pub, view_sk, view_pub) = make_keypair(1);
+        let mut rng = rng_from(7);
+        // Minimal OUTPUT_EXPORT request body: one output record's worth of bytes is enough —
+        // this test only asserts WHERE the ladder reports, not what the parse accepts.
+        let body = [1u8; 24];
+        let enc = encrypt_export_payload(
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &spend_pub,
+            &view_pub,
+            &body,
+            &mut rng,
+        )
+        .expect("encrypt");
+
+        // None trace: silent, no panic.
+        let mut scratch = alloc::vec![0u8; enc.len()];
+        let mut cn = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
+        let _ = decrypt_export_payload_into(
+            &enc,
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &mut scratch,
+            &mut cn,
+            None,
+        );
+        assert_eq!(
+            COUNT.load(Ordering::SeqCst),
+            0,
+            "None must not report phases"
+        );
+
+        // Injected trace: the ladder reaches the observer (signature-verify, then CN-done).
+        let mut scratch = alloc::vec![0u8; enc.len()];
+        let mut cn = alloc::vec![0u8; crate::types::caps::SIGN_WS_CN_SCRATCH];
+        let _ = decrypt_export_payload_into(
+            &enc,
+            OUTPUT_EXPORT_MAGIC,
+            &view_sk,
+            &mut scratch,
+            &mut cn,
+            Some(observe),
+        );
+        assert_eq!(
+            SEEN.load(Ordering::SeqCst),
+            crate::types::phase_trace::PHASE_CN_DONE,
+            "the last phase of a decrypt leg must reach the observer"
+        );
+        assert!(
+            COUNT.load(Ordering::SeqCst) >= 2,
+            "signature-verify and CN-done are both reported"
+        );
     }
 
     #[test]
@@ -706,6 +780,7 @@ mod tests {
                 &mut out2,
                 &mut rng2,
                 &mut cn2,
+                None,
             )
             .unwrap();
             // the e2e above used a seeded rng as well — same seed, same bytes
@@ -818,6 +893,7 @@ mod tests {
                 &mut out,
                 &mut rng,
                 &mut cn,
+                None,
             );
             assert!(r.is_err());
             scratch.iter().all(|&b| b == 0)
@@ -927,6 +1003,7 @@ mod tests {
             &view_sk,
             &mut scratch,
             &mut cn2,
+            None,
         )
         .unwrap();
         assert_eq!(pk1, spend_pub);

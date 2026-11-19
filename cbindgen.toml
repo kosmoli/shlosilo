@@ -114,6 +114,18 @@ include = [
 # Same-named constants across multiple mods (crate-internal implementation details, not needed on the C contract surface).
 # exclude resolves the conflicts (old behavior: the generator exits 0 but the output was incomplete / full of ERRORs).
 exclude = [
+  # The crash-phase ladder's canonical numbers live in `types::phase_trace` (a leaf module,
+  # so `forms/chain` can name them without depending on `ffi`). Only the C-facing
+  # `CRASH_PHASE_*` aliases belong on the ABI surface; exporting `PHASE_*` as well would put
+  # eight generic names into the host's C namespace for no reason.
+  "PHASE_NONE",
+  "PHASE_PAIR_LOOP",
+  "PHASE_DECRYPT_IN",
+  "PHASE_SIG_VERIFY",
+  "PHASE_SIG_OK",
+  "PHASE_CN_DONE",
+  "PHASE_OWNERSHIP",
+  "PHASE_PARSED",
   "REDEEM_SCRIPT",
   "WITNESS_SCRIPT",
   "BIP32_DERIVATION",

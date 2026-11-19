@@ -7,6 +7,7 @@
 pub mod caps;
 pub mod chain_kind;
 pub mod key_session;
+pub mod phase_trace;
 pub mod push;
 pub mod secret_bytes;
 pub mod secret_scalar;

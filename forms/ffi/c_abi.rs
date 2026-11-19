@@ -2413,6 +2413,8 @@ pub mod r3 {
                 .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?
             };
             let mut ki_written = 0usize;
+            // Crash forensics: the ABI layer owns the registered host hook; the chain layer
+            // only sees a plain fn pointer (external audit 2026-11-19 A3a-18).
             let outcome = crate::business::xmr_pairing::process_output_export_session(
                 session_ref,
                 payload_slice,
@@ -2421,6 +2423,7 @@ pub mod r3 {
                 &mut rng,
                 ki_slice,
                 &mut ki_written,
+                Some(crate::ffi::crash_phase::mark),
             )?;
             unsafe { write_actual_len(ki_records_actual, outcome.output_count) };
             Ok(outcome.written)

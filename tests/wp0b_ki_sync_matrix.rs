@@ -174,6 +174,7 @@ fn run_leg(plain: &[u8], seed: u64) -> (Vec<u8>, Vec<WalletKiRecord>) {
         &mut rng,
         &mut ki_out,
         &mut ki_written,
+        None,
     )
     .expect("pairing receive leg");
     (

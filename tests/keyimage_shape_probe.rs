@@ -246,6 +246,7 @@ fn run_chain(
         &mut out,
         &mut rng,
         &mut cn,
+        None,
     )
     .expect("chain run");
     out.truncate(n);

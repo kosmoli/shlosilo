@@ -741,6 +741,7 @@ fn run_chain(
         &mut out,
         &mut rng,
         &mut cn,
+        None,
     )
     .map_err(|e| format!("{e:?}"))?;
     let count = (n - (KEY_IMAGE_EXPORT_MAGIC.len() + 8 + 4 + 64 + 64)) / KEY_IMAGE_RECORD_LEN;
@@ -971,6 +972,7 @@ fn failing_case_offset_echo() {
             &mut out,
             &mut rng,
             &mut cn,
+            None,
         )
         .expect("pairing run");
         out[..n].to_vec()
