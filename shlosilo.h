@@ -1173,7 +1173,12 @@ int shlosilo_review_ffi(const char *type_name,
  * # Safety
  *
  * - `type_name` must be a NUL-terminated ASCII string with the NUL inside 65 readable bytes.
- * - `payload` must point to `payload_len` readable bytes (required; `(NULL, 0)` is rejected).
+ * - `payload` must point to `payload_len` readable bytes (required; `(NULL, 0)` is rejected) and
+ *   must stay readable AND unmodified until `shlosilo_ur_encode_free`: the encoder stores the
+ *   borrow and re-reads the payload on every later frame call, so a caller that frees or
+ *   reuses the buffer after this call gets a handle that emits garbage. (External audit
+ *   2026-11-19 A2-02: the contract only described `ws` up to free, while `payload` is
+ *   borrowed just as long.)
  * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_ur_encode_ws_len()`) and must stay at a stable address until `shlosilo_ur_encode_free`; it must not overlap `payload`.
  */
 struct UrMultipartEncoder *shlosilo_ur_encode_begin(const char *type_name,

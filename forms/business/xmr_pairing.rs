@@ -151,7 +151,10 @@ impl PairingWsLayout {
             a_r,
             core::mem::size_of::<([u8; 32], [u8; 64])>() * PAIRING_RECORDS_MAX,
         );
-        let total = align_up(off, 8);
+        // Trailing pad to the widest alignment plus the worst-case base shift: the length
+        // query must be a SUFFICIENT number, or a caller that allocates exactly `total`
+        // could fail to carve an unaligned buffer. (Same rule as `SignWsLayout`.)
+        let total = align_up(off, PAIRING_WS_BASE_ALIGN) + (PAIRING_WS_BASE_ALIGN - 1);
         PairingWsLayout {
             scratch,
             cn_scratch,
@@ -161,6 +164,16 @@ impl PairingWsLayout {
         }
     }
 }
+
+/// Alignment the workspace **base** must have. `PairingWsLayout` computes every offset as
+/// if the buffer started here, so the carve aligns the base up to it and `total` carries
+/// the worst-case slack.
+///
+/// External audit 2026-11-19 A2-03: the carve aligned only the *relative* offsets and
+/// accepted any base. A safe Rust caller passing `&mut raw[1..]` therefore got
+/// `&mut [ExportedTransferDetail]` — a type containing `u64` — at an odd address, which is
+/// undefined behaviour; the C entry's `# Safety` cannot constrain Rust callers at all.
+pub(crate) const PAIRING_WS_BASE_ALIGN: usize = 16;
 
 /// Total caller-workspace bytes required by [`carve_pairing_ws`].
 pub fn pairing_ws_len() -> usize {
@@ -181,7 +194,14 @@ pub fn carve_pairing_ws(buf: &mut [u8]) -> Option<PairingWs<'_>> {
         return None;
     }
     buf[..l.total].fill(0);
-    let base: *mut u8 = buf.as_mut_ptr();
+    // Align the base up before any offset is applied: `total` carries the worst-case
+    // shift, so the last span still ends inside `buf` (see `PAIRING_WS_BASE_ALIGN`).
+    let base: *mut u8 = {
+        let raw = buf.as_mut_ptr() as usize;
+        let aligned = align_up(raw, PAIRING_WS_BASE_ALIGN);
+        debug_assert!(aligned + l.total - (PAIRING_WS_BASE_ALIGN - 1) <= raw + buf.len());
+        aligned as *mut u8
+    };
     // SAFETY: offsets are disjoint by construction (the same computation
     // `pairing_ws_len` reports); every element is initialized below before the
     // slices are handed out; all spans derive from one base pointer.
@@ -368,6 +388,42 @@ pub const REQUEST_MAGIC: &[u8] = OUTPUT_EXPORT_MAGIC;
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A2-03 (external audit 2026-11-19): the workspace base is aligned up before any
+    /// offset is applied. A caller handing in a deliberately misaligned sub-slice
+    /// (`&mut raw[1..]`) must still get 8/16-aligned typed spans — before the fix the
+    /// `u64`-bearing `ExportedTransferDetail` pool landed at an odd address (UB).
+    #[test]
+    fn carve_aligns_base_for_misaligned_buffer() {
+        let total = pairing_ws_len();
+        // Deterministically hand the carve a buffer whose address is 1 mod 16.
+        let mut raw = alloc::vec![0u8; total + PAIRING_WS_BASE_ALIGN + 1];
+        let start = {
+            let a = raw.as_ptr() as usize;
+            ((a + PAIRING_WS_BASE_ALIGN - 1) & !(PAIRING_WS_BASE_ALIGN - 1)) + 1 - a
+        };
+        let buf = &mut raw[start..start + total];
+        assert_eq!(
+            buf.as_ptr() as usize % PAIRING_WS_BASE_ALIGN,
+            1,
+            "the fixture must really be misaligned"
+        );
+        let ws = carve_pairing_ws(buf).expect("carve must succeed for a misaligned base");
+        assert_eq!(
+            ws.details.as_ptr() as usize % core::mem::align_of::<ExportedTransferDetail>(),
+            0
+        );
+        assert_eq!(ws.records.as_ptr() as usize % 8, 0);
+        assert_eq!(
+            ws.cn_scratch.as_ptr() as usize % core::mem::align_of::<u128>(),
+            0
+        );
+        // The length query stays sufficient: a buffer of exactly `total` bytes also carves.
+        let mut exact = alloc::vec![0u8; total];
+        assert!(carve_pairing_ws(&mut exact).is_some());
+        // ... and one byte short still fails as a whole (never partially succeeds).
+        assert!(carve_pairing_ws(&mut exact[..total - 1]).is_none());
+    }
     use crate::chain::xmr::key_image_export::{
         decrypt_export_payload, encrypt_export_payload_into,
     };

@@ -29,14 +29,24 @@ use crate::types::key_session::KeySession;
 /// device strings).
 const EXPORT_BUF_MAX: usize = 4096;
 
-fn write_actual_len(p: *mut c_uint, v: usize) {
+/// # Safety
+///
+/// `p` must be null or writable for one `c_uint`.
+unsafe fn write_actual_len(p: *mut c_uint, v: usize) {
     if !p.is_null() {
         unsafe { *p = v as c_uint }
     }
 }
 
 /// Optional NUL-terminated ASCII parameter → `&str` (`None` for NULL).
-fn optional_cstr<'a>(p: *const c_char, max: usize) -> Option<&'a str> {
+///
+/// # Safety
+///
+/// `p` must be null or point to a NUL-terminated ASCII string whose NUL is inside `max`
+/// readable bytes, and the string must stay valid/unmodified for `'a`. This is the same
+/// obligation class as [`checked_slice`](crate::ffi::c_abi::checked_slice): scanning for
+/// a NUL bounds the *read*, it does not prove liveness or alignment of the buffer.
+unsafe fn optional_cstr<'a>(p: *const c_char, max: usize) -> Option<&'a str> {
     if p.is_null() {
         return None;
     }
@@ -122,7 +132,7 @@ pub unsafe extern "C" fn shlosilo_export_format_payload_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
-    write_actual_len(actual_len, 0);
+    unsafe { write_actual_len(actual_len, 0) };
     let format = match export_format::format_at(format_id as usize) {
         Some(f) => f,
         None => {
@@ -153,7 +163,7 @@ pub unsafe extern "C" fn shlosilo_export_format_payload_ffi(
     // F-1: the required capacity is a fixed budget; building the slice from the
     // caller's raw `c_uint` length would break the `from_raw_parts` contract on
     // 32-bit targets for an absurd claim.
-    let out = match checked_slice_mut(output_buf, EXPORT_BUF_MAX, EXPORT_BUF_MAX) {
+    let out = match unsafe { checked_slice_mut(output_buf, EXPORT_BUF_MAX, EXPORT_BUF_MAX) } {
         Some(o) => o,
         None => {
             return to_ffi_code(&crate::error::ShlosiloError::new(
@@ -162,20 +172,20 @@ pub unsafe extern "C" fn shlosilo_export_format_payload_ffi(
         }
     };
     let labels = ExportLabels {
-        label: optional_cstr(label, 64),
-        key_name: optional_cstr(device_type, 64),
-        device: optional_cstr(device_type, 64),
-        device_id: optional_cstr(device_id, 64),
-        device_version: optional_cstr(device_version, 64),
+        label: unsafe { optional_cstr(label, 64) },
+        key_name: unsafe { optional_cstr(device_type, 64) },
+        device: unsafe { optional_cstr(device_type, 64) },
+        device_id: unsafe { optional_cstr(device_id, 64) },
+        device_version: unsafe { optional_cstr(device_version, 64) },
         restore_height: u64::from(restore_height),
     };
     match export_format::payload(format, session.seed().expose(), net, &labels, out) {
         Ok(n) => {
-            write_actual_len(actual_len, n);
+            unsafe { write_actual_len(actual_len, n) };
             OK
         }
         Err(e) => {
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             to_ffi_code(&e)
         }
     }
@@ -211,7 +221,7 @@ pub unsafe extern "C" fn shlosilo_export_format_session_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
-    write_actual_len(actual_len, 0);
+    unsafe { write_actual_len(actual_len, 0) };
 
     let format = match export_format::format_at(format_id as usize) {
         Some(f) => f,
@@ -249,7 +259,7 @@ pub unsafe extern "C" fn shlosilo_export_format_session_ffi(
     // F-1: the required capacity is a fixed budget; building the slice from the
     // caller's raw `c_uint` length would break the `from_raw_parts` contract on
     // 32-bit targets for an absurd claim.
-    let out = match checked_slice_mut(output_buf, EXPORT_BUF_MAX, EXPORT_BUF_MAX) {
+    let out = match unsafe { checked_slice_mut(output_buf, EXPORT_BUF_MAX, EXPORT_BUF_MAX) } {
         Some(o) => o,
         None => {
             return to_ffi_code(&crate::error::ShlosiloError::new(
@@ -259,21 +269,21 @@ pub unsafe extern "C" fn shlosilo_export_format_session_ffi(
     };
 
     let labels = ExportLabels {
-        label: optional_cstr(label, 64),
-        key_name: optional_cstr(device_type, 64),
-        device: optional_cstr(device_type, 64),
-        device_id: optional_cstr(device_id, 64),
-        device_version: optional_cstr(device_version, 64),
+        label: unsafe { optional_cstr(label, 64) },
+        key_name: unsafe { optional_cstr(device_type, 64) },
+        device: unsafe { optional_cstr(device_type, 64) },
+        device_id: unsafe { optional_cstr(device_id, 64) },
+        device_version: unsafe { optional_cstr(device_version, 64) },
         restore_height: u64::from(restore_height),
     };
 
     match export_format::build(format, session.seed().expose(), net, &labels, out) {
         Ok(n) => {
-            write_actual_len(actual_len, n);
+            unsafe { write_actual_len(actual_len, n) };
             OK
         }
         Err(e) => {
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             to_ffi_code(&e)
         }
     }

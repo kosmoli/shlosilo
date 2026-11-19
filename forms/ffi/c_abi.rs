@@ -77,7 +77,12 @@ const MNEMONIC_BUF_MAX_LEN: usize = crate::entropy::mnemonic::MAX_MNEMONIC_WORDS
 const PATH_ELEMS_MAX: usize = crate::derivation::path::MAX_DEPTH;
 
 /// Writes the actual length back to the out-param; null pointer allowed (the caller may only query status)
-fn write_actual_len(ptr: *mut c_uint, len: usize) {
+///
+/// # Safety
+///
+/// A non-null `ptr` must be writable for one `c_uint` (or `(NULL, …)` = "caller does not
+/// want the length"). Null is tolerated because the out-param is genuinely optional here.
+unsafe fn write_actual_len(ptr: *mut c_uint, len: usize) {
     if !ptr.is_null() {
         unsafe {
             *ptr = len as c_uint;
@@ -94,7 +99,23 @@ fn write_actual_len(ptr: *mut c_uint, len: usize) {
 ///    on 32-bit Thumb, `u32::MAX` for `u16` elements already exceeds the address space; undetectable on a 64-bit host, UB on real hardware)
 ///
 /// Only when all conditions pass do we enter unsafe construction. Callers must not "validate later in business code" to patch up the proof.
-pub(crate) fn checked_slice<'a, T>(
+///
+/// # Safety
+///
+/// Everything this function *checks* is a length/null/address-space question. It cannot
+/// check the rest of the `from_raw_parts` contract — the caller must also guarantee:
+///
+/// - `p` is valid for reads of `len` elements for the whole lifetime `'a` (here: until the
+///   entry returns, or until the handle carrying the borrow is freed);
+/// - the memory is initialized as `T`;
+/// - `p` is properly aligned for `T`;
+/// - no other reference (alias) mutates or observes the same memory during `'a`.
+///
+/// External audit 2026-11-19 A2-04: this was a safe `fn`, so any safe code in the crate
+/// could take a raw pointer and mint a `&[T]`/`&mut [T]` of a lifetime it picks. Length
+/// checks do not prove liveness, alignment, initialization or exclusivity, so the
+/// obligation has to live at the call site — which for the C ABI is the entry's `# Safety`.
+pub(crate) unsafe fn checked_slice<'a, T>(
     p: *const T,
     len: usize,
     max_len: usize,
@@ -126,7 +147,12 @@ pub(crate) fn checked_slice<'a, T>(
 /// Audit #5 P0-03: mutable-output version of `checked_slice` (output_buf / frame_buf etc.).
 /// Extra out-param requirement: len (buffer capacity) is likewise bound by the business cap, preventing a caller from
 /// declaring a huge capacity and causing an out-of-bounds write on the Rust side.
-pub(crate) fn checked_slice_mut<'a, T>(
+/// # Safety
+///
+/// Same obligations as [`checked_slice`], plus exclusive access: `p` must be the only
+/// handle to that memory for `'a` (the mutable version hands out a `&mut`, so a caller
+/// that also keeps a live `&` to the same bytes creates aliasing UB).
+pub(crate) unsafe fn checked_slice_mut<'a, T>(
     p: *mut T,
     len: usize,
     max_len: usize,
@@ -149,13 +175,23 @@ pub(crate) fn checked_slice_mut<'a, T>(
 
 /// P0-02: optional inputs (passphrase / entropy) — `(NULL,0)` allowed, everything else goes through `checked_slice`.
 /// Budget is passed by the caller (passphrase=PASSPHRASE_MAX_LEN / entropy=the corresponding cap); no longer relies on comments as a backstop.
-fn optional_bytes_in(p: *const u8, len: usize, max_len: usize) -> Option<&'static [u8]> {
-    checked_slice(p, len, max_len, true)
+///
+/// # Safety
+///
+/// `(p, len)` must satisfy the [`checked_slice`] contract for `'static` — for the legacy
+/// entries that is "readable for the duration of the call".
+unsafe fn optional_bytes_in(p: *const u8, len: usize, max_len: usize) -> Option<&'static [u8]> {
+    unsafe { checked_slice(p, len, max_len, true) }
 }
 
 /// P0-02: required inputs — null / over-budget / beyond address space are all rejected.
-fn required_bytes_in(p: *const u8, len: usize, max_len: usize) -> Option<&'static [u8]> {
-    checked_slice(p, len, max_len, false)
+///
+/// # Safety
+///
+/// Same as [`optional_bytes_in`], except `(NULL, …)` is always rejected rather than
+/// meaning "no such parameter".
+unsafe fn required_bytes_in(p: *const u8, len: usize, max_len: usize) -> Option<&'static [u8]> {
+    unsafe { checked_slice(p, len, max_len, false) }
 }
 
 /// P0-02: safe read of c_int count parameters — negatives are always rejected, never zero-extended via `as usize`.
@@ -191,12 +227,12 @@ pub unsafe extern "C" fn shlosilo_sign_ffi(
     ws: *mut u8,
     ws_len: c_uint,
 ) -> c_int {
-    write_actual_len(actual_len, 0); // P0-02 #4: prologue zeroes the out-param (also covers the null early-return)
-                                     // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
-                                     // reports the workspace requirement and returns before input parsing, key
-                                     // derivation, or any RNG use; no output side effects (output_buf untouched).
+    unsafe { write_actual_len(actual_len, 0) }; // P0-02 #4: prologue zeroes the out-param (also covers the null early-return)
+                                                // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
+                                                // reports the workspace requirement and returns before input parsing, key
+                                                // derivation, or any RNG use; no output side effects (output_buf untouched).
     if ws.is_null() {
-        write_actual_len(actual_len, shlosilo_sign_ws_len() as usize);
+        unsafe { write_actual_len(actual_len, shlosilo_sign_ws_len() as usize) };
         return OK;
     }
     // Capacity is validated BEFORE execution; under-capacity reports the
@@ -204,7 +240,7 @@ pub unsafe extern "C" fn shlosilo_sign_ffi(
     // zero-on-failure rule — the caller needs the number to resize).
     let ws_need = shlosilo_sign_ws_len() as usize;
     if (ws_len as usize) < ws_need {
-        write_actual_len(actual_len, ws_need);
+        unsafe { write_actual_len(actual_len, ws_need) };
         return to_ffi_code(&ShlosiloError::with_context(
             ShlosiloErrorKind::BufferTooSmall,
             crate::error::ErrorContext::RequiredLength(ws_need),
@@ -221,26 +257,30 @@ pub unsafe extern "C" fn shlosilo_sign_ffi(
     };
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
         // P0-03: mnemonic goes through checked_slice (u16 elements, budget 24 = whitelist cap)
-        let mnem_slice = checked_slice(mnemonic_indices, word_count as usize, 24, false)
+        let mnem_slice = unsafe { checked_slice(mnemonic_indices, word_count as usize, 24, false) }
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         if ur_payload_len as usize > LEGACY_PSBT_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
         // P0-03: payload goes through checked_slice (budget LEGACY_PSBT_MAX_LEN=2048, validated before allocation)
-        let payload_slice = checked_slice(
-            ur_payload,
-            ur_payload_len as usize,
-            LEGACY_PSBT_MAX_LEN,
-            false,
-        )
+        let payload_slice = unsafe {
+            checked_slice(
+                ur_payload,
+                ur_payload_len as usize,
+                LEGACY_PSBT_MAX_LEN,
+                false,
+            )
+        }
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         // P0-03: output buffer goes through checked_slice_mut (budget SIGN_OUTPUT_BUF_MAX_LEN, guards against over-declared capacity)
-        let out_slice =
+        let out_slice = unsafe {
             checked_slice_mut(output_buf, output_buf_len as usize, SIGN_OUTPUT_BUF_MAX_LEN)
-                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+        }
+        .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         // P0-02 #2: (NULL, len>0) rejected — a wrong passphrase pointer must not silently become an empty passphrase
-        let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN)
-            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+        let pass_slice =
+            unsafe { optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN) }
+                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         if pass_slice.len() > PASSPHRASE_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
@@ -279,16 +319,16 @@ pub unsafe extern "C" fn shlosilo_sign_ffi(
 
     match result {
         Ok(Ok(length)) => {
-            write_actual_len(actual_len, length);
+            unsafe { write_actual_len(actual_len, length) };
             OK
         }
         Ok(Err(e)) => {
             // R2: failure path zeroes actual_len — the caller must never read a stale value
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             to_ffi_code(&e)
         }
         Err(_) => {
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             ERR_PANIC
         }
     }
@@ -373,10 +413,11 @@ pub unsafe extern "C" fn shlosilo_seed_qr_probe_ffi(data: *const u8, data_len: c
     // digits). Over-budget = invalid scan input, same policy as every other
     // FFI entry's over-cap input (EncodingError).
     const SCAN_PAYLOAD_MAX_LEN: usize = 4096;
-    let payload = match checked_slice(data, data_len as usize, SCAN_PAYLOAD_MAX_LEN, false) {
-        Some(s) => s,
-        None => return to_ffi_code(&err(ShlosiloErrorKind::EncodingInvalidFormat)),
-    };
+    let payload =
+        match unsafe { checked_slice(data, data_len as usize, SCAN_PAYLOAD_MAX_LEN, false) } {
+            Some(s) => s,
+            None => return to_ffi_code(&err(ShlosiloErrorKind::EncodingInvalidFormat)),
+        };
     match classify(payload) {
         SeedQrClass::NotSeed => 0,
         // classify only answers Standard for 48|96 bytes and Compact for
@@ -456,7 +497,7 @@ pub unsafe extern "C" fn shlosilo_seed_qr_encode_ffi(
     actual_len: *mut c_uint,
 ) -> c_int {
     use crate::entropy::seed_qr::{encode_compact_into, encode_standard_into, STANDARD_MAX_LEN};
-    write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+    unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
     if entropy.is_null() || out_buf.is_null() {
         return ERR_NULL_POINTER;
     }
@@ -464,7 +505,7 @@ pub unsafe extern "C" fn shlosilo_seed_qr_encode_ffi(
         // Entropy budget: 32 bytes is the 24-word plate cap; the steel-plate
         // family is EXACTLY 16/32 (BIP-39 proper also has 15/18/21 words —
         // those have no plate representation and are refused here).
-        let ent = checked_slice(entropy, entropy_len as usize, 32, false).ok_or(
+        let ent = (unsafe { checked_slice(entropy, entropy_len as usize, 32, false) }).ok_or(
             ShlosiloError::new(ShlosiloErrorKind::MnemonicInvalidEntropyLength),
         )?;
         if ent.len() != 16 && ent.len() != 32 {
@@ -472,7 +513,7 @@ pub unsafe extern "C" fn shlosilo_seed_qr_encode_ffi(
                 ShlosiloErrorKind::MnemonicInvalidEntropyLength,
             ));
         }
-        let out = checked_slice_mut(out_buf, out_buf_len as usize, STANDARD_MAX_LEN)
+        let out = unsafe { checked_slice_mut(out_buf, out_buf_len as usize, STANDARD_MAX_LEN) }
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         // Full validation on the way out too (BIP-39 checksum included):
         // a plate export always carries a scan-importable wallet.
@@ -485,15 +526,15 @@ pub unsafe extern "C" fn shlosilo_seed_qr_encode_ffi(
     });
     match result {
         Ok(Ok(length)) => {
-            write_actual_len(actual_len, length);
+            unsafe { write_actual_len(actual_len, length) };
             OK
         }
         Ok(Err(e)) => {
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             to_ffi_code(&e)
         }
         Err(_) => {
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             ERR_PANIC
         }
     }
@@ -535,12 +576,12 @@ pub unsafe extern "C" fn shlosilo_sign_ur_ffi(
     ws: *mut u8,
     ws_len: c_uint,
 ) -> c_int {
-    write_actual_len(actual_len, 0); // P0-02 #4: prologue zeroes the out-param
-                                     // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
-                                     // reports the workspace requirement and returns before input parsing, key
-                                     // derivation, or any RNG use; no output side effects (output_buf untouched).
+    unsafe { write_actual_len(actual_len, 0) }; // P0-02 #4: prologue zeroes the out-param
+                                                // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
+                                                // reports the workspace requirement and returns before input parsing, key
+                                                // derivation, or any RNG use; no output side effects (output_buf untouched).
     if ws.is_null() {
-        write_actual_len(actual_len, shlosilo_sign_ws_len() as usize);
+        unsafe { write_actual_len(actual_len, shlosilo_sign_ws_len() as usize) };
         return OK;
     }
     // Capacity is validated BEFORE execution; under-capacity reports the
@@ -548,7 +589,7 @@ pub unsafe extern "C" fn shlosilo_sign_ur_ffi(
     // zero-on-failure rule — the caller needs the number to resize).
     let ws_need = shlosilo_sign_ws_len() as usize;
     if (ws_len as usize) < ws_need {
-        write_actual_len(actual_len, ws_need);
+        unsafe { write_actual_len(actual_len, ws_need) };
         return to_ffi_code(&ShlosiloError::with_context(
             ShlosiloErrorKind::BufferTooSmall,
             crate::error::ErrorContext::RequiredLength(ws_need),
@@ -574,7 +615,7 @@ pub unsafe extern "C" fn shlosilo_sign_ur_ffi(
                 }
             }
         }
-        let uri_slice = checked_slice(uri.cast::<u8>(), len, 4096, false)
+        let uri_slice = unsafe { checked_slice(uri.cast::<u8>(), len, 4096, false) }
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
         let uri_str = core::str::from_utf8(uri_slice)
             .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -586,23 +627,27 @@ pub unsafe extern "C" fn shlosilo_sign_ur_ffi(
 
         // §B.5 entropy injection (NULL → empty slice; the XMR branch does an internal ≥16B misuse guard)
         // P0-02 #2: (NULL, len>0) rejected
-        let entropy_slice = optional_bytes_in(
-            entropy_ptr,
-            entropy_len as usize,
-            crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-        )
+        let entropy_slice = unsafe {
+            optional_bytes_in(
+                entropy_ptr,
+                entropy_len as usize,
+                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+            )
+        }
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
 
         // P0-03: mnemonic goes through checked_slice
-        let mnem_slice = checked_slice(mnemonic_indices, word_count as usize, 24, false)
+        let mnem_slice = unsafe { checked_slice(mnemonic_indices, word_count as usize, 24, false) }
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         // P0-03: output buffer goes through checked_slice_mut (budget SIGN_OUTPUT_BUF_MAX_LEN)
-        let out_slice =
+        let out_slice = unsafe {
             checked_slice_mut(output_buf, output_buf_len as usize, SIGN_OUTPUT_BUF_MAX_LEN)
-                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+        }
+        .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         // P0-02 #2: (NULL, len>0) rejected
-        let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN)
-            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+        let pass_slice =
+            unsafe { optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN) }
+                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         if pass_slice.len() > PASSPHRASE_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
@@ -643,16 +688,16 @@ pub unsafe extern "C" fn shlosilo_sign_ur_ffi(
 
     match result {
         Ok(Ok(length)) => {
-            write_actual_len(actual_len, length);
+            unsafe { write_actual_len(actual_len, length) };
             OK
         }
         Ok(Err(e)) => {
             // R2: failure path zeroes actual_len — the caller must never read a stale value
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             to_ffi_code(&e)
         }
         Err(_) => {
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             ERR_PANIC
         }
     }
@@ -687,7 +732,7 @@ pub unsafe extern "C" fn shlosilo_export_readonly_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
-    write_actual_len(actual_len, 0); // P0-02 #4: prologue zeroes the out-param
+    unsafe { write_actual_len(actual_len, 0) }; // P0-02 #4: prologue zeroes the out-param
     if mnemonic_indices.is_null() || path_elems.is_null() || output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
@@ -700,26 +745,30 @@ pub unsafe extern "C" fn shlosilo_export_readonly_ffi(
     };
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
         // P0-03: mnemonic goes through checked_slice
-        let mnem_slice = checked_slice(mnemonic_indices, word_count as usize, 24, false)
+        let mnem_slice = unsafe { checked_slice(mnemonic_indices, word_count as usize, 24, false) }
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         // P0-03: path_elems goes through checked_slice (u32 elements, budget MAX_DEPTH=16 — the direct path of the audit finding)
-        let elem_slice = checked_slice(path_elems, path_elem_count as usize, PATH_ELEMS_MAX, false)
-            .ok_or(ShlosiloError::new(
+        let elem_slice =
+            unsafe { checked_slice(path_elems, path_elem_count as usize, PATH_ELEMS_MAX, false) }
+                .ok_or(ShlosiloError::new(
                 ShlosiloErrorKind::DerivationPathInvalidSyntax,
             ))?;
         let path = DerivationPath::from_flat(elem_slice.iter().copied())
             .map_err(|_| err(ShlosiloErrorKind::DerivationPathInvalidSyntax))?;
 
         // P0-03: output buffer goes through checked_slice_mut (budget EXPORT_OUTPUT_BUF_MAX_LEN)
-        let out_slice = checked_slice_mut(
-            output_buf,
-            output_buf_len as usize,
-            EXPORT_OUTPUT_BUF_MAX_LEN,
-        )
+        let out_slice = unsafe {
+            checked_slice_mut(
+                output_buf,
+                output_buf_len as usize,
+                EXPORT_OUTPUT_BUF_MAX_LEN,
+            )
+        }
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         // P0-02 #2: (NULL, len>0) rejected
-        let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN)
-            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+        let pass_slice =
+            unsafe { optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN) }
+                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         if pass_slice.len() > PASSPHRASE_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
@@ -757,16 +806,16 @@ pub unsafe extern "C" fn shlosilo_export_readonly_ffi(
 
     match result {
         Ok(Ok(length)) => {
-            write_actual_len(actual_len, length);
+            unsafe { write_actual_len(actual_len, length) };
             OK
         }
         Ok(Err(e)) => {
             // R2: failure path zeroes actual_len — the caller must never read a stale value
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             to_ffi_code(&e)
         }
         Err(_) => {
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             ERR_PANIC
         }
     }
@@ -802,19 +851,23 @@ pub unsafe extern "C" fn shlosilo_create_account_ffi(
             return Err(err(ShlosiloErrorKind::DiceRollsInvalidCount));
         }
         // P0-03: rolls go through checked_slice (budget ROLLS_MAX_COUNT)
-        let rolls_slice = checked_slice(rolls, rolls_count as usize, ROLLS_MAX_COUNT, false)
-            .ok_or(ShlosiloError::new(ShlosiloErrorKind::DiceRollsInvalidCount))?;
+        let rolls_slice =
+            unsafe { checked_slice(rolls, rolls_count as usize, ROLLS_MAX_COUNT, false) }
+                .ok_or(ShlosiloError::new(ShlosiloErrorKind::DiceRollsInvalidCount))?;
         // SAFETY: mnemonic_buf is non-null (excluded in the prologue)
         // P0-03: mnemonic output goes through checked_slice_mut (budget 48B)
-        let mnemonic_slice = checked_slice_mut(
-            mnemonic_buf,
-            mnemonic_buf_len as usize,
-            MNEMONIC_BUF_MAX_LEN,
-        )
+        let mnemonic_slice = unsafe {
+            checked_slice_mut(
+                mnemonic_buf,
+                mnemonic_buf_len as usize,
+                MNEMONIC_BUF_MAX_LEN,
+            )
+        }
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         // P0-02 #2: (NULL, len>0) rejected
-        let pass_slice = optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN)
-            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+        let pass_slice =
+            unsafe { optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN) }
+                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         if pass_slice.len() > PASSPHRASE_MAX_LEN {
             return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
         }
@@ -856,12 +909,12 @@ pub unsafe extern "C" fn shlosilo_supported_networks_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
-    write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+    unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
     if output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-        let out_slice = checked_slice_mut(output_buf, output_buf_len as usize, 256)
+        let out_slice = unsafe { checked_slice_mut(output_buf, output_buf_len as usize, 256) }
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         // Gate4 #1: the real matrix — only list networks the business entries can actually complete:
         // BTC crypto-psbt is mainnet only (check_network rejects the rest); ETH mainnet/sepolia/goerli;
@@ -882,7 +935,7 @@ pub unsafe extern "C" fn shlosilo_supported_networks_ffi(
 
     match result {
         Ok(Ok(n)) => {
-            write_actual_len(actual_len, n);
+            unsafe { write_actual_len(actual_len, n) };
             OK
         }
         Ok(Err(e)) => to_ffi_code(&e),
@@ -902,12 +955,12 @@ pub unsafe extern "C" fn shlosilo_supported_protocols_ffi(
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
 ) -> c_int {
-    write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+    unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
     if output_buf.is_null() {
         return ERR_NULL_POINTER;
     }
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
-        let out_slice = checked_slice_mut(output_buf, output_buf_len as usize, 256)
+        let out_slice = unsafe { checked_slice_mut(output_buf, output_buf_len as usize, 256) }
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         // Gate4 #1 (re-reviewed 2026-09-01): capability may only claim items the business entries can actually complete.
         // export_readonly only implements CryptoHdKey (and mainnet only),
@@ -922,7 +975,7 @@ pub unsafe extern "C" fn shlosilo_supported_protocols_ffi(
 
     match result {
         Ok(Ok(n)) => {
-            write_actual_len(actual_len, n);
+            unsafe { write_actual_len(actual_len, n) };
             OK
         }
         Ok(Err(e)) => to_ffi_code(&e),
@@ -964,7 +1017,12 @@ pub mod r3 {
     /// # Safety
     ///
     /// - `type_name` must be a NUL-terminated ASCII string with the NUL inside 65 readable bytes.
-    /// - `payload` must point to `payload_len` readable bytes (required; `(NULL, 0)` is rejected).
+    /// - `payload` must point to `payload_len` readable bytes (required; `(NULL, 0)` is rejected) and
+    ///   must stay readable AND unmodified until `shlosilo_ur_encode_free`: the encoder stores the
+    ///   borrow and re-reads the payload on every later frame call, so a caller that frees or
+    ///   reuses the buffer after this call gets a handle that emits garbage. (External audit
+    ///   2026-11-19 A2-02: the contract only described `ws` up to free, while `payload` is
+    ///   borrowed just as long.)
     /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_ur_encode_ws_len()`) and must stay at a stable address until `shlosilo_ur_encode_free`; it must not overlap `payload`.
     #[no_mangle]
     pub unsafe extern "C" fn shlosilo_ur_encode_begin(
@@ -995,14 +1053,16 @@ pub mod r3 {
                     }
                 }
             }
-            let tslice = checked_slice(type_name.cast::<u8>(), tlen, 64, false)?;
+            let tslice = (unsafe { checked_slice(type_name.cast::<u8>(), tlen, 64, false) })?;
             let tname = core::str::from_utf8(tslice).ok()?;
             // P0-02 #2: payload is required — null is always rejected (even (NULL,0) is not allowed; encoding an empty payload is meaningless)
-            let pslice = required_bytes_in(
-                payload,
-                payload_len as usize,
-                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-            )?;
+            let pslice = (unsafe {
+                required_bytes_in(
+                    payload,
+                    payload_len as usize,
+                    crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+                )
+            })?;
             let enc = UrMultipartEncoder::new(tname, pslice, max_fragment_len as usize).ok()?;
             // SAFETY: ws_len >= ur_encode_ws_len() checked above; the workspace
             // stays at a stable address until shlosilo_ur_encode_free.
@@ -1035,14 +1095,14 @@ pub mod r3 {
         frame_buf_len: c_uint,
         actual_len: *mut c_uint,
     ) -> c_int {
-        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+        unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
 
         if handle.is_null() || frame_buf.is_null() {
             return ERR_NULL_POINTER;
         }
         if frame_buf_len < FRAME_BUF_MAX_LEN as c_uint {
             // L3 must supply a large-enough buffer
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             return ERR_BUFFER_TOO_SMALL;
         }
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
@@ -1053,7 +1113,7 @@ pub mod r3 {
                                            // any slice is built, so a bogus `frame_buf_len` cannot violate the
                                            // `from_raw_parts` contract (a `c_uint` length exceeds isize::MAX on 32-bit).
             let cap = (frame_buf_len as usize).min(FRAME_BUF_MAX_LEN);
-            let out = checked_slice_mut(frame_buf, cap, FRAME_BUF_MAX_LEN)
+            let out = unsafe { checked_slice_mut(frame_buf, cap, FRAME_BUF_MAX_LEN) }
                 .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
             let n = enc.next_frame_into(&mut scratch, &mut out[..cap - 1])?;
             out[n] = 0;
@@ -1061,15 +1121,15 @@ pub mod r3 {
         });
         match result {
             Ok(Ok(n)) => {
-                write_actual_len(actual_len, n);
+                unsafe { write_actual_len(actual_len, n) };
                 OK
             }
             Ok(Err(e)) => {
-                write_actual_len(actual_len, 0);
+                unsafe { write_actual_len(actual_len, 0) };
                 to_ffi_code(&e)
             }
             Err(_) => {
-                write_actual_len(actual_len, 0);
+                unsafe { write_actual_len(actual_len, 0) };
                 ERR_PANIC
             }
         }
@@ -1117,13 +1177,13 @@ pub mod r3 {
         frame_buf_len: c_uint,
         actual_len: *mut c_uint,
     ) -> c_int {
-        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+        unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
 
         if handle.is_null() || frame_buf.is_null() {
             return ERR_NULL_POINTER;
         }
         if frame_buf_len < FRAME_BUF_MAX_LEN as c_uint {
-            write_actual_len(actual_len, 0);
+            unsafe { write_actual_len(actual_len, 0) };
             return ERR_BUFFER_TOO_SMALL;
         }
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
@@ -1132,7 +1192,7 @@ pub mod r3 {
             let mut scratch = [0u8; 1024]; // part CBOR intermediate (A-class; oversized parts error explicitly)
                                            // F-1: same clamp as `shlosilo_ur_encode_next`.
             let cap = (frame_buf_len as usize).min(FRAME_BUF_MAX_LEN);
-            let out = checked_slice_mut(frame_buf, cap, FRAME_BUF_MAX_LEN)
+            let out = unsafe { checked_slice_mut(frame_buf, cap, FRAME_BUF_MAX_LEN) }
                 .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
             let n = enc.next_cyclic_frame_into(&mut scratch, &mut out[..cap - 1])?;
             out[n] = 0;
@@ -1140,15 +1200,15 @@ pub mod r3 {
         });
         match result {
             Ok(Ok(n)) => {
-                write_actual_len(actual_len, n);
+                unsafe { write_actual_len(actual_len, n) };
                 OK
             }
             Ok(Err(e)) => {
-                write_actual_len(actual_len, 0);
+                unsafe { write_actual_len(actual_len, 0) };
                 to_ffi_code(&e)
             }
             Err(_) => {
-                write_actual_len(actual_len, 0);
+                unsafe { write_actual_len(actual_len, 0) };
                 ERR_PANIC
             }
         }
@@ -1238,12 +1298,14 @@ pub mod r3 {
                     }
                 }
             }
-            let fslice = checked_slice(
-                frame.cast::<u8>(),
-                flen,
-                crate::ur::ur_multipart::MULTIPART_FRAME_MAX_LEN,
-                false,
-            )
+            let fslice = unsafe {
+                checked_slice(
+                    frame.cast::<u8>(),
+                    flen,
+                    crate::ur::ur_multipart::MULTIPART_FRAME_MAX_LEN,
+                    false,
+                )
+            }
             .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
             let fstr = core::str::from_utf8(fslice)
                 .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -1338,7 +1400,7 @@ pub mod r3 {
         payload_buf_len: c_uint,
         actual_len: *mut c_uint,
     ) -> c_int {
-        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+        unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
 
         if handle.is_null() || payload_buf.is_null() {
             return ERR_NULL_POINTER;
@@ -1350,11 +1412,13 @@ pub mod r3 {
             // building the slice (see `checked_slice_mut`).
             let cap =
                 (payload_buf_len as usize).min(crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN);
-            let out = checked_slice_mut(
-                payload_buf,
-                cap,
-                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-            )
+            let out = unsafe {
+                checked_slice_mut(
+                    payload_buf,
+                    cap,
+                    crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+                )
+            }
             .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
             let n = dec.payload_into(out)?.ok_or_else(err_unknown)?;
             Ok(n)
@@ -1374,15 +1438,15 @@ pub mod r3 {
         };
         match result {
             Ok(Ok(n)) => {
-                write_actual_len(actual_len, n);
+                unsafe { write_actual_len(actual_len, n) };
                 OK
             }
             Ok(Err(e)) => {
-                write_actual_len(actual_len, required);
+                unsafe { write_actual_len(actual_len, required) };
                 to_ffi_code(&e)
             }
             Err(_) => {
-                write_actual_len(actual_len, 0);
+                unsafe { write_actual_len(actual_len, 0) };
                 ERR_PANIC
             }
         }
@@ -1411,7 +1475,7 @@ pub mod r3 {
         type_buf_len: c_uint,
         actual_len: *mut c_uint,
     ) -> c_int {
-        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+        unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
 
         if handle.is_null() || type_buf.is_null() {
             return ERR_NULL_POINTER;
@@ -1443,15 +1507,15 @@ pub mod r3 {
         };
         match result {
             Ok(Ok(n)) => {
-                write_actual_len(actual_len, n);
+                unsafe { write_actual_len(actual_len, n) };
                 OK
             }
             Ok(Err(e)) => {
-                write_actual_len(actual_len, required);
+                unsafe { write_actual_len(actual_len, required) };
                 to_ffi_code(&e)
             }
             Err(_) => {
-                write_actual_len(actual_len, 0);
+                unsafe { write_actual_len(actual_len, 0) };
                 ERR_PANIC
             }
         }
@@ -1495,7 +1559,7 @@ pub mod r3 {
         payload_len: c_uint,
         actual_len: *mut c_uint,
     ) -> c_int {
-        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+        unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
         if uri.is_null() || type_buf.is_null() || payload.is_null() {
             return ERR_NULL_POINTER;
         }
@@ -1509,8 +1573,9 @@ pub mod r3 {
                     }
                 }
             }
-            let uslice = checked_slice(uri.cast::<u8>(), ulen, MULTIPART_FRAME_MAX_LEN, false)
-                .ok_or_else(err_type_name)?;
+            let uslice =
+                unsafe { checked_slice(uri.cast::<u8>(), ulen, MULTIPART_FRAME_MAX_LEN, false) }
+                    .ok_or_else(err_type_name)?;
             let ustr = core::str::from_utf8(uslice).map_err(|_| err_type_name())?;
             // Same recognition order as `ur_decode::decode` (which this wraps),
             // with the type name extracted for the caller.
@@ -1540,7 +1605,7 @@ pub mod r3 {
             let decoded = crate::ur::ur_decode::decode(ustr)?;
             let bytes = decoded.as_ref();
             if bytes.len() > payload_len as usize {
-                write_actual_len(actual_len, bytes.len()); // required value for the retry
+                unsafe { write_actual_len(actual_len, bytes.len()) }; // required value for the retry
                 return Err(err(ShlosiloErrorKind::BufferTooSmall));
             }
             unsafe {
@@ -1552,7 +1617,7 @@ pub mod r3 {
         });
         match result {
             Ok(Ok(n)) => {
-                write_actual_len(actual_len, n);
+                unsafe { write_actual_len(actual_len, n) };
                 OK
             }
             Ok(Err(e)) => to_ffi_code(&e),
@@ -1598,12 +1663,12 @@ pub mod r3 {
         ws: *mut u8,
         ws_len: c_uint,
     ) -> c_int {
-        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
-                                         // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
-                                         // reports the workspace requirement and returns before input parsing, key
-                                         // derivation, or any RNG use; no output side effects (output_buf untouched).
+        unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
+                                                    // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
+                                                    // reports the workspace requirement and returns before input parsing, key
+                                                    // derivation, or any RNG use; no output side effects (output_buf untouched).
         if ws.is_null() {
-            write_actual_len(actual_len, shlosilo_sign_ws_len() as usize);
+            unsafe { write_actual_len(actual_len, shlosilo_sign_ws_len() as usize) };
             return OK;
         }
         // Capacity is validated BEFORE execution; under-capacity reports the
@@ -1611,7 +1676,7 @@ pub mod r3 {
         // zero-on-failure rule — the caller needs the number to resize).
         let ws_need = shlosilo_sign_ws_len() as usize;
         if (ws_len as usize) < ws_need {
-            write_actual_len(actual_len, ws_need);
+            unsafe { write_actual_len(actual_len, ws_need) };
             return to_ffi_code(&ShlosiloError::with_context(
                 ShlosiloErrorKind::BufferTooSmall,
                 crate::error::ErrorContext::RequiredLength(ws_need),
@@ -1636,28 +1701,30 @@ pub mod r3 {
             // sign core — the same core `shlosilo_sign_session_ffi` uses (one
             // signing implementation, no duplicated logic). `Legacy` keeps this
             // entry's historical validation order and error codes verbatim.
-            sign_typed_core(
-                SignKeySource::Legacy {
-                    mnemonic_indices,
-                    word_count,
-                    passphrase,
-                    passphrase_len,
-                    network,
-                },
-                type_name,
-                payload,
-                payload_len,
-                &[], // no pairing retention on the legacy fixture path
-                entropy_ptr,
-                entropy_len,
-                output_buf,
-                output_buf_len,
-                ws,
-                ws_need,
-                crate::canonical::TailView::CAKE,
-            )
+            unsafe {
+                sign_typed_core(
+                    SignKeySource::Legacy {
+                        mnemonic_indices,
+                        word_count,
+                        passphrase,
+                        passphrase_len,
+                        network,
+                    },
+                    type_name,
+                    payload,
+                    payload_len,
+                    &[], // no pairing retention on the legacy fixture path
+                    entropy_ptr,
+                    entropy_len,
+                    output_buf,
+                    output_buf_len,
+                    ws,
+                    ws_need,
+                    crate::canonical::TailView::CAKE,
+                )
+            }
         });
-        finish_sign_ffi(result, actual_len)
+        unsafe { finish_sign_ffi(result, actual_len) }
     }
 
     /// Task 3: key face for the shared sign core (internal; not on the C-ABI surface).
@@ -1680,21 +1747,25 @@ pub mod r3 {
 
     /// Task 3: shared result mapping for the sign family (Gate4 out-param
     /// discipline: length on success, zeroed on every failure path).
-    fn finish_sign_ffi<E>(
+    ///
+    /// # Safety
+    ///
+    /// `actual_len` must be null or writable for one `c_uint`.
+    unsafe fn finish_sign_ffi<E>(
         result: Result<Result<usize, ShlosiloError>, E>,
         actual_len: *mut c_uint,
     ) -> c_int {
         match result {
             Ok(Ok(length)) => {
-                write_actual_len(actual_len, length);
+                unsafe { write_actual_len(actual_len, length) };
                 OK
             }
             Ok(Err(e)) => {
-                write_actual_len(actual_len, 0);
+                unsafe { write_actual_len(actual_len, 0) };
                 to_ffi_code(&e)
             }
             Err(_) => {
-                write_actual_len(actual_len, 0);
+                unsafe { write_actual_len(actual_len, 0) };
                 ERR_PANIC
             }
         }
@@ -1711,7 +1782,14 @@ pub mod r3 {
     /// no network parameter (chain/network gating for the session path is the
     /// caller's policy, upstream of this entry).
     #[allow(clippy::too_many_arguments)] // mirrors the frozen C-ABI face 1:1 (the entries' param lists are fixed by contract)
-    fn sign_typed_core(
+    ///
+    /// # Safety
+    ///
+    /// The pointer parameters carry the calling entry's `# Safety` obligations verbatim
+    /// (`type_name` NUL-terminated in range, `payload`/`entropy` readable for the stated
+    /// lengths, `output_buf` writable for `output_buf_len`, `ws` writable for `ws_need`)
+    /// — this helper validates the business layer only, it cannot re-prove them.
+    unsafe fn sign_typed_core(
         source: SignKeySource,
         type_name: *const c_char,
         payload: *const u8,
@@ -1739,8 +1817,8 @@ pub mod r3 {
                 }
             }
         }
-        let t_slice =
-            checked_slice(type_name.cast::<u8>(), tlen, 64, false).ok_or_else(err_type_name)?;
+        let t_slice = (unsafe { checked_slice(type_name.cast::<u8>(), tlen, 64, false) })
+            .ok_or_else(err_type_name)?;
         let t_str = core::str::from_utf8(t_slice)
             .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
         let tag = crate::ur::ur_encode::UrTypeTag::from_name(t_str);
@@ -1751,19 +1829,23 @@ pub mod r3 {
         if payload_len as usize > crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN {
             return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
         }
-        let payload_slice = checked_slice(
-            payload,
-            payload_len as usize,
-            crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-            false,
-        )
+        let payload_slice = unsafe {
+            checked_slice(
+                payload,
+                payload_len as usize,
+                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+                false,
+            )
+        }
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::UrPayloadTooLarge))?;
         // (4) P0-02 #2: (NULL, len>0) rejected
-        let entropy_slice = optional_bytes_in(
-            entropy_ptr,
-            entropy_len as usize,
-            crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-        )
+        let entropy_slice = unsafe {
+            optional_bytes_in(
+                entropy_ptr,
+                entropy_len as usize,
+                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+            )
+        }
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
         // (5, legacy only) mnemonic slice — kept BEFORE the output slice:
         // the deprecated entry's historical error precedence.
@@ -1773,16 +1855,17 @@ pub mod r3 {
                 word_count,
                 ..
             } => Some(
-                checked_slice(mnemonic_indices, word_count as usize, 24, false)
+                unsafe { checked_slice(mnemonic_indices, word_count as usize, 24, false) }
                     .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?,
             ),
             SignKeySource::Session(_) => None,
         };
         // SAFETY: output_buf is non-null (excluded in the entry prologue)
         // (6) P0-03: output buffer goes through checked_slice_mut
-        let out_slice =
+        let out_slice = unsafe {
             checked_slice_mut(output_buf, output_buf_len as usize, SIGN_OUTPUT_BUF_MAX_LEN)
-                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+        }
+        .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
         // (7-10) key face → SignInput (+ the legacy network gate)
         let (sign_input, network): (business::sign::SignInput<'_>, Option<Network>) = match source {
             SignKeySource::Session(session) => {
@@ -1808,9 +1891,10 @@ pub mod r3 {
                 let mnem_slice =
                     mnem_slice.ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
                 // (7) P0-02 #2: (NULL, len>0) rejected
-                let pass_slice =
+                let pass_slice = unsafe {
                     optional_bytes_in(passphrase, passphrase_len as usize, PASSPHRASE_MAX_LEN)
-                        .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+                }
+                .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
                 if pass_slice.len() > PASSPHRASE_MAX_LEN {
                     return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
                 }
@@ -1917,12 +2001,12 @@ pub mod r3 {
         ki_records: *const crate::business::sign::WalletKiRecord,
         ki_records_len: c_uint,
     ) -> c_int {
-        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
-                                         // Z3.3b workspace contract: ws == NULL is a PURE PROBE —
-                                         // reports the workspace requirement and returns before any
-                                         // key access, parsing, or RNG use; no output side effects.
+        unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
+                                                    // Z3.3b workspace contract: ws == NULL is a PURE PROBE —
+                                                    // reports the workspace requirement and returns before any
+                                                    // key access, parsing, or RNG use; no output side effects.
         if ws.is_null() {
-            write_actual_len(actual_len, shlosilo_sign_ws_len() as usize);
+            unsafe { write_actual_len(actual_len, shlosilo_sign_ws_len() as usize) };
             return OK;
         }
         // Capacity is validated BEFORE execution; under-capacity reports the
@@ -1930,7 +2014,7 @@ pub mod r3 {
         // zero-on-failure rule — the caller needs the number to resize).
         let ws_need = shlosilo_sign_ws_len() as usize;
         if (ws_len as usize) < ws_need {
-            write_actual_len(actual_len, ws_need);
+            unsafe { write_actual_len(actual_len, ws_need) };
             return to_ffi_code(&ShlosiloError::with_context(
                 ShlosiloErrorKind::BufferTooSmall,
                 crate::error::ErrorContext::RequiredLength(ws_need),
@@ -1954,30 +2038,34 @@ pub mod r3 {
             let ki_slice: &[crate::business::sign::WalletKiRecord] = if ki_records.is_null() {
                 &[]
             } else {
-                checked_slice(
-                    ki_records,
-                    ki_records_len as usize,
-                    crate::types::caps::SIGN_WS_KI,
-                    false,
-                )
+                unsafe {
+                    checked_slice(
+                        ki_records,
+                        ki_records_len as usize,
+                        crate::types::caps::SIGN_WS_KI,
+                        false,
+                    )
+                }
                 .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?
             };
-            sign_typed_core(
-                SignKeySource::Session(session),
-                type_name,
-                payload,
-                payload_len,
-                ki_slice,
-                entropy_ptr,
-                entropy_len,
-                output_buf,
-                output_buf_len,
-                ws,
-                ws_need,
-                crate::canonical::TailView::CAKE,
-            )
+            unsafe {
+                sign_typed_core(
+                    SignKeySource::Session(session),
+                    type_name,
+                    payload,
+                    payload_len,
+                    ki_slice,
+                    entropy_ptr,
+                    entropy_len,
+                    output_buf,
+                    output_buf_len,
+                    ws,
+                    ws_need,
+                    crate::canonical::TailView::CAKE,
+                )
+            }
         });
-        finish_sign_ffi(result, actual_len)
+        unsafe { finish_sign_ffi(result, actual_len) }
     }
 
     /// WP4 (2026-11-02): session sign with an explicit wire-tail VIEW.
@@ -2028,18 +2116,18 @@ pub mod r3 {
         let tail = match crate::canonical::TailView::from_abi(wire_view) {
             Some(t) => t,
             None => {
-                write_actual_len(actual_len, 0);
+                unsafe { write_actual_len(actual_len, 0) };
                 return to_ffi_code(&ShlosiloError::new(
                     ShlosiloErrorKind::EncodingInvalidFormat,
                 ));
             }
         };
-        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
-                                         // Z3.3b workspace contract: ws == NULL is a PURE PROBE —
-                                         // reports the workspace requirement and returns before any
-                                         // key access, parsing, or RNG use; no output side effects.
+        unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
+                                                    // Z3.3b workspace contract: ws == NULL is a PURE PROBE —
+                                                    // reports the workspace requirement and returns before any
+                                                    // key access, parsing, or RNG use; no output side effects.
         if ws.is_null() {
-            write_actual_len(actual_len, shlosilo_sign_ws_len() as usize);
+            unsafe { write_actual_len(actual_len, shlosilo_sign_ws_len() as usize) };
             return OK;
         }
         // Capacity is validated BEFORE execution; under-capacity reports the
@@ -2047,7 +2135,7 @@ pub mod r3 {
         // zero-on-failure rule — the caller needs the number to resize).
         let ws_need = shlosilo_sign_ws_len() as usize;
         if (ws_len as usize) < ws_need {
-            write_actual_len(actual_len, ws_need);
+            unsafe { write_actual_len(actual_len, ws_need) };
             return to_ffi_code(&ShlosiloError::with_context(
                 ShlosiloErrorKind::BufferTooSmall,
                 crate::error::ErrorContext::RequiredLength(ws_need),
@@ -2071,30 +2159,34 @@ pub mod r3 {
             let ki_slice: &[crate::business::sign::WalletKiRecord] = if ki_records.is_null() {
                 &[]
             } else {
-                checked_slice(
-                    ki_records,
-                    ki_records_len as usize,
-                    crate::types::caps::SIGN_WS_KI,
-                    false,
-                )
+                unsafe {
+                    checked_slice(
+                        ki_records,
+                        ki_records_len as usize,
+                        crate::types::caps::SIGN_WS_KI,
+                        false,
+                    )
+                }
                 .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?
             };
-            sign_typed_core(
-                SignKeySource::Session(session),
-                type_name,
-                payload,
-                payload_len,
-                ki_slice,
-                entropy_ptr,
-                entropy_len,
-                output_buf,
-                output_buf_len,
-                ws,
-                ws_need,
-                tail,
-            )
+            unsafe {
+                sign_typed_core(
+                    SignKeySource::Session(session),
+                    type_name,
+                    payload,
+                    payload_len,
+                    ki_slice,
+                    entropy_ptr,
+                    entropy_len,
+                    output_buf,
+                    output_buf_len,
+                    ws,
+                    ws_need,
+                    tail,
+                )
+            }
         });
-        finish_sign_ffi(result, actual_len)
+        unsafe { finish_sign_ffi(result, actual_len) }
     }
 
     /// Task 3 (2026-10-07): session reclaim — the handle lifecycle contract.
@@ -2226,19 +2318,19 @@ pub mod r3 {
         ki_records_cap: c_uint,
         ki_records_actual: *mut c_uint,
     ) -> c_int {
-        write_actual_len(actual_len, 0); // Gate4 #2: out-param zeroed up front
+        unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
         let ws_need = crate::business::xmr_pairing::pairing_ws_len();
         // Z3.3b workspace contract: ws == NULL is a PURE PROBE — reports the
         // workspace requirement and returns before any key access or parsing.
         if ws.is_null() {
-            write_actual_len(actual_len, ws_need);
+            unsafe { write_actual_len(actual_len, ws_need) };
             return OK;
         }
         // Capacity validated BEFORE execution; under-capacity reports the
         // required length through actual_len (documented exception to the
         // zero-on-failure rule).
         if (ws_len as usize) < ws_need {
-            write_actual_len(actual_len, ws_need);
+            unsafe { write_actual_len(actual_len, ws_need) };
             return to_ffi_code(&ShlosiloError::with_context(
                 ShlosiloErrorKind::BufferTooSmall,
                 crate::error::ErrorContext::RequiredLength(ws_need),
@@ -2252,26 +2344,31 @@ pub mod r3 {
             if payload_len as usize > crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN {
                 return Err(err(ShlosiloErrorKind::UrPayloadTooLarge));
             }
-            let payload_slice = checked_slice(
-                payload,
-                payload_len as usize,
-                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-                false,
-            )
+            let payload_slice = unsafe {
+                checked_slice(
+                    payload,
+                    payload_len as usize,
+                    crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+                    false,
+                )
+            }
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::UrPayloadTooLarge))?;
             // (2) entropy (§B.5): the export randomness stream. (NULL,0) is
             // accepted here and rejected by the misuse guard below — same
             // behavior as the XMR sign path.
-            let entropy_slice = optional_bytes_in(
-                entropy_ptr,
-                entropy_len as usize,
-                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-            )
+            let entropy_slice = unsafe {
+                optional_bytes_in(
+                    entropy_ptr,
+                    entropy_len as usize,
+                    crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+                )
+            }
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
             // (3) output buffer through the checked constructor
-            let out_slice =
+            let out_slice = unsafe {
                 checked_slice_mut(output_buf, output_buf_len as usize, SIGN_OUTPUT_BUF_MAX_LEN)
-                    .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
+            }
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
             // SAFETY: ws is non-null (the probe returned above) and ws_len >=
             // ws_need (checked above) — the carve validates the exact size.
             let ws_slice = unsafe { core::slice::from_raw_parts_mut(ws, ws_need) };
@@ -2306,11 +2403,13 @@ pub mod r3 {
             {
                 &mut []
             } else {
-                checked_slice_mut(
-                    ki_records_out,
-                    ki_records_cap as usize,
-                    crate::business::xmr_pairing::PAIRING_DETAILS_MAX,
-                )
+                unsafe {
+                    checked_slice_mut(
+                        ki_records_out,
+                        ki_records_cap as usize,
+                        crate::business::xmr_pairing::PAIRING_DETAILS_MAX,
+                    )
+                }
                 .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?
             };
             let mut ki_written = 0usize;
@@ -2323,10 +2422,10 @@ pub mod r3 {
                 ki_slice,
                 &mut ki_written,
             )?;
-            write_actual_len(ki_records_actual, outcome.output_count);
+            unsafe { write_actual_len(ki_records_actual, outcome.output_count) };
             Ok(outcome.written)
         });
-        finish_sign_ffi(result, actual_len)
+        unsafe { finish_sign_ffi(result, actual_len) }
     }
 
     /// Pairing retention store merge (pool §53 extraction, 2026-10-21): the
@@ -2381,7 +2480,9 @@ pub mod r3 {
         let store_slice: &mut [crate::business::sign::WalletKiRecord] = if store_cap == 0 {
             &mut []
         } else {
-            match checked_slice_mut(store, store_cap as usize, crate::types::caps::SIGN_WS_KI) {
+            match unsafe {
+                checked_slice_mut(store, store_cap as usize, crate::types::caps::SIGN_WS_KI)
+            } {
                 Some(s) => s,
                 None => return ERR_BUFFER_TOO_SMALL,
             }
@@ -2389,12 +2490,14 @@ pub mod r3 {
         let inc_slice: &[crate::business::sign::WalletKiRecord] = if incoming_len == 0 {
             &[]
         } else {
-            match checked_slice(
-                incoming,
-                incoming_len as usize,
-                crate::types::caps::SIGN_WS_KI,
-                false,
-            ) {
+            match unsafe {
+                checked_slice(
+                    incoming,
+                    incoming_len as usize,
+                    crate::types::caps::SIGN_WS_KI,
+                    false,
+                )
+            } {
                 Some(s) => s,
                 None => return ERR_BUFFER_TOO_SMALL,
             }
@@ -3047,21 +3150,21 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
     out_flags: *mut c_uint,
     out_in_out: *mut c_uint,
 ) -> c_int {
-    write_actual_len(out_used, 0);
-    write_actual_len(out_line_count, 0);
-    write_actual_len(out_flags, 0);
-    write_actual_len(out_in_out, 0);
+    unsafe { write_actual_len(out_used, 0) };
+    unsafe { write_actual_len(out_line_count, 0) };
+    unsafe { write_actual_len(out_flags, 0) };
+    unsafe { write_actual_len(out_in_out, 0) };
     if type_name.is_null() || payload.is_null() || out_lines.is_null() {
         return ERR_NULL_POINTER;
     }
     // ws == NULL is the pure probe (same contract as the sign family).
     if ws.is_null() {
-        write_actual_len(out_used, shlosilo_review_ws_len() as usize);
+        unsafe { write_actual_len(out_used, shlosilo_review_ws_len() as usize) };
         return OK;
     }
     let ws_need = shlosilo_review_ws_len() as usize;
     if (ws_len as usize) < ws_need {
-        write_actual_len(out_used, ws_need);
+        unsafe { write_actual_len(out_used, ws_need) };
         return to_ffi_code(&ShlosiloError::with_context(
             ShlosiloErrorKind::BufferTooSmall,
             crate::error::ErrorContext::RequiredLength(ws_need),
@@ -3079,25 +3182,27 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
                 }
             }
         }
-        let t_slice = checked_slice(type_name.cast::<u8>(), tlen, 64, false)
+        let t_slice = unsafe { checked_slice(type_name.cast::<u8>(), tlen, 64, false) }
             .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
         let t_str = core::str::from_utf8(t_slice)
             .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
         let tag = crate::ur::ur_encode::UrTypeTag::from_name(t_str);
 
-        let payload_slice = checked_slice(
-            payload,
-            payload_len as usize,
-            crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-            false,
-        )
+        let payload_slice = unsafe {
+            checked_slice(
+                payload,
+                payload_len as usize,
+                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+                false,
+            )
+        }
         .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadTooLarge))?;
 
         // optional 4-byte master fingerprint (NULL → no change marking)
         let mfp: Option<[u8; 4]> = if master_fingerprint.is_null() {
             None
         } else {
-            let s = checked_slice(master_fingerprint, 4, 4, false)
+            let s = unsafe { checked_slice(master_fingerprint, 4, 4, false) }
                 .ok_or_else(|| err(ShlosiloErrorKind::BufferKindMismatch))?;
             Some([s[0], s[1], s[2], s[3]])
         };
@@ -3128,7 +3233,7 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
         let view = business::review::build(tag, payload_slice, net, mfp.as_ref(), arena, recs)?;
 
         // pack the lines NUL-separated into the caller buffer
-        let out = checked_slice_mut(out_lines, out_lines_len as usize, REVIEW_LINES_BUF)
+        let out = unsafe { checked_slice_mut(out_lines, out_lines_len as usize, REVIEW_LINES_BUF) }
             .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
         let mut used = 0usize;
         let mut count = 0usize;
@@ -3148,10 +3253,10 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
 
     match result {
         Ok(Ok((used, count, flags, ins, outs))) => {
-            write_actual_len(out_used, used);
-            write_actual_len(out_line_count, count);
-            write_actual_len(out_flags, flags as usize);
-            write_actual_len(out_in_out, ((ins as usize) << 16) | outs as usize);
+            unsafe { write_actual_len(out_used, used) };
+            unsafe { write_actual_len(out_line_count, count) };
+            unsafe { write_actual_len(out_flags, flags as usize) };
+            unsafe { write_actual_len(out_in_out, ((ins as usize) << 16) | outs as usize) };
             OK
         }
         Ok(Err(e)) => to_ffi_code(&e),
