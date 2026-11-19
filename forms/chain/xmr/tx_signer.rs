@@ -569,9 +569,36 @@ fn source_count(tx_data: &TxConstructionData) -> usize {
 /// hand over a smaller spend - and must be reported as such (BufferTooSmall ->
 /// "request too large" on screen). It used to `assert!` inside the build loop,
 /// which panicked the whole device on the 17th input (2026-11-15).
+/// Outputs the signer can actually answer: the BP+ commitment table holds
+/// `monero_bulletproofs::MAX_COMMITMENTS` (16) aggregated commitments, one per output.
+///
+/// A3a-01 (external audit 2026-11-19): this used to be `PREFIX_OUTPUTS_MAX` (64), so a
+/// 17..=64-output request passed the entry check and then panicked on
+/// `commitments[..outs_len]` — before the back end ever got the chance to refuse. The
+/// wire format can carry more outputs, but this implementation proves one BP+ batch, so
+/// the honest answer is a recoverable capacity error.
+pub(crate) const XMR_SIGN_OUTPUTS_MAX: usize = monero_bulletproofs::MAX_COMMITMENTS;
+
 pub(crate) fn check_table_caps(inputs: usize, outputs: usize) -> Result<()> {
-    use crate::chain::xmr::transaction::{PREFIX_INPUTS_MAX, PREFIX_OUTPUTS_MAX};
-    if inputs > PREFIX_INPUTS_MAX || outputs > PREFIX_OUTPUTS_MAX {
+    use crate::chain::xmr::transaction::PREFIX_INPUTS_MAX;
+    if inputs > PREFIX_INPUTS_MAX || outputs > XMR_SIGN_OUTPUTS_MAX {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+    }
+    Ok(())
+}
+
+/// A3a-02 (external audit 2026-11-19): the per-input tables are CARVED BY THE CALLER, so
+/// the config cap says nothing about how long they really are. Before this guard the
+/// build loop indexed `tx_inputs[i]` / `rings[i]` with only the config cap checked, i.e.
+/// a legal-looking call with a short workspace panicked instead of answering
+/// `BufferTooSmall`. Checked once at the entry, before any secret is derived.
+pub(crate) fn check_table_lengths(
+    inputs: usize,
+    tx_inputs_len: usize,
+    rings_len: usize,
+    ring_lens_len: usize,
+) -> Result<()> {
+    if inputs > tx_inputs_len || inputs > rings_len || inputs > ring_lens_len {
         return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
     }
     Ok(())
@@ -613,6 +640,14 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // coins - so it must come back as BufferTooSmall ("request too large"), never
     // as a panic. `check_table_caps` is the pinned contract for both counts.
     check_table_caps(source_count(tx_data), tx_data.splitted_dsts.len())?;
+    // A3a-02: the caller carves these tables, so their real lengths are part of the
+    // contract (the config cap above does not imply them).
+    check_table_lengths(
+        source_count(tx_data),
+        tables.tx_inputs.len(),
+        tables.rings.len(),
+        tables.ring_lens.len(),
+    )?;
     let rct_type = resolve_rct_type(tx_data.rct_config.bp_version)?;
 
     // r is injected by the caller (§B.5: TxKey purpose subdomain derivation)
@@ -889,9 +924,10 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
             tx_data.subaddr_account,
             &tx_data.subaddr_indices,
         )?;
-        if tx_inputs_len >= crate::chain::xmr::transaction::PREFIX_INPUTS_MAX {
-            // Unreachable behind check_table_caps(); kept as a non-panicking guard
-            // because `forms` code must never abort the device (2026-11-15 red line).
+        if tx_inputs_len >= tx_inputs.len() {
+            // A3a-02: bound by the caller's ACTUAL slice, not the config cap — the entry
+            // guard makes this unreachable, but forms must never abort the device
+            // (2026-11-15 red line), so the tightest bound stays here too.
             return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
         }
         tx_inputs[tx_inputs_len] = TxInput::new(offs.clone(), key_image);
@@ -922,6 +958,12 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
         }
         if src.outputs.len() > crate::types::caps::RING_MAX {
             return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        // A3a-02 (external audit 2026-11-19): the ring row holds RING_MAX members. The
+        // `offs` push above already refuses a 17th member (heapless capacity), but that
+        // made a wire-driven bound implicit and invisible in review; state it here.
+        if src.outputs.len() > crate::types::caps::RING_MAX {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
         }
         for (j, o) in src.outputs.iter().enumerate() {
             rings[i_track][j] = (CompressedPoint::from(o.dest), CompressedPoint::from(o.mask));
@@ -995,10 +1037,13 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
     // mask-bearing values keep their wipe duty HERE — the vendor witness now
     // borrows; see the vendor patch note). Capacity = MAX_COMMITMENTS (the
     // BP+ protocol cap), so the fixed array can never bind.
-    let mut commitments =
-        zeroize::Zeroizing::new(core::array::from_fn::<MonCommitment, 16, _>(|_| {
-            MonCommitment::new(monero_ed25519::Scalar::ZERO, 0)
-        }));
+    let mut commitments = zeroize::Zeroizing::new(core::array::from_fn::<
+        MonCommitment,
+        { XMR_SIGN_OUTPUTS_MAX },
+        _,
+    >(|_| {
+        MonCommitment::new(monero_ed25519::Scalar::ZERO, 0)
+    }));
     let n_commitments = outs_len;
     for (slot, o) in commitments[..n_commitments]
         .iter_mut()
@@ -2442,9 +2487,51 @@ mod capacity_pins {
     /// inside the build loop and panicked the device. The refusal is now a
     /// `BufferTooSmall` at the entry, which the screen renders as "request too
     /// large" - a recoverable answer (the wallet can spend fewer coins).
+    /// A3a-01 (external audit 2026-11-19): the OUTPUT cap must be the BP+ commitment
+    /// table capacity, not `PREFIX_OUTPUTS_MAX`. The signer builds
+    /// `commitments[..outs_len]` over a fixed 16-slot array, so 17..=64 outputs
+    /// panicked inside the slice before the back end could refuse.
+    #[test]
+    fn output_cap_is_the_commitment_table_not_the_prefix_table() {
+        use crate::chain::xmr::tx_signer::XMR_SIGN_OUTPUTS_MAX;
+        assert_eq!(
+            XMR_SIGN_OUTPUTS_MAX, 16,
+            "BP+ commits at most 16 outputs per proof"
+        );
+        assert!(check_table_caps(1, XMR_SIGN_OUTPUTS_MAX).is_ok());
+        assert_eq!(
+            check_table_caps(1, XMR_SIGN_OUTPUTS_MAX + 1)
+                .err()
+                .map(|e| e.kind),
+            Some(ShlosiloErrorKind::BufferTooSmall),
+            "17 outputs must be a capacity error, never a slice panic"
+        );
+    }
+
+    /// A3a-02 (external audit 2026-11-19): the entry guarded the input count against the
+    /// CONFIG cap instead of the caller's actual slices, so a short `tx_inputs` slice
+    /// panicked on `tx_inputs[i]`. The guard below is the pinned contract.
+    #[test]
+    fn short_caller_tables_are_refused_before_any_derivation() {
+        assert!(check_table_lengths(2, 2, 2, 2).is_ok());
+        for (inputs, ti, rings, lens) in
+            [(2usize, 1usize, 2usize, 2usize), (2, 2, 1, 2), (2, 2, 2, 1)]
+        {
+            assert_eq!(
+                check_table_lengths(inputs, ti, rings, lens)
+                    .err()
+                    .map(|e| e.kind),
+                Some(ShlosiloErrorKind::BufferTooSmall),
+                "inputs={inputs} tx_inputs={ti} rings={rings} ring_lens={lens} must be refused"
+            );
+        }
+    }
+
     #[test]
     fn table_caps_refuse_instead_of_panicking() {
-        assert!(check_table_caps(PREFIX_INPUTS_MAX, PREFIX_OUTPUTS_MAX).is_ok());
+        // A3a-01 tightened the output side from PREFIX_OUTPUTS_MAX (64) to the BP+
+        // commitment table (16); the input side still uses the prefix table.
+        assert!(check_table_caps(PREFIX_INPUTS_MAX, XMR_SIGN_OUTPUTS_MAX).is_ok());
         assert!(check_table_caps(1, 1).is_ok());
 
         let too_many_inputs = check_table_caps(PREFIX_INPUTS_MAX + 1, 1);
@@ -2454,12 +2541,15 @@ mod capacity_pins {
             "one input past the table must be a capacity error"
         );
 
-        let too_many_outputs = check_table_caps(1, PREFIX_OUTPUTS_MAX + 1);
-        assert_eq!(
-            too_many_outputs.err().map(|e| e.kind),
-            Some(ShlosiloErrorKind::BufferTooSmall),
-            "one output past the table must be a capacity error"
-        );
+        // Both the old (prefix-table) and the real (commitment-table) boundary must now
+        // come back as a capacity error rather than reaching the slice.
+        for outputs in [XMR_SIGN_OUTPUTS_MAX + 1, PREFIX_OUTPUTS_MAX] {
+            assert_eq!(
+                check_table_caps(1, outputs).err().map(|e| e.kind),
+                Some(ShlosiloErrorKind::BufferTooSmall),
+                "{outputs} outputs must be a capacity error"
+            );
+        }
     }
 
     /// ...and that error code is the one the screen words as "request too large".
