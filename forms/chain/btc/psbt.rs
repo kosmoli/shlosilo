@@ -971,11 +971,12 @@ pub fn serialize_psbt(psbt: &Psbt<'_>) -> Vec<u8> {
 /// PSBT signing input (per-input info)
 ///
 /// P1-03: the private key uses `SecretBytes<32>` — no Clone or Debug, ZeroizeOnDrop, constant-time comparison.
-pub struct PsbtSignInput {
+pub struct PsbtSignInput<'a> {
     /// input index
     pub input_index: usize,
     /// The private key for this input (32 bytes)
-    pub private_key: SecretBytes<32>,
+    /// A2-08 (external audit 2026-11-19): borrowed — the signer only reads it.
+    pub private_key: &'a SecretBytes<32>,
     /// pubkey hash (20 bytes) — P2WPKH witness program
     pub pubkey_hash: [u8; 20],
     /// The value of this input (satoshis) — used for the BIP-143 sighash
@@ -997,7 +998,7 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt<'_>, sign_input: &PsbtSignInput) -> Resu
     // threw them away).
     let p2wpkh_input = crate::chain::btc::p2wpkh::P2WPKHSignInput {
         input_index: sign_input.input_index,
-        private_key: &sign_input.private_key,
+        private_key: sign_input.private_key,
         amount: sign_input.amount,
         pubkey_hash: sign_input.pubkey_hash,
     };
@@ -1200,18 +1201,20 @@ pub fn finalize_signed_inputs(psbt: &mut Psbt<'_>) -> Result<()> {
 /// PSBT signing input (P2PKH-specific, no amount needed)
 ///
 /// P1-03: the private key uses `SecretBytes<32>`.
-pub struct PsbtP2PKHSignInput {
+pub struct PsbtP2PKHSignInput<'a> {
     pub input_index: usize,
-    pub private_key: SecretBytes<32>,
+    /// A2-08 (external audit 2026-11-19): borrowed — the signer only reads it.
+    pub private_key: &'a SecretBytes<32>,
     pub pubkey_hash: [u8; 20],
 }
 
 /// PSBT signing input (P2SH-P2WPKH-specific, needs amount)
 ///
 /// P1-03: the private key uses `SecretBytes<32>`.
-pub struct PsbtP2SHP2WPKHSignInput {
+pub struct PsbtP2SHP2WPKHSignInput<'a> {
     pub input_index: usize,
-    pub private_key: SecretBytes<32>,
+    /// A2-08 (external audit 2026-11-19): borrowed — the signer only reads it.
+    pub private_key: &'a SecretBytes<32>,
     pub pubkey_hash: [u8; 20],
     pub amount: u64,
 }
@@ -1269,7 +1272,7 @@ fn sign_psbt_p2pkh_body(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) ->
     // 2. Legacy sighash + ECDSA over the unsigned tx, read-only.
     let p2pkh_input = p2pkh_mod::P2PKHSignInput {
         input_index: input_idx,
-        private_key: &sign_input.private_key,
+        private_key: sign_input.private_key,
         pubkey_hash: sign_input.pubkey_hash,
     };
     let (sig_with_sighash, pubkey) = p2pkh_mod::sign_p2pkh_core(&psbt.unsigned_tx, &p2pkh_input)?;
@@ -1337,7 +1340,7 @@ pub fn sign_psbt_p2sh_p2wpkh(
     // 3. Signature (BIP-143, scriptCode = the P2WPKH program inside the wrapper).
     let p2wpkh_input = crate::chain::btc::p2wpkh::P2WPKHSignInput {
         input_index: input_idx,
-        private_key: &sign_input.private_key,
+        private_key: sign_input.private_key,
         pubkey_hash: sign_input.pubkey_hash,
         amount,
     };
@@ -2300,7 +2303,7 @@ mod tests {
 
         let sign_input = PsbtSignInput {
             input_index: 0,
-            private_key,
+            private_key: &private_key,
             pubkey_hash: pk_hash,
             amount: 200_000,
         };
@@ -2344,7 +2347,7 @@ mod tests {
         let mut psbt = psbt;
         let sign_input = PsbtSignInput {
             input_index: 0,
-            private_key: SecretBytes::new([0; 32]),
+            private_key: &SecretBytes::new([0; 32]),
             pubkey_hash: [0; 20],
             amount: 0,
         };
@@ -2432,9 +2435,10 @@ mod tests {
             &[Vec::new()],
         );
 
+        let taken_key = SecretBytes::take(&mut private_key);
         let sign_input = PsbtP2PKHSignInput {
             input_index: 0,
-            private_key: SecretBytes::take(&mut private_key),
+            private_key: &taken_key,
             pubkey_hash: pk_hash,
         };
         let err = sign_psbt_p2pkh(&mut psbt, &sign_input).unwrap_err();
@@ -2492,7 +2496,7 @@ mod tests {
         let private_key = SecretBytes::take(&mut private_key);
         let sign_input = PsbtP2PKHSignInput {
             input_index: 0,
-            private_key,
+            private_key: &private_key,
             pubkey_hash: pk_hash,
         };
 
@@ -2591,9 +2595,10 @@ mod tests {
             &[Vec::new()],
         );
 
+        let taken_key = SecretBytes::take(&mut private_key);
         let sign_input = PsbtP2PKHSignInput {
             input_index: 0,
-            private_key: SecretBytes::take(&mut private_key),
+            private_key: &taken_key,
             pubkey_hash: [0x22; 20],
         };
         let err = sign_psbt_p2pkh(&mut psbt, &sign_input).unwrap_err();
@@ -2622,7 +2627,7 @@ mod tests {
         let mut psbt = psbt;
         let sign_input = PsbtP2PKHSignInput {
             input_index: 0,
-            private_key: SecretBytes::new([0; 32]),
+            private_key: &SecretBytes::new([0; 32]),
             pubkey_hash: [0; 20],
         };
         assert!(sign_psbt_p2pkh(&mut psbt, &sign_input).is_err());
@@ -2696,7 +2701,7 @@ mod tests {
         let private_key = SecretBytes::take(&mut private_key);
         let sign_input = PsbtP2SHP2WPKHSignInput {
             input_index: 0,
-            private_key,
+            private_key: &private_key,
             pubkey_hash: pk_hash,
             amount,
         };
@@ -2774,7 +2779,7 @@ mod tests {
         );
         let sign_input = PsbtP2SHP2WPKHSignInput {
             input_index: 0,
-            private_key: SecretBytes::new([0x01; 32]),
+            private_key: &SecretBytes::new([0x01; 32]),
             pubkey_hash: [0x42; 20],
             amount,
         };
@@ -2797,7 +2802,7 @@ mod tests {
         let mut psbt = psbt;
         let sign_input = PsbtP2SHP2WPKHSignInput {
             input_index: 0,
-            private_key: SecretBytes::new([0; 32]),
+            private_key: &SecretBytes::new([0; 32]),
             pubkey_hash: [0; 20],
             amount: 0,
         };

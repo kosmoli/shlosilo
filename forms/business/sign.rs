@@ -1811,7 +1811,11 @@ fn sign_btc<'a>(
         let key_bytes = resolve_owned_key(seed, &path_used, RecordPub::Full(&records[0].2))?
             .ok_or_else(|| err(ShlosiloErrorKind::PsbtOwnershipMismatch))?;
         // Z2.2 (2026-09-24): key-material stack copy zeroized on drop.
-        let sk_bytes = zeroize::Zeroizing::new(key_bytes);
+        // A2-08 (external audit 2026-11-19): one owner instead of three — the derived bytes
+        // used to live in `sk` (a Copy scalar with no Drop), in this `Zeroizing`, and in a
+        // fresh `SecretBytes` minted for every input. The signing inputs borrow the owner now.
+        let mut key_bytes = key_bytes;
+        let sk_bytes = SecretBytes::take(&mut key_bytes);
 
         let mut pubkey_hash: Option<[u8; 20]> = None;
         for (fp, path, pk) in &records {
@@ -1870,7 +1874,7 @@ fn sign_btc<'a>(
                 &mut psbt,
                 &psbt_mod::PsbtP2PKHSignInput {
                     input_index: idx,
-                    private_key: SecretBytes::new(*sk_bytes),
+                    private_key: &sk_bytes,
                     pubkey_hash,
                 },
             )?;
@@ -1885,7 +1889,7 @@ fn sign_btc<'a>(
                 &mut psbt,
                 &psbt_mod::PsbtP2SHP2WPKHSignInput {
                     input_index: idx,
-                    private_key: SecretBytes::new(*sk_bytes),
+                    private_key: &sk_bytes,
                     pubkey_hash,
                     amount,
                 },
@@ -1900,7 +1904,7 @@ fn sign_btc<'a>(
             &mut psbt,
             &psbt_mod::PsbtSignInput {
                 input_index: idx,
-                private_key: SecretBytes::new(*sk_bytes),
+                private_key: &sk_bytes,
                 pubkey_hash,
                 amount,
             },
@@ -1950,16 +1954,22 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         None => DerivationPath::parse("m/44'/60'/0'/0/0")?,
     };
     let t_derive = crate::device_timing::Mark::start(crate::device_timing::STAGE_BIP32);
-    let sk = crate::derivation::bip32_secp256k1::derive_from_seed(seed, &path)?;
+    // A2-08: the derived scalar is a Copy type with no Drop — own it so it is erased.
+    let sk = zeroize::Zeroizing::new(crate::derivation::bip32_secp256k1::derive_from_seed(
+        seed, &path,
+    )?);
     t_derive.end();
     // Z2.2 (2026-09-24): key-material stack copy zeroized on drop.
-    let sk_bytes = zeroize::Zeroizing::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&sk));
+    // A2-08: and a single owner for it — the sign input borrows this instead of minting a
+    // third copy of the same private key.
+    let mut raw_key = crate::curve_primitive::secp256k1::scalar_to_bytes(&sk);
+    let private_key = SecretBytes::take(&mut raw_key);
 
     let t_sign = crate::device_timing::Mark::start(crate::device_timing::STAGE_ECDSA);
     let outcome = eip1559::sign_eip1559_into(
         &eip1559::Eip1559SignInput {
             tx,
-            private_key: SecretBytes::new(*sk_bytes),
+            private_key: &private_key,
         },
         output_buf,
     )?;
@@ -2114,7 +2124,7 @@ mod tests {
         let direct = crate::chain::eth::eip1559::sign_eip1559(
             &crate::chain::eth::eip1559::Eip1559SignInput {
                 tx: tx.clone(),
-                private_key: SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(
+                private_key: &SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(
                     &sk,
                 )),
             },
@@ -2132,7 +2142,7 @@ mod tests {
         let expected = crate::chain::eth::eip1559::sign_eip1559(
             &crate::chain::eth::eip1559::Eip1559SignInput {
                 tx: tx.clone(),
-                private_key: SecretBytes::new(derived_bytes),
+                private_key: &SecretBytes::new(derived_bytes),
             },
         )
         .unwrap();
@@ -2763,7 +2773,7 @@ mod tests {
         let expected = crate::chain::eth::eip1559::sign_eip1559(
             &crate::chain::eth::eip1559::Eip1559SignInput {
                 tx: tx.clone(),
-                private_key: SecretBytes::new(derived_bytes),
+                private_key: &SecretBytes::new(derived_bytes),
             },
         )
         .unwrap();

@@ -74,7 +74,10 @@ pub type Address = [u8; 20];
 /// P1-03: private keys use `SecretBytes<32>` — no Clone, no Debug, ZeroizeOnDrop, constant-time comparison.
 pub struct Eip1559SignInput<'a> {
     pub tx: Eip1559Transaction<'a>,
-    pub private_key: SecretBytes<32>,
+    /// A2-08 (external audit 2026-11-19): the signer **borrows** the key. It only reads it
+    /// (`scalar_from_bytes(expose())`), so taking ownership forced every caller to mint an
+    /// extra owner of a secret it already had.
+    pub private_key: &'a SecretBytes<32>,
 }
 
 /// Signing output
@@ -443,7 +446,10 @@ mod tests {
             data: Vec::new().into(),
         };
 
-        let input = Eip1559SignInput { tx, private_key };
+        let input = Eip1559SignInput {
+            tx,
+            private_key: &private_key,
+        };
         let signed = sign_eip1559(&input).unwrap();
 
         // Verify the signing hash
@@ -494,7 +500,10 @@ mod tests {
             data: Vec::new().into(),
         };
 
-        let input = Eip1559SignInput { tx, private_key };
+        let input = Eip1559SignInput {
+            tx,
+            private_key: &private_key,
+        };
 
         let signed1 = sign_eip1559(&input).unwrap();
         let signed2 = sign_eip1559(&input).unwrap();
