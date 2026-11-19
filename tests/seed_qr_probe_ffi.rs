@@ -18,7 +18,7 @@ const ERR_NULL_POINTER: i32 = -2;
 const ERR_ENCODING: i32 = -21;
 
 fn probe(data: &[u8]) -> i32 {
-    shlosilo_seed_qr_probe_ffi(data.as_ptr(), data.len() as core::ffi::c_uint)
+    unsafe { shlosilo_seed_qr_probe_ffi(data.as_ptr(), data.len() as core::ffi::c_uint) }
 }
 
 fn digits(n: usize) -> alloc::vec::Vec<u8> {
@@ -67,7 +67,7 @@ fn empty_and_off_lengths_are_not_seed() {
     // empty scan: non-null pointer, zero length
     let dummy = 0u8;
     assert_eq!(
-        shlosilo_seed_qr_probe_ffi(&dummy, 0),
+        unsafe { shlosilo_seed_qr_probe_ffi(&dummy, 0) },
         NOT_SEED,
         "empty payload is NotSeed"
     );
@@ -79,11 +79,11 @@ fn empty_and_off_lengths_are_not_seed() {
 #[test]
 fn null_data_is_err_null_pointer() {
     assert_eq!(
-        shlosilo_seed_qr_probe_ffi(core::ptr::null(), 16),
+        unsafe { shlosilo_seed_qr_probe_ffi(core::ptr::null(), 16) },
         ERR_NULL_POINTER
     );
     assert_eq!(
-        shlosilo_seed_qr_probe_ffi(core::ptr::null(), 0),
+        unsafe { shlosilo_seed_qr_probe_ffi(core::ptr::null(), 0) },
         ERR_NULL_POINTER
     );
 }

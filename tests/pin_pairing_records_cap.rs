@@ -82,21 +82,23 @@ fn run_pairing(session: &KeySession, req: &[u8], entropy: &[u8; 32]) -> i32 {
     let mut ws = vec![0u8; ws_len as usize];
     let mut out = vec![0u8; 16384];
     let mut actual: u32 = 0;
-    shlosilo_xmr_pairing_ffi(
-        session,
-        req.as_ptr(),
-        req.len() as core::ffi::c_uint,
-        entropy.as_ptr(),
-        entropy.len() as core::ffi::c_uint,
-        out.as_mut_ptr(),
-        out.len() as core::ffi::c_uint,
-        &mut actual,
-        ws.as_mut_ptr(),
-        ws.len() as core::ffi::c_uint,
-        core::ptr::null_mut(),
-        0,
-        core::ptr::null_mut(),
-    )
+    unsafe {
+        shlosilo_xmr_pairing_ffi(
+            session,
+            req.as_ptr(),
+            req.len() as core::ffi::c_uint,
+            entropy.as_ptr(),
+            entropy.len() as core::ffi::c_uint,
+            out.as_mut_ptr(),
+            out.len() as core::ffi::c_uint,
+            &mut actual,
+            ws.as_mut_ptr(),
+            ws.len() as core::ffi::c_uint,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
+        )
+    }
 }
 
 /// The live 2026-10-29 case: 38 records must pair (RED until the cap moves).

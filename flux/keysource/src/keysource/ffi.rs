@@ -99,7 +99,7 @@ type QrWs = ws::KeyWs;
 /// same validity.
 #[inline(always)]
 unsafe fn ws_state(ws: *mut u8) -> *mut QrWs {
-    ws::ws_state(ws)
+    unsafe { ws::ws_state(ws) }
 }
 
 /// Bounded scan slice: `(data, data_len)` → `&[u8]`, `None` over budget.
@@ -159,9 +159,14 @@ pub extern "C" fn shlosilo_keysource_qr_ws_len() -> c_uint {
 ///   (e.g. `-21` EncodingError for a non-plate payload, `-31` InvalidMnemonic
 ///   for a checksum failure, `-14` FeatureNotImplemented for `ur:` transport,
 ///   `-21` when `data_len` exceeds the scan budget).
+///
+/// # Safety
+///
+/// - `ws` must point to `ws_len` writable, zero-initialised bytes (`ws_len >= shlosilo_keysource_qr_ws_len()`), pinned: the session lives inside this workspace until the matching close, so the address must not move and must not be reused concurrently.
+/// - `data` must point to `data_len` readable scanned bytes.
+/// - `out_session` must be a writable pointer slot; none of `ws`, `data`, `out_session` may overlap.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: entry null-checks first; all raw derefs below are bounded by that contract
-pub extern "C" fn shlosilo_keysource_qr_open_ffi(
+pub unsafe extern "C" fn shlosilo_keysource_qr_open_ffi(
     ws: *mut u8,
     ws_len: c_uint,
     data: *const u8,
@@ -242,9 +247,13 @@ pub extern "C" fn shlosilo_keysource_qr_open_ffi(
 /// key material. Close only after every sign call has returned. And per the
 /// two-model boundary: a QR-glue session is closed HERE, never through
 /// `shlosilo_session_free_ffi`.
+///
+/// # Safety
+///
+/// - `ws` must be the same workspace buffer given to `shlosilo_keysource_qr_open_ffi` (the layout is derived from it), and no sign call on the session it holds may be in flight.
+/// - The session must be closed here, never through `shlosilo_session_free_ffi` (two close models, one owner).
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checked first; single-owner workspace (see below)
-pub extern "C" fn shlosilo_keysource_qr_close_ffi(ws: *mut u8) -> c_int {
+pub unsafe extern "C" fn shlosilo_keysource_qr_close_ffi(ws: *mut u8) -> c_int {
     if ws.is_null() {
         return ERR_NULL_POINTER;
     }

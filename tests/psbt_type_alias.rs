@@ -144,23 +144,25 @@ fn typed_sign_entry_treats_both_names_alike() {
         let mut out = vec![0u8; PSBT.len() + 1024];
         let mut actual: c_uint = 0;
         let mut ws = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
-        shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi(
-            tname.as_ptr(),
-            PSBT.as_ptr(),
-            PSBT.len() as c_uint,
-            idx.as_ptr(),
-            12,
-            passphrase.as_ptr(),
-            0,
-            0,
-            core::ptr::null(),
-            0,
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            &mut actual,
-            ws.as_mut_ptr(),
-            ws.len() as c_uint,
-        )
+        unsafe {
+            shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi(
+                tname.as_ptr(),
+                PSBT.as_ptr(),
+                PSBT.len() as c_uint,
+                idx.as_ptr(),
+                12,
+                passphrase.as_ptr(),
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                &mut actual,
+                ws.as_mut_ptr(),
+                ws.len() as c_uint,
+            )
+        }
     }
 
     let rc_unknown = call("definitely-not-a-ur-type");

@@ -94,7 +94,7 @@ fn write_actual_len(ptr: *mut c_uint, len: usize) {
 ///    on 32-bit Thumb, `u32::MAX` for `u16` elements already exceeds the address space; undetectable on a 64-bit host, UB on real hardware)
 ///
 /// Only when all conditions pass do we enter unsafe construction. Callers must not "validate later in business code" to patch up the proof.
-fn checked_slice<'a, T>(
+pub(crate) fn checked_slice<'a, T>(
     p: *const T,
     len: usize,
     max_len: usize,
@@ -126,7 +126,11 @@ fn checked_slice<'a, T>(
 /// Audit #5 P0-03: mutable-output version of `checked_slice` (output_buf / frame_buf etc.).
 /// Extra out-param requirement: len (buffer capacity) is likewise bound by the business cap, preventing a caller from
 /// declaring a huge capacity and causing an out-of-bounds write on the Rust side.
-fn checked_slice_mut<'a, T>(p: *mut T, len: usize, max_len: usize) -> Option<&'a mut [T]> {
+pub(crate) fn checked_slice_mut<'a, T>(
+    p: *mut T,
+    len: usize,
+    max_len: usize,
+) -> Option<&'a mut [T]> {
     if p.is_null() {
         return None; // output buffer must be provided
     }
@@ -163,9 +167,17 @@ fn mnemonic_count_usize(count: c_int) -> Option<usize> {
 /// shlosilo_sign_ffi — mnemonic + UR payload → signature
 ///
 /// Returns 0 = Ok (length written to *actual_len), negative = error code.
+///
+/// # Safety
+///
+/// - `mnemonic_indices` must point to `mnemonic_count` readable `u16` word indices.
+/// - `passphrase` must be either `(NULL, 0)` or a non-NULL pointer to `passphrase_len` readable bytes.
+/// - `ur_payload` must point to `ur_payload_len` readable bytes.
+/// - `output_buf` must point to `output_buf_len` writable bytes.
+/// - `actual_len` must be writable and must not overlap any other argument.
+/// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
-pub extern "C" fn shlosilo_sign_ffi(
+pub unsafe extern "C" fn shlosilo_sign_ffi(
     mnemonic_indices: *const u16,
     mnemonic_count: c_int, // 12 / 15 / 18 / 21 / 24
     passphrase: *const u8,
@@ -346,9 +358,12 @@ pub extern "C" fn shlosilo_ur_decode_ws_len() -> c_uint {
 /// result. Safe to call before user confirmation; the full validation (word
 /// index range + BIP-39 checksum) stays in `seed_qr::decode` and runs at
 /// session-open time (the keysource QR glue).
+///
+/// # Safety
+///
+/// - `data` must point to `data_len` readable bytes (scanned payload; budget-checked on entry).
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checked first; bounded slice below (P0-03 discipline)
-pub extern "C" fn shlosilo_seed_qr_probe_ffi(data: *const u8, data_len: c_uint) -> c_int {
+pub unsafe extern "C" fn shlosilo_seed_qr_probe_ffi(data: *const u8, data_len: c_uint) -> c_int {
     use crate::entropy::seed_qr::{classify, SeedQrClass};
     if data.is_null() {
         return ERR_NULL_POINTER;
@@ -425,9 +440,14 @@ pub const SEED_QR_MODE_COMPACT: c_int = 2;
 /// after rendering (volatile walk, same as the scan flow's plate wipe), and
 /// showing it on screen is a deliberate secret-exposure surface (steel-plate
 /// threat model: anyone who photographs the plate owns the wallet).
+///
+/// # Safety
+///
+/// - `entropy` must point to `entropy_len` readable bytes.
+/// - `out_buf` must point to `out_buf_len` writable bytes; it must not overlap `entropy`.
+/// - `actual_len` must be writable and must not overlap any other argument.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checked first; bounded slices below (P0-03 discipline)
-pub extern "C" fn shlosilo_seed_qr_encode_ffi(
+pub unsafe extern "C" fn shlosilo_seed_qr_encode_ffi(
     mode: c_int,
     entropy: *const u8,
     entropy_len: c_uint,
@@ -489,9 +509,18 @@ pub extern "C" fn shlosilo_seed_qr_encode_ffi(
 /// backends, pass NULL/0. Same (keys, tx, entropy) → same signature (deterministic retry).
 ///
 /// Returns 0 = Ok, negative = error code; signature bytes are written to output_buf.
+///
+/// # Safety
+///
+/// - `uri` must be a NUL-terminated string with the NUL inside 4097 readable bytes.
+/// - `mnemonic_indices` must point to `mnemonic_count` readable `u16` word indices.
+/// - `passphrase` must be either `(NULL, 0)` or a non-NULL pointer to `passphrase_len` readable bytes.
+/// - `entropy_ptr` must be either `(NULL, 0)` or a non-NULL pointer to `entropy_len` readable bytes (XMR signing requires at least 16).
+/// - `output_buf` must point to `output_buf_len` writable bytes.
+/// - `actual_len` must be writable and must not overlap any other argument.
+/// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
-pub extern "C" fn shlosilo_sign_ur_ffi(
+pub unsafe extern "C" fn shlosilo_sign_ur_ffi(
     uri: *const c_char, // null-terminated C string
     mnemonic_indices: *const u16,
     mnemonic_count: c_int,
@@ -636,9 +665,16 @@ pub extern "C" fn shlosilo_sign_ur_ffi(
 ///
 /// paths is a flat u32 array (hardened bit = 0x8000_0000),
 /// `path_elem_count` is the element count of this one path (v1: single path).
+///
+/// # Safety
+///
+/// - `mnemonic_indices` must point to `mnemonic_count` readable `u16` word indices.
+/// - `passphrase` must be either `(NULL, 0)` or a non-NULL pointer to `passphrase_len` readable bytes.
+/// - `path_elems` must point to `path_elem_count` readable `u32` path elements (hardened bit set in the value).
+/// - `output_buf` must point to `output_buf_len` writable bytes.
+/// - `actual_len` must be writable and must not overlap any other argument.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
-pub extern "C" fn shlosilo_export_readonly_ffi(
+pub unsafe extern "C" fn shlosilo_export_readonly_ffi(
     mnemonic_indices: *const u16,
     mnemonic_count: c_int,
     passphrase: *const u8,
@@ -741,9 +777,14 @@ pub extern "C" fn shlosilo_export_readonly_ffi(
 /// **P1-04 (2026-08-29)**: `seed_out` removed — seed does not cross the FFI (v2 security model).
 /// dice → mnemonic is the sole output; later signing/export takes mnemonic directly (seed restored on the spot inside the library).
 /// passphrase kept (metadata to be written into device storage on a future offline create); currently only length-cap validated.
+///
+/// # Safety
+///
+/// - `rolls` must point to `rolls_count` readable dice-roll bytes.
+/// - `passphrase` must be either `(NULL, 0)` or a non-NULL pointer to `passphrase_len` readable bytes.
+/// - `mnemonic_buf` must point to `mnemonic_buf_len` writable bytes; it must not overlap `rolls`.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
-pub extern "C" fn shlosilo_create_account_ffi(
+pub unsafe extern "C" fn shlosilo_create_account_ffi(
     word_count: c_uint, // 12 / 15 / 18 / 21 / 24
     sides: c_uint,
     rolls: *const u8,
@@ -804,9 +845,13 @@ pub extern "C" fn shlosilo_create_account_ffi(
 // has no reason to exist. Mnemonic validity checking is inlined in the sign/export entries.
 
 /// List of supported Network u8 values (for UI dispatch at L3 startup)
+///
+/// # Safety
+///
+/// - `output_buf` must point to `output_buf_len` writable bytes.
+/// - `actual_len` must be writable and must not overlap `output_buf`.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
-pub extern "C" fn shlosilo_supported_networks_ffi(
+pub unsafe extern "C" fn shlosilo_supported_networks_ffi(
     output_buf: *mut u8,
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
@@ -846,9 +891,13 @@ pub extern "C" fn shlosilo_supported_networks_ffi(
 }
 
 /// List of supported ExportProtocol u8 values
+///
+/// # Safety
+///
+/// - `output_buf` must point to `output_buf_len` writable bytes.
+/// - `actual_len` must be writable and must not overlap `output_buf`.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
-pub extern "C" fn shlosilo_supported_protocols_ffi(
+pub unsafe extern "C" fn shlosilo_supported_protocols_ffi(
     output_buf: *mut u8,
     output_buf_len: c_uint,
     actual_len: *mut c_uint,
@@ -911,9 +960,14 @@ pub mod r3 {
     /// R3: create a multipart encoder. Returns a handle (non-null) on success, null on failure.
     /// type_name: ASCII alphanumeric + '-' (e.g. "xmr-txunsigned")
     /// L3 must call shlosilo_ur_encode_free when done.
+    ///
+    /// # Safety
+    ///
+    /// - `type_name` must be a NUL-terminated ASCII string with the NUL inside 65 readable bytes.
+    /// - `payload` must point to `payload_len` readable bytes (required; `(NULL, 0)` is rejected).
+    /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_ur_encode_ws_len()`) and must stay at a stable address until `shlosilo_ur_encode_free`; it must not overlap `payload`.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: visible to clippy once mod r3 becomes pub; contract same as the main entries (null-check first)
-    pub extern "C" fn shlosilo_ur_encode_begin(
+    pub unsafe extern "C" fn shlosilo_ur_encode_begin(
         type_name: *const c_char,
         payload: *const u8,
         payload_len: c_uint,
@@ -968,9 +1022,14 @@ pub mod r3 {
     ///
     /// frame_buf_len must be at least 1024 (FRAME_BUF_MAX_LEN); shorter buffers are
     /// rejected with BufferTooSmall even though a 200-byte-fragment frame is ~460 chars.
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+    /// - `frame_buf` must point to `frame_buf_len` writable bytes (at least `FRAME_BUF_MAX_LEN`).
+    /// - `actual_len` must be writable and must not overlap `frame_buf`.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub extern "C" fn shlosilo_ur_encode_next(
+    pub unsafe extern "C" fn shlosilo_ur_encode_next(
         handle: *mut UrMultipartEncoder<'static>,
         frame_buf: *mut u8,
         frame_buf_len: c_uint,
@@ -990,8 +1049,13 @@ pub mod r3 {
             let enc = unsafe { &mut *handle };
             // Z2.4c: build the frame directly into the caller buffer (was String + copy)
             let mut scratch = [0u8; 1024]; // part CBOR intermediate (A-class; oversized parts error explicitly)
-            let out = unsafe { core::slice::from_raw_parts_mut(frame_buf, frame_buf_len as usize) };
-            let n = enc.next_frame_into(&mut scratch, &mut out[..frame_buf_len as usize - 1])?;
+                                           // F-1: the caller's capacity claim is clamped to the frame budget before
+                                           // any slice is built, so a bogus `frame_buf_len` cannot violate the
+                                           // `from_raw_parts` contract (a `c_uint` length exceeds isize::MAX on 32-bit).
+            let cap = (frame_buf_len as usize).min(FRAME_BUF_MAX_LEN);
+            let out = checked_slice_mut(frame_buf, cap, FRAME_BUF_MAX_LEN)
+                .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
+            let n = enc.next_frame_into(&mut scratch, &mut out[..cap - 1])?;
             out[n] = 0;
             Ok(n)
         });
@@ -1016,9 +1080,12 @@ pub mod r3 {
     /// as ceil(payload_len / fragment) disagrees with the real count by the CBOR byte-string
     /// shell and the fountain padding, and then the label lies about the animation.
     /// Returns 0 for a null handle.
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub extern "C" fn shlosilo_ur_encode_fragment_count(
+    pub unsafe extern "C" fn shlosilo_ur_encode_fragment_count(
         handle: *mut UrMultipartEncoder<'static>,
     ) -> c_uint {
         if handle.is_null() {
@@ -1037,9 +1104,14 @@ pub mod r3 {
     ///
     /// frame_buf_len must be at least 1024 (FRAME_BUF_MAX_LEN); shorter buffers are
     /// rejected with BufferTooSmall even though a 200-byte-fragment frame is ~460 chars.
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+    /// - `frame_buf` must point to `frame_buf_len` writable bytes (at least `FRAME_BUF_MAX_LEN`).
+    /// - `actual_len` must be writable and must not overlap `frame_buf`.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub extern "C" fn shlosilo_ur_encode_next_cyclic(
+    pub unsafe extern "C" fn shlosilo_ur_encode_next_cyclic(
         handle: *mut UrMultipartEncoder<'static>,
         frame_buf: *mut u8,
         frame_buf_len: c_uint,
@@ -1058,9 +1130,11 @@ pub mod r3 {
             let enc = unsafe { &mut *handle };
             // Z2.4c: build the frame directly into the caller buffer (was String + copy)
             let mut scratch = [0u8; 1024]; // part CBOR intermediate (A-class; oversized parts error explicitly)
-            let out = unsafe { core::slice::from_raw_parts_mut(frame_buf, frame_buf_len as usize) };
-            let n =
-                enc.next_cyclic_frame_into(&mut scratch, &mut out[..frame_buf_len as usize - 1])?;
+                                           // F-1: same clamp as `shlosilo_ur_encode_next`.
+            let cap = (frame_buf_len as usize).min(FRAME_BUF_MAX_LEN);
+            let out = checked_slice_mut(frame_buf, cap, FRAME_BUF_MAX_LEN)
+                .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
+            let n = enc.next_cyclic_frame_into(&mut scratch, &mut out[..cap - 1])?;
             out[n] = 0;
             Ok(n)
         });
@@ -1081,9 +1155,12 @@ pub mod r3 {
     }
 
     /// R3: release the encoder handle. Null-safe (idempotent).
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be NULL or a handle previously returned by `shlosilo_ur_encode_begin` in caller workspace, freed exactly once, with no call on it in flight (including from interrupt context).
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: visible to clippy once mod r3 becomes pub; free contract: single-owner
-    pub extern "C" fn shlosilo_ur_encode_free(handle: *mut UrMultipartEncoder) {
+    pub unsafe extern "C" fn shlosilo_ur_encode_free(handle: *mut UrMultipartEncoder) {
         // Z3.3c: the handle lives in caller workspace — free only drops the
         // value in place (no deallocation; the memory returns to the caller).
         // Single-owner free contract unchanged: exactly one free per handle.
@@ -1101,12 +1178,12 @@ pub mod r3 {
     // Z3.3c (Z6 no-allocator pressure); the sign shell moves with the C-ABI
     // workspace at Z3.3b (proposed C shape in the Z3 design doc).
     /// R3: create a multipart decoder. Returns a handle on success, null on failure.
+    ///
+    /// # Safety
+    ///
+    /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_ur_decode_ws_len()`) and must stay at a stable address until `shlosilo_ur_decode_free`.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: ws_len is checked
-                                               // against shlosilo_ur_decode_ws_len() before from_raw_parts_mut; the
-                                               // caller guarantees ws points to ws_len valid bytes kept at a stable
-                                               // address until shlosilo_ur_decode_free (Z3.3c workspace contract).
-    pub extern "C" fn shlosilo_ur_decode_new(
+    pub unsafe extern "C" fn shlosilo_ur_decode_new(
         ws: *mut u8,
         ws_len: c_uint,
     ) -> *mut UrMultipartDecoder<'static> {
@@ -1132,9 +1209,14 @@ pub mod r3 {
 
     /// R3: feed one frame URI (NUL-terminated C string).
     /// Returns 0 = Ok (accepted status written to *accepted_out: 1 = new information, 0 = duplicate frame)
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+    /// - `frame` must be a NUL-terminated frame URI string with the NUL inside the frame budget + 1 readable bytes.
+    /// - `accepted_out` must be NULL or writable and must not overlap `frame`.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub extern "C" fn shlosilo_ur_decode_feed(
+    pub unsafe extern "C" fn shlosilo_ur_decode_feed(
         handle: *mut UrMultipartDecoder<'static>,
         frame: *const c_char,
         accepted_out: *mut c_uint,
@@ -1181,9 +1263,12 @@ pub mod r3 {
     }
 
     /// R3: decode progress 0..=99 (100 is expressed via complete)
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub extern "C" fn shlosilo_ur_decode_progress(handle: *mut UrMultipartDecoder) -> c_int {
+    pub unsafe extern "C" fn shlosilo_ur_decode_progress(handle: *mut UrMultipartDecoder) -> c_int {
         if handle.is_null() {
             return ERR_NULL_POINTER;
         }
@@ -1198,9 +1283,14 @@ pub mod r3 {
     /// that). Exists so the carrier can report what a *peer* actually sends (pool #71):
     /// the profile's arena slot has to cover it, and a guess that is too small fails a
     /// whole session.
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub extern "C" fn shlosilo_ur_decode_fragment_len(handle: *mut UrMultipartDecoder) -> c_uint {
+    pub unsafe extern "C" fn shlosilo_ur_decode_fragment_len(
+        handle: *mut UrMultipartDecoder,
+    ) -> c_uint {
         if handle.is_null() {
             return 0;
         }
@@ -1210,9 +1300,12 @@ pub mod r3 {
     }
 
     /// R3: whether decoding is complete
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub extern "C" fn shlosilo_ur_decode_complete(handle: *mut UrMultipartDecoder) -> c_int {
+    pub unsafe extern "C" fn shlosilo_ur_decode_complete(handle: *mut UrMultipartDecoder) -> c_int {
         if handle.is_null() {
             return ERR_NULL_POINTER;
         }
@@ -1232,9 +1325,14 @@ pub mod r3 {
     /// delivered payload length) → ERR_BUFFER_TOO_SMALL with actual_len set to that
     /// capacity for the retry allocation. On success actual_len is the delivered
     /// payload length (padding excluded, CBOR shell stripped).
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+    /// - `payload_buf` must point to `payload_buf_len` writable bytes (at least the reassembled capacity reported through `actual_len` on a `BufferTooSmall` return).
+    /// - `actual_len` must be writable and must not overlap `payload_buf`.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub extern "C" fn shlosilo_ur_decode_payload(
+    pub unsafe extern "C" fn shlosilo_ur_decode_payload(
         handle: *mut UrMultipartDecoder<'static>,
         payload_buf: *mut u8,
         payload_buf_len: c_uint,
@@ -1248,8 +1346,16 @@ pub mod r3 {
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
             let dec = unsafe { &*handle };
             // v1: payload goes straight into the caller buffer (no Vec).
-            let out =
-                unsafe { core::slice::from_raw_parts_mut(payload_buf, payload_buf_len as usize) };
+            // F-1: clamp the claimed capacity to the reassembly budget before
+            // building the slice (see `checked_slice_mut`).
+            let cap =
+                (payload_buf_len as usize).min(crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN);
+            let out = checked_slice_mut(
+                payload_buf,
+                cap,
+                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+            )
+            .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
             let n = dec.payload_into(out)?.ok_or_else(err_unknown)?;
             Ok(n)
         });
@@ -1292,9 +1398,14 @@ pub mod r3 {
 
     /// R3/P0-C (2026-09-01): get the decoded UR type (written to type_buf as NUL-terminated ASCII).
     /// Before completion or with no frames → EncodingInvalidFormat; buffer too small → BufferTooSmall (actual_len gets the required value, including NUL).
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+    /// - `type_buf` must point to `type_buf_len` writable bytes.
+    /// - `actual_len` must be writable and must not overlap `type_buf`.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub extern "C" fn shlosilo_ur_decode_type(
+    pub unsafe extern "C" fn shlosilo_ur_decode_type(
         handle: *mut UrMultipartDecoder<'static>,
         type_buf: *mut u8,
         type_buf_len: c_uint,
@@ -1368,9 +1479,15 @@ pub mod r3 {
     ///
     /// Returns 0 = Ok, negative = error code (-2 NULL argument, -20 buffer
     /// too small, -21 malformed / multipart URI).
+    ///
+    /// # Safety
+    ///
+    /// - `uri` must be a NUL-terminated string with the NUL inside the frame budget + 1 readable bytes.
+    /// - `type_buf` must point to `type_buf_len` writable bytes.
+    /// - `payload` must point to `payload_len` writable bytes.
+    /// - `actual_len` must be writable; none of `type_buf`, `payload` and `actual_len` may overlap each other or the `uri` buffer.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: entry null-checks first
-    pub extern "C" fn shlosilo_ur_decode_uri_ffi(
+    pub unsafe extern "C" fn shlosilo_ur_decode_uri_ffi(
         uri: *const c_char,
         type_buf: *mut u8,
         type_buf_len: c_uint,
@@ -1452,9 +1569,19 @@ pub mod r3 {
     /// (seed-less `KeySession` handle). Behavior is byte-for-byte unchanged:
     /// the body now delegates to the shared sign core (`sign_typed_core`) that
     /// the session entry also uses.
+    ///
+    /// # Safety
+    ///
+    /// - `type_name` must be a NUL-terminated string with the NUL inside 65 readable bytes.
+    /// - `payload` must point to `payload_len` readable bytes (budget: the multipart payload cap).
+    /// - `mnemonic_indices` must point to `mnemonic_count` readable `u16` word indices.
+    /// - `passphrase` must be either `(NULL, 0)` or a non-NULL pointer to `passphrase_len` readable bytes.
+    /// - `entropy_ptr` must be either `(NULL, 0)` or a non-NULL pointer to `entropy_len` readable bytes.
+    /// - `output_buf` must point to `output_buf_len` writable bytes.
+    /// - `actual_len` must be writable and must not overlap any other argument.
+    /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub extern "C" fn shlosilo_sign_typed_ffi(
+    pub unsafe extern "C" fn shlosilo_sign_typed_ffi(
         type_name: *const c_char,
         payload: *const u8,
         payload_len: c_uint,
@@ -1759,9 +1886,19 @@ pub mod r3 {
     /// Returns 0 = Ok (length in `actual_len`), negative = error code.
     /// The frozen signature carries no network parameter: chain/network gating
     /// is the caller's policy (the deprecated typed entry keeps its own).
+    ///
+    /// # Safety
+    ///
+    /// - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+    /// - `type_name` must be a NUL-terminated string with the NUL inside 65 readable bytes.
+    /// - `payload` must point to `payload_len` readable bytes (budget: the multipart payload cap).
+    /// - `entropy_ptr` must be either `(NULL, 0)` or a non-NULL pointer to `entropy_len` readable bytes.
+    /// - `output_buf` must point to `output_buf_len` writable bytes.
+    /// - `actual_len` must be writable and must not overlap any other argument.
+    /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
+    /// - `ki_records` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_len` readable `WalletKiRecord` values; it must not overlap `output_buf` or `ws`.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
-    pub extern "C" fn shlosilo_sign_session_ffi(
+    pub unsafe extern "C" fn shlosilo_sign_session_ffi(
         session: *const KeySession, // flux-constructed; the FFI side only holds the pointer
         type_name: *const c_char,
         payload: *const u8,
@@ -1812,12 +1949,18 @@ pub mod r3 {
             if ki_records.is_null() && ki_records_len != 0 {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch));
             }
+            // F-1: the record count is clamped through `checked_slice` before any
+            // slice exists (the sign path can cover at most `SIGN_WS_KI` records).
             let ki_slice: &[crate::business::sign::WalletKiRecord] = if ki_records.is_null() {
                 &[]
             } else {
-                // SAFETY: non-null (checked above) with the caller-supplied
-                // count; the array is repr(C) WalletKiRecord (layout match).
-                unsafe { core::slice::from_raw_parts(ki_records, ki_records_len as usize) }
+                checked_slice(
+                    ki_records,
+                    ki_records_len as usize,
+                    crate::types::caps::SIGN_WS_KI,
+                    false,
+                )
+                .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?
             };
             sign_typed_core(
                 SignKeySource::Session(session),
@@ -1847,9 +1990,19 @@ pub mod r3 {
     ///   keyed map (the keystone-ecosystem shape, validated A/B on real
     ///   hardware 2026-11-02);
     /// - any other value: `EncodingInvalidFormat` (never a silent fallback).
+    ///
+    /// # Safety
+    ///
+    /// - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+    /// - `type_name` must be a NUL-terminated string with the NUL inside 65 readable bytes.
+    /// - `payload` must point to `payload_len` readable bytes (budget: the multipart payload cap).
+    /// - `entropy_ptr` must be either `(NULL, 0)` or a non-NULL pointer to `entropy_len` readable bytes.
+    /// - `output_buf` must point to `output_buf_len` writable bytes.
+    /// - `actual_len` must be writable and must not overlap any other argument.
+    /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
+    /// - `ki_records` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_len` readable `WalletKiRecord` values; it must not overlap `output_buf` or `ws`.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
-    pub extern "C" fn shlosilo_sign_session_view_ffi(
+    pub unsafe extern "C" fn shlosilo_sign_session_view_ffi(
         session: *const KeySession, // flux-constructed; the FFI side only holds the pointer
         type_name: *const c_char,
         payload: *const u8,
@@ -1913,12 +2066,18 @@ pub mod r3 {
             if ki_records.is_null() && ki_records_len != 0 {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch));
             }
+            // F-1: the record count is clamped through `checked_slice` before any
+            // slice exists (the sign path can cover at most `SIGN_WS_KI` records).
             let ki_slice: &[crate::business::sign::WalletKiRecord] = if ki_records.is_null() {
                 &[]
             } else {
-                // SAFETY: non-null (checked above) with the caller-supplied
-                // count; the array is repr(C) WalletKiRecord (layout match).
-                unsafe { core::slice::from_raw_parts(ki_records, ki_records_len as usize) }
+                checked_slice(
+                    ki_records,
+                    ki_records_len as usize,
+                    crate::types::caps::SIGN_WS_KI,
+                    false,
+                )
+                .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?
             };
             sign_typed_core(
                 SignKeySource::Session(session),
@@ -1971,9 +2130,14 @@ pub mod r3 {
     /// `shlosilo_keysource_qr_close_ffi` instead — freeing it here would drop
     /// the slot-owned session behind the handle's back and turn the glue's
     /// next close into a double drop.
+    ///
+    /// # Safety
+    ///
+    /// - `session` must point to a writable handle slot owned by the caller; the slot must hold either NULL or a `KeySession` this library constructed in caller memory.
+    /// - The slot must not be used concurrently: no sign call on the same handle may be in flight (including from interrupt context).
+    /// - A session produced by the flux-side QR/SE glue must be closed through the matching `shlosilo_keysource_*_close_ffi` entry instead — freeing it here would drop the slot-owned session behind the glue's back and turn the glue's next close into a double drop.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checked first; single-owner handle (see below)
-    pub extern "C" fn shlosilo_session_free_ffi(session: *mut *mut KeySession) -> c_int {
+    pub unsafe extern "C" fn shlosilo_session_free_ffi(session: *mut *mut KeySession) -> c_int {
         if session.is_null() {
             return ERR_NULL_POINTER;
         }
@@ -2030,9 +2194,18 @@ pub mod r3 {
     /// wire), NOT the boost-archive `wallet2::export_key_images_str` blob.
     ///
     /// Returns 0 = Ok (length in `actual_len`), negative = error code.
+    ///
+    /// # Safety
+    ///
+    /// - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+    /// - `payload` must point to `payload_len` readable bytes (the xmr-output container, <= 16 KiB).
+    /// - `entropy_ptr` must be either `(NULL, 0)` or a non-NULL pointer to `entropy_len` readable bytes.
+    /// - `output_buf` must point to `output_buf_len` writable bytes.
+    /// - `ws` must point to `ws_len` writable bytes (`ws_len >=` the pairing workspace query) and must be **u128-aligned**: the CryptoNight scratch slot is carved at u128 alignment relative to the base and the core validates the absolute address. The address must stay stable for the call.
+    /// - `ki_records_out` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_cap` writable `WalletKiRecord` slots; it must not overlap `output_buf`, `ws` or the other out-params.
+    /// - `ki_records_actual` and `actual_len` must be writable and must not overlap any other argument.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: the entry null-checks first, then from_raw_parts; the C side guarantees pointer validity or accepts the NULL error code
-    pub extern "C" fn shlosilo_xmr_pairing_ffi(
+    pub unsafe extern "C" fn shlosilo_xmr_pairing_ffi(
         session: *const KeySession, // flux-constructed; the FFI side only holds the pointer
         payload: *const u8,
         payload_len: c_uint,
@@ -2127,13 +2300,18 @@ pub mod r3 {
             if ki_records_out.is_null() && ki_records_cap != 0 {
                 return Err(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch));
             }
+            // F-1: the capacity claim is clamped through `checked_slice_mut` before any
+            // slice exists; one export can produce at most `PAIRING_DETAILS_MAX` records.
             let ki_slice: &mut [crate::business::sign::WalletKiRecord] = if ki_records_out.is_null()
             {
                 &mut []
             } else {
-                // SAFETY: non-null (checked above) with the caller-supplied
-                // capacity; the array is repr(C) WalletKiRecord (layout match).
-                unsafe { core::slice::from_raw_parts_mut(ki_records_out, ki_records_cap as usize) }
+                checked_slice_mut(
+                    ki_records_out,
+                    ki_records_cap as usize,
+                    crate::business::xmr_pairing::PAIRING_DETAILS_MAX,
+                )
+                .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?
             };
             let mut ki_written = 0usize;
             let outcome = crate::business::xmr_pairing::process_output_export_session(
@@ -2170,9 +2348,14 @@ pub mod r3 {
     ///
     /// Returns 0 = Ok; negative = error code (`ERR_NULL_POINTER` on a null
     /// argument, `ERR_BUFFER_TOO_SMALL` on `*len > store_cap`).
+    ///
+    /// # Safety
+    ///
+    /// - `store` must be NULL only with `store_cap == 0`; otherwise it must point to `store_cap` writable `WalletKiRecord` slots.
+    /// - `incoming` must be NULL only with `incoming_len == 0`; otherwise it must point to `incoming_len` readable `WalletKiRecord` values that do **not overlap** `store` (both are borrowed at the same time, mutably and immutably respectively).
+    /// - `len` must point to an initialised `c_uint` holding the current record count (`*len <= store_cap`) and must not overlap `store` or `incoming`.
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checks first, then from_raw_parts
-    pub extern "C" fn shlosilo_ki_store_merge_ffi(
+    pub unsafe extern "C" fn shlosilo_ki_store_merge_ffi(
         store: *mut crate::business::sign::WalletKiRecord,
         store_cap: c_uint,
         len: *mut c_uint,
@@ -2187,15 +2370,34 @@ pub mod r3 {
         }
         // SAFETY: non-null where dereferenced (checked above); the caller
         // guarantees `store_cap` / `incoming_len` valid repr(C) slots.
+        // F-1: both record counts are clamped through `checked_slice(_mut)` before any
+        // slice exists; `SIGN_WS_KI` is the cap the sign path can actually consume, so
+        // a larger claim is a caller bug rather than a supported capacity.
+        if store_cap as usize > crate::types::caps::SIGN_WS_KI
+            || incoming_len as usize > crate::types::caps::SIGN_WS_KI
+        {
+            return ERR_BUFFER_TOO_SMALL;
+        }
         let store_slice: &mut [crate::business::sign::WalletKiRecord] = if store_cap == 0 {
             &mut []
         } else {
-            unsafe { core::slice::from_raw_parts_mut(store, store_cap as usize) }
+            match checked_slice_mut(store, store_cap as usize, crate::types::caps::SIGN_WS_KI) {
+                Some(s) => s,
+                None => return ERR_BUFFER_TOO_SMALL,
+            }
         };
         let inc_slice: &[crate::business::sign::WalletKiRecord] = if incoming_len == 0 {
             &[]
         } else {
-            unsafe { core::slice::from_raw_parts(incoming, incoming_len as usize) }
+            match checked_slice(
+                incoming,
+                incoming_len as usize,
+                crate::types::caps::SIGN_WS_KI,
+                false,
+            ) {
+                Some(s) => s,
+                None => return ERR_BUFFER_TOO_SMALL,
+            }
         };
         let mut len_v = unsafe { *len } as usize;
         if len_v > store_slice.len() {
@@ -2207,9 +2409,12 @@ pub mod r3 {
     }
 
     /// R3: release the decoder handle. Null-safe (idempotent).
+    ///
+    /// # Safety
+    ///
+    /// - `handle` must be NULL or a handle previously placed by `shlosilo_ur_decode_new` in caller workspace, freed exactly once, with no call on it in flight (including from interrupt context).
     #[no_mangle]
-    #[allow(clippy::not_unsafe_ptr_arg_deref)] // P0-02: visible to clippy once mod r3 becomes pub; free contract: single-owner
-    pub extern "C" fn shlosilo_ur_decode_free(handle: *mut UrMultipartDecoder<'static>) {
+    pub unsafe extern "C" fn shlosilo_ur_decode_free(handle: *mut UrMultipartDecoder<'static>) {
         // Z3.3c: caller-workspace handle — free drops the value in place (the
         // pools and handle memory return to the caller). Single-owner contract.
         // v1 contract 5: sensitive spans (decoded parts, buffers, received
@@ -2262,26 +2467,30 @@ pub mod r3 {
             let tname = c"xmr-txunsigned".as_ptr();
 
             let mut enc_ws = alloc::vec![0u8; shlosilo_ur_encode_ws_len() as usize];
-            let enc = shlosilo_ur_encode_begin(
-                tname,
-                payload.as_ptr(),
-                payload.len() as c_uint,
-                200,
-                enc_ws.as_mut_ptr(),
-                shlosilo_ur_encode_ws_len(),
-            );
+            let enc = unsafe {
+                shlosilo_ur_encode_begin(
+                    tname,
+                    payload.as_ptr(),
+                    payload.len() as c_uint,
+                    200,
+                    enc_ws.as_mut_ptr(),
+                    shlosilo_ur_encode_ws_len(),
+                )
+            };
             assert!(!enc.is_null());
 
             let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
             let mut actual: c_uint = 0;
             let mut frames: Vec<String> = Vec::new();
             loop {
-                let rc = shlosilo_ur_encode_next(
-                    enc,
-                    frame_buf.as_mut_ptr(),
-                    frame_buf.len() as c_uint,
-                    &mut actual,
-                );
+                let rc = unsafe {
+                    shlosilo_ur_encode_next(
+                        enc,
+                        frame_buf.as_mut_ptr(),
+                        frame_buf.len() as c_uint,
+                        &mut actual,
+                    )
+                };
                 assert_eq!(rc, OK, "rc={rc}");
                 let f = core::str::from_utf8(&frame_buf[..actual as usize]).unwrap();
                 let done = f.contains("/11-"); // 1024/200 → 6 fragments; guard below
@@ -2296,39 +2505,43 @@ pub mod r3 {
             assert!(frames[0].starts_with("ur:xmr-txunsigned/1-6/"));
 
             let mut dec_ws = alloc::vec![0u8; shlosilo_ur_decode_ws_len() as usize];
-            let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
+            let dec =
+                unsafe { shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len()) };
             assert!(!dec.is_null());
             for f in &frames {
                 let cf = alloc::ffi::CString::new(f.as_str()).unwrap();
                 let mut accepted: c_uint = 0;
-                let rc = shlosilo_ur_decode_feed(dec, cf.as_ptr(), &mut accepted);
+                let rc = unsafe { shlosilo_ur_decode_feed(dec, cf.as_ptr(), &mut accepted) };
                 assert_eq!(rc, OK);
             }
-            assert_eq!(shlosilo_ur_decode_complete(dec), 1);
+            assert_eq!(unsafe { shlosilo_ur_decode_complete(dec) }, 1);
 
             let mut out = [0u8; 2048];
-            let rc =
-                shlosilo_ur_decode_payload(dec, out.as_mut_ptr(), out.len() as c_uint, &mut actual);
+            let rc = unsafe {
+                shlosilo_ur_decode_payload(dec, out.as_mut_ptr(), out.len() as c_uint, &mut actual)
+            };
             assert_eq!(rc, OK);
             assert_eq!(actual as usize, payload.len());
             assert_eq!(&out[..payload.len()], &payload[..]);
 
             // cyclic frame: seq wraps back to 1
-            let rc = shlosilo_ur_encode_next_cyclic(
-                enc,
-                frame_buf.as_mut_ptr(),
-                frame_buf.len() as c_uint,
-                &mut actual,
-            );
+            let rc = unsafe {
+                shlosilo_ur_encode_next_cyclic(
+                    enc,
+                    frame_buf.as_mut_ptr(),
+                    frame_buf.len() as c_uint,
+                    &mut actual,
+                )
+            };
             assert_eq!(rc, OK);
             let f = core::str::from_utf8(&frame_buf[..actual as usize]).unwrap();
             assert!(f.starts_with("ur:xmr-txunsigned/1-6/"), "cyclic={f}");
 
-            shlosilo_ur_encode_free(enc);
-            shlosilo_ur_decode_free(dec);
+            unsafe { shlosilo_ur_encode_free(enc) };
+            unsafe { shlosilo_ur_decode_free(dec) };
             // post-free double-free protection is guaranteed by the L3 contract (C side nulls it); the Rust side is null-safe
-            shlosilo_ur_encode_free(core::ptr::null_mut());
-            shlosilo_ur_decode_free(core::ptr::null_mut());
+            unsafe { shlosilo_ur_encode_free(core::ptr::null_mut()) };
+            unsafe { shlosilo_ur_decode_free(core::ptr::null_mut()) };
         }
 
         /// P0-C E2E (2026-09-01): multipart (real Sparrow signet PSBT ~12KB) → decode_type
@@ -2360,40 +2573,46 @@ pub mod r3 {
             // multipart encode
             let tname = c"crypto-psbt".as_ptr();
             let mut enc_ws = alloc::vec![0u8; shlosilo_ur_encode_ws_len() as usize];
-            let enc = shlosilo_ur_encode_begin(
-                tname,
-                ur_payload.as_ptr(),
-                ur_payload.len() as c_uint,
-                200,
-                enc_ws.as_mut_ptr(),
-                shlosilo_ur_encode_ws_len(),
-            );
+            let enc = unsafe {
+                shlosilo_ur_encode_begin(
+                    tname,
+                    ur_payload.as_ptr(),
+                    ur_payload.len() as c_uint,
+                    200,
+                    enc_ws.as_mut_ptr(),
+                    shlosilo_ur_encode_ws_len(),
+                )
+            };
             assert!(!enc.is_null());
             let frag_count = ur_payload.len().div_ceil(200);
             let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
             let mut flen: c_uint = 0;
             let mut dec_ws = alloc::vec![0u8; shlosilo_ur_decode_ws_len() as usize];
-            let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
+            let dec =
+                unsafe { shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len()) };
             for _ in 0..frag_count {
-                let rc = shlosilo_ur_encode_next(
-                    enc,
-                    frame_buf.as_mut_ptr(),
-                    frame_buf.len() as c_uint,
-                    &mut flen,
-                );
+                let rc = unsafe {
+                    shlosilo_ur_encode_next(
+                        enc,
+                        frame_buf.as_mut_ptr(),
+                        frame_buf.len() as c_uint,
+                        &mut flen,
+                    )
+                };
                 assert_eq!(rc, OK);
                 let cf = CString::new(&frame_buf[..flen as usize]).unwrap();
                 let mut accepted: c_uint = 0;
-                let rc = shlosilo_ur_decode_feed(dec, cf.as_ptr(), &mut accepted);
+                let rc = unsafe { shlosilo_ur_decode_feed(dec, cf.as_ptr(), &mut accepted) };
                 assert_eq!(rc, OK, "feed rc={rc}");
             }
-            assert_eq!(shlosilo_ur_decode_complete(dec), 1);
+            assert_eq!(unsafe { shlosilo_ur_decode_complete(dec) }, 1);
 
             // type extraction
             let mut tbuf = [0u8; 64];
             let mut tlen: c_uint = 0;
-            let rc =
-                shlosilo_ur_decode_type(dec, tbuf.as_mut_ptr(), tbuf.len() as c_uint, &mut tlen);
+            let rc = unsafe {
+                shlosilo_ur_decode_type(dec, tbuf.as_mut_ptr(), tbuf.len() as c_uint, &mut tlen)
+            };
             assert_eq!(rc, OK);
             assert_eq!(&tbuf[..tlen as usize - 1], b"crypto-psbt");
 
@@ -2401,8 +2620,9 @@ pub mod r3 {
             // is stripped: the delivered bytes are the RAW PSBT
             let mut pbuf = [0u8; 16384];
             let mut plen: c_uint = 0;
-            let rc =
-                shlosilo_ur_decode_payload(dec, pbuf.as_mut_ptr(), pbuf.len() as c_uint, &mut plen);
+            let rc = unsafe {
+                shlosilo_ur_decode_payload(dec, pbuf.as_mut_ptr(), pbuf.len() as c_uint, &mut plen)
+            };
             assert_eq!(rc, OK);
             assert_eq!(plen as usize, PSBT.len());
             assert_eq!(&pbuf[..plen as usize], PSBT);
@@ -2412,30 +2632,32 @@ pub mod r3 {
             let mut out = [0u8; 16384 + 512];
             let mut olen: c_uint = 0;
             let mut ws_buf = alloc::vec![0u8; shlosilo_sign_ws_len() as usize];
-            let rc = shlosilo_sign_typed_ffi(
-                tname_c.as_ptr(),
-                pbuf.as_ptr(),
-                plen,
-                idx.as_ptr(),
-                idx.len() as c_int,
-                core::ptr::null(), // passphrase
-                0,
-                0, // network: mainnet (PSBT fixture is signet — does check_network require mainnet for crypto-psbt?)
-                core::ptr::null(),
-                0, // entropy
-                out.as_mut_ptr(),
-                out.len() as c_uint,
-                &mut olen,
-                ws_buf.as_mut_ptr(),
-                shlosilo_sign_ws_len(),
-            );
+            let rc = unsafe {
+                shlosilo_sign_typed_ffi(
+                    tname_c.as_ptr(),
+                    pbuf.as_ptr(),
+                    plen,
+                    idx.as_ptr(),
+                    idx.len() as c_int,
+                    core::ptr::null(), // passphrase
+                    0,
+                    0, // network: mainnet (PSBT fixture is signet — does check_network require mainnet for crypto-psbt?)
+                    core::ptr::null(),
+                    0, // entropy
+                    out.as_mut_ptr(),
+                    out.len() as c_uint,
+                    &mut olen,
+                    ws_buf.as_mut_ptr(),
+                    shlosilo_sign_ws_len(),
+                )
+            };
             assert_eq!(rc, OK, "typed sign rc={rc}");
             assert!(
                 olen as usize > PSBT.len(),
                 "signed output larger than unsigned"
             );
-            shlosilo_ur_encode_free(enc);
-            shlosilo_ur_decode_free(dec);
+            unsafe { shlosilo_ur_encode_free(enc) };
+            unsafe { shlosilo_ur_decode_free(dec) };
         }
 
         /// P0-C: type buffer too small → BufferTooSmall with the required value
@@ -2445,53 +2667,63 @@ pub mod r3 {
             let payload = [7u8; 8];
             let mut enc_ws = alloc::vec![0u8; shlosilo_ur_encode_ws_len() as usize];
             let mut dec_ws = alloc::vec![0u8; shlosilo_ur_decode_ws_len() as usize];
-            let enc = shlosilo_ur_encode_begin(
-                c"crypto-psbt".as_ptr(),
-                payload.as_ptr(),
-                8,
-                8,
-                enc_ws.as_mut_ptr(),
-                shlosilo_ur_encode_ws_len(),
-            );
-            let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
+            let enc = unsafe {
+                shlosilo_ur_encode_begin(
+                    c"crypto-psbt".as_ptr(),
+                    payload.as_ptr(),
+                    8,
+                    8,
+                    enc_ws.as_mut_ptr(),
+                    shlosilo_ur_encode_ws_len(),
+                )
+            };
+            let dec =
+                unsafe { shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len()) };
             let mut frame_buf = [0u8; FRAME_BUF_MAX_LEN];
             let mut flen: c_uint = 0;
-            let rc = shlosilo_ur_encode_next(
-                enc,
-                frame_buf.as_mut_ptr(),
-                frame_buf.len() as c_uint,
-                &mut flen,
-            );
+            let rc = unsafe {
+                shlosilo_ur_encode_next(
+                    enc,
+                    frame_buf.as_mut_ptr(),
+                    frame_buf.len() as c_uint,
+                    &mut flen,
+                )
+            };
             assert_eq!(rc, OK);
             let cf = CString::new(&frame_buf[..flen as usize]).unwrap();
-            let rc = shlosilo_ur_decode_feed(dec, cf.as_ptr(), core::ptr::null_mut());
+            let rc = unsafe { shlosilo_ur_decode_feed(dec, cf.as_ptr(), core::ptr::null_mut()) };
             assert_eq!(rc, OK);
 
             let mut tbuf = [0u8; 4];
             let mut tlen: c_uint = 0;
-            let rc =
-                shlosilo_ur_decode_type(dec, tbuf.as_mut_ptr(), tbuf.len() as c_uint, &mut tlen);
+            let rc = unsafe {
+                shlosilo_ur_decode_type(dec, tbuf.as_mut_ptr(), tbuf.len() as c_uint, &mut tlen)
+            };
             assert_eq!(rc, to_ffi_code(&err(ShlosiloErrorKind::BufferTooSmall)));
             assert!(tlen as usize > "crypto-psbt".len());
-            shlosilo_ur_encode_free(enc);
-            shlosilo_ur_decode_free(dec);
+            unsafe { shlosilo_ur_encode_free(enc) };
+            unsafe { shlosilo_ur_decode_free(dec) };
         }
         /// Z3.3c contract: free() drops the handle IN PLACE — the caller's
         /// workspace is reusable immediately (no deallocation involved).
         #[test]
         fn ffi_handle_ws_reusable_after_free() {
             let mut dec_ws = alloc::vec![0u8; shlosilo_ur_decode_ws_len() as usize];
-            let d1 = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
+            let d1 =
+                unsafe { shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len()) };
             assert!(!d1.is_null());
-            shlosilo_ur_decode_free(d1);
+            unsafe { shlosilo_ur_decode_free(d1) };
             // same workspace, second life
-            let d2 = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
+            let d2 =
+                unsafe { shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len()) };
             assert!(!d2.is_null(), "workspace must be reusable after free");
-            shlosilo_ur_decode_free(d2);
+            unsafe { shlosilo_ur_decode_free(d2) };
             // under-capacity: the whole-shape failure contract
             let tiny = shlosilo_ur_decode_ws_len() as usize - 1;
             let mut small = alloc::vec![0u8; tiny];
-            assert!(shlosilo_ur_decode_new(small.as_mut_ptr(), tiny as c_uint).is_null());
+            assert!(
+                unsafe { shlosilo_ur_decode_new(small.as_mut_ptr(), tiny as c_uint) }.is_null()
+            );
         }
 
         /// null handle/pointer guards
@@ -2499,33 +2731,39 @@ pub mod r3 {
         fn ffi_multipart_null_guards() {
             let mut enc_ws = alloc::vec![0u8; shlosilo_ur_encode_ws_len() as usize];
             let mut dec_ws = alloc::vec![0u8; shlosilo_ur_decode_ws_len() as usize];
-            assert!(shlosilo_ur_encode_begin(
-                core::ptr::null(),
-                core::ptr::null(),
-                0,
-                200,
-                enc_ws.as_mut_ptr(),
-                shlosilo_ur_encode_ws_len(),
-            )
+            assert!(unsafe {
+                shlosilo_ur_encode_begin(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0,
+                    200,
+                    enc_ws.as_mut_ptr(),
+                    shlosilo_ur_encode_ws_len(),
+                )
+            }
             .is_null());
-            assert!(
-                !shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len()).is_null()
-            );
-            let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len());
+            assert!(!unsafe {
+                shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len())
+            }
+            .is_null());
+            let dec =
+                unsafe { shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), shlosilo_ur_decode_ws_len()) };
             assert_eq!(
-                shlosilo_ur_decode_feed(
-                    core::ptr::null_mut(),
-                    c"x".as_ptr(),
-                    core::ptr::null_mut()
-                ),
+                unsafe {
+                    shlosilo_ur_decode_feed(
+                        core::ptr::null_mut(),
+                        c"x".as_ptr(),
+                        core::ptr::null_mut(),
+                    )
+                },
                 ERR_NULL_POINTER
             );
             assert_eq!(
-                shlosilo_ur_decode_progress(core::ptr::null_mut()),
+                unsafe { shlosilo_ur_decode_progress(core::ptr::null_mut()) },
                 ERR_NULL_POINTER
             );
-            assert_eq!(shlosilo_ur_decode_complete(dec), 0);
-            shlosilo_ur_decode_free(dec);
+            assert_eq!(unsafe { shlosilo_ur_decode_complete(dec) }, 0);
+            unsafe { shlosilo_ur_decode_free(dec) };
         }
     }
 }
@@ -2598,9 +2836,13 @@ pub unsafe extern "C" fn shlosilo_gencache_table_sizes(
         return ERR_NULL_POINTER;
     };
     let (g, h, b) = monero_bulletproofs::generator_table_sizes(set);
-    *g_bytes = g as u32;
-    *h_bytes = h as u32;
-    *blob_bytes = b as u32;
+    // SAFETY: the caller's `# Safety` contract makes all three out-pointers
+    // valid for a `u32` write and non-aliasing (checked non-NULL above).
+    unsafe {
+        *g_bytes = g as u32;
+        *h_bytes = h as u32;
+        *blob_bytes = b as u32;
+    }
     OK
 }
 
@@ -2640,11 +2882,16 @@ pub unsafe extern "C" fn shlosilo_gencache_provide_table(
     let (req_g, req_h, req_b) = monero_bulletproofs::generator_table_sizes(set);
 
     // INV-2: capacity checked before anything else; required reported on fail.
-    let (cap_g, cap_h, cap_b) = (*g_bytes, *h_bytes, *blob_bytes);
+    // SAFETY: the size out-pointers are non-NULL (checked above) and valid for
+    // reads/writes of `u32` per the caller's `# Safety` contract.
+    let (cap_g, cap_h, cap_b) = unsafe { (*g_bytes, *h_bytes, *blob_bytes) };
     if cap_g < req_g as u32 || cap_h < req_h as u32 || cap_b < req_b as u32 {
-        *g_bytes = req_g as u32;
-        *h_bytes = req_h as u32;
-        *blob_bytes = req_b as u32;
+        // SAFETY: same out-pointers, now written with the required sizes.
+        unsafe {
+            *g_bytes = req_g as u32;
+            *h_bytes = req_h as u32;
+            *blob_bytes = req_b as u32;
+        }
         return ERR_BUFFER_TOO_SMALL;
     }
 
@@ -2673,11 +2920,20 @@ pub unsafe extern "C" fn shlosilo_gencache_provide_table(
     // failure paths). Caller contract: buffers outlive every generator use.
     let pts_g = req_g / core::mem::size_of::<curve25519_dalek::EdwardsPoint>();
     let pts_h = req_h / core::mem::size_of::<curve25519_dalek::EdwardsPoint>();
-    let g_slice: &'static mut [curve25519_dalek::EdwardsPoint] =
-        core::slice::from_raw_parts_mut(g as *mut curve25519_dalek::EdwardsPoint, pts_g);
-    let h_slice: &'static mut [curve25519_dalek::EdwardsPoint] =
-        core::slice::from_raw_parts_mut(h as *mut curve25519_dalek::EdwardsPoint, pts_h);
-    let blob_slice: &'static mut [u8] = core::slice::from_raw_parts_mut(blob, req_b);
+    // SAFETY: every check above already passed (capacity, 8-byte alignment,
+    // pairwise-disjoint used regions); the buffers stay alive for the whole
+    // program by the caller's contract, which is what the `'static` promises.
+    let (g_slice, h_slice, blob_slice): (
+        &'static mut [curve25519_dalek::EdwardsPoint],
+        &'static mut [curve25519_dalek::EdwardsPoint],
+        &'static mut [u8],
+    ) = unsafe {
+        (
+            core::slice::from_raw_parts_mut(g as *mut curve25519_dalek::EdwardsPoint, pts_g),
+            core::slice::from_raw_parts_mut(h as *mut curve25519_dalek::EdwardsPoint, pts_h),
+            core::slice::from_raw_parts_mut(blob, req_b),
+        )
+    };
 
     // INV-4: the registry commit is atomic (validate-then-insert, one lock).
     let ok = monero_bulletproofs::provide_generator_table_storage(
@@ -2703,9 +2959,13 @@ pub unsafe extern "C" fn shlosilo_gencache_provide_table(
 /// (first real-device review, 2026-11-05: both outputs labelled `to:`).
 ///
 /// Contract: `session` is a flux-constructed handle; `out_len` must be >= 4.
+///
+/// # Safety
+///
+/// - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+/// - `out` must point to at least 4 writable bytes; `out_len` must be the real capacity.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn shlosilo_key_session_fingerprint(
+pub unsafe extern "C" fn shlosilo_key_session_fingerprint(
     session: *const crate::types::key_session::KeySession,
     out: *mut u8,
     out_len: c_uint,
@@ -2762,14 +3022,17 @@ pub extern "C" fn shlosilo_review_ws_len() -> c_uint {
 ///
 /// Out-params: `out_used` = bytes written to `out_lines` (NUL-separated),
 /// `out_line_count`, `out_flags` (risk bitmask), `out_in_out` = (in << 16) | out.
-//
-// Entry contract (same as the sign family): every pointer is null-checked before
-// any `from_raw_parts`, and the C caller guarantees validity for the documented
-// lengths. Kept as a safe `extern "C"` fn so C call sites need no `unsafe`
-// wrapper — hence the allow.
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
+///
+/// # Safety
+///
+/// - `type_name` must be a NUL-terminated string with the NUL inside 65 readable bytes.
+/// - `payload` must point to `payload_len` readable bytes (budget: the multipart payload cap).
+/// - `master_fingerprint` must be either `NULL` or a pointer to 4 readable bytes.
+/// - `ws` must be either `NULL` (pure probe) or point to `ws_len` writable bytes (`ws_len >= shlosilo_review_ws_len()`) that stay at a stable address for the call.
+/// - `out_lines` must point to `out_lines_len` writable bytes.
+/// - `out_used`, `out_line_count`, `out_flags` and `out_in_out` must each be writable and must not overlap each other, `out_lines`, `ws`, or any input buffer.
 #[no_mangle]
-pub extern "C" fn shlosilo_review_ffi(
+pub unsafe extern "C" fn shlosilo_review_ffi(
     type_name: *const c_char,
     payload: *const u8,
     payload_len: c_uint,
@@ -2842,12 +3105,23 @@ pub extern "C" fn shlosilo_review_ffi(
         let net = Network::from_u8(u8::try_from(network).unwrap_or(0xff))
             .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
 
-        // carve the workspace: arena then records (records aligned)
-        let base = ws;
+        // Carve the workspace: arena then records. F-2: the records span needs
+        // `align_of::<KvRec>()` alignment, and the caller's buffer may start at any
+        // address, so the base is aligned up at runtime (the `+8` slack in
+        // `review_ws_len()` is exactly this shift allowance). A debug-only check was
+        // not enough: it is compiled out in release, where a misaligned `&mut [KvRec]`
+        // would simply be UB.
+        let rec_align = core::mem::align_of::<crate::chain::btc::psbt::KvRec>();
+        let raw_base = ws as usize;
+        let aligned_base = (raw_base + rec_align - 1) & !(rec_align - 1);
+        let shift = aligned_base - raw_base;
+        if shift > 8 {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+        }
+        let base = aligned_base as *mut u8;
         let arena: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(base, REVIEW_WS_ARENA) };
         let recs_ptr = unsafe { base.add(REVIEW_WS_ARENA) };
-        debug_assert!((recs_ptr as usize)
-            .is_multiple_of(core::mem::align_of::<crate::chain::btc::psbt::KvRec>()));
+        debug_assert!((recs_ptr as usize).is_multiple_of(rec_align));
         let recs: &mut [crate::chain::btc::psbt::KvRec] =
             unsafe { core::slice::from_raw_parts_mut(recs_ptr.cast(), REVIEW_WS_RECS) };
 
@@ -2900,20 +3174,22 @@ mod tests {
     fn ffi_ws_probe_is_pure() {
         let mut out = [0xAAu8; 64];
         let mut actual: c_uint = 0xDEAD_BEEF;
-        let rc = shlosilo_sign_ffi(
-            core::ptr::null(), // invalid: null mnemonic — must NOT be validated in probe mode
-            999,               // invalid word count
-            core::ptr::null(),
-            0,
-            core::ptr::null(),
-            0,
-            999_999, // invalid network
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            &mut actual,
-            core::ptr::null_mut(), // ws == NULL → probe
-            0,
-        );
+        let rc = unsafe {
+            shlosilo_sign_ffi(
+                core::ptr::null(), // invalid: null mnemonic — must NOT be validated in probe mode
+                999,               // invalid word count
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                999_999, // invalid network
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                &mut actual,
+                core::ptr::null_mut(), // ws == NULL → probe
+                0,
+            )
+        };
         assert_eq!(
             rc, OK,
             "probe returns OK regardless of the other parameters"
@@ -2938,20 +3214,22 @@ mod tests {
         let mut actual: c_uint = 0xDEAD_BEEF;
         let need = shlosilo_sign_ws_len();
         let mut ws_buf = alloc::vec![0u8; need as usize - 1];
-        let rc = shlosilo_sign_ffi(
-            idx.as_ptr(),
-            12,
-            core::ptr::null(),
-            0,
-            b"x".as_ptr(),
-            1,
-            0,
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            &mut actual,
-            ws_buf.as_mut_ptr(),
-            need - 1,
-        );
+        let rc = unsafe {
+            shlosilo_sign_ffi(
+                idx.as_ptr(),
+                12,
+                core::ptr::null(),
+                0,
+                b"x".as_ptr(),
+                1,
+                0,
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                &mut actual,
+                ws_buf.as_mut_ptr(),
+                need - 1,
+            )
+        };
         assert_ne!(rc, OK, "under-capacity must fail");
         assert_eq!(actual, need, "required length must be reported");
         assert!(
@@ -3022,23 +3300,25 @@ mod tests {
         let need = shlosilo_sign_ws_len();
         let mut ws_buf = alloc::vec![0u8; need as usize];
         let tname = c"crypto-psbt";
-        let rc1 = super::r3::shlosilo_sign_typed_ffi(
-            tname.as_ptr(),
-            payload.as_ptr(),
-            payload.len() as c_uint,
-            idx.as_ptr(),
-            idx.len() as c_int,
-            core::ptr::null(),
-            0,
-            0,
-            core::ptr::null(),
-            0,
-            out_ws.as_mut_ptr(),
-            out_ws.len() as c_uint,
-            &mut a1,
-            ws_buf.as_mut_ptr(),
-            need,
-        );
+        let rc1 = unsafe {
+            super::r3::shlosilo_sign_typed_ffi(
+                tname.as_ptr(),
+                payload.as_ptr(),
+                payload.len() as c_uint,
+                idx.as_ptr(),
+                idx.len() as c_int,
+                core::ptr::null(),
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                out_ws.as_mut_ptr(),
+                out_ws.len() as c_uint,
+                &mut a1,
+                ws_buf.as_mut_ptr(),
+                need,
+            )
+        };
         assert_eq!(rc1, OK, "ws path must sign OK (rc1={rc1})");
         // shell path: business::sign directly (the ws == None branch)
         let n2 = crate::business::sign::sign(
@@ -3061,7 +3341,7 @@ mod tests {
 
     #[test]
     fn ffi_sign_signature_exists() {
-        const _: extern "C" fn(
+        const _: unsafe extern "C" fn(
             *const u16,
             c_int,
             *const u8,
@@ -3080,7 +3360,7 @@ mod tests {
     /// T6 signature pin: the Cake pairing entry's frozen C shape.
     #[test]
     fn ffi_xmr_pairing_signature_exists() {
-        const _: extern "C" fn(
+        const _: unsafe extern "C" fn(
             *const crate::types::key_session::KeySession,
             *const u8,
             c_uint,
@@ -3100,7 +3380,7 @@ mod tests {
     /// §53 contract pin: the frozen C-ABI signature of the store-merge entry.
     #[test]
     fn ffi_ki_store_merge_signature_pin() {
-        const _: extern "C" fn(
+        const _: unsafe extern "C" fn(
             *mut crate::business::sign::WalletKiRecord,
             c_uint,
             *mut c_uint,
@@ -3113,9 +3393,9 @@ mod tests {
     /// lookups (pure code in, `'static` CStr pointer out).
     #[test]
     fn ffi_failure_text_signature_pins() {
-        const _: extern "C" fn(c_int) -> *const c_char = r3::shlosilo_sign_failure_text;
-        const _: extern "C" fn(c_int) -> *const c_char = r3::shlosilo_pairing_failure_reason;
-        const _: extern "C" fn(c_int) -> *const c_char = r3::shlosilo_pairing_failure_hint;
+        const _: unsafe extern "C" fn(c_int) -> *const c_char = r3::shlosilo_sign_failure_text;
+        const _: unsafe extern "C" fn(c_int) -> *const c_char = r3::shlosilo_pairing_failure_reason;
+        const _: unsafe extern "C" fn(c_int) -> *const c_char = r3::shlosilo_pairing_failure_hint;
     }
 
     /// §53 behavior pin through the C-ABI (the 1021 real-device scenario
@@ -3135,13 +3415,17 @@ mod tests {
 
         // batch A (wallet A): two records append into the empty store.
         let a = [mk(0xA0, 0, 0x01), mk(0xA0, 1, 0x02)];
-        let rc = r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut len, a.as_ptr(), 2);
+        let rc = unsafe {
+            r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut len, a.as_ptr(), 2)
+        };
         assert_eq!(rc, OK);
         assert_eq!(len, 2);
 
         // batch B (wallet B — plate swap without a power cycle) → I1 clear.
         let b = [mk(0xB0, 0, 0xB1)];
-        let rc = r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut len, b.as_ptr(), 1);
+        let rc = unsafe {
+            r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut len, b.as_ptr(), 1)
+        };
         assert_eq!(rc, OK);
         assert_eq!(len, 1);
         assert_eq!(store[0].key_image, [0xB1; 32]);
@@ -3150,17 +3434,21 @@ mod tests {
         assert_eq!(store[1].key_image, [0x02; 32]);
 
         // empty batch = no-op (never clears).
-        let rc =
-            r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut len, core::ptr::null(), 0);
+        let rc = unsafe {
+            r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut len, core::ptr::null(), 0)
+        };
         assert_eq!(rc, OK);
         assert_eq!(len, 1);
 
         // guards
-        let rc = r3::shlosilo_ki_store_merge_ffi(core::ptr::null_mut(), 4, &mut len, a.as_ptr(), 1);
+        let rc = unsafe {
+            r3::shlosilo_ki_store_merge_ffi(core::ptr::null_mut(), 4, &mut len, a.as_ptr(), 1)
+        };
         assert_eq!(rc, ERR_NULL_POINTER);
         let mut bad_len: c_uint = 9;
-        let rc =
-            r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut bad_len, a.as_ptr(), 1);
+        let rc = unsafe {
+            r3::shlosilo_ki_store_merge_ffi(store.as_mut_ptr(), 4, &mut bad_len, a.as_ptr(), 1)
+        };
         assert_eq!(rc, ERR_BUFFER_TOO_SMALL);
     }
 
@@ -3183,21 +3471,23 @@ mod tests {
 
         // PURE PROBE: ws == NULL reports the workspace requirement.
         let mut actual: c_uint = 0;
-        let rc = r3::shlosilo_xmr_pairing_ffi(
-            &session,
-            req.as_ptr(),
-            req.len() as c_uint,
-            entropy.as_ptr(),
-            entropy.len() as c_uint,
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            &mut actual,
-            core::ptr::null_mut(),
-            0,
-            core::ptr::null_mut(),
-            0,
-            core::ptr::null_mut(),
-        );
+        let rc = unsafe {
+            r3::shlosilo_xmr_pairing_ffi(
+                &session,
+                req.as_ptr(),
+                req.len() as c_uint,
+                entropy.as_ptr(),
+                entropy.len() as c_uint,
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                &mut actual,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+            )
+        };
         assert_eq!(rc, OK);
         assert_eq!(
             actual as usize,
@@ -3212,21 +3502,23 @@ mod tests {
             out_pub: [0xFF; 32],
         }; 8];
         let mut retained_n: c_uint = 0;
-        let rc = r3::shlosilo_xmr_pairing_ffi(
-            &session,
-            req.as_ptr(),
-            req.len() as c_uint,
-            entropy.as_ptr(),
-            entropy.len() as c_uint,
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            &mut actual,
-            ws.as_mut_ptr(),
-            ws.len() as c_uint,
-            retained.as_mut_ptr(),
-            retained.len() as c_uint,
-            &mut retained_n,
-        );
+        let rc = unsafe {
+            r3::shlosilo_xmr_pairing_ffi(
+                &session,
+                req.as_ptr(),
+                req.len() as c_uint,
+                entropy.as_ptr(),
+                entropy.len() as c_uint,
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                &mut actual,
+                ws.as_mut_ptr(),
+                ws.len() as c_uint,
+                retained.as_mut_ptr(),
+                retained.len() as c_uint,
+                &mut retained_n,
+            )
+        };
         assert_eq!(rc, OK, "pairing entry must succeed");
         assert_eq!(retained_n, 1, "one record retained for one output");
         let n = actual as usize;
@@ -3261,28 +3553,30 @@ mod tests {
 
         // Entropy misuse guard: short entropy raises EntropyInjectionInvalid.
         let mut actual2: c_uint = 0;
-        let rc = r3::shlosilo_xmr_pairing_ffi(
-            &session,
-            req.as_ptr(),
-            req.len() as c_uint,
-            entropy.as_ptr(),
-            4,
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            &mut actual2,
-            ws.as_mut_ptr(),
-            ws.len() as c_uint,
-            core::ptr::null_mut(),
-            0,
-            core::ptr::null_mut(),
-        );
+        let rc = unsafe {
+            r3::shlosilo_xmr_pairing_ffi(
+                &session,
+                req.as_ptr(),
+                req.len() as c_uint,
+                entropy.as_ptr(),
+                4,
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                &mut actual2,
+                ws.as_mut_ptr(),
+                ws.len() as c_uint,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+            )
+        };
         assert_ne!(rc, OK, "short entropy must be rejected");
     }
 
     #[test]
     fn ffi_export_signature_exists() {
         // P1-04：seed → mnemonic indices + passphrase
-        const _: extern "C" fn(
+        const _: unsafe extern "C" fn(
             *const u16,
             c_int,
             *const u8,
@@ -3300,7 +3594,7 @@ mod tests {
     #[test]
     fn ffi_create_signature_exists() {
         // P1-04: seed_out parameter removed
-        const _: extern "C" fn(
+        const _: unsafe extern "C" fn(
             c_uint,
             c_uint,
             *const u8,
@@ -3323,16 +3617,18 @@ mod tests {
             r
         };
         let mut mnemonic_buf = [0u8; 24];
-        let rc = shlosilo_create_account_ffi(
-            12,
-            6,
-            rolls.as_ptr(),
-            rolls.len() as c_uint,
-            null(),
-            0,
-            mnemonic_buf.as_mut_ptr(),
-            mnemonic_buf.len() as c_uint,
-        );
+        let rc = unsafe {
+            shlosilo_create_account_ffi(
+                12,
+                6,
+                rolls.as_ptr(),
+                rolls.len() as c_uint,
+                null(),
+                0,
+                mnemonic_buf.as_mut_ptr(),
+                mnemonic_buf.len() as c_uint,
+            )
+        };
         assert_eq!(rc, OK, "rc={rc}");
         // The first word index should be a valid BIP-39 index
         let first = u16::from_le_bytes([mnemonic_buf[0], mnemonic_buf[1]]);
@@ -3348,19 +3644,21 @@ mod tests {
         let elems: [u32; 5] = [44 | 0x8000_0000, 0x8000_0000, 0x8000_0000, 0, 0];
         let mut buf = [0u8; 1024];
         let mut actual: c_uint = 0;
-        let rc = shlosilo_export_readonly_ffi(
-            idx.as_ptr(),
-            idx.len() as c_int,
-            null(), // passphrase
-            0,
-            0, // BitcoinMainnet
-            elems.as_ptr(),
-            elems.len() as c_uint,
-            0, // CryptoHdKey
-            buf.as_mut_ptr(),
-            buf.len() as c_uint,
-            &mut actual,
-        );
+        let rc = unsafe {
+            shlosilo_export_readonly_ffi(
+                idx.as_ptr(),
+                idx.len() as c_int,
+                null(), // passphrase
+                0,
+                0, // BitcoinMainnet
+                elems.as_ptr(),
+                elems.len() as c_uint,
+                0, // CryptoHdKey
+                buf.as_mut_ptr(),
+                buf.len() as c_uint,
+                &mut actual,
+            )
+        };
         assert_eq!(rc, OK, "rc={rc}");
         let uri = core::str::from_utf8(&buf[..actual as usize]).unwrap();
         assert!(uri.starts_with("ur:crypto-hdkey/"));
@@ -3371,8 +3669,9 @@ mod tests {
     fn ffi_supported_lists() {
         let mut net_buf = [0u8; 200];
         let mut n: c_uint = 0;
-        let rc =
-            shlosilo_supported_networks_ffi(net_buf.as_mut_ptr(), net_buf.len() as c_uint, &mut n);
+        let rc = unsafe {
+            shlosilo_supported_networks_ffi(net_buf.as_mut_ptr(), net_buf.len() as c_uint, &mut n)
+        };
         assert_eq!(rc, OK);
         // Gate4 #1: real matrix = BTC mainnet / ETH mainnet+sepolia+goerli / XMR mainnet
         assert_eq!(n, 5);
@@ -3380,11 +3679,13 @@ mod tests {
 
         let mut proto_buf = [0u8; 16];
         let mut p: c_uint = 0;
-        let rc = shlosilo_supported_protocols_ffi(
-            proto_buf.as_mut_ptr(),
-            proto_buf.len() as c_uint,
-            &mut p,
-        );
+        let rc = unsafe {
+            shlosilo_supported_protocols_ffi(
+                proto_buf.as_mut_ptr(),
+                proto_buf.len() as c_uint,
+                &mut p,
+            )
+        };
         assert_eq!(rc, OK);
         assert_eq!(p, 1); // CryptoHdKey only (all other export arms are Unimplemented)
         assert_eq!(proto_buf[0], 0);
@@ -3392,7 +3693,7 @@ mod tests {
         // BufferTooSmall must also hold: 2 slots cannot fit 5
         let mut tiny = [0u8; 2];
         let mut t: c_uint = 0;
-        let rc = shlosilo_supported_networks_ffi(tiny.as_mut_ptr(), 2, &mut t);
+        let rc = unsafe { shlosilo_supported_networks_ffi(tiny.as_mut_ptr(), 2, &mut t) };
         assert_eq!(rc, ERR_BUFFER_TOO_SMALL);
     }
 
@@ -3407,37 +3708,41 @@ mod tests {
         let elems: [u32; 1] = [44 | 0x8000_0000];
         let mut buf = [0u8; 64];
         let mut actual: c_uint = 0;
-        let rc = shlosilo_export_readonly_ffi(
-            idx.as_ptr(),
-            idx.len() as c_int,
-            long_pass.as_ptr(),
-            long_pass.len() as c_uint,
-            0, // network
-            elems.as_ptr(),
-            elems.len() as c_uint,
-            0, // protocol
-            buf.as_mut_ptr(),
-            buf.len() as c_uint,
-            &mut actual,
-        );
+        let rc = unsafe {
+            shlosilo_export_readonly_ffi(
+                idx.as_ptr(),
+                idx.len() as c_int,
+                long_pass.as_ptr(),
+                long_pass.len() as c_uint,
+                0, // network
+                elems.as_ptr(),
+                elems.len() as c_uint,
+                0, // protocol
+                buf.as_mut_ptr(),
+                buf.len() as c_uint,
+                &mut actual,
+            )
+        };
         // Audit #5 P0-03: a 257B over-budget is rejected at the helper layer (before unsafe construction) → InvalidArgument(-2),
         // no longer a business-layer EncodingError(-21) — moving budget validation earlier is exactly the remediation goal
         assert_eq!(rc, crate::error::ShlosiloErrorCode::InvalidArgument as i32);
         // 256 = within the cap → passes the passphrase check (the BIP-39 checksum later rejects the all-zero word set; not EncodingInvalidFormat)
         let ok_pass = [0x41u8; 256];
-        let rc = shlosilo_export_readonly_ffi(
-            idx.as_ptr(),
-            idx.len() as c_int,
-            ok_pass.as_ptr(),
-            ok_pass.len() as c_uint,
-            0,
-            elems.as_ptr(),
-            elems.len() as c_uint,
-            0,
-            buf.as_mut_ptr(),
-            buf.len() as c_uint,
-            &mut actual,
-        );
+        let rc = unsafe {
+            shlosilo_export_readonly_ffi(
+                idx.as_ptr(),
+                idx.len() as c_int,
+                ok_pass.as_ptr(),
+                ok_pass.len() as c_uint,
+                0,
+                elems.as_ptr(),
+                elems.len() as c_uint,
+                0,
+                buf.as_mut_ptr(),
+                buf.len() as c_uint,
+                &mut actual,
+            )
+        };
         // all-zero word set has an invalid checksum → MnemonicInvalidChecksum (P1-05 behavior, not a passphrase cap error)
         assert_eq!(
             rc,
@@ -3451,16 +3756,18 @@ mod tests {
     fn ffi_rolls_over_limit_rejected() {
         let rolls = [1u8; 1025];
         let mut mnemonic_buf = [0u8; 24];
-        let rc = shlosilo_create_account_ffi(
-            12,
-            6,
-            rolls.as_ptr(),
-            rolls.len() as c_uint,
-            null(),
-            0,
-            mnemonic_buf.as_mut_ptr(),
-            mnemonic_buf.len() as c_uint,
-        );
+        let rc = unsafe {
+            shlosilo_create_account_ffi(
+                12,
+                6,
+                rolls.as_ptr(),
+                rolls.len() as c_uint,
+                null(),
+                0,
+                mnemonic_buf.as_mut_ptr(),
+                mnemonic_buf.len() as c_uint,
+            )
+        };
         assert_eq!(rc, crate::error::ShlosiloErrorCode::InvalidDiceRolls as i32);
     }
 
@@ -3472,20 +3779,22 @@ mod tests {
         let mut out = [0u8; 4096];
         let mut actual: c_uint = 0;
         let mut ws_buf = alloc::vec![0u8; shlosilo_sign_ws_len() as usize];
-        let rc = shlosilo_sign_ffi(
-            idx.as_ptr(),
-            12,
-            null(),
-            0,
-            big_payload.as_ptr(),
-            big_payload.len() as c_uint,
-            0, // network
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            &mut actual,
-            ws_buf.as_mut_ptr(),
-            shlosilo_sign_ws_len(),
-        );
+        let rc = unsafe {
+            shlosilo_sign_ffi(
+                idx.as_ptr(),
+                12,
+                null(),
+                0,
+                big_payload.as_ptr(),
+                big_payload.len() as c_uint,
+                0, // network
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                &mut actual,
+                ws_buf.as_mut_ptr(),
+                shlosilo_sign_ws_len(),
+            )
+        };
         assert_eq!(rc, crate::error::ShlosiloErrorCode::EncodingError as i32);
     }
 
@@ -3500,7 +3809,7 @@ mod tests {
 
     #[test]
     fn ffi_sign_ur_signature_exists() {
-        const _: extern "C" fn(
+        const _: unsafe extern "C" fn(
             *const c_char, // uri (null-terminated)
             *const u16,
             c_int,
@@ -3593,21 +3902,23 @@ mod tests {
         let mut out = [0u8; 512];
         let mut actual: c_uint = 0;
         let mut ws_buf = alloc::vec![0u8; shlosilo_sign_ws_len() as usize];
-        let rc = shlosilo_sign_ur_ffi(
-            uri_c.as_ptr(),
-            idx.as_ptr(),
-            12,
-            null(),
-            0,
-            10,     // network = EthereumMainnet (P1-02: matches ETH chain_id=1)
-            null(), // entropy (§B.5)
-            0,
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            &mut actual,
-            ws_buf.as_mut_ptr(),
-            shlosilo_sign_ws_len(),
-        );
+        let rc = unsafe {
+            shlosilo_sign_ur_ffi(
+                uri_c.as_ptr(),
+                idx.as_ptr(),
+                12,
+                null(),
+                0,
+                10,     // network = EthereumMainnet (P1-02: matches ETH chain_id=1)
+                null(), // entropy (§B.5)
+                0,
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                &mut actual,
+                ws_buf.as_mut_ptr(),
+                shlosilo_sign_ws_len(),
+            )
+        };
         assert_eq!(rc, OK, "rc={rc}");
         assert_eq!(actual as usize, expected.tx_bytes.len());
         assert_eq!(&out[..actual as usize], &expected.tx_bytes[..]);
@@ -3621,21 +3932,23 @@ mod tests {
         let mut out = [0u8; 64];
         let mut actual: c_uint = 0;
         let mut ws_buf = alloc::vec![0u8; shlosilo_sign_ws_len() as usize];
-        let rc = shlosilo_sign_ur_ffi(
-            uri_c.as_ptr(),
-            idx.as_ptr(),
-            12,
-            null(),
-            0,
-            0,
-            null(), // entropy (§B.5)
-            0,
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            &mut actual,
-            ws_buf.as_mut_ptr(),
-            shlosilo_sign_ws_len(),
-        );
+        let rc = unsafe {
+            shlosilo_sign_ur_ffi(
+                uri_c.as_ptr(),
+                idx.as_ptr(),
+                12,
+                null(),
+                0,
+                0,
+                null(), // entropy (§B.5)
+                0,
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                &mut actual,
+                ws_buf.as_mut_ptr(),
+                shlosilo_sign_ws_len(),
+            )
+        };
         assert_ne!(rc, OK);
     }
 
@@ -3645,21 +3958,23 @@ mod tests {
         let idx: [u16; 12] = [0; 12];
         let mut out = [0u8; 64];
         let mut ws_buf = alloc::vec![0u8; shlosilo_sign_ws_len() as usize];
-        let rc = shlosilo_sign_ur_ffi(
-            null(),
-            idx.as_ptr(),
-            12,
-            null(),
-            0,
-            0,
-            null(), // entropy (§B.5)
-            0,
-            out.as_mut_ptr(),
-            out.len() as c_uint,
-            null_mut(),
-            ws_buf.as_mut_ptr(),
-            shlosilo_sign_ws_len(),
-        );
+        let rc = unsafe {
+            shlosilo_sign_ur_ffi(
+                null(),
+                idx.as_ptr(),
+                12,
+                null(),
+                0,
+                0,
+                null(), // entropy (§B.5)
+                0,
+                out.as_mut_ptr(),
+                out.len() as c_uint,
+                null_mut(),
+                ws_buf.as_mut_ptr(),
+                shlosilo_sign_ws_len(),
+            )
+        };
         assert_eq!(rc, ERR_NULL_POINTER);
     }
 }

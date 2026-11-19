@@ -17,6 +17,11 @@
 //! **Phase 4 to implement**: real algorithm integration (k256 / curve25519-dalek / monero-oxide)
 
 #![no_std]
+// FFI contract discipline (2026-11-19, FFI graded audit): every `unsafe extern "C"`
+// entry keeps its raw dereferences inside explicit `unsafe` blocks, so each proof
+// obligation stays visible at the site instead of being swallowed by the function's
+// implicit unsafe context (edition 2021 semantics).
+#![deny(unsafe_op_in_unsafe_fn)]
 
 // TEST-ONLY at the crate root (mod tests uses alloc::vec / alloc::string).
 // NOTE (2026-09-24 zero-heap decision): production modules still carry their own

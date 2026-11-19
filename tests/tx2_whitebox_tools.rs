@@ -28,34 +28,37 @@ fn env(name: &str) -> String {
 fn decode_frames(frames: &[String]) -> (String, Vec<u8>) {
     let ws_len = ur_decode_ws_len();
     let mut ws = vec![0u8; ws_len];
-    let dec = shlosilo_ur_decode_new(ws.as_mut_ptr(), ws_len as core::ffi::c_uint);
+    let dec = unsafe { shlosilo_ur_decode_new(ws.as_mut_ptr(), ws_len as core::ffi::c_uint) };
     assert!(!dec.is_null(), "decoder placement");
     for f in frames {
         let c: Vec<u8> = f.bytes().chain(core::iter::once(0)).collect();
         let mut accepted: core::ffi::c_uint = 0;
-        let rc =
-            shlosilo_ur_decode_feed(dec, c.as_ptr() as *const core::ffi::c_char, &mut accepted);
+        let rc = unsafe {
+            shlosilo_ur_decode_feed(dec, c.as_ptr() as *const core::ffi::c_char, &mut accepted)
+        };
         assert_eq!(rc, 0, "frame rejected: {f}");
     }
-    let complete = shlosilo_ur_decode_complete(dec);
+    let complete = unsafe { shlosilo_ur_decode_complete(dec) };
     assert_eq!(complete, 1, "frames did not reassemble");
     let mut type_buf = [0u8; 32];
     let mut tlen: core::ffi::c_uint = 0;
-    let _ = shlosilo_ur_decode_type(dec, type_buf.as_mut_ptr(), 32, &mut tlen);
+    let _ = unsafe { shlosilo_ur_decode_type(dec, type_buf.as_mut_ptr(), 32, &mut tlen) };
     let t = String::from_utf8_lossy(&type_buf)
         .trim_end_matches('\0')
         .to_string();
     let mut msg = vec![0u8; 16384];
     let mut actual: core::ffi::c_uint = 0;
-    let rc = shlosilo_ur_decode_payload(
-        dec,
-        msg.as_mut_ptr(),
-        msg.len() as core::ffi::c_uint,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_ur_decode_payload(
+            dec,
+            msg.as_mut_ptr(),
+            msg.len() as core::ffi::c_uint,
+            &mut actual,
+        )
+    };
     assert_eq!(rc, 0, "payload extract failed");
     msg.truncate(actual as usize);
-    shlosilo_ur_decode_free(dec);
+    unsafe { shlosilo_ur_decode_free(dec) };
     (t, msg)
 }
 

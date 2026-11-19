@@ -115,21 +115,23 @@ fn pairing_ffi_zero_alloc() {
 
     // PURE PROBE: ws == NULL reports the workspace requirement.
     let mut actual: core::ffi::c_uint = 0;
-    let rc = shlosilo_xmr_pairing_ffi(
-        &session,
-        req.as_ptr(),
-        req.len() as core::ffi::c_uint,
-        entropy.as_ptr(),
-        entropy.len() as core::ffi::c_uint,
-        out.as_mut_ptr(),
-        out.len() as core::ffi::c_uint,
-        &mut actual,
-        core::ptr::null_mut(),
-        0,
-        core::ptr::null_mut(),
-        0,
-        core::ptr::null_mut(),
-    );
+    let rc = unsafe {
+        shlosilo_xmr_pairing_ffi(
+            &session,
+            req.as_ptr(),
+            req.len() as core::ffi::c_uint,
+            entropy.as_ptr(),
+            entropy.len() as core::ffi::c_uint,
+            out.as_mut_ptr(),
+            out.len() as core::ffi::c_uint,
+            &mut actual,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
+        )
+    };
     assert_eq!(rc, 0, "pure probe must succeed");
     assert_eq!(actual as usize, pairing_ws_len());
 
@@ -142,25 +144,27 @@ fn pairing_ffi_zero_alloc() {
     );
 
     // Warm-up (lazy init outside the measured window).
-    let rc = shlosilo_xmr_pairing_ffi(
-        &session,
-        req.as_ptr(),
-        req.len() as core::ffi::c_uint,
-        entropy.as_ptr(),
-        entropy.len() as core::ffi::c_uint,
-        out.as_mut_ptr(),
-        out.len() as core::ffi::c_uint,
-        &mut actual,
-        ws.as_mut_ptr(),
-        ws.len() as core::ffi::c_uint,
-        core::ptr::null_mut(),
-        0,
-        core::ptr::null_mut(),
-    );
+    let rc = unsafe {
+        shlosilo_xmr_pairing_ffi(
+            &session,
+            req.as_ptr(),
+            req.len() as core::ffi::c_uint,
+            entropy.as_ptr(),
+            entropy.len() as core::ffi::c_uint,
+            out.as_mut_ptr(),
+            out.len() as core::ffi::c_uint,
+            &mut actual,
+            ws.as_mut_ptr(),
+            ws.len() as core::ffi::c_uint,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null_mut(),
+        )
+    };
     assert_eq!(rc, 0, "warm-up pairing call must succeed");
 
     // ── measured section: only the FFI call ─────────────────────────────────
-    let (rc, events) = measured(|| {
+    let (rc, events) = measured(|| unsafe {
         shlosilo_xmr_pairing_ffi(
             &session,
             req.as_ptr(),

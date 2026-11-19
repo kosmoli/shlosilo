@@ -53,23 +53,25 @@ fn typed_sign_with_buffer(out_len: usize) -> (i32, c_uint) {
     let mut out = vec![0u8; out_len];
     let mut actual: c_uint = 0;
     let mut ws = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
-    let rc = shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi(
-        tname.as_ptr(),
-        payload.as_ptr(),
-        payload.len() as c_uint,
-        idx.as_ptr(),
-        12,
-        passphrase.as_ptr(),
-        0,
-        0,
-        core::ptr::null(),
-        0,
-        out.as_mut_ptr(),
-        out.len() as c_uint,
-        &mut actual,
-        ws.as_mut_ptr(),
-        ws.len() as c_uint,
-    );
+    let rc = unsafe {
+        shlosilo::ffi::c_abi::r3::shlosilo_sign_typed_ffi(
+            tname.as_ptr(),
+            payload.as_ptr(),
+            payload.len() as c_uint,
+            idx.as_ptr(),
+            12,
+            passphrase.as_ptr(),
+            0,
+            0,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as c_uint,
+            &mut actual,
+            ws.as_mut_ptr(),
+            ws.len() as c_uint,
+        )
+    };
     (rc, actual)
 }
 

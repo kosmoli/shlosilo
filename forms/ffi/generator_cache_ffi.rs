@@ -117,10 +117,14 @@ mod imp {
         #[test]
         fn inv2_inv3_hooks_roundtrip_and_null_sentinel() {
             // inv2: register through the C-ABI entry, exercise both adapters.
-            crate::ffi::generator_cache_ffi::shlosilo_gen_cache_set_hooks(
-                Some(test_load),
-                Some(test_store),
-            );
+            // SAFETY: both callbacks are the test adapters below, valid for the
+            // rest of the test (which unregisters them before it returns).
+            unsafe {
+                crate::ffi::generator_cache_ffi::shlosilo_gen_cache_set_hooks(
+                    Some(test_load),
+                    Some(test_store),
+                )
+            };
             let got = load_adapter(b"bulletproof_plus").expect("load via registered C fn");
             assert_eq!(
                 got,
@@ -135,7 +139,7 @@ mod imp {
             );
 
             // inv3: NULL unregisters both slots.
-            crate::ffi::generator_cache_ffi::shlosilo_gen_cache_set_hooks(None, None);
+            unsafe { crate::ffi::generator_cache_ffi::shlosilo_gen_cache_set_hooks(None, None) };
             assert!(
                 load_adapter(b"bulletproof_plus").is_none(),
                 "inv3: unregistered load must yield None"
@@ -164,7 +168,7 @@ pub use imp::*;
 /// so the C host always links and cbindgen emits exactly one declaration.
 #[cfg_attr(not(feature = "generator-cache-ffi"), allow(unused_variables))]
 #[no_mangle]
-pub extern "C" fn shlosilo_gen_cache_set_hooks(
+pub unsafe extern "C" fn shlosilo_gen_cache_set_hooks(
     load_fptr: Option<extern "C" fn(*const u8, u32) -> *const u8>,
     store_fptr: Option<extern "C" fn(*const u8, u32, *const u8, u32) -> u32>,
 ) {

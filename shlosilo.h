@@ -825,6 +825,15 @@ void shlosilo_timing_reset(void);
  * shlosilo_sign_ffi — mnemonic + UR payload → signature
  *
  * Returns 0 = Ok (length written to *actual_len), negative = error code.
+ *
+ * # Safety
+ *
+ * - `mnemonic_indices` must point to `mnemonic_count` readable `u16` word indices.
+ * - `passphrase` must be either `(NULL, 0)` or a non-NULL pointer to `passphrase_len` readable bytes.
+ * - `ur_payload` must point to `ur_payload_len` readable bytes.
+ * - `output_buf` must point to `output_buf_len` writable bytes.
+ * - `actual_len` must be writable and must not overlap any other argument.
+ * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
  */
 int shlosilo_sign_ffi(const uint16_t *mnemonic_indices,
                       int mnemonic_count,
@@ -900,6 +909,10 @@ unsigned int shlosilo_ur_decode_ws_len(void);
  * result. Safe to call before user confirmation; the full validation (word
  * index range + BIP-39 checksum) stays in `seed_qr::decode` and runs at
  * session-open time (the keysource QR glue).
+ *
+ * # Safety
+ *
+ * - `data` must point to `data_len` readable bytes (scanned payload; budget-checked on entry).
  */
 int shlosilo_seed_qr_probe_ffi(const uint8_t *data, unsigned int data_len);
 
@@ -940,6 +953,12 @@ int shlosilo_seed_qr_probe_ffi(const uint8_t *data, unsigned int data_len);
  * after rendering (volatile walk, same as the scan flow's plate wipe), and
  * showing it on screen is a deliberate secret-exposure surface (steel-plate
  * threat model: anyone who photographs the plate owns the wallet).
+ *
+ * # Safety
+ *
+ * - `entropy` must point to `entropy_len` readable bytes.
+ * - `out_buf` must point to `out_buf_len` writable bytes; it must not overlap `entropy`.
+ * - `actual_len` must be writable and must not overlap any other argument.
  */
 int shlosilo_seed_qr_encode_ffi(int mode,
                                 const uint8_t *entropy,
@@ -959,6 +978,16 @@ int shlosilo_seed_qr_encode_ffi(int mode,
  * backends, pass NULL/0. Same (keys, tx, entropy) → same signature (deterministic retry).
  *
  * Returns 0 = Ok, negative = error code; signature bytes are written to output_buf.
+ *
+ * # Safety
+ *
+ * - `uri` must be a NUL-terminated string with the NUL inside 4097 readable bytes.
+ * - `mnemonic_indices` must point to `mnemonic_count` readable `u16` word indices.
+ * - `passphrase` must be either `(NULL, 0)` or a non-NULL pointer to `passphrase_len` readable bytes.
+ * - `entropy_ptr` must be either `(NULL, 0)` or a non-NULL pointer to `entropy_len` readable bytes (XMR signing requires at least 16).
+ * - `output_buf` must point to `output_buf_len` writable bytes.
+ * - `actual_len` must be writable and must not overlap any other argument.
+ * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
  */
 int shlosilo_sign_ur_ffi(const char *uri,
                          const uint16_t *mnemonic_indices,
@@ -982,6 +1011,14 @@ int shlosilo_sign_ur_ffi(const char *uri,
  *
  * paths is a flat u32 array (hardened bit = 0x8000_0000),
  * `path_elem_count` is the element count of this one path (v1: single path).
+ *
+ * # Safety
+ *
+ * - `mnemonic_indices` must point to `mnemonic_count` readable `u16` word indices.
+ * - `passphrase` must be either `(NULL, 0)` or a non-NULL pointer to `passphrase_len` readable bytes.
+ * - `path_elems` must point to `path_elem_count` readable `u32` path elements (hardened bit set in the value).
+ * - `output_buf` must point to `output_buf_len` writable bytes.
+ * - `actual_len` must be writable and must not overlap any other argument.
  */
 int shlosilo_export_readonly_ffi(const uint16_t *mnemonic_indices,
                                  int mnemonic_count,
@@ -1001,6 +1038,12 @@ int shlosilo_export_readonly_ffi(const uint16_t *mnemonic_indices,
  * **P1-04 (2026-08-29)**: `seed_out` removed — seed does not cross the FFI (v2 security model).
  * dice → mnemonic is the sole output; later signing/export takes mnemonic directly (seed restored on the spot inside the library).
  * passphrase kept (metadata to be written into device storage on a future offline create); currently only length-cap validated.
+ *
+ * # Safety
+ *
+ * - `rolls` must point to `rolls_count` readable dice-roll bytes.
+ * - `passphrase` must be either `(NULL, 0)` or a non-NULL pointer to `passphrase_len` readable bytes.
+ * - `mnemonic_buf` must point to `mnemonic_buf_len` writable bytes; it must not overlap `rolls`.
  */
 int shlosilo_create_account_ffi(unsigned int word_count,
                                 unsigned int sides,
@@ -1013,6 +1056,11 @@ int shlosilo_create_account_ffi(unsigned int word_count,
 
 /**
  * List of supported Network u8 values (for UI dispatch at L3 startup)
+ *
+ * # Safety
+ *
+ * - `output_buf` must point to `output_buf_len` writable bytes.
+ * - `actual_len` must be writable and must not overlap `output_buf`.
  */
 int shlosilo_supported_networks_ffi(uint8_t *output_buf,
                                     unsigned int output_buf_len,
@@ -1020,6 +1068,11 @@ int shlosilo_supported_networks_ffi(uint8_t *output_buf,
 
 /**
  * List of supported ExportProtocol u8 values
+ *
+ * # Safety
+ *
+ * - `output_buf` must point to `output_buf_len` writable bytes.
+ * - `actual_len` must be writable and must not overlap `output_buf`.
  */
 int shlosilo_supported_protocols_ffi(uint8_t *output_buf,
                                      unsigned int output_buf_len,
@@ -1067,6 +1120,11 @@ int32_t shlosilo_gencache_provide_table(int32_t set,
  * (first real-device review, 2026-11-05: both outputs labelled `to:`).
  *
  * Contract: `session` is a flux-constructed handle; `out_len` must be >= 4.
+ *
+ * # Safety
+ *
+ * - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `out` must point to at least 4 writable bytes; `out_len` must be the real capacity.
  */
 int shlosilo_key_session_fingerprint(const struct KeySession *session,
                                      uint8_t *out,
@@ -1083,6 +1141,15 @@ unsigned int shlosilo_review_ws_len(void);
  *
  * Out-params: `out_used` = bytes written to `out_lines` (NUL-separated),
  * `out_line_count`, `out_flags` (risk bitmask), `out_in_out` = (in << 16) | out.
+ *
+ * # Safety
+ *
+ * - `type_name` must be a NUL-terminated string with the NUL inside 65 readable bytes.
+ * - `payload` must point to `payload_len` readable bytes (budget: the multipart payload cap).
+ * - `master_fingerprint` must be either `NULL` or a pointer to 4 readable bytes.
+ * - `ws` must be either `NULL` (pure probe) or point to `ws_len` writable bytes (`ws_len >= shlosilo_review_ws_len()`) that stay at a stable address for the call.
+ * - `out_lines` must point to `out_lines_len` writable bytes.
+ * - `out_used`, `out_line_count`, `out_flags` and `out_in_out` must each be writable and must not overlap each other, `out_lines`, `ws`, or any input buffer.
  */
 int shlosilo_review_ffi(const char *type_name,
                         const uint8_t *payload,
@@ -1102,6 +1169,12 @@ int shlosilo_review_ffi(const char *type_name,
  * R3: create a multipart encoder. Returns a handle (non-null) on success, null on failure.
  * type_name: ASCII alphanumeric + '-' (e.g. "xmr-txunsigned")
  * L3 must call shlosilo_ur_encode_free when done.
+ *
+ * # Safety
+ *
+ * - `type_name` must be a NUL-terminated ASCII string with the NUL inside 65 readable bytes.
+ * - `payload` must point to `payload_len` readable bytes (required; `(NULL, 0)` is rejected).
+ * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_ur_encode_ws_len()`) and must stay at a stable address until `shlosilo_ur_encode_free`; it must not overlap `payload`.
  */
 struct UrMultipartEncoder *shlosilo_ur_encode_begin(const char *type_name,
                                                     const uint8_t *payload,
@@ -1116,6 +1189,12 @@ struct UrMultipartEncoder *shlosilo_ur_encode_begin(const char *type_name,
  *
  * frame_buf_len must be at least 1024 (FRAME_BUF_MAX_LEN); shorter buffers are
  * rejected with BufferTooSmall even though a 200-byte-fragment frame is ~460 chars.
+ *
+ * # Safety
+ *
+ * - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `frame_buf` must point to `frame_buf_len` writable bytes (at least `FRAME_BUF_MAX_LEN`).
+ * - `actual_len` must be writable and must not overlap `frame_buf`.
  */
 int shlosilo_ur_encode_next(struct UrMultipartEncoder *handle,
                             uint8_t *frame_buf,
@@ -1128,6 +1207,10 @@ int shlosilo_ur_encode_next(struct UrMultipartEncoder *handle,
  * as ceil(payload_len / fragment) disagrees with the real count by the CBOR byte-string
  * shell and the fountain padding, and then the label lies about the animation.
  * Returns 0 for a null handle.
+ *
+ * # Safety
+ *
+ * - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
  */
 unsigned int shlosilo_ur_encode_fragment_count(struct UrMultipartEncoder *handle);
 
@@ -1136,6 +1219,12 @@ unsigned int shlosilo_ur_encode_fragment_count(struct UrMultipartEncoder *handle
  *
  * frame_buf_len must be at least 1024 (FRAME_BUF_MAX_LEN); shorter buffers are
  * rejected with BufferTooSmall even though a 200-byte-fragment frame is ~460 chars.
+ *
+ * # Safety
+ *
+ * - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `frame_buf` must point to `frame_buf_len` writable bytes (at least `FRAME_BUF_MAX_LEN`).
+ * - `actual_len` must be writable and must not overlap `frame_buf`.
  */
 int shlosilo_ur_encode_next_cyclic(struct UrMultipartEncoder *handle,
                                    uint8_t *frame_buf,
@@ -1144,17 +1233,32 @@ int shlosilo_ur_encode_next_cyclic(struct UrMultipartEncoder *handle,
 
 /**
  * R3: release the encoder handle. Null-safe (idempotent).
+ *
+ * # Safety
+ *
+ * - `handle` must be NULL or a handle previously returned by `shlosilo_ur_encode_begin` in caller workspace, freed exactly once, with no call on it in flight (including from interrupt context).
  */
 void shlosilo_ur_encode_free(struct UrMultipartEncoder *handle);
 
 /**
  * R3: create a multipart decoder. Returns a handle on success, null on failure.
+ *
+ * # Safety
+ *
+ * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_ur_decode_ws_len()`) and must stay at a stable address until `shlosilo_ur_decode_free`.
  */
-struct UrMultipartDecoder *shlosilo_ur_decode_new(uint8_t *ws, unsigned int ws_len);
+struct UrMultipartDecoder *shlosilo_ur_decode_new(uint8_t *ws,
+                                                  unsigned int ws_len);
 
 /**
  * R3: feed one frame URI (NUL-terminated C string).
  * Returns 0 = Ok (accepted status written to *accepted_out: 1 = new information, 0 = duplicate frame)
+ *
+ * # Safety
+ *
+ * - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `frame` must be a NUL-terminated frame URI string with the NUL inside the frame budget + 1 readable bytes.
+ * - `accepted_out` must be NULL or writable and must not overlap `frame`.
  */
 int shlosilo_ur_decode_feed(struct UrMultipartDecoder *handle,
                             const char *frame,
@@ -1162,6 +1266,10 @@ int shlosilo_ur_decode_feed(struct UrMultipartDecoder *handle,
 
 /**
  * R3: decode progress 0..=99 (100 is expressed via complete)
+ *
+ * # Safety
+ *
+ * - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
  */
 int shlosilo_ur_decode_progress(struct UrMultipartDecoder *handle);
 
@@ -1170,11 +1278,19 @@ int shlosilo_ur_decode_progress(struct UrMultipartDecoder *handle);
  * that). Exists so the carrier can report what a *peer* actually sends (pool #71):
  * the profile's arena slot has to cover it, and a guess that is too small fails a
  * whole session.
+ *
+ * # Safety
+ *
+ * - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
  */
 unsigned int shlosilo_ur_decode_fragment_len(struct UrMultipartDecoder *handle);
 
 /**
  * R3: whether decoding is complete
+ *
+ * # Safety
+ *
+ * - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
  */
 int shlosilo_ur_decode_complete(struct UrMultipartDecoder *handle);
 
@@ -1188,6 +1304,12 @@ int shlosilo_ur_decode_complete(struct UrMultipartDecoder *handle);
  * delivered payload length) → ERR_BUFFER_TOO_SMALL with actual_len set to that
  * capacity for the retry allocation. On success actual_len is the delivered
  * payload length (padding excluded, CBOR shell stripped).
+ *
+ * # Safety
+ *
+ * - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `payload_buf` must point to `payload_buf_len` writable bytes (at least the reassembled capacity reported through `actual_len` on a `BufferTooSmall` return).
+ * - `actual_len` must be writable and must not overlap `payload_buf`.
  */
 int shlosilo_ur_decode_payload(struct UrMultipartDecoder *handle,
                                uint8_t *payload_buf,
@@ -1197,6 +1319,12 @@ int shlosilo_ur_decode_payload(struct UrMultipartDecoder *handle,
 /**
  * R3/P0-C (2026-09-01): get the decoded UR type (written to type_buf as NUL-terminated ASCII).
  * Before completion or with no frames → EncodingInvalidFormat; buffer too small → BufferTooSmall (actual_len gets the required value, including NUL).
+ *
+ * # Safety
+ *
+ * - `handle` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `type_buf` must point to `type_buf_len` writable bytes.
+ * - `actual_len` must be writable and must not overlap `type_buf`.
  */
 int shlosilo_ur_decode_type(struct UrMultipartDecoder *handle,
                             uint8_t *type_buf,
@@ -1226,6 +1354,13 @@ int shlosilo_ur_decode_type(struct UrMultipartDecoder *handle,
  *
  * Returns 0 = Ok, negative = error code (-2 NULL argument, -20 buffer
  * too small, -21 malformed / multipart URI).
+ *
+ * # Safety
+ *
+ * - `uri` must be a NUL-terminated string with the NUL inside the frame budget + 1 readable bytes.
+ * - `type_buf` must point to `type_buf_len` writable bytes.
+ * - `payload` must point to `payload_len` writable bytes.
+ * - `actual_len` must be writable; none of `type_buf`, `payload` and `actual_len` may overlap each other or the `uri` buffer.
  */
 int shlosilo_ur_decode_uri_ffi(const char *uri,
                                uint8_t *type_buf,
@@ -1244,6 +1379,17 @@ int shlosilo_ur_decode_uri_ffi(const char *uri,
  * (seed-less `KeySession` handle). Behavior is byte-for-byte unchanged:
  * the body now delegates to the shared sign core (`sign_typed_core`) that
  * the session entry also uses.
+ *
+ * # Safety
+ *
+ * - `type_name` must be a NUL-terminated string with the NUL inside 65 readable bytes.
+ * - `payload` must point to `payload_len` readable bytes (budget: the multipart payload cap).
+ * - `mnemonic_indices` must point to `mnemonic_count` readable `u16` word indices.
+ * - `passphrase` must be either `(NULL, 0)` or a non-NULL pointer to `passphrase_len` readable bytes.
+ * - `entropy_ptr` must be either `(NULL, 0)` or a non-NULL pointer to `entropy_len` readable bytes.
+ * - `output_buf` must point to `output_buf_len` writable bytes.
+ * - `actual_len` must be writable and must not overlap any other argument.
+ * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
  */
 int shlosilo_sign_typed_ffi(const char *type_name,
                             const uint8_t *payload,
@@ -1292,6 +1438,17 @@ int shlosilo_sign_typed_ffi(const char *type_name,
  * Returns 0 = Ok (length in `actual_len`), negative = error code.
  * The frozen signature carries no network parameter: chain/network gating
  * is the caller's policy (the deprecated typed entry keeps its own).
+ *
+ * # Safety
+ *
+ * - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `type_name` must be a NUL-terminated string with the NUL inside 65 readable bytes.
+ * - `payload` must point to `payload_len` readable bytes (budget: the multipart payload cap).
+ * - `entropy_ptr` must be either `(NULL, 0)` or a non-NULL pointer to `entropy_len` readable bytes.
+ * - `output_buf` must point to `output_buf_len` writable bytes.
+ * - `actual_len` must be writable and must not overlap any other argument.
+ * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
+ * - `ki_records` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_len` readable `WalletKiRecord` values; it must not overlap `output_buf` or `ws`.
  */
 int shlosilo_sign_session_ffi(const struct KeySession *session,
                               const char *type_name,
@@ -1318,6 +1475,17 @@ int shlosilo_sign_session_ffi(const struct KeySession *session,
  *   keyed map (the keystone-ecosystem shape, validated A/B on real
  *   hardware 2026-11-02);
  * - any other value: `EncodingInvalidFormat` (never a silent fallback).
+ *
+ * # Safety
+ *
+ * - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `type_name` must be a NUL-terminated string with the NUL inside 65 readable bytes.
+ * - `payload` must point to `payload_len` readable bytes (budget: the multipart payload cap).
+ * - `entropy_ptr` must be either `(NULL, 0)` or a non-NULL pointer to `entropy_len` readable bytes.
+ * - `output_buf` must point to `output_buf_len` writable bytes.
+ * - `actual_len` must be writable and must not overlap any other argument.
+ * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
+ * - `ki_records` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_len` readable `WalletKiRecord` values; it must not overlap `output_buf` or `ws`.
  */
 int shlosilo_sign_session_view_ffi(const struct KeySession *session,
                                    const char *type_name,
@@ -1368,6 +1536,12 @@ int shlosilo_sign_session_view_ffi(const struct KeySession *session,
  * `shlosilo_keysource_qr_close_ffi` instead — freeing it here would drop
  * the slot-owned session behind the handle's back and turn the glue's
  * next close into a double drop.
+ *
+ * # Safety
+ *
+ * - `session` must point to a writable handle slot owned by the caller; the slot must hold either NULL or a `KeySession` this library constructed in caller memory.
+ * - The slot must not be used concurrently: no sign call on the same handle may be in flight (including from interrupt context).
+ * - A session produced by the flux-side QR/SE glue must be closed through the matching `shlosilo_keysource_*_close_ffi` entry instead — freeing it here would drop the slot-owned session behind the glue's back and turn the glue's next close into a double drop.
  */
 int shlosilo_session_free_ffi(struct KeySession **session);
 
@@ -1406,6 +1580,16 @@ int shlosilo_session_free_ffi(struct KeySession **session);
  * wire), NOT the boost-archive `wallet2::export_key_images_str` blob.
  *
  * Returns 0 = Ok (length in `actual_len`), negative = error code.
+ *
+ * # Safety
+ *
+ * - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `payload` must point to `payload_len` readable bytes (the xmr-output container, <= 16 KiB).
+ * - `entropy_ptr` must be either `(NULL, 0)` or a non-NULL pointer to `entropy_len` readable bytes.
+ * - `output_buf` must point to `output_buf_len` writable bytes.
+ * - `ws` must point to `ws_len` writable bytes (`ws_len >=` the pairing workspace query) and must be **u128-aligned**: the CryptoNight scratch slot is carved at u128 alignment relative to the base and the core validates the absolute address. The address must stay stable for the call.
+ * - `ki_records_out` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_cap` writable `WalletKiRecord` slots; it must not overlap `output_buf`, `ws` or the other out-params.
+ * - `ki_records_actual` and `actual_len` must be writable and must not overlap any other argument.
  */
 int shlosilo_xmr_pairing_ffi(const struct KeySession *session,
                              const uint8_t *payload,
@@ -1441,6 +1625,12 @@ int shlosilo_xmr_pairing_ffi(const struct KeySession *session,
  *
  * Returns 0 = Ok; negative = error code (`ERR_NULL_POINTER` on a null
  * argument, `ERR_BUFFER_TOO_SMALL` on `*len > store_cap`).
+ *
+ * # Safety
+ *
+ * - `store` must be NULL only with `store_cap == 0`; otherwise it must point to `store_cap` writable `WalletKiRecord` slots.
+ * - `incoming` must be NULL only with `incoming_len == 0`; otherwise it must point to `incoming_len` readable `WalletKiRecord` values that do **not overlap** `store` (both are borrowed at the same time, mutably and immutably respectively).
+ * - `len` must point to an initialised `c_uint` holding the current record count (`*len <= store_cap`) and must not overlap `store` or `incoming`.
  */
 int shlosilo_ki_store_merge_ffi(struct WalletKiRecord *store,
                                 unsigned int store_cap,
@@ -1450,6 +1640,10 @@ int shlosilo_ki_store_merge_ffi(struct WalletKiRecord *store,
 
 /**
  * R3: release the decoder handle. Null-safe (idempotent).
+ *
+ * # Safety
+ *
+ * - `handle` must be NULL or a handle previously placed by `shlosilo_ur_decode_new` in caller workspace, freed exactly once, with no call on it in flight (including from interrupt context).
  */
 void shlosilo_ur_decode_free(struct UrMultipartDecoder *handle);
 
@@ -1503,6 +1697,10 @@ uint32_t shlosilo_cn_timing_phase(uint8_t phase);
  * cbindgen maps it to a nullable C function pointer (same as
  * `shlosilo_gen_cache_set_hooks`; a type alias would surface as an opaque
  * `struct Option_...`).
+ *
+ * # Safety
+ *
+ * - `hook`, when non-NULL, must be a valid `extern "C" fn(u8)` for the whole time the crash-phase marker may call it (registering NULL unregisters the slot; the last registration wins).
  */
 void shlosilo_crash_phase_set_hook(void (*hook)(uint8_t));
 
@@ -1545,6 +1743,13 @@ const char *shlosilo_export_format_ur_type(unsigned int format_id);
  *
  * For a UR shape this is the CBOR message the device fragments; for a text shape
  * it is the text, which is only ever shown as one static QR.
+ *
+ * # Safety
+ *
+ * - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `label`, `device_type`, `device_id`, `device_version` must each be NULL or a NUL-terminated string with the NUL inside 65 readable bytes.
+ * - `output_buf` must point to `output_buf_len` writable bytes (`output_buf_len >= shlosilo_export_format_max_len()`).
+ * - `actual_len` must be writable; none of the arguments may overlap.
  */
 int shlosilo_export_format_payload_ffi(const struct KeySession *session,
                                        unsigned int format_id,
@@ -1567,6 +1772,13 @@ int shlosilo_export_format_payload_ffi(const struct KeySession *session,
  * * `label` / `device_type` / `device_id` / `device_version` — optional, used by
  *   the shapes that carry them (pass NULL to omit)
  * * `restore_height` — used by the cupcake-shaped Monero JSON only
+ *
+ * # Safety
+ *
+ * - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+ * - `label`, `device_type`, `device_id`, `device_version` must each be NULL or a NUL-terminated string with the NUL inside 65 readable bytes.
+ * - `output_buf` must point to `output_buf_len` writable bytes (`output_buf_len >= shlosilo_export_format_max_len()`).
+ * - `actual_len` must be writable; none of the arguments may overlap.
  */
 int shlosilo_export_format_session_ffi(const struct KeySession *session,
                                        unsigned int format_id,

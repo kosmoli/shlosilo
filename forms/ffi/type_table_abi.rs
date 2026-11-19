@@ -13,17 +13,30 @@
 
 use core::ffi::{c_char, c_int, c_uint};
 
-/// Borrow the caller's bytes as a `&str`, or `None` for NULL/empty. Non-UTF-8 input
-/// cannot match a registry name, so it classifies as unknown rather than failing.
+/// Longest UR type name the classifier will look at. Registry names are far
+/// shorter; this is the same cap the rest of the FFI surface uses for a type
+/// name, and it is what keeps a bogus length claim out of the slice below.
+const TYPE_NAME_MAX: usize = 64;
+
+/// Borrow the caller's bytes as a `&str`, or `None` for NULL/empty/over-long.
+/// Non-UTF-8 input cannot match a registry name, so it classifies as unknown
+/// rather than failing.
 ///
 /// # Safety
 /// When `ptr` is non-NULL it must point to `len` readable bytes for the duration of
-/// the call.
+/// the call. `len` above [`TYPE_NAME_MAX`] is not read at all (it answers "unknown
+/// type"), so the caller only has to keep the documented name-length window valid.
 unsafe fn type_str<'a>(ptr: *const u8, len: c_uint) -> Option<&'a str> {
     if ptr.is_null() || len == 0 {
         return None;
     }
-    let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+    // F-1 (2026-11-19 graded audit): the claim is bounded BEFORE the slice exists.
+    // A `c_uint` length is greater than `isize::MAX` on a 32-bit target, which
+    // would make `from_raw_parts` a violated precondition (UB) instead of a miss.
+    let len = usize::try_from(len).ok().filter(|&l| l <= TYPE_NAME_MAX)?;
+    // SAFETY: non-null (checked above), non-zero and now within `TYPE_NAME_MAX`;
+    // validity of those bytes is the caller's `# Safety` obligation.
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
     core::str::from_utf8(bytes).ok()
 }
 

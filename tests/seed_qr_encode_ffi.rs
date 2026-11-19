@@ -33,14 +33,16 @@ const ERR_MNEMONIC_INVALID_ENTROPY_LEN: i32 = -31;
 fn encode(mode: i32, entropy: &[u8]) -> (i32, Vec<u8>, u32) {
     let mut out = vec![0u8; 96];
     let mut actual: u32 = 0;
-    let rc = shlosilo_seed_qr_encode_ffi(
-        mode,
-        entropy.as_ptr(),
-        entropy.len() as core::ffi::c_uint,
-        out.as_mut_ptr(),
-        out.len() as core::ffi::c_uint,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_seed_qr_encode_ffi(
+            mode,
+            entropy.as_ptr(),
+            entropy.len() as core::ffi::c_uint,
+            out.as_mut_ptr(),
+            out.len() as core::ffi::c_uint,
+            &mut actual,
+        )
+    };
     out.truncate(actual as usize);
     (rc, out, actual)
 }
@@ -95,49 +97,57 @@ fn error_side() {
     let mut actual: u32 = 7;
 
     // NULL buffers
-    let rc = shlosilo_seed_qr_encode_ffi(
-        SEED_QR_MODE_STANDARD,
-        core::ptr::null(),
-        16,
-        out.as_mut_ptr(),
-        96,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_seed_qr_encode_ffi(
+            SEED_QR_MODE_STANDARD,
+            core::ptr::null(),
+            16,
+            out.as_mut_ptr(),
+            96,
+            &mut actual,
+        )
+    };
     assert_eq!(rc, ERR_NULL_POINTER);
     assert_eq!(actual, 0, "actual_len must be zeroed on every error path");
 
-    let rc = shlosilo_seed_qr_encode_ffi(
-        SEED_QR_MODE_STANDARD,
-        ENTROPY_A.as_ptr(),
-        16,
-        core::ptr::null_mut(),
-        96,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_seed_qr_encode_ffi(
+            SEED_QR_MODE_STANDARD,
+            ENTROPY_A.as_ptr(),
+            16,
+            core::ptr::null_mut(),
+            96,
+            &mut actual,
+        )
+    };
     assert_eq!(rc, ERR_NULL_POINTER);
 
     // out budget too small
-    let rc = shlosilo_seed_qr_encode_ffi(
-        SEED_QR_MODE_STANDARD,
-        ENTROPY_A.as_ptr(),
-        16,
-        out.as_mut_ptr(),
-        47,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_seed_qr_encode_ffi(
+            SEED_QR_MODE_STANDARD,
+            ENTROPY_A.as_ptr(),
+            16,
+            out.as_mut_ptr(),
+            47,
+            &mut actual,
+        )
+    };
     assert_eq!(rc, ERR_BUFFER_TOO_SMALL);
     assert_eq!(actual, 0);
 
     // entropy length outside the steel-plate family (16/32 only)
     for bad_len in [0u32, 15, 17, 24, 31, 33] {
-        let rc = shlosilo_seed_qr_encode_ffi(
-            SEED_QR_MODE_STANDARD,
-            out.as_ptr(),
-            bad_len,
-            out.as_mut_ptr(),
-            96,
-            &mut actual,
-        );
+        let rc = unsafe {
+            shlosilo_seed_qr_encode_ffi(
+                SEED_QR_MODE_STANDARD,
+                out.as_ptr(),
+                bad_len,
+                out.as_mut_ptr(),
+                96,
+                &mut actual,
+            )
+        };
         assert_eq!(
             rc, ERR_MNEMONIC_INVALID_ENTROPY_LEN,
             "len {bad_len} must be rejected with the documented length-class code"
@@ -146,10 +156,12 @@ fn error_side() {
     }
 
     // unknown mode
-    let rc =
-        shlosilo_seed_qr_encode_ffi(0, ENTROPY_A.as_ptr(), 16, out.as_mut_ptr(), 96, &mut actual);
+    let rc = unsafe {
+        shlosilo_seed_qr_encode_ffi(0, ENTROPY_A.as_ptr(), 16, out.as_mut_ptr(), 96, &mut actual)
+    };
     assert_eq!(rc, ERR_ENCODING);
-    let rc =
-        shlosilo_seed_qr_encode_ffi(3, ENTROPY_A.as_ptr(), 16, out.as_mut_ptr(), 96, &mut actual);
+    let rc = unsafe {
+        shlosilo_seed_qr_encode_ffi(3, ENTROPY_A.as_ptr(), 16, out.as_mut_ptr(), 96, &mut actual)
+    };
     assert_eq!(rc, ERR_ENCODING);
 }

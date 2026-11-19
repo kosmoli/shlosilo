@@ -167,26 +167,28 @@ fn bt_typed_sign_zero_alloc() {
     let tname = c"crypto-psbt";
 
     // warm-up (lazy static init outside the measured section)
-    let rc = shlosilo_sign_typed_ffi(
-        tname.as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        idx.as_ptr(),
-        idx.len() as i32,
-        core::ptr::null(),
-        0,
-        0,
-        core::ptr::null(),
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws_buf.as_mut_ptr(),
-        need,
-    );
+    let rc = unsafe {
+        shlosilo_sign_typed_ffi(
+            tname.as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            idx.as_ptr(),
+            idx.len() as i32,
+            core::ptr::null(),
+            0,
+            0,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws_buf.as_mut_ptr(),
+            need,
+        )
+    };
     assert_eq!(rc, 0, "warm-up sign must succeed");
 
-    let (rc, events) = measured(|| {
+    let (rc, events) = measured(|| unsafe {
         shlosilo_sign_typed_ffi(
             tname.as_ptr(),
             payload.as_ptr(),

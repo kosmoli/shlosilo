@@ -18,7 +18,7 @@
 /// `clock_fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
 #[cfg_attr(not(feature = "cn-timing-ffi"), allow(unused_variables))]
 #[no_mangle]
-pub extern "C" fn shlosilo_cn_timing_set_clock(clock_fptr: Option<extern "C" fn() -> u32>) {
+pub unsafe extern "C" fn shlosilo_cn_timing_set_clock(clock_fptr: Option<extern "C" fn() -> u32>) {
     #[cfg(feature = "cn-timing-ffi")]
     {
         cuprate_cryptonight::register_clock(clock_fptr);

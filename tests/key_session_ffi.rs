@@ -85,23 +85,25 @@ fn sign_via_typed(indices: &[u16], network: u32, payload: &[u8]) -> (i32, std::v
     let mut actual: u32 = 0;
     let need = shlosilo_sign_ws_len();
     let mut ws = std::vec![0u8; need as usize];
-    let rc = shlosilo_sign_typed_ffi(
-        c"eth-sign-request".as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        indices.as_ptr(),
-        indices.len() as i32,
-        core::ptr::null(),
-        0,
-        network,
-        core::ptr::null(),
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws.as_mut_ptr(),
-        need,
-    );
+    let rc = unsafe {
+        shlosilo_sign_typed_ffi(
+            c"eth-sign-request".as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            indices.as_ptr(),
+            indices.len() as i32,
+            core::ptr::null(),
+            0,
+            network,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            need,
+        )
+    };
     (rc, out, actual)
 }
 
@@ -111,21 +113,23 @@ fn sign_via_session(session: *const KeySession, payload: &[u8]) -> (i32, std::ve
     let mut actual: u32 = 0;
     let need = shlosilo_sign_ws_len();
     let mut ws = std::vec![0u8; need as usize];
-    let rc = shlosilo_sign_session_ffi(
-        session,
-        c"eth-sign-request".as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        core::ptr::null(),
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws.as_mut_ptr(),
-        need,
-        core::ptr::null(),
-        0,
-    );
+    let rc = unsafe {
+        shlosilo_sign_session_ffi(
+            session,
+            c"eth-sign-request".as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            need,
+            core::ptr::null(),
+            0,
+        )
+    };
     (rc, out, actual)
 }
 
@@ -164,7 +168,7 @@ fn session_sign_matches_typed_entry_byte_for_byte() {
 
     // reclaim through the FFI lifecycle contract
     let mut slot = handle;
-    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+    assert_eq!(unsafe { shlosilo_session_free_ffi(&mut slot) }, OK);
     assert!(slot.is_null(), "free must NULL the caller's handle slot");
 }
 
@@ -176,11 +180,11 @@ fn session_free_lifecycle_contract() {
     let handle = place_session(&mut slot_mem, &FIXTURE_ENTROPY);
     let mut slot = handle;
 
-    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+    assert_eq!(unsafe { shlosilo_session_free_ffi(&mut slot) }, OK);
     assert!(slot.is_null(), "free must NULL the caller's handle slot");
     // same variable freed twice: the second call sees the NULLed slot
     assert_eq!(
-        shlosilo_session_free_ffi(&mut slot),
+        unsafe { shlosilo_session_free_ffi(&mut slot) },
         ERR_NULL_POINTER,
         "second free must be an error code, not UB"
     );
@@ -188,14 +192,14 @@ fn session_free_lifecycle_contract() {
 
     // NULL slot pointer
     assert_eq!(
-        shlosilo_session_free_ffi(core::ptr::null_mut()),
+        unsafe { shlosilo_session_free_ffi(core::ptr::null_mut()) },
         ERR_NULL_POINTER,
         "NULL slot pointer must be an error"
     );
     // NULL handle inside a valid slot
     let mut null_handle: *mut KeySession = core::ptr::null_mut();
     assert_eq!(
-        shlosilo_session_free_ffi(&mut null_handle),
+        unsafe { shlosilo_session_free_ffi(&mut null_handle) },
         ERR_NULL_POINTER,
         "NULL handle must be an error"
     );
@@ -224,7 +228,7 @@ fn typed_entry_output_matches_session_byte_for_byte_24_word() {
     );
 
     let mut slot = handle;
-    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+    assert_eq!(unsafe { shlosilo_session_free_ffi(&mut slot) }, OK);
 }
 
 //-- 3b. Behavior preservation: the typed entry is byte-for-byte unchanged vs the
@@ -269,21 +273,23 @@ fn session_sign_null_session_rejected() {
     let mut actual: u32 = 0;
     let need = shlosilo_sign_ws_len();
     let mut ws = std::vec![0u8; need as usize];
-    let rc = shlosilo_sign_session_ffi(
-        core::ptr::null(),
-        c"eth-sign-request".as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        core::ptr::null(),
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws.as_mut_ptr(),
-        need,
-        core::ptr::null(),
-        0,
-    );
+    let rc = unsafe {
+        shlosilo_sign_session_ffi(
+            core::ptr::null(),
+            c"eth-sign-request".as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            need,
+            core::ptr::null(),
+            0,
+        )
+    };
     assert_eq!(rc, ERR_NULL_POINTER, "NULL session must be rejected");
     assert_eq!(actual, 0, "failure path must zero actual_len");
 }
@@ -293,21 +299,23 @@ fn session_sign_ws_probe_reports_requirement() {
     let payload = eth_fixture_payload();
     let mut out = [0u8; 512];
     let mut actual: u32 = 0;
-    let rc = shlosilo_sign_session_ffi(
-        core::ptr::null(), // probe must return BEFORE the session null-check
-        c"eth-sign-request".as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        core::ptr::null(),
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        core::ptr::null_mut(), // ws == NULL: pure probe
-        0,
-        core::ptr::null(),
-        0,
-    );
+    let rc = unsafe {
+        shlosilo_sign_session_ffi(
+            core::ptr::null(), // probe must return BEFORE the session null-check
+            c"eth-sign-request".as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            core::ptr::null_mut(), // ws == NULL: pure probe
+            0,
+            core::ptr::null(),
+            0,
+        )
+    };
     assert_eq!(rc, OK, "ws == NULL is the pure probe (family contract)");
     assert_eq!(
         actual,
@@ -329,21 +337,23 @@ fn session_sign_output_buf_too_small_reports_buffer_too_small() {
     let mut actual: u32 = 0;
     let need = shlosilo_sign_ws_len();
     let mut ws = std::vec![0u8; need as usize];
-    let rc = shlosilo_sign_session_ffi(
-        handle,
-        c"eth-sign-request".as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        core::ptr::null(),
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws.as_mut_ptr(),
-        need,
-        core::ptr::null(),
-        0,
-    );
+    let rc = unsafe {
+        shlosilo_sign_session_ffi(
+            handle,
+            c"eth-sign-request".as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            need,
+            core::ptr::null(),
+            0,
+        )
+    };
     assert_eq!(
         rc, ERR_BUFFER_TOO_SMALL,
         "undersized output buffer must report BufferTooSmall"
@@ -351,7 +361,7 @@ fn session_sign_output_buf_too_small_reports_buffer_too_small() {
     assert_eq!(actual, 0, "failure path must zero actual_len");
 
     let mut slot = handle;
-    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+    assert_eq!(unsafe { shlosilo_session_free_ffi(&mut slot) }, OK);
 }
 
 /// NULL required args (type_name / payload / output_buf) → ERR_NULL_POINTER,
@@ -382,25 +392,27 @@ fn session_sign_null_required_args_rejected() {
     ];
     for (i, (type_name, pl, ob)) in cases.into_iter().enumerate() {
         let mut actual: u32 = 0;
-        let rc = shlosilo_sign_session_ffi(
-            handle,
-            type_name.cast(),
-            pl,
-            if pl.is_null() {
-                0
-            } else {
-                payload.len() as u32
-            },
-            core::ptr::null(),
-            0,
-            ob,
-            out.len() as u32,
-            &mut actual,
-            ws.as_mut_ptr(),
-            need,
-            core::ptr::null(),
-            0,
-        );
+        let rc = unsafe {
+            shlosilo_sign_session_ffi(
+                handle,
+                type_name.cast(),
+                pl,
+                if pl.is_null() {
+                    0
+                } else {
+                    payload.len() as u32
+                },
+                core::ptr::null(),
+                0,
+                ob,
+                out.len() as u32,
+                &mut actual,
+                ws.as_mut_ptr(),
+                need,
+                core::ptr::null(),
+                0,
+            )
+        };
         assert_eq!(
             rc, ERR_NULL_POINTER,
             "case {i}: NULL required arg must be rejected"
@@ -409,7 +421,7 @@ fn session_sign_null_required_args_rejected() {
     }
 
     let mut slot = handle;
-    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+    assert_eq!(unsafe { shlosilo_session_free_ffi(&mut slot) }, OK);
 }
 
 /// ws under-capacity → BufferTooSmall AND `actual_len` reports the required
@@ -424,21 +436,23 @@ fn session_sign_ws_under_capacity_reports_requirement() {
     let mut actual: u32 = 0;
     let need = shlosilo_sign_ws_len();
     let mut ws = std::vec![0u8; need as usize - 1]; // one byte short
-    let rc = shlosilo_sign_session_ffi(
-        handle,
-        c"eth-sign-request".as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        core::ptr::null(),
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws.as_mut_ptr(),
-        need - 1,
-        core::ptr::null(),
-        0,
-    );
+    let rc = unsafe {
+        shlosilo_sign_session_ffi(
+            handle,
+            c"eth-sign-request".as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            need - 1,
+            core::ptr::null(),
+            0,
+        )
+    };
     assert_eq!(rc, ERR_BUFFER_TOO_SMALL, "under-capacity ws must error");
     assert_eq!(
         actual,
@@ -447,7 +461,7 @@ fn session_sign_ws_under_capacity_reports_requirement() {
     );
 
     let mut slot = handle;
-    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+    assert_eq!(unsafe { shlosilo_session_free_ffi(&mut slot) }, OK);
 }
 
 /// §B.5 XMR entropy misuse guard through the SESSION path: an XMR sign request
@@ -480,21 +494,23 @@ fn session_sign_xmr_short_entropy_hits_misuse_guard() {
     let need = shlosilo_sign_ws_len();
     let mut ws = std::vec![0u8; need as usize];
     let short_entropy = [0x77u8; 8]; // < ENTROPY_MIN_LEN (16)
-    let rc = shlosilo_sign_session_ffi(
-        handle,
-        c"xmr-txunsigned".as_ptr(),
-        encrypted.as_ptr(),
-        encrypted.len() as u32,
-        short_entropy.as_ptr(),
-        short_entropy.len() as u32,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws.as_mut_ptr(),
-        need,
-        core::ptr::null(),
-        0,
-    );
+    let rc = unsafe {
+        shlosilo_sign_session_ffi(
+            handle,
+            c"xmr-txunsigned".as_ptr(),
+            encrypted.as_ptr(),
+            encrypted.len() as u32,
+            short_entropy.as_ptr(),
+            short_entropy.len() as u32,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            need,
+            core::ptr::null(),
+            0,
+        )
+    };
     assert_eq!(
         rc,
         ShlosiloErrorCode::InvalidDiceRolls as i32,
@@ -503,7 +519,7 @@ fn session_sign_xmr_short_entropy_hits_misuse_guard() {
     assert_eq!(actual, 0, "failure path must zero actual_len");
 
     let mut slot = handle;
-    assert_eq!(shlosilo_session_free_ffi(&mut slot), OK);
+    assert_eq!(unsafe { shlosilo_session_free_ffi(&mut slot) }, OK);
 }
 
 /// Encrypt with the unsigned-side isomorphic format (duplicated from

@@ -21,14 +21,16 @@ fn decode_through_ffi(uri: &str) -> (i32, String, Vec<u8>) {
     let mut type_buf = [0u8; 64];
     let mut payload = vec![0u8; 4096];
     let mut actual: c_uint = 0;
-    let rc = shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_uri_ffi(
-        text.as_ptr().cast(),
-        type_buf.as_mut_ptr(),
-        type_buf.len() as c_uint,
-        payload.as_mut_ptr(),
-        payload.len() as c_uint,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_uri_ffi(
+            text.as_ptr().cast(),
+            type_buf.as_mut_ptr(),
+            type_buf.len() as c_uint,
+            payload.as_mut_ptr(),
+            payload.len() as c_uint,
+            &mut actual,
+        )
+    };
     let type_out = {
         let end = type_buf.iter().position(|&b| b == 0).unwrap_or(0);
         String::from_utf8_lossy(&type_buf[..end]).to_string()

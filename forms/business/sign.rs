@@ -688,7 +688,9 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     // the slices are handed out. The spans all derive from one base pointer so
     // the borrow checker sees disjoint raw derivations, not competing &muts.
     unsafe fn at<'a, T>(base: *mut u8, off: usize, count: usize) -> &'a mut [T] {
-        core::slice::from_raw_parts_mut(base.add(off) as *mut T, count)
+        // SAFETY: caller (this carve) guarantees `off`/`count` come from
+        // SignWsLayout::compute and stay inside one base allocation.
+        unsafe { core::slice::from_raw_parts_mut(base.add(off) as *mut T, count) }
     }
     let txes: &mut [Option<TxConstructionData>] = unsafe { at(base, l.txes, c::SIGN_WS_TXES) };
     for s in txes.iter_mut() {

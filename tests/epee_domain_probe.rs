@@ -277,21 +277,23 @@ fn run_variant(
             Err(e) => shlosilo::error::ShlosiloErrorCode::from_shlosilo_error(e),
         }
     } else {
-        shlosilo_xmr_pairing_ffi(
-            session,
-            req.as_ptr(),
-            req.len() as core::ffi::c_uint,
-            [7u8; 32].as_ptr(),
-            32,
-            out.as_mut_ptr(),
-            out.len() as core::ffi::c_uint,
-            &mut actual,
-            ws.as_mut_ptr(),
-            ws.len() as core::ffi::c_uint,
-            core::ptr::null_mut(),
-            0,
-            core::ptr::null_mut(),
-        )
+        unsafe {
+            shlosilo_xmr_pairing_ffi(
+                session,
+                req.as_ptr(),
+                req.len() as core::ffi::c_uint,
+                [7u8; 32].as_ptr(),
+                32,
+                out.as_mut_ptr(),
+                out.len() as core::ffi::c_uint,
+                &mut actual,
+                ws.as_mut_ptr(),
+                ws.len() as core::ffi::c_uint,
+                core::ptr::null_mut(),
+                0,
+                core::ptr::null_mut(),
+            )
+        }
     };
 
     // attribution: re-parse the SAME plaintext with the device grammar directly

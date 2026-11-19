@@ -105,14 +105,14 @@ fn device_ffi_path_accepts_every_sparrow_frame() {
 
     let ws_need = shlosilo::ur::ur_multipart::ur_decode_ws_len();
     let mut ws = vec![0u8; ws_need];
-    let dec = c_abi::r3::shlosilo_ur_decode_new(ws.as_mut_ptr(), ws_need as c_uint);
+    let dec = unsafe { c_abi::r3::shlosilo_ur_decode_new(ws.as_mut_ptr(), ws_need as c_uint) };
     assert!(!dec.is_null(), "decoder init failed");
 
     let mut accepted_total = 0u32;
     for (i, f) in frames.iter().enumerate() {
         let c = CString::new(*f).unwrap();
         let mut accepted: c_uint = 0;
-        let rc = c_abi::r3::shlosilo_ur_decode_feed(dec, c.as_ptr(), &mut accepted);
+        let rc = unsafe { c_abi::r3::shlosilo_ur_decode_feed(dec, c.as_ptr(), &mut accepted) };
         assert_eq!(
             rc,
             0,
@@ -126,7 +126,7 @@ fn device_ffi_path_accepts_every_sparrow_frame() {
     }
     assert!(accepted_total > 0, "no frame carried new information");
     assert_eq!(
-        c_abi::r3::shlosilo_ur_decode_complete(dec),
+        unsafe { c_abi::r3::shlosilo_ur_decode_complete(dec) },
         1,
         "all frames received but still not complete"
     );
@@ -134,11 +134,13 @@ fn device_ffi_path_accepts_every_sparrow_frame() {
     let mut tlen: c_uint = 0;
     let mut ty = [0u8; 32];
     assert_eq!(
-        c_abi::r3::shlosilo_ur_decode_type(dec, ty.as_mut_ptr(), ty.len() as c_uint, &mut tlen),
+        unsafe {
+            c_abi::r3::shlosilo_ur_decode_type(dec, ty.as_mut_ptr(), ty.len() as c_uint, &mut tlen)
+        },
         0
     );
     let t = core::str::from_utf8(&ty[..(tlen as usize).saturating_sub(1)]).unwrap();
     assert_eq!(t, "crypto-psbt", "type should be normalized to lowercase");
 
-    c_abi::r3::shlosilo_ur_decode_free(dec);
+    unsafe { c_abi::r3::shlosilo_ur_decode_free(dec) };
 }

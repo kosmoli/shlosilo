@@ -56,8 +56,12 @@ pub fn mark(phase: u8) {
 /// cbindgen maps it to a nullable C function pointer (same as
 /// `shlosilo_gen_cache_set_hooks`; a type alias would surface as an opaque
 /// `struct Option_...`).
+///
+/// # Safety
+///
+/// - `hook`, when non-NULL, must be a valid `extern "C" fn(u8)` for the whole time the crash-phase marker may call it (registering NULL unregisters the slot; the last registration wins).
 #[no_mangle]
-pub extern "C" fn shlosilo_crash_phase_set_hook(hook: Option<extern "C" fn(u8)>) {
+pub unsafe extern "C" fn shlosilo_crash_phase_set_hook(hook: Option<extern "C" fn(u8)>) {
     #[allow(static_mut_refs)]
     unsafe {
         HOOK = hook;
@@ -87,19 +91,19 @@ mod tests {
     #[test]
     fn phase_hook_marks_forwards_and_unregisters() {
         // fresh state
-        shlosilo_crash_phase_set_hook(None);
+        unsafe { shlosilo_crash_phase_set_hook(None) };
         mark(CRASH_PHASE_PAIR_LOOP);
         assert_eq!(shlosilo_crash_phase_get(), CRASH_PHASE_PAIR_LOOP);
         assert_eq!(SEEN.load(Ordering::SeqCst), 0xAA, "no hook: not forwarded");
 
         // registered hook forwards and the getter tracks the atomic
-        shlosilo_crash_phase_set_hook(Some(record));
+        unsafe { shlosilo_crash_phase_set_hook(Some(record)) };
         mark(CRASH_PHASE_PAIR_LOOP);
         assert_eq!(shlosilo_crash_phase_get(), CRASH_PHASE_PAIR_LOOP);
         assert_eq!(SEEN.load(Ordering::SeqCst), CRASH_PHASE_PAIR_LOOP);
 
         // unregister: mark still updates the getter, nothing forwarded
-        shlosilo_crash_phase_set_hook(None);
+        unsafe { shlosilo_crash_phase_set_hook(None) };
         mark(0);
         assert_eq!(shlosilo_crash_phase_get(), 0);
         assert_eq!(SEEN.load(Ordering::SeqCst), CRASH_PHASE_PAIR_LOOP);

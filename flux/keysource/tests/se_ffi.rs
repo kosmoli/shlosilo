@@ -227,13 +227,15 @@ fn fresh_ws() -> Vec<u8> {
 }
 
 fn se_open(ws: &mut [u8], password: &[u8], out: &mut *const KeySession) -> i32 {
-    shlosilo_keysource_se_open_ffi(
-        ws.as_mut_ptr(),
-        ws.len() as core::ffi::c_uint,
-        password.as_ptr(),
-        password.len() as core::ffi::c_uint,
-        out,
-    )
+    unsafe {
+        shlosilo_keysource_se_open_ffi(
+            ws.as_mut_ptr(),
+            ws.len() as core::ffi::c_uint,
+            password.as_ptr(),
+            password.len() as core::ffi::c_uint,
+            out,
+        )
+    }
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -264,7 +266,10 @@ fn unlock_16_session_keys_match_from_entropy_direct_feed() {
         assert_eq!(sess.monero().spend_sk.expose(), &want_spend);
         assert_eq!(sess.monero().view_sk.expose(), &want_view);
     }
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 #[test]
@@ -280,7 +285,10 @@ fn unlock_32_session_keys_match_from_entropy_direct_feed() {
         assert_eq!(sess.monero().spend_sk.expose(), &want_spend);
         assert_eq!(sess.monero().view_sk.expose(), &want_view);
     }
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 #[test]
@@ -296,10 +304,16 @@ fn wrong_password_is_auth_failed_one_shot_and_no_session() {
     assert_eq!(shim_calls(), 1, "no retry after a rejected password");
     // No session: the workspace holds nothing — close is a defined no-op and the
     // right password still unlocks afterwards (no lockout state left behind).
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), OK);
     assert!(!out.is_null());
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 #[test]
@@ -311,7 +325,10 @@ fn se_comm_failure_is_se_comm_not_auth_failed() {
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), ERR_SE_COMM);
     assert!(out.is_null());
     assert_eq!(shim_calls(), 1);
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 #[test]
@@ -322,7 +339,10 @@ fn auth_failure_mode_maps_to_auth_failed() {
     let mut out: *const KeySession = core::ptr::null();
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), ERR_AUTH_FAILED);
     assert!(out.is_null());
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 // ── pool item #24: entropyLen is untrusted ─────────────────────────────────
@@ -342,11 +362,17 @@ fn entropy_len_not_16_or_32_is_refused() {
         );
         assert!(out.is_null(), "no session may come out of a lying length");
         // no session left behind: close is a defined no-op, ws re-opens.
-        assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+        assert_eq!(
+            unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+            OK
+        );
         shim_set_mode(MODE_OK16);
         assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), OK);
         assert!(!out.is_null());
-        assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+        assert_eq!(
+            unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+            OK
+        );
     }
 }
 
@@ -378,7 +404,10 @@ fn entropy_len_zero_is_coerced_to_32_by_the_c_chain_keystone3_parity() {
         assert_eq!(sess.monero().spend_sk.expose(), &want_spend);
         assert_eq!(sess.monero().view_sk.expose(), &want_view);
     }
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 // ── capacity + close discipline ────────────────────────────────────────────
@@ -408,7 +437,10 @@ fn second_unlock_on_busy_ws_is_slot_occupied_before_any_credential_attempt() {
         assert_eq!(sess.monero().spend_sk.expose(), &want_spend);
         assert_eq!(sess.monero().view_sk.expose(), &want_view);
     }
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 #[test]
@@ -418,17 +450,32 @@ fn close_is_total_and_idempotent_and_ws_reopens() {
     let mut ws = fresh_ws();
     let mut out: *const KeySession = core::ptr::null();
     // close before any open: defined no-op (zeroed workspace = no session)
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), OK);
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
     // second close after a successful one: defined no-op
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
     // the same workspace re-opens after close (24-word material this time)
     shim_set_mode(MODE_OK32);
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), OK);
     assert!(!out.is_null());
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 #[test]
@@ -450,7 +497,10 @@ fn close_wipes_the_key_bytes_forensic() {
         !contains(&ws, &[0x5eu8; 4]),
         "decrypted secret must not leak into the workspace"
     );
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
     assert!(
         !contains(&ws, &spend),
         "close must wipe the spend key bytes"
@@ -472,55 +522,66 @@ fn ws_len_under_capacity_is_buffer_too_small_and_null_params_are_err_null_pointe
     let mut ws = fresh_ws();
     let mut out: *const KeySession = core::ptr::null();
     for short in [0usize, 1, need - 1] {
-        let rc = shlosilo_keysource_se_open_ffi(
-            ws.as_mut_ptr(),
-            short as core::ffi::c_uint,
-            FIXTURE_PWD.as_ptr(),
-            FIXTURE_PWD.len() as core::ffi::c_uint,
-            &mut out,
-        );
+        let rc = unsafe {
+            shlosilo_keysource_se_open_ffi(
+                ws.as_mut_ptr(),
+                short as core::ffi::c_uint,
+                FIXTURE_PWD.as_ptr(),
+                FIXTURE_PWD.len() as core::ffi::c_uint,
+                &mut out,
+            )
+        };
         assert_eq!(rc, ERR_BUFFER_TOO_SMALL, "ws_len {short} must be refused");
         assert!(out.is_null());
     }
     assert_eq!(
-        shlosilo_keysource_se_open_ffi(
-            core::ptr::null_mut(),
-            ws.len() as core::ffi::c_uint,
-            FIXTURE_PWD.as_ptr(),
-            FIXTURE_PWD.len() as core::ffi::c_uint,
-            &mut out
-        ),
+        unsafe {
+            shlosilo_keysource_se_open_ffi(
+                core::ptr::null_mut(),
+                ws.len() as core::ffi::c_uint,
+                FIXTURE_PWD.as_ptr(),
+                FIXTURE_PWD.len() as core::ffi::c_uint,
+                &mut out,
+            )
+        },
         ERR_NULL_POINTER
     );
     assert_eq!(
-        shlosilo_keysource_se_open_ffi(
-            ws.as_mut_ptr(),
-            ws.len() as core::ffi::c_uint,
-            core::ptr::null(),
-            4,
-            &mut out
-        ),
+        unsafe {
+            shlosilo_keysource_se_open_ffi(
+                ws.as_mut_ptr(),
+                ws.len() as core::ffi::c_uint,
+                core::ptr::null(),
+                4,
+                &mut out,
+            )
+        },
         ERR_NULL_POINTER
     );
     assert_eq!(
-        shlosilo_keysource_se_open_ffi(
-            ws.as_mut_ptr(),
-            ws.len() as core::ffi::c_uint,
-            FIXTURE_PWD.as_ptr(),
-            FIXTURE_PWD.len() as core::ffi::c_uint,
-            core::ptr::null_mut()
-        ),
+        unsafe {
+            shlosilo_keysource_se_open_ffi(
+                ws.as_mut_ptr(),
+                ws.len() as core::ffi::c_uint,
+                FIXTURE_PWD.as_ptr(),
+                FIXTURE_PWD.len() as core::ffi::c_uint,
+                core::ptr::null_mut(),
+            )
+        },
         ERR_NULL_POINTER
     );
     assert_eq!(
-        shlosilo_keysource_se_close_ffi(core::ptr::null_mut()),
+        unsafe { shlosilo_keysource_se_close_ffi(core::ptr::null_mut()) },
         ERR_NULL_POINTER
     );
     // none of the refusals ran the credential path
     assert_eq!(shim_calls(), 0, "refused calls must not reach the SE");
     // the workspace still opens fine at full capacity
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), OK);
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 #[test]
@@ -555,30 +616,41 @@ fn qr_and_se_close_entries_share_one_teardown() {
     let mut ws = fresh_ws();
     let mut out: *const KeySession = core::ptr::null();
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), OK);
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
     assert_eq!(
-        shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()),
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
         OK,
         "idempotent"
     );
     // … and a QR-opened workspace closes through the SE close entry.
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            ws.len() as core::ffi::c_uint,
-            FIXTURE_ENTROPY.as_ptr(),
-            16,
-            &mut out
-        ),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws.len() as core::ffi::c_uint,
+                FIXTURE_ENTROPY.as_ptr(),
+                16,
+                &mut out,
+            )
+        },
         OK
     );
     let (spend, view) = reference_keys(&FIXTURE_ENTROPY);
     assert!(contains(&ws, &spend) && contains(&ws, &view));
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
     assert!(!contains(&ws, &spend) && !contains(&ws, &view));
     // and the workspace is reusable for an SE unlock afterwards
     assert_eq!(se_open(&mut ws, FIXTURE_PWD, &mut out), OK);
-    assert_eq!(shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 // ── trait face: SeKeySource implements KeySource ───────────────────────────
@@ -648,23 +720,40 @@ fn trait_face_unlock_while_unlocked_is_capacity() {
 fn seed_never_appears_in_se_ffi_signatures() {
     let src = include_str!("../src/keysource/se_ffi.rs");
     const FORBIDDEN: &[&str] = &["seed", "entropy", "mnemonic", "passphrase"];
-    let mut checked = 0usize;
-    let mut rest = src;
-    while let Some(pos) = rest.find("pub extern \"C\" fn") {
-        rest = &rest[pos..];
-        let end = rest.find("->").expect("extern fn must return");
-        let signature = rest[..end].to_ascii_lowercase();
-        for token in FORBIDDEN {
-            assert!(
-                !signature.contains(token),
-                "FFI signature must not mention `{token}`: {}",
-                rest[..end].lines().next().unwrap_or("")
-            );
+
+    // Two declaration shapes under the graded FFI contract (2026-11-19): pointer
+    // taking entries are `pub unsafe extern "C" fn` with a `# Safety` section, the
+    // pure capacity query stays safe.
+    let mut total = 0usize;
+    let mut unsafe_entries = 0usize;
+    for (shape, is_unsafe) in [
+        ("pub unsafe extern \"C\" fn", true),
+        ("pub extern \"C\" fn", false),
+    ] {
+        let mut rest = src;
+        while let Some(pos) = rest.find(shape) {
+            rest = &rest[pos..];
+            let end = rest.find("->").expect("extern fn must return");
+            let signature = rest[..end].to_ascii_lowercase();
+            for token in FORBIDDEN {
+                assert!(
+                    !signature.contains(token),
+                    "FFI signature must not mention `{token}`: {}",
+                    rest[..end].lines().next().unwrap_or("")
+                );
+            }
+            if is_unsafe {
+                unsafe_entries += 1;
+            }
+            total += 1;
+            rest = &rest[end..];
         }
-        checked += 1;
-        rest = &rest[end..];
     }
-    assert_eq!(checked, 3, "the three keysource SE entries");
+    assert_eq!(total, 3, "the three keysource SE entries");
+    assert_eq!(
+        unsafe_entries, 2,
+        "the entries that take pointers (`open` / `close`) must be unsafe"
+    );
 }
 
 /// Key hygiene pins (pool items #22/#24): the password and the decrypted

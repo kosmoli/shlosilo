@@ -578,7 +578,7 @@ fn cake_real_container_product_entry_ffi() {
     let mut ws = vec![0u8; pairing_ws_len()];
     let mut actual: core::ffi::c_uint = 0;
 
-    let (rc, dt) = timed("FFI shlosilo_xmr_pairing_ffi (whole chain)", || {
+    let (rc, dt) = timed("FFI shlosilo_xmr_pairing_ffi (whole chain)", || unsafe {
         shlosilo_xmr_pairing_ffi(
             &session,
             container.as_ptr(),

@@ -162,7 +162,7 @@ pub use imp::*;
 /// # Safety
 /// `fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
 #[no_mangle]
-pub extern "C" fn shlosilo_timing_set_clock_fn(fptr: Option<extern "C" fn() -> u32>) {
+pub unsafe extern "C" fn shlosilo_timing_set_clock_fn(fptr: Option<extern "C" fn() -> u32>) {
     #[cfg(feature = "device-timing")]
     {
         imp::set_clock(fptr);
@@ -231,7 +231,8 @@ mod tests {
     #[test]
     fn inv2_inv3_clock_roundtrip_and_null_sentinel() {
         // inv2: register the real fn pointer through the C-ABI entry.
-        shlosilo_timing_set_clock_fn(Some(test_clock));
+        // SAFETY: `test_clock` is a valid `extern "C" fn() -> u32` for the test.
+        unsafe { shlosilo_timing_set_clock_fn(Some(test_clock)) };
         shlosilo_timing_reset();
         TICK.store(1_000, Ordering::Relaxed);
         let m = Mark::start(STAGE_UR_DECODE);
@@ -246,7 +247,7 @@ mod tests {
         // inv3: NULL unregisters (last registration wins) — reads are all zero.
         // TICK moves across the Mark so a stale registration (dt = 50) cannot
         // masquerade as the unregistered reading (dt = 0).
-        shlosilo_timing_set_clock_fn(None);
+        unsafe { shlosilo_timing_set_clock_fn(None) };
         shlosilo_timing_reset();
         TICK.store(9_000, Ordering::Relaxed);
         let m = Mark::start(STAGE_UR_DECODE);

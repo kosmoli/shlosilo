@@ -65,7 +65,7 @@ const PAIRING_SCRATCH_LEN: usize = {
 // mismatched caps would refuse a 65..128-output export on the request side
 // even though the response side accepts it (audit finding of the WP4 test
 // sweep). Pool lives in PSRAM (caller-carved PairingWs).
-const PAIRING_DETAILS_MAX: usize = 128;
+pub(crate) const PAIRING_DETAILS_MAX: usize = 128;
 /// Key-image record pool (one 96 B record per output) — mirrors the details
 /// cap so every parsed output is answered. The C-side retention mirror is
 /// `PAIRING_KI_MAX` in flux/forgebox/src/tasks/product_task.c.
@@ -186,7 +186,9 @@ pub fn carve_pairing_ws(buf: &mut [u8]) -> Option<PairingWs<'_>> {
     // `pairing_ws_len` reports); every element is initialized below before the
     // slices are handed out; all spans derive from one base pointer.
     unsafe fn at<'a, T>(base: *mut u8, off: usize, count: usize) -> &'a mut [T] {
-        core::slice::from_raw_parts_mut(base.add(off) as *mut T, count)
+        // SAFETY: caller (this carve) guarantees `off`/`count` come from the
+        // pairing workspace layout and stay inside one base allocation.
+        unsafe { core::slice::from_raw_parts_mut(base.add(off) as *mut T, count) }
     }
     let scratch: &mut [u8] = unsafe { at(base, l.scratch, PAIRING_SCRATCH_LEN) };
     let cn_scratch: &mut [u8] =

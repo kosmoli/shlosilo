@@ -28,9 +28,12 @@ extern "C" fn now_ms_c() -> u32 {
 pub(crate) fn register() {
     // T-04 contract: typed nullable fn pointers, no address casting.
     // NULL would unregister; last registration wins.
-    shlosilo::ffi::tx_phase_ffi::shlosilo_tx_phase_set_clock(Some(now_ms_c));
-    shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_set_clock(Some(now_ms_c));
-    shlosilo::ffi::prove_timing_ffi::shlosilo_bp_timing_set_clock(Some(now_ms_c));
+    // SAFETY: `now_ms_c` is a valid `extern "C" fn() -> u32` for the program lifetime.
+    unsafe {
+        shlosilo::ffi::tx_phase_ffi::shlosilo_tx_phase_set_clock(Some(now_ms_c));
+        shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_set_clock(Some(now_ms_c));
+        shlosilo::ffi::prove_timing_ffi::shlosilo_bp_timing_set_clock(Some(now_ms_c));
+    }
 }
 
 /// Zero all accumulators (call right before a timed signing run).

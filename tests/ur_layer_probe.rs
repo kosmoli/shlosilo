@@ -77,14 +77,16 @@ fn ffi_decode_single(uri: &str) -> (i32, String, Vec<u8>) {
     let mut type_buf = [0u8; 32];
     let mut payload = vec![0u8; 16384];
     let mut actual: core::ffi::c_uint = 0;
-    let rc = shlosilo_ur_decode_uri_ffi(
-        c.as_ptr() as *const core::ffi::c_char,
-        type_buf.as_mut_ptr(),
-        type_buf.len() as core::ffi::c_uint,
-        payload.as_mut_ptr(),
-        payload.len() as core::ffi::c_uint,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_ur_decode_uri_ffi(
+            c.as_ptr() as *const core::ffi::c_char,
+            type_buf.as_mut_ptr(),
+            type_buf.len() as core::ffi::c_uint,
+            payload.as_mut_ptr(),
+            payload.len() as core::ffi::c_uint,
+            &mut actual,
+        )
+    };
     let t = String::from_utf8_lossy(&type_buf)
         .trim_end_matches('\0')
         .to_string();
@@ -99,33 +101,40 @@ fn ffi_decode_multipart(frames: &[String]) -> (i32, String, Vec<u8>) {
     use shlosilo::ur::ur_multipart::ur_decode_ws_len;
     let ws_len = ur_decode_ws_len();
     let mut ws = vec![0u8; ws_len];
-    let dec = shlosilo_ur_decode_new(ws.as_mut_ptr(), ws_len as core::ffi::c_uint);
+    let dec = unsafe { shlosilo_ur_decode_new(ws.as_mut_ptr(), ws_len as core::ffi::c_uint) };
     assert!(!dec.is_null(), "decoder placement");
     for f in frames {
         let c: Vec<u8> = f.bytes().chain(core::iter::once(0)).collect();
         let mut accepted: core::ffi::c_uint = 0;
-        let rc =
-            shlosilo_ur_decode_feed(dec, c.as_ptr() as *const core::ffi::c_char, &mut accepted);
+        let rc = unsafe {
+            shlosilo_ur_decode_feed(dec, c.as_ptr() as *const core::ffi::c_char, &mut accepted)
+        };
         assert_eq!(rc, 0, "frame rejected: {f}");
         let _ = accepted;
     }
-    assert_eq!(shlosilo_ur_decode_complete(dec), 1, "frames incomplete");
+    assert_eq!(
+        unsafe { shlosilo_ur_decode_complete(dec) },
+        1,
+        "frames incomplete"
+    );
     let mut type_buf = [0u8; 32];
     let mut tlen: core::ffi::c_uint = 0;
-    let rct = shlosilo_ur_decode_type(dec, type_buf.as_mut_ptr(), 32, &mut tlen);
+    let rct = unsafe { shlosilo_ur_decode_type(dec, type_buf.as_mut_ptr(), 32, &mut tlen) };
     let t = String::from_utf8_lossy(&type_buf)
         .trim_end_matches('\0')
         .to_string();
     let mut payload = vec![0u8; 16384];
     let mut actual: core::ffi::c_uint = 0;
-    let rc = shlosilo_ur_decode_payload(
-        dec,
-        payload.as_mut_ptr(),
-        payload.len() as core::ffi::c_uint,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_ur_decode_payload(
+            dec,
+            payload.as_mut_ptr(),
+            payload.len() as core::ffi::c_uint,
+            &mut actual,
+        )
+    };
     payload.truncate(actual as usize);
-    shlosilo_ur_decode_free(dec);
+    unsafe { shlosilo_ur_decode_free(dec) };
     let _ = rct;
     (rc, t, payload)
 }
@@ -202,38 +211,41 @@ fn real_cake_frames_message_framing() {
         &frames[0][..40.min(frames[0].len())]
     );
     let mut ws = vec![0u8; shlosilo::ur::ur_multipart::ur_decode_ws_len()];
-    let dec = shlosilo_ur_decode_new(ws.as_mut_ptr(), ws.len() as core::ffi::c_uint);
+    let dec = unsafe { shlosilo_ur_decode_new(ws.as_mut_ptr(), ws.len() as core::ffi::c_uint) };
     let mut rejected = 0usize;
     for f in &frames {
         let c: Vec<u8> = f.bytes().chain(core::iter::once(0)).collect();
         let mut accepted: core::ffi::c_uint = 0;
-        if shlosilo_ur_decode_feed(dec, c.as_ptr() as *const core::ffi::c_char, &mut accepted) != 0
+        if unsafe {
+            shlosilo_ur_decode_feed(dec, c.as_ptr() as *const core::ffi::c_char, &mut accepted)
+        } != 0
         {
             rejected += 1;
         }
     }
-    println!(
-        "    feed: rejected={rejected} complete={}",
+    println!("    feed: rejected={rejected} complete={}", unsafe {
         shlosilo_ur_decode_complete(dec)
-    );
-    if shlosilo_ur_decode_complete(dec) != 1 {
+    });
+    if unsafe { shlosilo_ur_decode_complete(dec) } != 1 {
         println!("    (frames insufficient — skip)");
-        shlosilo_ur_decode_free(dec);
+        unsafe { shlosilo_ur_decode_free(dec) };
         return;
     }
     let mut type_buf = [0u8; 32];
     let mut tlen: core::ffi::c_uint = 0;
-    let _ = shlosilo_ur_decode_type(dec, type_buf.as_mut_ptr(), 32, &mut tlen);
+    let _ = unsafe { shlosilo_ur_decode_type(dec, type_buf.as_mut_ptr(), 32, &mut tlen) };
     let mut payload = vec![0u8; 16384];
     let mut actual: core::ffi::c_uint = 0;
-    let rc = shlosilo_ur_decode_payload(
-        dec,
-        payload.as_mut_ptr(),
-        payload.len() as core::ffi::c_uint,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_ur_decode_payload(
+            dec,
+            payload.as_mut_ptr(),
+            payload.len() as core::ffi::c_uint,
+            &mut actual,
+        )
+    };
     payload.truncate(actual as usize);
-    shlosilo_ur_decode_free(dec);
+    unsafe { shlosilo_ur_decode_free(dec) };
     let t = String::from_utf8_lossy(&type_buf)
         .trim_end_matches('\0')
         .to_string();
@@ -426,21 +438,23 @@ fn ur_layer_xmr_output_full_chain() {
             let mut out = vec![0u8; 8192];
             let mut ws = vec![0u8; pairing_ws_len()];
             let mut actual: core::ffi::c_uint = 0;
-            let rc = shlosilo_xmr_pairing_ffi(
-                &session,
-                payload.as_ptr(),
-                payload.len() as core::ffi::c_uint,
-                entropy.as_ptr(),
-                entropy.len() as core::ffi::c_uint,
-                out.as_mut_ptr(),
-                out.len() as core::ffi::c_uint,
-                &mut actual,
-                ws.as_mut_ptr(),
-                ws.len() as core::ffi::c_uint,
-                core::ptr::null_mut(),
-                0,
-                core::ptr::null_mut(),
-            );
+            let rc = unsafe {
+                shlosilo_xmr_pairing_ffi(
+                    &session,
+                    payload.as_ptr(),
+                    payload.len() as core::ffi::c_uint,
+                    entropy.as_ptr(),
+                    entropy.len() as core::ffi::c_uint,
+                    out.as_mut_ptr(),
+                    out.len() as core::ffi::c_uint,
+                    &mut actual,
+                    ws.as_mut_ptr(),
+                    ws.len() as core::ffi::c_uint,
+                    core::ptr::null_mut(),
+                    0,
+                    core::ptr::null_mut(),
+                )
+            };
             println!("    xmr_pairing_ffi[{label}]: rc={rc} out_len={}", actual);
         }
     }

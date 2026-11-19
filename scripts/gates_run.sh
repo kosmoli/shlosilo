@@ -13,6 +13,9 @@ bash scripts/check_locks.sh > /tmp/g_locks.log 2>&1; echo "LOCKS=$?"
 # forms/ must answer every input with a Result: panic-class macros are budget 0
 # (recoverable failures like an oversized request are BufferTooSmall, never abort).
 python3 scripts/check_no_panic.py > /tmp/g_nopanic.log 2>&1; echo "NOPANIC=$?"
+# FFI graded audit F-1 (2026-11-19): no FFI entry may build a slice straight from an
+# unbounded caller length — a `c_uint` claim exceeds isize::MAX on 32-bit targets.
+bash scripts/check_ffi_raw_len.sh > /tmp/g_ffilen.log 2>&1; echo "FFILEN=$?"
 # Resource budget report for the host profile: proves the report is producible from the
 # production layout functions and fits the declared heap (exit 2 = over budget).
 bash scripts/limits_report.sh host > /tmp/g_limitsreport.log 2>&1; echo "LIMITSREPORT=$?"

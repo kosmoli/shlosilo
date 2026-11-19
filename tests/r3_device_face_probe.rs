@@ -60,15 +60,17 @@ impl Handles {
         let mut enc_ws = vec![0u8; enc_ws_len];
         let mut dec_ws = vec![0u8; dec_ws_len];
         let tname = CString::new("xmr-txunsigned").unwrap();
-        let enc = shlosilo_ur_encode_begin(
-            tname.as_ptr(),
-            payload.as_ptr(),
-            payload.len() as u32,
-            200,
-            enc_ws.as_mut_ptr(),
-            enc_ws_len as u32,
-        );
-        let dec = shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), dec_ws_len as u32);
+        let enc = unsafe {
+            shlosilo_ur_encode_begin(
+                tname.as_ptr(),
+                payload.as_ptr(),
+                payload.len() as u32,
+                200,
+                enc_ws.as_mut_ptr(),
+                enc_ws_len as u32,
+            )
+        };
+        let dec = unsafe { shlosilo_ur_decode_new(dec_ws.as_mut_ptr(), dec_ws_len as u32) };
         assert!(!enc.is_null(), "encode_begin returned null");
         assert!(!dec.is_null(), "decode_new returned null");
         Handles {
@@ -83,12 +85,14 @@ impl Handles {
     /// feeds the buffer straight to decode_feed — smoke parity).
     fn next_frame(&mut self, frame: &mut [u8]) -> Result<usize, i32> {
         let mut actual: u32 = 0;
-        let rc = shlosilo_ur_encode_next(
-            self.enc,
-            frame.as_mut_ptr(),
-            frame.len() as u32,
-            &mut actual,
-        );
+        let rc = unsafe {
+            shlosilo_ur_encode_next(
+                self.enc,
+                frame.as_mut_ptr(),
+                frame.len() as u32,
+                &mut actual,
+            )
+        };
         if rc != OK {
             return Err(rc);
         }
@@ -97,22 +101,25 @@ impl Handles {
 
     fn feed(&mut self, frame: &[u8]) -> (i32, u32) {
         let mut accepted: u32 = 9;
-        let rc = shlosilo_ur_decode_feed(self.dec, frame.as_ptr() as *const c_char, &mut accepted);
+        let rc = unsafe {
+            shlosilo_ur_decode_feed(self.dec, frame.as_ptr() as *const c_char, &mut accepted)
+        };
         (rc, accepted)
     }
 
     fn complete(&self) -> bool {
-        shlosilo_ur_decode_complete(self.dec) != 0
+        (unsafe { shlosilo_ur_decode_complete(self.dec) }) != 0
     }
 
     fn progress(&self) -> i32 {
-        shlosilo_ur_decode_progress(self.dec)
+        unsafe { shlosilo_ur_decode_progress(self.dec) }
     }
 
     fn payload(&mut self, out: &mut [u8]) -> Result<usize, i32> {
         let mut actual: u32 = 0;
-        let rc =
-            shlosilo_ur_decode_payload(self.dec, out.as_mut_ptr(), out.len() as u32, &mut actual);
+        let rc = unsafe {
+            shlosilo_ur_decode_payload(self.dec, out.as_mut_ptr(), out.len() as u32, &mut actual)
+        };
         if rc != OK {
             return Err(rc);
         }
@@ -122,8 +129,8 @@ impl Handles {
 
 impl Drop for Handles {
     fn drop(&mut self) {
-        shlosilo_ur_encode_free(self.enc);
-        shlosilo_ur_decode_free(self.dec);
+        unsafe { shlosilo_ur_encode_free(self.enc) };
+        unsafe { shlosilo_ur_decode_free(self.dec) };
     }
 }
 
@@ -196,7 +203,7 @@ fn payload_capacity_contract() {
     // 1032 -- the required-capacity report grows accordingly.
     let mut small = vec![0u8; 1024];
     let mut actual: u32 = 0;
-    let rc = shlosilo_ur_decode_payload(h.dec, small.as_mut_ptr(), 1024, &mut actual);
+    let rc = unsafe { shlosilo_ur_decode_payload(h.dec, small.as_mut_ptr(), 1024, &mut actual) };
     assert_ne!(rc, OK, "payload-sized buffer must be rejected (contract 4)");
     assert_eq!(
         actual, 1032,
@@ -205,7 +212,7 @@ fn payload_capacity_contract() {
 
     // Padded capacity: succeeds and delivers the SHELL-STRIPPED content (1024).
     let mut big = vec![0u8; 1032];
-    let rc = shlosilo_ur_decode_payload(h.dec, big.as_mut_ptr(), 1032, &mut actual);
+    let rc = unsafe { shlosilo_ur_decode_payload(h.dec, big.as_mut_ptr(), 1032, &mut actual) };
     assert_eq!(rc, OK);
     assert_eq!(actual, 1024, "delivered length is the stripped content");
     assert_eq!(&big[..1024], &payload[..], "payload content");

@@ -51,26 +51,29 @@ fn encode_frames(payload: &[u8]) -> Vec<String> {
     let tname = std::ffi::CString::new("bytes").unwrap();
     let enc_ws_len = ur_encode_ws_len();
     let mut enc_ws = vec![0u8; enc_ws_len];
-    let enc = shlosilo_ur_encode_begin(
-        tname.as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        200,
-        enc_ws.as_mut_ptr(),
-        enc_ws_len as u32,
-    );
+    let enc = unsafe {
+        shlosilo_ur_encode_begin(
+            tname.as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            200,
+            enc_ws.as_mut_ptr(),
+            enc_ws_len as u32,
+        )
+    };
     assert!(!enc.is_null());
     for _ in 0..64 {
         let mut buf = vec![0u8; 4096];
         let mut n: u32 = 0;
-        let rc = shlosilo_ur_encode_next(enc, buf.as_mut_ptr(), buf.len() as u32, &mut n);
+        let rc =
+            unsafe { shlosilo_ur_encode_next(enc, buf.as_mut_ptr(), buf.len() as u32, &mut n) };
         if rc != 0 || n == 0 {
             break;
         }
         buf.truncate(n as usize);
         frames.push(String::from_utf8(buf).unwrap());
     }
-    shlosilo_ur_encode_free(enc);
+    unsafe { shlosilo_ur_encode_free(enc) };
     frames
 }
 
@@ -80,10 +83,10 @@ fn encode_frames(payload: &[u8]) -> Vec<String> {
 fn inv2_ws_capacity_contract() {
     let need = shlosilo_ur_decode_ws_len() as usize;
     let mut ws = vec![0u8; need];
-    assert!(shlosilo_ur_decode_new(ws.as_mut_ptr(), (need - 1) as u32).is_null());
-    let h = shlosilo_ur_decode_new(ws.as_mut_ptr(), need as u32);
+    assert!(unsafe { shlosilo_ur_decode_new(ws.as_mut_ptr(), (need - 1) as u32) }.is_null());
+    let h = unsafe { shlosilo_ur_decode_new(ws.as_mut_ptr(), need as u32) };
     assert!(!h.is_null());
-    shlosilo_ur_decode_free(h);
+    unsafe { shlosilo_ur_decode_free(h) };
 }
 
 /// Invariants 3/4/6: the receive path (feed + payload) allocates zero times
@@ -97,7 +100,7 @@ fn inv346_receive_path_zero_alloc() {
 
     let need = shlosilo_ur_decode_ws_len() as usize;
     let mut ws = vec![0u8; need];
-    let h = shlosilo_ur_decode_new(ws.as_mut_ptr(), need as u32);
+    let h = unsafe { shlosilo_ur_decode_new(ws.as_mut_ptr(), need as u32) };
     assert!(!h.is_null());
 
     // Measurement windows wrap ONLY the FFI calls (fixture allocations —
@@ -110,7 +113,7 @@ fn inv346_receive_path_zero_alloc() {
 
     let c0 = counter();
     for cstr in &cstrs {
-        let rc = shlosilo_ur_decode_feed(h, cstr.as_ptr(), &mut accepted);
+        let rc = unsafe { shlosilo_ur_decode_feed(h, cstr.as_ptr(), &mut accepted) };
         assert_eq!(rc, 0, "feed must succeed");
     }
     let spent_feed = counter() - c0;
@@ -125,7 +128,7 @@ fn inv346_receive_path_zero_alloc() {
     let mut actual: u32 = 0;
     let mut small = [0u8; 4];
     let c1 = counter();
-    let rc = shlosilo_ur_decode_payload(h, small.as_mut_ptr(), 4, &mut actual);
+    let rc = unsafe { shlosilo_ur_decode_payload(h, small.as_mut_ptr(), 4, &mut actual) };
     let spent_probe = counter() - c1;
     assert_ne!(rc, 0, "undersized payload buffer must fail");
     assert_eq!(spent_probe, 0, "the capacity probe must not allocate");
@@ -135,7 +138,8 @@ fn inv346_receive_path_zero_alloc() {
     // and the sized call delivers the bytes
     let mut out = vec![0u8; required];
     let c2 = counter();
-    let rc = shlosilo_ur_decode_payload(h, out.as_mut_ptr(), out.len() as u32, &mut actual);
+    let rc =
+        unsafe { shlosilo_ur_decode_payload(h, out.as_mut_ptr(), out.len() as u32, &mut actual) };
     let spent_pull = counter() - c2;
     assert_eq!(rc, 0);
     assert_eq!(spent_pull, 0, "the payload pull must not allocate");
@@ -148,7 +152,7 @@ fn inv346_receive_path_zero_alloc() {
     // lives in the per-frame Part layer, not the message)
     assert_eq!(&out[..delivered], &payload[..], "payload byte-equal");
 
-    shlosilo_ur_decode_free(h);
+    unsafe { shlosilo_ur_decode_free(h) };
 }
 
 /// Invariant 5: free zeroes the sensitive spans before dropping in place.
@@ -158,14 +162,17 @@ fn inv5_free_zeroizes_sensitive_spans() {
     let frames = encode_frames(&payload);
     let need = shlosilo_ur_decode_ws_len() as usize;
     let mut ws = vec![0u8; need];
-    let h = shlosilo_ur_decode_new(ws.as_mut_ptr(), need as u32);
+    let h = unsafe { shlosilo_ur_decode_new(ws.as_mut_ptr(), need as u32) };
     assert!(!h.is_null());
     for f in &frames {
         let cstr = std::ffi::CString::new(f.as_str()).unwrap();
         let mut accepted: u32 = 0;
-        assert_eq!(shlosilo_ur_decode_feed(h, cstr.as_ptr(), &mut accepted), 0);
+        assert_eq!(
+            unsafe { shlosilo_ur_decode_feed(h, cstr.as_ptr(), &mut accepted) },
+            0
+        );
     }
-    shlosilo_ur_decode_free(h);
+    unsafe { shlosilo_ur_decode_free(h) };
     let l = UrDecodeWsLayout::compute();
     // every byte of the sensitive spans is zero after free
     for off in [l.decoded, l.buffer, l.queue, l.received, l.scratch] {

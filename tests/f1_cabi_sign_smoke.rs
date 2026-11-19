@@ -149,23 +149,25 @@ fn sign_typed(payload: &[u8]) -> (i32, u32) {
     let mut ws = vec![0u8; ws_len as usize];
     let mut out = vec![0u8; OUT_CAP];
     let mut actual: u32 = 0;
-    let rc = shlosilo_sign_typed_ffi(
-        c"xmr-txunsigned".as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        idx.as_ptr(),
-        idx.len() as i32,
-        core::ptr::null(),
-        0,
-        MONERO_MAINNET,
-        FRESH_ENTROPY.as_ptr(),
-        FRESH_ENTROPY.len() as u32,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws.as_mut_ptr(),
-        ws_len,
-    );
+    let rc = unsafe {
+        shlosilo_sign_typed_ffi(
+            c"xmr-txunsigned".as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            idx.as_ptr(),
+            idx.len() as i32,
+            core::ptr::null(),
+            0,
+            MONERO_MAINNET,
+            FRESH_ENTROPY.as_ptr(),
+            FRESH_ENTROPY.len() as u32,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            ws_len,
+        )
+    };
     (rc, actual)
 }
 
@@ -297,21 +299,23 @@ fn f1_sign_session_ffi_real_fixture_ok() {
     let mut out = vec![0u8; OUT_CAP];
     let mut actual: u32 = 0;
     let enc = enc_payload();
-    let rc = shlosilo_sign_session_ffi(
-        session,
-        c"xmr-txunsigned".as_ptr(),
-        enc.as_ptr(),
-        enc.len() as u32,
-        FRESH_ENTROPY.as_ptr(),
-        FRESH_ENTROPY.len() as u32,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws.as_mut_ptr(),
-        ws_len,
-        records.as_ptr(),
-        records.len() as u32,
-    );
+    let rc = unsafe {
+        shlosilo_sign_session_ffi(
+            session,
+            c"xmr-txunsigned".as_ptr(),
+            enc.as_ptr(),
+            enc.len() as u32,
+            FRESH_ENTROPY.as_ptr(),
+            FRESH_ENTROPY.len() as u32,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            ws_len,
+            records.as_ptr(),
+            records.len() as u32,
+        )
+    };
     assert_eq!(
         rc, OK,
         "session sign of the real 4-input fixture must return OK"
@@ -331,55 +335,61 @@ fn f1_sign_session_ffi_real_fixture_ok() {
     let mut n_i: u32 = 0;
     let mut out_k = vec![0u8; OUT_CAP];
     let mut n_k: u32 = 0;
-    let rc_i = shlosilo_sign_session_view_ffi(
-        session,
-        c"xmr-txunsigned".as_ptr(),
-        enc.as_ptr(),
-        enc.len() as u32,
-        FRESH_ENTROPY.as_ptr(),
-        FRESH_ENTROPY.len() as u32,
-        out_i.as_mut_ptr(),
-        out_i.len() as u32,
-        &mut n_i,
-        ws.as_mut_ptr(),
-        ws_len,
-        records.as_ptr(),
-        records.len() as u32,
-        0,
-    );
-    let rc_k = shlosilo_sign_session_view_ffi(
-        session,
-        c"xmr-txunsigned".as_ptr(),
-        enc.as_ptr(),
-        enc.len() as u32,
-        FRESH_ENTROPY.as_ptr(),
-        FRESH_ENTROPY.len() as u32,
-        out_k.as_mut_ptr(),
-        out_k.len() as u32,
-        &mut n_k,
-        ws.as_mut_ptr(),
-        ws_len,
-        records.as_ptr(),
-        records.len() as u32,
-        1,
-    );
+    let rc_i = unsafe {
+        shlosilo_sign_session_view_ffi(
+            session,
+            c"xmr-txunsigned".as_ptr(),
+            enc.as_ptr(),
+            enc.len() as u32,
+            FRESH_ENTROPY.as_ptr(),
+            FRESH_ENTROPY.len() as u32,
+            out_i.as_mut_ptr(),
+            out_i.len() as u32,
+            &mut n_i,
+            ws.as_mut_ptr(),
+            ws_len,
+            records.as_ptr(),
+            records.len() as u32,
+            0,
+        )
+    };
+    let rc_k = unsafe {
+        shlosilo_sign_session_view_ffi(
+            session,
+            c"xmr-txunsigned".as_ptr(),
+            enc.as_ptr(),
+            enc.len() as u32,
+            FRESH_ENTROPY.as_ptr(),
+            FRESH_ENTROPY.len() as u32,
+            out_k.as_mut_ptr(),
+            out_k.len() as u32,
+            &mut n_k,
+            ws.as_mut_ptr(),
+            ws_len,
+            records.as_ptr(),
+            records.len() as u32,
+            1,
+        )
+    };
     let mut n_bad: u32 = 0;
-    let rc_bad = shlosilo_sign_session_view_ffi(
-        session,
-        c"xmr-txunsigned".as_ptr(),
-        enc.as_ptr(),
-        enc.len() as u32,
-        FRESH_ENTROPY.as_ptr(),
-        FRESH_ENTROPY.len() as u32,
-        out_i.as_mut_ptr(),
-        out_i.len() as u32,
-        &mut n_bad,
-        ws.as_mut_ptr(),
-        ws_len,
-        records.as_ptr(),
-        records.len() as u32,
-        7,
-    );
+    let rc_bad = unsafe {
+        shlosilo_sign_session_view_ffi(
+            session,
+            c"xmr-txunsigned".as_ptr(),
+            enc.as_ptr(),
+            enc.len() as u32,
+            FRESH_ENTROPY.as_ptr(),
+            FRESH_ENTROPY.len() as u32,
+            out_i.as_mut_ptr(),
+            out_i.len() as u32,
+            &mut n_bad,
+            ws.as_mut_ptr(),
+            ws_len,
+            records.as_ptr(),
+            records.len() as u32,
+            7,
+        )
+    };
     assert_eq!(rc_i, OK, "view=0 must sign");
     assert_eq!(rc_k, OK, "view=1 must sign");
     assert!(rc_bad < 0, "unknown wire_view must refuse (got {rc_bad})");

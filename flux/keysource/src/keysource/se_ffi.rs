@@ -65,6 +65,19 @@ pub extern "C" fn shlosilo_keysource_se_ws_len() -> c_uint {
     ws::ws_len()
 }
 
+/// F-1: build the credential slice only after the length is bounded by the SE's
+/// own ceiling (`PASSWORD_MAX_LEN` — what the SE piece clamps to), so an absurd
+/// `c_uint` length claim can never violate the `from_raw_parts` contract (on a
+/// 32-bit target `u32::MAX` bytes exceeds `isize::MAX`).
+fn bounded_password(p: *const u8, len: usize) -> Option<&'static [u8]> {
+    if len > super::se::PASSWORD_MAX_LEN {
+        return None;
+    }
+    // SAFETY: `p` is non-NULL (the entry checks it) and `len` is now inside the
+    // supported ceiling; validity of those bytes is the caller's contract.
+    Some(unsafe { core::slice::from_raw_parts(p, len) })
+}
+
 /// Task 8: open a signing session from the account slot behind `password`.
 ///
 /// Pipeline (all in RAM, zero persistence): [`SeKeySource`] runs the C chain
@@ -94,9 +107,14 @@ pub extern "C" fn shlosilo_keysource_se_ws_len() -> c_uint {
 ///   reason;
 /// - `-31` (Invalid mnemonic family): `entropyLen` not 16/32 (pool item #24)
 ///   or `from_entropy` rejected the material.
+///
+/// # Safety
+///
+/// - `ws` must point to `ws_len` writable, zero-initialised bytes (`ws_len >= shlosilo_keysource_se_ws_len()`), pinned for the lifetime of the session.
+/// - `password` must point to `password_len` readable bytes.
+/// - `out_session` must be a writable pointer slot; none of `ws`, `password`, `out_session` may overlap.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: entry null-checks first; all raw derefs below are bounded by that contract
-pub extern "C" fn shlosilo_keysource_se_open_ffi(
+pub unsafe extern "C" fn shlosilo_keysource_se_open_ffi(
     ws: *mut u8,
     ws_len: c_uint,
     password: *const u8,
@@ -129,12 +147,17 @@ pub extern "C" fn shlosilo_keysource_se_open_ffi(
     // Bounded credential slice: `password_len` is explicit, so no NUL scan
     // and no unbounded read. Over-long is refused by the source itself
     // (AuthFailed) — checked there so the trait face shares the rule.
+    // F-1: the credential length is clamped to the SE's own `PASSWORD_MAX_LEN`
+    // before any slice exists (a `c_uint` claim exceeds isize::MAX on 32-bit).
     let pw: &[u8] = if password_len == 0 {
         &[]
     } else {
-        // SAFETY: non-null (entry-checked), non-zero bounded length; pointer
-        // validity for `password_len` bytes is the C side's contract.
-        unsafe { core::slice::from_raw_parts(password, password_len as usize) }
+        match bounded_password(password, password_len as usize) {
+            Some(p) => p,
+            // Over-long credentials are refused by the source as AuthFailed; the
+            // same code keeps the C side's error handling single-shaped.
+            None => return ERR_AUTH_FAILED,
+        }
     };
     // SAFETY: `state` is the pinned workspace and `live == 0` (the occupancy
     // gate above ran). `ws_prepare` places the empty slot in the workspace
@@ -201,9 +224,13 @@ fn se_error_to_ffi(e: &super::KeySourceError) -> c_int {
 /// call on the session pointer from `open` is in flight (same rule as the QR
 /// glue) — and per the two-model boundary: a keysource-glue session is
 /// closed HERE, never through `shlosilo_session_free_ffi`.
+///
+/// # Safety
+///
+/// - `ws` must be the same workspace buffer given to `shlosilo_keysource_se_open_ffi`, and no sign call on the session it holds may be in flight.
+/// - The session must be closed here, never through `shlosilo_session_free_ffi`.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checked first; single-owner workspace (see module docs)
-pub extern "C" fn shlosilo_keysource_se_close_ffi(ws: *mut u8) -> c_int {
+pub unsafe extern "C" fn shlosilo_keysource_se_close_ffi(ws: *mut u8) -> c_int {
     if ws.is_null() {
         return ERR_NULL_POINTER;
     }

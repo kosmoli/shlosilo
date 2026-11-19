@@ -298,21 +298,23 @@ fn review_ffi_packs_lines_and_meta() {
     // ws = NULL is a pure probe: it reports the length only and does no work.
     let mut probe: c_uint = 0;
     let ty = CString::new("crypto-psbt").unwrap();
-    let rc = c_abi::shlosilo_review_ffi(
-        ty.as_ptr(),
-        SPARROW_PSBT.as_ptr(),
-        SPARROW_PSBT.len() as c_uint,
-        1, // testnet
-        core::ptr::null(),
-        core::ptr::null_mut(),
-        0,
-        [0u8; 16].as_mut_ptr(),
-        0,
-        &mut probe,
-        core::ptr::null_mut(),
-        core::ptr::null_mut(),
-        core::ptr::null_mut(),
-    );
+    let rc = unsafe {
+        c_abi::shlosilo_review_ffi(
+            ty.as_ptr(),
+            SPARROW_PSBT.as_ptr(),
+            SPARROW_PSBT.len() as c_uint,
+            1, // testnet
+            core::ptr::null(),
+            core::ptr::null_mut(),
+            0,
+            [0u8; 16].as_mut_ptr(),
+            0,
+            &mut probe,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+    };
     assert_eq!(rc, 0);
     assert_eq!(
         probe as usize, ws_need,
@@ -326,21 +328,23 @@ fn review_ffi_packs_lines_and_meta() {
     let mut count: c_uint = 0;
     let mut flags: c_uint = 0;
     let mut in_out: c_uint = 0;
-    let rc = c_abi::shlosilo_review_ffi(
-        ty.as_ptr(),
-        SPARROW_PSBT.as_ptr(),
-        SPARROW_PSBT.len() as c_uint,
-        1,
-        core::ptr::null(),
-        ws.as_mut_ptr(),
-        ws.len() as c_uint,
-        lines.as_mut_ptr(),
-        lines.len() as c_uint,
-        &mut used,
-        &mut count,
-        &mut flags,
-        &mut in_out,
-    );
+    let rc = unsafe {
+        c_abi::shlosilo_review_ffi(
+            ty.as_ptr(),
+            SPARROW_PSBT.as_ptr(),
+            SPARROW_PSBT.len() as c_uint,
+            1,
+            core::ptr::null(),
+            ws.as_mut_ptr(),
+            ws.len() as c_uint,
+            lines.as_mut_ptr(),
+            lines.len() as c_uint,
+            &mut used,
+            &mut count,
+            &mut flags,
+            &mut in_out,
+        )
+    };
     assert_eq!(rc, 0, "review ffi should succeed");
     assert!(count > 0);
     // NUL-separated blob: the number of split entries must equal count.
@@ -358,21 +362,23 @@ fn review_ffi_packs_lines_and_meta() {
 
     // An insufficient buffer must error out (no partial write).
     let mut small = [0u8; 8];
-    let rc = c_abi::shlosilo_review_ffi(
-        ty.as_ptr(),
-        SPARROW_PSBT.as_ptr(),
-        SPARROW_PSBT.len() as c_uint,
-        1,
-        core::ptr::null(),
-        ws.as_mut_ptr(),
-        ws.len() as c_uint,
-        small.as_mut_ptr(),
-        small.len() as c_uint,
-        &mut used,
-        &mut count,
-        &mut flags,
-        &mut in_out,
-    );
+    let rc = unsafe {
+        c_abi::shlosilo_review_ffi(
+            ty.as_ptr(),
+            SPARROW_PSBT.as_ptr(),
+            SPARROW_PSBT.len() as c_uint,
+            1,
+            core::ptr::null(),
+            ws.as_mut_ptr(),
+            ws.len() as c_uint,
+            small.as_mut_ptr(),
+            small.len() as c_uint,
+            &mut used,
+            &mut count,
+            &mut flags,
+            &mut in_out,
+        )
+    };
     assert_ne!(rc, 0, "insufficient line buffer must fail");
 }
 
@@ -389,21 +395,23 @@ fn review_ffi_rejects_xmr_types() {
         (0, 0, 0, 0);
     for name in ["xmr-txunsigned", "xmr-output"] {
         let ty = CString::new(name).unwrap();
-        let rc = c_abi::shlosilo_review_ffi(
-            ty.as_ptr(),
-            [0u8; 8].as_ptr(),
-            8,
-            0,
-            core::ptr::null(),
-            ws.as_mut_ptr(),
-            ws.len() as c_uint,
-            lines.as_mut_ptr(),
-            lines.len() as c_uint,
-            &mut used,
-            &mut count,
-            &mut flags,
-            &mut in_out,
-        );
+        let rc = unsafe {
+            c_abi::shlosilo_review_ffi(
+                ty.as_ptr(),
+                [0u8; 8].as_ptr(),
+                8,
+                0,
+                core::ptr::null(),
+                ws.as_mut_ptr(),
+                ws.len() as c_uint,
+                lines.as_mut_ptr(),
+                lines.len() as c_uint,
+                &mut used,
+                &mut count,
+                &mut flags,
+                &mut in_out,
+            )
+        };
         assert_ne!(
             rc, 0,
             "{name} must not have a review view (XMR uses the original flow)"

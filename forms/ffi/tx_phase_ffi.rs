@@ -17,7 +17,7 @@
 /// `clock_fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
 #[cfg_attr(not(feature = "tx-phase-timing-ffi"), allow(unused_variables))]
 #[no_mangle]
-pub extern "C" fn shlosilo_tx_phase_set_clock(clock_fptr: Option<extern "C" fn() -> u32>) {
+pub unsafe extern "C" fn shlosilo_tx_phase_set_clock(clock_fptr: Option<extern "C" fn() -> u32>) {
     #[cfg(feature = "tx-phase-timing-ffi")]
     {
         crate::tx_phase_hook::register_clock(clock_fptr);

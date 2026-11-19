@@ -10,12 +10,20 @@ use core::mem::MaybeUninit;
 use shlosilo::types::key_session::KeySession;
 
 /// Task 5a: the C-ABI scan-flow glue (scan bytes in, session pointer out).
+///
+/// FFI contract discipline (2026-11-19, graded audit): the entries are
+/// `unsafe extern "C"` and every raw dereference stays inside an explicit
+/// `unsafe` block, so each proof obligation is visible at the site.
+#[deny(unsafe_op_in_unsafe_fn)]
 pub mod ffi;
 
 pub mod qr;
 /// Task 8: the secure-element key source (password unlock → signing session).
 pub mod se;
 /// Task 8: the C-ABI SE unlock glue (password in, session pointer out).
+///
+/// Same FFI contract discipline as [`ffi`].
+#[deny(unsafe_op_in_unsafe_fn)]
 pub mod se_ffi;
 /// Task 8: the shared keysource FFI workspace state (one layout, one
 /// teardown for every keysource glue entry).

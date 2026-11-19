@@ -73,13 +73,15 @@ fn fresh_ws() -> Vec<u8> {
 /// closes. Returns nothing: the whole cycle, keys included.
 fn full_cycle(ws: &mut [u8], plate: &[u8], entropy: &[u8]) {
     let mut out: *const KeySession = core::ptr::null();
-    let rc = shlosilo_keysource_qr_open_ffi(
-        ws.as_mut_ptr(),
-        ws.len() as core::ffi::c_uint,
-        plate.as_ptr(),
-        plate.len() as core::ffi::c_uint,
-        &mut out,
-    );
+    let rc = unsafe {
+        shlosilo_keysource_qr_open_ffi(
+            ws.as_mut_ptr(),
+            ws.len() as core::ffi::c_uint,
+            plate.as_ptr(),
+            plate.len() as core::ffi::c_uint,
+            &mut out,
+        )
+    };
     assert_eq!(rc, OK, "open must succeed");
     assert!(!out.is_null(), "open must hand out a session pointer");
     let (want_spend, want_view) = reference_keys(entropy);
@@ -90,7 +92,10 @@ fn full_cycle(ws: &mut [u8], plate: &[u8], entropy: &[u8]) {
         assert_eq!(sess.monero().spend_sk.expose(), &want_spend);
         assert_eq!(sess.monero().view_sk.expose(), &want_view);
     }
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 #[test]
@@ -117,24 +122,28 @@ fn compact_32_full_cycle_keys_match_from_entropy() {
 fn second_open_on_busy_ws_is_slot_occupied() {
     let mut ws = fresh_ws();
     let mut out: *const KeySession = core::ptr::null();
-    let rc = shlosilo_keysource_qr_open_ffi(
-        ws.as_mut_ptr(),
-        ws.len() as core::ffi::c_uint,
-        FIXTURE_ENTROPY.as_ptr(),
-        16,
-        &mut out,
-    );
+    let rc = unsafe {
+        shlosilo_keysource_qr_open_ffi(
+            ws.as_mut_ptr(),
+            ws.len() as core::ffi::c_uint,
+            FIXTURE_ENTROPY.as_ptr(),
+            16,
+            &mut out,
+        )
+    };
     assert_eq!(rc, OK);
     assert!(!out.is_null());
     // second open on the SAME workspace: refused before anything is touched
     let mut out2: *const KeySession = core::ptr::null();
-    let rc2 = shlosilo_keysource_qr_open_ffi(
-        ws.as_mut_ptr(),
-        ws.len() as core::ffi::c_uint,
-        FIXTURE_ENTROPY_24.as_ptr(),
-        32,
-        &mut out2,
-    );
+    let rc2 = unsafe {
+        shlosilo_keysource_qr_open_ffi(
+            ws.as_mut_ptr(),
+            ws.len() as core::ffi::c_uint,
+            FIXTURE_ENTROPY_24.as_ptr(),
+            32,
+            &mut out2,
+        )
+    };
     assert_eq!(rc2, ERR_SLOT_OCCUPIED, "one live session per workspace");
     assert!(out2.is_null(), "failed open must leave a NULL out-param");
     // the FIRST session is undisturbed (same pointer, live keys)
@@ -144,19 +153,31 @@ fn second_open_on_busy_ws_is_slot_occupied() {
         assert_eq!(sess.monero().spend_sk.expose(), &want_spend);
         assert_eq!(sess.monero().view_sk.expose(), &want_view);
     }
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 #[test]
 fn close_is_total_and_idempotent_and_ws_reopens() {
     let mut ws = fresh_ws();
     // close before any open: defined no-op (zeroed workspace = no session)
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
     // full cycle …
     full_cycle(&mut ws, &FIXTURE_ENTROPY, &FIXTURE_ENTROPY);
     // … then a second close: defined no-op, the zeroizing drop already ran
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
     // same workspace re-opens after close (24-word plate this time)
     full_cycle(&mut ws, &FIXTURE_ENTROPY_24, &FIXTURE_ENTROPY_24);
 }
@@ -168,13 +189,15 @@ fn ws_len_under_capacity_is_buffer_too_small() {
     let mut ws = fresh_ws();
     let mut out: *const KeySession = core::ptr::null();
     for short in [0usize, 1, need - 1] {
-        let rc = shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            short as core::ffi::c_uint,
-            FIXTURE_ENTROPY.as_ptr(),
-            16,
-            &mut out,
-        );
+        let rc = unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                short as core::ffi::c_uint,
+                FIXTURE_ENTROPY.as_ptr(),
+                16,
+                &mut out,
+            )
+        };
         assert_eq!(rc, ERR_BUFFER_TOO_SMALL, "ws_len {short} must be refused");
         assert!(out.is_null());
     }
@@ -189,31 +212,37 @@ fn null_params_are_err_null_pointer() {
     let mut out: *const KeySession = core::ptr::null();
     let ws_len = ws.len() as core::ffi::c_uint;
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            core::ptr::null_mut(),
-            ws_len,
-            FIXTURE_ENTROPY.as_ptr(),
-            16,
-            &mut out
-        ),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                core::ptr::null_mut(),
+                ws_len,
+                FIXTURE_ENTROPY.as_ptr(),
+                16,
+                &mut out,
+            )
+        },
         ERR_NULL_POINTER
     );
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(ws.as_mut_ptr(), ws_len, core::ptr::null(), 16, &mut out),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(ws.as_mut_ptr(), ws_len, core::ptr::null(), 16, &mut out)
+        },
         ERR_NULL_POINTER
     );
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            ws_len,
-            FIXTURE_ENTROPY.as_ptr(),
-            16,
-            core::ptr::null_mut()
-        ),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws_len,
+                FIXTURE_ENTROPY.as_ptr(),
+                16,
+                core::ptr::null_mut(),
+            )
+        },
         ERR_NULL_POINTER
     );
     assert_eq!(
-        shlosilo_keysource_qr_close_ffi(core::ptr::null_mut()),
+        unsafe { shlosilo_keysource_qr_close_ffi(core::ptr::null_mut()) },
         ERR_NULL_POINTER
     );
 }
@@ -226,30 +255,39 @@ fn decode_rejections_flow_through_the_l2b_mapping() {
     // ur: transport → FeatureNotImplemented (-14), never silently misread
     let ur = b"ur:crypto-seed/abc";
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            ws_len,
-            ur.as_ptr(),
-            ur.len() as core::ffi::c_uint,
-            &mut out
-        ),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws_len,
+                ur.as_ptr(),
+                ur.len() as core::ffi::c_uint,
+                &mut out,
+            )
+        },
         ERR_FEATURE_NOT_IMPLEMENTED
     );
     assert!(out.is_null());
     // off-length payload → EncodingInvalidFormat (-21)
     let short = [0x5au8; 15];
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(ws.as_mut_ptr(), ws_len, short.as_ptr(), 15, &mut out),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(ws.as_mut_ptr(), ws_len, short.as_ptr(), 15, &mut out)
+        },
         ERR_ENCODING
     );
     // digit plate with out-of-range word indices → rejected (L2b-mapped,
     // negative) — full validation (index range + checksum) runs at open time
     let bogus = [b'9'; 48];
-    let rc = shlosilo_keysource_qr_open_ffi(ws.as_mut_ptr(), ws_len, bogus.as_ptr(), 48, &mut out);
+    let rc = unsafe {
+        shlosilo_keysource_qr_open_ffi(ws.as_mut_ptr(), ws_len, bogus.as_ptr(), 48, &mut out)
+    };
     assert!(rc < 0, "bogus plate must be rejected, got {rc}");
     assert!(out.is_null());
     // none of the failed opens left a live session behind
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
     full_cycle(&mut ws, &FIXTURE_ENTROPY, &FIXTURE_ENTROPY);
 }
 
@@ -260,23 +298,41 @@ fn decode_rejections_flow_through_the_l2b_mapping() {
 fn seed_never_appears_in_ffi_signatures() {
     let src = include_str!("../src/keysource/ffi.rs");
     const FORBIDDEN: &[&str] = &["seed", "entropy", "mnemonic", "passphrase"];
-    let mut checked = 0usize;
-    let mut rest = src;
-    while let Some(pos) = rest.find("pub extern \"C\" fn") {
-        rest = &rest[pos..];
-        let end = rest.find("->").expect("extern fn must return");
-        let signature = rest[..end].to_ascii_lowercase();
-        for token in FORBIDDEN {
-            assert!(
-                !signature.contains(token),
-                "FFI signature must not mention `{token}`: {}",
-                rest[..end].lines().next().unwrap_or("")
-            );
+
+    // Two declaration shapes, both legitimate under the graded FFI contract
+    // (2026-11-19): an entry that takes raw pointers is `pub unsafe extern "C" fn`
+    // with a `# Safety` section; the pure capacity query takes no pointers and
+    // stays safe. A pointer-taking entry regressing to a safe declaration is red.
+    let mut total = 0usize;
+    let mut unsafe_entries = 0usize;
+    for (shape, is_unsafe) in [
+        ("pub unsafe extern \"C\" fn", true),
+        ("pub extern \"C\" fn", false),
+    ] {
+        let mut rest = src;
+        while let Some(pos) = rest.find(shape) {
+            rest = &rest[pos..];
+            let end = rest.find("->").expect("extern fn must return");
+            let signature = rest[..end].to_ascii_lowercase();
+            for token in FORBIDDEN {
+                assert!(
+                    !signature.contains(token),
+                    "FFI signature must not mention `{token}`: {}",
+                    rest[..end].lines().next().unwrap_or("")
+                );
+            }
+            if is_unsafe {
+                unsafe_entries += 1;
+            }
+            total += 1;
+            rest = &rest[end..];
         }
-        checked += 1;
-        rest = &rest[end..];
     }
-    assert_eq!(checked, 3, "the three keysource QR entries");
+    assert_eq!(total, 3, "the three keysource QR entries");
+    assert_eq!(
+        unsafe_entries, 2,
+        "the entries that take pointers (`open` / `close`) must be unsafe"
+    );
 }
 
 //-- 2. Task 5b blind-spot absorption (5a review hand-over) -------------------
@@ -289,13 +345,15 @@ fn data_len_over_budget_maps_to_encoding_error() {
     let mut out: *const KeySession = core::ptr::null();
     let big = std::vec![0x5au8; 4097];
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            ws.len() as core::ffi::c_uint,
-            big.as_ptr(),
-            4097,
-            &mut out
-        ),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws.len() as core::ffi::c_uint,
+                big.as_ptr(),
+                4097,
+                &mut out,
+            )
+        },
         ERR_ENCODING
     );
     assert!(out.is_null());
@@ -303,17 +361,22 @@ fn data_len_over_budget_maps_to_encoding_error() {
     // from the decode, but the budget gate itself passes)
     let ok_len = std::vec![0x5au8; 4096];
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            ws.len() as core::ffi::c_uint,
-            ok_len.as_ptr(),
-            4096,
-            &mut out
-        ),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws.len() as core::ffi::c_uint,
+                ok_len.as_ptr(),
+                4096,
+                &mut out,
+            )
+        },
         ERR_ENCODING,
         "at-budget input reaches decode (and rejects as non-plate)"
     );
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 /// `data_len == 0` with a non-NULL buffer: the empty slice reaches
@@ -324,17 +387,22 @@ fn zero_len_non_null_payload_maps_to_encoding_error() {
     let mut ws = fresh_ws();
     let mut out: *const KeySession = core::ptr::null();
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            ws.len() as core::ffi::c_uint,
-            FIXTURE_ENTROPY.as_ptr(), // non-NULL, length 0 below
-            0,
-            &mut out
-        ),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws.len() as core::ffi::c_uint,
+                FIXTURE_ENTROPY.as_ptr(), // non-NULL, length 0 below
+                0,
+                &mut out,
+            )
+        },
         ERR_ENCODING
     );
     assert!(out.is_null());
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 /// 96-digit standard plate (24 words): end-to-end open -> key comparison
@@ -360,13 +428,15 @@ fn slot_occupied_recovery_close_then_reopen_yields_new_scan_keys() {
     let mut out: *const KeySession = core::ptr::null();
     // session A: compact 16-byte scan
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            ws_len,
-            FIXTURE_ENTROPY.as_ptr(),
-            16,
-            &mut out
-        ),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws_len,
+                FIXTURE_ENTROPY.as_ptr(),
+                16,
+                &mut out,
+            )
+        },
         OK
     );
     assert!(!out.is_null());
@@ -374,26 +444,33 @@ fn slot_occupied_recovery_close_then_reopen_yields_new_scan_keys() {
     let plate_b = standard_plate(&FIXTURE_ENTROPY_24);
     let mut out2: *const KeySession = core::ptr::null();
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            ws_len,
-            plate_b.as_ptr(),
-            plate_b.len() as core::ffi::c_uint,
-            &mut out2
-        ),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws_len,
+                plate_b.as_ptr(),
+                plate_b.len() as core::ffi::c_uint,
+                &mut out2,
+            )
+        },
         ERR_SLOT_OCCUPIED
     );
     assert!(out2.is_null());
     // recovery: close the old session (zeroize), reopen from the new bytes
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            ws_len,
-            plate_b.as_ptr(),
-            plate_b.len() as core::ffi::c_uint,
-            &mut out2
-        ),
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
+    assert_eq!(
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws_len,
+                plate_b.as_ptr(),
+                plate_b.len() as core::ffi::c_uint,
+                &mut out2,
+            )
+        },
         OK
     );
     assert!(!out2.is_null());
@@ -403,7 +480,10 @@ fn slot_occupied_recovery_close_then_reopen_yields_new_scan_keys() {
         assert_eq!(sess.monero().spend_sk.expose(), &want_spend);
         assert_eq!(sess.monero().view_sk.expose(), &want_view);
     }
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 // -- Task 5b end-to-end sign equivalence: the QR-glue session pointer drives
@@ -432,14 +512,16 @@ fn single_frame_request(uri: &str) -> (std::vec::Vec<u8>, std::vec::Vec<u8>) {
     let mut payload = std::vec![0u8; 8192];
     let mut actual: u32 = 0;
     let c_uri = std::ffi::CString::new(uri).expect("uri is not NUL");
-    let rc = shlosilo_ur_decode_uri_ffi(
-        c_uri.as_ptr(),
-        ty.as_mut_ptr(),
-        ty.len() as u32,
-        payload.as_mut_ptr(),
-        payload.len() as u32,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_ur_decode_uri_ffi(
+            c_uri.as_ptr(),
+            ty.as_mut_ptr(),
+            ty.len() as u32,
+            payload.as_mut_ptr(),
+            payload.len() as u32,
+            &mut actual,
+        )
+    };
     assert_eq!(rc, OK, "single-frame decode must succeed");
     let nul = ty
         .iter()
@@ -463,14 +545,16 @@ fn single_frame_decode_uri_ffi_round_trip_and_rejections() {
     let mut payload = std::vec![0u8; 8192];
     let mut actual: u32 = 0;
     assert_eq!(
-        shlosilo_ur_decode_uri_ffi(
-            c_multi.as_ptr(),
-            ty.as_mut_ptr(),
-            ty.len() as u32,
-            payload.as_mut_ptr(),
-            payload.len() as u32,
-            &mut actual,
-        ),
+        unsafe {
+            shlosilo_ur_decode_uri_ffi(
+                c_multi.as_ptr(),
+                ty.as_mut_ptr(),
+                ty.len() as u32,
+                payload.as_mut_ptr(),
+                payload.len() as u32,
+                &mut actual,
+            )
+        },
         ERR_ENCODING
     );
     // payload buffer too small: -20 with the required length in actual_len
@@ -478,27 +562,31 @@ fn single_frame_decode_uri_ffi_round_trip_and_rejections() {
     let mut tiny = std::vec![0u8; 4];
     actual = 0;
     assert_eq!(
-        shlosilo_ur_decode_uri_ffi(
-            c_uri.as_ptr(),
-            ty.as_mut_ptr(),
-            ty.len() as u32,
-            tiny.as_mut_ptr(),
-            tiny.len() as u32,
-            &mut actual,
-        ),
+        unsafe {
+            shlosilo_ur_decode_uri_ffi(
+                c_uri.as_ptr(),
+                ty.as_mut_ptr(),
+                ty.len() as u32,
+                tiny.as_mut_ptr(),
+                tiny.len() as u32,
+                &mut actual,
+            )
+        },
         ERR_BUFFER_TOO_SMALL
     );
     assert_eq!(actual as usize, eth_fixture_payload().len());
     // NULL argument
     assert_eq!(
-        shlosilo_ur_decode_uri_ffi(
-            core::ptr::null(),
-            ty.as_mut_ptr(),
-            ty.len() as u32,
-            payload.as_mut_ptr(),
-            payload.len() as u32,
-            &mut actual,
-        ),
+        unsafe {
+            shlosilo_ur_decode_uri_ffi(
+                core::ptr::null(),
+                ty.as_mut_ptr(),
+                ty.len() as u32,
+                payload.as_mut_ptr(),
+                payload.len() as u32,
+                &mut actual,
+            )
+        },
         ERR_NULL_POINTER
     );
 }
@@ -508,23 +596,25 @@ fn sign_via_typed(indices: &[u16], payload: &[u8]) -> (i32, std::vec::Vec<u8>, u
     let mut actual: u32 = 0;
     let need = shlosilo_sign_ws_len();
     let mut ws = std::vec![0u8; need as usize];
-    let rc = shlosilo_sign_typed_ffi(
-        c"eth-sign-request".as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        indices.as_ptr(),
-        indices.len() as i32,
-        core::ptr::null(),
-        0,
-        ETHEREUM_MAINNET,
-        core::ptr::null(),
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws.as_mut_ptr(),
-        need,
-    );
+    let rc = unsafe {
+        shlosilo_sign_typed_ffi(
+            c"eth-sign-request".as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            indices.as_ptr(),
+            indices.len() as i32,
+            core::ptr::null(),
+            0,
+            ETHEREUM_MAINNET,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            need,
+        )
+    };
     (rc, out, actual)
 }
 
@@ -533,21 +623,23 @@ fn sign_via_session(session: *const KeySession, payload: &[u8]) -> (i32, std::ve
     let mut actual: u32 = 0;
     let need = shlosilo_sign_ws_len();
     let mut ws = std::vec![0u8; need as usize];
-    let rc = shlosilo_sign_session_ffi(
-        session,
-        c"eth-sign-request".as_ptr(),
-        payload.as_ptr(),
-        payload.len() as u32,
-        core::ptr::null(),
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws.as_mut_ptr(),
-        need,
-        core::ptr::null(),
-        0,
-    );
+    let rc = unsafe {
+        shlosilo_sign_session_ffi(
+            session,
+            c"eth-sign-request".as_ptr(),
+            payload.as_ptr(),
+            payload.len() as u32,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws.as_mut_ptr(),
+            need,
+            core::ptr::null(),
+            0,
+        )
+    };
     (rc, out, actual)
 }
 
@@ -569,13 +661,15 @@ fn qr_session_sign_matches_typed_entry_byte_for_byte() {
     let plate = standard_plate(&FIXTURE_ENTROPY);
     let mut session: *const KeySession = core::ptr::null();
     assert_eq!(
-        shlosilo_keysource_qr_open_ffi(
-            ws.as_mut_ptr(),
-            ws.len() as core::ffi::c_uint,
-            plate.as_ptr(),
-            plate.len() as core::ffi::c_uint,
-            &mut session
-        ),
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                ws.as_mut_ptr(),
+                ws.len() as core::ffi::c_uint,
+                plate.as_ptr(),
+                plate.len() as core::ffi::c_uint,
+                &mut session,
+            )
+        },
         OK
     );
     assert!(!session.is_null());
@@ -587,7 +681,10 @@ fn qr_session_sign_matches_typed_entry_byte_for_byte() {
         &out_t[..len_t as usize],
         "QR-glue session sign must be byte-identical to the typed entry"
     );
-    assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+    assert_eq!(
+        unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+        OK
+    );
 }
 
 // -- Phase 4 acceptance ③: the `se dump` zeroization forensic view --
@@ -630,13 +727,15 @@ fn dump_view_close_leaves_workspace_window_all_zero() {
         let mut ws = fresh_ws();
         let mut session: *const KeySession = core::ptr::null();
         assert_eq!(
-            shlosilo_keysource_qr_open_ffi(
-                ws.as_mut_ptr(),
-                ws.len() as core::ffi::c_uint,
-                plate.as_ptr(),
-                plate.len() as core::ffi::c_uint,
-                &mut session
-            ),
+            unsafe {
+                shlosilo_keysource_qr_open_ffi(
+                    ws.as_mut_ptr(),
+                    ws.len() as core::ffi::c_uint,
+                    plate.as_ptr(),
+                    plate.len() as core::ffi::c_uint,
+                    &mut session,
+                )
+            },
             OK
         );
         let (spend, view) = reference_keys(entropy);
@@ -644,7 +743,10 @@ fn dump_view_close_leaves_workspace_window_all_zero() {
             contains(&ws, &spend) && contains(&ws, &view),
             "precondition (before dump): live key bytes visible in the ws window"
         );
-        assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+        assert_eq!(
+            unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+            OK
+        );
         assert!(
             ws.iter().all(|&b| b == 0),
             "close must leave the WHOLE ws window zero (all zero after dump): {:?}",
@@ -653,16 +755,21 @@ fn dump_view_close_leaves_workspace_window_all_zero() {
         // The reusable state the acceptance re-run depends on: a reopen from
         // the all-zero window works and closes all-zero again.
         assert_eq!(
-            shlosilo_keysource_qr_open_ffi(
-                ws.as_mut_ptr(),
-                ws.len() as core::ffi::c_uint,
-                plate.as_ptr(),
-                plate.len() as core::ffi::c_uint,
-                &mut session
-            ),
+            unsafe {
+                shlosilo_keysource_qr_open_ffi(
+                    ws.as_mut_ptr(),
+                    ws.len() as core::ffi::c_uint,
+                    plate.as_ptr(),
+                    plate.len() as core::ffi::c_uint,
+                    &mut session,
+                )
+            },
             OK
         );
-        assert_eq!(shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()), OK);
+        assert_eq!(
+            unsafe { shlosilo_keysource_qr_close_ffi(ws.as_mut_ptr()) },
+            OK
+        );
         assert!(ws.iter().all(|&b| b == 0), "second close all-zero");
     }
 }

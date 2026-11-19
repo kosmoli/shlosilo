@@ -33,20 +33,22 @@ fn p002_negative_count_rejected_sign() {
     let mut actual: u32 = 0;
     for bad in [-1i32, i32::MIN, -12, 0, 11, 13, 14, 16, 25, i32::MAX] {
         let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
-        let rc = shlosilo_sign_ffi(
-            idx.as_ptr(),
-            bad,
-            core::ptr::null(),
-            0,
-            b"x".as_ptr(),
-            1,
-            0,
-            out.as_mut_ptr(),
-            out.len() as u32,
-            &mut actual,
-            ws_buf.as_mut_ptr(),
-            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
-        );
+        let rc = unsafe {
+            shlosilo_sign_ffi(
+                idx.as_ptr(),
+                bad,
+                core::ptr::null(),
+                0,
+                b"x".as_ptr(),
+                1,
+                0,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                &mut actual,
+                ws_buf.as_mut_ptr(),
+                shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+            )
+        };
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
         assert_eq!(actual, 0, "failure path must zero actual_len (count={bad})");
     }
@@ -63,21 +65,23 @@ fn p002_negative_count_rejected_sign_ur() {
     let uri_c = alloc_cstring(uri.as_str());
     for bad in [-1i32, i32::MIN, 13, 0] {
         let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
-        let rc = shlosilo_sign_ur_ffi(
-            uri_c.as_ptr(),
-            idx.as_ptr(),
-            bad,
-            core::ptr::null(),
-            0,
-            0,
-            core::ptr::null(),
-            0,
-            out.as_mut_ptr(),
-            out.len() as u32,
-            &mut actual,
-            ws_buf.as_mut_ptr(),
-            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
-        );
+        let rc = unsafe {
+            shlosilo_sign_ur_ffi(
+                uri_c.as_ptr(),
+                idx.as_ptr(),
+                bad,
+                core::ptr::null(),
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                &mut actual,
+                ws_buf.as_mut_ptr(),
+                shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+            )
+        };
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
         assert_eq!(actual, 0);
     }
@@ -90,19 +94,21 @@ fn p002_negative_count_rejected_export() {
     let mut buf = [0u8; 64];
     let mut actual: u32 = 0;
     for bad in [-1i32, i32::MIN, 13, 0] {
-        let rc = shlosilo_export_readonly_ffi(
-            idx.as_ptr(),
-            bad,
-            core::ptr::null(),
-            0,
-            0,
-            elems.as_ptr(),
-            elems.len() as u32,
-            0,
-            buf.as_mut_ptr(),
-            buf.len() as u32,
-            &mut actual,
-        );
+        let rc = unsafe {
+            shlosilo_export_readonly_ffi(
+                idx.as_ptr(),
+                bad,
+                core::ptr::null(),
+                0,
+                0,
+                elems.as_ptr(),
+                elems.len() as u32,
+                0,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &mut actual,
+            )
+        };
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
         assert_eq!(actual, 0);
     }
@@ -116,23 +122,25 @@ fn p002_negative_count_rejected_sign_typed() {
     let tname = c"crypto-psbt";
     for bad in [-1i32, i32::MIN, 13, 0] {
         let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
-        let rc = shlosilo_sign_typed_ffi(
-            tname.as_ptr(),
-            [0u8; 8].as_ptr(),
-            8,
-            idx.as_ptr(),
-            bad,
-            core::ptr::null(),
-            0,
-            0,
-            core::ptr::null(),
-            0,
-            out.as_mut_ptr(),
-            out.len() as u32,
-            &mut actual,
-            ws_buf.as_mut_ptr(),
-            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
-        );
+        let rc = unsafe {
+            shlosilo_sign_typed_ffi(
+                tname.as_ptr(),
+                [0u8; 8].as_ptr(),
+                8,
+                idx.as_ptr(),
+                bad,
+                core::ptr::null(),
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                &mut actual,
+                ws_buf.as_mut_ptr(),
+                shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+            )
+        };
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
         assert_eq!(actual, 0);
     }
@@ -148,19 +156,21 @@ fn p002_null_with_nonzero_len_rejected() {
     let mut actual: u32 = 0;
 
     // export: passphrase = (NULL, 1) → rejected (pre-fix = silent empty passphrase → wrong wallet derived)
-    let rc = shlosilo_export_readonly_ffi(
-        idx.as_ptr(),
-        12,
-        core::ptr::null(),
-        1, // len>0 + NULL = illegal combination
-        0,
-        elems.as_ptr(),
-        elems.len() as u32,
-        0,
-        buf.as_mut_ptr(),
-        buf.len() as u32,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_export_readonly_ffi(
+            idx.as_ptr(),
+            12,
+            core::ptr::null(),
+            1, // len>0 + NULL = illegal combination
+            0,
+            elems.as_ptr(),
+            elems.len() as u32,
+            0,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            &mut actual,
+        )
+    };
     assert_eq!(
         rc, INVALID_ARG,
         "(NULL, len=1) passphrase must be stably rejected"
@@ -170,19 +180,21 @@ fn p002_null_with_nonzero_len_rejected() {
     // (NULL, 0) still allowed (semantics: no passphrase) — run a full export with a large-enough buffer
     let mut big = [0u8; 1024];
     let mut actual_big: u32 = 0;
-    let rc = shlosilo_export_readonly_ffi(
-        idx.as_ptr(),
-        12,
-        core::ptr::null(),
-        0,
-        0,
-        elems.as_ptr(),
-        elems.len() as u32,
-        0,
-        big.as_mut_ptr(),
-        big.len() as u32,
-        &mut actual_big,
-    );
+    let rc = unsafe {
+        shlosilo_export_readonly_ffi(
+            idx.as_ptr(),
+            12,
+            core::ptr::null(),
+            0,
+            0,
+            elems.as_ptr(),
+            elems.len() as u32,
+            0,
+            big.as_mut_ptr(),
+            big.len() as u32,
+            &mut actual_big,
+        )
+    };
     assert_eq!(
         rc,
         shlosilo::ffi::error_code::OK,
@@ -206,20 +218,22 @@ fn p002_network_wraparound_rejected() {
         // The FFI parameter is c_uint (32-bit); narrowing wraparound is reproducible within the 32-bit range (256 → 0)
         let bad_net = bad_net_u64 as u32;
         let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
-        let rc = shlosilo_sign_ffi(
-            idx.as_ptr(),
-            12,
-            core::ptr::null(),
-            0,
-            b"x".as_ptr(),
-            1,
-            bad_net,
-            out.as_mut_ptr(),
-            out.len() as u32,
-            &mut actual,
-            ws_buf.as_mut_ptr(),
-            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
-        );
+        let rc = unsafe {
+            shlosilo_sign_ffi(
+                idx.as_ptr(),
+                12,
+                core::ptr::null(),
+                0,
+                b"x".as_ptr(),
+                1,
+                bad_net,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                &mut actual,
+                ws_buf.as_mut_ptr(),
+                shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+            )
+        };
         assert_ne!(
             rc,
             shlosilo::ffi::error_code::OK,
@@ -233,16 +247,18 @@ fn p002_sides_wraparound_rejected() {
     // sides = 262 → `as u8` wraps to 6; must be rejected after the fix (InvalidDiceConfig domain)
     let rolls = [1u8; 128];
     let mut mnemonic_buf = [0u8; 24];
-    let rc = shlosilo_create_account_ffi(
-        12,
-        262, // > u8::MAX
-        rolls.as_ptr(),
-        rolls.len() as u32,
-        core::ptr::null(),
-        0,
-        mnemonic_buf.as_mut_ptr(),
-        mnemonic_buf.len() as u32,
-    );
+    let rc = unsafe {
+        shlosilo_create_account_ffi(
+            12,
+            262, // > u8::MAX
+            rolls.as_ptr(),
+            rolls.len() as u32,
+            core::ptr::null(),
+            0,
+            mnemonic_buf.as_mut_ptr(),
+            mnemonic_buf.len() as u32,
+        )
+    };
     assert_ne!(
         rc,
         shlosilo::ffi::error_code::OK,
@@ -261,20 +277,22 @@ fn p002_outparam_zeroed_on_null_early_return() {
 
     // mnemonic_indices = NULL → ERR_NULL_POINTER, but actual_len must already be zeroed
     let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
-    let rc = shlosilo_sign_ffi(
-        core::ptr::null(),
-        12,
-        core::ptr::null(),
-        0,
-        b"x".as_ptr(),
-        1,
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-        ws_buf.as_mut_ptr(),
-        shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
-    );
+    let rc = unsafe {
+        shlosilo_sign_ffi(
+            core::ptr::null(),
+            12,
+            core::ptr::null(),
+            0,
+            b"x".as_ptr(),
+            1,
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws_buf.as_mut_ptr(),
+            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+        )
+    };
     assert_eq!(rc, INVALID_ARG);
     assert_eq!(
         actual, 0,
@@ -284,19 +302,21 @@ fn p002_outparam_zeroed_on_null_early_return() {
     // export, same path
     let mut actual2: u32 = 0xDEAD_BEEF;
     let elems: [u32; 1] = [44 | 0x8000_0000];
-    let rc = shlosilo_export_readonly_ffi(
-        core::ptr::null(),
-        12,
-        core::ptr::null(),
-        0,
-        0,
-        elems.as_ptr(),
-        elems.len() as u32,
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual2,
-    );
+    let rc = unsafe {
+        shlosilo_export_readonly_ffi(
+            core::ptr::null(),
+            12,
+            core::ptr::null(),
+            0,
+            0,
+            elems.as_ptr(),
+            elems.len() as u32,
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual2,
+        )
+    };
     assert_eq!(rc, INVALID_ARG);
     assert_eq!(actual2, 0);
 }
@@ -309,19 +329,21 @@ fn p002_valid_path_still_works() {
     let elems: [u32; 5] = [44 | 0x8000_0000, 0x8000_0000, 0x8000_0000, 0, 0];
     let mut buf = [0u8; 1024];
     let mut actual: u32 = 0;
-    let rc = shlosilo_export_readonly_ffi(
-        idx.as_ptr(),
-        12,
-        core::ptr::null(),
-        0,
-        0,
-        elems.as_ptr(),
-        elems.len() as u32,
-        0,
-        buf.as_mut_ptr(),
-        buf.len() as u32,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_export_readonly_ffi(
+            idx.as_ptr(),
+            12,
+            core::ptr::null(),
+            0,
+            0,
+            elems.as_ptr(),
+            elems.len() as u32,
+            0,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            &mut actual,
+        )
+    };
     assert_eq!(rc, shlosilo::ffi::error_code::OK);
     let uri = core::str::from_utf8(&buf[..actual as usize]).unwrap();
     assert!(uri.starts_with("ur:crypto-hdkey/"));
@@ -340,36 +362,40 @@ fn p003_uintmax_lengths_rejected() {
     let umax = u32::MAX;
 
     // passphrase len = UINT_MAX → rejected at the helper layer (over PASSPHRASE_MAX_LEN)
-    let rc = shlosilo_export_readonly_ffi(
-        idx.as_ptr(),
-        12,
-        core::ptr::null(),
-        umax,
-        0,
-        elems.as_ptr(),
-        elems.len() as u32,
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_export_readonly_ffi(
+            idx.as_ptr(),
+            12,
+            core::ptr::null(),
+            umax,
+            0,
+            elems.as_ptr(),
+            elems.len() as u32,
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+        )
+    };
     assert_eq!(rc, INVALID_ARG, "UINT_MAX passphrase must be rejected");
     assert_eq!(actual, 0);
 
     // path_elem_count = UINT_MAX → rejected at the helper layer (over MAX_DEPTH)
-    let rc = shlosilo_export_readonly_ffi(
-        idx.as_ptr(),
-        12,
-        core::ptr::null(),
-        0,
-        0,
-        elems.as_ptr(),
-        umax,
-        0,
-        out.as_mut_ptr(),
-        out.len() as u32,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_export_readonly_ffi(
+            idx.as_ptr(),
+            12,
+            core::ptr::null(),
+            0,
+            0,
+            elems.as_ptr(),
+            umax,
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+        )
+    };
     assert_eq!(
         rc,
         ShlosiloErrorCode::InvalidDerivationPath as i32,
@@ -378,19 +404,21 @@ fn p003_uintmax_lengths_rejected() {
     assert_eq!(actual, 0);
 
     // output_buf_len = UINT_MAX (over-declared capacity) → checked_slice_mut rejects, preventing an out-of-bounds write
-    let rc = shlosilo_export_readonly_ffi(
-        idx.as_ptr(),
-        12,
-        core::ptr::null(),
-        0,
-        0,
-        elems.as_ptr(),
-        elems.len() as u32,
-        0,
-        out.as_mut_ptr(),
-        umax,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_export_readonly_ffi(
+            idx.as_ptr(),
+            12,
+            core::ptr::null(),
+            0,
+            0,
+            elems.as_ptr(),
+            elems.len() as u32,
+            0,
+            out.as_mut_ptr(),
+            umax,
+            &mut actual,
+        )
+    };
     assert_eq!(
         rc,
         ShlosiloErrorCode::BufferTooSmall as i32,
@@ -400,16 +428,18 @@ fn p003_uintmax_lengths_rejected() {
 
     // rolls_count = UINT_MAX → rejected
     let mut mbuf = [0u8; 24];
-    let rc = shlosilo_create_account_ffi(
-        12,
-        6,
-        idx.as_ptr() as *const u8,
-        umax,
-        core::ptr::null(),
-        0,
-        mbuf.as_mut_ptr(),
-        mbuf.len() as u32,
-    );
+    let rc = unsafe {
+        shlosilo_create_account_ffi(
+            12,
+            6,
+            idx.as_ptr() as *const u8,
+            umax,
+            core::ptr::null(),
+            0,
+            mbuf.as_mut_ptr(),
+            mbuf.len() as u32,
+        )
+    };
     assert_eq!(
         rc,
         ShlosiloErrorCode::InvalidDiceRolls as i32,
@@ -424,19 +454,21 @@ fn p003_null_zero_len_semantics() {
     let elems: [u32; 1] = [44 | 0x8000_0000];
     let mut buf = [0u8; 1024];
     let mut actual: u32 = 0;
-    let rc = shlosilo_export_readonly_ffi(
-        idx.as_ptr(),
-        12,
-        core::ptr::null(),
-        0,
-        0,
-        elems.as_ptr(),
-        elems.len() as u32,
-        0,
-        buf.as_mut_ptr(),
-        buf.len() as u32,
-        &mut actual,
-    );
+    let rc = unsafe {
+        shlosilo_export_readonly_ffi(
+            idx.as_ptr(),
+            12,
+            core::ptr::null(),
+            0,
+            0,
+            elems.as_ptr(),
+            elems.len() as u32,
+            0,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            &mut actual,
+        )
+    };
     assert_eq!(
         rc,
         shlosilo::ffi::error_code::OK,

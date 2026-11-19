@@ -117,7 +117,8 @@ mod tests {
     #[test]
     fn inv23_tx_clock_contract_and_phase_guards() {
         // inv2: register through the C-ABI entry, drive a full probe cycle.
-        crate::ffi::tx_phase_ffi::shlosilo_tx_phase_set_clock(Some(test_clock));
+        // SAFETY: `test_clock` is a valid `extern "C" fn() -> u32` for the test.
+        unsafe { crate::ffi::tx_phase_ffi::shlosilo_tx_phase_set_clock(Some(test_clock)) };
         reset_all();
         TICK.store(2_000, Ordering::Relaxed);
         let mut probe = PhaseProbe::start(1).expect("clock registered");
@@ -136,7 +137,7 @@ mod tests {
         }
 
         // inv3: None unregisters (last registration wins).
-        crate::ffi::tx_phase_ffi::shlosilo_tx_phase_set_clock(None);
+        unsafe { crate::ffi::tx_phase_ffi::shlosilo_tx_phase_set_clock(None) };
         reset_all();
         assert!(
             PhaseProbe::start(1).is_none(),

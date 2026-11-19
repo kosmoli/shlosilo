@@ -19,6 +19,7 @@
 use core::ffi::{c_char, c_int, c_uint};
 
 use crate::business::export_format::{self, ExportLabels};
+use crate::ffi::c_abi::checked_slice_mut;
 use crate::ffi::error_code::{to_ffi_code, ERR_NULL_POINTER, OK};
 use crate::network::Network;
 use crate::types::key_session::KeySession;
@@ -99,10 +100,16 @@ pub extern "C" fn shlosilo_export_format_ur_type(format_id: c_uint) -> *const c_
 ///
 /// For a UR shape this is the CBOR message the device fragments; for a text shape
 /// it is the text, which is only ever shown as one static QR.
+///
+/// # Safety
+///
+/// - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+/// - `label`, `device_type`, `device_id`, `device_version` must each be NULL or a NUL-terminated string with the NUL inside 65 readable bytes.
+/// - `output_buf` must point to `output_buf_len` writable bytes (`output_buf_len >= shlosilo_export_format_max_len()`).
+/// - `actual_len` must be writable; none of the arguments may overlap.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[allow(clippy::too_many_arguments)]
-pub extern "C" fn shlosilo_export_format_payload_ffi(
+pub unsafe extern "C" fn shlosilo_export_format_payload_ffi(
     session: *const KeySession,
     format_id: c_uint,
     network: c_uint,
@@ -143,7 +150,17 @@ pub extern "C" fn shlosilo_export_format_payload_ffi(
             crate::error::ShlosiloErrorKind::BufferTooSmall,
         ));
     }
-    let out = unsafe { core::slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
+    // F-1: the required capacity is a fixed budget; building the slice from the
+    // caller's raw `c_uint` length would break the `from_raw_parts` contract on
+    // 32-bit targets for an absurd claim.
+    let out = match checked_slice_mut(output_buf, EXPORT_BUF_MAX, EXPORT_BUF_MAX) {
+        Some(o) => o,
+        None => {
+            return to_ffi_code(&crate::error::ShlosiloError::new(
+                crate::error::ShlosiloErrorKind::BufferTooSmall,
+            ))
+        }
+    };
     let labels = ExportLabels {
         label: optional_cstr(label, 64),
         key_name: optional_cstr(device_type, 64),
@@ -172,10 +189,16 @@ pub extern "C" fn shlosilo_export_format_payload_ffi(
 /// * `label` / `device_type` / `device_id` / `device_version` — optional, used by
 ///   the shapes that carry them (pass NULL to omit)
 /// * `restore_height` — used by the cupcake-shaped Monero JSON only
+///
+/// # Safety
+///
+/// - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
+/// - `label`, `device_type`, `device_id`, `device_version` must each be NULL or a NUL-terminated string with the NUL inside 65 readable bytes.
+/// - `output_buf` must point to `output_buf_len` writable bytes (`output_buf_len >= shlosilo_export_format_max_len()`).
+/// - `actual_len` must be writable; none of the arguments may overlap.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)] // contract: null-checked first, then from_raw_parts; the C side guarantees pointer validity
 #[allow(clippy::too_many_arguments)] // the C-ABI shape: one flat call, no structs across the boundary
-pub extern "C" fn shlosilo_export_format_session_ffi(
+pub unsafe extern "C" fn shlosilo_export_format_session_ffi(
     session: *const KeySession,
     format_id: c_uint,
     network: c_uint,
@@ -223,7 +246,17 @@ pub extern "C" fn shlosilo_export_format_session_ffi(
             crate::error::ShlosiloErrorKind::BufferTooSmall,
         ));
     }
-    let out = unsafe { core::slice::from_raw_parts_mut(output_buf, output_buf_len as usize) };
+    // F-1: the required capacity is a fixed budget; building the slice from the
+    // caller's raw `c_uint` length would break the `from_raw_parts` contract on
+    // 32-bit targets for an absurd claim.
+    let out = match checked_slice_mut(output_buf, EXPORT_BUF_MAX, EXPORT_BUF_MAX) {
+        Some(o) => o,
+        None => {
+            return to_ffi_code(&crate::error::ShlosiloError::new(
+                crate::error::ShlosiloErrorKind::BufferTooSmall,
+            ))
+        }
+    };
 
     let labels = ExportLabels {
         label: optional_cstr(label, 64),
@@ -275,19 +308,21 @@ mod tests {
         let mut actual: c_uint = 0;
         let label = c"test-wallet";
         let dev = c"TestDevice";
-        let rc = shlosilo_export_format_session_ffi(
-            session,
-            id,
-            0, // BitcoinMainnet
-            label.as_ptr(),
-            dev.as_ptr(),
-            dev.as_ptr(),
-            dev.as_ptr(),
-            0,
-            out.as_mut_ptr(),
-            EXPORT_BUF_MAX as c_uint,
-            &mut actual,
-        );
+        let rc = unsafe {
+            shlosilo_export_format_session_ffi(
+                session,
+                id,
+                0, // BitcoinMainnet
+                label.as_ptr(),
+                dev.as_ptr(),
+                dev.as_ptr(),
+                dev.as_ptr(),
+                0,
+                out.as_mut_ptr(),
+                EXPORT_BUF_MAX as c_uint,
+                &mut actual,
+            )
+        };
         (
             rc,
             core::str::from_utf8(&out[..actual as usize])
@@ -326,19 +361,21 @@ mod tests {
     fn null_session_and_small_buffer_are_refused() {
         let mut out = [0u8; EXPORT_BUF_MAX];
         let mut actual: c_uint = 7;
-        let rc = shlosilo_export_format_session_ffi(
-            core::ptr::null(),
-            0,
-            0,
-            core::ptr::null(),
-            core::ptr::null(),
-            core::ptr::null(),
-            core::ptr::null(),
-            0,
-            out.as_mut_ptr(),
-            EXPORT_BUF_MAX as c_uint,
-            &mut actual,
-        );
+        let rc = unsafe {
+            shlosilo_export_format_session_ffi(
+                core::ptr::null(),
+                0,
+                0,
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                0,
+                out.as_mut_ptr(),
+                EXPORT_BUF_MAX as c_uint,
+                &mut actual,
+            )
+        };
         assert_eq!(rc, ERR_NULL_POINTER);
         assert_eq!(actual, 0, "failure path zeroes actual_len");
 
@@ -347,19 +384,21 @@ mod tests {
         let (rc_small, s_small) = {
             let mut tiny = [0u8; 16];
             let mut a: c_uint = 0;
-            let rc = shlosilo_export_format_session_ffi(
-                session,
-                0,
-                0,
-                core::ptr::null(),
-                core::ptr::null(),
-                core::ptr::null(),
-                core::ptr::null(),
-                0,
-                tiny.as_mut_ptr(),
-                tiny.len() as c_uint,
-                &mut a,
-            );
+            let rc = unsafe {
+                shlosilo_export_format_session_ffi(
+                    session,
+                    0,
+                    0,
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0,
+                    tiny.as_mut_ptr(),
+                    tiny.len() as c_uint,
+                    &mut a,
+                )
+            };
             (rc, a)
         };
         assert_ne!(rc_small, OK, "a 16-byte buffer must be refused");
@@ -390,19 +429,21 @@ mod tests {
             }
             let mut actual: c_uint = 0;
             let dev = c"shlosilo";
-            let rc = shlosilo_export_format_payload_ffi(
-                session,
-                id,
-                0,
-                dev.as_ptr(),
-                dev.as_ptr(),
-                core::ptr::null(),
-                core::ptr::null(),
-                0,
-                out.as_mut_ptr(),
-                EXPORT_BUF_MAX as c_uint,
-                &mut actual,
-            );
+            let rc = unsafe {
+                shlosilo_export_format_payload_ffi(
+                    session,
+                    id,
+                    0,
+                    dev.as_ptr(),
+                    dev.as_ptr(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0,
+                    out.as_mut_ptr(),
+                    EXPORT_BUF_MAX as c_uint,
+                    &mut actual,
+                )
+            };
             assert_eq!(rc, OK, "format {id} payload");
             let got_parts = (actual as usize).div_ceil(200);
             assert_eq!(got_parts, parts as usize, "format {id} fragment count");
@@ -416,19 +457,21 @@ mod tests {
         let session = place(&mut slot);
         let mut out = [0u8; EXPORT_BUF_MAX];
         let mut actual: c_uint = 0;
-        let rc = shlosilo_export_format_session_ffi(
-            session,
-            99,
-            0,
-            core::ptr::null(),
-            core::ptr::null(),
-            core::ptr::null(),
-            core::ptr::null(),
-            0,
-            out.as_mut_ptr(),
-            EXPORT_BUF_MAX as c_uint,
-            &mut actual,
-        );
+        let rc = unsafe {
+            shlosilo_export_format_session_ffi(
+                session,
+                99,
+                0,
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                0,
+                out.as_mut_ptr(),
+                EXPORT_BUF_MAX as c_uint,
+                &mut actual,
+            )
+        };
         assert_ne!(rc, OK);
         assert_eq!(actual, 0);
         unsafe { core::ptr::drop_in_place(slot.as_mut_ptr()) };
