@@ -1494,29 +1494,57 @@ pub fn sign_psbt_p2tr_keypath_with_key(
     Ok(())
 }
 
-/// `PSBT_IN_SIGHASH_TYPE` (0x03) for a taproot input; absent = SIGHASH_DEFAULT.
-/// Only the values BIP-341 allows are accepted.
-fn taproot_sighash_type(input_map: KvMap<'_>) -> Result<u8> {
+/// The input's `PSBT_IN_SIGHASH_TYPE` (0x03), read with ONE rule for every consumer.
+///
+/// BTC-2 (external audit 2026-11-19): the signer looked the entry up by its full key
+/// (`[0x03]`) while the review page matched on the key's FIRST byte and then took the
+/// value's first byte. A request carrying the malformed key `[0x03, 0x00]` therefore made
+/// the two sides read different numbers — the operator approved one commitment while the
+/// device signed another. Key shape, value length and value range are validated here, so
+/// there is exactly one answer to "what sighash does this input declare".
+///
+/// `Ok(None)` = the entry is absent. `Err` = the entry exists but is not a valid
+/// sighash declaration (wrong key shape, wrong value length, or a value BIP-341 does not
+/// allow); callers must not fall back to a default in that case.
+pub fn input_sighash_type(input_map: KvMap<'_>) -> Result<Option<u8>> {
     let value = match input_map.get(&[input_type::SIGHASH_TYPE]) {
         Some(v) => v,
-        None => return Ok(0x00),
+        None => {
+            // A map entry whose key STARTS with the type byte but carries extra keydata
+            // (`0x03 || …`) is a malformed declaration, not an absent one: readers that
+            // match on the first byte (the review page used to) would see a value while an
+            // exact-key reader sees nothing and falls back to SIGHASH_DEFAULT. Refuse it
+            // so both sides are looking at the same, validated answer.
+            let malformed = input_map
+                .iter()
+                .any(|kv| kv.key.first() == Some(&input_type::SIGHASH_TYPE));
+            return if malformed {
+                Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))
+            } else {
+                Ok(None)
+            };
+        }
     };
     if value.len() != 4 {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
-    let raw = u32::from_le_bytes(
-        value
-            .try_into()
-            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?,
-    );
+    let raw = u32::from_le_bytes(match <[u8; 4]>::try_from(value) {
+        Ok(v) => v,
+        Err(_) => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
+    });
     if raw > 0xff {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let hash_type = raw as u8;
     match hash_type {
-        0x00 | 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83 => Ok(hash_type),
+        0x00 | 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83 => Ok(Some(hash_type)),
         _ => Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
     }
+}
+
+/// Taproot signing view: absent means SIGHASH_DEFAULT.
+fn taproot_sighash_type(input_map: KvMap<'_>) -> Result<u8> {
+    Ok(input_sighash_type(input_map)?.unwrap_or(0x00))
 }
 
 /// Build the BIP-341 keypath sighash view straight from the PSBT.
@@ -1952,6 +1980,62 @@ pub fn is_p2tr_input(input_map: KvMap<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// BTC-2 (external audit 2026-11-19): exactly ONE answer to "what sighash does this
+    /// input declare". The signer looked the entry up by its full key (`[0x03]`), the
+    /// review page matched the key's FIRST byte and took the value's first byte — so a
+    /// request carrying the malformed key `[0x03, 0x00]` showed the operator one
+    /// commitment while the device signed another.
+    #[test]
+    fn sighash_accessor_requires_the_exact_key_and_value_shape() {
+        use crate::chain::btc::psbt::{input_sighash_type, KeyValue, KvMap};
+
+        use crate::types::wire_bytes::WireBytes;
+        let val: WireBytes<'_> = WireBytes::from(&[0x02u8, 0x00, 0x00, 0x00][..]);
+        let key_exact: WireBytes<'_> = WireBytes::from(&[0x03u8][..]);
+        let key_padded: WireBytes<'_> = WireBytes::from(&[0x03u8, 0x00][..]);
+        let val_short: WireBytes<'_> = WireBytes::from(&[0x02u8][..]);
+        let val_wide: WireBytes<'_> = WireBytes::from(&[0x02u8, 0x00, 0x00, 0x01][..]);
+        // exact key shape -> the declared value
+        let exact = [KeyValue {
+            key: key_exact.clone(),
+            value: val.clone(),
+        }];
+        assert_eq!(
+            input_sighash_type(KvMap::from_slice(&exact)).ok().flatten(),
+            Some(0x02),
+            "the whole key must be the single type byte"
+        );
+
+        // malformed key: extra key data must NOT be read as a sighash
+        let padded = [KeyValue {
+            key: key_padded,
+            value: val.clone(),
+        }];
+        assert!(
+            input_sighash_type(KvMap::from_slice(&padded)).is_err(),
+            "a key with extra data is not a valid declaration"
+        );
+
+        // wrong value length and out-of-range value are errors, never defaults
+        let short = [KeyValue {
+            key: key_exact.clone(),
+            value: val_short,
+        }];
+        assert!(input_sighash_type(KvMap::from_slice(&short)).is_err());
+        let wide = [KeyValue {
+            key: key_exact,
+            value: val_wide,
+        }];
+        assert!(input_sighash_type(KvMap::from_slice(&wide)).is_err());
+
+        // absent stays absent
+        let empty: [KeyValue; 0] = [];
+        assert_eq!(
+            input_sighash_type(KvMap::from_slice(&empty)).ok().flatten(),
+            None
+        );
+    }
+
     use super::psbt_from_maps_leaky;
     use super::*;
     // Alloc surface: consumers behind alloc-fallback / cfg(test).

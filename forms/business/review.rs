@@ -238,15 +238,20 @@ fn summarize_psbt(
         let taproot = map
             .iter()
             .any(|kv| kv.key.first() == Some(&psbt::input_type::TAP_INTERNAL_KEY));
-        let sighash = map
-            .iter()
-            .find(|kv| kv.key.first() == Some(&psbt::input_type::SIGHASH_TYPE))
-            .and_then(|kv| kv.value.first().copied());
-        if let Some(v) = sighash {
-            let all = v == 0x01 || (taproot && v == 0x00);
-            if !all {
-                view.flags |= flag::SIGHASH_UNSAFE;
+        // BTC-2 (external audit 2026-11-19): read the declaration through the SAME
+        // accessor the signer uses. The old code matched the key's first byte and took the
+        // value's first byte, so a malformed key could show the operator a different
+        // sighash than the one the device would sign. An entry that exists but cannot be
+        // read is treated as unsafe, never as "absent".
+        match psbt::input_sighash_type(map) {
+            Ok(Some(v)) => {
+                let all = v == 0x01 || (taproot && v == 0x00);
+                if !all {
+                    view.flags |= flag::SIGHASH_UNSAFE;
+                }
             }
+            Ok(None) => {}
+            Err(_) => view.flags |= flag::SIGHASH_UNSAFE,
         }
     }
 
