@@ -111,8 +111,14 @@ impl<'a> Rlp<'a> {
                 (&bytes[start..end], &bytes[end..])
             }
         };
+        // A3c-F5 (external audit 2026-11-19, surfaced while building the ERC-20 review
+        // fixture): the LONG string range 0xb8..=0xbf was classified as a list. Every RLP
+        // string of 56 bytes or more therefore came back as `Rlp::List`, `as_str()` failed,
+        // and `parse_eip1559_raw` rejected the transaction — i.e. a plain ERC-20 transfer
+        // (68-byte calldata) could not be reviewed or signed at all. The string/list split
+        // is at 0xc0, not at 0xb8.
         let item = match b0 {
-            0x00..=0xb7 => Rlp::Str(payload),
+            0x00..=0xbf => Rlp::Str(payload),
             _ => Rlp::List(payload),
         };
         Ok((item, rest))
@@ -255,6 +261,31 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
 
 #[cfg(test)]
 mod tests {
+    /// A3c-F5: a string of 56+ bytes uses the long-form head (0xb8..=0xbf) and must still
+    /// come back as `Rlp::Str`. Before this pin the classification matched only
+    /// `0x00..=0xb7`, so every long string decoded as a list — which silently made any
+    /// transaction with ≥56 bytes of calldata (i.e. every ERC-20 call) unparseable.
+    #[test]
+    fn long_string_is_a_string_not_a_list() {
+        // Built as a literal so the pin also runs on the no-alloc (device) face.
+        // 0xb8 = long string with a 1-byte length, 0x44 = 68, then 68 bytes of calldata.
+        let mut enc = [0u8; 70];
+        enc[0] = 0xb8;
+        enc[1] = 0x44;
+        for b in &mut enc[2..] {
+            *b = 0xa9;
+        }
+        let (item, rest) = crate::chain::eth::from_rlp::Rlp::read(&enc).expect("long string");
+        assert_eq!(item.as_str().expect("must be a string").len(), 68);
+        assert!(rest.is_empty());
+
+        // and the list split is still at 0xc0
+        let lst = [0xc1u8, 0x80];
+        let (item, rest) = crate::chain::eth::from_rlp::Rlp::read(&lst).expect("list");
+        assert!(matches!(item, crate::chain::eth::from_rlp::Rlp::List(_)));
+        assert!(rest.is_empty());
+    }
+
     /// ETH-1 (external audit 2026-11-19): the long-form branches computed the end offset
     /// with a plain `usize` addition BEFORE any bound check. With overflow checks on
     /// (debug) that panics in the comparison itself; with them off (release) the wrap can
