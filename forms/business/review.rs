@@ -277,6 +277,10 @@ fn summarize_psbt(
                 Ownership::OwnChange => "change",
                 Ownership::OwnReceive => "to you",
                 Ownership::Foreign => "send",
+                // Neutral, not a warning: the operator sees what happened (a derivation
+                // record we could not read) and judges it. Filtering it into "send"
+                // would be a claim we cannot support.
+                Ownership::Unreadable => "unclassified",
             },
             out.value
         ))?;
@@ -638,7 +642,7 @@ fn warn_lines(flags: u16) -> [Option<&'static str>; 5] {
 /// master fingerprint. Absent fingerprint or absent record → treated as foreign
 /// (a payment), which is the conservative reading for a review screen.
 /// Who owns an output, as far as the PSBT itself can tell us.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ownership {
     /// No derivation record for us: money leaving to someone else.
     Foreign,
@@ -647,6 +651,14 @@ enum Ownership {
     OwnReceive,
     /// Our own key on the **internal** chain (`…/1/i`): change coming back.
     OwnChange,
+    /// The map has a derivation record for us, but its path cannot be read exactly
+    /// (a length that is not a whole number of `u32`s, or more elements than we can hold).
+    ///
+    /// A2-05 (external audit 2026-11-19): both cases used to fall through to a verdict —
+    /// the remainder bytes were dropped and the truncated path still classified, and a
+    /// too-deep path returned `OwnReceive` without reading anything. A review screen must
+    /// not present a guess as evidence, so the row now says it could not classify.
+    Unreadable,
 }
 
 /// Classify an output by the BIP-32 derivation record in its output map.
@@ -662,7 +674,11 @@ fn output_ownership(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> Ownership {
     // outgoing amount that is really their own money returning.
     if let Some((fingerprint, path)) = psbt::get_output_tap_bip32_derivation(map) {
         if fingerprint == *ours || psbt::fingerprint_is_unspecified(fingerprint) {
-            return ownership_from_elements(&path.elements[..path.depth as usize]);
+            let depth = path.depth as usize;
+            if depth > path.elements.len() {
+                return Ownership::Unreadable;
+            }
+            return ownership_from_elements(&path.elements[..depth]);
         }
     }
     for kv in map.iter() {
@@ -681,10 +697,15 @@ fn output_ownership(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> Ownership {
         }
         // value = fingerprint(4) || path elements as u32 LE each
         let elems = &kv.value[4..];
+        // The path must be a whole number of u32s: a stray tail means the record is not
+        // what we think it is, and classifying a truncated path would invent a chain index.
+        if elems.len() % 4 != 0 {
+            return Ownership::Unreadable;
+        }
         let depth = elems.len() / 4;
         let mut path = [0u32; crate::derivation::path::MAX_DEPTH];
         if depth > path.len() {
-            return Ownership::OwnReceive;
+            return Ownership::Unreadable;
         }
         for (i, chunk) in elems.as_chunks::<4>().0.iter().enumerate().take(depth) {
             path[i] = u32::from_le_bytes(*chunk);
@@ -857,6 +878,81 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
         }
     }
     Ok(view)
+}
+
+#[cfg(test)]
+mod output_ownership_pins {
+    use super::*;
+    use crate::chain::btc::psbt::{output_type, KeyValue};
+
+    const OURS: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
+    /// Control: a well-formed change record still classifies as change.
+    #[test]
+    fn well_formed_change_path_classifies() {
+        // fingerprint(4) || 84' / 0' / 0' / 1 / 5 — the second-to-last element is the
+        // chain index, and 1 is the change chain.
+        let mut value = alloc::vec![0u8; 4 + 5 * 4];
+        value[..4].copy_from_slice(&OURS);
+        for (i, elem) in [0x8000_0054u32, 0x8000_0000, 0x8000_0000, 1, 5]
+            .iter()
+            .enumerate()
+        {
+            value[4 + i * 4..8 + i * 4].copy_from_slice(&elem.to_le_bytes());
+        }
+        let kv = [KeyValue {
+            key: alloc::vec![output_type::BIP32_DERIVATION].into(),
+            value: value.clone().into(),
+        }];
+        assert_eq!(
+            output_ownership(psbt::KvMap::from_slice(&kv), &OURS),
+            Ownership::OwnChange
+        );
+    }
+
+    /// A2-05 (external audit 2026-11-19): a path tail that is not a whole `u32` must not be
+    /// chopped off and classified anyway — that invents a chain index out of a short read.
+    /// The row says `unclassified` instead of claiming `change` or `send`.
+    #[test]
+    fn truncated_path_is_not_classified() {
+        // fingerprint(4) || one full element || 3 stray bytes
+        let mut value = value_with(&[0x8000_0000u32]);
+        value.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
+        let kv = [KeyValue {
+            key: alloc::vec![output_type::BIP32_DERIVATION].into(),
+            value: value.into(),
+        }];
+        assert_eq!(
+            output_ownership(psbt::KvMap::from_slice(&kv), &OURS),
+            Ownership::Unreadable
+        );
+    }
+
+    /// Same item, second shape: more path elements than the fixed array holds used to return
+    /// `OwnReceive` without reading a single element — "ours" as a guess. It now refuses to
+    /// classify.
+    #[test]
+    fn over_deep_path_is_not_classified() {
+        let too_deep = alloc::vec![0u32; crate::derivation::path::MAX_DEPTH + 1];
+        let value = value_with(&too_deep);
+        let kv = [KeyValue {
+            key: alloc::vec![output_type::BIP32_DERIVATION].into(),
+            value: value.into(),
+        }];
+        assert_eq!(
+            output_ownership(psbt::KvMap::from_slice(&kv), &OURS),
+            Ownership::Unreadable
+        );
+    }
+
+    fn value_with(path: &[u32]) -> alloc::vec::Vec<u8> {
+        let mut v = alloc::vec![0u8; 4];
+        v[..4].copy_from_slice(&OURS);
+        for e in path {
+            v.extend_from_slice(&e.to_le_bytes());
+        }
+        v
+    }
 }
 
 #[cfg(test)]

@@ -80,7 +80,14 @@ fn eth_path(coin: u32) -> DerivationPath {
 }
 
 /// Monero (address, view-key hex) for the two JSON shapes.
-fn monero_material(seed: &[u8; 64], network: Network) -> Result<(heapless::String<112>, [u8; 64])> {
+/// A2-09 (external audit 2026-11-19): the second element is the private view key written out
+/// as ASCII hex. It used to be a plain `[u8; 64]` with no owner — the export's *purpose* is to
+/// hand that key over, but the intermediate copy in this function is not the exported result
+/// and has no reason to outlive the call un-erased.
+fn monero_material(
+    seed: &[u8; 64],
+    network: Network,
+) -> Result<(heapless::String<112>, crate::types::SecretBytes<64>)> {
     // Monero has one network/account notion here; `MoneroPath::mainnet(0)` is the
     // account-0 path the rest of the crate uses.
     let kp = monero_reduce_scalar::derive(seed, &MoneroPath::mainnet(0))?;
@@ -92,7 +99,8 @@ fn monero_material(seed: &[u8; 64], network: Network) -> Result<(heapless::Strin
     let addr = xmr_address::encode(&spend_pub, &view_pub, network)?;
     let mut s: heapless::String<112> = heapless::String::new();
     s.push_str(addr.as_ref()).map_err(|_| err())?;
-    Ok((s, hex32(&scalar_to_bytes(kp.view_priv()))))
+    let mut view_hex = hex32(&scalar_to_bytes(kp.view_priv()));
+    Ok((s, crate::types::SecretBytes::take(&mut view_hex)))
 }
 
 fn hex32(bytes: &[u8; 32]) -> [u8; 64] {
@@ -195,12 +203,12 @@ pub fn payload(
         }
         ExportFormat::MoneroViewOnlyJsonUnlabelled => {
             let (addr, view) = monero_material(seed, Network::MoneroMainnet)?;
-            let view_hex = core::str::from_utf8(&view).map_err(|_| err())?;
+            let view_hex = core::str::from_utf8(view.expose()).map_err(|_| err())?;
             monero_viewkey_json_unlabelled(&addr, view_hex, out)
         }
         ExportFormat::MoneroViewOnlyJsonLabelled => {
             let (addr, view) = monero_material(seed, Network::MoneroMainnet)?;
-            let view_hex = core::str::from_utf8(&view).map_err(|_| err())?;
+            let view_hex = core::str::from_utf8(view.expose()).map_err(|_| err())?;
             let label = labels.label.ok_or_else(err)?;
             monero_viewkey_json_labelled(label, &addr, view_hex, labels.restore_height, out)
         }

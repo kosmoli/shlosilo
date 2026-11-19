@@ -59,16 +59,36 @@ pub fn stub_signature_len(chain_kind: crate::types::chain_kind::ChainKind) -> us
 
 /// Get the BIP-39 seed from a SignInput (P1-03: carried in SecretBytes — the Mnemonic path restores on the spot,
 /// the stack buffer written by restore is taken over via take and the original copy zeroed)
-fn resolve_seed(sign_input: &SignInput<'_>) -> Result<SecretBytes<64>> {
+/// The seed the signing path works from.
+///
+/// A2-07 (external audit 2026-11-19): the `SignInput::Seed` branch used to copy all 64 bytes
+/// into a second `SecretBytes` owner. The audit's rule is that business code **borrows** a
+/// secret it was handed (C17); manufacturing a second owner only doubles the copies to erase.
+/// The mnemonic branch still owns its seed — it had to derive it from the words on the spot.
+enum SeedMaterial<'a> {
+    Borrowed(&'a [u8; 64]),
+    Owned(SecretBytes<64>),
+}
+
+impl SeedMaterial<'_> {
+    fn expose(&self) -> &[u8; 64] {
+        match self {
+            SeedMaterial::Borrowed(s) => s,
+            SeedMaterial::Owned(s) => s.expose(),
+        }
+    }
+}
+
+fn resolve_seed<'a>(sign_input: &'a SignInput<'_>) -> Result<SeedMaterial<'a>> {
     let mut restored = [0u8; 64];
     match sign_input {
-        SignInput::Seed { seed } => Ok(SecretBytes::new(**seed)),
+        SignInput::Seed { seed } => Ok(SeedMaterial::Borrowed(seed)),
         SignInput::Mnemonic {
             mnemonic,
             passphrase,
         } => {
             crate::business::restore_seed::restore_seed(mnemonic, passphrase, &mut restored)?;
-            Ok(SecretBytes::take(&mut restored))
+            Ok(SeedMaterial::Owned(SecretBytes::take(&mut restored)))
         }
     }
 }
