@@ -149,6 +149,17 @@ impl ExportedTransferDetails<'_> {
         let mut off = 0usize;
         let has_transfers = read_varint(bytes, &mut off)?;
         if has_transfers == 0 {
+            // A3a-04 (external audit 2026-11-19): the reference implementation checks
+            // exhaustion in the empty form too — keystone3-firmware
+            // `rust/apps/monero/src/outputs.rs:62-65`:
+            //     if tuple_fields == 0 {
+            //         if reader.remaining() != 0 { return Err(FormatError); }
+            //         ...
+            // We returned early instead, so trailing bytes after the "no transfers" head
+            // were accepted here while the same bytes were rejected in the non-empty form.
+            if off != bytes.len() {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+            }
             return Ok(ExportedTransferDetails {
                 offset: 0,
                 size: 0,
@@ -268,7 +279,20 @@ pub fn serialize_key_images(images: &[([u8; 32], [u8; 64])]) -> Vec<u8> {
     data
 }
 
-/// Deserialize a stream of 96B records (aligned with keystone `From<&Vec<u8>>`: a trailing segment shorter than 96B is dropped).
+/// Deserialize a stream of 96B records.
+///
+/// A3a-05 (external audit 2026-11-19) — **checked against the reference, kept as is**.
+/// keystone3-firmware `rust/apps/monero/src/key_images.rs:81-89` reads
+/// `while (data.len() - i) > 64 { … data[i+32..i+96].try_into().unwrap() … i += 96; }`, i.e.
+/// it stops on a remainder of 64 bytes or less and DROPS it — the same "a trailing
+/// partial record is not a record" rule this function implements with `>= 96`. The
+/// reference additionally panics on a remainder of 65..=95 (`unwrap` on a short slice);
+/// we answer `Ok(n)` and leave the remainder unconsumed, which is strictly safer and keeps
+/// the wire behaviour identical for every input the reference survives.
+///
+/// A truncated stream is therefore not silently accepted at the protocol level: the sign
+/// leg refuses when the retained records do not cover the container's key-image span
+/// (`KeyImageRecordsMissing`, -34).
 /// Parse 96B records into caller storage (Z2.4d-5 core); returns record count.
 /// Trailing remnant shorter than one record is dropped (keystone `From<&Vec<u8>>`
 /// semantics, unchanged).
@@ -310,6 +334,28 @@ pub fn deserialize_key_images(data: &[u8]) -> Vec<([u8; 32], [u8; 64])> {
 
 #[cfg(test)]
 mod tests {
+    /// A3a-04 (external audit 2026-11-19): the empty "no transfers" form must reject
+    /// trailing bytes, exactly like the reference does
+    /// (keystone `outputs.rs:62-65`). Before this pin we returned before the exhaustion
+    /// check, so `0x00 ‖ <anything>` parsed as a clean empty export.
+    #[test]
+    fn empty_export_form_rejects_trailing_bytes() {
+        let mut details: [ExportedTransferDetail; 4] = core::array::from_fn(|_| Default::default());
+        // 0x00 = "no transfers" — alone, this is a legal empty export
+        assert!(ExportedTransferDetails::from_bytes(&[0x00], &mut details).is_ok());
+        // ...but not with bytes behind it
+        for tail in [
+            alloc::vec![0x00u8, 0x00],
+            alloc::vec![0x00, 0x01],
+            alloc::vec![0x00, 0xff, 0x00],
+        ] {
+            assert!(
+                ExportedTransferDetails::from_bytes(&tail, &mut details).is_err(),
+                "trailing bytes after the empty form must be refused: {tail:?}"
+            );
+        }
+    }
+
     use super::*;
     use alloc::vec;
 
