@@ -49,17 +49,33 @@ impl<'a> Rlp<'a> {
             }
             0xb8..=0xbf => {
                 let lol = (b0 - 0xb7) as usize;
-                if bytes.len() < 1 + lol {
+                // ETH-1 (external audit 2026-11-19): every offset below is built with
+                // checked arithmetic. The old shape compared `bytes.len()` against
+                // `1 + lol + len` where `len` came straight from the wire: with overflow
+                // checks on the comparison itself panicked, and with them off the wrap
+                // could pass the check and make the following slice panic.
+                let start = match 1usize.checked_add(lol) {
+                    Some(v) => v,
+                    None => return Err(err()),
+                };
+                if start > bytes.len() {
                     return Err(err());
                 }
                 let mut len = 0usize;
-                for &b in &bytes[1..1 + lol] {
-                    len = (len << 8) | b as usize;
+                for &b in &bytes[1..start] {
+                    len = match len.checked_mul(256).and_then(|v| v.checked_add(b as usize)) {
+                        Some(v) => v,
+                        None => return Err(err()),
+                    };
                 }
-                if bytes.len() < 1 + lol + len {
+                let end = match start.checked_add(len) {
+                    Some(v) => v,
+                    None => return Err(err()),
+                };
+                if end > bytes.len() {
                     return Err(err());
                 }
-                (&bytes[1 + lol..1 + lol + len], &bytes[1 + lol + len..])
+                (&bytes[start..end], &bytes[end..])
             }
             0xc0..=0xf7 => {
                 let len = (b0 - 0xc0) as usize;
@@ -70,17 +86,29 @@ impl<'a> Rlp<'a> {
             }
             0xf8..=0xff => {
                 let lol = (b0 - 0xf7) as usize;
-                if bytes.len() < 1 + lol {
+                // ETH-1: see the long-string branch above (same overflow shape).
+                let start = match 1usize.checked_add(lol) {
+                    Some(v) => v,
+                    None => return Err(err()),
+                };
+                if start > bytes.len() {
                     return Err(err());
                 }
                 let mut len = 0usize;
-                for &b in &bytes[1..1 + lol] {
-                    len = (len << 8) | b as usize;
+                for &b in &bytes[1..start] {
+                    len = match len.checked_mul(256).and_then(|v| v.checked_add(b as usize)) {
+                        Some(v) => v,
+                        None => return Err(err()),
+                    };
                 }
-                if bytes.len() < 1 + lol + len {
+                let end = match start.checked_add(len) {
+                    Some(v) => v,
+                    None => return Err(err()),
+                };
+                if end > bytes.len() {
                     return Err(err());
                 }
-                (&bytes[1 + lol..1 + lol + len], &bytes[1 + lol + len..])
+                (&bytes[start..end], &bytes[end..])
             }
         };
         let item = match b0 {
@@ -227,6 +255,30 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
 
 #[cfg(test)]
 mod tests {
+    /// ETH-1 (external audit 2026-11-19): the long-form branches computed the end offset
+    /// with a plain `usize` addition BEFORE any bound check. With overflow checks on
+    /// (debug) that panics in the comparison itself; with them off (release) the wrap can
+    /// make the check pass and the following slice panics instead.
+    #[test]
+    fn long_form_overflow_is_a_clean_error() {
+        // 0xb8 = long string, 1 length byte; a huge length must not reach the slice.
+        let s_over = [0xb8u8, 0x40, 0x00, 0x00];
+        assert!(crate::chain::eth::from_rlp::Rlp::read(&s_over).is_err());
+        // length byte count at the top of the range (lol = 8) with a value that would
+        // overflow `1 + lol + len` on a 32-bit target and is nonsensical anyway.
+        let mut l8 = alloc::vec![0xb8u8 + 7];
+        l8.extend_from_slice(&[0xff; 8]);
+        assert!(crate::chain::eth::from_rlp::Rlp::read(&l8).is_err());
+        // long list branch (0xf8..)
+        let l_over = [0xf8u8, 0x40, 0x00, 0x00];
+        assert!(crate::chain::eth::from_rlp::Rlp::read(&l_over).is_err());
+        // and the legal case still parses
+        let ok = [0x83u8, 0x61, 0x62, 0x63];
+        let (item, rest) = crate::chain::eth::from_rlp::Rlp::read(&ok).expect("3-byte string");
+        assert_eq!(item.as_str().expect("string"), &[0x61, 0x62, 0x63]);
+        assert!(rest.is_empty());
+    }
+
     use super::*;
     // Alloc surface: consumers behind alloc-fallback / cfg(test).
     #[cfg(any(feature = "alloc-fallback", test))]

@@ -95,6 +95,15 @@ pub(crate) fn read_varint(data: &[u8], off: &mut usize) -> Result<u64> {
     loop {
         let b = *data.get(*off).ok_or_else(err)?;
         *off += 1;
+        // A3a-06 (external audit 2026-11-19): the last group may only carry the bits
+        // that still fit a u64. At shift 63 a byte with anything above bit 0 set used to
+        // be shifted out silently — the wire said one number and we read another.
+        // (Minimal-encoding strictness is NOT enforced here on purpose: monerod's own
+        // reader does not enforce it, and refusing non-minimal varints risks rejecting a
+        // container a real wallet produced. Tracked separately.)
+        if shift + 7 > 64 && (b & 0x7f) as u64 > (u64::MAX >> shift) {
+            return Err(err());
+        }
         value |= ((b & 0x7f) as u64) << shift;
         if b & 0x80 == 0 {
             break;
@@ -950,6 +959,23 @@ mod tests {
     }
     macro_rules! deser_err {
         ($bytes:expr) => { deser_outcome!($bytes, Err(_) => true) };
+    }
+
+    /// A3a-06: a varint whose final group overflows u64 must be an error, not a silently
+    /// truncated value. (10 groups of 0xff..: the 10th group may carry only bit 0.)
+    #[test]
+    fn read_varint_rejects_overflowing_final_group() {
+        // 9 × 0xff (continuation) + 0xff: would need 70 bits → refused.
+        let mut bad = [0xffu8; 10];
+        bad[9] = 0xff;
+        let mut off = 0usize;
+        assert!(super::read_varint(&bad, &mut off).is_err());
+
+        // u64::MAX is 9 × 0xff + 0x01 → legal.
+        let mut max = [0xffu8; 10];
+        max[9] = 0x01;
+        let mut off = 0usize;
+        assert_eq!(super::read_varint(&max, &mut off).unwrap(), u64::MAX);
     }
 
     /// Reader: varint, standard LEB128

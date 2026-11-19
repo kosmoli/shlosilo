@@ -189,8 +189,18 @@ impl ExportedTransferDetails<'_> {
                     .push(zeroize::Zeroizing::new(read_u8_32(bytes, &mut off)?))
                     .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall))?;
             }
-            let major = read_varint(bytes, &mut off)? as u32;
-            let minor = read_varint(bytes, &mut off)? as u32;
+            // A3a-08 (external audit 2026-11-19): these were `as u32`, so an
+            // out-of-range wire value silently became a DIFFERENT valid derivation
+            // position. Subaddress indices are u32 by definition; anything larger is a
+            // malformed container, not a number to truncate.
+            let major = match u32::try_from(read_varint(bytes, &mut off)?) {
+                Ok(v) => v,
+                Err(_) => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
+            };
+            let minor = match u32::try_from(read_varint(bytes, &mut off)?) {
+                Ok(v) => v,
+                Err(_) => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
+            };
 
             details.push(ExportedTransferDetail {
                 pubkey,
