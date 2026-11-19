@@ -189,6 +189,41 @@ pub struct Transaction<'a> {
 }
 
 impl Transaction<'_> {
+    /// Legacy full-transaction serialization (no marker/flag, no witness).
+    ///
+    /// BTC-1 (external audit 2026-11-19): a PSBT legacy input must carry the previous
+    /// transaction itself (`PSBT_IN_NON_WITNESS_UTXO`), and that byte string is also the
+    /// txid preimage — the only form in which the spent amount and script can be tied to
+    /// the outpoint being spent. The crate could serialize a transaction *with* witness
+    /// (`serialize_segwit`) but not without, so callers could not build or check that field.
+    #[cfg(any(feature = "alloc-fallback", test))]
+    pub fn serialize_no_witness(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.version.to_le_bytes());
+        encode_varint(&mut out, self.inputs.len() as u64);
+        for txin in &self.inputs {
+            txin.serialize_into(&mut out);
+            out.extend_from_slice(&txin.script_sig);
+            out.extend_from_slice(&txin.sequence.to_le_bytes());
+        }
+        encode_varint(&mut out, self.outputs.len() as u64);
+        for txout in &self.outputs {
+            txout.serialize_into(&mut out);
+        }
+        out.extend_from_slice(&self.lock_time.to_le_bytes());
+        out
+    }
+
+    /// The transaction id: double-SHA256 of [`Self::serialize_no_witness`], in the byte
+    /// order this crate compares against `OutPoint::txid` (no display-order reversal).
+    ///
+    /// `None` only if the SHA-256 helper refuses (it cannot for any input); `forms` must not
+    /// panic, so the caller decides — the no-panic gate budgets every `expect(` in the crate.
+    #[cfg(any(feature = "alloc-fallback", test))]
+    pub fn txid(&self) -> Option<[u8; 32]> {
+        crate::encoding::sha256::hash_twice(&self.serialize_no_witness()).ok()
+    }
+
     /// BIP-144 segwit serialization (marker=0x00, flag=0x01)
     #[cfg(any(feature = "alloc-fallback", test))]
     pub fn serialize_segwit(&self) -> Vec<u8> {

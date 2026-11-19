@@ -1240,6 +1240,16 @@ pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> 
     }
 
     // 1. Prevout binding: the spent script must lock to this very key.
+    //
+    // BTC-1 (external audit 2026-11-19), settled against a real fixture: Bitcoin Core's own
+    // regtest 2-in-1-out legacy PSBT (tests/fixtures/core_regtest_p2pkh_2in1out.psbt) carries
+    // `WITNESS_UTXO` only on its legacy inputs — the shape is real, so refusing it would
+    // break the oracle rather than protect anything. What the signature actually needs is
+    // `spk`, and that is verified against our own key hash below. The part that was NOT
+    // safe is the AMOUNT: an unbound `WITNESS_UTXO` states it freely, and legacy sighash
+    // does not commit to it, so the fee shown on the review page can be a lie. That is a
+    // review-side duty (flag the fee as unverified) and is tracked separately — see the
+    // audit ledger, BTC-1 follow-up.
     let prev_out = psbt.unsigned_tx.inputs[input_idx].prev_out.clone();
     let (_amount, spk) = get_utxo_any(psbt.input_map(input_idx), &prev_out)
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -1892,6 +1902,24 @@ fn non_witness_utxo_out<'a>(full_tx: &'a [u8], prev_out: &OutPoint) -> Option<(u
     hit
 }
 
+/// The spent output for a **legacy** input: `PSBT_IN_NON_WITNESS_UTXO` only, bound to this
+/// input's `prev_out` (txid + vout).
+///
+/// BTC-1 (external audit 2026-11-19): legacy signing went through `get_utxo_any`, which
+/// prefers `WITNESS_UTXO` — a bare `CTxOut` with nothing tying it to the outpoint it claims
+/// to be. BIP-174 requires a legacy input to carry the full previous transaction, and only
+/// that form lets us check the amount really belongs to the spent outpoint; with the loose
+/// getter a request could state any amount and the fee the operator approves would come
+/// from an unverified number. Absent or non-binding `NON_WITNESS_UTXO` answers `None`.
+pub fn get_utxo_non_witness<'a>(
+    input_map: KvMap<'a>,
+    prev_out: &OutPoint,
+) -> Option<(u64, crate::types::wire_bytes::WireBytes<'a>)> {
+    let full_tx = input_map.get(&[input_type::NON_WITNESS_UTXO])?;
+    let (value, script) = non_witness_utxo_out(full_tx, prev_out)?;
+    Some((value, crate::types::wire_bytes::wire_from(script)))
+}
+
 /// Get the spent output (value, spk) from an input map's WITNESS_UTXO field
 pub fn get_witness_utxo<'a>(
     input_map: KvMap<'a>,
@@ -2323,6 +2351,100 @@ mod tests {
         assert!(sign_psbt_p2wpkh(&mut psbt, &sign_input).is_err());
     }
 
+    /// Build a previous transaction whose txid really is the outpoint we spend.
+    ///
+    /// BTC-1: a legacy input's `NON_WITNESS_UTXO` is checked against the input's prevout
+    /// (txid + vout), so a hand-written fixture with an invented txid cannot pass. This
+    /// helper serializes the previous transaction and derives the txid from those very
+    /// bytes, which is what `non_witness_utxo_out` recomputes.
+    fn legacy_prevout(value: u64, spk: &[u8], output_value: u64) -> (OutPoint, Vec<u8>) {
+        let prev = Transaction {
+            version: 1,
+            inputs: bt_vec![TxIn {
+                prev_out: OutPoint {
+                    txid: [0x77; 32],
+                    vout: 1,
+                },
+                script_sig: vec![].into(),
+                sequence: 0xffffffff,
+                witness: vec![],
+            }],
+            outputs: bt_vec![TxOut {
+                value,
+                script_pubkey: spk.to_vec().into(),
+            }],
+            lock_time: 0,
+        };
+        let txid = prev.txid().expect("txid");
+        let raw = prev.serialize_no_witness();
+        let _ = output_value;
+        (OutPoint { txid, vout: 0 }, raw)
+    }
+
+    /// BTC-1 (external audit 2026-11-19): a `NON_WITNESS_UTXO` that is present must BIND to
+    /// the input's prevout. A full transaction claiming a different txid is not evidence
+    /// about the outpoint we spend, so it must not be used — no blind trust in the field.
+    ///
+    /// (A legacy input carrying only `WITNESS_UTXO` is accepted: Bitcoin Core's own regtest
+    /// 2-in-1-out legacy PSBT has that shape, and the signature only needs the scriptPubKey,
+    /// which is checked against our key hash. The unverified-amount consequence is a review
+    /// duty, tracked as the BTC-1 follow-up.)
+    #[test]
+    fn psbt_sign_p2pkh_refuses_non_binding_prev_tx() {
+        let mut private_key = [0u8; 32];
+        private_key[31] = 1;
+        let sk = crate::curve_primitive::secp256k1::scalar_from_bytes(&private_key).unwrap();
+        let pk = crate::curve_primitive::secp256k1::point_to_compressed(
+            &crate::curve_primitive::secp256k1::base_mul(&sk),
+        );
+        let h = crate::encoding::sha256::hash(&pk).unwrap();
+        let mut pk_hash = [0u8; 20];
+        pk_hash.copy_from_slice(&crate::encoding::ripemd160::hash(&h).unwrap());
+        let spk = crate::chain::btc::p2pkh::p2pkh_script_code(&pk_hash);
+
+        // A perfectly valid previous transaction — for a DIFFERENT outpoint. Its txid does
+        // not equal the prevout the input claims to spend, so it is not evidence about that
+        // outpoint and must not be used as the spent output.
+        let (_other_prev_out, prev_tx) = legacy_prevout(100_000, &spk, 90_000);
+
+        let mut psbt = psbt_from_maps_leaky(
+            Transaction {
+                version: 1,
+                inputs: bt_vec![TxIn {
+                    prev_out: OutPoint {
+                        txid: [0x33; 32],
+                        vout: 0
+                    },
+                    script_sig: vec![].into(),
+                    sequence: 0xffffffff,
+                    witness: vec![],
+                }],
+                outputs: bt_vec![TxOut {
+                    value: 90_000,
+                    script_pubkey: spk.to_vec().into(),
+                }],
+                lock_time: 0,
+            },
+            &[vec![KeyValue {
+                key: vec![input_type::NON_WITNESS_UTXO].into(),
+                value: prev_tx.into(),
+            }]],
+            &[Vec::new()],
+        );
+
+        let sign_input = PsbtP2PKHSignInput {
+            input_index: 0,
+            private_key: SecretBytes::take(&mut private_key),
+            pubkey_hash: pk_hash,
+        };
+        let err = sign_psbt_p2pkh(&mut psbt, &sign_input).unwrap_err();
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::EncodingInvalidFormat,
+            "a NON_WITNESS_UTXO whose txid does not match the prevout must not be used"
+        );
+    }
+
     /// Sign a PSBT P2PKH input → FINAL_SCRIPT_SIG
     #[test]
     fn psbt_sign_p2pkh() {
@@ -2340,25 +2462,18 @@ mod tests {
         let mut pk_hash = [0u8; 20];
         pk_hash.copy_from_slice(&crate::encoding::ripemd160::hash(&h).unwrap());
 
-        let mut txid = [0u8; 32];
-        txid[0] = 0xab;
+        let spk = crate::chain::btc::p2pkh::p2pkh_script_code(&pk_hash);
+        let (prev_out, prev_tx) = legacy_prevout(100_000, &spk, 90_000);
         let txin = TxIn {
-            prev_out: OutPoint { txid, vout: 0 },
+            prev_out,
             script_sig: vec![].into(),
             sequence: 0xffffffff,
             witness: vec![],
         };
-        let spk = crate::chain::btc::p2pkh::p2pkh_script_code(&pk_hash);
         let txout = TxOut {
-            value: 100_000,
+            value: 90_000,
             script_pubkey: spk.to_vec().into(),
         };
-
-        // WITNESS_UTXO (0x01) = amount (u64 LE) ‖ varint(len) ‖ script
-        let mut wu = Vec::new();
-        wu.extend_from_slice(&100_000u64.to_le_bytes());
-        wu.push(spk.len() as u8);
-        wu.extend_from_slice(&spk);
 
         let mut psbt = psbt_from_maps_leaky(
             Transaction {
@@ -2368,8 +2483,8 @@ mod tests {
                 lock_time: 0,
             },
             &[vec![KeyValue {
-                key: vec![input_type::WITNESS_UTXO].into(),
-                value: wu.into(),
+                key: vec![input_type::NON_WITNESS_UTXO].into(),
+                value: prev_tx.into(),
             }]],
             &[Vec::new()],
         );
@@ -2450,19 +2565,15 @@ mod tests {
         private_key[31] = 1;
         let foreign = crate::chain::btc::p2pkh::p2pkh_script_code(&[0x11; 20]);
 
-        let mut wu = Vec::new();
-        wu.extend_from_slice(&100_000u64.to_le_bytes());
-        wu.push(foreign.len() as u8);
-        wu.extend_from_slice(&foreign);
+        // The binding itself is honest (txid really is this prevout's), so what refuses
+        // the input is the OWNERSHIP check: the spent script locks to a foreign key hash.
+        let (prev_out, prev_tx) = legacy_prevout(100_000, &foreign, 90_000);
 
         let mut psbt = psbt_from_maps_leaky(
             Transaction {
                 version: 1,
                 inputs: bt_vec![TxIn {
-                    prev_out: OutPoint {
-                        txid: [0x33; 32],
-                        vout: 0
-                    },
+                    prev_out,
                     script_sig: vec![].into(),
                     sequence: 0xffffffff,
                     witness: vec![],
@@ -2474,8 +2585,8 @@ mod tests {
                 lock_time: 0,
             },
             &[vec![KeyValue {
-                key: vec![input_type::WITNESS_UTXO].into(),
-                value: wu.into(),
+                key: vec![input_type::NON_WITNESS_UTXO].into(),
+                value: prev_tx.into(),
             }]],
             &[Vec::new()],
         );
