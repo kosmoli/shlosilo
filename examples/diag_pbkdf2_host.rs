@@ -14,7 +14,7 @@ fn main() {
 
     // warmup both paths
     pbkdf2_hmac::<Sha512>(&password, salt, 2048, &mut out);
-    pbkdf2_hmac_sha512(&password, salt, 2048, &mut out2);
+    pbkdf2_hmac_sha512(&password, salt, 2048, &mut out2).expect("salt within the fast-path budget");
     assert_eq!(out, out2, "fast path diverges from the pbkdf2 crate");
 
     let n = 20;
@@ -26,7 +26,8 @@ fn main() {
 
     let t1 = Instant::now();
     for _ in 0..n {
-        pbkdf2_hmac_sha512(&password, salt, 2048, &mut out2);
+        pbkdf2_hmac_sha512(&password, salt, 2048, &mut out2)
+            .expect("salt within the fast-path budget");
     }
     let per_fast = t1.elapsed().as_secs_f64() * 1000.0 / n as f64;
 

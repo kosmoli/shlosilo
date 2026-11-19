@@ -13,8 +13,14 @@
 //! `hmac 0.12`'s `HmacCore` — so each PBKDF2 round costs exactly 2 fresh compressions.
 
 use crate::encoding::sha512_u32::{compress, initial_state};
+use crate::error::Result;
+use crate::error::{ShlosiloError, ShlosiloErrorKind};
 
 const SHA512_BLOCK_LEN: usize = 128;
+/// A1-01: the largest salt this single-block fast path can absorb. The HMAC inner
+/// message is `ipad(128) ‖ salt ‖ INT(1)`, and the same block still has to carry the
+/// `0x80` terminator plus the 16-byte length field.
+pub(crate) const MAX_SALT_LEN: usize = SHA512_BLOCK_LEN - 4 - 17;
 const SHA512_OUTPUT_LEN: usize = 64;
 
 /// HMAC-SHA512 keyed state with precomputed ipad/opad block compressions.
@@ -124,7 +130,7 @@ pub fn pbkdf2_hmac_sha512(
     salt: &[u8],
     rounds: u32,
     out: &mut [u8; SHA512_OUTPUT_LEN],
-) {
+) -> Result<()> {
     debug_assert_eq!(out.len(), SHA512_OUTPUT_LEN);
     let hmac = HmacSha512Fast::new(password);
 
@@ -134,10 +140,13 @@ pub fn pbkdf2_hmac_sha512(
     // BIP-39 salt = "mnemonic" + passphrase; upstream rejects non-ASCII passphrases and
     // the smoke fixtures keep passphrases short, so salt.len() + 4 always fits in one
     // final block with room for 0x80 + the 16-byte length field.
-    debug_assert!(
-        salt.len() + 4 + 17 <= SHA512_BLOCK_LEN,
-        "salt too long for fast path"
-    );
+    // A1-01 (external audit 2026-11-19): this used to be a `debug_assert!`, i.e. the
+    // single-block assumption was unchecked in release builds. A salt that does not fit
+    // silently collided with the 16-byte length field (the 0x80 terminator was
+    // overwritten) and produced a DIFFERENT seed with no error. Fail closed instead.
+    if salt.len() > MAX_SALT_LEN {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::UrPayloadTooLarge));
+    }
 
     // BIP-39 output is exactly 64 bytes = one PBKDF2 block, so only INT(1) is needed.
     let msg_len = salt.len() + 4;
@@ -178,10 +187,21 @@ pub fn pbkdf2_hmac_sha512(
     }
 
     out.copy_from_slice(&t);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    /// A1-01: the single-block fast path must refuse an over-long salt outright
+    /// (release builds used to have only a `debug_assert!` here).
+    #[test]
+    fn salt_over_budget_is_refused() {
+        let mut out = [0u8; SHA512_OUTPUT_LEN];
+        assert!(pbkdf2_hmac_sha512(b"pw", &[0u8; MAX_SALT_LEN], 1, &mut out).is_ok());
+        assert!(pbkdf2_hmac_sha512(b"pw", &[0u8; MAX_SALT_LEN + 1], 1, &mut out).is_err());
+        assert!(pbkdf2_hmac_sha512(b"pw", &[0u8; 264], 1, &mut out).is_err());
+    }
+
     use super::*;
 
     /// Reference via the pbkdf2 + sha2 crates (the current production path).
@@ -215,7 +235,7 @@ mod tests {
         // mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
         let words = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let mut out = [0u8; 64];
-        pbkdf2_hmac_sha512(words.as_bytes(), b"mnemonic", 2048, &mut out);
+        pbkdf2_hmac_sha512(words.as_bytes(), b"mnemonic", 2048, &mut out).expect("vectors");
         let want: [u8; 64] = [
             0x5e, 0xb0, 0x0b, 0xbd, 0xdc, 0xf0, 0x69, 0x08, 0x48, 0x89, 0xa8, 0xab, 0x91, 0x55,
             0x56, 0x81, 0x65, 0xf5, 0xc4, 0x53, 0xcc, 0xb8, 0x5e, 0x70, 0x81, 0x1a, 0xae, 0xd6,
@@ -241,7 +261,7 @@ mod tests {
             for salt_len in [0usize, 1, 8, 64, 100] {
                 let salt: alloc::vec::Vec<u8> = (0..salt_len).map(|_| gen()).collect();
                 let mut got = [0u8; 64];
-                pbkdf2_hmac_sha512(&pw, &salt, 2048, &mut got);
+                pbkdf2_hmac_sha512(&pw, &salt, 2048, &mut got).expect("differential");
                 assert_eq!(
                     got,
                     reference(&pw, &salt, 2048),
@@ -258,7 +278,7 @@ mod tests {
         // Passwords longer than the block size take the hash-down branch.
         let pw: alloc::vec::Vec<u8> = (0..200u32).map(|i| (i * 7) as u8).collect();
         let mut got = [0u8; 64];
-        pbkdf2_hmac_sha512(&pw, b"mnemonic", 2048, &mut got);
+        pbkdf2_hmac_sha512(&pw, b"mnemonic", 2048, &mut got).expect("clock/hash check");
         assert_eq!(got, reference(&pw, b"mnemonic", 2048));
     }
 }

@@ -65,7 +65,13 @@ pub fn mnemonic_to_seed(mnemonic: &Mnemonic, passphrase: &[u8]) -> Result<Bip39S
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     // salt = "mnemonic" ‖ passphrase (Z2.4a: stack buffer; passphrase cap explicit Err)
-    const PASSPHRASE_MAX: usize = 512;
+    // A1-01 (external audit 2026-11-19): the cap used to be 512, but the salt goes
+    // through a single-block PBKDF2 fast path whose real budget is
+    // `pbkdf2_fast::MAX_SALT_LEN` (=107 bytes of salt, i.e. 99 bytes of passphrase).
+    // 100..=115-byte passphrases silently produced a wrong seed (the padding terminator
+    // was overwritten by the length field) and >=120 panicked. Bound it here so the
+    // caller gets a clean error instead.
+    const PASSPHRASE_MAX: usize = crate::entropy::pbkdf2_fast::MAX_SALT_LEN - 8;
     if passphrase.len() > PASSPHRASE_MAX {
         return Err(crate::error::ShlosiloError::new(
             crate::error::ShlosiloErrorKind::UrPayloadTooLarge,
@@ -78,7 +84,7 @@ pub fn mnemonic_to_seed(mnemonic: &Mnemonic, passphrase: &[u8]) -> Result<Bip39S
     let mut bytes = [0u8; BIP39_SEED_LEN];
     // PBKDF2-HMAC-SHA512 via the u32-pair fast path (bit-identical to the pbkdf2 crate;
     // see entropy::pbkdf2_fast — the u64 sha2 backend costs ~40k cycles/block on CM4).
-    pbkdf2_hmac_sha512(&sentence[..n], &salt[..salt_len], 2048, &mut bytes);
+    pbkdf2_hmac_sha512(&sentence[..n], &salt[..salt_len], 2048, &mut bytes)?;
     sentence.zeroize();
     salt.zeroize();
     Ok(Bip39Seed { bytes })
@@ -87,6 +93,33 @@ pub fn mnemonic_to_seed(mnemonic: &Mnemonic, passphrase: &[u8]) -> Result<Bip39S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A1-01 regression (external audit 2026-11-19): the passphrase ceiling must equal the
+    /// single-block PBKDF2 budget. The silent-wrong-seed window used to be 100..=115 bytes
+    /// (padding terminator overwritten by the length field) and >=120 panicked inside
+    /// `copy_from_slice`. All of them must now be a clean error.
+    #[test]
+    fn passphrase_ceiling_matches_the_fast_path_budget() {
+        use crate::entropy::mnemonic::Mnemonic;
+        let m = Mnemonic::from_entropy(&[7u8; 16]).expect("mnemonic");
+        let max = crate::entropy::pbkdf2_fast::MAX_SALT_LEN - 8;
+
+        // at the ceiling: a real (deterministic) seed
+        let ok = alloc::vec![b'a'; max];
+        let s_ok = mnemonic_to_seed(&m, &ok).expect("passphrase at the ceiling must work");
+        assert_ne!(s_ok.as_ref(), &[0u8; 64]);
+        assert_eq!(mnemonic_to_seed(&m, &ok).unwrap().as_ref(), s_ok.as_ref());
+
+        // one byte over, the old silent-wrong-seed band, and the old panic band
+        for len in [max + 1, 110, 115, 116, 120, 256] {
+            let p = alloc::vec![b'a'; len];
+            assert!(
+                mnemonic_to_seed(&m, &p).is_err(),
+                "passphrase of {len} bytes must be refused, not silently mis-derived"
+            );
+        }
+    }
+
     use crate::entropy::mnemonic::WordCount;
 
     const _: fn(&Mnemonic, &[u8]) -> Result<Bip39Seed> = mnemonic_to_seed;
