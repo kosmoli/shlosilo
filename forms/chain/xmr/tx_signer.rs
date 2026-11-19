@@ -933,9 +933,11 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
         tx_inputs[tx_inputs_len] = TxInput::new(offs.clone(), key_image);
         tx_inputs_len += 1;
         // key_offset is derived and consumed immediately (no intermediate Vec); zeroized in place after push_take
+        // A3a-10: the derived one-time spend key arrives as an owner (`SecretBytes`); the
+        // pool takes it over in place, which also zeroes the owner's copy.
         let mut input_sk =
             crate::chain::xmr::subaddress::derive_input_spend_key(spend_sec, &key_offset)?;
-        if !input_sks.push_take(&mut input_sk) {
+        if !input_sks.push_take(input_sk.expose_mut()) {
             // Guard full: capacity, reported like every other over-cap refusal.
             return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
         } // input_sk taken over in place into the owner
@@ -1446,12 +1448,9 @@ mod guard_tests {
             amount: 1000,
             rct: true,
             mask: SecretBytes::new([0x66u8; 32]),
-            multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki {
-                k: [0; 32],
-                l: [0; 32],
-                r: [0; 32],
-                ki: [0; 32],
-            },
+            multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki::new(
+                [0; 32], [0; 32], [0; 32], [0; 32],
+            ),
         };
         // hostile destination: view_public_key = [0x02;32] (re-review PoC encoding)
         let dest = TxDestinationEntry {
@@ -1588,12 +1587,9 @@ fn owned_source(
         amount,
         rct: true,
         mask: SecretBytes::new(real_mask),
-        multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki {
-            k: [0; 32],
-            l: [0; 32],
-            r: [0; 32],
-            ki: [0; 32],
-        },
+        multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki::new(
+            [0; 32], [0; 32], [0; 32], [0; 32],
+        ),
     }
 }
 
@@ -1844,12 +1840,9 @@ fn signer_clsag_failure_populates_then_drops_owner() {
         amount: 1000,
         rct: true,
         mask: SecretBytes::new([0x66u8; 32]), // real mask (will be set up by the guard)
-        multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki {
-            k: [0; 32],
-            l: [0; 32],
-            r: [0; 32],
-            ki: [0; 32],
-        },
+        multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki::new(
+            [0; 32], [0; 32], [0; 32], [0; 32],
+        ),
     };
     let dest = TxDestinationEntry {
         original: heapless::Vec::new(),
@@ -1986,12 +1979,9 @@ fn multi_input_clsag_failure_drops_all_owners() {
         amount: 2000,
         rct: true,
         mask: SecretBytes::new(mask_of(0x77)),
-        multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki {
-            k: [0; 32],
-            l: [0; 32],
-            r: [0; 32],
-            ki: [0; 32],
-        },
+        multisig_kLRki: crate::chain::xmr::unsigned_txset::MultisigKLRki::new(
+            [0; 32], [0; 32], [0; 32], [0; 32],
+        ),
     };
     let mut t_src: [Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>; 2] =
         core::array::from_fn(|_| None);

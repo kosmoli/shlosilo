@@ -97,9 +97,9 @@ fn write_source_entry<S: Sink>(
     out.put(&s.amount.to_le_bytes())?;
     out.put_u8(s.rct as u8)?;
     out.put(s.mask.expose())?;
-    out.put(&s.multisig_kLRki.k)?;
-    out.put(&s.multisig_kLRki.l)?;
-    out.put(&s.multisig_kLRki.r)?;
+    out.put(s.multisig_kLRki.k())?;
+    out.put(s.multisig_kLRki.l())?;
+    out.put(s.multisig_kLRki.r())?;
     out.put(&s.multisig_kLRki.ki)
 }
 
@@ -1068,12 +1068,7 @@ mod tests {
             amount: 30_000_000_000,
             rct: true,
             mask: SourceMask::take(&mut [0xB1u8; 32]),
-            multisig_kLRki: MultisigKLRki {
-                k: [0; 32],
-                l: [0; 32],
-                r: [0; 32],
-                ki: [0; 32],
-            },
+            multisig_kLRki: MultisigKLRki::new([0; 32], [0; 32], [0; 32], [0; 32]),
         };
         let mut out: Vec<u8> = Vec::new();
         write_source_entry(&mut out, &src).unwrap();

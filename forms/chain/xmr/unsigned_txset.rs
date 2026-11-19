@@ -166,20 +166,35 @@ pub struct OutputEntry {
 /// Audit #5 P1-02: de-Clone — k/l/r are sensitive scalars; serialization only uses `&TxSourceEntry`,
 /// Clone is unnecessary (the earlier "wire DTO re-serialization need" rationale does not hold)
 pub struct MultisigKLRki {
-    pub k: [u8; 32],
-    pub l: [u8; 32],
-    pub r: [u8; 32],
+    /// A3a-15 (external audit 2026-11-19): k/l/r are multisig random masks (sensitive
+    /// scalars). They were `pub [u8; 32]` with a `Drop` that erased the struct's own copies —
+    /// which does nothing for `let stolen = entry.multisig_kLRki.k;`, a plain array with no
+    /// owner. `SecretBytes` is the type-level answer: no Copy, zeroized where it lands.
+    k: crate::types::SecretBytes<32>,
+    l: crate::types::SecretBytes<32>,
+    r: crate::types::SecretBytes<32>,
+    /// The key image is public chain data — deliberately NOT an owner type (over-erasing
+    /// public material is its own mistake).
     pub ki: [u8; 32],
 }
 
-/// P1-C (2026-09-01 re-review): k/l/r are multisig random masks (sensitive scalars) — zeroed on Drop.
-/// ki is a public key image and needs no erasure. Clone is kept: a functional need for wire DTO re-serialization.
-impl Drop for MultisigKLRki {
-    fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.k.zeroize();
-        self.l.zeroize();
-        self.r.zeroize();
+impl MultisigKLRki {
+    pub fn new(k: [u8; 32], l: [u8; 32], r: [u8; 32], ki: [u8; 32]) -> Self {
+        Self {
+            k: crate::types::SecretBytes::new(k),
+            l: crate::types::SecretBytes::new(l),
+            r: crate::types::SecretBytes::new(r),
+            ki,
+        }
+    }
+    pub fn k(&self) -> &[u8; 32] {
+        self.k.expose()
+    }
+    pub fn l(&self) -> &[u8; 32] {
+        self.l.expose()
+    }
+    pub fn r(&self) -> &[u8; 32] {
+        self.r.expose()
     }
 }
 
@@ -533,7 +548,7 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
         amount,
         rct,
         mask,
-        multisig_kLRki: MultisigKLRki { k, l, r, ki },
+        multisig_kLRki: MultisigKLRki::new(k, l, r, ki),
     })
 }
 
@@ -728,9 +743,9 @@ fn write_unsigned_source<S: Sink>(out: &mut S, s: &TxSourceEntry) -> Result<()> 
     out.put(&s.amount.to_le_bytes())?;
     out.put_u8(s.rct as u8)?;
     out.put(s.mask.expose())?;
-    out.put(&s.multisig_kLRki.k)?;
-    out.put(&s.multisig_kLRki.l)?;
-    out.put(&s.multisig_kLRki.r)?;
+    out.put(s.multisig_kLRki.k())?;
+    out.put(s.multisig_kLRki.l())?;
+    out.put(s.multisig_kLRki.r())?;
     out.put(&s.multisig_kLRki.ki)
 }
 
@@ -1071,12 +1086,7 @@ mod tests {
             amount: 1000,
             rct: true,
             mask: crate::types::SecretBytes::new([0x66u8; 32]),
-            multisig_kLRki: MultisigKLRki {
-                k: [0; 32],
-                l: [0; 32],
-                r: [0; 32],
-                ki: [0; 32],
-            },
+            multisig_kLRki: MultisigKLRki::new([0; 32], [0; 32], [0; 32], [0; 32]),
         };
         let dest = TxDestinationEntry {
             original: heapless::Vec::new(),
@@ -1194,12 +1204,7 @@ mod tests {
             amount: 1000,
             rct: true,
             mask: crate::types::SecretBytes::new([0x66u8; 32]),
-            multisig_kLRki: MultisigKLRki {
-                k: [0; 32],
-                l: [0; 32],
-                r: [0; 32],
-                ki: [0; 32],
-            },
+            multisig_kLRki: MultisigKLRki::new([0; 32], [0; 32], [0; 32], [0; 32]),
         };
         let dest = TxDestinationEntry {
             original: heapless::Vec::new(),

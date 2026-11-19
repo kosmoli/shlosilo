@@ -204,12 +204,7 @@ fn build_source(out_pub: [u8; 32], real_idx: u64, add_keys: &[[u8; 32]]) -> TxSo
         amount: 1000,
         rct: true,
         mask: SecretBytes::new(real_mask),
-        multisig_kLRki: MultisigKLRki {
-            k: [0; 32],
-            l: [0; 32],
-            r: [0; 32],
-            ki: [0; 32],
-        },
+        multisig_kLRki: MultisigKLRki::new([0; 32], [0; 32], [0; 32], [0; 32]),
     }
 }
 

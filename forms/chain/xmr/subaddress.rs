@@ -213,6 +213,17 @@ pub fn wallet_owns_destination(
 
 #[cfg(test)]
 mod wallet_ownership_tests {
+
+    /// A3a-10 shape pin: the one-time spend key leaves as an **owner**, not a bare array.
+    /// (Audit 2026-11-19; a bare `[u8; 32]` return let every caller copy the key onto the
+    /// stack and leave it there.) A signature change here is a behaviour-contract change.
+    #[allow(dead_code)]
+    fn input_spend_key_shape_pin() {
+        const _: fn(&[u8; 32], &[u8; 32]) -> Result<crate::types::SecretBytes<32>> =
+            derive_input_spend_key;
+        static_assertions::assert_not_impl_any!(crate::types::SecretBytes<32>: Clone, Copy);
+        assert!(core::mem::needs_drop::<crate::types::SecretBytes<32>>());
+    }
     use super::*;
     use crate::chain::xmr::unsigned_txset::TxDestinationEntry;
 
@@ -522,10 +533,18 @@ pub fn calc_output_key_offset(
 /// Compute the input's real spend private key: spend_sec + key_offset
 ///
 /// Aligned with keystone `generate_key_image_from_offset`.
-pub fn derive_input_spend_key(spend_sec: &[u8; 32], key_offset: &[u8; 32]) -> Result<[u8; 32]> {
+/// A3a-10 (external audit 2026-11-19): the result is a **one-time spend private key**, so it
+/// leaves as an owner (`SecretBytes`, not Clone/Copy, zeroized on drop) instead of a bare
+/// `[u8; 32]` that any caller could copy onto the stack and leave there.
+pub fn derive_input_spend_key(
+    spend_sec: &[u8; 32],
+    key_offset: &[u8; 32],
+) -> Result<crate::types::SecretBytes<32>> {
     let s = reduce_scalar_to_dalek(spend_sec);
     let o = reduce_scalar_to_dalek(key_offset);
-    Ok((s + o).to_bytes())
+    // `take` zeroes this binding as the owner takes it over (produced-as-owner, per audit #9).
+    let mut bytes = (s + o).to_bytes();
+    Ok(crate::types::SecretBytes::take(&mut bytes))
 }
 
 /// Derive the key image from a subaddress input (full path, aligned with keystone)
@@ -538,7 +557,7 @@ pub fn derive_key_image_with_offset(
     output_pubkey: &[u8; 32],
 ) -> Result<[u8; 32]> {
     let input_sk = derive_input_spend_key(spend_sec, key_offset)?;
-    let input_sk_dalek = reduce_scalar_to_dalek(&input_sk);
+    let input_sk_dalek = reduce_scalar_to_dalek(input_sk.expose());
 
     // verify input_sk · G == output_pubkey
     let derived_pub = (ED25519_BASEPOINT_TABLE * &input_sk_dalek)

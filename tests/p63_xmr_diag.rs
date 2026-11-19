@@ -170,7 +170,7 @@ fn diag_clsag_with_fixture_ring() {
     let mut rng = OsRng;
     let msg_hash = [0x42u8; 32];
     match clsag::sign(
-        &input_sk,
+        input_sk.expose(),
         &ring,
         src.real_output as u8,
         &real_mask,

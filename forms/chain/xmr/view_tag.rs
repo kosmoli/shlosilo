@@ -92,16 +92,18 @@ pub fn stealth_address(
 /// R1 (2026-08-31 re-review remediation): tx_secret is a transaction key — removed derive(Clone, Debug),
 /// hand-written Debug redacted; secret fields remain borrow-only consumption (v2-security §3 functions take borrows only).
 pub struct PaymentProof {
-    pub tx_secret: [u8; 32],
+    /// A3a-14 (external audit 2026-11-19): an owner type, not a bare array. The field used to
+    /// be `pub tx_secret: [u8; 32]` — a `Drop` impl on the struct erases the struct's own copy,
+    /// but nothing stopped `proof.tx_secret` from copying the key into a plain array with no
+    /// owner. `SecretBytes` cannot be copied and is zeroized wherever it lands.
+    tx_secret: crate::types::SecretBytes<32>,
     pub tx_pub: [u8; 32],
 }
 
-/// P1-C (2026-09-01 re-review): tx_secret is a transaction key — zeroized on Drop.
-/// No Clone/Copy (compile-time assertions in the inventory at end of file).
-impl Drop for PaymentProof {
-    fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.tx_secret.zeroize();
+impl PaymentProof {
+    /// Explicit plaintext access (the audit point: every read is greppable).
+    pub fn tx_secret(&self) -> &[u8; 32] {
+        self.tx_secret.expose()
     }
 }
 
@@ -118,7 +120,8 @@ impl PartialEq for PaymentProof {
     fn eq(&self, other: &Self) -> bool {
         // constant-time comparison of tx_secret to prevent timing side channels
         use subtle::ConstantTimeEq;
-        bool::from(self.tx_secret.ct_eq(&other.tx_secret)) && self.tx_pub == other.tx_pub
+        bool::from(self.tx_secret.expose().ct_eq(other.tx_secret.expose()))
+            && self.tx_pub == other.tx_pub
     }
 }
 
@@ -126,7 +129,7 @@ impl Eq for PaymentProof {}
 
 pub fn export_payment_proof(tx_secret: &[u8; 32], tx_pub: &[u8; 32]) -> PaymentProof {
     PaymentProof {
-        tx_secret: *tx_secret,
+        tx_secret: crate::types::SecretBytes::new(*tx_secret),
         tx_pub: *tx_pub,
     }
 }
@@ -258,7 +261,7 @@ mod tests {
         let proof = export_payment_proof(tx.secret.expose(), &tx.public);
         assert_eq!(proof.tx_pub, tx.public);
         assert!(verify_payment(
-            &proof.tx_secret,
+            proof.tx_secret(),
             &dest_view.public,
             &dest_spend.public,
             0,
@@ -266,7 +269,7 @@ mod tests {
         )
         .unwrap());
         assert!(!verify_payment(
-            &proof.tx_secret,
+            proof.tx_secret(),
             &dest_view.public,
             &dest_spend.public,
             1,

@@ -267,10 +267,15 @@ pub fn generate_monero_signature<R: RngCore + CryptoRng>(
 ) -> Result<[u8; 64]> {
     loop {
         // 64B random → mod_order_wide (aligned with keystone generate_random_scalar)
-        let mut wide = [0u8; 64];
-        rng.fill_bytes(&mut wide);
-        let k = Scalar::from_bytes_mod_order_wide(&wide);
-        let kb = (ED25519_BASEPOINT_TABLE * &k).compress().to_bytes();
+        //
+        // A3a-12 (external audit 2026-11-19): both the raw 64-byte draw and the nonce scalar
+        // are secrets with no owner before — `wide` sat on the stack un-erased and `k` is a
+        // Copy `Scalar` with no Drop of its own. Both are owned now, so every exit path
+        // (including the two `continue`s in the rejection loop) wipes them.
+        let mut wide = zeroize::Zeroizing::new([0u8; 64]);
+        rng.fill_bytes(&mut wide[..]);
+        let k = zeroize::Zeroizing::new(Scalar::from_bytes_mod_order_wide(&wide));
+        let kb = (ED25519_BASEPOINT_TABLE * &*k).compress().to_bytes();
         let pub_b = (ED25519_BASEPOINT_TABLE * sec).compress().to_bytes();
 
         // Z2.4d-5: stack buffer (was a 96B Vec on the signing path)
@@ -283,7 +288,7 @@ pub fn generate_monero_signature<R: RngCore + CryptoRng>(
         if c == Scalar::ZERO {
             continue;
         }
-        let r = k - c * sec;
+        let r = *k - c * sec;
         if r == Scalar::ZERO {
             continue;
         }

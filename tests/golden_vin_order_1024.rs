@@ -92,12 +92,12 @@ fn clone_source(
         amount: s.amount,
         rct: s.rct,
         mask: shlosilo::types::SecretBytes::new(*s.mask.expose()),
-        multisig_kLRki: shlosilo::chain::xmr::unsigned_txset::MultisigKLRki {
-            k: s.multisig_kLRki.k,
-            l: s.multisig_kLRki.l,
-            r: s.multisig_kLRki.r,
-            ki: s.multisig_kLRki.ki,
-        },
+        multisig_kLRki: shlosilo::chain::xmr::unsigned_txset::MultisigKLRki::new(
+            *s.multisig_kLRki.k(),
+            *s.multisig_kLRki.l(),
+            *s.multisig_kLRki.r(),
+            s.multisig_kLRki.ki,
+        ),
     }
 }
 
