@@ -548,16 +548,19 @@ fn rct_sig_type() -> u8 {
 ///
 /// **Output**: Ok(()) if all CLSAG + BP+ are valid
 #[cfg(any(feature = "alloc-fallback", test))]
-#[cfg(any(feature = "alloc-fallback", test))]
 pub fn verify_signed_tx<R: RngCore + CryptoRng>(
     signed: &SignedTx<'_>,
     inputs: &[TxInputSpec],
     outputs: &[TxOutputSpec],
     fee: u64,
     msg_hashes: &[[u8; 32]],
+    // Injected, not conjured (external audit 2026-11-19 A3a-19): the verifier used to build
+    // its own `OsRngFallback` — real OS entropy under `std`, all-zero bytes elsewhere — while
+    // already carrying an unused `R` type parameter. Caller-supplied makes the result a
+    // function of its inputs, and the device face never compiled this path anyway.
+    rng: &mut R,
 ) -> Result<()> {
     // 1. Verify BP+ over commitments
-    let mut rng = OsRngFallback::new();
 
     let mut commitments_points = Vec::new();
     for c in signed.rct_sig.prunable.commitments.iter() {
@@ -571,7 +574,7 @@ pub fn verify_signed_tx<R: RngCore + CryptoRng>(
     let bp = signed.rct_sig.prunable.bulletproofs[0]
         .as_ref()
         .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
-    if !verify_bulletproofs_plus(&mut rng, bp, &commitments_points) {
+    if !verify_bulletproofs_plus(rng, bp, &commitments_points) {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
@@ -622,57 +625,6 @@ pub fn verify_signed_tx<R: RngCore + CryptoRng>(
 
     Ok(())
 }
-
-/// Random number generator fallback
-/// - std (host): OS entropy
-/// - no_std (embedded): zero-filled — only for temporary challenges in BP+/CLSAG **verify**,
-///   never part of any secret generation; the signing path\'s RNG is injected by L3 (v2 §7.2)
-#[cfg(any(feature = "alloc-fallback", test))]
-struct OsRngFallback;
-#[cfg(any(feature = "alloc-fallback", test))]
-impl OsRngFallback {
-    fn new() -> Self {
-        Self
-    }
-}
-#[cfg(any(feature = "alloc-fallback", test))]
-impl RngCore for OsRngFallback {
-    #[cfg(feature = "std")]
-    fn next_u32(&mut self) -> u32 {
-        rand_core::OsRng.next_u32()
-    }
-    #[cfg(not(feature = "std"))]
-    fn next_u32(&mut self) -> u32 {
-        0
-    }
-    #[cfg(feature = "std")]
-    fn next_u64(&mut self) -> u64 {
-        rand_core::OsRng.next_u64()
-    }
-    #[cfg(not(feature = "std"))]
-    fn next_u64(&mut self) -> u64 {
-        0
-    }
-    #[cfg(feature = "std")]
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        rand_core::OsRng.fill_bytes(dest)
-    }
-    #[cfg(not(feature = "std"))]
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        dest.fill(0);
-    }
-    #[cfg(feature = "std")]
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> core::result::Result<(), rand_core::Error> {
-        rand_core::OsRng.try_fill_bytes(dest)
-    }
-    #[cfg(not(feature = "std"))]
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> core::result::Result<(), rand_core::Error> {
-        dest.fill(0);
-        Ok(())
-    }
-}
-#[cfg(any(feature = "alloc-fallback", test))]
-impl CryptoRng for OsRngFallback {}
 
 /// Unit tests
 #[cfg(test)]
@@ -870,12 +822,17 @@ mod tests {
         // and left a structural-only verify. Fixed 2026-10-28 (X7 un-gating).
         let msg_hash = crate::encoding::keccak256::hash(&signed.transaction.prefix.serialize())
             .expect("keccak prefix");
-        verify_signed_tx::<OsRng>(
+        // The verifier takes its RNG from the caller now (A3a-19): a fixed-seed ChaCha20
+        // keeps the check reproducible — verification needs sound batching weights, not
+        // unpredictability.
+        let mut vrng = <rand_chacha::ChaCha20Rng as rand_core::SeedableRng>::from_seed([7u8; 32]);
+        verify_signed_tx::<rand_chacha::ChaCha20Rng>(
             &signed,
             &[mk_input_spec()],
             &[mk_output_spec()],
             fee,
             &[msg_hash],
+            &mut vrng,
         )
         .expect("full CLSAG+BP verify must pass on a good signature");
         assert_eq!(signed.rct_sig.base.rct_type, 3); // BP+
@@ -918,13 +875,15 @@ mod tests {
         )
         .expect("sign");
         let zero = [0u8; 32];
+        let mut vrng = <rand_chacha::ChaCha20Rng as rand_core::SeedableRng>::from_seed([8u8; 32]);
         assert!(
-            verify_signed_tx::<OsRng>(
+            verify_signed_tx::<rand_chacha::ChaCha20Rng>(
                 &signed,
                 &[mk_input_spec()],
                 &[mk_output_spec()],
                 fee,
-                &[zero]
+                &[zero],
+                &mut vrng
             )
             .is_err(),
             "a wrong msg_hash must be rejected — the msg check is real"
@@ -964,13 +923,15 @@ mod tests {
         let msg_hash = crate::encoding::keccak256::hash(&signed.transaction.prefix.serialize())
             .expect("keccak prefix");
         signed.rct_sig.base.pseudo_outs[0][0] ^= 0x01;
+        let mut vrng = <rand_chacha::ChaCha20Rng as rand_core::SeedableRng>::from_seed([9u8; 32]);
         assert!(
-            verify_signed_tx::<OsRng>(
+            verify_signed_tx::<rand_chacha::ChaCha20Rng>(
                 &signed,
                 &[mk_input_spec()],
                 &[mk_output_spec()],
                 fee,
-                &[msg_hash]
+                &[msg_hash],
+                &mut vrng
             )
             .is_err(),
             "a tampered signature area must be rejected"
@@ -1330,7 +1291,16 @@ mod tests {
         // Note (2026-10-28): the FULL CLSAG+msg verification is covered by
         // end_to_end_single_input_single_output + verify_rejects_* (this test
         // predates those and keeps its structural-only scope deliberately).
-        verify_signed_tx::<OsRngFallback>(&signed, &[], &[], 100, &[expected]).unwrap();
+        let mut vrng = <rand_chacha::ChaCha20Rng as rand_core::SeedableRng>::from_seed([10u8; 32]);
+        verify_signed_tx::<rand_chacha::ChaCha20Rng>(
+            &signed,
+            &[],
+            &[],
+            100,
+            &[expected],
+            &mut vrng,
+        )
+        .unwrap();
     }
 
     /// v9.20a: the official shared secret = Hs(8·rA || varint(i)), and amount encryption uses it

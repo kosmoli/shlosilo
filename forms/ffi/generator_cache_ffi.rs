@@ -32,30 +32,45 @@
 
 #[cfg(feature = "generator-cache-ffi")]
 mod imp {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     /// C-side load callback: returns [len:u32 LE][crc32:u32 LE][blob] or NULL.
     pub type LoadC = extern "C" fn(*const u8, u32) -> *const u8;
     /// C-side store callback: 0 on success, non-zero on failure.
     pub type StoreC = extern "C" fn(*const u8, u32, *const u8, u32) -> u32;
 
-    #[allow(static_mut_refs)]
-    static mut LOAD_FPTR: Option<LoadC> = None;
-    #[allow(static_mut_refs)]
-    static mut STORE_FPTR: Option<StoreC> = None;
+    // The registration slots are atomics, not `static mut` (external audit 2026-11-19 A2-11:
+    // the crate forbids `static mut`/`OnceLock`/`Mutex`/`RefCell`, and these two were the
+    // leftovers). A registration has to persist somewhere a later call can read, so the slot
+    // itself stays; what it must not be is a mutable static that safe code can alias.
+    // `Option<extern "C" fn>` is null-pointer-optimized: `Some(f) as usize` is non-zero.
+    const NO_HOOK: usize = 0;
+    static LOAD_FPTR: AtomicUsize = AtomicUsize::new(NO_HOOK);
+    static STORE_FPTR: AtomicUsize = AtomicUsize::new(NO_HOOK);
+
+    #[inline]
+    fn widen(hook: usize) -> Option<usize> {
+        if hook == NO_HOOK {
+            None
+        } else {
+            Some(hook)
+        }
+    }
 
     /// Register the flash-backend callbacks (T-04 contract: typed nullable fn
     /// pointers). Last registration wins; `None` unregisters that slot.
     pub fn set_hooks(load_fptr: Option<LoadC>, store_fptr: Option<StoreC>) {
-        #[allow(static_mut_refs)]
-        unsafe {
-            LOAD_FPTR = load_fptr;
-            STORE_FPTR = store_fptr;
-        }
+        LOAD_FPTR.store(load_fptr.map_or(NO_HOOK, |f| f as usize), Ordering::SeqCst);
+        STORE_FPTR.store(store_fptr.map_or(NO_HOOK, |f| f as usize), Ordering::SeqCst);
         let _ = monero_bulletproofs::register_generator_cache_hooks(load_adapter, store_adapter);
     }
 
     fn load_adapter(prefix: &'static [u8]) -> Option<&'static [u8]> {
-        #[allow(static_mut_refs)]
-        let fptr = unsafe { LOAD_FPTR }?;
+        // SAFETY: the slot only ever receives a `LoadC` widened by `set_hooks` (or 0), so a
+        // non-zero value is a fn pointer the C side registered.
+        let fptr: LoadC = unsafe {
+            core::mem::transmute::<usize, LoadC>(widen(LOAD_FPTR.load(Ordering::SeqCst))?)
+        };
         let hdr = fptr(prefix.as_ptr(), prefix.len() as u32);
         if hdr.is_null() {
             return None;
@@ -75,9 +90,9 @@ mod imp {
     }
 
     fn store_adapter(prefix: &'static [u8], blob: &[u8]) {
-        #[allow(static_mut_refs)]
-        let fptr = match unsafe { STORE_FPTR } {
-            Some(f) => f,
+        // SAFETY: same as `load_adapter` — only a `StoreC` widened by `set_hooks` lands here.
+        let fptr: StoreC = match widen(STORE_FPTR.load(Ordering::SeqCst)) {
+            Some(raw) => unsafe { core::mem::transmute::<usize, StoreC>(raw) },
             None => return,
         };
         // Best effort: a failed store only costs boot time on the next run.
@@ -109,7 +124,7 @@ mod imp {
             0
         }
 
-        /// T-04 pins (single test on purpose: the hook slots are `static mut`).
+        /// T-04 pins (single test on purpose: the slots are process-global registrations).
         ///
         /// inv2: real 64-bit function addresses survive the C-ABI round trip
         /// (`shlosilo_gen_cache_set_hooks`) and the adapters actually call them.
