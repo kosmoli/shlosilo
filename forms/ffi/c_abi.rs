@@ -3446,6 +3446,12 @@ mod tests {
 
     #[test]
     fn ffi_sign_signature_exists() {
+        // ⚠️ Any change to the parameter or return shape below is a **CABI-breaking**
+        // change: bump `SHLOSILO_CABI_VERSION_MINOR` in `ffi/version.rs` and regenerate
+        // `shlosilo.h` in the same commit. `shlosilo_cabi_check` compares the version
+        // triple only, so a host built against the old header would otherwise pass the
+        // check and call this entry with the wrong argument list (external audit
+        // 2026-11-19 A2-01: 10 → 12 params shipped without a bump).
         const _: unsafe extern "C" fn(
             *const u16,
             c_int,

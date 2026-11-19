@@ -22,7 +22,12 @@ pub const SHLOSILO_VERSION_STRING: &str = concat!("v0.5.0-poc4+", env!("SHLOSILO
 /// its 0.x stage, where minor is the breaking component (consistent with 0.x semver convention). After entering 1.x it should relax to
 /// a major-only check.
 pub const SHLOSILO_CABI_VERSION_MAJOR: u16 = 0;
-pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 3;
+/// External audit 2026-11-19 A2-01: 3 -> 4. The version string had stayed at 0.3.0
+/// (Audit #4, 2026-09-01) while `shlosilo_sign_ffi` grew from 10 to 12 parameters (the
+/// caller workspace `ws`/`ws_len`) — a breaking prototype change that the strict-equality
+/// `shlosilo_cabi_check` could not see, so an old host would pass the check and then call
+/// the entry with the wrong argument list. 0.x semver: the minor is the breaking bit.
+pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 4;
 pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
 
 /// C ABI version string (NUL-terminated)
@@ -33,7 +38,7 @@ pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
 /// **Audit #4 remediation (2026-09-01)**: 0.2.0 → 0.3.0 — R3 added exports
 /// shlosilo_sign_typed_ffi / shlosilo_ur_decode_type (exported function set changed);
 /// the P0-02 entry prologue discipline changed ((NULL,len>0) went from a silent empty slice to stable rejection = a semantics change).
-pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.3.0\0";
+pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.4.0\0";
 
 /// extern "C" returning the version string (C side strdups it before use)
 #[no_mangle]
@@ -82,8 +87,9 @@ mod tests {
     #[test]
     fn cabi_version_constants() {
         // Audit #4 (2026-09-01): 0.2.0 → 0.3.0 (R3 new exports + P0-02 semantics change)
+        // External audit 2026-11-19 A2-01: 0.3.0 → 0.4.0 (`shlosilo_sign_ffi` 10 → 12 params)
         assert_eq!(SHLOSILO_CABI_VERSION_MAJOR, 0);
-        assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 3);
+        assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 4);
         assert_eq!(SHLOSILO_CABI_VERSION_PATCH, 0);
     }
 

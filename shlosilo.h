@@ -472,7 +472,14 @@
  */
 #define SHLOSILO_CABI_VERSION_MAJOR 0
 
-#define SHLOSILO_CABI_VERSION_MINOR 3
+/**
+ * External audit 2026-11-19 A2-01: 3 -> 4. The version string had stayed at 0.3.0
+ * (Audit #4, 2026-09-01) while `shlosilo_sign_ffi` grew from 10 to 12 parameters (the
+ * caller workspace `ws`/`ws_len`) — a breaking prototype change that the strict-equality
+ * `shlosilo_cabi_check` could not see, so an old host would pass the check and then call
+ * the entry with the wrong argument list. 0.x semver: the minor is the breaking bit.
+ */
+#define SHLOSILO_CABI_VERSION_MINOR 4
 
 #define SHLOSILO_CABI_VERSION_PATCH 0
 
