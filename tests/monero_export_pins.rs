@@ -102,7 +102,7 @@ fn exported_monero_pair_passes_moneros_own_keyvalid() {
     };
     let mut out = vec![0u8; 4096];
     let n = build(
-        ExportFormat::MoneroJsonKeystone,
+        ExportFormat::MoneroViewOnlyJsonUnlabelled,
         &seed(),
         Network::BitcoinMainnet, // the Monero shapes ignore it
         &labels,

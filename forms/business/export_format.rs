@@ -15,8 +15,8 @@
 //! | 1 | `UrCryptoAccount` | keystone-ecosystem BTC wallets (4 script paths in one UR) |
 //! | 2 | `BitcoinXpubUri` | Cake / Cupcake (BIP-84 account key in a static URI) |
 //! | 3 | `UrCryptoHdKey` | keystone-ecosystem ETH wallets (MetaMask / Rabby) |
-//! | 4 | `MoneroJsonKeystone` | Feather |
-//! | 5 | `MoneroJsonCupcake` | Cake pairing leg |
+//! | 4 | `MoneroViewOnlyJsonUnlabelled` | Feather |
+//! | 5 | `MoneroViewOnlyJsonLabelled` | Cake pairing leg |
 
 use crate::address::xmr as xmr_address;
 use crate::curve_primitive::ed25519::{base_mul_raw, scalar_to_bytes};
@@ -29,7 +29,7 @@ use crate::network::Network;
 /// format they want without reaching into the codec layer.
 pub use crate::ur::codec::account_text::ExportFormat;
 use crate::ur::codec::account_text::{
-    btc_xpub_uri, monero_viewkey_json_cupcake, monero_viewkey_json_keystone,
+    btc_xpub_uri, monero_viewkey_json_labelled, monero_viewkey_json_unlabelled,
 };
 use crate::ur::codec::{crypto_account, crypto_hd_key};
 
@@ -47,7 +47,7 @@ pub struct ExportLabels<'a> {
     pub device: Option<&'a str>,
     pub device_id: Option<&'a str>,
     pub device_version: Option<&'a str>,
-    /// Restore height for the cupcake-shaped JSON (0 when unknown).
+    /// Restore height for the labelled JSON (0 when unknown).
     pub restore_height: u64,
 }
 
@@ -117,8 +117,8 @@ pub fn ur_type(format: ExportFormat) -> Option<crate::ur::ur_encode::UrTypeTag> 
         ExportFormat::UrCryptoAccount => Some(crate::ur::ur_encode::UrTypeTag::CryptoAccount),
         ExportFormat::UrCryptoHdKey => Some(crate::ur::ur_encode::UrTypeTag::CryptoHdKey),
         ExportFormat::BitcoinXpubUri
-        | ExportFormat::MoneroJsonKeystone
-        | ExportFormat::MoneroJsonCupcake => None,
+        | ExportFormat::MoneroViewOnlyJsonUnlabelled
+        | ExportFormat::MoneroViewOnlyJsonLabelled => None,
     }
 }
 
@@ -193,16 +193,16 @@ pub fn payload(
             let label = labels.label.ok_or_else(err)?;
             btc_xpub_uri(&xpub, label, out)
         }
-        ExportFormat::MoneroJsonKeystone => {
+        ExportFormat::MoneroViewOnlyJsonUnlabelled => {
             let (addr, view) = monero_material(seed, Network::MoneroMainnet)?;
             let view_hex = core::str::from_utf8(&view).map_err(|_| err())?;
-            monero_viewkey_json_keystone(&addr, view_hex, out)
+            monero_viewkey_json_unlabelled(&addr, view_hex, out)
         }
-        ExportFormat::MoneroJsonCupcake => {
+        ExportFormat::MoneroViewOnlyJsonLabelled => {
             let (addr, view) = monero_material(seed, Network::MoneroMainnet)?;
             let view_hex = core::str::from_utf8(&view).map_err(|_| err())?;
             let label = labels.label.ok_or_else(err)?;
-            monero_viewkey_json_cupcake(label, &addr, view_hex, labels.restore_height, out)
+            monero_viewkey_json_labelled(label, &addr, view_hex, labels.restore_height, out)
         }
     }
 }
@@ -289,11 +289,11 @@ mod tests {
                     assert!(s.contains("&label=test-wallet"));
                 }
                 ExportFormat::UrCryptoHdKey => assert!(s.starts_with("ur:crypto-hdkey/")),
-                ExportFormat::MoneroJsonKeystone => {
+                ExportFormat::MoneroViewOnlyJsonUnlabelled => {
                     assert!(s.starts_with("{\"encrypted\":false,\"primaryAddress\":\"4"));
                     assert!(s.contains("\"source\":\"Keystone\""));
                 }
-                ExportFormat::MoneroJsonCupcake => {
+                ExportFormat::MoneroViewOnlyJsonLabelled => {
                     assert!(s.starts_with("{\"label\":\"test-wallet\",\"primaryAddress\":\"4"));
                     assert!(!s.contains("encrypted") && !s.contains("source"));
                 }
@@ -335,8 +335,8 @@ mod tests {
         // Text shapes are never framed.
         for f in [
             ExportFormat::BitcoinXpubUri,
-            ExportFormat::MoneroJsonKeystone,
-            ExportFormat::MoneroJsonCupcake,
+            ExportFormat::MoneroViewOnlyJsonUnlabelled,
+            ExportFormat::MoneroViewOnlyJsonLabelled,
         ] {
             assert!(ur_type(f).is_none(), "{f:?} is plain text");
         }
@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(format_count(), 5);
         assert_eq!(format_label(0), Some("ur:crypto-account"));
         assert_eq!(format_label(1), Some("bitcoin:?xpub=&label="));
-        assert_eq!(format_label(4), Some("json: monero (cupcake)"));
+        assert_eq!(format_label(4), Some("json: monero (cake)"));
         assert_eq!(format_label(5), None);
     }
 
@@ -357,7 +357,7 @@ mod tests {
         let empty = ExportLabels::default();
         for f in [
             ExportFormat::BitcoinXpubUri,
-            ExportFormat::MoneroJsonCupcake,
+            ExportFormat::MoneroViewOnlyJsonLabelled,
         ] {
             assert!(
                 build(f, &SEED, Network::BitcoinMainnet, &empty, &mut out).is_err(),
@@ -368,7 +368,7 @@ mod tests {
         for f in [
             ExportFormat::UrCryptoAccount,
             ExportFormat::UrCryptoHdKey,
-            ExportFormat::MoneroJsonKeystone,
+            ExportFormat::MoneroViewOnlyJsonUnlabelled,
         ] {
             assert!(build(f, &SEED, Network::BitcoinMainnet, &empty, &mut out).is_ok());
         }

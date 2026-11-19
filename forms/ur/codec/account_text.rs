@@ -111,7 +111,7 @@ pub fn btc_xpub_uri(xpub78: &[u8; 78], label: &str, out: &mut [u8]) -> Result<us
     Ok(w.len)
 }
 
-/// Monero view-key JSON in the **keystone** shape (what Feather consumes).
+/// Monero view-key JSON, **unlabelled** shape (the one Feather consumes).
 ///
 /// `restore_height` is 0 by contract: the reference firmware hardcodes it, and
 /// Feather then asks the operator to type the height
@@ -120,7 +120,12 @@ pub fn btc_xpub_uri(xpub78: &[u8; 78], label: &str, out: &mut [u8]) -> Result<us
 ///
 /// Keys are written in the alphabetical order serde_json produces for the
 /// reference firmware, so the bytes match what a keystone device emits.
-pub fn monero_viewkey_json_keystone(
+///
+/// The `"source":"Keystone"` string inside the payload is a **wire value copied from the
+/// reference firmware**, not a product claim: it is part of the byte sequence the reader
+/// was written against, and Feather ignores the field entirely. Renaming it here would
+/// change the bytes for no gain, so it stays verbatim.
+pub fn monero_viewkey_json_unlabelled(
     primary_address: &str,
     private_view_key_hex: &str,
     out: &mut [u8],
@@ -139,13 +144,13 @@ pub fn monero_viewkey_json_keystone(
     Ok(w.len)
 }
 
-/// Monero view-key JSON in the **cupcake** shape (what Cake's pairing QR carries).
+/// Monero view-key JSON, **labelled** shape (what Cake's pairing QR carries).
 ///
-/// Differences from the keystone shape, all of them load-bearing: it has a
-/// `label`, it has no `encrypted`/`source`, and `restore_height` is the wallet's
-/// real height - which a stateless signer does not know, so the caller passes
-/// what the operator chose (0 by default, same as the keystone shape).
-pub fn monero_viewkey_json_cupcake(
+/// Differences from the unlabelled shape, all of them load-bearing: it has a `label`, it
+/// has no `encrypted`/`source`, and `restore_height` is the wallet's real height - which a
+/// stateless signer does not know, so the caller passes what the operator chose (0 by
+/// default, same as the unlabelled shape).
+pub fn monero_viewkey_json_labelled(
     label: &str,
     primary_address: &str,
     private_view_key_hex: &str,
@@ -185,10 +190,12 @@ pub enum ExportFormat {
     BitcoinXpubUri,
     /// 3: BC-UR `crypto-hdkey` - keystone ecosystem ETH (BIP-44 standard)
     UrCryptoHdKey,
-    /// 4: keystone-shape Monero view-key JSON - Feather
-    MoneroJsonKeystone,
-    /// 5: cupcake-shape Monero view-key JSON - Cake pairing leg
-    MoneroJsonCupcake,
+    /// 4: Monero view-key JSON without a `label`, `restoreHeight` fixed at 0, with the
+    /// `encrypted`/`source` envelope - the shape Feather reads
+    MoneroViewOnlyJsonUnlabelled,
+    /// 5: Monero view-key JSON carrying a `label` and the caller's real `restoreHeight`,
+    /// no `encrypted`/`source` - the shape Cake's pairing leg reads
+    MoneroViewOnlyJsonLabelled,
 }
 
 impl ExportFormat {
@@ -197,20 +204,28 @@ impl ExportFormat {
         ExportFormat::UrCryptoAccount,
         ExportFormat::BitcoinXpubUri,
         ExportFormat::UrCryptoHdKey,
-        ExportFormat::MoneroJsonKeystone,
-        ExportFormat::MoneroJsonCupcake,
+        ExportFormat::MoneroViewOnlyJsonUnlabelled,
+        ExportFormat::MoneroViewOnlyJsonLabelled,
     ];
 
-    /// The label shown on the selection screen. Deliberately the **format
-    /// itself**, not a wallet brand: the operator picks the wire shape their
-    /// wallet asks for, and brand names would rot while the shapes do not.
+    /// The label shown on the selection screen.
+    ///
+    /// Mostly the **format itself**: the operator picks the wire shape their wallet asks
+    /// for, and brand names rot while shapes do not.
+    ///
+    /// The exception is the two Monero view-key JSONs: their wire difference (whether the
+    /// payload carries a `label`, and whether `restoreHeight` is the wallet's real height or
+    /// a fixed 0) is invisible to a person holding a phone, so the menu names **the wallet
+    /// that reads each shape** — `feather` and `cake`. That is UI text, not a code name:
+    /// the enum variants below are named after the shape (`...JsonLabelled` /
+    /// `...JsonUnlabelled`) precisely so no protocol code carries a brand.
     pub fn screen_label(self) -> &'static str {
         match self {
             Self::UrCryptoAccount => "ur:crypto-account",
             Self::BitcoinXpubUri => "bitcoin:?xpub=&label=",
             Self::UrCryptoHdKey => "ur:crypto-hdkey",
-            Self::MoneroJsonKeystone => "json: monero viewkey",
-            Self::MoneroJsonCupcake => "json: monero (cupcake)",
+            Self::MoneroViewOnlyJsonUnlabelled => "json: monero (feather)",
+            Self::MoneroViewOnlyJsonLabelled => "json: monero (cake)",
         }
     }
 
@@ -225,8 +240,8 @@ impl ExportFormat {
             Self::UrCryptoAccount => c"ur:crypto-account",
             Self::BitcoinXpubUri => c"bitcoin:?xpub=&label=",
             Self::UrCryptoHdKey => c"ur:crypto-hdkey",
-            Self::MoneroJsonKeystone => c"json: monero viewkey",
-            Self::MoneroJsonCupcake => c"json: monero (cupcake)",
+            Self::MoneroViewOnlyJsonUnlabelled => c"json: monero (feather)",
+            Self::MoneroViewOnlyJsonLabelled => c"json: monero (cake)",
         }
     }
 }
@@ -285,7 +300,7 @@ mod tests {
             ExportFormat::ALL.iter().map(|f| f.screen_label()).collect();
         assert_eq!(labels[0], "ur:crypto-account");
         assert_eq!(labels[1], "bitcoin:?xpub=&label=");
-        assert_eq!(labels[4], "json: monero (cupcake)");
+        assert_eq!(labels[4], "json: monero (cake)");
         for l in &labels {
             assert!(!l.contains("multi-accounts"), "dropped shape still listed");
         }
@@ -294,7 +309,7 @@ mod tests {
     #[test]
     fn keystone_json_field_order_is_alphabetical() {
         let mut buf = [0u8; 512];
-        let n = monero_viewkey_json_keystone("4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge",
+        let n = monero_viewkey_json_unlabelled("4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge",
             &"00".repeat(32), &mut buf).unwrap();
         let s = core::str::from_utf8(&buf[..n]).unwrap();
         assert!(s.starts_with("{\"encrypted\":false,\"primaryAddress\":"));
@@ -304,7 +319,7 @@ mod tests {
     #[test]
     fn cupcake_json_differs_from_keystone_shape() {
         let mut buf = [0u8; 512];
-        let n = monero_viewkey_json_cupcake(
+        let n = monero_viewkey_json_labelled(
             "test-wallet",
             "4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge",
             &"ab".repeat(32),
@@ -333,6 +348,6 @@ mod tests {
     #[test]
     fn short_buffer_is_an_error_not_a_truncation() {
         let mut tiny = [0u8; 8];
-        assert!(monero_viewkey_json_keystone("4AdUnd", &"00".repeat(32), &mut tiny).is_err());
+        assert!(monero_viewkey_json_unlabelled("4AdUnd", &"00".repeat(32), &mut tiny).is_err());
     }
 }
