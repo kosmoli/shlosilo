@@ -73,7 +73,42 @@ fn p102_typed_sign_over_budget_rejected() {
             shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
         )
     };
-    assert_ne!(rc, 0, "typed sign payload > budget must be rejected");
+    // T1-14 (2026-11-19 audit, closed 2026-11-20): "rc != 0" cannot tell a budget rejection from a
+    // content rejection - the payload here is zero-filled garbage, so several later checks would also
+    // fail. The two shapes are now told apart by their codes: the oversized payload must be refused
+    // with the capacity code *before* any content check, while the same call with a small payload
+    // fails later (content), i.e. with a different code.
+    let budget_code = shlosilo::error::ShlosiloErrorCode::BufferTooSmall as i32;
+    assert_eq!(
+        rc, budget_code,
+        "payload > MULTIPART_PAYLOAD_MAX_LEN must be refused with the capacity code"
+    );
+    assert_eq!(actual, 0, "a refused call must not report a written length");
+
+    let small = std::vec![0u8; 16];
+    let rc_small = unsafe {
+        shlosilo_sign_typed_ffi(
+            tname.as_ptr(),
+            small.as_ptr(),
+            small.len() as u32,
+            idx.as_ptr(),
+            12,
+            core::ptr::null(),
+            0,
+            0,
+            core::ptr::null(),
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws_buf.as_mut_ptr(),
+            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+        )
+    };
+    assert_ne!(
+        rc_small, budget_code,
+        "the in-budget control must fail for content reasons, not with the capacity code"
+    );
 }
 
 //-- Audit #6 P1-02: duplicate frames consume no budget + reset when work is exceeded --
