@@ -136,7 +136,13 @@ fn parse_signed_tail(plain: &[u8]) -> (Vec<[u8; 32]>, usize) {
 fn ptx_key_image_from_str_field(plain: &[u8]) -> [u8; 32] {
     let is_hex = |b: u8| matches!(b, b'0'..=b'9' | b'a'..=b'f');
     let mut found: Option<[u8; 32]> = None;
-    for i in 0..plain.len().saturating_sub(67) {
+    // T1-17 (2026-11-19 audit, closed 2026-11-20): the range was half open, so an item that ends
+    // exactly at the end of the buffer was never considered - `key_images_str` is the last field of the
+    // signed plaintext, which is precisely that case.
+    if plain.len() < 67 {
+        return [0u8; 32];
+    }
+    for i in 0..=plain.len() - 67 {
         if plain[i] != b'<' || plain[i + 65] != b'>' || plain[i + 66] != b' ' {
             continue;
         }
@@ -416,7 +422,11 @@ const KEY_IMAGES_STR_GOLDEN: &[u8] =
 fn count_ki_str_items(buf: &[u8]) -> usize {
     let is_hex = |b: u8| matches!(b, b'0'..=b'9' | b'a'..=b'f');
     let mut n = 0;
-    for i in 0..buf.len().saturating_sub(67) {
+    // T1-17: include the window that ends exactly at the last byte (see the extractor above).
+    if buf.len() < 67 {
+        return 0;
+    }
+    for i in 0..=buf.len() - 67 {
         if buf[i] == b'<'
             && buf[i + 65] == b'>'
             && buf[i + 66] == b' '
