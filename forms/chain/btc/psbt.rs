@@ -721,6 +721,14 @@ fn deserialize_unsigned_tx(bytes: &[u8]) -> Result<Transaction<'_>> {
 
         // scriptSig len + bytes
         let script_sig_len = decode_compact_size(bytes, &mut pos)? as usize;
+        // F-15 (external audit 2026-11-19): BIP-174 v0 requires every input of the global
+        // UNSIGNED_TX to carry an EMPTY scriptSig — the signatures live in the per-input maps,
+        // not here. Accepting a non-empty one means we would sign a "unsigned" transaction that
+        // already has script data, i.e. not the规范 object we claim to be signing. The prev-tx
+        // walker (non-witness UTXO) keeps accepting real scriptSigs; only this parser refuses.
+        if script_sig_len != 0 {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
         let script_sig =
             crate::types::wire_bytes::wire_from(take_bytes(bytes, &mut pos, script_sig_len)?);
 
@@ -870,6 +878,14 @@ pub fn parse_psbt_into<'a>(
     if bytes[..5] != PSBT_MAGIC {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
+    // F-13 (external audit 2026-11-19): the per-field caps bound one length/count field, not the
+    // container. A PSBT with many small maps could therefore exceed the 64 KiB budget in total
+    // and still parse — and the writer sized its allocation from the sum without a ceiling.
+    // The whole wire is budgeted once, here, so every downstream field cap works inside a
+    // bounded container.
+    if bytes.len() as u64 > PSBT_WIRE_MAX_LEN {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
     let mut pos = 5;
     let mut pool = MapPool::new_in(bytes, arena, recs);
 
@@ -957,7 +973,21 @@ pub fn parse_psbt_any<'a>(
 /// never freed. Production MUST pass caller storage via `parse_psbt_into`
 /// (the SignWs carve).
 #[cfg(any(feature = "alloc-fallback", test))]
+/// Alloc-face convenience: parse without a caller workspace.
+///
+/// F-12 (external audit 2026-11-19): this used to leak both pools **before** looking at the
+/// bytes, so even a malformed PSBT cost a permanent leak in a long-running host process. The
+/// pools are still leaked (a `Psbt<'_>` borrows its pool, so the owner has to outlive it and
+/// this signature has nowhere to put one), but only after a **validation pass** has accepted
+/// the input; rejected bytes leak nothing. Device paths must use [`parse_psbt_into`] with the
+/// caller's workspace — this function is the host convenience, not the production face.
 pub fn parse_psbt(bytes: &[u8]) -> Result<Psbt<'_>> {
+    {
+        // Validation pass over throwaway buffers: if this fails, nothing is leaked.
+        let mut probe_arena = alloc::vec![0u8; PSBT_TEST_ARENA];
+        let mut probe_recs = alloc::vec![KvRec::EMPTY; PSBT_TEST_RECS];
+        parse_psbt_into(bytes, &mut probe_arena, &mut probe_recs)?;
+    }
     let arena: &'static mut [u8] =
         alloc::boxed::Box::leak(alloc::vec![0u8; PSBT_TEST_ARENA].into_boxed_slice());
     let recs: &'static mut [KvRec] =
@@ -990,11 +1020,26 @@ pub fn serialize_psbt_into(psbt: &Psbt<'_>, out: &mut [u8]) -> Result<usize> {
 
 /// Test/staging convenience: one sized allocation, same bytes.
 #[cfg(any(feature = "alloc-fallback", test))]
-pub fn serialize_psbt(psbt: &Psbt<'_>) -> Vec<u8> {
-    let mut out = vec![0u8; serialize_psbt_len(psbt)];
-    let n = serialize_psbt_into(psbt, &mut out).expect("sized buffer");
+/// Alloc-face convenience: serialize into a `Vec`.
+///
+/// F-13 (external audit 2026-11-19): this sized the allocation from the summed length with no
+/// ceiling. A parse can stay inside the 64 KiB container budget and still grow past it when
+/// signatures are added, so the result is checked against the same `PSBT_WIRE_MAX_LEN` the
+/// parser enforces — the budget is one number, applied on both sides. Device paths use
+/// [`serialize_psbt_into`] against the caller's buffer, which fails with a required length
+/// instead of allocating.
+pub fn serialize_psbt(psbt: &Psbt<'_>) -> Result<Vec<u8>> {
+    let len = serialize_psbt_len(psbt);
+    if len as u64 > PSBT_WIRE_MAX_LEN {
+        return Err(ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(len),
+        ));
+    }
+    let mut out = vec![0u8; len];
+    let n = serialize_psbt_into(psbt, &mut out)?;
     out.truncate(n);
-    out
+    Ok(out)
 }
 
 /// PSBT signing input (per-input info)
@@ -2091,6 +2136,55 @@ pub fn is_p2tr_input(input_map: KvMap<'_>) -> bool {
 #[cfg(test)]
 mod tests {
 
+    /// F-13 (external audit 2026-11-19): the per-field caps bound one length field, not the
+    /// container. The whole wire is budgeted at the parse entry, so an oversized PSBT is
+    /// refused before any map is walked.
+    #[test]
+    fn container_over_budget_is_refused() {
+        let mut bytes = alloc::vec![0u8; (PSBT_WIRE_MAX_LEN as usize) + 1];
+        bytes[..5].copy_from_slice(&PSBT_MAGIC);
+        let err = match parse_psbt(&bytes) {
+            Ok(_) => panic!("oversized container must be refused"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind, ShlosiloErrorKind::EncodingInvalidFormat);
+
+        // Control: the budget itself is not off by one (magic present, map empty → parses the
+        // global map as missing and fails on that, not on the budget).
+        let mut at_limit = alloc::vec![0u8; PSBT_WIRE_MAX_LEN as usize];
+        at_limit[..5].copy_from_slice(&PSBT_MAGIC);
+        assert!(parse_psbt(&at_limit).is_err(), "no global map at all");
+    }
+
+    /// F-15 (external audit 2026-11-19): a BIP-174 unsigned transaction carries EMPTY
+    /// scriptSigs; signatures live in the per-input maps. This parser used to accept a
+    /// non-empty one.
+    #[test]
+    fn unsigned_tx_with_non_empty_script_sig_is_refused() {
+        // version(4) ‖ input_count(1) ‖ txid(32) ‖ vout(4) ‖ script_len(1)=1 ‖ 0x51 ‖ seq(4)
+        //          ‖ output_count(1)=0 ‖ locktime(4)
+        let mut tx = alloc::vec::Vec::new();
+        tx.extend_from_slice(&2i32.to_le_bytes());
+        tx.push(1);
+        tx.extend_from_slice(&[0x11; 32]);
+        tx.extend_from_slice(&0u32.to_le_bytes());
+        tx.push(1); // scriptSig length = 1
+        tx.push(0x51);
+        tx.extend_from_slice(&0xffff_ffffu32.to_le_bytes());
+        tx.push(0); // no outputs
+        tx.extend_from_slice(&0u32.to_le_bytes());
+        assert!(
+            deserialize_unsigned_tx(&tx).is_err(),
+            "non-empty scriptSig must be refused"
+        );
+
+        // Same shape with an empty scriptSig parses.
+        let mut ok = tx.clone();
+        ok.remove(5 + 32 + 4); // drop the 0x51 byte
+        ok[5 + 32 + 4] = 0; // script length 0
+        assert!(deserialize_unsigned_tx(&ok).is_ok());
+    }
+
     /// F-5 (external audit 2026-11-19): the ECDSA entries only implement SIGHASH_ALL. A PSBT
     /// that declares another mode must be refused, not silently signed as ALL — the review page
     /// shows the declared mode, so an ALL signature would commit to something the operator was
@@ -2202,7 +2296,7 @@ mod tests {
         );
         assert_eq!(before[1].0[0], 0x01, "second global record is the xpub");
 
-        let out = serialize_psbt(&parsed);
+        let out = serialize_psbt(&parsed).expect("fits");
         let mut arena2 = alloc::vec![0u8; PSBT_TEST_ARENA];
         let mut recs2 = alloc::vec![KvRec::EMPTY; PSBT_TEST_RECS];
         let reparsed = parse_psbt_into(&out, &mut arena2, &mut recs2).expect("reparse");
@@ -2404,7 +2498,7 @@ mod tests {
 
         let psbt = psbt_from_maps_leaky(unsigned_tx.clone(), &[Vec::new()], &[Vec::new()]);
 
-        let bytes = serialize_psbt(&psbt);
+        let bytes = serialize_psbt(&psbt).expect("fits");
 
         // Verify magic
         assert_eq!(&bytes[..5], &PSBT_MAGIC);
@@ -2484,7 +2578,7 @@ mod tests {
             &[Vec::new()],
         );
 
-        let bytes = serialize_psbt(&psbt);
+        let bytes = serialize_psbt(&psbt).expect("fits");
         let parsed = parse_psbt(&bytes).unwrap();
 
         // Verify the input map is preserved
@@ -3394,7 +3488,7 @@ mod tests {
             },
         )
         .unwrap();
-        let serialized = serialize_psbt(&psbt);
+        let serialized = serialize_psbt(&psbt).expect("fits");
         assert_eq!(&serialized[..5], &PSBT_MAGIC);
 
         // 6. Parse again → fields exist, signature verifiable

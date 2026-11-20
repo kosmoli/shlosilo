@@ -2372,7 +2372,7 @@ mod tests {
         }
 
         // 4. serialize → CBOR bytes (the crypto-psbt payload is a CBOR bytes item, no leading type byte)
-        let psbt_bytes = psbt::serialize_psbt(&psbt);
+        let psbt_bytes = psbt::serialize_psbt(&psbt).expect("fits");
         let ur_payload = cbor::encode_bytes(&psbt_bytes);
 
         // 5. Go through the business entry point (P1-01: type carried explicitly by the tag)
@@ -2491,7 +2491,7 @@ mod tests {
                 .unwrap();
         }
 
-        let psbt_bytes = psbt::serialize_psbt(&psbt);
+        let psbt_bytes = psbt::serialize_psbt(&psbt).expect("fits");
         let ur_payload = cbor::encode_bytes(&psbt_bytes);
 
         let mut output_buf = [0u8; 4096];
@@ -2581,7 +2581,7 @@ mod tests {
                 .unwrap();
         }
 
-        let psbt_bytes = psbt::serialize_psbt(&psbt);
+        let psbt_bytes = psbt::serialize_psbt(&psbt).expect("fits");
         let ur_payload = cbor::encode_bytes(&psbt_bytes);
 
         let mut output_buf = [0u8; 4096];
@@ -2674,7 +2674,7 @@ mod tests {
             &[alloc::vec![]],
         );
 
-        let psbt_bytes = psbt::serialize_psbt(&psbt);
+        let psbt_bytes = psbt::serialize_psbt(&psbt).expect("fits");
         let ur_payload = cbor::encode_bytes(&psbt_bytes);
         let mut output_buf = [0u8; 4096];
         let input = SignInput::Seed { seed: &seed };
@@ -2733,7 +2733,7 @@ mod tests {
             &[alloc::vec![]],
         );
 
-        let psbt_bytes = psbt::serialize_psbt(&psbt);
+        let psbt_bytes = psbt::serialize_psbt(&psbt).expect("fits");
         let ur_payload = cbor::encode_bytes(&psbt_bytes);
         let mut output_buf = [0u8; 4096];
         let input = SignInput::Seed { seed: &seed };
