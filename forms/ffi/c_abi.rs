@@ -47,7 +47,9 @@ use crate::business;
 use crate::derivation::path::DerivationPath;
 use crate::entropy::mnemonic::{Mnemonic, WordCount};
 use crate::error::{ShlosiloError, ShlosiloErrorCode, ShlosiloErrorKind};
-use crate::ffi::error_code::{to_ffi_code, ERR_BUFFER_TOO_SMALL, ERR_NULL_POINTER, ERR_PANIC, OK};
+use crate::ffi::error_code::{
+    to_ffi_code, ERR_BUFFER_TOO_SMALL, ERR_NULL_POINTER, ERR_PANIC, ERR_UNKNOWN, OK,
+};
 use crate::network::Network;
 use crate::types::SecretBytes;
 use core::ffi::{c_char, c_int, c_uint};
@@ -1405,7 +1407,7 @@ pub mod r3 {
         if handle.is_null() || payload_buf.is_null() {
             return ERR_NULL_POINTER;
         }
-        let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+        let result = ffi_catch_unwind!(|| -> Result<Option<usize>, ShlosiloError> {
             let dec = unsafe { &*handle };
             // v1: payload goes straight into the caller buffer (no Vec).
             // F-1: clamp the claimed capacity to the reassembly budget before
@@ -1420,8 +1422,11 @@ pub mod r3 {
                 )
             }
             .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
-            let n = dec.payload_into(out)?.ok_or_else(err_unknown)?;
-            Ok(n)
+            // A2-15 (2026-11-19 audit): "not complete yet" is a PUBLISHED state of this entry
+            // (ERR_UNKNOWN per the contract above), not a format error. It used to be funnelled
+            // through err_unknown() -> EncodingInvalidFormat -> -21, so a caller could not tell the
+            // documented state from a malformed input.
+            dec.payload_into(out)
         });
         // BufferTooSmall special case: actual_len gets the **required value** (L3 retries the allocation accordingly),
         // all other failure paths keep the R2 zeroing discipline.
@@ -1437,10 +1442,12 @@ pub mod r3 {
             _ => 0,
         };
         match result {
-            Ok(Ok(n)) => {
+            Ok(Ok(Some(n))) => {
                 unsafe { write_actual_len(actual_len, n) };
                 OK
             }
+            // documented not-complete state: -1, out-param stays zeroed
+            Ok(Ok(None)) => ERR_UNKNOWN,
             Ok(Err(e)) => {
                 unsafe { write_actual_len(actual_len, required) };
                 to_ffi_code(&e)

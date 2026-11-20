@@ -26,6 +26,7 @@ use core::mem::MaybeUninit;
 use shlosilo::error::ShlosiloErrorCode;
 use shlosilo::ffi::c_abi;
 use shlosilo::ffi::c_abi::r3::{shlosilo_sign_session_ffi, shlosilo_ur_decode_new};
+use shlosilo::ffi::error_code::ERR_UNKNOWN;
 use shlosilo::types::key_session::KeySession;
 
 const OK: i32 = 0;
@@ -130,9 +131,11 @@ fn ur_decode_payload_absurd_capacity_keeps_the_normal_error_path() {
         c_abi::r3::shlosilo_ur_decode_payload(handle, buf.as_mut_ptr(), u32::MAX, &mut actual)
     };
     unsafe { c_abi::r3::shlosilo_ur_decode_free(handle) };
-    // capacity is clamped, so the answer is the session's own state, not a
-    // slice-length error: no frames fed yet -> EncodingInvalidFormat.
-    assert_eq!(rc, ERR_INVALID_FORMAT);
+    // capacity is clamped, so the answer is the session's own state, not a slice-length error.
+    // A2-15 (2026-11-20): that state is the documented ERR_UNKNOWN (-1); it used to be reported as
+    // EncodingInvalidFormat, which made "no frames yet" indistinguishable from malformed input.
+    assert_eq!(rc, ERR_UNKNOWN);
+    assert_ne!(rc, ERR_INVALID_FORMAT);
     assert_eq!(actual, 0);
 }
 

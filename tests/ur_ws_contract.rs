@@ -211,3 +211,49 @@ fn inv5_free_zeroizes_sensitive_spans() {
         }
     }
 }
+
+/// A2-15 (2026-11-19 audit, closed 2026-11-20): asking for the payload before the message is complete is
+/// the entry's PUBLISHED "not ready" state (ERR_UNKNOWN, -1 per the contract on the entry). It used to
+/// come back as an invalid-format error (-21), which a caller cannot tell apart from a malformed input.
+#[test]
+fn payload_before_completion_is_the_documented_unknown_state() {
+    const ERR_UNKNOWN: i32 = shlosilo::error::ShlosiloErrorCode::UnknownError as i32;
+    const ERR_INVALID_ARGUMENT: i32 = shlosilo::error::ShlosiloErrorCode::InvalidArgument as i32;
+
+    let payload: Vec<u8> = (0..512u32).map(|i| (i % 251) as u8).collect();
+    let frames = encode_frames(&payload);
+    assert!(
+        frames.len() > 1,
+        "the fixture needs a multipart message, got {} frame(s)",
+        frames.len()
+    );
+
+    let need = shlosilo_ur_decode_ws_len() as usize;
+    let mut ws = vec![0u8; need];
+    let h = unsafe { shlosilo_ur_decode_new(ws.as_mut_ptr(), need as u32) };
+    assert!(!h.is_null());
+
+    // feed only the first frame: not complete
+    let cstr = std::ffi::CString::new(frames[0].as_str()).unwrap();
+    let mut accepted: u32 = 0;
+    assert_eq!(
+        unsafe { shlosilo_ur_decode_feed(h, cstr.as_ptr(), &mut accepted) },
+        0
+    );
+
+    let mut out = [0u8; 4];
+    let mut actual: u32 = 0xDEAD_BEEF;
+    let rc =
+        unsafe { shlosilo_ur_decode_payload(h, out.as_mut_ptr(), out.len() as u32, &mut actual) };
+    assert_eq!(
+        rc, ERR_UNKNOWN,
+        "not-complete must be the published -1 state, not an invalid-format error"
+    );
+    assert_ne!(
+        rc, ERR_INVALID_ARGUMENT,
+        "the old -21 answers were indistinguishable from malformed input"
+    );
+    assert_eq!(actual, 0, "the out-param stays zeroed");
+
+    unsafe { shlosilo_ur_decode_free(h) };
+}
