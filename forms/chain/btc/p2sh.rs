@@ -347,39 +347,80 @@ mod tests {
         assert!(sign_p2sh_p2wpkh(&mut tx, &input).is_err());
     }
 
-    /// Sighash consistency: P2SH-P2WPKH should share the sighash path with P2WPKH (both are BIP-143)
+    /// F-20 (external audit 2026-11-19): this test used to call `segwit_sighash_p2wpkh` twice with
+    /// identical arguments and assert the two results were equal — a tautology that would pass
+    /// even if the nested signer passed the wrong scriptCode. It now checks the **BIP-143
+    /// P2SH-P2WPKH example** (the BIP's own vector) through the same sighash path the nested
+    /// signer uses.
+    ///
+    /// BIP-143 vector:
+    ///   tx           0100000001db6b1b20…54770100000000feffffff02b8b4eb0b…92040000
+    ///   spent value  10 BTC (0x00ca9a3b00000000)
+    ///   redeemScript 001479091972186c449eb1ded22b78e40d009bdf0089
+    ///   scriptCode   1976a91479091972186c449eb1ded22b78e40d009bdf008988ac
+    ///   sighash      64f3b0f4dd2bb3aa1ce8566d220cc74dda9df97d8490cc81d89d735c92e59fb6
     #[test]
-    fn p2sh_p2wpkh_sighash_matches_p2wpkh() {
-        let mut txid = [0u8; 32];
-        txid[0] = 0xab;
+    fn p2sh_p2wpkh_sighash_matches_the_bip143_vector() {
+        use crate::chain::btc::p2wpkh::{segwit_sighash_p2wpkh, SIGHASH_ALL};
 
-        let txin = TxIn {
-            prev_out: OutPoint { txid, vout: 0 },
-            script_sig: vec![].into(),
-            sequence: 0xffffffff,
-            witness: vec![],
-        };
-        let txout = TxOut {
-            value: 100_000,
-            script_pubkey: vec![0x00, 0x14, 0x42].into(), // arbitrary
-        };
+        // hash160 of the key, i.e. the P2PKH scriptCode BIP-143 prescribes for P2SH-P2WPKH.
+        let mut pubkey_hash = [0u8; 20];
+        pubkey_hash.copy_from_slice(&hex_decode("79091972186c449eb1ded22b78e40d009bdf0089"));
+        let script_code = p2pkh_script_code(&pubkey_hash);
+
+        let mut prev_txid = [0u8; 32];
+        prev_txid.copy_from_slice(&hex_decode(
+            "db6b1b20aa0fd7b23880be2ecbd4a98130974cf4748fb66092ac4d3ceb1a5477",
+        ));
         let tx = Transaction {
             version: 1,
-            inputs: bt_vec![txin],
-            outputs: bt_vec![txout],
-            lock_time: 0,
+            inputs: bt_vec![TxIn {
+                prev_out: OutPoint {
+                    txid: prev_txid,
+                    vout: 1,
+                },
+                script_sig: Vec::new().into(),
+                // wire bytes `feffffff` are LE → the sequence VALUE is 0xffff_fffe
+                sequence: 0xffff_fffe,
+                witness: Vec::new(),
+            }],
+            outputs: bt_vec![
+                TxOut {
+                    // b8b4eb0b00000000 LE = 199,996,600 (verified against the BIP's own preimage)
+                    value: 199_996_600,
+                    script_pubkey:
+                        hex_decode("76a914a457b684d7f0d539a46a45bbc043f35b59d0d96388ac",).into(),
+                },
+                TxOut {
+                    value: 0x2faf_0800,
+                    script_pubkey:
+                        hex_decode("76a914fd270b1ee6abcaea97fea7ad0402e8bd8ad6d77c88ac",).into(),
+                },
+            ],
+            lock_time: 0x0492,
         };
 
-        let pk_hash = [0x42; 20];
-        // P2WPKH and P2SH-P2WPKH use the same P2PKH-style scriptCode (25 bytes)
-        let script_code = p2pkh_script_code(&pk_hash);
-
-        // The two sighash algorithms are identical (BIP-143); what differs is the scriptSig/witness serialization
-        let h_p2sh = segwit_sighash_p2wpkh(&tx, 0, &script_code, 300_000, SIGHASH_ALL).unwrap();
-        let h_p2w = segwit_sighash_p2wpkh(&tx, 0, &script_code, 300_000, SIGHASH_ALL).unwrap();
+        let digest =
+            segwit_sighash_p2wpkh(&tx, 0, &script_code, 1_000_000_000, SIGHASH_ALL).unwrap();
         assert_eq!(
-            h_p2sh, h_p2w,
-            "sighash should be identical (same algorithm)"
+            hex_encode(&digest),
+            "64f3b0f4dd2bb3aa1ce8566d220cc74dda9df97d8490cc81d89d735c92e59fb6",
+            "nested signer's digest must equal the BIP-143 P2SH-P2WPKH vector"
+        );
+
+        // ... and the scriptCode choice is load-bearing: feeding the redeem script instead of the
+        // P2PKH scriptCode gives a different digest (the old test could not tell the difference).
+        let wrong = segwit_sighash_p2wpkh(
+            &tx,
+            0,
+            &p2wpkh_redeem_script(&pubkey_hash),
+            1_000_000_000,
+            SIGHASH_ALL,
+        )
+        .unwrap();
+        assert_ne!(
+            wrong, digest,
+            "scriptCode must be the P2PKH script, not the redeemScript"
         );
     }
 }
