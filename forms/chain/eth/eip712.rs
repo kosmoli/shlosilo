@@ -422,12 +422,13 @@ pub fn signing_hash(
 
 /// EIP-712 signing input
 /// P1-03: the private key uses `SecretBytes<32>` — no Clone or Debug, ZeroizeOnDrop, constant-time comparison.
-pub struct Eip712SignInput {
+pub struct Eip712SignInput<'a> {
     pub domain: Eip712Domain,
     pub primary_type: String,
     pub message: Eip712Value,
     pub types: Types,
-    pub private_key: SecretBytes<32>,
+    /// A2-08 (2026-11-19 audit): borrowed, like the 1559/EIP-155 sign inputs - the signer only reads it.
+    pub private_key: &'a SecretBytes<32>,
 }
 
 /// EIP-712 signing output
@@ -441,7 +442,7 @@ pub struct Eip712SignedTx {
 }
 
 /// Sign EIP-712 typed data
-pub fn sign_eip712(input: &Eip712SignInput) -> Result<Eip712SignedTx> {
+pub fn sign_eip712(input: &Eip712SignInput<'_>) -> Result<Eip712SignedTx> {
     let sk = sign::sk_from_pk(input.private_key.expose())?;
     let sighash = signing_hash(
         &input.domain,
@@ -494,7 +495,7 @@ impl TypedData {
     }
 
     /// Sign (reused by v9.1\'s sign_eip712)
-    pub fn sign(&self, private_key: SecretBytes<32>) -> Result<Eip712SignedTx> {
+    pub fn sign(&self, private_key: &SecretBytes<32>) -> Result<Eip712SignedTx> {
         let input = Eip712SignInput {
             domain: self.domain.clone(),
             primary_type: self.primary_type.clone(),
@@ -1644,7 +1645,7 @@ mod tests {
             primary_type: "Mail".to_string(),
             message: mail,
             types,
-            private_key,
+            private_key: &private_key,
         };
         let signed = sign_eip712(&input).unwrap();
 
@@ -1708,7 +1709,7 @@ mod tests {
             primary_type: "Mail".to_string(),
             message: msg,
             types,
-            private_key,
+            private_key: &private_key,
         };
         let s1 = sign_eip712(&input).unwrap();
         let s2 = sign_eip712(&input).unwrap();
@@ -1968,7 +1969,7 @@ mod tests {
         }"#;
 
         let td = parse_typed_data_v4(json).unwrap();
-        let signed = td.sign(private_key).unwrap();
+        let signed = td.sign(&private_key).unwrap();
 
         // spec verification: the signing hash matches
         let expected_hash = "be609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2";

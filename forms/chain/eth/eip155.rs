@@ -65,7 +65,9 @@ pub struct Eip155Transaction<'a> {
 /// P1-03: the private key uses `SecretBytes<32>` — no Clone or Debug, ZeroizeOnDrop, constant-time comparison.
 pub struct Eip155SignInput<'a> {
     pub tx: Eip155Transaction<'a>,
-    pub private_key: SecretBytes<32>,
+    /// A2-08 (2026-11-19 audit): the signer BORROWS the key, mirroring `Eip1559SignInput`. Taking it
+    /// by value forced every caller to mint an extra owner of a secret it already held.
+    pub private_key: &'a SecretBytes<32>,
 }
 
 /// Signing output
@@ -309,7 +311,10 @@ mod tests {
             data: Vec::new().into(),
         };
 
-        let input = Eip155SignInput { tx, private_key };
+        let input = Eip155SignInput {
+            tx,
+            private_key: &private_key,
+        };
         let signed = sign_eip155(&input).unwrap();
 
         // Verify the signing hash
@@ -354,7 +359,7 @@ mod tests {
 
         let input = Eip155SignInput {
             tx: tx.clone(),
-            private_key,
+            private_key: &private_key,
         };
         let signed1 = sign_eip155(&input).unwrap();
         let signed2 = sign_eip155(&input).unwrap();

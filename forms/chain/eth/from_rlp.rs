@@ -377,9 +377,10 @@ mod tests {
             amount: 1_000_000_000_000_000_000,
             data: Vec::new().into(),
         };
+        let key = SecretBytes::new([0x46u8; 32]);
         let signed = sign_eip155(&Eip155SignInput {
             tx,
-            private_key: SecretBytes::new([0x46u8; 32]),
+            private_key: &key,
         })
         .unwrap();
         let parsed = parse_eip155_raw(&signed.tx_bytes).unwrap();
