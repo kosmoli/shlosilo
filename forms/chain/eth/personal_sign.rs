@@ -20,11 +20,11 @@ use crate::types::SecretBytes;
 
 /// personal_sign input
 /// P1-03: private keys go through `SecretBytes<32>` — no Clone, no Debug, ZeroizeOnDrop, constant-time comparison.
-pub struct PersonalSignInput {
+pub struct PersonalSignInput<'a> {
     /// Arbitrary UTF-8 string to sign
     pub message: Vec<u8>,
-    /// 32-byte private key
-    pub private_key: SecretBytes<32>,
+    /// 32-byte private key - A2-08 (2026-11-19 audit): borrowed, the signer only reads it.
+    pub private_key: &'a SecretBytes<32>,
 }
 
 /// personal_sign output: 65-byte signature (r || s || v)
@@ -54,7 +54,7 @@ pub fn personal_signing_hash(msg: &[u8]) -> Result<[u8; 32]> {
 /// Sign a personal message
 ///
 /// Outputs a 65-byte signature (r || s || v), v = 27 + y_parity (i.e. v=27 if y_parity=0, v=28 if y_parity=1).
-pub fn personal_sign(input: &PersonalSignInput) -> Result<PersonalSignature> {
+pub fn personal_sign(input: &PersonalSignInput<'_>) -> Result<PersonalSignature> {
     let sighash = personal_signing_hash(&input.message)?;
 
     // private_key: [u8; 32] → Secp256k1Scalar
@@ -186,9 +186,10 @@ mod tests {
         let mut pk = [0u8; 32];
         pk.copy_from_slice(&hex_decode(pk_hex));
 
+        let key = SecretBytes::new(pk);
         let input = PersonalSignInput {
             message: b"test message".to_vec(),
-            private_key: SecretBytes::new(pk),
+            private_key: &key,
         };
         let sig = personal_sign(&input).unwrap();
 
@@ -213,9 +214,10 @@ mod tests {
         let mut pk = [0u8; 32];
         pk.copy_from_slice(&hex_decode(pk_hex));
 
+        let key = SecretBytes::new(pk);
         let input1 = PersonalSignInput {
             message: msg.to_vec(),
-            private_key: SecretBytes::new(pk),
+            private_key: &key,
         };
         let sig1 = personal_sign(&input1).unwrap();
         let sig2 = personal_sign(&input1).unwrap();
@@ -235,9 +237,10 @@ mod tests {
         let mut pk_bytes = [0u8; 32];
         pk_bytes.copy_from_slice(&hex_decode(pk_hex));
 
+        let key = SecretBytes::new(pk_bytes);
         let input = PersonalSignInput {
             message: b"Hello, world!".to_vec(),
-            private_key: SecretBytes::new(pk_bytes),
+            private_key: &key,
         };
 
         // 1. Sign
