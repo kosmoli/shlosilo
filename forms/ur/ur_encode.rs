@@ -248,6 +248,31 @@ pub fn encode(type_tag: UrTypeTag, payload: &[u8]) -> Result<UrEncoded> {
     Ok(UrEncoded { uri })
 }
 
+/// Single-fragment encoding into a CALLER buffer (A2-14 groundwork, 2026-11-20).
+///
+/// Same bytes as [`encode`], but the URI is written straight into `out` instead of a
+/// `heapless::String` owned by the caller's stack frame - that is the shape the export path needs
+/// so it can stop treating the output buffer as scratch. Over-capacity is an explicit error, never
+/// truncation; the returned length is what was written.
+pub fn encode_into(type_tag: UrTypeTag, payload: &[u8], out: &mut [u8]) -> Result<usize> {
+    if payload.len() > UR_PAYLOAD_MAX_LEN {
+        return Err(err());
+    }
+    let mut wire = heapless::Vec::<u8, { UR_PAYLOAD_MAX_LEN + 3 }>::new();
+    if message_is_cbor_item(type_tag) {
+        wire.extend_from_slice(payload).map_err(|_| err())?;
+    } else {
+        crate::ur::ur_shell::ur_message_wrap_into(payload, &mut wire)?;
+        debug_assert_eq!(wire.len(), ur_message_shell_len(payload.len())?);
+    }
+    let mut n = 0usize;
+    crate::types::push::push_slice(out, &mut n, b"ur:")?;
+    crate::types::push::push_slice(out, &mut n, type_tag.type_name().as_bytes())?;
+    crate::types::push::push_slice(out, &mut n, b"/")?;
+    bytewords::encode_minimal_into(&wire, out, &mut n)?;
+    Ok(n)
+}
+
 fn push_str(uri: &mut heapless::String<UR_URI_MAX_LEN>, s: &str) -> Result<()> {
     uri.push_str(s)
         .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))
@@ -256,6 +281,32 @@ fn push_str(uri: &mut heapless::String<UR_URI_MAX_LEN>, s: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A2-14 groundwork: `encode_into` must produce byte-identical output to `encode`, and must
+    /// refuse (not truncate) when the caller buffer is one byte short.
+    #[test]
+    fn encode_into_matches_encode_and_refuses_short_buffers() {
+        let payload = b"caller buffer, no staging";
+        for tag in [UrTypeTag::CryptoAccount, UrTypeTag::Bytes] {
+            let owned = encode(tag, payload).unwrap();
+            let want = owned.as_str().as_bytes().to_vec();
+
+            let mut out = alloc::vec![0u8; crate::ur::ur_encode::UR_URI_MAX_LEN];
+            let n = encode_into(tag, payload, &mut out).unwrap();
+            assert_eq!(
+                &out[..n],
+                &want[..],
+                "encode_into must match encode ({tag:?})"
+            );
+
+            // one byte short of what the URI needs -> explicit error, no truncation
+            let mut tight = alloc::vec![0u8; n - 1];
+            assert!(
+                encode_into(tag, payload, &mut tight).is_err(),
+                "a short buffer must be refused, not truncated ({tag:?})"
+            );
+        }
+    }
 
     /// BCR-2020-05 / keystone-ur doctest：
     /// `ur:bytes/iehsjyhspmwfwfia` ↔ `b"data"` — the legacy vector's message is
