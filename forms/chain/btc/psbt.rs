@@ -1017,6 +1017,7 @@ pub struct PsbtSignInput<'a> {
 /// Inject into the input map:
 /// - 0x03 PARTIAL_SIG: key = `<type-byte 0x03><33-byte compressed pubkey>`, value = `<DER-sig + 0x01 sighash-byte>`
 pub fn sign_psbt_p2wpkh(psbt: &mut Psbt<'_>, sign_input: &PsbtSignInput) -> Result<()> {
+    require_sighash_all(psbt.input_map(sign_input.input_index))?;
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -1264,6 +1265,7 @@ pub struct PsbtP2SHP2WPKHSignInput<'a> {
 /// Zero heap: the sighash streams, the DER signature is a fixed 72-byte vector,
 /// the scriptSig a stack array.
 pub fn sign_psbt_p2pkh(psbt: &mut Psbt<'_>, sign_input: &PsbtP2PKHSignInput) -> Result<()> {
+    require_sighash_all(psbt.input_map(sign_input.input_index))?;
     use crate::chain::btc::p2pkh as p2pkh_mod;
 
     let input_idx = sign_input.input_index;
@@ -1337,6 +1339,7 @@ pub fn sign_psbt_p2sh_p2wpkh(
     psbt: &mut Psbt<'_>,
     sign_input: &PsbtP2SHP2WPKHSignInput,
 ) -> Result<()> {
+    require_sighash_all(psbt.input_map(sign_input.input_index))?;
     let input_idx = sign_input.input_index;
     if input_idx >= psbt.unsigned_tx.inputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
@@ -1416,6 +1419,13 @@ pub struct PsbtP2TRSignInput {
 pub struct PsbtP2TRScriptPathSignInput {
     pub input_index: usize,
     pub internal_key_x: [u8; 32],
+    /// x-only public key of the key that produced `schnorr_sig` (the tapleaf's signing key).
+    ///
+    /// F-17 (external audit 2026-11-19): BIP-371 defines the signature record's key as
+    /// `0x14 || xonly_pubkey || leaf_hash`, precisely so two different leaf signers under the
+    /// same leaf do not collide. The entry used to build `0x14 || leaf_hash` (33 bytes), which
+    /// cannot distinguish them — the second signature overwrote the first.
+    pub signing_pubkey_x: [u8; 32],
     pub leaf_hash: [u8; 32],
     pub schnorr_sig: [u8; 64],
     pub sighash_type: u8,
@@ -1494,7 +1504,7 @@ pub fn sign_psbt_p2tr_keypath_with_key(
     internal_x.copy_from_slice(&internal_compressed[1..]);
 
     let map = psbt.input_map(input_index);
-    let merkle_root = get_tap_merkle_root(map);
+    let merkle_root = get_tap_merkle_root(map)?;
     let expected = match merkle_root {
         Some(root) => taproot::compute_output_key_scriptpath(&internal_x, &root)?,
         None => taproot::compute_output_key(&internal_x)?,
@@ -1506,7 +1516,7 @@ pub fn sign_psbt_p2tr_keypath_with_key(
     }
 
     // 3. A declared internal key must be ours.
-    if let Some(declared) = get_tap_internal_key(map) {
+    if let Some(declared) = get_tap_internal_key(map)? {
         if declared != internal_x {
             return Err(ShlosiloError::new(ShlosiloErrorKind::PsbtOwnershipMismatch));
         }
@@ -1581,6 +1591,20 @@ pub fn input_sighash_type(input_map: KvMap<'_>) -> Result<Option<u8>> {
     match hash_type {
         0x00 | 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83 => Ok(Some(hash_type)),
         _ => Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
+    }
+}
+
+/// F-5 (external audit 2026-11-19): the three ECDSA PSBT entries implement **SIGHASH_ALL only**
+/// (`SIGHASH_ALL` is passed to the digest, and the record's trailer is 0x01). They used to sign
+/// ALL without looking at the request's declared `SIGHASH_TYPE`, so a PSBT asking for
+/// NONE / SINGLE / ANYONECANPAY got an ALL signature while the review page showed the declared
+/// mode — the operator approved one commitment and the device produced another.
+///
+/// Absent means ALL (BIP-174). Anything else is refused instead of silently changed.
+fn require_sighash_all(map: KvMap<'_>) -> Result<()> {
+    match input_sighash_type(map)? {
+        None | Some(1) => Ok(()),
+        Some(_) => Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
     }
 }
 
@@ -1766,16 +1790,26 @@ pub fn sign_psbt_p2tr_scriptpath(
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
-    // Inject TAP_SCRIPT_SIG (0x14): key = [0x14 || leaf_hash (32)], value = sig(64) || sighash_byte(1)
-    let mut key = [0u8; 33];
+    // Inject TAP_SCRIPT_SIG (0x14), BIP-371 shape:
+    //   key   = 0x14 || xonly_pubkey (32) || leaf_hash (32)   → 65 bytes
+    //   value = sig (64) for SIGHASH_DEFAULT, sig || hash_type (65) otherwise
+    //
+    // F-17 (external audit 2026-11-19): the key used to be `0x14 || leaf_hash` (33 bytes), which
+    // is not a BIP-371 key at all and made two leaf signers under one leaf indistinguishable;
+    // the value was always 65 bytes, i.e. SIGHASH_DEFAULT carried a bogus zero suffix.
+    let mut key = [0u8; 65];
     key[0] = input_type::TAP_SCRIPT_SIG;
-    key[1..33].copy_from_slice(&sign_input.leaf_hash);
+    key[1..33].copy_from_slice(&sign_input.signing_pubkey_x);
+    key[33..65].copy_from_slice(&sign_input.leaf_hash);
 
+    let with_type = sign_input.sighash_type != 0x00;
     let mut value = [0u8; 65];
     value[..64].copy_from_slice(&sign_input.schnorr_sig);
-    value[64] = sign_input.sighash_type;
-
-    psbt.set_input_kv(input_idx, &key, &value)?;
+    if with_type {
+        value[64] = sign_input.sighash_type;
+    }
+    let value_len = if with_type { 65 } else { 64 };
+    psbt.set_input_kv(input_idx, &key, &value[..value_len])?;
     Ok(())
 }
 
@@ -1984,16 +2018,23 @@ pub fn get_utxo_any<'a>(
 }
 
 /// Get TAP_INTERNAL_KEY from input map (BIP-371 0x17)
-pub fn get_tap_internal_key(input_map: KvMap<'_>) -> Option<[u8; 32]> {
-    let kv = input_map
+/// F-16 (external audit 2026-11-19): `Ok(None)` means the record is genuinely absent;
+/// `Err` means it is present but malformed. Collapsing both into `None` let a malformed
+/// declaration read as "no declaration", and the signer then skipped its consistency check
+/// against it.
+pub fn get_tap_internal_key(input_map: KvMap<'_>) -> Result<Option<[u8; 32]>> {
+    let Some(kv) = input_map
         .iter()
-        .find(|kv| kv.key == [input_type::TAP_INTERNAL_KEY])?;
+        .find(|kv| kv.key == [input_type::TAP_INTERNAL_KEY])
+    else {
+        return Ok(None);
+    };
     if kv.value.len() != 32 {
-        return None;
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let mut x = [0u8; 32];
     x.copy_from_slice(kv.value);
-    Some(x)
+    Ok(Some(x))
 }
 
 /// Set TAP_INTERNAL_KEY in input map
@@ -2012,23 +2053,32 @@ pub fn set_tap_internal_key(
 }
 
 /// Get TAP_MERKLE_ROOT from input map (BIP-371 0x18)
-pub fn get_tap_merkle_root(input_map: KvMap<'_>) -> Option<[u8; 32]> {
-    let kv = input_map
+/// F-16 (external audit 2026-11-19): `Ok(None)` means the record is genuinely absent;
+/// `Err` means it is present but malformed. Collapsing both into `None` let a malformed
+/// declaration read as "no declaration", and the signer then skipped its consistency check
+/// against it.
+pub fn get_tap_merkle_root(input_map: KvMap<'_>) -> Result<Option<[u8; 32]>> {
+    let Some(kv) = input_map
         .iter()
-        .find(|kv| kv.key == [input_type::TAP_MERKLE_ROOT])?;
+        .find(|kv| kv.key == [input_type::TAP_MERKLE_ROOT])
+    else {
+        return Ok(None);
+    };
     if kv.value.len() != 32 {
-        return None;
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
     let mut x = [0u8; 32];
     x.copy_from_slice(kv.value);
-    Some(x)
+    Ok(Some(x))
 }
 
 /// Check if input is P2TR (has P2TR witness UTXO and TAP_INTERNAL_KEY set)
 /// WITNESS_UTXO value = CTxOut: amount(8 LE) || varint(spk_len) || scriptPubKey
 #[cfg(any(feature = "alloc-fallback", test))]
 pub fn is_p2tr_input(input_map: KvMap<'_>) -> bool {
-    if get_tap_internal_key(input_map).is_none() {
+    // A malformed TAP_INTERNAL_KEY declaration is not "an internal key we know" (F-16): the
+    // predicate answers false, while the signing path above refuses with an error.
+    if !matches!(get_tap_internal_key(input_map), Ok(Some(_))) {
         return false;
     }
     get_witness_utxo(input_map)
@@ -2040,6 +2090,91 @@ pub fn is_p2tr_input(input_map: KvMap<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// F-5 (external audit 2026-11-19): the ECDSA entries only implement SIGHASH_ALL. A PSBT
+    /// that declares another mode must be refused, not silently signed as ALL — the review page
+    /// shows the declared mode, so an ALL signature would commit to something the operator was
+    /// never shown.
+    #[test]
+    fn ecdsa_entries_refuse_a_declared_sighash_other_than_all() {
+        let mut private_key = [0u8; 32];
+        private_key[31] = 1;
+        let sk = crate::curve_primitive::secp256k1::scalar_from_bytes(&private_key).unwrap();
+        let pk = crate::curve_primitive::secp256k1::point_to_compressed(
+            &crate::curve_primitive::secp256k1::base_mul(&sk),
+        );
+        let h = crate::encoding::sha256::hash(&pk).unwrap();
+        let mut pk_hash = [0u8; 20];
+        pk_hash.copy_from_slice(&crate::encoding::ripemd160::hash(&h).unwrap());
+        let spk = crate::chain::btc::p2pkh::p2pkh_script_code(&pk_hash);
+        let (prev_out, prev_tx) = legacy_prevout(100_000, &spk, 90_000);
+
+        let build = |sighash: Option<u8>| {
+            let mut map = alloc::vec![KeyValue {
+                key: alloc::vec![input_type::NON_WITNESS_UTXO].into(),
+                value: prev_tx.clone().into(),
+            }];
+            if let Some(t) = sighash {
+                map.push(KeyValue {
+                    key: alloc::vec![input_type::SIGHASH_TYPE].into(),
+                    // BIP-174: the value is a 4-byte little-endian unsigned integer.
+                    value: u32::from(t).to_le_bytes().to_vec().into(),
+                });
+            }
+            psbt_from_maps_leaky(
+                Transaction {
+                    version: 1,
+                    inputs: bt_vec![TxIn {
+                        prev_out: prev_out.clone(),
+                        script_sig: vec![].into(),
+                        sequence: 0xffffffff,
+                        witness: vec![],
+                    }],
+                    outputs: bt_vec![TxOut {
+                        value: 90_000,
+                        script_pubkey: spk.to_vec().into(),
+                    }],
+                    lock_time: 0,
+                },
+                &[map],
+                &[Vec::new()],
+            )
+        };
+
+        for declared in [0x02u8, 0x03, 0x81, 0x82, 0x83, 0x00] {
+            let mut psbt = build(Some(declared));
+            let mut key_bytes = private_key;
+            let err = sign_psbt_p2pkh(
+                &mut psbt,
+                &PsbtP2PKHSignInput {
+                    input_index: 0,
+                    private_key: &SecretBytes::take(&mut key_bytes),
+                    pubkey_hash: pk_hash,
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                err.kind,
+                ShlosiloErrorKind::EncodingInvalidFormat,
+                "declared sighash 0x{declared:02x} must be refused, not signed as ALL"
+            );
+        }
+
+        // Control: ALL (0x01) and absent both sign.
+        for declared in [Some(1u8), None] {
+            let mut psbt = build(declared);
+            let mut key_bytes = private_key;
+            sign_psbt_p2pkh(
+                &mut psbt,
+                &PsbtP2PKHSignInput {
+                    input_index: 0,
+                    private_key: &SecretBytes::take(&mut key_bytes),
+                    pubkey_hash: pk_hash,
+                },
+            )
+            .expect("ALL (or absent) must sign");
+        }
+    }
 
     /// F-14 (external audit 2026-11-19): the writer emitted exactly one global entry
     /// (UNSIGNED_TX) and terminated, so a signed PSBT silently lost every other global record.
@@ -3003,6 +3138,7 @@ mod tests {
         let sign_input = PsbtP2TRScriptPathSignInput {
             input_index: 0,
             internal_key_x: output_key_x,
+            signing_pubkey_x: output_key_x,
             leaf_hash,
             schnorr_sig,
             sighash_type: 0x00, // SIGHASH_DEFAULT
@@ -3010,17 +3146,24 @@ mod tests {
 
         sign_psbt_p2tr_scriptpath(&mut psbt, &sign_input).unwrap();
 
-        // Verify TAP_SCRIPT_SIG injected with key = [0x14 || leaf_hash (32)]
-        let expected_key_len = 1 + 32;
+        // F-17 (external audit 2026-11-19): the record follows BIP-371 —
+        //   key   = 0x14 || xonly_pubkey (32) || leaf_hash (32)   = 65 bytes
+        //   value = sig (64) for SIGHASH_DEFAULT (no type byte at all)
+        // The old shape was `0x14 || leaf_hash` (33 bytes) with a constant 65-byte value.
+        let expected_key_len = 1 + 32 + 32;
         let injected = psbt
             .input_map(0)
             .iter()
             .find(|kv| kv.key.len() == expected_key_len && kv.key[0] == input_type::TAP_SCRIPT_SIG)
             .expect("TAP_SCRIPT_SIG not injected");
-        assert_eq!(injected.key[1..], leaf_hash);
-        assert_eq!(injected.value.len(), 65); // sig(64) + sighash(1)
+        assert_eq!(injected.key[1..33], output_key_x, "leaf signer x-only key");
+        assert_eq!(injected.key[33..], leaf_hash, "leaf hash");
+        assert_eq!(
+            injected.value.len(),
+            64,
+            "SIGHASH_DEFAULT carries no trailing type byte"
+        );
         assert_eq!(&injected.value[0..64], &schnorr_sig);
-        assert_eq!(injected.value[64], 0x00); // sighash byte
     }
 
     /// P2TR keypath sign should reject non-P2TR input
@@ -3104,7 +3247,7 @@ mod tests {
         let internal_key = [0xabu8; 32];
         set_tap_internal_key(&mut input, &internal_key).unwrap();
         let retrieved = get_tap_internal_key(KvMap::from_slice(&input)).unwrap();
-        assert_eq!(retrieved, internal_key);
+        assert_eq!(retrieved, Some(internal_key));
     }
 
     /// PSBT_IN_TAP_MERKLE_ROOT encoding
@@ -3115,15 +3258,19 @@ mod tests {
             value: [0xaau8; 32].to_vec().into(),
         }];
         // No merkle root → keypath-only
-        assert!(get_tap_merkle_root(KvMap::from_slice(&input)).is_some());
+        assert!(get_tap_merkle_root(KvMap::from_slice(&input))
+            .unwrap()
+            .is_some());
         assert_eq!(
             get_tap_merkle_root(KvMap::from_slice(&input)).unwrap(),
-            [0xaau8; 32]
+            Some([0xaau8; 32])
         );
 
         // Empty input → no merkle root
         input.clear();
-        assert!(get_tap_merkle_root(KvMap::from_slice(&input)).is_none());
+        assert!(get_tap_merkle_root(KvMap::from_slice(&input))
+            .unwrap()
+            .is_none());
     }
 
     /// v9.13d end-to-end: keystone PSBT → parse → shlosilo sighash+sign → inject TAP_KEY_SIG → serialize
@@ -3149,8 +3296,8 @@ mod tests {
         assert_eq!(psbt.unsigned_tx.inputs[0].sequence, 0xffffffff);
 
         // 1. Extract Taproot metadata from the input map
-        let internal_key_x = get_tap_internal_key(psbt.input_map(0)).unwrap();
-        let merkle_root = get_tap_merkle_root(psbt.input_map(0));
+        let internal_key_x = get_tap_internal_key(psbt.input_map(0)).unwrap().unwrap();
+        let merkle_root = get_tap_merkle_root(psbt.input_map(0)).unwrap();
         assert_eq!(
             &hex_encode(&internal_key_x),
             "b68df382cad577d8304d5a8e640c3cb42d77c10016ab754caa4d6e68b6cb296d"
