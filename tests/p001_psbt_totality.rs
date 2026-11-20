@@ -167,39 +167,62 @@ fn p001_huge_input_count_no_oom() {
     );
 }
 
+/// A declared input count that cannot fit in the remaining bytes is refused.
+///
+/// T1-05 (2026-11-19 audit, closed 2026-11-20): this test used to claim - in a comment - that it
+/// asserted the physical-feasibility helper's behaviour, while its body only looked at the final
+/// `Err`. An integration test cannot observe "no allocation happened before the rejection", so the
+/// load-bearing evidence is the in-module pure-helper boundary test
+/// (`psbt::tests::helper_count_physically_feasible_boundaries`, criterion 4: direct boundary values,
+/// no timing), and this test keeps the end-to-end statement: a count of 60000 with a short wire is
+/// refused, while the same shape with a legal count parses.
 #[test]
 fn p001_count_exceeding_physical_bytes_rejected_before_alloc() {
-    // Audit #5 P0-02 + sixth re-review P2-01: the physical-feasibility check has been extracted into a pure helper
-    // count_physically_feasible (see psbt.rs); this test asserts helper behavior
-    // and no longer relies on timing observation (re-review verdict: the 100ms threshold is unreliable, with_capacity does not memset,
-    // and the host allocator could well be faster; if the old vulnerability regresses, a timing test would still pass).
-    //
-    // Behavior chain: malicious n_inputs=60000 + small wire → helper false → the parser returns Err
-    // before Vec::with_capacity (the helper call site precedes with_capacity in the implementation, locked by code order).
-    // before with_capacity, locked by code order).
+    // control: the same skeleton with a legal count parses
+    let legal_tx = tx_with_script_sig_len(&[0x00]);
+    assert!(
+        parse_psbt(&wrap_psbt(&legal_tx)).is_ok(),
+        "the control PSBT must parse, or the rejection below proves nothing"
+    );
+
+    // malicious: n_inputs = 60000 declared, no bytes behind it
     let mut tx = Vec::new();
     tx.extend_from_slice(&2i32.to_le_bytes());
     tx.push(0xfd); // n_inputs 2-byte prefix
     tx.extend_from_slice(&60_000u16.to_le_bytes());
     let psbt_bytes = wrap_psbt_full(&tx, 0, 0);
-    let r = parse_psbt(&psbt_bytes);
-    assert!(r.is_err(), "physically infeasible count must be rejected");
+    assert!(
+        parse_psbt(&psbt_bytes).is_err(),
+        "physically infeasible count must be rejected"
+    );
 }
 
+/// T1-04 (2026-11-19 audit, closed 2026-11-20): the fixture used to have no map terminator and two
+/// four-byte "transactions" as values, so it was rejected by the exact-consumption and unsigned-tx
+/// checks no matter what the duplicate-key rule did. The fixture is now a parseable PSBT built by the
+/// same helper as its sibling tests, with exactly one thing changed: the global UNSIGNED_TX key appears
+/// twice.
 #[test]
 fn p001_duplicate_map_key_rejected() {
-    // Audit #5 P0-02: duplicate key rejection — BIP-174 "key must be unique in a map",
-    // duplicates = a first-wins/last-wins parser differential vector
+    let tx = tx_with_script_sig_len(&[0x00]);
+
+    // Control: one UNSIGNED_TX entry parses.
+    let single = wrap_psbt(&tx);
+    assert!(
+        parse_psbt(&single).is_ok(),
+        "the control PSBT must parse, or the rejection below proves nothing"
+    );
+
+    // Duplicate: the same key twice, everything else identical.
     let mut b = psbt_magic();
-    // global map: two identical key=[0x00] (UNSIGNED_TX) entries
-    b.push(1); // keylen
-    b.push(0x00); // key = UNSIGNED_TX
-    b.push(4); // valuelen
-    b.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // value1
-    b.push(1); // keylen
-    b.push(0x00); // key = UNSIGNED_TX (duplicate!)
-    b.push(4); // valuelen
-    b.extend_from_slice(&[0x05, 0x06, 0x07, 0x08]); // value2
+    for _ in 0..2 {
+        b.push(1); // keylen
+        b.push(0x00); // key = UNSIGNED_TX
+        b.push(tx.len() as u8); // valuelen (< 0xfd)
+        b.extend_from_slice(&tx);
+    }
+    b.push(0x00); // global separator
+    b.push(0x00); // one input map separator (tx has n_inputs = 1)
     let r = parse_psbt(&b);
     assert!(r.is_err(), "duplicate map key must be rejected");
 }
