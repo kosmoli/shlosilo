@@ -335,39 +335,33 @@ impl<'a> MapPool<'a> {
         // Both closures must REFUSE rather than index past the arena: `copy_from_slice`
         // on an out-of-range slice panics, and forms never aborts. The requirement is
         // carried so the caller learns the size instead of a bare "too small".
-        let place_key = |pool: &mut Self| -> Result<u32> {
-            let off = base + pool.arena_used as u32;
-            let end = pool.arena_used.checked_add(key.len()).ok_or(cap)?;
+        // F-19 (external audit 2026-11-19): key and value are reserved and written as ONE step.
+        // The old shape placed the key first (advancing `arena_used`) and only then found that
+        // the value did not fit — the key bytes stayed consumed with no record pointing at
+        // them, and a retry kept eating the pool. Nothing is committed unless both fit; the
+        // requirement is still carried so the caller learns the size.
+        let place_pair = |pool: &mut Self| -> Result<(u32, u32)> {
+            let need = key.len().checked_add(value.len()).ok_or(cap)?;
+            let end = pool.arena_used.checked_add(need).ok_or(cap)?;
             if end > pool.arena.len() {
                 return Err(ShlosiloError::with_context(
                     ShlosiloErrorKind::BufferTooSmall,
                     crate::error::ErrorContext::RequiredLength(end + self.wire.len()),
                 ));
             }
-            pool.arena[pool.arena_used..end].copy_from_slice(key);
+            let k_off = base + pool.arena_used as u32;
+            let v_off = k_off + key.len() as u32;
+            pool.arena[pool.arena_used..pool.arena_used + key.len()].copy_from_slice(key);
+            pool.arena[pool.arena_used + key.len()..end].copy_from_slice(value);
             pool.arena_used = end;
-            Ok(off)
-        };
-        let place_val = |pool: &mut Self| -> Result<u32> {
-            let off = base + pool.arena_used as u32;
-            let end = pool.arena_used.checked_add(value.len()).ok_or(cap)?;
-            if end > pool.arena.len() {
-                return Err(ShlosiloError::with_context(
-                    ShlosiloErrorKind::BufferTooSmall,
-                    crate::error::ErrorContext::RequiredLength(end + self.wire.len()),
-                ));
-            }
-            pool.arena[pool.arena_used..end].copy_from_slice(value);
-            pool.arena_used = end;
-            Ok(off)
+            Ok((k_off, v_off))
         };
         // replace an existing key in place (the old payload tail is abandoned —
         // arena space is not reclaimed; capacity is a deployment parameter)
         for i in start..start + len {
             let k = KvMap::pool_slice(self.wire, &self.arena[..self.arena_used], self.recs[i].key);
             if k == key {
-                let k_off = place_key(self)?;
-                let v_off = place_val(self)?;
+                let (k_off, v_off) = place_pair(self)?;
                 self.recs[i] = KvRec {
                     key: (k_off, key.len() as u32),
                     value: (v_off, value.len() as u32),
@@ -379,8 +373,7 @@ impl<'a> MapPool<'a> {
         if self.recs_len >= self.recs.len() {
             return Err(cap);
         }
-        let k_off = place_key(self)?;
-        let v_off = place_val(self)?;
+        let (k_off, v_off) = place_pair(self)?;
         let at = start + len;
         self.recs.copy_within(at..self.recs_len, at + 1);
         self.recs[at] = KvRec {
@@ -2011,6 +2004,34 @@ pub fn is_p2tr_input(input_map: KvMap<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// F-19 (external audit 2026-11-19): `set_kv` reserves key+value as one step, so a value
+    /// that does not fit must not consume the key's arena space. The old shape advanced the
+    /// cursor after the key and returned Err on the value — every retry leaked more arena.
+    #[test]
+    fn set_kv_is_atomic_when_the_value_does_not_fit() {
+        let wire: [u8; 0] = [];
+        let mut arena = [0u8; 64];
+        let mut recs = [KvRec::EMPTY; 4];
+        let mut pool = MapPool::new_in(&wire, &mut arena, &mut recs);
+        assert_eq!(pool.start_map().expect("map"), 0);
+
+        // First write fits: key 4 + value 8 = 12 bytes.
+        pool.set_kv(0, b"aaaa", &[0x11; 8])
+            .expect("small pair fits");
+        let used_after_first = pool.arena_used;
+
+        // Second write: key 4 fits, value 60 does not (only 52 bytes of arena left).
+        let err = pool.set_kv(0, b"bbbb", &[0x22; 60]).unwrap_err();
+        assert_eq!(err.kind, ShlosiloErrorKind::BufferTooSmall);
+        assert_eq!(
+            pool.arena_used, used_after_first,
+            "a refused pair must not consume arena space"
+        );
+
+        // ... and the pool is still usable for a pair that does fit.
+        pool.set_kv(0, b"cccc", &[0x33; 8]).expect("still usable");
+    }
     /// BTC-2 (external audit 2026-11-19): exactly ONE answer to "what sighash does this
     /// input declare". The signer looked the entry up by its full key (`[0x03]`), the
     /// review page matched the key's FIRST byte and took the value's first byte — so a

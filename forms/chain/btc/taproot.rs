@@ -225,6 +225,21 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
     if input.input_index >= input.spent_outputs.len() {
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
+    // F-3 (external audit 2026-11-19, P0): the three per-input slices must describe the SAME
+    // transaction. Only `prevouts` and `spent_outputs` were length-checked, so
+    //
+    //   * a short `sequences` panicked in the ANYONECANPAY branch
+    //     (`input.sequences[input.input_index]`), and
+    //   * unequal lengths hashed a digest that corresponds to no real transaction in the
+    //     other branches — every per-input hasher simply iterates over its own slice.
+    //
+    // The PSBT assembly path keeps them equal, but this is a public API: it must refuse
+    // instead of trusting its caller.
+    if input.sequences.len() != input.prevouts.len()
+        || input.spent_outputs.len() != input.prevouts.len()
+    {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
     // hash_type validity (BIP-341): only 0x00/0x01/0x02/0x03/0x81/0x82/0x83 allowed
     match input.hash_type {
         0x00 | 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83 => {}
@@ -684,7 +699,14 @@ pub fn build_control_block(
 type ParsedControlBlock = (u8, u8, [u8; 32], alloc::vec::Vec<[u8; 32]>);
 #[cfg(any(feature = "alloc-fallback", test))]
 pub fn parse_control_block(cb: &[u8]) -> Option<ParsedControlBlock> {
-    if cb.len() < 33 {
+    // F-11 (external audit 2026-11-19): a control block is exactly `33 + 32m` bytes with
+    // `m <= 128` (BIP-341). This used to take whole 32-byte chunks and drop any remainder, so
+    // a trailing-trimmed block still parsed and the returned merkle path no longer represented
+    // the input; the depth was unbounded too, so a long block grew the Vec without limit.
+    if cb.len() < 33 || !(cb.len() - 33).is_multiple_of(32) {
+        return None;
+    }
+    if (cb.len() - 33) / 32 > 128 {
         return None;
     }
     let first_byte = cb[0];
@@ -708,6 +730,97 @@ pub fn parse_control_block(cb: &[u8]) -> Option<ParsedControlBlock> {
 /// Unit tests
 #[cfg(test)]
 mod tests {
+
+    /// F-11 (external audit 2026-11-19): a control block is exactly `33 + 32m` with `m <= 128`.
+    /// Trailing bytes used to be dropped silently, so the parsed merkle path no longer
+    /// described the input that was passed in.
+    #[test]
+    fn control_block_rejects_tail_and_excess_depth() {
+        use super::parse_control_block;
+
+        let mut base = alloc::vec![0u8; 33 + 32 * 2];
+        base[0] = 0xc0; // leaf_version 0xc0, parity 0
+        let (lv, parity, _ik, path) = parse_control_block(&base).expect("well-formed block");
+        assert_eq!(lv, 0xc0);
+        assert_eq!(parity, 0);
+        assert_eq!(path.len(), 2);
+
+        // one stray byte: 33 + 64 + 1 is not a whole number of path elements
+        let mut tail = base.clone();
+        tail.push(0xaa);
+        assert!(
+            parse_control_block(&tail).is_none(),
+            "trailing byte must be refused"
+        );
+
+        // depth 129 exceeds the BIP-341 limit
+        let too_deep = alloc::vec![0u8; 33 + 32 * 129];
+        assert!(
+            parse_control_block(&too_deep).is_none(),
+            "depth > 128 must be refused"
+        );
+    }
+
+    /// F-3 (external audit 2026-11-19, P0): opening the public sighash API to a caller whose
+    /// per-input slices disagree must return an error — the ANYONECANPAY branch used to index
+    /// `sequences[input_index]` directly and panic (panic = abort on the device).
+    #[test]
+    fn mismatched_per_input_slices_are_refused_not_panicked() {
+        use super::{bip341_keypath_sighash, SpentOutput, TaprootSighashInput};
+
+        let prevouts = [([0x11; 32], 0u32)];
+        let sequences_full = [0xffff_fffd_u32];
+        let spent = [SpentOutput {
+            value: 100_000,
+            script_pubkey: &[0x51],
+        }];
+        let outputs = [SpentOutput {
+            value: 90_000,
+            script_pubkey: &[0x51],
+        }];
+
+        let base = TaprootSighashInput {
+            tx_version: 2,
+            locktime: 0,
+            prevouts: &prevouts,
+            sequences: &sequences_full,
+            spent_outputs: &spent,
+            tx_outputs: &outputs,
+            input_index: 0,
+            hash_type: 0x81, // ANYONECANPAY | ALL — the branch that indexed `sequences`
+            annex_present: false,
+            tapleaf_hash: None,
+        };
+
+        // 1. sequences too short: this used to index out of bounds.
+        let short_sequences = TaprootSighashInput {
+            sequences: &[],
+            ..base
+        };
+        assert!(
+            bip341_keypath_sighash(&short_sequences).is_err(),
+            "a short sequences slice must be refused, not indexed"
+        );
+
+        // 2. spent_outputs too short: same class, other branch.
+        let short_spent = TaprootSighashInput {
+            spent_outputs: &[],
+            ..base
+        };
+        assert!(bip341_keypath_sighash(&short_spent).is_err());
+
+        // 3. longer than prevouts is equally inconsistent (it would hash entries with no
+        //    outpoint at all).
+        let extra_seq = [0u32, 1u32];
+        let too_long = TaprootSighashInput {
+            sequences: &extra_seq,
+            ..base
+        };
+        assert!(bip341_keypath_sighash(&too_long).is_err());
+
+        // Control: the consistent shape still hashes.
+        assert!(bip341_keypath_sighash(&base).is_ok());
+    }
     extern crate std;
     use super::*;
     use crate::curve_primitive::secp256k1::{base_mul, point_add, scalar_from_bytes};
