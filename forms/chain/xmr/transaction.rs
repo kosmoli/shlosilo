@@ -419,9 +419,17 @@ impl TxExtra {
                 if *pos + 32 > bytes.len() {
                     return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
                 }
-                let mut pk = [0u8; 32];
-                pk.copy_from_slice(&bytes[*pos..*pos + 32]);
-                extra.tx_pub_key = Some(pk);
+                // A3a-07 (external audit 2026-11-19), settled against the reference: a repeat
+                // of this tag is **not** an error — monero's `parse_tx_extra` simply collects
+                // every field, and `get_tx_pub_key_from_extra` selects by index through
+                // `find_tx_extra_field_by_type(fields, out, index = 0)` (i.e. the FIRST match).
+                // This reader used to overwrite, so with two `0x01` fields it kept the last one
+                // and disagreed with every wallet reading the same bytes. First wins now.
+                if extra.tx_pub_key.is_none() {
+                    let mut pk = [0u8; 32];
+                    pk.copy_from_slice(&bytes[*pos..*pos + 32]);
+                    extra.tx_pub_key = Some(pk);
+                }
                 *pos += 32;
                 continue;
             }
@@ -559,17 +567,21 @@ impl TransactionPrefix {
     }
 
     /// Exact serialized length (pairs with `serialize_into`).
+    ///
+    /// A3a-20 (external audit 2026-11-19): the sums used to run over the whole backing arrays
+    /// while the count prefixes and `serialize_into` use `inputs_len` / `outputs_len`. A pool
+    /// that still holds stale entries past the logical length therefore made this over-report
+    /// (a caller sizing a buffer from it gets a harmless oversized buffer, but the number was
+    /// simply wrong, and the reverse — an under-report — is the shape that overflows).
     pub fn serialized_len(&self) -> usize {
         1 + monero_varint_len(self.unlock_time)
             + monero_varint_len(self.inputs_len as u64)
-            + self
-                .inputs
+            + self.inputs[..self.inputs_len]
                 .iter()
                 .map(|i| i.serialized_len())
                 .sum::<usize>()
             + monero_varint_len(self.outputs_len as u64)
-            + self
-                .outputs
+            + self.outputs[..self.outputs_len]
                 .iter()
                 .map(|o| o.serialized_len())
                 .sum::<usize>()
@@ -849,6 +861,47 @@ impl Transaction {
 /// addition-overflow / slice panic (panic=abort DoS) or a capacity-overflow abort.
 #[cfg(test)]
 mod wire_hardening_tests {
+
+    /// A3a-07 (external audit 2026-11-19): a repeated `TX_EXTRA_TAG_PUBKEY` is not an error in
+    /// the reference (monero's `parse_tx_extra` collects every field and
+    /// `get_tx_pub_key_from_extra` takes index 0), so the reader must keep the FIRST key.
+    /// It used to overwrite, i.e. keep the last one, and disagree with every wallet reading
+    /// the same bytes.
+    #[test]
+    fn repeated_tx_pub_key_keeps_the_first() {
+        let mut bytes = alloc::vec::Vec::new();
+        bytes.push(0x01);
+        bytes.extend_from_slice(&[0xaa; 32]);
+        bytes.push(0x01);
+        bytes.extend_from_slice(&[0xbb; 32]);
+        let mut pos = 0usize;
+        let extra = TxExtra::deserialize(&bytes, &mut pos).expect("duplicate tag must parse");
+        assert_eq!(pos, bytes.len());
+        assert_eq!(extra.tx_pub_key, Some([0xaa; 32]), "first tag must win");
+    }
+
+    /// A3a-20 (external audit 2026-11-19): the length must describe the LOGICAL prefix.
+    /// `inputs_len` / `outputs_len` are what `serialize_into` writes; summing over the whole
+    /// backing arrays reported more whenever a pool held stale entries.
+    #[test]
+    fn serialized_len_counts_the_logical_prefix_only() {
+        use crate::chain::xmr::transaction::{TransactionPrefix, TxExtra, TxInput, TxOutput};
+        let inp_a = TxInput::new(heapless::Vec::new(), [0x11; 32]);
+        let inp_b = TxInput::new(heapless::Vec::new(), [0x22; 32]);
+        let out_a = TxOutput::new_tagged(0, [0x33; 32], 0);
+        let out_b = TxOutput::new_tagged(0, [0x44; 32], 0);
+        let mut prefix =
+            TransactionPrefix::new(0, &[inp_a, inp_b], &[out_a, out_b], TxExtra::new())
+                .expect("prefix");
+        // Simulate a pool that still holds a stale entry past the logical length.
+        prefix.inputs_len = 1;
+        prefix.outputs_len = 1;
+        assert_eq!(
+            prefix.serialized_len(),
+            prefix.serialize().len(),
+            "length must match what serialization actually writes"
+        );
+    }
     use super::*;
 
     /// Fuzz smoke regression (2026-09-25): output-entry field reads were

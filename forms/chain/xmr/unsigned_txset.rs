@@ -179,6 +179,18 @@ pub struct MultisigKLRki {
 }
 
 impl MultisigKLRki {
+    /// A3a-13 (external audit 2026-11-19): the wire reader fills plain arrays first, so it
+    /// must hand them over with this constructor — `take` wipes the caller's buffers as the
+    /// owner takes them, where `new` only erased its own parameter copies.
+    pub fn take(k: &mut [u8; 32], l: &mut [u8; 32], r: &mut [u8; 32], ki: [u8; 32]) -> Self {
+        Self {
+            k: crate::types::SecretBytes::take(k),
+            l: crate::types::SecretBytes::take(l),
+            r: crate::types::SecretBytes::take(r),
+            ki,
+        }
+    }
+
     pub fn new(k: [u8; 32], l: [u8; 32], r: [u8; 32], ki: [u8; 32]) -> Self {
         Self {
             k: crate::types::SecretBytes::new(k),
@@ -535,9 +547,9 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
     // P1-03: mask goes through SecretBytes take (the read-in buffer copy is zeroed immediately)
     let mut mask_buf = read_u8_32(data, off)?;
     let mask = crate::types::SecretBytes::take(&mut mask_buf);
-    let k = read_u8_32(data, off)?;
-    let l = read_u8_32(data, off)?;
-    let r = read_u8_32(data, off)?;
+    let mut k = read_u8_32(data, off)?;
+    let mut l = read_u8_32(data, off)?;
+    let mut r = read_u8_32(data, off)?;
     let ki = read_u8_32(data, off)?;
     Ok(TxSourceEntry {
         outputs,
@@ -548,7 +560,7 @@ fn read_source_entry(data: &[u8], off: &mut usize) -> Result<TxSourceEntry> {
         amount,
         rct,
         mask,
-        multisig_kLRki: MultisigKLRki::new(k, l, r, ki),
+        multisig_kLRki: MultisigKLRki::take(&mut k, &mut l, &mut r, ki),
     })
 }
 
@@ -921,7 +933,25 @@ pub fn deserialize_unsigned_tx<'a>(
         )?;
         txes.push(Some(d)).map_err(|_| err())?;
     }
-    // remainder = transfers segment (not needed by the display layer)
+    // remainder = the `transfers` segment (ExportedTransferDetails) — not needed by the
+    // display/sign layer, which reads only the construction data.
+    //
+    // A3a-03 (external audit 2026-11-19) reported "off == len is not checked, any suffix is
+    // accepted". That is **not** a defect: the wire container really does carry a second
+    // section after the construction data. Reference behaviour, read from the source rather
+    // than inferred: keystone3-firmware `rust/apps/monero/src/transfer.rs:1080-1082`
+    //
+    //     let transfers = ExportedTransferDetails::from_bytes(reader.remaining_bytes())?;
+    //     transfers.validate_curve_points()?;
+    //     Ok(UnsignedTx { txes, transfers })
+    //
+    // — i.e. the remainder is *consumed*, not rejected. Requiring exact consumption here
+    // would refuse every real unsigned txset.
+    //
+    // Residual difference, recorded honestly: the reference parses that remainder and
+    // validates its curve points; we skip it because nothing downstream reads it. A malformed
+    // transfers section is therefore accepted here and rejected there. Tightening this needs a
+    // caller-provided detail pool in `UnsignedTxPools`, which no consumer needs today.
     Ok(UnsignedTx { txes })
 }
 

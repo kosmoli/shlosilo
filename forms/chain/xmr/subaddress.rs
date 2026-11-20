@@ -133,17 +133,21 @@ pub fn derive_subaddress(
     account: u32,
     minor: u32,
 ) -> Result<SubaddressKeys> {
+    // A3a-11 (external audit 2026-11-19): every intermediate here is a secret scalar (or its
+    // bytes) and the `decompress` failure below is an early return — so each one is owned from
+    // the moment it exists instead of relying on the tail of the function to wipe it.
+    //
     // 1. m = Hs("SubAddr" || 0x00 || view_sec || major || minor)
-    let m = calc_subaddress_m(main_view_sec, account, minor)?;
-    let m_dalek = reduce_scalar_to_dalek(&m);
+    let m = zeroize::Zeroizing::new(calc_subaddress_m(main_view_sec, account, minor)?);
+    let m_dalek = zeroize::Zeroizing::new(reduce_scalar_to_dalek(&m));
 
     // 2. subaddr_spend_sec = (m + main_spend_sec) mod L
-    let spend_sec_dalek = reduce_scalar_to_dalek(main_spend_sec);
-    let subaddr_spend_sec_dalek = m_dalek + spend_sec_dalek;
+    let spend_sec_dalek = zeroize::Zeroizing::new(reduce_scalar_to_dalek(main_spend_sec));
+    let subaddr_spend_sec_dalek = zeroize::Zeroizing::new(*m_dalek + *spend_sec_dalek);
     let mut subaddr_spend_sec: [u8; 32] = subaddr_spend_sec_dalek.to_bytes();
 
     // 3. subaddr_spend_pub = main_spend_pub + m * G  (= subaddr_spend_sec * G)
-    let m_g: curve25519_dalek::EdwardsPoint = ED25519_BASEPOINT_TABLE * &m_dalek;
+    let m_g: curve25519_dalek::EdwardsPoint = ED25519_BASEPOINT_TABLE * &*m_dalek;
     let main_spend_pub_comp = CompressedPoint::from(*main_spend_pub);
     let main_spend_pub_point = main_spend_pub_comp
         .decompress()
@@ -154,12 +158,13 @@ pub fn derive_subaddress(
 
     // 4. subaddr_view_sec = (view_sec * subaddr_spend_sec) mod L
     //    (official Monero sub view secret c = a * d, d = spend secret, a = view secret)
-    let view_sec_dalek = reduce_scalar_to_dalek(main_view_sec);
-    let subaddr_view_sec_dalek = view_sec_dalek * subaddr_spend_sec_dalek;
+    let view_sec_dalek = zeroize::Zeroizing::new(reduce_scalar_to_dalek(main_view_sec));
+    let subaddr_view_sec_dalek =
+        zeroize::Zeroizing::new(*view_sec_dalek * *subaddr_spend_sec_dalek);
     let mut subaddr_view_sec: [u8; 32] = subaddr_view_sec_dalek.to_bytes();
 
     // 5. subaddr_view_pub = subaddr_spend_pub * view_sec  (= subaddr_view_sec * G)
-    let subaddr_view_pub_point = subaddr_spend_pub_point * view_sec_dalek;
+    let subaddr_view_pub_point = subaddr_spend_pub_point * *view_sec_dalek;
     let subaddr_view_pub = subaddr_view_pub_point.compress().to_bytes();
 
     Ok(SubaddressKeys {
