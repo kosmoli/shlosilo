@@ -813,6 +813,12 @@ fn push_decoded_calldata(
             view.push_str(name)?;
             view.push_str("args not decoded")
         }
+        // A3c-F12 (2026-11-20): the calldata has a known selector but NOT that call's canonical
+        // length. The extra bytes are signed too, so this must not read like a clean transfer.
+        D::ShapeMismatch { name, .. } => {
+            view.push_str(name)?;
+            view.push_str("shape does not match")
+        }
         D::Unknown { .. } => view.push_str("call: unknown contract"),
     }
 }
@@ -868,6 +874,7 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
                 if matches!(
                     decoded,
                     crate::chain::eth::calldata::DecodedCalldata::Unknown { .. }
+                        | crate::chain::eth::calldata::DecodedCalldata::ShapeMismatch { .. }
                 ) {
                     view.flags |= flag::UNKNOWN_CALLDATA;
                 }

@@ -24,17 +24,17 @@ use alloc::vec::Vec;
 
 /// RLP-encode a single value (bytes)
 ///
-/// - single byte `0x00` → `0x80` (empty string)
-/// - single bytes 1-127: returned as-is
+/// - single bytes 0x00-0x7f: returned as-is (a one-byte payload is its own encoding;
+///   only INTEGERS map zero to the empty string, and that happens in `encode_uint`)
 /// - 0-55 bytes: `[0x80 + len, ...bytes]`
 /// - >55 bytes: `[0xb7 + len_of_len, len_be, ...bytes]`
 #[cfg(any(feature = "alloc-fallback", test))]
 pub fn encode_bytes(b: &[u8]) -> Vec<u8> {
-    // single byte 0 → empty string (0x80)
-    if b.len() == 1 && b[0] == 0x00 {
-        return alloc::vec![0x80];
-    }
-    // single bytes 1-127: as-is
+    // single bytes 0x00-0x7f: as-is
+    // A3c-F3 (external audit 2026-11-19, verified 2026-11-20): this used to special-case the single
+    // byte 0x00 into the empty string 0x80. That is the INTEGER rule, and it already lives in
+    // `encode_uint`/`write_uint`; applying it to a byte string silently turned calldata `0x00` into
+    // empty calldata — the signed transaction was not the one that had been reviewed.
     if b.len() == 1 && b[0] < 0x80 {
         return alloc::vec![b[0]];
     }
@@ -119,9 +119,9 @@ pub fn encode_list(items: &[Vec<u8>]) -> Vec<u8> {
 
 // --- Zero-alloc streaming form (production) --------------------------
 //
-// Byte-for-byte equivalent to the `encode_*` conveniences above, including
-// the single-zero quirk (`[0x00]` encodes as the empty string 0x80) — the
-// existing canonical-uint semantics, pinned by the oracle suite.
+// Byte-for-byte equivalent to the `encode_*` conveniences above. A one-byte payload
+// 0x00-0x7f is its own encoding; only integers map zero to the empty string (0x80),
+// and that rule lives in `write_uint` / `write_uint256` (A3c-F3, 2026-11-20).
 //
 // The writers are generic over `Sink` (types/push.rs): the signing preimage
 // can stream straight into `KeccakSink` with NO intermediate buffer, and
@@ -132,7 +132,7 @@ use crate::types::push::Sink;
 
 /// Byte length of `encode_bytes(b)`'s output.
 pub fn encoded_bytes_len(b: &[u8]) -> usize {
-    if b.len() == 1 && (b[0] == 0 || b[0] < 0x80) {
+    if b.len() == 1 && b[0] < 0x80 {
         return 1;
     }
     if b.len() <= 55 {
@@ -152,7 +152,11 @@ pub fn encoded_uint_len(n: u128) -> usize {
         return 1;
     }
     let bytes_needed = (128 - n.leading_zeros()).div_ceil(8) as usize;
-    encoded_bytes_len_of_len(bytes_needed)
+    let be = n.to_be_bytes();
+    // A3c-F4 (external audit 2026-11-19, verified 2026-11-20): this used to add up the length from
+    // the payload SIZE alone, which is wrong for a single payload byte >= 0x80 — that one encodes as
+    // `0x81 xx` (two bytes). Delegating to the slice-aware helper keeps one rule in one place.
+    encoded_bytes_len(&be[16 - bytes_needed..])
 }
 
 /// Byte length of `encode_uint256(bytes)`'s output.
@@ -161,27 +165,8 @@ pub fn encoded_uint256_len(bytes: &[u8; 32]) -> usize {
     while start < 32 && bytes[start] == 0 {
         start += 1;
     }
-    if start == 32 {
-        return 1;
-    }
-    encoded_bytes_len_of_len(32 - start)
-}
-
-/// Byte length of an RLP string carrying `len` payload bytes (1-byte payload
-/// is a single as-is byte; callers pass raw payload bytes).
-fn encoded_bytes_len_of_len(len: usize) -> usize {
-    if len == 1 {
-        return 1;
-    }
-    if len <= 55 {
-        return 1 + len;
-    }
-    let n_bytes = (len as u32).to_be_bytes();
-    let mut leading_zeros = 0;
-    while leading_zeros < 4 && n_bytes[leading_zeros] == 0 {
-        leading_zeros += 1;
-    }
-    1 + (4 - leading_zeros) + len
+    // all-zero → empty payload → 1 byte (0x80); otherwise delegate (A3c-F4, same rule as above)
+    encoded_bytes_len(&bytes[start..])
 }
 
 /// Byte length of an RLP list header over `payload_len` payload bytes.
@@ -200,9 +185,9 @@ pub fn list_head_len(payload_len: usize) -> usize {
 
 /// RLP string into a sink — same bytes as `encode_bytes`.
 pub fn write_bytes<S: Sink>(s: &mut S, b: &[u8]) -> Result<()> {
-    if b.len() == 1 && b[0] == 0 {
-        return s.put(&[0x80]);
-    }
+    // A3c-F3 (2026-11-20): the single-zero special case used to live here. It belongs to the
+    // INTEGER writers (`write_uint(0)` → 0x80), not to byte strings: as a byte string, 0x00 is a
+    // 1-byte payload and encodes as itself.
     if b.len() == 1 && b[0] < 0x80 {
         return s.put(b);
     }
@@ -263,6 +248,7 @@ pub fn write_list_head<S: Sink>(s: &mut S, payload_len: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::push::SinkCursor;
 
     /// Official RLP test vector: empty string → 0x80
     #[test]
@@ -276,24 +262,17 @@ mod tests {
         assert_eq!(encode_bytes(&[0x7f]), alloc::vec![0x7f]);
     }
 
-    /// Official RLP test vector: 0x00 is not returned directly; it must encode as 0x80
-    /// (because 0 < 0x80 but per the RLP spec: single bytes < 0x80 return directly,
-    ///  but 0 is the special case → b"" encodes → 0x80)
+    /// A3c-F3 (2026-11-20): the byte string `0x00` and the integer 0 are different values and encode
+    /// differently. The old version of this test pinned the wrong one (byte string → 0x80); the RLP
+    /// rule is "a single byte < 0x80 is its own encoding", and only integers strip to the empty string.
     #[test]
     fn rlp_zero_byte() {
-        // 0x00 = single byte 0 = b"" → 0x80 (RLP empty string)
-        // but 0x00 itself encodes as [0x00] = 1-byte value 0
-        // our current implementation: b.len()==1 && b[0]<0x80 returns b directly
-        // but b"" is already handled; what should encode_bytes(b"\x00") return for b"\x00"?
-        // per the official spec: a single-byte value < 0x80 → return that byte directly
-        // but bytes_from_u128(0) = b"" (empty), then encode_bytes(b"") = [0x80]
-        // this tests the behavior of calling encode_bytes directly on [0x00]
-        // in fact [0x00] is a single-byte 0 → should just return [0x00]
-        // but the RLP spec treats 0 as an empty string — let's check the official tests
-        // official test "0" → 0x80
-        // so encode_bytes(b"\x00") should be [0x80], not [0x00]
-        // our implementation here needs fixing: single-byte 0 treated as an empty string
-        assert_eq!(encode_bytes(&[0x00]), alloc::vec![0x80]);
+        // byte string of length 1, value 0 → itself
+        assert_eq!(encode_bytes(&[0x00]), alloc::vec![0x00]);
+        // integer 0 → empty string
+        assert_eq!(encode_uint(0), alloc::vec![0x80]);
+        // empty byte string → empty string
+        assert_eq!(encode_bytes(b""), alloc::vec![0x80]);
     }
 
     /// Official RLP test vector: dog = 0x83 'd' 'o' 'g' (3 chars)
@@ -357,5 +336,112 @@ mod tests {
         // 0x94 || 20 bytes (0x80 + 0x14 = 0x94)
         assert_eq!(encoded.len(), 21);
         assert_eq!(encoded[0], 0x94);
+    }
+
+    /// A3c-F4 (2026-11-20): the length helper must agree with the writer for EVERY value, including
+    /// the single payload bytes >= 0x80 — those encode as `0x81 xx` (2 bytes), not as one byte.
+    /// Expected bytes below come from the independent Python RLP oracle.
+    #[test]
+    fn encoded_uint_len_matches_the_oracle_table() {
+        let cases: [(u128, &str); 14] = [
+            (0, "80"),
+            (1, "01"),
+            (15, "0f"),
+            (127, "7f"),
+            (128, "8180"),
+            (129, "8181"),
+            (137, "8189"),
+            (200, "81c8"),
+            (255, "81ff"),
+            (256, "820100"),
+            (65535, "82ffff"),
+            (65536, "83010000"),
+            (u64::MAX as u128, "88ffffffffffffffff"),
+            (u128::MAX, "90ffffffffffffffffffffffffffffffff"),
+        ];
+        for (n, expected_hex) in cases {
+            let expected_len = expected_hex.len() / 2;
+            assert_eq!(
+                encoded_uint_len(n),
+                expected_len,
+                "encoded_uint_len({n}) disagrees with the oracle"
+            );
+            // and the writer must actually produce that many bytes (internal consistency)
+            let mut buf = [0u8; 64];
+            let mut w = SinkCursor::new(&mut buf);
+            write_uint(&mut w, n).unwrap();
+            assert_eq!(w.pos(), expected_len, "write_uint({n}) length");
+        }
+    }
+
+    /// Same for the uint256 form (signature r/s go through it).
+    #[test]
+    fn encoded_uint256_len_matches_the_oracle() {
+        // stripped payload 0x80 / 0xff -> 2 bytes; 0x0102 -> 3 bytes; value 1 -> 1; all-zero -> 1
+        let mut b = [0u8; 32];
+        b[31] = 0x80;
+        assert_eq!(encoded_uint256_len(&b), 2);
+        b[31] = 0xff;
+        assert_eq!(encoded_uint256_len(&b), 2);
+        b[30] = 0x01;
+        b[31] = 0x02;
+        assert_eq!(encoded_uint256_len(&b), 3);
+        assert_eq!(encoded_uint256_len(&[0u8; 32]), 1);
+        let mut one = [0u8; 32];
+        one[31] = 0x01;
+        assert_eq!(encoded_uint256_len(&one), 1);
+        // full 32-byte payload (r/s normally): 0x81 prefix + 32 bytes for a leading byte >= 0x80?
+        // No — a 32-byte payload always takes the `0x80 + len` form: 1 + 32.
+        let mut full = [0xffu8; 32];
+        assert_eq!(encoded_uint256_len(&full), 33);
+        full[0] = 0x7f;
+        assert_eq!(encoded_uint256_len(&full), 33);
+        // internal consistency against the writer for a few shapes
+        for lead in [0x01u8, 0x7f, 0x80, 0xff] {
+            let mut b = [0u8; 32];
+            b[0] = lead;
+            b[31] = 0x33;
+            let mut buf = [0u8; 64];
+            let mut w = SinkCursor::new(&mut buf);
+            write_uint256(&mut w, &b).unwrap();
+            assert_eq!(
+                encoded_uint256_len(&b),
+                w.pos(),
+                "uint256 len vs writer (lead {:02x})",
+                lead
+            );
+        }
+    }
+
+    /// A3c-F3 (2026-11-20): a single 0x00 BYTE is a byte string of length 1 and must encode as itself.
+    /// Only integers map zero to the empty string (that path is `write_uint(0)`), so `write_bytes`
+    /// must not rewrite it.
+    #[test]
+    fn single_zero_byte_is_a_byte_string_not_an_empty_string() {
+        let mut buf = [0u8; 8];
+        let n = {
+            let mut w = SinkCursor::new(&mut buf);
+            write_bytes(&mut w, &[0x00]).unwrap();
+            w.pos()
+        };
+        assert_eq!(&buf[..n], &[0x00], "byte string 0x00 must stay 0x00");
+
+        // control: 0x01 and other sub-0x80 bytes were already correct
+        let mut buf = [0u8; 8];
+        let n = {
+            let mut w = SinkCursor::new(&mut buf);
+            write_bytes(&mut w, &[0x01]).unwrap();
+            w.pos()
+        };
+        assert_eq!(&buf[..n], &[0x01]);
+
+        // integer zero still maps to the empty string
+        let mut buf = [0u8; 8];
+        let n = {
+            let mut w = SinkCursor::new(&mut buf);
+            write_uint(&mut w, 0).unwrap();
+            w.pos()
+        };
+        assert_eq!(&buf[..n], &[0x80]);
     }
 }

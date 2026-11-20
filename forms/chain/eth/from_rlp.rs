@@ -45,6 +45,12 @@ impl<'a> Rlp<'a> {
                 if bytes.len() < 1 + len {
                     return Err(err());
                 }
+                // A3c-F6 (2026-11-20): canonicality. A payload of exactly one byte below 0x80 has its
+                // own encoding, so the short-string form is a second encoding of the same value —
+                // accepting it is a parser differential against a node.
+                if len == 1 && bytes[1] < 0x80 {
+                    return Err(err());
+                }
                 (&bytes[1..1 + len], &bytes[1 + len..])
             }
             0xb8..=0xbf => {
@@ -73,6 +79,11 @@ impl<'a> Rlp<'a> {
                     None => return Err(err()),
                 };
                 if end > bytes.len() {
+                    return Err(err());
+                }
+                // A3c-F6 (2026-11-20): the long form is only canonical for payloads >= 56 bytes and
+                // with a minimal length field (no leading zero byte).
+                if len <= 55 || bytes[1] == 0 {
                     return Err(err());
                 }
                 (&bytes[start..end], &bytes[end..])
@@ -106,6 +117,11 @@ impl<'a> Rlp<'a> {
                     None => return Err(err()),
                 };
                 if end > bytes.len() {
+                    return Err(err());
+                }
+                // A3c-F6 (2026-11-20): same canonicality rules for lists — long form only for
+                // payloads >= 56 bytes, and the length field must not start with a zero byte.
+                if len <= 55 || bytes[1] == 0 {
                     return Err(err());
                 }
                 (&bytes[start..end], &bytes[end..])
@@ -203,11 +219,14 @@ pub fn parse_eip1559_raw(raw: &[u8]) -> Result<Eip1559Transaction<'_>> {
         let _ = f.as_str()?;
     }
     Ok(Eip1559Transaction {
-        chain_id: chain_id as u64,
-        nonce: nonce as u64,
+        // A3c-F7 (2026-11-20): `as u64` silently truncated a wider wire integer, which rewrote the
+        // request (chain_id 2^64+1 became 1). Reject instead: a value the model cannot represent is
+        // not a transaction this device may review or sign.
+        chain_id: u64::try_from(chain_id).map_err(|_| err())?,
+        nonce: u64::try_from(nonce).map_err(|_| err())?,
         max_priority_fee_per_gas,
         max_fee_per_gas,
-        gas_limit: gas_limit as u64,
+        gas_limit: u64::try_from(gas_limit).map_err(|_| err())?,
         destination,
         amount,
         data,
@@ -241,7 +260,8 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
     };
     let amount = be_to_u128(fields[4].as_str()?)?;
     let data = crate::types::wire_bytes::wire_from(fields[5].as_str()?);
-    let v = be_to_u128(fields[6].as_str()?)? as u64;
+    // A3c-F7 (2026-11-20): the same rule as the 1559 entry — no silent truncation of wire integers.
+    let v = u64::try_from(be_to_u128(fields[6].as_str()?)?).map_err(|_| err())?;
     if v < 35 {
         return Err(err()); // pre-EIP-155 unsupported
     }
@@ -250,9 +270,9 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
     }
     Ok(Eip155Transaction {
         chain_id: ((v - 35) / 2) as u64,
-        nonce: nonce as u64,
+        nonce: u64::try_from(nonce).map_err(|_| err())?,
         gas_price,
-        gas_limit: gas_limit as u64,
+        gas_limit: u64::try_from(gas_limit).map_err(|_| err())?,
         destination,
         amount,
         data,
@@ -377,5 +397,80 @@ mod tests {
         let mut raw = hex_decode("02f8730180843b9aca008504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080c001a0b3d7e5d4775918a0ec38e4f9da6263f69c2072c0e177ff9aa274575bfba17d04a062182875ae92e4de08aaf8ea1a43d3ea0d836745788801cdc79ccc473a76dfd9");
         raw.push(0xff); // trailing garbage
         assert!(parse_eip1559_raw(&raw).is_err());
+    }
+
+    /// A3c-F7 (external audit 2026-11-19, verified 2026-11-20): wire integers wider than the
+    /// transaction model must be REJECTED, not silently truncated. Truncation rewrites the request —
+    /// `chain_id = 2^64 + 1` used to parse as 1, i.e. the device reviewed and signed for a different
+    /// chain than the bytes named (same shape for nonce and gas_limit, and for legacy `v`).
+    #[test]
+    fn oversized_wire_integers_are_rejected_not_truncated() {
+        // control: identical shape with in-range fields parses
+        let ok = hex_decode("02ed0109843b9aca008504a817c8008252089435353535353535353535353535353535353535358203e880c0800101");
+        assert!(parse_eip1559_raw(&ok).is_ok());
+
+        // chain_id / nonce / gas_limit each carrying 2^64 + small
+        for raw_hex in [
+            "02f68901000000000000000109843b9aca008504a817c8008252089435353535353535353535353535353535353535358203e880c0800101",
+            "02f601890100000000000000c8843b9aca008504a817c8008252089435353535353535353535353535353535353535358203e880c0800101",
+            "02f40109843b9aca008504a817c800890100000000000052089435353535353535353535353535353535353535358203e880c0800101",
+        ] {
+            assert!(
+                parse_eip1559_raw(&hex_decode(raw_hex)).is_err(),
+                "an oversized field must be rejected, not truncated: {raw_hex}"
+            );
+        }
+
+        // legacy entry (L1 face, ported into the product with pool item 68): nonce and v
+        assert!(parse_eip155_raw(&hex_decode(
+            "ec098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080250101"
+        ))
+        .is_ok());
+        assert!(parse_eip155_raw(&hex_decode(
+            "f5890100000000000000098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080250101"
+        ))
+        .is_err());
+        assert!(parse_eip155_raw(&hex_decode(
+            "f5098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080890100000000000000250101"
+        ))
+        .is_err());
+    }
+
+    /// A3c-F6 (2026-11-20): non-canonical RLP is rejected. Consensus-valid RLP has exactly one
+    /// encoding per value, so accepting variants creates a parser differential between this device and
+    /// a node (same decoded transaction, different bytes).
+    #[test]
+    fn non_canonical_rlp_is_rejected() {
+        // a single byte < 0x80 must be encoded as itself, not as `0x81 xx`
+        assert!(Rlp::read(&[0x81, 0x05]).is_err());
+        assert!(Rlp::read(&[0x05]).is_ok()); // control
+
+        // the long form is for payloads >= 56 bytes
+        assert!(Rlp::read(&[0xb8, 0x03, b'd', b'o', b'g']).is_err());
+        let mut ok_long = alloc::vec![0xb8u8, 0x38];
+        ok_long.extend_from_slice(&[0xaa; 56]);
+        assert!(Rlp::read(&ok_long).is_ok());
+
+        // length bytes must not carry leading zeros (`0xb9 0x00 0x38 …`)
+        let mut lead_zero = alloc::vec![0xb9u8, 0x00, 0x38];
+        lead_zero.extend_from_slice(&[0xaa; 56]);
+        assert!(Rlp::read(&lead_zero).is_err());
+
+        // the same two rules for lists
+        assert!(Rlp::read(&[0xf8, 0x01, 0x80]).is_err());
+        let list_lead_zero = alloc::vec![0xf9u8, 0x00, 0x01, 0x80];
+        assert!(Rlp::read(&list_lead_zero).is_err());
+        let mut ok_list = alloc::vec![0xf8u8, 0x38];
+        ok_list.extend_from_slice(&[0x80; 56]);
+        assert!(Rlp::read(&ok_list).is_ok());
+
+        // and through the transaction entry: nonce 5 written as `0x81 0x05`
+        let non_canonical_tx = hex_decode(
+            "02ee018105843b9aca008504a817c8008252089435353535353535353535353535353535353535358203e880c0800101",
+        );
+        assert!(
+            parse_eip1559_raw(&non_canonical_tx).is_err(),
+            "a transaction carrying a non-canonical field must be rejected"
+        );
     }
 }

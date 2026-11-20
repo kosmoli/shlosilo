@@ -48,6 +48,14 @@ pub enum DecodedCalldata {
     Unknown {
         selector: [u8; 4],
     },
+    /// A3c-F12 (external audit 2026-11-19, verified 2026-11-20): a known selector whose calldata does
+    /// NOT have that shape's canonical length. The extra (or missing) bytes are still signed, so this
+    /// call is not the plain shape it looks like — name it, but say the shape did not match instead of
+    /// decoding two words and pretending the rest does not exist.
+    ShapeMismatch {
+        selector: [u8; 4],
+        name: &'static str,
+    },
 }
 
 impl DecodedCalldata {
@@ -65,6 +73,7 @@ impl DecodedCalldata {
             DecodedCalldata::TransferFrom { .. } => "erc20 transfer from",
             DecodedCalldata::SetApprovalForAll { .. } => "set approval for all",
             DecodedCalldata::KnownSelector { name, .. } => name,
+            DecodedCalldata::ShapeMismatch { name, .. } => name,
             DecodedCalldata::Unknown { .. } => "unknown call",
         }
     }
@@ -125,29 +134,57 @@ pub fn decode_calldata(input: &[u8]) -> Result<DecodedCalldata> {
     }
     let mut sel = [0u8; 4];
     sel.copy_from_slice(&input[..4]);
+    // A3c-F12 (2026-11-20): every fixed shape below has an EXACT canonical length. Anything longer
+    // carries bytes that get signed but were not decoded; anything shorter cannot be that call at all.
+    // Both cases must be surfaced instead of decoding the shape we happened to find first.
+    let exact = |want: usize, name: &'static str| -> Option<DecodedCalldata> {
+        if input.len() == want {
+            None
+        } else {
+            Some(DecodedCalldata::ShapeMismatch {
+                selector: sel,
+                name,
+            })
+        }
+    };
     match sel {
         SEL_TRANSFER => {
+            if let Some(d) = exact(4 + 64, "erc20 transfer") {
+                return Ok(d);
+            }
             let to = address_word(word(input, 0)?)?;
             let amount = amount_word(word(input, 1)?);
             Ok(DecodedCalldata::Transfer { to, amount })
         }
         SEL_APPROVE => {
+            if let Some(d) = exact(4 + 64, "erc20 approve") {
+                return Ok(d);
+            }
             let spender = address_word(word(input, 0)?)?;
             let amount = amount_word(word(input, 1)?);
             Ok(DecodedCalldata::Approve { spender, amount })
         }
         SEL_INCREASE => {
+            if let Some(d) = exact(4 + 64, "erc20 increase allowance") {
+                return Ok(d);
+            }
             let spender = address_word(word(input, 0)?)?;
             let added = amount_word(word(input, 1)?);
             Ok(DecodedCalldata::IncreaseAllowance { spender, added })
         }
         SEL_TRANSFER_FROM => {
+            if let Some(d) = exact(4 + 96, "erc20 transfer from") {
+                return Ok(d);
+            }
             let from = address_word(word(input, 0)?)?;
             let to = address_word(word(input, 1)?)?;
             let amount = amount_word(word(input, 2)?);
             Ok(DecodedCalldata::TransferFrom { from, to, amount })
         }
         SEL_SET_APPROVAL => {
+            if let Some(d) = exact(4 + 64, "set approval for all") {
+                return Ok(d);
+            }
             let operator = address_word(word(input, 0)?)?;
             let approved = bool_word(word(input, 1)?)?;
             Ok(DecodedCalldata::SetApprovalForAll { operator, approved })
@@ -277,6 +314,46 @@ mod tests {
             }
             other => panic!("expected Transfer, got {other:?}"),
         }
+    }
+
+    /// A3c-F12 (external audit 2026-11-19, verified 2026-11-20): a fixed-shape call must match the
+    /// canonical length exactly. A `transfer` selector followed by the two words AND more bytes is a
+    /// different (possibly hostile) call — those extra bytes are still signed, so classifying it as a
+    /// plain `Transfer` overstates what was decoded.
+    #[test]
+    fn fixed_shape_with_trailing_bytes_is_not_a_plain_transfer() {
+        let canonical = hex_decode(
+            "a9059cbb0000000000000000000000005df9b87991262f6ba471f09758cde1c0fc1de7340000000000000000000000000000000000000000000000000000000000000064",
+        );
+        assert!(matches!(
+            decode_calldata(&canonical).unwrap(),
+            DecodedCalldata::Transfer { .. }
+        ));
+
+        let mut overlong = canonical.clone();
+        overlong.extend_from_slice(&hex_decode("deadbeef"));
+        match decode_calldata(&overlong).unwrap() {
+            DecodedCalldata::ShapeMismatch { name, .. } => assert_eq!(name, "erc20 transfer"),
+            other => panic!("trailing bytes must not decode as a plain call, got {other:?}"),
+        }
+
+        // every fixed shape that has an exact canonical length
+        let approve = hex_decode(
+            "095ea7b30000000000000000000000005df9b87991262f6ba471f09758cde1c0fc1de7340000000000000000000000000000000000000000000000000000000000000064",
+        );
+        assert!(matches!(
+            decode_calldata(&approve).unwrap(),
+            DecodedCalldata::Approve { .. }
+        ));
+        let mut short = approve.clone();
+        short.truncate(short.len() - 1); // 67 bytes: between canonical and garbage
+        assert!(
+            !matches!(
+                decode_calldata(&short).unwrap(),
+                DecodedCalldata::Approve { .. }
+            ),
+            "a truncated word boundary must not decode as approve"
+        );
     }
 
     #[test]
@@ -435,6 +512,13 @@ mod tests {
     fn transfer_too_short_rejected() {
         let input =
             hex_decode("a9059cbb0000000000000000000000005df9b87991262f6ba471f09758cde1c0fc1de734");
-        assert!(decode_calldata(&input).is_err());
+        // A3c-F12 (2026-11-20): a call that does not have the shape's canonical length is no longer an
+        // Err — it is reported as `ShapeMismatch`, which the review screen renders as
+        // "<name> shape does not match" and flags. Err here would collapse it into "unknown contract"
+        // and lose the fact that the selector IS a known ERC-20 method.
+        match decode_calldata(&input).unwrap() {
+            DecodedCalldata::ShapeMismatch { name, .. } => assert_eq!(name, "erc20 transfer"),
+            other => panic!("short transfer must be a shape mismatch, got {other:?}"),
+        }
     }
 }

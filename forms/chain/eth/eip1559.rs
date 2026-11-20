@@ -426,6 +426,72 @@ mod tests {
         assert_eq!(&hash[..], &expected_bytes[..], "signing hash mismatch");
     }
 
+    /// A3c-F4 (external audit 2026-11-19, verified 2026-11-20): the preimage layout must match an
+    /// independent implementation exactly. The expected hex below comes from a from-scratch Python
+    /// Keccak-256 + RLP encoder (not from this crate, not from any crypto library); the same script
+    /// reproduces the official EIP-1559 vector sighash, so a mismatch here is a layout defect, not an
+    /// oracle artifact. `chain_id = 137` and `nonce = 200` are the point: each is a single payload byte
+    /// at or above 0x80, which RLP encodes as TWO bytes (0x81 xx). The length helper counted them as
+    /// one, so the list head declared a payload two bytes shorter than what was written and the sighash
+    /// was over a malformed preimage — the signature could never validate on chain.
+    #[test]
+    fn preimage_layout_matches_independent_oracle() {
+        // Control: every field is already handled correctly (this case was green before the fix).
+        let control = Eip1559Transaction {
+            chain_id: 1,
+            nonce: 9,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 21000,
+            destination: Some([0x35u8; 20]),
+            amount: 1_000_000_000_000_000_000,
+            data: Vec::new().into(),
+        };
+        let mut buf = [0u8; 256];
+        let n = signing_preimage_into(&control, &mut buf).unwrap();
+        assert_eq!(
+            n,
+            hex_decode("02f00109843b9aca008504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080c0").unwrap().len()
+        );
+        assert_eq!(
+            &buf[..n],
+            &hex_decode("02f00109843b9aca008504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080c0").unwrap()[..],
+            "control preimage mismatch"
+        );
+        assert_eq!(
+            &signing_hash(&control).unwrap()[..],
+            &hex_decode("577f072b4be21dbe73cdd90f32675d67d2fdfefdecfbc579f52025caf096400a")
+                .unwrap()[..],
+            "control sighash mismatch"
+        );
+
+        // F-4: single-payload-byte integers >= 0x80 (chain_id 137, nonce 200).
+        let t = Eip1559Transaction {
+            chain_id: 137,
+            nonce: 200,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 21000,
+            destination: Some([0x35u8; 20]),
+            amount: 1000,
+            data: Vec::new().into(),
+        };
+        let expected = "02ec818981c8843b9aca008504a817c8008252089435353535353535353535353535353535353535358203e880c0";
+        let mut buf = [0u8; 256];
+        let n = signing_preimage_into(&t, &mut buf).unwrap();
+        assert_eq!(
+            &buf[..n],
+            &hex_decode(expected).unwrap()[..],
+            "F-4 preimage mismatch"
+        );
+        assert_eq!(
+            &signing_hash(&t).unwrap()[..],
+            &hex_decode("cbb31f2486c6149eb9b58c25ede1608afe93898b050be09ab3be3aa9a2e6b472")
+                .unwrap()[..],
+            "F-4 sighash mismatch"
+        );
+    }
+
     /// Full sign_eip1559 + signed tx comparison
     #[test]
     fn sign_eip1559_full_pipeline() {
