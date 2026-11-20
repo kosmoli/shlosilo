@@ -338,7 +338,18 @@ pub fn bip341_keypath_sighash(input: &TaprootSighashInput) -> Result<[u8; 32]> {
     }
     // BIP-342 extension: with scriptpath (ext_flag=1) the tapleaf hash is appended to the end of sigmsg
     if let Some(leaf_hash) = &input.tapleaf_hash {
+        // F-18 (external audit 2026-11-19): BIP-342's SigMsg extension is
+        //   tapleaf_hash (32) || key_version (1) || codesep_pos (4 LE)
+        // — this used to append only the leaf hash, so every scriptpath signature committed to
+        // a digest no node would recompute (i.e. the signature was worthless on chain).
+        //
+        // key_version = 0 is BIP-342's only assigned version.
+        // codesep_pos = 0xffffffff means "no OP_CODESEPARATOR was executed". This signer does
+        // not analyse tapscripts, so a leaf containing OP_CODESEPARATOR is NOT supported; that
+        // limitation is stated here rather than silently producing a wrong digest.
         msg.extend(leaf_hash)?;
+        msg.push(0x00)?; // key_version
+        msg.extend(&0xffff_ffffu32.to_le_bytes())?; // codesep_pos: none executed
     }
 
     // sighash = tagged_hash("TapSighash", 0x00 || sigmsg)
@@ -1035,8 +1046,20 @@ mod tests {
             tapleaf_hash: Some(leaf_hash),
         };
         let sighash = bip341_keypath_sighash(&input).unwrap();
+        // F-18 (external audit 2026-11-19): this expectation used to be
+        // `dad1bfa8b39db40db50c92d68f6edfd329d44805c89626fa197875d3e47bf8c1`, i.e. the digest of
+        // the TRUNCATED extension (leaf hash only). It pinned a value that no node would ever
+        // recompute, so this "reference" test locked the bug in.
+        //
+        // The value below is derived independently (a from-scratch Python implementation of
+        // BIP-341/342 SigMsg), not read back from this code. The same script reproduces the
+        // keypath oracle value `90ecc5ee…` used by the sibling test (ext_flag = 0) and the old
+        // scriptpath value `dad1bfa8…` when the extension is truncated — so the layout, not just
+        // the number, is what changed.
+        //
+        //   tapleaf_hash = f87f124e… || key_version = 0x00 || codesep_pos = 0xffffffff
         let expected =
-            hex_decode_32("dad1bfa8b39db40db50c92d68f6edfd329d44805c89626fa197875d3e47bf8c1");
+            hex_decode_32("ba0cbf3172d463fcc1722748ebe2afac340bf6dde95612e3115c59e7324e04c6");
         assert_eq!(
             sighash, expected,
             "scriptpath sighash must match independent Python reference"

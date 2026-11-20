@@ -70,9 +70,16 @@ const SPARROW_FRAGMENT_LEN: usize = 256;
 
 /// Signed Sparrow PSBT: length and SHA-256, pinned from the host run
 /// (deterministic: RFC-6979 + fixed fixture). The board must print the same.
-const SPARROW_SIGNED_LEN: usize = 12447;
+///
+/// F-14 (external audit 2026-11-19): these numbers moved from 12447 /
+/// `e840183d…` when `write_psbt` stopped dropping global records. The +97 bytes are
+/// exactly the fixture's global xpub entry — key type 0x01, 79-byte key, 16-byte value plus
+/// two compact-size prefixes (1 + 79 + 1 + 16 = 97). The old pin was measuring data loss.
+/// Both hosts run the same writer, so board and host stay byte-identical; the on-device
+/// re-measurement is the usual hardware pass, not a separate expectation.
+const SPARROW_SIGNED_LEN: usize = 12544;
 const SPARROW_SIGNED_SHA256: &str =
-    "e840183d1c1df23a6d2e199889011759ee1c90de3f7ef7b4f894c4edb1fc9b4b";
+    "c38a970073dc6c26bc4f1d6eafe9f8a2c45e28cd04fa42b89dc73ac3238bc3cc";
 
 fn to_hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);

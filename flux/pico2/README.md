@@ -451,7 +451,7 @@ drag-and-drop works, the LED heartbeat runs, the USB console is live, the
 three-step signing flow runs on-device with byte-identical output to the
 host oracle, and the serial bench channel signs host-fed fixtures — the
 ETH fixture (full hex match) and the 12.4 KiB Sparrow signet PSBT as 32
-multipart fragments (12447-byte signed output, sha256 match).
+multipart fragments (12544-byte signed output after the F-14 global-map fix, sha256 match).
 
 The hardware TRNG is characterised: checked operating point chain 4 /
 sample 200, conditioned consumer path verified, single-owner access (see

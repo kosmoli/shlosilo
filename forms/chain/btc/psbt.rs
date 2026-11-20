@@ -421,6 +421,12 @@ impl<'a> Psbt<'a> {
         self.pool.map(idx)
     }
 
+    /// The global map (map 0). F-14 (external audit 2026-11-19): the writer needs to walk it so
+    /// that only UNSIGNED_TX is replaced and every other record survives the round trip.
+    pub fn global_map(&self) -> KvMap<'_> {
+        self.pool.map(0)
+    }
+
     pub fn input_map(&self, i: usize) -> KvMap<'_> {
         self.pool.map(1 + i)
     }
@@ -621,13 +627,43 @@ fn write_unsigned_tx<S: Sink>(sink: &mut S, tx: &Transaction) -> Result<()> {
 /// One PSBT: magic || global map || input maps || output maps.
 fn write_psbt<S: Sink>(sink: &mut S, psbt: &Psbt<'_>) -> Result<()> {
     sink.put(&PSBT_MAGIC)?;
-    // global map: the UNSIGNED_TX entry (value = the serialized unsigned tx)
-    put_compact_size(sink, 1)?;
-    sink.put(&[global_type::UNSIGNED_TX])?;
-    let mut len = CountSink(0);
-    write_unsigned_tx(&mut len, &psbt.unsigned_tx)?;
-    put_compact_size(sink, len.0 as u64)?;
-    write_unsigned_tx(sink, &psbt.unsigned_tx)?;
+    // Global map: the UNSIGNED_TX entry (value = the serialized unsigned tx) plus every other
+    // record the parsed PSBT carried.
+    //
+    // F-14 (external audit 2026-11-19): this used to emit exactly one entry and terminate, so a
+    // signed PSBT lost the wallet's global xpub, `version` (0xfb), proprietary and unknown
+    // fields — the wallet then could not match the returned transaction to its own account.
+    // Now every global entry is written in order with UNSIGNED_TX replaced in place.
+    let global = psbt.global_map();
+    let unsigned_tx_records = global
+        .iter()
+        .filter(|kv| kv.key == [global_type::UNSIGNED_TX])
+        .count();
+    // The global map is a bare sequence of key/value pairs ended by a 0x00 separator — it has
+    // NO count prefix (the `put_compact_size(1)` in the old code was the first key's length).
+    for kv in global.iter() {
+        if kv.key == [global_type::UNSIGNED_TX] {
+            put_compact_size(sink, 1)?; // key length (the key itself is the single type byte)
+            sink.put(&[global_type::UNSIGNED_TX])?;
+            let mut len = CountSink(0);
+            write_unsigned_tx(&mut len, &psbt.unsigned_tx)?;
+            put_compact_size(sink, len.0 as u64)?;
+            write_unsigned_tx(sink, &psbt.unsigned_tx)?;
+        } else {
+            put_compact_size(sink, kv.key.len() as u64)?;
+            sink.put(kv.key)?;
+            put_compact_size(sink, kv.value.len() as u64)?;
+            sink.put(kv.value)?;
+        }
+    }
+    if unsigned_tx_records == 0 {
+        put_compact_size(sink, 1)?;
+        sink.put(&[global_type::UNSIGNED_TX])?;
+        let mut len = CountSink(0);
+        write_unsigned_tx(&mut len, &psbt.unsigned_tx)?;
+        put_compact_size(sink, len.0 as u64)?;
+        write_unsigned_tx(sink, &psbt.unsigned_tx)?;
+    }
     sink.put_u8(0x00)?;
     let n_in = psbt.unsigned_tx.inputs.len();
     let n_out = psbt.unsigned_tx.outputs.len();
@@ -2004,6 +2040,47 @@ pub fn is_p2tr_input(input_map: KvMap<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// F-14 (external audit 2026-11-19): the writer emitted exactly one global entry
+    /// (UNSIGNED_TX) and terminated, so a signed PSBT silently lost every other global record.
+    ///
+    /// The real Sparrow regtest fixture proves the impact: its global map carries UNSIGNED_TX
+    /// **and** the wallet's global xpub (BIP-174 key type 0x01). Before the fix the xpub was
+    /// dropped on the way out, so the wallet could not match the returned transaction to its
+    /// account. This compares the parsed global map against the map re-parsed from our output.
+    #[test]
+    fn global_map_entries_survive_the_round_trip() {
+        const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/sparrow_signet_12k.psbt");
+
+        let mut arena = alloc::vec![0u8; PSBT_TEST_ARENA];
+        let mut recs = alloc::vec![KvRec::EMPTY; PSBT_TEST_RECS];
+        let parsed = parse_psbt_into(FIXTURE, &mut arena, &mut recs).expect("parse fixture");
+        let before: alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> = parsed
+            .global_map()
+            .iter()
+            .map(|kv| (kv.key.to_vec(), kv.value.to_vec()))
+            .collect();
+        assert_eq!(
+            before.len(),
+            2,
+            "fixture must carry UNSIGNED_TX + global xpub"
+        );
+        assert_eq!(before[1].0[0], 0x01, "second global record is the xpub");
+
+        let out = serialize_psbt(&parsed);
+        let mut arena2 = alloc::vec![0u8; PSBT_TEST_ARENA];
+        let mut recs2 = alloc::vec![KvRec::EMPTY; PSBT_TEST_RECS];
+        let reparsed = parse_psbt_into(&out, &mut arena2, &mut recs2).expect("reparse");
+        let after: alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> = reparsed
+            .global_map()
+            .iter()
+            .map(|kv| (kv.key.to_vec(), kv.value.to_vec()))
+            .collect();
+        assert_eq!(
+            after, before,
+            "every global record must survive serialization (UNSIGNED_TX replaced in place)"
+        );
+    }
 
     /// F-19 (external audit 2026-11-19): `set_kv` reserves key+value as one step, so a value
     /// that does not fit must not consume the key's arena space. The old shape advanced the
