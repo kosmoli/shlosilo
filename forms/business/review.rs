@@ -541,7 +541,7 @@ fn infer_network(psbt: &Psbt<'_>) -> Option<Network> {
         // A taproot-only PSBT carries its paths under 0x16; reading just 0x02 would
         // fall back to the caller's network and render a signet address as `bc1…`.
         if coin.is_none() {
-            if let Some((_, tap)) = psbt::get_tap_bip32_derivation(map) {
+            if let Ok(Some((_, tap))) = psbt::get_tap_bip32_derivation(map) {
                 let d = tap.depth as usize;
                 if d >= 2 {
                     coin = Some(tap.elements[1] & 0x7fff_ffff);
@@ -672,7 +672,9 @@ fn output_ownership(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> Ownership {
     // Taproot outputs record their path under 0x16, not 0x02. Without this the
     // change of a P2TR spend comes back as a fresh payment - the operator sees an
     // outgoing amount that is really their own money returning.
-    if let Some((fingerprint, path)) = psbt::get_output_tap_bip32_derivation(map) {
+    // A malformed/ambiguous record is not evidence about ownership (F-6): the review row says
+    // `unclassified` instead of picking one record by map order.
+    if let Ok(Some((fingerprint, path))) = psbt::get_output_tap_bip32_derivation(map) {
         if fingerprint == *ours || psbt::fingerprint_is_unspecified(fingerprint) {
             let depth = path.depth as usize;
             if depth > path.elements.len() {

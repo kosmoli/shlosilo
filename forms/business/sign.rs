@@ -1557,7 +1557,7 @@ fn sign_btc_taproot_input(
     let (fp, record) = psbt_mod::get_tap_bip32_derivation(
         psbt.input_map_checked(idx)
             .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?,
-    )
+    )?
     .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
     if fp != local_fp && !psbt_mod::fingerprint_is_unspecified(fp) {
         // Ownership, not network: the record names a fingerprint that is neither

@@ -1754,7 +1754,7 @@ pub fn fingerprint_is_unspecified(fp: [u8; 4]) -> bool {
 /// an input.
 pub fn get_output_tap_bip32_derivation(
     output_map: KvMap<'_>,
-) -> Option<([u8; 4], TapDerivationPath)> {
+) -> Result<Option<([u8; 4], TapDerivationPath)>> {
     // Same field number on both faces (BIP-371 reuses 0x16), but named per side so
     // a reader can tell which map it belongs to.
     scan_tap_derivation(output_map, output_type::TAP_BIP32_DERIVATION)
@@ -1767,16 +1767,16 @@ pub fn get_output_tap_bip32_derivation(
 /// The tap-flavoured record is NOT the plain `0x06` one: it starts with the leaf
 /// hash count, so parsing it with the plain reader would read the count byte as
 /// part of the fingerprint.
-pub fn get_tap_bip32_derivation(input_map: KvMap<'_>) -> Option<([u8; 4], TapDerivationPath)> {
+pub fn get_tap_bip32_derivation(
+    input_map: KvMap<'_>,
+) -> Result<Option<([u8; 4], TapDerivationPath)>> {
     scan_tap_derivation(input_map, input_type::TAP_BIP32_DERIVATION)
 }
 
 /// Shared scanner for the taproot derivation record (`field` = 0x16 on both faces).
-fn scan_tap_derivation(map: KvMap<'_>, field: u8) -> Option<([u8; 4], TapDerivationPath)> {
-    let kv = map
-        .iter()
-        .find(|kv| kv.key.len() == 33 && kv.key[0] == field)?;
-    let value = kv.value;
+/// Parse one `0x16` record: `value = <compact_size n> <n×32 leaf hashes> <fp(4)> <path u32 LE…>`,
+/// `key = type || x-only pubkey`.
+fn parse_tap_derivation_record(key: &[u8], value: &[u8]) -> Option<([u8; 4], TapDerivationPath)> {
     let mut pos = 0usize;
     let hashes = decode_compact_size(value, &mut pos).ok()? as usize;
     // skip the leaf hashes: they only matter for scriptpath spends
@@ -1801,8 +1801,58 @@ fn scan_tap_derivation(map: KvMap<'_>, field: u8) -> Option<([u8; 4], TapDerivat
         path.elements[i] = u32::from_le_bytes(*chunk);
     }
     // the record's key payload is the x-only public key the path belongs to
-    path.key_x.copy_from_slice(&kv.key[1..33]);
+    path.key_x.copy_from_slice(&key[1..33]);
     Some((fp, path))
+}
+
+/// Scan every `0x16` record in the map and pick the keypath one.
+///
+/// F-6 (external audit 2026-11-19): this used to take the **first** shape-matching record, so a
+/// valid first record hid every later one, and a malformed first record made the whole lookup
+/// report "absent" — the signer then read a declaration it never validated. BIP-371 legitimately
+/// puts several records here (the keypath key *and* every script leaf key), so the fix is a
+/// selection, not a blanket rejection:
+///
+/// - every record must parse; one malformed record refuses the lookup (`Err`);
+/// - if the map declares `TAP_INTERNAL_KEY`, the record whose x-only key equals it is the
+///   keypath record;
+/// - with no such declaration the lookup only answers when there is exactly one record
+///   (otherwise "which one did you mean" has no answer we could defend).
+fn scan_tap_derivation(map: KvMap<'_>, field: u8) -> Result<Option<([u8; 4], TapDerivationPath)>> {
+    let declared_internal = get_tap_internal_key(map)?;
+    let mut chosen: Option<([u8; 4], TapDerivationPath)> = None;
+    let mut count = 0usize;
+    for kv in map
+        .iter()
+        .filter(|kv| kv.key.len() == 33 && kv.key[0] == field)
+    {
+        count += 1;
+        let parsed = parse_tap_derivation_record(kv.key, kv.value)
+            .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        if let Some(internal) = declared_internal {
+            if parsed.1.key_x == internal {
+                if chosen.is_some() {
+                    // two records claim the declared internal key
+                    return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+                }
+                chosen = Some(parsed);
+            }
+        } else if chosen.is_none() {
+            chosen = Some(parsed);
+        }
+    }
+    if count == 0 {
+        return Ok(None);
+    }
+    if declared_internal.is_none() && count > 1 {
+        // Ambiguous without a declared internal key: refuse instead of picking by map order.
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    if declared_internal.is_some() && chosen.is_none() {
+        // Records exist but none belongs to the declared internal key.
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    Ok(chosen)
 }
 
 /// A taproot derivation record: master fingerprint + path + the x-only key it names.
@@ -2135,6 +2185,65 @@ pub fn is_p2tr_input(input_map: KvMap<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// F-6 (external audit 2026-11-19): the taproot derivation lookup used to take the first
+    /// shape-matching record. BIP-371 legitimately carries several (keypath key + every leaf
+    /// key), so with two records the answer must be chosen deliberately — by the declared
+    /// internal key — and an ambiguous or malformed map must refuse instead of guessing.
+    #[test]
+    fn tap_derivation_selection_is_deliberate() {
+        use crate::chain::btc::psbt::{get_tap_bip32_derivation, set_tap_internal_key};
+
+        // value = compact_size(0 leaf hashes) || fp(4) || path(2 × u32 LE)
+        let record_value = |fp: [u8; 4], chain: u32| {
+            let mut v = alloc::vec![0u8]; // zero leaf hashes
+            v.extend_from_slice(&fp);
+            v.extend_from_slice(&0x8000_0056u32.to_le_bytes()); // 86'
+            v.extend_from_slice(&chain.to_le_bytes());
+            v
+        };
+        let rec = |key_x: u8, value: Vec<u8>| KeyValue {
+            key: {
+                let mut k = alloc::vec![input_type::TAP_BIP32_DERIVATION];
+                k.extend_from_slice(&[key_x; 32]);
+                k.into()
+            },
+            value: value.into(),
+        };
+
+        // Two records, no declared internal key → ambiguous, refused.
+        let two = alloc::vec![
+            rec(0x11, record_value([1, 2, 3, 4], 0)),
+            rec(0x22, record_value([1, 2, 3, 4], 1)),
+        ];
+        assert!(
+            get_tap_bip32_derivation(KvMap::from_slice(&two)).is_err(),
+            "two records without a declared internal key must not be resolved by map order"
+        );
+
+        // Declare which one is the keypath key → selected deliberately.
+        let mut with_decl = two.clone();
+        set_tap_internal_key(&mut with_decl, &[0x22; 32]).unwrap();
+        let (fp, chosen) = get_tap_bip32_derivation(KvMap::from_slice(&with_decl))
+            .unwrap()
+            .expect("declared record");
+        assert_eq!(fp, [1, 2, 3, 4]);
+        assert_eq!(chosen.key_x, [0x22; 32], "the declared key wins");
+        assert_eq!(chosen.elements[1] & 0x7fff_ffff, 1, "its own path");
+
+        // A malformed record next to a good one refuses the whole lookup.
+        let mut bad_value = alloc::vec![0u8];
+        bad_value.extend_from_slice(&[1, 2, 3, 4]);
+        bad_value.push(0xff); // path not a whole number of u32s
+        let with_bad = alloc::vec![
+            rec(0x33, record_value([9, 9, 9, 9], 0)),
+            rec(0x44, bad_value),
+        ];
+        assert!(
+            get_tap_bip32_derivation(KvMap::from_slice(&with_bad)).is_err(),
+            "one malformed record must refuse the lookup"
+        );
+    }
 
     /// F-13 (external audit 2026-11-19): the per-field caps bound one length field, not the
     /// container. The whole wire is budgeted at the parse entry, so an oversized PSBT is
