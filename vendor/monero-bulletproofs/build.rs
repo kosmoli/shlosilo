@@ -121,10 +121,13 @@ fn generators(prefix: &'static str, path: &str, key_const: &'static str) {
                 for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
                 crate::generator_cache_hook::try_store_blob(crate::generator_cache_hook::{key_const}, &blob);
               }}
-              return Ok(crate::generator_cache_hook::Generators {{
-                G: crate::generator_cache_hook::leak_vec(g),
-                H: crate::generator_cache_hook::leak_vec(h),
-              }});
+              // shlosilo vendor patch (2026-11-21): publish the leaked tables so the one-shot
+              // fallback really is one-shot (see publish_leaked_tables).
+              return Ok(crate::generator_cache_hook::publish_leaked_tables(
+                crate::generator_cache_hook::{key_const},
+                crate::generator_cache_hook::leak_vec(g),
+                crate::generator_cache_hook::leak_vec(h),
+              ));
             }}
             #[cfg(not(feature = "alloc-fallback"))]
             Err(crate::generator_cache_hook::InitError::BlobMismatch)

@@ -305,6 +305,32 @@ pub(crate) fn init_tables(
     Ok(Generators { G: g, H: h })
 }
 
+/// shlosilo vendor patch (2026-11-21, pico2 per-sign leak fix).
+///
+/// The `alloc-fallback` branch below decompresses the generator tables into leaked Vecs and is
+/// documented as ONE-SHOT. It used to bypass `init_tables`, so neither the ready flag nor the
+/// descriptor cache was ever populated: every subsequent sign re-entered the decompress and leaked
+/// another `2 x n_points x 160 B` (measured on pico2: +327,680 B per XMR sign, reproduced on the host
+/// under the pico2 feature closure). Publishing the leaked tables keeps the one-shot promise - the
+/// first sign pays the leak, later signs read the cache.
+#[cfg(feature = "alloc-fallback")]
+pub(crate) fn publish_leaked_tables(
+    prefix: &'static [u8],
+    g: &'static mut [EdwardsPoint],
+    h: &'static mut [EdwardsPoint],
+) -> Generators<'static> {
+    let set = GeneratorSet::from_prefix(prefix)
+        .expect("publish_leaked_tables: prefix is a compiled-in generator set");
+    *desc_slot_for(set).lock() = Some(TableDesc {
+        g_ptr: g.as_ptr() as usize,
+        g_len: g.len(),
+        h_ptr: h.as_ptr() as usize,
+        h_len: h.len(),
+    });
+    ready_flag_for(set).store(true, core::sync::atomic::Ordering::Release);
+    Generators { G: g, H: h }
+}
+
 /// Per-set ready flags (Release on success / Acquire on read) — the atomic
 /// uninitialized -> ready transition of A3. Keyed by `GeneratorSet` (via
 /// `from_prefix` upstream), never by raw-literal comparison.

@@ -39,6 +39,11 @@ bash scripts/test_zero_on_alloc.sh --offline --all-targets --all-features --no-f
 # errors before the cfg-widening sweep). Expected-red manifest: EMPTY (the
 # three pins on this face were fixed in the same batch).
 bash scripts/test_zero_on_alloc.sh --offline --no-default-features --all-targets --no-fail-fast > /tmp/g_testnoalloc.log 2>&1; echo "TESTNOALLOC=$?"
+# A4 pico2 leak pin (2026-11-21): the generator-table one-shot fallback only exists on the
+# alloc-fallback face that the pico2 firmware builds with (`default-features = false`). The
+# default-feature batch below cannot see it, so this face gets its own step: three XMR signs
+# must not grow the live heap (it used to grow 2 x 163,840 B per sign).
+cargo test --offline --release --no-default-features --features alloc-fallback --test xmr_device_peak_fixture xmr_sign_does_not_leak_generator_tables > /tmp/g_pico2leak.log 2>&1; echo "PICO2LEAK=$?"
 # CI "flux keysource" parity: the keysource package has its own test face
 # (qr_ffi FFI arity contracts etc.) that the root batch never compiles.
 cargo test --offline -p shlosilo-flux-keysource > /tmp/g_keysrc.log 2>&1; echo "KEYSRC=$?"

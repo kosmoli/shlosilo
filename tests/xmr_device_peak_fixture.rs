@@ -265,3 +265,95 @@ fn dice_xmr_ur_for_production_path() {
         n
     );
 }
+
+// ── Allocation pin (A4 pico2 leak, 2026-11-21) ──────────────────────────────
+//
+// pico2 builds `shlosilo` with `default-features = false, features = ["alloc-fallback"]`. On that
+// face the BP+ generator tables are decompressed into leaked Vecs; the fallback is meant to be
+// ONE-SHOT but never published its tables, so every sign re-ran the decompress and leaked another
+// 2 x 163,840 B (measured on hardware with `alloctrace`: +327,680 B per XMR sign, linear).
+//
+// The pin does not compare a live-byte balance (that is skewed by buffers allocated before the
+// window and freed inside it, e.g. the 2 MiB CN scratchpad). It counts the signature event instead:
+// a single allocation of >= 160 KiB in the sign path IS the table decompress, so after the warm-up
+// sign there must be NONE.
+// The table vectors are exactly 163,840 B (1,024 points x 160 B extended coordinates); the CN
+// scratchpad is 2 MiB and is legitimately allocated per sign, so the band is narrow on purpose.
+const LEAK_BAND_LO: usize = 160_000;
+const LEAK_BAND_HI: usize = 200_000;
+
+static BIG_EVENTS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static COUNTING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+struct ProbeAlloc;
+
+unsafe impl std::alloc::GlobalAlloc for ProbeAlloc {
+    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+        let p = unsafe { std::alloc::System.alloc(l) };
+        if !p.is_null()
+            && (LEAK_BAND_LO..LEAK_BAND_HI).contains(&l.size())
+            && COUNTING.load(core::sync::atomic::Ordering::Relaxed)
+        {
+            BIG_EVENTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        p
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(p, l) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
+        let q = unsafe { std::alloc::System.realloc(p, l, n) };
+        if !q.is_null()
+            && (LEAK_BAND_LO..LEAK_BAND_HI).contains(&n)
+            && COUNTING.load(core::sync::atomic::Ordering::Relaxed)
+        {
+            BIG_EVENTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        q
+    }
+}
+#[global_allocator]
+static PROBE_ALLOC: ProbeAlloc = ProbeAlloc;
+
+fn big_events() -> usize {
+    BIG_EVENTS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+#[test]
+fn xmr_sign_does_not_leak_generator_tables() {
+    let seed = smoke_seed();
+    let (_ur, encrypted) = build_fixture(&seed);
+    let entropy = [0x77u8; 32];
+    let mut out = vec![0u8; 16384];
+
+    let mut sign_once = || -> usize {
+        sign_with_entropy(
+            SignInput::Seed { seed: &seed },
+            UrTypeTag::XmrTxUnsigned,
+            &encrypted,
+            &entropy,
+            &mut out,
+        )
+        .expect("sign")
+    };
+
+    let _ = sign_once(); // warm-up: the one-shot table decompress (and its retained 2 x 160 KiB)
+    let _ = sign_once(); // second: the cache must serve this one (pre-fix it leaked again)
+
+    COUNTING.store(true, core::sync::atomic::Ordering::Relaxed);
+    let n2 = sign_once();
+    let seen2 = big_events();
+    let n3 = sign_once();
+    let seen3 = big_events() - seen2;
+    COUNTING.store(false, core::sync::atomic::Ordering::Relaxed);
+
+    eprintln!(
+        "PIN generator-table-size allocations ({LEAK_BAND_LO}..{LEAK_BAND_HI} B): sign2={seen2} \
+         sign3={seen3} (signed {n2}/{n3} B)"
+    );
+    assert_eq!(
+        seen2, 0,
+        "a later XMR sign must not decompress the generator tables again (that is the 160 KiB leak)"
+    );
+    assert_eq!(seen3, 0, "and it must stay flat on further signs");
+}

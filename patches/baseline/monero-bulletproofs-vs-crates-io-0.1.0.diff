@@ -1,7 +1,7 @@
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/build.rs b/build.rs
 --- a/build.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/build.rs	2026-10-09 18:22:33.066738394 +0800
-@@ -1,59 +1,135 @@
++++ b/build.rs	2026-11-21 03:47:07.804803164 +0800
+@@ -1,59 +1,138 @@
  //! Builds the generators within the Constant Reference String for Bulletproofs(+) at compile-time,
  //! allowing apps to solely deserialize them (without having to calculate them).
 +//!
@@ -169,10 +169,13 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +                for p in h.iter() {{ blob.extend_from_slice(&p.to_raw_extended_bytes()); }}
 +                crate::generator_cache_hook::try_store_blob(crate::generator_cache_hook::{key_const}, &blob);
 +              }}
-+              return Ok(crate::generator_cache_hook::Generators {{
-+                G: crate::generator_cache_hook::leak_vec(g),
-+                H: crate::generator_cache_hook::leak_vec(h),
-+              }});
++              // shlosilo vendor patch (2026-11-21): publish the leaked tables so the one-shot
++              // fallback really is one-shot (see publish_leaked_tables).
++              return Ok(crate::generator_cache_hook::publish_leaked_tables(
++                crate::generator_cache_hook::{key_const},
++                crate::generator_cache_hook::leak_vec(g),
++                crate::generator_cache_hook::leak_vec(h),
++              ));
 +            }}
 +            #[cfg(not(feature = "alloc-fallback"))]
 +            Err(crate::generator_cache_hook::InitError::BlobMismatch)
@@ -181,7 +184,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
        )
        .as_bytes(),
      )
-@@ -61,27 +137,51 @@
+@@ -61,27 +140,51 @@
  }
  
  #[cfg(not(feature = "compile-time-generators"))]
@@ -819,8 +822,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/generator_cache_hook.rs b/src/generator_cache_hook.rs
 --- a/src/generator_cache_hook.rs	1970-01-01 08:00:00.000000000 +0800
-+++ b/src/generator_cache_hook.rs	2026-10-09 18:23:20.732308963 +0800
-@@ -0,0 +1,430 @@
++++ b/src/generator_cache_hook.rs	2026-11-21 03:45:56.806058768 +0800
+@@ -0,0 +1,456 @@
 +//! shlosilo vendor patch (2026-09-07): external generator cache hooks.
 +//!
 +//! BP+/BP generators are public constants. On embedded targets the default
@@ -1126,6 +1129,32 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    });
 +    ready_flag_for(set).store(true, core::sync::atomic::Ordering::Release);
 +    Ok(Generators { G: g, H: h })
++}
++
++/// shlosilo vendor patch (2026-11-21, pico2 per-sign leak fix).
++///
++/// The `alloc-fallback` branch below decompresses the generator tables into leaked Vecs and is
++/// documented as ONE-SHOT. It used to bypass `init_tables`, so neither the ready flag nor the
++/// descriptor cache was ever populated: every subsequent sign re-entered the decompress and leaked
++/// another `2 x n_points x 160 B` (measured on pico2: +327,680 B per XMR sign, reproduced on the host
++/// under the pico2 feature closure). Publishing the leaked tables keeps the one-shot promise - the
++/// first sign pays the leak, later signs read the cache.
++#[cfg(feature = "alloc-fallback")]
++pub(crate) fn publish_leaked_tables(
++    prefix: &'static [u8],
++    g: &'static mut [EdwardsPoint],
++    h: &'static mut [EdwardsPoint],
++) -> Generators<'static> {
++    let set = GeneratorSet::from_prefix(prefix)
++        .expect("publish_leaked_tables: prefix is a compiled-in generator set");
++    *desc_slot_for(set).lock() = Some(TableDesc {
++        g_ptr: g.as_ptr() as usize,
++        g_len: g.len(),
++        h_ptr: h.as_ptr() as usize,
++        h_len: h.len(),
++    });
++    ready_flag_for(set).store(true, core::sync::atomic::Ordering::Release);
++    Generators { G: g, H: h }
 +}
 +
 +/// Per-set ready flags (Release on success / Acquire on read) — the atomic
