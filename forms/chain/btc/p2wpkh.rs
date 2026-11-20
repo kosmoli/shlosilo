@@ -851,9 +851,39 @@ mod tests {
         assert_eq!(&h[..], &expected[..], "hash_outputs mismatch");
     }
 
-    /// Full comparison of the serialized BIP-144 signed tx
+    /// A3c F-21 (2026-11-19 audit, closed 2026-11-20): byte-for-byte comparison against the signed
+    /// transaction published in BIP-143 for the native P2WPKH example.
+    ///
+    /// The previous version of this test deleted input 0's scriptSig ("we simplify by leaving it
+    /// empty") and then asserted only `len() > 200`, so it pinned nothing about the bytes and could not
+    /// fail for any serialization defect. The fixture below is the BIP text itself: input 0 is the P2PK
+    /// input carrying its real scriptSig, input 1 is the P2WPKH input this library signs, and the
+    /// expected value is the BIP's signed transaction.
     #[test]
     fn serialize_full_signed_tx_bip144() {
+        // BIP-143 native P2WPKH example, signed transaction (verbatim from the BIP).
+        const EXPECTED_SIGNED_TX: &str = "01000000000102fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f00000000494830450221008b9d1dc26ba6a9cb62127b02742fa9d754cd3bebf337f7a55d114c8e5cdd30be022040529b194ba3f9281a99f2b1c0a19c0489bc22ede944ccf4ecbab4cc618ef3ed01eeffffffef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a0100000000ffffffff02202cb206000000001976a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac9093510d000000001976a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac000247304402203609e17b84f6a7d30c80bfa610b5b4542f32a8a0d5447a12fb1366d7f01cc44a0220573a954c4518331561406f90300e8f3358f51928d43c212a8caed02de67eebee0121025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee635711000000";
+        // input 0 (P2PK) scriptSig, taken from the same signed transaction.
+        const IN0_SCRIPTSIG: &str = "4830450221008b9d1dc26ba6a9cb62127b02742fa9d754cd3bebf337f7a55d114c8e5cdd30be022040529b194ba3f9281a99f2b1c0a19c0489bc22ede944ccf4ecbab4cc618ef3ed01";
+
+        let input0 = TxIn {
+            prev_out: OutPoint {
+                txid: {
+                    let mut t = [0u8; 32];
+                    t.copy_from_slice(
+                        &hex_decode(
+                            "fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f",
+                        )
+                        .unwrap(),
+                    );
+                    t
+                },
+                vout: 0,
+            },
+            script_sig: hex_decode(IN0_SCRIPTSIG).unwrap().into(),
+            sequence: 0xffff_ffee,
+            witness: crate::types::wire_bytes::witness_empty(),
+        };
         let input1 = TxIn {
             prev_out: OutPoint {
                 txid: {
@@ -869,36 +899,17 @@ mod tests {
                 vout: 1,
             },
             script_sig: Vec::new().into(),
-            sequence: 0xffffffff,
-            witness: crate::types::wire_bytes::witness_empty(),
-        };
-        let input0 = TxIn {
-            prev_out: OutPoint {
-                txid: {
-                    let mut t = [0u8; 32];
-                    t.copy_from_slice(
-                        &hex_decode(
-                            "fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f",
-                        )
-                        .unwrap(),
-                    );
-                    t
-                },
-                vout: 0,
-            },
-            // The real signed scriptSig for P2PK input 0 is long; we simplify by leaving it empty
-            script_sig: Vec::new().into(),
-            sequence: 0xffffffee,
+            sequence: 0xffff_ffff,
             witness: crate::types::wire_bytes::witness_empty(),
         };
         let output0 = TxOut {
-            value: 0x0000000006b22c20,
+            value: 0x0000000006b22c20, // 112,340,000 sat
             script_pubkey: hex_decode("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac")
                 .unwrap()
                 .into(),
         };
         let output1 = TxOut {
-            value: 0x000000000d519390,
+            value: 0x000000000d519390, // 223,450,000 sat
             script_pubkey: hex_decode("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac")
                 .unwrap()
                 .into(),
@@ -934,15 +945,16 @@ mod tests {
         };
 
         let signed = sign_p2wpkh(&mut tx, &sign_input).unwrap();
-
-        // Verify: leading 4 bytes version + 00 01 marker/flag
-        assert_eq!(&signed.tx_bytes[0..4], &[0x01, 0x00, 0x00, 0x00]);
-        assert_eq!(signed.tx_bytes[4], 0x00);
-        assert_eq!(signed.tx_bytes[5], 0x01);
-
-        // Verify: length should be reasonable (unsigned tx ~ 193 bytes; signed adds ~108 bytes of witness)
-        // We simplify input 0 (P2PK, no signature) → the unsigned tx is shorter
-        // Skip full-hex comparison (input 0's scriptSig is missing); only verify the structure is OK
-        assert!(signed.tx_bytes.len() > 200);
+        let expected = hex_decode(EXPECTED_SIGNED_TX).unwrap();
+        assert_eq!(
+            signed.tx_bytes.len(),
+            expected.len(),
+            "signed tx length differs from the BIP-143 fixture"
+        );
+        assert_eq!(
+            &signed.tx_bytes[..],
+            &expected[..],
+            "signed tx differs from the BIP-143 fixture"
+        );
     }
 }
