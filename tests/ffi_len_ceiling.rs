@@ -140,25 +140,59 @@ fn ur_decode_payload_absurd_capacity_keeps_the_normal_error_path() {
 fn export_payload_rejects_absurd_capacity() {
     let mut slot = MaybeUninit::<KeySession>::uninit();
     let session = place_session(&mut slot, &FIXTURE_ENTROPY);
-    let mut out = std::vec![0u8; 4096];
-    let mut actual: u32 = 7;
-    let rc = unsafe {
-        shlosilo::ffi::export_abi::shlosilo_export_format_payload_ffi(
-            session,
-            0,
-            0,
-            core::ptr::null(),
-            core::ptr::null(),
-            core::ptr::null(),
-            core::ptr::null(),
-            0,
-            out.as_mut_ptr(),
-            u32::MAX,
-            &mut actual,
-        )
+
+    // T1-11 (2026-11-19 audit, closed 2026-11-20): OK plus a positive length does not prove that
+    // anything was written or that the reported length is the real one. The buffer is poisoned, and the
+    // absurd capacity claim is compared against a normal one: same bytes, same length, poison only
+    // beyond the reported end.
+    let run = |cap: u32| -> (i32, u32, std::vec::Vec<u8>) {
+        let mut out = std::vec![0xAAu8; 4096];
+        let mut actual: u32 = 0xDEAD_BEEF;
+        let rc = unsafe {
+            shlosilo::ffi::export_abi::shlosilo_export_format_payload_ffi(
+                session,
+                0,
+                0,
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                0,
+                out.as_mut_ptr(),
+                cap,
+                &mut actual,
+            )
+        };
+        (rc, actual, out)
     };
-    assert_eq!(rc, OK, "the capacity claim is clamped to the export budget");
-    assert!(actual > 0, "nothing was written");
+
+    let (rc_normal, n_normal, buf_normal) = run(4096);
+    let (rc_absurd, n_absurd, buf_absurd) = run(u32::MAX);
+
+    assert_eq!(rc_normal, OK, "the normal-capacity call must succeed");
+    assert_eq!(
+        rc_absurd, OK,
+        "the capacity claim must be clamped to the export budget, not refused"
+    );
+    assert_eq!(
+        n_absurd, n_normal,
+        "the absurd claim must report the same length as the honest one"
+    );
+    assert!(n_normal > 0, "nothing was written");
+    assert!(
+        buf_normal[..n_normal as usize].iter().any(|&b| b != 0xAA),
+        "the reported range is still poison, so no bytes were written"
+    );
+    assert_eq!(
+        &buf_absurd[..n_absurd as usize],
+        &buf_normal[..n_normal as usize],
+        "the clamped call must produce the same bytes"
+    );
+    assert!(
+        buf_normal[n_normal as usize..].iter().all(|&b| b == 0xAA),
+        "the call wrote past its own reported length"
+    );
+
     // the session storage is caller-owned: drop the value in place
     unsafe { core::ptr::drop_in_place(session) };
 }
@@ -233,31 +267,56 @@ fn review_ffi_accepts_misaligned_workspace() {
 
     const PSBT: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
     let need = shlosilo_review_ws_len() as usize;
-    // +8 slack, then shift the base by one byte to force a misaligned start
-    let mut backing = std::vec![0u8; need + 8];
-    let ws = &mut backing[1..1 + need];
 
-    // the entry's own line budget (a bigger claim would be refused, not clamped)
-    let mut lines = std::vec![0u8; c_abi::REVIEW_LINES_BUF];
-    let (mut used, mut count, mut flags, mut in_out) = (0u32, 0u32, 0u32, 0u32);
-    let rc = unsafe {
-        c_abi::shlosilo_review_ffi(
-            c"crypto-psbt".as_ptr(),
-            PSBT.as_ptr(),
-            PSBT.len() as u32,
-            1, // testnet
-            core::ptr::null(),
-            ws.as_mut_ptr(),
-            ws.len() as u32,
-            lines.as_mut_ptr(),
-            lines.len() as u32,
-            &mut used,
-            &mut count,
-            &mut flags,
-            &mut in_out,
-        )
+    // T1-12 (2026-11-19 audit, closed 2026-11-20): "count > 0" only shows the entry did not refuse the
+    // address - it cannot see a misaligned carve producing garbage content. The same review is run twice,
+    // from an aligned workspace and from a base shifted by one byte, and the complete output (line blob,
+    // length, line count, flags, in/out counts) must be identical.
+    let run = |shift: usize| -> (i32, std::vec::Vec<u8>, u32, u32, u32, u32) {
+        let mut backing = std::vec![0u8; need + 8];
+        let ws = &mut backing[shift..shift + need];
+        let mut lines = std::vec![0u8; c_abi::REVIEW_LINES_BUF];
+        let (mut used, mut count, mut flags, mut in_out) = (0u32, 0u32, 0u32, 0u32);
+        let rc = unsafe {
+            c_abi::shlosilo_review_ffi(
+                c"crypto-psbt".as_ptr(),
+                PSBT.as_ptr(),
+                PSBT.len() as u32,
+                1, // testnet
+                core::ptr::null(),
+                ws.as_mut_ptr(),
+                ws.len() as u32,
+                lines.as_mut_ptr(),
+                lines.len() as u32,
+                &mut used,
+                &mut count,
+                &mut flags,
+                &mut in_out,
+            )
+        };
+        lines.truncate(used as usize);
+        (rc, lines, used, count, flags, in_out)
     };
-    assert_eq!(rc, OK, "misaligned workspace must still be accepted");
-    assert!(count > 0, "the review produced no lines");
-    assert!(used > 0);
+
+    let aligned = run(0);
+    let shifted = run(1);
+
+    assert_eq!(aligned.0, OK, "the aligned control must succeed");
+    assert_eq!(
+        shifted.0, OK,
+        "a misaligned workspace must still be accepted (the entry aligns the base itself)"
+    );
+    assert!(aligned.3 > 0, "the review produced no lines");
+    assert!(
+        aligned.1.iter().any(|&b| b != 0),
+        "the aligned run produced an empty blob"
+    );
+    assert_eq!(
+        aligned.1, shifted.1,
+        "the misaligned run produced different line bytes"
+    );
+    assert_eq!(aligned.2, shifted.2, "used differs");
+    assert_eq!(aligned.3, shifted.3, "line count differs");
+    assert_eq!(aligned.4, shifted.4, "flags differ");
+    assert_eq!(aligned.5, shifted.5, "in/out counts differ");
 }
