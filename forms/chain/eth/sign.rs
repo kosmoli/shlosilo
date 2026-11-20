@@ -68,7 +68,20 @@ pub fn apply_low_s(
     // 2. compute y_parity with the original sig
     let y_parity_original = compute_y_parity(sk, sighash, r_bytes, s_bytes)?;
 
-    // 3. check s > n/2
+    // 3. low-s flip (single implementation, shared with the 1559 path)
+    Ok(flip_s_to_low(s_bytes, y_parity_original))
+}
+
+/// BIP-146 / EIP-2 low-s flip on an ALREADY computed signature.
+///
+/// If `s > n/2`, replace it with `n - s` and flip `y_parity` (R becomes -R); otherwise leave both
+/// alone. The secp256k1 order is n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141.
+///
+/// A3c-F9 (external audit 2026-11-19, verified 2026-11-20): the 1559 path used to carry its own copy
+/// of this rule and indexed the signature buffer from the front, i.e. it computed `n - r` instead of
+/// `n - s` (invisible only because the backend always returns low-s today). One helper, so the two
+/// paths cannot drift apart again.
+pub fn flip_s_to_low(s_bytes: &mut [u8; 32], y_parity: u8) -> u8 {
     let half_n_high: [u8; 16] = [
         0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
         0xff,
@@ -87,29 +100,28 @@ pub fn apply_low_s(
         s_low > half_n_low.as_slice()
     };
 
-    if is_high_s {
-        // flip s = n - s (256-bit subtraction)
-        let n_bytes: [u8; 32] = [
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-            0xff, 0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c,
-            0xd0, 0x36, 0x41, 0x41,
-        ];
-        let mut new_s = [0u8; 32];
-        let mut borrow: u8 = 0;
-        for i in (0..32).rev() {
-            let a = n_bytes[i];
-            let b = s_bytes[i];
-            let (d, b1) = a.overflowing_sub(b);
-            let (d2, b2) = d.overflowing_sub(borrow);
-            new_s[i] = d2;
-            borrow = (b1 || b2) as u8;
-        }
-        s_bytes.copy_from_slice(&new_s);
-        // flip y_parity (R → -R, parity flips)
-        Ok(y_parity_original ^ 1)
-    } else {
-        Ok(y_parity_original)
+    if !is_high_s {
+        return y_parity;
     }
+    // flip s = n - s (256-bit subtraction)
+    let n_bytes: [u8; 32] = [
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36,
+        0x41, 0x41,
+    ];
+    let mut new_s = [0u8; 32];
+    let mut borrow: u8 = 0;
+    for i in (0..32).rev() {
+        let a = n_bytes[i];
+        let b = s_bytes[i];
+        let (d, b1) = a.overflowing_sub(b);
+        let (d2, b2) = d.overflowing_sub(borrow);
+        new_s[i] = d2;
+        borrow = (b1 || b2) as u8;
+    }
+    s_bytes.copy_from_slice(&new_s);
+    // R becomes -R, so the recovery parity flips
+    y_parity ^ 1
 }
 
 /// Convert a 32-byte private key to a scalar
@@ -157,4 +169,59 @@ pub fn ecdsa_recover(prehash: &[u8; 32], sig: &[u8; 65]) -> Result<[u8; 64]> {
     let mut out = [0u8; 64];
     out.copy_from_slice(&bytes[1..]);
     Ok(out)
+}
+
+#[cfg(test)]
+mod low_s_pins {
+    use super::*;
+
+    fn hex32(s: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        out
+    }
+
+    /// A3c-F9 (external audit 2026-11-19, verified 2026-11-20): the low-s flip must read `s`.
+    /// `n - 1` flips to 1; the 1559 path used to index the signature buffer from the front, i.e. it
+    /// computed `n - r`, which this pin makes impossible to reintroduce without a red test.
+    #[test]
+    fn low_s_flip_uses_s_not_r() {
+        let mut s = hex32("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140"); // n - 1
+        let parity = flip_s_to_low(&mut s, 0);
+        assert_eq!(
+            s,
+            hex32("0000000000000000000000000000000000000000000000000000000000000001")
+        );
+        assert_eq!(parity, 1, "flipping s must flip the recovery parity");
+
+        // n - 2 -> 2
+        let mut s = hex32("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd036413f");
+        assert_eq!(flip_s_to_low(&mut s, 1), 0);
+        assert_eq!(
+            s,
+            hex32("0000000000000000000000000000000000000000000000000000000000000002")
+        );
+
+        // low s is untouched
+        let low = hex32("0000000000000000000000000000000000000000000000000000000000000002");
+        let mut s = low;
+        assert_eq!(flip_s_to_low(&mut s, 1), 1);
+        assert_eq!(s, low);
+
+        // exactly n/2 is not above the boundary
+        let half = hex32("7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0");
+        let mut s = half;
+        assert_eq!(flip_s_to_low(&mut s, 0), 0);
+        assert_eq!(s, half);
+
+        // one above n/2 flips back down to floor(n/2)
+        let mut s = hex32("7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a1");
+        assert_eq!(flip_s_to_low(&mut s, 0), 1);
+        assert_eq!(
+            s,
+            hex32("7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0")
+        );
+    }
 }

@@ -33,8 +33,10 @@ pub struct EthTxSummary {
     pub to: Option<[u8; 20]>,
     pub value: u128,
     pub gas_limit: u64,
-    /// max fee = max_fee_per_gas * gas_limit (1559); legacy uses gas_price * gas_limit
-    pub max_fee_wei: u128,
+    /// max fee = max_fee_per_gas * gas_limit (1559); legacy uses gas_price * gas_limit.
+    /// `None` means the product does not fit in u128: A3c-F13 (2026-11-20) - a saturated
+    /// multiplication reported a smaller definite number with no overflow flag.
+    pub max_fee_wei: Option<u128>,
     pub call: EthCallKind,
     /// unlimited approval (approve / increaseAllowance with amount all 1s)
     pub unlimited_approval: bool,
@@ -81,7 +83,7 @@ pub fn summarize_eip1559(tx: &Eip1559Transaction) -> Result<EthTxSummary> {
         to: tx.destination,
         value: tx.amount,
         gas_limit: tx.gas_limit,
-        max_fee_wei: tx.max_fee_per_gas.saturating_mul(tx.gas_limit as u128),
+        max_fee_wei: tx.max_fee_per_gas.checked_mul(tx.gas_limit as u128),
         call,
         unlimited_approval,
         is_contract_creation: tx.destination.is_none(),
@@ -100,7 +102,7 @@ pub fn summarize_eip155(tx: &Eip155Transaction) -> Result<EthTxSummary> {
         to: tx.destination,
         value: tx.amount,
         gas_limit: tx.gas_limit,
-        max_fee_wei: tx.gas_price.saturating_mul(tx.gas_limit as u128),
+        max_fee_wei: tx.gas_price.checked_mul(tx.gas_limit as u128),
         call,
         unlimited_approval,
         is_contract_creation: tx.destination.is_none(),
@@ -151,7 +153,7 @@ mod tests {
         assert_eq!(s.chain_id, 1);
         assert_eq!(s.nonce, 42);
         assert_eq!(s.value, 1_000_000_000_000_000_000);
-        assert_eq!(s.max_fee_wei, 100_000_000_000u128 * 21_000);
+        assert_eq!(s.max_fee_wei, Some(100_000_000_000u128 * 21_000));
         assert_eq!(s.call, EthCallKind::NativeTransfer);
         assert!(!s.unlimited_approval);
         assert!(!s.is_contract_creation);
@@ -219,7 +221,7 @@ mod tests {
         };
         let s = summarize_eip155(&tx).unwrap();
         assert!(s.unlimited_approval);
-        assert_eq!(s.max_fee_wei, 20_000_000_000u128 * 50_000);
+        assert_eq!(s.max_fee_wei, Some(20_000_000_000u128 * 50_000));
         match s.call {
             EthCallKind::Token(DecodedCalldata::Approve { .. }) => {}
             other => panic!("{other:?}"),

@@ -275,50 +275,15 @@ pub fn sign_eip1559_into(input: &Eip1559SignInput, out: &mut [u8]) -> Result<Eip
 
     // 2.5 BIP-146 / EIP-2 low-s enforcement:
     //     compute y_parity with the original s first, then flip s to (n - s) if s > n/2
-    //     flipping s is equivalent to R → -R (R.y parity flips)
+    //     (equivalent to R -> -R, so the recovery parity flips).
+    // A3c-F9 (external audit 2026-11-19, verified 2026-11-20): this used to be a hand-rolled copy of
+    // the rule that indexed the signature buffer from the front, i.e. it computed `n - r` instead of
+    // `n - s`. It was unreachable only because the backend always returns low-s. The shared helper in
+    // `sign` is now the single implementation, so the 1559 and legacy paths cannot drift apart.
     let t_yp = crate::device_timing::Mark::start(crate::device_timing::STAGE_SERIALIZE);
     let y_parity_original = compute_y_parity(&sk, &sighash, &r_bytes, &s_bytes)?;
+    let y_parity = crate::chain::eth::sign::flip_s_to_low(&mut s_bytes, y_parity_original);
     t_yp.end();
-
-    let half_n_high: [u8; 16] = [
-        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff,
-    ];
-    let half_n_low: [u8; 16] = [
-        0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b, 0x20,
-        0xa0,
-    ];
-    let s_high = &s_bytes[..16];
-    let s_low = &s_bytes[16..];
-    let is_high_s = if s_high > half_n_high.as_slice() {
-        true
-    } else if s_high < half_n_high.as_slice() {
-        false
-    } else {
-        s_low > half_n_low.as_slice()
-    };
-    let y_parity = if is_high_s {
-        let n_bytes: [u8; 32] = [
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-            0xff, 0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c,
-            0xd0, 0x36, 0x41, 0x41,
-        ];
-        let mut new_s = [0u8; 32];
-        let mut borrow: u8 = 0;
-        for i in (0..32).rev() {
-            let a = n_bytes[i];
-            let b = sig_bytes[i];
-            let (d, b1) = a.overflowing_sub(b);
-            let (d2, b2) = d.overflowing_sub(borrow);
-            new_s[i] = d2;
-            borrow = (b1 || b2) as u8;
-        }
-        s_bytes.copy_from_slice(&new_s);
-        // flip y_parity (R → -R, parity flips)
-        y_parity_original ^ 1
-    } else {
-        y_parity_original
-    };
 
     // 3. Build signed transaction: 0x02 || rlp([12 fields])
     let t_ser = crate::device_timing::Mark::start(crate::device_timing::STAGE_RLP);
