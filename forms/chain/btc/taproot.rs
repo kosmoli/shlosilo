@@ -411,10 +411,14 @@ impl SigMsg {
 }
 
 /// P2TR keypath signing input
-#[derive(Clone, Debug)]
-pub struct P2TRKeypathSignInput {
+///
+/// F-9 (external audit 2026-11-19): this used to be `#[derive(Clone, Debug)]` over
+/// `pub internal_sk: [u8; 32]` — a secret that could be copied out, cloned and printed by any
+/// holder. The key is **borrowed** now (an owner type, not a bare array) and the aggregate has
+/// no Clone/Debug at all, so a copy or a log line is a compile error rather than a habit.
+pub struct P2TRKeypathSignInput<'a> {
     /// internal private key (32 bytes, untweaked)
-    pub internal_sk: [u8; 32],
+    pub internal_sk: &'a crate::types::SecretBytes<32>,
     /// merkle root (None for keypath-only; Some when a script tree exists)
     pub merkle_root: Option<[u8; 32]>,
 }
@@ -450,7 +454,7 @@ pub fn sign_taproot_keypath(
 /// - SIGHASH_DEFAULT → 64 bytes (no suffix)
 /// - other hash_type  → 65 bytes (sig || hash_type)
 pub fn sign_p2tr_keypath_into(
-    input: &P2TRKeypathSignInput,
+    input: &P2TRKeypathSignInput<'_>,
     sighash: &[u8; 32],
     aux_rand: &[u8; 32],
     hash_type: u8,
@@ -461,7 +465,7 @@ pub fn sign_p2tr_keypath_into(
     };
 
     // 1. internal pubkey x-only (used for the TapTweak message)
-    let internal_sk = scalar_from_bytes(&input.internal_sk)?;
+    let internal_sk = scalar_from_bytes(input.internal_sk.expose())?;
     let internal_pub = base_mul(&internal_sk);
     let internal_compressed = point_to_compressed(&internal_pub);
     let mut internal_x = [0u8; 32];
@@ -503,7 +507,7 @@ pub(crate) const SIGNATURE_MAX: usize = 65;
 /// Allocating convenience wrapper (host face / transitional callers).
 #[cfg(any(feature = "alloc-fallback", test))]
 pub fn sign_p2tr_keypath(
-    input: &P2TRKeypathSignInput,
+    input: &P2TRKeypathSignInput<'_>,
     sighash: &[u8; 32],
     aux_rand: &[u8; 32],
     hash_type: u8,
@@ -522,7 +526,12 @@ pub fn sign_p2tr_keypath(
 /// - internal_pub_x: 32-byte x-only internal public key
 ///
 /// **Output**: Tweaked 32-byte private key (sum mod curve order)
-pub fn tweak_private_key(internal_sk: &[u8; 32], internal_pub_x: &[u8; 32]) -> Result<[u8; 32]> {
+/// F-10 (external audit 2026-11-19): the result is a **signing private key** (BIP-341 tweaked),
+/// so it leaves as an owner instead of a bare array that callers copy around un-erased.
+pub fn tweak_private_key(
+    internal_sk: &[u8; 32],
+    internal_pub_x: &[u8; 32],
+) -> Result<crate::types::SecretBytes<32>> {
     use crate::curve_primitive::secp256k1::{scalar_add, scalar_from_bytes, scalar_negate};
     let internal_scalar = scalar_from_bytes(internal_sk)?;
 
@@ -539,7 +548,9 @@ pub fn tweak_private_key(internal_sk: &[u8; 32], internal_pub_x: &[u8; 32]) -> R
         scalar_negate(&internal_scalar)
     };
     let tweaked_scalar = scalar_add(&base_scalar, &tweak_scalar);
-    Ok(scalar_to_bytes(&tweaked_scalar))
+    // `take` wipes the temporary as the owner takes it over (produced-as-owner).
+    let mut tweaked = scalar_to_bytes(&tweaked_scalar);
+    Ok(crate::types::SecretBytes::take(&mut tweaked))
 }
 
 // === v9.8 Taproot Scriptpath + Tapscript (BIP-341) ===
@@ -657,7 +668,7 @@ pub fn tweak_private_key_scriptpath(
     internal_sk: &[u8; 32],
     internal_pub_x: &[u8; 32],
     merkle_root: &[u8; 32],
-) -> Result<[u8; 32]> {
+) -> Result<crate::types::SecretBytes<32>> {
     use crate::curve_primitive::secp256k1::{scalar_add, scalar_from_bytes, scalar_negate};
     let internal_scalar = scalar_from_bytes(internal_sk)?;
     let tweak_bytes = taproot_script_tweak(internal_pub_x, merkle_root);
@@ -671,7 +682,9 @@ pub fn tweak_private_key_scriptpath(
         scalar_negate(&internal_scalar)
     };
     let tweaked_scalar = scalar_add(&base_scalar, &tweak_scalar);
-    Ok(scalar_to_bytes(&tweaked_scalar))
+    // `take` wipes the temporary as the owner takes it over (produced-as-owner).
+    let mut tweaked = scalar_to_bytes(&tweaked_scalar);
+    Ok(crate::types::SecretBytes::take(&mut tweaked))
 }
 
 #[cfg(any(feature = "alloc-fallback", test))]
@@ -918,7 +931,7 @@ mod tests {
         // tweaked_sk = internal_sk + tweak (mod L)
         // Verify: tweaked_sk * G == tweak * G + internal_sk * G
         let internal_scalar = scalar_from_bytes(&internal_sk_bytes).unwrap();
-        let tweaked_scalar = scalar_from_bytes(&tweaked_sk).unwrap();
+        let tweaked_scalar = scalar_from_bytes(tweaked_sk.expose()).unwrap();
 
         let tweaked_point = base_mul(&tweaked_scalar);
         let internal_point = base_mul(&internal_scalar);
@@ -1052,8 +1065,9 @@ mod tests {
         let merkle_root =
             hex_decode_32("c913dc9a8009a074e7bbc493b9d8b7e741ba137f725f99d44fbce99300b2bb0a");
 
+        let sk_owner = crate::types::SecretBytes::new(internal_sk_bytes);
         let sign_input = P2TRKeypathSignInput {
-            internal_sk: internal_sk_bytes,
+            internal_sk: &sk_owner,
             merkle_root: Some(merkle_root),
         };
 
@@ -1121,7 +1135,7 @@ mod tests {
         internal_pub_x.copy_from_slice(&internal_pub_compressed[1..]);
 
         let tweaked_sk_bytes = tweak_private_key(&internal_sk_bytes, &internal_pub_x).unwrap();
-        let tweaked_sk = scalar_from_bytes(&tweaked_sk_bytes).unwrap();
+        let tweaked_sk = scalar_from_bytes(tweaked_sk_bytes.expose()).unwrap();
         let tweaked_sk_pub = base_mul(&tweaked_sk);
         let tweaked_sk_pub_compressed = point_to_compressed(&tweaked_sk_pub);
 
@@ -1233,7 +1247,7 @@ mod tests {
         let tweaked_sk_bytes =
             tweak_private_key_scriptpath(&internal_sk_bytes, &internal_pub_x, &merkle_root)
                 .unwrap();
-        let tweaked_sk = scalar_from_bytes(&tweaked_sk_bytes).unwrap();
+        let tweaked_sk = scalar_from_bytes(tweaked_sk_bytes.expose()).unwrap();
         let tweaked_sk_pub = base_mul(&tweaked_sk);
         let tweaked_sk_pub_compressed = point_to_compressed(&tweaked_sk_pub);
 

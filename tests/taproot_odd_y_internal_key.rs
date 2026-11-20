@@ -82,8 +82,10 @@ fn odd_y_internal_key_produces_the_mainnet_output_key() {
 
 #[test]
 fn odd_y_internal_key_signature_verifies_against_the_mainnet_output_key() {
+    // F-9: the signing input borrows an owner (the aggregate cannot clone or print the key).
+    let sk_owner = shlosilo::types::SecretBytes::new(INTERNAL_SK);
     let input = P2TRKeypathSignInput {
-        internal_sk: INTERNAL_SK,
+        internal_sk: &sk_owner,
         merkle_root: None,
     };
     let sighash = [0x5au8; 32]; // arbitrary prehash: this pins the key path, not a transaction

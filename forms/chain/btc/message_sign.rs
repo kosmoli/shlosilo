@@ -301,9 +301,12 @@ pub fn sign_bip322_simple_p2tr(internal_sk: &[u8; 32], msg: &[u8]) -> Result<Vec
     use crate::chain::btc::taproot::{sign_p2tr_keypath, P2TRKeypathSignInput, SIGHASH_DEFAULT};
 
     let sighash = bip322_p2tr_sighash(internal_sk, msg)?;
+    // F-9: the signing input borrows an owner; this entry still takes a bare array, so the
+    // owner lives here for the call (and is wiped on drop).
+    let sk_owner = crate::types::SecretBytes::new(*internal_sk);
     let sig = sign_p2tr_keypath(
         &P2TRKeypathSignInput {
-            internal_sk: *internal_sk,
+            internal_sk: &sk_owner,
             merkle_root: None,
         },
         &sighash,

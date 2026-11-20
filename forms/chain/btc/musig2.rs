@@ -369,9 +369,13 @@ pub struct NonceGenOutput {
 }
 
 impl core::fmt::Debug for NonceGenOutput {
+    /// F-8 (external audit 2026-11-19): `secnonce` is the secret half of a MuSig2 nonce pair —
+    /// leaking it lets a counterparty solve for the signing key. This implementation used to
+    /// hex-encode it into an ordinary string, so any `{:?}` (a log line, a panic message, a
+    /// `dbg!`) would have printed it. Only the public nonce is shown now.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("NonceGenOutput")
-            .field("secnonce", &hex_encode(&self.secnonce))
+            .field("secnonce", &"[REDACTED]")
             .field("pubnonce", &hex_encode(&self.pubnonce))
             .finish()
     }
@@ -737,6 +741,25 @@ fn hex_decode_pubkey(s: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+
+    /// F-8 (external audit 2026-11-19): formatting a nonce pair must not print the secret half.
+    #[test]
+    fn debug_output_does_not_leak_the_secret_nonce() {
+        let n = NonceGenOutput {
+            secnonce: [0xab; 97],
+            pubnonce: [0xcd; 66],
+        };
+        let text = alloc::format!("{:?}", n);
+        assert!(
+            !text.contains("abab"),
+            "secret nonce must not appear in Debug output: {text}"
+        );
+        assert!(text.contains("REDACTED"), "{text}");
+        assert!(
+            text.contains("cdcd"),
+            "the public nonce stays visible: {text}"
+        );
+    }
     extern crate std;
     use super::*;
     use std::eprintln;

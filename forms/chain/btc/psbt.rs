@@ -1487,7 +1487,7 @@ pub fn sign_psbt_p2tr_keypath_with_key(
     let mut sig = [0u8; taproot::SIGNATURE_MAX];
     let sig_len = taproot::sign_p2tr_keypath_into(
         &taproot::P2TRKeypathSignInput {
-            internal_sk: *internal_sk.expose(),
+            internal_sk,
             merkle_root,
         },
         &sighash,
@@ -3146,9 +3146,10 @@ mod tests {
         let internal_sk =
             hex_decode_32arr("1fb777f1a6fb9b76724551f8bc8ad91b77f33b8c456d65d746035391d724922a");
         let aux_rand = [0u8; 32];
+        let sk_owner = crate::types::SecretBytes::new(internal_sk);
         let witness_sig = sign_p2tr_keypath(
             &P2TRKeypathSignInput {
-                internal_sk,
+                internal_sk: &sk_owner,
                 merkle_root,
             },
             &sighash,
