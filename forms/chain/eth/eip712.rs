@@ -184,11 +184,51 @@ fn is_atom(ty: &str) -> bool {
     matches!(ty, "string" | "bytes" | "address" | "bool")
         || ty.starts_with("int")
         || ty.starts_with("uint")
-        || (ty.starts_with("bytes") && ty.len() > 5 && is_numeric_suffix(&ty[5..]))
+        || bytes_n_width(ty).is_some()
 }
 
-fn is_numeric_suffix(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+/// Width of a `bytesN` atom, validated against the EIP-712 atom set (N in 1..=32).
+///
+/// A3c-F2 (external audit 2026-11-19, verified 2026-11-20): the value branch used to accept any N and
+/// only compare it with the payload length, so `bytes33` with 33 bytes of hex indexed `padded[..33]` on
+/// a `[u8; 32]` and panicked (a device abort). The type is now rejected before any slicing.
+fn bytes_n_width(ty: &str) -> Option<usize> {
+    let suffix = ty.strip_prefix("bytes")?;
+    if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    match suffix.parse::<usize>() {
+        Ok(n) if (1..=32).contains(&n) => Some(n),
+        _ => None,
+    }
+}
+
+/// Does a 32-byte big-endian value fit the declared `intN` / `uintN` width?
+///
+/// A3c-F17 (2026-11-20): the width in the type name was never checked, so `uint8` happily accepted a
+/// 256-bit value. Bytes above the declared width must be the correct extension (zeros for unsigned,
+/// the sign byte for signed), and the width must be a multiple of 8 within 8..=256.
+fn fits_declared_width(bytes: &[u8; 32], ty: &str, signed: bool) -> bool {
+    let suffix = if signed { &ty[3..] } else { &ty[4..] };
+    let bits: u32 = if suffix.is_empty() {
+        256
+    } else {
+        match suffix.parse::<u32>() {
+            Ok(b) => b,
+            Err(_) => return false,
+        }
+    };
+    if bits == 0 || bits > 256 || !bits.is_multiple_of(8) {
+        return false;
+    }
+    let covered = (bits / 8) as usize;
+    let top = 32 - covered;
+    if signed {
+        let sign_byte = if bytes[top] & 0x80 != 0 { 0xffu8 } else { 0x00 };
+        bytes[..top].iter().all(|&b| b == sign_byte)
+    } else {
+        bytes[..top].iter().all(|&b| b == 0)
+    }
 }
 
 /// Compute typeHash: `keccak256(type_signature_string)`
@@ -329,31 +369,29 @@ impl Eip712Domain {
         // Build the field values
         let mut values = Vec::with_capacity(fields.len());
         for (name, ty) in fields {
+            // A3c-F16 (external audit 2026-11-19, verified 2026-11-20): a declared domain field with no
+            // value used to be hashed as a zero value. The digest then covered a field set the request
+            // never filled in, and the signature was over a domain the counterparty does not compute.
+            // Declaration and value must agree; anything else is a malformed request.
+            let missing = || {
+                ShlosiloError::with_context(
+                    ShlosiloErrorKind::EncodingInvalidFormat,
+                    crate::error::ErrorContext::None,
+                )
+            };
             let v = match (name.as_str(), ty.as_str()) {
                 ("name", "string") => {
-                    Eip712Value::String(self.name.clone().unwrap_or_default().into_bytes())
+                    Eip712Value::String(self.name.clone().ok_or_else(missing)?.into_bytes())
                 }
                 ("version", "string") => {
-                    Eip712Value::String(self.version.clone().unwrap_or_default().into_bytes())
+                    Eip712Value::String(self.version.clone().ok_or_else(missing)?.into_bytes())
                 }
-                ("chainId", "uint256") => match self.chain_id {
-                    Some(c) => Eip712Value::Uint256(c),
-                    None => Eip712Value::Uint256([0u8; 32]),
-                },
-                ("verifyingContract", "address") => match self.verifying_contract {
-                    Some(a) => Eip712Value::Address(a),
-                    None => Eip712Value::Address([0u8; 20]),
-                },
-                ("salt", "bytes32") => match self.salt {
-                    Some(s) => Eip712Value::Bytes32(s),
-                    None => Eip712Value::Bytes32([0u8; 32]),
-                },
-                _ => {
-                    return Err(ShlosiloError::with_context(
-                        ShlosiloErrorKind::EncodingInvalidFormat,
-                        crate::error::ErrorContext::None, /* was format */
-                    ));
+                ("chainId", "uint256") => Eip712Value::Uint256(self.chain_id.ok_or_else(missing)?),
+                ("verifyingContract", "address") => {
+                    Eip712Value::Address(self.verifying_contract.ok_or_else(missing)?)
                 }
+                ("salt", "bytes32") => Eip712Value::Bytes32(self.salt.ok_or_else(missing)?),
+                _ => return Err(missing()),
             };
             values.push(v);
         }
@@ -616,6 +654,15 @@ pub enum JsonError {
     ExpectedKey,
     ExpectedColon,
     NumberOutOfRange,
+    /// A3c-F14 (2026-11-20): the same key appeared twice in one object. Silently keeping the last
+    /// value lets a request mean two different things to this parser and to the wallet that built it.
+    DuplicateKey,
+    /// A3c-F15 (2026-11-20): recursion depth budget exceeded.
+    TooDeep,
+    /// A3c-F15 (2026-11-20): total node budget exceeded.
+    TooManyNodes,
+    /// A3c-F15 (2026-11-20): the JSON document itself is larger than the entry budget.
+    InputTooLarge,
 }
 
 impl core::fmt::Display for JsonError {
@@ -632,13 +679,25 @@ impl core::fmt::Display for JsonError {
             JsonError::ExpectedKey => f.write_str("expected string key"),
             JsonError::ExpectedColon => f.write_str("expected ':'"),
             JsonError::NumberOutOfRange => f.write_str("number out of range"),
+            JsonError::DuplicateKey => f.write_str("duplicate object key"),
+            JsonError::TooDeep => f.write_str("JSON nesting too deep"),
+            JsonError::TooManyNodes => f.write_str("JSON node budget exceeded"),
+            JsonError::InputTooLarge => f.write_str("JSON input over budget"),
         }
     }
 }
 
 /// Parse a JSON string (trailing whitespace allowed)
 pub fn parse_json(s: &str) -> core::result::Result<JsonValue, JsonError> {
-    let mut p = Parser { input: s, pos: 0 };
+    if s.len() > JSON_MAX_LEN {
+        return Err(JsonError::InputTooLarge);
+    }
+    let mut p = Parser {
+        input: s,
+        pos: 0,
+        depth: 0,
+        nodes: 0,
+    };
     p.skip_ws();
     let v = p.parse_value()?;
     p.skip_ws();
@@ -648,9 +707,19 @@ pub fn parse_json(s: &str) -> core::result::Result<JsonValue, JsonError> {
     Ok(v)
 }
 
+/// A3c-F15 (external audit 2026-11-19, verified 2026-11-20): resource budgets for the typed-data JSON
+/// face. Without them a hostile request drives unbounded recursion (stack overflow, and on the device
+/// that is an abort) or unbounded allocation from a small document. The numbers are deliberately far
+/// above anything a wallet sends: a real eth_signTypedData payload is a few KiB with depth < 10.
+const JSON_MAX_LEN: usize = 16 * 1024;
+const JSON_MAX_DEPTH: u32 = 32;
+const JSON_MAX_NODES: u32 = 4096;
+
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
+    depth: u32,
+    nodes: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -675,6 +744,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_value(&mut self) -> core::result::Result<JsonValue, JsonError> {
+        // A3c-F15: every parsed value costs one node, containers included.
+        self.nodes += 1;
+        if self.nodes > JSON_MAX_NODES {
+            return Err(JsonError::TooManyNodes);
+        }
         self.skip_ws();
         match self.peek() {
             Some('n') => self.parse_null(),
@@ -767,6 +841,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_array(&mut self) -> core::result::Result<JsonValue, JsonError> {
+        // A3c-F15: depth is checked on entry and released on every exit path (including Err).
+        self.depth += 1;
+        if self.depth > JSON_MAX_DEPTH {
+            return Err(JsonError::TooDeep);
+        }
+        let out = self.parse_array_inner();
+        self.depth -= 1;
+        out
+    }
+
+    fn parse_array_inner(&mut self) -> core::result::Result<JsonValue, JsonError> {
         self.advance(); // '['
         let mut arr = Vec::new();
         self.skip_ws();
@@ -792,6 +877,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_object(&mut self) -> core::result::Result<JsonValue, JsonError> {
+        // A3c-F15: same depth accounting as parse_array.
+        self.depth += 1;
+        if self.depth > JSON_MAX_DEPTH {
+            return Err(JsonError::TooDeep);
+        }
+        let out = self.parse_object_inner();
+        self.depth -= 1;
+        out
+    }
+
+    fn parse_object_inner(&mut self) -> core::result::Result<JsonValue, JsonError> {
         self.advance(); // '{'
         let mut obj = BTreeMap::new();
         self.skip_ws();
@@ -807,7 +903,11 @@ impl<'a> Parser<'a> {
                 return Err(JsonError::ExpectedColon);
             }
             let value = self.parse_value()?;
-            obj.insert(key, value);
+            // A3c-F14: a duplicate key must not silently replace the earlier value - the digest would
+            // then cover a different field set than the one the counterparty sees.
+            if obj.insert(key, value).is_some() {
+                return Err(JsonError::DuplicateKey);
+            }
             self.skip_ws();
             match self.peek() {
                 Some(',') => {
@@ -987,13 +1087,24 @@ fn json_to_eip712_value(
             if let JsonValue::String_(s) = json {
                 // uint256 is often given as a string (to avoid precision loss)
                 if let Some(bytes) = parse_uint256_string(s) {
+                    if !fits_declared_width(&bytes, t, false) {
+                        return Err(JsonError::UnexpectedChar('?', 0));
+                    }
                     Ok(Eip712Value::Uint256(bytes))
                 } else {
                     Err(JsonError::UnexpectedChar('?', 0))
                 }
             } else if let JsonValue::Num(n) = json {
+                // A3c-F17: a negative number is not a uint. It used to be encoded as its two's
+                // complement and signed as a huge positive value.
+                if *n < 0 {
+                    return Err(JsonError::UnexpectedChar('?', 0));
+                }
                 let mut bytes = [0u8; 32];
                 bytes[32 - 8..].copy_from_slice(&n.to_be_bytes());
+                if !fits_declared_width(&bytes, t, false) {
+                    return Err(JsonError::UnexpectedChar('?', 0));
+                }
                 Ok(Eip712Value::Uint256(bytes))
             } else {
                 Err(JsonError::UnexpectedChar('?', 0))
@@ -1002,26 +1113,34 @@ fn json_to_eip712_value(
         t if t.starts_with("int") || t == "int256" => {
             if let JsonValue::String_(s) = json {
                 if let Some(bytes) = parse_int256_string(s) {
+                    if !fits_declared_width(&bytes, t, true) {
+                        return Err(JsonError::UnexpectedChar('?', 0));
+                    }
                     Ok(Eip712Value::Int256(bytes))
                 } else {
                     Err(JsonError::UnexpectedChar('?', 0))
                 }
             } else if let JsonValue::Num(n) = json {
+                // A3c-F17: negative values are sign-extended (0xff above the value), not zero-extended
+                // - the old shape hashed -1 as a small positive number.
                 let mut bytes = [0u8; 32];
+                if *n < 0 {
+                    bytes = [0xffu8; 32];
+                }
                 bytes[32 - 8..].copy_from_slice(&n.to_be_bytes());
+                if !fits_declared_width(&bytes, t, true) {
+                    return Err(JsonError::UnexpectedChar('?', 0));
+                }
                 Ok(Eip712Value::Int256(bytes))
             } else {
                 Err(JsonError::UnexpectedChar('?', 0))
             }
         }
-        t if t.starts_with("bytes")
-            && t.len() > 5
-            && t[5..].chars().all(|c| c.is_ascii_digit()) =>
-        {
-            // bytesN (fixed size)
+        t if bytes_n_width(t).is_some() => {
+            // bytesN (fixed size); A3c-F2: the width is validated as 1..=32 before any slicing
             if let JsonValue::String_(s) = json {
                 if let Some(bytes) = parse_dynamic_bytes_hex(s) {
-                    let n: usize = t[5..].parse().unwrap_or(0);
+                    let n: usize = bytes_n_width(t).ok_or(JsonError::UnexpectedChar('?', 0))?;
                     if bytes.len() == n {
                         let mut padded = [0u8; 32];
                         padded[..n].copy_from_slice(&bytes);
@@ -1133,6 +1252,12 @@ fn parse_uint256_string(s: &str) -> Option<[u8; 32]> {
                 arr[i] = (prod & 0xff) as u8;
                 carry = prod >> 8;
             }
+            // A3c-F18 (external audit 2026-11-19, verified 2026-11-20): the carry out of the top byte
+            // was dropped, so an out-of-range decimal silently became a DIFFERENT value (2^256+6 used
+            // to hash exactly like 6). Only the following add-digit carry used to be checked.
+            if carry != 0 {
+                return None;
+            }
             // arr += digit (low end)
             let mut c2: u16 = digit;
             for i in (0..32).rev() {
@@ -1161,19 +1286,22 @@ fn parse_int256_string(s: &str) -> Option<[u8; 32]> {
         let n: u64 = abs_str.parse().ok()?;
         let mut arr = [0u8; 32];
         if negative {
-            // Two\'s complement: the 256-bit complement of n = 2^256 - n
+            // Two's complement: 2^256 - n, computed as (!n) + 1 so there is no borrow bookkeeping to
+            // get wrong. A3c-N1 (found while verifying A3c-F17, 2026-11-20): the previous shape did
+            // `0u16 - byte - borrow`, which panics on an overflow-checked (debug) build for ANY
+            // negative value - the device builds without checks and got the right answer, so the
+            // breakage only showed up under test.
             let mut bytes = [0u8; 32];
             bytes[32 - 8..].copy_from_slice(&n.to_be_bytes());
-            // (2^256 - n) via 256-bit subtraction: 0 - n with borrow
             let mut result = [0u8; 32];
-            let mut borrow: u16 = 0;
+            for i in 0..32 {
+                result[i] = !bytes[i];
+            }
+            let mut carry: u16 = 1;
             for i in (0..32).rev() {
-                let diff = 0_u16 - (bytes[i] as u16) - borrow;
-                result[i] = diff as u8;
-                borrow = (diff >> 15) & 1; // borrow if diff > 255
-                if (diff & 0xFF00) != 0 {
-                    borrow = 1;
-                }
+                let sum = result[i] as u16 + carry;
+                result[i] = sum as u8;
+                carry = sum >> 8;
             }
             arr = result;
         } else {
@@ -1549,7 +1677,9 @@ mod tests {
             name: Some("Test".to_string()),
             version: Some("1".to_string()),
             chain_id: Some([0u8; 32]),
-            verifying_contract: None,
+            // A3c-F16: mail_types() declares verifyingContract, so the value must be present. This
+            // used to be None and the separator silently hashed a zero address instead.
+            verifying_contract: Some([0u8; 20]),
             salt: None,
         };
         let msg = Eip712Value::Struct(
@@ -1595,7 +1725,8 @@ mod tests {
             name: Some("App1".to_string()),
             version: Some("1".to_string()),
             chain_id: Some([0u8; 32]),
-            verifying_contract: None,
+            // A3c-F16: declared by mail_types(), so it has to carry a value.
+            verifying_contract: Some([0u8; 20]),
             salt: None,
         };
         let mut d2 = d1.clone();
@@ -1921,5 +2052,189 @@ mod tests {
             },
             _ => panic!("expected struct"),
         }
+    }
+}
+
+/// A3c bucket D pins (2026-11-20): the typed-data face is not wired to any product path today
+/// (`sign_eth` rejects TypedData / PersonalMessage), so these are the standing guards that must be
+/// green before typed-data signing is ever enabled.
+#[cfg(test)]
+mod a3c_pins {
+    use super::*;
+
+    fn hash_of(field_type: &str, value_literal: &str) -> core::result::Result<[u8; 32], JsonError> {
+        let json = alloc::format!(
+            r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}}],"M":[{{"name":"v","type":"{field_type}"}}]}},"primaryType":"M","domain":{{"name":"t"}},"message":{{"v":{value_literal}}}}}"#
+        );
+        parse_typed_data_v4(&json)?
+            .signing_hash()
+            .map_err(|_| JsonError::ExpectedKey)
+    }
+
+    /// A3c-F2: a bytesN wider than 32 bytes must be rejected as a type, not sliced.
+    #[test]
+    fn bytes_n_over_32_is_rejected_instead_of_panicking() {
+        // 33 payload bytes declared as bytes33 - the old code did padded[..33] on a [u8; 32]
+        let bad = hash_of(
+            "bytes33",
+            r#""0x010101010101010101010101010101010101010101010101010101010101010101""#,
+        );
+        assert!(bad.is_err(), "bytes33 must not be an accepted atom");
+        // control: bytes32 with 32 bytes hashes
+        assert!(hash_of(
+            "bytes32",
+            r#""0x0101010101010101010101010101010101010101010101010101010101010101""#
+        )
+        .is_ok());
+        // and bytes1 with one byte
+        assert!(hash_of("bytes1", r#""0x01""#).is_ok());
+    }
+
+    /// A3c-F14: duplicate object keys are an error, not a silent overwrite.
+    #[test]
+    fn duplicate_json_key_is_rejected() {
+        match parse_json(r#"{"a":1,"a":2}"#) {
+            Err(JsonError::DuplicateKey) => {}
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+        // control: distinct keys parse
+        assert!(parse_json(r#"{"a":1,"b":2}"#).is_ok());
+    }
+
+    /// A3c-F15: depth, node and input budgets.
+    #[test]
+    fn json_resource_budgets_are_enforced() {
+        let deep: alloc::string::String = {
+            let mut s = alloc::string::String::new();
+            for _ in 0..(JSON_MAX_DEPTH as usize + 4) {
+                s.push('[');
+            }
+            for _ in 0..(JSON_MAX_DEPTH as usize + 4) {
+                s.push(']');
+            }
+            s
+        };
+        match parse_json(&deep) {
+            Err(JsonError::TooDeep) => {}
+            other => panic!("expected TooDeep, got {other:?}"),
+        }
+
+        // within the depth budget still parses (control)
+        let shallow = "[[[[]]]]";
+        assert!(parse_json(shallow).is_ok());
+
+        // node budget: a flat array longer than JSON_MAX_NODES elements
+        let mut wide = alloc::string::String::from("[");
+        for i in 0..(JSON_MAX_NODES as usize + 8) {
+            if i > 0 {
+                wide.push(',');
+            }
+            wide.push('0');
+        }
+        wide.push(']');
+        match parse_json(&wide) {
+            Err(JsonError::TooManyNodes) => {}
+            other => panic!("expected TooManyNodes, got {other:?}"),
+        }
+
+        // input budget
+        let mut huge = alloc::string::String::from("\"");
+        for _ in 0..(JSON_MAX_LEN + 16) {
+            huge.push('a');
+        }
+        huge.push('"');
+        match parse_json(&huge) {
+            Err(JsonError::InputTooLarge) => {}
+            other => panic!("expected InputTooLarge, got {other:?}"),
+        }
+    }
+
+    /// A3c-F17: a negative JSON integer is sign-extended, and an unsigned type refuses it.
+    #[test]
+    fn negative_integers_are_sign_extended_and_unsigned_refuses_them() {
+        let as_number = hash_of("int256", "-1").unwrap();
+        let sign_extended =
+            hash_of("int256", &alloc::format!("\"0x{}\"", "ff".repeat(32))).unwrap();
+        let zero_extended = hash_of(
+            "int256",
+            &alloc::format!("\"0x{}{}\"", "00".repeat(24), "ff".repeat(8)),
+        )
+        .unwrap();
+        assert_eq!(
+            as_number, sign_extended,
+            "int256(-1) must be 32 bytes of 0xff"
+        );
+        assert_ne!(
+            as_number, zero_extended,
+            "zero extension is the old, wrong encoding"
+        );
+
+        // uint256 must refuse a negative number outright
+        assert!(hash_of("uint256", "-1").is_err());
+
+        // declared widths are enforced
+        assert!(hash_of("uint8", "200").is_ok());
+        assert!(hash_of("uint8", "300").is_err());
+        assert!(hash_of("int8", "100").is_ok());
+        assert!(hash_of("int8", "200").is_err());
+    }
+
+    /// A3c-F18: a decimal string that does not fit 256 bits is refused instead of wrapping.
+    #[test]
+    fn decimal_overflow_is_rejected() {
+        // 2^256 - 1 fits
+        assert!(hash_of(
+            "uint256",
+            r#""115792089237316195423570985008687907853269984665640564039457584007913129639935""#
+        )
+        .is_ok());
+        // 2^256 + 6 used to hash exactly like 6
+        let over =
+            r#""115792089237316195423570985008687907853269984665640564039457584007913129639942""#;
+        assert!(hash_of("uint256", over).is_err());
+        assert!(hash_of("uint256", r#""6""#).is_ok());
+    }
+
+    /// A3c-N1: a negative DECIMAL int256 string works (it used to panic on an overflow-checked build).
+    #[test]
+    fn negative_decimal_int256_matches_the_number_form() {
+        let from_string = hash_of("int256", "\"-1\"").unwrap();
+        let from_number = hash_of("int256", "-1").unwrap();
+        assert_eq!(
+            from_string, from_number,
+            "both spellings of -1 must produce the same typed-data hash"
+        );
+        // -2 as well, so the borrow-free two's complement is exercised past the n=1 case
+        let a = hash_of("int256", "\"-2\"").unwrap();
+        let b = hash_of("int256", "-2").unwrap();
+        assert_eq!(a, b);
+    }
+
+    /// A3c-F16: a domain field that the types declare but the domain does not fill in is an error.
+    #[test]
+    fn declared_domain_field_without_a_value_is_rejected() {
+        let mut types = Types::new();
+        types.insert(
+            "EIP712Domain".to_string(),
+            alloc::vec![
+                ("name".to_string(), "string".to_string()),
+                ("salt".to_string(), "bytes32".to_string()),
+            ],
+        );
+        let domain = Eip712Domain {
+            name: Some("t".to_string()),
+            version: None,
+            chain_id: None,
+            verifying_contract: None,
+            salt: None, // declared above, but no value
+        };
+        assert!(
+            domain.separator_with_types(&types).is_err(),
+            "a declared field with no value must not be hashed as zero"
+        );
+        // control: filling the value makes it hash
+        let mut ok = domain;
+        ok.salt = Some([0u8; 32]);
+        assert!(ok.separator_with_types(&types).is_ok());
     }
 }
