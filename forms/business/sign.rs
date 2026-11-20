@@ -1905,8 +1905,6 @@ fn sign_btc<'a>(
             &psbt_mod::PsbtSignInput {
                 input_index: idx,
                 private_key: &sk_bytes,
-                pubkey_hash,
-                amount,
             },
         )?;
     }

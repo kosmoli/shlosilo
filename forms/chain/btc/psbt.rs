@@ -1051,10 +1051,34 @@ pub struct PsbtSignInput<'a> {
     /// The private key for this input (32 bytes)
     /// A2-08 (external audit 2026-11-19): borrowed — the signer only reads it.
     pub private_key: &'a SecretBytes<32>,
-    /// pubkey hash (20 bytes) — P2WPKH witness program
-    pub pubkey_hash: [u8; 20],
-    /// The value of this input (satoshis) — used for the BIP-143 sighash
-    pub amount: u64,
+}
+
+impl PsbtSignInput<'_> {
+    /// Derive P2WPKH ownership material for this input from the private key and the map.
+    ///
+    /// F-4 (external audit 2026-11-19): `pubkey_hash` and `amount` used to be **caller
+    /// declarations** that this entry never checked against the input map — so it would write a
+    /// partial signature for an input with no UTXO at all, and the BIP-143 digest used an amount
+    /// nobody had authenticated. Both come from the input's own UTXO now, and the scriptPubKey
+    /// must lock to the key derived here.
+    fn resolve_prevout(&self, psbt: &Psbt<'_>) -> Result<(u64, [u8; 20])> {
+        use crate::curve_primitive::secp256k1::{base_mul, point_to_compressed, scalar_from_bytes};
+        let sk = scalar_from_bytes(self.private_key.expose())?;
+        let pk = point_to_compressed(&base_mul(&sk));
+        let h = crate::encoding::sha256::hash(&pk)?;
+        let mut pubkey_hash = [0u8; 20];
+        pubkey_hash.copy_from_slice(&crate::encoding::ripemd160::hash(&h)?);
+
+        let prev_out = psbt.unsigned_tx.inputs[self.input_index].prev_out.clone();
+        let (amount, spk) = get_utxo_any(psbt.input_map(self.input_index), &prev_out)
+            .ok_or(ShlosiloError::new(ShlosiloErrorKind::PrevoutMissing))?;
+        let spk = crate::types::wire_bytes::wire_slice(&spk);
+        // witness program: OP_0 PUSH20 <hash160>
+        if spk.len() != 22 || spk[0] != 0x00 || spk[1] != 0x14 || spk[2..22] != pubkey_hash {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::PsbtOwnershipMismatch));
+        }
+        Ok((amount, pubkey_hash))
+    }
 }
 
 /// Sign a PSBT P2WPKH input
@@ -1068,14 +1092,17 @@ pub fn sign_psbt_p2wpkh(psbt: &mut Psbt<'_>, sign_input: &PsbtSignInput) -> Resu
         return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
     }
 
+    // F-4: amount and witness program come from the input's own UTXO, bound to the prevout.
+    let (amount, pubkey_hash) = sign_input.resolve_prevout(psbt)?;
+
     // 2. Z4-3: sign against the unsigned tx READ-ONLY — no clone, no witness
     // staging, no signed-tx serialization (the old flow built all three and
     // threw them away).
     let p2wpkh_input = crate::chain::btc::p2wpkh::P2WPKHSignInput {
         input_index: sign_input.input_index,
         private_key: sign_input.private_key,
-        amount: sign_input.amount,
-        pubkey_hash: sign_input.pubkey_hash,
+        amount,
+        pubkey_hash,
     };
     let (sig_with_sighash, compressed_pk) =
         crate::chain::btc::p2wpkh::sign_p2wpkh_core(&psbt.unsigned_tx, &p2wpkh_input)?;
@@ -2698,9 +2725,84 @@ mod tests {
             .any(|kv| kv.key == vec![input_type::WITNESS_UTXO]));
     }
 
-    /// Sign a P2WPKH PSBT input
+    /// F-4 (external audit 2026-11-19): the entry must not write a partial signature for an
+    /// input whose UTXO nobody supplied — the amount in the BIP-143 digest would be a value the
+    /// caller invented. The old entry signed happily in this situation.
+    #[test]
+    fn p2wpkh_entry_refuses_an_input_without_utxo() {
+        let mut private_key = [0u8; 32];
+        private_key[31] = 1;
+        let owner = SecretBytes::new(private_key);
+
+        let txin = TxIn {
+            prev_out: OutPoint {
+                txid: [0x33; 32],
+                vout: 0,
+            },
+            script_sig: vec![].into(),
+            sequence: 0xffffffff,
+            witness: vec![],
+        };
+        let mut psbt = psbt_from_maps_leaky(
+            Transaction {
+                version: 2,
+                inputs: bt_vec![txin],
+                outputs: bt_vec![TxOut {
+                    value: 1_000,
+                    script_pubkey: vec![0x00, 0x14].into(),
+                }],
+                lock_time: 0,
+            },
+            &[Vec::new()], // no WITNESS_UTXO / NON_WITNESS_UTXO at all
+            &[Vec::new()],
+        );
+        let err = sign_psbt_p2wpkh(
+            &mut psbt,
+            &PsbtSignInput {
+                input_index: 0,
+                private_key: &owner,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::PrevoutMissing,
+            "signing without a bound UTXO must be refused"
+        );
+    }
+
+    /// hash160 of the compressed pubkey for a given private key — the witness program the
+    /// input's UTXO must lock to.
+    fn p2wpkh_spk_for(private_key: &[u8; 32]) -> Vec<u8> {
+        let sk = crate::curve_primitive::secp256k1::scalar_from_bytes(private_key).unwrap();
+        let pk = crate::curve_primitive::secp256k1::point_to_compressed(
+            &crate::curve_primitive::secp256k1::base_mul(&sk),
+        );
+        let h = crate::encoding::sha256::hash(&pk).unwrap();
+        let h160 = crate::encoding::ripemd160::hash(&h).unwrap();
+        let mut spk = Vec::with_capacity(22);
+        spk.push(0x00);
+        spk.push(0x14);
+        spk.extend_from_slice(&h160);
+        spk
+    }
+
+    /// Sign a P2WPKH PSBT input.
+    ///
+    /// F-4 (external audit 2026-11-19): this test used to sign with an **empty input map** and a
+    /// made-up witness program — it was proving that the entry signs without a UTXO, which is
+    /// exactly the defect. The fixture now carries the input's own UTXO and the entry derives
+    /// amount and program from it.
     #[test]
     fn psbt_sign_p2wpkh() {
+        let mut private_key_bytes =
+            hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
+        let mut pk_bytes = [0u8; 32];
+        pk_bytes.copy_from_slice(&private_key_bytes);
+        let spk = p2wpkh_spk_for(&pk_bytes);
+        let private_key = SecretBytes::take(&mut pk_bytes);
+        private_key_bytes.fill(0);
+
         let mut txid = [0u8; 32];
         txid[0] = 0xab;
         let txin = TxIn {
@@ -2709,16 +2811,16 @@ mod tests {
             sequence: 0xffffffff,
             witness: vec![],
         };
-        let mut pk_hash = [0u8; 20];
-        pk_hash[0] = 0x42;
-        let mut script_pubkey = Vec::with_capacity(22);
-        script_pubkey.push(0x00);
-        script_pubkey.push(0x14);
-        script_pubkey.extend_from_slice(&pk_hash);
         let txout = TxOut {
             value: 100_000,
-            script_pubkey: script_pubkey.into(),
+            script_pubkey: spk.clone().into(),
         };
+        // WITNESS_UTXO value = amount(8 LE) ‖ compact_size(spk_len) ‖ scriptPubKey
+        let mut utxo_bytes = Vec::new();
+        utxo_bytes.extend_from_slice(&200_000u64.to_le_bytes());
+        utxo_bytes.push(spk.len() as u8);
+
+        utxo_bytes.extend_from_slice(&spk);
 
         let mut psbt = psbt_from_maps_leaky(
             Transaction {
@@ -2727,21 +2829,16 @@ mod tests {
                 outputs: bt_vec![txout],
                 lock_time: 0,
             },
-            &[Vec::new()],
+            &[vec![KeyValue {
+                key: vec![input_type::WITNESS_UTXO].into(),
+                value: utxo_bytes.into(),
+            }]],
             &[Vec::new()],
         );
-
-        let private_key_bytes =
-            hex_decode("0101010101010101010101010101010101010101010101010101010101010101");
-        let mut private_key = [0u8; 32];
-        private_key.copy_from_slice(&private_key_bytes);
-        let private_key = SecretBytes::take(&mut private_key);
 
         let sign_input = PsbtSignInput {
             input_index: 0,
             private_key: &private_key,
-            pubkey_hash: pk_hash,
-            amount: 200_000,
         };
 
         sign_psbt_p2wpkh(&mut psbt, &sign_input).unwrap();
@@ -2784,8 +2881,6 @@ mod tests {
         let sign_input = PsbtSignInput {
             input_index: 0,
             private_key: &SecretBytes::new([0; 32]),
-            pubkey_hash: [0; 20],
-            amount: 0,
         };
         assert!(sign_psbt_p2wpkh(&mut psbt, &sign_input).is_err());
     }
