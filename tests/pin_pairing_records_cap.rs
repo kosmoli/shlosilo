@@ -27,6 +27,27 @@ fn point(sk: &[u8; 32]) -> [u8; 32] {
 
 /// Build a Cake-shaped `xmr-output` request container with `n` records
 /// (wire shape mirrors tests/xmr_pairing_zero_alloc.rs).
+/// Canonical Monero varint (LEB128): values below 0x80 are one byte, 128 needs two.
+///
+/// T1-03 (2026-11-19 audit, closed 2026-11-20): the fixture used to write `total`, `record_count`
+/// and `global_output_index` as single `u8`s. 129 therefore became the byte 0x81, whose high bit says
+/// "another varint byte follows" - so the request was malformed and its rejection proved nothing about
+/// the record cap.
+fn varint(mut v: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let mut b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v != 0 {
+            b |= 0x80;
+        }
+        out.push(b);
+        if v == 0 {
+            return out;
+        }
+    }
+}
+
 fn build_request(n: usize) -> (KeySession, Vec<u8>, [u8; 32]) {
     let session = KeySession::from_entropy(&[0x11u8; 16], b"").unwrap();
     let keys = session.monero();
@@ -34,7 +55,10 @@ fn build_request(n: usize) -> (KeySession, Vec<u8>, [u8; 32]) {
     let spend_sk = *keys.spend_sk.expose();
 
     let mut plain = Vec::new();
-    plain.extend_from_slice(&[0x01, 0x00, n as u8, n as u8]); // head, offset, total, record_count
+    plain.push(0x01); // head
+    plain.push(0x00); // offset
+    plain.extend_from_slice(&varint(n as u64)); // total (canonical varint)
+    plain.extend_from_slice(&varint(n as u64)); // record_count (canonical varint)
     for i in 0..n {
         let tx_pub = point(&[0x42u8.wrapping_add(i as u8); 32]);
         // distinct tx_pub per record, same slot convention as the known-good
@@ -46,7 +70,7 @@ fn build_request(n: usize) -> (KeySession, Vec<u8>, [u8; 32]) {
         plain.extend_from_slice(&[0x01]); // version
         plain.extend_from_slice(&out_pub);
         plain.push(0x00); // internal_output_index
-        plain.push(i as u8); // global_output_index (varint, <128)
+        plain.extend_from_slice(&varint(i as u64)); // global_output_index (canonical varint)
         plain.extend_from_slice(&tx_pub);
         plain.push(0b0001_0100); // rct | key_image_request
         plain.extend_from_slice(&[0x80, 0x96, 0x98, 0x91, 0x04]); // amount varint
@@ -107,6 +131,17 @@ fn pairing_accepts_38_record_wallet() {
     let (session, req, entropy) = build_request(38);
     let rc = run_pairing(&session, &req, &entropy);
     assert_eq!(rc, 0, "a 38-record Outputs(all) must pair (the live case)");
+}
+
+/// At the cap: accepted. Without this control the refusal below could be a fixture problem.
+#[test]
+fn pairing_accepts_exactly_the_cap() {
+    let (session, req, entropy) = build_request(128);
+    let rc = run_pairing(&session, &req, &entropy);
+    assert_eq!(
+        rc, 0,
+        "exactly PAIRING_RECORDS_MAX records must pair (canonical varint fixture)"
+    );
 }
 
 /// Beyond the cap: refuse (non-zero) — the device layer must show it.

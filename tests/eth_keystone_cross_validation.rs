@@ -121,8 +121,17 @@ fn eth_eip712_minimal_edge_case_documented() {
     let domain = eip712::Eip712Domain::default();
     let msg = eip712::Eip712Value::Struct("EIP712Domain".to_string(), vec![]);
 
-    // standard EIP-712 behavior: shlosilo's output ≠ keystone's quirk value; this is an **expected difference**
+    // standard EIP-712 behavior: shlosilo's output differs from keystone's quirk value; that dialect
+    // difference is documented by the assert_ne below, but excluding one wrong answer is not a check
+    // (T1-08, 2026-11-19 audit, closed 2026-11-20) - so the value is also pinned against an
+    // independent computation: typeHash = keccak("EIP712Domain()"), hashStruct over zero fields =
+    // keccak(typeHash), and the signing hash = keccak(0x1901 || sep || sep).
     let sighash = eip712::signing_hash(&domain, "EIP712Domain", &msg, &types).unwrap();
+    assert_eq!(
+        hex_encode(&sighash),
+        "85935f898ffc4239bfbe27fd9f097ef4cc1f8441ef1d141541cdd20ea0ab933a",
+        "empty-domain signing hash must match the independent computation"
+    );
     assert_ne!(
         hex_encode(&sighash),
         "8d4a3f4082945b7879e2b55f181c31a77c8c0a464b70669458abbaaf99de4c38",
@@ -301,8 +310,20 @@ fn eth_eip1559_signing_preimage_structure() {
         "RLP length prefix must match payload size"
     );
 
-    // sighash is keccak256(preimage), deterministic
-    let h1 = shlosilo::chain::eth::eip1559::signing_hash(&tx).unwrap();
-    let h2 = shlosilo::chain::eth::eip1559::signing_hash(&tx).unwrap();
-    assert_eq!(h1, h2);
+    // T1-01 (2026-11-19 audit, closed 2026-11-20): the old assertion compared the signer with itself
+    // (h1 == h2), which stays green even if both computations are wrong. The expected preimage and
+    // sighash below come from a from-scratch Python Keccak-256 + RLP encoder - the same script
+    // reproduces the official EIP-1559 vector sighash and the BIP-143/BIP-341 style controls - so this
+    // pins the bytes against an independent implementation.
+    assert_eq!(
+        hex_encode(&preimage),
+        "02f0012a847735940085174876e8008252089449ab56b91fc982fd6ec1ec7bb87d74efa6da30ab880de0b6b3a764000080c0",
+        "EIP-1559 preimage must match the independent oracle byte for byte"
+    );
+    let sighash = shlosilo::chain::eth::eip1559::signing_hash(&tx).unwrap();
+    assert_eq!(
+        hex_encode(&sighash),
+        "ee38168cca16acaed8c71f733f38b3f80a460117237ead322f547691c245b900",
+        "sighash must match the independent oracle"
+    );
 }
