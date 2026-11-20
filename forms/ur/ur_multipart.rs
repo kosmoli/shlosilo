@@ -354,6 +354,11 @@ pub struct UrDecodeWsLayout {
     pub scratch: usize,
     pub handle: usize,
     pub total: usize,
+    /// T1-02 (2026-11-19 audit, closed 2026-11-20): the five spans that the free path must wipe, as
+    /// (offset, len) pairs. Exposing the LENGTHS - not just the offsets - is what makes a full-length
+    /// wipe assertion possible; deriving them from neighbouring offsets would be wrong, because three
+    /// non-sensitive arenas (message, equations, index_scratch) sit between `received` and `scratch`.
+    pub sensitive_spans: [(usize, usize); 5],
 }
 
 fn ur_next(off: &mut usize, align: usize, size: usize) -> usize {
@@ -372,26 +377,14 @@ impl UrDecodeWsLayout {
         let align =
             core::mem::align_of::<UrMultipartDecoder<'static>>().max(core::mem::align_of::<BP>());
         let mut off = 0usize;
-        let decoded = ur_next(
-            &mut off,
-            core::mem::align_of::<DP>(),
-            core::mem::size_of::<DP>() * c::UR_WS_DECODED_SLOTS,
-        );
-        let buffer = ur_next(
-            &mut off,
-            core::mem::align_of::<BP>(),
-            core::mem::size_of::<BP>() * c::UR_WS_BUFFER_SLOTS,
-        );
-        let queue = ur_next(
-            &mut off,
-            core::mem::align_of::<DP>(),
-            core::mem::size_of::<DP>() * c::UR_WS_QUEUE_SLOTS,
-        );
-        let received = ur_next(
-            &mut off,
-            core::mem::align_of::<RS>(),
-            core::mem::size_of::<RS>() * c::UR_WS_RECEIVED_SLOTS,
-        );
+        let decoded_len = core::mem::size_of::<DP>() * c::UR_WS_DECODED_SLOTS;
+        let decoded = ur_next(&mut off, core::mem::align_of::<DP>(), decoded_len);
+        let buffer_len = core::mem::size_of::<BP>() * c::UR_WS_BUFFER_SLOTS;
+        let buffer = ur_next(&mut off, core::mem::align_of::<BP>(), buffer_len);
+        let queue_len = core::mem::size_of::<DP>() * c::UR_WS_QUEUE_SLOTS;
+        let queue = ur_next(&mut off, core::mem::align_of::<DP>(), queue_len);
+        let received_len = core::mem::size_of::<RS>() * c::UR_WS_RECEIVED_SLOTS;
+        let received = ur_next(&mut off, core::mem::align_of::<RS>(), received_len);
         // Fragment arenas (phase 5b): `message` holds the reassembled originals,
         // `equations` the unsolved XOR accumulations.
         let message = ur_next(&mut off, 1, crate::encoding::fountain::message_arena_len());
@@ -406,7 +399,8 @@ impl UrDecodeWsLayout {
             core::mem::align_of::<u16>(),
             core::mem::size_of::<u16>() * crate::limits::UR_SOURCE_FRAGMENTS_MAX,
         );
-        let scratch = ur_next(&mut off, 1, crate::ur::ur_multipart::PART_CBOR_SCRATCH_MAX);
+        let scratch_len = crate::ur::ur_multipart::PART_CBOR_SCRATCH_MAX;
+        let scratch = ur_next(&mut off, 1, scratch_len);
         let handle = ur_next(
             &mut off,
             core::mem::align_of::<UrMultipartDecoder<'static>>(),
@@ -428,6 +422,13 @@ impl UrDecodeWsLayout {
             scratch,
             handle,
             total,
+            sensitive_spans: [
+                (decoded, decoded_len),
+                (buffer, buffer_len),
+                (queue, queue_len),
+                (received, received_len),
+                (scratch, scratch_len),
+            ],
         }
     }
 }

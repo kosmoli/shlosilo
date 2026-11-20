@@ -167,7 +167,16 @@ fn inv5_free_zeroizes_sensitive_spans() {
     let payload: Vec<u8> = (0..256u32).map(|i| (i % 251) as u8).collect();
     let frames = encode_frames(&payload);
     let need = shlosilo_ur_decode_ws_len() as usize;
-    let mut ws = vec![0u8; need];
+    // T1-02 (2026-11-19 audit, closed 2026-11-20): this used to start from an all-zero workspace and
+    // sample five single bytes plus 32 bytes of scratch, so it could not tell "every sensitive byte was
+    // wiped" from "the bytes I happened to look at were zero anyway".
+    //
+    // Two things make it load-bearing now:
+    //   1. the workspace is poisoned with 0xAA first, so an unwiped byte is visible;
+    //   2. before the free, every sensitive span must contain data (the legal receive flow has to have
+    //      written into it), which is what makes the post-free all-zero assertion a statement about the
+    //      wipe rather than about the initial state.
+    let mut ws = vec![0xAAu8; need];
     let h = unsafe { shlosilo_ur_decode_new(ws.as_mut_ptr(), need as u32) };
     assert!(!h.is_null());
     for f in &frames {
@@ -178,12 +187,27 @@ fn inv5_free_zeroizes_sensitive_spans() {
             0
         );
     }
-    unsafe { shlosilo_ur_decode_free(h) };
+
     let l = UrDecodeWsLayout::compute();
-    // every byte of the sensitive spans is zero after free
-    for off in [l.decoded, l.buffer, l.queue, l.received, l.scratch] {
-        assert_eq!(ws[off], 0, "span at {off} not zeroed");
+    for (off, len) in l.sensitive_spans {
+        assert!(len > 0, "span at {off} has no declared length");
+        let live = ws[off..off + len].iter().filter(|&&b| b != 0).count();
+        assert!(
+            live > 0,
+            "span at {off} (len {len}) held no data before free, so its wipe is untested"
+        );
     }
-    // full-span check on the scratch (the frame CBOR copy)
-    assert!(ws[l.scratch..l.scratch + 32].iter().all(|&b| b == 0));
+
+    unsafe { shlosilo_ur_decode_free(h) };
+
+    // Every byte of every sensitive span, at its declared full length, is zero after free.
+    for (off, len) in l.sensitive_spans {
+        let span = &ws[off..off + len];
+        if let Some(pos) = span.iter().position(|&b| b != 0) {
+            panic!(
+                "span at {off} (len {len}) not fully zeroed: byte {pos} is {:#04x}",
+                span[pos]
+            );
+        }
+    }
 }
