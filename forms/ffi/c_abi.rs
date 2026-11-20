@@ -2153,6 +2153,21 @@ pub mod r3 {
         if session.is_null() || type_name.is_null() || payload.is_null() || output_buf.is_null() {
             return ERR_NULL_POINTER;
         }
+        // A2-06, option (1) - decided by Kosmo 2026-11-20 (2026-11-19 audit): a session that declared
+        // its dialect at pairing time must not be usable with a different wire-tail view. The view
+        // argument used to be taken at face value, so one bound session could sign out the OTHER
+        // dialect's shape. An unbound session (profile_id 0) keeps the historical behaviour: it selects
+        // explicitly per call because it never declared a dialect that could be contradicted.
+        if let Some(bound) = crate::profile::profile_current(unsafe { &*session }) {
+            let expected = match crate::profile::tail_view(bound) {
+                Ok(v) => v,
+                Err(e) => return to_ffi_code(&e),
+            };
+            if expected != tail {
+                unsafe { write_actual_len(actual_len, 0) };
+                return to_ffi_code(&ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch));
+            }
+        }
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
             // (13) wallet KI records: NULL/0 = no retention; a non-NULL
             // pointer with count 0 is likewise empty. Layout-compatible zero

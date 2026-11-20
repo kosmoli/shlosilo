@@ -393,6 +393,66 @@ fn f1_sign_session_ffi_real_fixture_ok() {
     assert_eq!(rc_i, OK, "view=0 must sign");
     assert_eq!(rc_k, OK, "view=1 must sign");
     assert!(rc_bad < 0, "unknown wire_view must refuse (got {rc_bad})");
+
+    // A2-06, option (1) (2026-11-20): once a session has DECLARED its dialect at pairing time, the
+    // wire-view argument must agree with it - otherwise one bound session could sign out the other
+    // dialect's shape. Unbound sessions (the assertions above) keep selecting per call.
+    unsafe {
+        shlosilo::profile::profile_bind(
+            &mut *slot.as_mut_ptr(),
+            shlosilo::profile::ProfileId::CakeCupcake,
+        )
+    }
+    .expect("bind CakeCupcake");
+    let mut n_mis: u32 = 99;
+    let rc_mis = unsafe {
+        shlosilo_sign_session_view_ffi(
+            session,
+            c"xmr-txunsigned".as_ptr(),
+            enc.as_ptr(),
+            enc.len() as u32,
+            FRESH_ENTROPY.as_ptr(),
+            FRESH_ENTROPY.len() as u32,
+            out_k.as_mut_ptr(),
+            out_k.len() as u32,
+            &mut n_mis,
+            ws.as_mut_ptr(),
+            ws_len,
+            records.as_ptr(),
+            records.len() as u32,
+            1,
+        )
+    };
+    assert_eq!(
+        rc_mis,
+        shlosilo::error::ShlosiloErrorCode::InvalidArgument as i32,
+        "a CakeCupcake-bound session must refuse the Keyed view (got {rc_mis})"
+    );
+    assert_eq!(n_mis, 0, "a refused call reports no written length");
+    // control: the bound view still signs
+    let mut n_ok: u32 = 0;
+    let rc_ok = unsafe {
+        shlosilo_sign_session_view_ffi(
+            session,
+            c"xmr-txunsigned".as_ptr(),
+            enc.as_ptr(),
+            enc.len() as u32,
+            FRESH_ENTROPY.as_ptr(),
+            FRESH_ENTROPY.len() as u32,
+            out_i.as_mut_ptr(),
+            out_i.len() as u32,
+            &mut n_ok,
+            ws.as_mut_ptr(),
+            ws_len,
+            records.as_ptr(),
+            records.len() as u32,
+            0,
+        )
+    };
+    assert_eq!(
+        rc_ok, OK,
+        "the session's own view must still sign (got {rc_ok})"
+    );
     assert_eq!(
         &out_i[..n_i as usize],
         &out[..actual as usize],
