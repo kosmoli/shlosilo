@@ -130,7 +130,13 @@ fn inv346_receive_path_zero_alloc() {
     let c1 = counter();
     let rc = unsafe { shlosilo_ur_decode_payload(h, small.as_mut_ptr(), 4, &mut actual) };
     let spent_probe = counter() - c1;
-    assert_ne!(rc, 0, "undersized payload buffer must fail");
+    // T1-13 (2026-11-19 audit, closed 2026-11-20): a bare "non-zero" also passes when the entry
+    // returns an unrelated code, so the contract value is pinned instead of the fact that it failed.
+    assert_eq!(
+        rc,
+        shlosilo::error::ShlosiloErrorCode::BufferTooSmall as i32,
+        "undersized payload buffer must fail with BufferTooSmall"
+    );
     assert_eq!(spent_probe, 0, "the capacity probe must not allocate");
     let required = actual as usize;
     assert!(required >= payload.len(), "required must cover the payload");
