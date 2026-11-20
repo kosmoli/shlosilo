@@ -894,7 +894,21 @@ fn dump_ours_signed_fa_gold() {
 /// preserved wallet2 field.
 #[test]
 fn golden_sign_path_embeds_construction_data_extra() {
-    // Parse side: the product parser must hand the extra to the model.
+    // T1-18 (2026-11-19 audit, closed 2026-11-20). The old assertion counted how often the 44-byte
+    // payload appeared in the signed plaintext, which says nothing about WHERE it is - and, as it turns
+    // out, it was resting on a false premise (see below).
+    //
+    // What this signer actually does (forms/chain/xmr/tx_signer.rs, step 3): it derives its OWN tx
+    // secret r, hence its own tx pubkey, and builds `extra` from scratch (tx pubkey + optional
+    // additional keys + the encrypted payment id when there is change) - the same shape keystone's
+    // extra() builds. So the signed transaction's extra is NOT the unsigned set's construction extra,
+    // and it is not supposed to be.
+    //
+    // The invariants worth pinning are therefore:
+    //   1. the SHAPE of the signed extra (tag 0x01 + 32-byte pubkey, then optionally 0x02 0x09 + 8 bytes);
+    //   2. SELF-CONSISTENCY: deriving output 0 from the tx pubkey carried in that extra, with this
+    //      wallet's view key, must reproduce the vout key - that is exactly how the recipient checks the
+    //      transaction, and it is what makes the outputs spendable.
     let enc: &[u8] = include_bytes!("fixtures/unsigned_fa_subaddr.bin");
     let plain = unsigned_plain(enc, &LAB_VIEW_SK);
     let mut p_txes = core::array::from_fn::<Option<TxConstructionData<'_>>, 8, _>(|_| None);
@@ -920,16 +934,8 @@ fn golden_sign_path_embeds_construction_data_extra() {
     )
     .expect("deserialize fa fixture");
     let d = utx.txes.iter().flatten().next().expect("single-tx fixture");
-    let extra: Vec<u8> = d.extra.to_vec();
-    assert_eq!(
-        extra.len(),
-        44,
-        "fixture wire fact: 44B extra payload (tx pub key + encrypted payment id)"
-    );
-    // Sign path: the embedded construction data must echo it. (v2 gap policy:
-    // gap positions need covering records — dummy values, since this pin is
-    // about `extra`, not the key-image values; selected indices are excluded,
-    // they derive fresh at sign time.)
+    // gap policy: gap positions need covering records (dummy values; this pin is about extra and the
+    // derivation chain, not about key-image values)
     let sel: Vec<u32> = d.selected_transfers.iter().map(|t| *t as u32).collect();
     let span = sel.iter().copied().max().unwrap_or(0) + 1;
     let fp = wallet_fp_of(&LAB_WALLET_ENTROPY);
@@ -944,18 +950,94 @@ fn golden_sign_path_embeds_construction_data_extra() {
         .collect();
     let out = sign_with_fixed_entropy_records(enc, &LAB_WALLET_ENTROPY, &records);
     let signed_plain = decrypt_signed_txset(&out, &LAB_VIEW_SK).expect("decrypt our signed output");
-    let occ = signed_plain
-        .windows(extra.len())
-        .filter(|w| **w == extra[..])
-        .count();
-    assert_eq!(
-        occ,
-        1,
-        "the wallet2 construction_data.extra payload must appear verbatim in our signed \
-         plaintext (the construction-data field is its only copy — our own tx extra carries \
-         different values), hex: {}",
+    let (extra, out_keys) = signed_plain_extra_and_outputs(&signed_plain);
+
+    // 1. shape: 0x01 || txpub(32) [|| 0x02 0x09 || 8]
+    // 33 = 0x01 + txpub; 44 = that plus the 0x02 0x09 + 8-byte encrypted payment id
+    assert!(
+        extra.len() == 33 || extra.len() == 44,
+        "unexpected extra length {} (hex {})",
+        extra.len(),
         hex(&extra)
     );
+    assert_eq!(extra[0], 0x01, "extra must start with the tx-pubkey tag");
+    if extra.len() == 44 {
+        assert_eq!(&extra[33..35], &[0x02, 0x09], "payment-id tag shape");
+    }
+    let mut tx_pub = [0u8; 32];
+    tx_pub.copy_from_slice(&extra[1..33]);
+
+    // 2. self-consistency: recipient-side derivation of output 0 must reproduce vout[0]
+    let (spend_sk, _view_sk) = monero_keys_from_entropy(&LAB_WALLET_ENTROPY);
+    let offset =
+        shlosilo::chain::xmr::subaddress::calc_output_key_offset(&LAB_VIEW_SK, &tx_pub, 0, 0, 0)
+            .expect("derive output offset");
+    let derived = {
+        use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
+        use curve25519_dalek::scalar::Scalar;
+        let s = Scalar::from_bytes_mod_order(spend_sk) + Scalar::from_bytes_mod_order(offset);
+        (ED25519_BASEPOINT_TABLE * &s).compress().to_bytes()
+    };
+    assert_eq!(
+        derived,
+        out_keys[0],
+        "deriving output 0 from the tx pubkey in the signed extra must reproduce the vout key \
+         (this is the recipient's own check); extra hex {}",
+        hex(&extra)
+    );
+}
+
+/// Walk the signed plaintext to the first ptx: return its `extra` field and its output keys.
+fn signed_plain_extra_and_outputs(plain: &[u8]) -> (Vec<u8>, Vec<[u8; 32]>) {
+    fn varint(b: &[u8], pos: &mut usize) -> u64 {
+        let mut v = 0u64;
+        let mut shift = 0;
+        loop {
+            let c = b[*pos];
+            *pos += 1;
+            v |= ((c & 0x7f) as u64) << shift;
+            if c & 0x80 == 0 {
+                return v;
+            }
+            shift += 7;
+        }
+    }
+    let mut pos = 0usize;
+    assert_eq!(varint(plain, &mut pos), 0, "signed_tx_set version");
+    assert_eq!(varint(plain, &mut pos), 1, "single ptx");
+    let _ptx_ver = varint(plain, &mut pos);
+    let _tx_ver = varint(plain, &mut pos);
+    let _unlock = varint(plain, &mut pos);
+    let n_in = varint(plain, &mut pos);
+    for _ in 0..n_in {
+        let tag = varint(plain, &mut pos);
+        assert_eq!(tag, 0x02, "txin_to_key tag");
+        let _amount = varint(plain, &mut pos);
+        let n_off = varint(plain, &mut pos);
+        for _ in 0..n_off {
+            let _rel = varint(plain, &mut pos);
+        }
+        pos += 32; // key image
+    }
+    let n_out = varint(plain, &mut pos);
+    let mut keys = Vec::with_capacity(n_out as usize);
+    for _ in 0..n_out {
+        let _amount = varint(plain, &mut pos);
+        let tag = varint(plain, &mut pos);
+        // tag 3 = txout_to_key (32B key + 1B view tag); tag 4 = the tagged variant (34)
+        let (key_len, pad) = match tag {
+            3 => (32usize, 1usize),
+            4 => (32usize, 2usize),
+            other => panic!("unexpected txout target tag {other}"),
+        };
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&plain[pos..pos + key_len]);
+        keys.push(k);
+        pos += key_len + pad;
+    }
+    let extra_len = varint(plain, &mut pos) as usize;
+    let extra = plain[pos..pos + extra_len].to_vec();
+    (extra, keys)
 }
 
 /// Minimal signed-plaintext walk: signed_tx_set framing, then the ptx tx
@@ -1015,10 +1097,18 @@ fn signed_plain_first_key_image(plain: &[u8]) -> [u8; 32] {
 ///     derived from the fixed signer entropy). Also divergent by design:
 ///     the `key_images` list length (wallet2 carries the wallet-wide spent
 ///     set, ours the wallet-indexed fill — SIGNED_TX_PARSE_FAIL_REPORT.md
-///     §3.1; both wallet2-parse-clean). The construction_data payment-id
-///     echo is NO LONGER divergent: it was the pool #39 extra drop, fixed
-///     2026-10-20 — our output now echoes the field verbatim (pinned by
-///     `golden_sign_path_embeds_construction_data_extra`).
+///     §3.1; both wallet2-parse-clean).
+///
+///     CORRECTION (2026-11-20, T1-18): the earlier text here claimed that the
+///     construction_data.extra payload is echoed verbatim into our output. It is
+///     not, and by design: `forms/chain/xmr/tx_signer.rs` step 3 derives its own tx
+///     secret, hence its own tx pubkey, and builds `extra` from scratch (tx pubkey +
+///     optional additional keys + encrypted payment id when there is change - the
+///     keystone extra() shape). The construction payload still appears once in the
+///     signed plaintext, but in a different structure, not in the transaction's extra.
+///     What `golden_sign_path_embeds_construction_data_extra` pins now is the extra's
+///     SHAPE plus recipient-side self-consistency: deriving output 0 from the tx pubkey
+///     in the signed extra (with this wallet's view key) must reproduce vout[0].
 #[test]
 fn golden_ours_vs_wallet2_gold_deterministic_region() {
     let gold_container: &[u8] = include_bytes!("fixtures/gold_signed_fa.bin");
