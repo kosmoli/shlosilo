@@ -30,9 +30,15 @@ fn valid_indices() -> [u16; 12] {
 fn p002_negative_count_rejected_sign() {
     let idx = valid_indices();
     let mut out = [0u8; 64];
-    let mut actual: u32 = 0;
+    // T1-10: assigned (poisoned) at the top of every iteration, so no initializer to be dead.
+    let mut actual: u32;
+    // T1-10 (2026-11-19 audit, closed 2026-11-20): `actual` started at zero and was never reset, so a
+    // missing zero-write on the failure path stayed green. Poison it before every call: only a real
+    // write_actual_len(.., 0) can make the assertion below pass.
+    const POISON: u32 = 0xDEAD_BEEF;
     for bad in [-1i32, i32::MIN, -12, 0, 11, 13, 14, 16, 25, i32::MAX] {
         let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
+        actual = POISON;
         let rc = unsafe {
             shlosilo_sign_ffi(
                 idx.as_ptr(),
@@ -58,13 +64,16 @@ fn p002_negative_count_rejected_sign() {
 fn p002_negative_count_rejected_sign_ur() {
     let idx = valid_indices();
     let mut out = [0u8; 64];
-    let mut actual: u32 = 0;
+    // T1-10: assigned (poisoned) at the top of every iteration, so no initializer to be dead.
+    let mut actual: u32;
     let uri =
         shlosilo::ur::ur_encode::encode(shlosilo::ur::ur_encode::UrTypeTag::CryptoPsbt, &[0u8; 8])
             .unwrap();
     let uri_c = alloc_cstring(uri.as_str());
+    // T1-10: same poison rule as the plain sign entry - a zero that was already there proves nothing.
     for bad in [-1i32, i32::MIN, 13, 0] {
         let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
+        actual = 0xDEAD_BEEF;
         let rc = unsafe {
             shlosilo_sign_ur_ffi(
                 uri_c.as_ptr(),
@@ -118,10 +127,13 @@ fn p002_negative_count_rejected_export() {
 fn p002_negative_count_rejected_sign_typed() {
     let idx = valid_indices();
     let mut out = [0u8; 64];
-    let mut actual: u32 = 0;
+    // T1-10: assigned (poisoned) at the top of every iteration, so no initializer to be dead.
+    let mut actual: u32;
     let tname = c"crypto-psbt";
+    // T1-10: same poison rule as the plain sign entry - a zero that was already there proves nothing.
     for bad in [-1i32, i32::MIN, 13, 0] {
         let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
+        actual = 0xDEAD_BEEF;
         let rc = unsafe {
             shlosilo_sign_typed_ffi(
                 tname.as_ptr(),
@@ -209,15 +221,26 @@ fn p002_null_with_nonzero_len_rejected() {
 
 #[test]
 fn p002_network_wraparound_rejected() {
+    // T1-09 (2026-11-19 audit, closed 2026-11-20): two problems with the old version.
+    //   1. It only asserted "not OK", and the payload it sent (`b"x"`) is not a valid signature
+    //      request, so every row failed for CONTENT reasons and the network check was never exercised.
+    //   2. One row was `0x1_0000_0000`, which is not representable in the ABI at all (the parameter is
+    //      c_uint): narrowing it to u32 yields 0 - a LEGAL network - so requiring that row to fail was
+    //      wrong on its face.
+    //
+    // Measured: the entry validates the network before parsing the payload, so a representable-but-
+    // illegal network returns UnsupportedNetwork (-12) while a legal network with the same garbage
+    // payload returns a content error (-30). That difference is what makes the pin meaningful.
     let idx = valid_indices();
     let mut out = [0u8; 64];
-    let mut actual: u32 = 0;
-    // network = 256 → `as u8` wraps to 0 (BitcoinMainnet); must be rejected after the fix
-    let big_nets = [256u64, 512, u64::from(u32::MAX), 0x1_0000_0000];
-    for &bad_net_u64 in &big_nets {
-        // The FFI parameter is c_uint (32-bit); narrowing wraparound is reproducible within the 32-bit range (256 → 0)
-        let bad_net = bad_net_u64 as u32;
+    // Poisoned at the top of every call, as in the negative-count cases above.
+    let mut actual: u32;
+    let network_code = shlosilo::error::ShlosiloErrorCode::UnsupportedNetwork as i32;
+
+    // Representable through c_uint, and illegal once narrowed to the network enum.
+    for bad_net in [256u32, 512, u32::MAX] {
         let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
+        actual = 0xDEAD_BEEF;
         let rc = unsafe {
             shlosilo_sign_ffi(
                 idx.as_ptr(),
@@ -234,12 +257,37 @@ fn p002_network_wraparound_rejected() {
                 shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
             )
         };
-        assert_ne!(
-            rc,
-            shlosilo::ffi::error_code::OK,
-            "network={bad_net} must not wrap into a legal value"
+        assert_eq!(
+            rc, network_code,
+            "network={bad_net} must be refused as an unsupported network"
         );
+        assert_eq!(actual, 0, "a refused call must report no written length");
     }
+
+    // Control: the same call with a LEGAL network must not come back with the network code - it fails
+    // later, on the payload. Without this row the assertion above could be satisfied by a blanket error.
+    let mut ws_buf = vec![0u8; shlosilo::ffi::c_abi::shlosilo_sign_ws_len() as usize];
+    actual = 0xDEAD_BEEF;
+    let rc_legal = unsafe {
+        shlosilo_sign_ffi(
+            idx.as_ptr(),
+            12,
+            core::ptr::null(),
+            0,
+            b"x".as_ptr(),
+            1,
+            0,
+            out.as_mut_ptr(),
+            out.len() as u32,
+            &mut actual,
+            ws_buf.as_mut_ptr(),
+            shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+        )
+    };
+    assert_ne!(
+        rc_legal, network_code,
+        "a legal network must not be reported as an unsupported network"
+    );
 }
 
 #[test]
