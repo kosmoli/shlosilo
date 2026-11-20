@@ -199,33 +199,58 @@ fn export_payload_rejects_absurd_capacity() {
 
 #[test]
 fn sign_session_rejects_absurd_ki_records_count() {
+    // T1-15 (2026-11-19 audit, closed 2026-11-20): the old version asserted only "not OK", and its
+    // payload is not a valid eth-sign-request anyway - so a payload/content rejection would have
+    // satisfied it without the record-count check ever running. Measured: the absurd count is refused
+    // with the count/kind code (-2), while the same call with one record fails later on content (-21).
+    // The pin is that difference, plus a zeroed out-param.
+    const RECORDS_KIND_CODE: i32 = shlosilo::error::ShlosiloErrorCode::InvalidArgument as i32;
+
     let mut slot = MaybeUninit::<KeySession>::uninit();
     let session = place_session(&mut slot, &FIXTURE_ENTROPY);
     let need = c_abi::shlosilo_sign_ws_len();
     let mut ws = std::vec![0u8; need as usize];
     let mut out = std::vec![0u8; 512];
-    let mut actual: u32 = 7;
     let records = [empty_record()];
-    let rc = unsafe {
-        shlosilo_sign_session_ffi(
-            session,
-            c"eth-sign-request".as_ptr(),
-            PAYLOAD.as_ptr(),
-            PAYLOAD.len() as u32,
-            core::ptr::null(),
-            0,
-            out.as_mut_ptr(),
-            out.len() as u32,
-            &mut actual,
-            ws.as_mut_ptr(),
-            need,
-            records.as_ptr(),
-            u32::MAX,
-        )
+
+    let mut run = |records_count: u32| -> (i32, u32) {
+        let mut actual: u32 = 0xDEAD_BEEF;
+        let rc = unsafe {
+            shlosilo_sign_session_ffi(
+                session,
+                c"eth-sign-request".as_ptr(),
+                PAYLOAD.as_ptr(),
+                PAYLOAD.len() as u32,
+                core::ptr::null(),
+                0,
+                out.as_mut_ptr(),
+                out.len() as u32,
+                &mut actual,
+                ws.as_mut_ptr(),
+                need,
+                records.as_ptr(),
+                records_count,
+            )
+        };
+        (rc, actual)
     };
+
+    let (rc_absurd, actual_absurd) = run(u32::MAX);
+    let (rc_one, _) = run(1);
     unsafe { core::ptr::drop_in_place(session) };
-    assert_ne!(rc, OK, "a 4 Gi-record array claim must be refused");
-    assert_eq!(actual, 0);
+
+    assert_eq!(
+        rc_absurd, RECORDS_KIND_CODE,
+        "a 4 Gi-record array claim must be refused by the count validation"
+    );
+    assert_eq!(
+        actual_absurd, 0,
+        "a refused call must report no written length"
+    );
+    assert_ne!(
+        rc_one, RECORDS_KIND_CODE,
+        "the one-record control must fail on the payload, not on the count check"
+    );
 }
 
 #[test]

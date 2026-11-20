@@ -231,6 +231,16 @@ fn fixture_gap_records() -> Vec<WalletKiRecord> {
 /// supplied, the outer key_images array is wallet-transfer-indexed — records
 /// land at their transfer indices, the spent input's derived key image at
 /// `selected_transfers`.
+///
+/// SCOPE (T1-16, 2026-11-19 audit, decided by Kosmo 2026-11-20): what this pin
+/// proves is that the first `FIXTURE_MAX_SELECTED + 1` slots are placed by
+/// transfer index. The fixture wallet holds more transfers than that, and
+/// wallet2 writes the array for the whole wallet, so this is NOT evidence that a
+/// host importing a SHORTER array than the wallet's transfer count accepts it.
+/// Treat "prefix import is a product contract" as an ASSUMPTION TO VERIFY, not a
+/// proven property; it graduates to a contract only when an upstream import
+/// receipt (wallet2 import of a short array, slots beyond the prefix observed)
+/// exists. Do not cite this test for that claim.
 #[test]
 fn key_images_wallet_transfer_indexed_with_records() {
     let records = fixture_gap_records();

@@ -3,6 +3,24 @@
 //! the deploy shape provides all storage up front: SignWs caller memory +
 //! generator tables via `provide_generator_table_storage`).
 //!
+//! ## Scope of this receipt (T1-19, 2026-11-19 audit, closed 2026-11-20)
+//!
+//! This file is ONE receipt, and it is deliberately narrow:
+//!
+//! * it measures a HOST, steady-state, post-warm-up window with
+//!   `debug_assertions` off and the `alloc-fallback` feature on;
+//! * it says nothing about the device link (no allocator symbols), and nothing
+//!   about the signature root (no disassembly) — those are two different
+//!   questions with their own evidence;
+//! * the zero-heap acceptance for the device shape is carried by the
+//!   `probes/noalloc` double-face run (GRAPH-CLEAN link graph + REACHABLE-CLEAN
+//!   disassembly of the reachable sign path), not by this counter.
+//!
+//! Keeping the three on separate receipts is intentional: merging them would let
+//! a host count stand in for a link-graph proof, which is exactly the kind of
+//! substitution that produces a green build with an unproven claim. Do not cite
+//! this file as a device zero-heap result.
+//!
 //! Measured sections wrap ONLY the sign entry calls; fixture prep and storage
 //! provisioning happen before the counter is armed. A single allocation in a
 //! measured section fails the test.
