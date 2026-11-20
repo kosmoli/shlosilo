@@ -240,21 +240,28 @@ fn eth_transaction_review_renders_eip55_destination() {
     )
     .expect("eth review builds");
 
+    // T1-07 (2026-11-19 audit, closed 2026-11-20): this used to assert only `0x` + length 42, so a
+    // completely different destination - or even non-hex characters - passed. The whole rendered view is
+    // pinned now, item by item.
+    //
+    // Scope note, stated so nobody over-reads this pin: the fixture's destination is 20 x 0x22, which has
+    // no hex letters, so this test cannot exercise the EIP-55 CASING. That is covered by
+    // tests/eth_address_and_chain_pins.rs against the four official EIP-55 vectors plus an independent
+    // recomputation; what this test adds is that the address, chain, value and gas limit reaching the
+    // screen are the ones in the transaction.
     let l = lines(&view);
-    assert_eq!(l[0], "eth send request", "lines = {l:?}");
-    assert!(
-        l.iter().any(|s| s.starts_with("chain ")),
-        "chain id missing: {l:?}"
-    );
-    let to_idx = l.iter().position(|s| s == "to:").expect("to: line");
-    let addr = &l[to_idx + 1];
-    assert!(
-        addr.starts_with("0x") && addr.len() == 42,
-        "EIP-55 address rendering failed: {addr}"
-    );
-    assert!(
-        l.iter().any(|s| s.starts_with("value ")),
-        "value missing: {l:?}"
+    assert_eq!(
+        l,
+        vec![
+            "eth send request".to_string(),
+            "chain 1 ethereum mainnet".to_string(),
+            "to:".to_string(),
+            "0x2222222222222222222222222222222222222222".to_string(),
+            "value 999".to_string(),
+            "gas limit 21000".to_string(),
+            "data: none".to_string(),
+        ],
+        "rendered ETH review view changed: {l:?}"
     );
 }
 
@@ -379,7 +386,23 @@ fn review_ffi_packs_lines_and_meta() {
             &mut in_out,
         )
     };
-    assert_ne!(rc, 0, "insufficient line buffer must fail");
+    // T1-06 (2026-11-19 audit, closed 2026-11-20): the failing call reused the out-params from the
+    // successful one, which is the best possible setup for catching a stale value - and then nothing was
+    // read. The entry zeroes all four up front (write_actual_len(.., 0) in the prologue), so a refusal
+    // must come back with the capacity code and four zeros.
+    assert_eq!(
+        rc,
+        shlosilo::error::ShlosiloErrorCode::BufferTooSmall as i32,
+        "insufficient line buffer must fail with the capacity code"
+    );
+    assert_eq!(used, 0, "used must be zero after a refused call");
+    assert_eq!(count, 0, "count must be zero after a refused call");
+    assert_eq!(flags, 0, "flags must be zero after a refused call");
+    assert_eq!(in_out, 0, "in_out must be zero after a refused call");
+    assert!(
+        small.iter().all(|&b| b == 0),
+        "a refused call must not write partial line bytes"
+    );
 }
 
 #[test]
