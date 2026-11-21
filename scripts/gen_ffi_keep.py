@@ -75,6 +75,65 @@ def strip_strings_and_comments(line: str) -> str:
     return "".join(out)
 
 
+def module_file(root: Path, parts):
+    """The file that holds the module `parts` (empty = the crate root)."""
+    if not parts:
+        for cand in ("lib.rs", "mod.rs"):
+            if (root / cand).is_file():
+                return root / cand
+        return None
+    base = root.joinpath(*parts)
+    for cand in (base / "mod.rs", base.with_suffix(".rs")):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def decl_cfg(path, name: str):
+    """The cfg attribute on the `mod <name>;` / `mod <name> {` declaration in `path`."""
+    if path is None or not path.is_file():
+        return None
+    lines = path.read_text().splitlines()
+    pat = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+" + re.escape(name) + r"\s*[;{]")
+    for i, raw in enumerate(lines):
+        if not pat.match(raw):
+            continue
+        j = i - 1
+        while j >= 0:
+            s = lines[j].strip()
+            if s == "" or s.startswith("//"):
+                j -= 1
+                continue
+            am = ATTR_RE.match(s)
+            if am:
+                cm = CFG_IN_ATTR_RE.match(am.group(1))
+                if cm:
+                    return cm.group(1)
+                j -= 1
+                continue
+            break
+        return None
+    return None
+
+
+def inherited_cfg(root: Path, crate: str, rel: Path):
+    """cfg chain inherited from the `mod` declarations this file hangs under.
+
+    A feature-gated module (`#[cfg(feature = "se")] pub mod se_ffi;`) removes every
+    entry point inside it, so its keep-table entries must carry the same gate - the
+    table is compiled against the real Rust path, and a path into a cfg'd-out module
+    does not resolve. Reading it off the declaration chain keeps source and table in
+    step instead of asking the author to repeat the attribute per function.
+    """
+    parts = module_path(rel, crate).split("::")[1:]  # drop the crate name
+    cfgs = []
+    for depth in range(len(parts)):
+        cfg = decl_cfg(module_file(root, parts[:depth]), parts[depth])
+        if cfg:
+            cfgs.append(cfg)
+    return " && ".join(cfgs) if cfgs else None
+
+
 def collect():
     entries = []
     for root, crate in ((FORMS, "shlosilo"), (KEYSOURCE, "shlosilo_flux_keysource")):
@@ -88,6 +147,7 @@ def collect_root(ROOT: Path, crate: str):
         rel = path.relative_to(ROOT)
         lines = path.read_text().splitlines()
         base = module_path(rel, crate)
+        file_cfg = inherited_cfg(ROOT, crate, rel)
         # stack of (is_mod, name) for currently open blocks
         stack = []
         stmt = ""  # statement text since the last brace/semicolon boundary
@@ -118,7 +178,10 @@ def collect_root(ROOT: Path, crate: str):
                     if cm:
                         cfg = cm.group(1)
                 if not (cfg and "test" in cfg):
-                    entries.append((name, full_mod, cfg))
+                    # The file's own module gate and the function's attribute are both
+                    # conditions on that entry point existing at all.
+                    combined = " && ".join(c for c in (file_cfg, cfg) if c) or None
+                    entries.append((name, full_mod, combined))
             # update the block stack for this line
             for c in line:
                 if c == "{":
@@ -161,8 +224,14 @@ def render(entries):
     for cfg in sorted(cfg_groups, key=lambda c: (c is not None, c or "")):
         group = cfg_groups[cfg]
         if cfg:
-            out.append(f"    #[cfg({cfg})]")
+            # One comment per group, then the gate PER ENTRY: an attribute applies to the
+            # single item that follows it, so a group-level `#[cfg]` would gate the first
+            # Addr and leave the rest ungated (a table that then fails to compile whenever
+            # the gate is off).
+            out.append(f"    // present only when: cfg({cfg})")
         for name, mod in group:
+            if cfg:
+                out.append(f"    #[cfg({cfg})]")
             out.append(f"    Addr({mod}::{name} as *const ()),")
     out.append("];")
     out.append("")
