@@ -563,6 +563,7 @@ static void ProductTask(void *argument)
          * always ends with a dead session (scan/carousel press the page-exit
          * flags through their own paths; this is the common drain). */
         if (UiTakeHomeRequest()) {
+            UiTracePush("home_req consumed p%d", (int)UiGetPage());
             g_export_pending = 0;   /* a cancelled export never hijacks a later import */
             key_session_close();
             UiGotoPage(UI_PAGE_WELCOME);
@@ -647,6 +648,7 @@ static void ProductTask(void *argument)
                 UiGotoPage(UI_PAGE_WELCOME);    /* repaint the footer line */
             }
             if (UiGetPage() == UI_PAGE_SCAN && g_scan == SCAN_IDLE) {
+                UiTracePush("auto scan_enter p%d", (int)UiGetPage());
                 scan_enter();
             } else if (UiGetPage() == UI_PAGE_QR && g_carousel == CAROUSEL_IDLE &&
                        g_export_static == 0) {
@@ -1608,6 +1610,7 @@ static void sign_run(const char *uri, const char *type,
         strncat(result, tail, sizeof(result) - strlen(result) - 1);
     }
     UiSetPayload(result, (uint32_t)strlen(result));
+    UiTracePush("sign rc out_len=%u", (unsigned)g_sign_out_len);
     if (g_sign_out_len == 0) {
         /* No signed artifact: this is the failure template on screen, and the scan
          * loop would repaint over it (B-7, 2026-11-15). Hold it until `home`. */
@@ -2572,6 +2575,7 @@ static void scan_enter(void)
      * device re-renders (and would sign) the OLD transaction. */
     ur_intake_reset();
 
+    UiTracePush("scan_enter gs=%d pool=%d", (int)g_scan, g_qr_pool != NULL);
     if (g_qr_pool == NULL) {
 #if QR_POOL_IN_SRAM
         extern uint8_t _ebss;
@@ -2607,6 +2611,8 @@ static void scan_enter(void)
         printf("scan: sram pool busy (%u live bytes)\r\n",
                (unsigned)shlosilo_sram_pool_live_bytes());
         UiScanInfo("sram busy", "rust allocs live", "", "");
+        UiTracePush("SA FAIL srambusy live=%u",
+                    (unsigned)shlosilo_sram_pool_live_bytes());
         g_scan = SCAN_FAILED;
         return;
     }
@@ -2626,6 +2632,7 @@ static void scan_enter(void)
         printf("scan: QrDecodeInit ret=%d\r\n", (int)ret);
         snprintf(l1, sizeof(l1), "init FAIL ret=%d", (int)ret);
         UiScanInfo(l1, "check camera hw", "", "");
+        UiTracePush("SA FAIL init ret=%d", (int)ret);
 #if QR_POOL_IN_SRAM
         shlosilo_sram_pool_reset();     /* decoder may have written the window */
 #endif
@@ -2642,6 +2649,7 @@ static void scan_enter(void)
     /* Status slot starts EMPTY (2026-10-09 UI spec): 'scanning N%' only
      * while actually collecting; hints live on the metrics rows. */
     UiScanInfo("", "point camera at QR", "", "");
+    UiTracePush("SA OK (camera up)");
 }
 
 static void scan_step(void)
@@ -2728,6 +2736,7 @@ static void scan_step(void)
 
 static void scan_exit(void)
 {
+    UiTracePush("scan_exit gs=%d", (int)g_scan);
     QrDecodeDeinit();
     g_scan = SCAN_IDLE;
 
@@ -2764,6 +2773,7 @@ static void hold_failure_page(void)
      * (2026-11-17: the review-failure page held, then the device reset instead of waiting
      * for `home`). `g_sign_busy` makes the guard task feed while we sit here. */
     g_sign_busy = 1;
+    UiTracePush("hold in gs=%d page=%d", (int)g_scan, (int)UiGetPage());
     for (;;) {
         if (TouchGetStatus(&st) == 0) {
             int down = st.touch ? 1 : 0;
@@ -2772,6 +2782,7 @@ static void hold_failure_page(void)
                 g_back_press_y = (int)st.y;
                 key_session_close();
                 g_sign_busy = 0;
+                UiTracePush("hold out (home)");
                 UiGotoPage(UI_PAGE_WELCOME);
                 return;
             }

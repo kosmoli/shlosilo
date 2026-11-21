@@ -48,6 +48,21 @@ void UiSignInfo(const char *line1, const char *line2, const char *line3);
 void UiReviewShow(const char *const *lines, unsigned count, const char *foot);
 void UiSetLast(const char *text);
 
+/* Diagnostic event trace (PRODUCT_UI_TRACE builds only; see product_task.c).
+ *
+ * The board has no serial console, so the only way to see WHY a press did
+ * nothing is to put the decision points on the screen. Push a short line at
+ * every branch that can swallow an input (press classification, page change,
+ * g_scan transition, request consumption) and the trace renders under the page
+ * body. Off in production: the store is a no-op and nothing draws. */
+#ifndef PRODUCT_UI_TRACE
+/* Default off. Build a diagnostic image with -DPRODUCT_UI_TRACE=1 (or by
+ * flipping this default): the trace stores the decision points and draws them
+ * on the welcome page, which costs a full redraw per event. */
+#define PRODUCT_UI_TRACE 0
+#endif
+void UiTracePush(const char *fmt, ...);
+
 /* Seed-plate import confirmation (Task 5b). Set the lines before
  * UiGotoPage(UI_PAGE_CONFIRM); calling while on the confirm page repaints.
  * The warning block is fixed text (ui_layout.h). The page's back/continue

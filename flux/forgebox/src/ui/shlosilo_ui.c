@@ -36,6 +36,7 @@
 #include "version.h"
 #include "shlosilo.h"   /* shlosilo_version(): our build identity on the footer */
 #include "cmsis_os.h"
+#include <stdarg.h>   /* UiTracePush (diagnostic builds) */
 #include <stdio.h>
 #include <string.h>
 
@@ -85,6 +86,12 @@ static uint8_t *g_fb;
 static uint8_t *g_band;
 static UiPage g_page = UI_PAGE_WELCOME;
 static char g_last[64] = "last: -";
+/* Diagnostic event trace (PRODUCT_UI_TRACE): newest last, drawn on the welcome
+ * page. Declared up here because draw_page() renders it. */
+#define UI_TRACE_N 12
+#define UI_TRACE_COLS 52
+static char g_trace[UI_TRACE_N][UI_TRACE_COLS];
+static int g_trace_len;
 static int g_touch_prev_down;
 
 /* Scan page live lines (status + three small lines), pushed by the caller. */
@@ -570,6 +577,12 @@ static void draw_page(void)
         draw_text_center(UI_W_SUB_Y, UI_TXT_SUB, UI_W_SUB_SCALE);
         draw_text_center(UI_W_BIG_Y, UI_TXT_BIG, UI_W_BIG_SCALE);
         draw_text_center(UI_W_HINT_Y, UI_TXT_HINT, UI_W_HINT_SCALE);
+#if PRODUCT_UI_TRACE
+        /* The evidence page: newest last, small font, above the footer. */
+        for (int t = 0; t < g_trace_len; t++) {
+            draw_text(8, UI_W_HINT_Y + 30 + t * 12, g_trace[t], 1);
+        }
+#endif
         break;
 
     case UI_PAGE_SCAN:
@@ -933,6 +946,36 @@ int UiExportListInput(int action)
     return 0;
 }
 
+/* ── diagnostic event trace (PRODUCT_UI_TRACE) ─────────────────────────────
+ * No serial console on the board: when a press produces no visible change, the
+ * only evidence is what the firmware itself decided. Each hook is one short
+ * line; the ring keeps the newest UI_TRACE_N so the state right before a frozen
+ * screen is still on it. The store always exists (so call sites need no ifdef),
+ * but only a trace build draws it. */
+
+void UiTracePush(const char *fmt, ...)
+{
+    char line[UI_TRACE_COLS];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+
+    if (g_trace_len < UI_TRACE_N) {
+        memcpy(g_trace[g_trace_len], line, UI_TRACE_COLS);
+        g_trace_len++;
+    } else {
+        memmove(g_trace[0], g_trace[1], (UI_TRACE_N - 1) * UI_TRACE_COLS);
+        memcpy(g_trace[UI_TRACE_N - 1], line, UI_TRACE_COLS);
+    }
+#if PRODUCT_UI_TRACE
+    if (g_page == UI_PAGE_WELCOME && g_fb != NULL) {
+        draw_page();
+        ui_flush_range(0, UI_FB_H - 1);
+    }
+#endif
+}
+
 void UiSetLast(const char *text)
 {
     snprintf(g_last, sizeof(g_last), "last: %.50s", text ? text : "-");
@@ -1032,6 +1075,7 @@ static void handle_press(int x, int y)
         snprintf(msg, sizeof(msg), "tap (%d,%d)", x, y);
     }
 
+    UiTracePush("press %d,%d p%d -> %s", x, y, (int)g_page, msg);
     UiSetLast(msg);
     printf("ui: %s\r\n", g_last);
     draw_page();
@@ -1087,8 +1131,13 @@ UiPage UiGetPage(void)
     return g_page;
 }
 
+void UiTracePush(const char *fmt, ...);   /* defined above; forward decl for hooks */
+
 void UiGotoPage(UiPage page)
 {
+    if (g_page != page) {
+        UiTracePush("page %d -> %d", (int)g_page, (int)page);
+    }
     g_page = page;
     if (g_fb == NULL || g_band == NULL) {
         return;
