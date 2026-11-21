@@ -184,6 +184,40 @@ static void TestRoundTrip(void)
     Check(loaded.entropyLen == 16, "entropyLen from param page");
 }
 
+/* ---- 4b. narrow entropy face (device path; design 密钥供给 §11) ----
+
+   The device reads the account through `LoadAccountEntropy`, which returns ONLY the entropy and
+   its length. This pins the two properties that matter:
+     (a) it returns exactly what the full-record read returns for the same slot (so narrowing the
+         API did not change which bytes the signer derives from), and
+     (b) it needs no seed-bearing struct - the caller has nowhere to receive a seed. */
+static void TestNarrowEntropyFace(void)
+{
+    AccountSecret_t s, full;
+    uint8_t entropy[ENTROPY_MAX_LEN], len = 0;
+
+    HostShimsReset();
+    HostShimsSeedOtp(GV_SALT, GV_OTP_AES_PIECE);
+    FillSecret(&s);
+    Check(SaveAccountSecret(2, &s, (const char *)GV_PASSWORD, false) == SUCCESS_CODE,
+          "SaveAccountSecret narrow-face run");
+    memset(HostSePage(2 * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_PARAM), 0, 32);
+
+    memset(&full, 0, sizeof(full));
+    Check(LoadAccountSecret(2, &full, (const char *)GV_PASSWORD) == SUCCESS_CODE,
+          "full read for the narrow-face comparison");
+
+    memset(entropy, 0, sizeof(entropy));
+    Check(LoadAccountEntropy(2, entropy, &len, (const char *)GV_PASSWORD) == SUCCESS_CODE,
+          "LoadAccountEntropy returns the slot");
+    CheckMem(entropy, full.entropy, ENTROPY_MAX_LEN, "narrow entropy == full entropy");
+    Check(len == full.entropyLen, "narrow entropyLen == full entropyLen");
+
+    /* Wrong password still dies on the same HMAC gate - narrowing must not bypass auth. */
+    Check(LoadAccountEntropy(2, entropy, &len, "wrong password") == ERR_KEYSTORE_AUTH,
+          "narrow path: wrong password => ERR_KEYSTORE_AUTH");
+}
+
 /* ---- 5. auth failure ---- */
 static void TestAuthFailures(void)
 {
@@ -391,6 +425,7 @@ int main(void)
     TestHmacBoundaryTamper();
     TestParamEntropyLenTamperAccepted();
     TestEntropyLenPassthrough();
+    TestNarrowEntropyFace();
 
     printf("keystore host test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

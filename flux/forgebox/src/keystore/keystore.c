@@ -1,5 +1,22 @@
 #include "define.h"
 #include "keystore.h"
+
+/*
+ * Design 密钥供给 §11 (2026-11-21, Kosmo): on SE-capable hardware the device must not be able to
+ * pull a seed out of the SE. The full keystone3-parity read (`LoadAccountSecret` ->
+ * `AccountSecret_t`, entropy AND the 64-byte seed AND the SLIP-39/TON tail) is therefore compiled
+ * OUT by default; the device path uses `LoadAccountEntropy`, whose only out-parameters are a
+ * 32-byte entropy buffer and a length byte.
+ *
+ * The parity implementation stays in this file for format archaeology and for the parity test
+ * build, which sets the switch to 1. Nothing else may: a product image that still contains the
+ * seed-decrypting entry point is exactly what this switch exists to prevent, and the
+ * FORGEBOXNOALLOC/KEYSTORE gates assert its absence from the shipped ELF.
+ */
+#ifndef SHLOSILO_KEYSTORE_FULL_RECORD_API
+#define SHLOSILO_KEYSTORE_FULL_RECORD_API 0
+#endif
+
 #include "string.h"
 #include "stdio.h"
 #include "user_utils.h"
@@ -174,6 +191,7 @@ int32_t SaveAccountSecret(uint8_t accountIndex, const AccountSecret_t *accountSe
 /// @param[out] accountSecret Account secret data.
 /// @param[in] password Password string.
 /// @return err code.
+#if SHLOSILO_KEYSTORE_FULL_RECORD_API
 static int32_t LoadAccountSecretFromSE(uint8_t accountIndex, AccountSecret_t *accountSecret, const char *password)
 {
     uint8_t pieces[KEY_PIECE_LEN * 2], hash[32], hmacCalc[32];
@@ -252,6 +270,83 @@ static int32_t LoadAccountSecretFromSE(uint8_t accountIndex, AccountSecret_t *ac
     return ret;
 }
 
+#endif /* SHLOSILO_KEYSTORE_FULL_RECORD_API */
+
+static int32_t LoadAccountEntropyFromSE(uint8_t accountIndex, uint8_t *entropy,
+                                       uint8_t *entropyLen, const char *password)
+{
+    uint8_t pieces[KEY_PIECE_LEN * 2], hash[32], hmacCalc[32];
+    struct sha512 sha512Hash;
+    uint8_t *enKey, *authKey;
+    uint8_t *iv, *encryptEntropy, *encryptSeed, *slip39EmsOrTonEntropyL32, *encryptReservedData, *hmac;
+    uint8_t accountEncryptData[ACCOUNT_TOTAL_LEN], param[32];
+    AccountParamHead_t *pAccountInfo = (AccountParamHead_t *)param;
+    int32_t ret;
+    AES256_CBC_ctx ctx;
+
+    ASSERT(accountIndex <= 2);
+    ASSERT(entropy != NULL && entropyLen != NULL);
+    /* Same derived keys as the full path: the record layout and its authentication are
+     * unchanged - only WHAT gets decrypted into the caller's memory is narrowed. */
+    enKey = sha512Hash.u.u8;
+    authKey = sha512Hash.u.u8 + AES_KEY_LEN;
+    iv = accountEncryptData;
+    encryptEntropy = iv + AES_IV_LEN;
+    encryptSeed = encryptEntropy + ENTROPY_MAX_LEN;
+    slip39EmsOrTonEntropyL32 = encryptSeed + SEED_LEN;
+    encryptReservedData = slip39EmsOrTonEntropyL32 + SLIP39_EMS_LEN;
+    hmac = encryptReservedData + SE_DATA_RESERVED_LEN;
+    do {
+        ret = GetKeyPieceFromSE(accountIndex, pieces, password);
+        CHECK_ERRCODE_BREAK("get key piece", ret);
+        HashWithSalt(hash, pieces, sizeof(pieces), "combine two pieces");
+        sha512(&sha512Hash, hash, sizeof(hash));
+
+        ret = SE_HmacEncryptRead(iv, accountIndex * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_IV);
+        CHECK_ERRCODE_BREAK("read iv", ret);
+        ret = SE_HmacEncryptRead(encryptEntropy, accountIndex * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_ENTROPY_OR_TON_ENTROPY_H32);
+        CHECK_ERRCODE_BREAK("read encrypt entropy", ret);
+        /* The remaining fields are READ (so the HMAC below still authenticates the whole
+         * record, exactly as the full path does) but never decrypted and never handed out. */
+        ret = SE_HmacEncryptRead(encryptSeed, accountIndex * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_SEED_H32);
+        CHECK_ERRCODE_BREAK("read encrypt seed h32", ret);
+        ret = SE_HmacEncryptRead(encryptSeed + 32, accountIndex * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_SEED_L32);
+        CHECK_ERRCODE_BREAK("read encrypt seed l32", ret);
+        ret = SE_HmacEncryptRead(slip39EmsOrTonEntropyL32, accountIndex * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_SLIP39_EMS_OR_TON_ENTROPY_L32);
+        CHECK_ERRCODE_BREAK("read slip39 ems or ton entropy l32", ret);
+        ret = SE_HmacEncryptRead(encryptReservedData, accountIndex * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_RESERVED);
+        CHECK_ERRCODE_BREAK("read encrypt reserved data", ret);
+        ret = SE_HmacEncryptRead(hmac, accountIndex * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_HMAC);
+        CHECK_ERRCODE_BREAK("read hmac", ret);
+        ret = SE_HmacEncryptRead(param, accountIndex * PAGE_NUM_PER_ACCOUNT + PAGE_INDEX_PARAM);
+        CHECK_ERRCODE_BREAK("read param", ret);
+        hmac_sha256(authKey, AUTH_KEY_LEN, accountEncryptData, ACCOUNT_TOTAL_LEN - HMAC_LEN, hmacCalc);
+        ret = ((memcmp(hmacCalc, hmac, HMAC_LEN) == 0) ? SUCCESS_CODE : ERR_KEYSTORE_AUTH);
+        CHECK_ERRCODE_BREAK("check hmac", ret);
+        *entropyLen = (pAccountInfo->entropyLen == 0) ? 32 : pAccountInfo->entropyLen; // 32 bytes as default.
+        CombineInnerAesKey(enKey);
+        AES256_CBC_init(&ctx, enKey, iv);
+        AES256_CBC_decrypt(&ctx, ENTROPY_MAX_LEN / AES_BLOCK_SIZE, entropy, encryptEntropy);
+    } while (0);
+
+    CLEAR_OBJECT(ctx);
+    CLEAR_ARRAY(pieces);
+    CLEAR_ARRAY(hash);
+    CLEAR_OBJECT(sha512Hash);
+    CLEAR_ARRAY(accountEncryptData);
+    CLEAR_ARRAY(hmacCalc);
+    CLEAR_ARRAY(param);
+    return ret;
+}
+
+int32_t LoadAccountEntropy(uint8_t accountIndex, uint8_t *entropy, uint8_t *entropyLen,
+                           const char *password)
+{
+    ASSERT(accountIndex <= 2);
+    return LoadAccountEntropyFromSE(accountIndex, entropy, entropyLen, password);
+}
+
+#if SHLOSILO_KEYSTORE_FULL_RECORD_API
 /// @brief Load account secret, including entropy/seed/reservedData.
 ///        keystone3 keystore.c:690-698.
 /// @param[in] accountIndex Account index, 0~2.
@@ -263,6 +358,7 @@ int32_t LoadAccountSecret(uint8_t accountIndex, AccountSecret_t *accountSecret, 
     ASSERT(accountIndex <= 2);
     return LoadAccountSecretFromSE(accountIndex, accountSecret, password);
 }
+#endif /* SHLOSILO_KEYSTORE_FULL_RECORD_API */
 
 /// @brief Combine with the internal AES KEY of MCU.
 ///        keystone3 keystore.c:703-723 (OTP XOR third factor).

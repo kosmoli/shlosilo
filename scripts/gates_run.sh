@@ -67,6 +67,14 @@ bash flux/forgebox/build.sh > /tmp/g_forgebox.log 2>&1; echo "FORGEBOX=$?"
 # product face, and the instrument must be able to see allocations at all (it re-measures the pico2
 # image, which allocates, as a sensitivity control). Runs after FORGEBOX (builds the ELF) and PICO2.
 bash scripts/forgebox_noalloc_check.sh > /tmp/g_forgeboxnoalloc.log 2>&1; echo "FORGEBOXNOALLOC=$?"
+# 密钥供给 §11 (2026-11-21): the device image must expose only the entropy face of the SE
+# keystore. The keystone3-parity full-record read (which returns a seed) is compiled out; this
+# measures the ELF instead of trusting the #if.
+bash scripts/forgebox_keystore_surface_check.sh > /tmp/g_keystoresurface.log 2>&1; echo "KEYSTORESURFACE=$?"
+# The C keystore data plane's own host test (keystone3-format golden vectors, OTP three-factor,
+# wear/auth paths, and the narrow-vs-full entropy equality). It builds the parity full-record path
+# ON so that code is exercised somewhere.
+bash flux/forgebox/tests/host_keystore/run.sh > /tmp/g_keystore.log 2>&1; echo "KEYSTORE=$?"
 cargo check --offline --manifest-path fuzz/Cargo.toml > /tmp/g_fuzz.log 2>&1; echo "FUZZ=$?"
 bash scripts/check_header.sh > /tmp/g_hdr.log 2>&1; echo "HDRKEEP=$?"
 cargo fmt --all -- --check > /tmp/g_fmt.log 2>&1; echo "FMT=$?"

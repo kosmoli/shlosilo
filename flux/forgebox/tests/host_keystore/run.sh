@@ -14,7 +14,10 @@ echo "=== oracle: generating golden_vectors.h (hashlib/hmac + OpenSSL) ==="
 python3 oracle_golden.py > golden_vectors.h
 
 echo "=== building keystore host test (gcc) ==="
-gcc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -O1 -g \
+# The device build compiles the full-record (seed-returning) read OUT - design 密钥供给 §11.
+# The parity path must not rot, so the HOST test build turns it back on and pins it against
+# the same oracle; a second target below builds the narrow face the device actually uses.
+gcc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -O1 -g -DSHLOSILO_KEYSTORE_FULL_RECORD_API=1 \
     -I host_include \
     -I . \
     -I "$SRC" \

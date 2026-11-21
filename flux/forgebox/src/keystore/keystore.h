@@ -47,6 +47,28 @@ typedef struct {
 } AccountSecret_t;
 
 /*
+ * Narrow read for the Rust key-supply face (shlosilo design 密钥供给 §11, 2026-11-21).
+ *
+ * `LoadAccountSecret` hands the whole decrypted record to its caller - entropy AND the 64-byte
+ * seed AND the SLIP-39/TON tail. The device never needs the seed (BIP-39 derives it from the
+ * entropy), so the Rust face must not be able to receive it at all. This entry point runs the
+ * same unlocked-record path (key pieces -> SHA-512 -> OTP XOR -> HMAC verify) but decrypts ONLY
+ * the entropy field into the caller's 32-byte buffer; the ciphertext of the other fields is read
+ * into the local page image and wiped there. There is no parameter through which a seed could be
+ * returned.
+ *
+ * keystone3 parity is unaffected: `LoadAccountSecret`/`AccountSecret_t` stay exactly as ported.
+ *
+ * @param[in]  accountIndex   account slot, 0..2
+ * @param[out] entropy        ENTROPY_MAX_LEN bytes
+ * @param[out] entropyLen     coerced length (0 in the record -> 32, keystone3 keystore.c:228)
+ * @param[in]  password       NUL-terminated credential
+ * @return err code (ERR_KEYSTORE_AUTH on wrong password)
+ */
+int32_t LoadAccountEntropy(uint8_t accountIndex, uint8_t *entropy, uint8_t *entropyLen,
+                           const char *password);
+
+/*
  * Head of the PAGE_INDEX_PARAM page. keystone3 reads it through
  * AccountInfo_t (src/managers/account_manager.h:33-47) whose FIRST member is
  * entropyLen; the keystore data plane touches nothing else in that page.

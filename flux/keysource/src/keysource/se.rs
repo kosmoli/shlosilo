@@ -1,7 +1,7 @@
 //! [`SeKeySource`]: secure-element-fed key source — password unlock to a
 //! signing session (Task 8, Phase 3 close-out).
 //!
-//! Pipeline (the C chain, keystone3-parity): `LoadAccountSecret` (keystore
+//! Pipeline (the C chain, keystone3-parity): `LoadAccountEntropy` (keystore
 //! data plane: SE key pieces + HMAC + AES slot decrypt) → `entropy` →
 //! [`KeySession::from_entropy`] → the caller's [`KeySessionSlot`]. The
 //! password enters, a session handle comes out — **the seed/entropy never
@@ -20,7 +20,7 @@
 //!
 //! # Trust boundary (pool item #24)
 //!
-//! `AccountSecret_t.entropyLen` arrives from the *unauthenticated* param page
+//! `entropyLen` arrives from the *unauthenticated* param page
 //! (the HMAC covers the encrypted slot, not this length byte). It is
 //! **untrusted input**: only 16 or 32 is accepted (the two shapes
 //! [`KeySession::from_entropy`] derives); anything else is
@@ -36,7 +36,8 @@
 //! - the password is copied into a stack buffer only for the C call and
 //!   wiped with a volatile walk immediately after (dead-store elimination
 //!   cannot drop the wipe);
-//! - the whole decrypted [`AccountSecret`] (entropy AND seed AND the
+//! - the decrypted [`AccountEntropy`] (entropy + length; the seed-bearing
+//!   `AccountSecret_t` field set is no longer reachable from Rust - design §11)
 //!   reserved tail) is wiped before return on every path — only the
 //!   `KeySession`'s own `ZeroizeOnDrop` fields survive;
 //! - close = zeroize through the same single-owner [`KeySessionHandle`]
@@ -74,37 +75,32 @@ const ERR_KEYSTORE_AUTH: i32 = 20;
 /// Success code (`err_code.h` `SUCCESS_CODE`).
 const C_SUCCESS: i32 = 0;
 
-/// C mirror of keystore.h `AccountSecret_t` (field order and sizes verbatim —
-/// the struct is an internal wire between `LoadAccountSecret` and here, both
-/// sides of one link unit).
+/// C mirror of the NARROW key-supply face (keystore.h `LoadAccountEntropy`,
+/// design 密钥供给 §11, 2026-11-21).
+///
+/// It carries the entropy and its authenticated length - nothing else. The 64-byte seed used to
+/// arrive here too (the keystone3-parity `AccountSecret_t` shape); it is no longer requestable:
+/// BIP-39 derives the seed from the entropy, so the device never needs it and the buffer it would
+/// land in does not exist any more. That is what makes "no seed leaves the SE" structural rather
+/// than a promise in a comment.
 #[repr(C)]
-pub struct AccountSecret {
+pub struct AccountEntropy {
     pub entropy: [u8; 32],
-    pub seed: [u8; 64],
-    pub slip39_ems_or_ton_entropy_l32: [u8; 32],
-    pub reserved_data: [u8; 32],
     /// Untrusted (pool item #24) — see the module docs. Only 16/32 accepted.
     pub entropy_len: u8,
 }
 
-impl AccountSecret {
+impl AccountEntropy {
     const fn zeroed() -> Self {
         Self {
             entropy: [0u8; 32],
-            seed: [0u8; 64],
-            slip39_ems_or_ton_entropy_l32: [0u8; 32],
-            reserved_data: [0u8; 32],
             entropy_len: 0,
         }
     }
 
-    /// Volatile wipe of every byte of the decrypted secret (entropy, seed,
-    /// reserved tail, length). Runs on EVERY exit path.
+    /// Volatile wipe of every byte (entropy + length). Runs on EVERY exit path.
     fn wipe(&mut self) {
         wipe_bytes(&mut self.entropy);
-        wipe_bytes(&mut self.seed);
-        wipe_bytes(&mut self.slip39_ems_or_ton_entropy_l32);
-        wipe_bytes(&mut self.reserved_data);
         wipe_bytes(core::slice::from_mut(&mut self.entropy_len));
     }
 }
@@ -127,12 +123,13 @@ fn wipe_bytes(buf: &mut [u8]) {
 // tests substitute a behavioural shim at link level (tests/se_ffi.rs — the
 // same shim discipline as tests/host_keystore / tests/host_se).
 extern "C" {
-    /// keystore.h `LoadAccountSecret(accountIndex, accountSecret, password)`:
-    /// password-gated read of one encrypted account slot. `password` is a
-    /// NUL-terminated C string.
-    fn LoadAccountSecret(
+    /// keystore.h `LoadAccountEntropy(accountIndex, entropy, entropyLen, password)`:
+    /// password-gated read of ONE encrypted account slot that returns the entropy only.
+    /// `password` is a NUL-terminated C string.
+    fn LoadAccountEntropy(
         account_index: u8,
-        account_secret: *mut AccountSecret,
+        entropy: *mut u8,
+        entropy_len: *mut u8,
         password: *const c_char,
     ) -> i32;
 }
@@ -201,12 +198,18 @@ impl<'s> SeKeySource<'s> {
         // overflow.
         let mut pw = [0u8; PASSWORD_MAX_LEN + 1];
         pw[..password.len()].copy_from_slice(password);
-        let mut secret = AccountSecret::zeroed();
+        let mut secret = AccountEntropy::zeroed();
         // SAFETY: `pw` is a valid NUL-terminated string of ≤ PASSWORD_MAX_LEN
-        // bytes (checked above); `secret` is a valid out-struct. Single
+        // bytes (checked above); `secret.entropy` is a 32-byte out-buffer and
+        // `secret.entropy_len` a 1-byte out-buffer, both writable. Single
         // thread (the flux key path is single-owner, `!Sync` slot discipline).
         let ret = unsafe {
-            LoadAccountSecret(ACCOUNT_INDEX_V1, &mut secret, pw.as_ptr() as *const c_char)
+            LoadAccountEntropy(
+                ACCOUNT_INDEX_V1,
+                secret.entropy.as_mut_ptr(),
+                &mut secret.entropy_len,
+                pw.as_ptr() as *const c_char,
+            )
         };
         // Password hygiene: the stack copy dies HERE on every path (volatile
         // walk — never a bare memset).
@@ -283,20 +286,17 @@ mod tests {
         );
     }
 
-    /// AccountSecret::wipe covers every field (entropy + seed + tail + len).
+    /// `AccountEntropy::wipe` covers every field it HAS (entropy + len).
+    ///
+    /// The seed/SLIP-39/reserved fields are gone from this type (design 密钥供给 §11): the wipe
+    /// test shrinks with the struct, which is the honest form - a test can only prove what exists.
     #[test]
-    fn account_secret_wipe_covers_all_fields() {
-        let mut s = AccountSecret::zeroed();
+    fn account_entropy_wipe_covers_all_fields() {
+        let mut s = AccountEntropy::zeroed();
         s.entropy = [0x11u8; 32];
-        s.seed = [0x22u8; 64];
-        s.slip39_ems_or_ton_entropy_l32 = [0x33u8; 32];
-        s.reserved_data = [0x44u8; 32];
         s.entropy_len = 32;
         s.wipe();
         assert!(s.entropy.iter().all(|&b| b == 0));
-        assert!(s.seed.iter().all(|&b| b == 0));
-        assert!(s.slip39_ems_or_ton_entropy_l32.iter().all(|&b| b == 0));
-        assert!(s.reserved_data.iter().all(|&b| b == 0));
         assert_eq!(s.entropy_len, 0);
     }
 }

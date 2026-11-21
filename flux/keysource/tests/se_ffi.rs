@@ -4,7 +4,7 @@
 //!
 //! Host-runnable full-cycle tests over the FFI entries + trait, following the
 //! host_keystore / host_se precedent: the PRODUCTION Rust chain runs against
-//! a behavioural `LoadAccountSecret` shim (link-level substitution of the SE
+//! a behavioural `LoadAccountEntropy` shim (link-level substitution of the SE
 //! dependency — the same discipline as tests/host_keystore/host_shims.c and
 //! tests/host_se/se_shims.c substitute the drivers).
 //!
@@ -16,7 +16,7 @@
 //!
 //! Pinned invariants (see `src/keysource/se_ffi.rs` module docs):
 //! - unlock success → session keys == `from_entropy(entropy)` direct feed;
-//! - wrong password → `ERR_AUTH_FAILED` (-24), ONE LoadAccountSecret call
+//! - wrong password → `ERR_AUTH_FAILED` (-24), ONE LoadAccountEntropy call
 //!   (no retry), no session;
 //! - `entropyLen` is untrusted (pool item #24): 33 / 255 / other ≠ 16/32 →
 //!   refused before any slice is formed. `entropyLen = 0` is the documented
@@ -37,7 +37,7 @@ use shlosilo::types::key_session::KeySession;
 use shlosilo_flux_keysource::keysource::ffi::{
     shlosilo_keysource_qr_close_ffi, shlosilo_keysource_qr_open_ffi,
 };
-use shlosilo_flux_keysource::keysource::se::{AccountSecret, SeKeySource, PASSWORD_MAX_LEN};
+use shlosilo_flux_keysource::keysource::se::{AccountEntropy, SeKeySource, PASSWORD_MAX_LEN};
 use shlosilo_flux_keysource::keysource::se_ffi::{
     shlosilo_keysource_se_close_ffi, shlosilo_keysource_se_open_ffi, shlosilo_keysource_se_ws_len,
 };
@@ -73,8 +73,10 @@ const FIXTURE_PWD: &[u8] = b"shlosilo-se-test-pwd";
 /// Wrong-password fixture.
 const WRONG_PWD: &[u8] = b"not-the-password";
 
-// ── LoadAccountSecret shim (link-level SE/keystore substitution) ────────────
+// ── LoadAccountEntropy shim (link-level SE/keystore substitution) ───────────
 
+/// keystore.h ENTROPY_MAX_LEN — the narrow out-buffer width.
+const ENTROPY_MAX: usize = 32;
 const C_ERR_KEYSTORE_AUTH: i32 = 20; // err_code.h ERR_KEYSTORE_AUTH
 const C_ERR_GENERAL_FAIL: i32 = 1; // err_code.h ERR_GENERAL_FAIL
 
@@ -112,20 +114,21 @@ fn shim_last_pwd() -> Vec<u8> {
 }
 
 /// The keystore.c link-level substitute: same contract as
-/// `LoadAccountSecret(accountIndex, accountSecret, password)`. The v1 account
+/// `LoadAccountEntropy(accountIndex, entropy, entropyLen, password)`. The v1 account
 /// scope pin (account 0) lives HERE — a call with any other index is a
 /// wrong-scope bug and trips the assert.
 ///
 /// # Safety
 ///
-/// C-ABI shim: `account_secret` must point to a valid `AccountSecret`, and
+/// C-ABI shim: `entropy` must point to a 32-byte writable buffer, `entropy_len` to one byte, and
 /// `password` to a NUL-terminated string no longer than `PASSWORD_MAX_LEN`
 /// (the Rust chain's own bounded stack copy). Both contracts are the
 /// caller's, hence the `unsafe` signature.
 #[no_mangle]
-pub unsafe extern "C" fn LoadAccountSecret(
+pub unsafe extern "C" fn LoadAccountEntropy(
     account_index: u8,
-    account_secret: *mut AccountSecret,
+    entropy: *mut u8,
+    entropy_len: *mut u8,
     password: *const core::ffi::c_char,
 ) -> i32 {
     use std::sync::atomic::Ordering;
@@ -133,11 +136,12 @@ pub unsafe extern "C" fn LoadAccountSecret(
         account_index, 0,
         "v1 scope: SeKeySource must unlock account 0 only"
     );
-    assert!(!account_secret.is_null());
+    /* Design 密钥供给 §11 (2026-11-21): the Rust face gets entropy ONLY. The whole seed-bearing
+     * struct is gone from the call, so this shim has no way to hand one over - if a future change
+     * reintroduces a seed out-parameter, this signature stops compiling, which is the point. */
+    assert!(!entropy.is_null());
+    assert!(!entropy_len.is_null());
     assert!(!password.is_null());
-    // SAFETY: C-string from the caller (the Rust side's NUL-terminated stack
-    // copy); bounded walk (the Rust side never passes > PASSWORD_MAX_LEN).
-    // (fn is `unsafe extern "C"`: the raw-pointer contract is the caller's.)
     let pw = {
         let mut n = 0usize;
         while *password.add(n) != 0 && n <= PASSWORD_MAX_LEN {
@@ -153,61 +157,28 @@ pub unsafe extern "C" fn LoadAccountSecret(
     *SHIM_LAST_PWD.lock().unwrap() = pw.clone();
 
     let mode = SHIM_MODE.load(Ordering::SeqCst);
-    // SAFETY: the out-struct is a valid `AccountSecret` (the Rust chain's own
-    // type); written field-wise below. (fn is `unsafe extern "C"`.)
-    let secret = &mut *account_secret;
-    // Default fill: the fixture entropy, real length, matching password gate.
-    secret.entropy = [0u8; 32];
-    secret.seed = [0u8; 64];
-    secret.slip39_ems_or_ton_entropy_l32 = [0u8; 32];
-    secret.reserved_data = [0u8; 32];
-    secret.entropy_len = 0;
+    for i in 0..ENTROPY_MAX {
+        *entropy.add(i) = 0;
+    }
+    *entropy_len = 0;
 
     match mode {
         MODE_OK16 | MODE_OK32 | MODE_LEN33 | MODE_LEN255 | MODE_LEN24 | MODE_LEN0 => {
             if pw != FIXTURE_PWD {
                 return C_ERR_KEYSTORE_AUTH; // wrong password, one shot
             }
-            match mode {
-                MODE_OK16 => {
-                    secret.entropy[..16].copy_from_slice(&FIXTURE_ENTROPY);
-                    secret.entropy_len = 16;
-                }
-                MODE_OK32 => {
-                    secret.entropy.copy_from_slice(&FIXTURE_ENTROPY_24);
-                    secret.entropy_len = 32;
-                }
-                MODE_LEN33 => {
-                    secret.entropy[..16].copy_from_slice(&FIXTURE_ENTROPY);
-                    secret.entropy_len = 33; // pool item #24: lying length
-                }
-                MODE_LEN255 => {
-                    secret.entropy[..16].copy_from_slice(&FIXTURE_ENTROPY);
-                    secret.entropy_len = 255; // pool item #24: lying length
-                }
-                MODE_LEN24 => {
-                    secret.entropy[..16].copy_from_slice(&FIXTURE_ENTROPY);
-                    secret.entropy_len = 24; // not 16/32
-                }
-                MODE_LEN0 => {
-                    // keystore.c:228 verbatim (keystone3 parity, NOT
-                    // changed): a param-page entropyLen of 0 becomes
-                    // `(0 == 0) ? 32 : …` = 32 ("32 bytes as default").
-                    // The shim plays the WHOLE C function — coercion
-                    // included — so the Rust chain sees exactly what the
-                    // device delivers: 32, never 0.
-                    secret.entropy.copy_from_slice(&FIXTURE_ENTROPY_LEN0);
-                    secret.entropy_len = 32; // <- 0 upstream, coerced HERE
-                }
+            let (bytes, len): (&[u8], u8) = match mode {
+                MODE_OK16 => (&FIXTURE_ENTROPY[..], 16),
+                MODE_OK32 => (&FIXTURE_ENTROPY_24[..], 32),
+                MODE_LEN33 => (&FIXTURE_ENTROPY[..], 33), // pool item #24: lying length
+                MODE_LEN255 => (&FIXTURE_ENTROPY[..], 255), // pool item #24: lying length
+                MODE_LEN24 => (&FIXTURE_ENTROPY[..], 24), // not 16/32
+                // keystore.c:228 verbatim (keystone3 parity): entropyLen 0 becomes 32.
+                MODE_LEN0 => (&FIXTURE_ENTROPY_LEN0[..], 32),
                 _ => unreachable!(),
-            }
-            // A4-06: the out-struct carries more than Rust may use. Fill the fields Rust must
-            // IGNORE with distinct markers, so "the session keys equal from_entropy(entropy)"
-            // doubles as proof that no derivation depends on them, and so the forensic wipe test
-            // has a marker per field to look for.
-            secret.seed = [0x5eu8; 64];
-            secret.slip39_ems_or_ton_entropy_l32 = [0x71u8; 32];
-            secret.reserved_data = [0x93u8; 32];
+            };
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), entropy, bytes.len());
+            *entropy_len = len;
             OK
         }
         MODE_AUTH => C_ERR_KEYSTORE_AUTH,
@@ -304,7 +275,7 @@ fn wrong_password_is_auth_failed_one_shot_and_no_session() {
     assert_eq!(se_open(&mut ws, WRONG_PWD, &mut out), ERR_AUTH_FAILED);
     assert!(out.is_null(), "failed unlock must leave a NULL out-param");
     // A wrong password is rejected on the first attempt, no retry: exactly ONE
-    // LoadAccountSecret call.
+    // LoadAccountEntropy call.
     assert_eq!(shim_calls(), 1, "no retry after a rejected password");
     // No session: the workspace holds nothing — close is a defined no-op and the
     // right password still unlocks afterwards (no lockout state left behind).
@@ -494,13 +465,14 @@ fn close_wipes_the_key_bytes_forensic() {
         contains(&ws, &spend) && contains(&ws, &view),
         "precondition: live key bytes visible in the workspace"
     );
-    // Also pin the decrypted-secret wipe: the shim's field markers (0x5e seed, 0x71 slip39, 0x93
-    // reserved) must not survive anywhere in the workspace after close.
-    // fill) must never survive the open — the AccountSecret dies before the
-    // session goes live.
+    // The decrypted-secret wipe is now checked against the ENTROPY itself rather than a marker:
+    // the seed-bearing fields the old shim filled with 0x5e/0x71/0x93 no longer exist in the call
+    // (design §11 - entropy is all Rust can receive), so a marker scan would pass vacuously.
+    // What must hold is that the raw entropy bytes never linger in the workspace: the session
+    // holds derived keys, not the input entropy.
     assert!(
-        !contains(&ws, &[0x5eu8; 4]),
-        "decrypted secret must not leak into the workspace"
+        !contains(&ws, &FIXTURE_ENTROPY[..8]),
+        "the decrypted entropy must not linger in the workspace"
     );
     assert_eq!(
         unsafe { shlosilo_keysource_se_close_ffi(ws.as_mut_ptr()) },

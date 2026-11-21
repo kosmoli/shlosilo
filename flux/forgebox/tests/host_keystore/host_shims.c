@@ -164,3 +164,18 @@ int32_t SE_HmacEncryptWrite(const uint8_t *data, uint8_t page)
     memcpy(g_pages[page], data, HOST_SIM_PAGE_LEN);
     return 0;
 }
+
+/* ---- memory-wipe primitive (src/ram/user_memory.c) ----
+
+   keystore.c wipes through `secure_fill` (volatile byte fill, so the compiler cannot drop it).
+   The host test does not link the SRAM memory manager, so the one primitive it needs is provided
+   here with the same semantics. If the manager is ever linked in, delete this and let the real
+   one win instead of relying on duplicate-symbol order. */
+void secure_fill(void *dest, int ch, size_t count)
+{
+    volatile uint8_t *v = (volatile uint8_t *)dest;
+    uint8_t c = (uint8_t)ch;
+    while (count-- > 0) {
+        *v++ = c;
+    }
+}
