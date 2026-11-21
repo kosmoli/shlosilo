@@ -1470,15 +1470,25 @@ impl ConsoleState {
             crate::heap_peak_reset();
             let (used, free, peak) = crate::heap_stats();
             let (pu, pf, pp) = crate::psram_stats();
-            log::info!(
-                "[heap] peak reset; sram {used}/{free} peak {peak}; psram {pu}/{pf} peak {pp}"
-            );
+            if crate::psram_heap_mapped() {
+                log::info!(
+                    "[heap] peak reset; sram {used}/{free} peak {peak}; psram {pu}/{pf} peak {pp}"
+                );
+            } else {
+                log::info!("[heap] peak reset; sram {used}/{free} peak {peak}; psram unmapped");
+            }
         } else {
             let (used, free, peak) = crate::heap_stats();
             let (pu, pf, pp) = crate::psram_stats();
-            log::info!(
-                "[heap] sram used {used} free {free} peak {peak}; psram used {pu} free {pf} peak {pp}"
-            );
+            if crate::psram_heap_mapped() {
+                log::info!(
+                    "[heap] sram used {used} free {free} peak {peak}; psram used {pu} free {pf} peak {pp}"
+                );
+            } else {
+                log::info!(
+                    "[heap] sram used {used} free {free} peak {peak}; psram unmapped (run psramtest)"
+                );
+            }
         }
     }
 
@@ -1547,9 +1557,15 @@ impl ConsoleState {
         if args == b"free" {
             let (su, sf, sp) = crate::heap_stats();
             let (pu, pf, pp) = crate::psram_stats();
-            log::info!(
-                "[alloctest] sram used={su} free={sf} peak={sp}; psram used={pu} free={pf} peak={pp}"
-            );
+            if crate::psram_heap_mapped() {
+                log::info!(
+                    "[alloctest] sram used={su} free={sf} peak={sp}; psram used={pu} free={pf} peak={pp}"
+                );
+            } else {
+                log::info!(
+                    "[alloctest] sram used={su} free={sf} peak={sp}; psram unmapped (run psramtest)"
+                );
+            }
             return;
         }
         if args == b"sweep" {

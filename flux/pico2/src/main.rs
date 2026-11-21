@@ -264,7 +264,20 @@ pub(crate) fn heap_stats() -> (usize, usize, usize) {
 }
 
 /// (psram_used, psram_free, psram_peak).
+///
+/// A4 (2026-11-21, measured on hardware): the PSRAM heap reports the size of the region it was
+/// DECLARED with, even before `psramtest` maps it - `alloctest free` printed
+/// `psram used=0 free=8388608` while `alloctest <size>` on the same heap printed
+/// "psram heap not mapped". Any "it fits in PSRAM" conclusion drawn from those numbers is unsound,
+/// so the counters now report zero until the heap is actually mapped; callers print `unmapped`.
+pub(crate) fn psram_heap_mapped() -> bool {
+    PSRAM_HEAP_READY.load(Ordering::Relaxed)
+}
+
 pub(crate) fn psram_stats() -> (usize, usize, usize) {
+    if !psram_heap_mapped() {
+        return (0, 0, 0);
+    }
     (
         HEAP.psram.used(),
         HEAP.psram.free(),
