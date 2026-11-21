@@ -66,6 +66,10 @@ bash scripts/check_pico2_flavors.sh > /tmp/g_pico2flavors.log 2>&1; echo "PICO2F
 # the production image from one non-inlined entry, with the console dispatcher as the sensitivity
 # control; allocation in our own code is red, the frozen third-party sites are named in the gate.
 bash scripts/pico2_sign_noalloc_check.sh > /tmp/g_pico2signalloc.log 2>&1; echo "PICO2SIGNAlloc=$?"
+# #74 / A4-05 (2026-11-22): the allocator is a carrier capability, not a given. Builds the flavor
+# without the console shell and asserts the image carries the sign path and ZERO allocator symbols;
+# the console flavor is the sensitivity control (and is left on disk for the gates above).
+bash scripts/pico2_heapless_check.sh > /tmp/g_pico2heapless.log 2>&1; echo "PICO2HEAPLESS=$?"
 bash flux/host-sim/build.sh > /tmp/g_hostsim.log 2>&1; echo "HOSTSIM_BUILD=$?"
 timeout 60 flux/host-sim/sim_l3 > /tmp/g_sim.log 2>&1; echo "HOSTSIM_RUN=$?"
 grep -c "signed tx (111 bytes)" /tmp/g_sim.log; grep -c "all steps completed" /tmp/g_sim.log

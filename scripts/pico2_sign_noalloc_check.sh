@@ -52,7 +52,7 @@ if [ ! -f "$ELF" ]; then
     exit 1
 fi
 
-entry=$(arm-none-eabi-nm "$ELF" | grep -E "^[0-9a-f]+ [tT] [^ ]*console12sign_stretch$" | awk '{print $3}' | head -1)
+entry=$(arm-none-eabi-nm "$ELF" | grep -E "^[0-9a-f]+ [tT] [^ ]*sign_pool12sign_stretch$" | awk '{print $3}' | head -1)
 if [ -z "$entry" ]; then
     echo "PICO2SIGNAlloc: FAIL - no 'sign_stretch' symbol in the image." >&2
     echo "                The sign stretch got inlined (or renamed); with no entry point every" >&2

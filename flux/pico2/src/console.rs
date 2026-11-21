@@ -2982,46 +2982,6 @@ async fn run_psram_test() {
 /// mid-sign silence as expected (bench/xmr_sign.py does). Moving the signer
 /// onto core1 would remove the stall; the first bring-up values simplicity,
 /// and the stall is bounded and observable.
-/// The measured sign stretch: carve the carrier's static arena and run the flow.
-///
-/// `#[inline(never)]` is deliberate. The allocation gate
-/// (`scripts/pico2_sign_noalloc_check.sh`) measures THIS symbol's reachable call set on the
-/// production image; with the body inlined into the console task's poll there is no entry point
-/// to measure at all, and "no allocation sites found" becomes indistinguishable from "the
-/// instrument is looking at nothing" (the A4-15 blindness class).
-///
-/// Pool failures map to `BufferTooSmall` (the workspace is unavailable), the same code the FFI
-/// carve path uses when a caller's buffer is short.
-#[inline(never)]
-fn sign_stretch(
-    input: SignInput<'_>,
-    payload: &[u8],
-    entropy: &[u8],
-    out: &mut [u8],
-) -> Result<usize, shlosilo::error::ShlosiloError> {
-    let err =
-        || shlosilo::error::ShlosiloError::new(shlosilo::error::ShlosiloErrorKind::BufferTooSmall);
-    // A4-04: ONE caller-owned arena, carved with the same layout the C-ABI face uses
-    // (`SignWsLayout`), instead of ~20 heap `Vec`s per sign. The arena is the reserved static
-    // pool at the front of PSRAM (sign_pool), sized once at bring-up; a profile whose layout
-    // outgrows it is refused at boot rather than overflowing here.
-    let Some(mut arena) = crate::sign_pool::take_sign() else {
-        return Err(err());
-    };
-    let Some(mut ws) = shlosilo::business::sign::carve_sign_ws(arena.as_mut()) else {
-        return Err(err());
-    };
-    shlosilo::business::sign::sign_with_entropy_ws(
-        input,
-        UrTypeTag::XmrTxUnsigned,
-        payload,
-        &[], // wallet KI records: not yet retained on pico2 (dev console)
-        entropy,
-        Some(&mut ws),
-        out,
-    )
-}
-
 async fn run_sign_xmr() {
     // Take the pending payload and the session mnemonic out of the console
     // state under a short lock (the signing stretch must not hold it).
@@ -3104,7 +3064,7 @@ async fn run_sign_xmr() {
     let mut out = [0u8; XMR_OUT_CAP];
     let t0 = Instant::now();
     // The whole measured stretch lives behind one non-inlined symbol (see `sign_stretch`).
-    match sign_stretch(input, payload, entropy, &mut out) {
+    match crate::sign_pool::sign_stretch(input, payload, entropy, &mut out) {
         Ok(n) => {
             let ms = t0.elapsed().as_millis();
             CONSOLE.lock(|cell| {

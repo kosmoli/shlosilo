@@ -165,3 +165,46 @@ pub fn note_capacity() -> bool {
 pub fn layout_bytes() -> usize {
     shlosilo::business::sign::SignWsLayout::compute().total
 }
+
+/// Where this lives: the pool module, NOT the console shell. The sign path must exist in every
+/// flavor that carries it - including the heap-free one, which has no console module at all - so
+/// its home cannot be the console. The console is one caller.
+/// The measured sign stretch: carve the carrier's static arena and run the flow.
+///
+/// `#[inline(never)]` is deliberate. The allocation gate
+/// (`scripts/pico2_sign_noalloc_check.sh`) measures THIS symbol's reachable call set on the
+/// production image; with the body inlined into the console task's poll there is no entry point
+/// to measure at all, and "no allocation sites found" becomes indistinguishable from "the
+/// instrument is looking at nothing" (the A4-15 blindness class).
+///
+/// Pool failures map to `BufferTooSmall` (the workspace is unavailable), the same code the FFI
+/// carve path uses when a caller's buffer is short.
+#[inline(never)]
+pub(crate) fn sign_stretch(
+    input: shlosilo::business::sign::SignInput<'_>,
+    payload: &[u8],
+    entropy: &[u8],
+    out: &mut [u8],
+) -> Result<usize, shlosilo::error::ShlosiloError> {
+    let err =
+        || shlosilo::error::ShlosiloError::new(shlosilo::error::ShlosiloErrorKind::BufferTooSmall);
+    // A4-04: ONE caller-owned arena, carved with the same layout the C-ABI face uses
+    // (`SignWsLayout`), instead of ~20 heap `Vec`s per sign. The arena is the reserved static
+    // pool at the front of PSRAM (sign_pool), sized once at bring-up; a profile whose layout
+    // outgrows it is refused at boot rather than overflowing here.
+    let Some(mut arena) = take_sign() else {
+        return Err(err());
+    };
+    let Some(mut ws) = shlosilo::business::sign::carve_sign_ws(arena.as_mut()) else {
+        return Err(err());
+    };
+    shlosilo::business::sign::sign_with_entropy_ws(
+        input,
+        shlosilo::ur::ur_encode::UrTypeTag::XmrTxUnsigned,
+        payload,
+        &[], // wallet KI records: not yet retained on pico2 (dev console)
+        entropy,
+        Some(&mut ws),
+        out,
+    )
+}

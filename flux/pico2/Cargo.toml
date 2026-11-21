@@ -7,10 +7,12 @@ edition = "2024"
 # forms core (workspace root crate). Rust-native appearance: the core is a
 # plain rlib here - pico2 owns its runtime (embedded-alloc + fault.rs;
 # critical-section from embassy-rp), so no C-host hooks are involved.
-# alloc-fallback: the USB console host keeps its Vec-based debug/UR session
-# shells (this firmware links an allocator; the Z6 zero-heap artifact is the
-# separate noalloc probe). Production sign paths use the _into forms either way.
-shlosilo = { path = "../..", default-features = false, features = ["alloc-fallback"] }
+# `alloc-fallback` is NOT unconditional any more (A4-05): it is what pulls the core's alloc
+# paths in, and it now rides on this carrier's `console` feature (see [features]). A heap-free
+# flavor builds the core with `default-features = false` only, which is the same face the
+# `probes/noalloc` artifact uses - so "no allocator in the image" is a property of the whole
+# graph, not just of this crate.
+shlosilo = { path = "../..", default-features = false }
 
 # RP2350 async stack
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "defmt"] }
@@ -61,6 +63,20 @@ defmt-rtt = "1"
 static_cell = "2"
 
 [features]
+# Carrier capability switch (A4-05, 2026-11-22): the USB console shell and the heap it needs.
+#
+# `alloc` is used by exactly four modules - console (UR/QR session shells), camera + qr (both
+# bench-gated) and trng (bench trace only; the production entropy path allocates nothing). So
+# "this device needs no allocator" is the same statement as "the console shell is not in this
+# image", and that is now a feature instead of a given: with --no-default-features the crate
+# registers NO `#[global_allocator]`, and any `alloc::` use anywhere fails at LINK time instead of
+# silently pulling a 224 KiB static heap plus the allocator support into the image.
+#
+# Default ON: this carrier's whole input surface is the USB console, so the bench firmware keeps
+# it. A product carrier (or a no-allocator probe) turns it off.
+default = ["console"]
+console = ["shlosilo/alloc-fallback"]
+
 # Bench-only console surface (audit #17 P1-01). Enables the commands that
 # inject entropy or load test key material, and the TRNG diagnostics:
 # `xmrseed` (fixed XMR entropy, for byte-exact host A/B), `entropy`
@@ -68,7 +84,7 @@ static_cell = "2"
 # `trngemb`. Production builds (`make pico2` / `make pico2-uf2`) do not
 # compile any of it - the fixed-entropy path must not exist in production
 # images. Bench build: `make pico2-bench-uf2`. See src/console.rs.
-bench = []
+bench = ["console"]
 
 # XMR signing phase-timing probes (diagnostic; perf work). Enables the
 # shlosilo timing hooks (L1 tx-phases / vendored BP+ prove / CryptoNight)

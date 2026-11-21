@@ -356,6 +356,13 @@ jobs:
           export SHLOSILO_LIMITS=pico2
           cargo build --locked --release --target thumbv8m.main-none-eabihf --manifest-path flux/pico2/Cargo.toml
           bash scripts/pico2_sign_noalloc_check.sh
+      # #74 / A4-05: the allocator rides on the console feature. Build the heap-free flavor and
+      # prove the sign path is still in that image with zero allocator symbols; the console flavor
+      # is the control (and ends up as the artifact on disk for the steps above).
+      - name: pico2 heap-free flavor (no allocator)
+        run: |
+          export SHLOSILO_LIMITS=pico2
+          bash scripts/pico2_heapless_check.sh
       - name: host-sim (POSIX) staticlib + keep gate + link + run
         run: |
           make host-sim

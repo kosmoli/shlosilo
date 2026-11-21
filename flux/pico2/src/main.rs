@@ -18,6 +18,7 @@
 mod bitbang;
 #[cfg(feature = "bench")]
 mod camera;
+#[cfg(feature = "console")]
 mod console;
 mod fault;
 mod font;
@@ -252,7 +253,12 @@ unsafe impl GlobalAlloc for DualHeap {
     }
 }
 
-#[global_allocator]
+/// The single heap object. Registered as the global allocator ONLY in flavors that carry the
+/// console shell (A4-05): a `console`-less flavor links with no allocator at all, so any stray
+/// `alloc::` use anywhere in the tree becomes a link error instead of an invisible 224 KiB
+/// static heap in the image. The stats accessors below keep reading this object either way, so
+/// `fault.rs` and the crash record compile unchanged in both flavors.
+#[cfg_attr(feature = "console", global_allocator)]
 static HEAP: DualHeap = DualHeap::empty();
 
 /// (sram_used, sram_free, sram_peak) allocator snapshot.
@@ -522,9 +528,90 @@ pub(crate) fn emb_trng_ready() -> bool {
     EMB_TRNG.lock(|cell| cell.borrow().is_some())
 }
 
+/// PSRAM bring-up (QMI CS1, GPIO19 on this board - the pin the vendor's Linux bootloader
+/// uses): 8 MiB memory-mapped at 0x11000000. A verification failure is recorded and the
+/// firmware continues SRAM-only.
+///
+/// Extracted from the boot path so both carrier entries (console shell / heap-free) run the
+/// same sequence - the heap-free flavor needs the mapped region for the static sign pool.
+fn psram_bringup(
+    qmi: embassy_rp::Peri<'_, embassy_rp::peripherals::QMI_CS1>,
+    pin: embassy_rp::Peri<'_, embassy_rp::peripherals::PIN_19>,
+) {
+    // PSRAM bring-up (QMI CS1, GPIO19 on this board - the pin the vendor's
+    // Linux bootloader uses): 8 MiB memory-mapped at 0x11000000, used for
+    // the large XMR allocations. A verification failure is logged and the
+    // firmware continues SRAM-only (BTC/ETH/console do not need PSRAM).
+    match embassy_rp::psram::Psram::new(
+        embassy_rp::qmi_cs1::QmiCs1::new(qmi, pin),
+        // clock_hz drives the QSPI divisor computation; report the actual
+        // system clock.
+        embassy_rp::psram::Config::custom(
+            embassy_rp::clocks::clk_sys_freq(),
+            133_000_000,
+            8,
+            18,
+            1,
+            embassy_rp::psram::PageBreak::_1024,
+            10,
+            Some(0x35),
+            0xEB,
+            Some(0x38),
+            24,
+            embassy_rp::psram::FormatConfig {
+                prefix_width: embassy_rp::psram::Width::Quad,
+                addr_width: embassy_rp::psram::Width::Quad,
+                suffix_width: embassy_rp::psram::Width::Quad,
+                dummy_width: embassy_rp::psram::Width::Quad,
+                data_width: embassy_rp::psram::Width::Quad,
+                prefix_len: true,
+                suffix_len: false,
+            },
+            Some(embassy_rp::psram::FormatConfig {
+                prefix_width: embassy_rp::psram::Width::Quad,
+                addr_width: embassy_rp::psram::Width::Quad,
+                suffix_width: embassy_rp::psram::Width::Quad,
+                dummy_width: embassy_rp::psram::Width::Quad,
+                data_width: embassy_rp::psram::Width::Quad,
+                prefix_len: true,
+                suffix_len: false,
+            }),
+            8 * 1024 * 1024,
+            embassy_rp::psram::VerificationType::Aps6404l,
+            true,
+        ),
+    ) {
+        Ok(psram) => {
+            let base = psram.base_address() as usize;
+            let size = psram.size();
+            psram_mark_ready(base, size);
+            // Boot r/w verification, immediately - before any task runs, so
+            // no allocation can ever see an unverified heap. Silent on
+            // success (the [psram] status line reports it); a failure marks
+            // SRAM-only and the heartbeat line carries the reason.
+            boot_psram_check(base, size);
+            info!(
+                "psram: {} MiB at {=usize:#x} (boot check done)",
+                size >> 20,
+                base
+            );
+        }
+        Err(e) => {
+            let code = match e {
+                embassy_rp::psram::Error::DeviceNotFound => 0,
+                embassy_rp::psram::Error::InvalidConfig => 1,
+                _ => 2,
+            };
+            psram_mark_failed(code);
+            info!("psram: bring-up failed ({:?}); continuing SRAM-only", e);
+        }
+    }
+}
+
 /// USB console task: enumerates as a CDC-ACM serial port. `log!` records go
 /// out over serial; `console::CommandHandler` processes incoming lines (the
 /// bench command channel).
+#[cfg(feature = "console")]
 #[embassy_executor::task]
 async fn usb_console_task(driver: Driver<'static, USB>) {
     // The version constant is NUL-terminated for C consumers; trim it for the
@@ -589,6 +676,7 @@ async fn usb_console_task(driver: Driver<'static, USB>) {
 /// Console cadence task: an `[hb]` line every 5 s (liveness + version string)
 /// and the stored smoke report every 4th tick (20 s), so a reader attaching
 /// at any time sees the full report within one cycle.
+#[cfg(feature = "console")]
 #[embassy_executor::task]
 async fn console_report_task() {
     let version = shlosilo::ffi::version::SHLOSILO_VERSION_STRING.trim_end_matches('\0');
@@ -628,8 +716,54 @@ async fn console_report_task() {
     }
 }
 
+/// Heap-free carrier entry (`--no-default-features`): no allocator, no USB console, no heap.
+///
+/// This flavor exists to make A4-05 checkable rather than asserted: the image links with NO
+/// `#[global_allocator]` (any `alloc::` use anywhere becomes a link error), it still contains the
+/// sign path and its static pool, and it reports over defmt RTT - which needs no heap either.
+/// It is also the skeleton a carrier without an OS shell starts from: bring-up, then wait for the
+/// flow to be added. PSRAM is deliberately not brought up here: with no input surface there is no
+/// request to sign, and the pool's capacity latch belongs to the flow that uses it.
+#[cfg(not(feature = "console"))]
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) -> ! {
+    let p = embassy_rp::init(Default::default());
+    psram_bringup(p.QMI_CS1, p.PIN_19);
+    // Latch the same capacity check the console flavor runs, so a profile that outgrew the static
+    // pool is visible in this flavor too (it is the flavor a product carrier starts from).
+    let pool_ok = sign_pool::note_capacity();
+    defmt::info!(
+        "pico2 heap-free flavor: no allocator registered; sign arena {} B, layout {} B, pool ok = {}",
+        sign_pool::SIGN_ARENA_BYTES,
+        sign_pool::layout_bytes(),
+        pool_ok
+    );
+    // Keep the sign stretch in the image. Nothing calls it yet - there is no input surface in this
+    // flavor - but the point of the artifact is that the sign path is LINKED WITHOUT an allocator,
+    // and without a reference the linker would collect it (a 19 KiB image that proves nothing).
+    // Same idiom as the C-host keep table: a `#[used]` address reference.
+    #[used]
+    static KEEP_SIGN_STRETCH: fn(
+        shlosilo::business::sign::SignInput<'_>,
+        &[u8],
+        &[u8],
+        &mut [u8],
+    ) -> Result<usize, shlosilo::error::ShlosiloError> = crate::sign_pool::sign_stretch;
+    let _ = &KEEP_SIGN_STRETCH;
+    loop {
+        Timer::after_secs(60).await;
+    }
+}
+
+/// Console-carrier entry (default flavor): heap + USB console + the on-device smoke report.
+#[cfg(feature = "console")]
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    console_carrier_main(spawner).await
+}
+
+#[cfg(feature = "console")]
+async fn console_carrier_main(spawner: Spawner) {
     // Crash record from the previous run (if the last boot died): render it
     // before anything else, so the console report can show it.
     fault::init();
@@ -644,74 +778,7 @@ async fn main(spawner: Spawner) {
 
     let p = embassy_rp::init(Default::default());
 
-    // PSRAM bring-up (QMI CS1, GPIO19 on this board - the pin the vendor's
-    // Linux bootloader uses): 8 MiB memory-mapped at 0x11000000, used for
-    // the large XMR allocations. A verification failure is logged and the
-    // firmware continues SRAM-only (BTC/ETH/console do not need PSRAM).
-    match embassy_rp::psram::Psram::new(
-        embassy_rp::qmi_cs1::QmiCs1::new(p.QMI_CS1, p.PIN_19),
-        // clock_hz drives the QSPI divisor computation; report the actual
-        // system clock.
-        embassy_rp::psram::Config::custom(
-            embassy_rp::clocks::clk_sys_freq(),
-            133_000_000,
-            8,
-            18,
-            1,
-            embassy_rp::psram::PageBreak::_1024,
-            10,
-            Some(0x35),
-            0xEB,
-            Some(0x38),
-            24,
-            embassy_rp::psram::FormatConfig {
-                prefix_width: embassy_rp::psram::Width::Quad,
-                addr_width: embassy_rp::psram::Width::Quad,
-                suffix_width: embassy_rp::psram::Width::Quad,
-                dummy_width: embassy_rp::psram::Width::Quad,
-                data_width: embassy_rp::psram::Width::Quad,
-                prefix_len: true,
-                suffix_len: false,
-            },
-            Some(embassy_rp::psram::FormatConfig {
-                prefix_width: embassy_rp::psram::Width::Quad,
-                addr_width: embassy_rp::psram::Width::Quad,
-                suffix_width: embassy_rp::psram::Width::Quad,
-                dummy_width: embassy_rp::psram::Width::Quad,
-                data_width: embassy_rp::psram::Width::Quad,
-                prefix_len: true,
-                suffix_len: false,
-            }),
-            8 * 1024 * 1024,
-            embassy_rp::psram::VerificationType::Aps6404l,
-            true,
-        ),
-    ) {
-        Ok(psram) => {
-            let base = psram.base_address() as usize;
-            let size = psram.size();
-            psram_mark_ready(base, size);
-            // Boot r/w verification, immediately - before any task runs, so
-            // no allocation can ever see an unverified heap. Silent on
-            // success (the [psram] status line reports it); a failure marks
-            // SRAM-only and the heartbeat line carries the reason.
-            boot_psram_check(base, size);
-            info!(
-                "psram: {} MiB at {=usize:#x} (boot check done)",
-                size >> 20,
-                base
-            );
-        }
-        Err(e) => {
-            let code = match e {
-                embassy_rp::psram::Error::DeviceNotFound => 0,
-                embassy_rp::psram::Error::InvalidConfig => 1,
-                _ => 2,
-            };
-            psram_mark_failed(code);
-            info!("psram: bring-up failed ({:?}); continuing SRAM-only", e);
-        }
-    }
+    psram_bringup(p.QMI_CS1, p.PIN_19);
 
     // Bring up the hardware TRNG through its singleton owner (see trng.rs;
     // all register access is serialized through this instance).
