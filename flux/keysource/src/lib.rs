@@ -29,6 +29,10 @@
 pub mod keysource;
 
 pub use keysource::qr::QrKeySource;
+// `se` is the replaceable-module switch (design 密钥供给 §11): without it the SE key source and
+// its FFI glue do not exist, so the re-export must carry the same gate - an unconditional one
+// leaves the crate uncompilable in its own default configuration.
+#[cfg(feature = "se")]
 pub use keysource::se::SeKeySource;
 pub use keysource::{
     KeySessionHandle, KeySessionSlot, KeySource, KeySourceError, KeySourceErrorKind,

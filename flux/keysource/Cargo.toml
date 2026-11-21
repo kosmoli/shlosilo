@@ -44,3 +44,10 @@ shlosilo = { path = "../..", default-features = false }
 # P1-03 discipline: assert_not_impl_any! pins "no Copy/Clone" compile-time
 # properties of the handle (same as forms/types/key_session.rs tests).
 static_assertions = "1"
+
+# The SE FFI tests exercise a face that only exists under `se` (design 密钥供给 §11), so they are
+# declared with required-features instead of carrying a crate-wide cfg: `cargo test -p
+# shlosilo-flux-keysource` then runs the plate-only face, and `--features se` adds these.
+[[test]]
+name = "se_ffi"
+required-features = ["se"]
