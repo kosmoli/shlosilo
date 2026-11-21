@@ -59,7 +59,7 @@ void UiSetLast(const char *text);
 /* Default off. Build a diagnostic image with -DPRODUCT_UI_TRACE=1 (or by
  * flipping this default): the trace stores the decision points and draws them
  * on the welcome page, which costs a full redraw per event. */
-#define PRODUCT_UI_TRACE 0
+#define PRODUCT_UI_TRACE 1
 #endif
 void UiTracePush(const char *fmt, ...);
 
