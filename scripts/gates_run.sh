@@ -63,6 +63,10 @@ bash flux/host-sim/build.sh > /tmp/g_hostsim.log 2>&1; echo "HOSTSIM_BUILD=$?"
 timeout 60 flux/host-sim/sim_l3 > /tmp/g_sim.log 2>&1; echo "HOSTSIM_RUN=$?"
 grep -c "signed tx (111 bytes)" /tmp/g_sim.log; grep -c "all steps completed" /tmp/g_sim.log
 bash flux/forgebox/build.sh > /tmp/g_forgebox.log 2>&1; echo "FORGEBOX=$?"
+# A4-15 (2026-11-21): the forgebox device image must not be able to reach the allocator from any
+# product face, and the instrument must be able to see allocations at all (it re-measures the pico2
+# image, which allocates, as a sensitivity control). Runs after FORGEBOX (builds the ELF) and PICO2.
+bash scripts/forgebox_noalloc_check.sh > /tmp/g_forgeboxnoalloc.log 2>&1; echo "FORGEBOXNOALLOC=$?"
 cargo check --offline --manifest-path fuzz/Cargo.toml > /tmp/g_fuzz.log 2>&1; echo "FUZZ=$?"
 bash scripts/check_header.sh > /tmp/g_hdr.log 2>&1; echo "HDRKEEP=$?"
 cargo fmt --all -- --check > /tmp/g_fmt.log 2>&1; echo "FMT=$?"

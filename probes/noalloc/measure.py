@@ -29,6 +29,20 @@ ALLOC_SYMS = (
     "__rust_realloc",
     "__rust_alloc_zeroed",
 )
+# Rust's allocator lang items reach the image name-mangled (`_RNvCs..._7___rustc12___rust_alloc`),
+# so a plain equality check against ALLOC_SYMS sees nothing on a Rust-linked device image. That
+# blindness is indistinguishable from "no allocations" - it silently passed a build that allocates
+# 320 KiB per sign. Match the stable tail instead, and report the allocator symbols themselves so a
+# reader can tell "support not linked" apart from "support linked but never called".
+ALLOC_SUFFIXES = tuple("___" + s.lstrip("_") for s in ALLOC_SYMS)
+
+
+def alloc_kind(name: str):
+    """-> the allocator lang item this symbol name refers to, or None."""
+    for plain, suffix in zip(ALLOC_SYMS, ALLOC_SUFFIXES):
+        if name == plain or name.endswith(suffix):
+            return plain
+    return None
 # The OOM glue pair is retained dead code; it is not an allocation site.
 OOM_GLUE = ("handle_alloc_error", "__rust_alloc_error_handler")
 
@@ -79,19 +93,42 @@ def reachable(calls, entry):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("elf")
-    ap.add_argument("--entry", default="z6_probe_run")
+    ap.add_argument(
+        "--entry",
+        default="z6_probe_run",
+        help="one entry symbol, or a comma-separated list of them "
+        "(every entry is measured; the verdict covers all of them)",
+    )
     ap.add_argument("--json", dest="json_path")
     args = ap.parse_args()
 
     disasm = disassemble(args.elf)
     calls = parse_functions(disasm)
-    reach = reachable(calls, args.entry)
+    entries = [e.strip() for e in args.entry.split(",") if e.strip()]
+    if not entries:
+        print("no entry symbols given", file=sys.stderr)
+        return 1
+    missing = [e for e in entries if e not in calls]
+    if missing:
+        # An entry that is not in the image would make "0 reachable sites" vacuous,
+        # so a missing entry is a tool/fixture error, not a clean result.
+        print(f"entry symbol(s) not in the linked image: {', '.join(missing)}", file=sys.stderr)
+        return 1
+    reach = set()
+    per_entry = {}
+    for e in entries:
+        r = reachable(calls, e)
+        per_entry[e] = len(r)
+        reach |= r
+
+    allocator_symbols = sorted({
+        f for f in calls if alloc_kind(f) is not None
+    })
 
     sites = []          # (caller, alloc_sym, reachable)
     for fn, targets in sorted(calls.items()):
         for t in targets:
-            base = t.split("::")[0]
-            if base in ALLOC_SYMS or t in ALLOC_SYMS:
+            if alloc_kind(t) is not None:
                 is_reach = fn in reach
                 glue = any(g in fn for g in OOM_GLUE)
                 sites.append({"caller": fn, "target": t,
@@ -102,11 +139,20 @@ def main():
 
     print("Z6 ALLOCATION-FACE MEASUREMENT REPORT")
     print(f"  elf:        {args.elf}")
-    print(f"  entry:      {args.entry}")
+    print(f"  entries:    {', '.join(entries)}")
     print(f"  functions:  {len(calls)} in the linked image")
+    if allocator_symbols:
+        print(f"  allocator symbols in image: {len(allocator_symbols)}")
+        for sym in allocator_symbols:
+            print(f"    {alloc_kind(sym)} <- {sym}")
+    else:
+        print("  allocator symbols in image: 0 (the lang items were garbage-collected, "
+              "so nothing can call them)")
     print(f"  alloc call sites (linked image): {len(real)}"
           f"  (+{len(sites) - len(real)} oom-glue, excluded)")
-    print(f"  reachable from entry:            {len(reach_debt)}")
+    print(f"  reachable from entries:          {len(reach_debt)}")
+    for e in entries:
+        print(f"    {e}: {per_entry[e]} functions reachable")
     if reach_debt:
         print("  REACHABLE DEBT:")
         for s in reach_debt:
@@ -127,7 +173,10 @@ def main():
             json.dump({
                 "elf": args.elf,
                 "entry": args.entry,
+                "entries": entries,
+                "entries_missing": [],
                 "functions": len(calls),
+                "allocator_symbols": allocator_symbols,
                 "alloc_sites_linked": len(real),
                 "alloc_sites_reachable": len(reach_debt),
                 "sites": sites,

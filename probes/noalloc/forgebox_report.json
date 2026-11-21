@@ -1,0 +1,19 @@
+{
+  "elf": "flux/forgebox/build/mh1903.elf",
+  "entry": "shlosilo_sign_ur_ffi,shlosilo_sign_typed_ffi,shlosilo_sign_session_view_ffi,shlosilo_review_ffi,shlosilo_ur_decode_uri_ffi,shlosilo_export_readonly_ffi,shlosilo_create_account_ffi",
+  "entries": [
+    "shlosilo_sign_ur_ffi",
+    "shlosilo_sign_typed_ffi",
+    "shlosilo_sign_session_view_ffi",
+    "shlosilo_review_ffi",
+    "shlosilo_ur_decode_uri_ffi",
+    "shlosilo_export_readonly_ffi",
+    "shlosilo_create_account_ffi"
+  ],
+  "entries_missing": [],
+  "functions": 2470,
+  "allocator_symbols": [],
+  "alloc_sites_linked": 0,
+  "alloc_sites_reachable": 0,
+  "sites": []
+}
