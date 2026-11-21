@@ -347,6 +347,15 @@ jobs:
           export SHLOSILO_ARM_TOOLCHAIN="$HOME/gnu-arm"
           export SHLOSILO_ARM_TOOLCHAIN_STRICT=1
           bash scripts/forgebox_se_isolation_check.sh
+      # #73 / A4-04: the XMR sign stretch is measured on the production pico2 image - the call
+      # graph reachable from it must contain no allocation site of our own (the vendored crypto
+      # crates' five known sites are named in the gate), and the console dispatcher must still
+      # show allocation sites so a clean sign verdict cannot be an instrument artefact.
+      - name: pico2 sign path allocation gate
+        run: |
+          export SHLOSILO_LIMITS=pico2
+          cargo build --locked --release --target thumbv8m.main-none-eabihf --manifest-path flux/pico2/Cargo.toml
+          bash scripts/pico2_sign_noalloc_check.sh
       - name: host-sim (POSIX) staticlib + keep gate + link + run
         run: |
           make host-sim

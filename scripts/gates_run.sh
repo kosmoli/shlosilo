@@ -62,6 +62,10 @@ SHLOSILO_LIMITS=pico2 cargo clippy --offline --target thumbv8m.main-none-eabihf 
 # builds production + bench + perf flavors and asserts the bench-only surface is absent from
 # production, present in bench, AND that the production no-session refusal really exists.
 bash scripts/check_pico2_flavors.sh > /tmp/g_pico2flavors.log 2>&1; echo "PICO2FLAVORS=$?"
+# #73 / A4-04 (2026-11-22): the pico2 sign stretch must not go through the allocator. Measured on
+# the production image from one non-inlined entry, with the console dispatcher as the sensitivity
+# control; allocation in our own code is red, the frozen third-party sites are named in the gate.
+bash scripts/pico2_sign_noalloc_check.sh > /tmp/g_pico2signalloc.log 2>&1; echo "PICO2SIGNAlloc=$?"
 bash flux/host-sim/build.sh > /tmp/g_hostsim.log 2>&1; echo "HOSTSIM_BUILD=$?"
 timeout 60 flux/host-sim/sim_l3 > /tmp/g_sim.log 2>&1; echo "HOSTSIM_RUN=$?"
 grep -c "signed tx (111 bytes)" /tmp/g_sim.log; grep -c "all steps completed" /tmp/g_sim.log

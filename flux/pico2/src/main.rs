@@ -28,6 +28,7 @@ mod perf_timing;
 #[cfg(feature = "bench")]
 mod qr;
 mod sd;
+mod sign_pool;
 mod sign_smoke;
 mod touch;
 mod trng;
@@ -347,13 +348,30 @@ pub(crate) fn psram_mark_rw_ok() -> bool {
     let Some((base, size)) = psram_region() else {
         return false;
     };
+    // The front of the region is the sign path's static pool (sign_pool::POOL_BYTES) and is
+    // NEVER handed to the allocator (A4-04: the sign workspace is caller-owned, not heap).
+    if size <= sign_pool::POOL_BYTES {
+        return false;
+    }
     if !PSRAM_HEAP_READY.load(Ordering::Relaxed) {
         // SAFETY: the region is memory-mapped and the r/w test just wrote and
-        // read it back; no allocator has handed out any of it.
-        unsafe { HEAP.psram.init(base, size) };
+        // read it back; the reserved pool prefix is excluded from the heap span.
+        unsafe {
+            HEAP.psram
+                .init(base + sign_pool::POOL_BYTES, size - sign_pool::POOL_BYTES)
+        };
         PSRAM_HEAP_READY.store(true, Ordering::Relaxed);
     }
     PSRAM_STATUS.store(PSRAM_STATUS_RW_OK, Ordering::Relaxed);
+    // A4-04: the reserved sign pool is only usable if this profile's layout fits it; latch the
+    // answer now so the sign path can refuse instead of overflowing later.
+    if !sign_pool::note_capacity() {
+        info!(
+            "sign pool: profile layout {} B does not fit the reserved {} B arena",
+            sign_pool::layout_bytes(),
+            sign_pool::SIGN_ARENA_BYTES
+        );
+    }
     true
 }
 

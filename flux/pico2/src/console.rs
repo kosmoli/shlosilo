@@ -106,7 +106,6 @@ struct ConsoleState {
     decoder: Option<UrMultipartDecoder<'static>>,
     /// Pending XMR signing request: the decoded UR payload, owned on the
     /// heap (16 KiB-class; above the PSRAM threshold it lands there).
-    xmr_pending: Option<alloc::vec::Vec<u8>>,
     /// Fixed-entropy override for XMR (`xmrseed <hex>`): when set, the next
     /// XMR job uses this instead of the TRNG, enabling a byte-exact A/B
     /// against a host recomputation. Bench-build only (audit #17): the
@@ -137,7 +136,6 @@ impl ConsoleState {
             line_overflow: false,
             session: None,
             decoder: None,
-            xmr_pending: None,
             #[cfg(feature = "bench")]
             xmr_seed: None,
             xmr_out: [0u8; XMR_OUT_CAP],
@@ -1941,7 +1939,11 @@ impl ConsoleState {
     fn sign_and_report(&mut self, tag: UrTypeTag, payload: &[u8]) -> Option<TrngJob> {
         match tag {
             UrTypeTag::XmrTxUnsigned => {
-                self.xmr_pending = Some(alloc::vec::Vec::from(payload));
+                // A4-04: stage into the carrier's reserved slot, not a heap Vec.
+                if !crate::sign_pool::stage_pending(payload) {
+                    log::info!("[err] xmr: request does not fit the staging slot");
+                    return None;
+                }
                 return Some(TrngJob::simple(JobMode::SignXmr));
             }
             UrTypeTag::XmrTxSigned | UrTypeTag::CryptoMoneroTx => {
@@ -2980,23 +2982,66 @@ async fn run_psram_test() {
 /// mid-sign silence as expected (bench/xmr_sign.py does). Moving the signer
 /// onto core1 would remove the stall; the first bring-up values simplicity,
 /// and the stall is bounded and observable.
+/// The measured sign stretch: carve the carrier's static arena and run the flow.
+///
+/// `#[inline(never)]` is deliberate. The allocation gate
+/// (`scripts/pico2_sign_noalloc_check.sh`) measures THIS symbol's reachable call set on the
+/// production image; with the body inlined into the console task's poll there is no entry point
+/// to measure at all, and "no allocation sites found" becomes indistinguishable from "the
+/// instrument is looking at nothing" (the A4-15 blindness class).
+///
+/// Pool failures map to `BufferTooSmall` (the workspace is unavailable), the same code the FFI
+/// carve path uses when a caller's buffer is short.
+#[inline(never)]
+fn sign_stretch(
+    input: SignInput<'_>,
+    payload: &[u8],
+    entropy: &[u8],
+    out: &mut [u8],
+) -> Result<usize, shlosilo::error::ShlosiloError> {
+    let err =
+        || shlosilo::error::ShlosiloError::new(shlosilo::error::ShlosiloErrorKind::BufferTooSmall);
+    // A4-04: ONE caller-owned arena, carved with the same layout the C-ABI face uses
+    // (`SignWsLayout`), instead of ~20 heap `Vec`s per sign. The arena is the reserved static
+    // pool at the front of PSRAM (sign_pool), sized once at bring-up; a profile whose layout
+    // outgrows it is refused at boot rather than overflowing here.
+    let Some(mut arena) = crate::sign_pool::take_sign() else {
+        return Err(err());
+    };
+    let Some(mut ws) = shlosilo::business::sign::carve_sign_ws(arena.as_mut()) else {
+        return Err(err());
+    };
+    shlosilo::business::sign::sign_with_entropy_ws(
+        input,
+        UrTypeTag::XmrTxUnsigned,
+        payload,
+        &[], // wallet KI records: not yet retained on pico2 (dev console)
+        entropy,
+        Some(&mut ws),
+        out,
+    )
+}
+
 async fn run_sign_xmr() {
     // Take the pending payload and the session mnemonic out of the console
     // state under a short lock (the signing stretch must not hold it).
-    let (payload, mnemonic) = CONSOLE.lock(|cell| {
-        let mut s = cell.borrow_mut();
-        let payload = s.xmr_pending.take();
-        let mnemonic = s.session_mnemonic();
-        (payload, mnemonic)
-    });
-    let Some(payload) = payload else {
+    let mnemonic = CONSOLE.lock(|cell| cell.borrow().session_mnemonic());
+    if !crate::sign_pool::has_pending() {
         log::info!("[err] xmr: no pending request");
         return;
-    };
+    }
     let Some(mnemonic) = mnemonic else {
         log::info!("[err] xmr: no session");
         return;
     };
+    // A4-04: the request bytes live in the carrier's reserved PSRAM slot (staged when the UR
+    // decode completed), so nothing on the sign path goes through the allocator. The guard is
+    // held for the whole flow and released on every exit.
+    let Some(payload_slot) = crate::sign_pool::take_pending() else {
+        log::info!("[err] xmr: payload slot busy or PSRAM unavailable; request dropped");
+        return;
+    };
+    let payload = payload_slot.as_slice();
 
     // The XMR path's CN scratchpad is 2 MiB: it can only come from PSRAM,
     // and only r/w-verified PSRAM may be handed to the allocator. Refuse
@@ -3057,102 +3102,9 @@ async fn run_sign_xmr() {
         passphrase: b"",
     };
     let mut out = [0u8; XMR_OUT_CAP];
-    // Z3.3a: caller-provisioned workspace — flux owns its memory strategy (Vec
-    // pools today, static pools later without touching forms). Caps mirror the
-    // transitional shell (behavior-identical); forms allocates nothing here.
-    let mut ws_plain = alloc::vec![0u8; payload.len()];
-    let mut ws_txes: alloc::vec::Vec<
-        Option<shlosilo::chain::xmr::unsigned_txset::TxConstructionData<'_>>,
-    > = (0..8).map(|_| None).collect();
-    let mut ws_sources: alloc::vec::Vec<
-        Option<shlosilo::chain::xmr::unsigned_txset::TxSourceEntry>,
-    > = (0..32).map(|_| None).collect();
-    let mut ws_sd = alloc::vec![
-        shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default();
-        64
-    ];
-    let mut ws_sel = alloc::vec![0usize; 256];
-    let mut ws_extra = alloc::vec![0u8; payload.len()];
-    let mut ws_dests = alloc::vec![
-        shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default();
-        64
-    ];
-    let mut ws_subidx = alloc::vec![0u32; 256];
-    let mut ws_ptx: alloc::vec::Vec<Option<shlosilo::chain::xmr::signed_txset::PendingTx<'_>>> =
-        (0..8).map(|_| None).collect();
-    let mut ws_tx_bytes = alloc::vec![0u8; 16 * 1024 * 8];
-    let mut ws_ki = alloc::vec![[0u8; 32]; 32];
-    let mut ws_tki =
-        alloc::vec![shlosilo::chain::xmr::signed_txset::TxKeyImageEntry::default(); 128];
-    let mut ws_sel_out = alloc::vec![0u8; 256];
-    let mut ws_kstr = alloc::vec![0u8; 67 * 32];
-    let mut ws_record_dests = alloc::vec![
-        shlosilo::chain::xmr::unsigned_txset::TxDestinationEntry::default();
-        64
-    ];
-    let mut ws_bp_terms = alloc::vec![
-        (
-            shlosilo::curve25519_dalek::Scalar::ZERO,
-            shlosilo::curve25519_dalek::constants::ED25519_BASEPOINT_POINT,
-        );
-        shlosilo::types::caps::SIGN_WS_BP_TERMS
-    ];
-    /* T-04 follow-up: one phase-exclusive overlay region (straus/wip/CN). */
-    let mut ws_bp_overlay_raw = alloc::vec![
-        0u8;
-        shlosilo::types::caps::SIGN_WS_BP_OVERLAY_BYTES
-    ];
-    // Z4-7d: the PSBT map pool (records + payload arena) joins the SignWs.
-    let mut ws_psbt_recs = alloc::vec![
-        shlosilo::chain::btc::psbt::KvRec::EMPTY;
-        shlosilo::types::caps::SIGN_WS_PSBT_RECS
-    ];
-    // Phase 4a: the per-input signing tables now live in the workspace too.
-    let zero_pt = shlosilo::monero_ed25519::CompressedPoint::from([0u8; 32]);
-    let mut ws_rings = alloc::vec![
-        [(zero_pt, zero_pt); shlosilo::types::caps::RING_MAX];
-        shlosilo::limits::XMR_INPUTS_MAX
-    ];
-    let mut ws_tx_inputs = alloc::vec![
-        shlosilo::chain::xmr::transaction::TxInput::EMPTY;
-        shlosilo::limits::XMR_INPUTS_MAX
-    ];
-    let mut ws_ring_lens = alloc::vec![0usize; shlosilo::limits::XMR_INPUTS_MAX];
-    let mut ws_psbt_arena = alloc::vec![0u8; shlosilo::types::caps::SIGN_WS_PSBT_ARENA];
-    let mut ws = shlosilo::business::sign::SignWs {
-        plain: &mut ws_plain,
-        txes: &mut ws_txes,
-        sources: &mut ws_sources,
-        splitted_dsts: &mut ws_sd,
-        selected_transfers: &mut ws_sel,
-        extra: &mut ws_extra,
-        dests: &mut ws_dests,
-        subaddr_indices: &mut ws_subidx,
-        ptx: &mut ws_ptx,
-        tx_bytes: &mut ws_tx_bytes,
-        ki: &mut ws_ki,
-        tki: &mut ws_tki,
-        sel: &mut ws_sel_out,
-        kstr: &mut ws_kstr,
-        record_dests: &mut ws_record_dests,
-        bp_terms: &mut ws_bp_terms,
-        bp_overlay: shlosilo::business::sign::OverlayRegion::new(&mut ws_bp_overlay_raw),
-        psbt_recs: &mut ws_psbt_recs,
-        psbt_arena: &mut ws_psbt_arena,
-        rings: &mut ws_rings,
-        tx_inputs: &mut ws_tx_inputs,
-        ring_lens: &mut ws_ring_lens,
-    };
     let t0 = Instant::now();
-    match shlosilo::business::sign::sign_with_entropy_ws(
-        input,
-        UrTypeTag::XmrTxUnsigned,
-        &payload,
-        &[], // wallet KI records: not yet retained on pico2 (dev console)
-        entropy,
-        Some(&mut ws),
-        &mut out,
-    ) {
+    // The whole measured stretch lives behind one non-inlined symbol (see `sign_stretch`).
+    match sign_stretch(input, payload, entropy, &mut out) {
         Ok(n) => {
             let ms = t0.elapsed().as_millis();
             CONSOLE.lock(|cell| {

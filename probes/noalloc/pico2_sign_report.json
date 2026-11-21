@@ -1,0 +1,48 @@
+{
+  "elf": "target/thumbv8m.main-none-eabihf/release/shlosilo-pico2",
+  "entry": "_RNvNtCsat2TqKtoZEW_14shlosilo_pico27console12sign_stretch",
+  "entries": [
+    "_RNvNtCsat2TqKtoZEW_14shlosilo_pico27console12sign_stretch"
+  ],
+  "entries_missing": [],
+  "functions": 643,
+  "allocator_symbols": [
+    "_RNvCs5WqGp7zLRnA_7___rustc12___rust_alloc",
+    "_RNvCs5WqGp7zLRnA_7___rustc14___rust_dealloc",
+    "_RNvCs5WqGp7zLRnA_7___rustc14___rust_realloc"
+  ],
+  "alloc_sites_linked": 5,
+  "alloc_sites_reachable": 5,
+  "sites": [
+    {
+      "caller": "_RNvCsi4yaNvN8NGD_12monero_clsag4core",
+      "target": "_RNvCs5WqGp7zLRnA_7___rustc14___rust_dealloc",
+      "reachable": true,
+      "oom_glue": false
+    },
+    {
+      "caller": "_RNvCsi4yaNvN8NGD_12monero_clsag4core",
+      "target": "_RNvCs5WqGp7zLRnA_7___rustc14___rust_dealloc",
+      "reachable": true,
+      "oom_glue": false
+    },
+    {
+      "caller": "_RNvMCsg5smb5qTvIs_19monero_bulletproofsNtB2_11Bulletproof14serialize_into",
+      "target": "_RNvCs5WqGp7zLRnA_7___rustc12___rust_alloc",
+      "reachable": true,
+      "oom_glue": false
+    },
+    {
+      "caller": "_RNvMs8_NtCsdsF7A4FTFAr_5alloc7raw_vecNtB5_11RawVecInner11finish_growCsg5smb5qTvIs_19monero_bulletproofs",
+      "target": "_RNvCs5WqGp7zLRnA_7___rustc14___rust_realloc",
+      "reachable": true,
+      "oom_glue": false
+    },
+    {
+      "caller": "_RNvMs8_NtCsdsF7A4FTFAr_5alloc7raw_vecNtB5_11RawVecInner11finish_growCsi4yaNvN8NGD_12monero_clsag",
+      "target": "_RNvCs5WqGp7zLRnA_7___rustc14___rust_realloc",
+      "reachable": true,
+      "oom_glue": false
+    }
+  ]
+}
