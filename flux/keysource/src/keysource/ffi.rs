@@ -104,9 +104,15 @@ unsafe fn ws_state(ws: *mut u8) -> *mut QrWs {
 
 /// Bounded scan slice: `(data, data_len)` → `&[u8]`, `None` over budget.
 ///
-/// The C contract is that `data` points at `data_len` reachable bytes; the
-/// budget keeps a lying `data_len` from demanding an absurd `from_raw_parts`.
-fn scan_payload<'a>(data: *const u8, data_len: c_uint) -> Option<&'a [u8]> {
+/// # Safety
+///
+/// `data` must point at `data_len` readable bytes for the whole of `'a`, and that
+/// borrow may not overlap any write while it lives. The budget below keeps a
+/// lying `data_len` from demanding an absurd `from_raw_parts`, but no length can
+/// prove the address is readable — that obligation belongs to the FFI entry that
+/// received the pointer, which is why this stays `unsafe` instead of presenting
+/// a safe signature over an unchecked address (A4-08).
+unsafe fn scan_payload<'a>(data: *const u8, data_len: c_uint) -> Option<&'a [u8]> {
     let len = data_len as usize;
     if len > SCAN_PAYLOAD_MAX_LEN {
         return None;
@@ -115,7 +121,7 @@ fn scan_payload<'a>(data: *const u8, data_len: c_uint) -> Option<&'a [u8]> {
         return Some(&[]);
     }
     // SAFETY: non-null (entry-checked), `len` non-zero and bounded by the scan
-    // budget; pointer validity for `len` bytes is the C side's contract.
+    // budget; pointer validity for `len` bytes is the caller's contract.
     Some(unsafe { core::slice::from_raw_parts(data, len) })
 }
 
@@ -173,20 +179,29 @@ pub unsafe extern "C" fn shlosilo_keysource_qr_open_ffi(
     data_len: c_uint,
     out_session: *mut *const KeySession,
 ) -> c_int {
-    if ws.is_null() || data.is_null() || out_session.is_null() {
+    if out_session.is_null() {
         return ERR_NULL_POINTER;
     }
-    // Gate4 #2 discipline: out-param zeroed up front — every failure path
-    // below leaves a deterministic NULL behind.
+    // Gate4 #2 discipline: out-param zeroed up front — every failure path below
+    // leaves a deterministic NULL behind. This has to run BEFORE the other null
+    // checks: a caller that reuses its out-slot would otherwise keep the previous
+    // session pointer through a refused open, and a stale non-NULL pointer reads
+    // exactly like a live one (A4-09).
     unsafe {
         *out_session = core::ptr::null();
+    }
+    if ws.is_null() || data.is_null() {
+        return ERR_NULL_POINTER;
     }
     // Capacity BEFORE execution (workspace contract): under-capacity is an
     // explicit error, never a truncated carve.
     if (ws_len as usize) < shlosilo_keysource_qr_ws_len() as usize {
         return ERR_BUFFER_TOO_SMALL;
     }
-    let payload = match scan_payload(data, data_len) {
+    // SAFETY: `data` is non-null (checked above) and the FFI contract in this
+    // entry's `# Safety` section makes the caller responsible for `data_len`
+    // readable bytes that outlive the borrow.
+    let payload = match unsafe { scan_payload(data, data_len) } {
         Some(p) => p,
         None => {
             return to_ffi_code(&ShlosiloError::new(

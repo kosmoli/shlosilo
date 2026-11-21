@@ -247,6 +247,51 @@ fn null_params_are_err_null_pointer() {
     );
 }
 
+/// A4-09 pin (2026-11-22): the out-param is cleared BEFORE the other null checks.
+///
+/// This entry's contract says `out_session` is zeroed on EVERY failure. The
+/// null-pointer exit used to run first, so a caller that reuses its out-slot
+/// kept pointing at the previous (already closed) session after a failed open -
+/// and a stale non-NULL pointer is indistinguishable from a live one at the call
+/// site. The sentinel below is what that caller looks like: non-NULL going in.
+#[test]
+fn failed_open_clears_out_param_even_when_another_arg_is_null() {
+    let mut ws = fresh_ws();
+    let ws_len = ws.len() as core::ffi::c_uint;
+    // Never dereferenced: only proves the slot was overwritten.
+    let sentinel = core::ptr::NonNull::<KeySession>::dangling().as_ptr();
+
+    let mut out: *const KeySession = sentinel;
+    assert_eq!(
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(
+                core::ptr::null_mut(),
+                ws_len,
+                FIXTURE_ENTROPY.as_ptr(),
+                16,
+                &mut out,
+            )
+        },
+        ERR_NULL_POINTER
+    );
+    assert!(
+        out.is_null(),
+        "A4-09: open with a NULL ws must still clear the out-param"
+    );
+
+    let mut out: *const KeySession = sentinel;
+    assert_eq!(
+        unsafe {
+            shlosilo_keysource_qr_open_ffi(ws.as_mut_ptr(), ws_len, core::ptr::null(), 16, &mut out)
+        },
+        ERR_NULL_POINTER
+    );
+    assert!(
+        out.is_null(),
+        "A4-09: open with a NULL payload must still clear the out-param"
+    );
+}
+
 #[test]
 fn decode_rejections_flow_through_the_l2b_mapping() {
     let mut ws = fresh_ws();

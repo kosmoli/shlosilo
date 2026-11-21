@@ -69,7 +69,15 @@ pub extern "C" fn shlosilo_keysource_se_ws_len() -> c_uint {
 /// own ceiling (`PASSWORD_MAX_LEN` — what the SE piece clamps to), so an absurd
 /// `c_uint` length claim can never violate the `from_raw_parts` contract (on a
 /// 32-bit target `u32::MAX` bytes exceeds `isize::MAX`).
-fn bounded_password(p: *const u8, len: usize) -> Option<&'static [u8]> {
+///
+/// # Safety
+///
+/// `p` must point at `len` readable bytes for the whole of `'a`, and that borrow
+/// may not overlap any write while it lives. The ceiling bounds the length claim,
+/// not the address — the readability obligation stays with the FFI entry that
+/// received the pointer, which is why this is `unsafe` rather than a safe
+/// signature over an unchecked address (A4-07).
+unsafe fn bounded_password<'a>(p: *const u8, len: usize) -> Option<&'a [u8]> {
     if len > super::se::PASSWORD_MAX_LEN {
         return None;
     }
@@ -121,13 +129,19 @@ pub unsafe extern "C" fn shlosilo_keysource_se_open_ffi(
     password_len: c_uint,
     out_session: *mut *const KeySession,
 ) -> c_int {
-    if ws.is_null() || password.is_null() || out_session.is_null() {
+    if out_session.is_null() {
         return ERR_NULL_POINTER;
     }
-    // Gate4 #2 discipline: out-param zeroed up front — every failure path
-    // below leaves a deterministic NULL behind.
+    // Gate4 #2 discipline: out-param zeroed up front — every failure path below
+    // leaves a deterministic NULL behind. Before the other null checks: a caller
+    // reusing its out-slot would otherwise keep the previous session pointer
+    // through a refused unlock, and a stale non-NULL pointer reads exactly like a
+    // live one (A4-10).
     unsafe {
         *out_session = core::ptr::null();
+    }
+    if ws.is_null() || password.is_null() {
+        return ERR_NULL_POINTER;
     }
     // Capacity BEFORE execution (workspace contract): under-capacity is an
     // explicit error, never a truncated carve.
@@ -152,7 +166,9 @@ pub unsafe extern "C" fn shlosilo_keysource_se_open_ffi(
     let pw: &[u8] = if password_len == 0 {
         &[]
     } else {
-        match bounded_password(password, password_len as usize) {
+        // SAFETY: `password` is non-null (checked above); the entry's `# Safety`
+        // section makes the caller responsible for `password_len` readable bytes.
+        match unsafe { bounded_password(password, password_len as usize) } {
             Some(p) => p,
             // Over-long credentials are refused by the source as AuthFailed; the
             // same code keeps the C side's error handling single-shaped.

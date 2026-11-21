@@ -561,6 +561,51 @@ fn ws_len_under_capacity_is_buffer_too_small_and_null_params_are_err_null_pointe
     );
 }
 
+/// A4-10 pin (2026-11-22): the out-param is cleared BEFORE the other null checks.
+///
+/// Same shape as the QR entry (A4-09): the null-pointer exit used to run before
+/// the out-param was zeroed, so a caller reusing its slot kept a stale non-NULL
+/// session pointer after a refused unlock - indistinguishable from a live one.
+#[test]
+fn refused_unlock_clears_out_param_even_when_another_arg_is_null() {
+    let _g = shim_lock();
+    shim_set_mode(MODE_OK16);
+    let mut ws = fresh_ws();
+    let ws_len = ws.len() as core::ffi::c_uint;
+    let sentinel = core::ptr::NonNull::<KeySession>::dangling().as_ptr();
+
+    let mut out: *const KeySession = sentinel;
+    assert_eq!(
+        unsafe {
+            shlosilo_keysource_se_open_ffi(
+                core::ptr::null_mut(),
+                ws_len,
+                FIXTURE_PWD.as_ptr(),
+                FIXTURE_PWD.len() as core::ffi::c_uint,
+                &mut out,
+            )
+        },
+        ERR_NULL_POINTER
+    );
+    assert!(
+        out.is_null(),
+        "A4-10: unlock with a NULL ws must still clear the out-param"
+    );
+
+    let mut out: *const KeySession = sentinel;
+    assert_eq!(
+        unsafe {
+            shlosilo_keysource_se_open_ffi(ws.as_mut_ptr(), ws_len, core::ptr::null(), 4, &mut out)
+        },
+        ERR_NULL_POINTER
+    );
+    assert!(
+        out.is_null(),
+        "A4-10: unlock with a NULL credential must still clear the out-param"
+    );
+    assert_eq!(shim_calls(), 0, "refused calls must not reach the SE");
+}
+
 #[test]
 fn empty_and_over_long_password_are_auth_failed_before_the_se() {
     let _g = shim_lock();
