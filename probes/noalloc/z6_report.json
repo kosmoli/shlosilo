@@ -1,7 +1,12 @@
 {
   "elf": "z6_probe.elf",
   "entry": "z6_probe_run",
+  "entries": [
+    "z6_probe_run"
+  ],
+  "entries_missing": [],
   "functions": 282,
+  "allocator_symbols": [],
   "alloc_sites_linked": 0,
   "alloc_sites_reachable": 0,
   "sites": []
