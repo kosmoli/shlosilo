@@ -226,25 +226,25 @@ pub fn build(
     // One derivation path for both renderings: the payload is what the device
     // fragments, and the UR string is that payload wrapped for single-QR use
     // (the SDK gate dumps these strings).
+    //
+    // A2-14: the payload and the URI used to share `out` - the payload was written there, `encode`
+    // returned a heap-free but 8 KiB `heapless::String`, and `copy_uri` copied it back over the
+    // payload. Two writes for one result, and the caller's buffer briefly held something that was
+    // never a valid output. The payload now goes to a bounded stack scratch and `encode_into`
+    // writes the URI straight into the caller's buffer, so `out` is written exactly once.
+    //
+    // The scratch is the same bound `encode_into` enforces anyway (`UR_PAYLOAD_MAX_LEN`), so an
+    // export too large to encode still fails with an error instead of being truncated, and the
+    // stack footprint of this path goes DOWN: `encode` built an `UR_URI_MAX_LEN` (8 KiB) string
+    // that `encode_into` no longer needs.
     match ur_type(format) {
         Some(tag) => {
-            let n = payload(format, seed, network, labels, out)?;
-            let enc = crate::ur::ur_encode::encode(tag, &out[..n])?;
-            copy_uri(enc.as_str(), out)
+            let mut scratch = [0u8; crate::ur::ur_encode::UR_PAYLOAD_MAX_LEN];
+            let n = payload(format, seed, network, labels, &mut scratch)?;
+            crate::ur::ur_encode::encode_into(tag, &scratch[..n], out)
         }
         None => payload(format, seed, network, labels, out),
     }
-}
-
-fn copy_uri(uri: &str, out: &mut [u8]) -> Result<usize> {
-    let bytes = uri.as_bytes();
-    if bytes.len() > out.len() {
-        return Err(ShlosiloError::new(
-            ShlosiloErrorKind::EncodingBufferOverflow,
-        ));
-    }
-    out[..bytes.len()].copy_from_slice(bytes);
-    Ok(bytes.len())
 }
 
 /// Every format's screen label, in listing order (the device UI asks for this).
@@ -278,6 +278,40 @@ mod tests {
             device_id: Some("SN-1"),
             device_version: Some("0.1"),
             restore_height: 0,
+        }
+    }
+
+    #[test]
+    fn build_matches_the_two_step_reference_and_touches_only_its_output() {
+        // A2-14: `build` used to write the payload into `out`, then copy the encoded URI back over
+        // it. This pins the property that replaced that: the bytes are exactly what
+        // payload+encode_into produce (same derivation, same encoding), and nothing past the
+        // reported length is written - the buffer is poisoned with 0xAA so a stray write shows up.
+        for f in ExportFormat::ALL.iter() {
+            let mut got = vec![0xAAu8; 8192];
+            let n = build(*f, &SEED, Network::BitcoinMainnet, &labels(), &mut got)
+                .unwrap_or_else(|e| panic!("{f:?} failed: {e:?}"));
+
+            let mut pl = vec![0u8; crate::ur::ur_encode::UR_PAYLOAD_MAX_LEN];
+            let pn = payload(*f, &SEED, Network::BitcoinMainnet, &labels(), &mut pl).unwrap();
+            let mut want = vec![0xAAu8; 8192];
+            let wn = match ur_type(*f) {
+                Some(tag) => crate::ur::ur_encode::encode_into(tag, &pl[..pn], &mut want).unwrap(),
+                None => {
+                    want[..pn].copy_from_slice(&pl[..pn]);
+                    pn
+                }
+            };
+
+            assert_eq!(
+                &got[..n],
+                &want[..wn],
+                "{f:?} differs from the payload+encode_into reference"
+            );
+            assert!(
+                got[n..].iter().all(|b| *b == 0xAA),
+                "{f:?} wrote past its reported length {n}"
+            );
         }
     }
 
