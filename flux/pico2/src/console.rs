@@ -1882,48 +1882,53 @@ impl ConsoleState {
             }
         };
 
-        // Start a fresh session when the frame opens one (seq 1) or when the
-        // previous session is finished/absent. Fragments may arrive in any
-        // order (fountain), so seq > 1 with no session still starts one.
-        let fresh = seq == 1
-            || self
-                .decoder
-                .as_ref()
-                .is_none_or(UrMultipartDecoder::complete);
-        if fresh {
-            self.decoder = Some(UrMultipartDecoder::new());
-        }
-        let mut dec = self.decoder.take().expect("decoder was just created");
-
-        match dec.receive_frame(s) {
-            Ok(is_new) => {
-                log::info!(
-                    "[ur] frag {seq}/{count} ({}) {}%",
-                    if is_new { "new" } else { "dup" },
-                    dec.progress()
-                );
-                if dec.complete() {
-                    let tag = UrTypeTag::from_name(dec.ur_type().unwrap_or(""));
-                    match dec.payload() {
-                        Ok(Some(payload)) => {
-                            log::info!(
-                                "[ur] complete: type={} len={}",
-                                tag.type_name(),
-                                payload.len()
-                            );
-                            // Decoder consumed; the session ends here.
-                            return self.sign_and_report(tag, &payload);
+        // Session identity is the DECODER's call, not the carrier's (v2 §2 layering, A4-13).
+        // Fragments arrive in any order (fountain), so a frame numbered 1 is not "the start":
+        // arriving late or repeated it is one more equation, and resetting on it threw away
+        // everything already received. The carrier acts only on the decoder's own signals -
+        // "complete" (session over) and "this frame does not belong" (mixed type / corrupt
+        // part), which is retried once as the first frame of a fresh session.
+        let mut dec = match self.decoder.take() {
+            Some(d) if !d.complete() => d,
+            _ => UrMultipartDecoder::new(),
+        };
+        for attempt in 0..2 {
+            match dec.receive_frame(s) {
+                Ok(is_new) => {
+                    log::info!(
+                        "[ur] frag {seq}/{count} ({}) {}%{}",
+                        if is_new { "new" } else { "dup" },
+                        dec.progress(),
+                        if attempt == 0 { "" } else { " [restarted]" }
+                    );
+                    if dec.complete() {
+                        let tag = UrTypeTag::from_name(dec.ur_type().unwrap_or(""));
+                        match dec.payload() {
+                            Ok(Some(payload)) => {
+                                log::info!(
+                                    "[ur] complete: type={} len={}",
+                                    tag.type_name(),
+                                    payload.len()
+                                );
+                                // Decoder consumed; the session ends here.
+                                return self.sign_and_report(tag, &payload);
+                            }
+                            Ok(None) => log::info!("[err] ur: complete but payload missing"),
+                            Err(e) => log::info!("[err] ur payload: {:?}", e.kind),
                         }
-                        Ok(None) => log::info!("[err] ur: complete but payload missing"),
-                        Err(e) => log::info!("[err] ur payload: {:?}", e.kind),
+                    } else {
+                        self.decoder = Some(dec); // keep the session for the next fragment
                     }
-                } else {
-                    self.decoder = Some(dec); // keep the session for the next fragment
+                    return None;
                 }
-            }
-            Err(e) => {
-                log::info!("[err] ur frame: {:?}", e.kind);
-                // Session dropped (decoder not put back).
+                Err(e) => {
+                    log::info!("[err] ur frame: {:?}", e.kind);
+                    if attempt == 0 {
+                        // The frame does not belong to the open session, so that session is
+                        // dropped with it; retry the frame against a clean decoder.
+                        dec = UrMultipartDecoder::new();
+                    }
+                }
             }
         }
         None
