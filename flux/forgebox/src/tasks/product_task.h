@@ -4,9 +4,14 @@
 /* Create the product-UI boot task (product flavor; SMOKE_SCREEN=0). */
 void CreateProductTask(void);
 
+#ifdef SHLOSILO_WITH_SE
 /*
  * Task 8: SE password unlock -> live key session on the product sign route
  * (the same g_key_session the plate flow signs with).
+ *
+ * Present only in the key-supply flavors that include the SE module (design
+ * 密钥供给 §11; the same SHLOSILO_WITH_SE macro gates the source set and the
+ * Rust `se` feature). A plate-only build has no SE credential to unlock.
  *
  * v1 entry is the dev console ('se unlock <password>', se_smoke.c): the
  * password transits the serial console - DEVELOPMENT CONVENIENCE ONLY, the
@@ -18,6 +23,7 @@ void CreateProductTask(void);
  * shlosilo_keysource_se_open_ffi error code.
  */
 int ProductKeySeUnlock(const char *password);
+#endif /* SHLOSILO_WITH_SE */
 
 /* WP4 (2026-11-02): wire-view selection (0 = indexed/legacy, 1 = keyed). */
 unsigned ProductWireView(void);

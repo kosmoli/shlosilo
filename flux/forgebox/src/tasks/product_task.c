@@ -669,8 +669,13 @@ static void ProductTask(void *argument)
              * g_key_session route. POLLED HERE ONLY (idle branch): the
              * scan/carousel loops are busy with hardware. The password
              * transits the serial console - development convenience; the
-             * product entry is the P4 UI. */
+             * product entry is the P4 UI.
+             * The console is part of the SE module's source set, so it exists
+             * only when the key-supply flavor includes the SE path (design
+             * 密钥供给 §11): a plate-only build has no console consumer. */
+#ifdef SHLOSILO_WITH_SE
             SeConsolePoll();
+#endif
 
             osDelay(UI_POLL_MS);
         }
@@ -952,9 +957,13 @@ static void key_session_close(void)
         printf("seed: key session closed (zeroized)\r\n");
     }
     /* The glue's close is total for a non-NULL ws (only ws==NULL errs), so
-     * the pointer dies unconditionally -- never keep a stale session. */
+     * the pointer dies unconditionally -- never keep a stale session. The SE
+     * close exists only in a key-supply flavor that includes the SE path (a
+     * plate-only build has no SE glue to close). */
     (void)shlosilo_keysource_qr_close_ffi(g_key_ws);
+#ifdef SHLOSILO_WITH_SE
     (void)shlosilo_keysource_se_close_ffi(g_key_ws);
+#endif
     g_key_session = NULL;
     g_key_from_se = 0;
     g_key_console = 0;
@@ -977,8 +986,13 @@ static void key_session_close(void)
  * product entry is the P4 UI. The unlocked session rides the SAME
  * g_key_session sign route as the plate flow (one route, two sources).
  * v1 account scope: account 0 (FindAccountByPassword is not ported yet -
- * multi-account unlock rides that port). */
+ * multi-account unlock rides that port).
+ *
+ * Key-supply flavor (design 密钥供给 §11): the SE path is a replaceable module,
+ * so this entry - and the Rust glue it calls - exist only when the build
+ * includes it. A plate-only carrier has no SE credential to unlock. */
 
+#ifdef SHLOSILO_WITH_SE
 /* err_code.h ERR_KEYSTORE_AUTH pins the Rust-side constant in
  * flux/keysource/src/keysource/se.rs (the AuthFailed mapping). */
 _Static_assert(ERR_KEYSTORE_AUTH == 20, "se.rs ERR_KEYSTORE_AUTH drift");
@@ -1018,9 +1032,11 @@ int ProductKeySeUnlock(const char *password)
     printf("se unlock: key session live (account 0)\r\n");
     return 0;
 }
+#endif /* SHLOSILO_WITH_SE */
 
 /* Console 'se lock': close (zeroize) the live session, whichever source
- * opened it - the shared teardown above. */
+ * opened it - the shared teardown above. Stays in every flavor on purpose:
+ * it is the plate flow's close too, not an SE-only entry. */
 void ProductKeyLock(void)
 {
     key_session_close();

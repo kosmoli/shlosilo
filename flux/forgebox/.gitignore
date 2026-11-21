@@ -22,3 +22,8 @@ pyenv
 /shlosilo/libshlosilo.a
 /shlosilo/shlosilo.h
 /shlosilo/shlosilo_limits.h
+
+# plate-only (SHLOSILO_WITH_SE=0) probe flavor: separate dirs so the probe build can never
+# clobber the canonical artifacts above. Built by scripts/forgebox_se_isolation_check.sh.
+/build-no-se
+/shlosilo-no-se

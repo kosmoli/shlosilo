@@ -56,7 +56,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 APP_ROOT="$(pwd)"
 REPO_ROOT="$(cd ../.. && pwd)"
 
-BUILD_FOLDER="$APP_ROOT/build"
+# Build outputs. The two overrides exist so a probe flavor (the SE-isolation gate) can build
+# without clobbering the canonical artifacts: same source tree, different build/staticlib dirs.
+BUILD_FOLDER="${SHLOSILO_FORGEBOX_BUILD_DIR:-$APP_ROOT/build}"
+SHLOSILO_DIR="${SHLOSILO_FORGEBOX_STATICLIB_DIR:-$APP_ROOT/shlosilo}"
 BUILD_SIMULATOR_FOLDER="$APP_ROOT/build_simulator"
 TOOLS_FOLDER="$APP_ROOT/tools"
 MAKE_OAT_FILE_PATH="${TOOLS_FOLDER}/ota_file_maker"
@@ -69,6 +72,21 @@ LANGUAGE_SCRIPT="python3 data_loader.py"
 # The feature set for the staticlib build (diagnostic FFI features) and the
 # C-host runtime hooks live in flux/forgebox/staticlib/.
 SHLOSILO_TARGET="${SHLOSILO_TARGET:-thumbv7em-none-eabihf}"
+
+# ---- key-supply module switch (design 密钥供给 §11) ----
+# SHLOSILO_WITH_SE=0 builds the plate-only flavor: the SE key-supply module is left out on BOTH
+# sides of the ABI - the Rust `se` feature (--no-default-features: no SeKeySource, no SE FFI
+# entries in the keep table) and the C SE source set + its call sites (CMake
+# -DSHLOSILO_WITH_SE=OFF). ONE variable drives both on purpose: the C product entry calls the
+# Rust SE glue and the C keystore sits under it, so a half-switched build either fails to link
+# or ships a module the carrier cannot use.
+SHLOSILO_WITH_SE="${SHLOSILO_WITH_SE:-1}"
+case "$SHLOSILO_WITH_SE" in
+    1) SE_CARGO_FLAGS=(); SE_CMAKE=ON ;;
+    0) SE_CARGO_FLAGS=(--no-default-features); SE_CMAKE=OFF ;;
+    *) echo "SHLOSILO_WITH_SE must be 0 or 1 (got '$SHLOSILO_WITH_SE')" >&2; exit 1 ;;
+esac
+echo "key supply: $( [[ "$SE_CMAKE" == ON ]] && echo "plate + SE (SHLOSILO_WITH_SE=1)" || echo "plate only (SHLOSILO_WITH_SE=0)" )"
 
 # forgebox CLI (firmware signing) lives in the Hermes node bin on the dev box.
 if [[ -d "$HOME/.hermes/node/bin" ]]; then
@@ -113,7 +131,7 @@ echo "Building with options: ${build_options[@]}"
 build_shlosilo() {
     local lib="$REPO_ROOT/target/$SHLOSILO_TARGET/release/libshlosilo.a"
 
-    echo "=== shlosilo staticlib: cargo build -p shlosilo-forgebox ($SHLOSILO_TARGET) ==="
+    echo "=== shlosilo staticlib: cargo build -p shlosilo-forgebox ($SHLOSILO_TARGET) ${SE_CARGO_FLAGS[*]:-} ==="
     # The keep-table must be current BEFORE the build: it is what keeps every
     # C-ABI entry point reachable through LTO. A new entry point without a
     # regenerated table would otherwise fail late, at the C link.
@@ -121,14 +139,22 @@ build_shlosilo() {
     # The core crate is rlib-only; the staticlib is bundled by the
     # flux/forgebox/staticlib shim package, so no other consumer of the crate
     # is ever forced through a staticlib unit.
-    ( cd "$REPO_ROOT" && SHLOSILO_LIMITS=forgebox cargo build -p shlosilo-forgebox --release --target "$SHLOSILO_TARGET" )
-    mkdir -p "$APP_ROOT/shlosilo"
-    arm-none-eabi-strip --strip-debug "$lib" -o "$APP_ROOT/shlosilo/libshlosilo.a"
-    echo "    staticlib -> shlosilo/libshlosilo.a ($(stat -c%s "$APP_ROOT/shlosilo/libshlosilo.a") bytes)"
+    ( cd "$REPO_ROOT" && SHLOSILO_LIMITS=forgebox cargo build -p shlosilo-forgebox \
+        "${SE_CARGO_FLAGS[@]}" --release --target "$SHLOSILO_TARGET" )
+    mkdir -p "$SHLOSILO_DIR"
+    arm-none-eabi-strip --strip-debug "$lib" -o "$SHLOSILO_DIR/libshlosilo.a"
+    echo "    staticlib -> $SHLOSILO_DIR/libshlosilo.a ($(stat -c%s "$SHLOSILO_DIR/libshlosilo.a") bytes)"
 
     echo "=== shlosilo C header sync gate (cbindgen regen must equal tracked) ==="
     bash "$REPO_ROOT/scripts/check_header.sh"
-    cp "$REPO_ROOT/shlosilo.h" "$APP_ROOT/shlosilo/shlosilo.h"
+    cp "$REPO_ROOT/shlosilo.h" "$SHLOSILO_DIR/shlosilo.h"
+    # The limits projection is written by the CORE crate's build.rs into the canonical carrier
+    # dir, so a probe flavor (its own SHLOSILO_DIR) has to take its copy from there - same
+    # profile, same content, separate file, so the two flavors can never read each other's.
+    # An ordinary build already IS that dir, and cp refuses to copy a file onto itself.
+    if [[ "$SHLOSILO_DIR" != "$APP_ROOT/shlosilo" ]]; then
+        cp "$APP_ROOT/shlosilo/shlosilo_limits.h" "$SHLOSILO_DIR/shlosilo_limits.h"
+    fi
     echo "    header OK (tracked == regen)"
 }
 
@@ -157,6 +183,12 @@ execute_build() {
     fi
 
     cmake_parm=""
+    # Same pinning rule as SMOKE_SCREEN below: pass the key-supply flavor EXPLICITLY on every
+    # configure, or a bare re-configure reuses whatever the cache holds and silently builds the
+    # other flavor. SHLOSILO_PATH is a cache variable for the same reason as the dirs above -
+    # the probe flavor consumes its own copy of libshlosilo.a, never the canonical one.
+    cmake_parm="${cmake_parm} -DSHLOSILO_WITH_SE=${SE_CMAKE}"
+    cmake_parm="${cmake_parm} -DSHLOSILO_PATH=${SHLOSILO_DIR}"
     # C objects are the long pole of this build (FreeRTOS + LVGL + vendor libs,
     # a full rebuild per CI run). When a compiler cache is installed, route the
     # C/ASM compile steps through it; nothing changes when it is absent.

@@ -280,6 +280,7 @@ jobs:
       - name: flux keysource (host tests + no-alloc embedded face)
         run: |
           cargo test --locked -p shlosilo-flux-keysource
+          cargo test --locked -p shlosilo-flux-keysource --features se
           SHLOSILO_LIMITS=pico2 cargo check --locked -p shlosilo-flux-keysource --no-default-features --target thumbv7em-none-eabihf
       - name: forgebox staticlib (embedded, thumbv7em)
         run: SHLOSILO_LIMITS=forgebox cargo check --locked -p shlosilo-forgebox --release --target thumbv7em-none-eabihf
@@ -336,6 +337,16 @@ jobs:
           # (dev machine only); CI asserts the PRE-SIGN image instead - the C
           # compile/link of the smoke/product callers is what this gate covers.
           ls -la flux/forgebox/build/mh1903_full.bin
+      # Design 密钥供给 §11: the SE key-supply module is one of two replaceable key sources, so a
+      # plate-only carrier must be buildable without it. Builds the SHLOSILO_WITH_SE=0 flavor
+      # (both halves: --no-default-features + the CMake source set) into its own dirs and asserts
+      # the SE face is absent from that image and still present in the canonical one - the
+      # presence half is the sensitivity control, without it "absent" and "invisible" look alike.
+      - name: key-supply module isolation (plate-only flavor)
+        run: |
+          export SHLOSILO_ARM_TOOLCHAIN="$HOME/gnu-arm"
+          export SHLOSILO_ARM_TOOLCHAIN_STRICT=1
+          bash scripts/forgebox_se_isolation_check.sh
       - name: host-sim (POSIX) staticlib + keep gate + link + run
         run: |
           make host-sim

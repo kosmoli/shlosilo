@@ -21,14 +21,27 @@ publish = false
 name = "shlosilo"
 crate-type = ["staticlib"]
 
+# Key-supply module switch (design 密钥供给 §11, C-side half). Same name as the keysource
+# crate's feature on purpose: this package is the carrier's build entry, so a carrier with a
+# secure element says so once here and the C build says the same thing with the SAME word
+# (`SHLOSILO_WITH_SE` in build.sh -> `--no-default-features` + the CMake option).
+#
+# It has to be this package's own feature, not just the dependency's: the keep-table entries
+# for the SE FFI face are `#[cfg(feature = "se")]` in this crate's source, so a feature that
+# does not exist here would leave them permanently compiled out - the table would not follow
+# the module.
+[features]
+default = ["se"]
+se = ["shlosilo-flux-keysource/se"]
+
 [dependencies]
 # Flux-side key acquisition face (Task 4): KeySource trait + QrKeySource thin
 # shell. Rust-only so far (no C glue yet) — it rides the firmware graph so the
 # thumbv7em build (CI + build.sh) compiles the face; the scan-flow glue lands
 # with the caller.
-# `se`: the Keystone 3 Pro board carries ATECC608B + DS28S60, so this carrier includes the
-# secure-element key-supply module. Carriers without one drop it here and by CMake option.
-shlosilo-flux-keysource = { path = "../../keysource", features = ["se"] }
+# The Keystone 3 Pro board carries ATECC608B + DS28S60, so this carrier turns `se` on by
+# default (above). A carrier without a secure element drops it with --no-default-features.
+shlosilo-flux-keysource = { path = "../../keysource" }
 # The diagnostic FFI features compiled into the .a for the C host.
 shlosilo = { path = "../../..", default-features = false, features = [
     "generator-cache-ffi",

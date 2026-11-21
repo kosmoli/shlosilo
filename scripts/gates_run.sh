@@ -45,8 +45,11 @@ bash scripts/test_zero_on_alloc.sh --offline --no-default-features --all-targets
 # must not grow the live heap (it used to grow 2 x 163,840 B per sign).
 cargo test --offline --release --no-default-features --features alloc-fallback --test xmr_device_peak_fixture xmr_sign_does_not_leak_generator_tables > /tmp/g_pico2leak.log 2>&1; echo "PICO2LEAK=$?"
 # CI "flux keysource" parity: the keysource package has its own test face
-# (qr_ffi FFI arity contracts etc.) that the root batch never compiles.
-cargo test --offline -p shlosilo-flux-keysource > /tmp/g_keysrc.log 2>&1; echo "KEYSRC=$?"
+# (qr_ffi FFI arity contracts etc.) that the root batch never compiles. Both key-supply
+# flavors are covered: the plate-only default (which an ungated `SeKeySource` re-export had
+# left uncompilable) and `--features se` (the SE face; its se_ffi tests carry required-features).
+( cargo test --offline -p shlosilo-flux-keysource \
+  && cargo test --offline -p shlosilo-flux-keysource --features se ) > /tmp/g_keysrc.log 2>&1; echo "KEYSRC=$?"
 bash scripts/clippy.sh > /tmp/g_clippy.log 2>&1; echo "CLIPPY=$?"
 cargo check --offline --target armv7-unknown-linux-gnueabihf > /tmp/g_arm.log 2>&1; echo "ARM=$?"
 # The embedded faces are compile-surface checks, not carrier builds: name the smallest
@@ -71,6 +74,12 @@ bash scripts/forgebox_noalloc_check.sh > /tmp/g_forgeboxnoalloc.log 2>&1; echo "
 # keystore. The keystone3-parity full-record read (which returns a seed) is compiled out; this
 # measures the ELF instead of trusting the #if.
 bash scripts/forgebox_keystore_surface_check.sh > /tmp/g_keystoresurface.log 2>&1; echo "KEYSTORESURFACE=$?"
+# 密钥供给 §11, the module boundary half: the SE key-supply module is a replaceable piece, so a
+# plate-only carrier must be buildable WITHOUT it. This builds the SHLOSILO_WITH_SE=0 flavor into
+# its own dirs and asserts the SE face is absent from that image AND present in the canonical one
+# (an instrument that cannot see the symbols would make the absence vacuous). Runs after FORGEBOX
+# (needs the canonical ELF) and after KEYSTORESURFACE (needs it intact).
+bash scripts/forgebox_se_isolation_check.sh > /tmp/g_forgeboxseiso.log 2>&1; echo "FORGEBOXSEISO=$?"
 # The C keystore data plane's own host test (keystone3-format golden vectors, OTP three-factor,
 # wear/auth paths, and the narrow-vs-full entropy equality). It builds the parity full-record path
 # ON so that code is exercised somewhere.

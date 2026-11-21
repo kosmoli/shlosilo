@@ -11,7 +11,7 @@
     "shlosilo_create_account_ffi"
   ],
   "entries_missing": [],
-  "functions": 2470,
+  "functions": 2471,
   "allocator_symbols": [],
   "alloc_sites_linked": 0,
   "alloc_sites_reachable": 0,

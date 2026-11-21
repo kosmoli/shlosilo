@@ -30,6 +30,18 @@ endif()
 # ON:  boot into the LVGL smoke diagnostics screen (build.sh smoke).
 option(SMOKE_SCREEN "boot into the LVGL smoke diagnostics screen" OFF)
 
+# ====== key-supply module switch (design 密钥供给 §11) ======
+# ON (default): plate scan AND the secure-element path (two parallel, replaceable key sources -
+# this board carries ATECC608B + DS28S60). OFF: plate only - the keystore data plane, its SE
+# transport, both SE drivers and the dev console battery are dropped from the source set, and
+# every C call site is gated on the same macro.
+# build.sh drives this together with the Rust `se` feature (--no-default-features) from ONE
+# variable, SHLOSILO_WITH_SE; the pair is verified below against the static library's symbols.
+option(SHLOSILO_WITH_SE "include the secure-element key-supply module" ON)
+if(SMOKE_SCREEN AND NOT SHLOSILO_WITH_SE)
+    message(FATAL_ERROR "key supply: the smoke diagnostics screen routes the SE console to the panel (shlosilo_smoke_task.c calls SeSmokeSetLog, which lives in the SE source set), so SMOKE_SCREEN=1 cannot be combined with SHLOSILO_WITH_SE=OFF yet. A plate-only carrier brings its own smoke screen.")
+endif()
+
 # Field-diagnosis flavor (off in every reference build): append the raw
 # sign-failure code in hex to the result page. The shipping vocabulary carries
 # class words only; when a code has no entry, "unknown code" is undiagnosable on
@@ -92,10 +104,12 @@ set(INCLUDE_DIR
 
 # ====== shlosilo (Rust staticlib) integration ======
 # PoC 3: shlosilo Rust business-library integration
-# - libshlosilo.a is produced by `shlosilo-poc3 cargo build --release`
+# - libshlosilo.a is produced by `shlosilo-poc4 cargo build --release`
 # - debug info already stripped with arm-none-eabi-strip
 # - called from FreeRTOS tasks through the C ABI (src/tasks/shlosilo_smoke_task.c)
-set(SHLOSILO_PATH "${CMAKE_CURRENT_SOURCE_DIR}/shlosilo")
+# A cache variable, not a fixed path: a probe flavor (SHLOSILO_WITH_SE=0) consumes its own copy
+# so it can never feed the canonical library to a differently-configured C build.
+set(SHLOSILO_PATH "${CMAKE_CURRENT_SOURCE_DIR}/shlosilo" CACHE PATH "dir holding libshlosilo.a + shlosilo.h")
 if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
     message(STATUS "shlosilo: integrating libshlosilo.a from ${SHLOSILO_PATH}")
     list(APPEND INCLUDE_DIR "${SHLOSILO_PATH}")
@@ -103,6 +117,28 @@ list(APPEND INCLUDE_DIR "external/mh1903_lib/MHSCPU_Driver/inc/cryptlib")
 list(APPEND INCLUDE_DIR "external/mh1903_lib/ctaes")
 else()
     message(WARNING "shlosilo: libshlosilo.a not found at ${SHLOSILO_PATH}, skipping integration")
+endif()
+
+# ---- key-supply flavor consistency (the switch has two halves; they must agree) ----
+# The Rust static library either carries the SE FFI face or it does not, and the C source set
+# must be configured to match. Asking the artifact instead of trusting the flag pair is what
+# makes a half-switched build impossible to ship: SE C sources without the Rust SE face fail
+# at the link, and the Rust SE face with no C caller would ship a dead module.
+if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
+    execute_process(
+        COMMAND ${CROSS_COMPILE_PREFIX}-nm "${SHLOSILO_PATH}/libshlosilo.a"
+        OUTPUT_VARIABLE SHLOSILO_LIB_SYMBOLS ERROR_QUIET)
+    if(SHLOSILO_LIB_SYMBOLS MATCHES "shlosilo_keysource_se_open_ffi")
+        set(SHLOSILO_LIB_HAS_SE TRUE)
+    else()
+        set(SHLOSILO_LIB_HAS_SE FALSE)
+    endif()
+    if(SHLOSILO_LIB_HAS_SE AND NOT SHLOSILO_WITH_SE)
+        message(FATAL_ERROR "key supply: SHLOSILO_WITH_SE=OFF, but ${SHLOSILO_PATH}/libshlosilo.a carries the SE FFI face. Rebuild the staticlib with --no-default-features (build.sh does both halves from SHLOSILO_WITH_SE).")
+    elseif(NOT SHLOSILO_LIB_HAS_SE AND SHLOSILO_WITH_SE)
+        message(FATAL_ERROR "key supply: SHLOSILO_WITH_SE=ON, but ${SHLOSILO_PATH}/libshlosilo.a has no SE FFI face. Rebuild the staticlib WITHOUT --no-default-features.")
+    endif()
+    message(STATUS "key supply: staticlib SE face = ${SHLOSILO_LIB_HAS_SE}, source set SE = ${SHLOSILO_WITH_SE}")
 endif()
 
 # LVGL source files (smoke diagnostics only; the product UI does not use LVGL)
@@ -185,10 +221,10 @@ set(APP_SRC
     src/flash/xmr_gen_cache_flash.c
     external/mh1903_lib/ctaes/ctaes.c
 
-    # keystore data plane (keystone3-parity) + its crypto primitives and the
-    # TRNG/OTP/MPU drivers it depends on (Task 6; SE comm arrives in Task 7).
-    src/keystore/keystore.c
-    src/keystore/se_manager.c
+    # Crypto primitives + the TRNG/OTP/MPU drivers the keystore is assembled from. They stay in
+    # EVERY flavor: err_code/log_print are used tree-wide, and the primitives are shared (a
+    # plate-only build strips the unused ones via --gc-sections instead of source-set surgery,
+    # so the keystore can come back without touching this list).
     src/crypto/sha256.c
     src/crypto/sha512.c
     src/crypto/hmac.c
@@ -196,42 +232,59 @@ set(APP_SRC
     src/driver/drv_trng.c
     src/driver/drv_otp.c
     src/driver/drv_mpu.c
-    # SE comm face (Task 7): ATECC608B / DS28S60 drivers + the dev console
-    # battery (se_smoke.c, hardware safety gate inside) + its utils.
-    # drv_spi_io.c is the GPIO-bitbang SPI the DS28S60 rides on (its absence
-    # was hidden by the same --gc-sections gap that hid the console).
-    src/driver/drv_atecc608b.c
-    src/driver/drv_ds28s60.c
-    src/driver/drv_spi_io.c
-    src/tasks/se_smoke.c
     src/utils/err_code.c
     src/utils/log_print.c
 )
 
-# ATECC608B driver library: vendored from keystone3-firmware external/
-# (same provenance as the keystore port; keystone3's own CMake builds this
-# exact file set -- atca core + calib + host + crypto + hashes + hal).
-# The file set is COMPILE INPUT (goes into objsrc), NOT an include path:
-# the old `list(APPEND INCLUDE_DIR ${CRYPTOAUTHLIB_SRC})` fed ~40 source
-# file paths to the include-dir list (a "not a directory" warning per file)
-# and the library was never compiled at all -- nothing referenced it while
-# the SE console plane was stripped by --gc-sections, so the link gap was
-# invisible. keystone3's chain is ${cryptoauthlib} -> ${EXTERNAL} ->
-# ${objsrc}; this glob is the same end (appended to objsrc below).
-file(GLOB_RECURSE CRYPTOAUTHLIB_SRC
-    external/cryptoauthlib/lib/atca_basic.c
-    external/cryptoauthlib/lib/atca_cfgs.c
-    external/cryptoauthlib/lib/atca_debug.c
-    external/cryptoauthlib/lib/atca_device.c
-    external/cryptoauthlib/lib/atca_helpers.c
-    external/cryptoauthlib/lib/atca_iface.c
-    external/cryptoauthlib/lib/atca_utils_sizes.c
-    external/cryptoauthlib/lib/calib/*.c
-    external/cryptoauthlib/lib/host/atca_host.c
-    external/cryptoauthlib/lib/crypto/*.c
-    external/cryptoauthlib/lib/crypto/hashes/*.c
-    external/cryptoauthlib/lib/hal/*.c
-)
+# ---- key-supply: the SE module's C side (design 密钥供给 §11) ----
+# The dependency edge is one-way and tight, which is why this is a clean cut: keystore.c is the
+# only consumer of se_manager.c, se_manager.c the only consumer of both SE drivers, and
+# se_smoke.c (the dev console battery: 'se unlock/lock', provisioning, SE self-checks) the only
+# consumer of keystore.h. Once the C call sites in product_task.c are gated on the same macro,
+# nothing in the tree references them.
+if(SHLOSILO_WITH_SE)
+    list(APPEND APP_SRC
+        # keystore data plane (keystone3-parity, the C side of the key supply)
+        src/keystore/keystore.c
+        src/keystore/se_manager.c
+        # SE comm face (Task 7): ATECC608B / DS28S60 drivers + the dev console battery
+        # (se_smoke.c, hardware safety gate inside) + its utils.
+        # drv_spi_io.c is the GPIO-bitbang SPI the DS28S60 rides on (its absence was hidden by
+        # the same --gc-sections gap that hid the console).
+        src/driver/drv_atecc608b.c
+        src/driver/drv_ds28s60.c
+        src/driver/drv_spi_io.c
+        src/tasks/se_smoke.c
+    )
+
+    # ATECC608B driver library: vendored from keystone3-firmware external/
+    # (same provenance as the keystore port; keystone3's own CMake builds this
+    # exact file set -- atca core + calib + host + crypto + hashes + hal).
+    # The file set is COMPILE INPUT (goes into objsrc), NOT an include path:
+    # the old `list(APPEND INCLUDE_DIR ${CRYPTOAUTHLIB_SRC})` fed ~40 source
+    # file paths to the include-dir list (a "not a directory" warning per file)
+    # and the library was never compiled at all -- nothing referenced it while
+    # the SE console plane was stripped by --gc-sections, so the link gap was
+    # invisible. keystone3's chain is ${cryptoauthlib} -> ${EXTERNAL} ->
+    # ${objsrc}; this glob is the same end (appended to objsrc below).
+    file(GLOB_RECURSE CRYPTOAUTHLIB_SRC
+        external/cryptoauthlib/lib/atca_basic.c
+        external/cryptoauthlib/lib/atca_cfgs.c
+        external/cryptoauthlib/lib/atca_debug.c
+        external/cryptoauthlib/lib/atca_device.c
+        external/cryptoauthlib/lib/atca_helpers.c
+        external/cryptoauthlib/lib/atca_iface.c
+        external/cryptoauthlib/lib/atca_utils_sizes.c
+        external/cryptoauthlib/lib/calib/*.c
+        external/cryptoauthlib/lib/host/atca_host.c
+        external/cryptoauthlib/lib/crypto/*.c
+        external/cryptoauthlib/lib/crypto/hashes/*.c
+        external/cryptoauthlib/lib/hal/*.c
+    )
+else()
+    set(CRYPTOAUTHLIB_SRC "")
+    message(STATUS "key supply: plate only - the SE module is out of the source set")
+endif()
 
 # Screen ownership: exactly one renderer per build owns the panel.
 if(SMOKE_SCREEN)
@@ -292,6 +345,13 @@ endif()
 add_executable(${PROJECT_NAME}.elf ${objsrc})
 if(SMOKE_SCREEN)
     list(APPEND COMMON_DEFINITIONS SMOKE_SCREEN=1)
+endif()
+# Presence-style define (same idiom as SMOKE_SCREEN above): defined exactly when the SE source
+# set is in the build, so the C call sites in product_task.c can never reference a translation
+# unit that is not there - SE call sites without their source file fail loudly at the link
+# instead of silently shipping as a stub. build.sh sets both halves together.
+if(SHLOSILO_WITH_SE)
+    list(APPEND COMMON_DEFINITIONS SHLOSILO_WITH_SE=1)
 endif()
 
 # Field-diagnosis switch (2026-11-04): draw the decoded UR type token as hex on

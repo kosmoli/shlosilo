@@ -26,6 +26,35 @@ bash build.sh rebuild    # also wipes build/ and the embedded cargo target
 bash build.sh simulator  # host simulator build instead of firmware
 ```
 
+### Key-supply flavor (`SHLOSILO_WITH_SE`)
+
+The board has two parallel, replaceable key sources: the seed-plate scan and the
+secure element (ATECC608B + DS28S60). This carrier includes both by default; a
+carrier without an SE builds the plate-only flavor:
+
+```sh
+SHLOSILO_WITH_SE=0 bash build.sh no_sign
+```
+
+That ONE variable drives both halves of the switch — the Rust `se` feature
+(`--no-default-features` on the staticlib: no `SeKeySource`, no SE FFI entries in
+the keep table) and the C source set (`-DSHLOSILO_WITH_SE=OFF`: no `keystore.c`,
+`se_manager.c`, either SE driver, `se_smoke.c` or cryptoauthlib, and the
+`ProductKeySeUnlock` / console call sites compile out). They cannot be switched
+independently: the C product entry calls the Rust SE glue and the keystore sits
+under it. CMake enforces the pair at configure time by reading
+`libshlosilo.a`'s symbols, so a mismatched pair is a hard error instead of an
+image that silently ships a dead module.
+
+Two directory overrides keep a probe build away from the canonical artifacts:
+`SHLOSILO_FORGEBOX_BUILD_DIR` and `SHLOSILO_FORGEBOX_STATICLIB_DIR` (the
+`FORGEBOXSEISO` gate uses them to build the plate-only flavor in `build-no-se/` +
+`shlosilo-no-se/`). Measured on this tree: the plate-only image is 84 KiB smaller
+(1,220,608 vs 1,306,624 bytes of `.bin`, 83.5 KiB of `.text`).
+
+`SMOKE_SCREEN=1` currently requires the SE flavor (the smoke screen routes the SE
+console to the panel, and that console lives in the SE source set).
+
 The build is self-contained: it bundles the forms static library
 (`libshlosilo.a`) via `staticlib/` (feature set and runtime hooks live
 there), runs a
