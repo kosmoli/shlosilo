@@ -188,6 +188,14 @@ impl<'s> SeKeySource<'s> {
         if password.is_empty() || password.len() > PASSWORD_MAX_LEN {
             return Err(KeySourceError::new(KeySourceErrorKind::AuthFailed));
         }
+        // A4-11: the C side takes the credential as a NUL-terminated string and measures it with
+        // `strnlen_s`, so an embedded NUL makes it authenticate a PREFIX - a different password
+        // than the one the user typed, and possibly one that collides with another length's
+        // credential. Rust is the only layer that still holds the length, so the check belongs
+        // here: refuse the credential instead of letting it become another string on the way down.
+        if password.contains(&0) {
+            return Err(KeySourceError::new(KeySourceErrorKind::AuthFailed));
+        }
         // Stack NUL-terminated copy for the C call (fixed size, Z6). The
         // length is already bounded by PASSWORD_MAX_LEN, so this cannot
         // overflow.

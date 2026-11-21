@@ -201,9 +201,13 @@ pub unsafe extern "C" fn LoadAccountSecret(
                 }
                 _ => unreachable!(),
             }
-            // The seed field carries a distinguishable marker so the wipe
-            // test can prove the decrypted secret dies before return.
+            // A4-06: the out-struct carries more than Rust may use. Fill the fields Rust must
+            // IGNORE with distinct markers, so "the session keys equal from_entropy(entropy)"
+            // doubles as proof that no derivation depends on them, and so the forensic wipe test
+            // has a marker per field to look for.
             secret.seed = [0x5eu8; 64];
+            secret.slip39_ems_or_ton_entropy_l32 = [0x71u8; 32];
+            secret.reserved_data = [0x93u8; 32];
             OK
         }
         MODE_AUTH => C_ERR_KEYSTORE_AUTH,
@@ -490,7 +494,8 @@ fn close_wipes_the_key_bytes_forensic() {
         contains(&ws, &spend) && contains(&ws, &view),
         "precondition: live key bytes visible in the workspace"
     );
-    // Also pin the decrypted-secret wipe: the shim's seed marker (0x5e
+    // Also pin the decrypted-secret wipe: the shim's field markers (0x5e seed, 0x71 slip39, 0x93
+    // reserved) must not survive anywhere in the workspace after close.
     // fill) must never survive the open — the AccountSecret dies before the
     // session goes live.
     assert!(
@@ -596,6 +601,20 @@ fn empty_and_over_long_password_are_auth_failed_before_the_se() {
     assert_eq!(se_open(&mut ws, &too_long, &mut out), ERR_AUTH_FAILED);
     assert!(out.is_null());
     assert_eq!(shim_calls(), 0, "empty/over-long must never reach the SE");
+    // A4-11: the C side measures the credential with `strnlen_s` on a NUL-terminated copy, so an
+    // embedded NUL would authenticate a PREFIX (a different password than the user typed). Rust
+    // still holds the length, so it must refuse instead of forwarding a string that means
+    // something else below.
+    let mut with_nul = b"correct-horse".to_vec();
+    with_nul.push(0);
+    with_nul.extend_from_slice(b"battery");
+    assert_eq!(se_open(&mut ws, &with_nul, &mut out), ERR_AUTH_FAILED);
+    assert!(out.is_null());
+    assert_eq!(
+        shim_calls(),
+        0,
+        "an embedded NUL must never reach the SE (it would authenticate a prefix)"
+    );
     // exactly at the bound is accepted as input (the password gate then runs)
     let at_bound = vec![b'x'; PASSWORD_MAX_LEN];
     assert_eq!(se_open(&mut ws, &at_bound, &mut out), ERR_AUTH_FAILED);
