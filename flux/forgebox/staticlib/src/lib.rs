@@ -212,7 +212,11 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo_flux_keysource::keysource::ffi::shlosilo_keysource_qr_ws_len as *const ()),
     Addr(shlosilo_flux_keysource::keysource::ffi::shlosilo_keysource_qr_open_ffi as *const ()),
     Addr(shlosilo_flux_keysource::keysource::ffi::shlosilo_keysource_qr_close_ffi as *const ()),
+    // SE key-supply face: present only when the `se` feature is on (design 密钥供给 §11).
+    #[cfg(feature = "se")]
     Addr(shlosilo_flux_keysource::keysource::se_ffi::shlosilo_keysource_se_ws_len as *const ()),
+    #[cfg(feature = "se")]
     Addr(shlosilo_flux_keysource::keysource::se_ffi::shlosilo_keysource_se_open_ffi as *const ()),
+    #[cfg(feature = "se")]
     Addr(shlosilo_flux_keysource::keysource::se_ffi::shlosilo_keysource_se_close_ffi as *const ()),
 ];

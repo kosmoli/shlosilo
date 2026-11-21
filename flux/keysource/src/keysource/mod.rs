@@ -19,17 +19,20 @@ pub mod ffi;
 
 pub mod qr;
 /// Task 8: the secure-element key source (password unlock → signing session).
+#[cfg(feature = "se")]
 pub mod se;
 /// Task 8: the C-ABI SE unlock glue (password in, session pointer out).
 ///
 /// Same FFI contract discipline as [`ffi`].
 #[deny(unsafe_op_in_unsafe_fn)]
+#[cfg(feature = "se")]
 pub mod se_ffi;
 /// Task 8: the shared keysource FFI workspace state (one layout, one
 /// teardown for every keysource glue entry).
 pub(crate) mod ws;
 
 pub use qr::QrKeySource;
+#[cfg(feature = "se")]
 pub use se::SeKeySource;
 
 /// Why a key source refused to open — or failed to hand over — a session.

@@ -26,7 +26,9 @@ crate-type = ["staticlib"]
 # shell. Rust-only so far (no C glue yet) — it rides the firmware graph so the
 # thumbv7em build (CI + build.sh) compiles the face; the scan-flow glue lands
 # with the caller.
-shlosilo-flux-keysource = { path = "../../keysource" }
+# `se`: the Keystone 3 Pro board carries ATECC608B + DS28S60, so this carrier includes the
+# secure-element key-supply module. Carriers without one drop it here and by CMake option.
+shlosilo-flux-keysource = { path = "../../keysource", features = ["se"] }
 # The diagnostic FFI features compiled into the .a for the C host.
 shlosilo = { path = "../../..", default-features = false, features = [
     "generator-cache-ffi",

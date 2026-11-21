@@ -25,6 +25,15 @@ publish = false
 # unit; the C hosts get their runtime hooks from their own shim packages.
 crate-type = ["rlib"]
 
+[features]
+# Design 密钥供给 §11 (2026-11-21): seed-plate and SE are parallel, replaceable key-supply
+# modules. Default = plate only; a carrier whose hardware has a secure element enables `se`.
+#
+# The switch is on the crate, not just the C build, because the SE face is a Rust module whose
+# FFI entries end up in the keep table: leaving it out must remove the code, not hide it.
+default = []
+se = []
+
 [dependencies]
 # default-features = false: the key path must stay std/alloc-free (Z6), and
 # KeySession/SeedEntropy are core-only faces. Same feature posture as
