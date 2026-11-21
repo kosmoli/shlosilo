@@ -151,6 +151,42 @@ pub(crate) fn to_hex<'a>(bytes: &[u8], out: &'a mut [u8]) -> &'a str {
     core::str::from_utf8(&out[..bytes.len() * 2]).unwrap_or("<hex>")
 }
 
+/// A4-12: a 64-byte secret buffer that wipes on EVERY exit, including the `?`
+/// returns in the middle of the flow.
+///
+/// The flow used to call `seed.fill(0)` at the bottom, which every early return
+/// skipped - and even on the success path a plain `fill` is a dead store the
+/// optimizer is free to delete once the buffer is unreachable. The wipe here is a
+/// volatile walk in `Drop` (the same idiom the C side uses for its password and
+/// plate copies), so it runs on all exits and cannot be elided.
+#[cfg(feature = "bench")]
+struct SeedScrub([u8; 64]);
+
+#[cfg(feature = "bench")]
+impl SeedScrub {
+    fn zeroed() -> Self {
+        Self([0u8; 64])
+    }
+
+    fn fill_target(&mut self) -> &mut [u8; 64] {
+        &mut self.0
+    }
+
+    fn bytes(&self) -> &[u8; 64] {
+        &self.0
+    }
+}
+
+#[cfg(feature = "bench")]
+impl Drop for SeedScrub {
+    fn drop(&mut self) {
+        for b in self.0.iter_mut() {
+            // SAFETY: `b` is a live, aligned, exclusively borrowed u8.
+            unsafe { core::ptr::write_volatile(b, 0) };
+        }
+    }
+}
+
 /// Run the three-step fixture flow once and store the report. `heap_probe`
 /// reports (used, free, peak) from the caller's allocator so the report can
 /// carry heap figures without this module knowing the allocator.
@@ -195,13 +231,15 @@ fn run_inner(
     );
 
     // ── Step 2: export_readonly — mnemonic → crypto-hdkey UR ──
-    let mut seed = [0u8; 64];
-    business::restore_seed::restore_seed(&mnemonic, b"", &mut seed)?;
+    // A4-12: the seed lives in a buffer that wipes on every exit (including the
+    // `?` returns below), not in a plain array scrubbed only on success.
+    let mut seed = SeedScrub::zeroed();
+    business::restore_seed::restore_seed(&mnemonic, b"", seed.fill_target())?;
     let path = DerivationPath::from_flat([44u32 | 0x8000_0000, 0x8000_0000, 0x8000_0000, 0, 0])?;
     let mut export_out = [0u8; 2048];
     let export_len = business::export_readonly::export_readonly(
         business::export_readonly::ExportProtocol::CryptoHdKey,
-        &seed,
+        seed.bytes(),
         Network::BitcoinMainnet,
         core::slice::from_ref(&path),
         &mut export_out,
@@ -236,8 +274,10 @@ fn run_inner(
     let _ = writeln!(w, "[smoke] sign ok: {sign_len} bytes");
     let _ = writeln!(w, "[smoke] signed: {hex}");
 
-    // Zero the sensitive stack material (parity with the C host's cleanup).
-    seed.fill(0);
+    // Sensitive stack material dies here: `seed` is a SeedScrub, whose Drop walks the
+    // buffer with volatile writes - the single wipe point for the success path AND
+    // every `?` return above.
+    drop(seed);
 
     let (used_after, free_after, peak_after) = heap_probe();
     let _ = writeln!(
