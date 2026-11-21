@@ -2048,10 +2048,12 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
              * fail-fast, not a review-side warning: nothing below can succeed.) */
             const char *why = shlosilo_sign_failure_text(rc);
             UiSetPayload(why, (uint32_t)strlen(why));
-            /* Hold it: returning to the caller used to bounce straight back to welcome,
-             * so the only screen a failed run produces was visible for a single frame and
-             * could not be photographed (2026-11-17, three device rounds lost to it). */
-            hold_failure_page();
+            /* The page is put up here, but the HOLD belongs to the caller (one owner per
+             * failure). Both used to hold: this function held until `home`, then returned
+             * -1 and `scan_ur_hit` held again with the page already back on welcome - so the
+             * operator saw welcome and the device sat in a second hold loop where only
+             * `home` responded (real device, 2026-11-21: "after the error the welcome screen
+             * is frozen, only home works"). */
             return -1;                  /* result page is up; caller must not sign */
         }
         UiSetLast("review unavailable - not signed");
@@ -2535,6 +2537,11 @@ static void scan_ur_hit(const char *text)
             ur_intake_reset();
             if (gate == 0) {
                 UiGotoPage(UI_PAGE_WELCOME);
+            } else {
+                /* gate < 0: the fail-fast text is up; hold it until `home`. The caller owns
+                 * the hold (see the note in review_gate) - this leg used to rely on
+                 * review_gate holding internally, which is what produced the double hold. */
+                hold_failure_page();
             }
             return;
         }
