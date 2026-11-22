@@ -118,16 +118,31 @@ pub fn take_sign() -> Option<SignArena> {
     Some(SignArena { buf })
 }
 
-/// Copy `payload` into the reserved staging slot. `false` = too big or PSRAM unavailable.
+/// Copy `payload` into the reserved staging slot. `false` = too big, slot busy, or PSRAM down.
+///
+/// Deliberately NOT built on [`take_pending`]: that guard clears the staged request when it drops
+/// (one-shot reader semantics), and staging takes the slot only for the duration of the copy - the
+/// bytes have to survive until the sign job reads them. Hardware run 2026-11-22 found the opposite
+/// version staging and then erasing the request in the same call (`[ur] complete` followed by
+/// `[err] xmr: no pending request`).
 pub fn stage_pending(payload: &[u8]) -> bool {
     if payload.len() > PENDING_BYTES {
         return false;
     }
-    let Some(slot) = take_pending() else {
+    let Some(base) = pool_base() else {
         return false;
     };
-    slot.buf[..payload.len()].copy_from_slice(payload);
+    if PENDING_TAKEN.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    // SAFETY: as in `take_pending` - the staging sub-region is reserved (never part of the heap)
+    // and the flag above makes this the only writer for the duration of the copy.
+    let dst = unsafe {
+        core::slice::from_raw_parts_mut((base + SIGN_ARENA_BYTES) as *mut u8, payload.len())
+    };
+    dst.copy_from_slice(payload);
     PENDING_LEN.store(payload.len(), Ordering::Release);
+    PENDING_TAKEN.store(false, Ordering::Release);
     true
 }
 
