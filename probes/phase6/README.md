@@ -16,11 +16,9 @@ So the time is not cryptography: it is `wallet_owns_destination()`, which runs a
 fixture's foreign payment output (`is_subaddress = false`, not our main address) spent all 1,809
 derivations to answer "not ours" - 39.98 s of a 71.5 s sign.
 
-`ownership-fastpath-wip.patch` contains:
-
-1. phases 13..17 instrumentation (that is what produced the numbers above), and
-2. the candidate fix: skip the lookahead for destinations flagged `!is_subaddress` (their only
-   possible match is the main address, already compared), plus a unit pin for that branch.
+The parked patch that used to sit next to this file is gone: both halves of it are merged
+(phases 13..17 in `98633f1`, the skip-lookahead fast path in `b6369bc`), and `git log` is the record.
+Kept: the measurement and the harness lessons below.
 
 **Status: VALIDATED and merged** (commit `b6369bc`). The two earlier "hardware crashes" were
 harness artifacts, not this code:

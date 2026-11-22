@@ -1887,7 +1887,13 @@ impl ConsoleState {
         // the guard (which hands the arena back to the signer) second. Neither frees anything - the
         // workspace is the static arena, not the heap.
         self.decoder = None;
-        self.ur_ws = None;
+        if let Some(mut ws) = self.ur_ws.take() {
+            // The core crate's own free path zeroizes the session spans; `open_ur_session` reads the
+            // decoder out of its handle slot instead, which bypasses that. Wipe here rather than rely
+            // on "the request is public data anyway": the arena is about to be carved by the signer,
+            // and what was in it should not depend on an argument about what those bytes were.
+            ws.as_mut().fill(0);
+        }
     }
 
     /// Open a decode session in the arena workspace and hand back its decoder.

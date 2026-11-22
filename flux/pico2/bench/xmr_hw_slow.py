@@ -100,24 +100,11 @@ if not accepted:
     print("FAIL: request never accepted")
     sys.exit(10)
 
-# The stall also takes the CDC interface down; wait for it to come back before reading the log.
-try:
-    os.close(fd)
-except OSError:
-    pass
-print("waiting for the console to come back...")
-deadline_port = time.time() + 120
-while time.time() < deadline_port:
-    if os.path.exists(args.dev):
-        break
-    time.sleep(1)
-time.sleep(2)
-try:
-    fd = os.open(args.dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-    tty.setraw(fd)
-except OSError as e:
-    print(f"FAIL: console did not come back: {e}")
-    sys.exit(13)
+# Do NOT close and reopen the tty here. The stall does not drop the CDC interface (reads simply
+# return nothing while the executor is busy), and closing the descriptor discards whatever the
+# console emitted in the gap. A 30 s sign finishes inside that gap, so the reopened fd never sees
+# `signed ok` and the run reports failure on a successful sign (measured 2026-11-22).
+print("request accepted; keeping the console attached and draining through the sign...")
 
 print("request accepted; waiting for the sign (executor stalls, console silent)...")
 deadline = time.time() + args.sign_timeout
