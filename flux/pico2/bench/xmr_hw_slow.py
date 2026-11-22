@@ -10,6 +10,7 @@ the heap peak - which is the evidence the static pool exists for.
 Usage: xmr_hw_slow.py [--dev /dev/ttyACM0] [--frames /tmp/xmr_2in_frames.txt] [--gap 1.2]
 """
 import argparse
+import atexit
 import os
 import re
 import select
@@ -33,6 +34,17 @@ print(f"{len(frames)} frames loaded")
 fd = os.open(args.dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
 tty.setraw(fd)
 log = []
+
+
+def _save_log() -> None:
+    try:
+        open("/tmp/p2_xmr_slow.log", "w").write("".join(log))
+        print("transcript: /tmp/p2_xmr_slow.log")
+    except OSError:
+        pass
+
+
+atexit.register(_save_log)
 
 
 def pump(seconds: float) -> str:
@@ -115,8 +127,12 @@ while time.time() < deadline:
         print(f"SIGNED: {m.group(0)}")
         break
     if "[err] xmr" in txt:
-        print("FAIL:", [l for l in txt.splitlines() if "[err] xmr" in l])
+        print("FAIL:", [l.strip() for l in txt.splitlines() if "[err] xmr" in l])
         sys.exit(11)
+    # a panic / fault record means the run ended without a signature
+    if "[crash]" in txt or "panicked" in txt:
+        print("FAIL:", [l.strip() for l in txt.splitlines() if "[crash]" in l or "panicked" in l])
+        sys.exit(14)
 
 if signed is None:
     print("FAIL: no signed line inside the timeout")
