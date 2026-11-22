@@ -132,6 +132,13 @@ if not wait("fixed entropy set", 15, before):
     sys.exit("xmrseed failed")
 print("fixed entropy set", flush=True)
 
+# 2b) Drop any session left over from an earlier attempt. It holds the decode workspace (the arena
+#     the signer borrows), so a stale partial session makes every frame of this request get rejected
+#     as "does not belong" and the run times out looking like a broken sign.
+before = len(buf)
+send("urclear")
+time.sleep(0.5)
+
 # 3) feed the fountain frames: up to 4 rounds, stop as soon as the device
 #    completes and starts its (executor-stalling) sign job.
 before = len(buf)

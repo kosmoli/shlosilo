@@ -104,6 +104,11 @@ time.sleep(0.4)
 signs = []
 for i in range(N):
     send(f"xmrseed {FIXED_ENTROPY}")
+
+    # Stale sessions hold the decode workspace; clearing keeps the next feed from being rejected
+    # frame by frame as "does not belong".
+    send("urclear")
+    time.sleep(0.5)
     time.sleep(0.4)
     before = len(buf)
     send(ur)
