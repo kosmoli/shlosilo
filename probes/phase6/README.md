@@ -22,10 +22,18 @@ derivations to answer "not ours" - 39.98 s of a 71.5 s sign.
 2. the candidate fix: skip the lookahead for destinations flagged `!is_subaddress` (their only
    possible match is the main address, already compared), plus a unit pin for that branch.
 
-**Status: NOT validated.** On hardware the build carrying the fast path crashed reproducibly in
-the allocator during the sign (`allocation of 589824 bytes failed | live psram=4627888`), and
-reverting to HEAD made the sign work again (72,991 ms, sha 55c4507b...) - so the correlation is
-clear but the mechanism is not. The host pin `tests/tx_key_images_wallet2_view.rs` still passes
-with the patch, so it is not a wire-semantics violation; the next session should instrument the
-allocation that fails (it is the same 576 KiB block that shows up in the "second request" OOM,
-pool #76) before re-attempting.
+**Status: NOT validated, and it broke hardware twice.** First attempt: a reproducible allocator
+panic mid-sign (`allocation of 589824 bytes failed | live psram=4627888`). That block turned out to
+be pool #76 - the decode session's leaked pools (fixed since; the pico2 sessions now live in the
+static arena and two signs per boot work). Second attempt, on top of the #76 fix: the board instead
+reboots **with no crash record at all** (the transcript ends in heartbeats plus the boot smoke test,
+and `faultclr` shows nothing), so the sign never finishes and never panics.
+
+No-record resets after a heap that was previously found corrupted point at an out-of-bounds write,
+and the fast path's only behavioural difference is that the per-destination key-image list drops
+from 2 entries to 1 (the foreign payment output is no longer "owned"). Something downstream is
+allowed to assume "one entry per destination". Find that assumption before touching this again:
+walk the consumers of `key_images_str` (wire assembly, the `PendingTx` read-back, and whatever the
+Cake view exposes) and assert the count relationship. The host pin
+`tests/tx_key_images_wallet2_view.rs` passes either way, which is exactly why this needs a host test
+that pins the *length* relationship, not just the entries.
