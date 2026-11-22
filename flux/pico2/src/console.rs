@@ -114,6 +114,13 @@ struct ConsoleState {
     xmr_seed: Option<([u8; 64], usize)>,
     /// Last signed XMR blob, retrievable via `xmrout <hex_off> <hex_len>`.
     xmr_out: [u8; XMR_OUT_CAP],
+    /// A sign job is queued or running: UR frames are dropped without touching memory until it
+    /// finishes. One decoder shell is ~2.4 MiB of the 5.2 MiB PSRAM budget left after the static
+    /// sign pool, and the host keeps streaming fountain frames after acceptance.
+    sign_pending: bool,
+    /// Guard over the UR decode workspace (it overlays the sign arena). Held for exactly as long
+    /// as `decoder` is alive.
+    ur_ws: Option<crate::sign_pool::UrWs>,
     xmr_out_len: usize,
     /// Raw-ROSC capture (`trngraw`; bench builds): 192-bit raw blocks from
     /// the fully-bypassed TRNG, held for `trngrawout` to stream. The
@@ -139,6 +146,8 @@ impl ConsoleState {
             #[cfg(feature = "bench")]
             xmr_seed: None,
             xmr_out: [0u8; XMR_OUT_CAP],
+            sign_pending: false,
+            ur_ws: None,
             xmr_out_len: 0,
             #[cfg(feature = "bench")]
             raw_buf: None,
@@ -1866,10 +1875,53 @@ impl ConsoleState {
     /// left ~2.8 MiB resident and made the SECOND request of a boot fail to allocate its session
     /// (`allocation of 589824 bytes failed | live psram=4627888`, hardware run 2026-11-22).
     fn release_ur_session(&mut self) {
+        // Order matters: the decoder borrows spans inside the workspace, so the value goes first and
+        // the guard (which hands the arena back to the signer) second. Neither frees anything - the
+        // workspace is the static arena, not the heap.
         self.decoder = None;
+        self.ur_ws = None;
+    }
+
+    /// Open a decode session in the arena workspace and hand back its decoder.
+    ///
+    /// Replaces `UrMultipartDecoder::new()`, which allocates its pools with `Box::leak` "on purpose
+    /// (ffi staging / tests only)": on this carrier that leaked 2.46 MiB per request and made every
+    /// request after the first one die in the allocator (`#76`, confirmed on hardware 2026-11-22 -
+    /// after a successful sign `psram used` stayed at 2,836,696 with the session supposedly gone).
+    fn open_ur_session(&mut self) -> Option<UrMultipartDecoder<'static>> {
+        self.release_ur_session();
+        let Some(mut ws) = crate::sign_pool::take_ur_ws() else {
+            log::info!(
+                "[err] ur: no decode workspace (psram down, arena busy, or needs {} > {} bytes)",
+                crate::sign_pool::ur_ws_len(),
+                crate::sign_pool::SIGN_ARENA_BYTES
+            );
+            return None;
+        };
+        let Some(hp) = shlosilo::ur::ur_multipart::ur_decode_ws_place(ws.as_mut()) else {
+            log::info!(
+                "[err] ur: decode workspace too small ({} < {})",
+                crate::sign_pool::SIGN_ARENA_BYTES,
+                crate::sign_pool::ur_ws_len()
+            );
+            return None;
+        };
+        // SAFETY: `ur_decode_ws_place` initialised the pools and wrote the handle into `ws`; the
+        // guard is stored below so the arena cannot be handed to the signer while this value is
+        // alive. Reading the value out moves only the struct (slice pointers into `ws`), never the
+        // workspace, which is why the caller-stability contract still holds.
+        let dec = unsafe { core::ptr::read(hp) };
+        self.ur_ws = Some(ws);
+        Some(dec)
     }
 
     fn handle_ur(&mut self, line: &[u8]) -> Option<TrngJob> {
+        if self.sign_pending {
+            // Dropped on purpose: the request is already staged and the sign job owns the device.
+            // Feeding a decoder here would allocate a fresh ~2.4 MiB shell per frame and OOM the
+            // region mid-sign (measured on hardware 2026-11-22).
+            return None;
+        }
         let s = match core::str::from_utf8(line) {
             Ok(s) => s,
             Err(_) => {
@@ -1914,9 +1966,9 @@ impl ConsoleState {
             Some(d) if !d.complete() => d,
             Some(d) => {
                 drop(d);
-                UrMultipartDecoder::new()
+                self.open_ur_session()?
             }
-            None => UrMultipartDecoder::new(),
+            None => self.open_ur_session()?,
         };
         for attempt in 0..2 {
             match dec.receive_frame(s) {
@@ -1955,10 +2007,11 @@ impl ConsoleState {
                     // ~2.5 MiB of PSRAM, so churning one per bad frame is how the region ran out
                     // on hardware (2026-11-22: two live shells = 5.0 MiB of 8).
                     if attempt == 0 && dec.progress() == 0 {
-                        // Drop the old session BEFORE allocating its replacement, or the peak
-                        // doubles to two live shells.
+                        // Release the old session BEFORE opening its replacement: the workspace is
+                        // a single arena, so the new session can only be placed once the old one
+                        // has handed it back.
                         drop(dec);
-                        dec = UrMultipartDecoder::new();
+                        dec = self.open_ur_session()?;
                     }
                 }
             }
@@ -1978,9 +2031,13 @@ impl ConsoleState {
                     log::info!("[err] xmr: request does not fit the staging slot");
                     return None;
                 }
-                // The request now lives in the static slot; the decode session is dead weight
-                // (2.4 MiB) from here on. Releasing it here is what lets a second request in the
-                // same boot allocate its own session.
+                // The request is copied out, so the decode session ends here - and it has to: the
+                // session lives in the arena the signer is about to carve (`take_sign` shares the
+                // same exclusive flag). Dropping it frees nothing (nothing was heap-allocated);
+                // it hands the arena back. The host keeps streaming frames after acceptance, which
+                // is why `sign_pending` makes them cheap to ignore instead of opening a new
+                // session for each one.
+                self.sign_pending = true;
                 self.release_ur_session();
                 return Some(TrngJob::simple(JobMode::SignXmr));
             }
@@ -3127,6 +3184,14 @@ async fn run_sign_xmr() {
     // impossible).
     #[cfg(feature = "perf-timing")]
     crate::perf_timing::log_phases();
+
+    // Request lifecycle ends here (success or error): accept frames again and hand the ~2.4 MiB
+    // decode shell back, so a second request in the same boot starts from an empty PSRAM.
+    CONSOLE.lock(|cell| {
+        let mut s = cell.borrow_mut();
+        s.sign_pending = false;
+        s.release_ur_session();
+    });
 }
 
 /// Fetch conditioned TRNG entropy into `buf` - the production entropy path

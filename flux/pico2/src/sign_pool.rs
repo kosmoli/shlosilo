@@ -118,6 +118,51 @@ pub fn take_sign() -> Option<SignArena> {
     Some(SignArena { buf })
 }
 
+/// Exclusive handle over the UR decode workspace, which OVERLAYS the sign arena.
+///
+/// The overlay is sound because the two lifespans provably never meet: a decode session is alive
+/// only while frames are arriving, the console drops it in the very step that copies the finished
+/// message into the staging sub-region (which sits outside the arena), and the sign job takes the
+/// arena afterwards. The `SIGN_TAKEN` flag is shared with [`take_sign`], so the two can never be
+/// outstanding together - that is the machine-checkable half of the argument.
+pub struct UrWs {
+    buf: &'static mut [u8],
+}
+
+impl Drop for UrWs {
+    fn drop(&mut self) {
+        SIGN_TAKEN.store(false, Ordering::Release);
+    }
+}
+
+impl UrWs {
+    pub fn as_mut(&mut self) -> &mut [u8] {
+        self.buf
+    }
+}
+
+/// Bytes the UR decode workspace needs on this profile.
+pub fn ur_ws_len() -> usize {
+    shlosilo::ur::ur_multipart::ur_decode_ws_len()
+}
+
+/// Take the arena as a UR decode workspace. `None` = PSRAM down, arena busy, or the profile's
+/// decode workspace does not fit the arena (checked here, so a limits change cannot silently
+/// overflow it).
+pub fn take_ur_ws() -> Option<UrWs> {
+    let base = pool_base()?;
+    if ur_ws_len() > SIGN_ARENA_BYTES {
+        return None;
+    }
+    if SIGN_TAKEN.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    // SAFETY: same argument as `take_sign` - the region is reserved PSRAM the heap never got, and
+    // the flag above makes this the only outstanding `&mut` over it.
+    let buf = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, ur_ws_len()) };
+    Some(UrWs { buf })
+}
+
 /// Copy `payload` into the reserved staging slot. `false` = too big, slot busy, or PSRAM down.
 ///
 /// Deliberately NOT built on [`take_pending`]: that guard clears the staged request when it drops
