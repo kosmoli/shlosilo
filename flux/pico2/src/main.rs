@@ -683,6 +683,26 @@ async fn console_report_task() {
     // A running report task is the clean-boot milestone: re-arm the crash
     // reset budget (see fault.rs).
     fault::boot_ok();
+    // Reset cause, once per boot: the crash record only covers panics and hard faults (fault.rs
+    // stores those and resets deliberately), so a reset with no record has to be attributed from
+    // here - watchdog vs power-on vs brownout.
+    {
+        use embassy_rp::pac::POWMAN;
+        let cr = POWMAN.chip_reset().read();
+        log::info!(
+            "[rst] por={} bor={} run_low={} wdt(powman={} async={} rsm={} swcore={}) glitch={} rescue={} swcore_pd={}",
+            cr.had_por(),
+            cr.had_bor(),
+            cr.had_run_low(),
+            cr.had_watchdog_reset_powman(),
+            cr.had_watchdog_reset_powman_async(),
+            cr.had_watchdog_reset_rsm(),
+            cr.had_watchdog_reset_swcore(),
+            cr.had_glitch_detect(),
+            cr.had_rescue(),
+            cr.had_swcore_pd()
+        );
+    }
     let mut tick: u32 = 0;
     loop {
         Timer::after_secs(5).await;
