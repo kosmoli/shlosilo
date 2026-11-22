@@ -16,8 +16,8 @@
 //!
 //! ## Display safety (UI red line, read this before adding text)
 //!
-//! Every line here is either a **fixed vocabulary** word ("fee", "in", "out",
-//! "to:", "warn: high fee") or a string **re-encoded from decoded structure**
+//! Every line here is either a **fixed vocabulary** word ("fee", "fee >=", "in",
+//! "out", "to:", "warn: high fee") or a string **re-encoded from decoded structure**
 //! (an address rendered from a scriptPubKey, a decimal amount). We never echo
 //! raw payload bytes, the UR type name, internal error codes or paths — an
 //! attacker controls the request, so anything echoed verbatim becomes a way to
@@ -69,6 +69,9 @@ pub mod flag {
     pub const MANY_OUTPUTS: u16 = 1 << 7;
     /// EVM: the destination is a contract (calldata present) we cannot decode.
     pub const UNKNOWN_CALLDATA: u16 = 1 << 8;
+    /// At least one input amount came from a `WITNESS_UTXO` declaration, so nothing binds it to the
+    /// outpoint (BIP-174) and the fee shown is a LOWER BOUND, not an exact figure.
+    pub const FEE_UNVERIFIED: u16 = 1 << 9;
 }
 
 /// Fee (in sats) above which we always warn: 0.01 BTC.
@@ -203,6 +206,9 @@ fn summarize_psbt(
 
     // ── inputs: total value + RBF signalling ──
     let mut total_in: Option<u64> = Some(0);
+    // BTC-1 follow-up (external audit 2026-11-19): track whether any input's amount is merely
+    // declared. The fee line must not claim exactness it does not have.
+    let mut any_amount_declared = false;
     let mut rbf = false;
     for i in 0..in_count {
         let map = psbt
@@ -212,8 +218,11 @@ fn summarize_psbt(
         // NON_WITNESS_UTXO (0x00) instead of a witness UTXO, and the operator must
         // still see the fee total for exactly those requests.
         let prev_out = psbt.unsigned_tx.inputs[i].prev_out.clone();
-        match psbt::get_utxo_any(map, &prev_out) {
-            Some((amount, _spk)) => {
+        match psbt::get_utxo_any_bound(map, &prev_out) {
+            Some((amount, _spk, binding)) => {
+                if binding == psbt::AmountBinding::Declared {
+                    any_amount_declared = true;
+                }
                 total_in = total_in.and_then(|acc| acc.checked_add(amount));
             }
             None => {
@@ -313,7 +322,16 @@ fn summarize_psbt(
     match total_in {
         Some(ti) if ti >= total_out => {
             let fee = ti - total_out;
-            push_head(format_args!("fee {} sats", fee))?;
+            // A declared input amount can only understate the true total, so the fee computed from
+            // it is a lower bound. Say so in the value itself (`>=`) rather than adding a warning:
+            // every segwit request has declared amounts, and a permanent banner would dilute the
+            // markers that do point at real risk.
+            if any_amount_declared {
+                view.flags |= flag::FEE_UNVERIFIED;
+                push_head(format_args!("fee >= {} sats", fee))?;
+            } else {
+                push_head(format_args!("fee {} sats", fee))?;
+            }
             if fee > HIGH_FEE_SATS {
                 view.flags |= flag::HIGH_FEE;
             }

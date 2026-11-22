@@ -125,6 +125,12 @@
  */
 #define UNKNOWN_CALLDATA (1 << 8)
 
+/**
+ * At least one input amount came from a `WITNESS_UTXO` declaration, so nothing binds it to the
+ * outpoint (BIP-174) and the fee shown is a LOWER BOUND, not an exact figure.
+ */
+#define FEE_UNVERIFIED (1 << 9)
+
 #define UNSIGNED_TX 0
 
 /**

@@ -76,7 +76,17 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
     assert_eq!(l[0], "in 1 / out 2", "lines = {l:?}");
     // Fixture oracle (comment in tests/p63_btc_psbt.rs): 1 input of 651157 sat,
     // outputs 1000 + 650087 sat -> fee 70 sat
-    assert_eq!(l[1], "fee 70 sats", "lines = {l:?}");
+    //
+    // BTC-1 follow-up (external audit 2026-11-19): this input's amount comes from WITNESS_UTXO,
+    // which BIP-174 makes the coordinator's declaration - nothing binds it to the outpoint, so the
+    // true input total can only be LARGER and the fee can only be higher. The line says so (`>=`)
+    // and the risk bit records it, instead of printing an exact-looking number.
+    assert_eq!(l[1], "fee >= 70 sats", "lines = {l:?}");
+    assert_ne!(
+        view.flags & review::flag::FEE_UNVERIFIED,
+        0,
+        "a fee built from declared amounts must set FEE_UNVERIFIED"
+    );
     // Layout constraints from the first on-device run (2026-11-05): every line must
     // be self-explanatory -- amounts carry units, the whole view fits on one page, and
     // no bare numbers or header lines duplicating the page title are allowed.
@@ -690,7 +700,16 @@ fn btc_legacy_p2pkh_review_shows_fee_and_rate() {
     let l = lines(&view);
     assert_eq!(l[0], "in 1 / out 1", "lines = {l:?}");
     // regtest fixture: 50,000,000 sat in, 49,990,000 sat out -> fee 10,000 sat
+    //
+    // Control for the line above: this input carries NON_WITNESS_UTXO, whose transaction is hashed
+    // against the outpoint, so the amount is VERIFIED and the fee stays an exact figure with no
+    // risk bit. Without this pair, "always print >=" would pass the test above unnoticed.
     assert_eq!(l[1], "fee 10000 sats", "lines = {l:?}");
+    assert_eq!(
+        view.flags & review::flag::FEE_UNVERIFIED,
+        0,
+        "a fee built from outpoint-verified amounts must not be marked unverified"
+    );
     // Recipient is the P2PKH address of m/84'/1'/0'/0/1 (base58check, testnet
     // version byte) — the script type we could not sign before B-9.
     let joined = l.join("\n");

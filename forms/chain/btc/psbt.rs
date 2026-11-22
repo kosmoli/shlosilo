@@ -2122,21 +2122,48 @@ pub fn get_witness_utxo<'a>(
 /// parsing + txid binding + vout indexing, no longer blindly trusting a bare CTxOut as fallback.
 /// (The non-standard CTxOut-in-0x01 form from the keystone fixture is no longer supported; affected tests
 ///   now use the standard WITNESS_UTXO form.)
+/// Where the signer got an input's amount from, and whether anything ties that amount to the
+/// outpoint it is supposed to describe.
+///
+/// BTC-1 follow-up (external audit 2026-11-19): `WITNESS_UTXO` is, by BIP-174 construction, the
+/// coordinator's *claim* - the device has no previous transaction to hash against, so the amount is
+/// unverifiable. `NON_WITNESS_UTXO` carries the full previous transaction and is checked against
+/// `prev_out` (txid + vout), so that amount is verified. Conflating the two let the review page
+/// print a fee that looked authoritative while its input side was only declared.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AmountBinding {
+    /// The amount was checked against the outpoint it belongs to (NON_WITNESS_UTXO path).
+    Verified,
+    /// The amount is the coordinator's declaration; nothing binds it to the outpoint.
+    Declared,
+}
+
+/// [`get_utxo_any`] plus where the amount came from.
+pub fn get_utxo_any_bound<'a>(
+    input_map: KvMap<'a>,
+    prev_out: &OutPoint,
+) -> Option<(u64, crate::types::wire_bytes::WireBytes<'a>, AmountBinding)> {
+    // Preferred: WITNESS_UTXO (standard path, CTxOut stored directly) — and unverifiable by nature.
+    if let Some((value, script)) = get_witness_utxo(input_map) {
+        return Some((value, script, AmountBinding::Declared));
+    }
+    // NON_WITNESS_UTXO: full-tx walker + txid binding + vout indexing. This is the shape a compliant
+    // wallet sends for a legacy input (BIP-174 forbids reading the amount anywhere else for a
+    // non-witness input), so the device face needs it too — the walker is zero-heap.
+    let full_tx = input_map.get(&[input_type::NON_WITNESS_UTXO])?;
+    let (value, script) = non_witness_utxo_out(full_tx, prev_out)?;
+    Some((
+        value,
+        crate::types::wire_bytes::wire_from(script),
+        AmountBinding::Verified,
+    ))
+}
+
 pub fn get_utxo_any<'a>(
     input_map: KvMap<'a>,
     prev_out: &OutPoint,
 ) -> Option<(u64, crate::types::wire_bytes::WireBytes<'a>)> {
-    // Preferred: WITNESS_UTXO (standard path, CTxOut stored directly)
-    if let Some(utxo) = get_witness_utxo(input_map) {
-        return Some(utxo);
-    }
-    // NON_WITNESS_UTXO: full-tx walker + txid binding + vout indexing. This is
-    // the shape a compliant wallet sends for a legacy input (BIP-174 forbids
-    // reading the amount anywhere else for a non-witness input), so the device
-    // face needs it too — the walker is zero-heap.
-    let full_tx = input_map.get(&[input_type::NON_WITNESS_UTXO])?;
-    let (value, script) = non_witness_utxo_out(full_tx, prev_out)?;
-    Some((value, crate::types::wire_bytes::wire_from(script)))
+    get_utxo_any_bound(input_map, prev_out).map(|(value, script, _binding)| (value, script))
 }
 
 /// Get TAP_INTERNAL_KEY from input map (BIP-371 0x17)
