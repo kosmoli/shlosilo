@@ -239,9 +239,10 @@ fn f1_sign_session_ffi_real_fixture_ok() {
     assert_eq!(n_in, 4, "the D-shape fixture has four inputs");
 
     let m = Mnemonic::from_entropy(&TEST2_ENTROPY).expect("mnemonic");
-    let seed = m.to_seed(b"");
+    let seed = m.to_seed(b"").expect("seed");
     let path = shlosilo::derivation::monero_reduce_scalar::MoneroPath::mainnet(0);
-    let kp = shlosilo::derivation::monero_reduce_scalar::derive(&seed, &path).expect("derive");
+    let kp =
+        shlosilo::derivation::monero_reduce_scalar::derive(seed.as_ref(), &path).expect("derive");
     let spend_sec = shlosilo::curve_primitive::ed25519::scalar_to_bytes(kp.spend_priv());
     let view_sec = shlosilo::curve_primitive::ed25519::scalar_to_bytes(kp.view_priv());
     let spend_pub = (curve25519_dalek::constants::ED25519_BASEPOINT_TABLE
@@ -530,9 +531,10 @@ fn f1_sign_session_ffi_real_fixture_ok() {
 #[test]
 fn test2_keys_match_bip39_derivation() {
     let m = Mnemonic::from_entropy(&TEST2_ENTROPY).expect("mnemonic");
-    let seed = m.to_seed(b"");
+    let seed = m.to_seed(b"").expect("seed");
     let path = shlosilo::derivation::monero_reduce_scalar::MoneroPath::mainnet(0);
-    let kp = shlosilo::derivation::monero_reduce_scalar::derive(&seed, &path).expect("derive");
+    let kp =
+        shlosilo::derivation::monero_reduce_scalar::derive(seed.as_ref(), &path).expect("derive");
     assert_eq!(
         shlosilo::curve_primitive::ed25519::scalar_to_bytes(kp.spend_priv()),
         TEST2_SPEND_SK,

@@ -24,7 +24,7 @@ fn to_seed_derives_non_degenerate_seed() {
     let m = Mnemonic::from_entropy(&[0x42u8; 32]).expect("entropy -> mnemonic");
     m.validate().expect("fixture mnemonic must be valid");
 
-    let seed = m.to_seed(b"");
+    let seed = m.to_seed(b"").expect("seed").into_bytes();
     if seed == [0u8; 64] {
         panic!(
             "PINNED RED: Mnemonic::to_seed returned [0u8; 64] for a valid mnemonic (pool §20 \

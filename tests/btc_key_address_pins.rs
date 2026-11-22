@@ -61,9 +61,9 @@ fn hash160(data: &[u8]) -> [u8; 20] {
 
 fn compressed_pubkey(path: &str) -> [u8; 33] {
     let m = shlosilo::entropy::mnemonic::Mnemonic::from_entropy(&ENTROPY).expect("entropy");
-    let seed = m.to_seed(b"");
+    let seed = m.to_seed(b"").expect("seed");
     let p = DerivationPath::parse(path).expect("path");
-    let sk = derive_from_seed(&seed, &p).expect("derive");
+    let sk = derive_from_seed(seed.as_ref(), &p).expect("derive");
     point_to_compressed(&base_mul(&sk))
 }
 

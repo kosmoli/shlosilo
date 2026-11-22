@@ -33,6 +33,8 @@ fn seed() -> [u8; 64] {
     shlosilo::entropy::mnemonic::Mnemonic::from_entropy(&entropy)
         .expect("mnemonic")
         .to_seed(b"")
+        .expect("seed")
+        .into_bytes()
 }
 
 fn decode_block(block: &[u8], out_len: usize) -> Vec<u8> {

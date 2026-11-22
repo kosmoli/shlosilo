@@ -187,17 +187,22 @@ impl Mnemonic {
     /// implementation in [`crate::entropy::bip39_passphrase::mnemonic_to_seed`]
     /// (stack-buffered, zero-alloc).
     ///
-    /// NOTE: the key-supply path calls `bip39_passphrase::mnemonic_to_seed`
-    /// directly (its `Bip39Seed` zeroizes on drop); this compatibility surface
-    /// returns a plain array. Derivation failure panics so misuse surfaces
-    /// immediately — invalid word indices are a programmer error. (Pool §20
-    /// zero-seed trap closed 2026-10-21: the old Phase-2 stub returned
-    /// `[0u8; 64]`, silently deriving identical all-zero keys for every
-    /// mnemonic.)
-    pub fn to_seed(&self, passphrase: &[u8]) -> [u8; 64] {
+    /// Returns the seed as [`Bip39Seed`], which zeroizes on drop and cannot be cloned, so a caller
+    /// cannot leave an un-erased copy behind.
+    ///
+    /// A1-02 (external audit 2026-11-19, P0): this used to return a bare `[u8; 64]` and to
+    /// `.expect(...)` every derivation error, on the theory that failure is a programmer error. It
+    /// is not: `mnemonic_to_seed` rejects a non-ASCII passphrase and any passphrase past its salt
+    /// budget, both of which are *user* input, and the resulting panic message ("invalid mnemonic
+    /// word indices?") pointed at the wrong thing entirely. Errors now propagate.
+    ///
+    /// (Pool §20 zero-seed trap closed 2026-10-21: the old Phase-2 stub returned `[0u8; 64]`,
+    /// silently deriving identical all-zero keys for every mnemonic.)
+    pub fn to_seed(
+        &self,
+        passphrase: &[u8],
+    ) -> Result<crate::entropy::bip39_passphrase::Bip39Seed> {
         crate::entropy::bip39_passphrase::mnemonic_to_seed(self, passphrase)
-            .expect("to_seed: mnemonic_to_seed failed (invalid mnemonic word indices?)")
-            .into_bytes()
     }
 
     /// Verify the mnemonic's checksum bits (P1-05 audit remediation, 2026-08-26)
@@ -644,5 +649,38 @@ mod tests {
         idx[11] = 3; // about
         let m = Mnemonic::from_indices(&idx, WordCount::Words12).unwrap();
         assert!(m.validate().is_ok());
+    }
+    // A1-02 (external audit 2026-11-19, P0): `to_seed` is a PUBLIC API whose failure modes include
+    // *user input* (a non-ASCII or over-long passphrase), not only programmer error. It used to
+    // `.expect(...)` on every `mnemonic_to_seed` error, so a hostile/typo'd passphrase panicked the
+    // caller. These are the red contracts for returning `Result` instead.
+    #[test]
+    fn to_seed_rejects_non_ascii_passphrase_instead_of_panicking() {
+        let m = Mnemonic::from_entropy(&[0u8; 16]).expect("mnemonic");
+        let seed = m.to_seed("caf\u{e9}".as_bytes());
+        assert!(
+            seed.is_err(),
+            "non-ASCII passphrase must be rejected, not panic"
+        );
+    }
+
+    #[test]
+    fn to_seed_rejects_oversized_passphrase_instead_of_panicking() {
+        let m = Mnemonic::from_entropy(&[0u8; 16]).expect("mnemonic");
+        let long = [b'a'; 120];
+        let seed = m.to_seed(&long);
+        assert!(
+            seed.is_err(),
+            "a passphrase past the salt budget must be rejected, not panic"
+        );
+    }
+
+    // Type-level pin: the seed must come back as the zeroizing secret type, not a bare array.
+    #[test]
+    fn to_seed_returns_the_zeroizing_seed_type() {
+        let m = Mnemonic::from_entropy(&[0u8; 16]).expect("mnemonic");
+        let seed: crate::entropy::bip39_passphrase::Bip39Seed =
+            m.to_seed(b"").expect("seed for an empty passphrase");
+        assert_eq!(seed.as_ref().len(), 64);
     }
 }
