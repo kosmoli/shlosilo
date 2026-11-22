@@ -280,6 +280,14 @@ impl ConsoleState {
             #[cfg(feature = "bench")]
             b"cam" => return self.cmd_cam(args),
             b"faultclr" => crate::fault::clear(),
+            // Drop the in-flight UR session and hand the arena back. Needed after a failed sign:
+            // the host's fountain stream keeps arriving, so a partial session for a request that was
+            // already consumed would otherwise sit on the arena and make the next request a stream of
+            // "does not belong" errors (nothing else can reuse the workspace while it is held).
+            b"urclear" => {
+                self.release_ur_session();
+                log::info!("[ur] session dropped; decode workspace released");
+            }
             // Development convenience: re-enter the RP2350 USB bootloader so the host can flash
             // without reaching for the BOOTSEL button (the console firmware has no other path back
             // into the bootloader, which made every flash cycle a manual step).

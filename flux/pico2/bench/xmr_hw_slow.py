@@ -73,6 +73,9 @@ print(say("faultclr", 1.5).strip()[-120:])
 print(say("heap reset", 2).strip().splitlines()[-1:])
 say(f"entropy {args.dev_entropy}", 1.5)
 say(f"xmrseed {args.fixed_entropy}", 1.5)
+# Drop any session left over from a previous attempt: it holds the decode workspace, so frames of a
+# new request are rejected as "does not belong" while it sits there.
+print(say("urclear", 1.0).strip()[-120:])
 
 accepted = False
 for i, fr in enumerate(frames, 1):
