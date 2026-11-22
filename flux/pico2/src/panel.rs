@@ -178,7 +178,11 @@ pub fn status_line(w: &mut impl Write) {
     );
     let id = TOUCH_ID.load(Ordering::Relaxed);
     if TOUCH_FAILED.load(Ordering::Relaxed) {
-        let _ = write!(w, " touch=err");
+        // `err` overstates it: on this bench the panel is not even fitted (pico2 carries no
+        // display or camera - it is the headless test carrier), and "no controller answered" is
+        // also what a correct probe reports on an empty socket. The word is a fact, not a fault
+        // (2026-11-22: a session was spent diagnosing this as a hardware fault).
+        let _ = write!(w, " touch=none");
     } else if id > 0xFF {
         let _ = write!(w, " touch=n/a");
     } else {
