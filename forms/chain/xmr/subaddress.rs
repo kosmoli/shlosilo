@@ -200,6 +200,14 @@ pub fn wallet_owns_destination(
     if dest.spend_public_key == *main_spend_pub {
         return true; // map entry (0,0): the main address
     }
+    // A destination that is NOT a subaddress can only ever be our main address: the lookahead
+    // below cannot make it match, so its 9 x 201 = 1809 derivations (each a basepoint scalar
+    // multiplication) are pure waste on that answer. Measured on pico2 (2026-11-22): this function
+    // was 39.98 s of a 71.5 s XMR sign - 1809 mults for one foreign payment output - while the four
+    // crypto operations it guards took 46 ms.
+    if !dest.is_subaddress {
+        return false;
+    }
     for major in 0..=SUB_LOOKAHEAD_MAJOR {
         for minor in 0..=SUB_LOOKAHEAD_MINOR {
             if major == 0 && minor == 0 {
@@ -289,6 +297,24 @@ mod wallet_ownership_tests {
             &view_sec,
             &dest(sp_far, true)
         ));
+
+        // 2026-11-22: the fast path trusts `dest.is_subaddress` to skip the lookahead. These two
+        // assertions pin the whole trade-off - the cost of the skip is that a wallet which flags a
+        // subaddress output as a plain one loses that output's key-image entry, which is acceptable
+        // because the flag is part of the request the wallet itself constructs (wallet2 fills it
+        // from its own subaddress map).
+        {
+            let sp = derive_subaddress_spend_pub(&main_spend_pub, &view_sec, 0, 6)
+                .expect("sub spend pub");
+            assert!(
+                wallet_owns_destination(&main_spend_pub, &view_sec, &dest(sp, true)),
+                "a subaddress output flagged as such is still found by the lookahead"
+            );
+            assert!(
+                !wallet_owns_destination(&main_spend_pub, &view_sec, &dest(sp, false)),
+                "a subaddress output flagged as a plain address is NOT owned: the lookahead is                  skipped, and that is the documented price of the 40 s this saves"
+            );
+        }
 
         // foreign address family: never owned
         let foreign = pub_of(&[0x77u8; 32]);
