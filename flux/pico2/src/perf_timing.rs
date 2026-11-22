@@ -50,7 +50,7 @@ pub(crate) fn log_phases() {
         let mut buf = [0u8; 320];
         let mut w = crate::sign_smoke::BufWriter::new(&mut buf);
         let _ = write!(w, "[xt] tx:");
-        for p in 1..=11u8 {
+        for p in 1..=shlosilo::tx_phase_hook::TX_PHASES as u8 {
             let v = shlosilo::ffi::tx_phase_ffi::shlosilo_tx_phase_phase(p);
             let _ = write!(w, " {p}={v}");
         }

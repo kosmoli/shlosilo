@@ -1206,6 +1206,10 @@ fn sign_xmr_with_ws<'a>(
         // wallet transfer position).
         let mut ki_src = [[0u8; 32]; crate::chain::xmr::tx_signer::MAX_INPUTS_TRACKED];
         let mut n_src = 0usize;
+        // Phase 12 splits phase 6: this loop is the only arithmetic in the window (per-source
+        // `derive_input_from_source`), so `6 - 12` is everything else (sort + `<hex> ` string).
+        #[cfg(feature = "tx-phase-timing-ffi")]
+        let mut px12 = PhaseProbe::start(12);
         for (src, &sel) in tx_data
             .sources
             .iter()
@@ -1232,6 +1236,11 @@ fn sign_xmr_with_ws<'a>(
             }
             ki_sv[idx] = ki;
         }
+        #[cfg(feature = "tx-phase-timing-ffi")]
+        if let Some(p) = px12.as_mut() {
+            p.end();
+        }
+
         // Pass 2: `key_images_str` must be in canonical vin order — strictly
         // DESCENDING key images (memcmp), the same order tx_signer sorts the
         // vins into (2026-10-24 unsorted-inputs fix). monero 0.18.5.3's

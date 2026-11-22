@@ -1858,6 +1858,17 @@ impl ConsoleState {
         }
     }
 
+    /// Drop the multipart decode session (and the PSRAM it holds).
+    ///
+    /// One decoder shell is ~2.4 MiB of the PSRAM budget this carrier has after the static sign
+    /// pool. The sign flow consumes the request out of the static staging slot, so the session has
+    /// no further use the moment the job is dispatched - holding it until the next frame arrives
+    /// left ~2.8 MiB resident and made the SECOND request of a boot fail to allocate its session
+    /// (`allocation of 589824 bytes failed | live psram=4627888`, hardware run 2026-11-22).
+    fn release_ur_session(&mut self) {
+        self.decoder = None;
+    }
+
     fn handle_ur(&mut self, line: &[u8]) -> Option<TrngJob> {
         let s = match core::str::from_utf8(line) {
             Ok(s) => s,
@@ -1967,6 +1978,10 @@ impl ConsoleState {
                     log::info!("[err] xmr: request does not fit the staging slot");
                     return None;
                 }
+                // The request now lives in the static slot; the decode session is dead weight
+                // (2.4 MiB) from here on. Releasing it here is what lets a second request in the
+                // same boot allocate its own session.
+                self.release_ur_session();
                 return Some(TrngJob::simple(JobMode::SignXmr));
             }
             UrTypeTag::XmrTxSigned | UrTypeTag::CryptoMoneroTx => {

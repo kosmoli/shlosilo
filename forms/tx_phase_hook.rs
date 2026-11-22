@@ -10,16 +10,20 @@
 //! (incl. statement/witness; bp4 is its inner prove-only total),
 //! 10 = bp sig encode + pre-MLSAG keccaks.
 //! 11 = sum masks + rct_base serialize + rct_base keccak.
+//! 12 = the per-source key-image derivation loop inside phase 6 (2026-11-22:
+//!      phase 6 measured 40 s on pico2 while the operands cost ~13 ms on the host
+//!      model, so the window needed splitting; 6 - 12 is the remainder of 6).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-pub const TX_PHASES: usize = 11;
+pub const TX_PHASES: usize = 12;
 
 type ClockFn = extern "C" fn() -> u32;
 
 #[allow(static_mut_refs)]
 static mut CLOCK_FN: Option<ClockFn> = None;
 static ACC: [AtomicU32; TX_PHASES] = [
+    AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
