@@ -1893,9 +1893,19 @@ impl ConsoleState {
         // everything already received. The carrier acts only on the decoder's own signals -
         // "complete" (session over) and "this frame does not belong" (mixed type / corrupt
         // part), which is retried once as the first frame of a fresh session.
-        let mut dec = match self.decoder.take() {
+        // Drop any finished decoder BEFORE allocating its replacement. A decoder shell here is
+        // ~2.5 MiB of PSRAM; allocating the new one inside the match arm leaves the old one alive
+        // until the arm ends, which puts two shells (5 MiB) in the region at once. Hardware run
+        // 2026-11-22 hit exactly that: trace shows session A's five blocks, three extra blocks,
+        // then session B's first two blocks, then a failed 589824.
+        let existing = self.decoder.take();
+        let mut dec = match existing {
             Some(d) if !d.complete() => d,
-            _ => UrMultipartDecoder::new(),
+            Some(d) => {
+                drop(d);
+                UrMultipartDecoder::new()
+            }
+            None => UrMultipartDecoder::new(),
         };
         for attempt in 0..2 {
             match dec.receive_frame(s) {

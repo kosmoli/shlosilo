@@ -76,6 +76,13 @@ pub fn reinit() -> bool {
         p.lcd.init();
         p.lcd.test_pattern();
         LCD_READY.store(true, Ordering::Relaxed);
+        // Rebuild the bit-bang engine first: `Flex::new` re-asserts FUNCSEL=SIO on GP26/27. The
+        // `i2c` console command switches those pads to the I2C1 peripheral, and after that the
+        // already-constructed Flex objects read SIO inputs as 0 for every bit - which shows up as
+        // "every address ACKs, every register reads 0x00" and sends a diagnosis down the wrong
+        // road (2026-11-22: a phantom-ACK verdict was reported to the operator before the
+        // hardware-I2C path showed a clean idle bus and a plain NACK).
+        p.touch.restore_bb();
         p.touch.bus_recover();
         block_for(Duration::from_millis(20));
         let mut probed = p.touch.probe();
@@ -131,7 +138,8 @@ pub fn reinit() -> bool {
                 p.touch.restore_bb();
                 p.touch.bus_recover();
                 log::info!(
-                    "[panel] touch probe failed: idle SDA={} SCL={} (1 = high); \
+                    "[panel] touch probe failed (bit-bang path, SIO funcsel re-asserted): \
+                     idle SDA={} SCL={} (1 = high); \
                      ACKs/8 normal 0x{:02x}={} 0x{:02x}={} / swapped 0x{:02x}={} 0x{:02x}={}",
                     idle_sda as u8,
                     idle_scl as u8,
