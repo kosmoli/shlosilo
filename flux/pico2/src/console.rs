@@ -271,6 +271,13 @@ impl ConsoleState {
             #[cfg(feature = "bench")]
             b"cam" => return self.cmd_cam(args),
             b"faultclr" => crate::fault::clear(),
+            // Development convenience: re-enter the RP2350 USB bootloader so the host can flash
+            // without reaching for the BOOTSEL button (the console firmware has no other path back
+            // into the bootloader, which made every flash cycle a manual step).
+            b"bootsel" => {
+                log::info!("[bootsel] resetting into the USB bootloader");
+                embassy_rp::rom_data::reset_to_usb_boot(0, 0);
+            }
             _ => {
                 let echo = core::str::from_utf8(cmd).unwrap_or("<non-utf8>");
                 log::info!("[err] unknown command: {echo} (try: help)");
@@ -1921,9 +1928,15 @@ impl ConsoleState {
                 }
                 Err(e) => {
                     log::info!("[err] ur frame: {:?}", e.kind);
-                    if attempt == 0 {
-                        // The frame does not belong to the open session, so that session is
-                        // dropped with it; retry the frame against a clean decoder.
+                    // Retry the frame as the first frame of a new session ONLY when the open
+                    // session has nothing yet: mid-session noise must not discard fragments that
+                    // already arrived (that is what A4-13 was about), and a decoder shell here is
+                    // ~2.5 MiB of PSRAM, so churning one per bad frame is how the region ran out
+                    // on hardware (2026-11-22: two live shells = 5.0 MiB of 8).
+                    if attempt == 0 && dec.progress() == 0 {
+                        // Drop the old session BEFORE allocating its replacement, or the peak
+                        // doubles to two live shells.
+                        drop(dec);
                         dec = UrMultipartDecoder::new();
                     }
                 }
