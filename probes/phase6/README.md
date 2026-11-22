@@ -22,18 +22,20 @@ derivations to answer "not ours" - 39.98 s of a 71.5 s sign.
 2. the candidate fix: skip the lookahead for destinations flagged `!is_subaddress` (their only
    possible match is the main address, already compared), plus a unit pin for that branch.
 
-**Status: NOT validated, and it broke hardware twice.** First attempt: a reproducible allocator
-panic mid-sign (`allocation of 589824 bytes failed | live psram=4627888`). That block turned out to
-be pool #76 - the decode session's leaked pools (fixed since; the pico2 sessions now live in the
-static arena and two signs per boot work). Second attempt, on top of the #76 fix: the board instead
-reboots **with no crash record at all** (the transcript ends in heartbeats plus the boot smoke test,
-and `faultclr` shows nothing), so the sign never finishes and never panics.
+**Status: VALIDATED and merged** (commit `b6369bc`). The two earlier "hardware crashes" were
+harness artifacts, not this code:
 
-No-record resets after a heap that was previously found corrupted point at an out-of-bounds write,
-and the fast path's only behavioural difference is that the per-destination key-image list drops
-from 2 entries to 1 (the foreign payment output is no longer "owned"). Something downstream is
-allowed to assume "one entry per destination". Find that assumption before touching this again:
-walk the consumers of `key_images_str` (wire assembly, the `PendingTx` read-back, and whatever the
-Cake view exposes) and assert the count relationship. The host pin
-`tests/tx_key_images_wallet2_view.rs` passes either way, which is exactly why this needs a host test
-that pins the *length* relationship, not just the entries.
+- the first one was pool #76 (the decode session's leaked pools) plus a fountain storm after
+  acceptance - both fixed in `f4c2af8`;
+- the second one was the capture harness: it never set the device entropy, so the fixture failed to
+  decrypt (`EncodingInvalidFormat`, which reads exactly like a broken sign), and it counted the 5 s
+  heartbeat banner as a reboot while clearing the crash record before reading it.
+
+Hardware result on the same fixture with fixed entropy: the sign goes from 70,563 ms to
+**30,127 ms** (28,244-30,084 ms over four runs, two of them on one boot) and the signed 6098 bytes
+are unchanged, sha256 `55c4507b...`. Phase 6: 40,101 -> 200 ms; phase 13: 39,977 -> 67 ms.
+
+Lesson worth keeping: a "no crash record" reset is a claim about the harness first and the firmware
+second. `bench/p2_crashcap.py` exists for that - it timestamps every byte from boot through the sign
+without filtering or clearing anything, and `[rst]` reports POWMAN's chip-reset flags for the case
+fault.rs cannot record (it stores panics and hard faults only).
