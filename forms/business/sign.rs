@@ -1289,6 +1289,8 @@ fn sign_xmr_with_ws<'a>(
                 .compress()
                 .to_bytes()
         };
+        #[cfg(feature = "tx-phase-timing-ffi")]
+        let mut px13 = PhaseProbe::start(13);
         for (i, dest) in tx_data.splitted_dsts.iter().enumerate() {
             let owned = crate::chain::xmr::subaddress::wallet_owns_destination(
                 &our_spend_pub,
@@ -1318,6 +1320,8 @@ fn sign_xmr_with_ws<'a>(
                 })?;
             let a_ed: curve25519_dalek::EdwardsPoint = a.into();
             let a_bytes = a_ed.compress().to_bytes();
+            #[cfg(feature = "tx-phase-timing-ffi")]
+            let mut px14 = PhaseProbe::start(14);
             let shared = zeroize::Zeroizing::new(r.mul_point_cofactor(&a_bytes).map_err(|_| {
                 crate::error::ShlosiloError::new(
                     crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
@@ -1325,6 +1329,10 @@ fn sign_xmr_with_ws<'a>(
             })?);
             // Z3.2c: stack-fixed od (32B shared ‖ varint(i) ≤ 10B) — Zeroizing
             // owner on the stack, explicit wipe via Drop as before.
+            #[cfg(feature = "tx-phase-timing-ffi")]
+            if let Some(p) = px14.as_mut() {
+                p.end();
+            }
             let mut od = zeroize::Zeroizing::new([0u8; 42]);
             let mut od_n = 0usize;
             crate::types::push::push_slice(&mut od[..], &mut od_n, shared.as_ref())?;
@@ -1351,15 +1359,33 @@ fn sign_xmr_with_ws<'a>(
                     })?
                     .into();
             // both stealth and image consume hs — all scalar multiplications complete inside the within_scalar closure
+            #[cfg(feature = "tx-phase-timing-ffi")]
+            let mut px15 = PhaseProbe::start(15);
             let stealth = hs.mul_basepoint_add_point(&b_dest);
+            #[cfg(feature = "tx-phase-timing-ffi")]
+            if let Some(p) = px15.as_mut() {
+                p.end();
+            }
+            #[cfg(feature = "tx-phase-timing-ffi")]
+            let mut px16 = PhaseProbe::start(16);
             let hp: curve25519_dalek::EdwardsPoint =
                 monero_ed25519::Point::biased_hash(stealth).into();
+            #[cfg(feature = "tx-phase-timing-ffi")]
+            if let Some(p) = px16.as_mut() {
+                p.end();
+            }
             let hp_bytes = hp.compress().to_bytes();
+            #[cfg(feature = "tx-phase-timing-ffi")]
+            let mut px17 = PhaseProbe::start(17);
             let image = hs.mul_point(&hp_bytes).map_err(|_| {
                 crate::error::ShlosiloError::new(
                     crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
                 )
             })?;
+            #[cfg(feature = "tx-phase-timing-ffi")]
+            if let Some(p) = px17.as_mut() {
+                p.end();
+            }
             tki_sv
                 .push(TxKeyImageEntry {
                     output_pubkey: stealth,
@@ -1372,6 +1398,10 @@ fn sign_xmr_with_ws<'a>(
                 })?;
         }
 
+        #[cfg(feature = "tx-phase-timing-ffi")]
+        if let Some(p) = px13.as_mut() {
+            p.end();
+        }
         #[cfg(feature = "tx-phase-timing-ffi")]
         if let Some(p) = px6.as_mut() {
             p.end();

@@ -509,7 +509,7 @@
 
 #define SCHNORR_SIGNATURE_LEN 64
 
-#define TX_PHASES 12
+#define TX_PHASES 17
 
 /**
  * Protocol-hard: Monero fixed ring size (post-v13 CLSAG). Never tunable.

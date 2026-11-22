@@ -13,16 +13,26 @@
 //! 12 = the per-source key-image derivation loop inside phase 6 (2026-11-22:
 //!      phase 6 measured 40 s on pico2 while the operands cost ~13 ms on the host
 //!      model, so the window needed splitting; 6 - 12 is the remainder of 6).
+//! 13 = the per-destination key-image recomputation loop inside phase 6 (the
+//!      remainder above), split further into its own operations:
+//! 14 = `r · A` + cofactor (mul_point_cofactor), 15 = `hs·B + B_dest`
+//!      (mul_basepoint_add_point), 16 = `biased_hash(stealth)` (hash-to-point),
+//! 17 = `hs · Hp` (mul_point).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-pub const TX_PHASES: usize = 12;
+pub const TX_PHASES: usize = 17;
 
 type ClockFn = extern "C" fn() -> u32;
 
 #[allow(static_mut_refs)]
 static mut CLOCK_FN: Option<ClockFn> = None;
 static ACC: [AtomicU32; TX_PHASES] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
