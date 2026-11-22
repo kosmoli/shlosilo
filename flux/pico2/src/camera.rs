@@ -1125,17 +1125,39 @@ fn wr4(i2c: &mut I2c<'static, I2C0, I2cBlocking>, reg: u16, d1: u16, d2: u16) {
 /// need the sequence re-run after PWDN is driven properly.
 async fn sccb_configure(i2c: &mut I2c<'static, I2C0, I2cBlocking>) -> (u16, [u8; 6]) {
     // Sensor id before anything else: proves XCLK + SCCB + the module.
+    //
+    // The read RESULT is kept (2026-11-22): a NAKing bus used to read as id 0x0000 and the code
+    // went on to "configure" a sensor that was never there, which reads on the console exactly
+    // like an id mismatch. Now a failed transfer says so, and the boot line carries the verdict.
+    let mut sccb_nak = false;
     let hi = {
         let mut v = [0u8; 1];
-        let _ = i2c.blocking_write_read(SCCB_ADDR, &[0x30, 0x0A], &mut v);
+        if i2c
+            .blocking_write_read(SCCB_ADDR, &[0x30, 0x0A], &mut v)
+            .is_err()
+        {
+            sccb_nak = true;
+        }
         v[0]
     };
     let lo = {
         let mut v = [0u8; 1];
-        let _ = i2c.blocking_write_read(SCCB_ADDR, &[0x30, 0x0B], &mut v);
+        if i2c
+            .blocking_write_read(SCCB_ADDR, &[0x30, 0x0B], &mut v)
+            .is_err()
+        {
+            sccb_nak = true;
+        }
         v[0]
     };
     let sensor_id = ((hi as u16) << 8) | lo as u16;
+    if sccb_nak {
+        // Id 0x0000 with a NAK = nothing answered at the sensor address. Distinguishes "module
+        // absent / unpowered / SCCB not wired" from "module present, id unexpected" in one line.
+        log::info!(
+            "[cam] SCCB NAK at 0x{SCCB_ADDR:02x}: no sensor answered (XCLK is running if the              [cam] XCLK line printed); id read as {sensor_id:#06x} is meaningless"
+        );
+    }
 
     // Vendor init table, with its delays honoured (see INIT_TABLE docs).
     for &(reg, val) in INIT_TABLE {
@@ -1473,6 +1495,13 @@ pub async fn init(p: Pins) -> Camera {
     // the readback line these three separate the failure modes: writes not
     // landing / no DVP signals at the pads / signals present but the capture
     // program not consuming them.
+    // PWDN state belongs in the verdict: "all three DVP lines dead" is the documented signature
+    // of PWDN driven high (or of no module at all), so report what the line was left at.
+    log::info!(
+        "[cam] PWDN(GP24) driven low at boot (high 10 ms -> low -> 50 ms settle); \
+         runtime sweep: `cam pwdn z|0|1`"
+    );
+
     let hits = sample_pins(20_000);
     log::info!(
         "[cam] pad samples (20k): VSYNC(GP8) {}/20000 high, HREF(GP9) {}/20000, \

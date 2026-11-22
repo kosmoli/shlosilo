@@ -23,6 +23,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, block_for};
 
 use crate::lcd::{self, St7796};
+use crate::touch::{CST816_ADDR, DEFAULT_HALF_CYCLES, FT6236_ADDR};
 use crate::touch::{Chip, Touch};
 
 /// Everything the panel bring-up owns: both drivers plus the shared reset.
@@ -104,7 +105,45 @@ pub fn reinit() -> bool {
             }
             Err(()) => {
                 TOUCH_FAILED.store(true, Ordering::Relaxed);
-                log::info!("[panel] touch probe failed (no controller answered)");
+                // Forensics in the boot line (2026-11-22): "no controller answered" has four very
+                // different causes and they all print the same thing today - no module / a bus
+                // held low / SDA-SCL swapped on this panel / a controller that is present but
+                // latched. Report the bus state and the ACK counts per address, both ways round,
+                // so one boot separates them.
+                let idle_sda = p.touch.bb().sda_is_high();
+                let idle_scl = p.touch.bb().scl_is_high();
+                let mut acks = [0u32; 4];
+                // (addr, swapped) - the swapped pair catches a panel/FPC whose SDA/SCL are the
+                // other way round from the documented pin roles.
+                for (i, (addr, swap)) in [
+                    (FT6236_ADDR, false),
+                    (CST816_ADDR, false),
+                    (FT6236_ADDR, true),
+                    (CST816_ADDR, true),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    p.touch.rebuild_bb(swap, DEFAULT_HALF_CYCLES);
+                    p.touch.bus_recover();
+                    acks[i] = p.touch.probe_addr_stats(addr, 8);
+                }
+                p.touch.restore_bb();
+                p.touch.bus_recover();
+                log::info!(
+                    "[panel] touch probe failed: idle SDA={} SCL={} (1 = high); \
+                     ACKs/8 normal 0x{:02x}={} 0x{:02x}={} / swapped 0x{:02x}={} 0x{:02x}={}",
+                    idle_sda as u8,
+                    idle_scl as u8,
+                    FT6236_ADDR,
+                    acks[0],
+                    CST816_ADDR,
+                    acks[1],
+                    FT6236_ADDR,
+                    acks[2],
+                    CST816_ADDR,
+                    acks[3]
+                );
             }
         }
 
