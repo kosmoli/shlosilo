@@ -351,6 +351,7 @@ pub fn build_and_sign_tx<'a, R: RngCore + CryptoRng>(
         &mut bp_straus_storage,
         crate::types::caps::SIGN_WS_BP_TERMS,
     )
+    .map(|s| s.with_chunk_terms(crate::types::caps::SIGN_BP_CHUNK_TERMS))
     .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
     let mut wip_storage = alloc::vec![
         0u8;

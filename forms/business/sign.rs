@@ -1144,7 +1144,9 @@ fn sign_xmr_with_ws<'a>(
         let mut bp_straus = match curve25519_dalek::scratch::StrausScratch::new(
             bp.straus,
             crate::types::caps::SIGN_WS_BP_CHUNK_MAX,
-        ) {
+        )
+        .map(|s| s.with_chunk_terms(crate::types::caps::SIGN_BP_CHUNK_TERMS))
+        {
             Ok(s) => s,
             Err(_) => {
                 return Err(crate::error::ShlosiloError::new(

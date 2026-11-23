@@ -406,7 +406,7 @@ impl ConsoleState {
         log::info!("[help]   xtiming         dump the XMR phase-timing table (probe builds)");
         #[cfg(feature = "perf-timing")]
         log::info!(
-            "[help]   xmrchunk <n>    BP+ multiexp chunk size (table placement; probe builds)"
+            "[help]   xmrchunk        BP+ multiexp chunk terms this build uses (probe builds)"
         );
         #[cfg(feature = "perf-bench")]
         log::info!(
@@ -1665,34 +1665,21 @@ impl ConsoleState {
     /// `entropy <hex>`: test-vector mnemonic loader. Bench builds only
     /// (audit #17).
     #[cfg(feature = "bench")]
-    /// `xmrchunk <n>`: set the BP+ multiexp chunk size (terms per CT table).
-    /// Larger chunks = fewer doubling chains but bigger tables; the table
-    /// routes to PSRAM once `n * 1280B` exceeds the 16 KiB threshold
-    /// (n >= 13). Probe builds only.
+    /// `xmrchunk`: report the BP+ multiexp chunk terms this build uses
+    /// (a platform-profile value, recorded per call on the straus scratch —
+    /// there is deliberately no setter: a process-wide knob would make a
+    /// call's result depend on boot order). Probe builds only.
     #[cfg(feature = "perf-timing")]
-    fn cmd_xmrchunk(&self, args: &[u8]) {
-        let n = core::str::from_utf8(trim_ascii(args))
-            .unwrap_or("")
-            .parse::<usize>()
-            .map(|v| v.clamp(1, 256));
-        match n {
-            Ok(v) => {
-                shlosilo::chain::xmr::set_bp_multiexp_chunk_terms(v);
-                let table = v * 1280;
-                log::info!(
-                    "[chunk] bp+ multiexp chunk = {v} terms (table {table} B -> {})",
-                    if table > 16 * 1024 { "PSRAM" } else { "SRAM" }
-                );
-            }
-            Err(_) => log::info!("[err] xmrchunk: usage: xmrchunk <terms>"),
-        }
+    fn cmd_xmrchunk(&self, _args: &[u8]) {
+        let v = shlosilo::types::caps::SIGN_BP_CHUNK_TERMS;
+        let table = v * 1280;
+        log::info!(
+            "[chunk] bp+ multiexp chunk = {v} terms (table {table} B -> {}); cap {} terms",
+            if table > 16 * 1024 { "PSRAM" } else { "SRAM" },
+            shlosilo::types::caps::SIGN_WS_BP_CHUNK_MAX
+        );
     }
 
-    /// `perfbench [name] [iters]`: run the dalek device-primitive benchmarks
-    /// (fmul / fsq / select / selaff / madd / maddaff / quad / ct <n> / vt2).
-    /// With no name (or `all`) runs the standard suite with defaults.
-    /// Diagnostic builds only (feature `perf-bench`).
-    #[cfg(feature = "perf-bench")]
     fn cmd_perfbench(&self, args: &[u8]) {
         use shlosilo::ffi::perf_bench_ffi as pb;
 

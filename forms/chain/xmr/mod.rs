@@ -8,26 +8,13 @@
 
 pub mod clsag;
 
-/// BP+ multiexp chunk size (per-platform memory-placement tuning; see
-/// `vendor/monero-bulletproofs/src/core.rs`). Table bytes = n x 1280B; each
-/// host picks the largest chunk whose table fits its fastest memory
-/// (forgebox SRAM pool 48K -> 36; pico2 SRAM heap 16K routing -> 12).
-/// Default 36; call once at boot.
-///
-/// T-04 follow-up (2026-09-30): clamped to `caps::SIGN_WS_BP_CHUNK_MAX` — the
-/// workspace straus scratch is sized from that cap, so a larger chunk would
-/// fail `StrausScratch::new` at prove time. The getter reports the value in
-/// force after clamping.
-pub fn set_bp_multiexp_chunk_terms(n: usize) {
-    let n = n.clamp(1, crate::types::caps::SIGN_WS_BP_CHUNK_MAX);
-    monero_bulletproofs::set_multiexp_chunk_terms(n);
-}
-
-/// Current BP+ multiexp chunk size in terms (default 36).
-#[must_use]
-pub fn bp_multiexp_chunk_terms() -> usize {
-    monero_bulletproofs::multiexp_chunk_terms()
-}
+/// BP+ multiexp chunk size in terms — a *per-call* choice recorded on the
+/// caller's `StrausScratch` (`with_chunk_terms`), never a process-wide value.
+/// Table bytes = n x 1280B; each carrier picks the largest chunk whose table
+/// fits its fastest memory (forgebox SRAM pool 48K -> 36; pico2 SRAM heap
+/// 16K routing -> 12). Clamped to `caps::SIGN_WS_BP_CHUNK_MAX` at the point
+/// the scratch is built, because the workspace straus region is sized from
+/// that cap. See `vendor/monero-bulletproofs/src/core.rs`.
 pub mod commitment;
 /// Test-only hooks for the BP+ generator cache (`#[doc(hidden)]`, not public API).
 #[cfg(feature = "std")]

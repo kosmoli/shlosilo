@@ -1,6 +1,6 @@
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/build.rs b/build.rs
 --- a/build.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/build.rs	2026-11-21 03:47:07.804803164 +0800
++++ b/build.rs	2026-11-21 03:59:04.092137247 +0800
 @@ -1,59 +1,138 @@
  //! Builds the generators within the Constant Reference String for Bulletproofs(+) at compile-time,
  //! allowing apps to solely deserialize them (without having to calculate them).
@@ -515,8 +515,8 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/core.rs b/src/core.rs
 --- a/src/core.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/core.rs	2026-10-01 16:00:57.826071847 +0800
-@@ -1,33 +1,229 @@
++++ b/src/core.rs	2026-11-23 14:47:34.642153956 +0800
+@@ -1,33 +1,231 @@
 +use core::sync::atomic::{AtomicUsize, Ordering};
 +
 +#[cfg(any(feature = "alloc-fallback", feature = "prove-timing"))]
@@ -535,25 +535,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 -  MAX_BULLETPROOF_COMMITMENTS as MAX_COMMITMENTS, COMMITMENT_BITS,
 -};
 +pub(crate) use crate::{COMMITMENT_BITS, MAX_COMMITMENTS};
- 
--pub(crate) fn multiexp(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
--  let mut buf_scalars = Vec::with_capacity(pairs.len());
--  let mut buf_points = Vec::with_capacity(pairs.len());
--  for (scalar, point) in pairs {
--    buf_scalars.push(scalar);
--    buf_points.push(point);
--  }
--  EdwardsPoint::multiscalar_mul(buf_scalars, buf_points)
--}
--
--pub(crate) fn multiexp_vartime(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
--  let mut buf_scalars = Vec::with_capacity(pairs.len());
--  let mut buf_points = Vec::with_capacity(pairs.len());
--  for (scalar, point) in pairs {
--    buf_scalars.push(scalar);
--    buf_points.push(point);
--  }
--  EdwardsPoint::vartime_multiscalar_mul(buf_scalars, buf_points)
++
 +/// Constant-time multiexp, chunked so every Straus lookup table fits the
 +/// host's fast memory. The chunk size is a PER-PLATFORM tuning knob
 +/// (runtime, default 36):
@@ -587,19 +569,21 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +/// select discipline. The only cost is re-running the per-chunk doubling
 +/// chain (64 iterations per chunk instead of once overall) — measured at
 +/// ~12ms/chunk on pico2, small against the per-term table traffic.
-+static MULTIEXP_CHUNK_TERMS: AtomicUsize = AtomicUsize::new(36);
++/// Chunking used when the caller did not record a choice on its
++/// `StrausScratch` (`with_chunk_terms`). 36 is the historical default and
++/// the ForgeBox optimum (SRAM pool admits the 46,080B table); a carrier
++/// that measures a better chunk passes it per call instead of registering
++/// a process-wide value, so identical inputs always produce identical
++/// results regardless of boot order.
++pub const DEFAULT_MULTIEXP_CHUNK_TERMS: usize = 36;
 +
-+/// Set the per-platform chunk size (terms per CT Straus table). The host
-+/// calls this once at boot with the largest chunk whose table
-+/// (`n * 1280B`) fits its fastest memory. Values of 0 are clamped to 1.
-+pub fn set_multiexp_chunk_terms(n: usize) {
-+    MULTIEXP_CHUNK_TERMS.store(n.max(1), Ordering::Relaxed);
-+}
-+
-+/// Current chunk size in terms (default 36).
-+#[must_use]
-+pub fn multiexp_chunk_terms() -> usize {
-+    MULTIEXP_CHUNK_TERMS.load(Ordering::Relaxed)
++/// The chunk size this call actually uses: the caller's recorded choice if
++/// any, clamped to what the provided storage can hold.
++fn chunk_terms(scratch: &curve25519_dalek::scratch::StrausScratch) -> usize {
++    scratch
++        .chunk_terms()
++        .unwrap_or(DEFAULT_MULTIEXP_CHUNK_TERMS)
++        .clamp(1, scratch.terms_cap())
 +}
 +
 +/// shlosilo vendor patch (Z5.3 D-cut): the large-term path runs over the
@@ -609,7 +593,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    pairs: &[(Scalar, EdwardsPoint)],
 +    scratch: &mut curve25519_dalek::scratch::StrausScratch,
 +) -> Result<EdwardsPoint, curve25519_dalek::scratch::ScratchError> {
-+    let chunk = multiexp_chunk_terms();
++    let chunk = chunk_terms(scratch);
 +    if pairs.len() <= chunk {
 +        return multiexp_chunk_scratch(pairs, scratch);
 +    }
@@ -622,7 +606,25 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +    }
 +    Ok(acc)
 +}
-+
+ 
+-pub(crate) fn multiexp(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
+-  let mut buf_scalars = Vec::with_capacity(pairs.len());
+-  let mut buf_points = Vec::with_capacity(pairs.len());
+-  for (scalar, point) in pairs {
+-    buf_scalars.push(scalar);
+-    buf_points.push(point);
+-  }
+-  EdwardsPoint::multiscalar_mul(buf_scalars, buf_points)
+-}
+-
+-pub(crate) fn multiexp_vartime(pairs: &[(Scalar, EdwardsPoint)]) -> EdwardsPoint {
+-  let mut buf_scalars = Vec::with_capacity(pairs.len());
+-  let mut buf_points = Vec::with_capacity(pairs.len());
+-  for (scalar, point) in pairs {
+-    buf_scalars.push(scalar);
+-    buf_points.push(point);
+-  }
+-  EdwardsPoint::vartime_multiscalar_mul(buf_scalars, buf_points)
 +fn multiexp_chunk_scratch(
 +    pairs: &[(Scalar, EdwardsPoint)],
 +    scratch: &mut curve25519_dalek::scratch::StrausScratch,
@@ -753,7 +755,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +            pairs.iter().map(|(_, point)| point),
 +        ));
 +    }
-+    let chunk = multiexp_chunk_terms();
++    let chunk = chunk_terms(scratch);
 +    let mut acc = EdwardsPoint::identity();
 +    let mut remaining = pairs;
 +    while !remaining.is_empty() {
@@ -770,7 +772,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
  }
  
  /*
-@@ -49,28 +245,29 @@
+@@ -49,28 +247,29 @@
  When there are 4 challenges (n=16), the iterative approach does 28 multiplications
  versus divide and conquer's 24.
  */
@@ -1282,7 +1284,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +}
 diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.json' '--exclude=.cargo-ok' a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs	2006-07-24 09:21:28.000000000 +0800
-+++ b/src/lib.rs	2026-10-24 12:08:18.446909720 +0800
++++ b/src/lib.rs	2026-11-23 14:47:39.285213829 +0800
 @@ -3,41 +3,93 @@
  #![cfg_attr(not(feature = "std"), no_std)]
  #![allow(non_snake_case)]
@@ -1326,7 +1328,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' '--exclude=.cargo-checksum.j
 +// bare path would be ambiguous at the root scope.
 +#[cfg(feature = "prove-timing")]
 +pub use crate::core::bench_multiexp_chain;
-+pub use crate::core::{multiexp_chunk_terms, set_multiexp_chunk_terms};
++pub use crate::core::DEFAULT_MULTIEXP_CHUNK_TERMS;
 +
 +// shlosilo vendor patch: the count constants are redefined locally (verbatim
 +// from monero-bulletproofs-generators 0.1.0) so the runtime graph no longer

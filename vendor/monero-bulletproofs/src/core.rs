@@ -44,19 +44,21 @@ pub(crate) use crate::{COMMITMENT_BITS, MAX_COMMITMENTS};
 /// select discipline. The only cost is re-running the per-chunk doubling
 /// chain (64 iterations per chunk instead of once overall) — measured at
 /// ~12ms/chunk on pico2, small against the per-term table traffic.
-static MULTIEXP_CHUNK_TERMS: AtomicUsize = AtomicUsize::new(36);
+/// Chunking used when the caller did not record a choice on its
+/// `StrausScratch` (`with_chunk_terms`). 36 is the historical default and
+/// the ForgeBox optimum (SRAM pool admits the 46,080B table); a carrier
+/// that measures a better chunk passes it per call instead of registering
+/// a process-wide value, so identical inputs always produce identical
+/// results regardless of boot order.
+pub const DEFAULT_MULTIEXP_CHUNK_TERMS: usize = 36;
 
-/// Set the per-platform chunk size (terms per CT Straus table). The host
-/// calls this once at boot with the largest chunk whose table
-/// (`n * 1280B`) fits its fastest memory. Values of 0 are clamped to 1.
-pub fn set_multiexp_chunk_terms(n: usize) {
-    MULTIEXP_CHUNK_TERMS.store(n.max(1), Ordering::Relaxed);
-}
-
-/// Current chunk size in terms (default 36).
-#[must_use]
-pub fn multiexp_chunk_terms() -> usize {
-    MULTIEXP_CHUNK_TERMS.load(Ordering::Relaxed)
+/// The chunk size this call actually uses: the caller's recorded choice if
+/// any, clamped to what the provided storage can hold.
+fn chunk_terms(scratch: &curve25519_dalek::scratch::StrausScratch) -> usize {
+    scratch
+        .chunk_terms()
+        .unwrap_or(DEFAULT_MULTIEXP_CHUNK_TERMS)
+        .clamp(1, scratch.terms_cap())
 }
 
 /// shlosilo vendor patch (Z5.3 D-cut): the large-term path runs over the
@@ -66,7 +68,7 @@ pub(crate) fn multiexp(
     pairs: &[(Scalar, EdwardsPoint)],
     scratch: &mut curve25519_dalek::scratch::StrausScratch,
 ) -> Result<EdwardsPoint, curve25519_dalek::scratch::ScratchError> {
-    let chunk = multiexp_chunk_terms();
+    let chunk = chunk_terms(scratch);
     if pairs.len() <= chunk {
         return multiexp_chunk_scratch(pairs, scratch);
     }
@@ -210,7 +212,7 @@ pub(crate) fn multiexp_vartime(
             pairs.iter().map(|(_, point)| point),
         ));
     }
-    let chunk = multiexp_chunk_terms();
+    let chunk = chunk_terms(scratch);
     let mut acc = EdwardsPoint::identity();
     let mut remaining = pairs;
     while !remaining.is_empty() {

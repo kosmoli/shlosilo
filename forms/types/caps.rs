@@ -20,13 +20,20 @@ pub const SIGN_WS_BP_TERMS: usize = 2050;
 /// two agree — same source-of-truth discipline as the Z3.3b ws layout).
 ///
 /// T-04 follow-up (2026-09-30): sized for the CHUNK capacity, not the terms
-/// bound. The chunked multiexp feeds `multiexp_chunk_terms()` terms at a time
-/// (default 36, per-platform deployment), so a terms-cap-sized pool was 57x
+/// bound. The chunked multiexp feeds `SIGN_BP_CHUNK_TERMS` terms at a time (a
+/// per-carrier profile value, default 36), so a terms-cap-sized pool was 57x
 /// larger than the live working set (5.77MB -> ~99KB) and pushed the ws past
 /// the 8MB PSRAM heap on forgebox ("sign ws: alloc fail (10575072 bytes)").
-/// `set_bp_multiexp_chunk_terms` clamps to this cap (a larger chunk would
-/// make `StrausScratch::new` fail loudly at prove time).
+/// This cap is the ceiling: `build.rs` asserts the profile's
+/// `sign_bp_chunk_terms` never exceeds it, and the scratch clamps again when a
+/// chunk is recorded on it (a larger chunk would read past the region).
 pub const SIGN_WS_BP_CHUNK_MAX: usize = crate::limits::SIGN_WS_BP_CHUNK_MAX;
+
+/// BP+ multiexp chunk terms this carrier asks for. Recorded on the straus
+/// scratch per call (`with_chunk_terms`), never registered process-wide, so a
+/// call's result depends only on its arguments. Profile-sourced; the build
+/// asserts it does not exceed `SIGN_WS_BP_CHUNK_MAX`.
+pub const SIGN_BP_CHUNK_TERMS: usize = crate::limits::SIGN_BP_CHUNK_TERMS;
 pub const SIGN_WS_BP_STRAUS_BYTES: usize =
     SIGN_WS_BP_CHUNK_MAX * (16 * 160) + SIGN_WS_BP_CHUNK_MAX * 256 + 64;
 /// CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB).

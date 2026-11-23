@@ -471,10 +471,12 @@ builds, so compare within one build). Two wins compose: BP+ table placement
 — the CT Straus multiexp tables are `n × 1280 B` and cost ~2× per term once
 they cross the 16 KiB PSRAM routing threshold (measured: SRAM tables
 ~11.7 ms + n×4.0 ms per chunk vs PSRAM ~7.6 ms + n×9.34 ms; see `bench/`
-and the `perfbench` console command); the chunk size is a per-host runtime
-knob (`set_bp_multiexp_chunk_terms`): forgebox keeps 36 (46 KB tables in
-its 48 K SRAM pool), pico2 sets 12 (15,360 B -> SRAM heap, boot-time
-default) — and the `codegen-compact` out-of-line CT-Straus codegen
+and the `perfbench` console command); the chunk size is a per-carrier
+**profile** value (`limits/<profile>.toml: sign_bp_chunk_terms`, generated
+into `caps::SIGN_BP_CHUNK_TERMS` and recorded on the straus scratch per
+call — there is no runtime setter, so a call's result never depends on boot
+order): forgebox keeps 36 (46 KB tables in its 48 K SRAM pool), pico2 uses
+12 (15,360 B -> SRAM heap) — and the `codegen-compact` out-of-line CT-Straus codegen
 (−197 ms net / −540 ms mechanism accounting on the batch protocol; part of
 the perf target's default features). Remaining time (batch readings):
 BP+ prove (bp1 1.3 / bp5 3.1 / bp6 3.0 s), CN ~5.1 s and CLSAG ~2.3 s.
@@ -483,8 +485,9 @@ Probe builds (`make pico2-perf-uf2`, features `perf-timing` + `perf-bench`
 + `codegen-compact`; flavor shows as `build=bench+perf`): `xtiming` dumps
 the per-phase tables (tx / bp / cn) accumulated during the last sign;
 `perfbench [name] [iters]` times raw device primitives (fmul / select /
-madd / quad / chunked CT multiexp / vartime 2-term); `xmrchunk <n>` flips
-the chunk size at runtime for single-variable A/B runs.
+madd / quad / chunked CT multiexp / vartime 2-term); `xmrchunk` reports the
+chunk terms this build uses (change it in `limits/pico2.toml` and rebuild —
+that is the single source of truth).
 
 The fitted panel (ST7796S + FT6236) and the mono UI are done and verified
 on hardware: the P2 UI base (1bpp canvas, Terminus ASCII font, QR page,

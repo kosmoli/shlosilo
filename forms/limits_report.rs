@@ -97,7 +97,7 @@ impl BudgetReport {
              \"budgets\":{{\"psram\":{},\"stack\":{},\"headroom\":{},\"fits\":{}}},\
              \"limits\":{{\"bt_tx_inputs_max\":{},\"bt_tx_outputs_max\":{},\"psbt_maps_max\":{},\
              \"ur_ws_decoded_slots\":{},\"ur_payload_max\":{},\"pairing_records_max\":{},\
-             \"sign_ws_bp_chunk_max\":{}}}}}",
+             \"sign_ws_bp_chunk_max\":{},\"sign_bp_chunk_terms\":{}}}}}",
             self.profile,
             self.fingerprint,
             self.target,
@@ -120,6 +120,7 @@ impl BudgetReport {
             limits::UR_PAYLOAD_MAX,
             limits::PAIRING_RECORDS_MAX,
             limits::SIGN_WS_BP_CHUNK_MAX,
+            limits::SIGN_BP_CHUNK_TERMS,
         );
         written.map_err(|_| ReportOverflow)?;
         Ok(w.len)

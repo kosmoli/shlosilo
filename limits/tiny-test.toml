@@ -10,6 +10,7 @@ ur_ws_queue_slots = 8  # UR fountain cascade-queue slots
 ur_ws_received_slots = 32  # UR received-sequence slots (fountain sequence space)
 ur_payload_max = 1920  # <= decoded_slots x 240 B (the assembler's own bound)
 sign_ws_bp_chunk_max = 4  # BP+ multiexp chunk terms ceiling (runtime knob clamps to this)
+sign_bp_chunk_terms = 4  # BP+ multiexp chunk terms this carrier asks for (per-call value on the straus scratch; <= sign_ws_bp_chunk_max)
 pairing_records_max = 4  # XMR pairing: key-image records per response (mirrors the Rust ceiling)
 c_header = 0  # 1 = also emit the C projection header (only the C-driven carrier needs it)
 psram_budget_bytes = 262144  # heap the workspaces may use at peak

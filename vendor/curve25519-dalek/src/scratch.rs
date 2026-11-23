@@ -34,10 +34,18 @@ pub enum ScratchError {
 /// Caller-owned Straus scratch storage: two overlaid regions —
 /// `tables` (sized for the widest table type) and `digits` (sized for the
 /// widest digit array), each sized from the term capacity.
+///
+/// The object also carries the caller's *chunking* choice for the multiexp
+/// that will use it (`with_chunk_terms`): how many terms share one set of
+/// tables is a property of this storage, not of the process. Keeping it here
+/// means a caller cannot leak a tuning value across calls — the value travels
+/// with the resource it constrains, so identical inputs always produce
+/// identical results.
 pub struct StrausScratch<'a> {
     tables: &'a mut [u8],
     digits: &'a mut [u8],
     terms_cap: usize,
+    chunk_terms: Option<usize>,
 }
 
 impl<'a> StrausScratch<'a> {
@@ -72,7 +80,24 @@ impl<'a> StrausScratch<'a> {
         let digits_len = terms_cap * 256;
         let (tables, rest) = storage.split_at_mut(tables_len);
         let (digits, _slack) = rest.split_at_mut(digits_len);
-        Ok(StrausScratch { tables, digits, terms_cap })
+        Ok(StrausScratch { tables, digits, terms_cap, chunk_terms: None })
+    }
+
+    /// Record this caller's multiexp chunking choice on the resource.
+    ///
+    /// Clamped to `1..=terms_cap`: a chunk wider than the storage was sized
+    /// for cannot be honored, and silently using a wider one would read past
+    /// the region.
+    #[must_use]
+    pub fn with_chunk_terms(mut self, n: usize) -> Self {
+        self.chunk_terms = Some(n.clamp(1, self.terms_cap));
+        self
+    }
+
+    /// The chunking choice recorded by the caller, if any (None = the
+    /// consumer's own default).
+    pub fn chunk_terms(&self) -> Option<usize> {
+        self.chunk_terms
     }
 
     /// The term capacity this scratch was sized for.

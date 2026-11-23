@@ -115,15 +115,23 @@ fn sign_ws_len_fits_device_heap() {
     );
 }
 
-/// T-04 follow-up inv: the chunk setter clamps to the cap the straus pool is
-/// sized from (a larger chunk would make StrausScratch::new fail at prove).
+/// The multiexp chunk is a property of the storage a call was handed, not of
+/// the process: it is clamped to what that storage can hold, and there is no
+/// setter to leak a value across calls (identical inputs -> identical results).
 #[test]
-fn chunk_terms_clamp_to_ws_scratch_cap() {
-    shlosilo::chain::xmr::set_bp_multiexp_chunk_terms(1000);
-    assert_eq!(
-        shlosilo::chain::xmr::bp_multiexp_chunk_terms(),
-        shlosilo::types::caps::SIGN_WS_BP_CHUNK_MAX
-    );
-    shlosilo::chain::xmr::set_bp_multiexp_chunk_terms(12);
-    assert_eq!(shlosilo::chain::xmr::bp_multiexp_chunk_terms(), 12);
+fn chunk_terms_travel_with_the_straus_scratch() {
+    let cap = shlosilo::types::caps::SIGN_WS_BP_CHUNK_MAX;
+    let mut storage = vec![0u8; curve25519_dalek::scratch::StrausScratch::storage_bytes(cap)];
+    let scratch = curve25519_dalek::scratch::StrausScratch::new(&mut storage, cap).unwrap();
+    assert_eq!(scratch.chunk_terms(), None, "unset = consumer default");
+
+    let clamped = scratch.with_chunk_terms(1000);
+    assert_eq!(clamped.chunk_terms(), Some(cap), "clamped to the capacity");
+
+    // The profile value a carrier actually asks for must fit the cap the
+    // workspace region is sized from (build.rs asserts the same pair).
+    let asked = shlosilo::types::caps::SIGN_BP_CHUNK_TERMS;
+    assert!(asked <= cap, "profile chunk {asked} exceeds cap {cap}");
+    let scratch = curve25519_dalek::scratch::StrausScratch::new(&mut storage, cap).unwrap();
+    assert_eq!(scratch.with_chunk_terms(asked).chunk_terms(), Some(asked));
 }

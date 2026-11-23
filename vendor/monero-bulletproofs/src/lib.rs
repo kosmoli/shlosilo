@@ -34,7 +34,7 @@ use curve25519_dalek::EdwardsPoint;
 // bare path would be ambiguous at the root scope.
 #[cfg(feature = "prove-timing")]
 pub use crate::core::bench_multiexp_chain;
-pub use crate::core::{multiexp_chunk_terms, set_multiexp_chunk_terms};
+pub use crate::core::DEFAULT_MULTIEXP_CHUNK_TERMS;
 
 // shlosilo vendor patch: the count constants are redefined locally (verbatim
 // from monero-bulletproofs-generators 0.1.0) so the runtime graph no longer

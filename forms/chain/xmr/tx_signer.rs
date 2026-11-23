@@ -491,7 +491,9 @@ pub fn sign_tx_from_construction_with_rngs<B: RngCore + CryptoRng, C: RngCore + 
     let mut straus_scratch = match curve25519_dalek::scratch::StrausScratch::new(
         &mut straus_storage,
         crate::types::caps::SIGN_WS_BP_TERMS,
-    ) {
+    )
+    .map(|s| s.with_chunk_terms(crate::types::caps::SIGN_BP_CHUNK_TERMS))
+    {
         Ok(s) => s,
         Err(_) => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
     };

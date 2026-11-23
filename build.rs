@@ -83,6 +83,7 @@ fn emit_limits() {
         "ur_source_fragments_max",
         "review_lines_max",
         "sign_ws_bp_chunk_max",
+        "sign_bp_chunk_terms",
         "pairing_records_max",
         "xmr_inputs_max",
         "c_header",
@@ -204,6 +205,17 @@ fn emit_limits() {
             .map(|(_, v)| v)
             .expect("schema check above guarantees presence")
     };
+
+    // Cross-key sanity: the per-call multiexp chunk may not exceed the ceiling the
+    // straus scratch region is sized from - a bigger chunk would make
+    // `StrausScratch::new` fail at prove time, i.e. a profile-only error that would
+    // surface as a runtime encoding error on the device.
+    assert!(
+        get("sign_bp_chunk_terms") <= get("sign_ws_bp_chunk_max"),
+        "profile {profile}: sign_bp_chunk_terms ({}) must be <= sign_ws_bp_chunk_max ({})",
+        get("sign_bp_chunk_terms"),
+        get("sign_ws_bp_chunk_max")
+    );
 
     // Cross-key sanity: the inbound payload ceiling cannot exceed what the part
     // domain can deliver (255 parts' worth of the largest fragment we accept).
