@@ -61,7 +61,11 @@ use static_cell::StaticCell;
 /// 11552 bytes over the old capacity (allocation failure -> panic). Grown to
 /// 224 KiB: the measured demand plus ~81 KiB of slack, while leaving ~270 KiB
 /// of the 512 KiB SRAM for stack (embassy tasks run on the main stack).
-const SRAM_HEAP_SIZE: usize = 224 * 1024;
+/// 160 KiB: the measured demand through a full UR-feed + signature is 3,453 B
+/// peak, so this still leaves ~47x headroom. It used to be 224 KiB, which was
+/// stack the sign path could not spare (measured margin: 224 B); the difference
+/// funds both the BP table scratch (33,856 B) and a real margin.
+const SRAM_HEAP_SIZE: usize = 160 * 1024;
 static mut SRAM_HEAP_MEM: [MaybeUninit<u8>; SRAM_HEAP_SIZE] =
     [MaybeUninit::uninit(); SRAM_HEAP_SIZE];
 

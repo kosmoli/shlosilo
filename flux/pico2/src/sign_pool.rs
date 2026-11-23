@@ -118,6 +118,55 @@ pub fn take_sign() -> Option<SignArena> {
     Some(SignArena { buf })
 }
 
+/// BP+ multiexp tables live in internal SRAM, not in the workspace arena.
+///
+/// The tables are re-read 64 times per term, so this is a memory-tier question
+/// before it is an arithmetic one: the same loop and term count measured
+/// 7.75 ms/term with the tables in SRAM against 12.1 ms/term in the PSRAM
+/// workspace tier (pico2, `perfbench` CT multiexp). 33,856 B at this profile's
+/// 12-term chunk, reserved at build time in `.bss` - never allocated, never seen
+/// by the heap.
+#[repr(align(32))]
+struct BpScratchBuf([u8; shlosilo::types::caps::SIGN_SCRATCH_BYTES]);
+static mut BP_SCRATCH: BpScratchBuf = BpScratchBuf([0; shlosilo::types::caps::SIGN_SCRATCH_BYTES]);
+static BP_SCRATCH_TAKEN: AtomicBool = AtomicBool::new(false);
+
+/// Exclusive handle over [`BP_SCRATCH`]; the flag clears on drop, so two signs
+/// can never hold it at once (same discipline as the arena, separate flag
+/// because the scratch is legitimately held *together with* the arena).
+pub struct BpScratch {
+    buf: &'static mut [u8],
+}
+
+impl Drop for BpScratch {
+    fn drop(&mut self) {
+        BP_SCRATCH_TAKEN.store(false, Ordering::Release);
+    }
+}
+
+impl BpScratch {
+    pub fn as_mut(&mut self) -> &mut [u8] {
+        self.buf
+    }
+}
+
+/// Take the BP table scratch exclusively. `None` = already taken.
+pub fn take_bp_scratch() -> Option<BpScratch> {
+    if BP_SCRATCH_TAKEN.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    // SAFETY: `BP_SCRATCH` is a static no allocator ever sees, and the flag
+    // above makes this the only outstanding `&mut` over it. The region is
+    // 32-byte aligned by the wrapper, above the 8 bytes the signer asks for.
+    let buf = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(BP_SCRATCH.0) as *mut u8,
+            shlosilo::types::caps::SIGN_SCRATCH_BYTES,
+        )
+    };
+    Some(BpScratch { buf })
+}
+
 /// Exclusive handle over the UR decode workspace, which OVERLAYS the sign arena.
 ///
 /// The overlay is sound because the two lifespans provably never meet: a decode session is alive
@@ -258,6 +307,10 @@ pub(crate) fn sign_stretch(
     let Some(mut ws) = shlosilo::business::sign::carve_sign_ws(arena.as_mut()) else {
         return Err(err());
     };
+    // The BP tables go to internal SRAM, not into the arena: same math, same
+    // output, ~1.5x cheaper per term (see `BpScratchBuf`). Unavailable scratch
+    // is not an error - the signer carves the same capacity out of the arena.
+    let mut bp_scratch = take_bp_scratch();
     shlosilo::business::sign::sign_with_entropy_ws(
         input,
         shlosilo::ur::ur_encode::UrTypeTag::XmrTxUnsigned,
@@ -265,7 +318,7 @@ pub(crate) fn sign_stretch(
         &[], // wallet KI records: not yet retained on pico2 (dev console)
         entropy,
         Some(&mut ws),
-        None,
+        bp_scratch.as_mut().map(|s| s.as_mut()),
         out,
     )
 }
