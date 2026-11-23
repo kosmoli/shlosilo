@@ -230,7 +230,7 @@ int main(void) {
     const char *bad_uri = "not-a-ur";
     rc = shlosilo_sign_ur_ffi(bad_uri, indices, 12, NULL, 0, 0, NULL, 0,
                               signed_out, sizeof(signed_out), &actual,
-                              sign_ws, ws_need);
+                              sign_ws, ws_need, NULL, 0);
     printf("sign_ur(bad) rc=%d (expected != 0)\n", rc);
 
     /* 4b. Real UR: the sim can build the payload internally but cannot run
@@ -241,7 +241,7 @@ int main(void) {
         "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
     rc = shlosilo_sign_ur_ffi(fixture_uri, indices, 12, NULL, 0, 0, NULL, 0,
                               signed_out, sizeof(signed_out), &actual,
-                              sign_ws, ws_need);
+                              sign_ws, ws_need, NULL, 0);
     if (rc == 0) {
         hexdump("signed tx", signed_out, actual);
     } else {

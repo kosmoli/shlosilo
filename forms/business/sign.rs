@@ -131,6 +131,7 @@ pub fn sign_with_entropy(
         &[],
         entropy,
         None,
+        None,
         output_buf,
     )
 }
@@ -229,7 +230,7 @@ pub fn sign_with_entropy_records(
     output_buf: &mut [u8],
 ) -> Result<usize> {
     sign_with_entropy_ws(
-        sign_input, type_tag, ur_payload, ki_records, entropy, None, output_buf,
+        sign_input, type_tag, ur_payload, ki_records, entropy, None, None, output_buf,
     )
 }
 
@@ -244,6 +245,7 @@ pub fn sign_with_entropy_records(
 ///
 /// `ki_records`: the pairing-beat wallet key image retention (XMR only; see
 /// [`sign_with_entropy_records`]). Empty = no retention available.
+#[allow(clippy::too_many_arguments)] // frozen legacy arg list + the scratch region
 pub fn sign_with_entropy_ws(
     sign_input: SignInput<'_>,
     type_tag: crate::ur::ur_encode::UrTypeTag,
@@ -251,6 +253,7 @@ pub fn sign_with_entropy_ws(
     ki_records: &[WalletKiRecord],
     entropy: &[u8],
     ws: Option<&mut SignWs<'_>>,
+    scratch: Option<&mut [u8]>,
     output_buf: &mut [u8],
 ) -> Result<usize> {
     sign_with_entropy_ws_views(
@@ -261,6 +264,7 @@ pub fn sign_with_entropy_ws(
         ki_records,
         entropy,
         ws,
+        scratch,
         output_buf,
     )
 }
@@ -278,6 +282,7 @@ pub fn sign_with_entropy_ws_views(
     ki_records: &[WalletKiRecord],
     entropy: &[u8],
     ws: Option<&mut SignWs<'_>>,
+    scratch: Option<&mut [u8]>,
     output_buf: &mut [u8],
 ) -> Result<usize> {
     let t_total = crate::device_timing::Mark::start(crate::device_timing::STAGE_PBKDF2);
@@ -327,6 +332,7 @@ pub fn sign_with_entropy_ws_views(
                     payload,
                     ki_records,
                     entropy,
+                    scratch,
                     output_buf,
                 )?;
                 Ok(n)
@@ -826,6 +832,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
 #[cfg(feature = "tx-phase-timing-ffi")]
 use crate::tx_phase_hook::PhaseProbe;
 
+#[allow(clippy::too_many_arguments)] // frozen arg list + the scratch region
 fn sign_xmr_with_ws<'a>(
     tail: crate::canonical::TailView,
     ws: &mut SignWs<'a>,
@@ -833,6 +840,7 @@ fn sign_xmr_with_ws<'a>(
     encrypted_unsigned: &[u8],
     ki_records: &[WalletKiRecord],
     entropy: &[u8],
+    mut scratch: Option<&mut [u8]>,
     output_buf: &mut [u8],
 ) -> Result<usize> {
     use crate::chain::xmr::signed_txset::{PendingTx, SignedTxSet, TxKeyImageEntry};
@@ -1141,19 +1149,25 @@ fn sign_xmr_with_ws<'a>(
         // phase guard from overlapping this borrow (phase exclusivity is
         // structural).
         let bp = ws.bp_overlay.enter_bp();
-        let mut bp_straus = match curve25519_dalek::scratch::StrausScratch::new(
-            bp.straus,
-            crate::types::caps::SIGN_WS_BP_CHUNK_MAX,
-        )
-        .map(|s| s.with_chunk_terms(crate::types::caps::SIGN_BP_CHUNK_TERMS))
-        {
-            Ok(s) => s,
-            Err(_) => {
-                return Err(crate::error::ShlosiloError::new(
-                    crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
-                ))
-            }
+        // The BP+ multiexp tables are transient: prefer the caller's scratch
+        // region (a carrier places it in its fastest memory) and fall back to
+        // carving the same capacity out of this workspace, which lives in the
+        // bulk memory tier. Identical math, identical output.
+        let (bp_straus_bytes, bp_straus_cap): (&mut [u8], usize) = match scratch.as_deref_mut() {
+            Some(region) => (region, crate::types::caps::SIGN_BP_CHUNK_TERMS),
+            None => (bp.straus, crate::types::caps::SIGN_WS_BP_CHUNK_MAX),
         };
+        let mut bp_straus =
+            match curve25519_dalek::scratch::StrausScratch::new(bp_straus_bytes, bp_straus_cap)
+                .map(|s| s.with_chunk_terms(crate::types::caps::SIGN_BP_CHUNK_TERMS))
+            {
+                Ok(s) => s,
+                Err(_) => {
+                    return Err(crate::error::ShlosiloError::new(
+                        crate::error::ShlosiloErrorKind::EncodingInvalidFormat,
+                    ))
+                }
+            };
         let mut bp_wip = match monero_bulletproofs::WipScratch::new(
             bp.wip,
             crate::types::caps::SIGN_WS_BP_TERMS,
@@ -1547,6 +1561,7 @@ fn sign_xmr(
         encrypted_unsigned,
         ki_records,
         entropy,
+        None,
         output_buf,
     )
 }

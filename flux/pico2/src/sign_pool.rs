@@ -265,6 +265,7 @@ pub(crate) fn sign_stretch(
         &[], // wallet KI records: not yet retained on pico2 (dev console)
         entropy,
         Some(&mut ws),
+        None,
         out,
     )
 }

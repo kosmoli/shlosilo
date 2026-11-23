@@ -173,6 +173,7 @@ fn device_sign(psbt: &[u8]) -> Result<Vec<u8>, shlosilo::error::ShlosiloError> {
         &[],
         &[],
         Some(&mut ws),
+        None,
         &mut out,
     ) {
         Ok(n) => {
@@ -412,6 +413,7 @@ fn refusal_leaves_the_output_buffer_untouched() {
         &[],
         &[],
         Some(&mut ws),
+        None,
         &mut out,
     );
     assert!(rc.is_err(), "must be refused");

@@ -382,6 +382,11 @@
 #define STANDARD_MAX_LEN 96
 
 /**
+ * Alignment the caller-provided scratch region must satisfy.
+ */
+#define SHLOSILO_SIGN_SCRATCH_ALIGN 8
+
+/**
  * Plate-export modes for [`shlosilo_seed_qr_encode_ffi`] (the C contract).
  */
 #define SEED_QR_MODE_STANDARD 1
@@ -484,8 +489,14 @@
  * caller workspace `ws`/`ws_len`) — a breaking prototype change that the strict-equality
  * `shlosilo_cabi_check` could not see, so an old host would pass the check and then call
  * the entry with the wrong argument list. 0.x semver: the minor is the breaking bit.
+ *
+ * 2026-11-23 (memory contract, v2-安全 §6): 4 -> 5. The three signing entries
+ * (`shlosilo_sign_ffi` / `shlosilo_sign_ur_ffi` / `shlosilo_sign_typed_ffi`)
+ * each gained `scratch`/`scratch_len`, and two exports were added
+ * (`shlosilo_sign_scratch_len` + `SHLOSILO_SIGN_SCRATCH_ALIGN`) — a parameter
+ * shape change, so the minor must move under strict equality.
  */
-#define SHLOSILO_CABI_VERSION_MINOR 4
+#define SHLOSILO_CABI_VERSION_MINOR 5
 
 #define SHLOSILO_CABI_VERSION_PATCH 0
 
@@ -847,6 +858,7 @@ void shlosilo_timing_reset(void);
  * - `output_buf` must point to `output_buf_len` writable bytes.
  * - `actual_len` must be writable and must not overlap any other argument.
  * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
+ * - `scratch` must be either `(NULL, 0)` (carve the temporary tables out of `ws`) or a non-NULL region of `scratch_len >= shlosilo_sign_scratch_len()` writable bytes aligned to `SHLOSILO_SIGN_SCRATCH_ALIGN`, live and unaliased for the whole call.
  */
 int shlosilo_sign_ffi(const uint16_t *mnemonic_indices,
                       int mnemonic_count,
@@ -859,7 +871,9 @@ int shlosilo_sign_ffi(const uint16_t *mnemonic_indices,
                       unsigned int output_buf_len,
                       unsigned int *actual_len,
                       uint8_t *ws,
-                      unsigned int ws_len);
+                      unsigned int ws_len,
+                      uint8_t *scratch,
+                      unsigned int scratch_len);
 
 /**
  * Z3.3b: sign workspace capacity query (C-ABI workspace contract v1 — the
@@ -870,6 +884,20 @@ int shlosilo_sign_ffi(const uint16_t *mnemonic_indices,
  * workspace carve uses (contract 3: one layout source of truth).
  */
 unsigned int shlosilo_sign_ws_len(void);
+
+/**
+ * Bytes of caller-provided scratch a signing entry may ask for.
+ *
+ * A signing call accepts an optional region of this size for the temporary
+ * working memory of the algorithms it runs (currently the BP+ multiexp
+ * tables). Supplying it lets the carrier place that memory where it is fast
+ * (internal SRAM) instead of where the workspace lives (bulk external RAM).
+ * Passing NULL keeps the old behaviour: the signer carves the same capacity
+ * out of its own workspace — slower tier, identical output.
+ *
+ * Pure probe: no RNG consumption, no derivation, no output side effects.
+ */
+unsigned int shlosilo_sign_scratch_len(void);
 
 /**
  * Z3.3c: encode-handle workspace capacity query (C-ABI workspace contract v1 —
@@ -1001,6 +1029,7 @@ int shlosilo_seed_qr_encode_ffi(int mode,
  * - `output_buf` must point to `output_buf_len` writable bytes.
  * - `actual_len` must be writable and must not overlap any other argument.
  * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
+ * - `scratch` must be either `(NULL, 0)` (carve the temporary tables out of `ws`) or a non-NULL region of `scratch_len >= shlosilo_sign_scratch_len()` writable bytes aligned to `SHLOSILO_SIGN_SCRATCH_ALIGN`, live and unaliased for the whole call.
  */
 int shlosilo_sign_ur_ffi(const char *uri,
                          const uint16_t *mnemonic_indices,
@@ -1014,7 +1043,9 @@ int shlosilo_sign_ur_ffi(const char *uri,
                          unsigned int output_buf_len,
                          unsigned int *actual_len,
                          uint8_t *ws,
-                         unsigned int ws_len);
+                         unsigned int ws_len,
+                         uint8_t *scratch,
+                         unsigned int scratch_len);
 
 /**
  * shlosilo_export_readonly_ffi — mnemonic + path → read-only credential UR
@@ -1408,6 +1439,7 @@ int shlosilo_ur_decode_uri_ffi(const char *uri,
  * - `output_buf` must point to `output_buf_len` writable bytes.
  * - `actual_len` must be writable and must not overlap any other argument.
  * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
+ * - `scratch` must be either `(NULL, 0)` (carve the temporary tables out of `ws`) or a non-NULL region of `scratch_len >= shlosilo_sign_scratch_len()` writable bytes aligned to `SHLOSILO_SIGN_SCRATCH_ALIGN`, live and unaliased for the whole call.
  */
 int shlosilo_sign_typed_ffi(const char *type_name,
                             const uint8_t *payload,
@@ -1423,7 +1455,9 @@ int shlosilo_sign_typed_ffi(const char *type_name,
                             unsigned int output_buf_len,
                             unsigned int *actual_len,
                             uint8_t *ws,
-                            unsigned int ws_len);
+                            unsigned int ws_len,
+                            uint8_t *scratch,
+                            unsigned int scratch_len);
 
 /**
  * Task 3 (2026-10-07): session sign — the seed-less signing entry (v2 §4.1).

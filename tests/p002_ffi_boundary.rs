@@ -53,6 +53,8 @@ fn p002_negative_count_rejected_sign() {
                 &mut actual,
                 ws_buf.as_mut_ptr(),
                 shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+                core::ptr::null_mut(),
+                0,
             )
         };
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
@@ -89,6 +91,8 @@ fn p002_negative_count_rejected_sign_ur() {
                 &mut actual,
                 ws_buf.as_mut_ptr(),
                 shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+                core::ptr::null_mut(),
+                0,
             )
         };
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
@@ -151,6 +155,8 @@ fn p002_negative_count_rejected_sign_typed() {
                 &mut actual,
                 ws_buf.as_mut_ptr(),
                 shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+                core::ptr::null_mut(),
+                0,
             )
         };
         assert_eq!(rc, INVALID_MNEMONIC, "count={bad}");
@@ -255,6 +261,8 @@ fn p002_network_wraparound_rejected() {
                 &mut actual,
                 ws_buf.as_mut_ptr(),
                 shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+                core::ptr::null_mut(),
+                0,
             )
         };
         assert_eq!(
@@ -282,6 +290,8 @@ fn p002_network_wraparound_rejected() {
             &mut actual,
             ws_buf.as_mut_ptr(),
             shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+            core::ptr::null_mut(),
+            0,
         )
     };
     assert_ne!(
@@ -339,6 +349,8 @@ fn p002_outparam_zeroed_on_null_early_return() {
             &mut actual,
             ws_buf.as_mut_ptr(),
             shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+            core::ptr::null_mut(),
+            0,
         )
     };
     assert_eq!(rc, INVALID_ARG);

@@ -139,6 +139,7 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::device_timing::shlosilo_timing_reset as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_sign_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_sign_ws_len as *const ()),
+    Addr(shlosilo::ffi::c_abi::shlosilo_sign_scratch_len as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_ur_encode_ws_len as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_limits_fingerprint as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_ur_decode_ws_len as *const ()),

@@ -202,6 +202,8 @@ fn bt_typed_sign_zero_alloc() {
             &mut actual,
             ws_buf.as_mut_ptr(),
             need,
+            core::ptr::null_mut(),
+            0,
         )
     };
     assert_eq!(rc, 0, "warm-up sign must succeed");
@@ -223,6 +225,8 @@ fn bt_typed_sign_zero_alloc() {
             &mut actual,
             ws_buf.as_mut_ptr(),
             need,
+            core::ptr::null_mut(),
+            0,
         )
     });
     assert_eq!(rc, 0, "measured sign must succeed");

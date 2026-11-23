@@ -71,6 +71,8 @@ fn p102_typed_sign_over_budget_rejected() {
             &mut actual,
             ws_buf.as_mut_ptr(),
             shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+            core::ptr::null_mut(),
+            0,
         )
     };
     // T1-14 (2026-11-19 audit, closed 2026-11-20): "rc != 0" cannot tell a budget rejection from a
@@ -103,6 +105,8 @@ fn p102_typed_sign_over_budget_rejected() {
             &mut actual,
             ws_buf.as_mut_ptr(),
             shlosilo::ffi::c_abi::shlosilo_sign_ws_len(),
+            core::ptr::null_mut(),
+            0,
         )
     };
     assert_ne!(

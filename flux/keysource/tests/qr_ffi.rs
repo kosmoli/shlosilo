@@ -658,6 +658,8 @@ fn sign_via_typed(indices: &[u16], payload: &[u8]) -> (i32, std::vec::Vec<u8>, u
             &mut actual,
             ws.as_mut_ptr(),
             need,
+            core::ptr::null_mut(),
+            0,
         )
     };
     (rc, out, actual)

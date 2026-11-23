@@ -102,6 +102,8 @@ fn sign_via_typed(indices: &[u16], network: u32, payload: &[u8]) -> (i32, std::v
             &mut actual,
             ws.as_mut_ptr(),
             need,
+            core::ptr::null_mut(),
+            0,
         )
     };
     (rc, out, actual)

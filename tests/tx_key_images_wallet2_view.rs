@@ -233,6 +233,7 @@ fn sign_fixture_plain_with_tail(tail: shlosilo::canonical::TailView) -> Vec<u8> 
         &fixture_gap_records(),
         &[0x77u8; 32],
         None,
+        None,
         &mut out,
     )
     .expect("sign fixture");

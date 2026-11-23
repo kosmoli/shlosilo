@@ -73,6 +73,7 @@ fn device_sign(tag: UrTypeTag, payload: &[u8]) -> Vec<u8> {
         &[],
         &[],
         Some(&mut ws),
+        None,
         &mut out,
     )
     .expect("signing must succeed under both names");
@@ -161,6 +162,8 @@ fn typed_sign_entry_treats_both_names_alike() {
                 &mut actual,
                 ws.as_mut_ptr(),
                 ws.len() as c_uint,
+                core::ptr::null_mut(),
+                0,
             )
         }
     }

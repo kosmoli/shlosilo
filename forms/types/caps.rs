@@ -34,6 +34,17 @@ pub const SIGN_WS_BP_CHUNK_MAX: usize = crate::limits::SIGN_WS_BP_CHUNK_MAX;
 /// call's result depends only on its arguments. Profile-sourced; the build
 /// asserts it does not exceed `SIGN_WS_BP_CHUNK_MAX`.
 pub const SIGN_BP_CHUNK_TERMS: usize = crate::limits::SIGN_BP_CHUNK_TERMS;
+
+/// Bytes of caller-provided scratch a signing call may ask for: the straus
+/// pool sized for this profile's chunk. `shlosilo_sign_scratch_len()` reports
+/// this number; supplying a region of this size lets the carrier place the
+/// temporary multiexp tables in its fastest memory. Without it the signer
+/// carves the same capacity out of its own workspace (slower tier, identical
+/// output). The tables region is reserved for the widest table type (vartime
+/// NAF5: 16 x 160 B per term), so at the 12-term chunk (pico2) the figure is
+/// 33,856 B although the CT path itself touches only 16,128 B of it.
+pub const SIGN_SCRATCH_BYTES: usize =
+    curve25519_dalek::scratch::StrausScratch::storage_bytes(SIGN_BP_CHUNK_TERMS);
 pub const SIGN_WS_BP_STRAUS_BYTES: usize =
     SIGN_WS_BP_CHUNK_MAX * (16 * 160) + SIGN_WS_BP_CHUNK_MAX * 256 + 64;
 /// CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB).

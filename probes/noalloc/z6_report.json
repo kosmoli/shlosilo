@@ -5,7 +5,7 @@
     "z6_probe_run"
   ],
   "entries_missing": [],
-  "functions": 284,
+  "functions": 285,
   "allocator_symbols": [],
   "alloc_sites_linked": 0,
   "alloc_sites_reachable": 0,

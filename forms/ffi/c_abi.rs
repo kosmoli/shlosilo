@@ -214,6 +214,7 @@ fn mnemonic_count_usize(count: c_int) -> Option<usize> {
 /// - `output_buf` must point to `output_buf_len` writable bytes.
 /// - `actual_len` must be writable and must not overlap any other argument.
 /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
+/// - `scratch` must be either `(NULL, 0)` (carve the temporary tables out of `ws`) or a non-NULL region of `scratch_len >= shlosilo_sign_scratch_len()` writable bytes aligned to `SHLOSILO_SIGN_SCRATCH_ALIGN`, live and unaliased for the whole call.
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_sign_ffi(
     mnemonic_indices: *const u16,
@@ -228,6 +229,8 @@ pub unsafe extern "C" fn shlosilo_sign_ffi(
     actual_len: *mut c_uint,
     ws: *mut u8,
     ws_len: c_uint,
+    scratch: *mut u8,
+    scratch_len: c_uint,
 ) -> c_int {
     unsafe { write_actual_len(actual_len, 0) }; // P0-02 #4: prologue zeroes the out-param (also covers the null early-return)
                                                 // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
@@ -258,6 +261,10 @@ pub unsafe extern "C" fn shlosilo_sign_ffi(
         None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
     };
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+        // v2-安全 §6: the caller-provided BP scratch is validated inside the
+        // closure (a `&mut [u8]` is not UnwindSafe, so it cannot be caught by
+        // the guard from outside).
+        let scratch_slice = unsafe { resolve_scratch(scratch, scratch_len, actual_len)? };
         // P0-03: mnemonic goes through checked_slice (u16 elements, budget 24 = whitelist cap)
         let mnem_slice = unsafe { checked_slice(mnemonic_indices, word_count as usize, 24, false) }
             .ok_or(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
@@ -315,6 +322,7 @@ pub unsafe extern "C" fn shlosilo_sign_ffi(
             &[],
             &[],
             Some(&mut ws),
+            scratch_slice,
             out_slice,
         )
     });
@@ -345,6 +353,66 @@ pub unsafe extern "C" fn shlosilo_sign_ffi(
 #[no_mangle]
 pub extern "C" fn shlosilo_sign_ws_len() -> c_uint {
     crate::business::sign::SignWsLayout::compute().total as c_uint
+}
+
+/// Alignment the caller-provided scratch region must satisfy.
+pub const SHLOSILO_SIGN_SCRATCH_ALIGN: usize = 8;
+
+/// Bytes of caller-provided scratch a signing entry may ask for.
+///
+/// A signing call accepts an optional region of this size for the temporary
+/// working memory of the algorithms it runs (currently the BP+ multiexp
+/// tables). Supplying it lets the carrier place that memory where it is fast
+/// (internal SRAM) instead of where the workspace lives (bulk external RAM).
+/// Passing NULL keeps the old behaviour: the signer carves the same capacity
+/// out of its own workspace — slower tier, identical output.
+///
+/// Pure probe: no RNG consumption, no derivation, no output side effects.
+#[no_mangle]
+pub extern "C" fn shlosilo_sign_scratch_len() -> c_uint {
+    crate::types::caps::SIGN_SCRATCH_BYTES as c_uint
+}
+
+/// Validate the caller's scratch arguments and hand back a slice.
+///
+/// `NULL` means "carve it out of my workspace" (`(NULL, 0)` only — a NULL with
+/// a non-zero length is a caller bug). A non-NULL region must be aligned to
+/// [`SHLOSILO_SIGN_SCRATCH_ALIGN`] and hold `shlosilo_sign_scratch_len()`
+/// bytes; both failures are rejected before any work starts, with no partial
+/// output.
+///
+/// # Safety
+/// `scratch` must point to `scratch_len` writable bytes that stay live and
+/// unaliased for the whole call.
+unsafe fn resolve_scratch(
+    scratch: *mut u8,
+    scratch_len: c_uint,
+    actual_len: *mut c_uint,
+) -> Result<Option<&'static mut [u8]>, ShlosiloError> {
+    if scratch.is_null() {
+        if scratch_len != 0 {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch));
+        }
+        return Ok(None);
+    }
+    if !(scratch as usize).is_multiple_of(SHLOSILO_SIGN_SCRATCH_ALIGN) {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch));
+    }
+    let need = shlosilo_sign_scratch_len() as usize;
+    if (scratch_len as usize) < need {
+        // Documented exception to the zero-on-failure rule: the caller needs
+        // the number to resize (same discipline as the ws capacity check).
+        unsafe { write_actual_len(actual_len, need) };
+        return Err(ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(need),
+        ));
+    }
+    // SAFETY: the caller guarantees `scratch_len >= need` writable, aligned
+    // bytes that stay live and unaliased for the call.
+    Ok(Some(unsafe {
+        core::slice::from_raw_parts_mut(scratch, need)
+    }))
 }
 
 /// Z3.3c: encode-handle workspace capacity query (C-ABI workspace contract v1 —
@@ -562,6 +630,7 @@ pub unsafe extern "C" fn shlosilo_seed_qr_encode_ffi(
 /// - `output_buf` must point to `output_buf_len` writable bytes.
 /// - `actual_len` must be writable and must not overlap any other argument.
 /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
+/// - `scratch` must be either `(NULL, 0)` (carve the temporary tables out of `ws`) or a non-NULL region of `scratch_len >= shlosilo_sign_scratch_len()` writable bytes aligned to `SHLOSILO_SIGN_SCRATCH_ALIGN`, live and unaliased for the whole call.
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_sign_ur_ffi(
     uri: *const c_char, // null-terminated C string
@@ -577,6 +646,8 @@ pub unsafe extern "C" fn shlosilo_sign_ur_ffi(
     actual_len: *mut c_uint,
     ws: *mut u8,
     ws_len: c_uint,
+    scratch: *mut u8,
+    scratch_len: c_uint,
 ) -> c_int {
     unsafe { write_actual_len(actual_len, 0) }; // P0-02 #4: prologue zeroes the out-param
                                                 // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
@@ -607,6 +678,9 @@ pub unsafe extern "C" fn shlosilo_sign_ur_ffi(
         None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
     };
     let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+        // v2-安全 §6: caller-provided BP scratch, validated inside the closure
+        // (`&mut [u8]` is not UnwindSafe).
+        let scratch_slice = unsafe { resolve_scratch(scratch, scratch_len, actual_len)? };
         // C string → &str (no alloc: scan directly to \0)
         let mut len = 0usize;
         unsafe {
@@ -684,6 +758,7 @@ pub unsafe extern "C" fn shlosilo_sign_ur_ffi(
             &[],
             entropy_slice,
             Some(&mut ws),
+            scratch_slice,
             out_slice,
         )
     });
@@ -1652,6 +1727,7 @@ pub mod r3 {
     /// - `output_buf` must point to `output_buf_len` writable bytes.
     /// - `actual_len` must be writable and must not overlap any other argument.
     /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
+    /// - `scratch` must be either `(NULL, 0)` (carve the temporary tables out of `ws`) or a non-NULL region of `scratch_len >= shlosilo_sign_scratch_len()` writable bytes aligned to `SHLOSILO_SIGN_SCRATCH_ALIGN`, live and unaliased for the whole call.
     #[no_mangle]
     pub unsafe extern "C" fn shlosilo_sign_typed_ffi(
         type_name: *const c_char,
@@ -1669,6 +1745,8 @@ pub mod r3 {
         actual_len: *mut c_uint,
         ws: *mut u8,
         ws_len: c_uint,
+        scratch: *mut u8,
+        scratch_len: c_uint,
     ) -> c_int {
         unsafe { write_actual_len(actual_len, 0) }; // Gate4 #2: out-param zeroed up front
                                                     // Z3.3b workspace contract (2026-09-25): ws == NULL is a PURE PROBE —
@@ -1704,6 +1782,9 @@ pub mod r3 {
                 None => return ShlosiloErrorCode::InvalidMnemonic as c_int,
             };
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            // v2-安全 §6: caller-provided BP scratch, validated inside the
+            // closure (`&mut [u8]` is not UnwindSafe).
+            let scratch_slice = unsafe { resolve_scratch(scratch, scratch_len, actual_len)? };
             // Task 3 (2026-10-07): the deprecated entry delegates to the shared
             // sign core — the same core `shlosilo_sign_session_ffi` uses (one
             // signing implementation, no duplicated logic). `Legacy` keeps this
@@ -1727,6 +1808,7 @@ pub mod r3 {
                     output_buf_len,
                     ws,
                     ws_need,
+                    scratch_slice,
                     crate::canonical::TailView::CAKE,
                 )
             }
@@ -1808,6 +1890,8 @@ pub mod r3 {
         output_buf_len: c_uint,
         ws: *mut u8,
         ws_need: usize,
+        // v2-安全 §6: caller-provided BP scratch (None = carve from the ws).
+        scratch: Option<&mut [u8]>,
         // WP4 (2026-11-02): the wire-tail view the signed set materializes in.
         // Indexed (wallet2 positional array) is the legacy default; Keyed
         // (empty positional array + tx_key_images map) is the keystone-ecosystem
@@ -1943,6 +2027,7 @@ pub mod r3 {
             ki_records,
             entropy_slice,
             Some(&mut ws),
+            scratch,
             out_slice,
         )
     }
@@ -2068,6 +2153,7 @@ pub mod r3 {
                     output_buf_len,
                     ws,
                     ws_need,
+                    None, // session entry: caller scratch not wired yet (ws carve)
                     crate::canonical::TailView::CAKE,
                 )
             }
@@ -2204,6 +2290,7 @@ pub mod r3 {
                     output_buf_len,
                     ws,
                     ws_need,
+                    None, // session entry: caller scratch not wired yet (ws carve)
                     tail,
                 )
             }
@@ -2777,6 +2864,8 @@ pub mod r3 {
                     &mut olen,
                     ws_buf.as_mut_ptr(),
                     shlosilo_sign_ws_len(),
+                    core::ptr::null_mut(),
+                    0,
                 )
             };
             assert_eq!(rc, OK, "typed sign rc={rc}");
@@ -3318,6 +3407,8 @@ mod tests {
                 &mut actual,
                 core::ptr::null_mut(), // ws == NULL → probe
                 0,
+                core::ptr::null_mut(), // scratch: not validated in probe mode
+                0,
             )
         };
         assert_eq!(
@@ -3358,6 +3449,8 @@ mod tests {
                 &mut actual,
                 ws_buf.as_mut_ptr(),
                 need - 1,
+                core::ptr::null_mut(),
+                0,
             )
         };
         assert_ne!(rc, OK, "under-capacity must fail");
@@ -3447,6 +3540,8 @@ mod tests {
                 &mut a1,
                 ws_buf.as_mut_ptr(),
                 need,
+                core::ptr::null_mut(),
+                0,
             )
         };
         assert_eq!(rc1, OK, "ws path must sign OK (rc1={rc1})");
@@ -3488,6 +3583,8 @@ mod tests {
             *mut u8,
             c_uint,
             *mut c_uint,
+            *mut u8,
+            c_uint,
             *mut u8,
             c_uint,
         ) -> c_int = shlosilo_sign_ffi;
@@ -3929,6 +4026,8 @@ mod tests {
                 &mut actual,
                 ws_buf.as_mut_ptr(),
                 shlosilo_sign_ws_len(),
+                core::ptr::null_mut(),
+                0,
             )
         };
         assert_eq!(rc, crate::error::ShlosiloErrorCode::EncodingError as i32);
@@ -3957,6 +4056,8 @@ mod tests {
             *mut u8,
             c_uint,
             *mut c_uint,
+            *mut u8,
+            c_uint,
             *mut u8,
             c_uint,
         ) -> c_int = shlosilo_sign_ur_ffi;
@@ -4053,6 +4154,8 @@ mod tests {
                 &mut actual,
                 ws_buf.as_mut_ptr(),
                 shlosilo_sign_ws_len(),
+                null_mut(),
+                0,
             )
         };
         assert_eq!(rc, OK, "rc={rc}");
@@ -4083,6 +4186,8 @@ mod tests {
                 &mut actual,
                 ws_buf.as_mut_ptr(),
                 shlosilo_sign_ws_len(),
+                null_mut(),
+                0,
             )
         };
         assert_ne!(rc, OK);
@@ -4109,6 +4214,8 @@ mod tests {
                 null_mut(),
                 ws_buf.as_mut_ptr(),
                 shlosilo_sign_ws_len(),
+                null_mut(),
+                0,
             )
         };
         assert_eq!(rc, ERR_NULL_POINTER);

@@ -114,6 +114,7 @@ fn main() {
         &[],
         &[],
         Some(&mut ws),
+        None,
         &mut out,
     )
     .expect("sign");

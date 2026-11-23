@@ -712,7 +712,7 @@ static int run_checks(void)
     uint32_t t0 = osKernelGetTickCount();
     int rc = shlosilo_sign_ur_ffi(FIXTURE_ETH_SIGN_REQUEST, idx12, 12,
                                   NULL, 0, 0, NULL, 0, out, sizeof(out), &actual,
-                                  sign_ws, ws_need);
+                                  sign_ws, ws_need, NULL, 0);
     uint32_t dt = osKernelGetTickCount() - t0;
     if (rc == 0 && actual > 0 && out[0] == 0x02) {
         log_line("sign: PASS (%u bytes, type=0x%02x)", actual, out[0]);
@@ -734,7 +734,7 @@ static int run_checks(void)
         uint32_t t0b = osKernelGetTickCount();
         int rc2 = shlosilo_sign_ur_ffi(FIXTURE_ETH_SIGN_REQUEST, idx12, 12,
                                        NULL, 0, 0, NULL, 0, out, sizeof(out), &actual,
-                                       sign_ws, ws_need);
+                                       sign_ws, ws_need, NULL, 0);
         uint32_t dt2 = osKernelGetTickCount() - t0b;
         if (rc2 == 0 && actual > 0) {
             log_line("run2: %u ms (t2 pbkdf2: %u)",
@@ -750,7 +750,7 @@ static int run_checks(void)
     /* 6. bad URI rejection */
     if (shlosilo_sign_ur_ffi("not-a-ur", idx12, 12, NULL, 0, 0, NULL, 0,
                              out, sizeof(out), &actual,
-                             sign_ws, ws_need) != 0) {
+                             sign_ws, ws_need, NULL, 0) != 0) {
         log_line("bad-uri: PASS (rejected)");
     } else {
         fail++;
@@ -1011,7 +1011,7 @@ static int run_checks(void)
         int rc = shlosilo_sign_ur_ffi(FIXTURE_XMR_TX_UNSIGNED, idx12, 12,
                                       NULL, 0, 0, entropy, sizeof(entropy),
                                       xmr_out, sizeof(xmr_out), &xmr_len,
-                                      sign_ws, ws_need);
+                                      sign_ws, ws_need, NULL, 0);
         uint32_t dt = osKernelGetTickCount() - t0;
         diag_prog(13); /* v8: post-xmr checkpoint (outside the timed window) */
         if (rc == 0 && xmr_len > 64) {

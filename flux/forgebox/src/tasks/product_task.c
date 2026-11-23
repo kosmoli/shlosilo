@@ -1476,13 +1476,13 @@ static void sign_run(const char *uri, const char *type,
         rc = shlosilo_sign_ur_ffi(uri, k_sign_idx12, 12, NULL, 0, 0,
                                   entropy, sizeof(entropy),
                                   g_sign_out, SIGN_OUT_MAX, &out_len,
-                                  ws, ws_need);
+                                  ws, ws_need, NULL, 0);
     } else {
         rc = shlosilo_sign_typed_ffi(type, payload, plen,
                                      k_sign_idx12, 12, NULL, 0, 0,
                                      entropy, sizeof(entropy),
                                      g_sign_out, SIGN_OUT_MAX, &out_len,
-                                     ws, ws_need);
+                                     ws, ws_need, NULL, 0);
     }
     dt = osKernelGetTickCount() - t0;
     g_sign_busy = 0;

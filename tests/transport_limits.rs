@@ -70,6 +70,8 @@ fn typed_sign_with_buffer(out_len: usize) -> (i32, c_uint) {
             &mut actual,
             ws.as_mut_ptr(),
             ws.len() as c_uint,
+            core::ptr::null_mut(),
+            0,
         )
     };
     (rc, actual)

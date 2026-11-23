@@ -166,6 +166,8 @@ fn sign_typed(payload: &[u8]) -> (i32, u32) {
             &mut actual,
             ws.as_mut_ptr(),
             ws_len,
+            core::ptr::null_mut(),
+            0,
         )
     };
     (rc, actual)
