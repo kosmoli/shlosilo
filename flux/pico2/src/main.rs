@@ -94,11 +94,12 @@ const PSRAM_THRESHOLD: usize = 16 * 1024;
 /// is no longer the marker: that address is the deepest the stack has been.
 #[cfg(feature = "bench")]
 pub mod stack_paint {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     const MARK: u8 = 0xA5;
     static LOW: AtomicUsize = AtomicUsize::new(0);
     static HIGH: AtomicUsize = AtomicUsize::new(0);
+    static FLOOR_OK: AtomicBool = AtomicBool::new(false);
 
     unsafe extern "C" {
         static __ebss: u8;
@@ -115,7 +116,17 @@ pub mod stack_paint {
     /// live frame. Call once, early, before the deep call chains run.
     pub fn paint() {
         let sp = stack_pointer();
-        let bottom = core::ptr::addr_of!(__ebss) as usize + 64;
+        // The FREE region starts after ALL statics, and `.bss` is not the last
+        // of them: the linker places `.uninit` (the fault record, crash ring and
+        // allocation trace - written at boot and on every allocation) right at
+        // `__ebss`. Painting from `__ebss` therefore covered live statics and
+        // the scan reported them as "deepest stack", pinning the reported margin
+        // to a constant ~224 B regardless of the actual peak. Skip a full 2 KiB
+        // (`.uninit` is 1,440 B today) and verify the marker survived, so a
+        // future static that outgrows the guard turns up as a warning instead of
+        // a plausible-looking number.
+        const STATIC_TAIL_GUARD: usize = 2048;
+        let bottom = core::ptr::addr_of!(__ebss) as usize + STATIC_TAIL_GUARD;
         // Leave the live frames above this point alone.
         let top = (sp - 1024) & !0x7usize;
         if top <= bottom {
@@ -126,6 +137,10 @@ pub mod stack_paint {
         unsafe { core::ptr::write_bytes(bottom as *mut u8, MARK, top - bottom) };
         LOW.store(bottom, Ordering::Relaxed);
         HIGH.store(top, Ordering::Relaxed);
+        let floor_is_ours =
+            // SAFETY: inside the region just painted.
+            unsafe { core::ptr::read_volatile(bottom as *const u8) } == MARK;
+        FLOOR_OK.store(floor_is_ours, Ordering::Relaxed);
     }
 
     /// Report the deepest stack use seen since `paint()`.
@@ -149,9 +164,14 @@ pub mod stack_paint {
             p += 32;
         }
         log::info!(
-            "[stack] {bottom:#x}..{top:#x} painted; deepest {deepest:#x}; used {} B; margin {} B",
+            "[stack] {bottom:#x}..{top:#x} painted; deepest {deepest:#x}; used {} B; margin {} B{}",
             top - deepest,
-            deepest - bottom
+            deepest - bottom,
+            if FLOOR_OK.load(Ordering::Relaxed) {
+                ""
+            } else {
+                " (WARNING: the paint floor overlapped a live static: margin understated)"
+            }
         );
     }
 }
