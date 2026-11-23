@@ -10,7 +10,7 @@ ur_ws_queue_slots = 256  # UR fountain cascade-queue slots
 ur_ws_received_slots = 4096  # UR received-sequence slots (fountain sequence space)
 ur_payload_max = 61440  # Inbound UR payload bytes (keep <= slots x max sender fragment)
 sign_ws_bp_chunk_max = 36  # BP+ multiexp chunk terms ceiling (runtime knob clamps to this)
-sign_bp_chunk_terms = 16  # BP+ multiexp chunk terms this carrier asks for (per-call value on the straus scratch; <= sign_ws_bp_chunk_max). Tables now live in the carrier's internal SRAM (product_task.c g_bp_scratch), so the scratch demand is what bounds this number: storage_bytes(16) = 16*(16*160) + 16*256 + 64 = 45,120 B is the largest tier inside the 48 KiB size class the carrier serves the hot set from; the 36-term tier would need 101,440 B.
+sign_bp_chunk_terms = 8  # BP+ multiexp chunk terms this carrier asks for (per-call value on the straus scratch; <= sign_ws_bp_chunk_max). Tables now live in the carrier's internal SRAM (product_task.c g_bp_scratch), and the scratch demand is what bounds this number: storage_bytes(8) = 8*(16*160) + 8*256 + 64 = 22,592 B, the largest tier that still keeps .bss below the QR decode pool window at QR_POOL_SRAM_ADDR = 0x20084000 (16 terms = 45,120 B overlapped it and the scan-page guard refused to start the camera).
 pairing_records_max = 128  # XMR pairing: key-image records per response (mirrors the Rust ceiling)
 c_header = 1  # 1 = also emit the C projection header (only the C-driven carrier needs it)
 psram_budget_bytes = 8384512  # heap the workspaces may use at peak

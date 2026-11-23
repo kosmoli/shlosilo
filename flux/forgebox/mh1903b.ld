@@ -113,6 +113,13 @@ SECTIONS
 	 * vs pool base" rule): .bss growth must not reach .diag_noinit at
 	 * 0x20098800 (and thereby the pool base at 0x20099000). */
 	ASSERT(_ebss <= 0x20098800, ".bss overflow into .diag_noinit")
+/* The QR decode pool is placed at a FIXED SRAM address (product_task.c
+ * QR_POOL_SRAM_ADDR) rather than allocated, so .bss must end below it: the
+ * scan page checks this at runtime ("sram pool guard / bss overlap") and
+ * refuses to open the camera, which is a device-side failure discovered by
+ * hand. Fail the link instead - a carrier whose statics outgrow the window has
+ * to re-place the pool or shrink the static, not boot into a dead scanner. */
+ASSERT(_ebss <= 0x20084000, ".bss overlaps the QR decode pool window (QR_POOL_SRAM_ADDR = 0x20084000)")
 }
 
 end = .;
