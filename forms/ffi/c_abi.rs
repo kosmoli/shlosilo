@@ -2182,6 +2182,7 @@ pub mod r3 {
     /// - `actual_len` must be writable and must not overlap any other argument.
     /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
     /// - `ki_records` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_len` readable `WalletKiRecord` values; it must not overlap `output_buf` or `ws`.
+    /// - `scratch` must be either `(NULL, 0)` (carve the temporary tables out of `ws`) or a non-NULL region of `scratch_len >= shlosilo_sign_scratch_len()` writable bytes aligned to `SHLOSILO_SIGN_SCRATCH_ALIGN`, live and unaliased for the whole call.
     #[no_mangle]
     pub unsafe extern "C" fn shlosilo_sign_session_view_ffi(
         session: *const KeySession, // flux-constructed; the FFI side only holds the pointer
@@ -2205,6 +2206,10 @@ pub mod r3 {
         // array, byte-identical to the legacy entry), 1 = Keyed (empty
         // positional array + tx_key_images map, the keystone-ecosystem shape).
         wire_view: c_uint,
+        // v2-安全 §6: caller-provided BP+ multiexp table scratch. NULL/0 = carve
+        // the temporary tables out of `ws` (the historical, slower tier).
+        scratch: *mut u8,
+        scratch_len: c_uint,
     ) -> c_int {
         let tail = match crate::canonical::TailView::from_abi(wire_view) {
             Some(t) => t,
@@ -2255,6 +2260,11 @@ pub mod r3 {
             }
         }
         let result = ffi_catch_unwind!(|| -> Result<usize, ShlosiloError> {
+            // v2-安全 §6: caller-provided BP+ scratch, validated inside the
+            // closure (`&mut [u8]` is not UnwindSafe) — NULL/0 keeps the
+            // historical ws-carve tier, and a short or misaligned region is
+            // refused rather than silently downgraded.
+            let scratch_slice = unsafe { resolve_scratch(scratch, scratch_len, actual_len)? };
             // (13) wallet KI records: NULL/0 = no retention; a non-NULL
             // pointer with count 0 is likewise empty. Layout-compatible zero
             // copy (repr(C) WalletKiRecord); the sign path's span check bounds
@@ -2290,7 +2300,7 @@ pub mod r3 {
                     output_buf_len,
                     ws,
                     ws_need,
-                    None, // session entry: caller scratch not wired yet (ws carve)
+                    scratch_slice, // v2-安全 §6: caller BP+ table region (ws carve when NULL/0)
                     tail,
                 )
             }

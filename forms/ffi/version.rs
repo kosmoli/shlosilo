@@ -28,11 +28,13 @@ pub const SHLOSILO_CABI_VERSION_MAJOR: u16 = 0;
 /// `shlosilo_cabi_check` could not see, so an old host would pass the check and then call
 /// the entry with the wrong argument list. 0.x semver: the minor is the breaking bit.
 ///
-/// 2026-11-23 (memory contract, v2-安全 §6): 4 -> 5. The three signing entries
-/// (`shlosilo_sign_ffi` / `shlosilo_sign_ur_ffi` / `shlosilo_sign_typed_ffi`)
-/// each gained `scratch`/`scratch_len`, and two exports were added
-/// (`shlosilo_sign_scratch_len` + `SHLOSILO_SIGN_SCRATCH_ALIGN`) — a parameter
-/// shape change, so the minor must move under strict equality.
+/// 2026-11-23 (memory contract, v2-安全 §6): 4 -> 5. The signing entries
+/// (`shlosilo_sign_ffi` / `shlosilo_sign_ur_ffi` / `shlosilo_sign_typed_ffi` /
+/// `shlosilo_sign_session_view_ffi`) each gained `scratch`/`scratch_len`, and two
+/// exports were added (`shlosilo_sign_scratch_len` + `SHLOSILO_SIGN_SCRATCH_ALIGN`)
+/// — a parameter shape change, so the minor must move under strict equality.
+/// The view entry joined the same unreleased 0.5.0 batch (no host was ever built
+/// against a 0.5.0 header without it), so one bump covers the batch.
 pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 5;
 pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
 

@@ -354,6 +354,8 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             records.as_ptr(),
             records.len() as u32,
             0,
+            core::ptr::null_mut(),
+            0,
         )
     };
     let rc_k = unsafe {
@@ -372,6 +374,8 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             records.as_ptr(),
             records.len() as u32,
             1,
+            core::ptr::null_mut(),
+            0,
         )
     };
     let mut n_bad: u32 = 0;
@@ -391,6 +395,8 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             records.as_ptr(),
             records.len() as u32,
             7,
+            core::ptr::null_mut(),
+            0,
         )
     };
     assert_eq!(rc_i, OK, "view=0 must sign");
@@ -424,6 +430,8 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             records.as_ptr(),
             records.len() as u32,
             1,
+            core::ptr::null_mut(),
+            0,
         )
     };
     assert_eq!(
@@ -449,6 +457,8 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             ws_len,
             records.as_ptr(),
             records.len() as u32,
+            0,
+            core::ptr::null_mut(),
             0,
         )
     };

@@ -1550,7 +1550,8 @@ static void sign_run(const char *uri, const char *type,
                                       g_sign_out, SIGN_OUT_MAX, &out_len,
                                       ws, ws_need,
                                       g_pairing_ki, g_pairing_ki_n,
-                                      g_wire_view);
+                                      g_wire_view,
+                                      bp_scratch, bp_scratch_len);
     } else if (uri != NULL) {
         rc = shlosilo_sign_ur_ffi(uri, k_sign_idx12, 12, NULL, 0, 0,
                                   entropy, sizeof(entropy),

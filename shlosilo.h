@@ -490,11 +490,13 @@
  * `shlosilo_cabi_check` could not see, so an old host would pass the check and then call
  * the entry with the wrong argument list. 0.x semver: the minor is the breaking bit.
  *
- * 2026-11-23 (memory contract, v2-安全 §6): 4 -> 5. The three signing entries
- * (`shlosilo_sign_ffi` / `shlosilo_sign_ur_ffi` / `shlosilo_sign_typed_ffi`)
- * each gained `scratch`/`scratch_len`, and two exports were added
- * (`shlosilo_sign_scratch_len` + `SHLOSILO_SIGN_SCRATCH_ALIGN`) — a parameter
- * shape change, so the minor must move under strict equality.
+ * 2026-11-23 (memory contract, v2-安全 §6): 4 -> 5. The signing entries
+ * (`shlosilo_sign_ffi` / `shlosilo_sign_ur_ffi` / `shlosilo_sign_typed_ffi` /
+ * `shlosilo_sign_session_view_ffi`) each gained `scratch`/`scratch_len`, and two
+ * exports were added (`shlosilo_sign_scratch_len` + `SHLOSILO_SIGN_SCRATCH_ALIGN`)
+ * — a parameter shape change, so the minor must move under strict equality.
+ * The view entry joined the same unreleased 0.5.0 batch (no host was ever built
+ * against a 0.5.0 header without it), so one bump covers the batch.
  */
 #define SHLOSILO_CABI_VERSION_MINOR 5
 
@@ -1538,6 +1540,7 @@ int shlosilo_sign_session_ffi(const struct KeySession *session,
  * - `actual_len` must be writable and must not overlap any other argument.
  * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
  * - `ki_records` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_len` readable `WalletKiRecord` values; it must not overlap `output_buf` or `ws`.
+ * - `scratch` must be either `(NULL, 0)` (carve the temporary tables out of `ws`) or a non-NULL region of `scratch_len >= shlosilo_sign_scratch_len()` writable bytes aligned to `SHLOSILO_SIGN_SCRATCH_ALIGN`, live and unaliased for the whole call.
  */
 int shlosilo_sign_session_view_ffi(const struct KeySession *session,
                                    const char *type_name,
@@ -1552,7 +1555,9 @@ int shlosilo_sign_session_view_ffi(const struct KeySession *session,
                                    unsigned int ws_len,
                                    const struct WalletKiRecord *ki_records,
                                    unsigned int ki_records_len,
-                                   unsigned int wire_view);
+                                   unsigned int wire_view,
+                                   uint8_t *scratch,
+                                   unsigned int scratch_len);
 
 /**
  * Task 3 (2026-10-07): session reclaim — the handle lifecycle contract.
