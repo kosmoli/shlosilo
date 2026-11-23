@@ -86,6 +86,11 @@ static uint8_t *g_fb;
 static uint8_t *g_band;
 static UiPage g_page = UI_PAGE_WELCOME;
 static char g_last[64] = "last: -";
+/* Footer L5: this run's sign wall-clock. Unknown until a signature is actually
+ * produced ("sign -"), so the page never shows 0 or a stale duration. Widest
+ * form is "sign 4294967295 ms" (18 glyphs = 144 px at scale 1, well inside the
+ * 480 px panel and one line). */
+static char g_sign_ms[24] = "sign -";
 /* Diagnostic event trace (PRODUCT_UI_TRACE): newest last, drawn on the welcome
  * page. Declared up here because draw_page() renders it. */
 #define UI_TRACE_N 12
@@ -565,6 +570,12 @@ static void draw_footer(void)
             draw_text(UI_FOOTER_X, UI_FOOTER_L4_Y, line, 1);
         }
     }
+
+    /* This run's sign wall-clock. "sign -" is the honest unknown (nothing
+     * signed yet, or the last attempt produced no signature); a duration only
+     * ever appears for a completed sign. Fixed wording on purpose: the number
+     * is the only variable, and the caller never supplies text. */
+    draw_text(UI_FOOTER_X, UI_FOOTER_L5_Y, g_sign_ms, 1);
 }
 
 static void draw_page(void)
@@ -979,6 +990,20 @@ void UiTracePush(const char *fmt, ...)
 void UiSetLast(const char *text)
 {
     snprintf(g_last, sizeof(g_last), "last: %.50s", text ? text : "-");
+}
+
+void UiSetSignMs(uint32_t ms, bool known)
+{
+    /* Fixed wording, one number: "sign 24823 ms" when a signature was produced,
+     * "sign -" otherwise. Never a zero, never a stale value, and no caller text
+     * (so no payload content or error code can reach the screen this way). The
+     * sign flow always draws a page after the call (result / QR carousel), and
+     * that draw reads this string, so no repaint is forced from here. */
+    if (known) {
+        snprintf(g_sign_ms, sizeof(g_sign_ms), "sign %lu ms", (unsigned long)ms);
+    } else {
+        snprintf(g_sign_ms, sizeof(g_sign_ms), "sign -");
+    }
 }
 
 static void handle_press(int x, int y)

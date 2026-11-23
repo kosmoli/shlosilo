@@ -34,9 +34,19 @@ void UiScanInfo(const char *line1, const char *line2, const char *line3, const c
 void UiScanMetrics(const char *m1, const char *m2, const char *m3);
 void UiScanProgress(uint8_t percent);
 
-/* Sign page summary lines (request type / payload size / key note). Set them
+/* Sign-page summary lines (request type / payload size / key note). Set them
  * before UiGotoPage(UI_PAGE_SIGN); calling while on the sign page repaints. */
 void UiSignInfo(const char *line1, const char *line2, const char *line3);
+
+/* Footer line 5: this run's sign wall-clock, e.g. "sign 24823 ms".
+ *
+ * `known == false` renders the fixed "sign -" (nothing has been signed since
+ * boot, or the last attempt produced no signature) — never a zero or a stale
+ * number. Fixed vocabulary only: the caller passes the measured millisecond
+ * value, the UI owns the wording, so no payload content, key name or error
+ * code can reach the screen through this line. It stores only; the sign flow
+ * draws a page afterwards (result / QR carousel) and that draw picks it up. */
+void UiSetSignMs(uint32_t ms, bool known);
 
 /* Review page (W0-1): four body lines + one footer line.
  *

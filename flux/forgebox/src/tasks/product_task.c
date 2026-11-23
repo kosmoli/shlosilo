@@ -813,6 +813,57 @@ static uint8_t *g_sign_out = NULL;
 static unsigned g_sign_out_len = 0;
 static char g_sign_out_type[32] = "bytes";
 
+/* BP+ multiexp table scratch — the carrier half of the FFI scratch contract
+ * (shlosilo_sign_scratch_len() / the trailing `scratch, scratch_len` pair on
+ * the sign entries). The signer's temporary multiexp tables are re-read ~64
+ * times per term, so where they live is a memory-TIER question before it is an
+ * arithmetic one: the same loop measured 12.1 ms/term with the tables in the
+ * PSRAM workspace tier against 5.2 ms/term in internal SRAM (pico2 sigbench,
+ * CT multiexp). This static is that SRAM residency for forgebox: it lands in
+ * .bss inside the on-chip window (SRAM @ 0x2000_0000, link-checked by the
+ * `_ebss <= 0x20098800` assert in mh1903b.ld), never in the ExtMalloc/PSRAM
+ * heap the workspaces use, and is never allocated or freed.
+ *
+ * SIZE: the C projection carries no macro for it, so it is derived here from
+ * the two macros that DO carry the numbers, in the same shape as shlosilo.h's
+ * SIGN_WS_BP_STRAUS_BYTES (= Rust `StrausScratch::storage_bytes`):
+ *     terms * (16 * SHLOSILO_GENPOINT_SIZE)   vartime NAF5 table (16 x 160 B)
+ *   + terms * 256                             the per-chunk doubling chain
+ *   + 64                                      header/padding slack
+ * `terms` is the PROFILE chunk (shlosilo_limits.h <- limits/forgebox.toml
+ * sign_bp_chunk_terms = 16), not the sign_ws_bp_chunk_max ceiling (36 would
+ * demand 101,440 B). At 16 terms this region is 45,120 B: the largest chunk
+ * tier whose scratch demand still fits the 48 KiB size class this carrier
+ * serves the BP+ hot set from (embedded_alloc_glue.c SRAM_POOL_MAX_ALLOC); the
+ * 36-term tier needs 101,440 B and does not. The array itself is a plain .bss
+ * static, so it is sized by the linker, not by that allocator threshold.
+ * The authoritative number is still the runtime probe: g_bp_scratch_need holds
+ * shlosilo_sign_scratch_len() and is checked against the array before use, so
+ * a profile that ever outgrows the region falls back to the documented
+ * (NULL, 0) path instead of overrunning it.
+ *
+ * ALIGNMENT: aligned(32). The ABI requires SHLOSILO_SIGN_SCRATCH_ALIGN (8);
+ * 32 is a strict superset of that, so the region can never be refused for
+ * misalignment.
+ *
+ * LIFETIME: used only inside one sign call (sign_run), which runs only on this
+ * single product task — nothing else signs in this carrier, so the region is
+ * never held concurrently and needs no lock. The signer neither retains the
+ * pointer past the call nor aliases it with the workspace. */
+#define BP_SCRATCH_TERMS   SHLOSILO_LIMITS_SIGN_BP_CHUNK_TERMS
+#define BP_SCRATCH_BYTES \
+    ((BP_SCRATCH_TERMS * (16 * SHLOSILO_GENPOINT_SIZE)) + (BP_SCRATCH_TERMS * 256) + 64)
+static uint8_t g_bp_scratch[BP_SCRATCH_BYTES] __attribute__((aligned(32)));
+static unsigned g_bp_scratch_need;  /* 0 = not resolved yet; else bytes to pass */
+static int g_bp_scratch_bad;        /* resolved once: profile outgrew the array */
+
+/* "This run's sign time" for the footer (see draw_footer). Written only by
+ * sign_run, only when a signature was actually produced: a failed or refused
+ * sign clears `known` so the page shows `sign -` rather than reporting the
+ * previous run's number as if it were this one's. */
+static volatile uint32_t g_last_sign_ms;
+static volatile int g_last_sign_known;
+
 /* ---------------- seed import (Task 5b): scan branch -> confirm -> key session ---------------- */
 
 /* Seed-QR scan-flow classes (shlosilo_seed_qr_probe_ffi return codes). */
@@ -1405,6 +1456,10 @@ static void sign_run(const char *uri, const char *type,
     unsigned out_len = 0;
     uint32_t t0, dt;
     int rc;
+    /* Carrier BP+ table region (see g_bp_scratch): resolved once from the
+     * signer's own probe, then handed to every sign entry that accepts it. */
+    uint8_t *bp_scratch = NULL;
+    unsigned bp_scratch_len = 0;
 
     memset(entropy, 0x77, sizeof(entropy));
 
@@ -1452,7 +1507,31 @@ static void sign_run(const char *uri, const char *type,
     shlosilo_timing_reset();
     shlosilo_timing_set_clock_fn(product_tick_ms);
 
-    printf("sign: start (ws=%u) key=%s\r\n", ws_need,
+    /* Resolve the BP+ table region once (a pure probe: no RNG, no state).
+     * Keeping it OUTSIDE the t0..dt window below so the footer number is the
+     * signing call and nothing else. */
+    if (!g_bp_scratch_bad) {
+        if (g_bp_scratch_need == 0) {
+            const unsigned scratch_need = shlosilo_sign_scratch_len();
+            if (scratch_need <= (unsigned)sizeof(g_bp_scratch)) {
+                g_bp_scratch_need = scratch_need;
+            } else {
+                /* The profile asked for more than the array holds: never pass
+                 * a short region (the FFI would refuse it, or worse a mismatched
+                 * length would let the signer write past the end). Stay on the
+                 * documented fallback — workspace tier, identical output. */
+                g_bp_scratch_bad = 1;
+                printf("sign: bp scratch %u > static %u, PSRAM tier\r\n",
+                       scratch_need, (unsigned)sizeof(g_bp_scratch));
+            }
+        }
+        if (g_bp_scratch_need != 0) {
+            bp_scratch = g_bp_scratch;
+            bp_scratch_len = g_bp_scratch_need;
+        }
+    }
+
+    printf("sign: start (ws=%u bp=%u) key=%s\r\n", ws_need, bp_scratch_len,
            (g_key_session != NULL)
                ? ((g_key_from_se != 0) ? "se unlock"
                                        : ((g_key_console != 0) ? "key new" : "plate session"))
@@ -1476,16 +1555,27 @@ static void sign_run(const char *uri, const char *type,
         rc = shlosilo_sign_ur_ffi(uri, k_sign_idx12, 12, NULL, 0, 0,
                                   entropy, sizeof(entropy),
                                   g_sign_out, SIGN_OUT_MAX, &out_len,
-                                  ws, ws_need, NULL, 0);
+                                  ws, ws_need, bp_scratch, bp_scratch_len);
     } else {
         rc = shlosilo_sign_typed_ffi(type, payload, plen,
                                      k_sign_idx12, 12, NULL, 0, 0,
                                      entropy, sizeof(entropy),
                                      g_sign_out, SIGN_OUT_MAX, &out_len,
-                                     ws, ws_need, NULL, 0);
+                                     ws, ws_need, bp_scratch, bp_scratch_len);
     }
     dt = osKernelGetTickCount() - t0;
     g_sign_busy = 0;
+    /* Footer datum (QR page): publish this run's wall clock ONLY when the call
+     * produced a signature. Any other outcome — refused, buffer too small, key
+     * error — clears the "known" flag so the page reads `sign -` instead of
+     * presenting the previous run's number as this run's. */
+    if (rc == 0 && out_len > 0) {
+        g_last_sign_ms = (uint32_t)dt;
+        g_last_sign_known = 1;
+    } else {
+        g_last_sign_known = 0;
+    }
+    UiSetSignMs(g_last_sign_ms, g_last_sign_known != 0);
     ExtFree(ws);
     /* Stack readings, hoisted: the success `last:` line and the failure text both
      * carry them (phase 7 measurement). */

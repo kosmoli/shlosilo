@@ -36,15 +36,21 @@
 #define UI_BTN_LABEL_MODE    "wire"
 #define UI_BTN_LABEL_RIGHT   "camera"
 
-/* Footer: three diagnostic lines above the button band */
+/* Footer: diagnostic lines above the button band.
+ * Pitched at 18 px (glyphs are 16) so five lines fit between the QR caption
+ * band and the separator at UI_LINE_Y (676). L5 carries this run's sign time
+ * ("sign 24823 ms", or "sign -" when no signature has been produced yet). */
 #define UI_FOOTER_X          16
 #define UI_FOOTER_L1_Y       588
-#define UI_FOOTER_L2_Y       608
-#define UI_FOOTER_L3_Y       628
+#define UI_FOOTER_L2_Y       606
+#define UI_FOOTER_L3_Y       624
 /* W0-1: shlosilo build identity (v0.5.0-poc4+<git7>) — the line the operator
  * reads to confirm which shlosilo build is actually flashed. The `fw` line
  * above it is the vendor firmware hash, which does NOT track our commits. */
-#define UI_FOOTER_L4_Y       648
+#define UI_FOOTER_L4_Y       642
+/* Sign wall-clock (product_task's g_last_sign_ms). Fixed vocabulary, ASCII,
+ * one line: "sign <n> ms" on success, "sign -" when unknown. */
+#define UI_FOOTER_L5_Y       660
 
 /* Battery readout (top-right; text right-aligned at UI_BATT_RIGHT):
  * "NN%" normally, "NN%c" while charging. The repaint box covers the widest

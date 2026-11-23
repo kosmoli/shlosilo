@@ -186,11 +186,12 @@ def draw_common(c: Canvas, L: dict, with_footer: bool = True) -> None:
     if not with_footer:
         return  # the scan page uses this strip for its status/info lines
 
-    # Footer: 3 diagnostic lines (sample content; runtime strings in firmware).
+    # Footer: diagnostic lines (sample content; runtime strings in firmware).
     foot = [
         (L["UI_FOOTER_L1_Y"], f"fw v1.0.0 {git_hash()}"),
         (L["UI_FOOTER_L2_Y"], "touch 0x38 ok=1"),
         (L["UI_FOOTER_L3_Y"], "last: continue -> scan (240,744)"),
+        (L["UI_FOOTER_L5_Y"], "sign 24823 ms"),
     ]
     for y, line in foot:
         check(Canvas.text_w(line, 1) <= L["UI_FB_W"] - 2 * L["UI_FOOTER_X"],
