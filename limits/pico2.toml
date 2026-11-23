@@ -10,7 +10,7 @@ ur_ws_queue_slots = 256  # UR fountain cascade-queue slots
 ur_ws_received_slots = 4096  # UR received-sequence slots (fountain sequence space)
 ur_payload_max = 61440  # Inbound UR payload bytes (keep <= slots x max sender fragment)
 sign_ws_bp_chunk_max = 36  # BP+ multiexp chunk terms ceiling (runtime knob clamps to this)
-sign_bp_chunk_terms = 12  # BP+ multiexp chunk terms this carrier asks for (per-call value on the straus scratch; <= sign_ws_bp_chunk_max)
+sign_bp_chunk_terms = 16  # BP+ multiexp chunk terms this carrier asks for (per-call value on the straus scratch; <= sign_ws_bp_chunk_max). Tables now live in internal SRAM, so the per-chunk doubling chain is amortised over 16 terms instead of 12.
 pairing_records_max = 128  # XMR pairing: key-image records per response (mirrors the Rust ceiling)
 c_header = 0  # 1 = also emit the C projection header (only the C-driven carrier needs it)
 psram_budget_bytes = 8388608  # heap the workspaces may use at peak
