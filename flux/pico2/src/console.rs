@@ -241,6 +241,8 @@ impl ConsoleState {
             b"bbtrace" => self.cmd_bbtrace(args),
             b"heap" => self.cmd_heap(args),
             #[cfg(feature = "bench")]
+            b"stack" => crate::stack_paint::report(),
+            #[cfg(feature = "bench")]
             b"entropy" => self.cmd_entropy(args),
             #[cfg(feature = "bench")]
             b"trng" => return Some(parse_trng_job(args)),
@@ -410,6 +412,8 @@ impl ConsoleState {
         log::info!(
             "[help]   perfbench [name] ...  probes; ctm <n> <chunk> <iters>, xchain <n> <iters> <tail> <gen>, vt2f <iters>"
         );
+        #[cfg(feature = "bench")]
+        log::info!("[help]   stack           deepest SRAM stack use since boot (painted at boot)");
         log::info!("[help]   ur:xmr-txunsigned/...  signs with TRNG entropy (deferred job;");
         log::info!("[help]                   fetch the result with xmrout)");
         log::info!("[help]   psramtest       verify PSRAM r/w with patterns at 5 offsets;");

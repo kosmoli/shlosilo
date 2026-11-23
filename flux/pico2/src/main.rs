@@ -76,6 +76,82 @@ static mut SRAM_HEAP_MEM: [MaybeUninit<u8>; SRAM_HEAP_SIZE] =
 /// PSRAM heap is its home. Only genuinely small allocations stay in SRAM.
 const PSRAM_THRESHOLD: usize = 16 * 1024;
 
+/// Stack high-water diagnostic (bench builds only).
+///
+/// The SRAM stack is whatever the statics leave above `__ebss` (~around
+/// 200 KiB on this carrier) and nothing in the build measures how deep the
+/// sign path actually reaches. That number became load-bearing when the CT
+/// Straus inline path started putting its per-term lookup tables (1,280 B
+/// each) on the stack: the frame grows with the term cap, so "does it fit"
+/// has to be an observation, not an assumption.
+///
+/// Paint the free region below the current stack pointer at boot, then scan
+/// upward from the bottom on demand (`stack` command) for the first byte that
+/// is no longer the marker: that address is the deepest the stack has been.
+#[cfg(feature = "bench")]
+pub mod stack_paint {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    const MARK: u8 = 0xA5;
+    static LOW: AtomicUsize = AtomicUsize::new(0);
+    static HIGH: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" {
+        static __ebss: u8;
+    }
+
+    fn stack_pointer() -> usize {
+        let sp: usize;
+        // SAFETY: reading the stack pointer has no side effects.
+        unsafe { core::arch::asm!("mrs {}, msp", out(reg) sp) };
+        sp
+    }
+
+    /// Paint every byte between the end of the statics and just below the
+    /// live frame. Call once, early, before the deep call chains run.
+    pub fn paint() {
+        let sp = stack_pointer();
+        let bottom = core::ptr::addr_of!(__ebss) as usize + 64;
+        // Leave the live frames above this point alone.
+        let top = (sp - 1024) & !0x7usize;
+        if top <= bottom {
+            return;
+        }
+        // SAFETY: this region is unused stack space; nothing can observe it
+        // until the stack actually grows into it.
+        unsafe { core::ptr::write_bytes(bottom as *mut u8, MARK, top - bottom) };
+        LOW.store(bottom, Ordering::Relaxed);
+        HIGH.store(top, Ordering::Relaxed);
+    }
+
+    /// Report the deepest stack use seen since `paint()`.
+    pub fn report() {
+        let bottom = LOW.load(Ordering::Relaxed);
+        let top = HIGH.load(Ordering::Relaxed);
+        if top == 0 {
+            log::info!("[stack] not painted");
+            return;
+        }
+        let mut deepest = top;
+        let mut p = bottom;
+        while p < top {
+            let len = core::cmp::min(32, top - p);
+            // SAFETY: inside the painted range.
+            let chunk = unsafe { core::slice::from_raw_parts(p as *const u8, len) };
+            if chunk.iter().any(|b| *b != MARK) {
+                deepest = p;
+                break;
+            }
+            p += 32;
+        }
+        log::info!(
+            "[stack] {bottom:#x}..{top:#x} painted; deepest {deepest:#x}; used {} B; margin {} B",
+            top - deepest,
+            deepest - bottom
+        );
+    }
+}
+
 /// BP+ multiexp chunk size for this host: fewer, bigger CT Straus tables
 /// (fewer per-chunk doubling chains) vs table placement. Each term's table
 /// is 1280B (8 x ProjectiveNielsPoint, fully scanned per constant-time
@@ -793,6 +869,11 @@ async fn console_carrier_main(spawner: Spawner) {
     // Crash record from the previous run (if the last boot died): render it
     // before anything else, so the console report can show it.
     fault::init();
+
+    // Stack high-water baseline (bench builds): paint before any deep call
+    // chain runs, so `stack` can report the deepest use since boot.
+    #[cfg(feature = "bench")]
+    stack_paint::paint();
 
     // SAFETY: runs once at startup, before any allocation happens.
     unsafe {
