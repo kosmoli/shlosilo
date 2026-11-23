@@ -1673,10 +1673,12 @@ impl ConsoleState {
     fn cmd_xmrchunk(&self, _args: &[u8]) {
         let v = shlosilo::types::caps::SIGN_BP_CHUNK_TERMS;
         let table = v * 1280;
+        // Placement is decided by the carrier's scratch region (sign_pool), not by
+        // this size heuristic: the tables ride in internal SRAM on this carrier.
         log::info!(
-            "[chunk] bp+ multiexp chunk = {v} terms (table {table} B -> {}); cap {} terms",
-            if table > 16 * 1024 { "PSRAM" } else { "SRAM" },
-            shlosilo::types::caps::SIGN_WS_BP_CHUNK_MAX
+            "[chunk] bp+ multiexp chunk = {v} terms (CT tables {table} B, placed in SRAM via the scratch region); cap {} terms, scratch {} B",
+            shlosilo::types::caps::SIGN_WS_BP_CHUNK_MAX,
+            shlosilo::types::caps::SIGN_SCRATCH_BYTES
         );
     }
 
