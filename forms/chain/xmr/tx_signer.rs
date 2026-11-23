@@ -722,7 +722,19 @@ pub fn sign_tx_from_construction_with_rngs_into<B: RngCore + CryptoRng, C: RngCo
 
     // Z5.3 tail cut: fixed per-output staging (the Vec grew per output; the
     // placeholder owners are overwritten in-loop and zeroized on drop).
-    const OUTINFO_MAX: usize = crate::chain::xmr::transaction::PREFIX_OUTPUTS_MAX;
+    //
+    // Sized by the SIGNING output ceiling, not the wire model's: this array is
+    // `OutInfo` x 64 in the wire bound (>=26 KB of stack, and the sign path's
+    // deepest frame), while a signed transaction can never carry more than
+    // `XMR_SIGN_OUTPUTS_MAX` destinations (`check_table_caps` rejects it before
+    // this point). 16 entries is the whole legal domain.
+    const OUTINFO_MAX: usize = XMR_SIGN_OUTPUTS_MAX;
+    const _: () = assert!(OUTINFO_MAX <= crate::chain::xmr::transaction::PREFIX_OUTPUTS_MAX);
+    if tx_data.splitted_dsts.len() > OUTINFO_MAX {
+        // Unreachable behind `check_table_caps`; kept so the fixed array can
+        // never be indexed past its end if that gate ever moves.
+        return Err(err());
+    }
     let outinfo_placeholder = || OutInfo {
         deriv: OutputDerivation {
             shared_key: crate::types::SecretBytes::new([0u8; 32]),
