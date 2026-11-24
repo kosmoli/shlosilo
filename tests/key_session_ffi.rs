@@ -47,7 +47,7 @@ const ERR_BUFFER_TOO_SMALL: i32 = ShlosiloErrorCode::BufferTooSmall as i32;
 
 /// ETH sign-request fixture UR — the same string as tests/pico2_smoke_parity.rs
 /// and flux/host-sim/sim_l3.c (the shared C-oracle fixture). Reused verbatim.
-const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
+const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxaaaaadylgymome";
 
 /// Fixture wallet entropy (same fixture entropy as tests/xmr_sign_zero_alloc.rs).
 const FIXTURE_ENTROPY: [u8; 16] = [

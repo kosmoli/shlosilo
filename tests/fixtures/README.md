@@ -287,3 +287,24 @@
   `FINAL_SCRIPT_SIG` 0x07、无 0x08、scriptSig 携带记录里那把公钥）；②严格方言
   `crypto-psbt` 仍拒同一份畸形请求（`EncodingInvalidFormat`）。
 - **隐私**: 只是已签未广播的请求 + 测试种子键；无真实资金。
+
+## eth_mainnet_1559_raw.json (E-2 外部 oracle)
+
+- **来源**: 2026-11-24 从公共主网 RPC `ethereum-rpc.publicnode.com` 取
+  `eth_getTransactionByHash` + `eth_getRawTransactionByHash`（经 mihomo 代理）。
+  两笔真实主网 EIP-1559 交易，主网 block 26482968：
+  - `0xf8c78e68c15e4311edd542b20eda40cb4f290f7dfa459d02a210ebab53cd1846`
+    （calldata 772 B，`yParity=1`，tip 0，signed 884 B）
+  - `0xaf1a2574224d75820419a310ac6dbbab87734614d8eb38c515decb7d684b48ae`
+    （纯转账 21,000 gas，`yParity=0`，signed 118 B）
+- **内容**: 每笔的 12 字段（chainId/nonce/tip/fee/gas/to/value/data/accessList +
+  yParity/r/s）、发布方 sender、以及**完整已签名原始字节**。字段值与原始字节已用
+  独立 RLP 解码器交叉核对（`r`/`s` 在 JSON 里是 quantity 形式，缺前导零，比对时按
+  32 字节左填充）。
+- **大小 / SHA-256**: 5,080 bytes / `21d12d1e3b8a80a68b98e04ad2cbc26d9bc5f2952474b793dcdaf43d82758790`
+- **用途**: `tests/eth_mainnet_recovery.rs` —— 用**我们自己的** `eip1559::signing_hash`
+  重算签名哈希，再用**我们自己的** `eth::sign::ecdsa_recover` 从 `(r,s,yParity)`
+  恢复公钥、取 keccak 后 20 字节，必须等于发布方 sender。这是 EIP-1559 摘要与 `v`
+  语义唯一的外部锚点（keystone 树里没有已签名 1559 夹具，见
+  `docs/eth-signature-codec.md`）。毒丸：翻转 yParity 必须恢复出**不同**地址。
+- **隐私**: 主网公开链上数据，无密钥材料；可公开提交。

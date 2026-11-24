@@ -238,7 +238,7 @@ int main(void) {
        single-part eth-sign-request UR produced by the Rust tests). Once P6.1d
        lands, this vector is replaced by a real Sparrow/MetaMask export. */
     const char *fixture_uri =
-        "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
+        "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxaaaaadylgymome";
     rc = shlosilo_sign_ur_ffi(fixture_uri, indices, 12, NULL, 0, 0, NULL, 0,
                               signed_out, sizeof(signed_out), &actual,
                               sign_ws, ws_need, NULL, 0);

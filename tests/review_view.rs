@@ -46,7 +46,7 @@ const CAKE_LEGACY_PSBT: &[u8] = &[
 const LEGACY_P2PKH_1IN1OUT: &[u8] = include_bytes!("fixtures/core_regtest_p2pkh_1in1out.psbt");
 
 /// The eth-sign-request UR already verified in the smoke task (EIP-1559 transfer).
-const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
+const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxaaaaadylgymome";
 
 const ARENA: usize = 16 * 1024;
 const RECS: usize = 128;

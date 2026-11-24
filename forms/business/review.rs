@@ -847,8 +847,26 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
 
     let req = parse_eth_sign_request(payload)?;
     let mut view = ReviewView::new();
+    // `data_type` selects the scheme before the payload is read (same dispatch as
+    // `sign_eth`). The review gate is fail-closed: a request this signer cannot
+    // sign must never render as a send.
     match req.data_type {
-        EthSignDataType::Transaction | EthSignDataType::TypedTransaction => {}
+        // data_type 1 = legacy (bare RLP, no type byte) — not implemented; see the
+        // data_type table in docs/eth-signature-codec.md.
+        EthSignDataType::Transaction => {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::FeatureNotImplemented));
+        }
+        EthSignDataType::TypedTransaction => {
+            // data_type 4: only EIP-1559 (first byte 0x02) is rendered or signed;
+            // EIP-2930 / 4844 / 7702 and unknown/empty payloads stay refused.
+            match req.sign_data.first() {
+                Some(0x02) => {}
+                Some(0x01) | Some(0x03) | Some(0x04) => {
+                    return Err(ShlosiloError::new(ShlosiloErrorKind::FeatureNotImplemented));
+                }
+                _ => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
+            }
+        }
         EthSignDataType::TypedData => {
             view.push_str("eth typed data")?;
             view.push_str("cannot display on this screen")?;
@@ -1039,5 +1057,109 @@ mod calldata_render_pins {
             selector: [1, 2, 3, 4],
         });
         assert!(ks.contains("args not decoded"), "{ks}");
+    }
+}
+
+#[cfg(test)]
+mod eth_data_type_dispatch_pins {
+    use super::*;
+
+    /// eth-sign-request CBOR map, ur-registry shape:
+    /// {1: request_id (tag 37 UUID), 2: sign_data, 3: data_type, 4: chain_id}
+    fn request_map(sign_data: &[u8], data_type: u64, chain_id: u64) -> alloc::vec::Vec<u8> {
+        use crate::encoding::cbor;
+        cbor::encode_map(&[
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(37, &cbor::encode_bytes(&[0x9bu8; 16])),
+            ),
+            (cbor::encode_uint(2), cbor::encode_bytes(sign_data)),
+            (cbor::encode_uint(3), cbor::encode_uint(data_type)),
+            (cbor::encode_uint(4), cbor::encode_uint(chain_id)),
+        ])
+    }
+
+    /// A bare RLP list with the 1559 field body but no type byte — the shape a legacy
+    /// (`data_type` 1) request carries.
+    fn bare_rlp_body() -> alloc::vec::Vec<u8> {
+        use crate::chain::eth::rlp;
+        rlp::encode_list(&[
+            rlp::encode_uint(1),
+            rlp::encode_uint(0),
+            rlp::encode_uint(1_000_000_000),
+            rlp::encode_uint(2_000_000_000),
+            rlp::encode_uint(21_000),
+            rlp::encode_bytes(&[0x11u8; 20]),
+            rlp::encode_uint(12345),
+            rlp::encode_bytes(b""),
+            rlp::encode_list(&[]),
+            rlp::encode_bytes(b""),
+            rlp::encode_bytes(b""),
+            rlp::encode_bytes(b""),
+        ])
+    }
+
+    /// The review gate is fail-closed. `data_type` 1 is legacy in the reference dialect and
+    /// this signer does not sign it, so the review must refuse instead of rendering the
+    /// payload as a 1559 send — an operator confirming that screen would be confirming a
+    /// transaction the device cannot honour.
+    #[test]
+    fn eth_review_refuses_legacy_data_type() {
+        let payload = request_map(&bare_rlp_body(), 1, 1);
+        // ReviewView has no Debug, so assert on the error rather than unwrap_err().
+        let result = build_eth(&payload);
+        assert!(
+            result.is_err(),
+            "data_type 1 = legacy must be refused, not rendered as a send"
+        );
+        if let Err(e) = result {
+            assert_eq!(
+                e.kind,
+                ShlosiloErrorKind::FeatureNotImplemented,
+                "data_type 1 = legacy must be refused as unimplemented, not as a format error"
+            );
+        }
+    }
+
+    /// `data_type` 4 dispatches on the first payload byte, mirroring the sign path: the
+    /// real-but-unsupported types read as unimplemented, anything else as a format error.
+    /// Only 0x02 may reach the renderer.
+    #[test]
+    fn eth_review_refuses_unsupported_typed_transactions() {
+        let cases: [(alloc::vec::Vec<u8>, ShlosiloErrorKind, &str); 5] = [
+            (
+                alloc::vec![0x01u8],
+                ShlosiloErrorKind::FeatureNotImplemented,
+                "0x01 (EIP-2930) is a real transaction type we do not sign",
+            ),
+            (
+                alloc::vec![0x03u8],
+                ShlosiloErrorKind::FeatureNotImplemented,
+                "0x03 (EIP-4844) is a real transaction type we do not sign",
+            ),
+            (
+                alloc::vec![0x04u8],
+                ShlosiloErrorKind::FeatureNotImplemented,
+                "0x04 (EIP-7702) is a real transaction type we do not sign",
+            ),
+            (
+                alloc::vec![0x99u8],
+                ShlosiloErrorKind::EncodingInvalidFormat,
+                "0x99 is not a transaction type",
+            ),
+            (
+                alloc::vec::Vec::new(),
+                ShlosiloErrorKind::EncodingInvalidFormat,
+                "an empty payload has no type byte",
+            ),
+        ];
+        for (sign_data, expected, why) in cases {
+            let payload = request_map(&sign_data, 4, 1);
+            let result = build_eth(&payload);
+            assert!(result.is_err(), "{why}");
+            if let Err(e) = result {
+                assert_eq!(e.kind, expected, "{why}");
+            }
+        }
     }
 }

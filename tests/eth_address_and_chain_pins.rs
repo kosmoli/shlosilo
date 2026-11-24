@@ -126,7 +126,7 @@ fn unknown_chain_is_printed_as_its_raw_id() {
 #[test]
 fn eth_review_names_the_chain() {
     // Real eth-sign-request (EIP-1559 transfer, chain id 1).
-    const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
+    const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxaaaaadylgymome";
     let ur = shlosilo::ur::ur_decode::decode(ETH_SIGN_REQUEST_URI).expect("ur decode");
     let payload = ur.as_ref();
     let mut arena = [0u8; 16 * 1024];

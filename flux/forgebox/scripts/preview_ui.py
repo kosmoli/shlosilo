@@ -40,7 +40,7 @@ PAYLOAD_SAMPLE = (
     + "\n"
     + "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjn"
     + "aohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcp"
-    + "cpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn"
+    + "cpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxaaaaadylgymome"
 )
 
 

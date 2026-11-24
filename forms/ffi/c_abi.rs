@@ -4114,7 +4114,9 @@ mod tests {
         raw.extend_from_slice(&list);
 
         // P1-01: payload = a real eth-sign-request CBOR map (ur-registry shape)
-        // {1: request_id (tag 37 UUID), 2: sign_data, 3: data_type=1, 4: chain_id=1}
+        // {1: request_id (tag 37 UUID), 2: sign_data, 3: data_type=4, 4: chain_id=1}
+        // data_type 4 = TypedTransaction, whose first payload byte (0x02) selects EIP-1559;
+        // data_type 1 would mean legacy bare RLP and is not signable.
         let request_id: [u8; 16] = [
             0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad, 0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d,
             0xcb, 0x6d,
@@ -4133,7 +4135,7 @@ mod tests {
             ),
             (
                 crate::encoding::cbor::encode_uint(3),
-                crate::encoding::cbor::encode_uint(1)
+                crate::encoding::cbor::encode_uint(4)
             ),
             (
                 crate::encoding::cbor::encode_uint(4),

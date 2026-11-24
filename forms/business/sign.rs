@@ -1978,8 +1978,10 @@ fn sign_btc<'a>(
 /// ETH: eth-sign-request CBOR map → `ur:eth-signature` container (E-1)
 ///
 /// P1-01 (2026-08-26): a real UR's payload is a CBOR map with sign_data / data_type /
-/// chain_id / derivation_path. Only raw tx signing of Transaction(1) / TypedTransaction(4)
-/// (= EIP-1559/legacy); PersonalMessage / TypedData explicitly rejected.
+/// chain_id / derivation_path. `data_type` selects the scheme before the payload is read:
+/// 4 (TypedTransaction) → first-byte dispatch (0x02 = EIP-1559, the only one we sign);
+/// 1 (Transaction = legacy, bare RLP) is not implemented yet; PersonalMessage / TypedData
+/// are explicitly rejected. See the data_type table in docs/eth-signature-codec.md.
 ///
 /// E-1 (2026-11-24): the exit returns the `ur:eth-signature` CBOR map
 /// (`r ‖ s ‖ v`, v = yParity for EIP-1559) instead of the signed raw
@@ -1994,12 +1996,32 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     use crate::ur::codec::eth_signature::{encode_eth_signature_into, EthSignature};
 
     let req = parse_eth_sign_request(cbor_payload)?;
+    // data_type selects the scheme BEFORE the payload is read (reference dialect:
+    // `rust_c/src/ethereum/mod.rs::eth_sign_tx_dynamic` dispatches on data_type first).
     match req.data_type {
-        EthSignDataType::Transaction | EthSignDataType::TypedTransaction => {}
+        // data_type 1 = legacy (bare RLP, no type byte) — not implemented; see the
+        // data_type table in docs/eth-signature-codec.md.
+        EthSignDataType::Transaction => {
+            return Err(err(ShlosiloErrorKind::FeatureNotImplemented));
+        }
+        EthSignDataType::TypedTransaction => {}
         EthSignDataType::TypedData | EthSignDataType::PersonalMessage => {
             // typed-data / personal-message only open up at P6.4; explicitly rejected for now
             return Err(err(ShlosiloErrorKind::ChainKindUnsupported));
         }
+    }
+
+    // data_type 4 (TypedTransaction): the first payload byte selects the scheme.
+    // Only EIP-1559 (0x02) is signable today; the other valid type bytes are named
+    // so they do not degrade into a generic format error.
+    match req.sign_data.first() {
+        Some(0x02) => {}
+        // EIP-2930 / 4844 / 7702: valid types we do not sign
+        Some(0x01) | Some(0x03) | Some(0x04) => {
+            return Err(err(ShlosiloErrorKind::FeatureNotImplemented));
+        }
+        // unknown type byte or empty payload
+        _ => return Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
     }
 
     let tx = from_rlp::parse_eip1559_raw(req.sign_data)?;
@@ -2226,9 +2248,9 @@ mod tests {
         .unwrap();
 
         // P1-01: build a real eth-sign-request CBOR map (ur-registry shape)
-        // {1: request_id, 2: sign_data(bytes), 3: data_type(1), 4: chain_id(1)}
+        // {1: request_id, 2: sign_data(bytes), 3: data_type(4), 4: chain_id(1)}
         let raw = encode_unsigned_tx_for_test(&tx);
-        let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);
+        let ur_payload = encode_eth_sign_request_for_test(&raw, 4, 1);
 
         let input = SignInput::Seed { seed: &test_seed };
         let mut output_buf = [0u8; 512];
@@ -2281,7 +2303,7 @@ mod tests {
         let mut outs = [([0u8; 512], 0usize), ([0u8; 512], 0usize)];
         let ids = [[0x11u8; 16], [0x22u8; 16]];
         for (i, id) in ids.iter().enumerate() {
-            let ur_payload = encode_eth_sign_request_full_for_test(&raw, 1, 1, None, Some(*id));
+            let ur_payload = encode_eth_sign_request_full_for_test(&raw, 4, 1, None, Some(*id));
             let input = SignInput::Seed { seed: &test_seed };
             let n = sign(
                 input,
@@ -2347,7 +2369,7 @@ mod tests {
         );
 
         let raw = encode_unsigned_tx_for_test(&tx);
-        let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);
+        let ur_payload = encode_eth_sign_request_for_test(&raw, 4, 1);
         let mut output_buf = [0u8; 512];
         let n = sign(
             SignInput::Seed { seed: &test_seed },
@@ -2397,7 +2419,7 @@ mod tests {
         };
         let raw = encode_unsigned_tx_for_test(&tx);
         // key 1 omitted — the pre-E-1 fixture shape
-        let ur_payload = encode_eth_sign_request_full_for_test(&raw, 1, 1, None, None);
+        let ur_payload = encode_eth_sign_request_full_for_test(&raw, 4, 1, None, None);
         let test_seed = [7u8; 64];
         let mut output_buf = [0u8; 512];
         let result = sign(
@@ -2428,7 +2450,7 @@ mod tests {
         };
         let raw = encode_unsigned_tx_for_test(&tx);
         // request chain_id=5 (≠ the tx's 1)
-        let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 5);
+        let ur_payload = encode_eth_sign_request_for_test(&raw, 4, 5);
         let test_seed = [7u8; 64];
         let input = SignInput::Seed { seed: &test_seed };
         let mut output_buf = [0u8; 512];
@@ -2472,6 +2494,113 @@ mod tests {
             result.unwrap_err().kind,
             ShlosiloErrorKind::ChainKindUnsupported
         );
+    }
+
+    /// `data_type` 1 is **legacy** in the reference dialect (bare RLP list, no type byte),
+    /// and this signer does not implement it yet. The pin asserts the exact kind: if the
+    /// dispatch ever routes `data_type` 1 back into the 1559 parser, a bare-RLP payload
+    /// fails as `EncodingInvalidFormat` and reads as a malformed request instead of an
+    /// unimplemented scheme.
+    #[test]
+    fn sign_eth_rejects_legacy_data_type_explicitly() {
+        use crate::chain::eth::eip1559::Eip1559Transaction;
+
+        let tx = Eip1559Transaction {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x11u8; 20]),
+            amount: 12345,
+            data: Vec::new().into(),
+        };
+        let typed = encode_unsigned_tx_for_test(&tx);
+        // A legacy payload is the bare RLP list: the same body without the 0x02 type byte.
+        let legacy = &typed[1..];
+        let ur_payload = encode_eth_sign_request_for_test(legacy, 1, 1);
+
+        let test_seed = [7u8; 64];
+        let mut output_buf = [0u8; 512];
+        let result = sign(
+            SignInput::Seed { seed: &test_seed },
+            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+            &ur_payload,
+            &mut output_buf,
+        );
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::FeatureNotImplemented,
+            "data_type 1 = legacy must be refused as unimplemented, not as a format error"
+        );
+    }
+
+    /// `data_type` 4 (`TypedTransaction`) dispatches on the FIRST payload byte. Only `0x02`
+    /// (EIP-1559) is signable here; the other *valid* type bytes (EIP-2930 / 4844 / 7702)
+    /// must report "unimplemented" rather than "malformed", while a byte that is not a
+    /// transaction type at all (`0x99`) — or no byte at all — is a format error.
+    #[test]
+    fn sign_eth_typed_transaction_first_byte_selects_the_scheme() {
+        use crate::chain::eth::eip1559::Eip1559Transaction;
+
+        let tx = Eip1559Transaction {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x11u8; 20]),
+            amount: 12345,
+            data: Vec::new().into(),
+        };
+        let typed = encode_unsigned_tx_for_test(&tx);
+        // Same 1559 body, different leading type byte.
+        let retype = |b: u8| {
+            let mut v = typed.clone();
+            v[0] = b;
+            v
+        };
+
+        let cases: [(Vec<u8>, ShlosiloErrorKind, &str); 5] = [
+            (
+                retype(0x01),
+                ShlosiloErrorKind::FeatureNotImplemented,
+                "0x01 (EIP-2930) is a real transaction type we do not sign",
+            ),
+            (
+                retype(0x03),
+                ShlosiloErrorKind::FeatureNotImplemented,
+                "0x03 (EIP-4844) is a real transaction type we do not sign",
+            ),
+            (
+                retype(0x04),
+                ShlosiloErrorKind::FeatureNotImplemented,
+                "0x04 (EIP-7702) is a real transaction type we do not sign",
+            ),
+            (
+                retype(0x99),
+                ShlosiloErrorKind::EncodingInvalidFormat,
+                "0x99 is not a transaction type",
+            ),
+            (
+                Vec::new(),
+                ShlosiloErrorKind::EncodingInvalidFormat,
+                "an empty payload has no type byte",
+            ),
+        ];
+
+        let test_seed = [7u8; 64];
+        for (sign_data, expected, why) in cases {
+            let ur_payload = encode_eth_sign_request_for_test(&sign_data, 4, 1);
+            let mut output_buf = [0u8; 512];
+            let result = sign(
+                SignInput::Seed { seed: &test_seed },
+                crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+                &ur_payload,
+                &mut output_buf,
+            );
+            assert_eq!(result.unwrap_err().kind, expected, "{why}");
+        }
     }
 
     /// Test helper: encode an unsigned EIP-1559 tx into raw bytes (for from_rlp parsing)
@@ -3068,7 +3197,7 @@ mod tests {
         .unwrap();
 
         let raw = encode_unsigned_tx_for_test(&tx);
-        let ur_payload = encode_eth_sign_request_with_path_for_test(&raw, 1, 1, Some(&path));
+        let ur_payload = encode_eth_sign_request_with_path_for_test(&raw, 4, 1, Some(&path));
 
         let mut output_buf = [0u8; 512];
         let input = SignInput::Seed { seed: &test_seed };
@@ -3146,7 +3275,7 @@ mod tests {
             data: Vec::new().into(),
         };
         let raw = encode_unsigned_tx_for_test(&tx);
-        let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);
+        let ur_payload = encode_eth_sign_request_for_test(&raw, 4, 1);
         let seed = [7u8; 64];
         let input = SignInput::Seed { seed: &seed };
         let mut output_buf = [0u8; 4096];
@@ -3178,7 +3307,7 @@ mod tests {
             data: Vec::new().into(),
         };
         let raw = encode_unsigned_tx_for_test(&tx);
-        let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);
+        let ur_payload = encode_eth_sign_request_for_test(&raw, 4, 1);
         let seed = [7u8; 64];
         let input = SignInput::Seed { seed: &seed };
         let mut output_buf = [0u8; 4096];

@@ -34,7 +34,7 @@ fn fixture_rolls() -> [u8; 64] {
 }
 
 /// ETH sign-request fixture UR (matches flux/host-sim/sim_l3.c and the pico2 smoke).
-const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
+const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxaaaaadylgymome";
 
 /// The crypto-hdkey UR the host-sim prints for the fixture mnemonic at
 /// m/44'/0'/0'/0/0 (mainnet). 2026-10-12 outbound convention: the message

@@ -9,6 +9,11 @@
 //! P1-02 network validation).
 //! The payload's leading [1] type-tag prefix is handled by ur_encode::encode, no longer assembled by hand.
 //!
+//! **After the data_type dispatch fix (2026-11-24)**: `data_type` selects the scheme before the
+//! payload is read (reference dialect: `eth_sign_tx_dynamic`). An EIP-1559 transaction is
+//! `TypedTransaction` = **4**, whose first payload byte (0x02) then selects 1559; `data_type` 1 is
+//! legacy (bare RLP, no type byte) and is not signable. This fixture therefore carries 4.
+//!
 //! **After E-1 (2026-11-24)**: the sign exit returns the `ur:eth-signature` container and echoes
 //! the request's `request_id`, so the fixture must carry key 1 — a request without it is refused.
 //! Key 1 is a tag(37) UUID wrapper over the 16 raw bytes (ur-registry `requestId`); the id is the
@@ -64,7 +69,7 @@ fn gen_fixture() {
             cbor::encode_tag(37, &cbor::encode_bytes(&REQUEST_ID)),
         ),
         (cbor::encode_uint(2), cbor::encode_bytes(&raw)),
-        (cbor::encode_uint(3), cbor::encode_uint(1)), // type 1 = TypedTransaction
+        (cbor::encode_uint(3), cbor::encode_uint(4)), // data_type 4 = TypedTransaction (0x02-prefixed 1559)
         (cbor::encode_uint(4), cbor::encode_uint(1)), // chain_id = 1
     ];
     let payload = cbor::encode_map(&pairs);

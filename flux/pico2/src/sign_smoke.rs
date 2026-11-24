@@ -62,7 +62,7 @@ pub(crate) fn fixture_mnemonic() -> Result<Mnemonic, ShlosiloError> {
 }
 
 /// ETH sign-request fixture UR (matches flux/host-sim/sim_l3.c).
-const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
+const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxaaaaadylgymome";
 
 const REPORT_CAP: usize = 1024;
 

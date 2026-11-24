@@ -149,7 +149,7 @@ LV_FONT_DECLARE(openSansEnText);
 static const char *FIXTURE_ETH_SIGN_REQUEST =
     "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjn"
     "aohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcp"
-    "cpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
+    "cpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxaaaaadylgymome";
 
 /* P6.6: hand-built idx12 1-input ring16 unsigned_txset UR (sign measured at 3458B on the host) */
 static const char *FIXTURE_XMR_TX_UNSIGNED =

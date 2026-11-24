@@ -63,7 +63,7 @@ def main() -> None:
     sample = ("SHLOSILO-FORGEBOX-OK-2026 " * 6) + "\n" + (
         "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjn"
         "aohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcp"
-        "cpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn")
+        "cpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxaaaaadylgymome")
 
     cases = {
         "sample.txt": sample,
