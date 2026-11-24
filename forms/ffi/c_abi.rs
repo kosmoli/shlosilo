@@ -4073,7 +4073,14 @@ mod tests {
         ) -> c_int = shlosilo_sign_ur_ffi;
     }
 
-    /// End-to-end: ETH raw tx → ur:eth-sign-request/... → FFI signature = direct sign
+    /// End-to-end: ETH raw tx → ur:eth-sign-request/... → FFI returns the
+    /// `ur:eth-signature` container whose r/s/v match a direct sign.
+    ///
+    /// E-1 (2026-11-24): this pin used to assert `out == expected.tx_bytes`, i.e.
+    /// the signed raw transaction. The exit now returns the eth-signature CBOR map
+    /// (r ‖ s ‖ v), so the assertion moved to its fields; the request also carries
+    /// key 1 now, because the container echoes the id and the exit refuses a
+    /// request without one.
     #[test]
     fn ffi_sign_ur_eth_end_to_end() {
         use crate::chain::eth::{eip1559, rlp};
@@ -4107,8 +4114,19 @@ mod tests {
         raw.extend_from_slice(&list);
 
         // P1-01: payload = a real eth-sign-request CBOR map (ur-registry shape)
-        // {2: sign_data, 3: data_type=1, 4: chain_id=1}
+        // {1: request_id (tag 37 UUID), 2: sign_data, 3: data_type=1, 4: chain_id=1}
+        let request_id: [u8; 16] = [
+            0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad, 0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d,
+            0xcb, 0x6d,
+        ];
         let pairs = alloc::vec![
+            (
+                crate::encoding::cbor::encode_uint(1),
+                crate::encoding::cbor::encode_tag(
+                    37,
+                    &crate::encoding::cbor::encode_bytes(&request_id)
+                )
+            ),
             (
                 crate::encoding::cbor::encode_uint(2),
                 crate::encoding::cbor::encode_bytes(&raw)
@@ -4169,8 +4187,15 @@ mod tests {
             )
         };
         assert_eq!(rc, OK, "rc={rc}");
-        assert_eq!(actual as usize, expected.tx_bytes.len());
-        assert_eq!(&out[..actual as usize], &expected.tx_bytes[..]);
+        // E-1: the exit is the eth-signature container, not a signed raw tx
+        let n = actual as usize;
+        assert_ne!(out[0], 0x02, "E-1: the exit must not return a tx");
+        let sig = crate::ur::codec::eth_signature::parse_eth_signature(&out[..n])
+            .expect("eth-signature container");
+        assert_eq!(sig.request_id, request_id, "the request id must be echoed");
+        assert_eq!(&sig.signature[..32], &expected.r[..], "r");
+        assert_eq!(&sig.signature[32..64], &expected.s[..], "s");
+        assert_eq!(sig.signature[64], expected.y_parity, "v = yParity (0/1)");
     }
 
     /// Non-UR string → error code, no crash

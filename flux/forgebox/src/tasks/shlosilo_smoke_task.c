@@ -147,9 +147,9 @@ LV_FONT_DECLARE(openSansEnText);
  * {2:sign_data, 3:data_type, 4:chain_id}). Produced by the library encoder,
  * CRC32 verified. */
 static const char *FIXTURE_ETH_SIGN_REQUEST =
-    "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmay"
-    "mwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxad"
-    "aaadrpceaadt";
+    "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjn"
+    "aohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcp"
+    "cpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
 
 /* P6.6: hand-built idx12 1-input ring16 unsigned_txset UR (sign measured at 3458B on the host) */
 static const char *FIXTURE_XMR_TX_UNSIGNED =

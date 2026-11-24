@@ -5,6 +5,12 @@
 //! - EIP-1559 signing hash（`keccak256(0x02 || rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit, destination, amount, data, access_list]))`）
 //! - sign_eip1559 business function (sighash → ECDSA → r/s + y_parity → assemble the signed tx)
 //!
+//! E-1 (2026-11-24): the signing steps are exposed separately as
+//! [`sign_eip1559_parts`], because the production exit path returns the
+//! `ur:eth-signature` container (`r ‖ s ‖ v`) instead of a signed raw
+//! transaction. `sign_eip1559_into` is now parts-then-serialize and keeps its
+//! old shape for the legacy/test consumers.
+//!
 //! ## Algorithm summary
 //!
 //! **EIP-1559 signing hash**:
@@ -250,9 +256,29 @@ pub struct Eip1559SignOutcome {
     pub y_parity: u8,
 }
 
-/// Sign an EIP-1559 transaction, writing `0x02 || rlp([12 fields])` straight
-/// into the caller's buffer. Zero-alloc production form.
-pub fn sign_eip1559_into(input: &Eip1559SignInput, out: &mut [u8]) -> Result<Eip1559SignOutcome> {
+/// EIP-1559 signature parts — no transaction serialization, pure arrays.
+///
+/// E-1: the exit path returns a `ur:eth-signature` container (`r ‖ s ‖ v`), so
+/// the signer needs exactly these four values. Serializing a signed raw
+/// transaction would compute RLP bytes nobody sends and size the caller's buffer
+/// for a transaction instead of the ~100 B container.
+#[derive(Clone, Debug)]
+pub struct Eip1559Signature {
+    /// signing hash (Keccak256 of the EIP-2718 preimage)
+    pub signing_hash: [u8; 32],
+    /// signature r
+    pub r: [u8; 32],
+    /// signature s (always the low-s form)
+    pub s: [u8; 32],
+    /// y_parity: 0 or 1 (never the legacy 27/28 offset)
+    pub y_parity: u8,
+}
+
+/// Steps 1–2.5 of the signing flow: signing hash → ECDSA → low-s flip.
+///
+/// Returns the signature parts only; `sign_eip1559_into` adds the RLP
+/// serialization on top, and the `ur:eth-signature` exit path stops here.
+pub fn sign_eip1559_parts(input: &Eip1559SignInput) -> Result<Eip1559Signature> {
     let sk = scalar_from_bytes(input.private_key.expose())?;
 
     // 1. signing hash (streams the preimage into Keccak — no buffer)
@@ -285,9 +311,27 @@ pub fn sign_eip1559_into(input: &Eip1559SignInput, out: &mut [u8]) -> Result<Eip
     let y_parity = crate::chain::eth::sign::flip_s_to_low(&mut s_bytes, y_parity_original);
     t_yp.end();
 
+    Ok(Eip1559Signature {
+        signing_hash: sighash,
+        r: r_bytes,
+        s: s_bytes,
+        y_parity,
+    })
+}
+
+/// Sign an EIP-1559 transaction, writing `0x02 || rlp([12 fields])` straight
+/// into the caller's buffer. Zero-alloc production form.
+///
+/// E-1: parts first, then serialize — the signing steps live in
+/// [`sign_eip1559_parts`] so the `ur:eth-signature` exit path can take them
+/// without paying for the transaction encoding. Behaviour (and every device
+/// timing mark) is unchanged from the pre-split version.
+pub fn sign_eip1559_into(input: &Eip1559SignInput, out: &mut [u8]) -> Result<Eip1559SignOutcome> {
+    let parts = sign_eip1559_parts(input)?;
+
     // 3. Build signed transaction: 0x02 || rlp([12 fields])
     let t_ser = crate::device_timing::Mark::start(crate::device_timing::STAGE_RLP);
-    let tail = (y_parity, &r_bytes, &s_bytes);
+    let tail = (parts.y_parity, &parts.r, &parts.s);
     let payload_len = tx_fields_len(&input.tx, Some(tail));
     let need = 1 + rlp::list_head_len(payload_len) + payload_len;
     if out.len() < need {
@@ -304,10 +348,10 @@ pub fn sign_eip1559_into(input: &Eip1559SignInput, out: &mut [u8]) -> Result<Eip
 
     Ok(Eip1559SignOutcome {
         written: w.pos(),
-        signing_hash: sighash,
-        r: r_bytes,
-        s: s_bytes,
-        y_parity,
+        signing_hash: parts.signing_hash,
+        r: parts.r,
+        s: parts.s,
+        y_parity: parts.y_parity,
     })
 }
 

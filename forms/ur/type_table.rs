@@ -201,6 +201,9 @@ pub fn review_gated(type_name: &str) -> bool {
 /// name the request used (`psbt` in → `psbt` out for the Cake family, `crypto-psbt`
 /// in → `crypto-psbt` out for the registry name), and anything else — including a
 /// prefix the classify questions accept — answers as opaque `bytes`.
+///
+/// `eth-sign-request` is the one row that changes name: the reply is a different
+/// container (`ur:eth-signature`, E-1), not a transformation of the request.
 pub fn reply_type(inbound: &str) -> &'static str {
     let hay = inbound.as_bytes();
     if eq_folded(hay, b"xmr-output") {
@@ -208,6 +211,9 @@ pub fn reply_type(inbound: &str) -> &'static str {
     }
     if eq_folded(hay, b"xmr-txunsigned") || eq_folded(hay, b"crypto-monero-tx") {
         return "xmr-txsigned";
+    }
+    if eq_folded(hay, b"eth-sign-request") {
+        return "eth-signature";
     }
     if eq_folded(hay, b"psbt") {
         return "psbt";
@@ -237,6 +243,7 @@ pub fn static_cstr(s: &'static str) -> &'static core::ffi::CStr {
         // reply names
         "xmr-keyimage" => c"xmr-keyimage",
         "xmr-txsigned" => c"xmr-txsigned",
+        "eth-signature" => c"eth-signature",
         "psbt" => c"psbt",
         "crypto-psbt" => c"crypto-psbt",
         "bytes" => c"bytes",
@@ -258,9 +265,10 @@ pub const ALL_PHRASES: [&str; 7] = [
 ];
 
 /// Every reply name this module can produce.
-pub const ALL_REPLY_TYPES: [&str; 5] = [
+pub const ALL_REPLY_TYPES: [&str; 6] = [
     "xmr-keyimage",
     "xmr-txsigned",
+    "eth-signature",
     "psbt",
     "crypto-psbt",
     "bytes",

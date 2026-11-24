@@ -1975,16 +1975,23 @@ fn sign_btc<'a>(
     psbt_mod::serialize_psbt_into(&psbt, output_buf)
 }
 
-/// ETH: eth-sign-request CBOR map → signed tx bytes
+/// ETH: eth-sign-request CBOR map → `ur:eth-signature` container (E-1)
 ///
 /// P1-01 (2026-08-26): a real UR's payload is a CBOR map with sign_data / data_type /
 /// chain_id / derivation_path. Only raw tx signing of Transaction(1) / TypedTransaction(4)
-/// raw tx signing (= EIP-1559/legacy); PersonalMessage / TypedData explicitly rejected.
+/// (= EIP-1559/legacy); PersonalMessage / TypedData explicitly rejected.
+///
+/// E-1 (2026-11-24): the exit returns the `ur:eth-signature` CBOR map
+/// (`r ‖ s ‖ v`, v = yParity for EIP-1559) instead of the signed raw
+/// transaction. The wallet assembles and broadcasts; no wallet in this dialect
+/// consumes a signed raw tx, and the tx encoding sized the caller's buffer for a
+/// transaction rather than for the ~100 B container.
 ///
 /// Derivation path = m/44'/60'/0'/0/0.
 fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<usize> {
     use crate::chain::eth::{eip1559, from_rlp};
     use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
+    use crate::ur::codec::eth_signature::{encode_eth_signature_into, EthSignature};
 
     let req = parse_eth_sign_request(cbor_payload)?;
     match req.data_type {
@@ -2002,6 +2009,15 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
         }
     }
+    // E-1: the reply must echo the request's id — the container never mints one.
+    // A signature the sender cannot correlate is worse than no answer, so a
+    // request without key 1 is refused here. Ordered after the request-shape
+    // gates above on purpose: a wrong data_type or chain_id keeps reporting its
+    // own error kind (those pins predate the request-id requirement).
+    let request_id = match req.request_id {
+        Some(id) => id,
+        None => return Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
+    };
     // P1-02: when the request carries a derivation_path, derive with it; otherwise fall back to the standard path
     let path = match req.derivation_path {
         Some(p) => p,
@@ -2020,15 +2036,27 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     let private_key = SecretBytes::take(&mut raw_key);
 
     let t_sign = crate::device_timing::Mark::start(crate::device_timing::STAGE_ECDSA);
-    let outcome = eip1559::sign_eip1559_into(
-        &eip1559::Eip1559SignInput {
-            tx,
-            private_key: &private_key,
+    let parts = eip1559::sign_eip1559_parts(&eip1559::Eip1559SignInput {
+        tx,
+        private_key: &private_key,
+    })?;
+    t_sign.end();
+
+    // E-1: `r ‖ s ‖ v`. For EIP-1559 `v` is the yParity byte (0/1): the 27/28
+    // offset belongs to the legacy and personal-sign paths and is NOT applied
+    // here — a 1559 container carrying 27/28 is a signature every peer drops.
+    let mut sig65 = [0u8; 65];
+    sig65[..32].copy_from_slice(&parts.r);
+    sig65[32..64].copy_from_slice(&parts.s);
+    sig65[64] = parts.y_parity;
+    encode_eth_signature_into(
+        &EthSignature {
+            request_id,
+            signature: sig65,
+            origin: req.origin,
         },
         output_buf,
-    )?;
-    t_sign.end();
-    Ok(outcome.written)
+    )
 }
 
 /// Signing (network enters the decision; closed out at P1-02)
@@ -2157,10 +2185,18 @@ mod tests {
         );
     }
 
-    /// ETH end-to-end: build a raw EIP-1559 tx → real eth-sign-request CBOR map → sign → output a valid 0x02 signed tx
+    /// ETH end-to-end: raw EIP-1559 tx → real eth-sign-request CBOR map → sign →
+    /// a `ur:eth-signature` container carrying the oracle's r/s/v.
+    ///
+    /// E-1 (2026-11-24): this pin used to assert the signed raw transaction
+    /// (`out == expected.tx_bytes`, `out[0] == 0x02`). No wallet in this dialect
+    /// consumes a signed raw tx — the wallet assembles and broadcasts — so the
+    /// assertion moved to the container: the fields must match an independent
+    /// `sign_eip1559` call, and the output must no longer be a transaction.
     #[test]
     fn sign_eth_end_to_end() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
+        use crate::ur::codec::eth_signature::parse_eth_signature;
 
         let tx = Eip1559Transaction {
             chain_id: 1,
@@ -2172,22 +2208,10 @@ mod tests {
             amount: 12345,
             data: Vec::new().into(),
         };
-        // build the unsigned preimage then strip the signature part — use signing_preimage + manual RLP directly
-        // simple approach: from_rlp round-trip — sign once to get the raw, then use it as input
-        let sk = crate::curve_primitive::secp256k1::scalar_from_bytes(&[42u8; 32]).unwrap();
-        let direct = crate::chain::eth::eip1559::sign_eip1559(
-            &crate::chain::eth::eip1559::Eip1559SignInput {
-                tx: tx.clone(),
-                private_key: &SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(
-                    &sk,
-                )),
-            },
-        )
-        .unwrap();
 
-        let mut output_buf = [0u8; 512];
-        // seed derives m/44'/60'/0'/0/0, a different key than the one signed with directly above — this verifies the flow, not byte equality:
-        // first derive the child key from the same seed, then sign directly with that key as a cross-check
+        // seed derives m/44'/60'/0'/0/0, a different key than any key literal used
+        // in this test: derive the child key here and sign with it directly, so the
+        // expectation is independent of the exit path (container layout + echo).
         let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
         let test_seed = [7u8; 64];
         let derived =
@@ -2200,14 +2224,14 @@ mod tests {
             },
         )
         .unwrap();
-        let _ = direct;
 
         // P1-01: build a real eth-sign-request CBOR map (ur-registry shape)
-        // {2: sign_data(bytes), 3: data_type(1), 4: chain_id(1)}
+        // {1: request_id, 2: sign_data(bytes), 3: data_type(1), 4: chain_id(1)}
         let raw = encode_unsigned_tx_for_test(&tx);
         let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);
 
         let input = SignInput::Seed { seed: &test_seed };
+        let mut output_buf = [0u8; 512];
         let n = sign(
             input,
             crate::ur::ur_encode::UrTypeTag::EthSignRequest,
@@ -2215,9 +2239,178 @@ mod tests {
             &mut output_buf,
         )
         .expect("sign ok");
-        assert_eq!(n, expected.tx_bytes.len());
-        assert_eq!(&output_buf[..n], &expected.tx_bytes[..]);
-        assert_eq!(output_buf[0], 0x02);
+
+        // E-1: the exit is no longer a signed raw transaction (0x02 || rlp([...]));
+        // it is the CBOR map of the eth-signature container.
+        assert_ne!(output_buf[0], 0x02, "E-1: the exit must not return a tx");
+        let sig = parse_eth_signature(&output_buf[..n]).expect("eth-signature container");
+        assert_eq!(
+            sig.request_id, TEST_ETH_REQUEST_ID,
+            "the container must echo the request's id"
+        );
+        assert_eq!(&sig.signature[..32], &expected.r[..], "r");
+        assert_eq!(&sig.signature[32..64], &expected.s[..], "s");
+        assert_eq!(sig.signature[64], expected.y_parity, "v = yParity");
+        assert_eq!(
+            sig.origin, None,
+            "no origin in the request, none in the reply"
+        );
+    }
+
+    /// E-1 pin: the request id reaches the wire and is the request's, not a
+    /// freshly minted one.
+    ///
+    /// The container has no way to invent an id (and must not): the sender
+    /// correlates the reply by it. Two requests that differ only in key 1 must
+    /// produce two encodings, each parsing back to its own id.
+    #[test]
+    fn sign_eth_echoes_request_id_from_the_request() {
+        let tx = crate::chain::eth::eip1559::Eip1559Transaction {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x11u8; 20]),
+            amount: 12345,
+            data: Vec::new().into(),
+        };
+        let raw = encode_unsigned_tx_for_test(&tx);
+        let test_seed = [7u8; 64];
+
+        let mut outs = [([0u8; 512], 0usize), ([0u8; 512], 0usize)];
+        let ids = [[0x11u8; 16], [0x22u8; 16]];
+        for (i, id) in ids.iter().enumerate() {
+            let ur_payload = encode_eth_sign_request_full_for_test(&raw, 1, 1, None, Some(*id));
+            let input = SignInput::Seed { seed: &test_seed };
+            let n = sign(
+                input,
+                crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+                &ur_payload,
+                &mut outs[i].0,
+            )
+            .expect("sign ok");
+            outs[i].1 = n;
+            let sig =
+                crate::ur::codec::eth_signature::parse_eth_signature(&outs[i].0[..n]).unwrap();
+            assert_eq!(sig.request_id, *id, "the reply must echo request id {i}");
+        }
+        assert_eq!(
+            outs[0].1, outs[1].1,
+            "the id is the only difference, so the two replies have the same length"
+        );
+        assert_ne!(
+            &outs[0].0[..outs[0].1],
+            &outs[1].0[..outs[1].1],
+            "a different request id must produce a different encoding"
+        );
+    }
+
+    /// E-1 pin: the wire `v` byte for EIP-1559 is the yParity (0/1) and the
+    /// container is laid out `r ‖ s ‖ v`, never `r ‖ s ‖ v+27`.
+    ///
+    /// The 27/28 offset belongs to the legacy and personal-sign paths. The
+    /// container codec treats `v` as opaque (it does not normalize it), so a
+    /// 27-offset byte would reach the wallet as-is and the signature would be
+    /// rejected or mis-recovered. Field positions are pinned by comparing against
+    /// the oracle's r/s, so a shifted layout fails here too.
+    #[test]
+    fn sign_eth_1559_v_is_yparity_not_27_offset() {
+        use crate::ur::codec::eth_signature::parse_eth_signature;
+
+        let tx = crate::chain::eth::eip1559::Eip1559Transaction {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x11u8; 20]),
+            amount: 12345,
+            data: Vec::new().into(),
+        };
+        let test_seed = [7u8; 64];
+        let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
+        let derived =
+            crate::derivation::bip32_secp256k1::derive_from_seed(&test_seed, &path).unwrap();
+        let derived_bytes = crate::curve_primitive::secp256k1::scalar_to_bytes(&derived);
+        let expected = crate::chain::eth::eip1559::sign_eip1559(
+            &crate::chain::eth::eip1559::Eip1559SignInput {
+                tx: tx.clone(),
+                private_key: &SecretBytes::new(derived_bytes),
+            },
+        )
+        .unwrap();
+        assert!(
+            expected.y_parity <= 1,
+            "the oracle's yParity is 0/1, got {}",
+            expected.y_parity
+        );
+
+        let raw = encode_unsigned_tx_for_test(&tx);
+        let ur_payload = encode_eth_sign_request_for_test(&raw, 1, 1);
+        let mut output_buf = [0u8; 512];
+        let n = sign(
+            SignInput::Seed { seed: &test_seed },
+            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+            &ur_payload,
+            &mut output_buf,
+        )
+        .expect("sign ok");
+
+        let sig = parse_eth_signature(&output_buf[..n]).expect("eth-signature container");
+        // layout: r at [0..32], s at [32..64], v at [64]
+        assert_eq!(&sig.signature[..32], &expected.r[..], "r must come first");
+        assert_eq!(&sig.signature[32..64], &expected.s[..], "s must follow r");
+        // the value itself: 0/1, and explicitly not the 27-offset form
+        assert_eq!(
+            sig.signature[64], expected.y_parity,
+            "v must be the yParity"
+        );
+        assert!(
+            sig.signature[64] <= 1,
+            "EIP-1559 v is 0/1, got {}",
+            sig.signature[64]
+        );
+        assert_ne!(
+            sig.signature[64],
+            expected.y_parity.wrapping_add(27),
+            "E-1: a 1559 container must not carry the legacy 27/28 offset"
+        );
+    }
+
+    /// E-1 pin: a request without key 1 is refused.
+    ///
+    /// The container echoes the id and never mints one, so signing would produce a
+    /// reply the sender cannot correlate — worse than no answer. `EncodingInvalidFormat`
+    /// (not a new error kind) is the module's format rejection.
+    #[test]
+    fn sign_eth_requires_request_id() {
+        let tx = crate::chain::eth::eip1559::Eip1559Transaction {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x11u8; 20]),
+            amount: 12345,
+            data: Vec::new().into(),
+        };
+        let raw = encode_unsigned_tx_for_test(&tx);
+        // key 1 omitted — the pre-E-1 fixture shape
+        let ur_payload = encode_eth_sign_request_full_for_test(&raw, 1, 1, None, None);
+        let test_seed = [7u8; 64];
+        let mut output_buf = [0u8; 512];
+        let result = sign(
+            SignInput::Seed { seed: &test_seed },
+            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+            &ur_payload,
+            &mut output_buf,
+        );
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::EncodingInvalidFormat,
+            "a request without a request id must be refused"
+        );
     }
 
     /// P1-01: ETH end-to-end rejects requests with a mismatched chain_id
@@ -2305,14 +2498,32 @@ mod tests {
         out
     }
 
+    /// Fixed request id used by the ETH request fixtures — the ur-registry test
+    /// vector's `requestId` (9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d), so the
+    /// encodings stay comparable with the gold vector in
+    /// `docs/eth-signature-codec.md`.
+    ///
+    /// E-1: the exit echoes this id into the `eth-signature` container, so every
+    /// fixture that expects a *signature* must carry key 1.
+    const TEST_ETH_REQUEST_ID: [u8; 16] = [
+        0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad, 0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d, 0xcb,
+        0x6d,
+    ];
+
     /// Test helper: build an eth-sign-request CBOR map (ur-registry shape, minimal set)
-    /// {2: sign_data(bytes), 3: data_type(uint), 4: chain_id(uint)}
+    /// {1: request_id(tag 37 UUID), 2: sign_data(bytes), 3: data_type(uint), 4: chain_id(uint)}
     fn encode_eth_sign_request_for_test(
         sign_data: &[u8],
         data_type: u64,
         chain_id: u64,
     ) -> alloc::vec::Vec<u8> {
-        encode_eth_sign_request_with_path_for_test(sign_data, data_type, chain_id, None)
+        encode_eth_sign_request_full_for_test(
+            sign_data,
+            data_type,
+            chain_id,
+            None,
+            Some(TEST_ETH_REQUEST_ID),
+        )
     }
 
     /// + optional derivation_path (key 5, tag 305 crypto-keypath)
@@ -2322,12 +2533,36 @@ mod tests {
         chain_id: u64,
         path: Option<&DerivationPath>,
     ) -> alloc::vec::Vec<u8> {
+        encode_eth_sign_request_full_for_test(
+            sign_data,
+            data_type,
+            chain_id,
+            path,
+            Some(TEST_ETH_REQUEST_ID),
+        )
+    }
+
+    /// Full control over the optional keys. `request_id = None` omits key 1 — the
+    /// shape the E-1 exit refuses, since a reply it cannot correlate is useless.
+    fn encode_eth_sign_request_full_for_test(
+        sign_data: &[u8],
+        data_type: u64,
+        chain_id: u64,
+        path: Option<&DerivationPath>,
+        request_id: Option<[u8; 16]>,
+    ) -> alloc::vec::Vec<u8> {
         use crate::encoding::cbor;
-        let mut pairs = alloc::vec![
-            (cbor::encode_uint(2), cbor::encode_bytes(sign_data)),
-            (cbor::encode_uint(3), cbor::encode_uint(data_type)),
-            (cbor::encode_uint(4), cbor::encode_uint(chain_id)),
-        ];
+        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        if let Some(id) = request_id {
+            // request_id: key 1, tag(37 UUID) over exactly 16 bytes
+            pairs.push((
+                cbor::encode_uint(1),
+                cbor::encode_tag(37, &cbor::encode_bytes(&id)),
+            ));
+        }
+        pairs.push((cbor::encode_uint(2), cbor::encode_bytes(sign_data)));
+        pairs.push((cbor::encode_uint(3), cbor::encode_uint(data_type)));
+        pairs.push((cbor::encode_uint(4), cbor::encode_uint(chain_id)));
         if let Some(p) = path {
             // crypto-keypath: tag(304, {1: [idx, hardened, ...], 2: depth})
             // P1-01 (audit #4): the registry tag is 304 — older comments/encoding mistakenly wrote 305; corrected
@@ -2845,8 +3080,35 @@ mod tests {
         )
         .expect("sign ok");
 
-        // the signature bytes match a direct sign with the key derived from that path → path threading proven
-        assert_eq!(&output_buf[..n], expected.tx_bytes.as_slice());
+        // E-1: compare the container's r/s/v against a direct sign with the key
+        // derived from that path → path threading proven. (Before E-1 this compared
+        // the signed raw transaction, which is no longer the exit shape.)
+        let sig = crate::ur::codec::eth_signature::parse_eth_signature(&output_buf[..n])
+            .expect("eth-signature container");
+        assert_eq!(&sig.signature[..32], &expected.r[..], "r");
+        assert_eq!(&sig.signature[32..64], &expected.s[..], "s");
+        assert_eq!(sig.signature[64], expected.y_parity, "v = yParity");
+        assert_eq!(sig.request_id, TEST_ETH_REQUEST_ID, "request id echoed");
+
+        // …and it is really *that* path: the default account would sign differently.
+        let default_path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
+        let default_derived =
+            crate::derivation::bip32_secp256k1::derive_from_seed(&test_seed, &default_path)
+                .unwrap();
+        let default_expected = crate::chain::eth::eip1559::sign_eip1559(
+            &crate::chain::eth::eip1559::Eip1559SignInput {
+                tx: tx.clone(),
+                private_key: &SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(
+                    &default_derived,
+                )),
+            },
+        )
+        .unwrap();
+        assert_ne!(
+            &sig.signature[..32],
+            &default_expected.r[..],
+            "the request's path (m/44'/60'/1'/0/0) must win over the default"
+        );
     }
 
     /// P1-02: network in decision — BTC rejects non-mainnet

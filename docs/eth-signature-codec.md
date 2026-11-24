@@ -189,3 +189,73 @@ Deliberately **not** in E-1: legacy (EIP-155) dispatch, `personal_sign` wiring
 `forms/chain/eth/personal_sign.rs` has no production caller), EIP-712
 containerization, and the software/hardware acceptance gate (E-2).
 
+## E-2 anchors: external signature oracles (no hardware needed)
+
+`~/codebases/keystone3-firmware` (tag 3.2.2) carries three fixtures signed by the
+**same test key** every keystone ETH test uses — seed
+`5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4`,
+path `m/44'/60'/0'/0/0`, address `0x9858EfFD232B4033E47d90003D41EC34EcaEda94`:
+
+| anchor | source | what it pins |
+|---|---|---|
+| `personal_sign` 65-byte signature `b836ae2b…810e1b` | `rust/apps/ethereum/src/lib.rs::test_sign_personal_message` | EIP-191 digest + **v = 27** + our RFC6979/low-s output matching keystone byte-for-byte |
+| EIP-712 typed-data 65-byte signature `042fd021…87531b` | `lib.rs::test_sign_typed_data` | 712 digest + **v = 27** |
+
+Why the byte-equality is legitimate rather than a coincidence: both sides sign the
+same sighash with the same key using deterministic ECDSA (RFC 6979) and both
+normalize to low-s, so `r`/`s` are unique; `yParity` then follows from the key and
+the sighash. Any drift in our digest, key derivation, low-s handling or v semantics
+shows up as a mismatch.
+
+**Correction (2026-11-24, same day):** an earlier version of this section claimed a
+third anchor — "a real signed EIP-1559 tx in `lib.rs::test_parse_tx`". That is
+wrong. That fixture is the **unsigned** 9-field payload (chain_id … access_list, no
+`0x02` byte, no signature), and the test's `from` address comes from the **pubkey
+passed in**, not from recovery. There is no signed-1559 fixture anywhere in the
+keystone tree (only internal legacy encode/decode round-trips). So the EIP-1559
+signature itself has **no external byte anchor** in the reference implementation;
+its oracles are instead:
+
+1. **a real mainnet EIP-1559 transaction** (published signed bytes + published
+   sender): re-derive its sighash with our code, recover the signer from
+   `(r‖s‖yParity)`, and the recovered address must equal the sender. This pins our
+   digest and `v` semantics against consensus **without needing anyone's private
+   key**, and it is the strongest check available for this path;
+2. an independent implementation (ethers/web3, addable to the dev-only
+   `tools/sdk-gate` package) re-signing the same tx with the same key — deterministic
+   ECDSA makes `r`/`s` comparable byte-for-byte;
+3. the EIP-1559 spec's own preimage vector, which we already pin
+   (`tests/eth_keystone_cross_validation.rs::eth_eip1559_signing_preimage_structure`).
+
+## Wire-shape finding: `data_type` selects the scheme, and our fixtures lied
+
+`rust_c/src/ethereum/mod.rs::eth_sign_tx_dynamic` (the production path) dispatches
+on **`data_type` first**, then on the first payload byte:
+
+| `data_type` | meaning | payload shape | keystone behaviour |
+|---|---|---|---|
+| 1 | `Transaction` → **legacy** | bare RLP list, **no type byte** | `sign_legacy_tx` (6-field unprotected or 9-field EIP-155) |
+| 4 | `TypedTransaction` | **`0x02`-prefixed** | first byte `0x02` → 1559; any other first byte → `UnsupportedTransaction` |
+| 3 | `PersonalMessage` | raw message bytes | EIP-191, v = 27/28 |
+| 2 | `TypedData` | EIP-712 JSON | 712, v = 27/28 |
+
+Our code accepts `data_type` 1 **and** 4 and routes both into
+`from_rlp::parse_eip1559_raw`, which requires the `0x02` prefix. Two consequences:
+
+1. A real **1559** request (`data_type` 4) signs correctly.
+2. A real **legacy** request (`data_type` 1, bare RLP) is rejected as
+   `EncodingInvalidFormat` — fail-closed, and the reason pool item #68 ("legacy 接
+   dispatch") is not merely wiring: the `data_type` → scheme mapping itself has to
+   become explicit.
+3. Every ETH fixture in this repo pairs `data_type` **1** with a `0x02`-prefixed
+   payload — a combination no wallet emits. The fixtures must move to
+   `data_type` 4 for 1559 before they count as acceptance evidence, and the dispatch
+   should mirror keystone: `data_type` 1 → legacy path (rejected until implemented),
+   4 → first-byte dispatch.
+
+That gives E-2 a **hardware-free, machine-judged acceptance gate** for the signature
+bytes. A real wallet (keystone 3 Pro / imToken / Rabby) still adds flow-level
+evidence — that it accepts the `ur:eth-signature` frames and shows the right
+review — but it is no longer the only way to prove the signature is correct.
+
+

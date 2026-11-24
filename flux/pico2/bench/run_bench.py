@@ -11,7 +11,7 @@ Prerequisites:
 
 The script drives the channel and checks the board's output against the
 host-pinned values:
-  - ETH fixture UR  -> 111-byte signed tx (full hex + sha256)
+  - ETH fixture UR  -> 89-byte ur:eth-signature container (full hex + sha256)
   - Sparrow 12.4 KiB PSBT as 32 multipart fragments -> signed PSBT
     (length + sha256)
 

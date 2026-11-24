@@ -38,9 +38,9 @@ SCAN_SAMPLE = {
 PAYLOAD_SAMPLE = (
     ("SHLOSILO-FORGEBOX-OK-2026 " * 6)
     + "\n"
-    + "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmay"
-    + "mwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxad"
-    + "aaadrpceaadt"
+    + "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjn"
+    + "aohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcp"
+    + "cpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn"
 )
 
 

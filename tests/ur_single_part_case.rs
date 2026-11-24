@@ -12,7 +12,7 @@
 
 use core::ffi::c_uint;
 
-const ETH_SIGN_REQUEST_LOWER: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
+const ETH_SIGN_REQUEST_LOWER: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
 
 fn decode_through_ffi(uri: &str) -> (i32, String, Vec<u8>) {
     // NUL-terminated copy for the C ABI

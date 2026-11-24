@@ -121,7 +121,7 @@ fn reply_names_follow_the_request_name() {
         ("crypto-monero-tx", "xmr-txsigned"),
         ("xmr-output", "xmr-keyimage"),
         ("xmr-txsigned", "bytes"),
-        ("eth-sign-request", "bytes"), // no ETH signature output yet
+        ("eth-sign-request", "eth-signature"), // E-1: the reply container is ur:eth-signature
         ("bytes", "bytes"),
         ("", "bytes"),
         // Whole-string matching, unlike the classify questions: the prefix that
@@ -131,6 +131,35 @@ fn reply_names_follow_the_request_name() {
     for (t, want) in cases {
         assert_eq!(reply_type(t), want, "reply_type({t})");
         assert_eq!(reply_type(&lc(t)), want, "reply_type(lowercased {t})");
+    }
+}
+
+/// E-1: an `eth-sign-request` is answered with the `ur:eth-signature` container.
+///
+/// Pinned on its own because it is the one reply row whose name differs from the
+/// request's: the product flow asks the table for the reply name and hands it to
+/// the frame encoder, so a missing row would ship the signature under `bytes` and
+/// every wallet would refuse it as an unknown type.
+#[test]
+fn eth_sign_request_answers_as_eth_signature() {
+    assert_eq!(reply_type("eth-sign-request"), "eth-signature");
+    assert_eq!(reply_type("ETH-SIGN-REQUEST"), "eth-signature");
+    // Whole-string rule: a prefixed alias still classifies as an ETH sign request
+    // but has no container of its own, so it must not answer as eth-signature.
+    assert!(is_sign("eth-sign-request-v2"));
+    assert_eq!(reply_type("eth-sign-request-v2"), "bytes");
+}
+
+/// Every reply name must be a type the UR encoder can frame: the FFI turns the
+/// table's answer into a UR type field verbatim, so a name the tag enum does not
+/// know would be shipped as `unknown`.
+#[test]
+fn every_reply_name_is_a_known_ur_type() {
+    use shlosilo::ur::ur_encode::UrTypeTag;
+    for r in ALL_REPLY_TYPES {
+        let tag = UrTypeTag::from_name(r);
+        assert_ne!(tag, UrTypeTag::Unknown, "reply name {r} is not a UR type");
+        assert_eq!(tag.type_name(), r, "reply name {r} does not round-trip");
     }
 }
 

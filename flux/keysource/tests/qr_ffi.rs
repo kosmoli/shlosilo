@@ -537,7 +537,7 @@ fn slot_occupied_recovery_close_then_reopen_yields_new_scan_keys() {
 
 /// ETH sign-request fixture — the same shared C-oracle string as
 /// tests/key_session_ffi.rs / tests/pico2_smoke_parity.rs / flux/host-sim.
-const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
+const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
 
 /// Network value for the ETH fixture (EthereumMainnet -> EIP-155 chain id 1).
 const ETHEREUM_MAINNET: u32 = 10;

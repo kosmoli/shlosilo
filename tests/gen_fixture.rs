@@ -4,14 +4,27 @@
 //! Output: flux/host-sim/fixture_eth_sign_request.txt (one UR line)
 //!
 //! **After P1-01/P1-02 (fixed 2026-08-29)**: the UR payload must be a CBOR map
-//! {2: sign_data, 3: data_type, 4: chain_id} — the old version stuffed the RLP in directly (wrong wire shape,
-//! previously masked by sign()'s fallback logic; exposed after the P1-02 network validation).
+//! {1: request_id, 2: sign_data, 3: data_type, 4: chain_id} — the old version stuffed the RLP
+//! in directly (wrong wire shape, previously masked by sign()'s fallback logic; exposed after the
+//! P1-02 network validation).
 //! The payload's leading [1] type-tag prefix is handled by ur_encode::encode, no longer assembled by hand.
+//!
+//! **After E-1 (2026-11-24)**: the sign exit returns the `ur:eth-signature` container and echoes
+//! the request's `request_id`, so the fixture must carry key 1 — a request without it is refused.
+//! Key 1 is a tag(37) UUID wrapper over the 16 raw bytes (ur-registry `requestId`); the id is the
+//! registry test vector's, the same one the business-layer fixtures use (`TEST_ETH_REQUEST_ID`).
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::eth::{eip1559, rlp};
 use shlosilo::encoding::cbor;
 use shlosilo::ur::ur_encode::{encode, UrTypeTag};
+
+/// Request id echoed into the `ur:eth-signature` container: the ur-registry test
+/// vector's `requestId` (9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d), shared with
+/// `TEST_ETH_REQUEST_ID` in `forms/business/sign.rs`.
+const REQUEST_ID: [u8; 16] = [
+    0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad, 0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d, 0xcb, 0x6d,
+];
 
 #[test]
 #[ignore]
@@ -43,8 +56,13 @@ fn gen_fixture() {
     let mut raw = vec![0x02u8];
     raw.extend_from_slice(&list);
 
-    // CBOR map (consistent with the business::sign test encoding): 2=sign_data, 3=data_type, 4=chain_id
+    // CBOR map (consistent with the business::sign test encoding), canonical key order:
+    // 1=request_id (tag 37 UUID), 2=sign_data, 3=data_type, 4=chain_id
     let pairs = vec![
+        (
+            cbor::encode_uint(1),
+            cbor::encode_tag(37, &cbor::encode_bytes(&REQUEST_ID)),
+        ),
         (cbor::encode_uint(2), cbor::encode_bytes(&raw)),
         (cbor::encode_uint(3), cbor::encode_uint(1)), // type 1 = TypedTransaction
         (cbor::encode_uint(4), cbor::encode_uint(1)), // chain_id = 1

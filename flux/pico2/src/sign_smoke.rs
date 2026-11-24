@@ -62,7 +62,7 @@ pub(crate) fn fixture_mnemonic() -> Result<Mnemonic, ShlosiloError> {
 }
 
 /// ETH sign-request fixture UR (matches flux/host-sim/sim_l3.c).
-const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
+const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
 
 const REPORT_CAP: usize = 1024;
 
@@ -247,7 +247,7 @@ fn run_inner(
     let uri = core::str::from_utf8(&export_out[..export_len]).unwrap_or("<non-utf8>");
     let _ = writeln!(w, "[smoke] export_readonly ok: {uri}");
 
-    // ── Step 3: sign — eth-sign-request UR fixture → signed tx ──
+    // ── Step 3: sign — eth-sign-request UR fixture → ur:eth-signature container ──
     let decoded = ur_decode::decode(ETH_SIGN_REQUEST_URI)?;
     // Note: the C-side FFI entry additionally runs its network check
     // (check_network) before signing - that check lives at the host boundary

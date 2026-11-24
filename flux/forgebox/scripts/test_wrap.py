@@ -61,9 +61,9 @@ def main() -> None:
     max_lines = L["UI_P_MAX_LINES"]
 
     sample = ("SHLOSILO-FORGEBOX-OK-2026 " * 6) + "\n" + (
-        "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmay"
-        "mwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxad"
-        "aaadrpceaadt")
+        "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjn"
+        "aohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcp"
+        "cpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn")
 
     cases = {
         "sample.txt": sample,

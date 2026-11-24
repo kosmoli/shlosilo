@@ -34,7 +34,7 @@ fn fixture_rolls() -> [u8; 64] {
 }
 
 /// ETH sign-request fixture UR (matches flux/host-sim/sim_l3.c and the pico2 smoke).
-const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
+const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
 
 /// The crypto-hdkey UR the host-sim prints for the fixture mnemonic at
 /// m/44'/0'/0'/0/0 (mainnet). 2026-10-12 outbound convention: the message
@@ -52,8 +52,13 @@ const ETH_SIGN_REQUEST_URI: &str = "ur:eth-sign-request/otaohddmaowpadlalrfrnysg
 /// `regenerate_export_ur` (`#[ignore]`) — do not hand-edit.
 const EXPECTED_EXPORT_UR: &str = "ur:crypto-hdkey/onaxhdclaxisyagdbdhsvarersbykegssnhesonthdetkokklomsprldoseymnpansbnwynyioaahdcxaorptnpmcmdibgcevegaetftloemsfhphdcflkswfsgmdyidchkndyprswsnfewpahtaadehoeadaeaoaeamtaaddyotadlecsdwykaeykaeykaewkaewkaocytkcyltbzaxahaycysssefxgwhsvlcwox";
 
-/// The signed EIP-1559 tx hex the host-sim prints (111 bytes).
-const EXPECTED_SIGNED_HEX: &str = "02f86c0180843b9aca0084773594008252089422222222222222222222222222222222222222228203e780c080a0231db6acdbb8e2b9ce1c7c38f0eaea8520dd327b4c7b9f24627459d57a4548a9a0444004dd6f14355354be998067ad1cc1d467bb9e3d73175c5b2b1215eeba1a72";
+/// The `ur:eth-signature` CBOR container the host-sim prints (89 bytes).
+///
+/// E-1 (2026-11-24): the sign exit returns the container, not a signed tx —
+/// map {1: tag(37) UUID request_id echoed from the request, 2: r‖s‖v (65 B,
+/// v = yParity for EIP-1559)}. This fixture carries no `origin`, so the map has
+/// two entries: `a2 01 d82550 <16 B id> 02 5841 <65 B sig>`.
+const EXPECTED_SIGNED_HEX: &str = "a201d825509b1deb4d3b7d4bad9bdd2b0d7b3dcb6d025841231db6acdbb8e2b9ce1c7c38f0eaea8520dd327b4c7b9f24627459d57a4548a9444004dd6f14355354be998067ad1cc1d467bb9e3d73175c5b2b1215eeba1a7200";
 
 /// The Sparrow signet PSBT fixture (12,437 bytes; see tests/fixtures/README).
 const SPARROW_PSBT: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
@@ -185,7 +190,11 @@ fn pico2_smoke_fixture_parity() {
 
     // ── Step 3: sign (same flow the board's boot smoke and console run) ──
     let signed = eth_signed_output();
-    assert_eq!(signed.len(), 111, "host-sim oracle: signed tx length");
+    assert_eq!(
+        signed.len(),
+        89,
+        "host-sim oracle: ur:eth-signature container length"
+    );
     assert_eq!(
         to_hex(&signed),
         EXPECTED_SIGNED_HEX,

@@ -301,7 +301,8 @@ report; `console_report_task` re-serves it on the 20 s cycle:
 
 1. `create_account` — 64 x d6 dice fixture → mnemonic indices (word0 = 1565);
 2. `export_readonly` — m/44'/0'/0'/0/0 crypto-hdkey UR;
-3. `sign` — the eth-sign-request fixture UR → 111-byte signed tx.
+3. `sign` — the eth-sign-request fixture UR → 89-byte `ur:eth-signature`
+   container (`r ‖ s ‖ v`, no origin).
 
 The fixtures and expected outputs are shared with `flux/host-sim/sim_l3.c`
 (the C-ABI oracle) and pinned on the host by `tests/pico2_smoke_parity.rs`

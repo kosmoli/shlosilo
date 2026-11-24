@@ -238,12 +238,12 @@ int main(void) {
        single-part eth-sign-request UR produced by the Rust tests). Once P6.1d
        lands, this vector is replaced by a real Sparrow/MetaMask export. */
     const char *fixture_uri =
-        "ur:eth-sign-request/otaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadrpceaadt";
+        "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddmaowpadlalrfrnysgaelrktecmwaelfgmaymwcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcpcplfaxvdlartlalalaaxadaaadwnnygdkn";
     rc = shlosilo_sign_ur_ffi(fixture_uri, indices, 12, NULL, 0, 0, NULL, 0,
                               signed_out, sizeof(signed_out), &actual,
                               sign_ws, ws_need, NULL, 0);
     if (rc == 0) {
-        hexdump("signed tx", signed_out, actual);
+        hexdump("eth-signature container", signed_out, actual);
     } else {
         printf("sign_ur(fixture) rc=%d (a fixture/mnemonic mismatch against "
                "create_account is expected; the real flow takes the mnemonic "
