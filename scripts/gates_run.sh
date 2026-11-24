@@ -112,3 +112,15 @@ bash probes/noalloc/build.sh > /tmp/g_probe.log 2>&1; echo "PROBE=$?"
 # minutes in debug.
 ( cd vendor/cryptonight && cargo test --offline --features cn-timing --lib ) > /tmp/g_vendor_cn.log 2>&1; echo "VENDOR_CN=$?"
 ( cd vendor/monero-bulletproofs && cargo test --offline --release ) > /tmp/g_vendor_bp.log 2>&1; echo "VENDOR_BP=$?" 
+# CI-parity #1 (2026-11-24): the production carrier target is armv7 (LuckyFox) and
+# CI lints it cross-target — c_char is u8 on ARM, so pointer-cast lints surface only
+# there. The local batch did not run it, so a change could pass locally and fail CI.
+cargo clippy --offline --all-targets --target armv7-unknown-linux-gnueabihf -- -D warnings > /tmp/g_arm7.log 2>&1; echo "ARM7LINT=$?"
+# CI-parity #2 (2026-11-24): CI checks every feature-gated FFI/timing surface on its
+# own. A cfg typo on one feature shows up nowhere else — the default and all-features
+# batches can both stay green.
+FEATMATRIX=0
+for f in device-timing generator-cache-ffi perf-bench-ffi prove-timing-ffi cn-timing-ffi tx-phase-timing-ffi; do
+    cargo check --offline --features "$f" > "/tmp/g_feat_$f.log" 2>&1 || FEATMATRIX=1
+done
+echo "FEATMATRIX=$FEATMATRIX"
