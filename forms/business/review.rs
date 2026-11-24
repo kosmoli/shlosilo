@@ -899,7 +899,13 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
             }
         }
         EthSignDataType::TypedData => {
+            // Not signed yet (EIP-712 needs a fixed-size container, see
+            // docs/eth-signature-codec.md §3.3). The byte count is printed on
+            // purpose: it is the one honest fact the screen can give about a payload
+            // it cannot render, and it lets an operator tell a ~90 B transaction
+            // preimage apart from a several-hundred-byte typed-data blob.
             view.push_str("eth typed data")?;
+            view.push_fmt(format_args!("data {} bytes", req.sign_data.len()))?;
             view.push_str("cannot display on this screen")?;
             view.push_str("review in your wallet")?;
             return Ok(view);
@@ -1298,6 +1304,43 @@ mod eth_personal_message_review_pins {
             view.lines().len() <= REVIEW_LINES_MAX,
             "the view stays bounded"
         );
+    }
+}
+
+#[cfg(test)]
+mod eth_typed_data_review_pins {
+    use super::*;
+    use crate::encoding::cbor;
+
+    fn typed_data_request(blob: &[u8]) -> alloc::vec::Vec<u8> {
+        cbor::encode_map(&[
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(37, &cbor::encode_bytes(&[0x9bu8; 16])),
+            ),
+            (cbor::encode_uint(2), cbor::encode_bytes(blob)),
+            (cbor::encode_uint(3), cbor::encode_uint(2)), // TypedData
+        ])
+    }
+
+    /// Typed data is refused (EIP-712 has no fixed-size container yet), and the screen
+    /// says how big the payload is. The count is what lets an operator — or a support
+    /// engineer reading a photo — tell a transaction-shaped request from a JSON blob
+    /// without any device-side debugging channel.
+    #[test]
+    fn typed_data_review_reports_the_payload_size() {
+        let blob = alloc::vec![b'x'; 512];
+        let result = build_eth(&typed_data_request(&blob));
+        // Review renders (it does not sign), so this returns a view.
+        let view = result.expect("typed data renders an explanation");
+        let mut text = alloc::string::String::new();
+        for l in view.lines() {
+            text.push_str(l.as_str());
+            text.push('\n');
+        }
+        assert!(text.contains("eth typed data"), "{text}");
+        assert!(text.contains("data 512 bytes"), "{text}");
+        assert!(text.contains("cannot display on this screen"), "{text}");
     }
 }
 
