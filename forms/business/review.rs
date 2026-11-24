@@ -813,25 +813,55 @@ fn push_decoded_calldata(
         view.push_wrapped(<_ as AsRef<str>>::as_ref(&rendered))
     }
 
-    /// 256-bit big-endian → "unlimited" for 2^256-1, else 0x-hex without leading zeros.
+    /// 256-bit big-endian → **decimal** raw units, or "unlimited" for 2^256-1.
+    ///
+    /// Decimal, not hex: this is the number the token contract will move, and the
+    /// operator compares it against "1.0 USDC" by eye. Hex (`0x0f4240`) is exact but
+    /// forces mental arithmetic on the one screen that must be readable at a glance —
+    /// measured on the real acceptance run (2026-11-24), where a 1.0 USDC transfer
+    /// rendered as `0x0f4240`. Token decimals are still not guessed (a wrong decimal
+    /// point is a wrong amount), so the figure stays in raw units; a `max cost`-style
+    /// fail-closed applies when 78 digits cannot fit the line.
     fn push_amount(view: &mut ReviewView, label: &str, amount: &[u8; 32]) -> Result<()> {
         view.push_str(label)?;
         if amount.iter().all(|&b| b == 0xff) {
             return view.push_str("unlimited");
         }
-        let first = amount
-            .iter()
-            .position(|&b| b != 0)
-            .unwrap_or(amount.len() - 1);
-        let mut text = heapless::String::<REVIEW_LINE_MAX>::new();
-        use core::fmt::Write as _;
-        text.push_str("0x")
-            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
-        for &b in &amount[first..] {
-            write!(&mut text, "{b:02x}")
-                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+        let mut digits = [0u8; 78];
+        let n = u256_decimal(amount, &mut digits);
+        // ASCII digits by construction; the conversion is here only because `push_str`
+        // takes a `&str`.
+        let text = core::str::from_utf8(&digits[..n])
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+        view.push_str(text)
+    }
+
+    /// Big-endian 256-bit → ASCII decimal digits; returns the digit count.
+    ///
+    /// Repeated division by ten over a scratch copy: 78 digits is the u256 worst case,
+    /// which is why the buffer is sized 78 and nothing here allocates.
+    fn u256_decimal(amount: &[u8; 32], out: &mut [u8; 78]) -> usize {
+        let mut v = *amount;
+        if v.iter().all(|&b| b == 0) {
+            out[0] = b'0';
+            return 1;
         }
-        view.push_wrapped(text.as_str())
+        let mut reversed = [0u8; 78];
+        let mut n = 0usize;
+        while v.iter().any(|&b| b != 0) {
+            let mut rem: u32 = 0;
+            for byte in v.iter_mut() {
+                let cur = (rem << 8) | u32::from(*byte);
+                *byte = (cur / 10) as u8;
+                rem = cur % 10;
+            }
+            reversed[n] = b'0' + rem as u8;
+            n += 1;
+        }
+        for i in 0..n {
+            out[i] = reversed[n - 1 - i];
+        }
+        n
     }
 
     match decoded {
@@ -1325,6 +1355,106 @@ mod eth_personal_message_review_pins {
             view.lines().len() <= REVIEW_LINES_MAX,
             "the view stays bounded"
         );
+    }
+}
+
+#[cfg(test)]
+mod eth_amount_rendering_pins {
+    use super::*;
+    use crate::chain::eth::calldata::DecodedCalldata;
+
+    fn view_for(decoded: &DecodedCalldata) -> alloc::string::String {
+        let mut view = ReviewView::new();
+        push_decoded_calldata(&mut view, decoded).expect("render");
+        let mut s = alloc::string::String::new();
+        for l in view.lines() {
+            s.push_str(l.as_str());
+            s.push('\n');
+        }
+        s
+    }
+
+    fn word(v: u128) -> [u8; 32] {
+        let mut w = [0u8; 32];
+        w[16..].copy_from_slice(&v.to_be_bytes());
+        w
+    }
+
+    /// The acceptance case: a 1.0 USDC transfer (raw 1_000_000, 6 decimals) rendered
+    /// as `0x0f4240` on the real device run. Decimal raw units is the readable form —
+    /// and the token's decimals are still not guessed, so no decimal point appears.
+    #[test]
+    fn erc20_amounts_render_in_decimal_raw_units() {
+        let text = view_for(&DecodedCalldata::Transfer {
+            to: [0x11u8; 20],
+            amount: word(1_000_000),
+        });
+        assert!(text.contains("erc20 transfer"), "{text}");
+        assert!(
+            text.contains("\n1000000\n"),
+            "amount must be decimal: {text}"
+        );
+        assert!(!text.contains("0x0f4240"), "hex is unreadable here: {text}");
+    }
+
+    /// Zero and the "unlimited" sentinel keep their dedicated renderings.
+    #[test]
+    fn erc20_amount_edge_values() {
+        assert!(view_for(&DecodedCalldata::Transfer {
+            to: [0x11u8; 20],
+            amount: word(0),
+        })
+        .contains("\n0\n"));
+        assert!(view_for(&DecodedCalldata::Approve {
+            spender: [0x22u8; 20],
+            amount: [0xffu8; 32],
+        })
+        .contains("unlimited"));
+    }
+
+    /// A u256 amount at the top of the range would not fit a 48-column line; the
+    /// review refuses rather than printing a partial number.
+    #[test]
+    fn erc20_amount_too_wide_is_refused() {
+        let mut view = ReviewView::new();
+        let mut big = [0xffu8; 32];
+        big[0] = 0x7f; // not the unlimited sentinel, but a 77-digit number
+        let result = push_decoded_calldata(
+            &mut view,
+            &DecodedCalldata::Transfer {
+                to: [0x11u8; 20],
+                amount: big,
+            },
+        );
+        assert!(result.is_err(), "a 77-digit amount must not be truncated");
+    }
+
+    /// Guard the reproduction: the fixture used above must be the shape the device
+    /// actually saw (selector + two words), so the pin keeps matching a real request.
+    #[test]
+    fn the_acceptance_calldata_shape_is_transfer_selector_plus_two_words() {
+        let mut data = alloc::vec::Vec::new();
+        data.extend_from_slice(&[0xa9, 0x05, 0x9c, 0xbb]);
+        data.extend_from_slice(&[0u8; 12]);
+        data.extend_from_slice(&[
+            0xd0u8, 0x03, 0x87, 0xde, 0x9f, 0x68, 0xc9, 0x64, 0x2e, 0x25, 0xd4, 0xc1, 0x94, 0xd6,
+            0xe1, 0xce, 0x23, 0x36, 0x33, 0xc0,
+        ]);
+        data.extend_from_slice(&word(1_000_000));
+        assert_eq!(data.len(), 68, "a real erc20 transfer request is 68 bytes");
+        let decoded = crate::chain::eth::calldata::decode_calldata(&data).expect("decodes");
+        match decoded {
+            DecodedCalldata::Transfer { to, amount } => {
+                assert_eq!(amount, word(1_000_000));
+                let rendered = crate::address::eth::encode_bytes(&to).expect("eip55");
+                assert_eq!(
+                    rendered.as_ref(),
+                    "0xd00387de9f68C9642e25d4c194d6e1cE233633C0",
+                    "the screen showed this casing"
+                );
+            }
+            _ => panic!("must decode as erc20 transfer"),
+        }
     }
 }
 

@@ -134,6 +134,29 @@ const TX_C: Vector = Vector {
     from_hex: "0988a7fe9d0eb483b89040e238a1d0afe5a7a736",
 };
 
+/// The device-signed **ERC-20** acceptance transaction (2026-11-24, forgebox
+/// `2f758e0`): a 1.0 USDC `transfer` through MetaMask, landed on mainnet in block
+/// 26485853 (status success). Same EIP-1559 path as `TX_C` with 68 bytes of
+/// calldata, so it also pins that the digest covers `data` — a preimage that dropped
+/// or mis-ordered the calldata field would stop recovering to the sender.
+const TX_D: Vector = Vector {
+    name: "TX_D",
+    tx_hash: "0x4b267146d3f7600b369cd124a3a84a86f0672c5ca75be1e25c37208ccb98c9a2",
+    block: 26485853,
+    chain_id: 1,
+    nonce: 1,
+    max_priority_fee_per_gas: 100_000,
+    max_fee_per_gas: 921_746_503,
+    gas_limit: 94_548,
+    to_hex: "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    amount: 0,
+    data_hex: "a9059cbb000000000000000000000000d00387de9f68c9642e25d4c194d6e1ce233633c000000000000000000000000000000000000000000000000000000000000f4240",
+    y_parity: 0,
+    r_hex: "cab6e06f67052858832ae302eb1bad38371ff52f1bf8eb9337ba0983f7648958",
+    s_hex: "76bfe4b6738bc070c6a60501f866e064bd705950821ca5eb86893cc6a62425a0",
+    from_hex: "0988a7fe9d0eb483b89040e238a1d0afe5a7a736",
+};
+
 /// Provenance label for assertion messages: every failure names the transaction it
 /// came from, so a red run points at the source of the vector rather than at "TX_A".
 fn label(v: &Vector) -> alloc::string::String {
@@ -216,6 +239,7 @@ fn mainnet_1559_signature_recovers_to_the_published_sender() {
     assert_recovers_to_published_sender(&TX_A);
     assert_recovers_to_published_sender(&TX_B);
     assert_recovers_to_published_sender(&TX_C);
+    assert_recovers_to_published_sender(&TX_D);
 }
 
 /// Poison pill: the recovery above must be discriminating, not accidentally true.
@@ -223,7 +247,7 @@ fn mainnet_1559_signature_recovers_to_the_published_sender() {
 /// the pin is blind to our `v` convention (the exact thing it exists to guard).
 #[test]
 fn flipping_y_parity_changes_the_recovered_address() {
-    for v in [&TX_A, &TX_B, &TX_C] {
+    for v in [&TX_A, &TX_B, &TX_C, &TX_D] {
         let expected: [u8; 20] = fixed::<20>(v.from_hex);
         let flipped = recover_sender(v, v.y_parity ^ 1);
         assert_ne!(
@@ -275,7 +299,7 @@ fn mainnet_signatures_are_low_s() {
         carry = u16::from(N[i] & 1);
     }
 
-    for v in [&TX_A, &TX_B, &TX_C] {
+    for v in [&TX_A, &TX_B, &TX_C, &TX_D] {
         let s = fixed::<32>(v.s_hex);
         assert_eq!(
             cmp_be(&s, &half),
