@@ -9,9 +9,12 @@
 //! independently and compares against the expectations written next to each
 //! artifact.
 
-use shlosilo::business::sign::{carve_sign_ws, sign_with_entropy_ws, SignInput};
+use shlosilo::business::sign::{carve_sign_ws, sign, sign_with_entropy_ws, SignInput};
+use shlosilo::chain::eth::eip1559::Eip1559Transaction;
+use shlosilo::chain::eth::rlp;
 use shlosilo::derivation::bip32_secp256k1::{master_fingerprint_from_seed, xpub_from_seed};
 use shlosilo::derivation::path::DerivationPath;
+use shlosilo::types::wire_bytes::{wire_from, wire_slice};
 use shlosilo::ur::codec::{crypto_account, crypto_hd_key};
 use shlosilo::ur::ur_encode::{self, UrTypeTag};
 
@@ -20,6 +23,13 @@ const SEED_HEX: &str = "d25e113e8f7be9936d67de81eb4d4bb94788b48b39f815f48f79dc02
 /// keystone test seed, used for the P2TR PSBT fixture.
 const KEYSTONE_SEED_HEX: &str = "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4";
 const P2TR_PSBT: &[u8] = include_bytes!("../tests/fixtures/keystone_p2tr_keypath_288b.psbt");
+/// The ETH `requestId`: the ur-registry test vector's `requestId`
+/// (9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d), the same id the business-layer ETH
+/// fixtures use. The reply echoes it, so a wallet can correlate the signature.
+#[cfg(feature = "alloc-fallback")]
+const ETH_REQUEST_ID: [u8; 16] = [
+    0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad, 0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d, 0xcb, 0x6d,
+];
 
 fn hex_decode(s: &str) -> Vec<u8> {
     s.bytes()
@@ -42,6 +52,94 @@ fn seed64(hex: &str) -> [u8; 64] {
     let v = hex_decode(hex);
     let mut out = [0u8; 64];
     out.copy_from_slice(&v);
+    out
+}
+
+/// `requestId` as the dashed UUID string a wallet displays.
+#[cfg(feature = "alloc-fallback")]
+fn dashed_uuid(id: &[u8; 16]) -> String {
+    let h = hex_encode(id);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
+}
+
+/// The transfer both ETH artifacts sign: a 999 wei EIP-1559 transfer on
+/// mainnet (chain_id 1), 21 000 gas, empty calldata.
+#[cfg(feature = "alloc-fallback")]
+fn eth_transfer() -> Eip1559Transaction<'static> {
+    Eip1559Transaction {
+        chain_id: 1,
+        nonce: 0,
+        max_priority_fee_per_gas: 1_000_000_000,
+        max_fee_per_gas: 2_000_000_000,
+        gas_limit: 21_000,
+        destination: Some([0x22u8; 20]),
+        amount: 999,
+        data: wire_from(&[]),
+    }
+}
+
+/// Unsigned transfer as the request's `sign_data`: the EIP-2718 type byte
+/// `0x02` followed by the RLP field list (the same construction the tests use —
+/// `tests/gen_fixture.rs` and `encode_unsigned_tx_for_test` in
+/// `forms/business/sign.rs`).
+#[cfg(feature = "alloc-fallback")]
+fn unsigned_1559_signing_payload(tx: &Eip1559Transaction<'_>) -> Vec<u8> {
+    let list = rlp::encode_list(&[
+        rlp::encode_uint(tx.chain_id as u128),
+        rlp::encode_uint(tx.nonce as u128),
+        rlp::encode_uint(tx.max_priority_fee_per_gas),
+        rlp::encode_uint(tx.max_fee_per_gas),
+        rlp::encode_uint(tx.gas_limit as u128),
+        rlp::encode_bytes(&tx.destination.expect("destination")),
+        rlp::encode_uint(tx.amount),
+        rlp::encode_bytes(wire_slice(&tx.data)),
+        rlp::encode_list(&[]),
+        rlp::encode_bytes(b""), // y_parity placeholder (unsigned shape)
+        rlp::encode_bytes(b""),
+        rlp::encode_bytes(b""),
+    ]);
+    let mut out = vec![0x02u8];
+    out.extend_from_slice(&list);
+    out
+}
+
+/// `eth-sign-request` CBOR map (ur-registry shape):
+/// `{1: tag(37) request_id, 2: sign_data, 3: data_type = 4, 4: chain_id = 1}`,
+/// plus key 7 (origin, text) when the caller sends one. `data_type` 4 is
+/// "typed transaction"; the payload's leading `0x02` then selects EIP-1559.
+#[cfg(feature = "alloc-fallback")]
+fn eth_sign_request(sign_data: &[u8], origin: Option<&str>) -> Vec<u8> {
+    use shlosilo::encoding::cbor;
+    let mut pairs = vec![
+        (
+            cbor::encode_uint(1),
+            cbor::encode_tag(37, &cbor::encode_bytes(&ETH_REQUEST_ID)),
+        ),
+        (cbor::encode_uint(2), cbor::encode_bytes(sign_data)),
+        (cbor::encode_uint(3), cbor::encode_uint(4)),
+        (cbor::encode_uint(4), cbor::encode_uint(1)),
+    ];
+    if let Some(o) = origin {
+        pairs.push((cbor::encode_uint(7), cbor_text_short(o)));
+    }
+    cbor::encode_map(&pairs)
+}
+
+/// CBOR text item (major type 3, short form). `encoding::cbor::encode_text` is
+/// test-gated, and the only origin here is a short literal, so the head is one
+/// byte — asserted rather than assumed, so a longer origin fails loudly.
+#[cfg(feature = "alloc-fallback")]
+fn cbor_text_short(s: &str) -> Vec<u8> {
+    assert!(s.len() < 24, "short-form CBOR text only: {s:?}");
+    let mut out = vec![0x60 | s.len() as u8];
+    out.extend_from_slice(s.as_bytes());
     out
 }
 
@@ -126,6 +224,72 @@ fn main() {
     // expected to reject it, which the gate asserts as a documented boundary.
     let alias = ur_encode::encode(UrTypeTag::Psbt, signed).expect("ur encode alias");
     std::fs::write(dir.join("psbt_alias.ur.txt"), alias.as_str()).expect("write alias ur");
+
+    // ---- ur:eth-signature, through the real ETH sign path ------------------
+    // Two artifacts over the same transfer: a request without an origin and one
+    // carrying key 7 = "keystone", which the reply must echo. The expectation's
+    // signature comes from an independent signer (the same derived key fed
+    // straight into `sign_eip1559_parts`), never from the request parser or the
+    // container encoder — a shift in the exit then shows up as a mismatch
+    // instead of passing against itself.
+    #[cfg(feature = "alloc-fallback")]
+    {
+        use shlosilo::chain::eth::eip1559::{sign_eip1559_parts, Eip1559SignInput};
+        use shlosilo::curve_primitive::secp256k1::scalar_to_bytes;
+        use shlosilo::derivation::bip32_secp256k1::derive_from_seed;
+        use shlosilo::types::SecretBytes;
+
+        let tx = eth_transfer();
+        let sign_data = unsigned_1559_signing_payload(&tx);
+
+        // sign_eth derives m/44'/60'/0'/0/0 when the request carries no key 5.
+        let eth_path = DerivationPath::parse("m/44'/60'/0'/0/0").expect("eth path");
+        let sk = derive_from_seed(&seed, &eth_path).expect("eth key");
+        let mut raw_key = scalar_to_bytes(&sk);
+        let parts = sign_eip1559_parts(&Eip1559SignInput {
+            tx: tx.clone(),
+            private_key: &SecretBytes::take(&mut raw_key),
+        })
+        .expect("eth oracle sign");
+        // r ‖ s ‖ v, v = yParity (0/1): the byte the wallet re-derives from.
+        let mut sig65 = [0u8; 65];
+        sig65[..32].copy_from_slice(&parts.r);
+        sig65[32..64].copy_from_slice(&parts.s);
+        sig65[64] = parts.y_parity;
+        let signature_hex = hex_encode(&sig65);
+
+        for (name, origin) in [
+            ("eth_signature", None),
+            ("eth_signature_origin", Some("keystone")),
+        ] {
+            let request = eth_sign_request(&sign_data, origin);
+            let mut out = vec![0u8; 512];
+            let n = sign(
+                SignInput::Seed { seed: &seed },
+                UrTypeTag::EthSignRequest,
+                &request,
+                &mut out,
+            )
+            .expect("eth sign");
+            let ur = ur_encode::encode(UrTypeTag::EthSignature, &out[..n]).expect("eth ur encode");
+            std::fs::write(dir.join(format!("{name}.ur.txt")), ur.as_str())
+                .expect("write eth signature");
+            let origin_json = match origin {
+                Some(o) => format!("\"{o}\""),
+                None => "null".to_string(),
+            };
+            std::fs::write(
+                dir.join(format!("{name}.expect.json")),
+                format!(
+                    "{{\"requestId\":\"{}\",\"signature\":\"{}\",\"origin\":{}}}\n",
+                    dashed_uuid(&ETH_REQUEST_ID),
+                    signature_hex,
+                    origin_json
+                ),
+            )
+            .expect("write eth signature expectation");
+        }
+    }
 
     // ---- the six account-export shapes (S2 export legs) -------------------
     // Same seed as the hdkey/account dumps above, so the node side can compare

@@ -126,7 +126,6 @@ const sdk = new KeystoneSDK()
   ok(threw === 'type not match', `psbt alias is refused by the SDK ("${threw}")`)
 }
 
-console.log(`\nSDK gate: ${checks} checks passed`)
 
 // --- 5. the six account-export shapes -----------------------------------------
 // Each shape is checked with the consumer's own parser where one is available:
@@ -172,3 +171,41 @@ console.log(`\nSDK gate: ${checks} checks passed`)
   ok(!('encrypted' in cp) && !('source' in cp), 'cupcake JSON has no encrypted/source')
   ok(cp.version === 0, 'cupcake JSON version 0')
 }
+
+// --- 6. ur:eth-signature: the ETH exit, parsed by the SDK ---------------------
+// E-1 made the ETH exit a `ur:eth-signature` container (r ‖ s ‖ v) instead of a
+// signed raw transaction, so this is the artifact a wallet scans back. Two are
+// dumped from the same request shape: one without an origin, one whose request
+// carried key 7 = "keystone", which the reply must echo. The `v` byte is asserted
+// as the EIP-1559 yParity (00/01): the container codec treats `v` as opaque, so a
+// legacy 27/28 offset would reach the wallet unchanged and the signature would be
+// dropped or mis-recovered - the exact interop failure this case exists to catch.
+for (const [file, wantOrigin, wantMsg] of [
+  ['eth_signature', undefined, 'absent'],
+  ['eth_signature_origin', 'keystone', 'echoed from the request']
+]) {
+  const want = readJson(`${file}.expect.json`)
+  const ur = UR.fromString(read(`${file}.ur.txt`))
+  ok(ur.type === 'eth-signature', `${file}: UR type is ${ur.type}`)
+  const sig = sdk.eth.parseSignature(ur)
+  ok(
+    sig.requestId === want.requestId,
+    `${file}: requestId ${sig.requestId} is the request's`
+  )
+  ok(
+    sig.signature.toLowerCase() === want.signature,
+    `${file}: signature matches the independent signer`
+  )
+  ok(
+    sig.signature.length === 130,
+    `${file}: signature is ${sig.signature.length / 2} bytes (r ‖ s ‖ v)`
+  )
+  const v = parseInt(sig.signature.slice(-2), 16)
+  ok(
+    v === 0 || v === 1,
+    `${file}: v is the EIP-1559 yParity (0x0${v}), not a 27/28 offset`
+  )
+  ok(sig.origin === wantOrigin, `${file}: origin is ${wantMsg}`)
+}
+
+console.log(`\nSDK gate: ${checks} checks passed`)
