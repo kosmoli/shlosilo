@@ -327,3 +327,103 @@ fn eth_eip1559_signing_preimage_structure() {
         "sighash must match the independent oracle"
     );
 }
+
+// ─── personal_sign (EIP-191): the reference implementation's own signature bytes ──
+
+/// `rust/apps/ethereum/src/lib.rs::test_sign_personal_message` pins a **raw 65-byte
+/// signature** over a fixed message with the fixture seed. Both sides use
+/// deterministic ECDSA (RFC 6979) and normalize to low-s, so `r`/`s` are unique for a
+/// digest/key pair and the bytes must match exactly; EIP-191 takes `v` = 27/28 on both
+/// sides. This is the only external byte-anchor for personal_sign, and it also covers
+/// our zero-alloc EIP-191 digest (`personal_signing_hash_bytes`), which the device
+/// path uses.
+#[test]
+fn eth_personal_sign_matches_keystone_signature_vector() {
+    use shlosilo::business::sign::{sign, SignInput};
+    use shlosilo::chain::eth::personal_sign;
+    use shlosilo::types::SecretBytes;
+    use shlosilo::ur::codec::eth_signature::parse_eth_signature;
+    use shlosilo::ur::ur_encode::UrTypeTag;
+
+    /// The 64-byte BIP-39 seed behind `0x9858EfFD232B4033E47d90003D41EC34EcaEda94`
+    /// at `m/44'/60'/0'/0/0` — the key every keystone ETH test uses.
+    const SEED_HEX: &str =
+        "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4";
+    /// "Example `personal_sign` message"
+    const MSG_HEX: &str = "4578616d706c652060706572736f6e616c5f7369676e60206d657373616765";
+    const EXPECTED_SIG_HEX: &str = "b836ae2bac525ae9d2799928cf6f52919cb2ed5e5e52ca26e3b3cdbeb136ca2f618da0e6413a6aa3aaa722fbc2bcc87f591b8b427ee6915916f257de8125810e1b";
+
+    let seed_vec = hex_bytes(SEED_HEX);
+    assert_eq!(seed_vec.len(), 64, "64-byte BIP-39 seed");
+    let mut seed = [0u8; 64];
+    seed.copy_from_slice(&seed_vec);
+    let msg = hex_bytes(MSG_HEX);
+
+    // 1. the digest + signature path on its own
+    let path = shlosilo::derivation::path::DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
+    let sk = shlosilo::derivation::bip32_secp256k1::derive_from_seed(&seed, &path).unwrap();
+    let key = SecretBytes::new(shlosilo::curve_primitive::secp256k1::scalar_to_bytes(&sk));
+    let sig = personal_sign::personal_sign_bytes(&msg, &key).expect("personal_sign");
+    let mut direct: Vec<u8> = Vec::new();
+    direct.extend_from_slice(&sig.r);
+    direct.extend_from_slice(&sig.s);
+    direct.push(sig.v);
+    assert_eq!(
+        hex_encode(&direct),
+        EXPECTED_SIG_HEX,
+        "personal_sign must reproduce keystone's 65 bytes (r || s || v), v = 27/28"
+    );
+
+    // 2. through the real exit: data_type 3 → ur:eth-signature
+    let payload = personal_sign_request(&msg);
+    let mut out = [0u8; 512];
+    let n = sign(
+        SignInput::Seed { seed: &seed },
+        UrTypeTag::EthSignRequest,
+        &payload,
+        &mut out,
+    )
+    .expect("sign via the eth exit");
+    let container = parse_eth_signature(&out[..n]).expect("eth-signature container");
+    assert_eq!(
+        hex_encode(&container.signature),
+        EXPECTED_SIG_HEX,
+        "the exit must carry the same signature bytes"
+    );
+    assert_eq!(
+        container.request_id,
+        [
+            0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad, 0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d,
+            0xcb, 0x6d
+        ],
+        "the reply echoes the request id"
+    );
+}
+
+/// `eth-sign-request` CBOR map for a personal message, hand-encoded: the `encode_*`
+/// convenience helpers in `encoding::cbor` are `cfg(test)`-gated inside the library,
+/// so an integration test cannot reach them.
+/// `{1: tag(37) uuid, 2: sign_data, 3: data_type = 3 (PersonalMessage)}`
+fn personal_sign_request(message: &[u8]) -> Vec<u8> {
+    const ID: [u8; 16] = [
+        0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad, 0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d, 0xcb,
+        0x6d,
+    ];
+    let mut out: Vec<u8> = Vec::new();
+    out.push(0xa3); // map(3)
+    out.push(0x01); // key 1
+    out.extend_from_slice(&[0xd8, 0x25, 0x50]); // tag(37), bytes(16)
+    out.extend_from_slice(&ID);
+    out.push(0x02); // key 2
+                    // CBOR byte-string head: short form under 24 bytes, 1-byte length up to 255.
+    if message.len() < 24 {
+        out.push(0x40 | message.len() as u8);
+    } else {
+        assert!(message.len() <= u8::MAX as usize, "1-byte length head only");
+        out.push(0x58);
+        out.push(message.len() as u8);
+    }
+    out.extend_from_slice(message);
+    out.extend_from_slice(&[0x03, 0x03]); // key 3 = data_type 3 (PersonalMessage)
+    out
+}

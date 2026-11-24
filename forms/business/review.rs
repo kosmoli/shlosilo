@@ -148,6 +148,37 @@ impl ReviewView {
     }
 }
 
+/// Longest prefix of a signed message the review screen shows. Six full lines is
+/// enough for the login/attestation messages EIP-191 is used for, and it bounds the
+/// stack buffer in [`push_sanitized_message`].
+const PERSONAL_MESSAGE_SHOWN_MAX: usize = REVIEW_LINE_MAX * 6;
+
+/// Render arbitrary message bytes as displayable text.
+///
+/// Printable ASCII is kept as-is and every other byte becomes `.`: a raw newline,
+/// escape sequence or Unicode bidi control drawn literally would let a message display
+/// as something other than what is signed, and that difference is exactly what this
+/// screen exists to expose. The caller always prints the true byte length, and a
+/// truncated tail is marked at the end rather than silently cut.
+fn push_sanitized_message(view: &mut ReviewView, msg: &[u8]) -> Result<()> {
+    let shown = msg.len().min(PERSONAL_MESSAGE_SHOWN_MAX);
+    let mut text = heapless::String::<{ PERSONAL_MESSAGE_SHOWN_MAX + 16 }>::new();
+    for &b in &msg[..shown] {
+        let ch = if (0x20..0x7f).contains(&b) {
+            b as char
+        } else {
+            '.'
+        };
+        text.push(ch)
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+    }
+    if shown < msg.len() {
+        text.push_str(" ..truncated")
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+    }
+    view.push_wrapped(&text)
+}
+
 /// Build the review view for a decoded sign request.
 ///
 /// `master_fingerprint` (optional) is used to mark outputs that come back to
@@ -874,9 +905,14 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
             return Ok(view);
         }
         EthSignDataType::PersonalMessage => {
+            // This scheme IS signed (EIP-191, the exit returns r||s||v with v=27/28),
+            // so the operator has to see what they are putting their key behind: a
+            // message the screen cannot show is a message nobody can judge. The bytes
+            // are rendered as printable ASCII with everything else escaped, wrapped
+            // across lines, and capped so a huge payload cannot crowd out the rest.
             view.push_str("eth message sign")?;
-            view.push_str("cannot display on this screen")?;
-            view.push_str("review in your wallet")?;
+            view.push_fmt(format_args!("message {} bytes", req.sign_data.len()))?;
+            push_sanitized_message(&mut view, req.sign_data)?;
             return Ok(view);
         }
     }
@@ -900,6 +936,23 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
     }
     view.push_fmt(format_args!("value {}", tx.amount))?;
     view.push_fmt(format_args!("gas limit {}", tx.gas_limit))?;
+    // EIP-1559 pays two fees, and the one that decides what a send actually costs is
+    // the max fee. Both are printed in wei as the wire carries them: no unit
+    // conversion, because a rounded gwei figure would be a guess where the operator
+    // needs the exact number they are authorizing.
+    view.push_fmt(format_args!("max fee {} wei", tx.max_fee_per_gas))?;
+    view.push_fmt(format_args!(
+        "priority fee {} wei",
+        tx.max_priority_fee_per_gas
+    ))?;
+    // The signer refuses a request whose own chain_id disagrees with the transaction
+    // it carries; the review must refuse it too, or the operator would confirm a
+    // network this device will not sign for.
+    if let Some(req_chain) = req.chain_id {
+        if req_chain != tx.chain_id as i128 {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::NetworkUnrecognized));
+        }
+    }
     let calldata = crate::types::wire_bytes::wire_slice(&tx.data);
     if calldata.is_empty() {
         view.push_str("data: none")?;
@@ -1161,5 +1214,175 @@ mod eth_data_type_dispatch_pins {
                 assert_eq!(e.kind, expected, "{why}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod eth_personal_message_review_pins {
+    use super::*;
+    use crate::encoding::cbor;
+
+    /// `eth-sign-request` map for a personal message: `{1: tag(37) uuid, 2: message,
+    /// 3: data_type = 3}`.
+    fn personal_request(message: &[u8]) -> alloc::vec::Vec<u8> {
+        cbor::encode_map(&[
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(37, &cbor::encode_bytes(&[0x9bu8; 16])),
+            ),
+            (cbor::encode_uint(2), cbor::encode_bytes(message)),
+            (cbor::encode_uint(3), cbor::encode_uint(3)), // PersonalMessage
+        ])
+    }
+
+    fn lines(view: &ReviewView) -> alloc::vec::Vec<alloc::string::String> {
+        view.lines()
+            .iter()
+            .map(|l| alloc::string::String::from(l.as_str()))
+            .collect()
+    }
+
+    /// The device signs this scheme (EIP-191), so the message it is signing has to be
+    /// on the screen. `cannot display on this screen` was the pre-wiring placeholder;
+    /// keeping it after wiring would make every personal_sign a blind signature.
+    #[test]
+    fn personal_message_review_shows_the_text() {
+        let msg = b"Example `personal_sign` message";
+        let view = build_eth(&personal_request(msg)).expect("review");
+        let joined = lines(&view).join("\n");
+        assert!(joined.contains("eth message sign"), "{joined}");
+        assert!(
+            joined.contains(&alloc::format!("message {} bytes", msg.len())),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("Example `personal_sign` message"),
+            "the message text must be on the screen: {joined}"
+        );
+        assert!(
+            !joined.contains("cannot display"),
+            "personal_sign is signed now; the screen must show what is signed: {joined}"
+        );
+    }
+
+    /// Non-printable bytes are escaped, so a message cannot render as something other
+    /// than the bytes that get signed (a raw newline would move text between lines; an
+    /// escape sequence could repaint a terminal).
+    #[test]
+    fn personal_message_review_escapes_non_printable_bytes() {
+        let msg = b"line1\nline2\x1b[31m";
+        let view = build_eth(&personal_request(msg)).expect("review");
+        let joined = lines(&view).join("\n");
+        assert!(
+            !joined.contains("line1\nline2"),
+            "the embedded newline must not split the message: {joined}"
+        );
+        assert!(
+            joined.contains("line1.line2.[31m") || joined.contains("line1.line2."),
+            "control bytes render as dots: {joined}"
+        );
+        assert!(!joined.contains('\u{1b}'), "no raw ESC on the screen");
+    }
+
+    /// A long message is shown truncated but marked, and the true length is printed, so
+    /// the operator can tell the screen is showing a prefix.
+    #[test]
+    fn personal_message_review_marks_truncation() {
+        let msg = alloc::vec![b'A'; 400];
+        let view = build_eth(&personal_request(&msg)).expect("review");
+        let joined = lines(&view).join("\n");
+        assert!(joined.contains("message 400 bytes"), "{joined}");
+        assert!(joined.contains("..truncated"), "{joined}");
+        assert!(
+            view.lines().len() <= REVIEW_LINES_MAX,
+            "the view stays bounded"
+        );
+    }
+}
+
+#[cfg(test)]
+mod eth_send_fee_review_pins {
+    use super::*;
+    use crate::chain::eth::rlp;
+    use crate::encoding::cbor;
+
+    /// Unsigned EIP-1559 payload: `0x02 || rlp([...12 fields...])`.
+    fn unsigned_1559() -> alloc::vec::Vec<u8> {
+        let mut raw = alloc::vec![0x02u8];
+        raw.extend_from_slice(&rlp::encode_list(&[
+            rlp::encode_uint(1),              // chain_id
+            rlp::encode_uint(0),              // nonce
+            rlp::encode_uint(1_000_000_000),  // max_priority_fee_per_gas
+            rlp::encode_uint(2_000_000_000),  // max_fee_per_gas
+            rlp::encode_uint(21_000),         // gas_limit
+            rlp::encode_bytes(&[0x11u8; 20]), // destination
+            rlp::encode_uint(12345),          // amount
+            rlp::encode_bytes(b""),           // data
+            rlp::encode_list(&[]),            // access_list
+            rlp::encode_bytes(b""),
+            rlp::encode_bytes(b""),
+            rlp::encode_bytes(b""),
+        ]));
+        raw
+    }
+
+    /// `{1: tag(37) uuid, 2: sign_data, 3: data_type = 4, 4: chain_id}`
+    fn typed_request(sign_data: &[u8], chain_id: u64) -> alloc::vec::Vec<u8> {
+        cbor::encode_map(&[
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(37, &cbor::encode_bytes(&[0x9bu8; 16])),
+            ),
+            (cbor::encode_uint(2), cbor::encode_bytes(sign_data)),
+            (cbor::encode_uint(3), cbor::encode_uint(4)),
+            (cbor::encode_uint(4), cbor::encode_uint(chain_id)),
+        ])
+    }
+
+    fn joined(view: &ReviewView) -> alloc::string::String {
+        let mut s = alloc::string::String::new();
+        for l in view.lines() {
+            s.push_str(l.as_str());
+            s.push('\n');
+        }
+        s
+    }
+
+    /// EIP-1559 pays two fees; the operator authorizes a maximum, so the maximum has to
+    /// be on the screen in the units the wire uses (wei). A rounded gwei figure would be
+    /// a guess where the exact number matters.
+    #[test]
+    fn eth_send_review_shows_both_fees() {
+        let view = build_eth(&typed_request(&unsigned_1559(), 1)).expect("review");
+        let text = joined(&view);
+        assert!(text.contains("max fee 2000000000 wei"), "{text}");
+        assert!(text.contains("priority fee 1000000000 wei"), "{text}");
+        // the fee lines sit next to the gas limit, not somewhere else on the page
+        let idx_gas = text.find("gas limit 21000").expect("gas line");
+        let idx_max = text.find("max fee").expect("max fee line");
+        assert!(idx_gas < idx_max, "fee lines follow the gas limit: {text}");
+    }
+
+    /// The signer refuses a request whose chain_id disagrees with its transaction, so the
+    /// review must refuse it too — otherwise an operator confirms a network this device
+    /// will not sign for.
+    #[test]
+    fn eth_send_review_refuses_chain_id_mismatch() {
+        let result = build_eth(&typed_request(&unsigned_1559(), 5));
+        assert!(
+            result.is_err(),
+            "a chain_id that disagrees with the transaction must not render"
+        );
+        if let Err(e) = result {
+            assert_eq!(e.kind, ShlosiloErrorKind::NetworkUnrecognized);
+        }
+    }
+
+    /// Control: the matching chain_id still renders, so the pin above is not passing for
+    /// an unrelated reason.
+    #[test]
+    fn eth_send_review_accepts_matching_chain_id() {
+        let view = build_eth(&typed_request(&unsigned_1559(), 1)).expect("review");
+        assert!(joined(&view).contains("chain 1"));
     }
 }

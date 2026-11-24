@@ -184,10 +184,44 @@ rewire**, not a wrapper:
    1559 and the byte layout is `r‖s‖v` (a 1559 signature must not be 27-offset);
    `reply_type("eth-sign-request") == "eth-signature"`.
 
-Deliberately **not** in E-1: legacy (EIP-155) dispatch, `personal_sign` wiring
-(today `EthSignDataType::PersonalMessage` returns `ChainKindUnsupported` and
-`forms/chain/eth/personal_sign.rs` has no production caller), EIP-712
+Deliberately **not** in E-1: legacy (EIP-155) dispatch, EIP-712
 containerization, and the software/hardware acceptance gate (E-2).
+
+## E-1b: personal_sign (EIP-191) is wired
+
+`data_type` 3 signs now. What it took, and what it pins:
+
+1. **Zero-alloc digest.** `personal_signing_hash` used `alloc::format!` plus a
+   concatenated `Vec`, which cannot sit on the device sign path (the no-alloc probes
+   exist for exactly this). `personal_signing_hash_bytes` renders
+   `\x19Ethereum Signed Message:\n<len>` into a fixed stack buffer (the length is
+   formatted by hand; the bound is `head + 20` digits) and absorbs head and message
+   into one `KeccakSink` — no allocation for a message of any length.
+   `personal_sign_bytes(&[u8], &SecretBytes<32>)` signs a **borrowed** message;
+   `PersonalSignInput` / `personal_sign` stay as the allocating convenience and are
+   now `cfg(alloc-fallback, test)`.
+2. **The module is no longer cfg-gated out of device builds.** `eth::personal_sign`
+   was `cfg(alloc-fallback, test)`, so the production path could not name it. The
+   gate moved inside the module (owning API only), which is what keeps the sign path
+   compiling on the bare-metal faces.
+3. **`v` = 27/28**, the EIP-191 convention an `ecrecover` consumer expects — the
+   opposite of the 1559 yParity rule. The container codec stays opaque to `v`; the
+   scheme owns it (`sign_eth`).
+4. **Review shows the message.** The pre-wiring screen said "cannot display on this
+   screen", which was honest only while the scheme was refused. Signing a message the
+   operator cannot read is a blind signature, so the review renders the bytes:
+   printable ASCII kept, every other byte as `.` (a raw newline or escape sequence
+   would display as something other than what is signed), wrapped, capped at six
+   lines with an explicit `..truncated`, and the true byte length always printed.
+5. **External anchor, byte-exact**: `eth_personal_sign_matches_keystone_signature_vector`
+   reproduces keystone's published 65 bytes (`b836ae2b…810e1b`) both directly and
+   through the UR exit, and the exit pin (`sign_eth_personal_message_signs_with_27_28_v`)
+   compares against an independent `personal_sign_bytes` call and asserts the 27/28
+   domain.
+
+EIP-712 (`data_type` 2) stays refused with `ChainKindUnsupported` and its review
+screen still says it cannot be displayed — that scheme is not signed, so the honest
+label is still honest.
 
 ## E-2 anchors: external signature oracles (no hardware needed)
 

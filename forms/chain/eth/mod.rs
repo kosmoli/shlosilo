@@ -17,7 +17,6 @@ pub mod eip1559;
 #[cfg(any(feature = "alloc-fallback", test))]
 pub mod eip712;
 pub mod from_rlp;
-#[cfg(any(feature = "alloc-fallback", test))]
 pub mod personal_sign;
 pub mod rlp;
 pub mod sign;

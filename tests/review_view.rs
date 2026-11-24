@@ -269,6 +269,10 @@ fn eth_transaction_review_renders_eip55_destination() {
             "0x2222222222222222222222222222222222222222".to_string(),
             "value 999".to_string(),
             "gas limit 21000".to_string(),
+            // EIP-1559 dual fee: the operator authorizes a maximum, so it is on the
+            // screen (wei, unconverted).
+            "max fee 2000000000 wei".to_string(),
+            "priority fee 1000000000 wei".to_string(),
             "data: none".to_string(),
         ],
         "rendered ETH review view changed: {l:?}"

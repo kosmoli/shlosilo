@@ -1979,15 +1979,16 @@ fn sign_btc<'a>(
 ///
 /// P1-01 (2026-08-26): a real UR's payload is a CBOR map with sign_data / data_type /
 /// chain_id / derivation_path. `data_type` selects the scheme before the payload is read:
-/// 4 (TypedTransaction) → first-byte dispatch (0x02 = EIP-1559, the only one we sign);
-/// 1 (Transaction = legacy, bare RLP) is not implemented yet; PersonalMessage / TypedData
-/// are explicitly rejected. See the data_type table in docs/eth-signature-codec.md.
+/// 4 (TypedTransaction) → first-byte dispatch (0x02 = EIP-1559, the only typed scheme we
+/// sign); 3 (PersonalMessage) → EIP-191 over the raw message, `v` = 27/28; 1
+/// (Transaction = legacy, bare RLP) is not implemented yet; TypedData is rejected until
+/// it has a fixed-size container. See the data_type table in
+/// docs/eth-signature-codec.md.
 ///
 /// E-1 (2026-11-24): the exit returns the `ur:eth-signature` CBOR map
-/// (`r ‖ s ‖ v`, v = yParity for EIP-1559) instead of the signed raw
-/// transaction. The wallet assembles and broadcasts; no wallet in this dialect
-/// consumes a signed raw tx, and the tx encoding sized the caller's buffer for a
-/// transaction rather than for the ~100 B container.
+/// (`r ‖ s ‖ v`) instead of the signed raw transaction. The wallet assembles and
+/// broadcasts; no wallet in this dialect consumes a signed raw tx, and the tx encoding
+/// sized the caller's buffer for a transaction rather than for the ~100 B container.
 ///
 /// Derivation path = m/44'/60'/0'/0/0.
 fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<usize> {
@@ -2005,8 +2006,12 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             return Err(err(ShlosiloErrorKind::FeatureNotImplemented));
         }
         EthSignDataType::TypedTransaction => {}
-        EthSignDataType::TypedData | EthSignDataType::PersonalMessage => {
-            // typed-data / personal-message only open up at P6.4; explicitly rejected for now
+        // data_type 3 = personal_sign (EIP-191): the payload is the raw message,
+        // not a transaction, so none of the transaction gates apply.
+        EthSignDataType::PersonalMessage => {}
+        EthSignDataType::TypedData => {
+            // EIP-712 typed data needs its own fixed-size container; refused until
+            // then (see docs/eth-signature-codec.md, E-3).
             return Err(err(ShlosiloErrorKind::ChainKindUnsupported));
         }
     }
@@ -2014,23 +2019,27 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     // data_type 4 (TypedTransaction): the first payload byte selects the scheme.
     // Only EIP-1559 (0x02) is signable today; the other valid type bytes are named
     // so they do not degrade into a generic format error.
-    match req.sign_data.first() {
-        Some(0x02) => {}
-        // EIP-2930 / 4844 / 7702: valid types we do not sign
-        Some(0x01) | Some(0x03) | Some(0x04) => {
-            return Err(err(ShlosiloErrorKind::FeatureNotImplemented));
+    let tx = if matches!(req.data_type, EthSignDataType::TypedTransaction) {
+        match req.sign_data.first() {
+            Some(0x02) => {}
+            // EIP-2930 / 4844 / 7702: valid types we do not sign
+            Some(0x01) | Some(0x03) | Some(0x04) => {
+                return Err(err(ShlosiloErrorKind::FeatureNotImplemented));
+            }
+            // unknown type byte or empty payload
+            _ => return Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
         }
-        // unknown type byte or empty payload
-        _ => return Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
-    }
-
-    let tx = from_rlp::parse_eip1559_raw(req.sign_data)?;
-    // P1-02 (ETH part): when eth-sign-request carries its own chain_id, verify it matches the tx
-    if let Some(req_chain) = req.chain_id {
-        if req_chain != tx.chain_id as i128 {
-            return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+        let tx = from_rlp::parse_eip1559_raw(req.sign_data)?;
+        // P1-02 (ETH part): when eth-sign-request carries its own chain_id, verify it matches the tx
+        if let Some(req_chain) = req.chain_id {
+            if req_chain != tx.chain_id as i128 {
+                return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+            }
         }
-    }
+        Some(tx)
+    } else {
+        None
+    };
     // E-1: the reply must echo the request's id — the container never mints one.
     // A signature the sender cannot correlate is worse than no answer, so a
     // request without key 1 is refused here. Ordered after the request-shape
@@ -2058,19 +2067,32 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     let private_key = SecretBytes::take(&mut raw_key);
 
     let t_sign = crate::device_timing::Mark::start(crate::device_timing::STAGE_ECDSA);
-    let parts = eip1559::sign_eip1559_parts(&eip1559::Eip1559SignInput {
-        tx,
-        private_key: &private_key,
-    })?;
+    // `r ‖ s ‖ v`: the `v` byte carries each scheme's own convention and is never
+    // normalized here. EIP-1559 carries the bare yParity (0/1) — a 27-offset byte
+    // there is a signature every peer drops — while personal_sign carries 27/28,
+    // which is what EIP-191 consumers hand to ecrecover.
+    let mut sig65 = [0u8; 65];
+    match tx {
+        Some(tx) => {
+            let parts = eip1559::sign_eip1559_parts(&eip1559::Eip1559SignInput {
+                tx,
+                private_key: &private_key,
+            })?;
+            sig65[..32].copy_from_slice(&parts.r);
+            sig65[32..64].copy_from_slice(&parts.s);
+            sig65[64] = parts.y_parity;
+        }
+        None => {
+            // data_type 3: EIP-191 over the raw message (`sign_data`), borrowed.
+            let sig =
+                crate::chain::eth::personal_sign::personal_sign_bytes(req.sign_data, &private_key)?;
+            sig65[..32].copy_from_slice(&sig.r);
+            sig65[32..64].copy_from_slice(&sig.s);
+            sig65[64] = sig.v;
+        }
+    }
     t_sign.end();
 
-    // E-1: `r ‖ s ‖ v`. For EIP-1559 `v` is the yParity byte (0/1): the 27/28
-    // offset belongs to the legacy and personal-sign paths and is NOT applied
-    // here — a 1559 container carrying 27/28 is a signature every peer drops.
-    let mut sig65 = [0u8; 65];
-    sig65[..32].copy_from_slice(&parts.r);
-    sig65[32..64].copy_from_slice(&parts.s);
-    sig65[64] = parts.y_parity;
     encode_eth_signature_into(
         &EthSignature {
             request_id,
@@ -2466,34 +2488,45 @@ mod tests {
         );
     }
 
-    /// P1-01: ETH end-to-end rejects personal-message (not currently supported)
+    /// `data_type` 3 = personal_sign (EIP-191). It is signed now, and the wire byte is
+    /// the EIP-191 convention (v = 27/28 — the bytes an `ecrecover` consumer expects),
+    /// which is the opposite of the 1559 yParity rule. The signature must equal an
+    /// independent `personal_sign_bytes` call over the same message and key, and the
+    /// payload must NOT be parsed as a transaction.
     #[test]
-    fn sign_eth_rejects_personal_message() {
-        let raw = encode_unsigned_tx_for_test(&crate::chain::eth::eip1559::Eip1559Transaction {
-            chain_id: 1,
-            nonce: 0,
-            max_priority_fee_per_gas: 1_000_000_000,
-            max_fee_per_gas: 2_000_000_000,
-            gas_limit: 21_000,
-            destination: Some([0x11u8; 20]),
-            amount: 12345,
-            data: Vec::new().into(),
-        });
-        // data_type = 3 (PersonalMessage)
-        let ur_payload = encode_eth_sign_request_for_test(&raw, 3, 1);
+    fn sign_eth_personal_message_signs_with_27_28_v() {
+        use crate::chain::eth::personal_sign;
+
+        let message = b"Example `personal_sign` message";
+        let ur_payload = encode_eth_sign_request_for_test(message, 3, 1);
         let test_seed = [7u8; 64];
-        let input = SignInput::Seed { seed: &test_seed };
         let mut output_buf = [0u8; 512];
-        let result = sign(
-            input,
+        let n = sign(
+            SignInput::Seed { seed: &test_seed },
             crate::ur::ur_encode::UrTypeTag::EthSignRequest,
             &ur_payload,
             &mut output_buf,
+        )
+        .expect("personal_sign is signed");
+
+        // Independent oracle: the same seed/path key fed straight into the signer.
+        let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
+        let derived =
+            crate::derivation::bip32_secp256k1::derive_from_seed(&test_seed, &path).unwrap();
+        let key = SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&derived));
+        let expected = personal_sign::personal_sign_bytes(message, &key).expect("oracle");
+
+        let sig = crate::ur::codec::eth_signature::parse_eth_signature(&output_buf[..n])
+            .expect("eth-signature container");
+        assert_eq!(&sig.signature[..32], &expected.r[..], "r");
+        assert_eq!(&sig.signature[32..64], &expected.s[..], "s");
+        assert_eq!(sig.signature[64], expected.v, "v");
+        assert!(
+            sig.signature[64] == 27 || sig.signature[64] == 28,
+            "EIP-191 carries v = 27/28, got {}",
+            sig.signature[64]
         );
-        assert_eq!(
-            result.unwrap_err().kind,
-            ShlosiloErrorKind::ChainKindUnsupported
-        );
+        assert_eq!(sig.request_id, TEST_ETH_REQUEST_ID, "request id echoed");
     }
 
     /// `data_type` 1 is **legacy** in the reference dialect (bare RLP list, no type byte),

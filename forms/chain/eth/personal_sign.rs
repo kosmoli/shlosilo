@@ -10,16 +10,16 @@
 #[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
 
-use alloc::format;
+#[cfg(any(feature = "alloc-fallback", test))]
 use alloc::vec::Vec;
 
 use crate::chain::eth::sign;
-use crate::encoding::keccak256;
 use crate::error::Result;
 use crate::types::SecretBytes;
 
 /// personal_sign input
 /// P1-03: private keys go through `SecretBytes<32>` — no Clone, no Debug, ZeroizeOnDrop, constant-time comparison.
+#[cfg(any(feature = "alloc-fallback", test))]
 pub struct PersonalSignInput<'a> {
     /// Arbitrary UTF-8 string to sign
     pub message: Vec<u8>,
@@ -44,21 +44,78 @@ pub struct PersonalSignature {
 ///
 /// EIP-191 v0x45: `keccak256("\x19Ethereum Signed Message:\n" + len(msg) + msg)`
 pub fn personal_signing_hash(msg: &[u8]) -> Result<[u8; 32]> {
-    let prefix_str = format!("\x19Ethereum Signed Message:\n{}", msg.len());
-    let mut full = Vec::with_capacity(prefix_str.len() + msg.len());
-    full.extend_from_slice(prefix_str.as_bytes());
-    full.extend_from_slice(msg);
-    keccak256::hash(&full)
+    personal_signing_hash_bytes(msg)
+}
+
+/// EIP-191 v0x45 prefix head. The message length follows as decimal digits.
+const EIP191_PREFIX: &[u8] = b"\x19Ethereum Signed Message:\n";
+
+/// Longest decimal `usize` is 20 digits, so the prefix (head + digits) never
+/// exceeds this. Keeping the bound static is what lets the digest run without an
+/// allocator.
+const EIP191_PREFIX_MAX: usize = EIP191_PREFIX.len() + 20;
+
+/// Render `msg_len` as decimal digits after [`EIP191_PREFIX`]; returns the used
+/// length. No formatting machinery, no allocation: the device path hashes a
+/// borrowed message and cannot touch a heap.
+fn eip191_prefix(msg_len: usize, buf: &mut [u8; EIP191_PREFIX_MAX]) -> usize {
+    buf[..EIP191_PREFIX.len()].copy_from_slice(EIP191_PREFIX);
+    let mut digits = [0u8; 20];
+    let mut count = 0;
+    let mut n = msg_len;
+    if n == 0 {
+        digits[0] = b'0';
+        count = 1;
+    } else {
+        while n > 0 {
+            digits[count] = b'0' + (n % 10) as u8;
+            count += 1;
+            n /= 10;
+        }
+    }
+    let start = EIP191_PREFIX.len();
+    for i in 0..count {
+        buf[start + i] = digits[count - 1 - i];
+    }
+    start + count
+}
+
+/// Zero-alloc EIP-191 v0x45 digest over a borrowed message.
+///
+/// The prefix is absorbed in two streaming chunks (head, then the message), so a
+/// message of any length is hashed without materializing the concatenation. This
+/// is the form the device sign path uses; [`personal_signing_hash`] stays as the
+/// allocating convenience for the historical callers.
+pub fn personal_signing_hash_bytes(msg: &[u8]) -> Result<[u8; 32]> {
+    let mut prefix = [0u8; EIP191_PREFIX_MAX];
+    let n = eip191_prefix(msg.len(), &mut prefix);
+    let mut sink = crate::encoding::keccak256::KeccakSink::new();
+    sink.absorb(&prefix[..n]);
+    sink.absorb(msg);
+    Ok(sink.finalize())
 }
 
 /// Sign a personal message
 ///
 /// Outputs a 65-byte signature (r || s || v), v = 27 + y_parity (i.e. v=27 if y_parity=0, v=28 if y_parity=1).
+#[cfg(any(feature = "alloc-fallback", test))]
 pub fn personal_sign(input: &PersonalSignInput<'_>) -> Result<PersonalSignature> {
-    let sighash = personal_signing_hash(&input.message)?;
+    personal_sign_bytes(&input.message, input.private_key)
+}
+
+/// Zero-alloc personal_sign: the message is borrowed straight from the wire and
+/// nothing is materialized.
+///
+/// This is the form the ETH exit uses for `eth-sign-request` `data_type` 3; the
+/// owning [`PersonalSignInput`] variant stays for the historical callers.
+pub fn personal_sign_bytes(
+    message: &[u8],
+    private_key: &SecretBytes<32>,
+) -> Result<PersonalSignature> {
+    let sighash = personal_signing_hash_bytes(message)?;
 
     // private_key: [u8; 32] → Secp256k1Scalar
-    let sk = sign::sk_from_pk(input.private_key.expose())?;
+    let sk = sign::sk_from_pk(private_key.expose())?;
 
     let mut r_bytes = [0u8; 32];
     let mut s_bytes = [0u8; 32];
@@ -88,6 +145,8 @@ pub fn personal_ec_recover(msg: &[u8], sig: &[u8; 65]) -> Result<[u8; 64]> {
 mod tests {
     extern crate std;
     use super::*;
+    use crate::encoding::keccak256;
+    use alloc::format;
     use alloc::string::String;
     use alloc::vec;
     use std::eprintln;
