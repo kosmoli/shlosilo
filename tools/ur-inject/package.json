@@ -1,0 +1,14 @@
+{
+  "name": "shlosilo-ur-inject",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Encode synthetic eth-sign-request shapes as QR pages for the device camera (test channel for request kinds no wallet produces).",
+  "scripts": {
+    "gen": "node gen.mjs"
+  },
+  "dependencies": {
+    "@ngraveio/bc-ur": "1.1.13",
+    "qrcode": "1.5.4"
+  }
+}

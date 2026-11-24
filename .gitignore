@@ -17,3 +17,4 @@ probes/*/target
 
 # sdk-gate: node dependencies are restored by `npm ci`, never committed
 tools/sdk-gate/node_modules/
+tools/ur-inject/node_modules/
