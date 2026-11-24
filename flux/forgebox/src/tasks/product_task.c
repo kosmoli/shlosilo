@@ -1676,10 +1676,14 @@ static void sign_run(const char *uri, const char *type,
      * exit leg (confirm reject / welcome housekeeping). */
     key_session_close();
     ur_intake_reset();
+    /* Which reply types a wallet can scan back is the library's call, not this
+     * file's: `ur::type_table::reply_goes_to_qr`. This used to be a strcmp chain
+     * here (xmr-txsigned / crypto-psbt / psbt), which silently missed
+     * `eth-signature` — a successful ETH sign then parked on the result page and the
+     * signed container never reached the wallet. */
     if (g_sign_out_len > 0 &&
-        (strcmp(g_sign_out_type, "xmr-txsigned") == 0 ||
-         strcmp(g_sign_out_type, "crypto-psbt") == 0 ||
-         strcmp(g_sign_out_type, "psbt") == 0)) {
+        shlosilo_ur_type_goes_to_qr_ffi((const uint8_t *)g_sign_out_type,
+                                        (unsigned)strlen(g_sign_out_type)) != 0) {
         /* T5 beat 4: an XMR signed set goes straight to the QR carousel --
          * Cake's "scan QR code" step collects it (the rc/out/dt diagnostics
          * already went to the console above). The session is already closed

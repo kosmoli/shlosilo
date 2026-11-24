@@ -224,6 +224,31 @@ pub fn reply_type(inbound: &str) -> &'static str {
     "bytes"
 }
 
+/// Whether a **reply** type's payload goes straight to the QR carousel after a
+/// successful sign, instead of parking on the result page.
+///
+/// This used to be a three-way `strcmp` chain in the C product task
+/// (`product_task.c`: `xmr-txsigned` / `crypto-psbt` / `psbt`), which is exactly the
+/// drift that made the ETH exit unreachable: the reply name became
+/// `eth-signature` and the hardcoded list never learned about it, so a successful
+/// ETH sign stopped at the result page and the artifact never reached a wallet. The
+/// rule now lives next to [`reply_type`], and a new reply type is one row here.
+///
+/// `bytes` is deliberately **not** in the set: an opaque payload is not something a
+/// wallet can consume, so it stays on the result page where the diagnostics are.
+pub fn reply_goes_to_qr(reply: &str) -> bool {
+    let hay = reply.as_bytes();
+    eq_folded(hay, b"xmr-txsigned")
+        || eq_folded(hay, b"crypto-psbt")
+        || eq_folded(hay, b"psbt")
+        || eq_folded(hay, b"eth-signature")
+        // `xmr-keyimage` is a wallet-scannable reply too; today it is produced by the
+        // pairing leg, which has its own QR path, so listing it changes nothing — it
+        // just keeps the set complete rather than leaving a future caller to discover
+        // the omission the way the ETH exit did.
+        || eq_folded(hay, b"xmr-keyimage")
+}
+
 /// Any `'static` string this module can hand to C, as a NUL-terminated C string.
 ///
 /// A `&str` pointer is not a C string (Rust literals carry no terminator), so the

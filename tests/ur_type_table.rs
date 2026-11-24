@@ -6,8 +6,8 @@
 //! has to change, it is a product decision (and the on-screen wording is part of
 //! the fixed vocabulary — see `failure_text`), not a refactor.
 use shlosilo::ur::type_table::{
-    display, info, is_sign, known_types, reply_type, review_gated, static_cstr, ALL_PHRASES,
-    ALL_REPLY_TYPES,
+    display, info, is_sign, known_types, reply_goes_to_qr, reply_type, review_gated, static_cstr,
+    ALL_PHRASES, ALL_REPLY_TYPES,
 };
 
 /// Bring a Rust string into the state the product flow always sees: the decoder
@@ -148,6 +148,35 @@ fn eth_sign_request_answers_as_eth_signature() {
     // but has no container of its own, so it must not answer as eth-signature.
     assert!(is_sign("eth-sign-request-v2"));
     assert_eq!(reply_type("eth-sign-request-v2"), "bytes");
+}
+
+/// Which reply payloads go straight to the QR carousel after a successful sign.
+///
+/// This list used to live in the C product task as a `strcmp` chain and silently
+/// missed `eth-signature`: a successful ETH sign parked on the result page and the
+/// signed container never reached the wallet. The pin covers both directions — the
+/// types a wallet can scan back, and the ones that must stay on the result page —
+/// plus case folding, because the C side hands over whatever the table produced.
+#[test]
+fn qr_reply_types_are_the_wallet_scannable_ones() {
+    for t in [
+        "xmr-txsigned",
+        "crypto-psbt",
+        "psbt",
+        "eth-signature",
+        "xmr-keyimage",
+        "ETH-SIGNATURE",
+    ] {
+        assert!(reply_goes_to_qr(t), "{t} must go to the QR carousel");
+    }
+    for t in ["bytes", "unknown", "", "crypto-psbt-extend"] {
+        assert!(!reply_goes_to_qr(t), "{t} must stay on the result page");
+    }
+    // Everything the reply table can produce is classified explicitly: a new reply
+    // name that nobody added here is a missing decision, not a default.
+    for r in ALL_REPLY_TYPES {
+        let _ = reply_goes_to_qr(r);
+    }
 }
 
 /// Every reply name must be a type the UR encoder can frame: the FFI turns the

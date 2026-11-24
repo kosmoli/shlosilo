@@ -1994,6 +1994,19 @@ const char *shlosilo_ur_type_display_ffi(const uint8_t *ptr, unsigned int len);
 const char *shlosilo_ur_type_reply_ffi(const uint8_t *ptr, unsigned int len);
 
 /**
+ * Non-zero when a successful sign under `reply` should go straight to the QR
+ * carousel instead of the result page.
+ *
+ * The set lives in `ur::type_table::reply_goes_to_qr` (one row per reply type). It
+ * used to be a hardcoded `strcmp` chain in the C product task, which silently missed
+ * `eth-signature` and left the ETH exit parked on the result page.
+ *
+ * # Safety
+ * See [`type_str`].
+ */
+int shlosilo_ur_type_goes_to_qr_ffi(const uint8_t *ptr, unsigned int len);
+
+/**
  * extern "C" returning the version string (C side strdups it before use)
  */
 const uint8_t *shlosilo_version(void);

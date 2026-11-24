@@ -212,6 +212,7 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::type_table_abi::shlosilo_ur_type_review_gated_ffi as *const ()),
     Addr(shlosilo::ffi::type_table_abi::shlosilo_ur_type_display_ffi as *const ()),
     Addr(shlosilo::ffi::type_table_abi::shlosilo_ur_type_reply_ffi as *const ()),
+    Addr(shlosilo::ffi::type_table_abi::shlosilo_ur_type_goes_to_qr_ffi as *const ()),
     Addr(shlosilo::ffi::version::shlosilo_version as *const ()),
     Addr(shlosilo::ffi::version::shlosilo_cabi_version as *const ()),
     Addr(shlosilo::ffi::version::shlosilo_cabi_check as *const ()),

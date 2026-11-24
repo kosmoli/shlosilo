@@ -335,10 +335,25 @@ fn firmware_type_table_knows_the_alias() {
         "sign request: btc"
     );
 
-    // (e) the signed-UR exit leg keys on the output type by name (still C)
+    // (e) the signed-UR exit leg accepts the `psbt` output type, and the decision
+    //     lives in one place. This used to be a `strcmp` chain in the C host; it is
+    //     now `type_table::reply_goes_to_qr`, because that chain is exactly what
+    //     parked a successful ETH sign on the result page (the reply name became
+    //     `eth-signature` and the hardcoded list never learned about it). The pin
+    //     keeps asking the same question — "does the carousel leg accept this output
+    //     type?" — and additionally forbids the C host from growing a second copy.
     assert!(
-        PRODUCT_TASK_C.contains("strcmp(g_sign_out_type, \"psbt\") == 0"),
+        type_table::reply_goes_to_qr("psbt"),
         "the signed-UR carousel must include the psbt output type"
+    );
+    assert!(type_table::reply_goes_to_qr("crypto-psbt"));
+    assert!(
+        PRODUCT_TASK_C.contains("shlosilo_ur_type_goes_to_qr_ffi"),
+        "the carousel decision must go through the library predicate"
+    );
+    assert!(
+        !PRODUCT_TASK_C.contains("strcmp(g_sign_out_type"),
+        "no second copy of the carousel type list in the C host"
     );
 
     // (f) one home: the four questions go through the FFI, and no second
@@ -348,6 +363,7 @@ fn firmware_type_table_knows_the_alias() {
         "shlosilo_ur_type_review_gated_ffi",
         "shlosilo_ur_type_display_ffi",
         "shlosilo_ur_type_reply_ffi",
+        "shlosilo_ur_type_goes_to_qr_ffi",
     ] {
         assert!(
             PRODUCT_TASK_C.contains(call),

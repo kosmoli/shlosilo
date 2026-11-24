@@ -91,3 +91,20 @@ pub unsafe extern "C" fn shlosilo_ur_type_reply_ffi(ptr: *const u8, len: c_uint)
     };
     crate::ur::type_table::static_cstr(reply).as_ptr()
 }
+
+/// Non-zero when a successful sign under `reply` should go straight to the QR
+/// carousel instead of the result page.
+///
+/// The set lives in `ur::type_table::reply_goes_to_qr` (one row per reply type). It
+/// used to be a hardcoded `strcmp` chain in the C product task, which silently missed
+/// `eth-signature` and left the ETH exit parked on the result page.
+///
+/// # Safety
+/// See [`type_str`].
+#[no_mangle]
+pub unsafe extern "C" fn shlosilo_ur_type_goes_to_qr_ffi(ptr: *const u8, len: c_uint) -> c_int {
+    match unsafe { type_str(ptr, len) } {
+        Some(t) => crate::ur::type_table::reply_goes_to_qr(t) as c_int,
+        None => 0,
+    }
+}
