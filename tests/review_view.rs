@@ -267,12 +267,16 @@ fn eth_transaction_review_renders_eip55_destination() {
             "chain 1 ethereum mainnet".to_string(),
             "to:".to_string(),
             "0x2222222222222222222222222222222222222222".to_string(),
-            "value 999".to_string(),
+            // Every amount line states its unit — a bare number next to a `wei` line
+            // is the mixed-unit screen that gets misread.
+            "value 999 wei".to_string(),
             "gas limit 21000".to_string(),
             // EIP-1559 dual fee: the operator authorizes a maximum, so it is on the
             // screen (wei, unconverted).
             "max fee 2000000000 wei".to_string(),
             "priority fee 1000000000 wei".to_string(),
+            // …and the ceiling that follows from them: gas_limit × max_fee + value.
+            "max cost 42000000000999 wei".to_string(),
             "data: none".to_string(),
         ],
         "rendered ETH review view changed: {l:?}"

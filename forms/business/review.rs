@@ -148,6 +148,16 @@ impl ReviewView {
     }
 }
 
+/// One amount line: `"<label> <amount> wei"`, in the units the wire carries.
+///
+/// Fails closed when the line cannot fit the 48-column frame: a truncated number is a
+/// *wrong* number on a screen whose only job is to let someone authorize an exact
+/// value, so the review refuses instead of printing a partial figure. (u128 wei
+/// values that are absurd for a transfer are the only way to reach that branch.)
+fn push_wei(view: &mut ReviewView, label: &str, amount: u128) -> Result<()> {
+    view.push_fmt(format_args!("{} {} wei", label, amount))
+}
+
 /// Longest prefix of a signed message the review screen shows. Six full lines is
 /// enough for the login/attestation messages EIP-191 is used for, and it bounds the
 /// stack buffer in [`push_sanitized_message`].
@@ -941,17 +951,28 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
         }
         None => view.push_str("to: contract creation")?,
     }
-    view.push_fmt(format_args!("value {}", tx.amount))?;
+    push_wei(&mut view, "value", tx.amount)?;
     view.push_fmt(format_args!("gas limit {}", tx.gas_limit))?;
     // EIP-1559 pays two fees, and the one that decides what a send actually costs is
     // the max fee. Both are printed in wei as the wire carries them: no unit
     // conversion, because a rounded gwei figure would be a guess where the operator
     // needs the exact number they are authorizing.
-    view.push_fmt(format_args!("max fee {} wei", tx.max_fee_per_gas))?;
-    view.push_fmt(format_args!(
-        "priority fee {} wei",
-        tx.max_priority_fee_per_gas
-    ))?;
+    push_wei(&mut view, "max fee", tx.max_fee_per_gas)?;
+    push_wei(&mut view, "priority fee", tx.max_priority_fee_per_gas)?;
+    // The worst case is what the operator is actually authorizing: the fee ceiling
+    // multiplied by the gas limit, plus the value. Shown whenever it is representable;
+    // an amount that would overflow u128 is refused below rather than guessed.
+    let gas_limit_u128 = u128::from(tx.gas_limit);
+    let fee_ceiling = tx
+        .max_fee_per_gas
+        .checked_mul(gas_limit_u128)
+        .and_then(|ceiling| ceiling.checked_add(tx.amount));
+    match fee_ceiling {
+        Some(total) => push_wei(&mut view, "max cost", total)?,
+        // A value the model cannot represent is not a transaction this device may
+        // review: the operator would be confirming a number nobody can show them.
+        None => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
+    }
     // The signer refuses a request whose own chain_id disagrees with the transaction
     // it carries; the review must refuse it too, or the operator would confirm a
     // network this device will not sign for.
@@ -1419,6 +1440,41 @@ mod eth_send_fee_review_pins {
         );
         if let Err(e) = result {
             assert_eq!(e.kind, ShlosiloErrorKind::NetworkUnrecognized);
+        }
+    }
+
+    /// The operator authorizes a ceiling, so the review must name it: gas_limit ×
+    /// max_fee + value, in wei, and every amount line carries its unit (a bare number
+    /// next to a `wei` line is the kind of mixed-unit screen that gets misread).
+    #[test]
+    fn eth_send_review_shows_the_worst_case_cost() {
+        let view = build_eth(&typed_request(&unsigned_1559(), 1)).expect("review");
+        let text = joined(&view);
+        // 21_000 * 2_000_000_000 + 12_345
+        let want = 21_000u128 * 2_000_000_000u128 + 12_345u128;
+        assert!(
+            text.contains(&alloc::format!("max cost {} wei", want)),
+            "worst-case cost missing: {text}"
+        );
+        assert!(
+            text.contains("value 12345 wei"),
+            "value needs its unit: {text}"
+        );
+        // every amount line states its unit
+        for line in text.lines() {
+            let has_number = line.chars().any(|c| c.is_ascii_digit());
+            if has_number
+                && (line.starts_with("value")
+                    || line.starts_with("max fee")
+                    || line.starts_with("priority fee")
+                    || line.starts_with("max cost")
+                    || line.starts_with("gas limit"))
+            {
+                assert!(
+                    line.ends_with(" wei") || line.starts_with("gas limit"),
+                    "amount line without its unit: {line}"
+                );
+            }
         }
     }
 
