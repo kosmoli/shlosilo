@@ -2029,7 +2029,8 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             // unknown type byte or empty payload
             _ => return Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
         }
-        let tx = from_rlp::parse_eip1559_raw(req.sign_data)?;
+        // Signing policy: refuse a payload that already carries a signature.
+        let tx = from_rlp::parse_eip1559_signing_request(req.sign_data)?;
         // P1-02 (ETH part): when eth-sign-request carries its own chain_id, verify it matches the tx
         if let Some(req_chain) = req.chain_id {
             if req_chain != tx.chain_id as i128 {

@@ -177,11 +177,38 @@ fn be_to_u128(bytes: &[u8]) -> Result<u128> {
     Ok(n)
 }
 
-/// Parse a raw EIP-1559 signed tx (`0x02 || rlp([...12 fields])`)
+/// Structural parser: `0x02 || rlp([9 or 12 fields])` → the unsigned transaction.
 ///
-/// Returns the unsigned part (chain_id cannot be recovered from the signature — it's the list's item 0).
+/// Two list lengths are legal on the wire, both with the `0x02` type byte, and real
+/// wallets send one or the other:
+/// - **9 fields** — the signing preimage itself (`chain_id … access_list`). This is
+///   what MetaMask's own QR keyring sends: `@metamask/eth-qr-keyring`
+///   `dist/device.cjs`, `RLP.encode(transaction.getMessageToSign())`.
+/// - **12 fields** — the unsigned transaction serialization, whose last three items
+///   are the signature slots. This is what
+///   `@keystonehq/metamask-airgapped-keyring` (≤ 0.15.x) sends:
+///   `Buffer.from(tx.serialize())`.
+///
+/// A payload that already carries a signature is still parsed here — this is the
+/// parser, used by round-trip pins and by callers that read signed transactions.
+/// Use [`parse_eip1559_signing_request`] for anything we are about to sign or review.
+///
 /// Returns Err when access_list is non-empty (out of v2 scope).
 pub fn parse_eip1559_raw(raw: &[u8]) -> Result<Eip1559Transaction<'_>> {
+    parse_impl(raw, false)
+}
+
+/// The same parse, for a payload we are about to **sign or review**.
+///
+/// Refuses a payload whose signature slots are non-empty: that is not a signing
+/// request, and signing over it would launder someone else's `r`/`s` as this
+/// device's output. The policy lives here rather than in the parser because the
+/// parser also serves callers that read already-signed transactions.
+pub fn parse_eip1559_signing_request(raw: &[u8]) -> Result<Eip1559Transaction<'_>> {
+    parse_impl(raw, true)
+}
+
+fn parse_impl(raw: &[u8], require_unsigned: bool) -> Result<Eip1559Transaction<'_>> {
     if raw.first() != Some(&0x02) {
         return Err(err());
     }
@@ -190,8 +217,18 @@ pub fn parse_eip1559_raw(raw: &[u8]) -> Result<Eip1559Transaction<'_>> {
         return Err(err());
     }
     let fields = top.as_list_items()?;
-    if fields.len() != 12 {
-        return Err(err());
+    match fields.len() {
+        9 => {}
+        12 => {
+            // Structural check for all callers; emptiness only when require_unsigned.
+            for f in &fields[9..12] {
+                let slot = f.as_str()?;
+                if require_unsigned && !slot.is_empty() {
+                    return Err(err());
+                }
+            }
+        }
+        _ => return Err(err()),
     }
     let chain_id = be_to_u128(fields[0].as_str()?)?;
     let nonce = be_to_u128(fields[1].as_str()?)?;
@@ -214,10 +251,7 @@ pub fn parse_eip1559_raw(raw: &[u8]) -> Result<Eip1559Transaction<'_>> {
     if !fields[8].as_list_items()?.is_empty() {
         return Err(err());
     }
-    // fields[9..12] = y_parity, r, s — parse only cares that the structure is legal
-    for f in &fields[9..12] {
-        let _ = f.as_str()?;
-    }
+    // The signature slots (present only in the 12-field shape) were validated above.
     Ok(Eip1559Transaction {
         // A3c-F7 (2026-11-20): `as u64` silently truncated a wider wire integer, which rewrote the
         // request (chain_id 2^64+1 became 1). Reject instead: a value the model cannot represent is

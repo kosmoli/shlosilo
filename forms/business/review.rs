@@ -917,7 +917,8 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
         }
     }
 
-    let tx = from_rlp::parse_eip1559_raw(req.sign_data)?;
+    // Review mirrors the sign path's policy: a pre-signed payload is not a request.
+    let tx = from_rlp::parse_eip1559_signing_request(req.sign_data)?;
     view.push_str("eth send request")?;
     // Name the chain when we know it: `chain 1` alone does not tell the operator
     // which network they are spending on, and a wrong-network send is not
