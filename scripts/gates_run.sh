@@ -71,8 +71,10 @@ bash scripts/pico2_sign_noalloc_check.sh > /tmp/g_pico2signalloc.log 2>&1; echo 
 # the console flavor is the sensitivity control (and is left on disk for the gates above).
 bash scripts/pico2_heapless_check.sh > /tmp/g_pico2heapless.log 2>&1; echo "PICO2HEAPLESS=$?"
 bash flux/host-sim/build.sh > /tmp/g_hostsim.log 2>&1; echo "HOSTSIM_BUILD=$?"
-timeout 60 flux/host-sim/sim_l3 > /tmp/g_sim.log 2>&1; echo "HOSTSIM_RUN=$?"
-grep -c "signed tx (111 bytes)" /tmp/g_sim.log; grep -c "all steps completed" /tmp/g_sim.log
+# The run assertion (expected device output) lives in scripts/check_hostsim.sh,
+# shared with CI — it used to be a `grep -c` here that only printed counts, so a
+# changed exit shape passed locally while CI failed on its own copy of the grep.
+bash scripts/check_hostsim.sh > /tmp/g_sim.log 2>&1; echo "HOSTSIM_RUN=$?"
 bash flux/forgebox/build.sh > /tmp/g_forgebox.log 2>&1; echo "FORGEBOX=$?"
 # A4-15 (2026-11-21): the forgebox device image must not be able to reach the allocator from any
 # product face, and the instrument must be able to see allocations at all (it re-measures the pico2

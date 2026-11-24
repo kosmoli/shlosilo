@@ -366,9 +366,11 @@ jobs:
       - name: host-sim (POSIX) staticlib + keep gate + link + run
         run: |
           make host-sim
-          ./flux/host-sim/sim_l3 | tee /tmp/sim_l3.log
-          grep -q "signed tx (111 bytes)" /tmp/sim_l3.log
-          grep -q "=== all steps completed ===" /tmp/sim_l3.log
+          # The expectations live in scripts/check_hostsim.sh, shared with the
+          # local gate batch — a device-output change must not require editing
+          # two copies of the same grep (that is how this step went red while
+          # the local batch stayed green).
+          bash scripts/check_hostsim.sh
       # Lint the appearance crates on their real targets. They are workspace
       # members but NOT default members (the workspace root is itself a
       # package, so default-members = the root alone), which kept them out of
