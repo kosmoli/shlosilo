@@ -16,9 +16,15 @@
 
 use crate::encoding::cbor::Cbor;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+use crate::types::caps::ETH_UR_ORIGIN_MAX_LEN;
 
 /// UR registry crypto-keypath tag (BCR-2020-006; same source as the encode side of crypto_hd_key.rs)
 const TAG_CRYPTO_KEYPATH: u64 = 304;
+/// CBOR tag 37 = UUID (RFC 4122 §3); `requestId` is always wrapped in it.
+const TAG_UUID: u64 = 37;
+const REQUEST_ID_LEN: usize = 16;
+const KEY_REQUEST_ID: u64 = 1;
+const KEY_ORIGIN: u64 = 7;
 
 #[cfg(any(feature = "alloc-fallback", test))]
 extern crate alloc;
@@ -58,6 +64,15 @@ pub struct EthSignRequest<'a> {
     /// derivation_path (key 5, tag 304 crypto-keypath, optional)
     /// P1-02: when given, signing derives with that path; the default fallback is m/44\'/60\'/0\'/0/0
     pub derivation_path: Option<crate::derivation::path::DerivationPath>,
+    /// request_id (key 1: tag(37 UUID) + 16 B, optional).
+    ///
+    /// Validated when present — a bare byte string or a foreign tag is a format
+    /// error. Absent stays `None` (older fixtures and third-party senders omit
+    /// it); the signer requires it before it can echo an id back.
+    pub request_id: Option<[u8; 16]>,
+    /// origin (key 7: text, optional), bounded by
+    /// `ETH_SIGNATURE_ORIGIN_MAX_LEN` — echoed into the `eth-signature` reply.
+    pub origin: Option<&'a str>,
 }
 
 /// Parse an eth-sign-request CBOR payload → EthSignRequest
@@ -140,11 +155,50 @@ pub fn parse_eth_sign_request<'a>(payload: &'a [u8]) -> Result<EthSignRequest<'a
         None => None,
     };
 
+    // request_id (key 1, optional) — tag(37) UUID over exactly 16 bytes when present.
+    //
+    // E-0 (2026-11-24): key 1 used to be ignored. It is now exposed so the
+    // `eth-signature` reply can echo it, and a present-but-malformed value is a
+    // format error rather than a silent drop (an untagged string or a foreign tag
+    // would otherwise reach the container as a request id the peer cannot match).
+    // Absent stays `None`: older fixtures and third-party senders omit key 1.
+    let request_id = match map.map_get_uint(KEY_REQUEST_ID)? {
+        Some(v) => {
+            if !matches!(v, Cbor::Tag(TAG_UUID, _)) {
+                return Err(err());
+            }
+            let b = v.inner()?.as_bytes()?;
+            if b.len() != REQUEST_ID_LEN {
+                return Err(err());
+            }
+            let mut id = [0u8; REQUEST_ID_LEN];
+            id.copy_from_slice(b);
+            Some(id)
+        }
+        None => None,
+    };
+
+    // origin (key 7, optional) — text, bounded by the shared ETH UR origin cap
+    // (`types::caps::ETH_UR_ORIGIN_MAX_LEN`) so the echoed container always fits
+    // `eth_signature::ETH_SIGNATURE_CBOR_MAX_LEN`.
+    let origin = match map.map_get_uint(KEY_ORIGIN)? {
+        Some(v) => {
+            let s = v.as_text()?;
+            if s.len() > ETH_UR_ORIGIN_MAX_LEN {
+                return Err(err());
+            }
+            Some(s)
+        }
+        None => None,
+    };
+
     Ok(EthSignRequest {
         sign_data,
         data_type,
         chain_id,
         derivation_path,
+        request_id,
+        origin,
     })
 }
 
@@ -284,7 +338,10 @@ mod tests {
 
         let request_id = [0x9bu8; 16];
         let pairs = alloc::vec![
-            (cbor::encode_uint(1), cbor::encode_bytes(&request_id)),
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(TAG_UUID, &cbor::encode_bytes(&request_id))
+            ),
             (cbor::encode_uint(2), cbor::encode_bytes(&[0x02u8; 16])),
             (cbor::encode_uint(3), cbor::encode_uint(1)), // data_type = Transaction
             (cbor::encode_uint(4), cbor::encode_uint(1)), // chain_id = 1
@@ -309,7 +366,10 @@ mod tests {
             (cbor::encode_uint(2), cbor::encode_uint(1)),
         ]);
         let pairs = alloc::vec![
-            (cbor::encode_uint(1), cbor::encode_bytes(&[0x9bu8; 16])),
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(TAG_UUID, &cbor::encode_bytes(&[0x9bu8; 16]))
+            ),
             (cbor::encode_uint(2), cbor::encode_bytes(&[0x02u8; 16])),
             (cbor::encode_uint(3), cbor::encode_uint(1)),
             (cbor::encode_uint(4), cbor::encode_uint(1)),
@@ -361,5 +421,55 @@ mod tests {
             .map(|i| (i.value(), i.is_hardened()))
             .collect();
         assert_eq!(flat, alloc::vec![(44, true), (60, true), (1, false)]);
+    }
+
+    /// E-0 pin 10: the official ur-registry `test_encode` vector exposes both the
+    /// echoed request id (key 1, tag 37 UUID) and the origin (key 7) — the two
+    /// fields the `eth-signature` container has to echo back.
+    #[test]
+    fn eth_sign_request_exposes_request_id_and_origin() {
+        let payload = hex(
+            "a601d825509b1deb4d3b7d4bad9bdd2b0d7b3dcb6d02584bf849808609184e72a00082271094000000000000000000000000000000000000000080a47f74657374320000000000000000000000000000000000000000000000000000006000578080800301040105d90130a2018a182cf501f501f500f401f4021a1234567807686d6574616d61736b",
+        );
+        let req = parse_eth_sign_request(&payload).expect("official vector must parse");
+        let want: [u8; 16] = [
+            0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad, 0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d,
+            0xcb, 0x6d,
+        ];
+        assert_eq!(req.request_id, Some(want));
+        assert_eq!(req.origin, Some("metamask"));
+    }
+
+    /// E-0 pin 11: key 1 is whitelisted on tag 37 — a foreign uuid tag (999) is a
+    /// format error, not "any tag".
+    #[test]
+    fn eth_sign_request_rejects_bad_uuid_tag() {
+        use crate::encoding::cbor;
+        let pairs = alloc::vec![
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(999, &cbor::encode_bytes(&[0x9bu8; 16]))
+            ),
+            (cbor::encode_uint(2), cbor::encode_bytes(&[0x02u8; 16])),
+            (cbor::encode_uint(3), cbor::encode_uint(1)),
+        ];
+        let payload = cbor::encode_map(&pairs);
+        assert!(
+            parse_eth_sign_request(&payload).is_err(),
+            "tag 999 on key 1 must be rejected (only the uuid tag 37 is whitelisted)"
+        );
+        // Control: the same map with the right tag parses.
+        let ok_pairs = alloc::vec![
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(TAG_UUID, &cbor::encode_bytes(&[0x9bu8; 16]))
+            ),
+            (cbor::encode_uint(2), cbor::encode_bytes(&[0x02u8; 16])),
+            (cbor::encode_uint(3), cbor::encode_uint(1)),
+        ];
+        let ok_payload = cbor::encode_map(&ok_pairs);
+        let ok = parse_eth_sign_request(&ok_payload).expect("tag 37 is accepted");
+        assert_eq!(ok.request_id, Some([0x9bu8; 16]));
+        assert_eq!(ok.origin, None, "key 7 absent stays None");
     }
 }

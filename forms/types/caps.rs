@@ -113,6 +113,15 @@ pub const TX_EXTRA_PUBKEYS_MAX: usize = 16;
 /// explicit EncodingInvalidFormat Err (Z3.1 leaf: the container Vec is gone).
 pub const DEST_ORIGINAL_MAX: usize = 106;
 
+/// Soft: the `origin` field of the ETH UR containers — `eth-sign-request` key 7
+/// (inbound) and `eth-signature` key 3 (the echo) share one bound. Keeping it
+/// here instead of in one of the two codecs means neither layer-E codec has to
+/// import the other, and the echoed reply always fits
+/// `ur::codec::eth_signature::ETH_SIGNATURE_CBOR_MAX_LEN` (156 B worst case).
+/// Real origins are host names (`keystone`, `metamask`). Over-cap is an explicit
+/// EncodingInvalidFormat Err on both sides — never a truncation.
+pub const ETH_UR_ORIGIN_MAX_LEN: usize = 64;
+
 // ── Z3.3b sign-workspace deployment caps (single source of truth: the shell,
 // the SignWsLayout carve, and the shlosilo_sign_ws_len() query all size from
 // these — contract 3 of the C-ABI workspace design). Counts mirror the

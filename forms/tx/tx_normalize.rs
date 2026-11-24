@@ -57,6 +57,9 @@ pub fn to_template<'a>(type_tag: UrTypeTag, payload: &'a [u8]) -> Result<TxTempl
         // their own business entry (`business::xmr_pairing`), never `sign`.
         | UrTypeTag::XmrOutput
         | UrTypeTag::XmrKeyImage
+        // `eth-signature` is our own outbound reply (E-0), not an inbound request:
+        // nothing to normalize into a sign template.
+        | UrTypeTag::EthSignature
         | UrTypeTag::Unknown => {
             return Err(crate::error::ShlosiloError::new(
                 crate::error::ShlosiloErrorKind::UrPayloadUnknownType,

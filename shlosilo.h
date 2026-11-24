@@ -606,6 +606,17 @@
 #define DEST_ORIGINAL_MAX 106
 
 /**
+ * Soft: the `origin` field of the ETH UR containers — `eth-sign-request` key 7
+ * (inbound) and `eth-signature` key 3 (the echo) share one bound. Keeping it
+ * here instead of in one of the two codecs means neither layer-E codec has to
+ * import the other, and the echoed reply always fits
+ * `ur::codec::eth_signature::ETH_SIGNATURE_CBOR_MAX_LEN` (156 B worst case).
+ * Real origins are host names (`keystone`, `metamask`). Over-cap is an explicit
+ * EncodingInvalidFormat Err on both sides — never a truncation.
+ */
+#define ETH_UR_ORIGIN_MAX_LEN 64
+
+/**
  * Workspace: plaintext scratch == max unsigned-txset plain budget.
  */
 #define SIGN_WS_PLAIN 16384
@@ -707,6 +718,12 @@
 #define WITNESS_PUBLIC_KEY_HASH 404
 
 #define TAPROOT 409
+
+/**
+ * Upper bound of the CBOR message: 156 B worst case (65-byte signature +
+ * origin at [`ETH_UR_ORIGIN_MAX_LEN`]) with margin.
+ */
+#define ETH_SIGNATURE_CBOR_MAX_LEN 160
 
 /**
  * JSON-encoded view key string (Feather Wallet compatible, max ~256 characters)

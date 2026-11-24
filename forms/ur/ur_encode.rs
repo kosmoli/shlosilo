@@ -77,10 +77,14 @@ pub enum UrTypeTag {
     /// Same payload as `CryptoPsbt`, different name: the reply must carry the
     /// name the request used, so the two are distinct tags, not aliases.
     Psbt,
-    EthSignRequest,     // ETH
-    CryptoMoneroTx,     // XMR (compatibility alias, deprecated — official is xmr-txunsigned/signed)
-    XmrTxUnsigned,      // XMR official registry 8303 (payload = full encrypted unsigned txset blob)
-    XmrTxSigned,        // XMR official registry 8304 (payload = full encrypted signed txset blob)
+    EthSignRequest, // ETH
+    /// ETH outbound signature container (`ur:eth-signature`): the reply to an
+    /// `eth-sign-request`. Outbound-only — there is no legacy inbound encoding,
+    /// so `from_bytes` deliberately has no row for it.
+    EthSignature,
+    CryptoMoneroTx, // XMR (compatibility alias, deprecated — official is xmr-txunsigned/signed)
+    XmrTxUnsigned,  // XMR official registry 8303 (payload = full encrypted unsigned txset blob)
+    XmrTxSigned,    // XMR official registry 8304 (payload = full encrypted signed txset blob)
     XmrOutput, // Cake direct pairing (monero_c patch name): encrypted output-export container (Monero output export\x04)
     XmrKeyImage, // Cake direct pairing (monero_c patch name): encrypted key-image container (Monero key image export\x03)
     SolanaSignRequest, // SOL
@@ -115,6 +119,7 @@ impl UrTypeTag {
             "crypto-psbt" => Self::CryptoPsbt,
             "psbt" => Self::Psbt,
             "eth-sign-request" => Self::EthSignRequest,
+            "eth-signature" => Self::EthSignature,
             "crypto-monero-tx" => Self::CryptoMoneroTx,
             "xmr-txunsigned" => Self::XmrTxUnsigned,
             "xmr-txsigned" => Self::XmrTxSigned,
@@ -135,6 +140,7 @@ impl UrTypeTag {
             Self::CryptoPsbt => "crypto-psbt",
             Self::Psbt => "psbt",
             Self::EthSignRequest => "eth-sign-request",
+            Self::EthSignature => "eth-signature",
             Self::CryptoMoneroTx => "crypto-monero-tx",
             Self::XmrTxUnsigned => "xmr-txunsigned",
             Self::XmrTxSigned => "xmr-txsigned",
@@ -159,6 +165,7 @@ impl UrTypeTag {
             Self::CryptoPsbt => c"crypto-psbt",
             Self::Psbt => c"psbt",
             Self::EthSignRequest => c"eth-sign-request",
+            Self::EthSignature => c"eth-signature",
             Self::CryptoMoneroTx => c"crypto-monero-tx",
             Self::XmrTxUnsigned => c"xmr-txunsigned",
             Self::XmrTxSigned => c"xmr-txsigned",
@@ -218,10 +225,17 @@ impl UrTypeTag {
 /// with "getData is not a function" because `map[5]` is a byte). Our own decoder
 /// strips the shell, so the defect is invisible to a decode-side shape test -
 /// only an external parser caught it (`tools/sdk-gate`).
+///
+/// `eth-signature` belongs to the same group: the peer decodes the message as the
+/// map (`ETHSignature.fromCBOR(ur.cbor)`), so a byte-string shell would break
+/// every consumer.
 pub(crate) fn message_is_cbor_item(type_tag: UrTypeTag) -> bool {
     matches!(
         type_tag,
-        UrTypeTag::CryptoHdKey | UrTypeTag::CryptoAccount | UrTypeTag::EthSignRequest
+        UrTypeTag::CryptoHdKey
+            | UrTypeTag::CryptoAccount
+            | UrTypeTag::EthSignRequest
+            | UrTypeTag::EthSignature
     )
 }
 
@@ -435,6 +449,7 @@ mod type_name_tests {
             UrTypeTag::CryptoPsbt,
             UrTypeTag::Psbt,
             UrTypeTag::EthSignRequest,
+            UrTypeTag::EthSignature,
             UrTypeTag::CryptoMoneroTx,
             UrTypeTag::XmrTxUnsigned,
             UrTypeTag::XmrTxSigned,
