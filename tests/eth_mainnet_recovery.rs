@@ -109,6 +109,31 @@ const TX_B: Vector = Vector {
     from_hex: "0668c9bf6a6936b9eb5a19f61c663070beff2f9b",
 };
 
+/// The device-signed acceptance transaction (2026-11-24, forgebox `2c16949`).
+///
+/// Kosmo signed this on the hardware wallet through MetaMask and it landed on
+/// mainnet in block 26485426 (status success). Keeping it here means the exact
+/// bytes this device produced are re-verified by our own digest and recovery on
+/// every gate run — a regression in the EIP-1559 preimage or in `yParity` would
+/// make this vector stop recovering to its published sender.
+const TX_C: Vector = Vector {
+    name: "TX_C",
+    tx_hash: "0x3ba8e61d6df1f84f8ddb2b1ddf8df8b001e92d572e436c5c1462824a08df00d8",
+    block: 26485426,
+    chain_id: 1,
+    nonce: 0,
+    max_priority_fee_per_gas: 2_000_000_000,
+    max_fee_per_gas: 2_289_017_607,
+    gas_limit: 31_500,
+    to_hex: "d00387de9f68c9642e25d4c194d6e1ce233633c0",
+    amount: 227_895_945_379_500,
+    data_hex: "",
+    y_parity: 1,
+    r_hex: "5fc723a08410302360e1090a113825f4f253e49be608c84498b4eccc93228b01",
+    s_hex: "63a675a74e396bc2647fcff42dcdfc9523c8c98aa564cd6a93f2cab10aaadc7c",
+    from_hex: "0988a7fe9d0eb483b89040e238a1d0afe5a7a736",
+};
+
 /// Provenance label for assertion messages: every failure names the transaction it
 /// came from, so a red run points at the source of the vector rather than at "TX_A".
 fn label(v: &Vector) -> alloc::string::String {
@@ -190,6 +215,7 @@ fn assert_recovers_to_published_sender(v: &Vector) {
 fn mainnet_1559_signature_recovers_to_the_published_sender() {
     assert_recovers_to_published_sender(&TX_A);
     assert_recovers_to_published_sender(&TX_B);
+    assert_recovers_to_published_sender(&TX_C);
 }
 
 /// Poison pill: the recovery above must be discriminating, not accidentally true.
@@ -197,7 +223,7 @@ fn mainnet_1559_signature_recovers_to_the_published_sender() {
 /// the pin is blind to our `v` convention (the exact thing it exists to guard).
 #[test]
 fn flipping_y_parity_changes_the_recovered_address() {
-    for v in [&TX_A, &TX_B] {
+    for v in [&TX_A, &TX_B, &TX_C] {
         let expected: [u8; 20] = fixed::<20>(v.from_hex);
         let flipped = recover_sender(v, v.y_parity ^ 1);
         assert_ne!(
@@ -249,7 +275,7 @@ fn mainnet_signatures_are_low_s() {
         carry = u16::from(N[i] & 1);
     }
 
-    for v in [&TX_A, &TX_B] {
+    for v in [&TX_A, &TX_B, &TX_C] {
         let s = fixed::<32>(v.s_hex);
         assert_eq!(
             cmp_be(&s, &half),
@@ -258,4 +284,17 @@ fn mainnet_signatures_are_low_s() {
             label(v)
         );
     }
+}
+
+/// The review screen's address casing must be the EIP-55 checksum of the bytes on
+/// the wire — not `toLowerCase()`, not an arbitrary choice. Pinned against the exact
+/// string the device displayed for the acceptance transaction (photo, 2026-11-24).
+#[test]
+fn the_acceptance_screen_address_is_the_eip55_rendering() {
+    let rendered = eth_address::encode_bytes(&fixed::<20>(TX_C.to_hex)).expect("EIP-55 encode");
+    assert_eq!(
+        rendered.as_ref(),
+        "0xd00387de9f68C9642e25d4c194d6e1cE233633C0",
+        "the screen showed this exact casing; the encoder must produce it"
+    );
 }
