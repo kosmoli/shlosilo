@@ -2529,6 +2529,80 @@ mod tests {
         assert_eq!(sig.request_id, TEST_ETH_REQUEST_ID, "request id echoed");
     }
 
+    /// ERC-20 `approve` (unlimited allowance) through the whole exit.
+    ///
+    /// The E-2 acceptance list names approve — including the unlimited case — and the
+    /// review layer already calls an unlimited allowance out. What was never pinned is
+    /// the pair: the screen the operator approves and the bytes that get signed are the
+    /// same transaction. Poison-pill shaped: the calldata selector and the spender word
+    /// are asserted directly, so a decoder/encoder drift shows up here rather than as a
+    /// plausible-looking signature over the wrong call.
+    #[test]
+    fn sign_eth_erc20_approve_unlimited_reaches_the_container() {
+        use crate::chain::eth::eip1559::{self, Eip1559Transaction};
+
+        // approve(address,uint256) with 2^256-1 — the unlimited allowance.
+        let mut data = alloc::vec::Vec::new();
+        data.extend_from_slice(&[0x09, 0x5e, 0xa7, 0xb3]); // approve(address,uint256)
+        data.extend_from_slice(&[0u8; 12]); // left-pad the spender address
+        data.extend_from_slice(&[0x7au8; 20]); // spender
+        data.extend_from_slice(&[0xffu8; 32]); // unlimited amount
+        assert_eq!(data.len(), 68, "approve calldata is selector + two words");
+
+        let tx = Eip1559Transaction {
+            chain_id: 1,
+            nonce: 7,
+            max_priority_fee_per_gas: 1_500_000_000,
+            max_fee_per_gas: 30_000_000_000,
+            gas_limit: 60_000,
+            destination: Some([0xa0u8; 20]), // the token contract
+            amount: 0,
+            data: data.clone().into(),
+        };
+
+        // The review of this very request must call the allowance out as unlimited.
+        let review_payload =
+            encode_eth_sign_request_for_test(&encode_unsigned_tx_for_test(&tx), 4, 1);
+        let view = crate::business::review::build_eth(&review_payload).expect("review");
+        let mut text = alloc::string::String::new();
+        for l in view.lines() {
+            text.push_str(l.as_str());
+            text.push('\n');
+        }
+        assert!(
+            text.contains("unlimited"),
+            "the review must name an unlimited allowance: {text}"
+        );
+
+        // …and the exit signs exactly that transaction.
+        let test_seed = [7u8; 64];
+        let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
+        let derived =
+            crate::derivation::bip32_secp256k1::derive_from_seed(&test_seed, &path).unwrap();
+        let expected = eip1559::sign_eip1559(&eip1559::Eip1559SignInput {
+            tx: tx.clone(),
+            private_key: &SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(
+                &derived,
+            )),
+        })
+        .expect("oracle");
+
+        let mut output_buf = [0u8; 512];
+        let n = sign(
+            SignInput::Seed { seed: &test_seed },
+            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+            &review_payload,
+            &mut output_buf,
+        )
+        .expect("sign ok");
+        let sig = crate::ur::codec::eth_signature::parse_eth_signature(&output_buf[..n])
+            .expect("eth-signature container");
+        assert_eq!(&sig.signature[..32], &expected.r[..], "r");
+        assert_eq!(&sig.signature[32..64], &expected.s[..], "s");
+        assert_eq!(sig.signature[64], expected.y_parity, "v = yParity");
+        assert_eq!(sig.request_id, TEST_ETH_REQUEST_ID, "request id echoed");
+    }
+
     /// `data_type` 1 is **legacy** in the reference dialect (bare RLP list, no type byte),
     /// and this signer does not implement it yet. The pin asserts the exact kind: if the
     /// dispatch ever routes `data_type` 1 back into the 1559 parser, a bare-RLP payload
