@@ -40,15 +40,37 @@ const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 
 /// An `eth-sign-request` payload carrying `json` as EIP-712 typed data (`data_type` 2).
 fn typed_data_request(json: &str) -> Vec<u8> {
+    typed_data_request_with_chain(json, None)
+}
+
+/// The same request with key 4 (`chain_id`) — the field the transaction schemes carry to state
+/// the chain they believe they are signing for.
+fn typed_data_request_with_chain(json: &str, chain_id: Option<u64>) -> Vec<u8> {
     use shlosilo::encoding::cbor;
-    cbor::encode_map(&[
+    let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = vec![
         (
             cbor::encode_uint(1),
             cbor::encode_tag(37, &cbor::encode_bytes(&[0x9bu8; 16])),
         ),
         (cbor::encode_uint(2), cbor::encode_bytes(json.as_bytes())),
         (cbor::encode_uint(3), cbor::encode_uint(2)),
-    ])
+    ];
+    if let Some(id) = chain_id {
+        pairs.push((cbor::encode_uint(4), cbor::encode_uint(id)));
+    }
+    cbor::encode_map(&pairs)
+}
+
+/// Move the document's own `domain.chainId` to another chain (the rest of the document is
+/// unchanged, so only the chain identity differs).
+fn domain_chain(json: &str, id: u64) -> String {
+    let needle = "\"chainId\":1,";
+    assert_eq!(
+        json.matches(needle).count(),
+        1,
+        "one domain chainId to move"
+    );
+    json.replace(needle, &format!("\"chainId\":{id},"))
 }
 
 /// The review workspace the C-ABI carves (`review_ws_len()` bytes; the page only uses the
@@ -176,6 +198,26 @@ fn a_struct_array_over_three_is_refused_by_both_faces() {
         ShlosiloErrorKind::FeatureNotImplemented,
         "the sign face must apply the page's gate, or a direct call could blind-sign"
     );
+
+    // Every length between four and seven is refused too: the bound is `> 3`, and an
+    // off-by-one there would show up here rather than in a real request.
+    for n in 4..=7 {
+        let over = typed_data_request(&struct_array(n));
+        assert_eq!(
+            review_of(&over)
+                .expect_err("the page refuses a folded struct array")
+                .kind,
+            ShlosiloErrorKind::FeatureNotImplemented,
+            "{n} struct elements must be refused"
+        );
+        assert_eq!(
+            device_sign(&over)
+                .expect_err("the signer refuses it too")
+                .kind,
+            ShlosiloErrorKind::FeatureNotImplemented,
+            "{n} struct elements must be refused by the sign face"
+        );
+    }
 
     // Three is still signable and fully itemized: the bound is the fold, not struct arrays.
     let three = typed_data_request(&struct_array(3));
@@ -361,6 +403,55 @@ fn the_network_gate_reads_the_domain_chain_id() {
         sign_on(&no_chain, Network::EthereumMainnet),
         ShlosiloErrorKind::BufferTooSmall,
         "a domain without a chain id has nothing to compare: the gate must skip it"
+    );
+}
+
+/// Key 4 (the request's own `chain_id`) cannot vouch for a chain the signed digest does not
+/// name: `check_network` compares BOTH with the selected network, so a request cannot state one
+/// chain in key 4 and sign another in `domain.chainId`.
+///
+/// Both directions are pinned because they fail at different places: a wrong key 4 is refused
+/// before the `data_type` dispatch, a wrong `domain.chainId` after it. Each case keeps the other
+/// field in agreement with the selection, so the refusal can only come from the field the case
+/// is about.
+#[test]
+fn key_four_cannot_vouch_for_a_different_domain_chain() {
+    let gate = |json: &str, key_four: Option<u64>, network: Network| -> ShlosiloErrorKind {
+        let payload = typed_data_request_with_chain(json, key_four);
+        let mut out = vec![0u8; 512];
+        match sign_with_network(
+            SignInput::Seed { seed: &SEED },
+            UrTypeTag::EthSignRequest,
+            &payload,
+            network,
+            &mut out,
+        ) {
+            Ok(_) => panic!("the alloc shell has no typed-data container, it cannot sign"),
+            Err(e) => e.kind,
+        }
+    };
+
+    // key 4 says mainnet, the domain says Sepolia: the domain comparison refuses.
+    assert_eq!(
+        gate(
+            &domain_chain(&permit(), 11_155_111),
+            Some(1),
+            Network::EthereumMainnet
+        ),
+        ShlosiloErrorKind::NetworkUnrecognized,
+        "a mainnet key 4 must not carry a Sepolia domain"
+    );
+    // key 4 says Sepolia, the domain says mainnet: the key-4 comparison refuses.
+    assert_eq!(
+        gate(&permit(), Some(11_155_111), Network::EthereumMainnet),
+        ShlosiloErrorKind::NetworkUnrecognized,
+        "a Sepolia key 4 must not sign a mainnet domain"
+    );
+    // Both on mainnet: the network gate passes (the container refusal is the next wall).
+    assert_eq!(
+        gate(&permit(), Some(1), Network::EthereumMainnet),
+        ShlosiloErrorKind::BufferTooSmall,
+        "key 4 and the domain agreeing must pass the network gate"
     );
 }
 
