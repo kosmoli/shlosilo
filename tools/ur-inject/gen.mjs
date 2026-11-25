@@ -23,6 +23,12 @@
 //   unknown   data_type 4, 0x99 || rlp      → refused (EncodingInvalidFormat)
 //   presigned data_type 4, 0x02 || rlp(12)  → refused (carries a signature)
 //   badchain  data_type 4, 1559 on chain 5 vs tx chain 1 → refused (network)
+//   batch     ur:eth-batch-sign-request (40404), {1: [tagged 1559, tagged 1559]}
+//                                           → refused: fixed "no batch signing"
+//
+// Only `batch` is not an `eth-sign-request`: it is the keystone batch extension
+// this device deliberately does not implement, and the point of injecting it is
+// that the screen must say so ("no batch signing") rather than "unknown code".
 //
 // The frames are rendered by the same bc-ur implementation the wallets use
 // (`@ngraveio/bc-ur`, already present under tools/sdk-gate/node_modules), so the
@@ -144,6 +150,26 @@ const transfer1559 = () => {
   return encList(fields)
 }
 
+/**
+ * One `eth-sign-request` as a batch carries it: CBOR tag 401 (`ETH_SIGN_REQUEST`)
+ * around the usual map, wrapping a valid 1559 transfer. `n` only varies the
+ * requestId, so the legs are two distinct requests rather than a copy.
+ */
+const ethSignRequest = (n) => {
+  const id = Buffer.from(UUID)
+  id[id.length - 1] = n
+  return cborTag(
+    401,
+    cborMap([
+      [cborUint(1), cborTag(37, cborBytes(id))],
+      [cborUint(2), cborBytes(Buffer.concat([Buffer.from([0x02]), transfer1559()]))],
+      [cborUint(3), cborUint(4)], // data_type 4 = EIP-1559 transaction
+      [cborUint(4), cborUint(1)], // chain_id 1
+      [cborUint(5), keypath()],
+    ]),
+  )
+}
+
 const KINDS = {
   1559: () => ({
     signData: Buffer.concat([Buffer.from([0x02]), transfer1559()]),
@@ -227,10 +253,30 @@ const KINDS = {
     chainId: 5,
     expect: 'REFUSED: request chain_id 5 vs transaction chain 1 (code -12)',
   }),
+  // eth-batch-sign-request — UR type 40404, a keystone private extension, payload
+  // `{1: [tagged eth-sign-request, …]}`. Both legs are *valid, signable* 1559
+  // transfers on chain 1, so what this exercises is the device's POLICY, not a
+  // malformed request: the whole batch is refused with a fixed phrase and the scan
+  // keeps running. If the device ever started signing one leg, this kind would show
+  // it -- which is why the legs are real requests rather than filler bytes.
+  batch: () => ({
+    urType: 'eth-batch-sign-request',
+    cbor: cborMap([
+      [cborUint(1), Buffer.concat([Buffer.from([0x82]), ethSignRequest(1), ethSignRequest(2)])],
+    ]),
+    expect: 'device refuses the whole batch with a fixed phrase',
+  }),
 }
+
+const DEFAULT_UR_TYPE = 'eth-sign-request'
 
 function request(kind) {
   const spec = KINDS[kind]()
+  // A kind may bring its own container: `batch` is a different UR type with a
+  // different payload shape, and hardcoding the type here would have shipped it as
+  // an `eth-sign-request` (the device would then never see the batch type at all).
+  const urType = spec.urType || DEFAULT_UR_TYPE
+  if (spec.cbor) return { cbor: spec.cbor, urType, expect: spec.expect }
   const pairs = [
     [cborUint(1), cborTag(37, cborBytes(UUID))],
     [cborUint(2), cborBytes(spec.signData)],
@@ -238,7 +284,7 @@ function request(kind) {
   ]
   if (spec.chainId !== null) pairs.push([cborUint(4), cborUint(spec.chainId)])
   pairs.push([cborUint(5), keypath()])
-  return { cbor: cborMap(pairs), expect: spec.expect }
+  return { cbor: cborMap(pairs), urType, expect: spec.expect }
 }
 
 const qrSvg = async (text) =>
@@ -302,8 +348,8 @@ if (!KINDS[kind]) {
 const frag = args.includes('--frag') ? Number(args[args.indexOf('--frag') + 1]) : 200
 const out = args.includes('--out') ? args[args.indexOf('--out') + 1] : `/tmp/ur-inject-${kind}.html`
 
-const { cbor, expect } = request(kind)
-const ur = new UR(cbor, 'eth-sign-request')
+const { cbor, urType, expect } = request(kind)
+const ur = new UR(cbor, urType)
 const enc = new UREncoder(ur, frag, 0)
 const frames = []
 for (;;) {
@@ -316,6 +362,6 @@ for (const f of frames) console.log(`  ${f}`)
 console.log(`expect: ${expect}`)
 const svgs = []
 for (const f of frames) svgs.push(await qrSvg(f))
-fs.writeFileSync(out, page({ urType: 'eth-sign-request', frames: svgs, kind, expect }))
+fs.writeFileSync(out, page({ urType, frames: svgs, kind, expect }))
 console.log(`page: ${out}  (open it fullscreen, then scan with the device)`)
 }

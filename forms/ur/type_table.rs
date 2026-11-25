@@ -1,12 +1,13 @@
 //! UR type classification — the device's whole "what is this type?" policy.
 //!
-//! Four questions the product flow asks about an inbound UR type — *is it a sign
-//! request*, *does it go through the operator review gate*, *which fixed phrase
-//! do we show*, and *which name do we answer under* — used to live as four ad-hoc
-//! `strcmp` chains in C (`flux/forgebox/src/tasks/product_task.c`), reachable only
-//! by grepping that file. They are pure string classification, so they live here:
-//! one table, one match, host-testable, and adding a type alias (B-6 did exactly
-//! that) is a one-line edit instead of four.
+//! Five questions the product flow asks about an inbound UR type — *is it a sign
+//! request*, *does it go through the operator review gate*, *is it a type we know
+//! and deliberately do not support*, *which fixed phrase do we show*, and *which
+//! name do we answer under* — used to live as ad-hoc `strcmp` chains in C
+//! (`flux/forgebox/src/tasks/product_task.c`), reachable only by grepping that
+//! file. They are pure string classification, so they live here: one table, one
+//! match, host-testable, and adding a type alias (B-6 did exactly that) is a
+//! one-line edit instead of four.
 //!
 //! **Screen vocabulary**: `display` values are the fixed phrases, never an echo of
 //! the input — an unknown type says `unknown code`, not the bytes the sender chose
@@ -31,6 +32,18 @@
 //! gate) — the whole module is table lookups over byte slices.
 
 /// What the product flow needs to know about one UR type.
+///
+/// Three states, and they are not interchangeable on screen (E-6):
+/// - [`TypeInfo::is_sign`] — a sign request: it reaches the sign dispatcher.
+/// - neither `is_sign` nor [`TypeInfo::unsupported`] — **pass-through**: a leg the
+///   product flow routes elsewhere (the Cake pairing legs `xmr-keyimage` /
+///   `xmr-output`, a peer's `xmr-txsigned`). The device prompts and keeps
+///   scanning, and the session must survive it.
+/// - [`TypeInfo::unsupported`] — **known, and deliberately not supported here**.
+///   The device must say so in a fixed phrase and keep scanning; it must not fall
+///   through to `unknown code` (which reads as a broken QR) and it must not use the
+///   pass-through wording (`collected: …` / `not a sign request`), because the
+///   reason is our policy, not the sender's framing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TypeInfo {
     /// Fixed on-screen phrase (screen vocabulary; never echoes the input).
@@ -42,14 +55,27 @@ pub struct TypeInfo {
     /// Goes through the operator review gate before signing (fail-closed: if the
     /// summary cannot be built, the request is not signed).
     pub review_gated: bool,
+    /// Known, and **deliberately not supported by this device**.
+    ///
+    /// Distinct from an unknown type: the operator sees "not supported" (a retry
+    /// will not help, the request itself is understood) instead of `unknown code`
+    /// (which reads like a damaged QR).
+    ///
+    /// Invariant: `unsupported == true` implies `is_sign == false`. A type this
+    /// device refuses never reaches the sign dispatcher, so a row claiming both
+    /// would be a contradiction the product flow could not act on (pinned in
+    /// `tests/ur_type_table.rs`).
+    pub unsupported: bool,
 }
 
 /// The fall-through classification: unknown types are shown as a fixed phrase,
-/// never signed, never review-gated (there is nothing to summarize).
+/// never signed, never review-gated (there is nothing to summarize), and not
+/// mistaken for a type we know and refuse.
 pub const UNKNOWN: TypeInfo = TypeInfo {
     display: "unknown code",
     is_sign: false,
     review_gated: false,
+    unsupported: false,
 };
 
 /// One table row. `exact` selects whole-string matching (the registry's short
@@ -62,7 +88,7 @@ struct Rule {
 
 /// The table. Order matters only for genuinely overlapping prefixes; the rows
 /// mirror the C chain's order so a future reader can diff them.
-const RULES: [Rule; 8] = [
+const RULES: [Rule; 9] = [
     Rule {
         name: "xmr-txunsigned",
         exact: false,
@@ -70,6 +96,7 @@ const RULES: [Rule; 8] = [
             display: "sign request: xmr",
             is_sign: true,
             review_gated: false, // XMR keeps its shipped session-bound flow
+            unsupported: false,
         },
     },
     Rule {
@@ -79,6 +106,7 @@ const RULES: [Rule; 8] = [
             display: "sign request: xmr",
             is_sign: true,
             review_gated: false,
+            unsupported: false,
         },
     },
     Rule {
@@ -88,6 +116,7 @@ const RULES: [Rule; 8] = [
             display: "sign request: btc",
             is_sign: true,
             review_gated: true,
+            unsupported: false,
         },
     },
     Rule {
@@ -97,6 +126,7 @@ const RULES: [Rule; 8] = [
             display: "sign request: btc",
             is_sign: true,
             review_gated: true,
+            unsupported: false,
         },
     },
     Rule {
@@ -106,6 +136,28 @@ const RULES: [Rule; 8] = [
             display: "sign request: eth",
             is_sign: true,
             review_gated: true,
+            unsupported: false,
+        },
+    },
+    // E-6: batch signing is a keystone private extension (`eth-batch-sign-request`,
+    // UR type 40404, payload `{1: [tagged eth-sign-request, …]}`) that this device
+    // decided **not** to implement — not now, and not by accident. Listing it makes
+    // the refusal a decision instead of a gap: before this row the type fell through
+    // to `unknown code`, which tells the operator the QR is damaged rather than that
+    // the request is understood and declined.
+    //
+    // Placed after `eth-sign-request` because that row is a prefix: `eth-sign` is not
+    // a prefix of `eth-batch`, so the order is safe either way, but keeping the two
+    // ETH rows adjacent makes the split visible. Prefix (`not exact`) so it also
+    // covers the reply leg `eth-batch-signature` (40405).
+    Rule {
+        name: "eth-batch", // prefix: covers eth-batch-sign-request(40404) and eth-batch-signature(40405)
+        exact: false,
+        info: TypeInfo {
+            display: "no batch signing",
+            is_sign: false,
+            review_gated: false,
+            unsupported: true,
         },
     },
     Rule {
@@ -115,6 +167,7 @@ const RULES: [Rule; 8] = [
             display: "signed: xmr",
             is_sign: false,
             review_gated: false,
+            unsupported: false,
         },
     },
     Rule {
@@ -124,6 +177,7 @@ const RULES: [Rule; 8] = [
             display: "pairing: outputs",
             is_sign: false,
             review_gated: false,
+            unsupported: false,
         },
     },
     Rule {
@@ -133,6 +187,7 @@ const RULES: [Rule; 8] = [
             display: "pairing: key images",
             is_sign: false,
             review_gated: false,
+            unsupported: false,
         },
     },
 ];
@@ -193,6 +248,15 @@ pub fn is_sign(type_name: &str) -> bool {
 /// Does this type go through the operator review gate?
 pub fn review_gated(type_name: &str) -> bool {
     info(type_name).review_gated
+}
+
+/// Is this a type we recognize and deliberately do not support?
+///
+/// The product flow still prompts and keeps scanning (the operator can scan the
+/// next QR), but the wording says *not supported* rather than `unknown code`:
+/// the request is understood, so no amount of re-scanning helps (E-6).
+pub fn unsupported(type_name: &str) -> bool {
+    info(type_name).unsupported
 }
 
 /// The UR type the device answers under, given the inbound type.
@@ -265,6 +329,7 @@ pub fn static_cstr(s: &'static str) -> &'static core::ffi::CStr {
         "signed: xmr" => c"signed: xmr",
         "pairing: outputs" => c"pairing: outputs",
         "pairing: key images" => c"pairing: key images",
+        "no batch signing" => c"no batch signing",
         // reply names
         "xmr-keyimage" => c"xmr-keyimage",
         "xmr-txsigned" => c"xmr-txsigned",
@@ -279,7 +344,7 @@ pub fn static_cstr(s: &'static str) -> &'static core::ffi::CStr {
 }
 
 /// Every phrase this module can produce (the closed set `phrase_cstr` maps).
-pub const ALL_PHRASES: [&str; 7] = [
+pub const ALL_PHRASES: [&str; 8] = [
     "unknown code",
     "sign request: xmr",
     "sign request: btc",
@@ -287,6 +352,7 @@ pub const ALL_PHRASES: [&str; 7] = [
     "signed: xmr",
     "pairing: outputs",
     "pairing: key images",
+    "no batch signing",
 ];
 
 /// Every reply name this module can produce.
@@ -300,8 +366,8 @@ pub const ALL_REPLY_TYPES: [&str; 6] = [
 ];
 
 /// The table's rows, for tests and for the header/host parity checks.
-pub fn known_types() -> [&'static str; 8] {
-    let mut out = [""; 8];
+pub fn known_types() -> [&'static str; 9] {
+    let mut out = [""; 9];
     let mut i = 0usize;
     while i < RULES.len() {
         out[i] = RULES[i].name;

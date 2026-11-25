@@ -2008,6 +2008,19 @@ int shlosilo_ur_type_is_sign_ffi(const uint8_t *ptr, unsigned int len);
 int shlosilo_ur_type_review_gated_ffi(const uint8_t *ptr, unsigned int len);
 
 /**
+ * Non-zero when `type` is **known and deliberately unsupported** by this device
+ * (E-6: batch signing, `eth-batch-sign-request` 40404).
+ *
+ * Distinct from "not a sign request": the product flow keeps scanning in both
+ * cases, but this one must say *not supported* — the request is understood, so a
+ * retry will not help. Answers 0 for NULL/empty (no type recorded = unknown).
+ *
+ * # Safety
+ * See [`type_str`].
+ */
+int shlosilo_ur_type_unsupported_ffi(const uint8_t *ptr, unsigned int len);
+
+/**
  * The fixed on-screen phrase for `type` (a NUL-terminated static string; the
  * caller must NOT free it).
  *

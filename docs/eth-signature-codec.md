@@ -287,9 +287,53 @@ Our code accepts `data_type` 1 **and** 4 and routes both into
    should mirror keystone: `data_type` 1 → legacy path (rejected until implemented),
    4 → first-byte dispatch.
 
+**Status (2026-11-25 — the analysis above is the finding, not the current code).**
+The dispatch now mirrors keystone (`768896d`): `data_type` 1 → `FeatureNotImplemented`
+(the refusal code, not a parse failure), 4 → first-byte dispatch with `0x01`/`0x03`/
+`0x04` refused as `FeatureNotImplemented` and an unknown first byte as
+`EncodingInvalidFormat`, 3 → EIP-191 personal_sign, 2 → refused pending E-3. A bare-RLP
+legacy request therefore gets a *stable code* today; actually **signing** legacy
+(and the two audit defects that become reachable the moment it does — F-8's
+`chain_id*2+35+parity` overflow and F-7-legacy's `u128`→`u64` silent truncation) is
+pool item #68 / batch E-1.
+
 That gives E-2 a **hardware-free, machine-judged acceptance gate** for the signature
 bytes. A real wallet (keystone 3 Pro / imToken / Rabby) still adds flow-level
 evidence — that it accepts the `ur:eth-signature` frames and shows the right
 review — but it is no longer the only way to prove the signature is correct.
+
+## E-6: batch signing (40404 / 40405) is refused by policy
+
+`eth-batch-sign-request` is UR type **40404**, `eth-batch-signature` is **40405**
+(`ur-registry` 1.0.8/1.0.9 `RegistryType`; a keystone private extension with no public
+spec). The payload adds nothing wire-wise — it is a packed list,
+`{1: [tagged(401) eth-sign-request, …]}` — so the whole question is *admission policy*,
+not parsing.
+
+**Decision (2026-11-25): not supported, and said out loud.** The device used to fall
+through to `unknown code`, which reads like a damaged QR and invites a pointless retry.
+Now the classification table answers `unsupported` for the `eth-batch` prefix and the
+product flow shows three fixed phrases — `no batch signing` / `not supported` /
+`scan another` — while scanning keeps running. The payload is never parsed: the refusal
+happens at the type, not at the transaction, so a malformed batch and a well-formed one
+are refused identically.
+
+Why not the "minimal subset": keystone's admission rule
+(`apps/ethereum/src/batch_tx_rules.rs::rule_swap`, 42 lines) accepts 1–3 legs where the
+first N−1 are ERC-20 `approve`-shaped and **the last leg is never inspected**. The link
+between the approved spender and the contract actually executed lives entirely in their
+built-in ABI/address allow-list (875 entries / 92 addresses). Copying the rule copies
+that review hole; doing it right means maintaining an approve↔execution-contract
+allow-list this project does not have (E-2 stops at the selector). There is also no
+third-party sender to validate against — MetaMask and Rabby emit single
+`eth-sign-request` legs.
+
+Pins live in `tests/ur_type_table.rs`: both 40404 and 40405 through the same prefix,
+upper-cased UR shapes, `unsupported ⇒ !is_sign`, the phrase staying inside the closed
+screen vocabulary, and `eth-sign-request` not being swallowed by the `eth-batch` row.
+The generator can emit the real thing — `node tools/ur-inject/gen.mjs --kind batch`
+builds `{1: [tagged(401), tagged(401)]}` from two *valid, signable* 1559 transfers, so
+a future regression that starts signing one leg shows up as a signature rather than as
+a parse error.
 
 

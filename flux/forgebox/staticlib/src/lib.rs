@@ -212,6 +212,7 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::tx_phase_ffi::shlosilo_tx_phase_phase as *const ()),
     Addr(shlosilo::ffi::type_table_abi::shlosilo_ur_type_is_sign_ffi as *const ()),
     Addr(shlosilo::ffi::type_table_abi::shlosilo_ur_type_review_gated_ffi as *const ()),
+    Addr(shlosilo::ffi::type_table_abi::shlosilo_ur_type_unsupported_ffi as *const ()),
     Addr(shlosilo::ffi::type_table_abi::shlosilo_ur_type_display_ffi as *const ()),
     Addr(shlosilo::ffi::type_table_abi::shlosilo_ur_type_reply_ffi as *const ()),
     Addr(shlosilo::ffi::type_table_abi::shlosilo_ur_type_goes_to_qr_ffi as *const ()),

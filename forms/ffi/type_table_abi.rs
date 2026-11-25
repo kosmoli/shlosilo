@@ -1,15 +1,23 @@
-//! UR type-classification FFI — the four questions the product flow asks about an
-//! inbound type, answered by `crate::ur::type_table` instead of four `strcmp`
-//! chains in C.
+//! UR type-classification FFI — the questions the product flow asks about an
+//! inbound type, answered by `crate::ur::type_table` instead of `strcmp` chains in
+//! C.
 //!
-//! All four entries take `(ptr, len)` rather than a NUL-terminated string: the type
+//! All entries take `(ptr, len)` rather than a NUL-terminated string: the type
 //! comes straight out of the decoder's fixed buffer, which is NUL-terminated in
 //! practice but not by contract, and length-passing keeps the FFI boundary honest
 //! about who owns bounds.
 //!
+//! The first five are the classify questions: *is it a sign request*, *does it go
+//! through the review gate*, *is it a type we know and deliberately do not support*
+//! (E-6 — the request is understood and refused by policy, so the screen must say so
+//! instead of `unknown code`), *which fixed phrase do we show*, and *which name do we
+//! answer under*. The sixth, [`shlosilo_ur_type_goes_to_qr_ffi`], answers where a
+//! *reply* payload goes.
+//!
 //! **NULL / empty means "no type recorded yet"**: every entry answers the
 //! fall-through classification (phrase `unknown code`, not a sign request, not
-//! review-gated, reply name `bytes`) instead of reading the pointer.
+//! review-gated, not a known-unsupported type, reply name `bytes`) instead of
+//! reading the pointer.
 
 use core::ffi::{c_char, c_int, c_uint};
 
@@ -60,6 +68,23 @@ pub unsafe extern "C" fn shlosilo_ur_type_is_sign_ffi(ptr: *const u8, len: c_uin
 pub unsafe extern "C" fn shlosilo_ur_type_review_gated_ffi(ptr: *const u8, len: c_uint) -> c_int {
     match unsafe { type_str(ptr, len) } {
         Some(t) => crate::ur::type_table::review_gated(t) as c_int,
+        None => 0,
+    }
+}
+
+/// Non-zero when `type` is **known and deliberately unsupported** by this device
+/// (E-6: batch signing, `eth-batch-sign-request` 40404).
+///
+/// Distinct from "not a sign request": the product flow keeps scanning in both
+/// cases, but this one must say *not supported* — the request is understood, so a
+/// retry will not help. Answers 0 for NULL/empty (no type recorded = unknown).
+///
+/// # Safety
+/// See [`type_str`].
+#[no_mangle]
+pub unsafe extern "C" fn shlosilo_ur_type_unsupported_ffi(ptr: *const u8, len: c_uint) -> c_int {
+    match unsafe { type_str(ptr, len) } {
+        Some(t) => crate::ur::type_table::unsupported(t) as c_int,
         None => 0,
     }
 }

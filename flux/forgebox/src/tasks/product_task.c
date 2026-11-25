@@ -2013,6 +2013,19 @@ static int ur_type_is_sign(const char *type)
                                         type ? (unsigned)strlen(type) : 0u) != 0;
 }
 
+/* Known and deliberately UNSUPPORTED type (E-6: eth-batch-sign-request, UR type
+ * 40404). Distinct from "not a sign request": the request is understood, so the
+ * screen must say "not supported" instead of falling through to "unknown code".
+ * The decision itself lives in forms (`ur::type_table::unsupported`, one row per
+ * type); this wrapper only marshals. The three refusal lines are this file's fixed
+ * words, and the first one mirrors that row's `display` phrase ("no batch signing",
+ * pinned in tests/ur_type_table.rs -- keep the two in step). */
+static int ur_type_unsupported(const char *type)
+{
+    return shlosilo_ur_type_unsupported_ffi((const uint8_t *)type,
+                                            type ? (unsigned)strlen(type) : 0u) != 0;
+}
+
 /* Bug A (2026-10-09): the legacy fixture-key sign path (k_sign_idx12) used to
  * be the silent FALLBACK whenever a sign UR was scanned with NO session --
  * the device signed with the smoke-anchor fixture key and the wallet rejected
@@ -2326,6 +2339,26 @@ static void scan_ur_hit(const char *text)
             int needs_keys = ur_type_is_sign(ftype) ||
                             strncasecmp(ftype, "xmr-output", 10) == 0;
             if (!needs_keys) {
+                if (ur_type_unsupported(ftype)) {
+                    /* Known and deliberately unsupported (E-6: batch signing).
+                     * Fixed refusal words, NOT the "collected: ... / not a sign
+                     * request" pass-through wording below: the request is
+                     * understood and declined by policy, so re-scanning this QR
+                     * will not help. Scanning itself keeps running -- the
+                     * operator can aim at the next QR without pressing a key.
+                     * No hex diagnostics here on purpose: the words are a fixed
+                     * whitelist (2026-10-10 red line), not an echo of the UR.
+                     * Throttled like the pass-through prompt below: a batch UR
+                     * is multi-frame, so prompting per frame would repaint the
+                     * same notice and flood the console once per frame. */
+                    if (strncmp(skip_type, ftype, sizeof(skip_type)) != 0) {
+                        snprintf(skip_type, sizeof(skip_type), "%s", ftype);
+                        printf("ur: unsupported type, keep scanning\r\n");
+                        scan_notice_sticky_n("no batch signing", "not supported",
+                                             "scan another");
+                    }
+                    return;
+                }
                 /* Not a request this flow consumes (xmr-keyimage input,
                  * unknown exchange legs): drop at frame 1, prompt once per
                  * type. */
@@ -2401,6 +2434,15 @@ static void scan_ur_hit(const char *text)
             return;
         }
         if (!ur_type_is_sign(g_ur_type)) {
+            if (ur_type_unsupported(g_ur_type)) {
+                /* Known and deliberately unsupported (E-6: batch signing): the
+                 * fixed refusal, not the pass-through wording below. Scanning
+                 * keeps running -- no key press to recover. */
+                printf("ur: unsupported type, keep scanning\r\n");
+                scan_notice_sticky_n("no batch signing", "not supported", "scan another");
+                ur_intake_reset();
+                return;
+            }
             char l1[48];
             snprintf(l1, sizeof(l1), "collected: %s", ur_type_display(g_ur_type));
             printf("ur: non-sign single frame (no session), keep scanning\r\n");
@@ -2441,6 +2483,16 @@ static void scan_ur_hit(const char *text)
             printf("ur: single-frame type=%s payload=%u (session sign)\r\n",
                    g_ur_type, plen);
             if (!ur_type_is_sign(g_ur_type)) {
+                if (ur_type_unsupported(g_ur_type)) {
+                    /* Known and deliberately unsupported (E-6: batch signing).
+                     * Refuse with the fixed words and keep the plate session
+                     * alive -- scanning continues, the sign request can still
+                     * follow. */
+                    printf("ur: unsupported type, keep scanning\r\n");
+                    scan_notice_sticky_n("no batch signing", "not supported", "scan another");
+                    ur_intake_reset();
+                    return;
+                }
                 /* Exchange legs (xmr-keyimage, ...) and unknown types: the
                  * typed sign FFI would refuse and the FAIL leg closes the
                  * plate session underneath. Prompt + keep scanning instead
