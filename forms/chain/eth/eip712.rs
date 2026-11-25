@@ -716,13 +716,12 @@ pub fn parse_json(s: &str) -> core::result::Result<JsonValue, JsonError> {
     Ok(v)
 }
 
-/// A3c-F15 (external audit 2026-11-19, verified 2026-11-20): resource budgets for the typed-data JSON
-/// face. Without them a hostile request drives unbounded recursion (stack overflow, and on the device
-/// that is an abort) or unbounded allocation from a small document. The numbers are deliberately far
-/// above anything a wallet sends: a real eth_signTypedData payload is a few KiB with depth < 10.
-const JSON_MAX_LEN: usize = 16 * 1024;
-const JSON_MAX_DEPTH: u32 = 32;
-const JSON_MAX_NODES: u32 = 4096;
+// A3c-F15 (external audit 2026-11-19, verified 2026-11-20): the typed-data JSON resource
+// budgets — unbounded recursion (a device abort) or unbounded allocation from a small
+// document. Their one home is `super::eip712_pool`, which is compiled on every face; this
+// alloc parser is an `alloc-fallback`/test convenience, so it imports them. The two
+// acceptance surfaces must not drift apart.
+use super::eip712_pool::{JSON_MAX_DEPTH, JSON_MAX_LEN, JSON_MAX_NODES};
 
 struct Parser<'a> {
     input: &'a str,

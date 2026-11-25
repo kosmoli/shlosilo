@@ -82,6 +82,14 @@ fn emit_limits() {
         "ur_inbound_fragment_max",
         "ur_source_fragments_max",
         "review_lines_max",
+        "eip712_types_max",
+        "eip712_type_fields_max",
+        "eip712_name_bytes",
+        "eip712_depth_max",
+        "eip712_nodes_max",
+        "eip712_encode_type_bytes",
+        "eip712_arena_bytes",
+        "eip712_display_bytes",
         "sign_ws_bp_chunk_max",
         "sign_bp_chunk_terms",
         "pairing_records_max",
@@ -197,6 +205,14 @@ fn emit_limits() {
     // follows the same headroom: the real 43-input request goes 61,138 -> 65,671 B, only
     // 377 B short of the old flat 64 KiB + 512. Same derivation as the arena.
     values.push(("sign_output_bytes", payload_cap + 16 * 1024));
+    // The JSON document budget for EIP-712 typed data is DERIVED from the inbound
+    // payload ceiling, never configured separately: a document larger than what the
+    // transport can deliver is not a limit anyone can reach, and a profile that
+    // shrinks the transport (tiny-test) must shrink the parser with it. The 16 KiB
+    // figure is the shared cap the alloc parser and the pool both enforce; the
+    // derived value is the smaller of the two.
+    let eip712_json_bytes_max = payload_cap.min(16 * 1024);
+    values.push(("eip712_json_bytes_max", eip712_json_bytes_max));
 
     let get = |name: &str| -> u64 {
         *values
@@ -261,6 +277,35 @@ fn emit_limits() {
         payload_max <= assembled_max,
         "{path}: ur_payload_max ({payload_max}) exceeds what {} decoded slots can assemble at 240 B/part ({assembled_max})",
         get("ur_ws_decoded_slots")
+    );
+    // EIP-712 container budgets size both the pool workspace and the parser's
+    // per-record ceilings. A profile that pushes one past what a record field can
+    // hold would not fail on the device — it would truncate a count or an index, so
+    // the domain is asserted here where the profile is read.
+    let eip712_types = get("eip712_types_max");
+    assert!(
+        (1..=64).contains(&eip712_types),
+        "{path}: eip712_types_max ({eip712_types}) must be 1..=64 (the encodeType walk tracks visited types in a u64 bitmap)"
+    );
+    let eip712_type_fields = get("eip712_type_fields_max");
+    assert!(
+        (1..=255).contains(&eip712_type_fields),
+        "{path}: eip712_type_fields_max ({eip712_type_fields}) must be 1..=255 (Eip712Type::n_fields is a u8)"
+    );
+    let eip712_name_bytes = get("eip712_name_bytes");
+    assert!(
+        (1..=255).contains(&eip712_name_bytes),
+        "{path}: eip712_name_bytes ({eip712_name_bytes}) must be 1..=255 (name and type-string lengths are u8)"
+    );
+    let eip712_nodes = get("eip712_nodes_max");
+    assert!(
+        (1..=65535).contains(&eip712_nodes),
+        "{path}: eip712_nodes_max ({eip712_nodes}) must be 1..=65535 (node child indices are u16)"
+    );
+    let eip712_depth = get("eip712_depth_max");
+    assert!(
+        (1..=32).contains(&eip712_depth),
+        "{path}: eip712_depth_max ({eip712_depth}) must be 1..=32 (a value tree cannot nest deeper than the JSON syntax it arrives in)"
     );
     // PSBT map count is derived, never configured: the parser holds one map per
     // global/input/output record and nothing else, so the ceiling is exactly

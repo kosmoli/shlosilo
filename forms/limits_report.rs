@@ -97,7 +97,10 @@ impl BudgetReport {
              \"budgets\":{{\"psram\":{},\"stack\":{},\"headroom\":{},\"fits\":{}}},\
              \"limits\":{{\"bt_tx_inputs_max\":{},\"bt_tx_outputs_max\":{},\"psbt_maps_max\":{},\
              \"ur_ws_decoded_slots\":{},\"ur_payload_max\":{},\"pairing_records_max\":{},\
-             \"sign_ws_bp_chunk_max\":{},\"sign_bp_chunk_terms\":{}}}}}",
+             \"sign_ws_bp_chunk_max\":{},\"sign_bp_chunk_terms\":{}}},\
+             \"eip712\":{{\"types_max\":{},\"type_fields_max\":{},\"name_bytes\":{},\"depth_max\":{},\
+             \"nodes_max\":{},\"encode_type_bytes\":{},\"arena_bytes\":{},\"display_bytes\":{},\
+             \"json_bytes_max\":{}}}}}",
             self.profile,
             self.fingerprint,
             self.target,
@@ -121,6 +124,15 @@ impl BudgetReport {
             limits::PAIRING_RECORDS_MAX,
             limits::SIGN_WS_BP_CHUNK_MAX,
             limits::SIGN_BP_CHUNK_TERMS,
+            limits::EIP712_TYPES_MAX,
+            limits::EIP712_TYPE_FIELDS_MAX,
+            limits::EIP712_NAME_BYTES,
+            limits::EIP712_DEPTH_MAX,
+            limits::EIP712_NODES_MAX,
+            limits::EIP712_ENCODE_TYPE_BYTES,
+            limits::EIP712_ARENA_BYTES,
+            limits::EIP712_DISPLAY_BYTES,
+            limits::EIP712_JSON_BYTES_MAX,
         );
         written.map_err(|_| ReportOverflow)?;
         Ok(w.len)

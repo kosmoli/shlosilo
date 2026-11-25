@@ -20,3 +20,11 @@ ur_encode_fragment_len = 200  # outbound UR fragment (bytes of payload per frame
 ur_inbound_fragment_max = 256  # arena slot width; measured peer value = 80 B (Sparrow, 2026-11-17), Keystone default 200
 ur_source_fragments_max = 1024  # source fragments per session (u16 domain)
 review_lines_max = 48  # review-page rows (paging budget; a 43-input PSBT needs > 16)
+eip712_types_max = 8  # EIP-712 type-table entries a request may declare (measured peak 4, Seaport)
+eip712_type_fields_max = 16  # fields one EIP-712 type may declare (measured peak 11, OrderComponents)
+eip712_name_bytes = 32  # bytes in one type name, field name or field type string (measured peak 20, identifierOrCriteria)
+eip712_depth_max = 8  # nesting levels of the typed-data value tree (measured peak 3)
+eip712_nodes_max = 256  # value-tree nodes: one per struct, array and atom (measured 6..104; 310 for a 3+40 batch, refused by policy)
+eip712_encode_type_bytes = 512  # encodeType expansion bytes (measured peak 450, Seaport)
+eip712_arena_bytes = 4096  # decoded name/string-value bytes (an unescaped name borrows the wire and costs no arena)
+eip712_display_bytes = 2048  # review-page formatted-value scratch (addresses, decimal uints, the value-tree walk)

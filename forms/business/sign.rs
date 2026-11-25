@@ -402,6 +402,10 @@ pub struct SignWs<'a> {
     pub bp_overlay: OverlayRegion<'a>,
     /// Z4-7d: PSBT map pool (records + payload arena).
     pub psbt_recs: &'a mut [crate::chain::btc::psbt::KvRec],
+    /// E-3: the EIP-712 container region (`eip712_pool::WS_BYTES`). One span on purpose:
+    /// the pool's internal divisions (nodes / types / fields / arena) are its own single
+    /// home, so this layout reserves bytes and never re-derives the figure.
+    pub eip712: &'a mut [u8],
     /// Phase 4a: per-input signer tables (see `layout`), initialised by the carve.
     pub rings: &'a mut [[(
         monero_ed25519::CompressedPoint,
@@ -503,6 +507,7 @@ pub struct SignWsLayout {
     pub bp_wip: usize,
     pub psbt_recs: usize,
     pub psbt_arena: usize,
+    pub eip712: usize,
     // Phase 4a: per-input signing tables, caller-carved so the task stack does not grow
     // with the input ceiling (`limits::XMR_INPUTS_MAX`).
     pub rings: usize,
@@ -619,6 +624,13 @@ impl SignWsLayout {
             core::mem::size_of::<crate::chain::btc::psbt::KvRec>() * c::SIGN_WS_PSBT_RECS,
         );
         let psbt_arena = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_PSBT_ARENA);
+        // E-3: the typed-data container. Its own alignment (payload offsets are u32), and
+        // its size comes from the pool module, which owns the record geometry.
+        let eip712 = ws_next(
+            &mut off,
+            core::mem::align_of::<crate::chain::eth::eip712_pool::Eip712Node>(),
+            crate::chain::eth::eip712_pool::WS_BYTES,
+        );
         // Phase 4a: the three per-input tables (previously stack arrays in the signer).
         let rings = ws_next(
             &mut off,
@@ -675,6 +687,7 @@ impl SignWsLayout {
             bp_wip,
             psbt_recs,
             psbt_arena,
+            eip712,
             rings,
             tx_inputs,
             ring_lens,
@@ -771,6 +784,9 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     let psbt_recs: &mut [crate::chain::btc::psbt::KvRec] =
         unsafe { at(base, l.psbt_recs, c::SIGN_WS_PSBT_RECS) };
     let psbt_arena: &mut [u8] = unsafe { at(base, l.psbt_arena, c::SIGN_WS_PSBT_ARENA) };
+    // E-3: plain bytes — the pool carves its spans out of this region itself, so the
+    // workspace only has to leave it zeroed (the whole-carve fill above already did).
+    let eip712: &mut [u8] = unsafe { at(base, l.eip712, crate::chain::eth::eip712_pool::WS_BYTES) };
     // Phase 4a: initialise-on-carve, never read-before-write. A single pass over the
     // input ceiling buys plain `&mut` slices in the signing core instead of a
     // MaybeUninit contract.
@@ -817,6 +833,7 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         bp_overlay,
         psbt_recs,
         psbt_arena,
+        eip712,
         rings,
         tx_inputs,
         ring_lens,

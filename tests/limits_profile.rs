@@ -45,6 +45,22 @@ fn host_profile_is_the_zero_diff_baseline() {
     // migration is only "zero behaviour change" while it stays at the pre-4a value.
     // Raising it (24) is a separate, separately verified change.
     assert_eq!(limits::XMR_INPUTS_MAX, 16);
+    // E-3 container budgets, as shipped (measured peaks in parentheses).
+    assert_eq!(limits::EIP712_TYPES_MAX, 8); // 4
+    assert_eq!(limits::EIP712_TYPE_FIELDS_MAX, 16); // 11
+    assert_eq!(limits::EIP712_NAME_BYTES, 32); // 20
+    assert_eq!(limits::EIP712_DEPTH_MAX, 8); // 3
+    assert_eq!(limits::EIP712_NODES_MAX, 256); // 104 typical, 310 for a 3+40 batch
+    assert_eq!(limits::EIP712_ENCODE_TYPE_BYTES, 512); // 450
+    assert_eq!(limits::EIP712_ARENA_BYTES, 4096);
+    assert_eq!(limits::EIP712_DISPLAY_BYTES, 2048);
+    // Derived, never configured: a document larger than the inbound transport can deliver
+    // is not a limit anyone can reach, so the parser's budget follows the transport.
+    assert_eq!(
+        limits::EIP712_JSON_BYTES_MAX,
+        limits::UR_PAYLOAD_MAX.min(16 * 1024),
+        "build.rs derives the typed-data JSON budget as min(16 KiB, ur_payload_max)"
+    );
 }
 
 /// The inbound buffer may never exceed what the part domain can assemble.

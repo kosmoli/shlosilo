@@ -3224,16 +3224,28 @@ pub unsafe extern "C" fn shlosilo_key_session_fingerprint(
 /// real 61 KB / 43-input request).
 pub const REVIEW_WS_ARENA: usize = crate::limits::PSBT_ARENA_BYTES;
 pub const REVIEW_WS_RECS: usize = crate::limits::PSBT_RECS_MAX;
+/// E-3: the review page re-parses the request into the same zero-heap containers the
+/// signing path uses, so the review workspace carries one EIP-712 pool region and the
+/// scratch the page formats atom values into (EIP-55 addresses, decimal uints). Only the
+/// sum is on the ABI surface (`review_ws_len`); the parts stay crate-internal so the
+/// header does not grow a second place to keep in sync.
+pub(crate) const REVIEW_WS_EIP712: usize = crate::chain::eth::eip712_pool::WS_BYTES;
+pub(crate) const REVIEW_WS_EIP712_DISPLAY: usize = crate::limits::EIP712_DISPLAY_BYTES;
 /// NUL-separated line blob: the platform's row budget x (line + separator).
 pub const REVIEW_LINES_BUF: usize =
     crate::limits::REVIEW_LINES_MAX * (crate::business::review::REVIEW_LINE_MAX + 1) + 1;
 
-/// Required review workspace size (arena + records + alignment slack).
+/// Required review workspace size (PSBT arena + records + the typed-data container and its
+/// formatter scratch + alignment slack).
 ///
 /// Kept as a plain fn so the budget report can call the same arithmetic without going
 /// through the C ABI.
 pub fn review_ws_len() -> usize {
-    REVIEW_WS_ARENA + REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>() + 8
+    REVIEW_WS_ARENA
+        + REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>()
+        + REVIEW_WS_EIP712
+        + REVIEW_WS_EIP712_DISPLAY
+        + 8
 }
 
 #[no_mangle]
@@ -3568,10 +3580,32 @@ mod tests {
         assert_eq!(ws.sel.len(), c::SIGN_WS_SEL_OUT);
         assert_eq!(ws.kstr.len(), c::SIGN_WS_KSTR);
         assert_eq!(ws.record_dests.len(), c::SIGN_WS_RECORD_DESTS);
+        assert_eq!(
+            ws.eip712.len(),
+            crate::chain::eth::eip712_pool::WS_BYTES,
+            "the typed-data container region is the pool's reserve, not a second guess"
+        );
         let mut small = alloc::vec![0u8; l.total - 1];
         assert!(
             carve_sign_ws(&mut small).is_none(),
             "carve(total-1) must fail as a whole"
+        );
+    }
+
+    /// E-3: the review workspace must keep room for one typed-data container after the
+    /// PSBT slabs. The review page rebuilds the pool to walk the value tree, so a tail that
+    /// does not cover it would refuse a request the signing path accepts - the exact
+    /// "review cannot display what sign would sign" split the review gate exists to prevent.
+    #[test]
+    fn review_workspace_covers_the_typed_data_container() {
+        let psbt_slabs = REVIEW_WS_ARENA
+            + REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>();
+        let tail = review_ws_len() - psbt_slabs;
+        assert!(
+            tail >= crate::chain::eth::eip712_pool::WS_BYTES + REVIEW_WS_EIP712_DISPLAY,
+            "review tail {tail} B must cover the pool ({} B) plus the formatter scratch ({} B)",
+            crate::chain::eth::eip712_pool::WS_BYTES,
+            REVIEW_WS_EIP712_DISPLAY
         );
     }
 

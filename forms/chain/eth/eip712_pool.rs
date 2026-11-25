@@ -105,16 +105,45 @@ const DOMAIN_FIELDS: [(&str, &str, u8, bool); 5] = [
     ("salt", "bytes32", KIND_BYTES32, false),
 ];
 
-// ─── the JSON budgets (copies, not moves) ────────────────────────────────────
+// ─── the JSON syntax budgets (one home) ──────────────────────────────────────
 
-/// Same number as `eip712::JSON_MAX_LEN` (16384). Kept as a private copy because
-/// that constant is private to `eip712.rs` and making it `pub` is P4's change; the
-/// parity pin fails loudly if the two ever drift apart.
-const JSON_MAX_LEN: usize = 16 * 1024;
-/// Same number as `eip712::JSON_MAX_DEPTH` (32): nesting levels, containers counted.
-const JSON_MAX_DEPTH: u32 = 32;
-/// Same number as `eip712::JSON_MAX_NODES` (4096): one per JSON value, containers included.
-const JSON_MAX_NODES: u32 = 4096;
+/// Bytes of typed-data JSON one request may carry. Profile-derived
+/// (`min(16 KiB, ur_payload_max)`, see `build.rs`): a document larger than the inbound
+/// transport can deliver is not a limit anyone can reach.
+pub(crate) const JSON_MAX_LEN: usize = crate::limits::EIP712_JSON_BYTES_MAX;
+/// Nesting levels of the JSON document itself (containers count).
+pub(crate) const JSON_MAX_DEPTH: u32 = 32;
+/// JSON values in one document (containers count).
+pub(crate) const JSON_MAX_NODES: u32 = 4096;
+
+// The three A3c-F15 budgets live **here**, not in `eip712`: this module is compiled on
+// every face (it is the zero-heap production container) while `eip712` is an
+// `alloc-fallback`/test convenience, so the alloc parser imports them from here. The
+// scanner below must accept exactly what `eip712::parse_json` accepts, and these budgets
+// are part of that surface — one home, no copies.
+
+// ─── the container budgets (profile-sourced) ─────────────────────────────────
+
+/// Type-table entries a request may declare (`WS_BYTES` sizes the `types` slice from
+/// this, so the table refuses through the slice it was given).
+pub(crate) const TYPES_MAX: usize = crate::limits::EIP712_TYPES_MAX;
+/// Fields one type may declare. Unlike the pool slices this ceiling is per record and
+/// is enforced in the parser: one type declaring everything the table can hold would
+/// leave no room for the types it references.
+pub(crate) const TYPE_FIELDS_MAX: usize = crate::limits::EIP712_TYPE_FIELDS_MAX;
+/// Value-tree nodes — one per struct, array and atom (`WS_BYTES` sizes the `nodes`).
+///
+/// The count covers **both** trees the pool holds: `domain` (root plus one child per
+/// declared field, so up to 6) and `message`. The spike's published figures
+/// (`tests/eip712_budget_spike.rs`, 6..104 typical, 310 for a 3+40 batch) count the
+/// message tree only, so the pool's own spend is that plus the domain.
+pub(crate) const NODES_MAX: usize = crate::limits::EIP712_NODES_MAX;
+/// Nesting levels of the value tree, the root struct counted as 1.
+pub(crate) const DEPTH_MAX: usize = crate::limits::EIP712_DEPTH_MAX;
+/// Bytes one type name, field name or field type string may occupy.
+pub(crate) const NAME_BYTES: usize = crate::limits::EIP712_NAME_BYTES;
+/// Decoded name / string-value bytes (`WS_BYTES` sizes the arena from this).
+pub(crate) const ARENA_BYTES: usize = crate::limits::EIP712_ARENA_BYTES;
 
 // ─── records ─────────────────────────────────────────────────────────────────
 
@@ -482,6 +511,11 @@ impl<'a> Eip712Pool<'a> {
             span.len as usize
         };
         if need > u8::MAX as usize {
+            return Err(cap_err(need));
+        }
+        // The name budget is per name, not per pool: a 4 KiB arena would happily hold one
+        // absurd type name and the screen would then have to display it.
+        if need > NAME_BYTES {
             return Err(cap_err(need));
         }
         let (off, len) = self.place_json_string(span)?;
@@ -1434,6 +1468,11 @@ impl<'a> Eip712Pool<'a> {
         loop {
             sc.skip_ws();
             let (name, ty) = self.scan_field_decl(sc)?;
+            // Per-type ceiling before the record width: one type must not consume the whole
+            // field table, which every declared type shares.
+            if count as usize >= TYPE_FIELDS_MAX {
+                return Err(cap_err(count as usize + 1));
+            }
             if count == u8::MAX {
                 return Err(cap_err(count as usize + 1));
             }
@@ -1599,7 +1638,13 @@ impl<'a> Eip712Pool<'a> {
     }
 
     /// Write one value (and its descendants) into the reserved `slot`.
-    fn fill_value(&mut self, ty: Span, value: (Span, u8), slot: usize) -> Result<()> {
+    fn fill_value(&mut self, ty: Span, value: (Span, u8), slot: usize, depth: usize) -> Result<()> {
+        // The value tree is filled by recursion, so its nesting is a stack budget as well
+        // as a container budget: refuse past the profile's ceiling instead of discovering it
+        // as a device abort.
+        if depth > DEPTH_MAX {
+            return Err(cap_err(depth));
+        }
         let (val, tag) = value;
         match self.classify(ty)? {
             Class::Array { elem_len } => {
@@ -1627,7 +1672,7 @@ impl<'a> Eip712Pool<'a> {
                 let mut walker = ArrayWalker::new(bytes, val.off as usize);
                 for i in 0..count {
                     let item = walker.next()?.ok_or_else(fmt_err)?;
-                    self.fill_value(elem_ty, item, first + i)?;
+                    self.fill_value(elem_ty, item, first + i, depth + 1)?;
                 }
                 Ok(())
             }
@@ -1705,7 +1750,7 @@ impl<'a> Eip712Pool<'a> {
                         off: field.type_off as u32,
                         len: field.type_len as u32,
                     };
-                    self.fill_value(field_ty, member, first + j)?;
+                    self.fill_value(field_ty, member, first + j, depth + 1)?;
                 }
                 Ok(())
             }
@@ -1788,7 +1833,7 @@ impl<'a> Eip712Pool<'a> {
             len: len as u32,
         };
         let slot = self.alloc_slot()?;
-        self.fill_value(ty, value, slot)?;
+        self.fill_value(ty, value, slot, 1)?;
         self.message_root = Some(slot as u16);
         Ok(())
     }
@@ -1811,7 +1856,9 @@ pub fn parse<'a>(
     fields: &'a mut [Eip712Field],
 ) -> Result<Eip712Pool<'a>> {
     if wire.len() > JSON_MAX_LEN {
-        return Err(fmt_err());
+        // A well-formed document that is simply larger than this device models answered
+        // "request too large" on the screen, never "not recognized" (B-7).
+        return Err(cap_err(wire.len()));
     }
     // The alloc parser takes `&str`, so anything that is not UTF-8 could never have
     // reached it. Rejecting it here keeps the two acceptance surfaces equal.
@@ -1936,7 +1983,7 @@ pub fn parse<'a>(
 /// The length depends only on the TYPE TABLE, never on the values: the largest sample
 /// measured (`tests/eip712_budget_spike.rs`, Seaport `OrderComponents`) is 450 B, and a
 /// bulk order carrying 40 offers — 11 KB of JSON — encodes to the same 450 B.
-const ENCODE_TYPE_MAX: usize = 512;
+const ENCODE_TYPE_MAX: usize = crate::limits::EIP712_ENCODE_TYPE_BYTES;
 
 /// Types `encodeType` can walk. The visited set is one bit per declared type; 64 is
 /// 16x the largest real-world table the spike measured (4 types).
@@ -2379,4 +2426,372 @@ fn cap_err(need: usize) -> ShlosiloError {
         ShlosiloErrorKind::BufferTooSmall,
         ErrorContext::RequiredLength(need),
     )
+}
+
+// ─── caller workspace: one region, one length ────────────────────────────────
+
+/// Alignment every carved span starts on (`Eip712Node` carries `u32` payload offsets).
+const WS_ALIGN: usize = core::mem::align_of::<Eip712Node>();
+
+/// Round `off` up to [`WS_ALIGN`].
+const fn ws_up(off: usize) -> usize {
+    (off + WS_ALIGN - 1) & !(WS_ALIGN - 1)
+}
+
+const WS_NODES_OFF: usize = 0;
+const WS_NODES_BYTES: usize = NODES_MAX * core::mem::size_of::<Eip712Node>();
+const WS_TYPES_OFF: usize = ws_up(WS_NODES_OFF + WS_NODES_BYTES);
+const WS_TYPES_BYTES: usize = TYPES_MAX * core::mem::size_of::<Eip712Type>();
+const WS_FIELDS_OFF: usize = ws_up(WS_TYPES_OFF + WS_TYPES_BYTES);
+const WS_FIELDS_BYTES: usize = TYPES_MAX * TYPE_FIELDS_MAX * core::mem::size_of::<Eip712Field>();
+const WS_ARENA_OFF: usize = ws_up(WS_FIELDS_OFF + WS_FIELDS_BYTES);
+
+/// Bytes the pool writes starting at the *aligned* base: the four spans, padded.
+const WS_REGIONS: usize = ws_up(WS_ARENA_OFF + ARENA_BYTES);
+
+/// Bytes a caller must reserve for one pool: [`WS_REGIONS`] plus the worst-case base
+/// shift, so a caller that allocates exactly this always fits whatever alignment its
+/// buffer starts on (`SignWsLayout` adds a region of this size; the review formula adds
+/// the same figure).
+///
+/// The region is handed to `parse` through `eip712_pool::parse_in`, which carves the
+/// four spans below out of it.
+pub(crate) const WS_BYTES: usize = WS_REGIONS + WS_ALIGN - 1;
+
+// ─── budget pins (E-3 P4) ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod budget_pins {
+    //! Every container budget is proved in **both** directions: the last value that fits
+    //! and the first one refused, with the error the screen turns into "request too
+    //! large". A one-sided pin passes just as happily when a ceiling sits one slot too
+    //! high, and the device then refuses a request it should have signed.
+    //!
+    //! The pool at profile capacity is the harness: the slab sizes come from the same
+    //! constants `WS_BYTES` reserves, so a pin that fits here fits on the carrier.
+
+    use super::*;
+    use alloc::string::{String, ToString};
+
+    /// The four slabs at profile capacity.
+    fn slabs() -> (
+        [u8; ARENA_BYTES],
+        [Eip712Node; NODES_MAX],
+        [Eip712Type; TYPES_MAX],
+        [Eip712Field; TYPES_MAX * TYPE_FIELDS_MAX],
+    ) {
+        (
+            [0u8; ARENA_BYTES],
+            [Eip712Node::default(); NODES_MAX],
+            [Eip712Type::default(); TYPES_MAX],
+            [Eip712Field::default(); TYPES_MAX * TYPE_FIELDS_MAX],
+        )
+    }
+
+    /// Parse `doc` at profile capacity; returns the measured counts.
+    fn measured(doc: &[u8]) -> (usize, usize, usize, usize) {
+        let (mut arena, mut nodes, mut types, mut fields) = slabs();
+        let pool = parse(doc, &mut arena, &mut nodes, &mut types, &mut fields)
+            .unwrap_or_else(|e| panic!("expected the document to fit: {e:?}"));
+        (
+            pool.types_len(),
+            pool.fields_len(),
+            pool.nodes_len(),
+            pool.arena_used(),
+        )
+    }
+
+    /// Parse `doc` at profile capacity, expecting a refusal.
+    fn refuse(doc: &[u8]) -> ShlosiloError {
+        let (mut arena, mut nodes, mut types, mut fields) = slabs();
+        match parse(doc, &mut arena, &mut nodes, &mut types, &mut fields) {
+            Ok(_) => panic!("expected a refusal, the document parsed"),
+            Err(e) => e,
+        }
+    }
+
+    /// One real ERC-2612 permit, the shape the signing path is being wired for.
+    const PERMIT: &[u8] = br#"{"types":{"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}],"Permit":[{"name":"owner","type":"address"},{"name":"spender","type":"address"},{"name":"value","type":"uint256"},{"name":"nonce","type":"uint256"},{"name":"deadline","type":"uint256"}]},"primaryType":"Permit","domain":{"name":"USD Coin","version":"2","chainId":1,"verifyingContract":"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"},"message":{"owner":"0x1111111111111111111111111111111111111111","spender":"0x2222222222222222222222222222222222222222","value":"1000000","nonce":0,"deadline":1700000000}}"#;
+
+    /// A document with `n` declared types; the first holds `fields` uint256 fields.
+    fn doc_types(n: usize, fields: usize) -> String {
+        let mut types = String::from("{");
+        for t in 0..n {
+            if t > 0 {
+                types.push(',');
+            }
+            types.push_str(&alloc::format!("\"T{t}\":["));
+            let count = if t == 0 { fields } else { 1 };
+            for f in 0..count {
+                if f > 0 {
+                    types.push(',');
+                }
+                types.push_str(&alloc::format!(
+                    "{{\"name\":\"f{f}\",\"type\":\"uint256\"}}"
+                ));
+            }
+            types.push(']');
+        }
+        types.push('}');
+        let mut message = String::from("{");
+        for f in 0..fields {
+            if f > 0 {
+                message.push(',');
+            }
+            message.push_str(&alloc::format!("\"f{f}\":{f}"));
+        }
+        message.push('}');
+        alloc::format!(
+            "{{\"types\":{types},\"primaryType\":\"T0\",\"domain\":{{}},\"message\":{message}}}"
+        )
+    }
+
+    /// A document whose only field is `name: ty`, with `value` as its message.
+    fn doc_field(name: &str, ty: &str, value: &str) -> String {
+        alloc::format!(
+            "{{\"types\":{{\"T\":[{{\"name\":\"{name}\",\"type\":\"{ty}\"}}]}},\
+             \"primaryType\":\"T\",\"domain\":{{}},\"message\":{{\"{name}\":{value}}}}}"
+        )
+    }
+
+    /// `[[…atom…]]` with `levels` brackets.
+    fn nest(levels: usize, atom: &str) -> String {
+        let mut s = String::new();
+        for _ in 0..levels {
+            s.push('[');
+        }
+        s.push_str(atom);
+        for _ in 0..levels {
+            s.push(']');
+        }
+        s
+    }
+
+    /// `1,1,…,1` with `n` elements.
+    fn atom_list(n: usize) -> String {
+        let mut s = String::new();
+        for i in 0..n {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push('1');
+        }
+        s
+    }
+
+    fn required_len(err: &ShlosiloError) -> usize {
+        match err.context {
+            ErrorContext::RequiredLength(need) => need,
+            ref other => panic!("expected RequiredLength, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workspace_geometry_is_the_sum_of_its_padded_spans() {
+        assert_eq!(WS_NODES_OFF % WS_ALIGN, 0, "node slab alignment");
+        assert_eq!(WS_TYPES_OFF % WS_ALIGN, 0, "type slab alignment");
+        assert_eq!(WS_FIELDS_OFF % WS_ALIGN, 0, "field slab alignment");
+        assert_eq!(WS_ARENA_OFF % WS_ALIGN, 0, "arena slab alignment");
+        assert_eq!(
+            WS_TYPES_OFF,
+            ws_up(WS_NODES_OFF + WS_NODES_BYTES),
+            "type slab starts after the node slab"
+        );
+        assert_eq!(
+            WS_FIELDS_OFF,
+            ws_up(WS_TYPES_OFF + WS_TYPES_BYTES),
+            "field slab starts after the type slab"
+        );
+        assert_eq!(
+            WS_ARENA_OFF,
+            ws_up(WS_FIELDS_OFF + WS_FIELDS_BYTES),
+            "arena starts after the field slab"
+        );
+        assert_eq!(
+            WS_REGIONS,
+            ws_up(WS_ARENA_OFF + ARENA_BYTES),
+            "the carved region ends at the arena tail"
+        );
+        assert_eq!(
+            WS_BYTES,
+            WS_REGIONS + WS_ALIGN - 1,
+            "the reserve carries the worst-case base shift"
+        );
+        const _: () = assert!(
+            WS_BYTES >= WS_NODES_BYTES + WS_TYPES_BYTES + WS_FIELDS_BYTES + ARENA_BYTES,
+            "WS_BYTES is smaller than its own slabs"
+        );
+    }
+
+    #[test]
+    fn a_real_permit_fits_every_profile_budget() {
+        let (types, fields, nodes, arena) = measured(PERMIT);
+        // Spike regression: the measured cost of a real shape stays inside the knobs. A
+        // budget change that breaks this moves the numbers in limits/*.toml.
+        assert!(types <= TYPES_MAX, "types {types} > {TYPES_MAX}");
+        assert!(
+            fields <= TYPES_MAX * TYPE_FIELDS_MAX,
+            "fields {fields} > {}",
+            TYPES_MAX * TYPE_FIELDS_MAX
+        );
+        assert!(nodes <= NODES_MAX, "nodes {nodes} > {NODES_MAX}");
+        assert!(arena <= ARENA_BYTES, "arena {arena} > {ARENA_BYTES}");
+    }
+
+    #[test]
+    fn a_field_over_the_per_type_ceiling_is_refused() {
+        // Per type, not per pool: the field slab holds many more records than one type may
+        // claim, so this pin can only pass if the parser enforces the per-record ceiling.
+        let (_, fields_at, _, _) = measured(doc_types(1, TYPE_FIELDS_MAX).as_bytes());
+        assert_eq!(fields_at, TYPE_FIELDS_MAX);
+
+        let err = refuse(doc_types(1, TYPE_FIELDS_MAX + 1).as_bytes());
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::BufferTooSmall,
+            "capacity, not format"
+        );
+        assert_eq!(
+            required_len(&err),
+            TYPE_FIELDS_MAX + 1,
+            "reports the count it needed"
+        );
+    }
+
+    #[test]
+    fn a_type_table_over_the_budget_is_refused() {
+        let (types_at, _, _, _) = measured(doc_types(TYPES_MAX, 1).as_bytes());
+        assert_eq!(types_at, TYPES_MAX);
+
+        let err = refuse(doc_types(TYPES_MAX + 1, 1).as_bytes());
+        assert_eq!(err.kind, ShlosiloErrorKind::BufferTooSmall);
+        assert_eq!(required_len(&err), TYPES_MAX + 1);
+    }
+
+    #[test]
+    fn a_name_over_the_budget_is_refused() {
+        let long = "n".repeat(NAME_BYTES);
+        measured(doc_field(&long, "uint256", "1").as_bytes());
+
+        let err = refuse(doc_field(&"n".repeat(NAME_BYTES + 1), "uint256", "1").as_bytes());
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::BufferTooSmall,
+            "field name over budget"
+        );
+        assert_eq!(required_len(&err), NAME_BYTES + 1);
+
+        // The same ceiling covers a field's type string.
+        let long_ty = "u".repeat(NAME_BYTES + 1);
+        let err = refuse(doc_field("x", &long_ty, "1").as_bytes());
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::BufferTooSmall,
+            "field type over budget"
+        );
+    }
+
+    /// A chain of `levels` types: `A{i}` holds one field of type `A{i+1}`, the last one an
+    /// atom — so the value tree nests `levels` structs plus the closing atom. Nested array
+    /// types cannot express this: both parsers split a type at its FIRST `[`, so
+    /// `uint256[1][1]` reads as a one-dimensional array (parity with the alloc face).
+    fn doc_chain(levels: usize) -> String {
+        let mut types = String::from("{");
+        for i in 0..levels {
+            if i > 0 {
+                types.push(',');
+            }
+            let field = if i + 1 < levels {
+                alloc::format!("{{\"name\":\"inner\",\"type\":\"A{}\"}}", i + 1)
+            } else {
+                "{\"name\":\"v\",\"type\":\"uint256\"}".to_string()
+            };
+            types.push_str(&alloc::format!("\"A{i}\":[{field}]"));
+        }
+        types.push('}');
+        let mut message = String::from("{\"v\":1}");
+        for _ in 0..levels - 1 {
+            message = alloc::format!("{{\"inner\":{message}}}");
+        }
+        alloc::format!(
+            "{{\"types\":{types},\"primaryType\":\"A0\",\"domain\":{{}},\"message\":{message}}}"
+        )
+    }
+
+    #[test]
+    fn a_value_tree_deeper_than_the_budget_is_refused() {
+        // The atom closes the chain, so `levels` structs put it at depth `levels + 1`.
+        let levels_at = DEPTH_MAX - 1;
+        measured(doc_chain(levels_at).as_bytes());
+
+        let err = refuse(doc_chain(DEPTH_MAX).as_bytes());
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::BufferTooSmall,
+            "capacity, not format"
+        );
+        assert_eq!(
+            required_len(&err),
+            DEPTH_MAX + 1,
+            "reports the depth it needed"
+        );
+        // Discriminator: the same document is inside the type budget, so the refusal can
+        // only come from the depth ceiling.
+        const _: () = assert!(DEPTH_MAX <= TYPES_MAX, "the chain must fit the type table");
+    }
+
+    #[test]
+    fn a_node_count_over_the_budget_is_refused() {
+        // One node per struct, array and atom: a single `uint256[k]` field costs `k + 2`.
+        // Message root + array + atoms + the empty `domain` object: the budget covers the
+        // whole pool, not the message tree alone.
+        let (_, _, nodes_at, _) = measured(
+            doc_field(
+                "a",
+                &alloc::format!("uint256[{}]", NODES_MAX - 3),
+                &nest(1, &atom_list(NODES_MAX - 3)),
+            )
+            .as_bytes(),
+        );
+        assert_eq!(nodes_at, NODES_MAX, "the document spends the whole budget");
+
+        let over = doc_field(
+            "a",
+            &alloc::format!("uint256[{}]", NODES_MAX - 2),
+            &nest(1, &atom_list(NODES_MAX - 2)),
+        );
+        assert!(
+            over.len() < JSON_MAX_LEN,
+            "the oversized document still fits the JSON budget"
+        );
+        let err = refuse(over.as_bytes());
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::BufferTooSmall,
+            "capacity, not format"
+        );
+        assert!(
+            required_len(&err) > NODES_MAX,
+            "reports what it needed, not what it had"
+        );
+    }
+
+    #[test]
+    fn an_oversized_document_is_a_capacity_error() {
+        // The byte budget is the one the transport can actually deliver
+        // (min(16 KiB, ur_payload_max)), and an over-budget document is refused as
+        // "request too large" — never as "not recognized".
+        let err = refuse(&alloc::vec![b' '; JSON_MAX_LEN + 1]);
+        assert_eq!(err.kind, ShlosiloErrorKind::BufferTooSmall);
+        assert_eq!(required_len(&err), JSON_MAX_LEN + 1);
+
+        // Exactly at the budget, the same document is still refused for its content — which
+        // proves the length check is a `>` and not a `>=`.
+        let err = refuse(&alloc::vec![b' '; JSON_MAX_LEN]);
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::EncodingInvalidFormat,
+            "at the budget the refusal must come from the parser, not the length check"
+        );
+    }
 }

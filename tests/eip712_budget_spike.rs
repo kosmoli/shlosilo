@@ -12,6 +12,7 @@
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::eth::eip712::{encode_type, parse_typed_data_v4, Eip712Value, TypedData};
+use shlosilo::chain::eth::eip712_pool::{self, Eip712Field, Eip712Node, Eip712Type};
 
 /// Walk the value tree: (node count, max depth).
 fn measure_value(v: &Eip712Value, depth: usize) -> (usize, usize) {
@@ -503,4 +504,73 @@ fn measure_real_world_typed_data() {
         peak(&|r| r.summary_len)
     );
     println!();
+}
+
+// ─── the shipped-budget verdict table (E-3 P4) ───────────────────────────────
+
+/// What the pool does with each measured sample at the **shipped** profile budgets.
+/// The table is the pin: a budget change in `limits/*.toml` moves a verdict, and this
+/// fails before a carrier refuses a request it used to sign (or signs one it used to
+/// refuse). `true` = the pool accepts the document.
+///
+/// This is the parse face only. The signing decision adds the review fold policy on top
+/// (a struct array past three entries is refused there by design), so samples that parse
+/// here are not all signable.
+const SHIPPED_BUDGET_VERDICTS: &[(&str, bool)] = &[
+    ("erc2612 permit", true),
+    ("permit2 PermitSingle", true),
+    ("permit2 PermitBatch (8)", true),
+    ("permit2 PermitBatch (20)", true),
+    ("seaport OrderComponents", true),
+    ("seaport bulk (3+8)", true),
+    ("seaport bulk (3+20)", true),
+    // 310 message nodes plus the domain tree: past `eip712_nodes_max` (256). A 3+40 batch
+    // carries a struct array the fold policy refuses anyway; the budget refuses it earlier
+    // and the screen says "request too large" rather than a policy word.
+    ("seaport bulk (3+40)", false),
+    ("safe SafeTx", true),
+    ("eip712 Mail (official)", true),
+    ("eip712 Mail (6-person)", true),
+];
+
+/// Parse one document into slabs sized exactly like the carrier's workspace region.
+fn accepts_at_shipped_budgets(json: &str) -> bool {
+    let mut arena = vec![0u8; shlosilo::limits::EIP712_ARENA_BYTES];
+    let mut nodes = vec![Eip712Node::default(); shlosilo::limits::EIP712_NODES_MAX];
+    let mut types = vec![Eip712Type::default(); shlosilo::limits::EIP712_TYPES_MAX];
+    let mut fields = vec![
+        Eip712Field::default();
+        shlosilo::limits::EIP712_TYPES_MAX
+            * shlosilo::limits::EIP712_TYPE_FIELDS_MAX
+    ];
+    eip712_pool::parse(
+        json.as_bytes(),
+        &mut arena,
+        &mut nodes,
+        &mut types,
+        &mut fields,
+    )
+    .is_ok()
+}
+
+#[test]
+fn every_measured_sample_keeps_its_shipped_budget_verdict() {
+    let samples = samples();
+    assert_eq!(
+        samples.len(),
+        SHIPPED_BUDGET_VERDICTS.len(),
+        "every sample needs a verdict row (and no stale rows)"
+    );
+    for (name, json) in samples {
+        let expected = SHIPPED_BUDGET_VERDICTS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name}: no verdict row"))
+            .1;
+        assert_eq!(
+            accepts_at_shipped_budgets(&json),
+            expected,
+            "{name}: the shipped budgets changed its verdict"
+        );
+    }
 }
