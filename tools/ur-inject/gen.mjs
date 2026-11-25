@@ -108,6 +108,26 @@ const keypath = () => {
 
 const UUID = Buffer.from('9b1deb4d3b7d4bad9bdd2b0d7b3dcb6d', 'hex')
 
+
+/** The 1559 field list for `approve(spender, amount)` against USDC. */
+const approveTx = (amount) => {
+  const selector = Buffer.from('095ea7b3', 'hex')
+  const spender = Buffer.concat([Buffer.alloc(12), Buffer.from('d00387de9f68c9642e25d4c194d6e1ce233633c0', 'hex')])
+  const amountWord = Buffer.from(amount.toString(16).padStart(64, '0'), 'hex')
+  const data = Buffer.concat([selector, spender, amountWord])
+  return encList([
+    encUint(1),                  // chain_id
+    encUint(8),                  // nonce
+    encUint(1_500_000_000),      // max_priority_fee_per_gas
+    encUint(30_000_000_000),     // max_fee_per_gas
+    encUint(60_000),             // gas_limit (approve costs ~46k)
+    encBytes(Buffer.from('a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', 'hex')), // USDC
+    encUint(0),                  // value
+    encBytes(data),              // calldata
+    encList([]),                 // access_list
+  ])
+}
+
 /** A plain 1559 transfer as the signing preimage: 0x02 || rlp([9 fields]). */
 const transfer1559 = () => {
   const fields = [
@@ -136,6 +156,21 @@ const KINDS = {
     dataType: 3,
     chainId: null,
     expect: 'review: eth message sign / message 31 bytes / the message text, then SIGN with v = 27/28',
+  }),
+  // ERC-20 approve: what MetaMask's in-app Swap refuses to do with a QR hardware
+  // account is still a plain EIP-1559 transaction, so the device path is identical to
+  // a transfer — only the calldata differs. USDC + a spender of our own address.
+  approve: () => ({
+    signData: Buffer.concat([Buffer.from([0x02]), approveTx(1_000_000n)]),
+    dataType: 4,
+    chainId: 1,
+    expect: 'review: erc20 approve / spender 0xd003… / allowance 1000000 (decimal, raw units), then SIGN',
+  }),
+  'approve-unlimited': () => ({
+    signData: Buffer.concat([Buffer.from([0x02]), approveTx((1n << 256n) - 1n)]),
+    dataType: 4,
+    chainId: 1,
+    expect: 'review: erc20 approve / spender 0xd003… / allowance unlimited, then SIGN',
   }),
   712: () => ({
     signData: Buffer.from(JSON.stringify({ types: {}, primaryType: 'Mail', domain: {}, message: {} }), 'utf8'),

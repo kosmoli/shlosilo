@@ -86,6 +86,28 @@ const CASES: &[Case] = &[
         },
     },
     Case {
+        kind: "approve",
+        ur: "ur:eth-sign-request/onadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohdjoaoyajnadaylrhkisdlaelpamztcnpsaelfwdhnmwnbroinmeswclluensettntgedmnnpftoenamwmfdlarofyashyosqdaeaeaeaeaeaeaeaeaeaeaeaetiaxltueneissoiedmdatysemwtbvytocneneortaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaebsfwfzrtaxaaaaadahtaaddyoeadlecsdwykcsfnykaeykaewkaewkaoahdygdpkla",
+        expect: Expect::Sign {
+            review_has: &[
+                "eth send request",
+                "erc20 approve",
+                "spender",
+                "0xd00387de9f68C9642e25d4c194d6e1cE233633C0",
+                "1000000",
+            ],
+            v_domain: VDomain::YParity,
+        },
+    },
+    Case {
+        kind: "approve-unlimited",
+        ur: "ur:eth-sign-request/onadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohdjoaoyajnadaylrhkisdlaelpamztcnpsaelfwdhnmwnbroinmeswclluensettntgedmnnpftoenamwmfdlarofyashyosqdaeaeaeaeaeaeaeaeaeaeaeaetiaxltueneissoiedmdatysemwtbvytocneneortzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmrtaxaaaaadahtaaddyoeadlecsdwykcsfnykaeykaewkaewkaoahjpfrwdeo",
+        expect: Expect::Sign {
+            review_has: &["erc20 approve", "unlimited"],
+            v_domain: VDomain::YParity,
+        },
+    },
+    Case {
         kind: "712",
         ur: "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohdftkgcpjykkjoihjkcpftkgkidwcpjojpinjnhsjpkkghkkjoihcpftcpgthsinjzcpdwcpiejljnhsinjtcpftkgkidwcpjnihjkjkhsioihcpftkgkikiaxaoahtaaddyoeadlecsdwykcsfnykaeykaewkaewkaoahsatedevo",
         expect: Expect::ReviewOnly {
@@ -236,5 +258,68 @@ fn the_matrix_matches_the_device_behaviour() {
                 }
             }
         }
+    }
+}
+
+/// An `approve` signature is only useful if it verifies. This recovers the signer of
+/// both approve payloads (finite and unlimited) with the plain EIP-1559 digest and
+/// compares it with the public key derived from the same seed/path the exit used — so
+/// "the device approved a spender" is checked with the same arithmetic a node would
+/// apply, without broadcasting anything.
+#[test]
+fn approve_signatures_recover_to_the_device_address() {
+    use shlosilo::address::eth as eth_address;
+    use shlosilo::chain::eth::{eip1559, from_rlp, sign as eth_sign};
+    use shlosilo::curve_primitive::secp256k1;
+    use shlosilo::derivation::bip32_secp256k1::derive_from_seed;
+    use shlosilo::derivation::path::DerivationPath;
+    use shlosilo::encoding::keccak256;
+    use shlosilo::ur::codec::eth_sign_request::parse_eth_sign_request;
+
+    let seed = [7u8; 64];
+    let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
+    let sk = derive_from_seed(&seed, &path).unwrap();
+    let device_pub = secp256k1::point_to_uncompressed(&secp256k1::base_mul(&sk));
+
+    for kind in ["approve", "approve-unlimited"] {
+        let case = CASES
+            .iter()
+            .find(|c| c.kind == kind)
+            .expect("approve case present");
+        let payload = payload(case.ur);
+        let req = parse_eth_sign_request(&payload).expect("request parses");
+        let tx = from_rlp::parse_eip1559_signing_request(req.sign_data).expect("tx parses");
+        let sighash = eip1559::signing_hash(&tx).expect("sighash");
+
+        let mut out = [0u8; 512];
+        let n = sign(
+            SignInput::Seed { seed: &seed },
+            UrTypeTag::EthSignRequest,
+            &payload,
+            &mut out,
+        )
+        .expect("signs");
+        let sig = parse_eth_signature(&out[..n]).expect("container");
+
+        // The container carries the bare yParity; recovery takes the EIP-191-style
+        // 27/28 form, so the offset is applied here (never on the wire).
+        let mut sig65 = sig.signature;
+        sig65[64] += 27;
+        let recovered = eth_sign::ecdsa_recover(&sighash, &sig65).expect("recover");
+        assert_eq!(
+            recovered,
+            device_pub[1..],
+            "{kind}: the signature must verify against the device's own public key"
+        );
+
+        let h = keccak256::hash(&recovered).unwrap();
+        let mut addr = [0u8; 20];
+        addr.copy_from_slice(&h[12..]);
+        let rendered = eth_address::encode_bytes(&addr).unwrap();
+        assert_eq!(
+            rendered.as_ref().len(),
+            42,
+            "{kind}: address renders as an EIP-55 string"
+        );
     }
 }
