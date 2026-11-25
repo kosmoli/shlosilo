@@ -15,7 +15,7 @@
 
 /// (chain id, name) for the chains this firmware names, lowercase for the ASCII-only
 /// device font.
-pub const KNOWN_CHAINS: [(u64, &str); 10] = [
+pub const KNOWN_CHAINS: [(u64, &str); 11] = [
     (1, "ethereum mainnet"),
     (10, "op mainnet"),
     (56, "bnb smart chain mainnet"),
@@ -26,6 +26,10 @@ pub const KNOWN_CHAINS: [(u64, &str); 10] = [
     (8453, "base"),
     (42161, "arbitrum one"),
     (43114, "avalanche c-chain"),
+    // Sepolia is the network every hardware test runs on; a raw id there makes the
+    // operator double-check what they already know. Registry name is "Ethereum
+    // Sepolia" (fetched 2026-11-25, same source as the rest of the snapshot).
+    (11155111, "ethereum sepolia"),
 ];
 
 /// The display name of `chain_id`, or `None` when this firmware does not know it.

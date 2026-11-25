@@ -813,6 +813,24 @@ fn push_decoded_calldata(
         view.push_wrapped(<_ as AsRef<str>>::as_ref(&rendered))
     }
 
+    /// The raw 4-byte selector as `selector 0x????????`.
+    ///
+    /// Printed whenever the name alone does not settle what the call is — unknown
+    /// selector, known name with an unexpected shape, or a name whose arguments were
+    /// not split. It is the one fact that lets an operator diff our screen against the
+    /// dApp's confirmation page without trusting either side.
+    fn push_selector(view: &mut ReviewView, selector: &[u8; 4]) -> Result<()> {
+        let mut text = heapless::String::<REVIEW_LINE_MAX>::new();
+        use core::fmt::Write as _;
+        text.push_str("selector 0x")
+            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+        for b in selector {
+            write!(&mut text, "{b:02x}")
+                .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+        }
+        view.push_str(text.as_str())
+    }
+
     /// 256-bit big-endian → **decimal** raw units, or "unlimited" for 2^256-1.
     ///
     /// Decimal, not hex: this is the number the token contract will move, and the
@@ -871,21 +889,28 @@ fn push_decoded_calldata(
             push_addr(view, "recipient", to)?;
             push_amount(view, "amount", amount)
         }
+        // `approve(address,uint256)` is the SAME selector for ERC-20 (allowance, in
+        // token units) and ERC-721 (a token id), so the label must not claim a family
+        // and the value must not be called an allowance: an operator who reads
+        // "erc20 approve / allowance 1" on an NFT approval is being told the wrong
+        // thing about what they are signing. Measured on Sepolia 2026-11-25.
         D::Approve { spender, amount } => {
-            view.push_str("erc20 approve")?;
+            view.push_str("approve")?;
             push_addr(view, "spender", spender)?;
-            push_amount(view, "allowance", amount)
+            push_amount(view, "amount or token id", amount)
         }
         D::IncreaseAllowance { spender, added } => {
             view.push_str("erc20 increase allowance")?;
             push_addr(view, "spender", spender)?;
             push_amount(view, "added", added)
         }
+        // `transferFrom(address,address,uint256)` is shared the same way (ERC-20
+        // amount, ERC-721 token id).
         D::TransferFrom { from, to, amount } => {
-            view.push_str("erc20 transfer from")?;
+            view.push_str("transfer from")?;
             push_addr(view, "from", from)?;
             push_addr(view, "recipient", to)?;
-            push_amount(view, "amount", amount)
+            push_amount(view, "amount or token id", amount)
         }
         D::SetApprovalForAll { operator, approved } => {
             view.push_str("set approval for all")?;
@@ -898,17 +923,24 @@ fn push_decoded_calldata(
         }
         // Selector recognised, arguments NOT split: say so instead of implying a full
         // decode (an NFT transfer and an NFT approval must not look the same).
-        D::KnownSelector { name, .. } => {
+        D::KnownSelector { name, selector } => {
             view.push_str(name)?;
-            view.push_str("args not decoded")
+            view.push_str("args not decoded")?;
+            push_selector(view, selector)
         }
         // A3c-F12 (2026-11-20): the calldata has a known selector but NOT that call's canonical
         // length. The extra bytes are signed too, so this must not read like a clean transfer.
-        D::ShapeMismatch { name, .. } => {
+        D::ShapeMismatch { selector, name } => {
             view.push_str(name)?;
-            view.push_str("shape does not match")
+            view.push_str("shape does not match")?;
+            push_selector(view, selector)
         }
-        D::Unknown { .. } => view.push_str("call: unknown contract"),
+        // Unknown selector: the operator's only cross-check is comparing the four bytes
+        // with what the dApp showed them, so print them instead of a bare verdict.
+        D::Unknown { selector } => {
+            view.push_str("call: unknown contract")?;
+            push_selector(view, selector)
+        }
     }
 }
 
@@ -1014,6 +1046,13 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
     let calldata = crate::types::wire_bytes::wire_slice(&tx.data);
     if calldata.is_empty() {
         view.push_str("data: none")?;
+    } else if tx.destination.is_none() {
+        // Contract creation: the calldata IS the deploy bytecode, so there is no callee
+        // to name and no ABI to decode. Saying "unknown contract" here reads like a
+        // failed lookup against a contract that exists — measured on Sepolia
+        // 2026-11-25, where a deploy was labelled that way.
+        view.push_fmt(format_args!("data {} bytes", calldata.len()))?;
+        view.push_str("call: contract deploy")?;
     } else {
         view.push_fmt(format_args!("data {} bytes", calldata.len()))?;
         match crate::chain::eth::calldata::decode_calldata(calldata) {
@@ -1151,7 +1190,13 @@ mod calldata_render_pins {
         });
         assert_ne!(ta, ap);
         assert!(ta.contains("erc20 transfer"), "{ta}");
-        assert!(ap.contains("erc20 approve"), "{ap}");
+        // `approve(address,uint256)` is shared by ERC-20 and ERC-721, so the label names
+        // no family and the value is not called an allowance. (Before 2026-11-25 this
+        // asserted "erc20 approve" — the Sepolia run showed an ERC-721 approve wearing
+        // that label, which tells the operator the wrong thing.)
+        assert!(ap.contains("approve"), "{ap}");
+        assert!(!ap.contains("erc20"), "{ap}");
+        assert!(ap.contains("amount or token id"), "{ap}");
 
         let un = render(&D::Approve {
             spender: a,
@@ -1168,6 +1213,184 @@ mod calldata_render_pins {
             selector: [1, 2, 3, 4],
         });
         assert!(ks.contains("args not decoded"), "{ks}");
+    }
+}
+
+#[cfg(test)]
+mod sepolia_acceptance_pins {
+    //! Calldata taken from the six device-signed Sepolia transactions of 2026-11-25
+    //! (MetaMask official test-dApp; txids in the acceptance record). These are what a
+    //! real dApp put on the wire — not hand-written fixtures — so a rendering change
+    //! that would mislabel one of them turns this module red.
+    use super::*;
+    use crate::chain::eth::calldata::DecodedCalldata;
+
+    fn word(v: u128) -> [u8; 32] {
+        let mut w = [0u8; 32];
+        w[16..].copy_from_slice(&v.to_be_bytes());
+        w
+    }
+
+    fn addr(hex: &str) -> [u8; 20] {
+        let mut a = [0u8; 20];
+        for i in 0..20 {
+            a[i] = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap();
+        }
+        a
+    }
+
+    fn render(decoded: &DecodedCalldata) -> alloc::string::String {
+        let mut view = ReviewView::new();
+        push_decoded_calldata(&mut view, decoded).expect("render");
+        let mut s = alloc::string::String::new();
+        for l in view.lines() {
+            s.push_str(l.as_str());
+            s.push('\n');
+        }
+        s
+    }
+
+    /// `0x095ea7b3` is ERC-20 `approve(address,uint256)` **and** ERC-721
+    /// `approve(address,uint256)`. The same four bytes carry an allowance in the first
+    /// case and a token id in the second, so both must render with the same neutral
+    /// labels — the device cannot tell them apart and must not pretend to.
+    #[test]
+    fn the_shared_approve_selector_never_names_a_token_standard() {
+        let spender = addr("9bc5baf874d2da8d216ae9f137804184ee5afef4");
+        // ERC-20 approve: 70000 units (Sepolia tx 0xbfa80281…)
+        let erc20 = render(&DecodedCalldata::Approve {
+            spender,
+            amount: word(70_000),
+        });
+        // ERC-721 approve: token id 1 (Sepolia tx 0x47a148a0…)
+        let erc721 = render(&DecodedCalldata::Approve {
+            spender,
+            amount: word(1),
+        });
+        for t in [&erc20, &erc721] {
+            assert!(!t.contains("erc20"), "no token-standard claim: {t}");
+            assert!(t.contains("approve"), "{t}");
+            assert!(t.contains("amount or token id"), "{t}");
+            assert!(
+                t.contains("0x9bc5baF874d2DA8D216aE9f137804184EE5AfEF4"),
+                "spender must be the EIP-55 form: {t}"
+            );
+        }
+        assert!(erc20.contains("\n70000\n"), "{erc20}");
+        assert!(erc721.contains("\n1\n"), "{erc721}");
+    }
+
+    /// `setApprovalForAll` (Sepolia tx 0xabfd5b23…): operator + the boolean verdict must
+    /// both be on the screen — "approved: no" is a revoke and reads differently.
+    #[test]
+    fn set_approval_for_all_shows_the_verdict() {
+        let operator = addr("9bc5baf874d2da8d216ae9f137804184ee5afef4");
+        let yes = render(&DecodedCalldata::SetApprovalForAll {
+            operator,
+            approved: true,
+        });
+        assert!(yes.contains("set approval for all"), "{yes}");
+        assert!(yes.contains("operator"), "{yes}");
+        assert!(yes.contains("approved: yes"), "{yes}");
+        let no = render(&DecodedCalldata::SetApprovalForAll {
+            operator,
+            approved: false,
+        });
+        assert!(no.contains("approved: no"), "{no}");
+    }
+
+    /// `increaseAllowance` (Sepolia tx 0x6da06d0d…) is ERC-20 only, so it keeps the
+    /// family label — the contrast with the shared `approve` is deliberate.
+    #[test]
+    fn increase_allowance_is_erc20_and_labelled_as_such() {
+        let t = render(&DecodedCalldata::IncreaseAllowance {
+            spender: addr("9bc5baf874d2da8d216ae9f137804184ee5afef4"),
+            added: word(10_000),
+        });
+        assert!(t.contains("erc20 increase allowance"), "{t}");
+        assert!(t.contains("\n10000\n"), "{t}");
+    }
+}
+
+#[cfg(test)]
+mod eth_unknown_call_pins {
+    use super::*;
+    use crate::encoding::cbor;
+
+    /// A 1559 request whose calldata is `data`, optionally with no destination
+    /// (contract creation).
+    fn request_with(calldata: &[u8], destination: Option<[u8; 20]>) -> alloc::vec::Vec<u8> {
+        use crate::chain::eth::rlp;
+        let fields = alloc::vec![
+            rlp::encode_uint(1),
+            rlp::encode_uint(0),
+            rlp::encode_uint(1_000_000_000),
+            rlp::encode_uint(2_000_000_000),
+            rlp::encode_uint(100_000),
+            match destination {
+                Some(d) => rlp::encode_bytes(&d),
+                None => rlp::encode_bytes(&[]),
+            },
+            rlp::encode_uint(0),
+            rlp::encode_bytes(calldata),
+            rlp::encode_list(&[]),
+        ];
+        let mut raw = alloc::vec![0x02u8];
+        raw.extend_from_slice(&rlp::encode_list(&fields));
+        cbor::encode_map(&[
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(37, &cbor::encode_bytes(&[0x9bu8; 16])),
+            ),
+            (cbor::encode_uint(2), cbor::encode_bytes(&raw)),
+            (cbor::encode_uint(3), cbor::encode_uint(4)),
+            (cbor::encode_uint(4), cbor::encode_uint(1)),
+        ])
+    }
+
+    fn text(payload: &[u8]) -> alloc::string::String {
+        let view = build_eth(payload).expect("review renders");
+        let mut s = alloc::string::String::new();
+        for l in view.lines() {
+            s.push_str(l.as_str());
+            s.push('\n');
+        }
+        s
+    }
+
+    /// Sepolia 2026-11-25: a deploy was labelled `call: unknown contract`, which reads
+    /// like a failed lookup against a contract that exists. There is no callee at all.
+    #[test]
+    fn contract_creation_says_deploy_not_unknown_contract() {
+        let t = text(&request_with(&[0x61, 0x01, 0x40, 0x60, 0x80], None));
+        assert!(t.contains("to: contract creation"), "{t}");
+        assert!(t.contains("call: contract deploy"), "{t}");
+        assert!(!t.contains("unknown contract"), "{t}");
+    }
+
+    /// Same run: a non-standard selector (the dApp's `mint`) printed only
+    /// `unknown contract`, leaving the operator nothing to compare against. The four
+    /// bytes are now on the screen.
+    #[test]
+    fn unknown_selector_is_printed() {
+        let mut cd = alloc::vec![0x3b, 0xb1, 0x38, 0x1bu8]; // mint-ish, not in our table
+        cd.extend_from_slice(&[0u8; 32]);
+        let t = text(&request_with(&cd, Some([0x86u8; 20])));
+        assert!(t.contains("call: unknown contract"), "{t}");
+        assert!(t.contains("selector 0x3bb1381b"), "{t}");
+    }
+
+    /// A known selector with the wrong argument count keeps its "shape does not match"
+    /// verdict and now also shows the selector, so a photo of the screen identifies the
+    /// call without a debug channel.
+    #[test]
+    fn shape_mismatch_shows_the_selector() {
+        // approve selector with a single word instead of two
+        let mut cd = alloc::vec![0x09, 0x5e, 0xa7, 0xb3];
+        cd.extend_from_slice(&[0u8; 32]);
+        let t = text(&request_with(&cd, Some([0x11u8; 20])));
+        assert!(t.contains("shape does not match"), "{t}");
+        assert!(t.contains("selector 0x095ea7b3"), "{t}");
     }
 }
 

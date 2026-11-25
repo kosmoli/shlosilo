@@ -91,7 +91,8 @@ const CASES: &[Case] = &[
         expect: Expect::Sign {
             review_has: &[
                 "eth send request",
-                "erc20 approve",
+                // shared selector: the review names no token standard (Sepolia 2026-11-25)
+                "approve",
                 "spender",
                 "0xd00387de9f68C9642e25d4c194d6e1cE233633C0",
                 "1000000",
@@ -103,7 +104,7 @@ const CASES: &[Case] = &[
         kind: "approve-unlimited",
         ur: "ur:eth-sign-request/onadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohdjoaoyajnadaylrhkisdlaelpamztcnpsaelfwdhnmwnbroinmeswclluensettntgedmnnpftoenamwmfdlarofyashyosqdaeaeaeaeaeaeaeaeaeaeaeaetiaxltueneissoiedmdatysemwtbvytocneneortzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmzmrtaxaaaaadahtaaddyoeadlecsdwykcsfnykaeykaewkaewkaoahjpfrwdeo",
         expect: Expect::Sign {
-            review_has: &["erc20 approve", "unlimited"],
+            review_has: &["approve", "amount or token id", "unlimited"],
             v_domain: VDomain::YParity,
         },
     },
