@@ -124,3 +124,8 @@ for f in device-timing generator-cache-ffi perf-bench-ffi prove-timing-ffi cn-ti
     cargo check --offline --features "$f" > "/tmp/g_feat_$f.log" 2>&1 || FEATMATRIX=1
 done
 echo "FEATMATRIX=$FEATMATRIX"
+# The synthetic-request injector and its verifier (tools/ur-inject). The verifier is
+# what decides whether a device signature is valid, so a broken tool would hand out
+# false assurance — its own self-test signs known payloads and drives the real CLI.
+( cd tools/ur-inject && npm ci --silent > /tmp/g_urinject_npm.log 2>&1 \
+    && cd ../.. && node tools/ur-inject/selftest.mjs ) > /tmp/g_urinject.log 2>&1; echo "URINJECT=$?"

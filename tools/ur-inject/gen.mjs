@@ -279,12 +279,21 @@ function page({ urType, frames, kind, expect }) {
 </script>`
 }
 
-const args = process.argv.slice(2)
-if (args.includes('--list') || args.length === 0) {
+export { KINDS, request, transfer1559, encList, encUint, encBytes }
+
+const isCli = process.argv[1] && process.argv[1].endsWith('gen.mjs')
+const args = isCli ? process.argv.slice(2) : ['--list']
+if (!isCli) {
+  // imported as a module: nothing to run
+} else if (args.includes('--list') || args.length === 0) {
   console.log('kinds:')
-  for (const k of Object.keys(KINDS)) console.log(`  ${k.padEnd(10)} ${KINDS[k]().expect}`)
+  for (const k of Object.keys(KINDS)) console.log(`  ${k.padEnd(18)} ${KINDS[k]().expect}`)
   process.exit(0)
 }
+if (!isCli) {
+  // fall through for importers
+}
+if (isCli) {
 const kind = args[args.indexOf('--kind') + 1]
 if (!KINDS[kind]) {
   console.error(`unknown kind: ${kind} (try --list)`)
@@ -309,3 +318,4 @@ const svgs = []
 for (const f of frames) svgs.push(await qrSvg(f))
 fs.writeFileSync(out, page({ urType: 'eth-sign-request', frames: svgs, kind, expect }))
 console.log(`page: ${out}  (open it fullscreen, then scan with the device)`)
+}
