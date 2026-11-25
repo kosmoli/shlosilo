@@ -1203,7 +1203,12 @@ unsigned int shlosilo_review_ws_len(void);
  * Monero legs keep their shipped, wallet-validated flow.
  *
  * Out-params: `out_used` = bytes written to `out_lines` (NUL-separated),
- * `out_line_count`, `out_flags` (risk bitmask), `out_in_out` = (in << 16) | out.
+ * `out_line_count`, `out_flags` (risk bitmask), `out_in_out` = (in << 16) | out,
+ * `out_break_mask` = line `i` must not open a page when bit `i` is set (a label and
+ * its value travel together). Feed it with `out_line_count` to
+ * [`shlosilo_review_page_count`] / [`shlosilo_review_page_span`]; the paginator must
+ * not compute breaks on its own, or the real-device defect of 2026-11-25 (a page
+ * ending on `spender` with its address on the next page) comes back.
  *
  * # Safety
  *
@@ -1212,7 +1217,7 @@ unsigned int shlosilo_review_ws_len(void);
  * - `master_fingerprint` must be either `NULL` or a pointer to 4 readable bytes.
  * - `ws` must be either `NULL` (pure probe) or point to `ws_len` writable bytes (`ws_len >= shlosilo_review_ws_len()`) that stay at a stable address for the call.
  * - `out_lines` must point to `out_lines_len` writable bytes.
- * - `out_used`, `out_line_count`, `out_flags` and `out_in_out` must each be writable and must not overlap each other, `out_lines`, `ws`, or any input buffer.
+ * - `out_used`, `out_line_count`, `out_flags`, `out_in_out` and `out_break_mask` must each be writable (`out_break_mask` may be `NULL`) and must not overlap each other, `out_lines`, `ws`, or any input buffer.
  */
 int shlosilo_review_ffi(const char *type_name,
                         const uint8_t *payload,
@@ -1226,7 +1231,34 @@ int shlosilo_review_ffi(const char *type_name,
                         unsigned int *out_used,
                         unsigned int *out_line_count,
                         unsigned int *out_flags,
-                        unsigned int *out_in_out);
+                        unsigned int *out_in_out,
+                        uint64_t *out_break_mask);
+
+/**
+ * How many pages the operator will page through for a rendered review.
+ *
+ * Pure: no workspace, no state — `count` and `break_mask` are what
+ * [`shlosilo_review_ffi`] just reported, `page_lines` is the carrier's own layout
+ * (how many rows its confirm screen shows). The geometry lives in
+ * `business::review` so it is host-tested; the carrier must not re-derive it.
+ */
+unsigned int shlosilo_review_page_count(unsigned int count,
+                                        uint64_t break_mask,
+                                        unsigned int page_lines);
+
+/**
+ * `(first, len)` of `page`: the line range to render. Out-of-range pages are empty.
+ *
+ * # Safety
+ *
+ * `out_first` and `out_len` must each be writable and must not overlap.
+ */
+int shlosilo_review_page_span(unsigned int count,
+                              uint64_t break_mask,
+                              unsigned int page_lines,
+                              unsigned int page,
+                              unsigned int *out_first,
+                              unsigned int *out_len);
 
 /**
  * R3: create a multipart encoder. Returns a handle (non-null) on success, null on failure.

@@ -178,6 +178,8 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::c_abi::shlosilo_key_session_fingerprint as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_review_ws_len as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_review_ffi as *const ()),
+    Addr(shlosilo::ffi::c_abi::shlosilo_review_page_count as *const ()),
+    Addr(shlosilo::ffi::c_abi::shlosilo_review_page_span as *const ()),
     Addr(shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_set_clock as *const ()),
     Addr(shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_reset as *const ()),
     Addr(shlosilo::ffi::cn_timing_ffi::shlosilo_cn_timing_phase as *const ()),

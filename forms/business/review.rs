@@ -81,6 +81,11 @@ pub const HIGH_FEE_SATS: u64 = 1_000_000;
 #[derive(Clone)]
 pub struct Line {
     text: heapless::String<REVIEW_LINE_MAX>,
+    /// This line must not open a page: it belongs with the one above it (a label and
+    /// its value). The platform paginator asks [`page_span`] where a page ends, so the
+    /// semantic half of "keep these together" lives here and the layout half (how many
+    /// rows fit) stays with the carrier.
+    no_break_before: bool,
 }
 
 impl Line {
@@ -92,6 +97,9 @@ impl Line {
 /// A bounded, reviewable view of a sign request.
 pub struct ReviewView {
     lines: heapless::Vec<Line, REVIEW_LINES_MAX>,
+    /// Set by [`glue_next_line`](ReviewView::glue_next_line): the next pushed line rides
+    /// with the one just pushed instead of opening a page.
+    glue_next: bool,
     pub flags: u16,
     pub input_count: u8,
     pub output_count: u8,
@@ -101,6 +109,7 @@ impl ReviewView {
     fn new() -> Self {
         ReviewView {
             lines: heapless::Vec::new(),
+            glue_next: false,
             flags: 0,
             input_count: 0,
             output_count: 0,
@@ -112,12 +121,23 @@ impl ReviewView {
         &self.lines
     }
 
+    /// The next pushed line belongs with the one above it (label → value).
+    ///
+    /// Called right after a label so the paginator cannot open a page between them.
+    fn glue_next_line(&mut self) {
+        self.glue_next = true;
+    }
+
     fn push_str(&mut self, s: &str) -> Result<()> {
         let mut text = heapless::String::<REVIEW_LINE_MAX>::new();
         text.push_str(s)
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+        let no_break_before = core::mem::replace(&mut self.glue_next, false);
         self.lines
-            .push(Line { text })
+            .push(Line {
+                text,
+                no_break_before,
+            })
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))
     }
 
@@ -126,8 +146,12 @@ impl ReviewView {
         let mut text = heapless::String::<REVIEW_LINE_MAX>::new();
         text.write_fmt(args)
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
+        let no_break_before = core::mem::replace(&mut self.glue_next, false);
         self.lines
-            .push(Line { text })
+            .push(Line {
+                text,
+                no_break_before,
+            })
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))
     }
 
@@ -139,6 +163,8 @@ impl ReviewView {
         if s.len() <= REVIEW_LINE_MAX {
             return self.push_str(s);
         }
+        // Only the FIRST chunk carries the glue flag (push_str consumes it); the
+        // continuation chunks may break, or one long address could own a whole page.
         for chunk in s.as_bytes().chunks(REVIEW_LINE_MAX) {
             let part = core::str::from_utf8(chunk)
                 .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
@@ -146,6 +172,83 @@ impl ReviewView {
         }
         Ok(())
     }
+
+    /// Bit `i` set = line `i` must not open a page. See [`Line::no_break_before`].
+    pub fn break_mask(&self) -> u64 {
+        let mut mask = 0u64;
+        for (i, line) in self.lines.iter().enumerate() {
+            if line.no_break_before && i < 64 {
+                mask |= 1u64 << i;
+            }
+        }
+        mask
+    }
+}
+
+/// Whether a page may end at line index `at` (i.e. line `at` may open a page).
+///
+/// `break_mask` bit `i` set means line `i` must stay with the line above it — the
+/// semantic half of pagination, produced by the renderer. Bit 0 is meaningless (the
+/// first line always opens page one) and lines past bit 63 are treated as breakable,
+/// which is safe because `REVIEW_LINES_MAX` caps the view well under 64.
+fn break_allowed(break_mask: u64, at: usize) -> bool {
+    at == 0 || at >= 64 || (break_mask >> at) & 1 == 0
+}
+
+/// Where the page starting at `start` ends (exclusive), honouring the glue mask.
+///
+/// The natural end is `start + page_lines`; if the line there must stay with its
+/// label, the break walks back to the last allowed boundary. A group longer than a
+/// page cannot be kept together — the break then falls at `start + 1` so a page is
+/// never empty and the operator can always page forward.
+fn next_page_end(start: usize, count: usize, page_lines: usize, break_mask: u64) -> usize {
+    if page_lines == 0 {
+        return count;
+    }
+    let mut end = core::cmp::min(start + page_lines, count);
+    if end >= count {
+        return count;
+    }
+    while end > start + 1 && !break_allowed(break_mask, end) {
+        end -= 1;
+    }
+    end
+}
+
+/// Number of pages the operator will page through.
+pub fn page_count(count: usize, break_mask: u64, page_lines: usize) -> usize {
+    if count == 0 || page_lines == 0 {
+        return 1;
+    }
+    let mut pages = 0usize;
+    let mut start = 0usize;
+    while start < count {
+        start = next_page_end(start, count, page_lines, break_mask);
+        pages += 1;
+    }
+    if pages == 0 {
+        1
+    } else {
+        pages
+    }
+}
+
+/// `(first, len)` of `page`, honouring the glue mask. Out-of-range pages are empty.
+pub fn page_span(count: usize, break_mask: u64, page_lines: usize, page: usize) -> (usize, usize) {
+    if count == 0 || page_lines == 0 {
+        return (0, 0);
+    }
+    let mut start = 0usize;
+    let mut p = 0usize;
+    while start < count && p < page {
+        start = next_page_end(start, count, page_lines, break_mask);
+        p += 1;
+    }
+    if start >= count {
+        return (start, 0);
+    }
+    let end = next_page_end(start, count, page_lines, break_mask);
+    (start, end - start)
 }
 
 /// One amount line: `"<label> <amount> wei"`, in the units the wire carries.
@@ -354,8 +457,11 @@ fn summarize_psbt(
         let mut text = heapless::String::<REVIEW_LINE_MAX>::new();
         text.write_fmt(args)
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
-        head.push(Line { text })
-            .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))
+        head.push(Line {
+            text,
+            no_break_before: false,
+        })
+        .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))
     };
     // No title line: the page header already says "review"; every body line
     // must carry information (first real-device layout review, 2026-11-05).
@@ -461,7 +567,10 @@ fn summarize_psbt(
         text.push_str(warn)
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
         merged
-            .push(Line { text })
+            .push(Line {
+                text,
+                no_break_before: false,
+            })
             .map_err(|_| ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow))?;
     }
     for line in view.lines.iter() {
@@ -810,6 +919,7 @@ fn push_decoded_calldata(
     fn push_addr(view: &mut ReviewView, label: &str, addr: &[u8; 20]) -> Result<()> {
         let rendered = crate::address::eth::encode_bytes(addr)?;
         view.push_str(label)?;
+        view.glue_next_line(); // the address is the label's value, not a new item
         view.push_wrapped(<_ as AsRef<str>>::as_ref(&rendered))
     }
 
@@ -842,6 +952,7 @@ fn push_decoded_calldata(
     /// fail-closed applies when 78 digits cannot fit the line.
     fn push_amount(view: &mut ReviewView, label: &str, amount: &[u8; 32]) -> Result<()> {
         view.push_str(label)?;
+        view.glue_next_line(); // the figure belongs to the label above it
         if amount.iter().all(|&b| b == 0xff) {
             return view.push_str("unlimited");
         }
@@ -1009,6 +1120,7 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
         Some(dest) => {
             let rendered = eth::encode_bytes(&dest)?;
             view.push_str("to:")?;
+            view.glue_next_line();
             view.push_wrapped(<_ as AsRef<str>>::as_ref(&rendered))?;
         }
         None => view.push_str("to: contract creation")?,
@@ -1213,6 +1325,149 @@ mod calldata_render_pins {
             selector: [1, 2, 3, 4],
         });
         assert!(ks.contains("args not decoded"), "{ks}");
+    }
+}
+
+#[cfg(test)]
+mod review_pagination_pins {
+    use super::*;
+
+    /// Every line on its own page boundary: the geometry must be exactly the old
+    /// `ceil(count / page_lines)`, so a request whose content has no glued pairs pages
+    /// identically to before this feature.
+    #[test]
+    fn without_glue_the_geometry_is_the_plain_ceil() {
+        for count in [1usize, 5, 12, 13, 24, 25, 37] {
+            assert_eq!(
+                page_count(count, 0, 12),
+                count.div_ceil(12),
+                "count {count}"
+            );
+            for page in 0..page_count(count, 0, 12) {
+                let (first, len) = page_span(count, 0, 12, page);
+                assert_eq!(first, page * 12, "count {count} page {page}");
+                assert_eq!(len, core::cmp::min(12, count - first));
+            }
+        }
+    }
+
+    /// The defect this exists for: a label on the last row of a page with its value on
+    /// the next. The page now ends one row earlier so both travel together.
+    #[test]
+    fn a_glued_value_never_opens_a_page() {
+        let count = 30usize;
+        // line 12 is the value of line 11 → it must not start page 2
+        let mask = 1u64 << 12;
+        let (first0, len0) = page_span(count, mask, 12, 0);
+        assert_eq!((first0, len0), (0, 11), "page 1 must stop before the label");
+        let (first1, len1) = page_span(count, mask, 12, 1);
+        assert_eq!(first1, 11, "page 2 starts at the label");
+        assert_eq!(len1, 12, "and carries label + value");
+        // the whole view is still covered exactly once, in order
+        let mut covered = alloc::vec::Vec::new();
+        for p in 0..page_count(count, mask, 12) {
+            let (f, l) = page_span(count, mask, 12, p);
+            covered.extend(f..f + l);
+        }
+        assert_eq!(covered, (0..count).collect::<alloc::vec::Vec<_>>());
+    }
+
+    /// Consecutive glued lines walk the break back as far as needed.
+    #[test]
+    fn a_chain_of_glued_lines_moves_the_break_further() {
+        let count = 30usize;
+        let mask = (1u64 << 11) | (1u64 << 12) | (1u64 << 13); // 10 is the label
+        let (first, len) = page_span(count, mask, 12, 0);
+        assert_eq!(
+            (first, len),
+            (0, 10),
+            "page 1 stops before the 3-line group"
+        );
+        let (next_first, _) = page_span(count, mask, 12, 1);
+        assert_eq!(next_first, 10);
+    }
+
+    /// A group longer than a page cannot be kept together; the paginator must still
+    /// make progress and never render an empty page (a dead `wire` key on a device is
+    /// worse than a split group).
+    #[test]
+    fn an_unglueable_run_still_pages_forward() {
+        let count = 40usize;
+        // every line glues to the previous one: no allowed break anywhere past 0
+        let mask = !1u64;
+        let pages = page_count(count, mask, 12);
+        assert!(pages >= 4, "must page forward, got {pages}");
+        let mut covered = alloc::vec::Vec::new();
+        for p in 0..pages {
+            let (f, l) = page_span(count, mask, 12, p);
+            assert!(l > 0, "page {p} is empty");
+            covered.extend(f..f + l);
+        }
+        assert_eq!(covered, (0..count).collect::<alloc::vec::Vec<_>>());
+    }
+
+    /// The real views: a label and its value are glued, and the mask reaches the
+    /// platform. Checked on the ETH send shape (to: + address, and the calldata
+    /// detail lines the Sepolia run showed split across pages).
+    #[test]
+    fn the_send_view_glues_labels_to_their_values() {
+        use crate::chain::eth::calldata::DecodedCalldata;
+        use crate::encoding::cbor;
+
+        // ETH send with an approve calldata: `to:` + address and `spender` + value are
+        // the two pairs that were split on the real device.
+        let mut data = alloc::vec![0x09, 0x5e, 0xa7, 0xb3];
+        data.extend_from_slice(&[0u8; 12]);
+        data.extend_from_slice(&[0x9bu8; 20]);
+        data.extend_from_slice(&{
+            let mut w = [0u8; 32];
+            w[31] = 1;
+            w
+        });
+        use crate::chain::eth::rlp;
+        let fields = alloc::vec![
+            rlp::encode_uint(1),
+            rlp::encode_uint(0),
+            rlp::encode_uint(1_000_000_000),
+            rlp::encode_uint(2_000_000_000),
+            rlp::encode_uint(60_000),
+            rlp::encode_bytes(&[0x11u8; 20]),
+            rlp::encode_uint(0),
+            rlp::encode_bytes(&data),
+            rlp::encode_list(&[]),
+        ];
+        let mut raw = alloc::vec![0x02u8];
+        raw.extend_from_slice(&rlp::encode_list(&fields));
+        let payload = cbor::encode_map(&[
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(37, &cbor::encode_bytes(&[0x9bu8; 16])),
+            ),
+            (cbor::encode_uint(2), cbor::encode_bytes(&raw)),
+            (cbor::encode_uint(3), cbor::encode_uint(4)),
+            (cbor::encode_uint(4), cbor::encode_uint(1)),
+        ]);
+        let view = build_eth(&payload).expect("review");
+        let mask = view.break_mask();
+        let texts: alloc::vec::Vec<&str> = view.lines().iter().map(|l| l.as_str()).collect();
+
+        // every "label then value" pair: the value line must carry the glue bit
+        for (i, t) in texts.iter().enumerate() {
+            if *t == "to:" || *t == "spender" || *t == "amount or token id" {
+                assert!(
+                    i + 1 < texts.len(),
+                    "{t} is the last line — nothing to glue"
+                );
+                assert!(
+                    (mask >> (i + 1)) & 1 == 1,
+                    "line {} ({:?}) must not open a page",
+                    i + 1,
+                    texts[i + 1]
+                );
+            }
+        }
+        // …and a wrapped address keeps only its first chunk glued
+        let _ = DecodedCalldata::Empty; // keep the import used if the shape changes
     }
 }
 

@@ -308,6 +308,84 @@ fn unsupported_types_are_rejected() {
 
 // --------------------- FFI surface (the path the platform layer actually calls) ---------------------
 
+/// The pagination contract the carrier depends on, pinned through the FFI (that is
+/// what the C host calls, not the Rust API):
+///  - `shlosilo_review_ffi` reports a glue mask (line `i` must not open a page),
+///  - `shlosilo_review_page_count` / `_page_span` turn (count, mask, rows) into the
+///    page geometry,
+///  - and no page ever *starts* on a glued line.
+///
+/// The real-device defect this exists for (2026-11-25): page 1 ended on `spender` and
+/// its address was the first line of page 2, so the operator could confirm an amount
+/// they had never seen next to its label.
+#[test]
+fn review_ffi_reports_a_glue_mask_and_pages_with_it() {
+    use core::ffi::c_uint;
+    use shlosilo::ffi::c_abi;
+    use std::ffi::CString;
+
+    let decoded = shlosilo::ur::ur_decode::decode(ETH_SIGN_REQUEST_URI).expect("ur decode");
+    let payload = decoded.as_ref().to_vec();
+    let ty = CString::new("eth-sign-request").unwrap();
+
+    let ws_need = c_abi::shlosilo_review_ws_len() as usize;
+    let mut ws = vec![0u8; ws_need];
+    let mut lines = [0u8; c_abi::REVIEW_LINES_BUF];
+    let mut used: c_uint = 0;
+    let mut count: c_uint = 0;
+    let mut flags: c_uint = 0;
+    let mut in_out: c_uint = 0;
+    let mut mask: u64 = 0;
+    let rc = unsafe {
+        c_abi::shlosilo_review_ffi(
+            ty.as_ptr(),
+            payload.as_ptr(),
+            payload.len() as c_uint,
+            1, // EthereumMainnet — the fixture's chain id
+            core::ptr::null(),
+            ws.as_mut_ptr(),
+            ws_need as c_uint,
+            lines.as_mut_ptr(),
+            lines.len() as c_uint,
+            &mut used,
+            &mut count,
+            &mut flags,
+            &mut in_out,
+            &mut mask,
+        )
+    };
+    assert_eq!(rc, 0, "review must build");
+    assert!(count > 0);
+    assert_ne!(mask, 0, "the ETH view has label/value pairs to glue");
+
+    // Walk the pages the way the host does and assert nothing glued opens a page.
+    let page_lines: c_uint = 12;
+    let pages = c_abi::shlosilo_review_page_count(count, mask, page_lines);
+    assert!(pages >= 1);
+    let mut covered = 0u32;
+    for page in 0..pages {
+        let mut first: c_uint = 0;
+        let mut len: c_uint = 0;
+        let rc = unsafe {
+            c_abi::shlosilo_review_page_span(count, mask, page_lines, page, &mut first, &mut len)
+        };
+        assert_eq!(rc, 0);
+        assert!(len > 0, "page {page} must not be empty");
+        if first > 0 {
+            assert_eq!(
+                (mask >> first) & 1,
+                0,
+                "page {page} starts on line {first}, which is glued to the line above"
+            );
+        }
+        covered += len;
+    }
+    assert_eq!(
+        covered, count,
+        "the pages must cover every line exactly once"
+    );
+}
+
 #[test]
 fn review_ffi_packs_lines_and_meta() {
     use core::ffi::c_uint;
@@ -335,6 +413,7 @@ fn review_ffi_packs_lines_and_meta() {
             [0u8; 16].as_mut_ptr(),
             0,
             &mut probe,
+            core::ptr::null_mut(),
             core::ptr::null_mut(),
             core::ptr::null_mut(),
             core::ptr::null_mut(),
@@ -368,6 +447,7 @@ fn review_ffi_packs_lines_and_meta() {
             &mut count,
             &mut flags,
             &mut in_out,
+            core::ptr::null_mut(),
         )
     };
     assert_eq!(rc, 0, "review ffi should succeed");
@@ -402,6 +482,7 @@ fn review_ffi_packs_lines_and_meta() {
             &mut count,
             &mut flags,
             &mut in_out,
+            core::ptr::null_mut(),
         )
     };
     // T1-06 (2026-11-19 audit, closed 2026-11-20): the failing call reused the out-params from the
@@ -451,6 +532,7 @@ fn review_ffi_rejects_xmr_types() {
                 &mut count,
                 &mut flags,
                 &mut in_out,
+                core::ptr::null_mut(),
             )
         };
         assert_ne!(

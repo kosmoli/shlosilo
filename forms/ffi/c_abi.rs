@@ -3248,7 +3248,12 @@ pub extern "C" fn shlosilo_review_ws_len() -> c_uint {
 /// Monero legs keep their shipped, wallet-validated flow.
 ///
 /// Out-params: `out_used` = bytes written to `out_lines` (NUL-separated),
-/// `out_line_count`, `out_flags` (risk bitmask), `out_in_out` = (in << 16) | out.
+/// `out_line_count`, `out_flags` (risk bitmask), `out_in_out` = (in << 16) | out,
+/// `out_break_mask` = line `i` must not open a page when bit `i` is set (a label and
+/// its value travel together). Feed it with `out_line_count` to
+/// [`shlosilo_review_page_count`] / [`shlosilo_review_page_span`]; the paginator must
+/// not compute breaks on its own, or the real-device defect of 2026-11-25 (a page
+/// ending on `spender` with its address on the next page) comes back.
 ///
 /// # Safety
 ///
@@ -3257,7 +3262,7 @@ pub extern "C" fn shlosilo_review_ws_len() -> c_uint {
 /// - `master_fingerprint` must be either `NULL` or a pointer to 4 readable bytes.
 /// - `ws` must be either `NULL` (pure probe) or point to `ws_len` writable bytes (`ws_len >= shlosilo_review_ws_len()`) that stay at a stable address for the call.
 /// - `out_lines` must point to `out_lines_len` writable bytes.
-/// - `out_used`, `out_line_count`, `out_flags` and `out_in_out` must each be writable and must not overlap each other, `out_lines`, `ws`, or any input buffer.
+/// - `out_used`, `out_line_count`, `out_flags`, `out_in_out` and `out_break_mask` must each be writable (`out_break_mask` may be `NULL`) and must not overlap each other, `out_lines`, `ws`, or any input buffer.
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_review_ffi(
     type_name: *const c_char,
@@ -3273,11 +3278,15 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
     out_line_count: *mut c_uint,
     out_flags: *mut c_uint,
     out_in_out: *mut c_uint,
+    out_break_mask: *mut u64,
 ) -> c_int {
     unsafe { write_actual_len(out_used, 0) };
     unsafe { write_actual_len(out_line_count, 0) };
     unsafe { write_actual_len(out_flags, 0) };
     unsafe { write_actual_len(out_in_out, 0) };
+    if !out_break_mask.is_null() {
+        unsafe { core::ptr::write(out_break_mask, 0) };
+    }
     if type_name.is_null() || payload.is_null() || out_lines.is_null() {
         return ERR_NULL_POINTER;
     }
@@ -3295,97 +3304,154 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
         ));
     }
 
-    let result = ffi_catch_unwind!(|| -> Result<(usize, usize, u16, u8, u8), ShlosiloError> {
-        // type name (NUL-terminated, bounded)
-        let mut tlen = 0usize;
-        unsafe {
-            while *type_name.add(tlen) != 0 {
-                tlen += 1;
-                if tlen > 64 {
-                    return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+    let result = ffi_catch_unwind!(
+        || -> Result<(usize, usize, u16, u8, u8, u64), ShlosiloError> {
+            // type name (NUL-terminated, bounded)
+            let mut tlen = 0usize;
+            unsafe {
+                while *type_name.add(tlen) != 0 {
+                    tlen += 1;
+                    if tlen > 64 {
+                        return Err(err(ShlosiloErrorKind::EncodingInvalidFormat));
+                    }
                 }
             }
-        }
-        let t_slice = unsafe { checked_slice(type_name.cast::<u8>(), tlen, 64, false) }
-            .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-        let t_str = core::str::from_utf8(t_slice)
-            .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
-        let tag = crate::ur::ur_encode::UrTypeTag::from_name(t_str);
+            let t_slice = unsafe { checked_slice(type_name.cast::<u8>(), tlen, 64, false) }
+                .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            let t_str = core::str::from_utf8(t_slice)
+                .map_err(|_| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+            let tag = crate::ur::ur_encode::UrTypeTag::from_name(t_str);
 
-        let payload_slice = unsafe {
-            checked_slice(
-                payload,
-                payload_len as usize,
-                crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
-                false,
-            )
-        }
-        .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadTooLarge))?;
-
-        // optional 4-byte master fingerprint (NULL → no change marking)
-        let mfp: Option<[u8; 4]> = if master_fingerprint.is_null() {
-            None
-        } else {
-            let s = unsafe { checked_slice(master_fingerprint, 4, 4, false) }
-                .ok_or_else(|| err(ShlosiloErrorKind::BufferKindMismatch))?;
-            Some([s[0], s[1], s[2], s[3]])
-        };
-
-        let net = Network::from_u8(u8::try_from(network).unwrap_or(0xff))
-            .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
-
-        // Carve the workspace: arena then records. F-2: the records span needs
-        // `align_of::<KvRec>()` alignment, and the caller's buffer may start at any
-        // address, so the base is aligned up at runtime (the `+8` slack in
-        // `review_ws_len()` is exactly this shift allowance). A debug-only check was
-        // not enough: it is compiled out in release, where a misaligned `&mut [KvRec]`
-        // would simply be UB.
-        let rec_align = core::mem::align_of::<crate::chain::btc::psbt::KvRec>();
-        let raw_base = ws as usize;
-        let aligned_base = (raw_base + rec_align - 1) & !(rec_align - 1);
-        let shift = aligned_base - raw_base;
-        if shift > 8 {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
-        }
-        let base = aligned_base as *mut u8;
-        let arena: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(base, REVIEW_WS_ARENA) };
-        let recs_ptr = unsafe { base.add(REVIEW_WS_ARENA) };
-        debug_assert!((recs_ptr as usize).is_multiple_of(rec_align));
-        let recs: &mut [crate::chain::btc::psbt::KvRec] =
-            unsafe { core::slice::from_raw_parts_mut(recs_ptr.cast(), REVIEW_WS_RECS) };
-
-        let view = business::review::build(tag, payload_slice, net, mfp.as_ref(), arena, recs)?;
-
-        // pack the lines NUL-separated into the caller buffer
-        let out = unsafe { checked_slice_mut(out_lines, out_lines_len as usize, REVIEW_LINES_BUF) }
-            .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
-        let mut used = 0usize;
-        let mut count = 0usize;
-        for line in view.lines() {
-            let bytes = line.as_str().as_bytes();
-            if used + bytes.len() + 1 > out.len() {
-                return Err(err(ShlosiloErrorKind::BufferTooSmall));
+            let payload_slice = unsafe {
+                checked_slice(
+                    payload,
+                    payload_len as usize,
+                    crate::ur::ur_multipart::MULTIPART_PAYLOAD_MAX_LEN,
+                    false,
+                )
             }
-            out[used..used + bytes.len()].copy_from_slice(bytes);
-            used += bytes.len();
-            out[used] = 0;
-            used += 1;
-            count += 1;
+            .ok_or_else(|| err(ShlosiloErrorKind::UrPayloadTooLarge))?;
+
+            // optional 4-byte master fingerprint (NULL → no change marking)
+            let mfp: Option<[u8; 4]> = if master_fingerprint.is_null() {
+                None
+            } else {
+                let s = unsafe { checked_slice(master_fingerprint, 4, 4, false) }
+                    .ok_or_else(|| err(ShlosiloErrorKind::BufferKindMismatch))?;
+                Some([s[0], s[1], s[2], s[3]])
+            };
+
+            let net = Network::from_u8(u8::try_from(network).unwrap_or(0xff))
+                .ok_or_else(|| err(ShlosiloErrorKind::NetworkUnrecognized))?;
+
+            // Carve the workspace: arena then records. F-2: the records span needs
+            // `align_of::<KvRec>()` alignment, and the caller's buffer may start at any
+            // address, so the base is aligned up at runtime (the `+8` slack in
+            // `review_ws_len()` is exactly this shift allowance). A debug-only check was
+            // not enough: it is compiled out in release, where a misaligned `&mut [KvRec]`
+            // would simply be UB.
+            let rec_align = core::mem::align_of::<crate::chain::btc::psbt::KvRec>();
+            let raw_base = ws as usize;
+            let aligned_base = (raw_base + rec_align - 1) & !(rec_align - 1);
+            let shift = aligned_base - raw_base;
+            if shift > 8 {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
+            }
+            let base = aligned_base as *mut u8;
+            let arena: &mut [u8] =
+                unsafe { core::slice::from_raw_parts_mut(base, REVIEW_WS_ARENA) };
+            let recs_ptr = unsafe { base.add(REVIEW_WS_ARENA) };
+            debug_assert!((recs_ptr as usize).is_multiple_of(rec_align));
+            let recs: &mut [crate::chain::btc::psbt::KvRec] =
+                unsafe { core::slice::from_raw_parts_mut(recs_ptr.cast(), REVIEW_WS_RECS) };
+
+            let view = business::review::build(tag, payload_slice, net, mfp.as_ref(), arena, recs)?;
+
+            // pack the lines NUL-separated into the caller buffer
+            let out =
+                unsafe { checked_slice_mut(out_lines, out_lines_len as usize, REVIEW_LINES_BUF) }
+                    .ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
+            let mut used = 0usize;
+            let mut count = 0usize;
+            for line in view.lines() {
+                let bytes = line.as_str().as_bytes();
+                if used + bytes.len() + 1 > out.len() {
+                    return Err(err(ShlosiloErrorKind::BufferTooSmall));
+                }
+                out[used..used + bytes.len()].copy_from_slice(bytes);
+                used += bytes.len();
+                out[used] = 0;
+                used += 1;
+                count += 1;
+            }
+            Ok((
+                used,
+                count,
+                view.flags,
+                view.input_count,
+                view.output_count,
+                view.break_mask(),
+            ))
         }
-        Ok((used, count, view.flags, view.input_count, view.output_count))
-    });
+    );
 
     match result {
-        Ok(Ok((used, count, flags, ins, outs))) => {
+        Ok(Ok((used, count, flags, ins, outs, break_mask))) => {
             unsafe { write_actual_len(out_used, used) };
             unsafe { write_actual_len(out_line_count, count) };
             unsafe { write_actual_len(out_flags, flags as usize) };
             unsafe { write_actual_len(out_in_out, ((ins as usize) << 16) | outs as usize) };
+            if !out_break_mask.is_null() {
+                unsafe { core::ptr::write(out_break_mask, break_mask) };
+            }
             OK
         }
         Ok(Err(e)) => to_ffi_code(&e),
         Err(_) => ERR_PANIC,
     }
+}
+
+/// How many pages the operator will page through for a rendered review.
+///
+/// Pure: no workspace, no state — `count` and `break_mask` are what
+/// [`shlosilo_review_ffi`] just reported, `page_lines` is the carrier's own layout
+/// (how many rows its confirm screen shows). The geometry lives in
+/// `business::review` so it is host-tested; the carrier must not re-derive it.
+#[no_mangle]
+pub extern "C" fn shlosilo_review_page_count(
+    count: c_uint,
+    break_mask: u64,
+    page_lines: c_uint,
+) -> c_uint {
+    business::review::page_count(count as usize, break_mask, page_lines as usize) as c_uint
+}
+
+/// `(first, len)` of `page`: the line range to render. Out-of-range pages are empty.
+///
+/// # Safety
+///
+/// `out_first` and `out_len` must each be writable and must not overlap.
+#[no_mangle]
+pub unsafe extern "C" fn shlosilo_review_page_span(
+    count: c_uint,
+    break_mask: u64,
+    page_lines: c_uint,
+    page: c_uint,
+    out_first: *mut c_uint,
+    out_len: *mut c_uint,
+) -> c_int {
+    if out_first.is_null() || out_len.is_null() {
+        return ERR_NULL_POINTER;
+    }
+    let (first, len) = business::review::page_span(
+        count as usize,
+        break_mask,
+        page_lines as usize,
+        page as usize,
+    );
+    unsafe { core::ptr::write(out_first, first as c_uint) };
+    unsafe { core::ptr::write(out_len, len as c_uint) };
+    OK
 }
 
 #[cfg(test)]

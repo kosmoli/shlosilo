@@ -285,6 +285,10 @@ static int g_review_wire_req;
 static int g_review_cancel_req;
 static unsigned g_review_page;
 static unsigned g_review_pages;
+/* Line i must not open a page when bit i is set (label/value pairs). Comes from the
+ * library so the paginator never re-derives semantics; the geometry below is the
+ * library's too (`shlosilo_review_page_count` / `_page_span`). */
+static uint64_t g_review_break_mask;
 static unsigned g_review_count;
 /* Sized from the row budget: a 43-input PSBT needs more rows than the old 16 x 48
  * fit, and running out here surfaced as "request too large" *after* the whole
@@ -2091,12 +2095,22 @@ static void review_render(void)
      * the message completed). Keep the pointers and the storage in sync here. */
     static const char *lptr[REVIEW_PAGE_LINES];
     char foot[48];
-    unsigned first = g_review_page * REVIEW_PAGE_LINES;
+    /* The line range of this page comes from the library: it owns the glue semantics
+     * (a label and its value stay on one page) and the geometry derived from them. The
+     * carrier only says how many rows its screen holds. */
+    unsigned first = 0;
+    unsigned page_len = 0;
     unsigned k;
     unsigned n = 0;
     int last = (g_review_page + 1u >= g_review_pages);
 
-    for (k = 0; k < REVIEW_PAGE_LINES; k++) {
+    if (shlosilo_review_page_span(g_review_count, g_review_break_mask,
+                                  REVIEW_PAGE_LINES, g_review_page,
+                                  &first, &page_len) != 0) {
+        page_len = 0;
+    }
+
+    for (k = 0; k < page_len; k++) {
         unsigned idx = first + k;
         if (idx >= g_review_count) {
             break;
@@ -2143,7 +2157,8 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
         rc = shlosilo_review_ffi(type, payload, plen, 0, fp_ptr,
                                  g_review_ws, ws_need,
                                  (uint8_t *)g_review_lines, sizeof(g_review_lines),
-                                 &used, &count, &flags, &in_out);
+                                 &used, &count, &flags, &in_out,
+                                 &g_review_break_mask);
     }
     ExtFree(g_review_ws);
     g_review_ws = NULL;
@@ -2185,7 +2200,7 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
         UiSetLast(d);
     }
     g_review_count = count;
-    g_review_pages = (count + REVIEW_PAGE_LINES - 1u) / REVIEW_PAGE_LINES;
+    g_review_pages = shlosilo_review_page_count(count, g_review_break_mask, REVIEW_PAGE_LINES);
     if (g_review_pages == 0) {
         g_review_pages = 1;
     }
