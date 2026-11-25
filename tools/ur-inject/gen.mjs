@@ -114,6 +114,48 @@ const keypath = () => {
 
 const UUID = Buffer.from('9b1deb4d3b7d4bad9bdd2b0d7b3dcb6d', 'hex')
 
+/**
+ * One real ERC-2612 `permit` document (USDC on mainnet).
+ *
+ * Serialized without whitespace and with the field order a wallet sends, so the injected
+ * UR is byte-stable: `tests/ur_inject_matrix.rs` carries the frames this prints, and a
+ * change here must show up there as a red pin rather than as a silently different request.
+ * The domain is the full four-field form (name/version/chainId/verifyingContract), which
+ * is what makes the request bind to a contract AND a chain.
+ */
+const permitJson = () =>
+  JSON.stringify({
+    types: {
+      EIP712Domain: [
+        { name: 'name', type: 'string' },
+        { name: 'version', type: 'string' },
+        { name: 'chainId', type: 'uint256' },
+        { name: 'verifyingContract', type: 'address' },
+      ],
+      Permit: [
+        { name: 'owner', type: 'address' },
+        { name: 'spender', type: 'address' },
+        { name: 'value', type: 'uint256' },
+        { name: 'nonce', type: 'uint256' },
+        { name: 'deadline', type: 'uint256' },
+      ],
+    },
+    primaryType: 'Permit',
+    domain: {
+      name: 'USD Coin',
+      version: '2',
+      chainId: 1,
+      verifyingContract: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+    },
+    message: {
+      owner: '0x1111111111111111111111111111111111111111',
+      spender: '0x2222222222222222222222222222222222222222',
+      value: '1000000',
+      nonce: 0,
+      deadline: 1700000000,
+    },
+  })
+
 
 /** The 1559 field list for `approve(spender, amount)` against USDC. */
 const approveTx = (amount) => {
@@ -202,7 +244,16 @@ const KINDS = {
     signData: Buffer.from(JSON.stringify({ types: {}, primaryType: 'Mail', domain: {}, message: {} }), 'utf8'),
     dataType: 2,
     chainId: null,
-    expect: 'review: eth typed data / data <N> bytes / cannot display → REFUSED (code -10)',
+    expect: 'review: eth typed data → REFUSED: no such type in the declaration (code -21)',
+  }),
+  // ERC-2612 `permit`: the shape EIP-712 is used for in practice. `data_type` 2 means
+  // `sign_data` IS the typed-data JSON document, not RLP — the one kind in this matrix
+  // whose payload is JSON rather than a transaction preimage.
+  '712-permit': () => ({
+    signData: Buffer.from(permitJson(), 'utf8'),
+    dataType: 2,
+    chainId: 1,
+    expect: 'review: eth typed data / sign Permit / domain name+chain+verifying contract / owner, spender, value, nonce, deadline → SIGN with v = 27/28',
   }),
   legacy: () => ({
     signData: encList([encUint(7), encUint(30_000_000_000), encUint(21_000), encBytes(Buffer.alloc(20, 0x11)), encUint(0), encBytes(Buffer.alloc(0)), encUint(1), encBytes(Buffer.alloc(0)), encBytes(Buffer.alloc(0))]),

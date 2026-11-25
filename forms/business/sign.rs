@@ -323,7 +323,13 @@ pub fn sign_with_entropy_ws_views(
             Ok(n)
         }
         crate::types::chain_kind::ChainKind::Eth => {
-            let n = sign_eth(seed.expose(), payload, output_buf)?;
+            // E-3 P3: typed data is signed out of the caller's workspace (the pool the
+            // EIP-712 container carves). The other ETH schemes ignore it.
+            let region = match ws {
+                Some(ws) => Some(&mut *ws.eip712),
+                None => None,
+            };
+            let n = sign_eth(seed.expose(), payload, region, output_buf)?;
             Ok(n)
         }
         crate::types::chain_kind::ChainKind::Xmr => match ws {
@@ -2016,8 +2022,18 @@ fn sign_btc<'a>(
 /// (`eip155::write_v_be`).
 ///
 /// Derivation path = m/44'/60'/0'/0/0.
-fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<usize> {
-    use crate::chain::eth::{eip155, eip1559, from_rlp};
+///
+/// E-3 P3 (typed data): `data_type` 2 is signed from the zero-heap EIP-712 pool. The
+/// pool's storage is the caller's `region` (one `eip712_pool::WS_BYTES` span carved out
+/// of the sign workspace); without a region there is no container to parse into and the
+/// request is refused rather than parsed into a second, allocating one.
+fn sign_eth(
+    seed: &[u8],
+    cbor_payload: &[u8],
+    region: Option<&mut [u8]>,
+    output_buf: &mut [u8],
+) -> Result<usize> {
+    use crate::chain::eth::{eip155, eip1559, eip712_pool, from_rlp};
     use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
     use crate::ur::codec::eth_signature::{
         encode_eth_signature_into, EthSignature, SIGNATURE_MAX_LEN, SIGNATURE_MIN_LEN,
@@ -2028,10 +2044,14 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     /// Three-shaped because the two transaction schemes have different models and
     /// different request parsers: a legacy request is the EIP-155 preimage
     /// (`from_rlp::parse_eip155_signing_request`), a typed one is `0x02 || rlp([...])`.
+    /// Typed data carries the digest instead of a model: the pool it was computed from
+    /// borrows the caller's region, so it cannot outlive this dispatch.
     enum Scheme<'a> {
         Legacy(eip155::Eip155Transaction<'a>),
         Eip1559(eip1559::Eip1559Transaction<'a>),
         Personal,
+        /// EIP-712: `keccak256(0x1901 ‖ domainSeparator ‖ hashStruct(message))`.
+        TypedData([u8; 32]),
     }
 
     let req = parse_eth_sign_request(cbor_payload)?;
@@ -2078,10 +2098,21 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
         // data_type 3 = personal_sign (EIP-191): the payload is the raw message,
         // not a transaction, so none of the transaction gates apply.
         EthSignDataType::PersonalMessage => Scheme::Personal,
+        // data_type 2 = EIP-712 typed data: `sign_data` IS the typed-data JSON document
+        // (borrowed, never copied). The digest comes from the zero-heap container; the
+        // pool borrows `req.sign_data` and the caller's region, so both stay alive here
+        // and only the 32-byte digest leaves this arm.
         EthSignDataType::TypedData => {
-            // EIP-712 typed data needs its own fixed-size container; refused until
-            // then (see docs/eth-signature-codec.md, E-3).
-            return Err(err(ShlosiloErrorKind::ChainKindUnsupported));
+            let region = region.ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
+            let t_hash = crate::device_timing::Mark::start(crate::device_timing::STAGE_KECCAK);
+            let pool = eip712_pool::parse_in(req.sign_data, region)?;
+            // One gate, two faces: the review page refuses what it cannot show, and the
+            // signer refuses the same documents so a direct sign call cannot sign a
+            // request the operator was never shown (see `review::typed_data_fold_gate`).
+            crate::business::review::typed_data_fold_gate(&pool)?;
+            let digest = eip712_pool::signing_hash_pool(&pool)?;
+            t_hash.end();
+            Scheme::TypedData(digest)
         }
     };
 
@@ -2149,6 +2180,24 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
             signature[..32].copy_from_slice(&sig.r);
             signature[32..64].copy_from_slice(&sig.s);
             signature[64] = sig.v;
+            SIGNATURE_MIN_LEN
+        }
+        Scheme::TypedData(digest) => {
+            // data_type 2: the digest was computed from the pool above; the signature is
+            // the same primitive personal_sign uses (ECDSA over a 32-byte digest, low-s
+            // normalized), because `v` follows the same convention.
+            let sk = crate::chain::eth::sign::sk_from_pk(private_key.expose())?;
+            let mut r = [0u8; 32];
+            let mut s = [0u8; 32];
+            let y_parity = crate::chain::eth::sign::apply_low_s(&digest, &sk, &mut r, &mut s)?;
+            signature[..32].copy_from_slice(&r);
+            signature[32..64].copy_from_slice(&s);
+            // `v` is 27/28 for typed data, not the bare yParity EIP-1559 carries: the
+            // reference signer serializes `(rec_id + 27, rs)` for typed data exactly as
+            // it does for personal_sign (keystone3-firmware
+            // `rust/apps/ethereum/src/lib.rs`, `sign_typed_data_message`). A 27-offset
+            // byte is what `ecrecover`/`eth_signTypedData` consumers expect.
+            signature[64] = 27 + y_parity;
             SIGNATURE_MIN_LEN
         }
     };
@@ -2229,11 +2278,23 @@ pub(crate) fn check_network(
                 EthSignDataType::TypedTransaction => {
                     crate::chain::eth::from_rlp::parse_eip1559_raw(req.sign_data)?.chain_id
                 }
-                // Neither scheme has a chain id to compare: data_type 3 signs a raw
-                // message (and 2 is refused further down the sign path with its own
-                // code), so the network gate has nothing to check here and must not
-                // turn them into a format error.
-                EthSignDataType::PersonalMessage | EthSignDataType::TypedData => return Ok(()),
+                // E-3 P3: typed data carries no transaction, so its chain lives in the
+                // document's own `domain.chainId`. Read it without a workspace (the
+                // pre-check only scans; it fills no pool), and compare it under the same
+                // rule the two transaction schemes use. A document without a readable
+                // `chainId` has nothing to compare: the gate is skipped rather than
+                // turned into a format error, because the digest layer already refuses a
+                // domain whose declared fields have no values.
+                EthSignDataType::TypedData => {
+                    match crate::chain::eth::eip712_pool::domain_chain_id(req.sign_data)? {
+                        Some(id) => id,
+                        None => return Ok(()),
+                    }
+                }
+                // data_type 3 signs a raw message: no chain id to compare, so the
+                // network gate has nothing to check and must not turn it into a format
+                // error.
+                EthSignDataType::PersonalMessage => return Ok(()),
             };
             if tx_chain_id != expected_chain_id {
                 return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
@@ -2645,7 +2706,10 @@ mod tests {
         // The review of this very request must call the allowance out as unlimited.
         let review_payload =
             encode_eth_sign_request_for_test(&encode_unsigned_tx_for_test(&tx), 4, 1);
-        let view = crate::business::review::build_eth(&review_payload).expect("review");
+        // the page needs a typed-data workspace even for an EIP-1559 request (the region
+        // belongs to the container; the send pages do not touch it)
+        let mut td_ws = alloc::vec![0u8; crate::business::review::TYPED_DATA_WS_BYTES];
+        let view = crate::business::review::build_eth(&review_payload, &mut td_ws).expect("review");
         let mut text = alloc::string::String::new();
         for l in view.lines() {
             text.push_str(l.as_str());

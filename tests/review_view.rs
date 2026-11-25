@@ -14,6 +14,13 @@ use shlosilo::error::ShlosiloErrorKind;
 use shlosilo::network::Network;
 use shlosilo::ur::ur_encode::UrTypeTag;
 
+/// A review workspace sized the way the C-ABI carves one (`shlosilo_review_ws_len()`),
+/// handed to `review::build` as its typed-data tail. The page's own geometry stays inside
+/// the crate; a caller only has to provide "at least one review workspace".
+fn typed_data_ws() -> Vec<u8> {
+    vec![0u8; shlosilo::ffi::c_abi::review_ws_len()]
+}
+
 const SPARROW_PSBT: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 /// A real Sparrow taproot PSBT from the B-3 round trip: 2 P2TR inputs, 2 P2TR
 /// outputs. The output-side derivations are under 0x07
@@ -69,6 +76,7 @@ fn btc_psbt_review_summarizes_real_sparrow_fixture() {
         None,
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("review builds for the Sparrow fixture");
 
@@ -197,6 +205,7 @@ fn btc_unknown_output_script_degrades_to_fixed_words() {
         None,
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("review still builds");
 
@@ -228,6 +237,7 @@ fn btc_missing_utxo_makes_the_review_refuse() {
         None,
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .err()
     .expect("review must refuse a request it cannot sign");
@@ -247,6 +257,7 @@ fn eth_transaction_review_renders_eip55_destination() {
         None,
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("eth review builds");
 
@@ -301,6 +312,7 @@ fn unsupported_types_are_rejected() {
             None,
             &mut arena,
             &mut recs,
+            &mut typed_data_ws(),
         );
         assert!(r.is_err(), "{tag:?} must not have a review view");
     }
@@ -556,6 +568,7 @@ fn network_follows_the_psbt_coin_type_not_the_caller() {
         None,
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("review builds");
     let l = lines(&view);
@@ -586,6 +599,7 @@ fn change_output_is_labelled_when_our_fingerprint_is_known() {
         Some(&mfp),
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("review builds");
     let l = lines(&view);
@@ -614,6 +628,7 @@ fn taproot_outputs_are_labelled_from_the_output_tap_derivation() {
         Some(&mfp),
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("review builds for the real taproot fixture");
     let l = lines(&view);
@@ -656,6 +671,7 @@ fn taproot_default_sighash_is_not_a_warning() {
         Some(&mfp),
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("review builds");
     let l = lines(&view);
@@ -684,6 +700,7 @@ fn taproot_default_sighash_is_not_a_warning() {
         Some(&mfp),
         &mut arena2,
         &mut recs2,
+        &mut typed_data_ws(),
     )
     .expect("review builds for the patched copy");
     assert!(
@@ -707,6 +724,7 @@ fn taproot_psbt_network_comes_from_the_tap_derivation() {
         None,
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("review builds");
     let l = lines(&view);
@@ -784,6 +802,7 @@ fn btc_legacy_p2pkh_review_shows_fee_and_rate() {
         None,
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("review builds for a legacy P2PKH PSBT");
 

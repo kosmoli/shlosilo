@@ -22,6 +22,13 @@ use shlosilo::business::review;
 use shlosilo::chain::eth::chain_names::{chain_name, KNOWN_CHAINS};
 use shlosilo::ur::ur_encode::UrTypeTag;
 
+/// A review workspace sized the way the C-ABI carves one (`shlosilo_review_ws_len()`),
+/// handed to `review::build` as its typed-data tail. The page's own geometry stays inside
+/// the crate; a caller only has to provide "at least one review workspace".
+fn typed_data_ws() -> Vec<u8> {
+    vec![0u8; shlosilo::ffi::c_abi::review_ws_len()]
+}
+
 /// (raw 20-byte address hex, expected EIP-55 rendering)
 const EIP55_VECTORS: &[(&str, &str)] = &[
     // --- the four vectors from EIP-55 itself ---
@@ -138,6 +145,7 @@ fn eth_review_names_the_chain() {
         None,
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("review builds");
     let lines: Vec<String> = view

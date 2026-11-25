@@ -255,9 +255,19 @@ containerization, and the software/hardware acceptance gate (E-2).
    compares against an independent `personal_sign_bytes` call and asserts the 27/28
    domain.
 
-EIP-712 (`data_type` 2) stays refused with `ChainKindUnsupported` and its review
-screen still says it cannot be displayed — that scheme is not signed, so the honest
-label is still honest.
+EIP-712 (`data_type` 2) is signed since E-3 P3 (2026-11-26). The JSON document is parsed
+into the caller's zero-heap container (`eip712_pool`), the digest is
+`keccak256(0x1901 ‖ domainSeparator ‖ hashStruct(message))`, and `v` is 27/28 — the same
+convention `personal_sign` uses, because the reference signer serializes `rec_id + 27`
+for typed data too. The review page renders the primary type, the domain block
+(name / version / chain / verifying contract / salt) and every top-level field: an atom
+array past three entries folds to `3 of 8` with the length always printed, a struct
+array past three is refused outright (`FeatureNotImplemented`) on both faces, and a
+struct nested past the expansion depth is named with its field count instead of being
+expanded. The signer runs the same gate (`review::typed_data_fold_gate`) before it
+hashes, so a direct sign call cannot sign a document the operator was never shown.
+Without a caller workspace there is no container and the request is refused with
+`BufferTooSmall` — never parsed into a second, allocating one.
 
 ## E-2 anchors: external signature oracles (no hardware needed)
 

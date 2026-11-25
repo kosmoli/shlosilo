@@ -25,6 +25,13 @@ use shlosilo::entropy::mnemonic::Mnemonic;
 use shlosilo::ur::ur_encode::UrTypeTag;
 use shlosilo::ur::ur_multipart::UrMultipartDecoder;
 
+/// A review workspace sized the way the C-ABI carves one (`shlosilo_review_ws_len()`),
+/// handed to `review::build` as its typed-data tail. The page's own geometry stays inside
+/// the crate; a caller only has to provide "at least one review workspace".
+fn typed_data_ws() -> Vec<u8> {
+    vec![0u8; shlosilo::ffi::c_abi::review_ws_len()]
+}
+
 const FRAMES: &str = include_str!("fixtures/cake_legacy_frames.txt");
 
 fn test_mnemonic() -> Mnemonic {
@@ -108,6 +115,7 @@ fn cake_legacy_psbt_review_refuses_before_any_confirmation() {
         None,
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .err()
     .expect("review must refuse");

@@ -11,8 +11,9 @@
 //! - `1559` / `personal` / `legacy` — the three shapes the device signs; the review
 //!   text and the `v` domain are asserted (yParity vs 27/28 vs EIP-155's
 //!   `chain_id*2 + 35 + parity`).
-//! - `712` — typed data, refused until it has a fixed-size container; the review must
-//!   still report the payload size.
+//! - `712-permit` — EIP-712 typed data (an ERC-2612 permit): the review must show the
+//!   whole document and the exit must carry a 27/28 `v`.
+//! - `712` — typed data whose `primaryType` is not in its own declaration: malformed.
 //! - `2930`, `4844`, `7702` — valid Ethereum schemes this signer does not implement:
 //!   they must be refused as *unimplemented*, not as malformed.
 //! - `unknown` — an unassigned type byte: malformed, refused with the format code.
@@ -23,7 +24,9 @@
 extern crate alloc;
 
 use shlosilo::business::review;
-use shlosilo::business::sign::{sign, SignInput};
+use shlosilo::business::sign::{
+    carve_sign_ws, sign, sign_with_entropy_ws, SignInput, SignWsLayout,
+};
 use shlosilo::error::ShlosiloErrorKind;
 use shlosilo::ur::codec::eth_signature::parse_eth_signature;
 use shlosilo::ur::ur_decode;
@@ -35,12 +38,6 @@ enum Expect {
         review_has: &'static [&'static str],
         v_domain: VDomain,
     },
-    /// Review renders an explanation (it is honest about what the payload is) but the
-    /// sign path refuses with this kind — typed data is explained, not signed.
-    ReviewOnly {
-        review_has: &'static [&'static str],
-        refuse: ShlosiloErrorKind,
-    },
     /// Review refuses with this kind (and signing refuses the same way).
     Refuse(ShlosiloErrorKind),
 }
@@ -51,6 +48,9 @@ enum VDomain {
     YParity,
     /// EIP-191: 27 / 28.
     Eip191,
+    /// EIP-712: 27 / 28 as well — typed data carries the same `rec_id + 27` convention
+    /// personal_sign does, NOT the bare yParity EIP-1559 uses.
+    Eip712,
     /// EIP-155 legacy: `chain_id*2 + 35 + parity`, minimal big-endian (1..=8 bytes).
     Eip155 { chain_id: u64 },
 }
@@ -112,15 +112,35 @@ const CASES: &[Case] = &[
         },
     },
     Case {
-        kind: "712",
-        ur: "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohdftkgcpjykkjoihjkcpftkgkidwcpjojpinjnhsjpkkghkkjoihcpftcpgthsinjzcpdwcpiejljnhsinjtcpftkgkidwcpjnihjkjkhsioihcpftkgkikiaxaoahtaaddyoeadlecsdwykcsfnykaeykaewkaewkaoahsatedevo",
-        expect: Expect::ReviewOnly {
+        // E-3 P3: typed data is signed now, so the page renders the whole permit and the
+        // exit carries the EIP-712 digest's signature with v = 27/28. The UR is
+        // `tools/ur-inject/gen.mjs --kind 712-permit` at a fragment size that keeps it in
+        // one frame.
+        kind: "712-permit",
+        ur: "ur:eth-sign-request/onadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohkaooxkgcpjykkjoihjkcpftkgcpfegagdemeheyfyjljnhsinjtcpfthpkgcpjthsjnihcpftcpjthsjnihcpdwcpjykkjoihcpftcpjkjyjpinjtiocpkidwkgcpjthsjnihcpftcpkoihjpjkinjljtcpdwcpjykkjoihcpftcpjkjyjpinjtiocpkidwkgcpjthsjnihcpftcpiaishsinjtgaiecpdwcpjykkjoihcpftcpkpinjtjyeyecencpkidwkgcpjthsjnihcpftcpkoihjpiniykkinjtiofxjljtjyjphsiajycpdwcpjykkjoihcpftcphsieiejpihjkjkcpkihldwcpgdihjpjninjycpfthpkgcpjthsjnihcpftcpjlktjtihjpcpdwcpjykkjoihcpftcphsieiejpihjkjkcpkidwkgcpjthsjnihcpftcpjkjoihjtieihjpcpdwcpjykkjoihcpftcphsieiejpihjkjkcpkidwkgcpjthsjnihcpftcpkohsjzkpihcpdwcpjykkjoihcpftcpkpinjtjyeyecencpkidwkgcpjthsjnihcpftcpjtjljtiaihcpdwcpjykkjoihcpftcpkpinjtjyeyecencpkidwkgcpjthsjnihcpftcpieihhsiejzinjtihcpdwcpjykkjoihcpftcpkpinjtjyeyecencpkihlkidwcpjojpinjnhsjpkkghkkjoihcpftcpgdihjpjninjycpdwcpiejljnhsinjtcpftkgcpjthsjnihcpftcpgogufycxfxjlinjtcpdwcpkoihjpjkinjljtcpftcpeycpdwcpiaishsinjtgaiecpftehdwcpkoihjpiniykkinjtiofxjljtjyjphsiajycpftcpdyksfpdyidetenesesehiaeneyehetideoeniaehieehesfyeehseyihesfeiddyiafeeoendyenihfweeetcpkidwcpjnihjkjkhsioihcpftkgcpjlktjtihjpcpftcpdyksehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehehcpdwcpjkjoihjtieihjpcpftcpdykseyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeyeycpdwcpkohsjzkpihcpftcpehdydydydydydycpdwcpjtjljtiaihcpftdydwcpieihhsiejzinjtihcpftehemdydydydydydydydykikiaxaoaaadahtaaddyoeadlecsdwykcsfnykaeykaewkaewkaoahbbrygtbs",
+        expect: Expect::Sign {
             review_has: &[
                 "eth typed data",
-                "cannot display on this screen",
+                "sign Permit",
+                "name USD Coin",
+                "chain 1 ethereum mainnet",
+                "verifying contract",
+                "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                "owner",
+                "spender",
+                "value 1000000",
+                "nonce 0",
+                "deadline 1700000000",
             ],
-            refuse: ShlosiloErrorKind::ChainKindUnsupported,
+            v_domain: VDomain::Eip712,
         },
+    },
+    Case {
+        // `primaryType: "Mail"` with an empty type table: the document does not declare
+        // the type it asks to sign, which both faces refuse as a format error.
+        kind: "712",
+        ur: "ur:eth-sign-request/oxadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohdftkgcpjykkjoihjkcpftkgkidwcpjojpinjnhsjpkkghkkjoihcpftcpgthsinjzcpdwcpiejljnhsinjtcpftkgkidwcpjnihjkjkhsioihcpftkgkikiaxaoahtaaddyoeadlecsdwykcsfnykaeykaewkaewkaoahsatedevo",
+        expect: Expect::Refuse(ShlosiloErrorKind::EncodingInvalidFormat),
     },
     Case {
         kind: "legacy",
@@ -179,6 +199,28 @@ fn payload(ur: &str) -> alloc::vec::Vec<u8> {
     decoded.as_ref().to_vec()
 }
 
+/// Sign through the workspace-provisioned entry — the face every C-ABI sign call uses, so
+/// a typed-data request has the container region it needs. `sign()` (no workspace) refuses
+/// typed data with `BufferTooSmall` by design; that is not what this matrix is about.
+fn device_sign(payload: &[u8], out: &mut [u8]) -> Result<usize, shlosilo::error::ShlosiloError> {
+    use shlosilo::error::ShlosiloError;
+    let need = SignWsLayout::compute().total;
+    let mut ws_bytes = alloc::vec![0u8; need];
+    let mut ws = carve_sign_ws(&mut ws_bytes).expect("workspace carve");
+    let seed = [7u8; 64];
+    sign_with_entropy_ws(
+        SignInput::Seed { seed: &seed },
+        UrTypeTag::EthSignRequest,
+        payload,
+        &[],
+        &[],
+        Some(&mut ws),
+        None,
+        out,
+    )
+    .map_err(|e: ShlosiloError| e)
+}
+
 fn review_text(view: &review::ReviewView) -> alloc::string::String {
     let mut s = alloc::string::String::new();
     for l in view.lines() {
@@ -190,7 +232,6 @@ fn review_text(view: &review::ReviewView) -> alloc::string::String {
 
 #[test]
 fn the_matrix_matches_the_device_behaviour() {
-    let seed = [7u8; 64];
     for case in CASES {
         let payload = payload(case.ur);
         match case.expect {
@@ -198,8 +239,13 @@ fn the_matrix_matches_the_device_behaviour() {
                 review_has,
                 v_domain,
             } => {
-                let view = review::build_eth(&payload)
-                    .unwrap_or_else(|_| panic!("{}: review must render", case.kind));
+                let mut td_ws = alloc::vec![0u8; shlosilo::ffi::c_abi::review_ws_len()];
+                let view = review::build_eth(&payload, &mut td_ws).unwrap_or_else(|e| {
+                    panic!(
+                        "{}: review must render, got {:?} {:?}",
+                        case.kind, e.kind, e.context
+                    )
+                });
                 let text = review_text(&view);
                 for needle in review_has {
                     assert!(
@@ -210,13 +256,8 @@ fn the_matrix_matches_the_device_behaviour() {
                 }
 
                 let mut out = [0u8; 512];
-                let n = sign(
-                    SignInput::Seed { seed: &seed },
-                    UrTypeTag::EthSignRequest,
-                    &payload,
-                    &mut out,
-                )
-                .unwrap_or_else(|e| panic!("{}: must sign, got {:?}", case.kind, e.kind));
+                let n = device_sign(&payload, &mut out)
+                    .unwrap_or_else(|e| panic!("{}: must sign, got {:?}", case.kind, e.kind));
                 let sig = parse_eth_signature(&out[..n])
                     .unwrap_or_else(|_| panic!("{}: exit must be a container", case.kind));
                 match v_domain {
@@ -233,6 +274,23 @@ fn the_matrix_matches_the_device_behaviour() {
                         assert!(
                             v == 27 || v == 28,
                             "{}: EIP-191 carries v = 27/28, got v={v}",
+                            case.kind
+                        )
+                    }
+                    VDomain::Eip712 => {
+                        // EIP-712 shares personal_sign's convention: a 27/28 byte, not
+                        // EIP-1559's bare parity. The container's v slot must be exactly
+                        // one byte here (`signature_len` = 65).
+                        assert_eq!(
+                            sig.signature_bytes().len(),
+                            65,
+                            "{}: a typed-data v is one byte",
+                            case.kind
+                        );
+                        let v = sig.signature[64];
+                        assert!(
+                            v == 27 || v == 28,
+                            "{}: EIP-712 carries v = 27/28, got v={v}",
                             case.kind
                         )
                     }
@@ -264,30 +322,9 @@ fn the_matrix_matches_the_device_behaviour() {
                     }
                 }
             }
-            Expect::ReviewOnly { review_has, refuse } => {
-                let view = review::build_eth(&payload)
-                    .unwrap_or_else(|_| panic!("{}: review must explain", case.kind));
-                let text = review_text(&view);
-                for needle in review_has {
-                    assert!(
-                        text.contains(needle),
-                        "{}: review must contain {needle:?}; got:\n{text}",
-                        case.kind
-                    );
-                }
-                let mut out = [0u8; 512];
-                match sign(
-                    SignInput::Seed { seed: &seed },
-                    UrTypeTag::EthSignRequest,
-                    &payload,
-                    &mut out,
-                ) {
-                    Ok(_) => panic!("{}: must not sign", case.kind),
-                    Err(e) => assert_eq!(e.kind, refuse, "{}: sign code", case.kind),
-                }
-            }
             Expect::Refuse(kind) => {
-                match review::build_eth(&payload) {
+                let mut td_ws2 = alloc::vec![0u8; shlosilo::ffi::c_abi::review_ws_len()];
+                match review::build_eth(&payload, &mut td_ws2) {
                     Ok(view) => panic!(
                         "{}: review must refuse, but rendered:\n{}",
                         case.kind,
@@ -296,12 +333,7 @@ fn the_matrix_matches_the_device_behaviour() {
                     Err(e) => assert_eq!(e.kind, kind, "{}: review code", case.kind),
                 }
                 let mut out = [0u8; 512];
-                match sign(
-                    SignInput::Seed { seed: &seed },
-                    UrTypeTag::EthSignRequest,
-                    &payload,
-                    &mut out,
-                ) {
+                match device_sign(&payload, &mut out) {
                     Ok(_) => panic!("{}: must not sign", case.kind),
                     Err(e) => assert_eq!(e.kind, kind, "{}: sign code", case.kind),
                 }

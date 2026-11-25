@@ -3376,8 +3376,30 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
             debug_assert!((recs_ptr as usize).is_multiple_of(rec_align));
             let recs: &mut [crate::chain::btc::psbt::KvRec] =
                 unsafe { core::slice::from_raw_parts_mut(recs_ptr.cast(), REVIEW_WS_RECS) };
+            // E-3: the typed-data container region and the scratch its page formats values
+            // into follow the records as one tail. Plain bytes, so it needs no alignment of
+            // its own (the pool aligns its base out of its region, and `WS_BYTES` already
+            // carries that shift).
+            let typed_data_ptr = unsafe {
+                recs_ptr
+                    .add(REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>())
+            };
+            let typed_data: &mut [u8] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    typed_data_ptr,
+                    REVIEW_WS_EIP712 + REVIEW_WS_EIP712_DISPLAY,
+                )
+            };
 
-            let view = business::review::build(tag, payload_slice, net, mfp.as_ref(), arena, recs)?;
+            let view = business::review::build(
+                tag,
+                payload_slice,
+                net,
+                mfp.as_ref(),
+                arena,
+                recs,
+                typed_data,
+            )?;
 
             // pack the lines NUL-separated into the caller buffer
             let out =

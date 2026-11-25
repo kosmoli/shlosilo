@@ -82,7 +82,11 @@ fn eth_sign_request(sign_data: &[u8]) -> Vec<u8> {
 
 fn show(title: &str, payload: &[u8]) {
     println!("\n=== {title} ===");
-    match review::build_eth(payload) {
+    // The typed-data page parses into the same zero-heap container the signer uses, so it
+    // needs a workspace; the C-ABI hands over `review_ws_len()` bytes, and this host tool
+    // mirrors that (only the tail is used by the ETH page).
+    let mut ws = vec![0u8; shlosilo::ffi::c_abi::review_ws_len()];
+    match review::build_eth(payload, &mut ws) {
         Ok(view) => {
             let lines: Vec<&str> = view.lines().iter().map(|l| l.as_str()).collect();
             println!("rows={} flags=0x{:04x}", lines.len(), view.flags);

@@ -29,6 +29,13 @@ use shlosilo::network::Network;
 const RECS: usize = 128;
 use shlosilo::ur::ur_encode::UrTypeTag;
 
+/// A review workspace sized the way the C-ABI carves one (`shlosilo_review_ws_len()`),
+/// handed to `review::build` as its typed-data tail. The page's own geometry stays inside
+/// the crate; a caller only has to provide "at least one review workspace".
+fn typed_data_ws() -> Vec<u8> {
+    vec![0u8; shlosilo::ffi::c_abi::review_ws_len()]
+}
+
 const PSBT: &[u8] = include_bytes!("fixtures/sparrow_signet_12k.psbt");
 
 /// Our master fingerprint for the fixture seed (entropy f284fb6c…).
@@ -128,6 +135,7 @@ fn review_still_marks_change_when_the_fingerprint_is_unspecified() {
         Some(&OUR_FP),
         &mut arena,
         &mut recs,
+        &mut typed_data_ws(),
     )
     .expect("review builds");
     let lines: Vec<String> = with_fp

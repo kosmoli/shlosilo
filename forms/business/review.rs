@@ -39,6 +39,7 @@
 
 use crate::address::{btc_script, eth};
 use crate::chain::btc::psbt::{self, KvRec, Psbt};
+use crate::chain::eth::eip712_pool::{self, Eip712Node, Eip712Pool, KIND_ARRAY, KIND_STRUCT};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::network::Network;
 use crate::ur::ur_encode::UrTypeTag;
@@ -296,6 +297,11 @@ fn push_sanitized_message(view: &mut ReviewView, msg: &[u8]) -> Result<()> {
 ///
 /// `master_fingerprint` (optional) is used to mark outputs that come back to
 /// this wallet (change). Without it every output renders as a payment.
+///
+/// `arena` / `recs` are the PSBT map pools; `typed_data` is the EIP-712 workspace (the
+/// pool region followed by the formatter scratch). Every face parses the request into
+/// caller memory, so the page adds no allocation of its own — the C-ABI carves all four
+/// spans out of one review workspace (`review_ws_len`).
 pub fn build(
     type_tag: UrTypeTag,
     payload: &[u8],
@@ -303,12 +309,16 @@ pub fn build(
     master_fingerprint: Option<&[u8; 4]>,
     arena: &mut [u8],
     recs: &mut [KvRec],
+    typed_data: &mut [u8],
 ) -> Result<ReviewView> {
     match type_tag {
         UrTypeTag::CryptoPsbt | UrTypeTag::Psbt => {
             build_btc(payload, network, master_fingerprint, arena, recs)
         }
-        UrTypeTag::EthSignRequest => build_eth(payload),
+        // EIP-712 re-parses the request into the same zero-heap container the sign path
+        // uses, so what the page can show and what the signer can sign are decided by one
+        // container.
+        UrTypeTag::EthSignRequest => build_eth(payload, typed_data),
         _ => Err(ShlosiloError::new(ShlosiloErrorKind::ChainKindUnsupported)),
     }
 }
@@ -1125,7 +1135,539 @@ fn push_calldata(
     Ok(())
 }
 
-pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
+// ─── EIP-712 typed data (E-3 P3) ─────────────────────────────────────────────
+//
+// The page is built from the same zero-heap container the signer uses, and it applies
+// the same refusal gate (`typed_data_fold_gate`), so "the operator saw the whole
+// document" and "the device signed it" are one decision, not two.
+//
+// What decide the layout: the operator has to be able to check the four things an
+// EIP-712 signature actually authorizes — which primary type, which domain (chain,
+// contract, name), which top-level fields and their values — plus the SIZE of anything
+// the page does not itemize. Nothing on this page is chosen by the payload: labels are
+// a fixed vocabulary (`sign`, `domain`, `chain`, `verifying contract`, `<field name>`,
+// `items`, `and N more`), and values are re-encoded (EIP-55 addresses, decimal
+// integers) or sanitized ASCII, never echoed raw.
+
+/// Array elements the page itemizes before it folds the rest into `and N more`.
+const TD_SHOWN_MAX: usize = 3;
+/// Struct nesting the page expands below the message root. A struct met at this depth is
+/// printed as `struct <Type>` plus its field count instead of being expanded.
+const TD_EXPAND_MAX: usize = 2;
+/// Bytes of one value the page renders (three lines) before it marks the tail.
+const TD_VALUE_MAX: usize = REVIEW_LINE_MAX * 3;
+
+/// The typed-data refusal gate: one rule, two faces.
+///
+/// **A struct-element array longer than [`TD_SHOWN_MAX`] is refused** — the whole request
+/// with `FeatureNotImplemented`. **An atom array of the same length is folded and stays
+/// signable**, with `and N more (3 of 8)` printed. **A struct deeper than
+/// [`TD_EXPAND_MAX`] is truncated, not refused**, and the page still names its type and
+/// field count.
+///
+/// The line between the refusal and the two truncations is *how many things the screen
+/// cannot show*, not how much data it omits:
+///
+/// - A folded struct array hides N **distinct authorizations**. Every element is a value
+///   the operator would have to accept one by one (a permit, a transfer, an order), and
+///   an attacker only has to make element 4 hostile. A count is not a summary of a list
+///   like that, so this device declines to sign it.
+/// - A truncated struct hides exactly **one** value, and the page prints its type name and
+///   its field count — the same facts a one-element fold would give. The operator is asked
+///   to trust the contents of a single named, counted position, which is the trust every
+///   wallet already asks for at the point where its own screen runs out of room.
+/// - A folded atom array hides repeated instances of **one scalar** whose type and length
+///   are printed; there is no per-element meaning to judge (`uint256[] ids` of a claim).
+///
+/// Changing that balance one way or the other breaks a pin
+/// (`tests/eip712_review_page.rs`), and it is the sign face's rule too: `sign_eth` calls
+/// this same function, so a direct sign call cannot sign a document the page would have
+/// refused.
+pub(crate) fn typed_data_fold_gate(pool: &Eip712Pool<'_>) -> Result<()> {
+    let mut view: Option<&mut ReviewView> = None;
+    let mut display = [0u8; 0];
+    walk_typed_data(pool, &mut view, &mut display)
+}
+
+/// Push through the optional view: `None` is the gate's face, where the walk runs for its
+/// refusal rules and writes nothing.
+fn td_fmt(view: &mut Option<&mut ReviewView>, args: core::fmt::Arguments<'_>) -> Result<()> {
+    match view.as_deref_mut() {
+        Some(view) => view.push_fmt(args),
+        None => Ok(()),
+    }
+}
+
+fn td_str(view: &mut Option<&mut ReviewView>, s: &str) -> Result<()> {
+    match view.as_deref_mut() {
+        Some(view) => view.push_str(s),
+        None => Ok(()),
+    }
+}
+
+fn td_wrapped(view: &mut Option<&mut ReviewView>, s: &str) -> Result<()> {
+    match view.as_deref_mut() {
+        Some(view) => view.push_wrapped(s),
+        None => Ok(()),
+    }
+}
+
+fn td_chain(view: &mut Option<&mut ReviewView>, chain_id: u64) -> Result<()> {
+    match view.as_deref_mut() {
+        Some(view) => push_chain(view, chain_id),
+        None => Ok(()),
+    }
+}
+
+/// `<label> <value>` on one line when it fits, else the label alone with the value glued
+/// under it. A label never opens a page without its value.
+fn td_labeled(view: &mut Option<&mut ReviewView>, label: &str, value: &str) -> Result<()> {
+    if label.len() + 1 + value.len() <= REVIEW_LINE_MAX {
+        return td_fmt(view, format_args!("{} {}", label, value));
+    }
+    td_str(view, label)?;
+    if let Some(view) = view.as_deref_mut() {
+        view.glue_next_line();
+    }
+    td_wrapped(view, value)
+}
+
+/// Render an atom's value into the display scratch and answer the byte count.
+///
+/// Canonical where the declared type has a canonical form — an `address` is re-written as
+/// EIP-55 (so a document sending lowercase or a checksum-broken mix prints as the one form
+/// every wallet shows), everything else keeps the decimal/hex text the wire carried — and
+/// sanitized everywhere: printable ASCII is kept, every other byte becomes `.`, exactly
+/// like the personal-message page. A raw newline or a bidi control drawn literally would
+/// let the value describe something other than what is signed.
+///
+/// The scratch bounds the rendering ([`TD_VALUE_MAX`], three lines); a longer value is
+/// marked at the cut (`..`) instead of being silently shortened. A scratch too small for
+/// the render is `BufferTooSmall` with the length needed — capacity, never truncation.
+fn td_atom_text(pool: &Eip712Pool<'_>, node: &Eip712Node, display: &mut [u8]) -> Result<usize> {
+    use crate::chain::eth::eip712_pool::KIND_ADDRESS;
+    let payload = pool.payload(node)?;
+    if node.kind == KIND_ADDRESS {
+        // `0x` is required on a value and optional on a domain path (`HexForm`), so the
+        // prefix is stripped when present rather than demanded.
+        let hex = payload.strip_prefix(b"0x".as_slice()).unwrap_or(payload);
+        let mut raw = [0u8; 20];
+        if hex.len() != 40 {
+            return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+        }
+        for (i, slot) in raw.iter_mut().enumerate() {
+            let pair = hex.get(i * 2..i * 2 + 2).unwrap_or(&[]);
+            let hi = hex_nibble(pair.first().copied()).unwrap_or(0xff);
+            let lo = hex_nibble(pair.get(1).copied()).unwrap_or(0xff);
+            if hi == 0xff || lo == 0xff {
+                return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+            }
+            *slot = (hi << 4) | lo;
+        }
+        let rendered = eth::encode_bytes(&raw)?;
+        let text = <_ as AsRef<str>>::as_ref(&rendered).as_bytes();
+        let dst = display.get_mut(..text.len()).ok_or_else(|| {
+            ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(text.len()),
+            )
+        })?;
+        dst.copy_from_slice(text);
+        return Ok(text.len());
+    }
+    if matches!(node.kind, KIND_STRUCT | KIND_ARRAY) {
+        // Not a value this renderer itemizes; the walk routes those.
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    let cap = display.len().min(TD_VALUE_MAX);
+    if cap < payload.len() {
+        // Room for the cut marker (` ..`) plus at least one byte of value.
+        if cap < 4 {
+            return Err(ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                crate::error::ErrorContext::RequiredLength(payload.len().min(TD_VALUE_MAX)),
+            ));
+        }
+        let shown = cap - 3;
+        for (i, &byte) in payload.iter().take(shown).enumerate() {
+            display[i] = sanitize_byte(byte);
+        }
+        for (i, &byte) in b" ..".iter().enumerate() {
+            display[shown + i] = byte;
+        }
+        return Ok(cap);
+    }
+    for (i, &byte) in payload.iter().enumerate() {
+        display[i] = sanitize_byte(byte);
+    }
+    Ok(payload.len())
+}
+
+/// Push one atom value line, or nothing at all when the walk is running for the gate.
+///
+/// The gate's face renders no values, so it must not touch the scratch either: an empty
+/// scratch is not a capacity failure there, it is "nobody asked for this line".
+fn td_atom_labeled(
+    pool: &Eip712Pool<'_>,
+    view: &mut Option<&mut ReviewView>,
+    display: &mut [u8],
+    label: &str,
+    node: &Eip712Node,
+) -> Result<()> {
+    if view.is_none() {
+        return Ok(());
+    }
+    let n = td_atom_text(pool, node, display)?;
+    let text = core::str::from_utf8(&display[..n]).map_err(|_| invalid_doc())?;
+    td_labeled(view, label, text)
+}
+
+/// Displayable form of one payload byte (same rule as the personal-message page).
+fn sanitize_byte(byte: u8) -> u8 {
+    if (0x20..0x7f).contains(&byte) {
+        byte
+    } else {
+        b'.'
+    }
+}
+
+fn hex_nibble(byte: Option<u8>) -> Option<u8> {
+    match byte? {
+        b @ b'0'..=b'9' => Some(b - b'0'),
+        b @ b'a'..=b'f' => Some(b - b'a' + 10),
+        b @ b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// The message tree: `primaryType`, one `sign` line, then every top-level field.
+fn walk_typed_data(
+    pool: &Eip712Pool<'_>,
+    view: &mut Option<&mut ReviewView>,
+    display: &mut [u8],
+) -> Result<()> {
+    let primary = pool.primary_type()?;
+    td_str(view, "eth typed data")?;
+    td_labeled(view, "sign", primary)?;
+    walk_domain(pool, view, display)?;
+    let root = pool.message()?;
+    let root_idx = pool
+        .message_root()
+        .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?
+        as usize;
+    if root.kind != KIND_STRUCT {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat));
+    }
+    walk_struct_fields(pool, primary, root_idx, "", 1, view, display)
+}
+
+/// The domain block: name, version, chain, verifying contract, salt — whichever the
+/// document filled, always in the canonical slot order so the same domain always reads
+/// the same way.
+fn walk_domain(
+    pool: &Eip712Pool<'_>,
+    view: &mut Option<&mut ReviewView>,
+    display: &mut [u8],
+) -> Result<()> {
+    use crate::chain::eth::eip712_pool::{domain_slot_field, DOMAIN_SLOTS};
+    if view.is_none() {
+        // The gate reads the message tree only: the domain has no rule of its own (the
+        // digest layer already refuses a domain whose declared fields have no values).
+        return Ok(());
+    }
+    let root_idx = match pool.domain_root() {
+        Some(idx) => idx as usize,
+        None => return Ok(()),
+    };
+    let root = *pool.node(root_idx).ok_or_else(invalid_doc)?;
+    if root.kind != KIND_STRUCT {
+        return Err(invalid_doc());
+    }
+    td_str(view, "domain")?;
+    let mask = pool.domain_mask();
+    let children = pool.children_of(root_idx)?;
+    // The children hold only the filled slots, in canonical order, so the nth set bit
+    // owns the nth child.
+    let mut child = 0usize;
+    let mut contract_shown = false;
+    for slot in 0..DOMAIN_SLOTS {
+        let present = u32::try_from(slot)
+            .ok()
+            .and_then(|shift| 1u8.checked_shl(shift))
+            .is_some_and(|bit| mask & bit != 0);
+        if !present {
+            continue;
+        }
+        let node = *children.get(child).ok_or_else(invalid_doc)?;
+        child += 1;
+        let Some((name, _declared)) = domain_slot_field(slot) else {
+            continue;
+        };
+        let n = td_atom_text(pool, &node, display)?;
+        let text = core::str::from_utf8(&display[..n]).map_err(|_| invalid_doc())?;
+        match name {
+            "chainId" => match parse_decimal(text) {
+                // The shared chain renderer, so an id reads the same on every page.
+                Some(id) => td_chain(view, id)?,
+                // A chain id outside u64 cannot be named; it is still shown, raw.
+                None => td_labeled(view, "chain", text)?,
+            },
+            "verifyingContract" => {
+                contract_shown = true;
+                td_labeled(view, "verifying contract", text)?;
+            }
+            other => td_labeled(view, other, text)?,
+        }
+    }
+    if !contract_shown {
+        // A domain without a `verifyingContract` binds the signature to no contract at
+        // all. Saying so is not decoration: a line that is simply absent reads like a
+        // page that ran out of room, and this is the one domain field that decides which
+        // contract will accept the signature.
+        td_str(view, "verifying contract none")?;
+    }
+    Ok(())
+}
+
+/// The page labels a value with the pool's own domain slot names, so the two lists cannot
+/// drift; this constant is what makes a sixth domain slot fail the build here.
+const _: () = assert!(crate::chain::eth::eip712_pool::DOMAIN_SLOTS == 5);
+
+/// Longest label the page builds: `parent.field` (two capped names) or `label[N]`.
+///
+/// Spelled `heapless::String<TD_LABEL_MAX>` at each use rather than behind a type alias:
+/// cbindgen walks item-level aliases into its opaque-type graph and refuses a const-generic
+/// `heapless::String` there (it panics, which would turn the C-header gate red).
+const TD_LABEL_MAX: usize = 2 * crate::chain::eth::eip712_pool::NAME_BYTES + 2 + 8;
+
+fn overflow() -> ShlosiloError {
+    ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow)
+}
+
+fn invalid_doc() -> ShlosiloError {
+    ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
+}
+
+/// The message's fields, in declaration order.
+///
+/// `prefix` is empty for the message root and `parent` (or `parent[2]`) for a nested
+/// struct, so a value buried one level down still shows which field it belongs to.
+#[allow(clippy::too_many_arguments)] // pool + node + label parts + two sinks
+fn walk_struct_fields(
+    pool: &Eip712Pool<'_>,
+    ty_name: &str,
+    node_idx: usize,
+    prefix: &str,
+    depth: usize,
+    view: &mut Option<&mut ReviewView>,
+    display: &mut [u8],
+) -> Result<()> {
+    let type_idx = pool.type_index(ty_name).ok_or_else(invalid_doc)?;
+    let declared = *pool.type_at(type_idx as usize).ok_or_else(invalid_doc)?;
+    let fields = pool.fields_of(&declared)?;
+    let children = pool.children_of(node_idx)?;
+    if fields.len() != children.len() {
+        // `encode_data` refuses the same mismatch: a value list that does not match the
+        // declaration is not a document this device can hash, so the page cannot render
+        // it either.
+        return Err(invalid_doc());
+    }
+    for (i, field) in fields.iter().enumerate() {
+        let child_idx = (pool.node(node_idx).ok_or_else(invalid_doc)?.first_child as usize)
+            .checked_add(i)
+            .ok_or_else(invalid_doc)?;
+        walk_field(
+            pool,
+            pool.field_name(field)?,
+            pool.field_type(field)?,
+            child_idx,
+            prefix,
+            depth,
+            view,
+            display,
+        )?;
+    }
+    Ok(())
+}
+
+/// One declared field: an atom, an array or a struct.
+#[allow(clippy::too_many_arguments)] // the walk's parameter shape, one call site per arm
+fn walk_field(
+    pool: &Eip712Pool<'_>,
+    name: &str,
+    declared: &str,
+    node_idx: usize,
+    prefix: &str,
+    depth: usize,
+    view: &mut Option<&mut ReviewView>,
+    display: &mut [u8],
+) -> Result<()> {
+    let node = *pool.node(node_idx).ok_or_else(invalid_doc)?;
+    let label = join_label(prefix, name)?;
+    if let Some(open) = declared.find('[') {
+        // Same array test the hash layer uses (`encode_value_pool`).
+        let elem = declared.get(..open).ok_or_else(invalid_doc)?;
+        return walk_array(pool, &label, elem, &node, depth, view, display);
+    }
+    match node.kind {
+        KIND_STRUCT => walk_struct_value(pool, &label, declared, node_idx, depth, view, display),
+        // An array value under a type that declares no array suffix: the hash layer
+        // refuses it, so it never reaches a screen.
+        KIND_ARRAY => Err(invalid_doc()),
+        _ => td_atom_labeled(pool, view, display, &label, &node),
+    }
+}
+
+/// One array value: its length always, its elements itemized up to [`TD_SHOWN_MAX`].
+///
+/// A struct-element array longer than that is refused by
+/// [`typed_data_fold_gate`] before this runs, so the only fold that can happen here is
+/// the atom one.
+fn walk_array(
+    pool: &Eip712Pool<'_>,
+    label: &str,
+    elem: &str,
+    node: &Eip712Node,
+    depth: usize,
+    view: &mut Option<&mut ReviewView>,
+    display: &mut [u8],
+) -> Result<()> {
+    if node.kind != KIND_ARRAY {
+        return Err(invalid_doc());
+    }
+    let len = node.n_children as usize;
+    let first = node.first_child as usize;
+    // A declared type in the table means a struct element: a list of values the operator
+    // would have to accept one by one.
+    let elem_is_struct = pool.type_index(elem).is_some();
+    if elem_is_struct && len > TD_SHOWN_MAX {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::FeatureNotImplemented));
+    }
+    td_fmt(view, format_args!("{} {} items", label, len))?;
+    let shown = len.min(TD_SHOWN_MAX);
+    for i in 0..shown {
+        let child_idx = first.checked_add(i).ok_or_else(invalid_doc)?;
+        let child = *pool.node(child_idx).ok_or_else(invalid_doc)?;
+        let mut item = heapless::String::<TD_LABEL_MAX>::new();
+        use core::fmt::Write;
+        write!(item, "{}[{}]", label, i).map_err(|_| overflow())?;
+        if elem_is_struct {
+            walk_struct_value(pool, &item, elem, child_idx, depth, view, display)?;
+            continue;
+        }
+        if matches!(child.kind, KIND_ARRAY | KIND_STRUCT) {
+            // Nested arrays and unexpected structs under an atom element type are shapes
+            // the digest layer refuses (the pool reads `uint256[2][3]` as one dimension;
+            // that request is not signable).
+            return Err(invalid_doc());
+        }
+        td_atom_labeled(pool, view, display, &item, &child)?;
+    }
+    if len > TD_SHOWN_MAX {
+        td_fmt(
+            view,
+            format_args!("and {} more ({} of {})", len - shown, shown, len),
+        )?;
+    }
+    Ok(())
+}
+
+/// One struct value: its type name, then either its fields or — past [`TD_EXPAND_MAX`] —
+/// its field count.
+fn walk_struct_value(
+    pool: &Eip712Pool<'_>,
+    label: &str,
+    ty_name: &str,
+    node_idx: usize,
+    depth: usize,
+    view: &mut Option<&mut ReviewView>,
+    display: &mut [u8],
+) -> Result<()> {
+    let node = *pool.node(node_idx).ok_or_else(invalid_doc)?;
+    if node.kind != KIND_STRUCT {
+        return Err(invalid_doc());
+    }
+    td_fmt(view, format_args!("{} struct {}", label, ty_name))?;
+    if depth >= TD_EXPAND_MAX {
+        // Depth truncation, NOT a refusal: the type is named and the number of values
+        // hidden behind it is printed (see `typed_data_fold_gate` for why this is
+        // allowed where a folded struct array is not).
+        let type_idx = pool.type_index(ty_name).ok_or_else(invalid_doc)?;
+        let declared = *pool.type_at(type_idx as usize).ok_or_else(invalid_doc)?;
+        let n_fields = pool.fields_of(&declared)?.len();
+        return td_fmt(
+            view,
+            format_args!("{} {} fields not shown", label, n_fields),
+        );
+    }
+    walk_struct_fields(pool, ty_name, node_idx, label, depth + 1, view, display)
+}
+
+/// `prefix` + `.` + `name`, or just `name` at the message root.
+fn join_label(prefix: &str, name: &str) -> Result<heapless::String<TD_LABEL_MAX>> {
+    let mut out = heapless::String::<TD_LABEL_MAX>::new();
+    if !prefix.is_empty() {
+        out.push_str(prefix).map_err(|_| overflow())?;
+        out.push('.').map_err(|_| overflow())?;
+    }
+    out.push_str(name).map_err(|_| overflow())?;
+    Ok(out)
+}
+
+/// Decimal text → `u64`, or `None` when it is not a decimal integer in range.
+fn parse_decimal(text: &str) -> Option<u64> {
+    let mut value: u64 = 0;
+    if text.is_empty() {
+        return None;
+    }
+    for byte in text.bytes() {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add(u64::from(byte - b'0'))?;
+    }
+    Some(value)
+}
+
+/// Bytes the typed-data page needs: the container's region plus the formatter scratch
+/// (`limits::EIP712_DISPLAY_BYTES`, which is exactly the span the review workspace
+/// reserves for it).
+pub(crate) const TYPED_DATA_WS_BYTES: usize =
+    crate::chain::eth::eip712_pool::WS_BYTES + crate::limits::EIP712_DISPLAY_BYTES;
+
+/// `(container region, formatter scratch)` out of one typed-data workspace.
+///
+/// The whole workspace is either big enough for both spans or the page refuses: a
+/// half-sized region would fail deep inside the walk, and the caller must see "request too
+/// large" with the size that would have worked (the B-7 rule the pool applies too).
+fn split_typed_data_ws(ws: &mut [u8]) -> Result<(&mut [u8], &mut [u8])> {
+    let region_bytes = crate::chain::eth::eip712_pool::WS_BYTES;
+    if ws.len() < TYPED_DATA_WS_BYTES {
+        return Err(ShlosiloError::with_context(
+            ShlosiloErrorKind::BufferTooSmall,
+            crate::error::ErrorContext::RequiredLength(TYPED_DATA_WS_BYTES),
+        ));
+    }
+    let (region, display) = ws.split_at_mut(region_bytes);
+    Ok((region, display))
+}
+
+/// `build_eth` over a fresh typed-data workspace — what the C-ABI carve hands over, so the
+/// unit pins drive the same path the device does instead of a widened test-only one.
+#[cfg(test)]
+fn build_eth_ws(payload: &[u8]) -> Result<ReviewView> {
+    let mut ws = alloc::vec![0u8; TYPED_DATA_WS_BYTES];
+    build_eth(payload, &mut ws)
+}
+
+/// ETH request review.
+///
+/// Typed data (`data_type` 2) renders the EIP-712 page out of `ws`: the first
+/// [`TYPED_DATA_WS_BYTES`] minus the display scratch is the container region, the rest is
+/// the scratch the page formats values into. One slice because the caller carves one
+/// tail, and because a face that hands over a region too small must be refused here —
+/// `BufferTooSmall` with the size needed, not a page drawn from leftover bytes.
+pub fn build_eth(payload: &[u8], ws: &mut [u8]) -> Result<ReviewView> {
     use crate::chain::eth::from_rlp;
     use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
 
@@ -1185,15 +1727,19 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
             }
         }
         EthSignDataType::TypedData => {
-            // Not signed yet (EIP-712 needs a fixed-size container, see
-            // docs/eth-signature-codec.md §3.3). The byte count is printed on
-            // purpose: it is the one honest fact the screen can give about a payload
-            // it cannot render, and it lets an operator tell a ~90 B transaction
-            // preimage apart from a several-hundred-byte typed-data blob.
-            view.push_str("eth typed data")?;
-            view.push_fmt(format_args!("data {} bytes", req.sign_data.len()))?;
-            view.push_str("cannot display on this screen")?;
-            view.push_str("review in your wallet")?;
+            // E-3 P3: the real typed-data page. The request is re-parsed into the same
+            // zero-heap container the signer uses, and the digest is recomputed before a
+            // single line is rendered: a document this device cannot hash is a document
+            // it will not sign, so it must not render as a confirmable request either
+            // (fail closed — the review gate exists to stop exactly that).
+            let (region, display) = split_typed_data_ws(ws)?;
+            let pool = eip712_pool::parse_in(req.sign_data, region)?;
+            typed_data_fold_gate(&pool)?;
+            let _digest = eip712_pool::signing_hash_pool(&pool)?;
+            {
+                let mut sink = Some(&mut view);
+                walk_typed_data(&pool, &mut sink, display)?;
+            }
             return Ok(view);
         }
         EthSignDataType::PersonalMessage => {
@@ -1510,7 +2056,7 @@ mod review_pagination_pins {
             (cbor::encode_uint(3), cbor::encode_uint(4)),
             (cbor::encode_uint(4), cbor::encode_uint(1)),
         ]);
-        let view = build_eth(&payload).expect("review");
+        let view = build_eth_ws(&payload).expect("review");
         let mask = view.break_mask();
         let texts: alloc::vec::Vec<&str> = view.lines().iter().map(|l| l.as_str()).collect();
 
@@ -1588,7 +2134,7 @@ mod erc20_transfer_layout_pins {
     #[test]
     fn the_verified_mainnet_layout_pages_as_the_device_showed_it() {
         let payload = transfer_request();
-        let view = build_eth(&payload).expect("review");
+        let view = build_eth_ws(&payload).expect("review");
         let texts: alloc::vec::Vec<&str> = view.lines().iter().map(|l| l.as_str()).collect();
         assert_eq!(texts.len(), 15, "the send view is 15 lines: {texts:?}");
 
@@ -1742,7 +2288,7 @@ mod eth_unknown_call_pins {
     }
 
     fn text(payload: &[u8]) -> alloc::string::String {
-        let view = build_eth(payload).expect("review renders");
+        let view = build_eth_ws(payload).expect("review renders");
         let mut s = alloc::string::String::new();
         for l in view.lines() {
             s.push_str(l.as_str());
@@ -1860,7 +2406,7 @@ mod eth_data_type_dispatch_pins {
     #[test]
     fn eth_review_renders_a_legacy_send_with_gas_price() {
         let payload = request_map(&legacy_preimage(1), 1, 1);
-        let view = build_eth(&payload).expect("legacy sends render");
+        let view = build_eth_ws(&payload).expect("legacy sends render");
         let text = joined(&view);
         assert!(text.contains("eth send request"), "{text}");
         assert!(text.contains("chain 1 ethereum mainnet"), "{text}");
@@ -1898,7 +2444,7 @@ mod eth_data_type_dispatch_pins {
             rlp::encode_uint(0),
             rlp::encode_bytes(b""),
         ]);
-        let result = build_eth(&request_map(&six, 1, 1));
+        let result = build_eth_ws(&request_map(&six, 1, 1));
         assert!(result.is_err(), "6-item legacy must not render");
         if let Err(e) = result {
             assert_eq!(e.kind, ShlosiloErrorKind::FeatureNotImplemented, "{e:?}");
@@ -1912,7 +2458,7 @@ mod eth_data_type_dispatch_pins {
     fn eth_review_refuses_a_typed_body_without_its_type_byte() {
         let payload = request_map(&bare_rlp_body(), 1, 1);
         // ReviewView has no Debug, so assert on the error rather than unwrap_err().
-        let result = build_eth(&payload);
+        let result = build_eth_ws(&payload);
         assert!(
             result.is_err(),
             "a 12-item body under data_type 1 must be refused, not rendered as a send"
@@ -1932,14 +2478,14 @@ mod eth_data_type_dispatch_pins {
     #[test]
     fn eth_review_legacy_refuses_a_chain_id_mismatch() {
         // request says chain 5, the preimage says chain 1
-        let result = build_eth(&request_map(&legacy_preimage(1), 1, 5));
+        let result = build_eth_ws(&request_map(&legacy_preimage(1), 1, 5));
         assert!(result.is_err(), "a chain mismatch must not render");
         if let Err(e) = result {
             assert_eq!(e.kind, ShlosiloErrorKind::NetworkUnrecognized);
         }
         // control: the matching pairing renders
         let view =
-            build_eth(&request_map(&legacy_preimage(1), 1, 1)).expect("matching chain renders");
+            build_eth_ws(&request_map(&legacy_preimage(1), 1, 1)).expect("matching chain renders");
         assert!(joined(&view).contains("chain 1 ethereum mainnet"));
     }
 
@@ -1977,7 +2523,7 @@ mod eth_data_type_dispatch_pins {
         ];
         for (sign_data, expected, why) in cases {
             let payload = request_map(&sign_data, 4, 1);
-            let result = build_eth(&payload);
+            let result = build_eth_ws(&payload);
             assert!(result.is_err(), "{why}");
             if let Err(e) = result {
                 assert_eq!(e.kind, expected, "{why}");
@@ -2017,7 +2563,7 @@ mod eth_personal_message_review_pins {
     #[test]
     fn personal_message_review_shows_the_text() {
         let msg = b"Example `personal_sign` message";
-        let view = build_eth(&personal_request(msg)).expect("review");
+        let view = build_eth_ws(&personal_request(msg)).expect("review");
         let joined = lines(&view).join("\n");
         assert!(joined.contains("eth message sign"), "{joined}");
         assert!(
@@ -2040,7 +2586,7 @@ mod eth_personal_message_review_pins {
     #[test]
     fn personal_message_review_escapes_non_printable_bytes() {
         let msg = b"line1\nline2\x1b[31m";
-        let view = build_eth(&personal_request(msg)).expect("review");
+        let view = build_eth_ws(&personal_request(msg)).expect("review");
         let joined = lines(&view).join("\n");
         assert!(
             !joined.contains("line1\nline2"),
@@ -2058,7 +2604,7 @@ mod eth_personal_message_review_pins {
     #[test]
     fn personal_message_review_marks_truncation() {
         let msg = alloc::vec![b'A'; 400];
-        let view = build_eth(&personal_request(&msg)).expect("review");
+        let view = build_eth_ws(&personal_request(&msg)).expect("review");
         let joined = lines(&view).join("\n");
         assert!(joined.contains("message 400 bytes"), "{joined}");
         assert!(joined.contains("..truncated"), "{joined}");
@@ -2185,24 +2731,73 @@ mod eth_typed_data_review_pins {
         ])
     }
 
-    /// Typed data is refused (EIP-712 has no fixed-size container yet), and the screen
-    /// says how big the payload is. The count is what lets an operator — or a support
-    /// engineer reading a photo — tell a transaction-shaped request from a JSON blob
-    /// without any device-side debugging channel.
+    /// E-3 P3: typed data now has a container and a page, so a payload that is not
+    /// typed-data JSON is refused as a format error instead of being described by its
+    /// byte count. The old page said how many bytes it could not show; the new one either
+    /// shows the document or says it is not one.
     #[test]
-    fn typed_data_review_reports_the_payload_size() {
+    fn typed_data_review_refuses_a_payload_that_is_not_json() {
         let blob = alloc::vec![b'x'; 512];
-        let result = build_eth(&typed_data_request(&blob));
-        // Review renders (it does not sign), so this returns a view.
-        let view = result.expect("typed data renders an explanation");
+        let err = match build_eth_ws(&typed_data_request(&blob)) {
+            Ok(_) => panic!("512 x's is not typed-data JSON"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            err.kind,
+            ShlosiloErrorKind::EncodingInvalidFormat,
+            "a non-JSON typed-data payload is a format error"
+        );
+    }
+
+    /// A real ERC-2612 permit renders the values the operator has to check: the primary
+    /// type, the domain it is bound to (name, chain, verifying contract) and every
+    /// top-level field.
+    #[test]
+    fn typed_data_review_renders_a_permit() {
+        let permit = br#"{"types":{"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}],"Permit":[{"name":"owner","type":"address"},{"name":"spender","type":"address"},{"name":"value","type":"uint256"},{"name":"nonce","type":"uint256"},{"name":"deadline","type":"uint256"}]},"primaryType":"Permit","domain":{"name":"USD Coin","version":"2","chainId":1,"verifyingContract":"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"},"message":{"owner":"0x1111111111111111111111111111111111111111","spender":"0x2222222222222222222222222222222222222222","value":"1000000","nonce":0,"deadline":1700000000}}"#;
+        let view = build_eth_ws(&typed_data_request(permit)).expect("permit renders");
         let mut text = alloc::string::String::new();
         for l in view.lines() {
             text.push_str(l.as_str());
             text.push('\n');
         }
-        assert!(text.contains("eth typed data"), "{text}");
-        assert!(text.contains("data 512 bytes"), "{text}");
-        assert!(text.contains("cannot display on this screen"), "{text}");
+        for needle in [
+            "eth typed data",
+            "sign Permit",
+            "domain",
+            "name USD Coin",
+            "chain 1 ethereum mainnet",
+            "verifying contract",
+            // the address is re-encoded as EIP-55, not echoed as the wire's lowercase form
+            "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            "owner",
+            "0x1111111111111111111111111111111111111111",
+            "spender",
+            "value 1000000",
+            "nonce 0",
+            "deadline 1700000000",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
+        }
+    }
+
+    /// A workspace one byte short of what the page needs is `BufferTooSmall` with the size
+    /// that would have worked — never a page drawn from leftover bytes.
+    #[test]
+    fn typed_data_workspace_capacity_is_explicit() {
+        let permit = br#"{"types":{"EIP712Domain":[],"Permit":[]},"primaryType":"Permit","domain":{},"message":{}}"#;
+        let req = typed_data_request(permit);
+        let mut short = alloc::vec![0u8; TYPED_DATA_WS_BYTES - 1];
+        let err = match build_eth(&req, &mut short) {
+            Ok(_) => panic!("a short workspace must be refused"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind, ShlosiloErrorKind::BufferTooSmall);
+        assert_eq!(
+            err.context,
+            crate::error::ErrorContext::RequiredLength(TYPED_DATA_WS_BYTES),
+            "the refusal must name the size that fits"
+        );
     }
 }
 
@@ -2259,7 +2854,7 @@ mod eth_send_fee_review_pins {
     /// a guess where the exact number matters.
     #[test]
     fn eth_send_review_shows_both_fees() {
-        let view = build_eth(&typed_request(&unsigned_1559(), 1)).expect("review");
+        let view = build_eth_ws(&typed_request(&unsigned_1559(), 1)).expect("review");
         let text = joined(&view);
         assert!(text.contains("max fee 2000000000 wei"), "{text}");
         assert!(text.contains("priority fee 1000000000 wei"), "{text}");
@@ -2274,7 +2869,7 @@ mod eth_send_fee_review_pins {
     /// will not sign for.
     #[test]
     fn eth_send_review_refuses_chain_id_mismatch() {
-        let result = build_eth(&typed_request(&unsigned_1559(), 5));
+        let result = build_eth_ws(&typed_request(&unsigned_1559(), 5));
         assert!(
             result.is_err(),
             "a chain_id that disagrees with the transaction must not render"
@@ -2289,7 +2884,7 @@ mod eth_send_fee_review_pins {
     /// next to a `wei` line is the kind of mixed-unit screen that gets misread).
     #[test]
     fn eth_send_review_shows_the_worst_case_cost() {
-        let view = build_eth(&typed_request(&unsigned_1559(), 1)).expect("review");
+        let view = build_eth_ws(&typed_request(&unsigned_1559(), 1)).expect("review");
         let text = joined(&view);
         // 21_000 * 2_000_000_000 + 12_345
         let want = 21_000u128 * 2_000_000_000u128 + 12_345u128;
@@ -2323,7 +2918,7 @@ mod eth_send_fee_review_pins {
     /// an unrelated reason.
     #[test]
     fn eth_send_review_accepts_matching_chain_id() {
-        let view = build_eth(&typed_request(&unsigned_1559(), 1)).expect("review");
+        let view = build_eth_ws(&typed_request(&unsigned_1559(), 1)).expect("review");
         assert!(joined(&view).contains("chain 1"));
     }
 }

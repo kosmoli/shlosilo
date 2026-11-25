@@ -355,6 +355,18 @@ impl<'a> Eip712Pool<'a> {
         self.domain_root
     }
 
+    /// Bitmap of the standard domain slots the document filled: bit `slot` set means the
+    /// value for `domain_slot_field(slot)` is present, and the domain's children hold the
+    /// present slots in canonical order (so the value for a set bit is the child at
+    /// `count_ones(bits below it)`).
+    ///
+    /// The domain's children carry no names — the wire's `EIP712Domain` declaration is a
+    /// fixed list this module owns — so a caller that has to LABEL a domain value (the
+    /// review page) reads the name from that list and the presence from here.
+    pub(crate) fn domain_mask(&self) -> u8 {
+        self.domain_mask
+    }
+
     /// Nodes written so far (domain tree + message tree).
     pub fn nodes_len(&self) -> usize {
         self.nodes_len
@@ -755,6 +767,13 @@ impl<'a> Scanner<'a> {
         }
     }
 
+    /// Consume a run of ASCII digits (at least one; the caller has looked ahead).
+    fn skip_digits(&mut self) {
+        while self.peek().is_some_and(|b| b.is_ascii_digit()) {
+            self.pos += 1;
+        }
+    }
+
     /// Scan an integer literal, rejecting what `str::parse::<i64>` rejects.
     fn scan_number(&mut self) -> Result<Span> {
         let start = self.pos;
@@ -763,9 +782,7 @@ impl<'a> Scanner<'a> {
             self.pos += 1;
         }
         let digits_start = self.pos;
-        while self.peek().is_some_and(|b| b.is_ascii_digit()) {
-            self.pos += 1;
-        }
+        self.skip_digits();
         let digits = self.wire.get(digits_start..self.pos).ok_or_else(fmt_err)?;
         if digits.is_empty() {
             return Err(fmt_err());
@@ -2399,6 +2416,20 @@ fn domain_slot(name: &str, declared: &str) -> Option<u8> {
         .map(|slot| slot as u8)
 }
 
+/// Standard domain slots, in canonical order (the order the domain's children are stored
+/// in). Callers that must put a NAME on a domain value — the review page — iterate this
+/// and consult [`Eip712Pool::domain_mask`]; the tree itself carries no field names,
+/// because the domain's `EIP712Domain` declaration is a fixed list this module already
+/// owns. One home: a caller cannot invent a sixth slot or reorder the five.
+pub(crate) const DOMAIN_SLOTS: usize = DOMAIN_FIELDS.len();
+
+/// The canonical name and declared type of standard domain slot `slot`.
+pub(crate) fn domain_slot_field(slot: usize) -> Option<(&'static str, &'static str)> {
+    DOMAIN_FIELDS
+        .get(slot)
+        .map(|(name, declared, _, _)| (*name, *declared))
+}
+
 /// The EIP-712 digest: `keccak256(0x1901 ‖ domainSeparator ‖ hashStruct(message))`.
 pub fn signing_hash_pool(pool: &Eip712Pool<'_>) -> Result<[u8; 32]> {
     let separator = domain_separator_pool(pool)?;
@@ -2457,6 +2488,225 @@ const WS_REGIONS: usize = ws_up(WS_ARENA_OFF + ARENA_BYTES);
 /// The region is handed to `parse` through `eip712_pool::parse_in`, which carves the
 /// four spans below out of it.
 pub(crate) const WS_BYTES: usize = WS_REGIONS + WS_ALIGN - 1;
+
+/// [`parse`] over a caller-carved region instead of four separate slabs.
+///
+/// `ws` is one plain byte region of at least [`WS_BYTES`] (the sign workspace and the
+/// review workspace both reserve exactly that). Two things the four-slab entry cannot
+/// promise are settled here:
+///
+/// - **Alignment.** A `&mut [u8]` says nothing about its base address, and the node /
+///   type / field slabs are read through aligned references. The base is rounded up to
+///   [`WS_ALIGN`] here, which is why [`WS_BYTES`] carries the worst-case shift.
+/// - **Initialisation.** The caller's bytes may be dirty (a reused workspace, a
+///   re-scanned request over the previous one's leftovers). The four spans are zeroed
+///   before the parse so a stale record can never be read as this document's.
+///
+/// The whole region is either usable or the call fails: a short region answers
+/// `BufferTooSmall` with [`WS_BYTES`], exactly like `carve_sign_ws` answers `None`.
+pub(crate) fn parse_in<'a>(wire: &'a [u8], ws: &'a mut [u8]) -> Result<Eip712Pool<'a>> {
+    if ws.len() < WS_BYTES {
+        // Whole-region failure, never a partial pool: the four spans are sized from
+        // the same budgets, so a region that misses one of them misses all four.
+        return Err(cap_err(WS_BYTES));
+    }
+    let raw = ws.as_mut_ptr() as usize;
+    let aligned = ws_up(raw);
+    let shift = aligned - raw;
+    let end = aligned
+        .checked_add(WS_REGIONS)
+        .ok_or_else(|| cap_err(WS_BYTES))?;
+    if end > raw + ws.len() {
+        // Cannot happen with `ws.len() >= WS_BYTES` (the shift is in the budget), but
+        // the check is the one that makes the pointer arithmetic below safe.
+        return Err(cap_err(WS_BYTES));
+    }
+    // Clear the four spans: the caller hands over bytes, not values.
+    // SAFETY: the span [aligned, aligned + WS_REGIONS) was just proved to lie inside
+    // `ws`, and `aligned` is a live, writable, non-aliased base derived from `ws`.
+    let base = unsafe { ws.as_mut_ptr().add(shift) };
+    unsafe { core::ptr::write_bytes(base, 0, WS_REGIONS) };
+    // SAFETY: `WS_NODES_OFF`/`WS_TYPES_OFF`/`WS_FIELDS_OFF`/`WS_ARENA_OFF` are the
+    // const offsets `WS_REGIONS` was computed from (`ws_up` of each previous span), so
+    // every sub-span starts on its own alignment, the four are disjoint, and their
+    // total ends at `WS_REGIONS`. The counts are the slab capacities the byte counts
+    // were derived from, so each slice is exactly as long as the bytes reserved for it.
+    // `ws` is not touched again after this point, so no safe reference aliases them.
+    unsafe {
+        let nodes: &'a mut [Eip712Node] =
+            core::slice::from_raw_parts_mut(base.add(WS_NODES_OFF).cast::<Eip712Node>(), NODES_MAX);
+        let types: &'a mut [Eip712Type] =
+            core::slice::from_raw_parts_mut(base.add(WS_TYPES_OFF).cast::<Eip712Type>(), TYPES_MAX);
+        let fields: &'a mut [Eip712Field] = core::slice::from_raw_parts_mut(
+            base.add(WS_FIELDS_OFF).cast::<Eip712Field>(),
+            TYPES_MAX * TYPE_FIELDS_MAX,
+        );
+        let arena: &'a mut [u8] =
+            core::slice::from_raw_parts_mut(base.add(WS_ARENA_OFF), ARENA_BYTES);
+        parse(wire, arena, nodes, types, fields)
+    }
+}
+
+/// The `chainId` a typed-data document declares in its top-level `domain`, if it has
+/// one this device can read.
+///
+/// This is the pre-check `check_network` can afford: it walks the document with the
+/// same [`Scanner`] the parser uses but fills no pool, so it runs on the C-ABI network
+/// gate where no workspace exists. `Ok(None)` means "nothing to compare" (no `domain`,
+/// no `chainId`, or a value that is not a non-negative integer that fits a `u64`) and
+/// the network gate is skipped; a document that is not valid JSON at all is
+/// `EncodingInvalidFormat`, because then there is no request to reason about.
+///
+/// Only the shape `eip712.rs::json_to_domain` accepts can reach the digest (a JSON
+/// number for `chainId`; a string form is dropped there), so a value of any other
+/// shape answers `Ok(None)` here as well — the two faces skip the same documents.
+pub(crate) fn domain_chain_id(json: &[u8]) -> Result<Option<u64>> {
+    if json.len() > JSON_MAX_LEN {
+        return Err(cap_err(json.len()));
+    }
+    if core::str::from_utf8(json).is_err() {
+        return Err(fmt_err());
+    }
+    let mut sc = Scanner::new(json, 0);
+    sc.skip_ws();
+    sc.take(b'{')?;
+    sc.depth = 1;
+    let mut domain: Option<Span> = None;
+    sc.skip_ws();
+    if sc.peek() == Some(b'}') {
+        sc.pos += 1;
+    } else {
+        loop {
+            sc.skip_ws();
+            let key = sc.scan_string()?;
+            let key_bytes = sc.span_bytes(key)?;
+            sc.skip_ws();
+            sc.take(b':')?;
+            sc.skip_ws();
+            if json_eq_decoded(key_bytes, b"domain")? {
+                if domain.is_some() {
+                    // `parse` refuses a repeated top-level key; the pre-check reports
+                    // the same document as malformed rather than picking one.
+                    return Err(fmt_err());
+                }
+                let (span, tag) = sc.scan_value()?;
+                // A `domain` that is not an object is refused by `parse`; either way it
+                // carries no chain id we could compare.
+                domain = if tag == TAG_OBJECT { Some(span) } else { None };
+            } else {
+                sc.scan_value()?;
+            }
+            sc.skip_ws();
+            match sc.peek() {
+                Some(b',') => sc.pos += 1,
+                Some(b'}') => {
+                    sc.pos += 1;
+                    break;
+                }
+                _ => return Err(fmt_err()),
+            }
+        }
+    }
+    sc.depth -= 1;
+    sc.skip_ws();
+    if sc.pos < json.len() {
+        return Err(fmt_err());
+    }
+    let span = match domain {
+        Some(span) => span,
+        None => return Ok(None),
+    };
+    // Second pass, over the `domain` object only.
+    let bytes = sc.span_bytes(span)?;
+    let mut ds = Scanner::new(bytes, span.off as usize);
+    ds.depth = 1;
+    ds.take(b'{')?;
+    ds.skip_ws();
+    if ds.peek() == Some(b'}') {
+        return Ok(None);
+    }
+    let mut value: Option<u64> = None;
+    let mut seen = false;
+    loop {
+        ds.skip_ws();
+        let key = ds.scan_string()?;
+        let key_bytes = ds.span_bytes(key)?;
+        ds.skip_ws();
+        ds.take(b':')?;
+        ds.skip_ws();
+        if json_eq_decoded(key_bytes, b"chainId")? {
+            if seen {
+                // Duplicate member: `find_member` refuses the document, so there is no
+                // single chain id to compare against the selected network.
+                return Err(fmt_err());
+            }
+            seen = true;
+            value = scan_u64_lenient(&mut ds)?;
+        } else {
+            ds.scan_value()?;
+        }
+        ds.skip_ws();
+        match ds.peek() {
+            Some(b',') => ds.pos += 1,
+            Some(b'}') => break,
+            _ => return Err(fmt_err()),
+        }
+    }
+    Ok(value)
+}
+
+/// Read the value after `chainId` as a decimal `u64`, or answer "nothing to compare".
+///
+/// The reads here are deliberately placed on the *value token* rather than run through
+/// [`Scanner::scan_value`], because the caller's question is "is there a chain id I can
+/// compare", not "is this member well formed": a `chainId` sent as an object, an array, a
+/// string or a negative literal is a shape `eip712.rs::json_to_domain` drops, so the only
+/// honest answer is `Ok(None)` (skip the pre-check) instead of a format error that would
+/// describe a document the digest layer may still sign.
+///
+/// A literal past `u64` answers `Ok(None)` here as well, but it never gets this far: the
+/// document-level scan bounds every number to the `i64` domain (the same bound `parse`
+/// applies), so such a request is already refused as torn by both faces.
+fn scan_u64_lenient(sc: &mut Scanner<'_>) -> Result<Option<u64>> {
+    match sc.peek() {
+        Some(b'0'..=b'9') => {}
+        Some(b'-') => {
+            // A negative chain id is not a chain id; consume the token so the caller's
+            // separator check still sees the object's real punctuation.
+            sc.pos += 1;
+            let start = sc.pos;
+            sc.skip_digits();
+            return if sc.pos > start {
+                Ok(None)
+            } else {
+                Err(fmt_err())
+            };
+        }
+        // Objects, arrays, strings, literals: shape `json_to_domain` drops, so there is
+        // nothing to compare.
+        _ => {
+            sc.scan_value()?;
+            return Ok(None);
+        }
+    }
+    let start = sc.pos;
+    sc.skip_digits();
+    let digits = sc.wire.get(start..sc.pos).ok_or_else(fmt_err)?;
+    // A trailing `.`/`e` would be a number the pool refuses anyway; leave it to the
+    // caller's separator check, which turns it into a format error.
+    let mut value: u64 = 0;
+    for &d in digits {
+        let next = match value.checked_mul(10) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        value = match next.checked_add((d - b'0') as u64) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+    }
+    Ok(Some(value))
+}
 
 // ─── budget pins (E-3 P4) ────────────────────────────────────────────────────
 
@@ -2792,6 +3042,168 @@ mod budget_pins {
             err.kind,
             ShlosiloErrorKind::EncodingInvalidFormat,
             "at the budget the refusal must come from the parser, not the length check"
+        );
+    }
+}
+
+// ─── P3 pins: the workspace carve and the network pre-check ──────────────────
+
+#[cfg(test)]
+mod ws_pins {
+    //! The two entry points E-3 P3 added: [`parse_in`], which carves one caller region into
+    //! the pool's four spans, and [`domain_chain_id`], which the network gate runs with no
+    //! workspace at all.
+    //!
+    //! `parse_in`'s whole job is the two things the slab entry cannot promise — a base
+    //! address it does not control and bytes it did not write — so the pins are poison, every
+    //! base alignment, and the one-byte-short region. `domain_chain_id`'s job is to never
+    //! turn "cannot tell" into "malformed", so the pins walk the shapes that have no
+    //! readable integer in them.
+    use super::*;
+
+    /// One real ERC-2612 permit (USDC on mainnet) — the document the sign path is wired for.
+    const PERMIT: &[u8] = br#"{"types":{"EIP712Domain":[{"name":"name","type":"string"},{"name":"version","type":"string"},{"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}],"Permit":[{"name":"owner","type":"address"},{"name":"spender","type":"address"},{"name":"value","type":"uint256"},{"name":"nonce","type":"uint256"},{"name":"deadline","type":"uint256"}]},"primaryType":"Permit","domain":{"name":"USD Coin","version":"2","chainId":1,"verifyingContract":"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"},"message":{"owner":"0x1111111111111111111111111111111111111111","spender":"0x2222222222222222222222222222222222222222","value":"1000000","nonce":0,"deadline":1700000000}}"#;
+
+    /// What one parse measured: `(types, fields, nodes, arena bytes)`.
+    fn counts(pool: &Eip712Pool<'_>) -> (usize, usize, usize, usize) {
+        (
+            pool.types_len(),
+            pool.fields_len(),
+            pool.nodes_len(),
+            pool.arena_used(),
+        )
+    }
+
+    /// The same document through the four-slab entry, which owns no carve and no
+    /// initialisation duty — the reference a carve must reproduce exactly.
+    fn slab_counts(doc: &[u8]) -> (usize, usize, usize, usize) {
+        let mut arena = [0u8; ARENA_BYTES];
+        let mut nodes = [Eip712Node::default(); NODES_MAX];
+        let mut types = [Eip712Type::default(); TYPES_MAX];
+        let mut fields = [Eip712Field::default(); TYPES_MAX * TYPE_FIELDS_MAX];
+        let pool = parse(doc, &mut arena, &mut nodes, &mut types, &mut fields)
+            .expect("the document fits the profile's budgets");
+        counts(&pool)
+    }
+
+    /// A region pre-filled with 0xAA: every record the parse leaves un-written would be
+    /// poison read back as a node, a type or a field.
+    #[test]
+    fn parse_in_ignores_poison_in_the_region() {
+        let want = slab_counts(PERMIT);
+        let mut ws = alloc::vec![0xAAu8; WS_BYTES];
+        let pool = parse_in(PERMIT, &mut ws).expect("parse over poison");
+        assert_eq!(
+            counts(&pool),
+            want,
+            "poison changed what the parse measured"
+        );
+        assert_eq!(pool.primary_type().unwrap(), "Permit");
+    }
+
+    /// The base address is the caller's, so the pool must round it up itself for every
+    /// alignment the region can start on.
+    #[test]
+    fn parse_in_places_the_pool_at_any_base_offset() {
+        let want = slab_counts(PERMIT);
+        for offset in 0..WS_ALIGN {
+            let mut backing = alloc::vec![0xAAu8; WS_BYTES + offset];
+            let ws = &mut backing[offset..];
+            let pool = parse_in(PERMIT, ws)
+                .unwrap_or_else(|e| panic!("offset {offset} must parse, got {e:?}"));
+            assert_eq!(&pool.arena_used().to_le_bytes(), &want.3.to_le_bytes());
+            assert_eq!(
+                (pool.types_len(), pool.fields_len(), pool.nodes_len()),
+                (want.0, want.1, want.2),
+                "offset {offset} measured a different pool"
+            );
+        }
+    }
+
+    /// One byte short is `BufferTooSmall` naming the size that fits — the carve never
+    /// half-succeeds (same contract as `carve_sign_ws`).
+    #[test]
+    fn parse_in_refuses_a_region_one_byte_short() {
+        let mut short = alloc::vec![0u8; WS_BYTES - 1];
+        let err = match parse_in(PERMIT, &mut short) {
+            Ok(_) => panic!("a region one byte short cannot hold a pool"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind, ShlosiloErrorKind::BufferTooSmall);
+        assert_eq!(err.context, ErrorContext::RequiredLength(WS_BYTES));
+    }
+
+    /// The pre-check reads `domain.chainId`, not a same-named message field.
+    #[test]
+    fn domain_chain_id_reads_the_domain_only() {
+        assert_eq!(domain_chain_id(PERMIT).expect("readable"), Some(1));
+        let message_only = br#"{"types":{"T":[{"name":"chainId","type":"uint256"}]},"primaryType":"T","domain":{"chainId":5},"message":{"chainId":1}}"#;
+        assert_eq!(
+            domain_chain_id(message_only).expect("readable"),
+            Some(5),
+            "the message's own field must not shadow the domain's"
+        );
+    }
+
+    /// Values with no readable `u64` in them are "nothing to compare": the network gate skips
+    /// the request instead of calling it malformed.
+    ///
+    /// Every shape here is a document `parse` also accepts (or refuses for its own reasons),
+    /// so the skip never blesses something the signer would reject as malformed: the scanner
+    /// both faces share is what validates the document, and this function only reads one
+    /// member out of it.
+    #[test]
+    fn domain_chain_id_skips_what_it_cannot_read() {
+        let skippable: [&[u8]; 6] = [
+            br#"{"types":{},"primaryType":"T","domain":{},"message":{}}"#,
+            br#"{"types":{},"primaryType":"T","domain":{"name":"x"},"message":{}}"#,
+            br#"{"types":{},"primaryType":"T","domain":{"chainId":{"a":1}},"message":{}}"#,
+            br#"{"types":{},"primaryType":"T","domain":{"chainId":[1]},"message":{}}"#,
+            br#"{"types":{},"primaryType":"T","domain":{"chainId":"1"},"message":{}}"#,
+            br#"{"types":{},"primaryType":"T","domain":{"chainId":-1},"message":{}}"#,
+        ];
+        for doc in skippable {
+            match domain_chain_id(doc) {
+                Ok(None) => {}
+                other => panic!(
+                    "{}: expected a skip, got {other:?}",
+                    core::str::from_utf8(doc).expect("utf8")
+                ),
+            }
+        }
+        // A chain id past `i64::MAX` cannot survive the document scan at all (the shared
+        // scanner bounds numbers to the `i64` domain, exactly as `parse` does), so the gate
+        // reports the document the signer would report: torn, not "unknown network".
+        let big = br#"{"types":{},"primaryType":"T","domain":{"chainId":9223372036854775808},"message":{}}"#;
+        assert_eq!(
+            domain_chain_id(big).unwrap_err().kind,
+            ShlosiloErrorKind::EncodingInvalidFormat,
+            "a number the shared scanner cannot read fails the whole document on both faces"
+        );
+    }
+
+    /// A document that is not JSON is a format error — there is no request to reason about,
+    /// and silence here would let a torn payload reach the gate looking chainless.
+    #[test]
+    fn domain_chain_id_refuses_a_tear_in_the_json() {
+        let broken: [&[u8]; 3] = [
+            br#"{"types":"#,
+            br#"{"types":{},"domain":{"chainId":1}"#,
+            br#"{"types":{} } trailing"#,
+        ];
+        for doc in broken {
+            assert_eq!(
+                domain_chain_id(doc).unwrap_err().kind,
+                ShlosiloErrorKind::EncodingInvalidFormat
+            );
+        }
+        // A repeated member is ambiguous, not "the first one wins": `find_member` refuses the
+        // same document, so the pre-check reports the same verdict.
+        let repeated =
+            br#"{"types":{},"primaryType":"T","domain":{"chainId":1,"chainId":2},"message":{}}"#;
+        assert_eq!(
+            domain_chain_id(repeated).unwrap_err().kind,
+            ShlosiloErrorKind::EncodingInvalidFormat
         );
     }
 }
