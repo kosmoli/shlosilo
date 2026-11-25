@@ -1055,6 +1055,76 @@ fn push_decoded_calldata(
     }
 }
 
+/// One chain line: `chain <id> <name>`, or just the id when this firmware does not
+/// know the chain.
+///
+/// `chain 1` alone does not tell the operator which network they are spending on,
+/// and a wrong-network send is not recoverable; an unknown id is printed raw because
+/// we do not guess names. Shared by the typed and the legacy send pages so the two
+/// cannot name the same chain differently.
+fn push_chain(view: &mut ReviewView, chain_id: u64) -> Result<()> {
+    match crate::chain::eth::chain_names::chain_name(chain_id) {
+        Some(name) => view.push_fmt(format_args!("chain {} {}", chain_id, name)),
+        None => view.push_fmt(format_args!("chain {}", chain_id)),
+    }
+}
+
+/// Destination line: `to:` + EIP-55 address (glued, so the label never opens a page
+/// alone), or `to: contract creation` when there is no callee.
+///
+/// Shared by both send pages: the destination is the single thing the operator must
+/// verify, so it is rendered identically no matter which transaction type carried it.
+fn push_destination(view: &mut ReviewView, destination: Option<[u8; 20]>) -> Result<()> {
+    match destination {
+        Some(dest) => {
+            let rendered = eth::encode_bytes(&dest)?;
+            view.push_str("to:")?;
+            view.glue_next_line();
+            view.push_wrapped(<_ as AsRef<str>>::as_ref(&rendered))
+        }
+        None => view.push_str("to: contract creation"),
+    }
+}
+
+/// Calldata lines: byte count, then either the deploy verdict or the decoded call.
+///
+/// Shared by both send pages — the same bytes must not be described one way for an
+/// EIP-1559 send and another way for a legacy one (an ERC-20 transfer looks the same
+/// to a wallet either way). `destination` is needed because with none of it the
+/// calldata IS the deploy bytecode: there is no callee to name and no ABI to decode,
+/// and calling that "unknown contract" reads like a failed lookup against a contract
+/// that exists (measured on Sepolia 2026-11-25).
+fn push_calldata(
+    view: &mut ReviewView,
+    calldata: &[u8],
+    destination: Option<[u8; 20]>,
+) -> Result<()> {
+    if calldata.is_empty() {
+        return view.push_str("data: none");
+    }
+    view.push_fmt(format_args!("data {} bytes", calldata.len()))?;
+    if destination.is_none() {
+        return view.push_str("call: contract deploy");
+    }
+    match crate::chain::eth::calldata::decode_calldata(calldata) {
+        Ok(decoded) => {
+            if matches!(
+                decoded,
+                crate::chain::eth::calldata::DecodedCalldata::Unknown { .. }
+                    | crate::chain::eth::calldata::DecodedCalldata::ShapeMismatch { .. }
+            ) {
+                view.flags |= flag::UNKNOWN_CALLDATA;
+            }
+            push_decoded_calldata(view, &decoded)?;
+        }
+        Err(_) => {
+            view.flags |= flag::UNKNOWN_CALLDATA;
+            view.push_str("call: unknown contract")?;
+        }
+    }
+    Ok(())
+}
+
 pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
     use crate::chain::eth::from_rlp;
     use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
@@ -1065,10 +1135,43 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
     // `sign_eth`). The review gate is fail-closed: a request this signer cannot
     // sign must never render as a send.
     match req.data_type {
-        // data_type 1 = legacy (bare RLP, no type byte) — not implemented; see the
-        // data_type table in docs/eth-signature-codec.md.
+        // data_type 1 = legacy, EIP-155 protected (bare RLP preimage, no type byte).
+        //
+        // E-1 (2026-11-25): this used to be refused as unimplemented. The page is the
+        // same skeleton as the typed send with ONE fee — legacy has no base fee and no
+        // priority tip, only `gas price`, so calling it "max fee" would describe a
+        // scheme the operator is not signing.
         EthSignDataType::Transaction => {
-            return Err(ShlosiloError::new(ShlosiloErrorKind::FeatureNotImplemented));
+            let tx = from_rlp::parse_eip155_signing_request(req.sign_data)?;
+            // Fail closed before rendering: a request whose own chain_id disagrees with
+            // the transaction is one this device refuses to sign (same rule, same code
+            // as the sign path), so it must not reach the screen as a send.
+            if let Some(req_chain) = req.chain_id {
+                if req_chain != tx.chain_id as i128 {
+                    return Err(ShlosiloError::new(ShlosiloErrorKind::NetworkUnrecognized));
+                }
+            }
+            view.push_str("eth send request")?;
+            push_chain(&mut view, tx.chain_id)?;
+            push_destination(&mut view, tx.destination)?;
+            push_wei(&mut view, "value", tx.amount)?;
+            view.push_fmt(format_args!("gas limit {}", tx.gas_limit))?;
+            // The single fee this scheme pays, in the units the wire carries.
+            push_wei(&mut view, "gas price", tx.gas_price)?;
+            // Worst case the operator is authorizing: gas_limit × gas price + value.
+            let fee_ceiling = tx
+                .gas_price
+                .checked_mul(u128::from(tx.gas_limit))
+                .and_then(|ceiling| ceiling.checked_add(tx.amount));
+            match fee_ceiling {
+                Some(total) => push_wei(&mut view, "max cost", total)?,
+                // Same rule as the typed page: a number nobody can print is a
+                // transaction nobody may confirm.
+                None => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
+            }
+            let calldata = crate::types::wire_bytes::wire_slice(&tx.data);
+            push_calldata(&mut view, calldata, tx.destination)?;
+            return Ok(view);
         }
         EthSignDataType::TypedTransaction => {
             // data_type 4: only EIP-1559 (first byte 0x02) is rendered or signed;
@@ -1109,22 +1212,9 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
     // Review mirrors the sign path's policy: a pre-signed payload is not a request.
     let tx = from_rlp::parse_eip1559_signing_request(req.sign_data)?;
     view.push_str("eth send request")?;
-    // Name the chain when we know it: `chain 1` alone does not tell the operator
-    // which network they are spending on, and a wrong-network send is not
-    // recoverable. Unknown ids are printed raw - we do not guess a name.
-    match crate::chain::eth::chain_names::chain_name(tx.chain_id) {
-        Some(name) => view.push_fmt(format_args!("chain {} {}", tx.chain_id, name))?,
-        None => view.push_fmt(format_args!("chain {}", tx.chain_id))?,
-    }
-    match tx.destination {
-        Some(dest) => {
-            let rendered = eth::encode_bytes(&dest)?;
-            view.push_str("to:")?;
-            view.glue_next_line();
-            view.push_wrapped(<_ as AsRef<str>>::as_ref(&rendered))?;
-        }
-        None => view.push_str("to: contract creation")?,
-    }
+    // Name the chain when we know it (shared with the legacy page).
+    push_chain(&mut view, tx.chain_id)?;
+    push_destination(&mut view, tx.destination)?;
     push_wei(&mut view, "value", tx.amount)?;
     view.push_fmt(format_args!("gas limit {}", tx.gas_limit))?;
     // EIP-1559 pays two fees, and the one that decides what a send actually costs is
@@ -1156,34 +1246,7 @@ pub fn build_eth(payload: &[u8]) -> Result<ReviewView> {
         }
     }
     let calldata = crate::types::wire_bytes::wire_slice(&tx.data);
-    if calldata.is_empty() {
-        view.push_str("data: none")?;
-    } else if tx.destination.is_none() {
-        // Contract creation: the calldata IS the deploy bytecode, so there is no callee
-        // to name and no ABI to decode. Saying "unknown contract" here reads like a
-        // failed lookup against a contract that exists — measured on Sepolia
-        // 2026-11-25, where a deploy was labelled that way.
-        view.push_fmt(format_args!("data {} bytes", calldata.len()))?;
-        view.push_str("call: contract deploy")?;
-    } else {
-        view.push_fmt(format_args!("data {} bytes", calldata.len()))?;
-        match crate::chain::eth::calldata::decode_calldata(calldata) {
-            Ok(decoded) => {
-                if matches!(
-                    decoded,
-                    crate::chain::eth::calldata::DecodedCalldata::Unknown { .. }
-                        | crate::chain::eth::calldata::DecodedCalldata::ShapeMismatch { .. }
-                ) {
-                    view.flags |= flag::UNKNOWN_CALLDATA;
-                }
-                push_decoded_calldata(&mut view, &decoded)?;
-            }
-            Err(_) => {
-                view.flags |= flag::UNKNOWN_CALLDATA;
-                view.push_str("call: unknown contract")?;
-            }
-        }
-    }
+    push_calldata(&mut view, calldata, tx.destination)?;
     Ok(view)
 }
 
@@ -1743,8 +1806,8 @@ mod eth_data_type_dispatch_pins {
         ])
     }
 
-    /// A bare RLP list with the 1559 field body but no type byte — the shape a legacy
-    /// (`data_type` 1) request carries.
+    /// A bare RLP list with the 1559 field body but no type byte — a shape that is
+    /// neither a legacy request nor a typed transaction.
     fn bare_rlp_body() -> alloc::vec::Vec<u8> {
         use crate::chain::eth::rlp;
         rlp::encode_list(&[
@@ -1763,26 +1826,121 @@ mod eth_data_type_dispatch_pins {
         ])
     }
 
-    /// The review gate is fail-closed. `data_type` 1 is legacy in the reference dialect and
-    /// this signer does not sign it, so the review must refuse instead of rendering the
-    /// payload as a 1559 send — an operator confirming that screen would be confirming a
-    /// transaction the device cannot honour.
+    /// The legacy (EIP-155) preimage `rlp([nonce, gas_price, gas_limit, to, value,
+    /// data, chain_id, [], []])` — the shape a `data_type` 1 request carries.
+    fn legacy_preimage(chain_id: u64) -> alloc::vec::Vec<u8> {
+        use crate::chain::eth::eip155::{self, Eip155Transaction};
+        eip155::signing_preimage(&Eip155Transaction {
+            chain_id,
+            nonce: 7,
+            gas_price: 30_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x11u8; 20]),
+            amount: 1_000_000_000_000_000,
+            data: alloc::vec::Vec::new().into(),
+        })
+    }
+
+    fn joined(view: &ReviewView) -> alloc::string::String {
+        let mut s = alloc::string::String::new();
+        for l in view.lines() {
+            s.push_str(l.as_str());
+            s.push('\n');
+        }
+        s
+    }
+
+    /// E-1 (2026-11-25): `data_type` 1 = legacy EIP-155 is reviewable now, and the
+    /// page names the ONE fee this scheme pays.
+    ///
+    /// A legacy transaction has a `gas price`, not a base fee and not a priority tip:
+    /// printing "max fee" here would describe a 1559 send the operator is not
+    /// approving. The worst case (gas_limit × gas price + value) is still shown,
+    /// because that is the ceiling they are authorizing either way.
     #[test]
-    fn eth_review_refuses_legacy_data_type() {
+    fn eth_review_renders_a_legacy_send_with_gas_price() {
+        let payload = request_map(&legacy_preimage(1), 1, 1);
+        let view = build_eth(&payload).expect("legacy sends render");
+        let text = joined(&view);
+        assert!(text.contains("eth send request"), "{text}");
+        assert!(text.contains("chain 1 ethereum mainnet"), "{text}");
+        assert!(text.contains("to:"), "{text}");
+        assert!(text.contains("value 1000000000000000 wei"), "{text}");
+        assert!(text.contains("gas limit 21000"), "{text}");
+        assert!(
+            text.contains("gas price 30000000000 wei"),
+            "legacy pays gas price, in wei: {text}"
+        );
+        // 21000 * 30 gwei + 0.001 ETH
+        assert!(
+            text.contains("max cost 1630000000000000 wei"),
+            "worst case = gas_limit × gas price + value: {text}"
+        );
+        assert!(text.contains("data: none"), "{text}");
+        // the two 1559-only fee words must not appear on a legacy page
+        assert!(
+            !text.contains("max fee") && !text.contains("priority fee"),
+            "legacy has no max fee / priority fee: {text}"
+        );
+    }
+
+    /// An unprotected legacy request has no chain id at all: it is a shape we refuse
+    /// on purpose, and the operator must see it refused — not rendered as a send with
+    /// a guessed network.
+    #[test]
+    fn eth_review_refuses_unprotected_legacy() {
+        use crate::chain::eth::rlp;
+        let six = rlp::encode_list(&[
+            rlp::encode_uint(7),
+            rlp::encode_uint(30_000_000_000),
+            rlp::encode_uint(21_000),
+            rlp::encode_bytes(&[0x11u8; 20]),
+            rlp::encode_uint(0),
+            rlp::encode_bytes(b""),
+        ]);
+        let result = build_eth(&request_map(&six, 1, 1));
+        assert!(result.is_err(), "6-item legacy must not render");
+        if let Err(e) = result {
+            assert_eq!(e.kind, ShlosiloErrorKind::FeatureNotImplemented, "{e:?}");
+        }
+    }
+
+    /// A typed transaction body with its `0x02` type byte stripped is not a legacy
+    /// request (12 items, item 6 is a fee, its signature slots are full of access-list
+    /// shape): it must be refused as malformed rather than rendered as a send.
+    #[test]
+    fn eth_review_refuses_a_typed_body_without_its_type_byte() {
         let payload = request_map(&bare_rlp_body(), 1, 1);
         // ReviewView has no Debug, so assert on the error rather than unwrap_err().
         let result = build_eth(&payload);
         assert!(
             result.is_err(),
-            "data_type 1 = legacy must be refused, not rendered as a send"
+            "a 12-item body under data_type 1 must be refused, not rendered as a send"
         );
         if let Err(e) = result {
             assert_eq!(
                 e.kind,
-                ShlosiloErrorKind::FeatureNotImplemented,
-                "data_type 1 = legacy must be refused as unimplemented, not as a format error"
+                ShlosiloErrorKind::EncodingInvalidFormat,
+                "12 items is not a legacy request shape"
             );
         }
+    }
+
+    /// The legacy page refuses a request whose own `chain_id` disagrees with the
+    /// transaction, exactly like the 1559 page: the operator must never confirm a
+    /// network this device will not sign for.
+    #[test]
+    fn eth_review_legacy_refuses_a_chain_id_mismatch() {
+        // request says chain 5, the preimage says chain 1
+        let result = build_eth(&request_map(&legacy_preimage(1), 1, 5));
+        assert!(result.is_err(), "a chain mismatch must not render");
+        if let Err(e) = result {
+            assert_eq!(e.kind, ShlosiloErrorKind::NetworkUnrecognized);
+        }
+        // control: the matching pairing renders
+        let view =
+            build_eth(&request_map(&legacy_preimage(1), 1, 1)).expect("matching chain renders");
+        assert!(joined(&view).contains("chain 1 ethereum mainnet"));
     }
 
     /// `data_type` 4 dispatches on the first payload byte, mirroring the sign path: the

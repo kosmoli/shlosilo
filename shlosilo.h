@@ -610,7 +610,8 @@
  * (inbound) and `eth-signature` key 3 (the echo) share one bound. Keeping it
  * here instead of in one of the two codecs means neither layer-E codec has to
  * import the other, and the echoed reply always fits
- * `ur::codec::eth_signature::ETH_SIGNATURE_CBOR_MAX_LEN` (156 B worst case).
+ * `ur::codec::eth_signature::ETH_SIGNATURE_CBOR_MAX_LEN` (163 B worst case:
+ * a 72-byte `r ‖ s ‖ v` plus an origin at this cap).
  * Real origins are host names (`keystone`, `metamask`). Over-cap is an explicit
  * EncodingInvalidFormat Err on both sides — never a truncation.
  */
@@ -720,10 +721,24 @@
 #define TAPROOT 409
 
 /**
- * Upper bound of the CBOR message: 156 B worst case (65-byte signature +
+ * Upper bound of the CBOR message: 163 B worst case (a 72-byte signature plus an
  * origin at [`ETH_UR_ORIGIN_MAX_LEN`]) with margin.
+ *
+ * The 65-byte form is 156 B, as before; the 7 extra bytes are the widest `v` an
+ * EIP-155 chain id can produce (`u64::MAX` → `ffffffffffffff` and no longer
+ * representable as `v`, see `eip155::sign_eip155_parts`).
  */
-#define ETH_SIGNATURE_CBOR_MAX_LEN 160
+#define ETH_SIGNATURE_CBOR_MAX_LEN 168
+
+/**
+ * Shortest `r ‖ s ‖ v`: 64 bytes of signature plus a one-byte `v`.
+ */
+#define SIGNATURE_MIN_LEN 65
+
+/**
+ * Longest: 64 bytes plus a full-width 8-byte `v` (`chain_id = u64::MAX`).
+ */
+#define SIGNATURE_MAX_LEN 72
 
 /**
  * JSON-encoded view key string (Feather Wallet compatible, max ~256 characters)

@@ -386,9 +386,13 @@ fn eth_personal_sign_matches_keystone_signature_vector() {
     .expect("sign via the eth exit");
     let container = parse_eth_signature(&out[..n]).expect("eth-signature container");
     assert_eq!(
-        hex_encode(&container.signature),
+        hex_encode(container.signature_bytes()),
         EXPECTED_SIG_HEX,
-        "the exit must carry the same signature bytes"
+        "the exit must carry the same signature bytes (65 = r ‖ s ‖ 27/28)"
+    );
+    assert_eq!(
+        container.signature_len, 65,
+        "EIP-191 keeps the one-byte v, so the container stays 65 bytes"
     );
     assert_eq!(
         container.request_id,

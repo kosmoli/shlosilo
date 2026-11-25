@@ -5,7 +5,7 @@
     "_RNvNtCsa2n30vyK4nm_14shlosilo_pico29sign_pool12sign_stretch"
   ],
   "entries_missing": [],
-  "functions": 643,
+  "functions": 647,
   "allocator_symbols": [
     "_RNvCs5WqGp7zLRnA_7___rustc12___rust_alloc",
     "_RNvCs5WqGp7zLRnA_7___rustc14___rust_dealloc",

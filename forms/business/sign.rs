@@ -3,7 +3,10 @@
 //! **P6.0d/e realization**:
 //! - Mnemonic input → restore_seed (real BIP-39)
 //! - BTC (crypto-psbt): extract PSBT bytes from CBOR → parse_psbt → sign input by input → serialize
-//! - ETH(eth-sign-request): payload = raw EIP-1559 tx → parse_eip1559_raw → sign_eip1559
+//! - ETH(eth-sign-request): payload + `data_type` select the scheme — 4 = typed
+//!   transaction (`0x02 || rlp([...])` → `parse_eip1559_signing_request` → `sign_eip1559_parts`),
+//!   1 = legacy EIP-155 (bare preimage → `parse_eip155_signing_request` → `sign_eip155_parts`),
+//!   3 = EIP-191 personal message. All three answer with a `ur:eth-signature` container.
 //! - XMR / other chains: explicitly rejected (XMR awaits a real Feather fixture; v2 scope does not build transactions)
 
 use crate::derivation::path::DerivationPath;
@@ -1980,9 +1983,9 @@ fn sign_btc<'a>(
 /// P1-01 (2026-08-26): a real UR's payload is a CBOR map with sign_data / data_type /
 /// chain_id / derivation_path. `data_type` selects the scheme before the payload is read:
 /// 4 (TypedTransaction) → first-byte dispatch (0x02 = EIP-1559, the only typed scheme we
-/// sign); 3 (PersonalMessage) → EIP-191 over the raw message, `v` = 27/28; 1
-/// (Transaction = legacy, bare RLP) is not implemented yet; TypedData is rejected until
-/// it has a fixed-size container. See the data_type table in
+/// sign); 1 (Transaction) → legacy EIP-155 (bare RLP preimage, no type byte); 3
+/// (PersonalMessage) → EIP-191 over the raw message, `v` = 27/28; TypedData is rejected
+/// until it has a fixed-size container. See the data_type table in
 /// docs/eth-signature-codec.md.
 ///
 /// E-1 (2026-11-24): the exit returns the `ur:eth-signature` CBOR map
@@ -1990,57 +1993,81 @@ fn sign_btc<'a>(
 /// broadcasts; no wallet in this dialect consumes a signed raw tx, and the tx encoding
 /// sized the caller's buffer for a transaction rather than for the ~100 B container.
 ///
+/// E-1 legacy leg (2026-11-25): `data_type` 1 is wired in. Its `v` is
+/// `chain_id * 2 + 35 + y_parity` — a u64, so the container's signature slot is
+/// 65..=72 bytes and `v` goes on the wire as minimal big-endian bytes
+/// (`eip155::write_v_be`).
+///
 /// Derivation path = m/44'/60'/0'/0/0.
 fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<usize> {
-    use crate::chain::eth::{eip1559, from_rlp};
+    use crate::chain::eth::{eip155, eip1559, from_rlp};
     use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
-    use crate::ur::codec::eth_signature::{encode_eth_signature_into, EthSignature};
+    use crate::ur::codec::eth_signature::{
+        encode_eth_signature_into, EthSignature, SIGNATURE_MAX_LEN, SIGNATURE_MIN_LEN,
+    };
+
+    /// Which scheme the request asked for, with its parsed transaction (if any).
+    ///
+    /// Three-shaped because the two transaction schemes have different models and
+    /// different request parsers: a legacy request is the EIP-155 preimage
+    /// (`from_rlp::parse_eip155_signing_request`), a typed one is `0x02 || rlp([...])`.
+    enum Scheme<'a> {
+        Legacy(eip155::Eip155Transaction<'a>),
+        Eip1559(eip1559::Eip1559Transaction<'a>),
+        Personal,
+    }
 
     let req = parse_eth_sign_request(cbor_payload)?;
     // data_type selects the scheme BEFORE the payload is read (reference dialect:
     // `rust_c/src/ethereum/mod.rs::eth_sign_tx_dynamic` dispatches on data_type first).
-    match req.data_type {
-        // data_type 1 = legacy (bare RLP, no type byte) — not implemented; see the
-        // data_type table in docs/eth-signature-codec.md.
+    let scheme = match req.data_type {
+        // data_type 1 = legacy, EIP-155 protected (bare RLP, no type byte). The
+        // unprotected 6-item shape has no replay protection and is refused by the
+        // parser with its own code (FeatureNotImplemented), never as a format error.
         EthSignDataType::Transaction => {
-            return Err(err(ShlosiloErrorKind::FeatureNotImplemented));
+            let tx = from_rlp::parse_eip155_signing_request(req.sign_data)?;
+            // P1-02 (ETH part), same rule as the typed path below: when the request
+            // carries its own chain_id, it must agree with the transaction.
+            if let Some(req_chain) = req.chain_id {
+                if req_chain != tx.chain_id as i128 {
+                    return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+                }
+            }
+            Scheme::Legacy(tx)
         }
-        EthSignDataType::TypedTransaction => {}
+        EthSignDataType::TypedTransaction => {
+            // The first payload byte selects the scheme. Only EIP-1559 (0x02) is
+            // signable today; the other valid type bytes are named so they do not
+            // degrade into a generic format error.
+            match req.sign_data.first() {
+                Some(0x02) => {}
+                // EIP-2930 / 4844 / 7702: valid types we do not sign
+                Some(0x01) | Some(0x03) | Some(0x04) => {
+                    return Err(err(ShlosiloErrorKind::FeatureNotImplemented));
+                }
+                // unknown type byte or empty payload
+                _ => return Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
+            }
+            // Signing policy: refuse a payload that already carries a signature.
+            let tx = from_rlp::parse_eip1559_signing_request(req.sign_data)?;
+            // P1-02 (ETH part): when eth-sign-request carries its own chain_id, verify it matches the tx
+            if let Some(req_chain) = req.chain_id {
+                if req_chain != tx.chain_id as i128 {
+                    return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
+                }
+            }
+            Scheme::Eip1559(tx)
+        }
         // data_type 3 = personal_sign (EIP-191): the payload is the raw message,
         // not a transaction, so none of the transaction gates apply.
-        EthSignDataType::PersonalMessage => {}
+        EthSignDataType::PersonalMessage => Scheme::Personal,
         EthSignDataType::TypedData => {
             // EIP-712 typed data needs its own fixed-size container; refused until
             // then (see docs/eth-signature-codec.md, E-3).
             return Err(err(ShlosiloErrorKind::ChainKindUnsupported));
         }
-    }
-
-    // data_type 4 (TypedTransaction): the first payload byte selects the scheme.
-    // Only EIP-1559 (0x02) is signable today; the other valid type bytes are named
-    // so they do not degrade into a generic format error.
-    let tx = if matches!(req.data_type, EthSignDataType::TypedTransaction) {
-        match req.sign_data.first() {
-            Some(0x02) => {}
-            // EIP-2930 / 4844 / 7702: valid types we do not sign
-            Some(0x01) | Some(0x03) | Some(0x04) => {
-                return Err(err(ShlosiloErrorKind::FeatureNotImplemented));
-            }
-            // unknown type byte or empty payload
-            _ => return Err(err(ShlosiloErrorKind::EncodingInvalidFormat)),
-        }
-        // Signing policy: refuse a payload that already carries a signature.
-        let tx = from_rlp::parse_eip1559_signing_request(req.sign_data)?;
-        // P1-02 (ETH part): when eth-sign-request carries its own chain_id, verify it matches the tx
-        if let Some(req_chain) = req.chain_id {
-            if req_chain != tx.chain_id as i128 {
-                return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
-            }
-        }
-        Some(tx)
-    } else {
-        None
     };
+
     // E-1: the reply must echo the request's id — the container never mints one.
     // A signature the sender cannot correlate is worse than no answer, so a
     // request without key 1 is refused here. Ordered after the request-shape
@@ -2068,36 +2095,53 @@ fn sign_eth(seed: &[u8], cbor_payload: &[u8], output_buf: &mut [u8]) -> Result<u
     let private_key = SecretBytes::take(&mut raw_key);
 
     let t_sign = crate::device_timing::Mark::start(crate::device_timing::STAGE_ECDSA);
-    // `r ‖ s ‖ v`: the `v` byte carries each scheme's own convention and is never
+    // `r ‖ s ‖ v`: the `v` segment carries each scheme's own convention and is never
     // normalized here. EIP-1559 carries the bare yParity (0/1) — a 27-offset byte
     // there is a signature every peer drops — while personal_sign carries 27/28,
-    // which is what EIP-191 consumers hand to ecrecover.
-    let mut sig65 = [0u8; 65];
-    match tx {
-        Some(tx) => {
+    // which is what EIP-191 consumers hand to ecrecover. EIP-155 carries the
+    // protected `v = chain_id*2 + 35 + y_parity` as 1..=8 big-endian bytes, so the
+    // slot is 72 bytes wide and `signature_len` says how much of it is real.
+    let mut signature = [0u8; SIGNATURE_MAX_LEN];
+    let signature_len = match scheme {
+        Scheme::Eip1559(tx) => {
             let parts = eip1559::sign_eip1559_parts(&eip1559::Eip1559SignInput {
                 tx,
                 private_key: &private_key,
             })?;
-            sig65[..32].copy_from_slice(&parts.r);
-            sig65[32..64].copy_from_slice(&parts.s);
-            sig65[64] = parts.y_parity;
+            signature[..32].copy_from_slice(&parts.r);
+            signature[32..64].copy_from_slice(&parts.s);
+            signature[64] = parts.y_parity;
+            SIGNATURE_MIN_LEN
         }
-        None => {
+        Scheme::Legacy(tx) => {
+            let parts = eip155::sign_eip155_parts(&eip155::Eip155SignInput {
+                tx,
+                private_key: &private_key,
+            })?;
+            signature[..32].copy_from_slice(&parts.r);
+            signature[32..64].copy_from_slice(&parts.s);
+            // Minimal big-endian v (keystone `EthereumSignature::serialize`'s rule):
+            // 1 byte on mainnet (37/38), 2 on Polygon (309/310), 4 on Sepolia.
+            let v_len = eip155::write_v_be(parts.v, &mut signature[64..])?;
+            SIGNATURE_MIN_LEN - 1 + v_len
+        }
+        Scheme::Personal => {
             // data_type 3: EIP-191 over the raw message (`sign_data`), borrowed.
             let sig =
                 crate::chain::eth::personal_sign::personal_sign_bytes(req.sign_data, &private_key)?;
-            sig65[..32].copy_from_slice(&sig.r);
-            sig65[32..64].copy_from_slice(&sig.s);
-            sig65[64] = sig.v;
+            signature[..32].copy_from_slice(&sig.r);
+            signature[32..64].copy_from_slice(&sig.s);
+            signature[64] = sig.v;
+            SIGNATURE_MIN_LEN
         }
-    }
+    };
     t_sign.end();
 
     encode_eth_signature_into(
         &EthSignature {
             request_id,
-            signature: sig65,
+            signature,
+            signature_len,
             origin: req.origin,
         },
         output_buf,
@@ -2153,8 +2197,28 @@ pub(crate) fn check_network(
                     return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
                 }
             }
-            let tx = crate::chain::eth::from_rlp::parse_eip1559_raw(req.sign_data)?;
-            if tx.chain_id != expected_chain_id {
+            // Dispatch on `data_type` exactly like the sign path does: a legacy
+            // request is the EIP-155 preimage (item 6 is its chain id), a typed one
+            // is `0x02 || rlp([...])` (its first field is the chain id). Reading a
+            // legacy payload with the 1559 parser would report a format error for a
+            // wrong-chain request — the operator would see "malformed" where the
+            // truth is "this is not the network you asked for".
+            use crate::ur::codec::eth_sign_request::EthSignDataType;
+            let tx_chain_id = match req.data_type {
+                EthSignDataType::Transaction => {
+                    crate::chain::eth::from_rlp::parse_eip155_signing_request(req.sign_data)?
+                        .chain_id
+                }
+                EthSignDataType::TypedTransaction => {
+                    crate::chain::eth::from_rlp::parse_eip1559_raw(req.sign_data)?.chain_id
+                }
+                // Neither scheme has a chain id to compare: data_type 3 signs a raw
+                // message (and 2 is refused further down the sign path with its own
+                // code), so the network gate has nothing to check here and must not
+                // turn them into a format error.
+                EthSignDataType::PersonalMessage | EthSignDataType::TypedData => return Ok(()),
+            };
+            if tx_chain_id != expected_chain_id {
                 return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
             }
         }
@@ -2604,13 +2668,186 @@ mod tests {
         assert_eq!(sig.request_id, TEST_ETH_REQUEST_ID, "request id echoed");
     }
 
-    /// `data_type` 1 is **legacy** in the reference dialect (bare RLP list, no type byte),
-    /// and this signer does not implement it yet. The pin asserts the exact kind: if the
-    /// dispatch ever routes `data_type` 1 back into the 1559 parser, a bare-RLP payload
-    /// fails as `EncodingInvalidFormat` and reads as a malformed request instead of an
-    /// unimplemented scheme.
+    /// `data_type` 1 (`Transaction`, E-1 2026-11-25): legacy EIP-155. The exit must
+    /// carry the oracle's `r ‖ s` and the protected `v = chain_id*2 + 35 + parity`
+    /// (37/38 on mainnet), not a bare yParity and not a 27/28 offset.
+    ///
+    /// The payload is the EIP-155 **preimage**
+    /// `rlp([nonce, gas_price, gas_limit, to, value, data, chain_id, [], []])` — the
+    /// shape a wallet sends for a legacy transaction. Feeding the signed-transaction
+    /// reader instead would take `chain_id` for a `v` and sign for the wrong chain
+    /// (see `from_rlp::parse_eip155_signing_request`).
     #[test]
-    fn sign_eth_rejects_legacy_data_type_explicitly() {
+    fn sign_eth_legacy_mainnet_reaches_the_container_with_v37() {
+        use crate::chain::eth::eip155;
+        use crate::ur::codec::eth_signature::parse_eth_signature;
+
+        let tx = eip155::Eip155Transaction {
+            chain_id: 1,
+            nonce: 9,
+            gas_price: 20_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x35u8; 20]),
+            amount: 1_000_000_000_000_000_000,
+            data: Vec::new().into(),
+        };
+        // the preimage IS the wire shape, and the gold vector's preimage
+        let sign_data = eip155::signing_preimage(&tx);
+        assert_eq!(
+            hex_lower(&sign_data),
+            "ec098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080018080",
+            "the request payload must be the EIP-155 preimage"
+        );
+
+        let test_seed = [7u8; 64];
+        let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
+        let derived =
+            crate::derivation::bip32_secp256k1::derive_from_seed(&test_seed, &path).unwrap();
+        let expected = eip155::sign_eip155_parts(&eip155::Eip155SignInput {
+            tx,
+            private_key: &SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(
+                &derived,
+            )),
+        })
+        .unwrap();
+
+        let ur_payload = encode_eth_sign_request_for_test(&sign_data, 1, 1);
+        let mut output_buf = [0u8; 512];
+        let n = sign(
+            SignInput::Seed { seed: &test_seed },
+            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+            &ur_payload,
+            &mut output_buf,
+        )
+        .expect("legacy signs");
+
+        let sig = parse_eth_signature(&output_buf[..n]).expect("eth-signature container");
+        assert_eq!(sig.request_id, TEST_ETH_REQUEST_ID, "request id echoed");
+        // mainnet v = 37/38 → one byte → the classic 65-byte container
+        assert_eq!(sig.signature_len, 65, "mainnet legacy stays 65 bytes");
+        assert_eq!(&sig.signature_bytes()[..32], &expected.r[..], "r");
+        assert_eq!(&sig.signature_bytes()[32..64], &expected.s[..], "s");
+        assert_eq!(
+            &sig.signature_bytes()[64..],
+            &[0x25],
+            "v = chain_id*2 + 35 + parity = 37 (0x25)"
+        );
+        assert_eq!(expected.v, 37, "the oracle agrees on v");
+    }
+
+    /// The container's `v` segment follows the chain id, and it is what makes the
+    /// signature usable at all: Sepolia (11155111 → 22310257) needs 4 bytes and Polygon
+    /// (137 → 309) needs 2, which a fixed 65-byte field could not carry.
+    #[test]
+    fn sign_eth_legacy_v_segment_follows_the_chain_id() {
+        use crate::chain::eth::eip155;
+        use crate::ur::codec::eth_signature::parse_eth_signature;
+
+        let test_seed = [7u8; 64];
+        let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
+        let derived =
+            crate::derivation::bip32_secp256k1::derive_from_seed(&test_seed, &path).unwrap();
+        let key = SecretBytes::new(crate::curve_primitive::secp256k1::scalar_to_bytes(&derived));
+
+        // (chain id, expected container length, expected v for parity 0, label)
+        let cases: [(u64, usize, &[u8], &str); 3] = [
+            (1, 65, &[0x25], "mainnet → v = 37"),
+            (137, 66, &[0x01, 0x35], "polygon → v = 309"),
+            (
+                11_155_111,
+                68,
+                &[0x01, 0x54, 0x6d, 0x71],
+                "sepolia → v = 22310257",
+            ),
+        ];
+        for (chain_id, want_len, v_parity0, label) in cases {
+            let tx = eip155::Eip155Transaction {
+                chain_id,
+                nonce: 0,
+                gas_price: 1_000_000_000,
+                gas_limit: 21_000,
+                destination: Some([0x11u8; 20]),
+                amount: 0,
+                data: Vec::new().into(),
+            };
+            let sign_data = eip155::signing_preimage(&tx);
+            let expected = eip155::sign_eip155_parts(&eip155::Eip155SignInput {
+                tx,
+                private_key: &key,
+            })
+            .unwrap();
+            // v = chain_id*2 + 35 + parity. `v_parity0` is the parity-0 form, so the
+            // expected bytes are that value plus the parity the oracle produced.
+            let parity = (expected.v - (chain_id * 2 + 35)) as u8;
+            assert!(parity <= 1, "{label}: v must be the protected form");
+            let mut full = [0u8; 8];
+            full[8 - v_parity0.len()..].copy_from_slice(v_parity0);
+            let v_value = u64::from_be_bytes(full) + u64::from(parity);
+            let mut want_v = [0u8; 8];
+            let want_v_len = eip155::write_v_be(v_value, &mut want_v).expect("write v");
+            let want_v = &want_v[..want_v_len];
+
+            let ur_payload = encode_eth_sign_request_for_test(&sign_data, 1, chain_id);
+            let mut output_buf = [0u8; 512];
+            let n = sign(
+                SignInput::Seed { seed: &test_seed },
+                crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+                &ur_payload,
+                &mut output_buf,
+            )
+            .expect("legacy signs");
+            let sig = parse_eth_signature(&output_buf[..n]).expect("container");
+            assert_eq!(sig.signature_len, want_len, "{label}: container width");
+            assert_eq!(&sig.signature_bytes()[..32], &expected.r[..], "{label}: r");
+            assert_eq!(
+                &sig.signature_bytes()[32..64],
+                &expected.s[..],
+                "{label}: s"
+            );
+            assert_eq!(
+                &sig.signature_bytes()[64..],
+                want_v,
+                "{label}: v bytes must be minimal big-endian"
+            );
+        }
+    }
+
+    /// An unprotected legacy request (6 items, no chain id) is refused as
+    /// unimplemented — a stable code for a shape we know and will not sign — never as a
+    /// malformed request, and never signed with a 27/28 `v`.
+    #[test]
+    fn sign_eth_legacy_unprotected_six_item_shape_is_refused() {
+        use crate::chain::eth::rlp;
+        // rlp([nonce, gas_price, gas_limit, to, value, data]) — no chain id at all
+        let sign_data = rlp::encode_list(&[
+            rlp::encode_uint(9),
+            rlp::encode_uint(20_000_000_000),
+            rlp::encode_uint(21_000),
+            rlp::encode_bytes(&[0x35u8; 20]),
+            rlp::encode_uint(1_000_000_000_000_000_000),
+            rlp::encode_bytes(b""),
+        ]);
+        let ur_payload = encode_eth_sign_request_for_test(&sign_data, 1, 1);
+        let test_seed = [7u8; 64];
+        let mut output_buf = [0u8; 512];
+        let result = sign(
+            SignInput::Seed { seed: &test_seed },
+            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+            &ur_payload,
+            &mut output_buf,
+        );
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::FeatureNotImplemented,
+            "pre-EIP-155 has no replay protection: refused, and not as a format error"
+        );
+    }
+
+    /// A typed transaction body with its `0x02` byte stripped is NOT a legacy request:
+    /// legacy carries a chain id in item 6 and empty signature slots, this carries
+    /// neither. It must fail as malformed instead of being signed as something else.
+    #[test]
+    fn sign_eth_legacy_rejects_a_typed_body_without_its_type_byte() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
 
         let tx = Eip1559Transaction {
@@ -2624,7 +2861,6 @@ mod tests {
             data: Vec::new().into(),
         };
         let typed = encode_unsigned_tx_for_test(&tx);
-        // A legacy payload is the bare RLP list: the same body without the 0x02 type byte.
         let legacy = &typed[1..];
         let ur_payload = encode_eth_sign_request_for_test(legacy, 1, 1);
 
@@ -2638,8 +2874,41 @@ mod tests {
         );
         assert_eq!(
             result.unwrap_err().kind,
-            ShlosiloErrorKind::FeatureNotImplemented,
-            "data_type 1 = legacy must be refused as unimplemented, not as a format error"
+            ShlosiloErrorKind::EncodingInvalidFormat,
+            "a 12-item body is not a legacy request"
+        );
+    }
+
+    /// The request's own `chain_id` (key 4) must agree with the transaction, exactly as
+    /// on the typed path: a legacy request that names chain 5 while carrying a chain-1
+    /// transaction is a request this device must not sign.
+    #[test]
+    fn sign_eth_legacy_rejects_a_chain_id_mismatch() {
+        use crate::chain::eth::eip155;
+
+        let tx = eip155::Eip155Transaction {
+            chain_id: 1,
+            nonce: 0,
+            gas_price: 1_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x11u8; 20]),
+            amount: 0,
+            data: Vec::new().into(),
+        };
+        let sign_data = eip155::signing_preimage(&tx);
+        // request says Goerli (5), the transaction says mainnet (1)
+        let ur_payload = encode_eth_sign_request_for_test(&sign_data, 1, 5);
+        let test_seed = [7u8; 64];
+        let mut output_buf = [0u8; 512];
+        let result = sign(
+            SignInput::Seed { seed: &test_seed },
+            crate::ur::ur_encode::UrTypeTag::EthSignRequest,
+            &ur_payload,
+            &mut output_buf,
+        );
+        assert_eq!(
+            result.unwrap_err().kind,
+            ShlosiloErrorKind::NetworkUnrecognized
         );
     }
 
@@ -2709,6 +2978,16 @@ mod tests {
             );
             assert_eq!(result.unwrap_err().kind, expected, "{why}");
         }
+    }
+
+    /// Test helper: lowercase hex, for comparing a built payload with a published one.
+    fn hex_lower(bytes: &[u8]) -> alloc::string::String {
+        use core::fmt::Write as _;
+        let mut s = alloc::string::String::new();
+        for b in bytes {
+            let _ = write!(s, "{b:02x}");
+        }
+        s
     }
 
     /// Test helper: encode an unsigned EIP-1559 tx into raw bytes (for from_rlp parsing)

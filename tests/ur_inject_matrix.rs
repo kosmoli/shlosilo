@@ -8,12 +8,13 @@
 //! needing another round of hardware testing.
 //!
 //! What each row is for:
-//! - `1559` / `personal` — the two shapes the device signs; the review text and the
-//!   `v` domain are asserted (yParity vs 27/28).
+//! - `1559` / `personal` / `legacy` — the three shapes the device signs; the review
+//!   text and the `v` domain are asserted (yParity vs 27/28 vs EIP-155's
+//!   `chain_id*2 + 35 + parity`).
 //! - `712` — typed data, refused until it has a fixed-size container; the review must
 //!   still report the payload size.
-//! - `legacy`, `2930`, `4844`, `7702` — valid Ethereum schemes this signer does not
-//!   implement: they must be refused as *unimplemented*, not as malformed.
+//! - `2930`, `4844`, `7702` — valid Ethereum schemes this signer does not implement:
+//!   they must be refused as *unimplemented*, not as malformed.
 //! - `unknown` — an unassigned type byte: malformed, refused with the format code.
 //! - `presigned` — a payload that already carries a signature: not a signing request.
 //! - `badchain` — the request says chain 5, the transaction says chain 1.
@@ -50,6 +51,8 @@ enum VDomain {
     YParity,
     /// EIP-191: 27 / 28.
     Eip191,
+    /// EIP-155 legacy: `chain_id*2 + 35 + parity`, minimal big-endian (1..=8 bytes).
+    Eip155 { chain_id: u64 },
 }
 
 struct Case {
@@ -122,7 +125,21 @@ const CASES: &[Case] = &[
     Case {
         kind: "legacy",
         ur: "ur:eth-sign-request/onadtpdagdndcawmgtfrkigrpmndutdnbtkgfssbjnaohddaveatlpamztcnpsaelfgmaymwbybybybybybybybybybybybybybybybybybybybylalaadlalaaxadaaadahtaaddyoeadlecsdwykcsfnykaeykaewkaewkaoahoxpflpos",
-        expect: Expect::Refuse(ShlosiloErrorKind::FeatureNotImplemented),
+        // E-1 (2026-11-25): legacy (data_type 1) is signed now. The payload is the
+        // EIP-155 preimage (item 6 = chain id 1, empty r/s slots), so the page shows
+        // the one fee this scheme has — `gas price` — and the exit carries the
+        // protected v = chain_id*2 + 35 + parity = 37/38.
+        expect: Expect::Sign {
+            review_has: &[
+                "eth send request",
+                "chain 1 ethereum mainnet",
+                "value 0 wei",
+                "gas limit 21000",
+                "gas price 30000000000 wei",
+                "data: none",
+            ],
+            v_domain: VDomain::Eip155 { chain_id: 1 },
+        },
     },
     Case {
         kind: "2930",
@@ -202,18 +219,49 @@ fn the_matrix_matches_the_device_behaviour() {
                 .unwrap_or_else(|e| panic!("{}: must sign, got {:?}", case.kind, e.kind));
                 let sig = parse_eth_signature(&out[..n])
                     .unwrap_or_else(|_| panic!("{}: exit must be a container", case.kind));
-                let v = sig.signature[64];
                 match v_domain {
-                    VDomain::YParity => assert!(
-                        v <= 1,
-                        "{}: EIP-1559 carries the bare yParity, got v={v}",
-                        case.kind
-                    ),
-                    VDomain::Eip191 => assert!(
-                        v == 27 || v == 28,
-                        "{}: EIP-191 carries v = 27/28, got v={v}",
-                        case.kind
-                    ),
+                    VDomain::YParity => {
+                        let v = sig.signature[64];
+                        assert!(
+                            v <= 1,
+                            "{}: EIP-1559 carries the bare yParity, got v={v}",
+                            case.kind
+                        )
+                    }
+                    VDomain::Eip191 => {
+                        let v = sig.signature[64];
+                        assert!(
+                            v == 27 || v == 28,
+                            "{}: EIP-191 carries v = 27/28, got v={v}",
+                            case.kind
+                        )
+                    }
+                    VDomain::Eip155 { chain_id } => {
+                        // Whatever the parity, the wire `v` must decode back to this
+                        // chain id: chain_id = (v - 35) / 2, and the bytes must be the
+                        // minimal big-endian form of that v (no padding).
+                        let v_bytes = &sig.signature_bytes()[64..];
+                        assert!(
+                            (1..=8).contains(&v_bytes.len()),
+                            "{}: v is 1..=8 bytes, got {}",
+                            case.kind,
+                            v_bytes.len()
+                        );
+                        assert!(
+                            v_bytes[0] != 0x00,
+                            "{}: v must not carry a leading zero byte",
+                            case.kind
+                        );
+                        let mut v: u64 = 0;
+                        for b in v_bytes {
+                            v = (v << 8) | u64::from(*b);
+                        }
+                        assert!(
+                            v >= 35 && (v - 35) / 2 == chain_id,
+                            "{}: v={v} must decode to chain {chain_id}",
+                            case.kind
+                        );
+                    }
                 }
             }
             Expect::ReviewOnly { review_has, refuse } => {
@@ -303,8 +351,11 @@ fn approve_signatures_recover_to_the_device_address() {
         let sig = parse_eth_signature(&out[..n]).expect("container");
 
         // The container carries the bare yParity; recovery takes the EIP-191-style
-        // 27/28 form, so the offset is applied here (never on the wire).
-        let mut sig65 = sig.signature;
+        // 27/28 form, so the offset is applied here (never on the wire). The
+        // container's signature slot is 72 bytes wide (EIP-155's `v` is a u64), so
+        // the 65-byte recovery form is built explicitly.
+        let mut sig65 = [0u8; 65];
+        sig65.copy_from_slice(&sig.signature_bytes()[..65]);
         sig65[64] += 27;
         let recovered = eth_sign::ecdsa_recover(&sighash, &sig65).expect("recover");
         assert_eq!(
@@ -323,4 +374,94 @@ fn approve_signatures_recover_to_the_device_address() {
             "{kind}: address renders as an EIP-55 string"
         );
     }
+}
+
+/// E-1 (2026-11-25): a legacy (EIP-155) signature is only usable if `v` is the
+/// protected form the network expects. This closes the loop the same way
+/// `approve_signatures_recover_to_the_device_address` does for 1559: recompute the
+/// EIP-155 preimage digest with our own code, take `r ‖ s ‖ v` **straight off the
+/// wire**, undo the `chain_id*2 + 35` offset exactly as a wallet does
+/// (`parity = (v - 35) % 2`), and recover the signer. The recovered key must be the
+/// device's own — so a `v` from the wrong chain, a truncated `v`, or a 27/28
+/// substitution all fail here instead of at a user's wallet.
+#[test]
+fn legacy_signature_recovers_to_the_device_address() {
+    use shlosilo::chain::eth::{eip155, from_rlp, sign as eth_sign};
+    use shlosilo::curve_primitive::secp256k1;
+    use shlosilo::derivation::bip32_secp256k1::derive_from_seed;
+    use shlosilo::derivation::path::DerivationPath;
+    use shlosilo::encoding::keccak256;
+    use shlosilo::ur::codec::eth_sign_request::parse_eth_sign_request;
+
+    let seed = [7u8; 64];
+    let path = DerivationPath::parse("m/44'/60'/0'/0/0").unwrap();
+    let sk = derive_from_seed(&seed, &path).unwrap();
+    let device_pub = secp256k1::point_to_uncompressed(&secp256k1::base_mul(&sk));
+
+    let case = CASES
+        .iter()
+        .find(|c| c.kind == "legacy")
+        .expect("legacy case present");
+    let payload = payload(case.ur);
+    let req = parse_eth_sign_request(&payload).expect("request parses");
+    let tx = from_rlp::parse_eip155_signing_request(req.sign_data).expect("legacy tx parses");
+    assert_eq!(tx.chain_id, 1, "the fixture is a mainnet transaction");
+    // the digest the network would compute for this preimage
+    let sighash = eip155::signing_hash(&tx).expect("sighash");
+
+    let mut out = [0u8; 512];
+    let n = sign(
+        SignInput::Seed { seed: &seed },
+        UrTypeTag::EthSignRequest,
+        &payload,
+        &mut out,
+    )
+    .expect("legacy signs");
+    let sig = parse_eth_signature(&out[..n]).expect("container");
+
+    // v off the wire, minimal big-endian
+    let v_bytes = &sig.signature_bytes()[64..];
+    let mut v: u64 = 0;
+    for b in v_bytes {
+        v = (v << 8) | u64::from(*b);
+    }
+    assert_eq!(
+        v, 37,
+        "chain 1 → v = 37 or 38, and this fixture's parity is 0"
+    );
+
+    // what a wallet does with an EIP-155 v: strip the chain, keep the parity
+    let parity = ((v - 35) % 2) as u8;
+    let mut sig65 = [0u8; 65];
+    sig65[..64].copy_from_slice(&sig.signature_bytes()[..64]);
+    sig65[64] = 27 + parity;
+
+    let recovered = eth_sign::ecdsa_recover(&sighash, &sig65).expect("recover");
+    assert_eq!(
+        recovered,
+        device_pub[1..],
+        "a legacy signature must recover to the device's own key from the wire bytes"
+    );
+
+    // ... and the same signature with the 27-offset v (what a 1559/personal-shaped
+    // container would have carried) recovers to something else: the offset is not
+    // cosmetic.
+    let mut wrong = sig65;
+    wrong[64] = 27 + (1 - parity);
+    let mis_recovered = eth_sign::ecdsa_recover(&sighash, &wrong).expect("recover (wrong parity)");
+    assert_ne!(
+        mis_recovered,
+        device_pub[1..],
+        "flipping the parity must not recover to the device key"
+    );
+
+    // keccak256(preimage) is the digest our model re-derives: pin it against the
+    // preimage bytes so a re-encoding drift cannot hide behind a matching signature
+    let mut preimage = [0u8; 256];
+    let pn = eip155::signing_preimage_into(&tx, &mut preimage).expect("preimage");
+    assert_eq!(
+        keccak256::hash(&preimage[..pn]).unwrap(),
+        sighash,
+        "the digest must be keccak256 of the EIP-155 preimage"
+    );
 }

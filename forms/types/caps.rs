@@ -117,7 +117,8 @@ pub const DEST_ORIGINAL_MAX: usize = 106;
 /// (inbound) and `eth-signature` key 3 (the echo) share one bound. Keeping it
 /// here instead of in one of the two codecs means neither layer-E codec has to
 /// import the other, and the echoed reply always fits
-/// `ur::codec::eth_signature::ETH_SIGNATURE_CBOR_MAX_LEN` (156 B worst case).
+/// `ur::codec::eth_signature::ETH_SIGNATURE_CBOR_MAX_LEN` (163 B worst case:
+/// a 72-byte `r ‖ s ‖ v` plus an origin at this cap).
 /// Real origins are host names (`keystone`, `metamask`). Over-cap is an explicit
 /// EncodingInvalidFormat Err on both sides — never a truncation.
 pub const ETH_UR_ORIGIN_MAX_LEN: usize = 64;

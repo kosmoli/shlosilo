@@ -20,21 +20,36 @@ CBOR map, exactly three keys, canonically ordered 1, 2, 3:
 | key | CBOR type | content |
 |---|---|---|
 | 1 | tag(37) + bytes(16) | `requestId`, **echoed from the request** (`eth-sign-request` key 1) |
-| 2 | bytes(65) | `r ‖ s ‖ v` — r 32 B, s 32 B, v 1 B |
+| 2 | bytes(65..=72) | `r ‖ s ‖ v` — r 32 B, s 32 B, v 1..=8 B |
 | 3 | text (optional) | `origin`, echoed from the request (key 7) |
 
-`v` is **opaque** to this container: 1 byte, no 27 offset added, no range check.
+`v` is **opaque** to this container: 1..=8 bytes, no 27 offset added, no range check.
 Chain semantics belong to the signer and are pinned there (E-1):
 
-| path | v |
-|---|---|
-| EIP-1559 (`0x02`) | `0` / `1` (yParity) |
-| legacy unprotected (6-item) | `27` / `28` |
-| legacy EIP-155 (9-item) | `chain_id*2 + 8 + {0,1}` ⇒ `37` / `38` on chain 1 |
-| EIP-191 `personal_sign` / EIP-712 | `27` / `28` |
+| path | v | bytes on the wire |
+|---|---|---|
+| EIP-1559 (`0x02`) | `0` / `1` (yParity) | 1 |
+| legacy unprotected (6-item) | *refused* (`FeatureNotImplemented`) — no replay protection | — |
+| legacy EIP-155 (9-item) | `chain_id*2 + 35 + {0,1}` ⇒ `37`/`38` on chain 1, `309`/`310` on 137, `22310257`/`22310258` on 11155111 | 1 / 2 / 4 |
+| EIP-191 `personal_sign` / EIP-712 | `27` / `28` | 1 |
 
-Sizes: 99 B for an 8-char origin. Worst case with the origin cap below is 156 B;
-`ETH_SIGNATURE_CBOR_MAX_LEN = 160` leaves margin.
+### Why `v` is variadic (E-1, 2026-11-25)
+
+`v` was one byte while the only wired-up schemes were EIP-1559 and EIP-191. EIP-155
+makes `v = chain_id * 2 + 35 + y_parity`, a `u64`: mainnet fits in one byte, Polygon
+(137 → 309) needs two, Sepolia (11155111 → 22310257) needs four. A fixed 65-byte
+signature could not carry a Sepolia `v` at all, so key 2 is now 65..=72 bytes and the
+`v` segment is written **big-endian, minimal** (leading zero bytes dropped; `v == 0` is
+a single `0x00` byte) — byte for byte what keystone's reference implementation does in
+`rust/apps/ethereum/src/structs.rs::EthereumSignature::serialize`.
+
+That minimal form is also what makes the container canonical: `v = 309` has exactly one
+encoding (`01 35`). Accepting `00 01 35` as well would give one signature two byte
+strings, so a padded `v` is rejected on both sides.
+
+Sizes: 99 B for an 8-char origin and a 65-byte signature. Worst case with the origin cap
+below is 163 B (72-byte signature + 64-byte origin); `ETH_SIGNATURE_CBOR_MAX_LEN = 168`
+leaves margin.
 
 ## Gold vector (byte-exact target)
 
@@ -52,15 +67,28 @@ bytes exactly for those three fields.
 ## API
 
 ```rust
-pub const ETH_SIGNATURE_CBOR_MAX_LEN: usize = 160;
+pub const ETH_SIGNATURE_CBOR_MAX_LEN: usize = 168;
+/// Shortest `r ‖ s ‖ v`: 64 + a one-byte v.
+pub const SIGNATURE_MIN_LEN: usize = 65;
+/// Longest: 64 + a full-width 8-byte v (EIP-155's v is a u64).
+pub const SIGNATURE_MAX_LEN: usize = 72;
 // The origin cap is shared with the inbound `eth-sign-request` key 7, so it
 // lives in `forms/types/caps.rs` — neither layer-E codec imports its sibling.
 // pub const ETH_UR_ORIGIN_MAX_LEN: usize = 64;
 
 pub struct EthSignature<'a> {
     pub request_id: [u8; 16],
-    pub signature: [u8; 65],
+    /// Only the first `signature_len` bytes are on the wire.
+    pub signature: [u8; SIGNATURE_MAX_LEN],
+    /// 65..=72 (64 + the width of v).
+    pub signature_len: usize,
     pub origin: Option<&'a str>,
+}
+
+impl EthSignature<'_> {
+    /// The `r ‖ s ‖ v` bytes that go on the wire (empty if `signature_len` is
+    /// out of range — every encode refuses that shape anyway).
+    pub fn signature_bytes(&self) -> &[u8];
 }
 
 /// CBOR message only (no UR wrapper), into the caller's buffer.
@@ -75,11 +103,16 @@ pub fn parse_eth_signature(payload: &[u8]) -> Result<EthSignature<'_>>;
 pub fn encode_eth_signature_ur(sig: &EthSignature<'_>) -> Result<UrEncoded>;
 ```
 
+The `v` byte itself is produced by `forms/chain/eth/eip155.rs::write_v_be` (minimal
+big-endian, keystone's rule) and is the only producer of that segment.
+
 ## Strictness rules (each gets a pin)
 
 Encode:
 - missing required field cannot happen by construction; `origin` over
   `ETH_UR_ORIGIN_MAX_LEN` is an error, not a truncation;
+- `signature_len` outside 65..=72, or a multi-byte `v` whose first byte is `0x00`, is
+  `EncodingInvalidFormat` — the encoder never mints a non-canonical container;
 - buffer under-capacity returns `BufferTooSmall` with the required length in the
   error context — never a partial write reported as success.
 
@@ -87,8 +120,11 @@ Parse (fail closed, no silent defaulting):
 - non-map payload → `EncodingInvalidFormat`;
 - key 1 absent or not `tag(37)` over exactly 16 bytes → error (uuid tag is
   whitelisted, not "any tag");
-- key 2 absent or not exactly 65 bytes → error (a 64-byte `r‖s` must not be
+- key 2 absent or shorter than 65 bytes → error (a 64-byte `r‖s` must not be
   accepted and short-filled);
+- key 2 longer than 72 bytes → error (no `v` is wider than 8 bytes);
+- key 2 wider than 65 bytes whose `v` segment starts with `0x00` → error (only the
+  minimal big-endian form is canonical; see above);
 - key 3 present but not text, or longer than the cap → error;
 - trailing garbage after the single top-level item → error (the shared
   `encoding::cbor::decode` already enforces this — do not add a second parser).

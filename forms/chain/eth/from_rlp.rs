@@ -313,6 +313,98 @@ pub fn parse_eip155_raw(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
     })
 }
 
+/// Parse a **legacy signing request** (`eth-sign-request`, `data_type` 1).
+///
+/// Wire shape — the EIP-155 preimage, which is what wallets send (`@metamask/
+/// eth-qr-keyring` encodes `transaction.getMessageToSign()`, and EIP-155 defines it
+/// as exactly this list):
+///
+/// ```text
+/// rlp([nonce, gas_price, gas_limit, destination, amount, data, chain_id, [], []])
+/// ```
+///
+/// ## Why this is not [`parse_eip155_raw`]
+///
+/// Item 6 means different things in the two shapes, and the difference is not
+/// cosmetic:
+///
+/// | payload | item 6 | items 7/8 |
+/// |---|---|---|
+/// | signed transaction | `v` (>= 35) | `r`, `s` |
+/// | signing request | `chain_id` | empty signature slots |
+///
+/// keystone's reference implementation draws the line at the same place —
+/// `LegacyTransaction::chain_id()` returns `signature.v()` when the `s` slot is
+/// zero ("unsigned eip155 compatible") and `(v - 35) / 2` only for a signed one.
+/// Reading a request through the signed-transaction entry would take Polygon's
+/// `chain_id = 137` for `v = 137` and sign a preimage for chain 51: a signature
+/// the sender cannot use, produced while the device reports success.
+///
+/// ## Refused on purpose
+///
+/// - **6 items** (`rlp([nonce, gas_price, gas_limit, destination, amount, data])`)
+///   — pre-EIP-155: no replay protection, so a signature over it is valid on every
+///   chain that ever forked. `FeatureNotImplemented`: this is a shape we know and
+///   choose not to sign, not a malformed request (the code used to be invisible
+///   behind a generic parse failure). keystone signs it as if `chain_id` were 1,
+///   which is exactly the outcome we do not want.
+/// - **non-empty `r`/`s` slots** — the payload already carries a signature;
+///   signing over it would launder someone else's `r`/`s` as this device's output.
+///   Same policy as [`parse_eip1559_signing_request`].
+/// - **`chain_id == 0`** — no chain has id 0, and the `v` it implies (35/36) is
+///   indistinguishable from a protected transaction on a chain nobody names.
+pub fn parse_eip155_signing_request(raw: &[u8]) -> Result<Eip155Transaction<'_>> {
+    let (top, tail) = Rlp::read(raw)?;
+    if !tail.is_empty() {
+        return Err(err());
+    }
+    let fields = top.as_list_items()?;
+    match fields.len() {
+        // pre-EIP-155: known shape, deliberately not signable here.
+        6 => return Err(ShlosiloError::new(ShlosiloErrorKind::FeatureNotImplemented)),
+        9 => {}
+        _ => return Err(err()),
+    }
+    // Items 7/8 are the signature slots of the signed form. A request leaves both
+    // empty — that empty `s` is also how the reference implementation recognises
+    // "unsigned eip155 compatible" and reads item 6 as a chain id.
+    for slot in &fields[7..9] {
+        if !slot.as_str()?.is_empty() {
+            return Err(err());
+        }
+    }
+    let nonce = be_to_u128(fields[0].as_str()?)?;
+    let gas_price = be_to_u128(fields[1].as_str()?)?;
+    let gas_limit = be_to_u128(fields[2].as_str()?)?;
+    let dest_bytes = fields[3].as_str()?;
+    let destination = match dest_bytes.len() {
+        0 => None,
+        20 => {
+            let mut a = [0u8; 20];
+            a.copy_from_slice(dest_bytes);
+            Some(a)
+        }
+        _ => return Err(err()),
+    };
+    let amount = be_to_u128(fields[4].as_str()?)?;
+    let data = crate::types::wire_bytes::wire_from(fields[5].as_str()?);
+    // A3c-F7 discipline (already fixed for the other entries, kept identical here): a
+    // wire integer the model cannot hold is rejected, never truncated.
+    let chain_id = u64::try_from(be_to_u128(fields[6].as_str()?)?).map_err(|_| err())?;
+    if chain_id == 0 {
+        return Err(err());
+    }
+    Ok(Eip155Transaction {
+        chain_id,
+        nonce: u64::try_from(nonce).map_err(|_| err())?,
+        gas_price,
+        gas_limit: u64::try_from(gas_limit).map_err(|_| err())?,
+        destination,
+        amount,
+        data,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     /// A3c-F5: a string of 56+ bytes uses the long-form head (0xb8..=0xbf) and must still
@@ -506,6 +598,161 @@ mod tests {
         assert!(
             parse_eip1559_raw(&non_canonical_tx).is_err(),
             "a transaction carrying a non-canonical field must be rejected"
+        );
+    }
+
+    // ─── E-1 (2026-11-25): legacy signing requests (data_type 1) ────────────
+
+    /// The live `eth-sign-request` fixture this repo already ships for legacy
+    /// (`tests/ur_inject_matrix.rs` case `legacy`, UR-decoded 2026-11-25): a 9-item
+    /// preimage whose item 6 is the CHAIN ID and whose signature slots are empty.
+    ///
+    /// `e4 07 85 06fc23ac00 82 5208 94 11…11 80 80 01 80 80`
+    /// → nonce 7, 30 gwei, 21000 gas, to 0x1111…11, value 0, no data, chain 1.
+    ///
+    /// This is the shape the first wiring attempt broke on: reading it as a signed
+    /// transaction makes item 6 a `v`, so chain 1 looks like "pre-EIP-155" and is
+    /// refused — while chain 137 would have been read as chain 51 and signed.
+    #[test]
+    fn legacy_signing_request_reads_item_six_as_the_chain_id() {
+        let raw = hex_decode(
+            "e4078506fc23ac008252089411111111111111111111111111111111111111118080018080",
+        );
+        let tx = parse_eip155_signing_request(&raw).expect("the shipped legacy fixture parses");
+        assert_eq!(tx.chain_id, 1, "item 6 is the chain id, not v");
+        assert_eq!(tx.nonce, 7);
+        assert_eq!(tx.gas_price, 30_000_000_000);
+        assert_eq!(tx.gas_limit, 21_000);
+        assert_eq!(tx.destination, Some([0x11u8; 20]));
+        assert_eq!(tx.amount, 0);
+        assert!(crate::types::wire_bytes::wire_slice(&tx.data).is_empty());
+
+        // the same doc's chain ids: Polygon and Sepolia must not be re-derived
+        // (as `v`-shaped parses they would read 137 → chain 51 and 11155111 → chain
+        // 5577578), so item 6 is the chain id and nothing else.
+        for (chain_id, raw_hex) in [
+            (
+                137u64,
+                "e5078506fc23ac00825208941111111111111111111111111111111111111111808081898080",
+            ),
+            (
+                11_155_111u64,
+                "e7078506fc23ac00825208941111111111111111111111111111111111111111808083aa36a78080",
+            ),
+        ] {
+            let raw = hex_decode(raw_hex);
+            let tx = parse_eip155_signing_request(&raw).expect("chain id in range");
+            assert_eq!(
+                tx.chain_id, chain_id,
+                "chain {chain_id} must survive the parse"
+            );
+        }
+    }
+
+    /// The gold EIP-155 preimage (spec example / pool #68) parses to the fields the
+    /// core signs, so the request path and the `eip155` gold vector cannot drift.
+    #[test]
+    fn legacy_signing_request_parses_the_spec_example_preimage() {
+        let raw = hex_decode(
+            "ec098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080018080",
+        );
+        let tx = parse_eip155_signing_request(&raw).expect("spec preimage parses");
+        assert_eq!(tx.chain_id, 1);
+        assert_eq!(tx.nonce, 9);
+        assert_eq!(tx.gas_price, 20_000_000_000);
+        assert_eq!(tx.gas_limit, 21_000);
+        assert_eq!(tx.destination, Some([0x35u8; 20]));
+        assert_eq!(tx.amount, 1_000_000_000_000_000_000);
+    }
+
+    /// A payload that already carries `r`/`s` is not a request: signing over it
+    /// would hand back someone else's signature as ours. The signed form is still
+    /// readable, but only through [`parse_eip155_raw`] — the two entries are not
+    /// interchangeable, which is the whole point of having both.
+    #[test]
+    fn legacy_signing_request_refuses_a_presigned_payload() {
+        use crate::chain::eth::eip155::{sign_eip155, Eip155SignInput, Eip155Transaction};
+        let tx = Eip155Transaction {
+            chain_id: 1,
+            nonce: 9,
+            gas_price: 20_000_000_000,
+            gas_limit: 21_000,
+            destination: Some([0x35u8; 20]),
+            amount: 1_000_000_000_000_000_000,
+            data: Vec::new().into(),
+        };
+        let key = SecretBytes::new([0x46u8; 32]);
+        let signed = sign_eip155(&Eip155SignInput {
+            tx,
+            private_key: &key,
+        })
+        .unwrap();
+        // the signed transaction is readable as a transaction ...
+        assert!(parse_eip155_raw(&signed.tx_bytes).is_ok());
+        // ... and refused as a signing request
+        let e = parse_eip155_signing_request(&signed.tx_bytes)
+            .expect_err("a signed payload is not a signing request");
+        assert_eq!(e.kind, ShlosiloErrorKind::EncodingInvalidFormat);
+
+        // r/s slots: empty = request, non-empty = pre-signed. Control on the same
+        // shape with one slot filled (`... 01 01 80`).
+        let with_r = hex_decode(
+            "ec098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080010180",
+        );
+        assert!(
+            parse_eip155_signing_request(&with_r).is_err(),
+            "a non-empty r slot means the payload is already signed"
+        );
+    }
+
+    /// The unprotected legacy shape is refused with its own stable code: it is a
+    /// known request we will not sign (no replay protection), not a malformed one.
+    #[test]
+    fn legacy_signing_request_refuses_unprotected_shape_with_a_stable_code() {
+        // rlp([nonce=9, gas_price=20 gwei, gas_limit=21000, to, value=1 ETH, data=""])
+        let raw = hex_decode(
+            "e9098504a817c800825208943535353535353535353535353535353535353535880de0b6b3a764000080",
+        );
+        let e = parse_eip155_signing_request(&raw).expect_err("6 items = pre-EIP-155, refused");
+        assert_eq!(
+            e.kind,
+            ShlosiloErrorKind::FeatureNotImplemented,
+            "the unprotected shape must not read as a generic format error"
+        );
+    }
+
+    /// Shape and range failures, each its own case: a wrong item count, an empty
+    /// payload, `chain_id = 0`, and a chain id wider than u64 (A3c-F7 discipline:
+    /// reject, never truncate).
+    #[test]
+    fn legacy_signing_request_rejects_bad_shapes() {
+        let cases: [(&str, &str); 4] = [
+            ("", "empty payload"),
+            ("c0", "zero items"),
+            // 8 items: one signature slot missing
+            (
+                "e3078506fc23ac0082520894111111111111111111111111111111111111111180800180",
+                "8 items",
+            ),
+            // chain_id = 0
+            (
+                "e4078506fc23ac008252089411111111111111111111111111111111111111118080808080",
+                "chain_id 0",
+            ),
+        ];
+        for (hex, why) in cases {
+            assert!(
+                parse_eip155_signing_request(&hex_decode(hex)).is_err(),
+                "{why} must be rejected"
+            );
+        }
+        // chain id 2^64 + 1 must not truncate to 1
+        let raw = hex_decode(
+            "ed078506fc23ac008252089411111111111111111111111111111111111111118080890100000000000000018080",
+        );
+        assert!(
+            parse_eip155_signing_request(&raw).is_err(),
+            "an oversized chain id must be rejected, not truncated"
         );
     }
 }
