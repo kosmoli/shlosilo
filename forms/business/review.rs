@@ -1472,6 +1472,81 @@ mod review_pagination_pins {
 }
 
 #[cfg(test)]
+mod erc20_transfer_layout_pins {
+    //! The page layout the operator actually saw on the mainnet acceptance run
+    //! (2026-11-25, tx 0xb29c50b4…2ff0, firmware `e303033`): page 1 ends at the
+    //! calldata label because the next line is a label whose value is glued to it, so
+    //! the whole `recipient` pair travels to page 2. Pinned as a layout, not as an
+    //! implementation detail: if a line is added or the glue rules change, this test
+    //! makes someone look at the screen again.
+    use super::*;
+    use crate::encoding::cbor;
+
+    const RECIPIENT: [u8; 20] = [
+        0xd0, 0x03, 0x87, 0xde, 0x9f, 0x68, 0xc9, 0x64, 0x2e, 0x25, 0xd4, 0xc1, 0x94, 0xd6, 0xe1,
+        0xce, 0x23, 0x36, 0x33, 0xc0,
+    ];
+    const USDC: [u8; 20] = [
+        0xa0, 0xb8, 0x69, 0x91, 0xc6, 0x21, 0x8b, 0x36, 0xc1, 0xd1, 0x9d, 0x4a, 0x2e, 0x9e, 0xb0,
+        0xce, 0x36, 0x06, 0xeb, 0x48,
+    ];
+
+    fn transfer_request() -> alloc::vec::Vec<u8> {
+        use crate::chain::eth::rlp;
+        let mut data = alloc::vec![0xa9, 0x05, 0x9c, 0xbb];
+        data.extend_from_slice(&[0u8; 12]);
+        data.extend_from_slice(&RECIPIENT);
+        data.extend_from_slice(&[0u8; 29]);
+        data.extend_from_slice(&[0x0f, 0x42, 0x40]); // 1_000_000
+        let fields = alloc::vec![
+            rlp::encode_uint(1),
+            rlp::encode_uint(2),
+            rlp::encode_uint(100_000),
+            rlp::encode_uint(204_205_660),
+            rlp::encode_uint(94_548),
+            rlp::encode_bytes(&USDC),
+            rlp::encode_uint(0),
+            rlp::encode_bytes(&data),
+            rlp::encode_list(&[]),
+        ];
+        let mut raw = alloc::vec![0x02u8];
+        raw.extend_from_slice(&rlp::encode_list(&fields));
+        cbor::encode_map(&[
+            (
+                cbor::encode_uint(1),
+                cbor::encode_tag(37, &cbor::encode_bytes(&[0x9bu8; 16])),
+            ),
+            (cbor::encode_uint(2), cbor::encode_bytes(&raw)),
+            (cbor::encode_uint(3), cbor::encode_uint(4)),
+            (cbor::encode_uint(4), cbor::encode_uint(1)),
+        ])
+    }
+
+    #[test]
+    fn the_verified_mainnet_layout_pages_as_the_device_showed_it() {
+        let payload = transfer_request();
+        let view = build_eth(&payload).expect("review");
+        let texts: alloc::vec::Vec<&str> = view.lines().iter().map(|l| l.as_str()).collect();
+        assert_eq!(texts.len(), 15, "the send view is 15 lines: {texts:?}");
+
+        let mask = view.break_mask();
+        assert_eq!(page_count(15, mask, 12), 2, "two pages");
+        assert_eq!(page_span(15, mask, 12, 0), (0, 11), "page 1: {texts:?}");
+        assert_eq!(page_span(15, mask, 12, 1), (11, 4), "page 2: {texts:?}");
+
+        // page 1 ends on the calldata label; its value pair opens page 2
+        assert_eq!(texts[10], "erc20 transfer");
+        assert_eq!(texts[11], "recipient");
+        assert_eq!(texts[12], "0xd00387de9f68C9642e25d4c194d6e1cE233633C0");
+        assert_eq!(texts[13], "amount");
+        assert_eq!(texts[14], "1000000");
+        // …and the destination pair sits together on page 1
+        assert_eq!(texts[2], "to:");
+        assert_eq!(texts[3], "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+    }
+}
+
+#[cfg(test)]
 mod sepolia_acceptance_pins {
     //! Calldata taken from the six device-signed Sepolia transactions of 2026-11-25
     //! (MetaMask official test-dApp; txids in the acceptance record). These are what a
