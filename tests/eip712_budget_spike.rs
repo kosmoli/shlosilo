@@ -184,7 +184,10 @@ const PERMIT2_BATCH: &str = r#"{
 
 /// Seaport `OrderComponents`: the deepest shape a mainstream wallet signs —
 /// two arrays of nested structs (`OfferItem[]`, `ConsiderationItem[]`).
-const SEAPORT_ORDER: &str = r#"{
+///
+/// `pub(crate)`: `tests/eip712_pool_hash.rs` includes this file as a module so the P2
+/// digest pin hashes the same documents this spike measured (no second copy).
+pub(crate) const SEAPORT_ORDER: &str = r#"{
   "types": {
     "EIP712Domain": [
       {"name":"name","type":"string"},
@@ -277,7 +280,8 @@ const SAFE_TX: &str = r#"{
 }"#;
 
 /// EIP-712's own `Mail` example: a nested struct plus a fixed-length array.
-const MAIL_OFFICIAL: &str = r#"{
+/// `pub(crate)`: see `SEAPORT_ORDER` — the P2 digest pin reads it too.
+pub(crate) const MAIL_OFFICIAL: &str = r#"{
   "types": {
     "EIP712Domain": [
       {"name":"name","type":"string"},
@@ -436,7 +440,10 @@ fn seaport_bulk_n(n: u64) -> String {
     )
 }
 
-fn samples() -> Vec<(&'static str, String)> {
+/// The measured sample set. `pub(crate)` because `tests/eip712_pool_hash.rs` includes
+/// this file to hash the SAME documents — the digest pin and the size measurements must
+/// never disagree about what a real payload is.
+pub(crate) fn samples() -> Vec<(&'static str, String)> {
     vec![
         ("erc2612 permit", PERMIT_2612.to_string()),
         ("permit2 PermitSingle", PERMIT2_SINGLE.to_string()),

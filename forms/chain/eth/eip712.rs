@@ -145,6 +145,14 @@ fn add_subtypes(
         }
     }
     for sub in &sub_types {
+        // A later branch of this frame may already have emitted `sub` (a diamond: A
+        // reaches C directly and through B). The candidate set was collected before the
+        // loop, so it must be re-checked here — without this the type is written twice
+        // and `typeHash` stops matching every standard implementation, which makes the
+        // signature verify against a different digest than the wallet's.
+        if visited.contains(sub) {
+            continue;
+        }
         visited.insert(sub.clone());
         // Recurse into sub structs
         let sub_fields = types.get(sub).ok_or_else(|| {

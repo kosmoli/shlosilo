@@ -1019,24 +1019,46 @@ fn missing_and_duplicate_members_are_refused() {
 }
 
 #[test]
-fn atom_content_validation_is_deferred_to_the_encoder() {
-    // KNOWN GAP, pinned on purpose: the pool records the JSON SHAPE (a `uint8` field
-    // must carry a number or a numeric string), while the alloc parser also checks the
-    // declared width. `uint8 = 300` is therefore refused there and accepted here.
+fn atom_content_is_validated_by_both_faces() {
+    // P1 recorded this as a KNOWN GAP: the pool checked only the JSON SHAPE, so
+    // `uint8 = 300` was refused by the alloc parser and accepted by the pool. P2 moved
+    // the declared-width check into the pool — the same decoder the digest layer uses —
+    // so both faces now refuse the request at the same entry point (`parse`), with the
+    // same `EncodingInvalidFormat`.
     //
-    // P2/P3 (the encoder) is where the width belongs, because that is where the value
-    // is turned into 32 bytes. If a later step moves the check into the pool, this
-    // assertion is the one that must flip — the silence would otherwise look like
-    // parity drift.
+    // This assertion is the one that must flip if a later step ever delegates the width
+    // check back out of the pool: silence here would look like parity drift.
     let overflow = TINY
         .replace(r#""type":"uint256""#, r#""type":"uint8""#)
         .replace(r#""a":1"#, r#""a":300"#);
-    assert!(
-        parse_typed_data_v4(&overflow).is_err(),
-        "the alloc parser checks the declared width"
-    );
-    assert!(
-        run(&overflow, Caps::GENEROUS).is_ok(),
-        "the pool defers width checks to the encoder"
-    );
+    let (alloc_ok, pool_ok) = verdicts(&overflow);
+    assert!(!alloc_ok, "the alloc parser checks the declared width");
+    assert!(!pool_ok, "the pool checks the declared width too");
+
+    // The rest of the atom content surface gets the same treatment: an address that is
+    // not 20 bytes, a `bytesN` whose hex is not N bytes, a `bytes33` type (the shape
+    // that used to panic the encoder, audit A3c-F2) and a negative `uint` (A3c-F17).
+    let cases: [(&str, String); 4] = [
+        (
+            "address with 19 bytes",
+            TINY.replace(
+                "0x0000000000000000000000000000000000000001",
+                "0x000000000000000000000000000000000000001",
+            ),
+        ),
+        (
+            "bytes32 carrying 20 bytes of hex",
+            TINY.replace(r#""type":"address""#, r#""type":"bytes32""#),
+        ),
+        (
+            "bytes33 is not an atom type",
+            TINY.replace(r#""type":"address""#, r#""type":"bytes33""#),
+        ),
+        ("negative uint", TINY.replace(r#""a":1"#, r#""a":-1"#)),
+    ];
+    for (what, json) in cases {
+        let (alloc_ok, pool_ok) = verdicts(&json);
+        assert!(!alloc_ok, "{what}: the alloc parser must refuse");
+        assert!(!pool_ok, "{what}: the pool must refuse too");
+    }
 }

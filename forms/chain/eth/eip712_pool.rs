@@ -38,16 +38,30 @@
 //! only, `\uXXXX` goes through `u32::from_str_radix` + `char::from_u32`) and applies
 //! the same three budgets. Do not tighten one side without the other.
 //!
-//! **P1 scope.** This module only fills the pool and exposes views. Recomputing the
-//! digest from these views and showing the request to the user land in P2/P3; the
-//! value payloads are therefore kept as raw text (`"0x…"`, `"115792…"`, `"true"`)
-//! rather than decoded numbers — the encoder is the next step's job.
+//! **P1 scope.** The container: [`parse`] fills the pool and the views above expose it.
+//! Value payloads are kept as raw text (`"0x…"`, `"115792…"`, `"true"`) rather than
+//! decoded numbers, because decoding is the encoder's job.
 //!
-//! **Not-yet-validated.** Atom CONTENT validation (address hex, `uintN` width,
-//! `bytesN` length) is deliberately deferred to the encoder: this step answers
-//! "does the document have the shape the type table describes", not "is every
-//! number inside its declared width".
+//! **P2 scope (this step).** The algorithm layer: [`encode_type_pool`],
+//! [`type_hash_pool`], [`hash_struct_pool`] and [`signing_hash_pool`] recompute the
+//! EIP-712 digest from these views, byte for byte the digest `eip712.rs` signs.
+//! `tests/eip712_pool_hash.rs` holds both implementations against each other on every
+//! real-world sample and on the keystone golden vectors — that differential pin, not
+//! this comment, is what keeps them equal. `eip712.rs` keeps the alloc face for
+//! callers that already own parsed values; the two faces are the same pattern
+//! `eip155`/`eip1559` use for their parts / complete-transaction builders.
+//!
+//! **Atom content is validated.** P1 only checked the JSON shape; [`parse`] now also
+//! decodes each atom against its declared type — `uintN`/`intN` inside the declared
+//! width (`eip712.rs::fits_declared_width`, audit A3c-F17), `bytesN` exactly N bytes,
+//! `address` exactly 20 — through the same decoder the hash layer uses, so the pool
+//! cannot accept an atom the digest layer would refuse. Domain values are the one
+//! exception and stay lenient at parse time: `eip712.rs::json_to_domain` SKIPS a
+//! domain key whose shape does not fit instead of refusing the document, so the pool
+//! must too, and the content check moves to [`signing_hash_pool`], where a declared
+//! field must have a usable value (audit A3c-F16).
 
+use crate::encoding::keccak256::{self, KeccakSink};
 use crate::error::{ErrorContext, Result, ShlosiloError, ShlosiloErrorKind};
 
 // ─── node kinds ──────────────────────────────────────────────────────────────
@@ -72,6 +86,24 @@ pub const KIND_STRUCT: u8 = 7;
 /// elements are atoms or structs is readable from `children_of(0).kind` (P3's fold
 /// strategy needs exactly that, which is why there is no extra field for it).
 pub const KIND_ARRAY: u8 = 8;
+
+// ─── the built-in domain slots ───────────────────────────────────────────────
+
+/// The domain type's name. `eip712.rs` takes the domain's field list from the
+/// request's own `EIP712Domain` declaration; the pool builds the tree from the fixed
+/// slot list below, so the hash layer maps one onto the other.
+const DOMAIN_TYPE_NAME: &str = "EIP712Domain";
+
+/// The standard domain slots in canonical order: `(field name, declared type, node
+/// kind, may arrive as a JSON number)`. Only `chainId` may be a bare number — wallets
+/// disagree about it and `eip712.rs::json_to_domain` accepts just the number form.
+const DOMAIN_FIELDS: [(&str, &str, u8, bool); 5] = [
+    ("name", "string", KIND_STRING, false),
+    ("version", "string", KIND_STRING, false),
+    ("chainId", "uint256", KIND_UINT256, true),
+    ("verifyingContract", "address", KIND_ADDRESS, false),
+    ("salt", "bytes32", KIND_BYTES32, false),
+];
 
 // ─── the JSON budgets (copies, not moves) ────────────────────────────────────
 
@@ -154,6 +186,11 @@ pub struct Eip712Pool<'a> {
     message_root: Option<u16>,
     /// Root node of the `domain` tree.
     domain_root: Option<u16>,
+    /// Which canonical domain slots [`DOMAIN_FIELDS`] the `domain` tree holds, one bit
+    /// per slot. The children are stored in slot order with no names attached, and a
+    /// subsequence of kinds is ambiguous (`[string]` is `name` or `version`), so the
+    /// hash layer needs this to map a declared `EIP712Domain` field onto its value.
+    domain_mask: u8,
 }
 
 // ─── views ───────────────────────────────────────────────────────────────────
@@ -179,6 +216,7 @@ impl<'a> Eip712Pool<'a> {
             primary_type: None,
             message_root: None,
             domain_root: None,
+            domain_mask: 0,
         }
     }
 
@@ -1032,6 +1070,289 @@ fn atom_kind(ty: &str) -> Option<u8> {
     None
 }
 
+/// The element type of a declared type string (`"Person[2]"` → `"Person"`), the same
+/// split at the first `[` that `eip712.rs::atom_type` makes.
+fn strip_array_suffix(ty: &str) -> &str {
+    match ty.find('[') {
+        Some(at) => ty.get(..at).unwrap_or(ty),
+        None => ty,
+    }
+}
+
+// ─── atom decoding (shared by the fill pass and the hash layer) ───────────────
+
+/// Value of one hex digit (`eip712.rs::hex_nibble`).
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Is this an even-length run of hex digits? (`eip712.rs::parse_hex_bytes`'s test,
+/// minus the prefix handling: a wallet may spell `address` without `0x`, and the
+/// alloc parser accepts that.)
+fn is_hex(hex: &[u8]) -> bool {
+    hex.len().is_multiple_of(2) && hex.iter().all(|b| hex_nibble(*b).is_some())
+}
+
+/// Decode `payload` into `dst`, whose length fixes the expected size. One optional
+/// `0x` prefix is skipped. `false` when the text is not exactly `dst.len()` bytes of
+/// hex.
+fn hex_decode_at(payload: &[u8], dst: &mut [u8]) -> bool {
+    let hex = payload.strip_prefix(b"0x".as_slice()).unwrap_or(payload);
+    if !is_hex(hex) || hex.len() / 2 != dst.len() {
+        return false;
+    }
+    for (i, slot) in dst.iter_mut().enumerate() {
+        let hi = hex.get(2 * i).copied().and_then(hex_nibble).unwrap_or(0);
+        let lo = hex
+            .get(2 * i + 1)
+            .copied()
+            .and_then(hex_nibble)
+            .unwrap_or(0);
+        *slot = (hi << 4) | lo;
+    }
+    true
+}
+
+/// Absorb the bytes an (already [`is_hex`]-validated) hex run spells out.
+fn absorb_hex(sink: &mut KeccakSink, hex: &[u8]) {
+    let mut chunk = [0u8; 32];
+    let mut used = 0usize;
+    let mut at = 0usize;
+    while at < hex.len() {
+        let hi = hex.get(at).copied().and_then(hex_nibble).unwrap_or(0);
+        let lo = hex.get(at + 1).copied().and_then(hex_nibble).unwrap_or(0);
+        if let Some(slot) = chunk.get_mut(used) {
+            *slot = (hi << 4) | lo;
+        }
+        used += 1;
+        at += 2;
+        if used == chunk.len() {
+            sink.absorb(&chunk);
+            used = 0;
+        }
+    }
+    if let Some(tail) = chunk.get(..used) {
+        if !tail.is_empty() {
+            sink.absorb(tail);
+        }
+    }
+}
+
+/// Decimal (base 10) text → 32-byte big-endian, arbitrary precision
+/// (`eip712.rs::parse_uint256_string`). `None` when the text is not all digits or the
+/// value does not fit 256 bits — dropping the carry out of the top byte would turn
+/// `2^256 + 6` into `6` (audit A3c-F18).
+fn decimal_word(text: &[u8]) -> Option<[u8; 32]> {
+    let mut word = [0u8; 32];
+    for &d in text {
+        if !d.is_ascii_digit() {
+            return None;
+        }
+        let digit = u16::from(d - b'0');
+        // word *= 10
+        let mut carry: u16 = 0;
+        for slot in word.iter_mut().rev() {
+            let prod = u16::from(*slot) * 10 + carry;
+            *slot = (prod & 0xff) as u8;
+            carry = prod >> 8;
+        }
+        if carry != 0 {
+            return None;
+        }
+        // word += digit
+        let mut carry = digit;
+        for slot in word.iter_mut().rev() {
+            let sum = u16::from(*slot) + carry;
+            *slot = (sum & 0xff) as u8;
+            carry = sum >> 8;
+            if carry == 0 {
+                break;
+            }
+        }
+        if carry != 0 {
+            return None;
+        }
+    }
+    Some(word)
+}
+
+/// `uintN` text → 32-byte word: `0x`-hex (at most 32 bytes, right-aligned) or decimal.
+fn uint_word(payload: &[u8]) -> Result<[u8; 32]> {
+    if payload.starts_with(b"0x") || payload.starts_with(b"0X") {
+        // `parse_hex_bytes` only knows the lowercase prefix, so `0X…` is malformed
+        // hex and the alloc parser answers an error.
+        let hex = payload.strip_prefix(b"0x".as_slice()).ok_or_else(fmt_err)?;
+        if !is_hex(hex) {
+            return Err(fmt_err());
+        }
+        let n = hex.len() / 2;
+        let mut word = [0u8; 32];
+        let dst = word
+            .get_mut(32usize.checked_sub(n).ok_or_else(fmt_err)?..)
+            .ok_or_else(fmt_err)?;
+        if !hex_decode_at(hex, dst) {
+            return Err(fmt_err());
+        }
+        Ok(word)
+    } else {
+        decimal_word(payload).ok_or_else(fmt_err)
+    }
+}
+
+/// `intN` text → 32-byte two's-complement word (`eip712.rs::parse_int256_string`):
+/// `0x`-hex, or a decimal `i64`/`u64` magnitude with an optional leading `-`.
+fn int_word(payload: &[u8]) -> Result<[u8; 32]> {
+    if payload.starts_with(b"0x") {
+        return uint_word(payload);
+    }
+    let text = core::str::from_utf8(payload).map_err(|_| fmt_err())?;
+    let (negative, magnitude) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    // The alloc parser goes through `str::parse::<u64>` here, so `+5` is accepted and
+    // anything past `u64` is not.
+    let n: u64 = magnitude.parse().map_err(|_| fmt_err())?;
+    let mut word = [0u8; 32];
+    word[24..].copy_from_slice(&n.to_be_bytes());
+    if negative {
+        // Two's complement as `(!n) + 1`, so there is no borrow bookkeeping to get
+        // wrong (audit A3c-N1).
+        for slot in word.iter_mut() {
+            *slot = !*slot;
+        }
+        let mut carry: u16 = 1;
+        for slot in word.iter_mut().rev() {
+            let sum = u16::from(*slot) + carry;
+            *slot = sum as u8;
+            carry = sum >> 8;
+        }
+    }
+    Ok(word)
+}
+
+/// Does a 32-byte big-endian value fit the declared `intN` / `uintN` width?
+///
+/// Port of `eip712.rs::fits_declared_width` (audit A3c-F17): the bytes above the
+/// declared width must be the correct extension (zeros unsigned, the sign byte
+/// signed), and the width must be a multiple of 8 within 8..=256.
+fn fits_declared_width(word: &[u8; 32], ty: &str, signed: bool) -> bool {
+    let suffix = if signed {
+        ty.strip_prefix("int")
+    } else {
+        ty.strip_prefix("uint")
+    };
+    let Some(suffix) = suffix else {
+        return false;
+    };
+    let bits: u32 = if suffix.is_empty() {
+        256
+    } else {
+        match suffix.parse::<u32>() {
+            Ok(bits) => bits,
+            Err(_) => return false,
+        }
+    };
+    if bits == 0 || bits > 256 || !bits.is_multiple_of(8) {
+        return false;
+    }
+    let covered = (bits / 8) as usize;
+    let top = 32usize.saturating_sub(covered);
+    if signed {
+        let sign_byte = match word.get(top) {
+            Some(b) if b & 0x80 != 0 => 0xffu8,
+            _ => 0x00u8,
+        };
+        word.get(..top)
+            .unwrap_or(&[])
+            .iter()
+            .all(|&b| b == sign_byte)
+    } else {
+        word.get(..top).unwrap_or(&[]).iter().all(|&b| b == 0)
+    }
+}
+
+/// Which hex spelling a `bytesN` atom accepts.
+///
+/// The alloc parser is not uniform about this, and the pool mirrors it rather than
+/// smoothing it over: a MESSAGE field goes through `json_to_eip712_value` →
+/// `parse_dynamic_bytes_hex` (the `0x` prefix is required), while a domain `salt` goes
+/// through `json_to_domain` → `parse_bytes32_hex` → `parse_hex_bytes` (the prefix is
+/// optional). `address` is prefix-optional on both paths, so it ignores this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HexForm {
+    /// `0x` required.
+    Prefixed,
+    /// `0x` optional.
+    Bare,
+}
+
+/// Decode one atom payload into the 32-byte word EIP-712 hashes, validating it
+/// against the DECLARED type: `address` must be 20 bytes, `bytesN` exactly N,
+/// `uintN`/`intN` inside the declared width. `string` and `bytes` are hashed as they
+/// stand and are not words, so they answer an error here.
+///
+/// One decoder for both faces of the pool: [`parse`] calls it to reject a request the
+/// digest could not represent, and the hash layer calls it to get the word.
+fn atom_word(ty: &str, kind: u8, payload: &[u8], form: HexForm) -> Result<[u8; 32]> {
+    if atom_kind(ty) != Some(kind) {
+        return Err(fmt_err());
+    }
+    match kind {
+        KIND_ADDRESS => {
+            let mut address = [0u8; 20];
+            if !hex_decode_at(payload, &mut address) {
+                return Err(fmt_err());
+            }
+            let mut word = [0u8; 32];
+            word[12..].copy_from_slice(&address);
+            Ok(word)
+        }
+        KIND_BYTES32 => {
+            let width = bytes_n_width(ty).ok_or_else(fmt_err)?;
+            let hex = match form {
+                HexForm::Prefixed => payload.strip_prefix(b"0x".as_slice()).ok_or_else(fmt_err)?,
+                HexForm::Bare => payload.strip_prefix(b"0x".as_slice()).unwrap_or(payload),
+            };
+            let mut word = [0u8; 32];
+            let dst = word.get_mut(..width).ok_or_else(fmt_err)?;
+            if !hex_decode_at(hex, dst) {
+                return Err(fmt_err());
+            }
+            Ok(word)
+        }
+        KIND_UINT256 => {
+            let word = uint_word(payload)?;
+            if !fits_declared_width(&word, ty, false) {
+                return Err(fmt_err());
+            }
+            Ok(word)
+        }
+        KIND_INT256 => {
+            let word = int_word(payload)?;
+            if !fits_declared_width(&word, ty, true) {
+                return Err(fmt_err());
+            }
+            Ok(word)
+        }
+        KIND_BOOL => {
+            let mut word = [0u8; 32];
+            match payload {
+                b"true" => word[31] = 1,
+                b"false" => {}
+                _ => return Err(fmt_err()),
+            }
+            Ok(word)
+        }
+        _ => Err(fmt_err()),
+    }
+}
+
 // ─── fill: pass 1 (types + primaryType) ──────────────────────────────────────
 
 impl<'a> Eip712Pool<'a> {
@@ -1320,6 +1641,15 @@ impl<'a> Eip712Pool<'a> {
                     // Numbers and the `true`/`false` literals stay in the wire.
                     (val.off, val.len)
                 };
+                // Content check: the same decoder the hash layer uses, so the pool can
+                // never accept an atom the digest layer would refuse (the alloc parser
+                // validates in `json_to_eip712_value`). `string` and `bytes` carry no
+                // declared width — they are hashed as they stand.
+                if !matches!(kind, KIND_STRING | KIND_BYTES) {
+                    let declared = self.str_at(ty.off, ty.len)?;
+                    let payload = self.bytes_at(off, len)?;
+                    atom_word(declared, kind, payload, HexForm::Prefixed)?;
+                }
                 self.set_node(
                     slot,
                     Eip712Node {
@@ -1389,25 +1719,19 @@ impl<'a> Eip712Pool<'a> {
     /// disagree about `chainId` as a string, and the digest is over the declared
     /// domain type, not over whatever extra keys the wallet added).
     fn fill_domain(&mut self, obj: Span) -> Result<()> {
-        const DOMAIN_TYPE: &[u8] = b"EIP712Domain";
-        const DOMAIN_FIELDS: [(&[u8], u8, bool); 5] = [
-            (b"name", KIND_STRING, false),
-            (b"version", KIND_STRING, false),
-            (b"chainId", KIND_UINT256, true),
-            (b"verifyingContract", KIND_ADDRESS, false),
-            (b"salt", KIND_BYTES32, false),
-        ];
-        let mut present: [Option<(u8, Span)>; 5] = [None; 5];
+        let domain_type = DOMAIN_TYPE_NAME.as_bytes();
+        let mut present: [Option<(u8, Span)>; DOMAIN_FIELDS.len()] = [None; DOMAIN_FIELDS.len()];
         let mut count = 0usize;
-        for (name, kind, number_only) in DOMAIN_FIELDS {
-            let (found, matches) = self.find_member(obj, name)?;
+        let mut mask: u8 = 0;
+        for (slot, (name, _declared, kind, number_only)) in DOMAIN_FIELDS.iter().enumerate() {
+            let (found, matches) = self.find_member(obj, name.as_bytes())?;
             if matches > 1 {
                 return Err(fmt_err());
             }
             let Some((span, tag)) = found else {
                 continue;
             };
-            let shape_ok = if number_only {
+            let shape_ok = if *number_only {
                 tag == TAG_NUMBER
             } else {
                 tag == TAG_STRING
@@ -1416,10 +1740,15 @@ impl<'a> Eip712Pool<'a> {
                 continue;
             }
             let entry = present.get_mut(count).ok_or_else(|| cap_err(count + 1))?;
-            *entry = Some((kind, span));
+            *entry = Some((*kind, span));
             count += 1;
+            // Remember WHICH slot this child is: the hash layer maps a declared
+            // `EIP712Domain` field onto its value through this bit.
+            mask |= 1u8
+                .checked_shl(slot as u32)
+                .ok_or_else(|| cap_err(slot + 1))?;
         }
-        let (name_off, name_len) = self.place_arena(DOMAIN_TYPE)?;
+        let (name_off, name_len) = self.place_arena(domain_type)?;
         let slot = self.alloc_slot()?;
         let first = self.alloc_block(count)?;
         self.set_node(
@@ -1447,6 +1776,7 @@ impl<'a> Eip712Pool<'a> {
             )?;
         }
         self.domain_root = Some(slot as u16);
+        self.domain_mask = mask;
         Ok(())
     }
 
@@ -1584,6 +1914,454 @@ pub fn parse<'a>(
     pool.fill_domain(domain)?;
     pool.fill_message(message)?;
     Ok(pool)
+}
+
+// ─── the algorithm layer (P2) ────────────────────────────────────────────────
+//
+// Everything below recomputes what `eip712.rs` computes from owned values, reading
+// only the pool's views. The four entries mirror the alloc names one for one:
+//
+//   encodeType(T)   = "T(fieldType field,…)" + every type T reaches, alphabetical
+//   typeHash(T)     = keccak256(encodeType(T))
+//   hashStruct(S)   = keccak256(typeHash(S) ‖ encodeData(S))
+//   signingHash     = keccak256(0x1901 ‖ domainSeparator ‖ hashStruct(message))
+//
+// The container is fixed, so the two things the alloc version gets for free — a
+// `Vec` for the encoded type string and a `BTreeSet` for the visited types — are a
+// caller buffer and a bitmap here. Both are bounded and both answer `BufferTooSmall`
+// instead of truncating: a truncated type hash signs a different digest.
+
+/// Stack scratch for the `encodeType` string.
+///
+/// The length depends only on the TYPE TABLE, never on the values: the largest sample
+/// measured (`tests/eip712_budget_spike.rs`, Seaport `OrderComponents`) is 450 B, and a
+/// bulk order carrying 40 offers — 11 KB of JSON — encodes to the same 450 B.
+const ENCODE_TYPE_MAX: usize = 512;
+
+/// Types `encodeType` can walk. The visited set is one bit per declared type; 64 is
+/// 16x the largest real-world table the spike measured (4 types).
+const ENCODE_TYPE_TYPES_MAX: usize = 64;
+
+/// Frames on the `encodeType` walk stack. A type is entered at most once, so the depth
+/// is bounded by the type count.
+const ENCODE_TYPE_FRAMES: usize = ENCODE_TYPE_TYPES_MAX;
+
+/// "This frame has not emitted a sub type yet".
+const NO_FIELD: u16 = u16::MAX;
+
+/// Per-node struct hashes one `hash_struct_pool` walk can keep.
+///
+/// The array is addressed by NODE INDEX (a subtraction, no map), so a slot is reserved
+/// per node of the walked span even though only Struct nodes are written into it. The
+/// largest sample measured (seaport bulk 3+40) walks 310 nodes. Overshooting the bound
+/// is `BufferTooSmall` (capacity, not format); P4 sizes this against the carrier's stack
+/// profile, which is why it is a named constant here instead of a caller buffer.
+const NODE_HASH_SLOTS: usize = 384;
+
+/// Per-node `hashStruct` results of one walk, addressed by `node index - base`.
+struct NodeHashes<'h> {
+    hashes: &'h [[u8; 32]],
+    base: usize,
+}
+
+impl NodeHashes<'_> {
+    fn get(&self, idx: usize) -> Result<[u8; 32]> {
+        let at = idx.checked_sub(self.base).ok_or_else(fmt_err)?;
+        self.hashes.get(at).copied().ok_or_else(|| cap_err(at + 1))
+    }
+}
+
+/// Bounded writer for the `encodeType` string (the alloc version appends to a
+/// `String`).
+struct TypeOut<'b> {
+    out: &'b mut [u8],
+    pos: usize,
+}
+
+impl TypeOut<'_> {
+    fn put(&mut self, bytes: &[u8]) -> Result<()> {
+        let end = self
+            .pos
+            .checked_add(bytes.len())
+            .ok_or_else(|| cap_err(self.pos))?;
+        let dst = self
+            .out
+            .get_mut(self.pos..end)
+            .ok_or_else(|| cap_err(end))?;
+        dst.copy_from_slice(bytes);
+        self.pos = end;
+        Ok(())
+    }
+
+    fn put_str(&mut self, text: &str) -> Result<()> {
+        self.put(text.as_bytes())
+    }
+}
+
+/// One level of the type walk: which type's fields are being enumerated, and how far
+/// the enumeration got.
+#[derive(Clone, Copy)]
+struct TypeFrame {
+    /// Index of the type whose fields this frame is walking.
+    ty: u16,
+    /// Field index of the last sub type this frame emitted ([`NO_FIELD`] before the
+    /// first one).
+    last: u16,
+}
+
+/// Is the visited bit for `idx` set?
+fn seen_bit(bits: u64, idx: u16) -> bool {
+    let idx = idx as usize;
+    if idx >= ENCODE_TYPE_TYPES_MAX {
+        return false;
+    }
+    bits & (1u64 << idx) != 0
+}
+
+fn mark_seen(bits: &mut u64, idx: u16) -> Result<()> {
+    let idx = idx as usize;
+    if idx >= ENCODE_TYPE_TYPES_MAX {
+        return Err(cap_err(idx + 1));
+    }
+    *bits |= 1u64 << idx;
+    Ok(())
+}
+
+/// `TypeName(fieldType fieldName,…)` in DECLARATION order (`eip712.rs::encode_type`:
+/// the declaration list is not re-sorted, only the types it reaches are).
+fn write_type_def(pool: &Eip712Pool<'_>, idx: u16, out: &mut TypeOut<'_>) -> Result<()> {
+    let ty = *pool.type_at(idx as usize).ok_or_else(fmt_err)?;
+    out.put_str(pool.type_name(&ty)?)?;
+    out.put(b"(")?;
+    for (i, field) in pool.fields_of(&ty)?.iter().enumerate() {
+        if i > 0 {
+            out.put(b",")?;
+        }
+        out.put_str(pool.field_type(field)?)?;
+        out.put(b" ")?;
+        out.put_str(pool.field_name(field)?)?;
+    }
+    out.put(b")")
+}
+
+/// The next sub type `frame` must emit: the alphabetically smallest one this frame has
+/// not emitted yet, i.e. exactly what iterating `eip712.rs`'s `BTreeSet` yields.
+///
+/// Names are compared as byte strings (the order `String: Ord` gives there), and a name
+/// that appears on two fields of one type is emitted once — both fall out of the
+/// "strictly after the last emitted name" selection.
+fn next_subtype(pool: &Eip712Pool<'_>, frame: &TypeFrame, seen: u64) -> Result<Option<(u16, u16)>> {
+    let ty = *pool.type_at(frame.ty as usize).ok_or_else(fmt_err)?;
+    let fields = pool.fields_of(&ty)?;
+    let after = match frame.last {
+        NO_FIELD => None,
+        last => {
+            let field = fields.get(last as usize).ok_or_else(fmt_err)?;
+            Some(strip_array_suffix(pool.field_type(field)?))
+        }
+    };
+    let mut best: Option<(u16, u16, &str)> = None;
+    for (i, field) in fields.iter().enumerate() {
+        let name = strip_array_suffix(pool.field_type(field)?);
+        // Atoms are part of the string that is already written; only user types get a
+        // definition of their own.
+        if atom_kind(name).is_some() {
+            continue;
+        }
+        if let Some(last) = after {
+            if name <= last {
+                continue;
+            }
+        }
+        // A field type the table does not declare is what `types.get(sub)` refuses.
+        let sub = pool.type_index(name).ok_or_else(fmt_err)?;
+        if seen_bit(seen, sub) {
+            continue;
+        }
+        let keep = match best {
+            Some((_, _, current)) => name < current,
+            None => true,
+        };
+        if keep {
+            best = Some((i as u16, sub, name));
+        }
+    }
+    Ok(best.map(|(i, sub, _)| (i, sub)))
+}
+
+/// EIP-712 `encodeType`: the primary type's declaration, then every type it reaches
+/// (alphabetical, depth-first, deduplicated) — byte for byte the string
+/// `eip712.rs::encode_type` builds.
+///
+/// Writes into `out` and answers the number of bytes written; an `out` that is too
+/// small is `BufferTooSmall` with the length that would have been needed.
+pub fn encode_type_pool(pool: &Eip712Pool<'_>, primary: &str, out: &mut [u8]) -> Result<usize> {
+    if pool.types_len() > ENCODE_TYPE_TYPES_MAX {
+        // The visited set is one bit per type: a table this wide cannot be walked.
+        return Err(cap_err(pool.types_len()));
+    }
+    let first = pool.type_index(primary).ok_or_else(fmt_err)?;
+    let mut out = TypeOut { out, pos: 0 };
+    write_type_def(pool, first, &mut out)?;
+    let mut seen = 0u64;
+    mark_seen(&mut seen, first)?;
+    let mut frames = [TypeFrame {
+        ty: 0,
+        last: NO_FIELD,
+    }; ENCODE_TYPE_FRAMES];
+    *frames.get_mut(0).ok_or_else(|| cap_err(1))? = TypeFrame {
+        ty: first,
+        last: NO_FIELD,
+    };
+    let mut depth = 1usize;
+    while depth > 0 {
+        // The top frame is the one being advanced; a frame that has no candidates left
+        // is done, which pops it. Children push, so this is a depth-first walk without
+        // a recursive call.
+        let at = depth - 1;
+        let frame = *frames.get(at).ok_or_else(fmt_err)?;
+        let Some((last, sub)) = next_subtype(pool, &frame, seen)? else {
+            depth = at;
+            continue;
+        };
+        if let Some(slot) = frames.get_mut(at) {
+            slot.last = last;
+        }
+        write_type_def(pool, sub, &mut out)?;
+        mark_seen(&mut seen, sub)?;
+        *frames.get_mut(depth).ok_or_else(|| cap_err(depth + 1))? = TypeFrame {
+            ty: sub,
+            last: NO_FIELD,
+        };
+        depth += 1;
+    }
+    Ok(out.pos)
+}
+
+/// `typeHash(T) = keccak256(encodeType(T))`.
+pub fn type_hash_pool(pool: &Eip712Pool<'_>, primary: &str) -> Result<[u8; 32]> {
+    let mut encoded = [0u8; ENCODE_TYPE_MAX];
+    let n = encode_type_pool(pool, primary, &mut encoded)?;
+    keccak256::hash(encoded.get(..n).ok_or_else(|| cap_err(n))?)
+}
+
+/// One atom value, absorbed into `sink`: `string` and `bytes` contribute their own
+/// keccak, everything else its 32-byte word (`eip712.rs::encode_value`).
+fn encode_atom_pool(
+    pool: &Eip712Pool<'_>,
+    ty: &str,
+    node: &Eip712Node,
+    form: HexForm,
+    sink: &mut KeccakSink,
+) -> Result<()> {
+    let payload = pool.payload(node)?;
+    match node.kind {
+        KIND_STRING => {
+            let mut inner = KeccakSink::new();
+            inner.absorb(payload);
+            sink.absorb(&inner.finalize());
+            Ok(())
+        }
+        KIND_BYTES => {
+            // `0x`-hex when the text parses as hex, the literal text otherwise — the
+            // alloc parser's fallback in `json_to_eip712_value`.
+            let mut inner = KeccakSink::new();
+            match payload.strip_prefix(b"0x".as_slice()) {
+                Some(hex) if is_hex(hex) => absorb_hex(&mut inner, hex),
+                _ => inner.absorb(payload),
+            }
+            sink.absorb(&inner.finalize());
+            Ok(())
+        }
+        _ => {
+            sink.absorb(&atom_word(ty, node.kind, payload, form)?);
+            Ok(())
+        }
+    }
+}
+
+/// One field value, absorbed into `sink` (`eip712.rs::encode_value`).
+fn encode_value_pool(
+    pool: &Eip712Pool<'_>,
+    ty: &str,
+    idx: usize,
+    node: &Eip712Node,
+    hashes: &NodeHashes<'_>,
+    sink: &mut KeccakSink,
+) -> Result<()> {
+    if let Some(at) = ty.find('[') {
+        // An array hashes the concatenation of its element encodings, so it is one
+        // nested keccak: the sink streams, which is why no concat buffer exists here.
+        let elem = ty.get(..at).ok_or_else(fmt_err)?;
+        if node.kind != KIND_ARRAY {
+            return Err(fmt_err());
+        }
+        let mut inner = KeccakSink::new();
+        let first = node.first_child as usize;
+        for j in 0..node.n_children as usize {
+            let child_idx = first.checked_add(j).ok_or_else(fmt_err)?;
+            let child = *pool.node(child_idx).ok_or_else(fmt_err)?;
+            encode_value_pool(pool, elem, child_idx, &child, hashes, &mut inner)?;
+        }
+        sink.absorb(&inner.finalize());
+        return Ok(());
+    }
+    match node.kind {
+        KIND_STRUCT => {
+            // A nested struct contributes the struct hash the reverse pass already
+            // computed. `eip712.rs` takes that struct's name from the value itself, and
+            // the pool stores the declared field type as the node's payload — they must
+            // be the same name or the two faces hash different types.
+            if pool.payload(node)? != ty.as_bytes() {
+                return Err(fmt_err());
+            }
+            sink.absorb(&hashes.get(idx)?);
+            Ok(())
+        }
+        // An array value under a type that declares no array suffix.
+        KIND_ARRAY => Err(fmt_err()),
+        _ => encode_atom_pool(pool, ty, node, HexForm::Prefixed, sink),
+    }
+}
+
+/// `hashStruct` of the struct node at `idx`, whose children are already hashed.
+fn hash_struct_node(
+    pool: &Eip712Pool<'_>,
+    node: &Eip712Node,
+    hashes: &NodeHashes<'_>,
+) -> Result<[u8; 32]> {
+    let name = core::str::from_utf8(pool.payload(node)?).map_err(|_| fmt_err())?;
+    let type_idx = pool.type_index(name).ok_or_else(fmt_err)?;
+    let ty = *pool.type_at(type_idx as usize).ok_or_else(fmt_err)?;
+    let fields = pool.fields_of(&ty)?;
+    if fields.len() != node.n_children as usize {
+        // `encode_data` refuses a value list that does not match the declaration.
+        return Err(fmt_err());
+    }
+    let mut sink = KeccakSink::new();
+    sink.absorb(&type_hash_pool(pool, name)?);
+    let first = node.first_child as usize;
+    for (j, field) in fields.iter().enumerate() {
+        let child_idx = first.checked_add(j).ok_or_else(fmt_err)?;
+        let child = *pool.node(child_idx).ok_or_else(fmt_err)?;
+        encode_value_pool(
+            pool,
+            pool.field_type(field)?,
+            child_idx,
+            &child,
+            hashes,
+            &mut sink,
+        )?;
+    }
+    Ok(sink.finalize())
+}
+
+/// `hashStruct(S) = keccak256(typeHash(S) ‖ encodeData(S))` for the struct at `root`.
+///
+/// **One reverse pass, no recursive call.** P1 hands out a node's child block after the
+/// node itself, so every child index is higher than its parent's: walking the pool
+/// backwards is a bottom-up traversal, and node `i`'s struct hash is ready before its
+/// parent asks for it. The hashes live in a bounded stack array — a tree that does not
+/// fit is `BufferTooSmall`, never a silently truncated digest.
+///
+/// The walk starts at the pool's LAST node, so a subtree root (a nested struct rather
+/// than the message root) also hashes the nodes above its own subtree. Those results are
+/// never read; they only cost time, and the bound is measured on that span.
+pub fn hash_struct_pool(pool: &Eip712Pool<'_>, root: u16) -> Result<[u8; 32]> {
+    let base = root as usize;
+    let node = *pool.node(base).ok_or_else(fmt_err)?;
+    if node.kind != KIND_STRUCT {
+        return Err(fmt_err());
+    }
+    let span = pool.nodes_len().saturating_sub(base);
+    if span > NODE_HASH_SLOTS {
+        return Err(cap_err(span));
+    }
+    let mut hashes = [[0u8; 32]; NODE_HASH_SLOTS];
+    let mut idx = pool.nodes_len();
+    while idx > base {
+        idx -= 1;
+        let node = *pool.node(idx).ok_or_else(fmt_err)?;
+        if node.kind != KIND_STRUCT {
+            // Atoms are encoded where they are consumed (they cost no slot), and an
+            // array's encoding is folded into whoever declares it.
+            continue;
+        }
+        let view = NodeHashes {
+            hashes: &hashes,
+            base,
+        };
+        let hash = hash_struct_node(pool, &node, &view)?;
+        let at = idx.checked_sub(base).ok_or_else(fmt_err)?;
+        *hashes.get_mut(at).ok_or_else(|| cap_err(at + 1))? = hash;
+    }
+    NodeHashes {
+        hashes: &hashes,
+        base,
+    }
+    .get(base)
+}
+
+/// `domainSeparator = hashStruct(EIP712Domain)` for the pool's domain tree.
+///
+/// The field list and its ORDER come from the request's own `EIP712Domain` declaration,
+/// exactly as `eip712.rs::separator_with_types` reads them — not from the built-in
+/// standard list, because a document that declares a narrower domain (`{chainId,
+/// verifyingContract}`, which Safe sends) signs a different digest than one declaring
+/// all four fields. The pool's tree keeps the canonical slot order with no names
+/// attached, so each declared field finds its value through `domain_mask`; a declared
+/// field the document never filled is `EncodingInvalidFormat` (audit A3c-F16), while a
+/// value the declaration does not cover is left out — the same asymmetry the alloc face
+/// has, and the reason the domain stays lenient at parse time.
+fn domain_separator_pool(pool: &Eip712Pool<'_>) -> Result<[u8; 32]> {
+    let root_idx = pool.domain_root().ok_or_else(fmt_err)? as usize;
+    let root = *pool.node(root_idx).ok_or_else(fmt_err)?;
+    if root.kind != KIND_STRUCT {
+        return Err(fmt_err());
+    }
+    let type_idx = pool.type_index(DOMAIN_TYPE_NAME).ok_or_else(fmt_err)?;
+    let ty = *pool.type_at(type_idx as usize).ok_or_else(fmt_err)?;
+    let mut sink = KeccakSink::new();
+    sink.absorb(&type_hash_pool(pool, DOMAIN_TYPE_NAME)?);
+    let first = root.first_child as usize;
+    for field in pool.fields_of(&ty)? {
+        let declared = pool.field_type(field)?;
+        // `separator_with_types` answers `missing()` for a declared field it has no
+        // value for, and an unknown (name, type) pair is such a field.
+        let slot = domain_slot(pool.field_name(field)?, declared).ok_or_else(fmt_err)?;
+        let bit = 1u8.checked_shl(u32::from(slot)).ok_or_else(fmt_err)?;
+        if pool.domain_mask & bit == 0 {
+            return Err(fmt_err());
+        }
+        // Children sit in canonical slot order, so the value's position is the number of
+        // present slots before it.
+        let before = (pool.domain_mask & (bit - 1)).count_ones() as usize;
+        let child_idx = first.checked_add(before).ok_or_else(fmt_err)?;
+        let child = *pool.node(child_idx).ok_or_else(fmt_err)?;
+        encode_atom_pool(pool, declared, &child, HexForm::Bare, &mut sink)?;
+    }
+    Ok(sink.finalize())
+}
+
+/// The canonical slot a declared `(name, type)` pair maps to, if any.
+/// `separator_with_types` accepts exactly these four pairs plus `salt`.
+fn domain_slot(name: &str, declared: &str) -> Option<u8> {
+    DOMAIN_FIELDS
+        .iter()
+        .position(|(known_name, known_type, _, _)| *known_name == name && *known_type == declared)
+        .map(|slot| slot as u8)
+}
+
+/// The EIP-712 digest: `keccak256(0x1901 ‖ domainSeparator ‖ hashStruct(message))`.
+pub fn signing_hash_pool(pool: &Eip712Pool<'_>) -> Result<[u8; 32]> {
+    let separator = domain_separator_pool(pool)?;
+    let root = pool.message_root().ok_or_else(fmt_err)?;
+    let struct_hash = hash_struct_pool(pool, root)?;
+    let mut sink = KeccakSink::new();
+    sink.absorb(&[0x19, 0x01]);
+    sink.absorb(&separator);
+    sink.absorb(&struct_hash);
+    Ok(sink.finalize())
 }
 
 // ─── error helpers ───────────────────────────────────────────────────────────
