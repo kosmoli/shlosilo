@@ -169,6 +169,53 @@
 #define P2TR_WITNESS_VERSION 1
 
 /**
+ * `bytesN` (N in 1..=32): payload = the raw `"0x…"` text.
+ */
+#define KIND_BYTES32 0
+
+/**
+ * `address`: payload = the raw `"0x…"` text.
+ */
+#define KIND_ADDRESS 1
+
+/**
+ * `uintN`: payload = the decimal text (string or JSON number literal).
+ */
+#define KIND_UINT256 2
+
+/**
+ * `intN`: payload = the decimal text (may carry a leading `-`).
+ */
+#define KIND_INT256 3
+
+/**
+ * `bool`: payload = `"true"` / `"false"`.
+ */
+#define KIND_BOOL 4
+
+/**
+ * `string`: payload = the decoded UTF-8 bytes.
+ */
+#define KIND_STRING 5
+
+/**
+ * `bytes`: payload = the raw text (dynamic hex or literal bytes).
+ */
+#define KIND_BYTES 6
+
+/**
+ * A struct: payload = the type name; children = the fields in declaration order.
+ */
+#define KIND_STRUCT 7
+
+/**
+ * An array: no payload; children = the elements in document order. Whether the
+ * elements are atoms or structs is readable from `children_of(0).kind` (P3's fold
+ * strategy needs exactly that, which is why there is no extra field for it).
+ */
+#define KIND_ARRAY 8
+
+/**
  * CLSAG ring maximum length (XMR protocol default 11 = 1 real + 10 decoys)
  */
 #define DEFAULT_RING_LEN 11

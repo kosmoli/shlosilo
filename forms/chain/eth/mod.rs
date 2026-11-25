@@ -16,6 +16,9 @@ pub mod eip155;
 pub mod eip1559;
 #[cfg(any(feature = "alloc-fallback", test))]
 pub mod eip712;
+// E-3 P1: the zero-heap twin of `eip712` (fixed-capacity pool + read-only views).
+// Not feature-gated: this is the module the device face is supposed to use.
+pub mod eip712_pool;
 pub mod from_rlp;
 pub mod personal_sign;
 pub mod rlp;
