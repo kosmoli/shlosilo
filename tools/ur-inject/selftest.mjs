@@ -22,22 +22,102 @@ const VERIFY = path.join(HERE, 'verify.mjs')
 const KEY = Buffer.from('4646464646464646464646464646464646464646464646464646464646464646', 'hex')
 const ADDR = '0x' + Buffer.from(privateToAddress(KEY)).toString('hex')
 
+const word32 = (n) => {
+  const b = Buffer.alloc(32)
+  let hex = BigInt(n).toString(16)
+  if (hex.length % 2) hex = '0' + hex
+  Buffer.from(hex, 'hex').copy(b, 32 - Buffer.from(hex, 'hex').length)
+  return b
+}
+
+/**
+ * The EIP-712 digest of the injector's `712-permit` document, computed from type strings
+ * hardcoded HERE rather than derived by `verify.mjs`. That is the point: if the verifier's
+ * type-string derivation or field encoding is wrong, the two disagree and the recovered
+ * address stops matching. Values mirror `gen.mjs`'s `permitJson()`.
+ */
+function permitDigest() {
+  const domainType =
+    'EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)'
+  const permitType =
+    'Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)'
+  const addrWord = (h) => {
+    const b = Buffer.alloc(32)
+    Buffer.from(h.replace(/^0x/, ''), 'hex').copy(b, 12)
+    return b
+  }
+  const domainSep = Buffer.from(
+    keccak256(
+      Buffer.concat([
+        Buffer.from(keccak256(Buffer.from(domainType, 'utf8'))),
+        Buffer.from(keccak256(Buffer.from('USD Coin', 'utf8'))),
+        Buffer.from(keccak256(Buffer.from('2', 'utf8'))),
+        word32(1n),
+        addrWord('0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'),
+      ]),
+    ),
+  )
+  const struct = Buffer.from(
+    keccak256(
+      Buffer.concat([
+        Buffer.from(keccak256(Buffer.from(permitType, 'utf8'))),
+        addrWord('0x1111111111111111111111111111111111111111'),
+        addrWord('0x2222222222222222222222222222222222222222'),
+        word32(1_000_000n),
+        word32(0n),
+        word32(1_700_000_000n),
+      ]),
+    ),
+  )
+  return Buffer.from(keccak256(Buffer.concat([Buffer.from([0x19, 0x01]), domainSep, struct])))
+}
+
+/** The digest each scheme signs, rebuilt from the injector's own request. */
+function digestOf(spec) {
+  if (spec.dataType === 4) {
+    const nine = RLP.decode(spec.signData.subarray(1)).slice(0, 9)
+    return { digest: Buffer.from(keccak256(Buffer.concat([Buffer.from([0x02]), RLP.encode(nine)]))), chain: null }
+  }
+  if (spec.dataType === 1) {
+    const nine = RLP.decode(spec.signData)
+    const chain = BigInt('0x' + Buffer.from(nine[6]).toString('hex'))
+    return { digest: Buffer.from(keccak256(RLP.encode(nine))), chain }
+  }
+  if (spec.dataType === 2) {
+    return { digest: permitDigest(), chain: 1n }
+  }
+  throw new Error(`selftest has no digest for data_type ${spec.dataType}`)
+}
+
 function container(kind, corrupt = false) {
   const spec = KINDS[kind]()
-  const nine = RLP.decode(spec.signData.subarray(1)).slice(0, 9)
-  const sighash = keccak256(Buffer.concat([Buffer.from([0x02]), RLP.encode(nine)]))
-  const { r, s, v } = ecsign(sighash, KEY)
-  const sig = Buffer.concat([r, s, Buffer.from([Number(v - 27n)])])
+  const { digest, chain } = digestOf(spec)
+  const { r, s, v } = ecsign(digest, KEY)
+  const parity = Number(v - 27n)
+  let vBytes
+  if (spec.dataType === 4) vBytes = Buffer.from([parity]) // yParity, bare
+  else if (spec.dataType === 1) vBytes = minimalBE(chain * 2n + 35n + BigInt(parity)) // EIP-155
+  else vBytes = Buffer.from([27 + parity]) // EIP-712
+
+  let sig = Buffer.concat([r, s, vBytes])
   if (corrupt) sig[0] ^= 0x01
   const id = Buffer.from('9b1deb4d3b7d4bad9bdd2b0d7b3dcb6d', 'hex')
+  // The container's signature slot is 65..=72 bytes (E-1), so its CBOR length byte varies.
   const cbor = Buffer.concat([
     Buffer.from([0xa2, 0x01, 0xd8, 0x25, 0x50]),
     id,
-    Buffer.from([0x02, 0x58, 0x41]),
+    Buffer.from([0x02, 0x58, sig.length]),
     sig,
   ])
   const enc = new UREncoder(new UR(cbor, 'eth-signature'), 200, 0)
   return enc.nextPart()
+}
+
+function minimalBE(n) {
+  if (n === 0n) return Buffer.alloc(0)
+  let hex = n.toString(16)
+  if (hex.length % 2) hex = '0' + hex
+  return Buffer.from(hex, 'hex')
 }
 
 function run(kind, uri, expectFrom) {
@@ -60,7 +140,7 @@ const check = (cond, msg) => {
 }
 
 console.log(`test key address: ${ADDR}`)
-for (const kind of ['approve', 'approve-unlimited', '1559']) {
+for (const kind of ['approve', 'approve-unlimited', '1559', 'legacy', 'legacy-sepolia', '712-permit']) {
   const uri = container(kind)
   const { code, out } = run(kind, uri, ADDR)
   let report = null
@@ -71,11 +151,40 @@ for (const kind of ['approve', 'approve-unlimited', '1559']) {
   }
   check(code === 0, `${kind}: verify.mjs accepts a valid signature`)
   check(report?.signerMatches === true, `${kind}: recovered sender equals the expected address`)
-  check(
-    typeof report?.signedTxHex === 'string' && report.signedTxHex.startsWith('0x02'),
-    `${kind}: a signed 0x02 transaction is assembled`,
-  )
-  check(report?.yParity === 0 || report?.yParity === 1, `${kind}: yParity is the bare 0/1 byte`)
+  const spec = KINDS[kind]()
+  if (spec.dataType === 4) {
+    check(
+      typeof report?.signedTxHex === 'string' && report.signedTxHex.startsWith('0x02'),
+      `${kind}: a signed 0x02 transaction is assembled`,
+    )
+    check(report?.yParity === 0 || report?.yParity === 1, `${kind}: yParity is the bare 0/1 byte`)
+  } else if (spec.dataType === 1) {
+    const chain = BigInt(spec.chainId)
+    check(
+      report?.v === Number(chain * 2n + 35n) || report?.v === Number(chain * 2n + 36n),
+      `${kind}: v carries chain_id*2+35+parity (${report?.v})`,
+    )
+    check(
+      typeof report?.signedTxHex === 'string' && /^0x[0-9a-f]+$/.test(report.signedTxHex),
+      `${kind}: a signed legacy list is assembled (${String(report?.signedTxHex).slice(0, 18)}…)`,
+    )
+    // The chain id is item 6 of the PREIMAGE; the signed form carries v there instead and
+    // must still be a 9-item list (nonce…data, v, r, s).
+    const signed = RLP.decode(Buffer.from(String(report?.signedTxHex).slice(2), 'hex'))
+    check(signed.length === 9, `${kind}: signed legacy list has 9 items`)
+    check(
+      signed.length === 9 &&
+        BigInt('0x' + Buffer.from(signed[6]).toString('hex') || '0x0') === BigInt(report.v),
+      `${kind}: item 6 of the signed list is v`,
+    )
+  } else {
+    check(report?.v === 27 || report?.v === 28, `${kind}: v is 27/28, not a bare parity`)
+    check(report?.signedTxHex === null, `${kind}: a typed-data signature has nothing to broadcast`)
+    check(
+      /^0x[0-9a-f]{64}$/.test(report?.digest || ''),
+      `${kind}: the verifier recomputed a 32-byte digest`,
+    )
+  }
 }
 
 // The verifier must reject a signature it cannot validate.

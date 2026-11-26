@@ -15,8 +15,10 @@
 // Kinds (device behaviour is what the firmware pins say; the page prints it too):
 //   1559      data_type 4, 0x02 || rlp(9)   → review + sign (a valid transfer)
 //   personal  data_type 3, raw message      → review shows the text, signs, v=27/28
-//   712       data_type 2, JSON blob        → refused (no fixed-size container yet)
-//   legacy    data_type 1, bare RLP         → refused (FeatureNotImplemented)
+//   712-permit data_type 2, ERC-2612 permit → review + sign (EIP-712, v = 27/28)
+//   712       data_type 2, JSON blob        → refused: primaryType not in the declaration
+//   legacy    data_type 1, naked RLP, chain 1        → review + sign (EIP-155 v = 37/38)
+//   legacy-sepolia data_type 1, chain 11155111       → review + sign (v = 22310257, 4-byte v)
 //   2930      data_type 4, 0x01 || rlp      → refused (FeatureNotImplemented)
 //   4844      data_type 4, 0x03 || rlp      → refused (FeatureNotImplemented)
 //   7702      data_type 4, 0x04 || rlp      → refused (FeatureNotImplemented)
@@ -72,9 +74,18 @@ const encList = (items) => {
 
 // ── CBOR for the eth-sign-request map ────────────────────────────────────────
 const cborUint = (n) => {
+  // Major type 0 with the canonical minimal width. The chain-id fields need 4 bytes
+  // (Sepolia = 11155111), and a real wallet sends its chain id the same way.
+  if (!Number.isSafeInteger(n) || n < 0) throw new Error(`cborUint: not a uint: ${n}`)
   if (n < 24) return Buffer.from([n])
   if (n <= 0xff) return Buffer.from([0x18, n])
-  throw new Error('cborUint: only small keys/values needed here')
+  if (n <= 0xffff) return Buffer.from([0x19, n >> 8, n & 0xff])
+  if (n <= 0xffff_ffff) {
+    return Buffer.concat([Buffer.from([0x1a]), (() => { const b = Buffer.alloc(4); b.writeUInt32BE(n); return b })()])
+  }
+  const b = Buffer.alloc(8)
+  b.writeBigUInt64BE(BigInt(n))
+  return Buffer.concat([Buffer.from([0x1b]), b])
 }
 const cborBytes = (b) => {
   if (b.length < 24) return Buffer.concat([Buffer.from([0x40 + b.length]), b])
@@ -212,6 +223,31 @@ const ethSignRequest = (n) => {
   )
 }
 
+/// A legacy EIP-155 signing request (the preimage, not a signed transaction): nine items with
+/// the chain id in item 6. `v` in the reply is `chain_id * 2 + 35 + parity`, written minimal
+/// big-endian, so this is the kind that exercises the variadic signature slot.
+function legacyRequest(chainId) {
+  return {
+    signData: encList([
+      encUint(7),
+      encUint(30_000_000_000),
+      encUint(21_000),
+      encBytes(Buffer.alloc(20, 0x11)),
+      encUint(0),
+      encBytes(Buffer.alloc(0)),
+      encUint(chainId),
+      encBytes(Buffer.alloc(0)),
+      encBytes(Buffer.alloc(0)),
+    ]),
+    dataType: 1,
+    chainId,
+    expect:
+      chainId === 1
+        ? 'review: eth send request (legacy, chain 1, gas price 30000000000 wei) then SIGN with v = 37/38'
+        : `review: eth send request (legacy, chain ${chainId}, gas price 30000000000 wei) then SIGN with v = ${chainId * 2 + 35}/${chainId * 2 + 36}`,
+  }
+}
+
 const KINDS = {
   1559: () => ({
     signData: Buffer.concat([Buffer.from([0x02]), transfer1559()]),
@@ -255,12 +291,10 @@ const KINDS = {
     chainId: 1,
     expect: 'review: eth typed data / sign Permit / domain name+chain+verifying contract / owner, spender, value, nonce, deadline → SIGN with v = 27/28',
   }),
-  legacy: () => ({
-    signData: encList([encUint(7), encUint(30_000_000_000), encUint(21_000), encBytes(Buffer.alloc(20, 0x11)), encUint(0), encBytes(Buffer.alloc(0)), encUint(1), encBytes(Buffer.alloc(0)), encBytes(Buffer.alloc(0))]),
-    dataType: 1,
-    chainId: 1,
-    expect: 'REFUSED: legacy data_type is not implemented (code -14)',
-  }),
+  // Legacy (EIP-155, 9-item preimage). The chain id is item 6 and it decides the width of `v`
+  // in the reply: chain 1 gives 37/38 (one byte), 11155111 gives 22310257 (four bytes).
+  legacy: () => legacyRequest(1),
+  'legacy-sepolia': () => legacyRequest(11_155_111),
   2930: () => ({
     signData: Buffer.concat([Buffer.from([0x01]), transfer1559()]),
     dataType: 4,
