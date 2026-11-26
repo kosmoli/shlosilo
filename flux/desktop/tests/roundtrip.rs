@@ -26,7 +26,7 @@ use shlosilo::network::Network;
 use shlosilo::ur::ur_decode;
 use shlosilo::ur::ur_encode::{self, UrTypeTag};
 use shlosilo_flux_shell::{
-    run_once, Action, Carrier, OutPiece, Page, Request, ShellConfig, ShellError,
+    run_once, Action, Carrier, OutPiece, Page, Request, ShellConfig, ShellError, Workspaces,
 };
 
 /// The unsigned fixture, exactly as Bitcoin Core produced it.
@@ -167,7 +167,8 @@ fn confirm_signs_and_the_artifact_decodes_back() {
     let uri = request_uri();
     let mut carrier = ScriptedCarrier::new(&uri, [Action::Confirm]);
 
-    run_once(&mut carrier, &config()).expect("the flow completes");
+    let mut ws = Workspaces::owned();
+    run_once(&mut carrier, &config(), &mut ws.borrow()).expect("the flow completes");
 
     // 1. the operator saw something, and it is the review forms derived.
     let first = carrier.pages.first().expect("a review page was drawn");
@@ -270,7 +271,8 @@ fn the_review_pages_through_when_the_screen_is_small() {
     let mut cfg = config();
     cfg.rows_per_page = 1;
 
-    run_once(&mut carrier, &cfg).expect("the flow completes");
+    let mut ws = Workspaces::owned();
+    run_once(&mut carrier, &cfg, &mut ws.borrow()).expect("the flow completes");
 
     let drawn = carrier.pages.len();
     assert!(
@@ -315,7 +317,8 @@ fn cancel_signs_nothing() {
     let uri = request_uri();
     let mut carrier = ScriptedCarrier::new(&uri, [Action::Cancel]);
 
-    let outcome = run_once(&mut carrier, &config());
+    let mut ws = Workspaces::owned();
+    let outcome = run_once(&mut carrier, &config(), &mut ws.borrow());
 
     assert_eq!(outcome, Err(ShellError::Cancelled));
     assert!(carrier.emitted.is_none(), "no artifact on the cancel path");
@@ -335,7 +338,8 @@ fn a_refusal_shows_only_forms_fixed_words() {
         .expect("an opaque bytes message encodes");
     let mut carrier = ScriptedCarrier::new(uri.as_str(), [Action::Confirm]);
 
-    let outcome = run_once(&mut carrier, &config());
+    let mut ws = Workspaces::owned();
+    let outcome = run_once(&mut carrier, &config(), &mut ws.borrow());
 
     assert_eq!(outcome, Err(ShellError::Refused));
     assert!(carrier.emitted.is_none(), "a refusal never emits");

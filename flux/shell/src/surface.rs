@@ -19,8 +19,10 @@
 ///
 /// `next_request` hands out a reference into the carrier, i.e. it holds the carrier's
 /// `&mut` borrow for as long as the value lives. The flow therefore copies the two
-/// fields into shell-owned storage before it calls [`Carrier::draw`]; a carrier is not
-/// expected to keep the referenced bytes alive past the next call.
+/// fields into the workspace the caller lent it ([`crate::Workspaces`]) before it calls
+/// [`Carrier::draw`]; a carrier is not expected to keep the referenced bytes alive past
+/// the next call. The copy is bounded by `WorkspaceSizes::request` / `flow::TYPE_NAME_MAX`,
+/// and it costs no allocation — which is why carriers own the memory instead of the shell.
 pub struct Request<'a> {
     /// UR type name exactly as it arrived (`crypto-psbt`, `eth-sign-request`, ...).
     pub type_name: &'a str,

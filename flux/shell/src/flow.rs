@@ -2,10 +2,11 @@
 //!
 //! ```text
 //! carrier.next_request()            -> (type name, payload)
-//! forms review::build               -> lines + break mask
-//! forms review::page_count/span     -> this page's rows
+//!   type name -> heapless::String<64>, payload -> ws.request[..n]   (borrow ends)
+//! forms review::build   (ws.review_arena / recs / typed)  -> lines + break mask
+//! forms review::page_count/span                           -> this page's rows
 //! carrier.draw(page) / carrier.action()
-//!   Confirm -> forms sign_with_entropy_ws -> carrier.emit(out piece)
+//!   Confirm -> forms sign_with_entropy_ws (ws.sign_ws, ws.out) -> carrier.emit(out piece)
 //!   refusal -> forms failure_text words   -> carrier.draw(fixed page)
 //! ```
 //!
@@ -14,21 +15,34 @@
 //! `review::page_count`/`page_span`, `failure_text`, `type_table`). The only thing this
 //! layer owns is the order, and the fact that a refusal never reaches the wire.
 //!
+//! Nothing in this file allocates either: the request is staged into the caller's
+//! [`Workspaces`], and every buffer forms needs is one of those spans. That is what makes
+//! a bare-metal carrier able to run this flow (design §10 gap 5).
+//!
 //! Red line 1 reminder (design §3): this flow *initiates* review; it does not *guarantee*
 //! that a review happened, because nothing in a replaceable shell can. See the crate
 //! docs and the slice report for where that guarantee actually lives today.
 
 use shlosilo::business::review;
 use shlosilo::business::sign::{carve_sign_ws, sign_with_entropy_ws, SignInput};
-use shlosilo::error::{ShlosiloError, ShlosiloErrorCode, ShlosiloErrorKind};
+use shlosilo::error::{ErrorContext, ShlosiloError, ShlosiloErrorCode, ShlosiloErrorKind};
 use shlosilo::failure_text;
 use shlosilo::network::Network;
 use shlosilo::ur::type_table;
 use shlosilo::ur::ur_encode::UrTypeTag;
 
 use crate::error::ShellError;
-use crate::surface::{Action, Carrier, OutPiece, Page};
+use crate::surface::{Action, Carrier, OutPiece, Page, Request};
 use crate::workspace::Workspaces;
+
+/// Fixed capacity of the staged UR type name.
+///
+/// forms' own frame parser caps a type name at `heapless::String<32>`
+/// (`ur_multipart::UrMultipartDecoder::type_name`), so 64 is headroom for any name a
+/// carrier can legitimately hand over — not a protocol number. A longer name is refused
+/// with a capacity failure rather than truncated: a truncated type name would be a
+/// *different* name, and the type table would answer for the wrong request.
+pub const TYPE_NAME_MAX: usize = 64;
 
 /// What the flow needs that no carrier seam provides yet.
 ///
@@ -61,38 +75,55 @@ pub struct ShellConfig<'a> {
 /// [`Carrier::emit`]. Every other ending is a [`ShellError`]; when forms refused, the
 /// carrier has already been shown the fixed failure words.
 ///
-/// # Why the request is copied
+/// # Why the request is staged
 ///
 /// [`Carrier::next_request`] returns a value that borrows the carrier, so the carrier
 /// stays mutably borrowed while it lives. The flow needs the payload again after the
 /// operator confirms (page turns and the sign call happen in between), so it copies the
-/// two fields out up front and lets the borrow end. A carrier lending the request for
-/// the whole run instead would save one copy per request — that is a seam change, not a
-/// local optimisation, and it is recorded in the slice report.
-pub fn run_once<C: Carrier>(carrier: &mut C, config: &ShellConfig<'_>) -> Result<(), ShellError> {
+/// two fields into `ws` — the caller's memory, not the heap — and lets the carrier borrow
+/// end before the first `draw`. The copy is bounded by [`WorkspaceSizes::request`], and a
+/// payload or type name that does not fit is refused with forms' capacity words (the
+/// `RequiredLength` context carries the number internally; nothing of it reaches a
+/// screen).
+pub fn run_once<C: Carrier>(
+    carrier: &mut C,
+    config: &ShellConfig<'_>,
+    ws: &mut Workspaces<'_>,
+) -> Result<(), ShellError> {
     // A page with zero rows would let `Confirm` authorise a request the operator never
     // saw, so this is refused rather than clamped.
     if config.rows_per_page == 0 {
         return Err(ShellError::Misconfigured);
     }
 
-    // ── 1. one request ───────────────────────────────────────────────────────────
-    let Some(request) = carrier.next_request() else {
-        return Err(ShellError::NoRequest);
-    };
-    let type_name = request.type_name.to_owned();
-    let payload = request.payload.to_vec();
-    // `request` is not dropped explicitly: it holds no resources, and NLL ends the
-    // carrier borrow at its last use (right here) — see the note on copying above.
+    // Field-precise borrows: the payload only needs `ws.request`, so the review pools and
+    // the sign workspace stay free for the mutating calls below.
+    let Workspaces {
+        request,
+        review_arena,
+        review_recs,
+        review_typed,
+        sign_ws,
+        out,
+    } = ws;
 
-    // Workspaces are provisioned only once there is something to work on: the largest of
-    // them (the sign workspace) is megabytes, and a run with no request must not pay for
-    // it.
-    let mut ws = Workspaces::provision();
+    // ── 1. one request, staged into caller memory ────────────────────────────────
+    let mut type_name: heapless::String<TYPE_NAME_MAX> = heapless::String::new();
+    let mut payload_len = 0usize;
+    // The `Some(...)` arm ends the carrier borrow before the next statement: `staged`
+    // holds a `Result<(), ShlosiloError>`, no reference into the carrier.
+    let staged = match carrier.next_request() {
+        None => return Err(ShellError::NoRequest),
+        Some(req) => stage_request(req, &mut type_name, request, &mut payload_len),
+    };
+    if let Err(e) = staged {
+        return Err(refuse(carrier, e));
+    }
+    let payload: &[u8] = &request[..payload_len];
 
     // ── 2. what it is, and what the operator must see: forms decides ─────────────
-    let tag = UrTypeTag::from_name(&type_name);
-    if !type_table::is_sign(&type_name) {
+    let tag = UrTypeTag::from_name(type_name.as_str());
+    if !type_table::is_sign(type_name.as_str()) {
         // Not a sign request. The product flow routes these elsewhere (the XMR pairing
         // legs, a peer's already-signed artifact) and the scan session must survive them;
         // one run of this shell signs one request, so anything else is a refusal carrying
@@ -108,15 +139,15 @@ pub fn run_once<C: Carrier>(carrier: &mut C, config: &ShellConfig<'_>) -> Result
     // type the table does not gate goes straight to signing — the same thing the device
     // that ships today does. Inventing a page here, or inventing a refusal, would both be
     // a policy this layer has no business making.
-    if type_table::review_gated(&type_name) {
+    if type_table::review_gated(type_name.as_str()) {
         let view = match review::build(
             tag,
-            &payload,
+            payload,
             config.network,
             config.master_fingerprint.as_ref(),
-            &mut ws.review_arena,
-            &mut ws.review_recs,
-            &mut ws.review_typed_data,
+            review_arena,
+            review_recs,
+            review_typed,
         ) {
             Ok(view) => view,
             Err(e) => return Err(refuse(carrier, e)),
@@ -161,12 +192,17 @@ pub fn run_once<C: Carrier>(carrier: &mut C, config: &ShellConfig<'_>) -> Result
     // ── 4. sign, out of caller memory ────────────────────────────────────────────
     //
     // The workspace covers exactly `SignWsLayout::compute().total`, so a failed carve
-    // means the layout and this allocation disagree — report it as the capacity failure
+    // means the layout and the caller's span disagree — report it as the capacity failure
     // forms' word table already has for "request too large" rather than panicking.
-    let Some(mut sign_ws) = carve_sign_ws(&mut ws.sign_ws) else {
+    let Some(mut sign_ws) = carve_sign_ws(sign_ws) else {
         return Err(refuse(
             carrier,
-            ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall),
+            ShlosiloError::with_context(
+                ShlosiloErrorKind::BufferTooSmall,
+                ErrorContext::RequiredLength(
+                    shlosilo::business::sign::SignWsLayout::compute().total,
+                ),
+            ),
         ));
     };
     // Entropy is empty on purpose: the design defers the carrier's entropy seam (§4), and
@@ -178,12 +214,12 @@ pub fn run_once<C: Carrier>(carrier: &mut C, config: &ShellConfig<'_>) -> Result
     let signed = sign_with_entropy_ws(
         SignInput::Seed { seed: config.seed },
         tag,
-        &payload,
+        payload,
         &[],
         &[],
         Some(&mut sign_ws),
         None,
-        &mut ws.out,
+        out,
     );
     let signed_len = match signed {
         Ok(n) => n,
@@ -191,12 +227,47 @@ pub fn run_once<C: Carrier>(carrier: &mut C, config: &ShellConfig<'_>) -> Result
     };
 
     // ── 5. hand it over (framing belongs to the carrier) ─────────────────────────
-    let reply = type_table::reply_type(&type_name);
+    let reply = type_table::reply_type(type_name.as_str());
     carrier.emit(&OutPiece {
         type_name: reply,
-        bytes: &ws.out[..signed_len],
+        bytes: &out[..signed_len],
     });
     Ok(())
+}
+
+/// Copy the carrier's request into caller memory.
+///
+/// Both fields are bounded and both failures are capacity failures (forms' `BufferTooSmall`
+/// class, with the required length carried in the context): the type name goes into a
+/// `heapless::String` and the payload into `dest`. Splitting this out keeps the borrow of
+/// the carrier confined to one expression — see [`run_once`].
+fn stage_request(
+    request: Request<'_>,
+    type_name: &mut heapless::String<TYPE_NAME_MAX>,
+    dest: &mut [u8],
+    payload_len: &mut usize,
+) -> Result<(), ShlosiloError> {
+    if type_name.push_str(request.type_name).is_err() {
+        return Err(capacity_failure(request.type_name.len()));
+    }
+    let n = request.payload.len();
+    if n > dest.len() {
+        return Err(capacity_failure(n));
+    }
+    dest[..n].copy_from_slice(request.payload);
+    *payload_len = n;
+    Ok(())
+}
+
+/// "This does not fit, and here is how much it needed."
+///
+/// The number stays in the error's context; the operator only ever sees forms' fixed
+/// words for the capacity class (split-code red line).
+fn capacity_failure(required: usize) -> ShlosiloError {
+    ShlosiloError::with_context(
+        ShlosiloErrorKind::BufferTooSmall,
+        ErrorContext::RequiredLength(required),
+    )
 }
 
 /// Show forms' fixed words for a refusal, then report it.

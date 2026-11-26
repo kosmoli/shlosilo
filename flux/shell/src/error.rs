@@ -33,4 +33,8 @@ impl core::fmt::Display for ShellError {
     }
 }
 
+// `std::error::Error` is a host convenience only: a no_std carrier has no error trait
+// registry to plug into, and pulling `std` in for one empty impl is exactly the coupling
+// this crate is shedding.
+#[cfg(feature = "std")]
 impl std::error::Error for ShellError {}

@@ -1,6 +1,7 @@
 //! flux product shell — the sequence-and-presentation half every carrier shares.
 //!
-//! Design: `shlosilo-设计-flux外壳与载体分层-2026-11-26` (§3 layers, §4 seam, §6 slice).
+//! Design: `shlosilo-设计-flux外壳与载体分层-2026-11-26` (§3 layers, §4 seam, §6 slice,
+//! §10 the gap register this crate is closing).
 //!
 //! Three layers, three owners:
 //!
@@ -11,7 +12,7 @@
 //!   review, hand the pages to the carrier, take an action, ask forms to sign, hand the
 //!   artifact back.
 //! - **a carrier** (`flux/*`) owns *its own I/O only*: frames, pixels, keys, files,
-//!   entropy, clocks, updates.
+//!   entropy, clocks, updates. It also owns the **memory** one run needs — see below.
 //!
 //! # What this crate must never do
 //!
@@ -31,20 +32,36 @@
 //! 4. **No C-ABI face.** Rust carriers link forms directly (design §4), so this crate
 //!    defines no `extern "C"` entry, no header, no keep-table row.
 //!
-//! # Scope of this first slice
+//! # Memory: lent in, never allocated (design §10 gap 5)
 //!
-//! One request per run, one page set, one artifact. The state machine the design
-//! sketches (SCAN → REVIEW → SIGN → RESULT → EXPORT/SETTINGS), status-slot ownership
-//! (sticky failures, collection progress, default hint), the export list and the
+//! The crate is `no_std` and allocation-free unless the `std` feature is on. One run
+//! borrows six spans from the caller ([`Workspaces`], sized by [`WorkspaceSizes`] /
+//! [`workspace_bytes`]) instead of provisioning them: the request payload staging, the two
+//! review pools, the EIP-712 tail, the sign workspace and the output buffer. A carrier
+//! decides where those live (statics, a PSRAM arena, `malloc` on the host). This is what
+//! makes the shell reachable from a bare-metal carrier; `--no-default-features` on
+//! `thumbv7em-none-eabihf` is the evidence (see `flux/shell/Cargo.toml`).
+//!
+//! # Scope of this slice
+//!
+//! One request per run, one page set, one artifact. The state machine the design sketches
+//! (SCAN → REVIEW → SIGN → RESULT → EXPORT/SETTINGS), status-slot ownership (sticky
+//! failures, collection progress, default hint), the export list and the
 //! `persist`/`entropy`/`now_ms`/`settings` seams are deliberately absent — the slice
 //! report lists them as follow-ups instead of guessing their shape here.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod error;
 pub mod flow;
 pub mod surface;
-mod workspace;
+pub mod workspace;
 
 pub use error::ShellError;
-pub use flow::{run_once, ShellConfig};
+pub use flow::{run_once, ShellConfig, TYPE_NAME_MAX};
 pub use surface::{Action, Carrier, OutPiece, Page, Request};
-pub use workspace::workspace_bytes;
+pub use workspace::{workspace_bytes, WorkspaceSizes, Workspaces};
+
+#[cfg(feature = "std")]
+pub use workspace::OwnedWorkspaces;

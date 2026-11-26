@@ -14,14 +14,47 @@ publish = false
 #
 # Dependency note: `shlosilo` is a direct path dependency, NOT a C-ABI hop
 # (design §4). Rust carriers link the core as a library, so this crate needs no
-# header, no keep table and no `extern "C"` surface. The default feature set is
-# kept: the shell provisions its own workspaces (see src/workspace.rs), which
-# needs an allocator. A no_std carrier cannot adopt the shell until the carrier
-# carries a workspace seam — that is a design gap, not a feature flag away, and
-# it is recorded in the report of this slice.
+# header, no keep table and no `extern "C"` surface.
+#
+# Feature split (design §10 gaps 3 and 5 — the two this batch closed):
+#
+#   std (default)  host face: `std::error::Error`, plus `OwnedWorkspaces`, the
+#                  convenience owner the desktop carrier and the tests use. It
+#                  forwards into forms' host face (`shlosilo/std`,
+#                  `shlosilo/alloc-fallback`) — exactly the feature set the
+#                  desktop carrier asks for itself, so host builds see no change
+#                  from this split.
+#
+#   --no-default-features
+#                  device face: `no_std`, allocation-free, and forms compiled
+#                  WITHOUT `std` and WITHOUT `alloc-fallback` — the same
+#                  zero-allocator form the heap-free pico2 flavour builds
+#                  (`flux/pico2`: `default-features = false`, no `console`
+#                  feature). The shell needs neither: it never calls a forms
+#                  convenience API, only the `*_ws` / `*_into` entry points that
+#                  take caller memory. A carrier that has a heap can turn one on
+#                  for itself; the shell must not require it, and this is the only
+#                  feature combination that proves it.
+#
+# Both faces are exercised: `cargo test -p shlosilo-flux-desktop` runs the std
+# face; `cargo check -p shlosilo-flux-shell --no-default-features --target
+# thumbv7em-none-eabihf` runs the device one. Bare-metal builds also need
+# `SHLOSILO_LIMITS=<profile>` in the environment, because forms' build script
+# refuses to pick a default resource profile for a device target (limits/README).
 
 [lib]
 crate-type = ["rlib"]
 
 [dependencies]
-shlosilo = { path = "../.." }
+# Device face on the dependency side by default: the *shell's* own `std` feature
+# turns forms' host face back on. Declaring forms with default features would put
+# `std` into every thumbv7em build of this crate, which is precisely the block
+# this batch removed.
+shlosilo = { path = "../..", default-features = false }
+# Already in the workspace graph (forms depends on it): the one fixed-cap buffer
+# the flow owns — the UR type name. No new third-party crate.
+heapless = "0.7"
+
+[features]
+default = ["std"]
+std = ["shlosilo/std", "shlosilo/alloc-fallback"]
