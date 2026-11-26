@@ -8,6 +8,9 @@
 //! - All four panic points: decode_witness_utxo:723 / deserialize_unsigned_tx:272 /
 //!   decode_map:356 / Vec::with_capacity:251
 //! - Real fixture compatibility (locked by p63_btc_psbt.rs, not duplicated here)
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::btc::psbt::{decode_witness_utxo, parse_psbt};

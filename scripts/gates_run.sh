@@ -38,12 +38,17 @@ bash scripts/test_zero_on_alloc.sh --offline --all-targets --all-features --no-f
 # Pool §46 (2026-10-21): no-default-features test face (was ~796 compile
 # errors before the cfg-widening sweep). Expected-red manifest: EMPTY (the
 # three pins on this face were fixed in the same batch).
-bash scripts/test_zero_on_alloc.sh --offline --no-default-features --all-targets --no-fail-fast > /tmp/g_testnoalloc.log 2>&1; echo "TESTNOALLOC=$?"
+# Chain axis (batch 1): `default` now carries chain-btc/eth/xmr, so a bare
+# --no-default-features build would also drop all three chains and stop testing
+# the chain code this face covers today. The three are named explicitly to keep
+# the face measuring what it measured before (the chain SUBSETS are the
+# CHAINAXES step's job, not this one's).
+bash scripts/test_zero_on_alloc.sh --offline --no-default-features --features chain-btc,chain-eth,chain-xmr --all-targets --no-fail-fast > /tmp/g_testnoalloc.log 2>&1; echo "TESTNOALLOC=$?"
 # A4 pico2 leak pin (2026-11-21): the generator-table one-shot fallback only exists on the
 # alloc-fallback face that the pico2 firmware builds with (`default-features = false`). The
 # default-feature batch below cannot see it, so this face gets its own step: three XMR signs
 # must not grow the live heap (it used to grow 2 x 163,840 B per sign).
-cargo test --offline --release --no-default-features --features alloc-fallback --test xmr_device_peak_fixture xmr_sign_does_not_leak_generator_tables > /tmp/g_pico2leak.log 2>&1; echo "PICO2LEAK=$?"
+cargo test --offline --release --no-default-features --features alloc-fallback,chain-btc,chain-eth,chain-xmr --test xmr_device_peak_fixture xmr_sign_does_not_leak_generator_tables > /tmp/g_pico2leak.log 2>&1; echo "PICO2LEAK=$?"
 # CI "flux keysource" parity: the keysource package has its own test face
 # (qr_ffi FFI arity contracts etc.) that the root batch never compiles. Both key-supply
 # flavors are covered: the plate-only default (which an ungated `SeKeySource` re-export had
@@ -55,8 +60,12 @@ cargo check --offline --target armv7-unknown-linux-gnueabihf > /tmp/g_arm.log 2>
 # The embedded faces are compile-surface checks, not carrier builds: name the smallest
 # real bare-metal profile so build.rs does not have to guess (it refuses to default
 # to host for a bare-metal target).
-SHLOSILO_LIMITS=pico2 cargo check --lib --no-default-features --target thumbv7em-none-eabihf > /tmp/g_embed1.log 2>&1; echo "EMBED1=$?"
-SHLOSILO_LIMITS=pico2 cargo check --lib --no-default-features --target thumbv7em-none-eabihf --features device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi > /tmp/g_embed2.log 2>&1; echo "EMBED2=$?"
+# Chain axis (batch 1): the profiles declare all three chains, and the firmware these
+# checks describe carries them, so the chain features are named explicitly here — a
+# bare --no-default-features build would now also drop the chain layers and stop being
+# the face this step exists to measure.
+SHLOSILO_LIMITS=pico2 cargo check --lib --no-default-features --features chain-btc,chain-eth,chain-xmr --target thumbv7em-none-eabihf > /tmp/g_embed1.log 2>&1; echo "EMBED1=$?"
+SHLOSILO_LIMITS=pico2 cargo check --lib --no-default-features --features chain-btc,chain-eth,chain-xmr,device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi > /tmp/g_embed2.log 2>&1; echo "EMBED2=$?"
 SHLOSILO_LIMITS=pico2 cargo clippy --offline --target thumbv8m.main-none-eabihf --manifest-path flux/pico2/Cargo.toml --all-features -- -D warnings > /tmp/g_pico2.log 2>&1; echo "PICO2=$?"
 # pico2 build-flavor face (audit #17 P1-01, extended 2026-11-19 with the A4-01/A4-02 canaries):
 # builds production + bench + perf flavors and asserts the bench-only surface is absent from
@@ -124,6 +133,15 @@ for f in device-timing generator-cache-ffi perf-bench-ffi prove-timing-ffi cn-ti
     cargo check --offline --features "$f" > "/tmp/g_feat_$f.log" 2>&1 || FEATMATRIX=1
 done
 echo "FEATMATRIX=$FEATMATRIX"
+# Chain axis (design note §9.4, batch 1): the 7 combinations (3 single + 3 double +
+# 1 all-on) compile on the host face, and the symbol criterion is DOUBLE-EDGED — a
+# disabled chain must own zero symbols in the rlib AND an enabled chain's sampled
+# symbols must be present in the same rlib (only verifying absence cannot tell
+# "compiled out" from "instrument blind"; same lesson as FORGEBOXSEISO). Sizes are
+# printed per combination. Each combination is built against a generated
+# `limits/chainaxes-<combo>.toml` whose [chains] block matches it, because build.rs
+# refuses a profile that contradicts the compiled feature set.
+bash scripts/check_chain_axes.sh > /tmp/g_chainaxes.log 2>&1; echo "CHAINAXES=$?"
 # The synthetic-request injector and its verifier (tools/ur-inject). The verifier is
 # what decides whether a device signature is valid, so a broken tool would hand out
 # false assurance — its own self-test signs known payloads and drives the real CLI.

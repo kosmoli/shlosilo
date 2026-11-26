@@ -16,6 +16,10 @@
 //! - keystone uses rust-bitcoin 0.32 `Psbt::sign` (standard implementation)
 //! - its signature verifying against shlosilo's computed sighash ⟺ shlosilo's BIP-341 implementation is correct
 
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
+
 use sha2::{Digest, Sha256};
 
 fn hex_decode(s: &str) -> Vec<u8> {

@@ -20,6 +20,9 @@
 //! pinned in tests/pin_signed_key_images_wallet_indexed.rs and the F7 claim
 //! pins.
 
+// Chain axis: this file exercises the feature = "chain-xmr" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-xmr")]
 // Alloc-face test: the container decrypt/record APIs are `alloc-fallback`
 // gated (pool #46 face: integration tests cannot see cfg-gated APIs under
 // no-default-features).

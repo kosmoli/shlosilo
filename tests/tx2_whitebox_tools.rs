@@ -10,6 +10,9 @@
 //! Frame generation (shelled + bare) lives in
 //! `~/works/xmr-stagenet-lab/watchonly_probe/ur_frames.py` (validated against
 //! `p64_xmr_multi_input::encode_ur_frames` byte-for-byte).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::ffi::c_abi::r3::{

@@ -10,6 +10,10 @@
 //! that could only ever assemble 16.6 KiB, and a PSBT map table one slot short of a real
 //! 43-input request).
 
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
+
 use shlosilo::chain::btc::p2wpkh::{BT_TX_INPUTS_MAX, BT_TX_OUTPUTS_MAX};
 use shlosilo::limits;
 use shlosilo::limits::PSBT_MAPS_MAX;

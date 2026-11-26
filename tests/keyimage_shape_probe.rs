@@ -35,6 +35,10 @@
 //! The `pin_red_…` convention (2026-10-20 option B) meant INTENTIONALLY RED (the pinned divergence, not
 //! fixed here — see KEYIMAGE_SIG_FAIL_REPORT.md). Everything else is green.
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
+
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::scalar::Scalar;
 use monero_ed25519::Point;

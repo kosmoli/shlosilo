@@ -18,6 +18,9 @@
 //!   -> failure-mode bisect probes (multipart-into-single-frame exit,
 //!      CBOR byte-string wrapping, oversize single-frame) to see which layer
 //!      produces the device's exact -21.
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use rand_chacha::rand_core::SeedableRng as _;

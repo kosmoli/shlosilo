@@ -1,6 +1,9 @@
 //! SCRATCH dump (2026-10-17): pin the unsigned_tx_set `transfers` segment
 //! encoding + verify construction extra round-trip. Temporary — folded into the
 //! red pins / fix in the same series.
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 use shlosilo::chain::xmr::unsigned_txset::decrypt_unsigned_txset;
 

@@ -16,6 +16,9 @@
 //!
 //! Run:
 //!   cargo test --release --test xmr_device_blob_verify -- --ignored --nocapture
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::business::sign::{sign_with_entropy, SignInput};

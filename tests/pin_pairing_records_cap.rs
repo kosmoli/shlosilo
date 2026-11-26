@@ -7,6 +7,9 @@
 //! - counts beyond the cap MUST refuse with a non-zero rc (the device layer
 //!   must surface that refusal visibly — display is pinned at the flux
 //!   layer, the refusal itself is pinned here).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;

@@ -33,6 +33,10 @@
 //! | path | m/49'/1'/0'/0/0, master fingerprint `f3b9960b` |
 //! | tx output | 99,867 sat, spk `0014 4d3b1adf…90d76acd` |
 
+// Chain axis: this file drives the chain-btc signing path end to end (a chain-off build
+// answers UnsupportedChainKind, so the assertions here have nothing to assert).
+#![cfg(feature = "chain-btc")]
+
 use sha2::{Digest, Sha256};
 use shlosilo::business::sign::{carve_sign_ws, sign_with_entropy_ws, SignInput};
 use shlosilo::ur::ur_encode::UrTypeTag;

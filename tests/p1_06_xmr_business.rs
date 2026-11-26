@@ -9,6 +9,9 @@
 //!
 //! §B.5 test model: F(keys, tx, entropy) → signed_tx is a purely deterministic function.
 //! Fixed entropy → identical bytes across runs (deterministic retry property).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use rand_chacha::rand_core::RngCore;

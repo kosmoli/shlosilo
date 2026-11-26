@@ -129,6 +129,11 @@ impl SecretScalar {
     /// Read a copy of the bytes (audit #12 P1-01: narrowed to crate-private — the public API must not let
     /// secrets Copy-escape; consumers could only rely on the convention "go straight into the next owner/hash",
     /// which the type system cannot enforce; legitimate in-crate uses: wire serialization before push_take, test assertions).
+    // Chain axis: today the only runtime caller family is the XMR sum-of-masks
+    // accumulator (`chain::xmr::tx_signer`), so a build without that chain sees it as
+    // unused. The accessor itself stays on every face (its API-surface pin below is
+    // chain-independent) — only the lint is relaxed.
+    #[cfg_attr(not(feature = "chain-xmr"), allow(dead_code))]
     pub(crate) fn to_bytes(&self) -> [u8; 32] {
         self.scalar.to_bytes()
     }

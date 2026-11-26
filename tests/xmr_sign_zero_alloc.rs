@@ -24,6 +24,9 @@
 //! Measured sections wrap ONLY the sign entry calls; fixture prep and storage
 //! provisioning happen before the counter is armed. A single allocation in a
 //! measured section fails the test.
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use rand_core::SeedableRng as _;

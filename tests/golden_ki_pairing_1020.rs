@@ -18,6 +18,9 @@
 //!   the device response byte-for-byte);
 //! - the accompanying single-ring signatures;
 //! - the response offset echo (fix 2026-10-16).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;

@@ -4,6 +4,9 @@
 //! MetaMask's shipping code paths locally (see the provenance block per vector).
 //! A pin that only speaks our own dialect cannot catch a dialect mismatch, and
 //! that is exactly the failure class a real wallet exposes first.
+// Chain axis: this file drives the eth surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-eth")]
 #![cfg(feature = "alloc-fallback")]
 
 extern crate alloc;

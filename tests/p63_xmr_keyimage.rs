@@ -10,6 +10,9 @@
 //! The P6.3-wallet env variant is retired: its keys are lost with the wallet
 //! file; this KAT covers the same code path (calc_output_key_offset ->
 //! derive_input_from_source -> key image) on real captured bytes.
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::subaddress::{calc_output_key_offset, derive_input_from_source};

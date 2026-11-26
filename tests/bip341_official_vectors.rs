@@ -10,6 +10,10 @@
 //! The sigHashes in these vectors are external anchors produced by Bitcoin Core maintainers;
 //! shlosilo's independent implementation must match byte for byte.
 
+// Chain axis: this file exercises the feature = "chain-btc" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-btc")]
+
 use shlosilo::chain::btc::taproot::{
     bip341_keypath_sighash, compute_merkle_root, tap_branch_hash, tap_leaf_hash, SpentOutput,
     TaprootSighashInput,

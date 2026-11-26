@@ -6,6 +6,10 @@
 //! line, plus the budget relation that should have caught the 2026-11-15 slot mistake
 //! (a profile whose peak does not fit its heap must fail the build, not the device).
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
+
 use shlosilo::limits;
 use shlosilo::limits_report::BudgetReport;
 

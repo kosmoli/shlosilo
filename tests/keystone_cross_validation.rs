@@ -20,6 +20,9 @@
 //!
 //! ### BTC P2WPKH (BIP-143/144 segwit)
 //! Source: keystone3-firmware/rust/apps/bitcoin/src/transactions/legacy/mod.rs::test_sign_btc_p2wpkh_transaction
+// Chain axis: this file drives the btc+eth surface; without that switch the
+// API it uses does not exist.
+#![cfg(all(feature = "chain-btc", feature = "chain-eth"))]
 #![cfg(feature = "alloc-fallback")]
 #![cfg(test)]
 extern crate alloc;

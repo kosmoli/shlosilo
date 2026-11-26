@@ -10,6 +10,9 @@
 //!   TX2_FRAMES=/tmp/tx2real_frames.txt \
 //!   SHLOSILO_TEST_XMR_VIEW_SK=... \
 //!   cargo test --release --test tx2_partial_decrypt -- --ignored --nocapture
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 use shlosilo::chain::xmr::signed_txset::decrypt_signed_txset;
 

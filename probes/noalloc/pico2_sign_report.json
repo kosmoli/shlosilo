@@ -1,8 +1,8 @@
 {
   "elf": "target/thumbv8m.main-none-eabihf/release/shlosilo-pico2",
-  "entry": "_RNvNtCsa2n30vyK4nm_14shlosilo_pico29sign_pool12sign_stretch",
+  "entry": "_RNvNtCsaqocIaSfvDX_14shlosilo_pico29sign_pool12sign_stretch",
   "entries": [
-    "_RNvNtCsa2n30vyK4nm_14shlosilo_pico29sign_pool12sign_stretch"
+    "_RNvNtCsaqocIaSfvDX_14shlosilo_pico29sign_pool12sign_stretch"
   ],
   "entries_missing": [],
   "functions": 700,

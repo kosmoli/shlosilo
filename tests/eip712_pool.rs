@@ -21,6 +21,9 @@
 //! The sample documents are copied verbatim from the spike (its `permit2_batch_20()`
 //! and `seaport_bulk_n()` generators included) so the two files cannot disagree about
 //! what a "real" payload looks like.
+// Chain axis: this file drives the eth surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-eth")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::eth::eip712::parse_typed_data_v4;

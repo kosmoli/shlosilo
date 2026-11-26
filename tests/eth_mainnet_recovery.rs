@@ -20,6 +20,9 @@
 //! What this does **not** cover: that our signature is accepted by a wallet, and the
 //! `ur:eth-signature` container shape — those are pinned in
 //! `forms/ur/codec/eth_signature.rs` and the business-layer pins.
+// Chain axis: this file drives the eth surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-eth")]
 #![cfg(feature = "alloc-fallback")]
 
 extern crate alloc;

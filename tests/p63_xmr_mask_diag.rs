@@ -1,5 +1,9 @@
 //! P63-XMR mask diagnostics: compare the fixture ring mask with the on-chain outPk commitment
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
+
 use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
 
 const PLAIN: &[u8] = include_bytes!("fixtures/txset_plain.bin");

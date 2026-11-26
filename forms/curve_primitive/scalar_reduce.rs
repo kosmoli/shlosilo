@@ -1,6 +1,18 @@
-//! XMR ed25519 scalar normalization (reduce modulo curve order)
+//! Ed25519 scalar normalization (reduce modulo the curve order L)
 //!
 //! Phase 5 v4 real implementation: wraps `monero-ed25519 0.1` + `curve25519-dalek 4`
+//!
+//! **Why this lives in `curve_primitive` and not `chain::xmr` (chain axis, batch 1)**:
+//! reducing 32 bytes mod L is a curve operation, not XMR wire semantics — the XMR
+//! transaction layer is the only *caller* that needs it, but `derivation::
+//! monero_reduce_scalar` (the Icarus unclamped path used by `KeySession` / the
+//! read-only export) needs the same primitive and is not chain-gated. Housing it
+//! under `chain::xmr` made the `chain-xmr` switch leak into the derivation, session
+//! and export faces: turning XMR off would have forced those to vanish too. Per the
+//! design note §3.3 (shared pieces stay always-compiled; only chain semantics follow
+//! the chain axis) the shared primitive moves here, next to the other curve code that
+//! every build carries. `chain::xmr::reduce_scalar` remains a path alias for the XMR
+//! call sites.
 //!
 //! ## Algorithm
 //!

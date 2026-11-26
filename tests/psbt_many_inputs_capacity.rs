@@ -31,6 +31,9 @@
 //! at 240 B parts. This request only fits with >= 239-byte parts. Widening the index
 //! domain (u8 -> u16) in the fountain core is a separate change; the last two tests
 //! below pin the boundary so the gap cannot go quiet.
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::btc::psbt::{parse_psbt_into, KvRec};

@@ -21,6 +21,10 @@
 //!
 //! Run: cargo test --offline --test pin_ur_single_frame_budget
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
+
 use shlosilo::chain::xmr::key_image_export::OUTPUT_EXPORT_MAGIC;
 use shlosilo::ur::ur_decode::decode;
 use shlosilo::ur::ur_encode::{encode, UrTypeTag, UR_PAYLOAD_MAX_LEN};

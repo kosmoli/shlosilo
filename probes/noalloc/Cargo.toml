@@ -25,7 +25,11 @@ crate-type = ["staticlib"]
 [dependencies]
 # Same shape as the forgebox staticlib dep: no default features, no
 # alloc-fallback — the zero-heap claim under test.
-shlosilo = { path = "../..", default-features = false }  # alloc-face turns on std+alloc-fallback
+# Chain axis (batch 1): the probe measures the full production sign graph, so it names
+# the three chains explicitly (same shape as the forgebox staticlib dep). A probe that
+# wanted a chain subset would name its own; dropping `default` alone must not silently
+# turn this into a chain-less graph and shrink what the allocation instrument measures.
+shlosilo = { path = "../..", default-features = false, features = ["chain-btc", "chain-eth", "chain-xmr"] }  # alloc-face turns on std+alloc-fallback
 zeroize = { version = "1", default-features = false }
 rand_core = { version = "0.6", default-features = false }
 

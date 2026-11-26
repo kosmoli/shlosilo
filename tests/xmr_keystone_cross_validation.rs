@@ -13,6 +13,9 @@
 //! ## Sources
 //! Fixtures extracted from `/home/komo/works/keystone3-firmware/rust/apps/monero/src/`.
 //! keystone = audited and deployed on hardware wallets; it is shlosilo's oracle.
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(test)]
 extern crate alloc;
 

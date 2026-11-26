@@ -25,6 +25,10 @@
 //! - The signature is verified by `k256::schnorr::verify_prehash` against `OUTPUT_X`, so
 //!   neither our taproot module nor our Schnorr verifier is in that path.
 
+// Chain axis: this file exercises the feature = "chain-btc" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-btc")]
+
 use k256::schnorr::signature::hazmat::PrehashVerifier;
 use k256::schnorr::{Signature, VerifyingKey};
 use shlosilo::chain::btc::taproot::{

@@ -16,6 +16,9 @@
 //! `pin_red_…` was INTENTIONALLY RED (the pinned divergence, not fixed here —
 //! see ~/works/xmr-stagenet-lab/watchonly_probe/SIGNED_TX_PARSE_FAIL_REPORT.md).
 //! The two `control_…` tests are green and prove the harness is sound.
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;

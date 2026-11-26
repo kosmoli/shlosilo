@@ -1,6 +1,10 @@
 //! Print the index/dest/mask of all 16 fixture ring outputs and the real_output,
 //! and determine whether ring[real] at signing time really is the real idx.
 
+// Chain axis: this file exercises the feature = "chain-xmr" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-xmr")]
+
 use shlosilo::chain::xmr::unsigned_txset::deserialize_unsigned_tx;
 
 const PLAIN: &[u8] = include_bytes!("fixtures/txset_plain.bin");

@@ -6,6 +6,9 @@
 //! keystone3-firmware/rust/apps/monero src/utils/mod.rs `shlosilo_ki_fixture_test`）。
 //!
 //! Dependencies: run this test first to produce the fixture, then run the keystone-side test.
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 #![cfg(test)]
 

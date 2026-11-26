@@ -7,6 +7,9 @@
 //!
 //! Methodology: the expected hash/RLP bytes in keystone's tests are external anchors,
 //! shlosilo's independent implementation must produce identical bytes.
+// Chain axis: this file exercises the feature = "chain-eth" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-eth")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::eth::eip712;

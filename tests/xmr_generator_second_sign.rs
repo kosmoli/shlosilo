@@ -15,6 +15,9 @@
 //!
 //! Own integration binary: the vendored generator statics are per-process
 //! (same pattern as tests/xmr_generator_cache*.rs / xmr_generator_storage.rs).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "std")]
 
 use curve25519_dalek::EdwardsPoint;

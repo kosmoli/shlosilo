@@ -17,4 +17,5 @@ pub mod sign;
 /// CryptoNight-V0 over the caller-provided workspace scratchpad
 /// (`PairingWs` carries the `cn_scratch` region), so the whole receive chain
 /// is alloc-free — the FFI entry is the real body on every face.
+#[cfg(feature = "chain-xmr")]
 pub mod xmr_pairing;

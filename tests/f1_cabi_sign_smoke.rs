@@ -24,6 +24,9 @@
 //!   BufferTooSmall (-20) by checked_slice_mut — bigger is not safer;
 //! - Network::MoneroMainnet = 90 (0 is BitcoinMainnet and the sign core
 //!   rejects the chain-kind mismatch).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::entropy::mnemonic::Mnemonic;

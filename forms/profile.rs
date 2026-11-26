@@ -19,9 +19,12 @@
 //! Default builds are the "dialect off" variant (Cake only, tests green =
 //! downstream zero-awareness proof); `--all-features` is the "on" variant.
 
+#[cfg(feature = "chain-xmr")]
 use crate::canonical::SignKiEntry;
+#[cfg(feature = "chain-xmr")]
 use crate::chain::xmr::signed_txset::TxKeyImageEntry;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
+#[cfg(feature = "chain-xmr")]
 use crate::types::SliceVec;
 
 /// The dialect discriminant (session byte: 0 = unbound, see
@@ -103,6 +106,12 @@ pub fn tx_key_images_includes(profile: ProfileId, wallet_owned: bool) -> Result<
 ///   `transfers.details` loop — our retention set is the same truth).
 ///
 /// Returns the number of entries written.
+///
+/// Chain axis (batch 1): `TxKeyImageEntry` is an XMR wire type, so this whole
+/// translation is `chain-xmr`-gated. Nothing in the crate calls it (the pairing
+/// legs materialize through `business::xmr_pairing`), and a chain-off build has no
+/// key-image wire to fill — the entry point simply does not exist there.
+#[cfg(feature = "chain-xmr")]
 pub fn materialize_tx_key_images(
     profile: ProfileId,
     retained: &[SignKiEntry],

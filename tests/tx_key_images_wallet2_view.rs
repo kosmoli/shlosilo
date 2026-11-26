@@ -21,6 +21,9 @@
 //! to its invariant name the same day when the WP2 first-batch fix turned it
 //! green (fix36-style: red pins carry the pin_red_ prefix only while red).
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use rand_chacha::rand_core::SeedableRng as _;

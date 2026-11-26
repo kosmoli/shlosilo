@@ -16,6 +16,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SHIM = REPO / "flux/forgebox/staticlib/src/lib.rs"
+SHIM_MANIFEST = REPO / "flux/forgebox/staticlib/Cargo.toml"
 FORMS = REPO / "forms"
 # Task 5a: the flux-side keysource QR C glue (flux/keysource) is bundled into
 # the same staticlib, so its #[no_mangle] entries need the same LTO
@@ -141,6 +142,41 @@ def collect():
     return entries
 
 
+def shim_features() -> set:
+    """Feature names the SHIM crate itself declares.
+
+    A keep-table entry is gated with `#[cfg(feature = ..)]` **in the shim**, so only
+    the shim's own features can appear there. A cfg read off the core (e.g.
+    `#[cfg(feature = "chain-xmr")]` on a core FFI entry, chain axis 2026-11-26) names
+    a feature the shim does not have: emitting it verbatim would either drop a symbol
+    the C host still uses (the shim always builds the core with that chain) or fail
+    the `unexpected_cfgs` lint. Such an entry is unconditional here — the chain set of
+    the bundled core is decided by the shim's dependency line, not by a feature of the
+    shim.
+    """
+    text = SHIM_MANIFEST.read_text()
+    names = set()
+    in_features = False
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("["):
+            in_features = line == "[features]"
+            continue
+        if in_features and "=" in line:
+            names.add(line.split("=", 1)[0].strip())
+    return names
+
+
+def shim_local_cfg(cfg):
+    """True when every `feature = "x"` inside `cfg` is a feature the shim declares."""
+    if not cfg:
+        return True
+    declared = shim_features()
+    return all(f in declared for f in re.findall(r'feature\s*=\s*"([^"]+)"', cfg))
+
+
 def collect_root(ROOT: Path, crate: str):
     entries = []
     for path in sorted(ROOT.rglob("*.rs")):
@@ -179,8 +215,11 @@ def collect_root(ROOT: Path, crate: str):
                         cfg = cm.group(1)
                 if not (cfg and "test" in cfg):
                     # The file's own module gate and the function's attribute are both
-                    # conditions on that entry point existing at all.
-                    combined = " && ".join(c for c in (file_cfg, cfg) if c) or None
+                    # conditions on that entry point existing at all — but only gates
+                    # the SHIM can evaluate belong in the shim's table (see
+                    # `shim_local_cfg`).
+                    local = [c for c in (file_cfg, cfg) if c and shim_local_cfg(c)]
+                    combined = " && ".join(local) or None
                     entries.append((name, full_mod, combined))
             # update the block stack for this line
             for c in line:

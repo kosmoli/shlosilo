@@ -18,6 +18,9 @@
 //! the request's `request_id`, so the fixture must carry key 1 — a request without it is refused.
 //! Key 1 is a tag(37) UUID wrapper over the 16 raw bytes (ur-registry `requestId`); the id is the
 //! registry test vector's, the same one the business-layer fixtures use (`TEST_ETH_REQUEST_ID`).
+// Chain axis: this file drives the eth surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-eth")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::eth::{eip1559, rlp};

@@ -10,6 +10,10 @@
 //! This file carries exactly ONE test: a global counter would mix sibling
 //! threads' allocations into the window (see the zero-heap instrument notes).
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

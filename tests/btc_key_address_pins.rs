@@ -42,6 +42,10 @@
 //!    show - the signet path happened to have even y, so only the mainnet vector
 //!    exposes it.
 
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
+
 use shlosilo::address::btc_script;
 use shlosilo::chain::btc::taproot::compute_output_key;
 use shlosilo::curve_primitive::secp256k1::{base_mul, point_to_compressed};

@@ -3,6 +3,9 @@
 //!
 //! This runs as its own integration-test binary (separate process), so the
 //! `GENERATORS` LazyLock inside the vendored bulletproofs crate is fresh here.
+// Chain axis: this file exercises the feature = "chain-xmr" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "std")]
 
 use curve25519_dalek::EdwardsPoint;

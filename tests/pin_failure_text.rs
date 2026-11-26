@@ -15,6 +15,10 @@
 //! The end-to-end leg over a REAL sign run (foreign-fp records -> refusal)
 //! lives in tests/pin_signed_key_images_wallet_indexed.rs.
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
+
 use shlosilo::business::sign::{wallet_fingerprint, WalletKiRecord};
 use shlosilo::business::xmr_pairing::{
     carve_pairing_ws, pairing_ws_len, process_output_export_with_records,

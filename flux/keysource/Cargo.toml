@@ -38,7 +38,8 @@ se = []
 # default-features = false: the key path must stay std/alloc-free (Z6), and
 # KeySession/SeedEntropy are core-only faces. Same feature posture as
 # flux/host-sim/staticlib's dependency on the core.
-shlosilo = { path = "../..", default-features = false }
+# Chain axis: same reasoning as the shell — explicit, never inherited from `default`.
+shlosilo = { path = "../..", default-features = false, features = ["chain-btc", "chain-eth", "chain-xmr"] }
 
 [dev-dependencies]
 # P1-03 discipline: assert_not_impl_any! pins "no Copy/Clone" compile-time

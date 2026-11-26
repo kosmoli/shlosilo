@@ -25,3 +25,7 @@ tools/ur-inject/node_modules/
 # product footer wears "-dirty" for a clean commit (2026-11-26: that is exactly what happened,
 # and the identity assertion in flux/forgebox/build.sh caught it on its first CI run).
 /.ccache/
+
+# Chain-axis matrix profiles are generated per run by scripts/check_chain_axes.sh
+# (same ceilings as host.toml, [chains] rewritten); they must never be committed.
+/limits/chainaxes-*.toml

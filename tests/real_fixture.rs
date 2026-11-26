@@ -8,6 +8,9 @@
 //! Pipeline: decrypt → verify signature → pk1/pk2 ownership → epee parse → shlosilo computes key image + signature →
 //!       KEY_IMAGE_EXPORT encrypt → read-back decrypt cross-check → byte-for-byte compare against the CLI's self-computed key image →
 //!       self-implemented verification of BOTH 64B signatures (container envelope + per-record accompanying sig).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::key_image_export::{

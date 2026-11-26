@@ -183,6 +183,10 @@ impl ShlosiloError {
 /// off zero-heap link surfaces. Alloc builds drop normally; zero-heap builds
 /// forget the payload (a ZST there) — semantics of the returned error are
 /// unchanged either way.
+// Chain axis: today the only callers are the XMR wire/CLSAG readers (the vendored
+// monero crates' `monero_io::Error`). Gated so a chain-off build does not carry (or
+// warn about) an unused bridge; un-gate it the moment a second chain needs it.
+#[cfg(feature = "chain-xmr")]
 pub(crate) fn map_io_err<T, E>(
     r: core::result::Result<T, E>,
     kind: ShlosiloErrorKind,

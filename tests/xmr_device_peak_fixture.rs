@@ -8,6 +8,9 @@
 //! only sign a fixture encrypted to THAT wallet - this test builds one,
 //! mirroring the device's derivation exactly (same rolls -> create_account ->
 //! from_indices -> restore_seed).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use rand_chacha::rand_core::SeedableRng;

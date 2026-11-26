@@ -15,6 +15,9 @@
 //! These pins hold the split by wire shape, so "which type do I answer in"
 //! cannot silently collapse into one behaviour.
 
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::business::sign::{sign, SignInput};

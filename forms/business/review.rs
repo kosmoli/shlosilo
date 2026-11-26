@@ -36,9 +36,28 @@
 //! XMR keeps the shipped flow: its legs are session-bound and were validated
 //! with a real wallet, so a review page is a separate product decision, not a
 //! by-product of this module.
+//!
+//! ## Chain axis (design note §9.3-2, batch 1)
+//!
+//! The page renders BTC (PSBT) and ETH (EVM) requests, so each renderer is gated by
+//! its own `chain-*` feature and the module survives on either one alone. With
+//! both switches off the module has nothing left to render: `build` keeps its
+//! ABI-shaped signature and answers `ChainKindUnsupported`, and the shared page
+//! scaffolding (`ReviewView`, paging) is dead by construction — hence the targeted
+//! `dead_code` allowance below. It is scoped to exactly that combination, so a
+//! build that carries either chain still gets the lint.
+#![cfg_attr(
+    not(any(feature = "chain-btc", feature = "chain-eth")),
+    allow(dead_code)
+)]
 
-use crate::address::{btc_script, eth};
+#[cfg(feature = "chain-btc")]
+use crate::address::btc_script;
+#[cfg(feature = "chain-eth")]
+use crate::address::eth;
+#[cfg(feature = "chain-btc")]
 use crate::chain::btc::psbt::{self, KvRec, Psbt};
+#[cfg(feature = "chain-eth")]
 use crate::chain::eth::eip712_pool::{self, Eip712Node, Eip712Pool, KIND_ARRAY, KIND_STRUCT};
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
 use crate::network::Network;
@@ -125,6 +144,7 @@ impl ReviewView {
     /// The next pushed line belongs with the one above it (label → value).
     ///
     /// Called right after a label so the paginator cannot open a page between them.
+    #[cfg(feature = "chain-eth")]
     fn glue_next_line(&mut self) {
         self.glue_next = true;
     }
@@ -258,6 +278,7 @@ pub fn page_span(count: usize, break_mask: u64, page_lines: usize, page: usize) 
 /// *wrong* number on a screen whose only job is to let someone authorize an exact
 /// value, so the review refuses instead of printing a partial figure. (u128 wei
 /// values that are absurd for a transfer are the only way to reach that branch.)
+#[cfg(feature = "chain-eth")]
 fn push_wei(view: &mut ReviewView, label: &str, amount: u128) -> Result<()> {
     view.push_fmt(format_args!("{} {} wei", label, amount))
 }
@@ -265,6 +286,7 @@ fn push_wei(view: &mut ReviewView, label: &str, amount: u128) -> Result<()> {
 /// Longest prefix of a signed message the review screen shows. Six full lines is
 /// enough for the login/attestation messages EIP-191 is used for, and it bounds the
 /// stack buffer in [`push_sanitized_message`].
+#[cfg(feature = "chain-eth")]
 const PERSONAL_MESSAGE_SHOWN_MAX: usize = REVIEW_LINE_MAX * 6;
 
 /// Render arbitrary message bytes as displayable text.
@@ -274,6 +296,7 @@ const PERSONAL_MESSAGE_SHOWN_MAX: usize = REVIEW_LINE_MAX * 6;
 /// as something other than what is signed, and that difference is exactly what this
 /// screen exists to expose. The caller always prints the true byte length, and a
 /// truncated tail is marked at the end rather than silently cut.
+#[cfg(feature = "chain-eth")]
 fn push_sanitized_message(view: &mut ReviewView, msg: &[u8]) -> Result<()> {
     let shown = msg.len().min(PERSONAL_MESSAGE_SHOWN_MAX);
     let mut text = heapless::String::<{ PERSONAL_MESSAGE_SHOWN_MAX + 16 }>::new();
@@ -293,6 +316,17 @@ fn push_sanitized_message(view: &mut ReviewView, msg: &[u8]) -> Result<()> {
     view.push_wrapped(&text)
 }
 
+/// The PSBT map pool the review parse writes into (an alias so `build` keeps ONE
+/// signature on every chain combination).
+///
+/// `chain-btc` off: there is no record type to carve and every PSBT arm is gone, so
+/// the pool degrades to an unused byte span — the ABI shape survives without
+/// pretending a BTC type exists.
+#[cfg(feature = "chain-btc")]
+pub type PsbtRecs<'a> = &'a mut [KvRec];
+#[cfg(not(feature = "chain-btc"))]
+pub type PsbtRecs<'a> = &'a mut [u8];
+
 /// Build the review view for a decoded sign request.
 ///
 /// `master_fingerprint` (optional) is used to mark outputs that come back to
@@ -302,30 +336,47 @@ fn push_sanitized_message(view: &mut ReviewView, msg: &[u8]) -> Result<()> {
 /// pool region followed by the formatter scratch). Every face parses the request into
 /// caller memory, so the page adds no allocation of its own — the C-ABI carves all four
 /// spans out of one review workspace (`review_ws_len`).
+///
+/// Chain axis: the arms for chains this build does not carry do not exist, so the
+/// request answers the pre-existing `ChainKindUnsupported` instead of being rendered.
 pub fn build(
     type_tag: UrTypeTag,
     payload: &[u8],
     network: Network,
     master_fingerprint: Option<&[u8; 4]>,
     arena: &mut [u8],
-    recs: &mut [KvRec],
+    recs: PsbtRecs<'_>,
     typed_data: &mut [u8],
 ) -> Result<ReviewView> {
     match type_tag {
+        #[cfg(feature = "chain-btc")]
         UrTypeTag::CryptoPsbt | UrTypeTag::Psbt => {
             build_btc(payload, network, master_fingerprint, arena, recs)
         }
         // EIP-712 re-parses the request into the same zero-heap container the sign path
         // uses, so what the page can show and what the signer can sign are decided by one
         // container.
+        #[cfg(feature = "chain-eth")]
         UrTypeTag::EthSignRequest => build_eth(payload, typed_data),
-        _ => Err(ShlosiloError::new(ShlosiloErrorKind::ChainKindUnsupported)),
+        _ => {
+            // A chain-less build still has to name what it was handed.
+            let _ = (
+                arena.len(),
+                recs.len(),
+                typed_data.len(),
+                &payload,
+                network,
+                master_fingerprint,
+            );
+            Err(ShlosiloError::new(ShlosiloErrorKind::ChainKindUnsupported))
+        }
     }
 }
 
 /// PSBT review. `payload` is either the CBOR byte-string shell or the bare PSBT
 /// (the UR exits strip the shell; both shapes are legal — same rule as the sign
 /// path).
+#[cfg(feature = "chain-btc")]
 pub fn build_btc(
     payload: &[u8],
     network: Network,
@@ -347,6 +398,7 @@ pub fn build_btc(
     summarize_psbt(&psbt, network, master_fingerprint)
 }
 
+#[cfg(feature = "chain-btc")]
 fn summarize_psbt(
     psbt: &Psbt<'_>,
     network: Network,
@@ -631,6 +683,7 @@ pub fn fee_rate_hundredths(fee: u64, wu: u32) -> u64 {
 ///
 /// `None` when any input or output has a script type we cannot price: a fee rate
 /// computed from a partial picture is worse than no fee rate.
+#[cfg(feature = "chain-btc")]
 fn estimated_weight(psbt: &Psbt<'_>) -> Option<u32> {
     // Base overhead = 10 bytes × 4 = 40 WU (version 4 + locktime 4 + the two count
     // varints 1+1), plus the 2 WU marker/flag pair **only when the transaction has a
@@ -667,6 +720,7 @@ fn estimated_weight(psbt: &Psbt<'_>) -> Option<u32> {
 }
 
 /// Weight unit cost of spending (input) or creating (output) one script type.
+#[cfg(feature = "chain-btc")]
 fn script_weight(spk: &[u8], input: bool) -> Option<u32> {
     let kind = match spk {
         [0x00, 0x14, h @ ..] if h.len() == 20 => {
@@ -712,6 +766,7 @@ fn script_weight(spk: &[u8], input: bool) -> Option<u32> {
 /// Reviewed as "the PSBT tells us where it lives": wallets put the coin type in
 /// the derivation path they hand the signer, and a mismatched address prefix is
 /// exactly the kind of error the operator would mis-read.
+#[cfg(feature = "chain-btc")]
 fn infer_network(psbt: &Psbt<'_>) -> Option<Network> {
     for i in 0..psbt.unsigned_tx.inputs.len() {
         let map = psbt.input_map_checked(i)?;
@@ -755,6 +810,7 @@ fn infer_network(psbt: &Psbt<'_>) -> Option<Network> {
 const LOCKTIME_THRESHOLD: u32 = 500_000_000;
 
 /// Every input final? Then `nLockTime` is ignored by consensus entirely.
+#[cfg(feature = "chain-btc")]
 fn all_inputs_final(psbt: &Psbt<'_>) -> bool {
     psbt.unsigned_tx
         .inputs
@@ -786,6 +842,7 @@ pub fn locktime_domain(lock_time: u32) -> LocktimeDomain {
 /// a closed vocabulary (ASCII, no payload content): the operator reads "what
 /// kind of risk", not a rendered payload field. Ordering is fixed so the eye
 /// finds the same warning in the same place on every transaction.
+#[cfg(feature = "chain-btc")]
 fn warn_lines(flags: u16) -> [Option<&'static str>; 5] {
     [
         if flags & flag::SIGHASH_UNSAFE != 0 {
@@ -821,6 +878,7 @@ fn warn_lines(flags: u16) -> [Option<&'static str>; 5] {
 /// (a payment), which is the conservative reading for a review screen.
 /// Who owns an output, as far as the PSBT itself can tell us.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "chain-btc")]
 enum Ownership {
     /// No derivation record for us: money leaving to someone else.
     Foreign,
@@ -846,6 +904,7 @@ enum Ownership {
 /// "has our fingerprint" alone lumps a self-payment together with change — the
 /// first real-device review (2026-11-05) showed both outputs labelled `change`
 /// on a payment to our own receive address.
+#[cfg(feature = "chain-btc")]
 fn output_ownership(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> Ownership {
     // Taproot outputs record their path under 0x16, not 0x02. Without this the
     // change of a P2TR spend comes back as a fresh payment - the operator sees an
@@ -897,6 +956,7 @@ fn output_ownership(map: psbt::KvMap<'_>, ours: &[u8; 4]) -> Ownership {
 
 /// Change vs receive from a derivation path: the **second-to-last** element is
 /// the chain/index component that BIP-44 fixes to 0 = receive, 1 = change.
+#[cfg(feature = "chain-btc")]
 fn ownership_from_elements(elements: &[u32]) -> Ownership {
     if elements.len() < 2 {
         return Ownership::OwnReceive; // too short to tell: assume not change
@@ -919,6 +979,7 @@ fn ownership_from_elements(elements: &[u32]) -> Ownership {
 /// payment from a different payment. Amounts are printed as RAW integers (hex, or the
 /// words "unlimited" for 2^256-1); token decimals are not guessed, because a wrong decimal
 /// point is worse than no decimal point.
+#[cfg(feature = "chain-eth")]
 fn push_decoded_calldata(
     view: &mut ReviewView,
     decoded: &crate::chain::eth::calldata::DecodedCalldata,
@@ -1072,6 +1133,7 @@ fn push_decoded_calldata(
 /// and a wrong-network send is not recoverable; an unknown id is printed raw because
 /// we do not guess names. Shared by the typed and the legacy send pages so the two
 /// cannot name the same chain differently.
+#[cfg(feature = "chain-eth")]
 fn push_chain(view: &mut ReviewView, chain_id: u64) -> Result<()> {
     match crate::chain::eth::chain_names::chain_name(chain_id) {
         Some(name) => view.push_fmt(format_args!("chain {} {}", chain_id, name)),
@@ -1084,6 +1146,7 @@ fn push_chain(view: &mut ReviewView, chain_id: u64) -> Result<()> {
 ///
 /// Shared by both send pages: the destination is the single thing the operator must
 /// verify, so it is rendered identically no matter which transaction type carried it.
+#[cfg(feature = "chain-eth")]
 fn push_destination(view: &mut ReviewView, destination: Option<[u8; 20]>) -> Result<()> {
     match destination {
         Some(dest) => {
@@ -1104,6 +1167,7 @@ fn push_destination(view: &mut ReviewView, destination: Option<[u8; 20]>) -> Res
 /// calldata IS the deploy bytecode: there is no callee to name and no ABI to decode,
 /// and calling that "unknown contract" reads like a failed lookup against a contract
 /// that exists (measured on Sepolia 2026-11-25).
+#[cfg(feature = "chain-eth")]
 fn push_calldata(
     view: &mut ReviewView,
     calldata: &[u8],
@@ -1150,11 +1214,14 @@ fn push_calldata(
 // integers) or sanitized ASCII, never echoed raw.
 
 /// Array elements the page itemizes before it folds the rest into `and N more`.
+#[cfg(feature = "chain-eth")]
 const TD_SHOWN_MAX: usize = 3;
 /// Struct nesting the page expands below the message root. A struct met at this depth is
 /// printed as `struct <Type>` plus its field count instead of being expanded.
+#[cfg(feature = "chain-eth")]
 const TD_EXPAND_MAX: usize = 2;
 /// Bytes of one value the page renders (three lines) before it marks the tail.
+#[cfg(feature = "chain-eth")]
 const TD_VALUE_MAX: usize = REVIEW_LINE_MAX * 3;
 
 /// The typed-data refusal gate: one rule, two faces.
@@ -1183,6 +1250,7 @@ const TD_VALUE_MAX: usize = REVIEW_LINE_MAX * 3;
 /// (`tests/eip712_review_page.rs`), and it is the sign face's rule too: `sign_eth` calls
 /// this same function, so a direct sign call cannot sign a document the page would have
 /// refused.
+#[cfg(feature = "chain-eth")]
 pub(crate) fn typed_data_fold_gate(pool: &Eip712Pool<'_>) -> Result<()> {
     let mut view: Option<&mut ReviewView> = None;
     let mut display = [0u8; 0];
@@ -1203,6 +1271,7 @@ pub(crate) fn typed_data_fold_gate(pool: &Eip712Pool<'_>) -> Result<()> {
 /// Only a *readable* domain chain is compared: a domain that omits `chainId` has nothing to
 /// compare (EIP-712 allows it), and the digest layer already refuses a declared-but-absent
 /// value.
+#[cfg(feature = "chain-eth")]
 pub(crate) fn typed_data_request_chain_gate(req_chain_id: Option<i128>, json: &[u8]) -> Result<()> {
     let Some(envelope_chain) = req_chain_id else {
         return Ok(());
@@ -1218,6 +1287,7 @@ pub(crate) fn typed_data_request_chain_gate(req_chain_id: Option<i128>, json: &[
 
 /// Push through the optional view: `None` is the gate's face, where the walk runs for its
 /// refusal rules and writes nothing.
+#[cfg(feature = "chain-eth")]
 fn td_fmt(view: &mut Option<&mut ReviewView>, args: core::fmt::Arguments<'_>) -> Result<()> {
     match view.as_deref_mut() {
         Some(view) => view.push_fmt(args),
@@ -1225,6 +1295,7 @@ fn td_fmt(view: &mut Option<&mut ReviewView>, args: core::fmt::Arguments<'_>) ->
     }
 }
 
+#[cfg(feature = "chain-eth")]
 fn td_str(view: &mut Option<&mut ReviewView>, s: &str) -> Result<()> {
     match view.as_deref_mut() {
         Some(view) => view.push_str(s),
@@ -1232,6 +1303,7 @@ fn td_str(view: &mut Option<&mut ReviewView>, s: &str) -> Result<()> {
     }
 }
 
+#[cfg(feature = "chain-eth")]
 fn td_wrapped(view: &mut Option<&mut ReviewView>, s: &str) -> Result<()> {
     match view.as_deref_mut() {
         Some(view) => view.push_wrapped(s),
@@ -1239,6 +1311,7 @@ fn td_wrapped(view: &mut Option<&mut ReviewView>, s: &str) -> Result<()> {
     }
 }
 
+#[cfg(feature = "chain-eth")]
 fn td_chain(view: &mut Option<&mut ReviewView>, chain_id: u64) -> Result<()> {
     match view.as_deref_mut() {
         Some(view) => push_chain(view, chain_id),
@@ -1248,6 +1321,7 @@ fn td_chain(view: &mut Option<&mut ReviewView>, chain_id: u64) -> Result<()> {
 
 /// `<label> <value>` on one line when it fits, else the label alone with the value glued
 /// under it. A label never opens a page without its value.
+#[cfg(feature = "chain-eth")]
 fn td_labeled(view: &mut Option<&mut ReviewView>, label: &str, value: &str) -> Result<()> {
     if label.len() + 1 + value.len() <= REVIEW_LINE_MAX {
         return td_fmt(view, format_args!("{} {}", label, value));
@@ -1271,6 +1345,7 @@ fn td_labeled(view: &mut Option<&mut ReviewView>, label: &str, value: &str) -> R
 /// The scratch bounds the rendering ([`TD_VALUE_MAX`], three lines); a longer value is
 /// marked at the cut (`..`) instead of being silently shortened. A scratch too small for
 /// the render is `BufferTooSmall` with the length needed — capacity, never truncation.
+#[cfg(feature = "chain-eth")]
 fn td_atom_text(pool: &Eip712Pool<'_>, node: &Eip712Node, display: &mut [u8]) -> Result<usize> {
     use crate::chain::eth::eip712_pool::KIND_ADDRESS;
     let payload = pool.payload(node)?;
@@ -1334,6 +1409,7 @@ fn td_atom_text(pool: &Eip712Pool<'_>, node: &Eip712Node, display: &mut [u8]) ->
 ///
 /// The gate's face renders no values, so it must not touch the scratch either: an empty
 /// scratch is not a capacity failure there, it is "nobody asked for this line".
+#[cfg(feature = "chain-eth")]
 fn td_atom_labeled(
     pool: &Eip712Pool<'_>,
     view: &mut Option<&mut ReviewView>,
@@ -1350,6 +1426,7 @@ fn td_atom_labeled(
 }
 
 /// Displayable form of one payload byte (same rule as the personal-message page).
+#[cfg(feature = "chain-eth")]
 fn sanitize_byte(byte: u8) -> u8 {
     if (0x20..0x7f).contains(&byte) {
         byte
@@ -1358,6 +1435,7 @@ fn sanitize_byte(byte: u8) -> u8 {
     }
 }
 
+#[cfg(feature = "chain-eth")]
 fn hex_nibble(byte: Option<u8>) -> Option<u8> {
     match byte? {
         b @ b'0'..=b'9' => Some(b - b'0'),
@@ -1368,6 +1446,7 @@ fn hex_nibble(byte: Option<u8>) -> Option<u8> {
 }
 
 /// The message tree: `primaryType`, one `sign` line, then every top-level field.
+#[cfg(feature = "chain-eth")]
 fn walk_typed_data(
     pool: &Eip712Pool<'_>,
     view: &mut Option<&mut ReviewView>,
@@ -1391,6 +1470,7 @@ fn walk_typed_data(
 /// The domain block: name, version, chain, verifying contract, salt — whichever the
 /// document filled, always in the canonical slot order so the same domain always reads
 /// the same way.
+#[cfg(feature = "chain-eth")]
 fn walk_domain(
     pool: &Eip712Pool<'_>,
     view: &mut Option<&mut ReviewView>,
@@ -1458,6 +1538,7 @@ fn walk_domain(
 
 /// The page labels a value with the pool's own domain slot names, so the two lists cannot
 /// drift; this constant is what makes a sixth domain slot fail the build here.
+#[cfg(feature = "chain-eth")]
 const _: () = assert!(crate::chain::eth::eip712_pool::DOMAIN_SLOTS == 5);
 
 /// Longest label the page builds: `parent.field` (two capped names) or `label[N]`.
@@ -1465,12 +1546,15 @@ const _: () = assert!(crate::chain::eth::eip712_pool::DOMAIN_SLOTS == 5);
 /// Spelled `heapless::String<TD_LABEL_MAX>` at each use rather than behind a type alias:
 /// cbindgen walks item-level aliases into its opaque-type graph and refuses a const-generic
 /// `heapless::String` there (it panics, which would turn the C-header gate red).
+#[cfg(feature = "chain-eth")]
 const TD_LABEL_MAX: usize = 2 * crate::chain::eth::eip712_pool::NAME_BYTES + 2 + 8;
 
+#[cfg(feature = "chain-eth")]
 fn overflow() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingBufferOverflow)
 }
 
+#[cfg(feature = "chain-eth")]
 fn invalid_doc() -> ShlosiloError {
     ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)
 }
@@ -1480,6 +1564,7 @@ fn invalid_doc() -> ShlosiloError {
 /// `prefix` is empty for the message root and `parent` (or `parent[2]`) for a nested
 /// struct, so a value buried one level down still shows which field it belongs to.
 #[allow(clippy::too_many_arguments)] // pool + node + label parts + two sinks
+#[cfg(feature = "chain-eth")]
 fn walk_struct_fields(
     pool: &Eip712Pool<'_>,
     ty_name: &str,
@@ -1519,6 +1604,7 @@ fn walk_struct_fields(
 
 /// One declared field: an atom, an array or a struct.
 #[allow(clippy::too_many_arguments)] // the walk's parameter shape, one call site per arm
+#[cfg(feature = "chain-eth")]
 fn walk_field(
     pool: &Eip712Pool<'_>,
     name: &str,
@@ -1550,6 +1636,7 @@ fn walk_field(
 /// A struct-element array longer than that is refused by
 /// [`typed_data_fold_gate`] before this runs, so the only fold that can happen here is
 /// the atom one.
+#[cfg(feature = "chain-eth")]
 fn walk_array(
     pool: &Eip712Pool<'_>,
     label: &str,
@@ -1601,6 +1688,7 @@ fn walk_array(
 
 /// One struct value: its type name, then either its fields or — past [`TD_EXPAND_MAX`] —
 /// its field count.
+#[cfg(feature = "chain-eth")]
 fn walk_struct_value(
     pool: &Eip712Pool<'_>,
     label: &str,
@@ -1631,6 +1719,7 @@ fn walk_struct_value(
 }
 
 /// `prefix` + `.` + `name`, or just `name` at the message root.
+#[cfg(feature = "chain-eth")]
 fn join_label(prefix: &str, name: &str) -> Result<heapless::String<TD_LABEL_MAX>> {
     let mut out = heapless::String::<TD_LABEL_MAX>::new();
     if !prefix.is_empty() {
@@ -1642,6 +1731,7 @@ fn join_label(prefix: &str, name: &str) -> Result<heapless::String<TD_LABEL_MAX>
 }
 
 /// Decimal text → `u64`, or `None` when it is not a decimal integer in range.
+#[cfg(feature = "chain-eth")]
 fn parse_decimal(text: &str) -> Option<u64> {
     let mut value: u64 = 0;
     if text.is_empty() {
@@ -1659,6 +1749,7 @@ fn parse_decimal(text: &str) -> Option<u64> {
 /// Bytes the typed-data page needs: the container's region plus the formatter scratch
 /// (`limits::EIP712_DISPLAY_BYTES`, which is exactly the span the review workspace
 /// reserves for it).
+#[cfg(feature = "chain-eth")]
 pub(crate) const TYPED_DATA_WS_BYTES: usize =
     crate::chain::eth::eip712_pool::WS_BYTES + crate::limits::EIP712_DISPLAY_BYTES;
 
@@ -1667,6 +1758,7 @@ pub(crate) const TYPED_DATA_WS_BYTES: usize =
 /// The whole workspace is either big enough for both spans or the page refuses: a
 /// half-sized region would fail deep inside the walk, and the caller must see "request too
 /// large" with the size that would have worked (the B-7 rule the pool applies too).
+#[cfg(feature = "chain-eth")]
 fn split_typed_data_ws(ws: &mut [u8]) -> Result<(&mut [u8], &mut [u8])> {
     let region_bytes = crate::chain::eth::eip712_pool::WS_BYTES;
     if ws.len() < TYPED_DATA_WS_BYTES {
@@ -1682,6 +1774,7 @@ fn split_typed_data_ws(ws: &mut [u8]) -> Result<(&mut [u8], &mut [u8])> {
 /// `build_eth` over a fresh typed-data workspace — what the C-ABI carve hands over, so the
 /// unit pins drive the same path the device does instead of a widened test-only one.
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 fn build_eth_ws(payload: &[u8]) -> Result<ReviewView> {
     let mut ws = alloc::vec![0u8; TYPED_DATA_WS_BYTES];
     build_eth(payload, &mut ws)
@@ -1694,6 +1787,7 @@ fn build_eth_ws(payload: &[u8]) -> Result<ReviewView> {
 /// the scratch the page formats values into. One slice because the caller carves one
 /// tail, and because a face that hands over a region too small must be refused here —
 /// `BufferTooSmall` with the size needed, not a page drawn from leftover bytes.
+#[cfg(feature = "chain-eth")]
 pub fn build_eth(payload: &[u8], ws: &mut [u8]) -> Result<ReviewView> {
     use crate::chain::eth::from_rlp;
     use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
@@ -1828,6 +1922,7 @@ pub fn build_eth(payload: &[u8], ws: &mut [u8]) -> Result<ReviewView> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-btc")]
 mod output_ownership_pins {
     use super::*;
     use crate::chain::btc::psbt::{output_type, KeyValue};
@@ -1903,6 +1998,7 @@ mod output_ownership_pins {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 mod calldata_render_pins {
     use super::*;
 
@@ -1969,6 +2065,7 @@ mod calldata_render_pins {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 mod review_pagination_pins {
     use super::*;
 
@@ -2112,6 +2209,7 @@ mod review_pagination_pins {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 mod erc20_transfer_layout_pins {
     //! The page layout the operator actually saw on the mainnet acceptance run
     //! (2026-11-25, tx 0xb29c50b4…2ff0, firmware `e303033`): page 1 ends at the
@@ -2187,6 +2285,7 @@ mod erc20_transfer_layout_pins {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 mod sepolia_acceptance_pins {
     //! Calldata taken from the six device-signed Sepolia transactions of 2026-11-25
     //! (MetaMask official test-dApp; txids in the acceptance record). These are what a
@@ -2283,6 +2382,7 @@ mod sepolia_acceptance_pins {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 mod eth_unknown_call_pins {
     use super::*;
     use crate::encoding::cbor;
@@ -2365,6 +2465,7 @@ mod eth_unknown_call_pins {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 mod eth_data_type_dispatch_pins {
     use super::*;
 
@@ -2564,6 +2665,7 @@ mod eth_data_type_dispatch_pins {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 mod eth_personal_message_review_pins {
     use super::*;
     use crate::encoding::cbor;
@@ -2647,6 +2749,7 @@ mod eth_personal_message_review_pins {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 mod eth_amount_rendering_pins {
     use super::*;
     use crate::chain::eth::calldata::DecodedCalldata;
@@ -2747,6 +2850,7 @@ mod eth_amount_rendering_pins {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 mod eth_typed_data_review_pins {
     use super::*;
     use crate::encoding::cbor;
@@ -2833,6 +2937,7 @@ mod eth_typed_data_review_pins {
 }
 
 #[cfg(test)]
+#[cfg(feature = "chain-eth")]
 mod eth_send_fee_review_pins {
     use super::*;
     use crate::chain::eth::rlp;

@@ -6,6 +6,9 @@
 //! prints the construction shape plus the predicted signed size against the
 //! device caps (SIGN_OUT_MAX 66048 outbound / 16384 inbound reassembly).
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::unsigned_txset::{

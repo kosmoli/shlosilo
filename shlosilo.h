@@ -1758,6 +1758,9 @@ int shlosilo_session_free_ffi(struct KeySession **session);
  * - `ws` must point to `ws_len` writable bytes (`ws_len >=` the pairing workspace query) and must be **u128-aligned**: the CryptoNight scratch slot is carved at u128 alignment relative to the base and the core validates the absolute address. The address must stay stable for the call.
  * - `ki_records_out` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_cap` writable `WalletKiRecord` slots; it must not overlap `output_buf`, `ws` or the other out-params.
  * - `ki_records_actual` and `actual_len` must be writable and must not overlap any other argument.
+ *
+ * Chain axis: the pairing legs are Monero wire (`xmr-output` to `xmr-keyimage`),
+ * so this entry does not exist without the `chain-xmr` switch.
  */
 int shlosilo_xmr_pairing_ffi(const struct KeySession *session,
                              const uint8_t *payload,

@@ -12,6 +12,9 @@
 //! 2. tx version byte = 2 (ringct tx)
 //! 3. structural counts match the construction shape
 //! 4. fee = input_sum - out_sum matches the construction's balance delta
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use rand_core::OsRng;

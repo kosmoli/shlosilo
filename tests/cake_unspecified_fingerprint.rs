@@ -16,6 +16,9 @@
 //! is a hint. A zeroed hint means "unspecified", not "someone else"; any other
 //! mismatch is still an ownership rejection (-15).
 
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::business::review;

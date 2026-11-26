@@ -14,6 +14,9 @@
 //!   (kdf_rounds = 1);
 //! - the nonce is 8 bytes, big-endian, the rng's FIRST draw.
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use rand_chacha::rand_core::{RngCore as _, SeedableRng as _};

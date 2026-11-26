@@ -10,6 +10,9 @@
 //! In debug builds the wip::prove relation shadow additionally asserts the
 //! P-relation on BOTH signs. The real-wallet zero-count receipt stays in
 //! `xmr_sign_zero_alloc` (env-gated).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use rand_core::SeedableRng as _;

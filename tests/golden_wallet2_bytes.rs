@@ -56,6 +56,9 @@
 //!
 //! Run: cargo test --release --test golden_wallet2_bytes (sign pins are slow
 //! in debug builds; `make test` runs them anyway).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::key_image_export::{

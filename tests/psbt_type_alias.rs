@@ -22,6 +22,10 @@
 //!    operator-facing text). Those live in C, so the last pin is a source scan -
 //!    a behavioural pin needs the device.
 
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
+
 use sha2::{Digest, Sha256};
 use shlosilo::business::sign::{carve_sign_ws, sign_with_entropy_ws, SignInput};
 use shlosilo::tx::tx_normalize;

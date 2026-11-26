@@ -11,6 +11,10 @@
 //! The wire-level keystone bytes (I9 golden) land at WP3 against the
 //! keystone3 3.2.0 material; these pins freeze the POLICY and CONTENT.
 
+// Chain axis: this file exercises the feature = "chain-xmr" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-xmr")]
+
 use shlosilo::canonical::SignKiEntry;
 use shlosilo::chain::xmr::signed_txset::TxKeyImageEntry;
 use shlosilo::profile::{

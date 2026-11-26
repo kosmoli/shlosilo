@@ -53,7 +53,10 @@ impl BudgetReport {
             sign_ws: crate::business::sign::SignWsLayout::compute().total,
             ur_decode_ws: crate::ur::ur_multipart::ur_decode_ws_len(),
             ur_encode_ws: crate::ur::ur_multipart::ur_encode_ws_len(),
+            #[cfg(feature = "chain-xmr")]
             pairing_ws: crate::business::xmr_pairing::pairing_ws_len(),
+            #[cfg(not(feature = "chain-xmr"))]
+            pairing_ws: 0,
             review_ws: crate::ffi::c_abi::review_ws_len(),
             psram_budget: limits::PSRAM_BUDGET_BYTES,
             stack_budget: limits::STACK_BUDGET_BYTES,

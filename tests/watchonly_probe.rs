@@ -11,6 +11,9 @@
 //!   keys.hex              — "<spend_sk hex> <view_sk hex>"
 //! Optional control (if present): /tmp/test0830_outputs_all + /tmp/test0830_keys.hex
 //! (a different full wallet whose container is known to pass the device chain).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use chacha20::cipher::{KeyIvInit as _, StreamCipher as _};

@@ -9,6 +9,9 @@
 //! Run: `cargo test --offline --test eip712_budget_spike -- --ignored --nocapture`
 //!
 //! Re-run after E-3 lands to check the chosen budgets against the same sample set.
+// Chain axis: this file exercises the feature = "chain-eth" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-eth")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::eth::eip712::{encode_type, parse_typed_data_v4, Eip712Value, TypedData};

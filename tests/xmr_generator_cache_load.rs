@@ -5,6 +5,9 @@
 //!
 //! Separate integration-test binary: `GENERATORS` inside the vendored bulletproofs
 //! crate is a per-process LazyLock, so this process must see a fresh one.
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "std")]
 
 use std::sync::atomic::{AtomicBool, Ordering};

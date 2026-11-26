@@ -17,6 +17,9 @@
 //! - `abhash`: the spent pubkey hash contains `0xab`, which is the only case that
 //!   separates the consensus (opcode-wise) `OP_CODESEPARATOR` deletion from the
 //!   byte-wise one.
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::business::sign::{sign, SignInput};

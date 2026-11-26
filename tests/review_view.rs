@@ -8,6 +8,10 @@
 //! Copy discipline: every asserted line is either a fixed word-table entry or an
 //! address/amount re-encoded from the decoded structure -- never raw payload text.
 
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
+
 use shlosilo::business::review::{self, flag};
 use shlosilo::chain::btc::psbt::KvRec;
 use shlosilo::error::ShlosiloErrorKind;

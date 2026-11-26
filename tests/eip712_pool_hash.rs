@@ -21,6 +21,9 @@
 //!    external digest is checked through BOTH faces. Those vectors are constructed
 //!    programmatically there (no JSON), hence the JSON below: it is their field values
 //!    and type definitions spelled out, and the expected hash is the oracle's.
+// Chain axis: this file drives the eth surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-eth")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::eth::eip712::{self, parse_typed_data_v4};

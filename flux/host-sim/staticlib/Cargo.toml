@@ -17,4 +17,6 @@ name = "shlosilo"
 crate-type = ["staticlib"]
 
 [dependencies]
-shlosilo = { path = "../../..", default-features = false }
+# Chain axis: the POSIX simulator stands in for the product carriers, so it carries
+# the same three chains they do.
+shlosilo = { path = "../../..", default-features = false, features = ["chain-btc", "chain-eth", "chain-xmr"] }

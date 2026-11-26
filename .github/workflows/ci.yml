@@ -95,9 +95,13 @@ jobs:
       # green the same day, renamed to tests/tx_key_images_wallet2_view.rs).
       # `always()` keeps the step running regardless of earlier step
       # outcomes.
+      # Chain axis (batch 1): `default` now carries chain-btc/eth/xmr, so this face
+      # names them explicitly — otherwise dropping `default` would also drop the chain
+      # layers and the face would stop covering the code it covers today. The chain
+      # SUBSETS are the "Chain axis matrix" step's job.
       - name: Tests (no default features)
         if: always()
-        run: bash scripts/test_zero_on_alloc.sh --no-default-features --all-targets --no-fail-fast
+        run: bash scripts/test_zero_on_alloc.sh --no-default-features --features chain-btc,chain-eth,chain-xmr --all-targets --no-fail-fast
       # Audit #15 P1-02: each diagnostic feature must build on its own (host).
       # Note: a host build with --no-default-features is not a supported
       # configuration (the no_std library's panic_handler collides with the
@@ -110,6 +114,16 @@ jobs:
             cargo check --locked --features "$f"
             echo "::endgroup::"
           done
+      # Chain axis matrix (design note §9.4, batch 1): the 7 chain combinations
+      # (3 single + 3 double + 1 all-on) must each compile on the host face, with a
+      # DOUBLE-EDGED symbol criterion — a disabled chain owns zero symbols in the rlib,
+      # and an enabled chain's sampled symbols are present in that same rlib (absence
+      # alone cannot distinguish "compiled out" from "instrument blind"). Each
+      # combination is built against a generated limits/chainaxes-<combo>.toml whose
+      # [chains] block matches it: build.rs refuses a profile that contradicts the
+      # compiled feature set in either direction.
+      - name: Chain axis matrix (7 combinations + symbol criterion)
+        run: CARGO_FLAGS=--locked bash scripts/check_chain_axes.sh
       # Platform switch (2026-09-23): the production carrier is LuckyFox Pico Mini
       # (Linux/POSIX, armv7). The per-commit standard gate
       # (`cargo check --target armv7-unknown-linux-gnueabihf`) is enforced here with
@@ -122,9 +136,12 @@ jobs:
           rustup target add thumbv7em-none-eabihf
           # A bare-metal target must name a profile (build.rs refuses to default to host);
           # the generic embedded checks use the smallest real carrier.
-          SHLOSILO_LIMITS=pico2 cargo check --locked --lib --no-default-features --target thumbv7em-none-eabihf
-          SHLOSILO_LIMITS=pico2 cargo check --locked --lib --no-default-features --target thumbv7em-none-eabihf \
-            --features device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi
+          # The profiles declare all three chains and the firmware carries them, so the
+          # chain features are named explicitly: a bare --no-default-features build would
+          # now also drop the chain layers.
+          SHLOSILO_LIMITS=pico2 cargo check --locked --lib --no-default-features --features chain-btc,chain-eth,chain-xmr --target thumbv7em-none-eabihf
+          SHLOSILO_LIMITS=pico2 cargo check --locked --lib --no-default-features --features chain-btc,chain-eth,chain-xmr --target thumbv7em-none-eabihf \
+            --features chain-btc,chain-eth,chain-xmr,device-timing,generator-cache-ffi,prove-timing-ffi,cn-timing-ffi,tx-phase-timing-ffi,perf-bench-ffi
       - name: Vendor crate tests (timing hooks)
         run: cd vendor/cryptonight && cargo test --locked --features cn-timing --lib
       # Z5.3 test-infra (2026-10-21): the vendored bulletproofs' own suite is

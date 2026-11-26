@@ -37,6 +37,10 @@
 //! | sighash type | 0x00 (SIGHASH_DEFAULT) |
 //! | taproot | internal key `b68df3…6cb296d`, merkle root `c913dc…b2bb0a` |
 
+// Chain axis: this file drives the chain-btc signing path end to end (a chain-off build
+// answers UnsupportedChainKind, so the assertions here have nothing to assert).
+#![cfg(feature = "chain-btc")]
+
 use sha2::{Digest, Sha256};
 use shlosilo::business::sign::{carve_sign_ws, sign_with_entropy_ws, SignInput};
 use shlosilo::ur::ur_encode::UrTypeTag;

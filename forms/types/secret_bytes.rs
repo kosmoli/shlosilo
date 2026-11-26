@@ -99,33 +99,56 @@ mod tests {
     static_assertions::assert_not_impl_any!(SecretBytes<64>: Clone, Copy);
 
     // P1-03 migration types: forbid Clone / Copy (v2-security §2 + audit 2026-08-25 P1-03)
+    #[cfg(feature = "chain-btc")]
     use crate::chain::btc::p2pkh::P2PKHSignInput;
+    #[cfg(feature = "chain-btc")]
     use crate::chain::btc::p2sh::P2SHP2WPKHSignInput;
+    #[cfg(feature = "chain-btc")]
     use crate::chain::btc::p2wpkh::P2WPKHSignInput;
+    #[cfg(feature = "chain-btc")]
     use crate::chain::btc::psbt::{PsbtP2PKHSignInput, PsbtP2SHP2WPKHSignInput, PsbtSignInput};
+    #[cfg(feature = "chain-eth")]
     use crate::chain::eth::eip155::Eip155SignInput;
+    #[cfg(feature = "chain-eth")]
     use crate::chain::eth::eip1559::Eip1559SignInput;
+    #[cfg(feature = "chain-eth")]
     use crate::chain::eth::eip712::Eip712SignInput;
+    #[cfg(feature = "chain-eth")]
     use crate::chain::eth::personal_sign::PersonalSignInput;
+    #[cfg(feature = "chain-xmr")]
     use crate::chain::xmr::tx_builder::{SignedTx, TxInputSpec, TxKeyPair, TxOutputSpec};
     use crate::derivation::bip32_secp256k1::ExtendedPrivKey;
     use crate::derivation::slip10_ed25519::Slip10ExtendedKey;
     use crate::entropy::bip39_passphrase::Bip39Seed;
     use crate::entropy::mnemonic::Mnemonic;
 
+    #[cfg(feature = "chain-xmr")]
     static_assertions::assert_not_impl_any!(TxKeyPair: Clone, Copy);
+    #[cfg(feature = "chain-xmr")]
     static_assertions::assert_not_impl_any!(TxInputSpec: Clone, Copy);
+    #[cfg(feature = "chain-xmr")]
     static_assertions::assert_not_impl_any!(TxOutputSpec: Clone, Copy);
+    #[cfg(feature = "chain-xmr")]
     static_assertions::assert_not_impl_any!(SignedTx<'static>: Clone, Copy);
+    #[cfg(feature = "chain-btc")]
     static_assertions::assert_not_impl_any!(PsbtSignInput: Clone, Copy);
+    #[cfg(feature = "chain-btc")]
     static_assertions::assert_not_impl_any!(PsbtP2PKHSignInput: Clone, Copy);
+    #[cfg(feature = "chain-btc")]
     static_assertions::assert_not_impl_any!(PsbtP2SHP2WPKHSignInput: Clone, Copy);
+    #[cfg(feature = "chain-btc")]
     static_assertions::assert_not_impl_any!(P2WPKHSignInput<'static>: Clone, Copy);
+    #[cfg(feature = "chain-btc")]
     static_assertions::assert_not_impl_any!(P2PKHSignInput<'static>: Clone, Copy);
+    #[cfg(feature = "chain-btc")]
     static_assertions::assert_not_impl_any!(P2SHP2WPKHSignInput<'static>: Clone, Copy);
+    #[cfg(feature = "chain-eth")]
     static_assertions::assert_not_impl_any!(Eip155SignInput: Clone, Copy);
+    #[cfg(feature = "chain-eth")]
     static_assertions::assert_not_impl_any!(Eip1559SignInput: Clone, Copy);
+    #[cfg(feature = "chain-eth")]
     static_assertions::assert_not_impl_any!(Eip712SignInput: Clone, Copy);
+    #[cfg(feature = "chain-eth")]
     static_assertions::assert_not_impl_any!(PersonalSignInput: Clone, Copy);
     static_assertions::assert_not_impl_any!(Bip39Seed: Clone, Copy);
     static_assertions::assert_not_impl_any!(ExtendedPrivKey: Clone, Copy);

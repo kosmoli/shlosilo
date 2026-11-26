@@ -27,7 +27,11 @@ pub mod generator_cache_test_hooks;
 pub mod key_image_export;
 pub mod output_export;
 pub mod rct_sig;
-pub mod reduce_scalar;
+/// Path alias for the shared ed25519 scalar reduction. The implementation lives in
+/// `curve_primitive::scalar_reduce` (it is a curve operation, not XMR wire semantics,
+/// and the un-gated derivation/session/export faces need it) — see that module's docs
+/// for why the chain axis pushed it out of this tree.
+pub use crate::curve_primitive::scalar_reduce as reduce_scalar;
 pub mod signed_txset;
 pub mod signing_rng;
 pub mod subaddress;

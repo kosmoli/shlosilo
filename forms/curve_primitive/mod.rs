@@ -16,4 +16,5 @@
 pub mod ed25519;
 pub mod p256;
 pub mod rsa;
+pub mod scalar_reduce;
 pub mod secp256k1;

@@ -10,6 +10,9 @@
 //!    pre-filled with poison proves nothing is passed through uninitialised.
 //! 3. **Disjointness** — the three regions must not overlap the rest of the workspace
 //!    (a silent overlap is the classic accounting bug in a byte arena).
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use monero_ed25519::CompressedPoint;

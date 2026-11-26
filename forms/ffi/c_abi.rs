@@ -2415,6 +2415,10 @@ pub mod r3 {
     /// - `ws` must point to `ws_len` writable bytes (`ws_len >=` the pairing workspace query) and must be **u128-aligned**: the CryptoNight scratch slot is carved at u128 alignment relative to the base and the core validates the absolute address. The address must stay stable for the call.
     /// - `ki_records_out` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_cap` writable `WalletKiRecord` slots; it must not overlap `output_buf`, `ws` or the other out-params.
     /// - `ki_records_actual` and `actual_len` must be writable and must not overlap any other argument.
+    ///
+    /// Chain axis: the pairing legs are Monero wire (`xmr-output` to `xmr-keyimage`),
+    /// so this entry does not exist without the `chain-xmr` switch.
+    #[cfg(feature = "chain-xmr")]
     #[no_mangle]
     pub unsafe extern "C" fn shlosilo_xmr_pairing_ffi(
         session: *const KeySession, // flux-constructed; the FFI side only holds the pointer
@@ -2774,6 +2778,7 @@ pub mod r3 {
         /// shape — message = CBOR bytes item wrapping the PSBT; since
         /// 2026-10-12 the decode exit strips the shell, so the delivered
         /// payload is the RAW PSBT (what sign_btc consumes either way).
+        #[cfg(feature = "chain-btc")]
         #[test]
         fn p0c_typed_sign_vertical_slice() {
             use alloc::ffi::CString;
@@ -3229,7 +3234,12 @@ pub const REVIEW_WS_RECS: usize = crate::limits::PSBT_RECS_MAX;
 /// scratch the page formats atom values into (EIP-55 addresses, decimal uints). Only the
 /// sum is on the ABI surface (`review_ws_len`); the parts stay crate-internal so the
 /// header does not grow a second place to keep in sync.
+/// Chain axis: the typed-data container is an ETH artefact — with `chain-eth` off the
+/// review page has no EIP-712 arm, so the region (and the scratch it formats into)
+/// leaves the workspace entirely instead of reserving dead bytes.
+#[cfg(feature = "chain-eth")]
 pub(crate) const REVIEW_WS_EIP712: usize = crate::chain::eth::eip712_pool::WS_BYTES;
+#[cfg(feature = "chain-eth")]
 pub(crate) const REVIEW_WS_EIP712_DISPLAY: usize = crate::limits::EIP712_DISPLAY_BYTES;
 /// NUL-separated line blob: the platform's row budget x (line + separator).
 pub const REVIEW_LINES_BUF: usize =
@@ -3241,11 +3251,21 @@ pub const REVIEW_LINES_BUF: usize =
 /// Kept as a plain fn so the budget report can call the same arithmetic without going
 /// through the C ABI.
 pub fn review_ws_len() -> usize {
-    REVIEW_WS_ARENA
-        + REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>()
-        + REVIEW_WS_EIP712
-        + REVIEW_WS_EIP712_DISPLAY
-        + 8
+    // `+ 8` is the base-alignment slack for the PSBT pool (the records span needs
+    // `align_of::<KvRec>()`); a build without that pool still reports it, because the
+    // figure is an upper bound the C side allocates once.
+    #[allow(unused_mut)]
+    let mut n = 8usize;
+    #[cfg(feature = "chain-btc")]
+    {
+        n += REVIEW_WS_ARENA
+            + REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>();
+    }
+    #[cfg(feature = "chain-eth")]
+    {
+        n += REVIEW_WS_EIP712 + REVIEW_WS_EIP712_DISPLAY;
+    }
+    n
 }
 
 #[no_mangle]
@@ -3362,7 +3382,14 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
             // `review_ws_len()` is exactly this shift allowance). A debug-only check was
             // not enough: it is compiled out in release, where a misaligned `&mut [KvRec]`
             // would simply be UB.
+            //
+            // Chain axis: the PSBT slabs exist only with `chain-btc`. Without it the page
+            // parses nothing into this workspace, so the spans degrade to empty and every
+            // byte after the base belongs to the typed-data tail.
+            #[cfg(feature = "chain-btc")]
             let rec_align = core::mem::align_of::<crate::chain::btc::psbt::KvRec>();
+            #[cfg(not(feature = "chain-btc"))]
+            let rec_align = core::mem::align_of::<u8>();
             let raw_base = ws as usize;
             let aligned_base = (raw_base + rec_align - 1) & !(rec_align - 1);
             let shift = aligned_base - raw_base;
@@ -3370,26 +3397,37 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
                 return Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall));
             }
             let base = aligned_base as *mut u8;
-            let arena: &mut [u8] =
-                unsafe { core::slice::from_raw_parts_mut(base, REVIEW_WS_ARENA) };
-            let recs_ptr = unsafe { base.add(REVIEW_WS_ARENA) };
-            debug_assert!((recs_ptr as usize).is_multiple_of(rec_align));
-            let recs: &mut [crate::chain::btc::psbt::KvRec] =
-                unsafe { core::slice::from_raw_parts_mut(recs_ptr.cast(), REVIEW_WS_RECS) };
-            // E-3: the typed-data container region and the scratch its page formats values
-            // into follow the records as one tail. Plain bytes, so it needs no alignment of
-            // its own (the pool aligns its base out of its region, and `WS_BYTES` already
-            // carries that shift).
-            let typed_data_ptr = unsafe {
-                recs_ptr
-                    .add(REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>())
+            #[cfg(feature = "chain-btc")]
+            let (arena, recs, tail_ptr) = unsafe {
+                let arena: &mut [u8] = core::slice::from_raw_parts_mut(base, REVIEW_WS_ARENA);
+                let recs_ptr = base.add(REVIEW_WS_ARENA);
+                debug_assert!((recs_ptr as usize).is_multiple_of(rec_align));
+                let recs: &mut [crate::chain::btc::psbt::KvRec] =
+                    core::slice::from_raw_parts_mut(recs_ptr.cast(), REVIEW_WS_RECS);
+                // E-3: the typed-data tail follows the records.
+                let tail_ptr = recs_ptr
+                    .add(REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>());
+                (arena, recs, tail_ptr)
             };
+            #[cfg(not(feature = "chain-btc"))]
+            let (arena, recs, tail_ptr): (
+                &mut [u8],
+                business::review::PsbtRecs<'_>,
+                *mut u8,
+            ) = (&mut [], &mut [], base);
+            let _ = tail_ptr;
+            // E-3: the typed-data container region and the scratch its page formats values
+            // into are the tail. Plain bytes, so it needs no alignment of its own (the pool
+            // aligns its base out of its region, and `WS_BYTES` already carries that shift).
+            #[cfg(feature = "chain-eth")]
             let typed_data: &mut [u8] = unsafe {
                 core::slice::from_raw_parts_mut(
-                    typed_data_ptr,
+                    tail_ptr,
                     REVIEW_WS_EIP712 + REVIEW_WS_EIP712_DISPLAY,
                 )
             };
+            #[cfg(not(feature = "chain-eth"))]
+            let typed_data: &mut [u8] = &mut [];
 
             let view = business::review::build(
                 tag,
@@ -3587,21 +3625,31 @@ mod tests {
         );
         let mut buf = alloc::vec![0u8; l.total];
         let ws = carve_sign_ws(&mut buf).expect("carve at exactly total must succeed");
+        // Chain axis: the per-chain regions exist only where their switch is on, so each
+        // capacity pin rides the same feature as the field it measures.
         assert_eq!(ws.plain.len(), c::SIGN_WS_PLAIN);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.txes.len(), c::SIGN_WS_TXES);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.sources.len(), c::SIGN_WS_SOURCES);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.splitted_dsts.len(), c::SIGN_WS_SPLITS);
         assert_eq!(ws.selected_transfers.len(), c::SIGN_WS_SEL);
         assert_eq!(ws.extra.len(), c::SIGN_WS_EXTRA);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.dests.len(), c::SIGN_WS_DESTS);
         assert_eq!(ws.subaddr_indices.len(), c::SIGN_WS_SUBIDX);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.ptx.len(), c::SIGN_WS_PTX);
         assert_eq!(ws.tx_bytes.len(), c::SIGN_WS_TX_BYTES);
         assert_eq!(ws.ki.len(), c::SIGN_WS_KI);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.tki.len(), c::SIGN_WS_TKI);
         assert_eq!(ws.sel.len(), c::SIGN_WS_SEL_OUT);
         assert_eq!(ws.kstr.len(), c::SIGN_WS_KSTR);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.record_dests.len(), c::SIGN_WS_RECORD_DESTS);
+        #[cfg(feature = "chain-eth")]
         assert_eq!(
             ws.eip712.len(),
             crate::chain::eth::eip712_pool::WS_BYTES,
@@ -3619,6 +3667,7 @@ mod tests {
     /// does not cover it would refuse a request the signing path accepts - the exact
     /// "review cannot display what sign would sign" split the review gate exists to prevent.
     #[test]
+    #[cfg(all(feature = "chain-btc", feature = "chain-eth"))]
     fn review_workspace_covers_the_typed_data_container() {
         let psbt_slabs = REVIEW_WS_ARENA
             + REVIEW_WS_RECS * core::mem::size_of::<crate::chain::btc::psbt::KvRec>();
@@ -3723,6 +3772,7 @@ mod tests {
     }
 
     /// T6 signature pin: the Cake pairing entry's frozen C shape.
+    #[cfg(feature = "chain-xmr")]
     #[test]
     fn ffi_xmr_pairing_signature_exists() {
         const _: unsafe extern "C" fn(
@@ -3820,6 +3870,7 @@ mod tests {
     /// T6 end-to-end through the frozen entry: session handle + valid request
     /// container → response container decrypts to exactly one key-image record
     /// whose image matches the independent recomputation.
+    #[cfg(feature = "chain-xmr")]
     #[cfg(any(feature = "alloc-fallback", test))]
     #[test]
     fn ffi_xmr_pairing_e2e() {
@@ -4203,6 +4254,7 @@ mod tests {
     /// (r ‖ s ‖ v), so the assertion moved to its fields; the request also carries
     /// key 1 now, because the container echoes the id and the exit refuses a
     /// request without one.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn ffi_sign_ur_eth_end_to_end() {
         use crate::chain::eth::{eip1559, rlp};

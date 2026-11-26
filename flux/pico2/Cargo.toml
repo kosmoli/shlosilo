@@ -12,7 +12,10 @@ edition = "2024"
 # flavor builds the core with `default-features = false` only, which is the same face the
 # `probes/noalloc` artifact uses - so "no allocator in the image" is a property of the whole
 # graph, not just of this crate.
-shlosilo = { path = "../..", default-features = false }
+# Chain axis: this carrier build keeps all three chains compiled in (batch 1 of the
+# chain axis only adds the switches — a carrier that wants a slimmer image names its
+# subset here and gets it, and the signer answers UnsupportedChainKind for the rest).
+shlosilo = { path = "../..", default-features = false, features = ["chain-btc", "chain-eth", "chain-xmr"] }
 
 # RP2350 async stack
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "defmt"] }

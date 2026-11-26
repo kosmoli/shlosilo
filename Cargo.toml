@@ -154,7 +154,19 @@ perf-bench-ffi = ["curve25519-dalek/perf-bench"]
 prove-timing-ffi = ["monero-bulletproofs/prove-timing"]
 cn-timing-ffi = ["prove-timing-ffi", "cuprate-cryptonight/cn-timing"]
 tx-phase-timing-ffi = ["prove-timing-ffi"]
-default = ["std", "alloc-fallback"]
+# ===== chain axis (2026-09-19 design note §9.3-2 / §9.4) =====
+# Additive-only (Cargo union semantics): any build that turns one on has it
+# globally. NEVER make these mutually exclusive and never let one imply
+# another. Each one gates `forms/chain/<name>` plus every dispatch site that
+# would reach it; a disabled chain's request answers the PRE-EXISTING error
+# kind `ChainKindUnsupported` (C-ABI -10 `UnsupportedChainKind`), no new code.
+# Batch 1 scope: the switches + the cross-checks only. Dependency slimming
+# (optional = true) is batch 2 — today every chain crate is still linked, so
+# a chain-off build compiles the code out but does not yet shrink the graph.
+chain-btc = []
+chain-eth = []
+chain-xmr = []
+default = ["std", "alloc-fallback", "chain-btc", "chain-eth", "chain-xmr"]
 # std enabled (on by default, only for cargo test; Phase 5 real implementation switches to panic = "abort" without std)
 std = ["rand_core/std"]
 # alloc enabled (ffi module uses Vec as a staging buffer for path elements)
@@ -166,6 +178,30 @@ device-timing = []
 # its green test face is the downstream zero-awareness proof; `--all-features`
 # is the "on" variant (CI feature matrix = the C5 double build).
 profile-keystone = []
+
+# Chain axis (batch 1): examples that drive a specific chain layer are only built
+# when that chain is compiled in. `required-features` is the cargo-native way to say
+# "this target belongs to this switch" (an `#![cfg]` inside a bin would leave a
+# main-less crate behind).
+[[example]]
+name = "p7_real_unsigned"
+required-features = ["chain-xmr"]
+
+[[example]]
+name = "p7_real_sign"
+required-features = ["chain-xmr"]
+
+[[example]]
+name = "dump_signed_psbt"
+required-features = ["chain-btc"]
+
+[[example]]
+name = "review_eth_erc20"
+required-features = ["chain-eth"]
+
+[[example]]
+name = "dump_sdk_artifacts"
+required-features = ["chain-eth"]
 
 [lib]
 # The pure-function core is the `forms` tree; flux appearances consume it.

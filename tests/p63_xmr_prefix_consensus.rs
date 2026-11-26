@@ -1,4 +1,7 @@
 //! Regression tests for the exact transaction-prefix bytes committed to by CLSAG.
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::transaction::{TransactionPrefix, TxExtra, TxInput, TxOutput};

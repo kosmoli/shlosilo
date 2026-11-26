@@ -64,6 +64,9 @@
 //!   X7) and is out of scope here.
 //!
 //! Run: cargo test --offline --test golden_p2in_decrypt
+// Chain axis: this file exercises the feature = "chain-xmr" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::signed_txset::decrypt_signed_txset;

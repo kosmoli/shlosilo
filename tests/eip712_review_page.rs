@@ -15,6 +15,9 @@
 //!    the same code, and every document the page renders the signer signs. The one allowed
 //!    asymmetry is the page's own fold policy (it refuses a structure it cannot itemize),
 //!    which is named and asserted as such.
+// Chain axis: this file drives the eth surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-eth")]
 #![cfg(feature = "alloc-fallback")]
 
 extern crate alloc;

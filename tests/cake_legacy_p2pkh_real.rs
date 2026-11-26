@@ -17,6 +17,9 @@
 //! shape only appears when the wallet could not fetch the previous transaction,
 //! which is not a normal flow, so the device does not guess a script template on
 //! the wallet's behalf — it says "request input data missing" and stops.
+// Chain axis: this file exercises the feature = "chain-btc" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-btc")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::business::sign::{sign, SignInput};

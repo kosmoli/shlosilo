@@ -9,6 +9,9 @@
 //!   3 = EIP-191 personal message. All three answer with a `ur:eth-signature` container.
 //! - XMR / other chains: explicitly rejected (XMR awaits a real Feather fixture; v2 scope does not build transactions)
 
+// Both coin sides parse derivation paths out of their requests (PSBT BIP32 records for
+// BTC, `derivation_path` on an eth-sign-request for ETH).
+#[cfg(any(feature = "chain-btc", feature = "chain-eth"))]
 use crate::derivation::path::DerivationPath;
 use crate::entropy::mnemonic::Mnemonic;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -20,6 +23,7 @@ use crate::types::SecretBytes;
 extern crate alloc;
 
 /// Z2.3 C3b-3: one-byte SliceVec push with the standard overflow error shape.
+#[cfg(feature = "chain-xmr")]
 fn pushb(v: &mut crate::types::SliceVec<u8>, b: u8) -> Result<()> {
     v.push(b).map_err(|_| {
         crate::error::ShlosiloError::new(crate::error::ShlosiloErrorKind::BufferTooSmall)
@@ -301,7 +305,13 @@ pub fn sign_with_entropy_ws_views(
     }
     let payload = template.payload;
 
+    // Chain axis (batch 1): a chain that is not compiled in has no arm, so its
+    // request falls through to the trailing `_` arm below and answers the
+    // PRE-EXISTING `ChainKindUnsupported` (C-ABI -10 `UnsupportedChainKind`).
+    // No new error kind was introduced, and the gated-off arms are the exact
+    // arms a chain-on build runs.
     match chain_kind {
+        #[cfg(feature = "chain-btc")]
         crate::types::chain_kind::ChainKind::Btc => {
             // Z4-7d: the PSBT map pool lives in the caller's workspace (the
             // zero-heap path); without a ws the leaking convenience serves
@@ -322,6 +332,7 @@ pub fn sign_with_entropy_ws_views(
             )?;
             Ok(n)
         }
+        #[cfg(feature = "chain-eth")]
         crate::types::chain_kind::ChainKind::Eth => {
             // E-3 P3: typed data is signed out of the caller's workspace (the pool the
             // EIP-712 container carves). The other ETH schemes ignore it.
@@ -332,6 +343,7 @@ pub fn sign_with_entropy_ws_views(
             let n = sign_eth(seed.expose(), payload, region, output_buf)?;
             Ok(n)
         }
+        #[cfg(feature = "chain-xmr")]
         crate::types::chain_kind::ChainKind::Xmr => match ws {
             Some(ws) => {
                 let n = sign_xmr_with_ws(
@@ -361,7 +373,23 @@ pub fn sign_with_entropy_ws_views(
             #[cfg(not(feature = "alloc-fallback"))]
             None => Err(ShlosiloError::new(ShlosiloErrorKind::BufferTooSmall)),
         },
-        _ => Err(err(ShlosiloErrorKind::ChainKindUnsupported)),
+        _ => {
+            // Reached by the chains this build does not carry (and by the kinds
+            // that never had an arm). Keep the arg list live so a build with no
+            // chain at all still has one place that names what it dropped.
+            let _ = (
+                seed.expose().len(),
+                payload.len(),
+                ws.as_ref().map(|w| w.plain.len()),
+                scratch.map(|s| s.len()),
+                ki_records.len(),
+                entropy.len(),
+                tail.key_images,
+                tail.tx_key_images,
+                output_buf.len(),
+            );
+            Err(err(ShlosiloErrorKind::ChainKindUnsupported))
+        }
     }
 }
 
@@ -380,23 +408,30 @@ pub struct SignWs<'a> {
     /// over caller memory.
     pub plain: &'a mut [u8],
     /// The unsigned-tx model pools (same carve discipline as `UnsignedTxPools`).
+    #[cfg(feature = "chain-xmr")]
     pub txes: &'a mut [Option<crate::chain::xmr::unsigned_txset::TxConstructionData<'a>>],
+    #[cfg(feature = "chain-xmr")]
     pub sources: &'a mut [Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>],
+    #[cfg(feature = "chain-xmr")]
     pub splitted_dsts: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
     pub selected_transfers: &'a mut [usize],
     pub extra: &'a mut [u8],
+    #[cfg(feature = "chain-xmr")]
     pub dests: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
     pub subaddr_indices: &'a mut [u32],
     // Z3.2b: sign-face backings (the SignedTxSet model + per-tx carve pools).
+    #[cfg(feature = "chain-xmr")]
     pub ptx: &'a mut [Option<crate::chain::xmr::signed_txset::PendingTx<'a>>],
     /// Contiguous signed-tx wire slots (C-class: `TX_BYTES_SLOT_MAX` per tx,
     /// carved per iteration — the signer writes straight into the slot).
     pub tx_bytes: &'a mut [u8],
     pub ki: &'a mut [[u8; 32]],
+    #[cfg(feature = "chain-xmr")]
     pub tki: &'a mut [crate::chain::xmr::signed_txset::TxKeyImageEntry],
     pub sel: &'a mut [u8],
     pub kstr: &'a mut [u8],
     /// Records-face dests (per-tx clones carved into the PendingTx records).
+    #[cfg(feature = "chain-xmr")]
     pub record_dests: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
     /// Z5.3 pool cut: BP+ prove multiexp scratch (caller memory, carved).
     pub bp_terms: &'a mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
@@ -407,18 +442,22 @@ pub struct SignWs<'a> {
     /// CN phase's drop.
     pub bp_overlay: OverlayRegion<'a>,
     /// Z4-7d: PSBT map pool (records + payload arena).
+    #[cfg(feature = "chain-btc")]
     pub psbt_recs: &'a mut [crate::chain::btc::psbt::KvRec],
     /// E-3: the EIP-712 container region (`eip712_pool::WS_BYTES`). One span on purpose:
     /// the pool's internal divisions (nodes / types / fields / arena) are its own single
     /// home, so this layout reserves bytes and never re-derives the figure.
+    #[cfg(feature = "chain-eth")]
     pub eip712: &'a mut [u8],
     /// Phase 4a: per-input signer tables (see `layout`), initialised by the carve.
     pub rings: &'a mut [[(
         monero_ed25519::CompressedPoint,
         monero_ed25519::CompressedPoint,
     ); crate::types::caps::RING_MAX]],
+    #[cfg(feature = "chain-xmr")]
     pub tx_inputs: &'a mut [crate::chain::xmr::transaction::TxInput],
     pub ring_lens: &'a mut [usize],
+    #[cfg(feature = "chain-btc")]
     pub psbt_arena: &'a mut [u8],
 }
 
@@ -493,30 +532,41 @@ pub struct SignWsLayout {
     /// whatever alignment its buffer starts at.
     regions: usize,
     plain: usize,
+    #[cfg(feature = "chain-xmr")]
     txes: usize,
+    #[cfg(feature = "chain-xmr")]
     sources: usize,
+    #[cfg(feature = "chain-xmr")]
     splits: usize,
     sel: usize,
     extra: usize,
+    #[cfg(feature = "chain-xmr")]
     dests: usize,
     subidx: usize,
+    #[cfg(feature = "chain-xmr")]
     ptx: usize,
     tx_bytes: usize,
     ki: usize,
+    #[cfg(feature = "chain-xmr")]
     tki: usize,
     sel_out: usize,
     kstr: usize,
+    #[cfg(feature = "chain-xmr")]
     record_dests: usize,
     pub bp_terms: usize,
     pub bp_straus: usize,
     pub cn_scratch: usize,
     pub bp_wip: usize,
+    #[cfg(feature = "chain-btc")]
     pub psbt_recs: usize,
+    #[cfg(feature = "chain-btc")]
     pub psbt_arena: usize,
+    #[cfg(feature = "chain-eth")]
     pub eip712: usize,
     // Phase 4a: per-input signing tables, caller-carved so the task stack does not grow
     // with the input ceiling (`limits::XMR_INPUTS_MAX`).
     pub rings: usize,
+    #[cfg(feature = "chain-xmr")]
     pub tx_inputs: usize,
     pub ring_lens: usize,
 }
@@ -537,7 +587,9 @@ fn ws_next(off: &mut usize, align: usize, size: usize) -> usize {
 
 impl SignWsLayout {
     pub fn compute() -> Self {
+        #[cfg(feature = "chain-xmr")]
         use crate::chain::xmr::signed_txset::{PendingTx, TxKeyImageEntry};
+        #[cfg(feature = "chain-xmr")]
         use crate::chain::xmr::unsigned_txset::{
             TxConstructionData, TxDestinationEntry, TxSourceEntry,
         };
@@ -546,16 +598,19 @@ impl SignWsLayout {
         // the worst-case shift is carried by `total` (see the tail below).
         let mut off = 0usize;
         let plain = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_PLAIN);
+        #[cfg(feature = "chain-xmr")]
         let txes = ws_next(
             &mut off,
             core::mem::align_of::<Option<TxConstructionData<'static>>>(),
             core::mem::size_of::<Option<TxConstructionData<'static>>>() * c::SIGN_WS_TXES,
         );
+        #[cfg(feature = "chain-xmr")]
         let sources = ws_next(
             &mut off,
             core::mem::align_of::<Option<TxSourceEntry>>(),
             core::mem::size_of::<Option<TxSourceEntry>>() * c::SIGN_WS_SOURCES,
         );
+        #[cfg(feature = "chain-xmr")]
         let splits = ws_next(
             &mut off,
             core::mem::align_of::<TxDestinationEntry>(),
@@ -567,6 +622,7 @@ impl SignWsLayout {
             core::mem::size_of::<usize>() * c::SIGN_WS_SEL,
         );
         let extra = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_EXTRA);
+        #[cfg(feature = "chain-xmr")]
         let dests = ws_next(
             &mut off,
             core::mem::align_of::<TxDestinationEntry>(),
@@ -577,6 +633,7 @@ impl SignWsLayout {
             core::mem::align_of::<u32>(),
             core::mem::size_of::<u32>() * c::SIGN_WS_SUBIDX,
         );
+        #[cfg(feature = "chain-xmr")]
         let ptx = ws_next(
             &mut off,
             core::mem::align_of::<Option<PendingTx<'static>>>(),
@@ -588,6 +645,7 @@ impl SignWsLayout {
             core::mem::align_of::<[u8; 32]>(),
             core::mem::size_of::<[u8; 32]>() * c::SIGN_WS_KI,
         );
+        #[cfg(feature = "chain-xmr")]
         let tki = ws_next(
             &mut off,
             core::mem::align_of::<TxKeyImageEntry>(),
@@ -595,6 +653,7 @@ impl SignWsLayout {
         );
         let sel_out = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_SEL_OUT);
         let kstr = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_KSTR);
+        #[cfg(feature = "chain-xmr")]
         let record_dests = ws_next(
             &mut off,
             core::mem::align_of::<TxDestinationEntry>(),
@@ -624,14 +683,17 @@ impl SignWsLayout {
             core::mem::align_of::<u64>(),
             c::SIGN_WS_BP_OVERLAY_BYTES - c::SIGN_WS_BP_STRAUS_BYTES,
         );
+        #[cfg(feature = "chain-btc")]
         let psbt_recs = ws_next(
             &mut off,
             core::mem::align_of::<crate::chain::btc::psbt::KvRec>(),
             core::mem::size_of::<crate::chain::btc::psbt::KvRec>() * c::SIGN_WS_PSBT_RECS,
         );
+        #[cfg(feature = "chain-btc")]
         let psbt_arena = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_PSBT_ARENA);
         // E-3: the typed-data container. Its own alignment (payload offsets are u32), and
         // its size comes from the pool module, which owns the record geometry.
+        #[cfg(feature = "chain-eth")]
         let eip712 = ws_next(
             &mut off,
             core::mem::align_of::<crate::chain::eth::eip712_pool::Eip712Node>(),
@@ -653,6 +715,7 @@ impl SignWsLayout {
                 ); c::RING_MAX],
             >() * crate::limits::XMR_INPUTS_MAX,
         );
+        #[cfg(feature = "chain-xmr")]
         let tx_inputs = ws_next(
             &mut off,
             core::mem::align_of::<crate::chain::xmr::transaction::TxInput>(),
@@ -673,28 +736,39 @@ impl SignWsLayout {
             total,
             regions,
             plain,
+            #[cfg(feature = "chain-xmr")]
             txes,
+            #[cfg(feature = "chain-xmr")]
             sources,
+            #[cfg(feature = "chain-xmr")]
             splits,
             sel,
             extra,
+            #[cfg(feature = "chain-xmr")]
             dests,
             subidx,
+            #[cfg(feature = "chain-xmr")]
             ptx,
             tx_bytes,
             ki,
+            #[cfg(feature = "chain-xmr")]
             tki,
             sel_out,
             kstr,
+            #[cfg(feature = "chain-xmr")]
             record_dests,
             bp_terms,
             bp_straus,
             cn_scratch,
             bp_wip,
+            #[cfg(feature = "chain-btc")]
             psbt_recs,
+            #[cfg(feature = "chain-btc")]
             psbt_arena,
+            #[cfg(feature = "chain-eth")]
             eip712,
             rings,
+            #[cfg(feature = "chain-xmr")]
             tx_inputs,
             ring_lens,
         }
@@ -710,7 +784,9 @@ impl SignWsLayout {
 /// initialized after carving (Option slots to `None`, Default-able leaves to
 /// `default()`, POD spans zeroed) so no uninit value is ever observable.
 pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
+    #[cfg(feature = "chain-xmr")]
     use crate::chain::xmr::signed_txset::{PendingTx, TxKeyImageEntry};
+    #[cfg(feature = "chain-xmr")]
     use crate::chain::xmr::unsigned_txset::{
         TxConstructionData, TxDestinationEntry, TxSourceEntry,
     };
@@ -740,32 +816,46 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         // SignWsLayout::compute and stay inside one base allocation.
         unsafe { core::slice::from_raw_parts_mut(base.add(off) as *mut T, count) }
     }
+    #[cfg(feature = "chain-xmr")]
     let txes: &mut [Option<TxConstructionData>] = unsafe { at(base, l.txes, c::SIGN_WS_TXES) };
+    #[cfg(feature = "chain-xmr")]
     for s in txes.iter_mut() {
         unsafe { core::ptr::write(s, None) };
     }
+    #[cfg(feature = "chain-xmr")]
     let sources: &mut [Option<TxSourceEntry>] = unsafe { at(base, l.sources, c::SIGN_WS_SOURCES) };
+    #[cfg(feature = "chain-xmr")]
     for s in sources.iter_mut() {
         unsafe { core::ptr::write(s, None) };
     }
+    #[cfg(feature = "chain-xmr")]
     let splits: &mut [TxDestinationEntry] = unsafe { at(base, l.splits, c::SIGN_WS_SPLITS) };
+    #[cfg(feature = "chain-xmr")]
     for s in splits.iter_mut() {
         unsafe { core::ptr::write(s, TxDestinationEntry::default()) };
     }
+    #[cfg(feature = "chain-xmr")]
     let dests: &mut [TxDestinationEntry] = unsafe { at(base, l.dests, c::SIGN_WS_DESTS) };
+    #[cfg(feature = "chain-xmr")]
     for s in dests.iter_mut() {
         unsafe { core::ptr::write(s, TxDestinationEntry::default()) };
     }
+    #[cfg(feature = "chain-xmr")]
     let record_dests: &mut [TxDestinationEntry] =
         unsafe { at(base, l.record_dests, c::SIGN_WS_RECORD_DESTS) };
+    #[cfg(feature = "chain-xmr")]
     for s in record_dests.iter_mut() {
         unsafe { core::ptr::write(s, TxDestinationEntry::default()) };
     }
+    #[cfg(feature = "chain-xmr")]
     let ptx: &mut [Option<PendingTx>] = unsafe { at(base, l.ptx, c::SIGN_WS_PTX) };
+    #[cfg(feature = "chain-xmr")]
     for s in ptx.iter_mut() {
         unsafe { core::ptr::write(s, None) };
     }
+    #[cfg(feature = "chain-xmr")]
     let tki: &mut [TxKeyImageEntry] = unsafe { at(base, l.tki, c::SIGN_WS_TKI) };
+    #[cfg(feature = "chain-xmr")]
     for s in tki.iter_mut() {
         unsafe { core::ptr::write(s, TxKeyImageEntry::default()) };
     }
@@ -787,11 +877,14 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
      * cn_scratch offset == bp_straus offset is pinned in tests). */
     let bp_overlay: OverlayRegion<'_> =
         OverlayRegion::new(unsafe { at(base, l.bp_straus, c::SIGN_WS_BP_OVERLAY_BYTES) });
+    #[cfg(feature = "chain-btc")]
     let psbt_recs: &mut [crate::chain::btc::psbt::KvRec] =
         unsafe { at(base, l.psbt_recs, c::SIGN_WS_PSBT_RECS) };
+    #[cfg(feature = "chain-btc")]
     let psbt_arena: &mut [u8] = unsafe { at(base, l.psbt_arena, c::SIGN_WS_PSBT_ARENA) };
     // E-3: plain bytes — the pool carves its spans out of this region itself, so the
     // workspace only has to leave it zeroed (the whole-carve fill above already did).
+    #[cfg(feature = "chain-eth")]
     let eip712: &mut [u8] = unsafe { at(base, l.eip712, crate::chain::eth::eip712_pool::WS_BYTES) };
     // Phase 4a: initialise-on-carve, never read-before-write. A single pass over the
     // input ceiling buys plain `&mut` slices in the signing core instead of a
@@ -807,8 +900,10 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
             unsafe { core::ptr::write(slot, (zero, zero)) };
         }
     }
+    #[cfg(feature = "chain-xmr")]
     let tx_inputs: &mut [crate::chain::xmr::transaction::TxInput] =
         unsafe { at(base, l.tx_inputs, crate::limits::XMR_INPUTS_MAX) };
+    #[cfg(feature = "chain-xmr")]
     for slot in tx_inputs.iter_mut() {
         unsafe {
             core::ptr::write(
@@ -821,26 +916,37 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     ring_lens.fill(0);
     Some(SignWs {
         plain,
+        #[cfg(feature = "chain-xmr")]
         txes,
+        #[cfg(feature = "chain-xmr")]
         sources,
+        #[cfg(feature = "chain-xmr")]
         splitted_dsts: splits,
         selected_transfers: sel,
         extra,
+        #[cfg(feature = "chain-xmr")]
         dests,
         subaddr_indices: subidx,
+        #[cfg(feature = "chain-xmr")]
         ptx,
         tx_bytes,
         ki,
+        #[cfg(feature = "chain-xmr")]
         tki,
         sel: sel_out,
         kstr,
+        #[cfg(feature = "chain-xmr")]
         record_dests,
         bp_terms,
         bp_overlay,
+        #[cfg(feature = "chain-btc")]
         psbt_recs,
+        #[cfg(feature = "chain-btc")]
         psbt_arena,
+        #[cfg(feature = "chain-eth")]
         eip712,
         rings,
+        #[cfg(feature = "chain-xmr")]
         tx_inputs,
         ring_lens,
     })
@@ -855,10 +961,11 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
 /// 4. Serialize the SignedTxSet (tx_key=ONE placeholder) → encrypt_signed_txset (SIGNED_TX_PREFIX)
 ///
 /// rng usage: BP+/CLSAG/encryption nonce + signing k; the tx_key r entropy comes from the entropy derivation.
-#[cfg(feature = "tx-phase-timing-ffi")]
+#[cfg(all(feature = "chain-xmr", feature = "tx-phase-timing-ffi"))]
 use crate::tx_phase_hook::PhaseProbe;
 
 #[allow(clippy::too_many_arguments)] // frozen arg list + the scratch region
+#[cfg(feature = "chain-xmr")]
 fn sign_xmr_with_ws<'a>(
     tail: crate::canonical::TailView,
     ws: &mut SignWs<'a>,
@@ -1560,7 +1667,7 @@ fn sign_xmr_with_ws<'a>(
 /// callers; Rust flux hosts pass `Some(ws)` over their own memory instead and
 /// the shell leaves their path entirely. Removed when the C-ABI workspace lands
 /// (Z3.3b) — see the Z3 design doc for the proposed C shape.
-#[cfg(feature = "alloc-fallback")]
+#[cfg(all(feature = "alloc-fallback", feature = "chain-xmr"))]
 fn sign_xmr(
     tail: crate::canonical::TailView,
     seed: &[u8],
@@ -1592,6 +1699,7 @@ fn sign_xmr(
     )
 }
 
+#[cfg(feature = "chain-btc")]
 fn parse_derivation_value(value: &[u8]) -> Option<([u8; 4], DerivationPath)> {
     if value.len() < 8 || !(value.len() - 4).is_multiple_of(4) {
         return None;
@@ -1609,6 +1717,7 @@ fn parse_derivation_value(value: &[u8]) -> Option<([u8; 4], DerivationPath)> {
     .map(|p| (fp, p))
 }
 
+#[cfg(feature = "chain-btc")]
 fn read_bip32_derivation(
     input_map: crate::chain::btc::psbt::KvMap<'_>,
 ) -> Option<([u8; 4], DerivationPath)> {
@@ -1626,6 +1735,7 @@ fn read_bip32_derivation(
 /// The BIP-341 sighash, the output-key/prevout comparison and the signature
 /// injection live in `chain/btc/psbt.rs` (same parsing face as the rest of the
 /// PSBT code, so review and signing cannot drift apart).
+#[cfg(feature = "chain-btc")]
 fn sign_btc_taproot_input(
     seed: &[u8],
     psbt: &mut crate::chain::btc::psbt::Psbt<'_>,
@@ -1682,6 +1792,7 @@ fn sign_btc_taproot_input(
 /// Every purpose we hand out an account key for. A watch-only wallet derives
 /// under whichever account key it received and *labels* the address path with its
 /// own purpose level, so the same suffix has to be tried under each of these.
+#[cfg(feature = "chain-btc")]
 const OWNED_PURPOSES: [u32; 4] = [
     84 | 0x8000_0000,
     49 | 0x8000_0000,
@@ -1704,11 +1815,13 @@ const OWNED_PURPOSES: [u32; 4] = [
 /// record does not name.
 /// The pubkey form a derivation record names: a full compressed key (0x06
 /// records) or an x-only key (0x16 TAP_BIP32_DERIVATION).
+#[cfg(feature = "chain-btc")]
 enum RecordPub<'a> {
     Full(&'a [u8; 33]),
     XOnly(&'a [u8; 32]),
 }
 
+#[cfg(feature = "chain-btc")]
 fn key_at_path_if_matches(
     seed: &[u8],
     path: &DerivationPath,
@@ -1747,6 +1860,7 @@ fn key_at_path_if_matches(
 /// A record whose pubkey no candidate reproduces is refused, so a mislabelled path can
 /// only stop a legitimate request — never make us sign with a key the record does not
 /// name.
+#[cfg(feature = "chain-btc")]
 fn resolve_owned_key(
     seed: &[u8],
     path: &DerivationPath,
@@ -1787,6 +1901,7 @@ fn resolve_owned_key(
     Ok(None)
 }
 
+#[cfg(feature = "chain-btc")]
 fn sign_btc<'a>(
     seed: &[u8],
     cbor_payload: &'a [u8],
@@ -2027,6 +2142,7 @@ fn sign_btc<'a>(
 /// pool's storage is the caller's `region` (one `eip712_pool::WS_BYTES` span carved out
 /// of the sign workspace); without a region there is no container to parse into and the
 /// request is refused rather than parsed into a second, allocating one.
+#[cfg(feature = "chain-eth")]
 fn sign_eth(
     seed: &[u8],
     cbor_payload: &[u8],
@@ -2257,10 +2373,15 @@ pub(crate) fn check_network(
     ur_payload: &[u8],
     network: Network,
 ) -> Result<()> {
+    // A build with neither BTC nor ETH compiled in has no arm below; the pair stays
+    // named so the ABI-shaped signature does not sprout `_` prefixes per feature.
+    let _ = (&ur_payload, network);
     match type_tag {
+        #[cfg(feature = "chain-btc")]
         crate::ur::ur_encode::UrTypeTag::CryptoPsbt if network != Network::BitcoinMainnet => {
             return Err(err(ShlosiloErrorKind::NetworkUnrecognized));
         }
+        #[cfg(feature = "chain-eth")]
         crate::ur::ur_encode::UrTypeTag::EthSignRequest
             if matches!(
                 network,
@@ -2323,12 +2444,15 @@ pub(crate) fn check_network(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "chain-btc")]
     use crate::chain::btc::p2wpkh::bt_vec;
+    #[cfg(feature = "chain-btc")]
     use crate::chain::btc::psbt::psbt_from_maps_leaky;
     use crate::types::chain_kind::ChainKind;
     #[cfg(feature = "alloc-fallback")]
     extern crate alloc;
     // (alloc::vec import dropped — test literals use the qualified form)
+    #[cfg(feature = "chain-eth")]
     use alloc::vec::Vec;
 
     #[test]
@@ -2360,6 +2484,7 @@ mod tests {
 
     /// XMR is now wired in (P1-06 wrap-up): missing entropy raises EntropyInjectionInvalid
     /// (§B.5 misuse guard; the old ChainKindUnsupported behavior has been removed)
+    #[cfg(feature = "chain-xmr")]
     #[test]
     #[cfg(feature = "alloc-fallback")]
     fn sign_xmr_requires_entropy() {
@@ -2395,6 +2520,7 @@ mod tests {
     /// consumes a signed raw tx — the wallet assembles and broadcasts — so the
     /// assertion moved to the container: the fields must match an independent
     /// `sign_eip1559` call, and the output must no longer be a transaction.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_end_to_end() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
@@ -2465,6 +2591,7 @@ mod tests {
     /// The container has no way to invent an id (and must not): the sender
     /// correlates the reply by it. Two requests that differ only in key 1 must
     /// produce two encodings, each parsing back to its own id.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_echoes_request_id_from_the_request() {
         let tx = crate::chain::eth::eip1559::Eip1559Transaction {
@@ -2516,6 +2643,7 @@ mod tests {
     /// 27-offset byte would reach the wallet as-is and the signature would be
     /// rejected or mis-recovered. Field positions are pinned by comparing against
     /// the oracle's r/s, so a shifted layout fails here too.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_1559_v_is_yparity_not_27_offset() {
         use crate::ur::codec::eth_signature::parse_eth_signature;
@@ -2585,6 +2713,7 @@ mod tests {
     /// The container echoes the id and never mints one, so signing would produce a
     /// reply the sender cannot correlate — worse than no answer. `EncodingInvalidFormat`
     /// (not a new error kind) is the module's format rejection.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_requires_request_id() {
         let tx = crate::chain::eth::eip1559::Eip1559Transaction {
@@ -2616,6 +2745,7 @@ mod tests {
     }
 
     /// P1-01: ETH end-to-end rejects requests with a mismatched chain_id
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_rejects_chain_id_mismatch() {
         let tx = crate::chain::eth::eip1559::Eip1559Transaction {
@@ -2651,6 +2781,7 @@ mod tests {
     /// which is the opposite of the 1559 yParity rule. The signature must equal an
     /// independent `personal_sign_bytes` call over the same message and key, and the
     /// payload must NOT be parsed as a transaction.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_personal_message_signs_with_27_28_v() {
         use crate::chain::eth::personal_sign;
@@ -2695,6 +2826,7 @@ mod tests {
     /// same transaction. Poison-pill shaped: the calldata selector and the spender word
     /// are asserted directly, so a decoder/encoder drift shows up here rather than as a
     /// plausible-looking signature over the wrong call.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_erc20_approve_unlimited_reaches_the_container() {
         use crate::chain::eth::eip1559::{self, Eip1559Transaction};
@@ -2773,6 +2905,7 @@ mod tests {
     /// shape a wallet sends for a legacy transaction. Feeding the signed-transaction
     /// reader instead would take `chain_id` for a `v` and sign for the wrong chain
     /// (see `from_rlp::parse_eip155_signing_request`).
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_legacy_mainnet_reaches_the_container_with_v37() {
         use crate::chain::eth::eip155;
@@ -2834,6 +2967,7 @@ mod tests {
     /// The container's `v` segment follows the chain id, and it is what makes the
     /// signature usable at all: Sepolia (11155111 → 22310257) needs 4 bytes and Polygon
     /// (137 → 309) needs 2, which a fixed 65-byte field could not carry.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_legacy_v_segment_follows_the_chain_id() {
         use crate::chain::eth::eip155;
@@ -2911,6 +3045,7 @@ mod tests {
     /// An unprotected legacy request (6 items, no chain id) is refused as
     /// unimplemented — a stable code for a shape we know and will not sign — never as a
     /// malformed request, and never signed with a 27/28 `v`.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_legacy_unprotected_six_item_shape_is_refused() {
         use crate::chain::eth::rlp;
@@ -2942,6 +3077,7 @@ mod tests {
     /// A typed transaction body with its `0x02` byte stripped is NOT a legacy request:
     /// legacy carries a chain id in item 6 and empty signature slots, this carries
     /// neither. It must fail as malformed instead of being signed as something else.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_legacy_rejects_a_typed_body_without_its_type_byte() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
@@ -2978,6 +3114,7 @@ mod tests {
     /// The request's own `chain_id` (key 4) must agree with the transaction, exactly as
     /// on the typed path: a legacy request that names chain 5 while carrying a chain-1
     /// transaction is a request this device must not sign.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_legacy_rejects_a_chain_id_mismatch() {
         use crate::chain::eth::eip155;
@@ -3012,6 +3149,7 @@ mod tests {
     /// (EIP-1559) is signable here; the other *valid* type bytes (EIP-2930 / 4844 / 7702)
     /// must report "unimplemented" rather than "malformed", while a byte that is not a
     /// transaction type at all (`0x99`) — or no byte at all — is a format error.
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_typed_transaction_first_byte_selects_the_scheme() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
@@ -3077,6 +3215,7 @@ mod tests {
     }
 
     /// Test helper: lowercase hex, for comparing a built payload with a published one.
+    #[cfg(feature = "chain-eth")]
     fn hex_lower(bytes: &[u8]) -> alloc::string::String {
         use core::fmt::Write as _;
         let mut s = alloc::string::String::new();
@@ -3087,6 +3226,7 @@ mod tests {
     }
 
     /// Test helper: encode an unsigned EIP-1559 tx into raw bytes (for from_rlp parsing)
+    #[cfg(feature = "chain-eth")]
     fn encode_unsigned_tx_for_test(
         tx: &crate::chain::eth::eip1559::Eip1559Transaction,
     ) -> alloc::vec::Vec<u8> {
@@ -3124,6 +3264,7 @@ mod tests {
 
     /// Test helper: build an eth-sign-request CBOR map (ur-registry shape, minimal set)
     /// {1: request_id(tag 37 UUID), 2: sign_data(bytes), 3: data_type(uint), 4: chain_id(uint)}
+    #[cfg(feature = "chain-eth")]
     fn encode_eth_sign_request_for_test(
         sign_data: &[u8],
         data_type: u64,
@@ -3139,6 +3280,7 @@ mod tests {
     }
 
     /// + optional derivation_path (key 5, tag 305 crypto-keypath)
+    #[cfg(feature = "chain-eth")]
     fn encode_eth_sign_request_with_path_for_test(
         sign_data: &[u8],
         data_type: u64,
@@ -3156,6 +3298,7 @@ mod tests {
 
     /// Full control over the optional keys. `request_id = None` omits key 1 — the
     /// shape the E-1 exit refuses, since a reply it cannot correlate is useless.
+    #[cfg(feature = "chain-eth")]
     fn encode_eth_sign_request_full_for_test(
         sign_data: &[u8],
         data_type: u64,
@@ -3193,6 +3336,7 @@ mod tests {
     }
 
     /// BTC end-to-end: build a P2WPKH PSBT → crypto-psbt CBOR → sign() → verify PARTIAL_SIG
+    #[cfg(feature = "chain-btc")]
     #[test]
     #[cfg(feature = "alloc-fallback")]
     fn sign_btc_psbt_end_to_end() {
@@ -3320,6 +3464,7 @@ mod tests {
     }
 
     /// P1-02: PSBT with a non-default path (m/84'/0'/1'/0/0) → signing derives the key from that path (threading proof)
+    #[cfg(feature = "chain-btc")]
     #[test]
     #[cfg(feature = "alloc-fallback")]
     fn sign_btc_psbt_uses_psbt_derivation_path() {
@@ -3411,6 +3556,7 @@ mod tests {
     }
 
     /// P1-02: BIP32_DERIVATION fingerprint mismatch with ours → reject (prevents signing from the wrong wallet)
+    #[cfg(feature = "chain-btc")]
     #[test]
     #[cfg(feature = "alloc-fallback")]
     fn sign_btc_psbt_rejects_fingerprint_mismatch() {
@@ -3503,6 +3649,7 @@ mod tests {
     }
 
     /// P1-B: witness_utxo scriptPubKey not bound to the signing key (swapped to someone else's P2WPKH) → reject
+    #[cfg(feature = "chain-btc")]
     #[test]
     #[cfg(feature = "alloc-fallback")]
     fn p1b_rejects_witness_utxo_script_mismatch() {
@@ -3592,6 +3739,7 @@ mod tests {
     }
 
     /// P1-B: no BIP32_DERIVATION record (the old default-path fallback has been removed) → reject
+    #[cfg(feature = "chain-btc")]
     #[test]
     #[cfg(feature = "alloc-fallback")]
     fn p1b_rejects_missing_derivation_record() {
@@ -3651,6 +3799,7 @@ mod tests {
     }
 
     /// P1-02: eth-sign-request with a derivation_path → signing derives the key from that path (threading proof)
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_eth_uses_request_derivation_path() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
@@ -3724,6 +3873,7 @@ mod tests {
     }
 
     /// P1-02: network in decision — BTC rejects non-mainnet
+    #[cfg(feature = "chain-btc")]
     #[test]
     fn sign_with_network_btc_rejects_testnet() {
         let seed = [0xA5u8; 64];
@@ -3744,6 +3894,7 @@ mod tests {
     }
 
     /// P1-02: network in decision — ETH rejects when network(10=mainnet,chain_id=1) does not match the tx chain_id
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_with_network_eth_rejects_chain_id_mismatch() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
@@ -3776,6 +3927,7 @@ mod tests {
     }
 
     /// P1-02: network in decision — ETH allows when the network matches the tx chain_id (successful signing)
+    #[cfg(feature = "chain-eth")]
     #[test]
     fn sign_with_network_eth_accepts_matching() {
         use crate::chain::eth::eip1559::Eip1559Transaction;
@@ -3816,6 +3968,7 @@ mod t04_overlay_pins {
     extern crate alloc;
     use super::*;
 
+    #[cfg(feature = "chain-xmr")]
     #[test]
     fn cn_phase_zeroizes_overlay_on_drop() {
         let mut raw = alloc::vec![0xAAu8; crate::types::caps::SIGN_WS_BP_OVERLAY_BYTES];

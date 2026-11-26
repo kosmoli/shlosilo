@@ -6,6 +6,9 @@
 //! - m/84'/1'/0'/0/2 privkey 51f15ae12f89aebd635796b16d96ca8aa81e96687c918de96b2175c75604be1d
 //!   pubkey 027b54f8c6f01ce468c291a2959532a925868762bf8330e67624b45292499be40f
 //!   (exactly matching the test.psbt BIP32_DERIVATION key)
+// Chain axis: this file drives the btc surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-btc")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::business::sign::{sign, SignInput};

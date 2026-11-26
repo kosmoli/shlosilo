@@ -19,6 +19,9 @@
 //! - `unknown` — an unassigned type byte: malformed, refused with the format code.
 //! - `presigned` — a payload that already carries a signature: not a signing request.
 //! - `badchain` — the request says chain 5, the transaction says chain 1.
+// Chain axis: this file exercises the feature = "chain-eth" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-eth")]
 #![cfg(feature = "alloc-fallback")]
 
 extern crate alloc;

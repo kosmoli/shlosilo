@@ -15,6 +15,9 @@
 //!    recognized under the stock main-key branch, while the two
 //!    additional-key-derived outputs are only reachable at the PRE-FIX table's
 //!    shifted slots — the regression being the dshape pin.
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::chain::xmr::subaddress::calc_output_key_offset;

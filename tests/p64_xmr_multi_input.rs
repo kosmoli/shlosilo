@@ -19,6 +19,9 @@
 //! Run:
 //!   P64_ENTROPY_HEX=$(cat /tmp/p64_env | cut -d= -f2) cargo test --release \
 //!     --test p64_xmr_multi_input -- --ignored --nocapture
+// Chain axis: this file exercises the feature = "chain-xmr" surface; without that switch
+// compiled in, the API it drives does not exist.
+#![cfg(feature = "chain-xmr")]
 #![cfg(feature = "alloc-fallback")]
 
 use shlosilo::address::xmr::encode;

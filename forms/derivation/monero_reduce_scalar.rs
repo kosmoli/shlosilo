@@ -94,12 +94,12 @@ pub fn derive(seed: &[u8], path: &MoneroPath) -> Result<MoneroKeyPair> {
 
     // 2. spend = Hs(raw)
     let spend_hash = crate::encoding::keccak256::hash(&raw)?;
-    let spend_priv = crate::chain::xmr::reduce_scalar::reduce_scalar(&spend_hash)?;
+    let spend_priv = crate::curve_primitive::scalar_reduce::reduce_scalar(&spend_hash)?;
 
     // 3. view = Hs(spend)
     let spend_bytes = crate::curve_primitive::ed25519::scalar_to_bytes(&spend_priv);
     let view_hash = crate::encoding::keccak256::hash(&spend_bytes)?;
-    let view_priv = crate::chain::xmr::reduce_scalar::reduce_scalar(&view_hash)?;
+    let view_priv = crate::curve_primitive::scalar_reduce::reduce_scalar(&view_hash)?;
 
     Ok(MoneroKeyPair {
         spend_priv,
@@ -113,7 +113,7 @@ pub fn derive(seed: &[u8], path: &MoneroPath) -> Result<MoneroKeyPair> {
 pub fn derive_view_key(spend_private: &Ed25519Scalar) -> Result<Ed25519Scalar> {
     let spend_bytes = crate::curve_primitive::ed25519::scalar_to_bytes(spend_private);
     let view_hash = crate::encoding::keccak256::hash(&spend_bytes)?;
-    crate::chain::xmr::reduce_scalar::reduce_scalar(&view_hash)
+    crate::curve_primitive::scalar_reduce::reduce_scalar(&view_hash)
 }
 
 #[cfg(test)]

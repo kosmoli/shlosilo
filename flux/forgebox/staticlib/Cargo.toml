@@ -44,6 +44,11 @@ se = ["shlosilo-flux-keysource/se"]
 shlosilo-flux-keysource = { path = "../../keysource" }
 # The diagnostic FFI features compiled into the .a for the C host.
 shlosilo = { path = "../../..", default-features = false, features = [
+    # Chain axis (batch 1): the C host drives every chain through the same ABI, so the
+    # staticlib names all three. A carrier-specific subset is a build.sh decision later.
+    "chain-btc",
+    "chain-eth",
+    "chain-xmr",
     "generator-cache-ffi",
     "cn-timing-ffi",
     "tx-phase-timing-ffi",

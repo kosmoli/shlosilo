@@ -17,6 +17,10 @@
 //! must be named by us with the same (lowercased) name, and we must not name a chain
 //! the registry snapshot does not contain.
 
+// Chain axis: this file drives the btc+eth surface; without that switch the
+// API it uses does not exist.
+#![cfg(all(feature = "chain-btc", feature = "chain-eth"))]
+
 use shlosilo::address::eth;
 use shlosilo::business::review;
 use shlosilo::chain::eth::chain_names::{chain_name, KNOWN_CHAINS};

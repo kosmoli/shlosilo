@@ -50,7 +50,9 @@ crate-type = ["rlib"]
 # turns forms' host face back on. Declaring forms with default features would put
 # `std` into every thumbv7em build of this crate, which is precisely the block
 # this batch removed.
-shlosilo = { path = "../..", default-features = false }
+# Chain axis: the shell renders and drives every chain, so it names all three
+# explicitly instead of relying on forms' `default` (which it does not inherit).
+shlosilo = { path = "../..", default-features = false, features = ["chain-btc", "chain-eth", "chain-xmr"] }
 # Already in the workspace graph (forms depends on it): the one fixed-cap buffer
 # the flow owns — the UR type name. No new third-party crate.
 heapless = "0.7"

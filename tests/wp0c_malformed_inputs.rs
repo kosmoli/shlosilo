@@ -13,6 +13,9 @@
 //! Each pin runs a positive control first (probe calibration: a pin that
 //! rejects everything because the artifact was never valid proves nothing).
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
 // Alloc-face test: the container decrypt APIs are `alloc-fallback` gated
 // (invisible to integration tests on the no-default-features face — pool
 // #46 lesson), so this whole face rides that feature.

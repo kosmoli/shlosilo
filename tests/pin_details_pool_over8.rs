@@ -21,6 +21,10 @@
 //!
 //! Run: cargo test --offline --test pin_details_pool_over8
 
+// Chain axis: this file drives the xmr surface; without that switch the
+// API it uses does not exist.
+#![cfg(feature = "chain-xmr")]
+
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::scalar::Scalar;
 use rand_chacha::rand_core::SeedableRng as _;
