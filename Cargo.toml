@@ -40,6 +40,13 @@ members = [
     # flux infrastructure, host-testable (the staticlib shims are embedded-only
     # and cannot run `cargo test`); see flux/keysource/Cargo.toml.
     "flux/keysource",
+    # flux-side product shell (Carrier trait + the review→confirm→sign flow): the
+    # sequence-and-presentation layer every carrier shares, so a new carrier writes
+    # only its own I/O. Rust carriers link forms directly — no C-ABI hop.
+    "flux/shell",
+    # First no-hardware carrier (files + stdin/stdout): the shell's host TDD loop and
+    # the chain-axis acceptance executor.
+    "flux/desktop",
 ]
 exclude = [
     "fuzz",

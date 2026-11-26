@@ -1,0 +1,27 @@
+[package]
+name = "shlosilo-flux-shell"
+version = "0.5.0"
+edition = "2021"
+publish = false
+
+# flux product shell: the sequence-and-presentation layer every carrier shares.
+#
+# Layer rationale (design 2026-11-26 §3): forms answers what a request means and
+# what may be signed; a carrier answers only what its own hardware can do (frames
+# in, pixels out, keys, files); this crate answers *in what order* those two talk.
+# The split exists because the forgebox product task (~4.7k lines of C) is mostly
+# this layer, not platform adaptation.
+#
+# Dependency note: `shlosilo` is a direct path dependency, NOT a C-ABI hop
+# (design §4). Rust carriers link the core as a library, so this crate needs no
+# header, no keep table and no `extern "C"` surface. The default feature set is
+# kept: the shell provisions its own workspaces (see src/workspace.rs), which
+# needs an allocator. A no_std carrier cannot adopt the shell until the carrier
+# carries a workspace seam — that is a design gap, not a feature flag away, and
+# it is recorded in the report of this slice.
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+shlosilo = { path = "../.." }

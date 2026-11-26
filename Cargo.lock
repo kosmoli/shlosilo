@@ -2380,11 +2380,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "shlosilo-flux-desktop"
+version = "0.5.0"
+dependencies = [
+ "shlosilo",
+ "shlosilo-flux-shell",
+]
+
+[[package]]
 name = "shlosilo-flux-keysource"
 version = "0.5.0"
 dependencies = [
  "shlosilo",
  "static_assertions",
+]
+
+[[package]]
+name = "shlosilo-flux-shell"
+version = "0.5.0"
+dependencies = [
+ "shlosilo",
 ]
 
 [[package]]
