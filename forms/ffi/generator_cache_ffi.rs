@@ -30,7 +30,7 @@
 //!   Returns 0 on success, non-zero on failure (store failure is non-fatal: the cache
 //!   simply re-decompresses on next boot).
 
-#[cfg(feature = "generator-cache-ffi")]
+#[cfg(all(feature = "generator-cache-ffi", feature = "chain-xmr"))]
 mod imp {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -169,7 +169,7 @@ mod imp {
     }
 }
 
-#[cfg(feature = "generator-cache-ffi")]
+#[cfg(all(feature = "generator-cache-ffi", feature = "chain-xmr"))]
 pub use imp::*;
 
 /// C-ABI: register the flash-backend callbacks. Call once from C init (before the first
@@ -181,13 +181,21 @@ pub use imp::*;
 ///
 /// Single definition with a cfg-split body (feature on: real hooks; off: no-op)
 /// so the C host always links and cbindgen emits exactly one declaration.
-#[cfg_attr(not(feature = "generator-cache-ffi"), allow(unused_variables))]
+///
+/// Chain axis (batch 3): the hooks belong to the BP+ generator cache, so the real
+/// body also needs `chain-xmr` — `monero-bulletproofs` is an optional dependency of
+/// that chain and a build without it must still link this symbol (the C host calls
+/// it unconditionally from init).
+#[cfg_attr(
+    not(all(feature = "generator-cache-ffi", feature = "chain-xmr")),
+    allow(unused_variables)
+)]
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_gen_cache_set_hooks(
     load_fptr: Option<extern "C" fn(*const u8, u32) -> *const u8>,
     store_fptr: Option<extern "C" fn(*const u8, u32, *const u8, u32) -> u32>,
 ) {
-    #[cfg(feature = "generator-cache-ffi")]
+    #[cfg(all(feature = "generator-cache-ffi", feature = "chain-xmr"))]
     {
         imp::set_hooks(load_fptr, store_fptr);
     }

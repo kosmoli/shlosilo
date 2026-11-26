@@ -13,6 +13,7 @@
 /// entries. Bound = `2 * padded_pow_of_2(MAX_COMMITMENTS * 64) + 2` = 2*1024+2
 /// (the A-terms worst case; WIP L/R need less). Over-cap in the prove chain
 /// is an explicit error before any proving starts.
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_BP_TERMS: usize = 2050;
 
 /// Z5.3 D-cut: the Straus scratch byte pool (byte expression of the vendor's
@@ -45,6 +46,7 @@ pub const SIGN_BP_CHUNK_TERMS: usize = crate::limits::SIGN_BP_CHUNK_TERMS;
 /// 33,856 B although the CT path itself touches only 16,128 B of it.
 pub const SIGN_SCRATCH_BYTES: usize =
     curve25519_dalek::scratch::StrausScratch::storage_bytes(SIGN_BP_CHUNK_TERMS);
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_BP_STRAUS_BYTES: usize =
     SIGN_WS_BP_CHUNK_MAX * (16 * 160) + SIGN_WS_BP_CHUNK_MAX * 256 + 64;
 /// CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB).
@@ -53,11 +55,13 @@ pub const SIGN_WS_BP_STRAUS_BYTES: usize =
 /// completes before the prove phase; the CN core zeroes the region on every
 /// exit path, restoring the carve's documented zero-fill state). The overlay
 /// fit is enforced at compile time below and pinned by layout tests.
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_CN_SCRATCH: usize = 1 << 21;
 
 /// T-04 follow-up: the overlay region shared by the CN scratchpad and the
 /// straus+wip pair — the larger of the two demands. The wip carve is padded
 /// to fill the region (`WipScratch::new` takes "at least" storage).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_BP_OVERLAY_BYTES: usize =
     if SIGN_WS_CN_SCRATCH > SIGN_WS_BP_STRAUS_BYTES + SIGN_WS_BP_WIP_BYTES {
         SIGN_WS_CN_SCRATCH
@@ -66,6 +70,7 @@ pub const SIGN_WS_BP_OVERLAY_BYTES: usize =
     };
 
 /// T-04 follow-up: the overlay must fit the region by construction.
+#[cfg(feature = "chain-xmr")]
 const _: () = assert!(
     SIGN_WS_CN_SCRATCH <= SIGN_WS_BP_OVERLAY_BYTES
         && SIGN_WS_BP_STRAUS_BYTES + SIGN_WS_BP_WIP_BYTES <= SIGN_WS_BP_OVERLAY_BYTES,
@@ -74,6 +79,7 @@ const _: () = assert!(
 
 /// Z5.3 C-cut B: WIP round ping-pong scratch (a/b/g/h double buffers) —
 /// byte expression of `WipScratch::storage_bytes(SIGN_WS_BP_TERMS)`.
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_BP_WIP_BYTES: usize = SIGN_WS_BP_TERMS * 960;
 
 /// Z4-7d: PSBT map pool — record pool + payload arena. The map store's home is
@@ -97,20 +103,25 @@ pub const SHLOSILO_GENCACHE_G_BYTES: u32 = 163_840;
 pub const SHLOSILO_GENCACHE_H_BYTES: u32 = 163_840;
 pub const SHLOSILO_GENCACHE_BLOB_BYTES: u32 = 262_144;
 
+#[cfg(feature = "chain-xmr")]
 pub const RING_MAX: usize = 16;
 
 /// Soft: additional tx keys per source/output (real traffic 1-2).
+#[cfg(feature = "chain-xmr")]
 pub const EXTRA_KEYS_MAX: usize = 8;
 
 /// Soft: `tx_extra` nonce payload bytes (payment IDs are 8/9B).
+#[cfg(feature = "chain-xmr")]
 pub const TX_EXTRA_NONCE_MAX: usize = 32;
 
 /// Soft: `tx_extra` additional pubkeys (subaddress sends; one per output).
+#[cfg(feature = "chain-xmr")]
 pub const TX_EXTRA_PUBKEYS_MAX: usize = 16;
 
 /// Soft: `original` address-string bytes (Monero base58 addresses: standard 95,
 /// integrated 106 chars — real traffic never exceeds 106). Over-cap is an
 /// explicit EncodingInvalidFormat Err (Z3.1 leaf: the container Vec is gone).
+#[cfg(feature = "chain-xmr")]
 pub const DEST_ORIGINAL_MAX: usize = 106;
 
 /// Soft: the `origin` field of the ETH UR containers — `eth-sign-request` key 7
@@ -129,10 +140,13 @@ pub const ETH_UR_ORIGIN_MAX_LEN: usize = 64;
 // historical shell caps (behavior-identical); tuning is deployment work.
 
 /// Workspace: plaintext scratch == max unsigned-txset plain budget.
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_PLAIN: usize = 16384;
 /// Workspace: unsigned-model tx slots.
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_TXES: usize = 8;
 /// Workspace: source entries (flat, all txes).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_SOURCES: usize = 32;
 /// Workspace: the retained-leg staging (I13) — the FULL fp-matched retention
 /// set for the keystone two-fill map. Mirrors `WalletKiRecord` capacity
@@ -141,32 +155,48 @@ pub const SIGN_WS_SOURCES: usize = 32;
 // the keystone-ecosystem scenario (a real wallet's outputs history) crosses
 // 64 quickly; the sign workspace lives in PSRAM (ExtMalloc), so the extra
 // slots cost heap, not SRAM.
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_RETAINED: usize = 128;
 /// Workspace: splitted destinations (flat).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_SPLITS: usize = 64;
 /// Workspace: selected-transfers bytes (flat).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_SEL: usize = 256;
 /// Workspace: tx_extra bytes == max plain budget.
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_EXTRA: usize = 16384;
 /// Workspace: model destinations (flat).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_DESTS: usize = 64;
 /// Workspace: subaddress indices (flat).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_SUBIDX: usize = 256;
 /// Workspace: PendingTx slots.
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_PTX: usize = 8;
 /// Workspace: signed-tx wire bytes (TX_WIRE_SLOT_MAX per tx).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_TX_BYTES: usize = 16 * 1024 * 8;
 /// Workspace: key images (flat).
 /// Raised 32 -> 128 (WP4): the Indexed positional array spans
 /// max(selected_transfers)+1 over the wallet's transfer space.
+// NOT chain-gated: this is a *number* the generic sign entry clamps its
+// `ki_records` slice against (`ffi/c_abi.rs::shlosilo_sign_typed`) and the
+// KI-store merge entry bounds its caller arrays with. The MEMORY it describes
+// (the `ki` region, `SIGN_WS_KI * 32` B) is gated in `SignWsLayout`, which is
+// where the budget lives — hiding the constant would only break shared code.
 pub const SIGN_WS_KI: usize = 128;
 /// Workspace: tx key image records (flat).
 /// Raised 128 -> 256 (WP4): the Keyed tail's two-fill union =
 /// new outputs (≤100) + retained transfers (≤128).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_TKI: usize = 256;
 /// Workspace: selected-transfers record bytes (flat).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_SEL_OUT: usize = 256;
 /// Workspace: key-image string bytes (67 per source).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_KSTR: usize = 67 * 32;
 /// Workspace: UR decode — work-buffer slots (one per part; same domain bound).
 pub const UR_WS_BUFFER_SLOTS: usize = crate::limits::UR_WS_BUFFER_SLOTS;
@@ -189,10 +219,12 @@ pub const UR_WS_QUEUE_SLOTS: usize = crate::limits::UR_WS_QUEUE_SLOTS;
 pub const UR_WS_RECEIVED_SLOTS: usize = crate::limits::UR_WS_RECEIVED_SLOTS;
 
 /// Workspace: records-face destinations (flat).
+#[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_RECORD_DESTS: usize = 64;
 
 /// ClsagProof serialized cap: pseudo_out (32) + s[RING_MAX] (32*16) + c1 (32) + D (32).
 /// Layout per clsag.rs sign(): `pseudo_out(32) ‖ s[mixin+1] ‖ c1 ‖ D`.
+#[cfg(feature = "chain-xmr")]
 pub const CLSAG_PROOF_MAX: usize = 32 * (RING_MAX + 3);
 
 // === QR transport limits (B-7) =============================================

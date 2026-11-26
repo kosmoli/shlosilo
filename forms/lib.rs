@@ -65,9 +65,14 @@ pub use business::{
 /// scratch element types); no API surface beyond naming.
 pub use curve25519_dalek;
 pub use entropy::mnemonic::WordCount;
+/// Chain axis (batch 3): these two are carried by `chain-xmr` and are optional
+/// dependencies, so the re-exports follow the switch — a chain-off build cannot
+/// name a crate it does not link.
+#[cfg(feature = "chain-xmr")]
 pub use monero_bulletproofs;
 /// Compressed points are part of the public signing surface (`InputTables`), so the
 /// carrying crate is re-exported rather than forcing every caller onto our dep list.
+#[cfg(feature = "chain-xmr")]
 pub use monero_ed25519;
 
 // Public Layer A types (Phase 2.1 stub — Phase 4 real algorithm integration)

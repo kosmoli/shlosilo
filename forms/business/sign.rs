@@ -377,10 +377,12 @@ pub fn sign_with_entropy_ws_views(
             // Reached by the chains this build does not carry (and by the kinds
             // that never had an arm). Keep the arg list live so a build with no
             // chain at all still has one place that names what it dropped.
+            // (Chain axis batch 3: `ws` is probed with `is_some()` — with every
+            // chain off the workspace has no fields left to look at.)
             let _ = (
                 seed.expose().len(),
                 payload.len(),
-                ws.as_ref().map(|w| w.plain.len()),
+                ws.is_some(),
                 scratch.map(|s| s.len()),
                 ki_records.len(),
                 entropy.len(),
@@ -406,6 +408,14 @@ pub struct SignWs<'a> {
     /// (C-class: never on the stack). Forms keeps the wipe duty (Z2.4d-3
     /// contract): the whole block is wiped before return on every path, now
     /// over caller memory.
+    ///
+    /// Chain axis (batch 3, §9.5-4): every region below that only the XMR flow
+    /// touches is carried by `chain-xmr` — a chain-off build must not reserve
+    /// caller memory for a flow it cannot reach (`types::caps` carries the
+    /// matching constants, `SignWsLayout` the matching offsets, all on the same
+    /// switch). BTC keeps `psbt_*`, ETH keeps `eip712`; with all three off the
+    /// struct is field-less and the marker below keeps `'a` well-formed.
+    #[cfg(feature = "chain-xmr")]
     pub plain: &'a mut [u8],
     /// The unsigned-tx model pools (same carve discipline as `UnsignedTxPools`).
     #[cfg(feature = "chain-xmr")]
@@ -414,32 +424,41 @@ pub struct SignWs<'a> {
     pub sources: &'a mut [Option<crate::chain::xmr::unsigned_txset::TxSourceEntry>],
     #[cfg(feature = "chain-xmr")]
     pub splitted_dsts: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
+    #[cfg(feature = "chain-xmr")]
     pub selected_transfers: &'a mut [usize],
+    #[cfg(feature = "chain-xmr")]
     pub extra: &'a mut [u8],
     #[cfg(feature = "chain-xmr")]
     pub dests: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
+    #[cfg(feature = "chain-xmr")]
     pub subaddr_indices: &'a mut [u32],
     // Z3.2b: sign-face backings (the SignedTxSet model + per-tx carve pools).
     #[cfg(feature = "chain-xmr")]
     pub ptx: &'a mut [Option<crate::chain::xmr::signed_txset::PendingTx<'a>>],
     /// Contiguous signed-tx wire slots (C-class: `TX_BYTES_SLOT_MAX` per tx,
     /// carved per iteration — the signer writes straight into the slot).
+    #[cfg(feature = "chain-xmr")]
     pub tx_bytes: &'a mut [u8],
+    #[cfg(feature = "chain-xmr")]
     pub ki: &'a mut [[u8; 32]],
     #[cfg(feature = "chain-xmr")]
     pub tki: &'a mut [crate::chain::xmr::signed_txset::TxKeyImageEntry],
+    #[cfg(feature = "chain-xmr")]
     pub sel: &'a mut [u8],
+    #[cfg(feature = "chain-xmr")]
     pub kstr: &'a mut [u8],
     /// Records-face dests (per-tx clones carved into the PendingTx records).
     #[cfg(feature = "chain-xmr")]
     pub record_dests: &'a mut [crate::chain::xmr::unsigned_txset::TxDestinationEntry],
     /// Z5.3 pool cut: BP+ prove multiexp scratch (caller memory, carved).
+    #[cfg(feature = "chain-xmr")]
     pub bp_terms: &'a mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)],
     /// Z5.3 D-cut: Straus scratch storage (raw bytes; the typed scratch is
     /// constructed from it at the call site).
     /// T-04 follow-up (2026-09-30): the straus/wip/CN storage is one
     /// `OverlayRegion` — phase-exclusive by type (see below), zeroized on the
     /// CN phase's drop.
+    #[cfg(feature = "chain-xmr")]
     pub bp_overlay: OverlayRegion<'a>,
     /// Z4-7d: PSBT map pool (records + payload arena).
     #[cfg(feature = "chain-btc")]
@@ -450,15 +469,23 @@ pub struct SignWs<'a> {
     #[cfg(feature = "chain-eth")]
     pub eip712: &'a mut [u8],
     /// Phase 4a: per-input signer tables (see `layout`), initialised by the carve.
+    #[cfg(feature = "chain-xmr")]
     pub rings: &'a mut [[(
         monero_ed25519::CompressedPoint,
         monero_ed25519::CompressedPoint,
     ); crate::types::caps::RING_MAX]],
     #[cfg(feature = "chain-xmr")]
     pub tx_inputs: &'a mut [crate::chain::xmr::transaction::TxInput],
+    #[cfg(feature = "chain-xmr")]
     pub ring_lens: &'a mut [usize],
     #[cfg(feature = "chain-btc")]
     pub psbt_arena: &'a mut [u8],
+    /// Chain axis (batch 3): with every chain switched off no region is left —
+    /// all of them belong to a chain. The marker keeps the lifetime parameter
+    /// well-formed (a struct cannot carry an unused `'a`) at zero bytes: it is
+    /// never carved and never reported by `SignWsLayout::compute()`.
+    #[cfg(not(any(feature = "chain-btc", feature = "chain-eth", feature = "chain-xmr")))]
+    _no_chain: core::marker::PhantomData<&'a ()>,
 }
 
 /// T-04 follow-up (2026-09-30): phase-exclusive handle over the shared
@@ -468,13 +495,19 @@ pub struct SignWs<'a> {
 /// phase guard zeroizes on drop, covering every return/Err/unwind exit path
 /// (abort and hard-fault paths end in a warm reset, which scrubs SRAM on this
 /// chip — the r/p noinit experiments, 2026-09-30).
+///
+/// Chain axis (batch 3): the overlay is the XMR phase time-share (CN scratchpad
+/// vs BP+ prove tables), so the type and its phase views follow `chain-xmr`.
+#[cfg(feature = "chain-xmr")]
 pub struct OverlayRegion<'a> {
     raw: &'a mut [u8],
 }
 
 /// The CN-V0 derivation phase view (the whole region; secret-bearing).
+#[cfg(feature = "chain-xmr")]
 pub struct CnScratch<'a>(&'a mut [u8]);
 
+#[cfg(feature = "chain-xmr")]
 impl<'a> core::ops::Deref for CnScratch<'a> {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
@@ -482,12 +515,14 @@ impl<'a> core::ops::Deref for CnScratch<'a> {
     }
 }
 
+#[cfg(feature = "chain-xmr")]
 impl<'a> core::ops::DerefMut for CnScratch<'a> {
     fn deref_mut(&mut self) -> &mut [u8] {
         self.0
     }
 }
 
+#[cfg(feature = "chain-xmr")]
 impl<'a> Drop for CnScratch<'a> {
     fn drop(&mut self) {
         zeroize::Zeroize::zeroize(self.0);
@@ -495,11 +530,13 @@ impl<'a> Drop for CnScratch<'a> {
 }
 
 /// The BP+ prove phase view: disjoint straus + wip slices of the region.
+#[cfg(feature = "chain-xmr")]
 pub struct BpScratch<'a> {
     pub straus: &'a mut [u8],
     pub wip: &'a mut [u8],
 }
 
+#[cfg(feature = "chain-xmr")]
 impl<'a> OverlayRegion<'a> {
     pub fn new(raw: &'a mut [u8]) -> Self {
         Self { raw }
@@ -531,6 +568,7 @@ pub struct SignWsLayout {
     /// allowance. Kept separate so a caller that allocates exactly `total` always fits,
     /// whatever alignment its buffer starts at.
     regions: usize,
+    #[cfg(feature = "chain-xmr")]
     plain: usize,
     #[cfg(feature = "chain-xmr")]
     txes: usize,
@@ -538,24 +576,35 @@ pub struct SignWsLayout {
     sources: usize,
     #[cfg(feature = "chain-xmr")]
     splits: usize,
+    #[cfg(feature = "chain-xmr")]
     sel: usize,
+    #[cfg(feature = "chain-xmr")]
     extra: usize,
     #[cfg(feature = "chain-xmr")]
     dests: usize,
+    #[cfg(feature = "chain-xmr")]
     subidx: usize,
     #[cfg(feature = "chain-xmr")]
     ptx: usize,
+    #[cfg(feature = "chain-xmr")]
     tx_bytes: usize,
+    #[cfg(feature = "chain-xmr")]
     ki: usize,
     #[cfg(feature = "chain-xmr")]
     tki: usize,
+    #[cfg(feature = "chain-xmr")]
     sel_out: usize,
+    #[cfg(feature = "chain-xmr")]
     kstr: usize,
     #[cfg(feature = "chain-xmr")]
     record_dests: usize,
+    #[cfg(feature = "chain-xmr")]
     pub bp_terms: usize,
+    #[cfg(feature = "chain-xmr")]
     pub bp_straus: usize,
+    #[cfg(feature = "chain-xmr")]
     pub cn_scratch: usize,
+    #[cfg(feature = "chain-xmr")]
     pub bp_wip: usize,
     #[cfg(feature = "chain-btc")]
     pub psbt_recs: usize,
@@ -565,9 +614,11 @@ pub struct SignWsLayout {
     pub eip712: usize,
     // Phase 4a: per-input signing tables, caller-carved so the task stack does not grow
     // with the input ceiling (`limits::XMR_INPUTS_MAX`).
+    #[cfg(feature = "chain-xmr")]
     pub rings: usize,
     #[cfg(feature = "chain-xmr")]
     pub tx_inputs: usize,
+    #[cfg(feature = "chain-xmr")]
     pub ring_lens: usize,
 }
 
@@ -596,7 +647,14 @@ impl SignWsLayout {
         use crate::types::caps as c;
         // Offsets are computed from an origin the carve aligns up to SIGN_WS_BASE_ALIGN;
         // the worst-case shift is carried by `total` (see the tail below).
+        //
+        // Chain axis (batch 3, §9.5-4): each region is carved only when the chain that
+        // owns it is compiled in. Order is unchanged, so the all-on layout — and every
+        // offset the device pins measure — is bit-identical to before; a chain-off build
+        // hands the caller a smaller number because the regions it cannot reach are not
+        // *there* rather than merely unused.
         let mut off = 0usize;
+        #[cfg(feature = "chain-xmr")]
         let plain = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_PLAIN);
         #[cfg(feature = "chain-xmr")]
         let txes = ws_next(
@@ -616,11 +674,13 @@ impl SignWsLayout {
             core::mem::align_of::<TxDestinationEntry>(),
             core::mem::size_of::<TxDestinationEntry>() * c::SIGN_WS_SPLITS,
         );
+        #[cfg(feature = "chain-xmr")]
         let sel = ws_next(
             &mut off,
             core::mem::align_of::<usize>(),
             core::mem::size_of::<usize>() * c::SIGN_WS_SEL,
         );
+        #[cfg(feature = "chain-xmr")]
         let extra = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_EXTRA);
         #[cfg(feature = "chain-xmr")]
         let dests = ws_next(
@@ -628,6 +688,7 @@ impl SignWsLayout {
             core::mem::align_of::<TxDestinationEntry>(),
             core::mem::size_of::<TxDestinationEntry>() * c::SIGN_WS_DESTS,
         );
+        #[cfg(feature = "chain-xmr")]
         let subidx = ws_next(
             &mut off,
             core::mem::align_of::<u32>(),
@@ -639,7 +700,9 @@ impl SignWsLayout {
             core::mem::align_of::<Option<PendingTx<'static>>>(),
             core::mem::size_of::<Option<PendingTx<'static>>>() * c::SIGN_WS_PTX,
         );
+        #[cfg(feature = "chain-xmr")]
         let tx_bytes = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_TX_BYTES);
+        #[cfg(feature = "chain-xmr")]
         let ki = ws_next(
             &mut off,
             core::mem::align_of::<[u8; 32]>(),
@@ -651,7 +714,9 @@ impl SignWsLayout {
             core::mem::align_of::<TxKeyImageEntry>(),
             core::mem::size_of::<TxKeyImageEntry>() * c::SIGN_WS_TKI,
         );
+        #[cfg(feature = "chain-xmr")]
         let sel_out = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_SEL_OUT);
+        #[cfg(feature = "chain-xmr")]
         let kstr = ws_next(&mut off, core::mem::align_of::<u8>(), c::SIGN_WS_KSTR);
         #[cfg(feature = "chain-xmr")]
         let record_dests = ws_next(
@@ -659,6 +724,7 @@ impl SignWsLayout {
             core::mem::align_of::<TxDestinationEntry>(),
             core::mem::size_of::<TxDestinationEntry>() * c::SIGN_WS_RECORD_DESTS,
         );
+        #[cfg(feature = "chain-xmr")]
         let bp_terms = ws_next(
             &mut off,
             core::mem::align_of::<(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)>(),
@@ -670,14 +736,17 @@ impl SignWsLayout {
         // before the prove; the CN core zeroes the region on exit, restoring
         // the carve's documented zero-fill state). u128 alignment governs the
         // shared slot; the fit is pinned by a const assert in `types::caps`.
+        #[cfg(feature = "chain-xmr")]
         let bp_straus = ws_next(
             &mut off,
             core::mem::align_of::<u128>(),
             c::SIGN_WS_BP_STRAUS_BYTES,
         );
+        #[cfg(feature = "chain-xmr")]
         let cn_scratch = bp_straus;
         /* wip carve padded to the overlay region tail (WipScratch::new takes
          * "at least" storage; the pad is the CN overlay's fit margin). */
+        #[cfg(feature = "chain-xmr")]
         let bp_wip = ws_next(
             &mut off,
             core::mem::align_of::<u64>(),
@@ -700,6 +769,7 @@ impl SignWsLayout {
             crate::chain::eth::eip712_pool::WS_BYTES,
         );
         // Phase 4a: the three per-input tables (previously stack arrays in the signer).
+        #[cfg(feature = "chain-xmr")]
         let rings = ws_next(
             &mut off,
             core::mem::align_of::<
@@ -722,6 +792,7 @@ impl SignWsLayout {
             core::mem::size_of::<crate::chain::xmr::transaction::TxInput>()
                 * crate::limits::XMR_INPUTS_MAX,
         );
+        #[cfg(feature = "chain-xmr")]
         let ring_lens = ws_next(
             &mut off,
             core::mem::align_of::<usize>(),
@@ -735,6 +806,7 @@ impl SignWsLayout {
         SignWsLayout {
             total,
             regions,
+            #[cfg(feature = "chain-xmr")]
             plain,
             #[cfg(feature = "chain-xmr")]
             txes,
@@ -742,24 +814,35 @@ impl SignWsLayout {
             sources,
             #[cfg(feature = "chain-xmr")]
             splits,
+            #[cfg(feature = "chain-xmr")]
             sel,
+            #[cfg(feature = "chain-xmr")]
             extra,
             #[cfg(feature = "chain-xmr")]
             dests,
+            #[cfg(feature = "chain-xmr")]
             subidx,
             #[cfg(feature = "chain-xmr")]
             ptx,
+            #[cfg(feature = "chain-xmr")]
             tx_bytes,
+            #[cfg(feature = "chain-xmr")]
             ki,
             #[cfg(feature = "chain-xmr")]
             tki,
+            #[cfg(feature = "chain-xmr")]
             sel_out,
+            #[cfg(feature = "chain-xmr")]
             kstr,
             #[cfg(feature = "chain-xmr")]
             record_dests,
+            #[cfg(feature = "chain-xmr")]
             bp_terms,
+            #[cfg(feature = "chain-xmr")]
             bp_straus,
+            #[cfg(feature = "chain-xmr")]
             cn_scratch,
+            #[cfg(feature = "chain-xmr")]
             bp_wip,
             #[cfg(feature = "chain-btc")]
             psbt_recs,
@@ -767,9 +850,11 @@ impl SignWsLayout {
             psbt_arena,
             #[cfg(feature = "chain-eth")]
             eip712,
+            #[cfg(feature = "chain-xmr")]
             rings,
             #[cfg(feature = "chain-xmr")]
             tx_inputs,
+            #[cfg(feature = "chain-xmr")]
             ring_lens,
         }
     }
@@ -859,22 +944,34 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     for s in tki.iter_mut() {
         unsafe { core::ptr::write(s, TxKeyImageEntry::default()) };
     }
-    // POD spans: the fill(0) above is their initialization.
+    // POD spans: the fill(0) above is their initialization. Chain axis (batch 3):
+    // each span is carved only when its chain is compiled in — see
+    // `SignWsLayout::compute`, which computes the matching offsets.
+    #[cfg(feature = "chain-xmr")]
     let plain: &mut [u8] = unsafe { at(base, l.plain, c::SIGN_WS_PLAIN) };
+    #[cfg(feature = "chain-xmr")]
     let sel: &mut [usize] = unsafe { at(base, l.sel, c::SIGN_WS_SEL) };
+    #[cfg(feature = "chain-xmr")]
     let extra: &mut [u8] = unsafe { at(base, l.extra, c::SIGN_WS_EXTRA) };
+    #[cfg(feature = "chain-xmr")]
     let subidx: &mut [u32] = unsafe { at(base, l.subidx, c::SIGN_WS_SUBIDX) };
+    #[cfg(feature = "chain-xmr")]
     let tx_bytes: &mut [u8] = unsafe { at(base, l.tx_bytes, c::SIGN_WS_TX_BYTES) };
+    #[cfg(feature = "chain-xmr")]
     let ki: &mut [[u8; 32]] = unsafe { at(base, l.ki, c::SIGN_WS_KI) };
+    #[cfg(feature = "chain-xmr")]
     let sel_out: &mut [u8] = unsafe { at(base, l.sel_out, c::SIGN_WS_SEL_OUT) };
+    #[cfg(feature = "chain-xmr")]
     let kstr: &mut [u8] = unsafe { at(base, l.kstr, c::SIGN_WS_KSTR) };
     // Z5.3 pool cut: BP+ prove scratch (POD span — the whole-carve zero fill
     // is its documented initialization; the prove chain overwrites entries
     // before reading them).
+    #[cfg(feature = "chain-xmr")]
     let bp_terms: &mut [(curve25519_dalek::Scalar, curve25519_dalek::EdwardsPoint)] =
         unsafe { at(base, l.bp_terms, c::SIGN_WS_BP_TERMS) };
     /* T-04: one phase-exclusive region over the overlaid slot (the layout's
      * cn_scratch offset == bp_straus offset is pinned in tests). */
+    #[cfg(feature = "chain-xmr")]
     let bp_overlay: OverlayRegion<'_> =
         OverlayRegion::new(unsafe { at(base, l.bp_straus, c::SIGN_WS_BP_OVERLAY_BYTES) });
     #[cfg(feature = "chain-btc")]
@@ -889,11 +986,14 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
     // Phase 4a: initialise-on-carve, never read-before-write. A single pass over the
     // input ceiling buys plain `&mut` slices in the signing core instead of a
     // MaybeUninit contract.
+    #[cfg(feature = "chain-xmr")]
     type RingRow = [(
         monero_ed25519::CompressedPoint,
         monero_ed25519::CompressedPoint,
     ); crate::types::caps::RING_MAX];
+    #[cfg(feature = "chain-xmr")]
     let rings: &mut [RingRow] = unsafe { at(base, l.rings, crate::limits::XMR_INPUTS_MAX) };
+    #[cfg(feature = "chain-xmr")]
     for row in rings.iter_mut() {
         let zero = monero_ed25519::CompressedPoint::from([0u8; 32]);
         for slot in row.iter_mut() {
@@ -912,9 +1012,12 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
             )
         };
     }
+    #[cfg(feature = "chain-xmr")]
     let ring_lens: &mut [usize] = unsafe { at(base, l.ring_lens, crate::limits::XMR_INPUTS_MAX) };
+    #[cfg(feature = "chain-xmr")]
     ring_lens.fill(0);
     Some(SignWs {
+        #[cfg(feature = "chain-xmr")]
         plain,
         #[cfg(feature = "chain-xmr")]
         txes,
@@ -922,22 +1025,31 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         sources,
         #[cfg(feature = "chain-xmr")]
         splitted_dsts: splits,
+        #[cfg(feature = "chain-xmr")]
         selected_transfers: sel,
+        #[cfg(feature = "chain-xmr")]
         extra,
         #[cfg(feature = "chain-xmr")]
         dests,
+        #[cfg(feature = "chain-xmr")]
         subaddr_indices: subidx,
         #[cfg(feature = "chain-xmr")]
         ptx,
+        #[cfg(feature = "chain-xmr")]
         tx_bytes,
+        #[cfg(feature = "chain-xmr")]
         ki,
         #[cfg(feature = "chain-xmr")]
         tki,
+        #[cfg(feature = "chain-xmr")]
         sel: sel_out,
+        #[cfg(feature = "chain-xmr")]
         kstr,
         #[cfg(feature = "chain-xmr")]
         record_dests,
+        #[cfg(feature = "chain-xmr")]
         bp_terms,
+        #[cfg(feature = "chain-xmr")]
         bp_overlay,
         #[cfg(feature = "chain-btc")]
         psbt_recs,
@@ -945,10 +1057,14 @@ pub fn carve_sign_ws(buf: &mut [u8]) -> Option<SignWs<'_>> {
         psbt_arena,
         #[cfg(feature = "chain-eth")]
         eip712,
+        #[cfg(feature = "chain-xmr")]
         rings,
         #[cfg(feature = "chain-xmr")]
         tx_inputs,
+        #[cfg(feature = "chain-xmr")]
         ring_lens,
+        #[cfg(not(any(feature = "chain-btc", feature = "chain-eth", feature = "chain-xmr")))]
+        _no_chain: core::marker::PhantomData,
     })
 }
 

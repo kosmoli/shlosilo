@@ -20,6 +20,15 @@
 //! the carrier allocates the decode workspace, releases it, and only then asks for the
 //! signing one (see `product_task.c`). Anything that changes that ownership has to change
 //! this model too.
+//!
+//! **Chain axis (design note §9.5-4, batch 3).** The figures follow the compiled chain
+//! set, because they are produced by the same carve that the device runs: a build
+//! without `chain-xmr` does not reserve the XMR-exclusive sign regions (CN scratchpad
+//! overlay, BP+ prove tables, the txset pools, rings/ki/kstr …) and reports `pairing: 0`,
+//! so the number a carrier sees is the memory it will really be asked for. The all-chain
+//! build is unchanged byte-for-byte — the switch adds nothing, it only stops reserving
+//! what the build cannot reach. Measured on the host profile: sign 2,921,767 B all-on vs
+//! 111,119 B (btc) / 9,031 B (eth) / 120,135 B (btc+eth).
 
 use crate::limits;
 use core::fmt::Write;

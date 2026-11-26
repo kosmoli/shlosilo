@@ -83,19 +83,19 @@ k256 = { version = "0.14", default-features = false, features = ["ecdsa", "schno
 # primeorder = internal Field/PrimeField traits of k256 0.14
 primeorder = { version = "0.14", default-features = false, features = ["critical-section"] }
 ed25519-dalek = { version = "2.1", default-features = false, features = ["fast", "zeroize"] }  # Ed25519 (XMR / SOL / Cardano); std only on host (see the target config below)
-monero-ed25519 = { version = "0.1", default-features = false }  # Ed25519 + Pedersen commitment (XMR)
+monero-ed25519 = { version = "0.1", default-features = false, optional = true }  # Ed25519 + Pedersen commitment (XMR)
 # "generator-cache" = shlosilo vendor patch (raw extended-coordinate serialize/reconstruct pair for the BP+ generator cache); see patches/curve25519-dalek-generator-cache.patch
 curve25519-dalek = { version = "4", default-features = false, features = ["zeroize", "precomputed-tables", "rand_core", "generator-cache"] }  # Ed25519 foundation (curve25519-dalek 4 already serves as the SemVer abstraction layer)
-monero-clsag = { version = "0.1", default-features = false }  # CLSAG ring signature (XMR)
-monero-bulletproofs = { path = "vendor/monero-bulletproofs", default-features = false, features = ["compile-time-generators"] }  # Bulletproofs+; vendor patch: generator loop decompresses to avoid vec![decompress();2048] blowing the stack
+monero-clsag = { version = "0.1", default-features = false, optional = true }  # CLSAG ring signature (XMR)
+monero-bulletproofs = { path = "vendor/monero-bulletproofs", default-features = false, features = ["compile-time-generators"], optional = true }  # Bulletproofs+; vendor patch: generator loop decompresses to avoid vec![decompress();2048] blowing the stack
 base58-monero = { version = "2", default-features = false }  # XMR base58 (encoding class, audited; check feature omitted because encode_check has a bug and we hand-write it)
 # explicit so alloc-fallback can map the alloc re-export root (vendor-patched)
-std-shims = { version = "0.1.5", default-features = false }
-monero-io = { version = "0.1.0", default-features = false }
-cuprate-cryptonight = { path = "vendor/cryptonight", default-features = false }  # CryptoNight V0 (XMR txset chacha key derivation); vendored no_std version, see the comment in vendor/cryptonight/Cargo.toml
-chacha20 = { version = "0.9", default-features = false }  # ChaCha20 + ChaCha20Legacy (XMR txset decryption; keystone uses the same 0.9.1)
+std-shims = { version = "0.1.5", default-features = false, optional = true }
+monero-io = { version = "0.1.0", default-features = false, optional = true }
+cuprate-cryptonight = { path = "vendor/cryptonight", default-features = false, optional = true }  # CryptoNight V0 (XMR txset chacha key derivation); vendored no_std version, see the comment in vendor/cryptonight/Cargo.toml
+chacha20 = { version = "0.9", default-features = false, optional = true }  # ChaCha20 + ChaCha20Legacy (XMR txset decryption; keystone uses the same 0.9.1)
 # §B.5 RNG injection finalized: entropy → HKDF-SHA256 → ChaCha20Rng (no homemade DRBG)
-hkdf = { version = "0.12", default-features = false }  # HKDF-SHA256 (RFC 5869) seed derivation
+hkdf = { version = "0.12", default-features = false, optional = true }  # HKDF-SHA256 (RFC 5869) seed derivation
 hmac = { version = "0.12", default-features = false }  # HMAC-SHA512 BIP-32 CKD (self-implemented at P2-04)
 rand_chacha = { version = "0.3", default-features = false }  # ChaCha20Rng CSPRNG (same as the keystone monero app)
 subtle = { version = "2", default-features = false }  # CtOption/ct_eq (XMR Schnorr verification + curve25519 scalar canonical checks)
@@ -130,6 +130,14 @@ curve25519-dalek = { version = "4", default-features = false, features = ["alloc
 # Pedersen commitment generators for Bulletproofs+ — DEV-ONLY (test oracles
 # re-derive reference generators via its Vec API). Kept out of the runtime
 # dependency set: the Vec API pins an allocator to the graph (Z6 probe).
+# Chain axis (batch 3) measured this one: cargo refuses `optional = true` on a
+# dev-dependency ("dev-dependencies are not allowed to be optional"), and moving
+# it into `[dependencies]` to make it optional would pin an allocator to the
+# product graph — the exact thing the Z6 probe exists to catch. It therefore
+# stays a plain dev-dependency: it is XMR-only, but a dev-dependency cannot reach
+# a product graph at all (`cargo tree -e normal,build` never lists it), so there
+# is nothing to cut here. Its `dep`-free `alloc` feature reference below is
+# harmless for the same reason.
 monero-bulletproofs-generators = { version = "0.1", default-features = false }
 # P1-06 oracle: official-format tx parser (monero-rs) to diagnose deviations in our wire serialization
 monero = { version = "0.21" }
@@ -156,11 +164,18 @@ generator-cache-ffi = []
 # Z5.2b: transitional generator no-storage fallback (vendor alloc-fallback).
 # Host/tests default ON; device builds (Z6 no-allocator acceptance) build with
 # --no-default-features (plus std as needed) and MUST provide table storage.
-alloc-fallback = ["monero-bulletproofs/alloc-fallback", "monero-clsag/alloc-fallback", "curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc", "cuprate-cryptonight/alloc-fallback", "std-shims/alloc", "monero-io/alloc", "monero-bulletproofs-generators/alloc", "base58-monero/alloc"]
+alloc-fallback = ["monero-bulletproofs?/alloc-fallback", "monero-clsag?/alloc-fallback", "curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc", "cuprate-cryptonight?/alloc-fallback", "std-shims?/alloc", "monero-io?/alloc", "monero-bulletproofs-generators/alloc", "base58-monero/alloc"]
 # Device primitive perf-bench FFI (raw per-op costs; diagnostic only).
 perf-bench-ffi = ["curve25519-dalek/perf-bench"]
-prove-timing-ffi = ["monero-bulletproofs/prove-timing"]
-cn-timing-ffi = ["prove-timing-ffi", "cuprate-cryptonight/cn-timing"]
+# Measurement-only knob (chain axis batch 3, §9.5-2 / §9.4): k256's precomputed
+# tables are OFF by default because the once_cell Lazy table costs ~31 KB of RAM
+# (see the k256 dependency line). This feature exists so the cost can be MEASURED
+# per carrier instead of guessed: it is deliberately NOT part of `default`, NOT in
+# any `builds/*.toml`, and no code path requires it. Turning it on trades SRAM for
+# signing speed; the numbers live in the design note's size account.
+k256-precomp = ["k256/precomputed-tables"]
+prove-timing-ffi = ["monero-bulletproofs?/prove-timing"]
+cn-timing-ffi = ["prove-timing-ffi", "cuprate-cryptonight?/cn-timing"]
 tx-phase-timing-ffi = ["prove-timing-ffi"]
 # ===== chain axis (2026-09-19 design note §9.3-2 / §9.4) =====
 # Additive-only (Cargo union semantics): any build that turns one on has it
@@ -168,12 +183,34 @@ tx-phase-timing-ffi = ["prove-timing-ffi"]
 # another. Each one gates `forms/chain/<name>` plus every dispatch site that
 # would reach it; a disabled chain's request answers the PRE-EXISTING error
 # kind `ChainKindUnsupported` (C-ABI -10 `UnsupportedChainKind`), no new code.
-# Batch 1 scope: the switches + the cross-checks only. Dependency slimming
-# (optional = true) is batch 2 — today every chain crate is still linked, so
-# a chain-off build compiles the code out but does not yet shrink the graph.
+#
+# Batch 1 added the switches; batch 2 the manifests; batch 3 (this one) makes
+# the XMR-exclusive dependencies REAL optional deps carried by `chain-xmr`, so a
+# chain-off build also cuts the graph. Two rules keep that true:
+#   1. every dependency named here is XMR-EXCLUSIVE (`dep:` below). Shared
+#      foundations stay unconditional on purpose — `curve25519-dalek` (XMR *and*
+#      the Ed25519 Layer-A primitive), `ed25519-dalek` (the same Layer-A
+#      consumer set: SOL/Cardano address stubs, slip10, eddsa/fcmp),
+#      `base58-monero` (reached through the ungated export-protocol face) and
+#      `rand_core` (the CSPRNG abstraction, in the graph through `rand_chacha`).
+#      Gating one of those would gate a capability axis, not this one.
+#   2. every feature that used to name one of them with a bare `crate/feat` now
+#      uses a WEAK reference (`crate?/feat`). A strong reference re-activates
+#      an optional dependency from a feature that has nothing to do with the
+#      chain — `alloc-fallback` alone would drag the whole XMR stack back into a
+#      BTC-only build and silently undo this batch.
 chain-btc = []
 chain-eth = []
-chain-xmr = []
+chain-xmr = [
+    "dep:monero-clsag",
+    "dep:monero-bulletproofs",
+    "dep:monero-ed25519",
+    "dep:monero-io",
+    "dep:std-shims",
+    "dep:cuprate-cryptonight",
+    "dep:chacha20",
+    "dep:hkdf",
+]
 default = ["std", "alloc-fallback", "chain-btc", "chain-eth", "chain-xmr"]
 # std enabled (on by default, only for cargo test; Phase 5 real implementation switches to panic = "abort" without std)
 std = ["rand_core/std"]

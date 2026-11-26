@@ -3077,6 +3077,7 @@ const _: () = assert!(
 );
 const _: () = assert!(core::mem::align_of::<curve25519_dalek::EdwardsPoint>() <= 8);
 
+#[cfg(feature = "chain-xmr")]
 fn genset_from_c(set: i32) -> Option<monero_bulletproofs::GeneratorSet> {
     match set {
         0 => Some(monero_bulletproofs::GeneratorSet::Bulletproof),
@@ -3091,6 +3092,13 @@ fn genset_from_c(set: i32) -> Option<monero_bulletproofs::GeneratorSet> {
 ///
 /// # Safety
 /// All three out-pointers must be valid for writes of `u32` and non-aliased.
+///
+/// Chain axis (batch 3): the generator tables are the XMR Bulletproofs+ backend,
+/// so the whole face follows `chain-xmr` — a chain-off build does not carry
+/// `monero-bulletproofs` and therefore cannot answer these entries. Same rule the
+/// pairing entries already follow (batch 1): the entry ceases to exist rather
+/// than existing and failing.
+#[cfg(feature = "chain-xmr")]
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_gencache_table_sizes(
     set: i32,
@@ -3125,6 +3133,7 @@ pub unsafe extern "C" fn shlosilo_gencache_table_sizes(
 /// pairwise disjoint (enforced). The buffers must outlive every generator
 /// use — they are written ONCE at first generator use and read thereafter.
 /// Size out-pointers must be valid for read/write and non-aliased.
+#[cfg(feature = "chain-xmr")]
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_gencache_provide_table(
     set: i32,

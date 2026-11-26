@@ -1254,6 +1254,12 @@ int shlosilo_supported_protocols_ffi(uint8_t *output_buf,
  *
  * # Safety
  * All three out-pointers must be valid for writes of `u32` and non-aliased.
+ *
+ * Chain axis (batch 3): the generator tables are the XMR Bulletproofs+ backend,
+ * so the whole face follows `chain-xmr` — a chain-off build does not carry
+ * `monero-bulletproofs` and therefore cannot answer these entries. Same rule the
+ * pairing entries already follow (batch 1): the entry ceases to exist rather
+ * than existing and failing.
  */
 int32_t shlosilo_gencache_table_sizes(int32_t set,
                                       uint32_t *g_bytes,
@@ -2017,6 +2023,11 @@ int shlosilo_export_format_session_ffi(const struct KeySession *session,
  *
  * Single definition with a cfg-split body (feature on: real hooks; off: no-op)
  * so the C host always links and cbindgen emits exactly one declaration.
+ *
+ * Chain axis (batch 3): the hooks belong to the BP+ generator cache, so the real
+ * body also needs `chain-xmr` — `monero-bulletproofs` is an optional dependency of
+ * that chain and a build without it must still link this symbol (the C host calls
+ * it unconditionally from init).
  */
 void shlosilo_gen_cache_set_hooks(const uint8_t *(*load_fptr)(const uint8_t*, uint32_t),
                                   uint32_t (*store_fptr)(const uint8_t*,

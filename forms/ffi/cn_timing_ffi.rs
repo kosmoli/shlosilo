@@ -7,7 +7,11 @@
 //!
 //! Each entry point has a SINGLE definition whose body is cfg-split: the real
 //! implementation under the feature, a no-op otherwise, so the C host always
-//! links. One definition also means cbindgen emits exactly one declaration per
+//! links.
+//!
+//! Chain axis (batch 3): the real body needs BOTH the feature and `chain-xmr`,
+//! because it forwards to the optionally-linked `cuprate-cryptonight`. See the
+//! same note in `prove_timing_ffi`. One definition also means cbindgen emits exactly one declaration per
 //! function (dual `#[cfg]`-branches produced duplicate header declarations).
 
 /// C-ABI: register the millisecond clock for CN phase timing.
@@ -16,10 +20,13 @@
 ///
 /// # Safety
 /// `clock_fptr`, when non-NULL, must be a valid `extern "C" fn() -> u32` on the target.
-#[cfg_attr(not(feature = "cn-timing-ffi"), allow(unused_variables))]
+#[cfg_attr(
+    not(all(feature = "cn-timing-ffi", feature = "chain-xmr")),
+    allow(unused_variables)
+)]
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_cn_timing_set_clock(clock_fptr: Option<extern "C" fn() -> u32>) {
-    #[cfg(feature = "cn-timing-ffi")]
+    #[cfg(all(feature = "cn-timing-ffi", feature = "chain-xmr"))]
     {
         cuprate_cryptonight::register_clock(clock_fptr);
     }
@@ -28,18 +35,18 @@ pub unsafe extern "C" fn shlosilo_cn_timing_set_clock(clock_fptr: Option<extern 
 /// C-ABI: reset all CN phase counters.
 #[no_mangle]
 pub extern "C" fn shlosilo_cn_timing_reset() {
-    #[cfg(feature = "cn-timing-ffi")]
+    #[cfg(all(feature = "cn-timing-ffi", feature = "chain-xmr"))]
     cuprate_cryptonight::reset_all();
 }
 
 /// C-ABI: read one phase's accumulated ms (0 for unknown phase).
 #[no_mangle]
 pub extern "C" fn shlosilo_cn_timing_phase(phase: u8) -> u32 {
-    #[cfg(feature = "cn-timing-ffi")]
+    #[cfg(all(feature = "cn-timing-ffi", feature = "chain-xmr"))]
     {
         cuprate_cryptonight::phase_ms(phase)
     }
-    #[cfg(not(feature = "cn-timing-ffi"))]
+    #[cfg(not(all(feature = "cn-timing-ffi", feature = "chain-xmr")))]
     {
         let _ = phase;
         0

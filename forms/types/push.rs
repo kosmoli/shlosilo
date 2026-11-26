@@ -90,11 +90,19 @@ impl Sink for SinkCursor<'_> {
 /// before forwarding, so the serialized plaintext NEVER materializes as a buffer —
 /// the secret bytes live only inside the model's own owners (SecretBytes/Zeroizing)
 /// plus a per-chunk stack scratch that is itself Zeroizing.
+///
+/// Chain axis (batch 3): this is the XMR wire-encryption sink (its two users are
+/// `chain::xmr::signed_txset` and `chain::xmr::key_image_export`, both behind
+/// `chain-xmr`), and `chacha20` is an optional dependency carried by that switch.
+/// Gating the sink is what lets the crate leave the graph in a chain-off build —
+/// the shared sinks above (`SinkCursor`, `CountSink`) stay unconditional.
+#[cfg(feature = "chain-xmr")]
 pub struct EncryptingSink<'a> {
     inner: SinkCursor<'a>,
     cipher: chacha20::ChaCha20Legacy,
 }
 
+#[cfg(feature = "chain-xmr")]
 impl<'a> EncryptingSink<'a> {
     pub fn new(inner: SinkCursor<'a>, cipher: chacha20::ChaCha20Legacy) -> Self {
         Self { inner, cipher }
@@ -105,6 +113,7 @@ impl<'a> EncryptingSink<'a> {
     }
 }
 
+#[cfg(feature = "chain-xmr")]
 impl Sink for EncryptingSink<'_> {
     fn put(&mut self, bytes: &[u8]) -> Result<()> {
         use chacha20::cipher::StreamCipher;

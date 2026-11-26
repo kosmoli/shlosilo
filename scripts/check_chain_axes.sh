@@ -50,11 +50,21 @@
 #    module that leaks without contributing one of the sampled functions.
 #
 # 5. SIZE ACCOUNT (§9.4) — each combination's `size` text total is printed with
-#    its delta against the all-on build. Batch 1 only added the switches: the code is
-#    compiled out, but the dependency graph is NOT sliced yet (L7 keeps optional deps
-#    and the k256 tables for batch 3), so the text delta measures the switch's own
-#    effect and nothing else. A BTC-only build therefore does NOT yet mean a smaller
-#    attack surface — only a correctly selected chain axis.
+#    its delta against the all-on build, and since batch 3 the DEPENDENCY account
+#    next to it (`cargo tree` node count + the XMR-exclusive crates' presence) means
+#    a delta can be read correctly: batch 1/2 could only compile code out (every
+#    chain crate stayed linked, so a text delta measured the switch's own effect),
+#    batch 3 makes the XMR-exclusive dependencies real optional dependencies carried
+#    by `chain-xmr`, so a chain-off build now also drops their nodes.
+#
+# 6. DEPENDENCY ACCOUNT (batch 3, L7 lifted) — for every combination the resolved
+#    graph (normal + build edges; dev-dependencies are deliberately excluded, they
+#    never reach a product graph) is counted and the XMR-exclusive crates are looked
+#    for. Both directions are asserted: a combo WITHOUT xmr must show zero of them
+#    (the graph followed the declaration), and the ALL-ON combo must show all of them
+#    (the instrument can see what it claims is absent). A count alone cannot
+#    distinguish "graph sliced" from "instrument blind", so the second half is what
+#    makes the first half mean anything.
 #
 # Usage: bash scripts/check_chain_axes.sh
 #   CARGO_FLAGS=--locked ...  forwarded to cargo (CI), default --offline.
@@ -83,6 +93,42 @@ chain_samples() {
         eth) printf '%s\n' "5chain3eth8from_rlp17parse_eip1559_raw" "5chain3eth8calldata15decode_calldata" ;;
         xmr) printf '%s\n' "5chain3xmr10subaddress22calc_output_key_offset" "5chain3xmr5clsag" ;;
     esac
+}
+
+# Crates that exist ONLY for the XMR chain (batch 3 made them optional deps carried
+# by `chain-xmr`). One regex, used by BOTH halves of the dependency criterion.
+#   - monero-* / cuprate-cryptonight / std-shims: the CLSAG + Bulletproofs+ stack and
+#     the monero-oxide alloc/io shims under it;
+#   - chacha20 (the XMR wire cipher) and hkdf (the XMR purpose-subdomain RNG).
+# Deliberately absent: curve25519-dalek, ed25519-dalek and base58-monero. They look
+# XMR-shaped but are reached from UNGATED code (the Ed25519 Layer-A primitive that
+# SOL/Cardano/slip10/edDSA share, and the export-protocol face), so gating them would
+# move a capability axis rather than this one. See the Cargo.toml feature note.
+XMR_ONLY_RE='(monero-clsag|monero-bulletproofs|monero-bulletproofs-generators|monero-ed25519|monero-io|cuprate-cryptonight|std-shims|chacha20|hkdf) v'
+
+# Positional count of the resolved graph: `cargo tree -e normal,build` lists one line
+# per node (build-dependencies are indented under an explicit marker line, which the
+# `^[^ ]` filter excludes, so the count is crate nodes, not lines).
+dep_feature_list() {
+    # Base features mirror `scripts/build_declared.sh`'s rule for a host target
+    # (`std,alloc-fallback`); the chain half is the combination under test.
+    local feats="std,alloc-fallback" chain
+    for chain in btc eth xmr; do
+        case ",$1," in
+            *",$chain,"*) feats="$feats,chain-$chain" ;;
+        esac
+    done
+    printf '%s' "$feats"
+}
+
+dep_account() {
+    local combo="$1" feats tree_out nodes hits
+    feats="$(dep_feature_list "$combo")"
+    tree_out="$(cargo tree -e normal,build -p shlosilo $CARGO_FLAGS \
+        --no-default-features --features "$feats" 2>/dev/null)" || { printf 'ERR'; return; }
+    nodes=$(printf '%s\n' "$tree_out" | grep -cE '^[^ ]')
+    hits=$(printf '%s\n' "$tree_out" | grep -cE "$XMR_ONLY_RE")
+    printf '%s|%s' "$nodes" "$hits"
 }
 
 # Write a manifest for one combination: limits referenced BY NAME, chains explicitly
@@ -221,6 +267,30 @@ for combo in "${COMBOS[@]}"; do
     text_bytes=$(size -t "$rlib" 2>/dev/null | awk '/TOTALS/ {print $1}' | tail -1)
     printf '%s\n' "$combo|${text_bytes:-?}|$rlib" >> "$TMP_DIR/sizes.txt"
     note "   text: ${text_bytes:-?} bytes  ($(basename "$rlib"))"
+
+    # 4b. dependency account (batch 3) — see header note 6. Printed for every row and
+    # asserted in both directions: a disabled chain must contribute no nodes, and the
+    # all-on build must still show them (otherwise "absent" and "invisible" look alike).
+    dep="$(dep_account "$combo")"
+    dep_nodes="${dep%%|*}"
+    dep_xmr="${dep##*|}"
+    case ",$combo," in
+        *",xmr,"*)
+            if [ "${dep_xmr:-0}" -eq 0 ]; then
+                bad "$combo: chain-xmr is ON but zero XMR-exclusive crates resolved (instrument blind, or the graph regressed)"
+            else
+                note "   deps: ${dep_nodes:-?} nodes, ${dep_xmr} XMR-exclusive (chain on: expected > 0)"
+            fi
+            ;;
+        *)
+            if [ "${dep_xmr:-0}" -ne 0 ]; then
+                bad "$combo: chain-xmr is OFF but ${dep_xmr} XMR-exclusive crate node(s) are still resolved"
+            else
+                note "   deps: ${dep_nodes:-?} nodes, 0 XMR-exclusive (graph sliced with the declaration)"
+            fi
+            ;;
+    esac
+    printf '%s\n' "$combo|${dep_nodes:-?}|${dep_xmr:-?}" >> "$TMP_DIR/deps.txt"
 done
 
 # ── 5. NEGATIVE TEST (L2) ───────────────────────────────────────────────────
@@ -269,9 +339,20 @@ else
 fi
 
 note ""
+note "== dependency account (resolved graph nodes: normal + build edges, dev excluded)"
+if [ -f "$TMP_DIR/deps.txt" ]; then
+    while IFS='|' read -r combo nodes xmr; do
+        printf '   %-14s nodes=%s  xmr-exclusive=%s\n' "$combo" "$nodes" "$xmr"
+    done < "$TMP_DIR/deps.txt"
+else
+    bad "no dependency account collected"
+fi
+
+note ""
 if [ "$fail" -eq 0 ]; then
     note "CHAIN AXES: OK (${#COMBOS[@]} declared combinations + negative test, no symbol leak,"
-    note "             all-on symbols present, undeclared chain refused with the set difference)"
+    note "             all-on symbols present, undeclared chain refused with the set difference,"
+    note "             dependency graph follows the declaration in both directions)"
 else
     note "CHAIN AXES: RED (see FAIL lines above)"
 fi
