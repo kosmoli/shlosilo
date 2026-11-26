@@ -336,10 +336,23 @@ if [ "$WANT_RECEIPT" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 # ── 7. receipt (identity values are READ BACK from build.rs, not re-derived) ──
-OUT_DIR="$(python3 scripts/cargo_msg.py out-dir "$JSON_LOG" 2>/dev/null)"
+# The identity is read from the STABLE path build.rs also writes (repo/build/build-identity/
+# <target>/<cargo profile>). It is deliberately not taken from cargo's `build-script-executed`
+# message: cargo replays a fresh build script's output but never re-emits that message, so a
+# message-derived path is cache-dependent and disappears on a clean checkout (measured in CI).
+# Key the path exactly like build.rs does: TARGET (the effective one) and cargo's PROFILE.
+ID_TARGET="${EFFECTIVE_TARGET}"
+if [ -z "$ID_TARGET" ]; then
+    ID_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+fi
+ID_PROFILE=debug
+for a in ${PASSTHRU[@]+"${PASSTHRU[@]}"}; do
+    case "$a" in --release) ID_PROFILE=release ;; esac
+done
+ID_DIR="build/build-identity/$ID_TARGET/$ID_PROFILE"
 IDENTITY=""
-if [ -n "$OUT_DIR" ] && [ -f "$OUT_DIR/build_identity.txt" ]; then
-    IDENTITY="$OUT_DIR/build_identity.txt"
+if [ -f "$ID_DIR/build_identity.txt" ]; then
+    IDENTITY="$ID_DIR/build_identity.txt"
 else
     echo "ERROR: cannot find the build identity (build_identity.txt) for this build." >&2
     echo "       The receipt must quote what the library carries, not a second derivation." >&2

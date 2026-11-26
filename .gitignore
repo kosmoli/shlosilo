@@ -36,3 +36,6 @@ tools/ur-inject/node_modules/
 # build of one working tree; committing one would publish a claim about a binary nobody
 # can reproduce from the repository alone.
 /build/receipts/
+# Stable build-identity copies (build.rs writes them for C hosts that cannot discover
+# $OUT_DIR from cargo's message stream; see the comment in build.rs)
+/build/build-identity/

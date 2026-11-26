@@ -675,6 +675,10 @@ fn emit_limits(identity: &str, dirty_list: &str) {
         .sum();
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+    // Repo root and cargo's own profile: the stable identity directory is keyed by both plus
+    // TARGET, so one session may hold several configurations without them colliding.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+    let profile_dir = std::env::var("PROFILE").unwrap_or_else(|_| "unknown".into());
     // The canonical bytes travel with the generated constants so the fingerprint can be
     // re-derived independently: `sha256sum build_fingerprint.canon.txt` must equal
     // BUILD_FINGERPRINT_SHA256.
@@ -794,6 +798,17 @@ fn emit_limits(identity: &str, dirty_list: &str) {
     );
     std::fs::write(format!("{out_dir}/shlosilo_build_identity.h"), &id)
         .expect("write shlosilo_build_identity.h");
+    // A second copy at a STABLE path, because `$OUT_DIR` cannot be discovered reliably from
+    // cargo's message stream: cargo replays a fresh build script's output but does NOT
+    // re-emit the `build-script-executed` message, so a host carrier that reads the path from
+    // that stream works on a warm tree and fails on a clean checkout (measured in CI: the
+    // host-sim step could not find the identity header while the same step passed locally).
+    // The path carries TARGET and PROFILE so a session that builds several configurations
+    // cannot hand one configuration's identity to another.
+    let stable_dir = format!("{manifest_dir}/build/build-identity/{target}/{profile_dir}");
+    std::fs::create_dir_all(&stable_dir).expect("create build/build-identity dir");
+    std::fs::write(format!("{stable_dir}/shlosilo_build_identity.h"), &id)
+        .expect("write stable shlosilo_build_identity.h");
 
     // Machine-readable identity for the wrapper's receipt (L6). Written here so the
     // receipt quotes the SAME values the library carries instead of re-deriving them
@@ -813,8 +828,10 @@ fn emit_limits(identity: &str, dirty_list: &str) {
         std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".into()),
         csv(&compiled)
     );
-    std::fs::write(format!("{out_dir}/build_identity.txt"), identity_txt)
+    std::fs::write(format!("{out_dir}/build_identity.txt"), &identity_txt)
         .expect("write build_identity.txt");
+    std::fs::write(format!("{stable_dir}/build_identity.txt"), &identity_txt)
+        .expect("write stable build_identity.txt");
 
     // C projection of the ceilings: only a carrier whose platform layer is C asks for
     // it. This is a one-way projection of the Rust ceilings - never the source of

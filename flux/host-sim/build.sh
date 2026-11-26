@@ -21,7 +21,7 @@ echo "=== shlosilo forms: cargo build -p shlosilo-host-sim --release (host) ==="
 # Chain axis batch 2 (L5): sim_l3.c also compiles against the GENERATED build identity
 # header (`shlosilo_build_identity.h`: the chain set this build compiled + its
 # BUILD_FINGERPRINT) and compares it with the library at run time. That header lives in
-# the forms build script's OUT_DIR, whose path carries a hash - so cargo is asked where
+# the generated build identity header - so cargo is asked where
 # it is instead of globbing `target/release/build/shlosilo-*/out`, which would happily
 # pick a stale unit from an earlier feature set or profile.
 # `json-render-diagnostics` renders diagnostics as usual and keeps stdout machine-
@@ -33,15 +33,18 @@ if ! ( cd "$REPO_ROOT" && cargo build -p shlosilo-host-sim --release \
     echo "ERROR: cargo build failed" >&2
     exit 1
 fi
-OUT_DIR="$( cd "$REPO_ROOT" && python3 scripts/cargo_msg.py out-dir "$CARGO_JSON" )" || {
-    echo "ERROR: cannot locate the forms build-script OUT_DIR (see scripts/cargo_msg.py)" >&2
+# The identity header lives at a STABLE path that build.rs writes (repo/build/build-identity/
+# <target>/<profile>). It is deliberately not read from cargo's message stream: cargo replays a
+# fresh build script's output but never re-emits `build-script-executed`, so a path taken from
+# that stream works on a warm tree and vanishes on a clean checkout (that is how this step
+# passed locally and failed in CI).
+HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+ID_DIR="$REPO_ROOT/build/build-identity/$HOST_TRIPLE/release"
+[ -f "$ID_DIR/shlosilo_build_identity.h" ] || {
+    echo "ERROR: $ID_DIR/shlosilo_build_identity.h missing - build.rs must generate it" >&2
     exit 1
 }
-[ -f "$OUT_DIR/shlosilo_build_identity.h" ] || {
-    echo "ERROR: $OUT_DIR/shlosilo_build_identity.h missing - build.rs must generate it" >&2
-    exit 1
-}
-echo "    build identity header: $OUT_DIR/shlosilo_build_identity.h"
+echo "    build identity header: $ID_DIR/shlosilo_build_identity.h"
 
 echo "=== keep-table gate (sim_l3 calls must be pinned in the keep table) ==="
 # Same discipline as forgebox: extern "C" declarations do not create LTO
@@ -69,12 +72,12 @@ done
 echo "    keep table OK (sim_l3 call surface pinned and defined)"
 
 echo "=== linking sim_l3 ==="
-# -I "$OUT_DIR" is where the generated build identity header came from: the simulator
+# -I "$ID_DIR" is where the generated build identity header came from: the simulator
 # must compile against the SAME build the library came from, and run once to prove the
 # header and the library agree (see the assertion in sim_l3.c).
 gcc -Wall -Wextra \
     -o "$APP_ROOT/sim_l3" "$APP_ROOT/sim_l3.c" \
-    -I "$REPO_ROOT" -I "$OUT_DIR" -L "$REPO_ROOT/target/release" \
+    -I "$REPO_ROOT" -I "$ID_DIR" -L "$REPO_ROOT/target/release" \
     -lshlosilo -lpthread -ldl -lm
 
 echo "    built: flux/host-sim/sim_l3"
