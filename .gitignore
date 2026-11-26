@@ -26,6 +26,13 @@ tools/ur-inject/node_modules/
 # and the identity assertion in flux/forgebox/build.sh caught it on its first CI run).
 /.ccache/
 
-# Chain-axis matrix profiles are generated per run by scripts/check_chain_axes.sh
-# (same ceilings as host.toml, [chains] rewritten); they must never be committed.
+# Chain-axis matrix manifests are generated per run by scripts/check_chain_axes.sh in a
+# temp dir (never in-tree) since batch 2: the matrix builds through
+# scripts/build_declared.sh, and a limits profile carries no chain set any more. The
+# pattern stays so a leftover from an older tree cannot be committed by accident.
 /limits/chainaxes-*.toml
+
+# Delivery receipts (scripts/build_declared.sh, role=delivery). A receipt describes one
+# build of one working tree; committing one would publish a claim about a binary nobody
+# can reproduce from the repository alone.
+/build/receipts/

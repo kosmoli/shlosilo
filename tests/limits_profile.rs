@@ -136,3 +136,62 @@ fn test_profiles_are_smaller_than_production() {
     assert!(value(tiny, "ur_ws_decoded_slots") < UR_WS_DECODED_SLOTS as u64);
     assert_eq!(value(stress, "bt_tx_inputs_max"), BT_TX_INPUTS_MAX as u64);
 }
+
+/// Chain axis batch 2 (design note §9.3-ter / L1): a limits profile describes RESOURCE
+/// CEILINGS only. The chain set is a build declaration (`builds/<name>.toml`), so no
+/// profile may carry a `[chains]` table again — one profile per chain subset would
+/// duplicate every number in it and re-couple two orthogonal axes.
+///
+/// `build.rs` refuses the section too; this pins the rule on the test face so a
+/// reintroduction is red without needing a device or a specific build profile.
+#[test]
+fn limits_profiles_carry_no_chain_declaration() {
+    let profiles = [
+        ("host", include_str!("../limits/host.toml")),
+        ("pico2", include_str!("../limits/pico2.toml")),
+        ("forgebox", include_str!("../limits/forgebox.toml")),
+        ("luckyfox", include_str!("../limits/luckyfox.toml")),
+        ("tiny-test", include_str!("../limits/tiny-test.toml")),
+        ("stress-test", include_str!("../limits/stress-test.toml")),
+    ];
+    for (name, text) in profiles {
+        assert!(
+            !text
+                .lines()
+                .any(|l| l.split('#').next().unwrap_or("").trim() == "[chains]"),
+            "limits/{name}.toml declares a [chains] table: the chain set belongs in a \
+             build manifest (builds/<name>.toml), a limits profile carries ceilings only"
+        );
+        // A stray `btc = true` would be a chain declaration without its section header;
+        // build.rs rejects unknown keys, and this says so on the test face as well.
+        for chain in ["btc", "eth", "xmr"] {
+            assert!(
+                !text.lines().any(|l| {
+                    let l = l.split('#').next().unwrap_or("").trim();
+                    l.starts_with(&format!("{chain} ="))
+                }),
+                "limits/{name}.toml carries a chain flag for {chain}"
+            );
+        }
+    }
+    // And the manifests that DO declare chains exist and are named after their request.
+    // Read at RUNTIME, not through a compile-time include macro: scripts/check_fixtures.sh
+    // requires every included target to be a git-tracked fixture, and a build manifest is
+    // source, not a golden vector. Integration tests run with the package root as cwd.
+    for name in ["builds/pico2-btc.toml", "builds/host-all.toml"] {
+        let manifest =
+            std::fs::read_to_string(name).unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
+        assert!(
+            manifest.lines().any(|l| l.trim() == "[chains]"),
+            "{name}: a build manifest declares its chain set"
+        );
+        assert!(
+            manifest.contains("limits = \""),
+            "{name}: a manifest references a limits profile by NAME (never copies it)"
+        );
+        assert!(
+            manifest.contains("role = \""),
+            "{name}: a manifest states its role (only delivery may produce a receipt)"
+        );
+    }
+}

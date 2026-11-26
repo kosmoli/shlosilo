@@ -22,6 +22,10 @@ pyenv
 /shlosilo/libshlosilo.a
 /shlosilo/shlosilo.h
 /shlosilo/shlosilo_limits.h
+# Chain axis batch 2: the generated build identity header (the chain set this build
+# compiled + its BUILD_FINGERPRINT). Written by the core crate's build.rs next to the
+# limits projection; it changes with HEAD, so it is never a tracked file.
+/shlosilo/shlosilo_build_identity.h
 
 # plate-only (SHLOSILO_WITH_SE=0) probe flavor: separate dirs so the probe build can never
 # clobber the canonical artifacts above. Built by scripts/forgebox_se_isolation_check.sh.

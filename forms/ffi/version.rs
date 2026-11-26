@@ -35,7 +35,16 @@ pub const SHLOSILO_CABI_VERSION_MAJOR: u16 = 0;
 /// — a parameter shape change, so the minor must move under strict equality.
 /// The view entry joined the same unreleased 0.5.0 batch (no host was ever built
 /// against a 0.5.0 header without it), so one bump covers the batch.
-pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 5;
+///
+/// 2026-11-27 (chain axis batch 2, L5): 5 -> 6. Two exports were added —
+/// `shlosilo_build_fingerprint_ffi` (`uint64_t`) and `shlosilo_build_chain_mask_ffi`
+/// (`unsigned int`) — so the library can be asked which chains and which build it
+/// carries, and the C carrier compares the answer with the generated
+/// `shlosilo_build_identity.h` it compiled against. Adding exports IS a change of the
+/// exported function set under this ABI's rule (no host built against a 0.5.0 header
+/// has these declarations, and the C side's identity assertion keys on the ABI check
+/// passing first), so the minor moves.
+pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 6;
 pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
 
 /// C ABI version string (NUL-terminated)
@@ -50,7 +59,11 @@ pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
 /// **Memory contract (2026-11-23)**: 0.4.0 → 0.5.0 — the three signing entries gained
 /// `scratch`/`scratch_len` (caller-provided BP multiexp scratch) and the export set grew
 /// by `shlosilo_sign_scratch_len` + `SHLOSILO_SIGN_SCRATCH_ALIGN`.
-pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.5.0\0";
+///
+/// **Chain axis batch 2 (2026-11-27)**: 0.5.0 → 0.6.0 — the export set grew by
+/// `shlosilo_build_fingerprint_ffi` and `shlosilo_build_chain_mask_ffi` (the C side can
+/// now verify the chain set and BUILD_FINGERPRINT of the library it linked).
+pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.6.0\0";
 
 /// extern "C" returning the version string (C side strdups it before use)
 #[no_mangle]
@@ -101,8 +114,9 @@ mod tests {
         // Audit #4 (2026-09-01): 0.2.0 → 0.3.0 (R3 new exports + P0-02 semantics change)
         // External audit 2026-11-19 A2-01: 0.3.0 → 0.4.0 (`shlosilo_sign_ffi` 10 → 12 params)
         // Memory contract (2026-11-23): 0.4.0 → 0.5.0 (three sign entries gained scratch/scratch_len)
+        // Chain axis batch 2 (2026-11-27): 0.5.0 → 0.6.0 (build fingerprint + chain mask exports)
         assert_eq!(SHLOSILO_CABI_VERSION_MAJOR, 0);
-        assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 5);
+        assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 6);
         assert_eq!(SHLOSILO_CABI_VERSION_PATCH, 0);
     }
 

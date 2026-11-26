@@ -1,31 +1,34 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Chain axis matrix (design note 「链轴积木化」 §9.3-2 / §9.4, batch 1)
+# Chain axis matrix (design note 「链轴积木化」 §9.3-2 / §9.4; batch 2 = manifests)
 #
 # What this gate proves, in order:
 #
 # 1. COMBINATION MATRIX — the 3 single-chain, 3 double-chain and 1 all-on builds
-#    each compile on the host face:
-#        cargo check --offline --no-default-features \
-#                    --features "std,alloc-fallback,<combo>"
-#    The features are additive (Cargo union semantics), so no two chains are
-#    mutually exclusive; the matrix is about *presence*, never about exclusion.
+#    each compile on the host face. Since batch 2 they are built through
+#    `scripts/build_declared.sh`, i.e. through a real BUILD MANIFEST:
+#        builds/<tmp>/<combo>.toml  (limits = host, role = test, chains = combo)
+#    The manifests are generated in a TEMP DIRECTORY and never touch the tree — no
+#    `limits/*.toml` is created, copied or generated any more (L1: a limits profile
+#    carries resource ceilings only, and one profile per chain subset would duplicate
+#    every number in it).
 #
-# 2. PROFILE AGREEMENT — every combination is built against a profile whose
-#    `[chains]` block declares exactly that combination. `build.rs` cross-checks
-#    the declaration against the compiled `chain-*` features in BOTH directions
-#    and refuses a mismatch, so this script cannot silently test a build the
-#    profile does not describe. The profiles are derived from `limits/host.toml`
-#    with ONLY the `[chains]` block rewritten (every numeric ceiling is copied
-#    byte for byte — this gate never invents a limit), are named
-#    `limits/chainaxes-<combo>.toml`, and are removed on exit.
+# 2. DECLARATION CHECK — the wrapper exports SHLOSILO_CHAINS from each manifest and
+#    `build.rs` requires STRICT equality with the feature set cargo actually resolved.
+#    So every row of the matrix is simultaneously a test that a truthful manifest
+#    builds, which is the property the delivery face depends on.
 #
-# 3. DOUBLE-EDGED SYMBOL CRITERION (§9.4, the FORGEBOXSEISO lesson) — for every
+# 3. NEGATIVE TEST (L2, §9.3-quater) — a manifest that declares btc-only while the
+#    build is given `chain-eth` extra MUST FAIL, and the failure must name the set
+#    difference. Without this the strict check is only ever exercised on inputs that
+#    agree with it, i.e. it is untested where it matters.
+#
+# 4. DOUBLE-EDGED SYMBOL CRITERION (§9.4, the FORGEBOXSEISO lesson) — for every
 #    combination, each DISABLED chain must own ZERO symbols in the rlib, and each
 #    ENABLED chain's sampled symbols must be PRESENT in the same rlib. The second
 #    half is what makes the first half mean something: a grep that cannot see a
-#    symbol cannot distinguish "compiled out" from "instrument broken / rlib
-#    stale / wrong artifact".
+#    symbol cannot distinguish "compiled out" from "instrument broken / rlib stale /
+#    wrong artifact".
 #
 #    Sampling method (measured, not assumed): the build uses the v0 legacy symbol
 #    mangling, so a function's mangled name carries its module path as plain text
@@ -46,26 +49,28 @@
 #    asserted too: it is broader than the per-function samples, so it catches a
 #    module that leaks without contributing one of the sampled functions.
 #
-# 4. SIZE ACCOUNT (§9.4) — each combination's `size` text total is printed with
-#    its delta against the all-on build. Batch 1 only adds the switches and the
-#    cross-checks: the code is compiled out, but the dependency graph is not yet
-#    sliced (optional deps land in batch 2), so the text delta measures the
-#    switch's own effect and nothing else.
+# 5. SIZE ACCOUNT (§9.4) — each combination's `size` text total is printed with
+#    its delta against the all-on build. Batch 1 only added the switches: the code is
+#    compiled out, but the dependency graph is NOT sliced yet (L7 keeps optional deps
+#    and the k256 tables for batch 3), so the text delta measures the switch's own
+#    effect and nothing else. A BTC-only build therefore does NOT yet mean a smaller
+#    attack surface — only a correctly selected chain axis.
 #
 # Usage: bash scripts/check_chain_axes.sh
+#   CARGO_FLAGS=--locked ...  forwarded to cargo (CI), default --offline.
 # =============================================================================
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 COMBOS=(btc eth xmr btc,eth btc,xmr eth,xmr btc,eth,xmr)
-PROFILE_PREFIX="chainaxes-"
-BASE_FEATURES="std,alloc-fallback"
+LIMITS_PROFILE="host"
+BUILD_ROLE="test"
 # Same flags on both faces: the local batch must not touch the network (--offline),
 # CI wants the reviewed lockfile pinned (--locked). Caller decides, as with
 # scripts/test_zero_on_alloc.sh.
 CARGO_FLAGS="${CARGO_FLAGS:---offline}"
 TMP_DIR="$(mktemp -d /tmp/chainaxes.XXXXXX)"
-trap 'rm -f limits/${PROFILE_PREFIX}*.toml; rm -rf "$TMP_DIR"' EXIT
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 fail=0
 note() { printf '%s\n' "$*"; }
@@ -80,61 +85,41 @@ chain_samples() {
     esac
 }
 
-combo_profile() { printf '%s%s' "$PROFILE_PREFIX" "${1//,/-}"; }
-
-# Chain names (as the profile declares them) -> cargo feature names, in order.
-combo_features() {
-    local out="" c
-    for c in ${1//,/ }; do out="${out:+$out,}chain-$c"; done
-    printf '%s' "$out"
+# Write a manifest for one combination: limits referenced BY NAME, chains explicitly
+# declared, role = test (this face never produces a receipt). Lives in $TMP_DIR only.
+write_manifest() {
+    local combo="$1" path="$TMP_DIR/chainaxes-${1//,/-}.toml"
+    {
+        printf '# @generated by scripts/check_chain_axes.sh — never committed, never in-tree.\n'
+        printf '# The matrix builds a DECLARED chain subset against unchanged resource\n'
+        printf '# ceilings: limits profiles carry no chain set (batch 2 / L1).\n'
+        printf 'limits = "%s"\n' "$LIMITS_PROFILE"
+        printf 'role = "%s"\n' "$BUILD_ROLE"
+        printf '\n[chains]\n'
+        for chain in btc eth xmr; do
+            case ",$combo," in
+                *",$chain,"*) printf '%s = true\n' "$chain" ;;
+                *) printf '%s = false\n' "$chain" ;;
+            esac
+        done
+    } > "$path"
+    printf '%s' "$path"
 }
 
-# Derive this combination's profile from limits/host.toml: same numeric ceilings,
-# `[chains]` rewritten to declare exactly this combination.
-gen_profile() {
-    python3 - "$1" > "limits/$(combo_profile "$1").toml" <<'PY'
-import sys
-
-combo = sys.argv[1].split(",")
-text = open("limits/host.toml", "r", encoding="utf-8").read()
-
-out = [
-    "# @generated by scripts/check_chain_axes.sh - do not edit, do not commit.\n",
-    "# Same ceilings as limits/host.toml; only the [chains] block differs, so this\n",
-    "# profile declares exactly the combination the matrix is building.\n",
-    "[chains]\n",
-]
-for chain in ("btc", "eth", "xmr"):
-    out.append("%s = %s\n" % (chain, "true" if chain in combo else "false"))
-out.append("\n")
-
-# Copy every [limits] line verbatim (values untouched), skipping host's own
-# `[chains]` block and every comment that precedes the first section header (the
-# header above that block describes the [chains] declaration we just replaced).
-section = None
-for line in text.splitlines(True):
-    stripped = line.strip()
-    if stripped.startswith("[") and stripped.endswith("]"):
-        section = stripped[1:-1]
-        if section == "chains":
-            continue
-        out.append(line)
-        continue
-    if section is None or section == "chains":
-        continue
-    out.append(line)
-sys.stdout.write("".join(out))
-PY
-}
-
-# The rlib cargo just produced for the current feature set (the artifact list is
-# keyed by feature set, so this names exactly the unit under test).
+# The rlib cargo just produced for the current declaration (the artifact list is keyed
+# by feature set, so this names exactly the unit under test). Built through the wrapper
+# too: the symbol/size evidence must come from the same declared build the check ran in,
+# otherwise the matrix could certify an rlib nobody declared.
 rlib_of() {
-    cargo build $CARGO_FLAGS --lib --no-default-features --features "$BASE_FEATURES,$1" \
-        --message-format=json 2>/dev/null |
-        python3 -c '
-import sys, json
-for line in sys.stdin:
+    local manifest="$1" log="$TMP_DIR/rlib.json"
+    bash scripts/build_declared.sh "$manifest" -- $CARGO_FLAGS --message-format=json \
+        build --lib -p shlosilo | tee "$log" >/dev/null
+    python3 - "$log" <<'PY'
+import json, sys
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
     try:
         m = json.loads(line)
     except Exception:
@@ -149,34 +134,40 @@ for line in sys.stdin:
     for f in m.get("filenames") or []:
         if f.endswith(".rlib"):
             print(f)
-'
+PY
 }
 
 index=0
 for combo in "${COMBOS[@]}"; do
     index=$((index + 1))
-    profile="$(combo_profile "$combo")"
-    gen_profile "$combo" || { bad "$combo: profile generation"; continue; }
+    manifest="$(write_manifest "$combo")"
+    [ -f "$manifest" ] || { bad "$combo: manifest generation"; continue; }
 
     note ""
-    note "== [$index/${#COMBOS[@]}] chains: $combo  (profile SHLOSILO_LIMITS=$profile)"
+    note "== [$index/${#COMBOS[@]}] chains declared: $combo  (manifest $manifest)"
 
-    # 1. compile matrix (the assertion the design note names)
-    if SHLOSILO_LIMITS="$profile" cargo check $CARGO_FLAGS --no-default-features \
-        --features "$BASE_FEATURES,$(combo_features "$combo")" > "$TMP_DIR/check-$index.log" 2>&1; then
-        note "   check: exit 0"
+    # 1. compile matrix through the declared wrapper (the assertion §9.4 names)
+    if bash scripts/build_declared.sh "$manifest" -- $CARGO_FLAGS check -p shlosilo \
+        > "$TMP_DIR/check-$index.log" 2>&1; then
+        note "   check: exit 0 (declared == compiled)"
     else
-        bad "$combo: cargo check failed (log: $TMP_DIR/check-$index.log)"
-        tail -20 "$TMP_DIR/check-$index.log" | sed 's/^/      /'
+        bad "$combo: declared check failed (log: $TMP_DIR/check-$index.log)"
+        tail -25 "$TMP_DIR/check-$index.log" | sed 's/^/      /'
         continue
     fi
 
     # 2. object code for the symbol + size assertions
-    rlib="$(SHLOSILO_LIMITS="$profile" rlib_of "$(combo_features "$combo")" | tail -1)"
-    if [ -z "$rlib" ] || [ ! -f "$rlib" ]; then
-        bad "$combo: no rlib artifact found"
+    # The artifact cargo reports is the UPLIFTED `target/debug/libshlosilo.rlib`, which the
+    # next combination overwrites. Take a private copy per combination so the evidence this
+    # row prints belongs to THIS feature set and cannot be re-read from a later build.
+    built_rlib="$(rlib_of "$manifest" 2> "$TMP_DIR/rlib-$index.log" | tail -1)"
+    if [ -z "$built_rlib" ] || [ ! -f "$built_rlib" ]; then
+        bad "$combo: no rlib artifact found (log: $TMP_DIR/rlib-$index.log)"
+        tail -10 "$TMP_DIR/rlib-$index.log" | sed 's/^/      /'
         continue
     fi
+    rlib="$TMP_DIR/libshlosilo-chains-${combo//,/-}.rlib"
+    cp "$built_rlib" "$rlib" || { bad "$combo: cannot copy the rlib artifact"; continue; }
     nm --defined-only "$rlib" > "$TMP_DIR/nm-$index.txt" 2>/dev/null
     total=$(wc -l < "$TMP_DIR/nm-$index.txt")
     # Sensitivity control: an rlib with a handful of symbols means nm (or the
@@ -232,6 +223,35 @@ for combo in "${COMBOS[@]}"; do
     note "   text: ${text_bytes:-?} bytes  ($(basename "$rlib"))"
 done
 
+# ── 5. NEGATIVE TEST (L2) ───────────────────────────────────────────────────
+# A manifest that declares btc-only, built with an extra chain-eth feature, MUST be
+# refused by build.rs - and the refusal has to name both sets, because "the build
+# failed" is not the property being pinned: "it failed for THIS reason" is.
+note ""
+note "== negative test: declared btc-only, build asked for chain-btc,chain-eth"
+neg_manifest="$TMP_DIR/negative-btc-only.toml"
+{
+    printf '# @generated by scripts/check_chain_axes.sh — negative test fixture.\n'
+    printf 'limits = "%s"\n' "$LIMITS_PROFILE"
+    printf 'role = "%s"\n\n' "$BUILD_ROLE"
+    printf '[chains]\nbtc = true\neth = false\nxmr = false\n'
+} > "$neg_manifest"
+neg_log="$TMP_DIR/negative.log"
+if bash scripts/build_declared.sh "$neg_manifest" -- $CARGO_FLAGS check -p shlosilo \
+    --features chain-btc,chain-eth > "$neg_log" 2>&1; then
+    bad "negative test: an undeclared chain was accepted (declared btc, built btc+eth)"
+    tail -20 "$neg_log" | sed 's/^/      /'
+else
+    if grep -q "declared chains = \[btc\]" "$neg_log" \
+        && grep -q "compiled chains = \[btc,eth\]" "$neg_log"; then
+        note "   refused with the set difference:"
+        grep -E "declared chains =|compiled chains =" "$neg_log" | sed 's/^/      /'
+    else
+        bad "negative test: build failed, but not with the declared/compiled set difference"
+        tail -25 "$neg_log" | sed 's/^/      /'
+    fi
+fi
+
 note ""
 note "== size account (rlib .text total, delta vs the all-on build)"
 if [ -f "$TMP_DIR/sizes.txt" ]; then
@@ -250,7 +270,8 @@ fi
 
 note ""
 if [ "$fail" -eq 0 ]; then
-    note "CHAIN AXES: OK (${#COMBOS[@]} combinations, no symbol leak, all-on symbols present)"
+    note "CHAIN AXES: OK (${#COMBOS[@]} declared combinations + negative test, no symbol leak,"
+    note "             all-on symbols present, undeclared chain refused with the set difference)"
 else
     note "CHAIN AXES: RED (see FAIL lines above)"
 fi

@@ -114,15 +114,22 @@ jobs:
             cargo check --locked --features "$f"
             echo "::endgroup::"
           done
-      # Chain axis matrix (design note §9.4, batch 1): the 7 chain combinations
+      # Chain axis (design note §9.3-quater L2 ★): the strict declared-vs-compiled chain
+      # check lives in forms/build.rs and sees only the CORE crate's feature set, which
+      # covers the product only while the chain axis exists in exactly one crate. This step
+      # pins that precondition: `cfg(feature = "chain-…")` must appear only under forms/.
+      - name: Chain axis scope (chain conditionals confined to forms/)
+        run: bash scripts/check_chainaxis_scope.sh
+      # Chain axis matrix (design note §9.4, batch 2): the 7 chain combinations
       # (3 single + 3 double + 1 all-on) must each compile on the host face, with a
       # DOUBLE-EDGED symbol criterion — a disabled chain owns zero symbols in the rlib,
       # and an enabled chain's sampled symbols are present in that same rlib (absence
-      # alone cannot distinguish "compiled out" from "instrument blind"). Each
-      # combination is built against a generated limits/chainaxes-<combo>.toml whose
-      # [chains] block matches it: build.rs refuses a profile that contradicts the
-      # compiled feature set in either direction.
-      - name: Chain axis matrix (7 combinations + symbol criterion)
+      # alone cannot distinguish "compiled out" from "instrument blind"). Every
+      # combination is built through scripts/build_declared.sh from a manifest generated
+      # in a temp dir (limits profiles carry no chain set any more), and the run ends with
+      # the negative test: a btc-only declaration built with chain-eth must fail naming the
+      # set difference.
+      - name: Chain axis matrix (7 declared combinations + negative test + symbol criterion)
         run: CARGO_FLAGS=--locked bash scripts/check_chain_axes.sh
       # Platform switch (2026-09-23): the production carrier is LuckyFox Pico Mini
       # (Linux/POSIX, armv7). The per-commit standard gate

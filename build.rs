@@ -13,8 +13,46 @@
 //! clean last-commit hash: exactly the confusion this script exists to
 //! prevent. (Measured 2026-09-14: the perf-bench firmware built from a dirty
 //! tree still said `+15a83ca` with no `-dirty`.)
+//!
+//! Chain axis, batch 2 (design note 「链轴积木化」 §9.3-ter / §9.3-quater): this
+//! script does exactly two things and nothing else -
+//!
+//! 1. **limits schema / derivations / fingerprint** (`limits/<profile>.toml` →
+//!    `$OUT_DIR/limits_generated.rs`). The `[chains]` block is GONE from those
+//!    files (L1): a limits profile describes resource ceilings only, and a file
+//!    that still carries one is a hard error below.
+//! 2. **declaration vs build cross-check.** A build manifest (`builds/<name>.toml`)
+//!    is a *declaration*; the cargo `chain-*` features are the *mechanism*. The
+//!    wrapper (`scripts/build_declared.sh`) exports `SHLOSILO_CHAINS=<csv>` and this
+//!    script compares it against the compiled `CARGO_FEATURE_CHAIN_*` set:
+//!    - no `SHLOSILO_CHAINS` (a bare `cargo build/test`) ⇒ no check at all. The
+//!      looseness comes from the ABSENCE of a declaration, never from a switch (L3:
+//!      `role` decides purpose and receipt rights, never strictness);
+//!    - `SHLOSILO_CHAINS` present ⇒ **strict equality**. A mismatch is a build
+//!      error in both directions: a declared chain must be compiled in (an image
+//!      that promises what it cannot sign) and an undeclared chain must not be
+//!      (extra parsers/crypto/signing logic change the audit surface of a signer -
+//!      "development convenience" does not get to relax the delivery face).
+//!      The check has to live HERE rather than in the wrapper: a wrapper can stop a
+//!      human from forgetting a feature, but only `CARGO_FEATURE_*` sees the feature
+//!      set **after unification**, which is what catches a transitive dependency
+//!      turning a chain on behind everyone's back.
+//!
+//! The two identities are different questions and are never merged:
+//! - `LIMITS_FINGERPRINT` (FNV-1a 64): the resource ceilings. A Rust↔C
+//!   accidental-mismatch tripwire; not cryptographic, not an attestation.
+//! - `BUILD_FINGERPRINT` (SHA-256 over a versioned canonical encoding, see
+//!   [`canonical_build_encoding`]): the whole build identity - limits content, the
+//!   ACTUAL chain set, target, HEAD, Cargo.lock digest, rustc version, role and this
+//!   script's own digest. Projected into Rust AND into the C header, and queryable
+//!   over the C ABI, so the C side can check "the chains I think I compiled against"
+//!   against "the chains inside the library I just linked".
+//!   It does NOT take the FNV value as input (L4: a non-cryptographic digest must not
+//!   feed a cryptographic one).
 
 use std::process::Command;
+
+use sha2::{Digest, Sha256};
 
 /// Sources that end up in a produced firmware and can be edited without
 /// moving HEAD. Kept as an explicit list because cargo watches nothing by
@@ -23,31 +61,40 @@ const WATCH_PATHS: &[&str] = &[
     ".git/logs/HEAD", // commits/checkouts: keeps the hash itself current
     "build.rs",
     "Cargo.toml",
+    "Cargo.lock",     // BUILD_FINGERPRINT input (dependency identity)
     "forms",          // the core crate source tree
     "vendor",         // vendored crates (patched in tree)
     "flux/pico2/src", // Rust-native appearance
     "flux/pico2/Cargo.toml",
     "flux/pico2/build.rs",
-    "flux/forgebox/staticlib", // C-host staticlib shim
-    "flux/host-sim/staticlib", // POSIX simulator shim
-    "limits",                  // platform resource profiles (generated consts)
+    "flux/forgebox/staticlib",   // C-host staticlib shim
+    "flux/host-sim/staticlib",   // POSIX simulator shim
+    "limits",                    // platform resource profiles (generated consts)
+    "builds",                    // build manifests (declarations; digest goes in the receipt)
+    "scripts/build_declared.sh", // the wrapper's digest is a BUILD_FINGERPRINT input
 ];
 
+/// The chain-axis vocabulary, in the one canonical order every projection uses:
+/// the C header, `SHLOSILO_CHAINS`, the Rust constants and this file agree on it.
+/// (`(name, CARGO_FEATURE suffix)`.)
+const CHAINS: &[(&str, &str)] = &[
+    ("btc", "CHAIN_BTC"),
+    ("eth", "CHAIN_ETH"),
+    ("xmr", "CHAIN_XMR"),
+];
+
+/// Roles a build may declare. `delivery` is the only one allowed to produce a
+/// receipt (L3/L6) - and the only one this script holds to a clean working tree.
+const ROLES: &[&str] = &["delivery", "development", "test", "benchmark"];
+
+/// Version of the [`canonical_build_encoding`] layout. Bump it when the field
+/// set or its order changes: a fingerprint is only comparable inside one schema.
+const BUILD_FINGERPRINT_SCHEMA: u32 = 1;
+
 fn main() {
-    let git_hash = Command::new("git")
-        .args(["rev-parse", "--short=7", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    let dirty_list = Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
+    let git_hash =
+        git(&["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let dirty_list = git(&["status", "--porcelain"]).unwrap_or_default();
     let identity = if !dirty_list.is_empty() && git_hash != "unknown" {
         // Say WHAT was dirty, not just that something was: this string is what a delivered
         // image wears on its footer, and "why did this build say -dirty" is unanswerable
@@ -65,7 +112,173 @@ fn main() {
     for path in WATCH_PATHS {
         println!("cargo:rerun-if-changed={path}");
     }
-    emit_limits();
+    emit_limits(&identity, &dirty_list);
+}
+
+/// One line of `git <args>` output, or `None` when git is unusable.
+fn git(args: &[&str]) -> Option<String> {
+    Command::new("git")
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Digest of a file as lowercase hex, or `None` when it cannot be read.
+fn sha256_file(path: &str) -> Option<String> {
+    std::fs::read(path).ok().map(|bytes| sha256_hex(&bytes))
+}
+
+/// The chain set the compiler ACTUALLY resolved, in canonical order.
+///
+/// Read from `CARGO_FEATURE_CHAIN_*`, i.e. the feature set after unification for
+/// this crate - the only place where a transitively-enabled chain is visible.
+fn compiled_chains() -> Vec<&'static str> {
+    CHAINS
+        .iter()
+        .filter(|(_, feature)| std::env::var_os(format!("CARGO_FEATURE_{feature}")).is_some())
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// The chain set a build manifest DECLARED (`SHLOSILO_CHAINS`, exported by
+/// `scripts/build_declared.sh`), or `None` for a bare cargo build.
+///
+/// Empty/unset means "no declaration" (the dev face). Malformed input is an error,
+/// not a silent fallback: a typo in the wrapper must not switch the strict check off.
+fn declared_chains() -> Option<Vec<&'static str>> {
+    let raw = match std::env::var("SHLOSILO_CHAINS") {
+        Ok(raw) if !raw.trim().is_empty() => raw,
+        _ => return None,
+    };
+    let mut out: Vec<&'static str> = Vec::new();
+    for token in raw.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let name = CHAINS
+            .iter()
+            .find(|(name, _)| *name == token)
+            .map(|(name, _)| *name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "SHLOSILO_CHAINS declares unknown chain {token:?}; known chains are {:?}",
+                    CHAINS.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            !out.contains(&name),
+            "SHLOSILO_CHAINS lists {name} twice ({raw:?})"
+        );
+        out.push(name);
+    }
+    assert!(
+        !out.is_empty(),
+        "SHLOSILO_CHAINS is set but names no chain (raw {raw:?}); a manifest declares at least one"
+    );
+    Some(out)
+}
+
+fn csv(chains: &[&str]) -> String {
+    if chains.is_empty() {
+        "none".to_string()
+    } else {
+        chains.join(",")
+    }
+}
+
+/// Append one `name=value` line, refusing a newline in either half: that is what
+/// makes the field boundaries unambiguous without a length prefix.
+fn push_field(out: &mut String, name: &str, value: &str) {
+    assert!(
+        !name.contains('\n') && !value.contains('\n'),
+        "canonical build encoding field contains a newline: {name}={value:?}"
+    );
+    out.push_str(name);
+    out.push('=');
+    out.push_str(value);
+    out.push('\n');
+}
+
+/// Versioned canonical encoding of everything `BUILD_FINGERPRINT` commits to.
+///
+/// Shape (UTF-8, every line LF-terminated, `name=value`, fixed order, no value may
+/// contain a newline):
+///
+/// ```text
+/// shlosilo-build-fingerprint/1        <- schema/domain tag, always the first line
+/// schema_version=1
+/// limits_profile=<profile>
+/// limits.<KEY>=<value>                <- one line per limits key, ASCII-sorted by key
+/// chains=<canonical csv>              <- the ACTUAL compiled set ("none" if empty)
+/// target=<TARGET triple>
+/// git_head=<40 hex | unknown>
+/// tree_state=<clean | dirty>
+/// cargo_lock_sha256=<64 hex | absent>
+/// rustc=<rustc --version, one line>
+/// build_role=<role | unspecified>
+/// build_script_sha256=<64 hex>
+/// wrapper_sha256=<64 hex | absent>
+/// ```
+///
+/// `BUILD_FINGERPRINT_SHA256` is SHA-256 over exactly these bytes; the text is also
+/// written to `$OUT_DIR/build_fingerprint.canon.txt`, so the published hex can be
+/// re-derived with `sha256sum` alone - a fingerprint nobody can recompute is a claim,
+/// not a fact. The FNV limits fingerprint is deliberately NOT an input (L4).
+#[allow(clippy::too_many_arguments)]
+fn canonical_build_encoding(
+    profile: &str,
+    values: &[(&str, u64)],
+    chains: &[&str],
+    target: &str,
+    git_head: &str,
+    tree_state: &str,
+    cargo_lock_sha: &str,
+    rustc: &str,
+    role: &str,
+    build_script_sha: &str,
+    wrapper_sha: &str,
+) -> String {
+    // Fixed order: sorted by key, never the file's own line order (a profile rewrite
+    // that only moves lines must not move the fingerprint).
+    let mut limits: Vec<(&str, u64)> = values.to_vec();
+    limits.sort_by(|a, b| a.0.cmp(b.0));
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "shlosilo-build-fingerprint/{BUILD_FINGERPRINT_SCHEMA}\n"
+    ));
+    push_field(
+        &mut out,
+        "schema_version",
+        &BUILD_FINGERPRINT_SCHEMA.to_string(),
+    );
+    push_field(&mut out, "limits_profile", profile);
+    for (key, value) in &limits {
+        push_field(&mut out, &format!("limits.{key}"), &value.to_string());
+    }
+    push_field(&mut out, "chains", &csv(chains));
+    push_field(&mut out, "target", target);
+    push_field(&mut out, "git_head", git_head);
+    push_field(&mut out, "tree_state", tree_state);
+    push_field(&mut out, "cargo_lock_sha256", cargo_lock_sha);
+    push_field(&mut out, "rustc", rustc);
+    push_field(&mut out, "build_role", role);
+    push_field(&mut out, "build_script_sha256", build_script_sha);
+    push_field(&mut out, "wrapper_sha256", wrapper_sha);
+    out
 }
 
 /// Platform resource profiles (`limits/<profile>.toml`) -> `$OUT_DIR/limits_generated.rs`.
@@ -77,7 +290,7 @@ fn main() {
 /// Parsing is deliberately minimal (sections and `key = value` lines): the files are
 /// ours, the schema check below is the real gate, and pulling a TOML dependency into a
 /// build script that also runs for `thumbv7em` targets is not worth it.
-fn emit_limits() {
+fn emit_limits(identity: &str, dirty_list: &str) {
     const KEYS: &[&str] = &[
         "bt_tx_inputs_max",
         "bt_tx_outputs_max",
@@ -107,6 +320,10 @@ fn emit_limits() {
         "stack_budget_bytes",
     ];
     println!("cargo:rerun-if-env-changed=SHLOSILO_LIMITS");
+    // Chain axis batch 2: the declaration pair. Both are exported by
+    // `scripts/build_declared.sh`; a bare cargo build sets neither.
+    println!("cargo:rerun-if-env-changed=SHLOSILO_CHAINS");
+    println!("cargo:rerun-if-env-changed=SHLOSILO_BUILD_ROLE");
     // The budget report states where it was computed: a host report is not a device
     // report, because `size_of::<usize>()` differs.
     println!(
@@ -132,17 +349,7 @@ fn emit_limits() {
         "forgebox",
         "luckyfox",
     ];
-    // Chain-axis matrix profiles (`chainaxes-<combo>`): generated by
-    // `scripts/check_chain_axes.sh` from `host.toml` with only the `[chains]` block
-    // rewritten, so the matrix can build each combination against a profile that
-    // *agrees* with it (the cross-check below refuses a mismatch in either direction).
-    // The name gate is a whitelist of SHAPES as well as names: lowercase/digits/'-'
-    // only, so an environment value still cannot become a path.
-    let derived_chainaxes = profile.starts_with("chainaxes-")
-        && profile
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-    if !PROFILES.contains(&profile.as_str()) && !derived_chainaxes {
+    if !PROFILES.contains(&profile.as_str()) {
         panic!("unknown SHLOSILO_LIMITS profile {profile:?}; expected one of {PROFILES:?}");
     }
 
@@ -151,20 +358,6 @@ fn emit_limits() {
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
 
     let mut values: Vec<(&str, u64)> = Vec::new();
-    // Chain capability list (`[chains]`). Batch 1 of the chain axis keeps this file
-    // the single source of truth for "which chains does this profile claim", and the
-    // cross-check below makes the claim verifiable instead of aspirational.
-    let mut chains: Vec<(&str, bool)> = Vec::new();
-    const CHAIN_KEYS: &[&str] = &["btc", "eth", "xmr"];
-    // Limits keys that are only meaningful for one chain: required while that chain is
-    // on, allowed to be absent while it is off (a chain-less profile should not have to
-    // carry another chain's ceilings). Everything else stays unconditional.
-    const CHAIN_REQUIRED_KEYS: &[(&str, &str)] = &[
-        ("bt_tx_inputs_max", "btc"),
-        ("bt_tx_outputs_max", "btc"),
-        ("xmr_inputs_max", "xmr"),
-        ("pairing_records_max", "xmr"),
-    ];
     let mut section = "";
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
@@ -174,8 +367,17 @@ fn emit_limits() {
         if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
             section = match name {
                 "limits" => "limits",
-                "chains" => "chains",
-                _ => panic!("{path}: unknown section [{name}] (schema: [limits], [chains])"),
+                // L1: a limits profile describes RESOURCE CEILINGS only. The chain set
+                // is a build declaration (`builds/<name>.toml`); keeping it here
+                // re-coupled two orthogonal axes and forced one file per chain subset.
+                "chains" => panic!(
+                    "{path}: `[chains]` does not belong in a limits profile any more (chain \
+                     axis L1). Declare the chain set in a build manifest instead - \
+                     builds/<name>.toml with a `[chains]` table - and build through \
+                     `scripts/build_declared.sh <manifest>`. Limits files carry resource \
+                     ceilings only."
+                ),
+                _ => panic!("{path}: unknown section [{name}] (schema: [limits])"),
             };
             continue;
         }
@@ -183,22 +385,6 @@ fn emit_limits() {
             .split_once('=')
             .unwrap_or_else(|| panic!("{path}: expected `key = value`, got {line:?}"));
         let key = k.trim();
-        if section == "chains" {
-            let chain = CHAIN_KEYS.iter().find(|c| **c == key).unwrap_or_else(|| {
-                panic!("{path}: unknown [chains] key {key:?} (schema: {CHAIN_KEYS:?})")
-            });
-            let on = match v.trim() {
-                "true" => true,
-                "false" => false,
-                other => panic!("{path}: [chains] {key} must be true or false, got {other:?}"),
-            };
-            assert!(
-                chains.iter().all(|(c, _)| c != chain),
-                "{path}: duplicate [chains] key {key}"
-            );
-            chains.push((chain, on));
-            continue;
-        }
         assert!(
             section == "limits",
             "{path}: key {key:?} appears outside a section (a TOML section header is required)"
@@ -222,45 +408,54 @@ fn emit_limits() {
         }
         values.push((known, value));
     }
-    // The capability list must exist and be complete: a missing chain is an unstated
-    // claim, and "unstated" is what this file exists to rule out.
-    for chain in CHAIN_KEYS {
-        assert!(
-            chains.iter().any(|(c, _)| c == chain),
-            "{path}: missing [chains] key {chain} (schema: {CHAIN_KEYS:?})"
-        );
-    }
-    let chain_on = |name: &str| -> bool {
-        chains
-            .iter()
-            .find(|(c, _)| *c == name)
-            .map(|(_, on)| *on)
-            .expect("schema check above guarantees presence")
+
+    // ---- build role (L3: purpose + receipt rights, never strictness) --------
+    let role = match std::env::var("SHLOSILO_BUILD_ROLE") {
+        Ok(r) if !r.trim().is_empty() => {
+            let r = r.trim().to_string();
+            // A typo must not silently downgrade a delivery build to "unspecified".
+            assert!(
+                ROLES.contains(&r.as_str()),
+                "unknown SHLOSILO_BUILD_ROLE {r:?}; expected one of {ROLES:?}"
+            );
+            r
+        }
+        _ => "unspecified".to_string(),
     };
-    // BIDIRECTIONAL cross-check against the compiled feature set.
+
+    // ---- chain declaration vs compiled feature set (batch 2) ----------------
     //
-    // build.rs does not participate in dependency resolution (design note §2) and must
-    // not: it only reads the features cargo already decided on and refuses a profile
-    // whose claim contradicts the build. Both directions matter — "declared on but not
-    // compiled" ships an image whose profile promises a chain it cannot sign, and
-    // "compiled but declared off" leaves chain code in an image whose capability list
-    // says it is absent (the size/symbol accounting would then be a lie).
-    for (chain, feature) in [
-        ("btc", "CHAIN_BTC"),
-        ("eth", "CHAIN_ETH"),
-        ("xmr", "CHAIN_XMR"),
-    ] {
-        let declared = chain_on(chain);
-        let compiled = std::env::var_os(format!("CARGO_FEATURE_{feature}")).is_some();
-        assert_eq!(
-            declared,
-            compiled,
-            "{path}: [chains] {chain} = {declared} but cargo feature {} is {} \
-             (declared-on needs the feature in the build's feature set; declared-off needs it out)",
-            feature.to_lowercase().replace('_', "-"),
-            if compiled { "on" } else { "off" }
-        );
+    // `compiled` is what this crate will actually contain; `declared` is what the
+    // build manifest asked for. Strict equality whenever a declaration exists (L3):
+    // the permissive direction ("declared ⊆ compiled") only ever belonged to the
+    // no-declaration dev face, which needs no check at all.
+    let compiled = compiled_chains();
+    if let Some(declared) = declared_chains() {
+        if declared != compiled {
+            panic!(
+                "chain axis mismatch (limits profile {profile}, build role {role}):\n\
+                 - declared chains = [{}]  (SHLOSILO_CHAINS, from the build manifest)\n\
+                 - compiled chains = [{}]  (CARGO_FEATURE_CHAIN_* after feature unification)\n\
+                 A declared chain must be compiled in, and an undeclared chain must not be:\n\
+                 extra parsers/crypto/signing logic change the audit surface of a signer, so\n\
+                 the delivery face has no \"superset is fine\" direction. Fix the manifest or\n\
+                 the build's --features; a bare `cargo build` (no manifest) is the only\n\
+                 unchecked face.",
+                csv(&declared),
+                csv(&compiled)
+            );
+        }
     }
+    let chain_on = |name: &str| -> bool { compiled.contains(&name) };
+    // Limits keys that are only meaningful for one chain: required exactly while that
+    // chain is compiled in, absent-allowed otherwise (a BTC-less build should not have
+    // to carry another chain's ceilings). Everything else stays unconditional.
+    const CHAIN_REQUIRED_KEYS: &[(&str, &str)] = &[
+        ("bt_tx_inputs_max", "btc"),
+        ("bt_tx_outputs_max", "btc"),
+        ("xmr_inputs_max", "xmr"),
+        ("pairing_records_max", "xmr"),
+    ];
     for key in KEYS {
         if CHAIN_REQUIRED_KEYS
             .iter()
@@ -386,7 +581,7 @@ fn emit_limits() {
     );
     // EIP-712 container budgets size both the pool workspace and the parser's
     // per-record ceilings. A profile that pushes one past what a record field can
-    // hold would not fail on the device — it would truncate a count or an index, so
+    // hold would not fail on the device - it would truncate a count or an index, so
     // the domain is asserted here where the profile is read.
     let eip712_types = get("eip712_types_max");
     assert!(
@@ -413,10 +608,78 @@ fn emit_limits() {
         (1..=32).contains(&eip712_depth),
         "{path}: eip712_depth_max ({eip712_depth}) must be 1..=32 (a value tree cannot nest deeper than the JSON syntax it arrives in)"
     );
-    // PSBT map count is derived, never configured: the parser holds one map per
-    // global/input/output record and nothing else, so the ceiling is exactly
-    // 1 + inputs + outputs. A profile that shrinks the input ceiling gets the smaller
-    // map array for free instead of carrying a stale hand-computed number.
+
+    // ---- the build identity ------------------------------------------------
+    let tree_state = if dirty_list.is_empty() {
+        "clean"
+    } else {
+        "dirty"
+    };
+    // L4 (`HEAD ≠ source`): a delivery build must be reproducible from the commit it
+    // names, so a dirty tree is refused outright rather than recorded as a footnote.
+    // The wrapper refuses first (before cargo starts); this is the same rule at the
+    // layer that cannot be bypassed by calling cargo by hand.
+    if role == "delivery" {
+        assert!(
+            dirty_list.is_empty(),
+            "role=delivery refuses a dirty working tree (L4): HEAD would not be the source \
+             that was built. git sees:\n{dirty_list}\n\
+             Commit or stash the changes, or declare the manifest with role=test/development \
+             (those never produce a receipt)."
+        );
+    }
+
+    let git_head = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let cargo_lock_sha = sha256_file("Cargo.lock").unwrap_or_else(|| "absent".to_string());
+    let build_script_sha =
+        sha256_file("build.rs").expect("BUILD_FINGERPRINT needs this script's own digest");
+    let wrapper_sha =
+        sha256_file("scripts/build_declared.sh").unwrap_or_else(|| "absent".to_string());
+    let rustc_version = Command::new(std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into()))
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().replace('\n', " "))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let target_field = if target.is_empty() {
+        "unknown"
+    } else {
+        &target
+    };
+    let canonical = canonical_build_encoding(
+        &profile,
+        &values,
+        &compiled,
+        target_field,
+        &git_head,
+        tree_state,
+        &cargo_lock_sha,
+        &rustc_version,
+        &role,
+        &build_script_sha,
+        &wrapper_sha,
+    );
+    let build_fingerprint_sha = sha256_hex(canonical.as_bytes());
+    // The 64-bit projection (Rust constant + C macro + FFI return): the first 8 bytes
+    // of the SHA-256, big-endian. 64 bits are plenty for a build-consistency tripwire,
+    // and it keeps the C comparison in the same shape as `shlosilo_limits_fingerprint`.
+    let build_fingerprint_u64 = u64::from_str_radix(&build_fingerprint_sha[..16], 16)
+        .expect("a sha256 hex prefix is 16 hex digits");
+    let chain_mask: u32 = CHAINS
+        .iter()
+        .enumerate()
+        .filter(|(_, (name, _))| chain_on(name))
+        .map(|(bit, _)| 1u32 << bit)
+        .sum();
+
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+    // The canonical bytes travel with the generated constants so the fingerprint can be
+    // re-derived independently: `sha256sum build_fingerprint.canon.txt` must equal
+    // BUILD_FINGERPRINT_SHA256.
+    std::fs::write(format!("{out_dir}/build_fingerprint.canon.txt"), &canonical)
+        .expect("write build_fingerprint.canon.txt");
 
     let mut out = String::from(
         "// @generated by build.rs from limits/*.toml - do not edit.
@@ -424,17 +687,10 @@ fn emit_limits() {
 ",
     );
     out.push_str(&format!("pub const PROFILE: &str = \"{profile}\";\n"));
-    // Chain capability list, projected from the profile's `[chains]` block (chain axis,
-    // §9.3-1). Rust-only on purpose: it is the DECLARATION the cross-check above just
-    // verified against the compiled features, so a query can state what this profile
-    // claims. It is deliberately not part of `LIMITS_FINGERPRINT` (the tracked C
-    // `shlosilo_limits.h` pins that value; the feature set is already identified by the
-    // build itself) and it is not projected into the C header.
-    for (chain, const_name) in [
-        ("btc", "CHAIN_BTC"),
-        ("eth", "CHAIN_ETH"),
-        ("xmr", "CHAIN_XMR"),
-    ] {
+    // The chain set of THIS build: read from the compiled features, not from a limits
+    // file (batch 2 / L1). `CHAIN_*` keeps the batch-1 constant names so anything that
+    // already queries them keeps working.
+    for (chain, const_name) in CHAINS {
         out.push_str(&format!(
             "pub const {const_name}: bool = {};\n",
             chain_on(chain)
@@ -453,29 +709,118 @@ fn emit_limits() {
     // Identity of the effective configuration: FNV-1a 64 over the canonical
     // "v1|profile|key=value..." text. Not a security boundary - it exists so a Rust
     // staticlib and a C translation unit built from different profiles cannot be linked
-    // into one firmware without saying so.
-    let mut canonical = format!("v1|{profile}");
+    // into one firmware without saying so. Unchanged by batch 2 on purpose: it commits
+    // to the resource ceilings only, and it is NOT an input to BUILD_FINGERPRINT (L4).
+    let mut canonical_fnv = format!("v1|{profile}");
     for (key, value) in &values {
-        canonical.push_str(&format!("|{key}={value}"));
+        canonical_fnv.push_str(&format!("|{key}={value}"));
     }
     let mut fingerprint: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in canonical.as_bytes() {
+    for byte in canonical_fnv.as_bytes() {
         fingerprint ^= u64::from(*byte);
         fingerprint = fingerprint.wrapping_mul(0x0000_0100_0000_01b3);
     }
     out.push_str(&format!(
         "pub const LIMITS_FINGERPRINT: u64 = 0x{fingerprint:016x};\n"
     ));
+    // The build identity (L4/L5): what this build IS, not just which ceilings it holds.
+    out.push_str(&format!(
+        "/// SHA-256 over the versioned canonical build encoding (schema {BUILD_FINGERPRINT_SCHEMA}).\n\
+         /// Re-derivable: `sha256sum $OUT_DIR/build_fingerprint.canon.txt`.\n\
+         pub const BUILD_FINGERPRINT_SHA256: &str = \"{build_fingerprint_sha}\";\n\
+         /// First 8 bytes of [`BUILD_FINGERPRINT_SHA256`], big-endian (C-ABI projection).\n\
+         pub const BUILD_FINGERPRINT: u64 = 0x{build_fingerprint_u64:016x};\n\
+         /// The chain set this build actually compiled, in canonical order (btc,eth,xmr).\n\
+         pub const BUILD_CHAINS: &str = \"{}\";\n\
+         /// The same set as a bitmask: btc = 1, eth = 2, xmr = 4.\n\
+         pub const BUILD_CHAIN_MASK: u32 = {chain_mask};\n\
+         /// The declared build role ({ROLES:?}); only `delivery` may produce a receipt.\n\
+         pub const BUILD_ROLE: &str = \"{role}\";\n\
+         /// The target triple the fingerprint was computed for.\n\
+         pub const BUILD_TARGET: &str = \"{target_field}\";\n",
+        csv(&compiled)
+    ));
 
-    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     std::fs::write(format!("{out_dir}/limits_generated.rs"), out)
         .expect("write limits_generated.rs");
 
-    // C projection: only a carrier whose platform layer is C asks for it. This is a
-    // one-way projection of the Rust ceilings - never the source of truth - and it is
-    // written into that carrier's own artifact directory, so two profiles can never
-    // overwrite each other's header (a Rust/C capacity mismatch is an FFI buffer-length
-    // mismatch, not a cosmetic problem).
+    // ---------------------------------------------------------------- C side --
+    // The identity block is generated once here and written verbatim to two places:
+    //   * `$OUT_DIR/shlosilo_build_identity.h` - always. Any C host (the POSIX
+    //     simulator included) can compare the header it compiled against with the
+    //     library it linked.
+    //   * `shlosilo_limits.h` - only when the carrier asks for the limits projection
+    //     (`c_header = 1`), which is the header the product carrier already includes.
+    // The `#ifndef` guard makes including both legal and keeps the values single
+    // (a second, drifting copy is exactly what a projection must not become).
+    let mut id = String::from(
+        "/* @generated by build.rs - do not edit.\n\
+         * Build identity: the chain set this library ACTUALLY compiled, and the\n\
+         * BUILD_FINGERPRINT over (schema, limits, chains, target, HEAD, Cargo.lock,\n\
+         * rustc, role). Compare it against the linked library with\n\
+         *   shlosilo_build_fingerprint_ffi()   -> SHLOSILO_BUILD_FINGERPRINT\n\
+         *   shlosilo_build_chain_mask_ffi()    -> SHLOSILO_BUILD_CHAIN_MASK\n\
+         * A mismatch means the header and the library came from different builds.\n */\n\
+         #ifndef SHLOSILO_BUILD_IDENTITY_H\n#define SHLOSILO_BUILD_IDENTITY_H\n\n\
+         #ifndef SHLOSILO_BUILD_IDENTITY_DEFINED\n#define SHLOSILO_BUILD_IDENTITY_DEFINED 1\n",
+    );
+    id.push_str(&format!("#define SHLOSILO_BUILD_PROFILE \"{profile}\"\n"));
+    id.push_str(&format!("#define SHLOSILO_BUILD_ROLE \"{role}\"\n"));
+    id.push_str(&format!(
+        "#define SHLOSILO_BUILD_TARGET \"{target_field}\"\n"
+    ));
+    id.push_str(&format!(
+        "#define SHLOSILO_BUILD_CHAINS \"{}\"\n",
+        csv(&compiled)
+    ));
+    id.push_str(&format!(
+        "#define SHLOSILO_BUILD_CHAIN_MASK {chain_mask}u\n"
+    ));
+    for (chain, _) in CHAINS {
+        id.push_str(&format!(
+            "#define SHLOSILO_BUILD_CHAIN_{} {}\n",
+            chain.to_uppercase(),
+            u8::from(chain_on(chain))
+        ));
+    }
+    id.push_str(&format!(
+        "#define SHLOSILO_BUILD_FINGERPRINT 0x{build_fingerprint_u64:016x}ULL\n"
+    ));
+    id.push_str(&format!(
+        "#define SHLOSILO_BUILD_FINGERPRINT_SHA256 \"{build_fingerprint_sha}\"\n"
+    ));
+    id.push_str(
+        "#endif /* SHLOSILO_BUILD_IDENTITY_DEFINED */\n\n#endif /* SHLOSILO_BUILD_IDENTITY_H */\n",
+    );
+    std::fs::write(format!("{out_dir}/shlosilo_build_identity.h"), &id)
+        .expect("write shlosilo_build_identity.h");
+
+    // Machine-readable identity for the wrapper's receipt (L6). Written here so the
+    // receipt quotes the SAME values the library carries instead of re-deriving them
+    // from a second place - a receipt that recomputes identity is a second source.
+    let identity_txt = format!(
+        "version_string=v{}-poc4+{identity}\n\
+         limits_profile={profile}\n\
+         build_role={role}\n\
+         build_target={target_field}\n\
+         chains={}\n\
+         chain_mask={chain_mask}\n\
+         build_fingerprint_sha256={build_fingerprint_sha}\n\
+         build_fingerprint_u64=0x{build_fingerprint_u64:016x}\n\
+         limits_fingerprint=0x{fingerprint:016x}\n\
+         git_head={git_head}\n\
+         tree_state={tree_state}\n",
+        std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".into()),
+        csv(&compiled)
+    );
+    std::fs::write(format!("{out_dir}/build_identity.txt"), identity_txt)
+        .expect("write build_identity.txt");
+
+    // C projection of the ceilings: only a carrier whose platform layer is C asks for
+    // it. This is a one-way projection of the Rust ceilings - never the source of
+    // truth - and it is written into that carrier's own artifact directory, so two
+    // profiles can never overwrite each other's header (a Rust/C capacity mismatch is
+    // an FFI buffer-length mismatch, not a cosmetic problem).
     if get("c_header") == 1 {
         let mut h = String::from(
             "/* @generated by build.rs from limits/*.toml - do not edit.\n\
@@ -492,15 +837,26 @@ fn emit_limits() {
                 key.to_uppercase()
             ));
         }
+        // The build identity rides the same header (design note §9.3-ter): the C side
+        // must be able to check the chain set it assumes against the compiled one.
+        h.push('\n');
+        h.push_str(&id);
         h.push_str("\n#endif /* SHLOSILO_LIMITS_H */\n");
 
         let carrier_dir = "flux/forgebox/shlosilo";
         std::fs::create_dir_all(carrier_dir).expect("create carrier include dir");
         std::fs::write(format!("{carrier_dir}/shlosilo_limits.h"), &h)
             .expect("write shlosilo_limits.h into the carrier tree");
+        std::fs::write(format!("{carrier_dir}/shlosilo_build_identity.h"), &id)
+            .expect("write shlosilo_build_identity.h into the carrier tree");
         std::fs::write(format!("{out_dir}/shlosilo_limits.h"), &h)
             .expect("write shlosilo_limits.h into OUT_DIR");
     }
 
-    println!("cargo:warning=limits profile: {profile}");
+    println!(
+        "cargo:warning=build identity: limits profile {profile}, chains [{}], role {role}, \
+         BUILD_FINGERPRINT {}",
+        csv(&compiled),
+        &build_fingerprint_sha[..16]
+    );
 }

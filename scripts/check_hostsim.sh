@@ -44,7 +44,14 @@ fail() {
 
 grep -q "eth-signature container (89 bytes)" "$LOG" \
     || fail 'host-sim did not print "eth-signature container (89 bytes)"'
+# Chain axis batch 2 (L5): the simulator compares the generated build identity header
+# with the library it linked and only prints this line when both agree (the comparisons
+# are CHECK()s - a mismatch aborts before this printf). Only the SHAPE is asserted here:
+# the mask and fingerprint change with every commit, so pinning their values would turn
+# every commit red instead of catching a header/library drift.
+grep -q "build identity: chains=" "$LOG" \
+    || fail 'host-sim did not print the build identity line (header vs library)'
 grep -q "=== all steps completed ===" "$LOG" \
     || fail 'host-sim did not reach "=== all steps completed ==="'
 
-echo "host-sim run OK (eth-signature container + all steps)"
+echo "host-sim run OK (eth-signature container + build identity + all steps)"

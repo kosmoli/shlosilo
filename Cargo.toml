@@ -108,6 +108,14 @@ rand_core = { version = "0.6", default-features = false }  # CLSAG signing RNG (
 # PBKDF2 (BIP-39 seed derivation)
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }  # PBKDF2-HMAC-SHA512
 
+# The build script hashes the build identity (BUILD_FINGERPRINT, chain axis batch 2 /
+# L4). sha2 is already a runtime dependency of the core at the same version, so this is
+# a HOST-SIDE edge only: it adds no crate to the product graph, changes no version, and
+# leaves Cargo.lock untouched (the lock entry for the root package already lists
+# sha2 0.10.9). No new dependency is introduced.
+[build-dependencies]
+sha2 = { version = "0.10", default-features = false }
+
 [dev-dependencies]
 # QR pipeline host validation (pico2 camera path): encoder + decoder used
 # together, feeding the decoder synthetic camera-like frames.

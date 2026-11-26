@@ -27,7 +27,7 @@ unsafe impl Sync for Addr {}
 // encoder -> frame stream -> decoder round-trip at the firmware's buffer
 // size, plus the FRAME_BUF_MAX_LEN contract check).
 #[used]
-static KEEP_FFI: [Addr; 18] = [
+static KEEP_FFI: [Addr; 20] = [
     Addr(shlosilo::ffi::c_abi::shlosilo_create_account_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_export_readonly_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_sign_ur_ffi as *const ()),
@@ -36,6 +36,10 @@ static KEEP_FFI: [Addr; 18] = [
     Addr(shlosilo::ffi::c_abi::shlosilo_gencache_provide_table as *const ()),
     Addr(shlosilo::ffi::version::shlosilo_version as *const ()),
     Addr(shlosilo::ffi::version::shlosilo_cabi_check as *const ()),
+    // Chain axis batch 2 (L5): the build-identity queries sim_l3.c compares against the
+    // generated shlosilo_build_identity.h it compiled with.
+    Addr(shlosilo::ffi::c_abi::shlosilo_build_chain_mask_ffi as *const ()),
+    Addr(shlosilo::ffi::c_abi::shlosilo_build_fingerprint_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_begin as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_next as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_encode_next_cyclic as *const ()),

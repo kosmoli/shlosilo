@@ -544,8 +544,17 @@
  * — a parameter shape change, so the minor must move under strict equality.
  * The view entry joined the same unreleased 0.5.0 batch (no host was ever built
  * against a 0.5.0 header without it), so one bump covers the batch.
+ *
+ * 2026-11-27 (chain axis batch 2, L5): 5 -> 6. Two exports were added —
+ * `shlosilo_build_fingerprint_ffi` (`uint64_t`) and `shlosilo_build_chain_mask_ffi`
+ * (`unsigned int`) — so the library can be asked which chains and which build it
+ * carries, and the C carrier compares the answer with the generated
+ * `shlosilo_build_identity.h` it compiled against. Adding exports IS a change of the
+ * exported function set under this ABI's rule (no host built against a 0.5.0 header
+ * has these declarations, and the C side's identity assertion keys on the ABI check
+ * passing first), so the minor moves.
  */
-#define SHLOSILO_CABI_VERSION_MINOR 5
+#define SHLOSILO_CABI_VERSION_MINOR 6
 
 #define SHLOSILO_CABI_VERSION_PATCH 0
 
@@ -997,6 +1006,41 @@ unsigned int shlosilo_ur_encode_ws_len(void);
  * detector.
  */
 uint64_t shlosilo_limits_fingerprint(void);
+
+/**
+ * The chain set this library ACTUALLY compiled, as a bitmask.
+ *
+ * `btc = 1`, `eth = 2`, `xmr = 4` (canonical order; a build may carry any non-empty
+ * subset). The build script wrote the same number into `SHLOSILO_BUILD_CHAIN_MASK` in
+ * the generated `shlosilo_build_identity.h`, so a C carrier can assert
+ * "the chains I compiled against" == "the chains inside the library I linked" with one
+ * comparison - the failure that is otherwise silent, because a superset library still
+ * answers every call the header promises (it just carries parsers and crypto the
+ * firmware never declared).
+ *
+ * Pure: no state, no side effects. The value is a build fact, not a runtime switch -
+ * turning a chain OFF happens at build time, never here (chain axis design note §9.3).
+ */
+unsigned int shlosilo_build_chain_mask_ffi(void);
+
+/**
+ * `BUILD_FINGERPRINT` - the identity of this build, as the first 8 bytes of its
+ * SHA-256 (big-endian).
+ *
+ * Why 64 bits over the ABI and the full 256-bit value only in the header/constant: the
+ * C comparison is a build-consistency tripwire, not an attestation (chain axis note,
+ * L6 - no signature infrastructure exists or is implied), and 64 bits keep it in the
+ * same shape as [`shlosilo_limits_fingerprint`] (`uint64_t` vs `0x...ULL`), so no new
+ * buffer/out-param contract is introduced. A consumer that needs the whole digest can
+ * read the compile-time constant `BUILD_FINGERPRINT_SHA256` (Rust) or
+ * `SHLOSILO_BUILD_FINGERPRINT_SHA256` (C header).
+ *
+ * What it commits to (versioned canonical encoding, `schema_version = 1`): the
+ * normalized limits content, the ACTUAL chain set, the target triple, `HEAD`,
+ * `Cargo.lock`'s digest, the rustc version, the build role and `build.rs`'s own digest.
+ * It does NOT contain the FNV limits fingerprint.
+ */
+uint64_t shlosilo_build_fingerprint_ffi(void);
 
 /**
  * Z3.3c: decode-handle workspace capacity query (pools + handle, alignment

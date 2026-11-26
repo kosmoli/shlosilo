@@ -1,0 +1,27 @@
+# Build manifest — a DECLARATION of one build request (chain axis §9.3-ter).
+#
+# Three concepts, three homes (they are orthogonal and must stay that way):
+#   * `limits/*.toml`      — RESOURCE CEILINGS only. Referenced BY NAME here; never
+#                            copied, never forked per chain subset (L1).
+#   * cargo `chain-*`      — the MECHANISM. Additive features; the wrapper projects this
+#     features               file's chain set onto `--features`.
+#   * `builds/<name>.toml` — THIS file: which ceilings, which chains, which target and
+#                            what the build is FOR.
+#
+# Enforcement: `scripts/build_declared.sh` exports SHLOSILO_CHAINS from the `[chains]`
+# table below, and `build.rs` requires STRICT equality against the feature set cargo
+# actually resolved (declared ≠ compiled ⇒ build error, with no role-based leniency).
+#
+# `target` is optional: omitted means "the host triple cargo picks" (no --target is
+# passed). Naming one makes the wrapper pass `--target`, so a manifest cannot be built
+# for a target it does not name.
+#
+# `role` decides PURPOSE and receipt rights only (never strictness):
+#   delivery / development / test / benchmark — only `delivery` may produce a receipt.
+limits = "host"
+role = "development"
+
+[chains]
+btc = true
+eth = true
+xmr = true

@@ -133,14 +133,24 @@ for f in device-timing generator-cache-ffi perf-bench-ffi prove-timing-ffi cn-ti
     cargo check --offline --features "$f" > "/tmp/g_feat_$f.log" 2>&1 || FEATMATRIX=1
 done
 echo "FEATMATRIX=$FEATMATRIX"
-# Chain axis (design note §9.4, batch 1): the 7 combinations (3 single + 3 double +
+# Chain axis (design note §9.3-quater L2 ★): the strict declared-vs-compiled check lives
+# in forms/build.rs, which can only see the CORE crate's feature set. That single check
+# covers the whole product only while the chain axis exists in exactly one crate — so the
+# precondition is a gate: `cfg(feature = "chain-…")` must appear only under forms/.
+# The day a second crate grows a chain axis this goes red, and the person who sees it must
+# bring that crate into the consistency check instead of widening the allowlist (see the
+# script header).
+bash scripts/check_chainaxis_scope.sh > /tmp/g_chainaxisscope.log 2>&1; echo "CHAINAXIS_SCOPE=$?"
+# Chain axis (design note §9.4, batch 2): the 7 combinations (3 single + 3 double +
 # 1 all-on) compile on the host face, and the symbol criterion is DOUBLE-EDGED — a
 # disabled chain must own zero symbols in the rlib AND an enabled chain's sampled
 # symbols must be present in the same rlib (only verifying absence cannot tell
 # "compiled out" from "instrument blind"; same lesson as FORGEBOXSEISO). Sizes are
-# printed per combination. Each combination is built against a generated
-# `limits/chainaxes-<combo>.toml` whose [chains] block matches it, because build.rs
-# refuses a profile that contradicts the compiled feature set.
+# printed per combination. Every combination is built through
+# `scripts/build_declared.sh` with a manifest generated in a TEMP DIR (no limits file is
+# created any more - limits profiles carry no chain set), and the run ends with the
+# negative test: a btc-only declaration built with chain-eth must fail naming the set
+# difference.
 bash scripts/check_chain_axes.sh > /tmp/g_chainaxes.log 2>&1; echo "CHAINAXES=$?"
 # The synthetic-request injector and its verifier (tools/ur-inject). The verifier is
 # what decides whether a device signature is valid, so a broken tool would hand out

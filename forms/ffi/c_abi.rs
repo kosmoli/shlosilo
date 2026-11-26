@@ -435,6 +435,43 @@ pub extern "C" fn shlosilo_limits_fingerprint() -> u64 {
     crate::limits::LIMITS_FINGERPRINT
 }
 
+/// The chain set this library ACTUALLY compiled, as a bitmask.
+///
+/// `btc = 1`, `eth = 2`, `xmr = 4` (canonical order; a build may carry any non-empty
+/// subset). The build script wrote the same number into `SHLOSILO_BUILD_CHAIN_MASK` in
+/// the generated `shlosilo_build_identity.h`, so a C carrier can assert
+/// "the chains I compiled against" == "the chains inside the library I linked" with one
+/// comparison - the failure that is otherwise silent, because a superset library still
+/// answers every call the header promises (it just carries parsers and crypto the
+/// firmware never declared).
+///
+/// Pure: no state, no side effects. The value is a build fact, not a runtime switch -
+/// turning a chain OFF happens at build time, never here (chain axis design note §9.3).
+#[no_mangle]
+pub extern "C" fn shlosilo_build_chain_mask_ffi() -> c_uint {
+    crate::limits::BUILD_CHAIN_MASK
+}
+
+/// `BUILD_FINGERPRINT` - the identity of this build, as the first 8 bytes of its
+/// SHA-256 (big-endian).
+///
+/// Why 64 bits over the ABI and the full 256-bit value only in the header/constant: the
+/// C comparison is a build-consistency tripwire, not an attestation (chain axis note,
+/// L6 - no signature infrastructure exists or is implied), and 64 bits keep it in the
+/// same shape as [`shlosilo_limits_fingerprint`] (`uint64_t` vs `0x...ULL`), so no new
+/// buffer/out-param contract is introduced. A consumer that needs the whole digest can
+/// read the compile-time constant `BUILD_FINGERPRINT_SHA256` (Rust) or
+/// `SHLOSILO_BUILD_FINGERPRINT_SHA256` (C header).
+///
+/// What it commits to (versioned canonical encoding, `schema_version = 1`): the
+/// normalized limits content, the ACTUAL chain set, the target triple, `HEAD`,
+/// `Cargo.lock`'s digest, the rustc version, the build role and `build.rs`'s own digest.
+/// It does NOT contain the FNV limits fingerprint.
+#[no_mangle]
+pub extern "C" fn shlosilo_build_fingerprint_ffi() -> u64 {
+    crate::limits::BUILD_FINGERPRINT
+}
+
 /// Z3.3c: decode-handle workspace capacity query (pools + handle, alignment
 /// slop included). Pure: no state, no side effects. Same layout source as the
 /// placement carve (contract 3).
@@ -3529,6 +3566,7 @@ pub unsafe extern "C" fn shlosilo_review_page_span(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
     use alloc::vec::Vec;
     use core::ptr::{null, null_mut};
 
@@ -3811,6 +3849,52 @@ mod tests {
         const _: unsafe extern "C" fn(c_int) -> *const c_char = r3::shlosilo_sign_failure_text;
         const _: unsafe extern "C" fn(c_int) -> *const c_char = r3::shlosilo_pairing_failure_reason;
         const _: unsafe extern "C" fn(c_int) -> *const c_char = r3::shlosilo_pairing_failure_hint;
+    }
+
+    /// Chain axis batch 2 (L5): the frozen C shapes of the build-identity queries.
+    ///
+    /// Both are pure `fn() -> <integer>`, so the C side compares them against the
+    /// compile-time macros in `shlosilo_build_identity.h` with no buffer contract. A
+    /// changed return width is CABI-breaking like every other pin in this module: bump
+    /// `SHLOSILO_CABI_VERSION_MINOR` and regenerate `shlosilo.h` in the same commit.
+    #[test]
+    fn ffi_build_identity_signature_pins() {
+        const _: extern "C" fn() -> u64 = shlosilo_build_fingerprint_ffi;
+        const _: extern "C" fn() -> c_uint = shlosilo_build_chain_mask_ffi;
+    }
+
+    /// The identity queries must report what THIS build compiled, and the projected
+    /// constants must agree with the compiler's own view of the feature set.
+    ///
+    /// The expected mask is derived from `cfg!`, not from the same constants the entry
+    /// returns: a build.rs projection that drifted from the feature set has to be red
+    /// here, not silently self-consistent.
+    #[test]
+    fn ffi_build_identity_reports_this_build() {
+        let expected_mask = u32::from(cfg!(feature = "chain-btc"))
+            | (u32::from(cfg!(feature = "chain-eth")) << 1)
+            | (u32::from(cfg!(feature = "chain-xmr")) << 2);
+        assert_eq!(
+            shlosilo_build_chain_mask_ffi(),
+            expected_mask,
+            "chain mask must equal the compiled chain features"
+        );
+        assert_eq!(crate::limits::BUILD_CHAIN_MASK, expected_mask);
+        assert_eq!(crate::limits::CHAIN_BTC, cfg!(feature = "chain-btc"));
+        assert_eq!(crate::limits::CHAIN_ETH, cfg!(feature = "chain-eth"));
+        assert_eq!(crate::limits::CHAIN_XMR, cfg!(feature = "chain-xmr"));
+        // The 64-bit ABI projection is the first 8 bytes of the full digest (big-endian),
+        // so the two published forms can never describe different builds.
+        assert_eq!(
+            format!("{:016x}", shlosilo_build_fingerprint_ffi()),
+            crate::limits::BUILD_FINGERPRINT_SHA256[..16],
+            "the u64 projection must be the big-endian prefix of the SHA-256"
+        );
+        assert_eq!(
+            shlosilo_build_fingerprint_ffi(),
+            crate::limits::BUILD_FINGERPRINT
+        );
+        assert_eq!(crate::limits::BUILD_FINGERPRINT_SHA256.len(), 64);
     }
 
     /// §53 behavior pin through the C-ABI (the 1021 real-device scenario

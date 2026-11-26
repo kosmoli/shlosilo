@@ -1,17 +1,12 @@
-# Chain capability list (chain axis, design note §9.3-1). This is the profile's
-# DECLARATION of which chain layers the build carries; `build.rs` cross-checks it
-# against the compiled `chain-*` cargo features in BOTH directions (declared-on ⇒
-# feature present, declared-off ⇒ feature absent), so the file cannot drift from the
-# binary. Chain-specific limits keys below are required exactly for the chains that
-# are on (bt_tx_* for btc, xmr_inputs_max/pairing_records_max for xmr).
-[chains]
-btc = true
-eth = true
-xmr = true
-
 # Platform resource profile: tiny-test
 # Source of truth for the resource knobs. Runtime setters clamp to these
 # ceilings; anything that sizes a stack array is fixed here at build time.
+#
+# RESOURCE CEILINGS ONLY (chain axis design note, L1): which chains a build carries is
+# a BUILD DECLARATION, never a property of a resource profile - see builds/<name>.toml
+# (a `[chains]` table of btc/eth/xmr flags) and scripts/build_declared.sh. Do not grow
+# that section back here: one profile per chain subset would duplicate every number
+# below and couple two orthogonal axes; build.rs refuses the section outright.
 [limits]
 bt_tx_inputs_max = 2  # BTC PSBT inputs the wire model holds (hard cap; over-cap -> BufferTooSmall)
 bt_tx_outputs_max = 2  # BTC PSBT outputs the wire model holds

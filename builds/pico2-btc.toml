@@ -1,0 +1,30 @@
+# Build manifest — a DECLARATION of one build request (chain axis §9.3-ter).
+#
+# Three concepts, three homes (they are orthogonal and must stay that way):
+#   * `limits/*.toml`      — RESOURCE CEILINGS only. Referenced BY NAME here; never
+#                            copied, never forked per chain subset (L1).
+#   * cargo `chain-*`      — the MECHANISM. Additive features; the wrapper projects this
+#     features               file's chain set onto `--features`.
+#   * `builds/<name>.toml` — THIS file: which ceilings, which chains, which target and
+#                            what the build is FOR. A community Monero-only signer adds
+#                            a manifest here and `limits/*.toml` does not change a byte.
+#
+# Enforcement: `scripts/build_declared.sh` exports SHLOSILO_CHAINS from the `[chains]`
+# table below, and `build.rs` requires STRICT equality against the feature set cargo
+# actually resolved (declared ≠ compiled ⇒ build error, with no role-based leniency).
+# A bare `cargo build` names no manifest and is therefore unchecked — that is the
+# development face, and its looseness comes from the absence of a declaration.
+#
+# `role` decides PURPOSE and receipt rights only:
+#   delivery     — may produce a receipt; refuses a dirty working tree (L4).
+#   development  — the everyday dev build; never produces a receipt.
+#   test         — the matrix/gate faces; never produces a receipt.
+#   benchmark    — measurement faces; never produces a receipt.
+limits = "pico2"
+target = "thumbv8m.main-none-eabihf"
+role = "delivery"
+
+[chains]
+btc = true
+eth = false
+xmr = false
