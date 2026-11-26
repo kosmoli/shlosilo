@@ -158,6 +158,45 @@ build_shlosilo() {
     echo "    header OK (tracked == regen)"
 }
 
+# -----------------------------------------------------------------------------
+# firmware identity assertion
+# -----------------------------------------------------------------------------
+# The screen carries TWO identity strings and they are computed at DIFFERENT times:
+#   * `shlosilo v0.5.0-poc4+<hash>[-dirty]` — the Rust core, baked when cargo compiles
+#     (`build.rs`, at the start of build_shlosilo);
+#   * `fw v1.0.0 <hash>[-dirty]`            — the C side, baked when cmake configures
+#     (CMakeLists.txt reads `git status --porcelain`).
+# Both must name this commit and agree about dirtiness. One delivered image already wore
+# `-dirty` on the C line for a clean commit because something dirtied the tree between the
+# two windows, and nothing caught it — the receipt then claimed the image was clean. This
+# assertion turns that class of mismatch into a build failure instead of a footer nobody
+# reads twice.
+assert_firmware_identity() {
+    local elf="$BUILD_FOLDER/mh1903.elf"
+    local id_h="$BUILD_FOLDER/fw_identity.h"
+    [[ -f "$elf" && -f "$id_h" ]] || { echo "identity: missing $elf or $id_h" >&2; exit 1; }
+    local head_short rust_id c_id
+    head_short="$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
+    rust_id="$(strings "$elf" | grep -oE 'v0\.5\.0-poc4\+[0-9a-z-]+' | head -1)"
+    rust_id="${rust_id#v0.5.0-poc4+}"
+    c_id="$(sed -n 's/^#define FIRMWARE_GIT_HASH "\(.*\)"$/\1/p' "$id_h")"
+    if [[ -z "$rust_id" || -z "$c_id" ]]; then
+        echo "identity: could not read the strings (rust='$rust_id' c='$c_id')" >&2
+        exit 1
+    fi
+    if [[ "${rust_id%-dirty}" != "$head_short" || "${c_id%-dirty}" != "$head_short" ]]; then
+        echo "identity: expected both strings to name ${head_short}; got rust='$rust_id' c='$c_id'" >&2
+        exit 1
+    fi
+    if [[ "$rust_id" != "$c_id" ]]; then
+        echo "identity: the two strings disagree (rust='$rust_id' c='$c_id')." >&2
+        echo "identity: they are baked at different times, so a dirty tree in between shows up" >&2
+        echo "identity: here. Rebuild from a clean tree, or make both windows see the same state." >&2
+        exit 1
+    fi
+    echo "    identity: rust='$rust_id' c='$c_id' (HEAD ${head_short})"
+}
+
 if [[ "${build_options[rebuild]}" == true ]]; then
     if [[ -d "$BUILD_FOLDER" ]]; then
         rm -rf "$BUILD_FOLDER"
@@ -247,6 +286,7 @@ execute_build() {
         # (4K alignment + APP_END magic). Never pad again by hand after this.
         python3 padding_bin_file.py mh1903.bin
         popd
+        assert_firmware_identity
     fi
 
     # ---- sign: single fwdata-layer image ready for the SD card ----

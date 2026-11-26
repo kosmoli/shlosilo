@@ -1189,6 +1189,33 @@ pub(crate) fn typed_data_fold_gate(pool: &Eip712Pool<'_>) -> Result<()> {
     walk_typed_data(pool, &mut view, &mut display)
 }
 
+/// Refuse a typed-data request whose own `chain_id` (key 4) disagrees with the chain its
+/// document names.
+///
+/// This is a **payload-internal** consistency check, deliberately not part of
+/// `sign::check_network`: that gate compares the payload against the network the *caller*
+/// declared, and a carrier with no network selection (the product device passes a
+/// placeholder, and the session-view entry has no such parameter) never reaches it. Key 4
+/// is metadata the wallet fills in; the digest is built from `domain.chainId`. Letting the
+/// two disagree means a request can claim one chain in the envelope and sign another, and
+/// the operator's only evidence for the mismatch would be reading both screens.
+///
+/// Only a *readable* domain chain is compared: a domain that omits `chainId` has nothing to
+/// compare (EIP-712 allows it), and the digest layer already refuses a declared-but-absent
+/// value.
+pub(crate) fn typed_data_request_chain_gate(req_chain_id: Option<i128>, json: &[u8]) -> Result<()> {
+    let Some(envelope_chain) = req_chain_id else {
+        return Ok(());
+    };
+    let Some(domain_chain) = crate::chain::eth::eip712_pool::domain_chain_id(json)? else {
+        return Ok(());
+    };
+    if envelope_chain != i128::from(domain_chain) {
+        return Err(ShlosiloError::new(ShlosiloErrorKind::NetworkUnrecognized));
+    }
+    Ok(())
+}
+
 /// Push through the optional view: `None` is the gate's face, where the walk runs for its
 /// refusal rules and writes nothing.
 fn td_fmt(view: &mut Option<&mut ReviewView>, args: core::fmt::Arguments<'_>) -> Result<()> {
@@ -1732,6 +1759,10 @@ pub fn build_eth(payload: &[u8], ws: &mut [u8]) -> Result<ReviewView> {
             // single line is rendered: a document this device cannot hash is a document
             // it will not sign, so it must not render as a confirmable request either
             // (fail closed — the review gate exists to stop exactly that).
+            // Same envelope-vs-document consistency rule the signer applies (the two
+            // faces must refuse the same requests): the page must not render a document
+            // the signer would refuse for naming a different chain than the request.
+            typed_data_request_chain_gate(req.chain_id, req.sign_data)?;
             let (region, display) = split_typed_data_ws(ws)?;
             let pool = eip712_pool::parse_in(req.sign_data, region)?;
             typed_data_fold_gate(&pool)?;

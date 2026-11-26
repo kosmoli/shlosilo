@@ -455,6 +455,41 @@ fn key_four_cannot_vouch_for_a_different_domain_chain() {
     );
 }
 
+/// The envelope's key 4 and the document's `domain.chainId` must agree — on the face that
+/// actually signs on a device.
+///
+/// `check_network` compares each of them against the network the CALLER declared, and a
+/// carrier without a network selection never reaches it (the product firmware passes a
+/// placeholder, and the session-view entry has no such parameter). The rule that has to
+/// hold on every carrier therefore lives with the payload
+/// (`review::typed_data_request_chain_gate`), and this pin goes through the
+/// workspace-provisioned entry, which takes no network at all.
+#[test]
+fn the_envelope_chain_must_match_the_document_chain() {
+    // key 4 says mainnet, the document signs for Sepolia.
+    let mismatched = typed_data_request_with_chain(&domain_chain(&permit(), 11_155_111), Some(1));
+    assert_eq!(
+        device_sign(&mismatched)
+            .expect_err("the signer must refuse a split chain")
+            .kind,
+        ShlosiloErrorKind::NetworkUnrecognized,
+    );
+    assert_eq!(
+        review_of(&mismatched)
+            .expect_err("the page must refuse the same request")
+            .kind,
+        ShlosiloErrorKind::NetworkUnrecognized,
+    );
+
+    // Agreeing on the chain passes both faces…
+    let agreed = typed_data_request_with_chain(&permit(), Some(1));
+    assert!(review_of(&agreed).is_ok(), "an agreeing request renders");
+    assert!(device_sign(&agreed).is_ok(), "an agreeing request signs");
+
+    // …and a request with no key 4 has nothing to compare, so it stays signable.
+    assert!(device_sign(&typed_data_request(&permit())).is_ok());
+}
+
 // ─── 4. one decision, two faces ─────────────────────────────────────────────
 
 /// Every document the signer refuses, the page refuses with the SAME code; every document the

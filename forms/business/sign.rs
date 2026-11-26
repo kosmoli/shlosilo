@@ -2103,6 +2103,11 @@ fn sign_eth(
         // pool borrows `req.sign_data` and the caller's region, so both stay alive here
         // and only the 32-byte digest leaves this arm.
         EthSignDataType::TypedData => {
+            // Envelope-vs-document chain consistency, before the container is even built:
+            // `check_network` compares the payload against the network the CALLER declared,
+            // which a carrier without a network selection never reaches, so the check that
+            // must hold on every face lives here (and in the review gate, same function).
+            crate::business::review::typed_data_request_chain_gate(req.chain_id, req.sign_data)?;
             let region = region.ok_or_else(|| err(ShlosiloErrorKind::BufferTooSmall))?;
             let t_hash = crate::device_timing::Mark::start(crate::device_timing::STAGE_KECCAK);
             let pool = eip712_pool::parse_in(req.sign_data, region)?;
@@ -2237,6 +2242,16 @@ pub fn sign_with_network(
 /// - ETH (eth-sign-request): the network maps to an EIP-155 chain id, which must match the tx's actual chain_id
 ///   (and the request's own chain_id field, if given) must match
 /// - other chains: the FFI layer already validates the u8; the business layer does not gate it
+///
+/// **Scope — what this gate is NOT.** It compares the payload against the network the
+/// *caller declared*. A carrier with no network selection never reaches the ETH arm (the
+/// product firmware passes a placeholder 0, and `shlosilo_sign_session_view_ffi` has no
+/// network parameter at all), so on a device this function gates nothing. What protects the
+/// operator there is (a) the chain the payload itself names, which the review page prints,
+/// and (b) the payload-internal consistency checks in `sign_eth`
+/// (`req.chain_id` vs the transaction, and `review::typed_data_request_chain_gate` for
+/// typed data). Do not add a rule here that must hold on every carrier — put it with the
+/// payload instead.
 pub(crate) fn check_network(
     type_tag: crate::ur::ur_encode::UrTypeTag,
     ur_payload: &[u8],

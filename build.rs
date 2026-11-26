@@ -41,14 +41,22 @@ fn main() {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let dirty = Command::new("git")
+    let dirty_list = Command::new("git")
         .args(["status", "--porcelain"])
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
-    let identity = if dirty && git_hash != "unknown" {
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let identity = if !dirty_list.is_empty() && git_hash != "unknown" {
+        // Say WHAT was dirty, not just that something was: this string is what a delivered
+        // image wears on its footer, and "why did this build say -dirty" is unanswerable
+        // after the fact without the list (a real image once read -dirty for a clean commit
+        // because something touched the tree between the Rust and C identity windows).
+        println!(
+            "cargo:warning=shlosilo identity is dirty; git saw: {}",
+            dirty_list.replace('\n', "; ")
+        );
         format!("{git_hash}-dirty")
     } else {
         git_hash

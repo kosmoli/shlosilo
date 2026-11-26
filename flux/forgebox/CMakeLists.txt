@@ -321,6 +321,10 @@ if(GIT_FOUND)
         OUTPUT_VARIABLE FW_GIT_DIRTY OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     if(FW_GIT_DIRTY)
         set(FW_GIT_HASH "${FW_GIT_HASH}-dirty")
+        # Record WHAT was dirty: this suffix reaches the product screen, and a footer reading
+        # "-dirty" for a clean commit is unanswerable after the fact without the list.
+        string(REPLACE "\n" "; " FW_GIT_DIRTY_LIST "${FW_GIT_DIRTY}")
+        message(WARNING "firmware identity is dirty; git saw: ${FW_GIT_DIRTY_LIST}")
     endif()
 endif()
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/fw_identity.h
