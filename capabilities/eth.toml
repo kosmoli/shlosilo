@@ -1,0 +1,28 @@
+# ETH — EVM signing surface.
+schema_version = 1
+
+[chain]
+name = "eth"
+rules_version = 1
+coin_type = 60
+container = "rlp"
+
+[curves]
+secp256k1 = true
+
+[signatures]
+ecdsa = true         # EIP-155 / EIP-1559 / EIP-191 / EIP-712 all end in ECDSA over secp256k1
+
+[derivations]
+bip32 = true
+
+[address_encodings]
+eip55_hex = true     # EIP-55 checksummed hex
+
+[containers]
+rlp = true
+eip712 = true        # typed-data pool + parser (EIP-712)
+
+[ur_codecs]
+eth_sign_request = true
+eth_signature = true

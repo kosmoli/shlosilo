@@ -1,0 +1,32 @@
+# BTC — what this product's Bitcoin product path actually uses.
+#
+# `true` means "the product path uses it", never "the library contains it". The vocabulary
+# (capabilities/_primitives.toml) is the only place a name is defined; a name that is not in it
+# is a hard error, and a name whose scope is shared/library cannot be declared here at all.
+schema_version = 1
+
+[chain]
+name = "btc"
+rules_version = 1     # Shlosilo's own rules contract for this chain (not a hard-fork number)
+coin_type = 0         # SLIP-0044
+container = "psbt"    # container family for assembly; NOT a signing dispatch key
+
+[curves]
+secp256k1 = true
+
+[signatures]
+ecdsa = true            # ECDSA over secp256k1 (legacy / segwit v0 inputs)
+schnorr_bip340 = true   # BIP-340 (taproot key path)
+
+[derivations]
+bip32 = true
+
+[address_encodings]
+base58check = true   # P2PKH / P2SH
+bech32 = true        # segwit v0 (v1..v16 rule split lands with C2)
+
+[containers]
+psbt = true
+
+[ur_codecs]
+crypto_psbt = true   # ur:crypto-psbt

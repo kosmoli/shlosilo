@@ -1,0 +1,36 @@
+# XMR — CryptoNote signing surface.
+#
+# Two names deliberately absent, both verified in source (2026-11-27):
+#   * icarus_ed25519 / slip10_ed25519 — library-only, no production caller. The derivation XMR
+#     actually uses is monero_reduce_scalar (business/export_format.rs::monero_material).
+#   * fcmp — not wired into the signing flow.
+# Declaring either would be the exact confusion this table exists to prevent.
+schema_version = 1
+
+[chain]
+name = "xmr"
+rules_version = 1
+coin_type = 128
+container = "monero_wire"
+
+[curves]
+ed25519 = true
+scalar_reduce = true
+
+[signatures]
+clsag = true
+
+[proofs]
+bulletproof_plus = true
+
+[derivations]
+monero_reduce_scalar = true
+
+[address_encodings]
+base58_monero = true   # block-based base58 + keccak checksum
+
+[containers]
+monero_wire = true
+
+[ur_codecs]
+json_monero_viewkey = true

@@ -141,6 +141,14 @@ echo "FEATMATRIX=$FEATMATRIX"
 # bring that crate into the consistency check instead of widening the allowlist (see the
 # script header).
 bash scripts/check_chainaxis_scope.sh > /tmp/g_chainaxisscope.log 2>&1; echo "CHAINAXIS_SCOPE=$?"
+# Chain-axis design §3.3 (S1): a chain may only reference the capabilities it DECLARES, and the
+# frozen-debt list must stay separate from the declarations. Scope is source-level attribution
+# ONLY — primitives are not cargo features yet, so the dependency-closure half of the check
+# arrives with C3. The self-test runs in the same step because a gate that cannot go red is
+# decoration: it proves six negative fixtures (unknown name, false entry, library-only
+# declaration, missing declaration, missing chain file, debt/declaration overlap) all fail.
+python3 scripts/check_capabilities.py --self-test > /tmp/g_capscope_selftest.log 2>&1 \
+    && python3 scripts/check_capabilities.py > /tmp/g_capscope.log 2>&1; echo "CAPSCOPE=$?"
 # Chain axis (design note §9.4, batch 2): the 7 combinations (3 single + 3 double +
 # 1 all-on) compile on the host face, and the symbol criterion is DOUBLE-EDGED — a
 # disabled chain must own zero symbols in the rlib AND an enabled chain's sampled

@@ -1,0 +1,77 @@
+# The capability vocabulary — one entry per primitive a chain MAY declare.
+#
+# Three concepts, three homes (they must stay orthogonal):
+#   * `capabilities/<chain>.toml` — what this chain IS (product semantics, sole declaration).
+#   * `cargo` `chain-*` / `prim-*` — the MECHANISM (additive features; `chain-*` implies `prim-*`).
+#   * `limits/<profile>.toml`     — resource ceilings only (never a chain set).
+#
+# `sources` names the module that implements the primitive TODAY. The names on the left are the
+# target vocabulary from the chain-axis design; where the source has not been split yet (the
+# address layer is re-cut in C2), the note says so and C2 updates this table. A capability whose
+# `sources` are empty would make the scanner blind rather than green, so that is a hard error.
+#
+# scope decides who may declare it:
+#   chain    — belongs to a chain; that chain declares it, and declaring it means "the product
+#              path really uses this", not "the library contains it".
+#   shared   — product-wide machinery (export/derivation plumbing). No chain owns it; it may be
+#              referenced anywhere and must NOT appear in a chain declaration.
+#   library  — implemented for a chain this product does not sign for yet. Referencing it is
+#              allowed (and reported); declaring it in a chain file is a hard error.
+
+schema_version = 1
+
+[curves]
+secp256k1     = { sources = ["curve_primitive::secp256k1"] }
+ed25519       = { sources = ["curve_primitive::ed25519"] }
+scalar_reduce = { sources = ["curve_primitive::scalar_reduce"], note = "shared scalar reduction; consumed by ed25519 ops and the Monero derivation path" }
+p256          = { sources = ["curve_primitive::p256"], scope = "library" }
+rsa           = { sources = ["curve_primitive::rsa"], scope = "library", note = "only reachable from the Arweave account/address surfaces" }
+
+[signatures]
+ecdsa           = { sources = ["signature::ecdsa_secp256k1"] }
+schnorr_bip340  = { sources = ["signature::schnorr_secp256k1"] }
+clsag           = { sources = ["signature::clsag_ed25519"], crates = ["monero-clsag"], note = "XMR's CLSAG path runs on the monero-clsag crate from chain/xmr/clsag.rs; the forms wrapper has no production caller today" }
+eddsa           = { sources = ["signature::eddsa_ed25519"], scope = "library", note = "no production caller: no EdDSA-account chain is wired" }
+fcmp            = { sources = ["signature::fcmp_ed25519"], scope = "library", note = "not wired into the XMR signing flow" }
+rsa_pss         = { sources = ["signature::rsa_pss"], scope = "library" }
+
+[proofs]
+bulletproof_plus = { crates = ["monero-bulletproofs"], note = "consumed through the vendored crate inside chain/xmr/rct_sig.rs; there is no forms/ module of its own" }
+
+[derivations]
+bip32                = { sources = ["derivation::bip32_secp256k1"] }
+monero_reduce_scalar = { sources = ["derivation::monero_reduce_scalar"], note = "the derivation XMR actually uses (business/export_format.rs::monero_material)" }
+path                 = { sources = ["derivation::path"], scope = "shared", note = "path arithmetic, not a scheme" }
+bip32_multisig       = { sources = ["derivation::bip32_secp256k1_multisig"], scope = "library", note = "re-exported only" }
+slip10_ed25519       = { sources = ["derivation::slip10_ed25519"], scope = "library", note = "no production caller" }
+icarus_ed25519       = { sources = ["derivation::icarus_ed25519"], scope = "library", note = "no production caller" }
+
+[address_encodings]
+# C2 re-cuts this section into string encoders that take an already-built payload; until then a
+# name covers the whole chain-specific module, and the note records what it will split into.
+base58check   = { sources = ["address::btc_legacy", "address::tron", "address::xrp"], note = "same encoder, three payload constructions; C2 keeps this name for the encoder" }
+bech32        = { sources = ["address::btc_segwit"], note = "C2 splits this into a generic bech32 encoder plus the segwit v0/v1..v16 rules that stay in the chain layer; a separate bech32m entry arrives then" }
+eip55_hex     = { sources = ["address::eth"] }
+base58_monero = { sources = ["address::xmr"] }
+base58_plain  = { sources = ["address::sol"], scope = "library" }
+hex_plain     = { sources = ["address::aptos_sui"], scope = "library" }
+base64url     = { sources = ["address::arweave"], scope = "library" }
+bech32_cardano = { sources = ["address::cardano"], scope = "library", note = "Shelley addresses are bech32; Byron is CBOR over base58" }
+
+[containers]
+psbt        = { sources = ["chain::btc::psbt"] }
+rlp         = { sources = ["chain::eth::rlp", "chain::eth::from_rlp"] }
+eip712      = { sources = ["chain::eth::eip712", "chain::eth::eip712_pool"], note = "typed-data pool + parser" }
+monero_wire = { sources = ["chain::xmr::transaction", "chain::xmr::unsigned_txset", "chain::xmr::signed_txset"] }
+
+[ur_codecs]
+crypto_psbt         = { sources = ["ur::codec::crypto_psbt"], note = "the ur:crypto-psbt codec; the container it carries is [containers].psbt" }
+eth_sign_request    = { sources = ["ur::codec::eth_sign_request"] }
+eth_signature       = { sources = ["ur::codec::eth_signature"] }
+json_monero_viewkey = { sources = ["ur::codec::json_monero_viewkey"] }
+crypto_hdkey        = { sources = ["ur::codec::crypto_hd_key"], scope = "shared", note = "export face, serves every chain" }
+crypto_account      = { sources = ["ur::codec::crypto_account"], scope = "shared" }
+account_text        = { sources = ["ur::codec::account_text"], scope = "shared" }
+bytes               = { sources = ["ur::codec::bytes"], scope = "shared" }
+zcash_accounts           = { sources = ["ur::codec::zcash_accounts"], scope = "library" }
+arweave_crypto_account   = { sources = ["ur::codec::arweave_crypto_account"], scope = "library" }
