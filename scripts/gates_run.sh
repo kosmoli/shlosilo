@@ -149,6 +149,12 @@ bash scripts/check_chainaxis_scope.sh > /tmp/g_chainaxisscope.log 2>&1; echo "CH
 # declaration, missing declaration, missing chain file, debt/declaration overlap) all fail.
 python3 scripts/check_capabilities.py --self-test > /tmp/g_capscope_selftest.log 2>&1 \
     && python3 scripts/check_capabilities.py > /tmp/g_capscope.log 2>&1; echo "CAPSCOPE=$?"
+# Purity acceptance (chain-axis design §3 / S3): forms must LINK for a 32-bit POSIX target.
+# The thumb steps prove bare-metal compiles; this one proves the same source becomes a
+# runnable 32-bit Linux binary, using musl's self-contained libc + rust-lld (no cross gcc).
+# The run-time half (artifact byte equality across 64-bit host / 32-bit board / M33) cannot
+# run here - it needs the board - and lives in the S2/S3 receipt.
+bash scripts/check_purity32.sh > /tmp/g_purity32.log 2>&1; echo "PURITY32=$?"
 # Chain axis (design note §9.4, batch 2): the 7 combinations (3 single + 3 double +
 # 1 all-on) compile on the host face, and the symbol criterion is DOUBLE-EDGED — a
 # disabled chain must own zero symbols in the rlib AND an enabled chain's sampled

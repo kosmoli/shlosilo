@@ -138,6 +138,14 @@ jobs:
       # this target (the same class the flux-crate gate below caught historically).
       - name: LuckyFox gate (armv7-unknown-linux-gnueabihf)
         run: cargo clippy --locked --all-targets --target armv7-unknown-linux-gnueabihf -- -D warnings
+      # The step above only CHECKS (clippy); nothing links. Purity acceptance needs a real
+      # 32-bit link, and musl's self-contained libc lets that happen with rust-lld alone -
+      # no arm-linux cross gcc in CI. Same script the local gate batch runs, so the two
+      # cannot drift.
+      - name: Purity acceptance (32-bit POSIX link, armv7 musl)
+        run: |
+          rustup target add armv7-unknown-linux-musleabihf
+          bash scripts/check_purity32.sh
       - name: Embedded checks (thumbv7em)
         run: |
           rustup target add thumbv7em-none-eabihf

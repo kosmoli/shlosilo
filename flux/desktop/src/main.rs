@@ -125,7 +125,9 @@ const PART_CBOR_SLACK: usize = 512;
 struct Args {
     input: PathBuf,
     out: PathBuf,
-    seed: [u8; 64],
+    seed: Option<[u8; 64]>,
+    print_layout: bool,
+    decode_only: bool,
     rows: usize,
     network: Network,
     master_fingerprint: Option<[u8; 4]>,
@@ -140,6 +142,8 @@ impl Args {
         let mut rows = 12usize;
         let mut network = Network::BitcoinTestnet;
         let mut master_fingerprint: Option<[u8; 4]> = None;
+        let mut print_layout = false;
+        let mut decode_only = false;
         // The profile's own number, not a literal: an outbound fragment length that
         // disagrees with the platform profile is a memory budget nobody measured.
         let mut frag = ur_multipart::DEFAULT_FRAGMENT_LEN;
@@ -181,15 +185,33 @@ impl Args {
                 "--mfp" => {
                     master_fingerprint = Some(parse_fixed_hex::<4>(&value(&mut argv, "--mfp")?)?)
                 }
+                // Carrier bring-up: print the workspace breakdown and exit. A carrier has to
+                // size its memory from these six numbers, and "the total" hides which term
+                // moved when a build changes (or when the target's pointer width does).
+                "--print-layout" => print_layout = true,
+                // Decode a UR file and report the payload digest, without signing: this is
+                // how an artifact gets checked against a golden measured elsewhere (a device
+                // that only printed a digest, another architecture, another carrier).
+                "--decode-only" => decode_only = true,
                 "-h" | "--help" => return Err(String::from("help requested")),
                 other => return Err(format!("unknown argument {other:?}")),
             }
         }
 
         Ok(Args {
-            input: input.ok_or("--in is required")?,
-            out: out.ok_or("--out is required")?,
-            seed: seed.ok_or("--seed-hex is required")?,
+            input: match input {
+                Some(path) => path,
+                None if print_layout || decode_only => PathBuf::new(),
+                None => return Err(String::from("--in is required")),
+            },
+            out: match out {
+                Some(path) => path,
+                None if print_layout || decode_only => PathBuf::new(),
+                None => return Err(String::from("--out is required")),
+            },
+            seed,
+            print_layout,
+            decode_only,
             rows,
             network,
             master_fingerprint,
@@ -500,6 +522,68 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    if args.print_layout {
+        // Pure probe: no request, no seed, no signing - just the six numbers a carrier must
+        // size its memory from, so a 32-bit and a 64-bit build can be compared term by term.
+        let ws = workspace_bytes();
+        let kv = ws.kv_rec_bytes();
+        println!(
+            "layout request={} review_arena={} review_recs={}x{}={} review_typed={} sign_ws={} out={} total={}",
+            ws.request,
+            ws.review_arena,
+            ws.review_recs,
+            kv,
+            ws.review_recs * kv,
+            ws.review_typed,
+            ws.sign_ws,
+            ws.out,
+            ws.total_bytes()
+        );
+        println!("layout pointer_width={}", core::mem::size_of::<usize>() * 8);
+        // Identity probe: a carrier must be able to say which build it is, and this is the same
+        // string the firmware prints at boot. (It also keeps the constant from being lifted out
+        // of the image, which is what makes a purity check able to prove the artifact is ours.)
+        println!(
+            "build shlosilo_version={} cabi={}",
+            shlosilo::ffi::version::SHLOSILO_VERSION_STRING.trim_end_matches('\0'),
+            shlosilo::ffi::version::SHLOSILO_CABI_VERSION_STRING.trim_end_matches('\0')
+        );
+        return ExitCode::SUCCESS;
+    }
+    if args.decode_only {
+        let request = match load_request(&args.input) {
+            Ok(request) => request,
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::from(1);
+            }
+        };
+        let digest = match shlosilo::encoding::sha256::hash(&request.1) {
+            Ok(digest) => digest,
+            Err(e) => {
+                eprintln!("sha256: {:?}", e.kind);
+                return ExitCode::from(1);
+            }
+        };
+        let mut hex = String::new();
+        for byte in digest {
+            use core::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+        }
+        println!(
+            "payload ur:{} {} bytes sha256={hex}",
+            request.0,
+            request.1.len()
+        );
+        return ExitCode::SUCCESS;
+    }
+    let seed = match args.seed {
+        Some(seed) => seed,
+        None => {
+            eprintln!("--seed-hex is required (except with --print-layout)");
+            return ExitCode::from(1);
+        }
+    };
     let request = match load_request(&args.input) {
         Ok(request) => request,
         Err(message) => {
@@ -516,7 +600,7 @@ fn main() -> ExitCode {
 
     let mut carrier = DesktopCarrier::new(request, args.out, args.frag);
     let config = ShellConfig {
-        seed: &args.seed,
+        seed: &seed,
         network: args.network,
         master_fingerprint: args.master_fingerprint,
         rows_per_page: args.rows,
