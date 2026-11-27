@@ -71,6 +71,7 @@ const WATCH_PATHS: &[&str] = &[
     "flux/host-sim/staticlib",   // POSIX simulator shim
     "limits",                    // platform resource profiles (generated consts)
     "builds",                    // build manifests (declarations; digest goes in the receipt)
+    "capabilities",              // chain capability declarations (digest goes in the identity)
     "scripts/build_declared.sh", // the wrapper's digest is a BUILD_FINGERPRINT input
 ];
 
@@ -138,6 +139,44 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// Digest of a file as lowercase hex, or `None` when it cannot be read.
 fn sha256_file(path: &str) -> Option<String> {
     std::fs::read(path).ok().map(|bytes| sha256_hex(&bytes))
+}
+
+/// SHA-256 over a directory of declarations, in one canonical form.
+///
+/// Per file, in name order: `<name>\0<len>\0<bytes>\0`. Deterministic, order-stable and
+/// self-delimiting, so neither a renamed file nor an inserted byte can collide with another
+/// arrangement. Missing directory => `absent`; an existing but empty one => `empty` (neither
+/// may be mistaken for a real digest).
+fn sha256_dir(path: &str) -> String {
+    let mut entries: Vec<_> = match std::fs::read_dir(path) {
+        Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
+        Err(_) => return "absent".to_string(),
+    };
+    entries.sort();
+    let mut buf = Vec::new();
+    for entry in entries {
+        if !entry.is_file() {
+            continue;
+        }
+        let name = match entry.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.as_bytes().to_vec(),
+            None => continue,
+        };
+        let bytes = match std::fs::read(&entry) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        buf.extend_from_slice(&name);
+        buf.push(0);
+        buf.extend_from_slice(bytes.len().to_string().as_bytes());
+        buf.push(0);
+        buf.extend_from_slice(&bytes);
+        buf.push(0);
+    }
+    if buf.is_empty() {
+        return "empty".to_string();
+    }
+    sha256_hex(&buf)
 }
 
 /// The chain set the compiler ACTUALLY resolved, in canonical order.
@@ -635,6 +674,7 @@ fn emit_limits(identity: &str, dirty_list: &str) {
         sha256_file("build.rs").expect("BUILD_FINGERPRINT needs this script's own digest");
     let wrapper_sha =
         sha256_file("scripts/build_declared.sh").unwrap_or_else(|| "absent".to_string());
+    let capabilities_sha = sha256_dir("capabilities");
     let rustc_version = Command::new(std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into()))
         .arg("--version")
         .output()
@@ -823,11 +863,16 @@ fn emit_limits(identity: &str, dirty_list: &str) {
          build_fingerprint_sha256={build_fingerprint_sha}\n\
          build_fingerprint_u64=0x{build_fingerprint_u64:016x}\n\
          limits_fingerprint=0x{fingerprint:016x}\n\
+         capabilities_fingerprint={capabilities_sha}\n\
          git_head={git_head}\n\
          tree_state={tree_state}\n",
         std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".into()),
         csv(&compiled)
     );
+    // `capabilities_fingerprint` is recorded here but is NOT yet an input to
+    // BUILD_FINGERPRINT: the table declares what the product path uses while the build still
+    // compiles the whole primitive library, so folding it in now would claim an identity the
+    // binary does not have. C3 does that once `prim-*` features exist.
     std::fs::write(format!("{out_dir}/build_identity.txt"), &identity_txt)
         .expect("write build_identity.txt");
     std::fs::write(format!("{stable_dir}/build_identity.txt"), &identity_txt)

@@ -387,6 +387,22 @@ trap 'rm -f "$RECEIPT_BODY"; [ -n "${JSON_LOG:-}" ] && rm -f "$JSON_LOG"' EXIT
     echo "build_fingerprint_sha256 $(field build_fingerprint_sha256)"
     echo "build_fingerprint_u64    $(field build_fingerprint_u64)"
     echo "limits_fingerprint       $(field limits_fingerprint)  (FNV tripwire, not an identity)"
+    echo "capabilities_fingerprint $(field capabilities_fingerprint)"
+    echo "chain_rules              $(python3 - "$CHAINS" <<'PY'
+import sys, tomllib
+from pathlib import Path
+out = []
+for chain in [c.strip() for c in sys.argv[1].split(",") if c.strip()]:
+    path = Path("capabilities") / f"{chain}.toml"
+    try:
+        with open(path, "rb") as fh:
+            doc = tomllib.load(fh)
+        out.append(f"{chain}:{doc['chain']['rules_version']}")
+    except Exception as exc:                      # a receipt must not silently omit this
+        sys.exit(f"cannot read {path}: {exc}")
+print(",".join(out))
+PY
+)"
     echo "version_string $(field version_string)"
     echo "git_head       $(field git_head)"
     echo "tree_state     $(field tree_state)"
