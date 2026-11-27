@@ -155,10 +155,6 @@ jobs:
         run: |
           python3 scripts/check_capabilities.py --self-test
           python3 scripts/check_capabilities.py
-      # The C surfaces must follow the chain set: the keep table is generated per combination and
-      # the all-on tables must reproduce the committed files byte-identically.
-      - name: Header + keep table per combination
-        run: bash scripts/check_header_per_combo.sh
       - name: Embedded checks (thumbv7em)
         run: |
           rustup target add thumbv7em-none-eabihf
@@ -320,6 +316,12 @@ jobs:
         run: |
           cargo install cbindgen --version 0.27.0 --locked
           bash scripts/check_header.sh
+      # Same subject as the gate above (the C surface), and it needs the same pinned cbindgen —
+      # so it lives here rather than in the Test job, which has no cbindgen installed. The keep
+      # table must follow the declared chain set, and the all-on header + table must reproduce
+      # the committed files byte for byte.
+      - name: Header + keep table per combination
+        run: bash scripts/check_header_per_combo.sh
       - name: vendor baseline replay gate (T-12 zero-residue)
         run: bash scripts/vendor_baseline_check.sh
       - name: flux keysource (host tests + no-alloc embedded face)

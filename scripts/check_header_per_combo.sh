@@ -38,6 +38,14 @@ CARGO_FLAGS="${CARGO_FLAGS:---offline}"
 TMP_DIR="$(mktemp -d /tmp/hdrcombo.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+# Fail closed: without cbindgen every row would "fail" as a header problem, which is how a
+# missing tool gets misdiagnosed as a C-surface regression (measured in CI: four rows red with
+# the real cause hidden in a temp log that the trap deleted).
+if ! command -v cbindgen > /dev/null 2>&1; then
+    printf 'FAIL: cbindgen is not installed (expected 0.27.0: cargo install cbindgen --version 0.27.0 --locked)\n' >&2
+    exit 10
+fi
+
 fail=0
 note() { printf '%s\n' "$*"; }
 bad() { printf 'FAIL: %s\n' "$*"; fail=1; }
@@ -86,7 +94,8 @@ for combo in "${COMBOS[@]}"; do
     hdr="$TMP_DIR/hdr-$tag.h"
     if ! cbindgen --config cbindgen.toml --crate shlosilo --metadata "$meta" --output "$hdr" \
             > "$TMP_DIR/cbindgen-$tag.log" 2>&1; then
-        bad "$combo: cbindgen failed (see $TMP_DIR/cbindgen-$tag.log)"
+        bad "$combo: cbindgen failed:"
+        tail -8 "$TMP_DIR/cbindgen-$tag.log" | sed 's/^/      /'
         continue
     fi
     [ -s "$hdr" ] || { bad "$combo: cbindgen produced an empty header"; continue; }
@@ -183,7 +192,14 @@ done
 #    a red line rather than a surprise in a C build.
 note ""
 base="$TMP_DIR/hdr-btc-eth-xmr.h"
+if [ ! -f "$base" ]; then
+    # The baseline row failed (its own FAIL is already reported): comparing against a file that
+    # does not exist would add four misleading "the C surface is now chain-dependent" lines.
+    bad "cannot compare the per-chain headers: the all-on baseline was not generated"
+    combo=""
+fi
 for combo in btc eth xmr; do
+    [ -n "$combo" ] || break
     tag="${combo//,/-}"
     if ! diff -q "$base" "$TMP_DIR/hdr-$tag.h" > /dev/null; then
         bad "header for chains=$combo differs from all-on: the C surface is now chain-dependent."
