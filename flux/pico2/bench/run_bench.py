@@ -188,13 +188,20 @@ def main():
     m2 = re.search(r"\[sign\] eth-sign-request hex: ([0-9a-f]+)", text)
     if args.btc_only:
         # The refusal is the assertion here: an image that declares one chain must not
-        # produce a signature for another. Both refusals in the intake dispatch count -
-        # a sign-path error and a type-level rejection are the same answer to the operator.
-        check("eth refused (no signature produced)", not m and not m2,
-              (m or m2).group(0) if (m or m2) else "")
-        eth_errs = re.findall(r"\[err\] (?:sign eth-sign-request|.*eth-sign-request.*)", text)
+        # produce a signature for another. Scope the search to what the device printed
+        # AFTER the fed URI, so the boot smoke's own ETH attempt (which cannot be read as
+        # an answer to our command) cannot satisfy the check by accident.
+        mark = text.rfind(eth_uri[:40])
+        window = text[mark:] if mark >= 0 else text
+        wm = re.search(r"\[sign\] eth-sign-request ok: (\d+) bytes", window)
+        check("eth refused (no signature for the fed request)", not wm,
+              wm.group(0) if wm else "")
+        eth_errs = [ln for ln in window.split("\r\n") if "[err]" in ln and "eth" in ln.lower()]
         check("eth refusal is reported on the console", bool(eth_errs),
               eth_errs[0].strip() if eth_errs else "silently dropped")
+        check("boot smoke also cannot sign ETH on this face",
+              "[sign] eth-sign-request ok:" not in text,
+              "a boot-smoke ETH signature exists, so chain-eth is still linked")
     else:
         check("eth ok line present", bool(m))
         if m:
