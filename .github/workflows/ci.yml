@@ -146,6 +146,19 @@ jobs:
         run: |
           rustup target add armv7-unknown-linux-musleabihf
           bash scripts/check_purity32.sh
+      # Capability declarations (chain-axis design §3.3): a chain module may only reference the
+      # capabilities it declares, no capability may be owner-less, and the frozen debt list must
+      # stay separate from the declarations. Runs the checker's own negative fixtures first: a
+      # gate that cannot go red is decoration. (This was local-only for one batch — exactly the
+      # asymmetry the "local must cover CI, CI must cover local" rule exists to prevent.)
+      - name: Capability scope gate
+        run: |
+          python3 scripts/check_capabilities.py --self-test
+          python3 scripts/check_capabilities.py
+      # The C surfaces must follow the chain set: the keep table is generated per combination and
+      # the all-on tables must reproduce the committed files byte-identically.
+      - name: Header + keep table per combination
+        run: bash scripts/check_header_per_combo.sh
       - name: Embedded checks (thumbv7em)
         run: |
           rustup target add thumbv7em-none-eabihf
