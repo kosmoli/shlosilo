@@ -1,0 +1,18 @@
+# Build manifest — the MEASUREMENT face of the same BTC-only declaration.
+#
+# `builds/pico2-btc.toml` declares the delivery face (no bench commands). This file declares
+# the face that gets flashed for the on-device parity smoke: the bench console is what can
+# inject a session mnemonic and feed UR fragments from a host, so the signing evidence for a
+# chain-subset image can only be produced from a bench build.
+#
+# Two manifests rather than one manifest with a flavor key: `role` already says what a build is
+# FOR, and "may produce a receipt" must not silently attach to an image that carries
+# entropy-injection commands. A benchmark face never produces a receipt.
+limits = "pico2"
+target = "thumbv8m.main-none-eabihf"
+role = "benchmark"
+
+[chains]
+btc = true
+eth = false
+xmr = false
