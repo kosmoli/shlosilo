@@ -12,10 +12,11 @@ edition = "2024"
 # flavor builds the core with `default-features = false` only, which is the same face the
 # `probes/noalloc` artifact uses - so "no allocator in the image" is a property of the whole
 # graph, not just of this crate.
-# Chain axis: this carrier build keeps all three chains compiled in (batch 1 of the
-# chain axis only adds the switches — a carrier that wants a slimmer image names its
-# subset here and gets it, and the signer answers UnsupportedChainKind for the rest).
-shlosilo = { path = "../..", default-features = false, features = ["chain-btc", "chain-eth", "chain-xmr"] }
+# Chain axis: the carrier NAMES its subset through its own `chain-*` features (below) and
+# this dependency stays chain-neutral. `default` keeps the three-chain product face for a
+# plain `cargo build`; a slimmer image turns `default` off and names one chain, and the
+# core's `build.rs` then refuses any mismatch with the declared build manifest.
+shlosilo = { path = "../..", default-features = false }
 
 # RP2350 async stack
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "defmt"] }
@@ -77,8 +78,16 @@ static_cell = "2"
 #
 # Default ON: this carrier's whole input surface is the USB console, so the bench firmware keeps
 # it. A product carrier (or a no-allocator probe) turns it off.
-default = ["console"]
+default = ["console", "chain-btc", "chain-eth", "chain-xmr"]
 console = ["shlosilo/alloc-fallback"]
+
+# Chain axis (forwarding switches): the core gates its chain semantics on these features, and a
+# carrier build is the only place that decides which ones are compiled. Keeping them here rather
+# than as a literal on the `shlosilo` line is what makes `--no-default-features --features
+# console,bench,chain-btc` a BTC-only image instead of a three-chain one.
+chain-btc = ["shlosilo/chain-btc"]
+chain-eth = ["shlosilo/chain-eth"]
+chain-xmr = ["shlosilo/chain-xmr"]
 
 # Bench-only console surface (audit #17 P1-01). Enables the commands that
 # inject entropy or load test key material, and the TRNG diagnostics:
