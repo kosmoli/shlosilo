@@ -93,6 +93,46 @@ def main(argv):
         print(__doc__, file=sys.stderr)
         return 2
     mode, log = argv[1], argv[2]
+    if not os.path.isfile(log):
+        print(f"ERROR: no such cargo json log: {log}", file=sys.stderr)
+        return 2
+
+    if mode == "artifacts":
+        found = artifacts(log)
+        if not found:
+            # Silence here is what let receipts claim to hash "every artifact" while
+            # listing none: the caller renders an explanation, but only if we refuse.
+            print(
+                "ERROR: no artifact of this workspace appears in the cargo json log "
+                "(type-check surfaces produce none; a build that produced a binary "
+                "but is missing here means the artifact filter is wrong)",
+                file=sys.stderr,
+            )
+            return 1
+        for path in found:
+            print(path)
+        return 0
+
+    # out-dir: DEPRECATED. `build.rs` writes the identity to a stable path
+    # (build/build-identity/<target>/<profile>/build_identity.txt) because cargo never
+    # re-emits `build-script-executed` for a fresh build script (measured on a clean CI
+    # checkout). Kept only so an old caller fails with an explanation, not silence.
+    for msg in messages(log):
+        if msg.get("reason") != "build-script-executed":
+            continue
+        if not (msg.get("package_id") or "").startswith(CORE_PACKAGE):
+            continue
+        out_dir = msg.get("out_dir")
+        if out_dir:
+            print(out_dir)
+            return 0
+    print(
+        "ERROR: no `build-script-executed` message for the core package in this log. "
+        "This lookup is cache-dependent by design; read "
+        "build/build-identity/<target>/<profile>/build_identity.txt instead.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":
