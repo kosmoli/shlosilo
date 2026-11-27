@@ -47,16 +47,22 @@ slip10_ed25519       = { sources = ["derivation::slip10_ed25519"], scope = "libr
 icarus_ed25519       = { sources = ["derivation::icarus_ed25519"], scope = "library", note = "no production caller" }
 
 [address_encodings]
-# C2 re-cuts this section into string encoders that take an already-built payload; until then a
-# name covers the whole chain-specific module, and the note records what it will split into.
-base58check   = { sources = ["address::btc_legacy", "address::tron", "address::xrp"], note = "same encoder, three payload constructions; C2 keeps this name for the encoder" }
-bech32        = { sources = ["address::btc_segwit"], note = "C2 splits this into a generic bech32 encoder plus the segwit v0/v1..v16 rules that stay in the chain layer; a separate bech32m entry arrives then" }
-eip55_hex     = { sources = ["address::eth"] }
-base58_monero = { sources = ["address::xmr"] }
-base58_plain  = { sources = ["address::sol"], scope = "library" }
-hex_plain     = { sources = ["address::aptos_sui"], scope = "library" }
-base64url     = { sources = ["address::arweave"], scope = "library" }
-bech32_cardano = { sources = ["address::cardano"], scope = "library", note = "Shelley addresses are bech32; Byron is CBOR over base58" }
+# Measured 2026-11-27 (S8): the encoders were ALREADY shared — they live in `forms/encoding/`, and
+# the chain files build a payload and call them (btc_script::render does exactly the
+# payload → encoder split this design asks for). What was wrong was this table: it pointed at
+# `address::*` chain modules, several of which are stubs. Point each name at the code that
+# actually implements it.
+#
+# The variant split (plain vs check base58, bech32 vs bech32m, hex vs EIP-55) is NOT expressed as
+# separate entries yet: this scanner matches module paths, so two entries sharing one module would
+# both light up on every reference and force chains to over-declare. The split lands with the
+# function-level matcher (follow-up), and the notes below record which API call is which variant.
+base58check   = { sources = ["encoding::base58"], note = "base58::encode_check_into (double-SHA256). The payload — version byte + HASH160 / script hash / account id — is chain assembly; the same module also carries plain base58::encode_into, which no wired chain uses today" }
+bech32        = { sources = ["encoding::bech32"], note = "bech32::encode (BIP-173) and bech32::encode_m (BIP-350, segwit v1..v16). The witness-program rules (v0 20/32 B, v1 taproot) stay in chain assembly" }
+eip55_hex     = { sources = ["address::eth"], note = "address::eth::encode_bytes: hex rendering WITH the EIP-55 case checksum — still in the chain file, extraction is cosmetic and deferred" }
+base58_monero = { crates = ["base58-monero"], note = "block-wise encoding through the vendored audited crate, called from address::xmr (zero-heap wrapper over base58_monero::base58::encode_block)" }
+base64        = { sources = ["encoding::base64"], scope = "shared", note = "base64::encode_std / encode_url_safe. Transport/display machinery (BIP-137 message signatures render as base64 text), not a chain capability — the encoder also carries the url-safe variant Arweave would use" }
+cbor_payload  = { sources = ["encoding::cbor"], scope = "shared", note = "the payload container inside UR messages and the keystone account shapes: product machinery, no chain owns it" }
 
 [containers]
 psbt        = { sources = ["chain::btc::psbt"] }

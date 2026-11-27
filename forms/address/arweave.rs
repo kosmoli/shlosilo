@@ -1,5 +1,11 @@
 //! Arweave address encoding (base64url + SHA-256 digest)
-
+//! **NOT IMPLEMENTED** — this module is a stub: every entry point returns
+//! `ShlosiloErrorKind::FeatureNotImplemented`. It must therefore never back a capability in
+//! `capabilities/*.toml`: there, `true` means "the product path really uses this", and a stub is
+//! the opposite of that ("a primitive that merely exists in the library is not a capability of
+//! this chain" — chain-axis design §3.2). Real address encoders live in `forms/encoding/`
+//! (base58 + base58check, bech32 + bech32m, base64, cbor); this file is the chain-specific
+//! payload construction that has not been written yet.
 use crate::curve_primitive::rsa::RsaPubKey;
 use crate::error::Result;
 use crate::network::Network;
