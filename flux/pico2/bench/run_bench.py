@@ -18,7 +18,12 @@ host-pinned values:
 Requires the bench build (`make pico2-bench-uf2`): the Sparrow session
 uses the bench-only `entropy` command (audit #17).
 
-Usage:  python3 run_bench.py [--dev /dev/ttyACM0] [--log /tmp/pico2-bench-run.log]
+`--btc-only` is the chain-subset face: the image declares `chain-btc` alone, so the ETH
+request must be REFUSED. The flag feeds the same ETH fixture and asserts that no
+`eth-sign-request ok:` line appears - a chain switch that silently accepts a request it
+cannot sign is worse than one that refuses it, so the refusal is checked, not skipped.
+
+Usage:  python3 run_bench.py [--dev /dev/ttyACM0] [--log /tmp/pico2-bench-run.log] [--btc-only]
 Exit code 0 = all checks passed.
 """
 import argparse
@@ -44,6 +49,11 @@ def main():
     ap.add_argument("--expected", default=EXP_DEFAULT)
     ap.add_argument("--fragments", default=FRAGS_DEFAULT)
     ap.add_argument("--log", default="/tmp/pico2-bench-run.log")
+    ap.add_argument(
+        "--btc-only",
+        action="store_true",
+        help="image declares chain-btc alone: require the ETH request to be refused",
+    )
     args = ap.parse_args()
 
     for p in (args.expected, args.fragments, ETH_URI_FILE):
@@ -62,7 +72,8 @@ def main():
     with open(args.fragments) as f:
         frags = [l.strip() for l in f if l.strip()]
 
-    print(f"expected: eth_sha256={exp['eth_sha256'][:16]}... sparrow_sha256={exp['sparrow_sha256'][:16]}...")
+    eth_note = exp["eth_sha256"][:16] + "..." if exp.get("eth_sha256") else "<absent>"
+    print(f"expected: eth_sha256={eth_note} sparrow_sha256={exp['sparrow_sha256'][:16]}...")
     print(f"fixtures: 1 eth UR ({len(eth_uri)} chars), {len(frags)} sparrow fragments")
 
     t0 = time.time()
@@ -130,6 +141,8 @@ def main():
     time.sleep(0.4)
 
     # ── ETH fixture, default dice session ──
+    # On a chain-subset image this must be refused; feeding it anyway is what turns
+    # "the ETH arm is compiled out" from a claim about the build into an observed fact.
     print("feeding eth fixture UR ...")
     send(eth_uri)
     ok = wait_for("[sign] eth-sign-request", 30)
@@ -137,6 +150,9 @@ def main():
     time.sleep(0.5)
     send("heap")
     time.sleep(0.5)
+    if args.btc_only:
+        send("urclear")
+        time.sleep(0.4)
 
     # ── Sparrow session ──
     print("setting sparrow session entropy ...")
@@ -169,11 +185,21 @@ def main():
         print(("PASS " if cond else "FAIL ") + name + (("  :: " + detail) if detail else ""))
 
     m = re.search(r"\[sign\] eth-sign-request ok: (\d+) bytes sha256=([0-9a-f]{64})", text)
-    check("eth ok line present", bool(m))
-    if m:
-        check("eth sha256 matches host", m.group(2) == exp["eth_sha256"], m.group(2))
     m2 = re.search(r"\[sign\] eth-sign-request hex: ([0-9a-f]+)", text)
-    check("eth full hex matches host", bool(m2) and m2.group(1) == exp["eth_hex"])
+    if args.btc_only:
+        # The refusal is the assertion here: an image that declares one chain must not
+        # produce a signature for another. Both refusals in the intake dispatch count -
+        # a sign-path error and a type-level rejection are the same answer to the operator.
+        check("eth refused (no signature produced)", not m and not m2,
+              (m or m2).group(0) if (m or m2) else "")
+        eth_errs = re.findall(r"\[err\] (?:sign eth-sign-request|.*eth-sign-request.*)", text)
+        check("eth refusal is reported on the console", bool(eth_errs),
+              eth_errs[0].strip() if eth_errs else "silently dropped")
+    else:
+        check("eth ok line present", bool(m))
+        if m:
+            check("eth sha256 matches host", m.group(2) == exp["eth_sha256"], m.group(2))
+        check("eth full hex matches host", bool(m2) and m2.group(1) == exp["eth_hex"])
 
     m3 = re.search(r"\[sign\] crypto-psbt ok: (\d+) bytes sha256=([0-9a-f]{64})", text)
     check("sparrow ok line present", bool(m3))

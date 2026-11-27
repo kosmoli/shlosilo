@@ -96,6 +96,11 @@ fn to_hex(bytes: &[u8]) -> String {
 
 /// Run the dice-fixture ETH signing flow (steps 1-3 of the smoke) and return
 /// the signed output.
+///
+/// `chain-eth`-gated: on a `chain-btc`-only face the signer answers
+/// `ChainKindUnsupported`, which is the correct product behaviour and not a test
+/// failure. The Sparrow PSBT test below is the chain-independent half.
+#[cfg(feature = "chain-eth")]
 fn eth_signed_output() -> Vec<u8> {
     let rolls = fixture_rolls();
     let mut mnemonic_buf = [0u8; 24];
@@ -189,17 +194,22 @@ fn pico2_smoke_fixture_parity() {
     assert_eq!(uri, EXPECTED_EXPORT_UR, "host-sim oracle: export UR");
 
     // ── Step 3: sign (same flow the board's boot smoke and console run) ──
-    let signed = eth_signed_output();
-    assert_eq!(
-        signed.len(),
-        89,
-        "host-sim oracle: ur:eth-signature container length"
-    );
-    assert_eq!(
-        to_hex(&signed),
-        EXPECTED_SIGNED_HEX,
-        "host-sim oracle: signed hex"
-    );
+    // Steps 1-2 (derive, export) are chain-independent; only the ETH signature needs
+    // `chain-eth` compiled in.
+    #[cfg(feature = "chain-eth")]
+    {
+        let signed = eth_signed_output();
+        assert_eq!(
+            signed.len(),
+            89,
+            "host-sim oracle: ur:eth-signature container length"
+        );
+        assert_eq!(
+            to_hex(&signed),
+            EXPECTED_SIGNED_HEX,
+            "host-sim oracle: signed hex"
+        );
+    }
 }
 
 #[test]
@@ -258,16 +268,24 @@ fn gen_bench_channel_files() {
     let frag_path = "/tmp/shlosilo_sparrow_fragments.txt";
     std::fs::write(frag_path, frames.join("\n") + "\n").expect("write fragments");
 
-    let eth = eth_signed_output();
-    let eth_sha = sha256::hash(&eth).expect("sha256 eth");
+    // On a chain subset without ETH there is no ETH signature to record; the file keeps
+    // the key with an empty value so its shape stays stable for the driver.
+    #[cfg(feature = "chain-eth")]
+    let (eth, eth_sha) = {
+        let eth = eth_signed_output();
+        let sha = sha256::hash(&eth).expect("sha256 eth");
+        (to_hex(&eth), to_hex(&sha))
+    };
+    #[cfg(not(feature = "chain-eth"))]
+    let (eth, eth_sha) = (String::new(), String::new());
 
     let signed = sparrow_signed_output(&payload);
     let sp_sha = sha256::hash(&signed).expect("sha256 sparrow");
 
     let expected = format!(
         "eth_hex {}\neth_sha256 {}\nsparrow_len {}\nsparrow_sha256 {}\nfragments {}\nfragment_count {}\npayload_len {}\n",
-        to_hex(&eth),
-        to_hex(&eth_sha),
+        eth,
+        eth_sha,
         signed.len(),
         to_hex(&sp_sha),
         frag_path,
