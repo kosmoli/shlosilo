@@ -3674,6 +3674,7 @@ mod tests {
         let ws = carve_sign_ws(&mut buf).expect("carve at exactly total must succeed");
         // Chain axis: the per-chain regions exist only where their switch is on, so each
         // capacity pin rides the same feature as the field it measures.
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.plain.len(), c::SIGN_WS_PLAIN);
         #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.txes.len(), c::SIGN_WS_TXES);
@@ -3681,18 +3682,25 @@ mod tests {
         assert_eq!(ws.sources.len(), c::SIGN_WS_SOURCES);
         #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.splitted_dsts.len(), c::SIGN_WS_SPLITS);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.selected_transfers.len(), c::SIGN_WS_SEL);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.extra.len(), c::SIGN_WS_EXTRA);
         #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.dests.len(), c::SIGN_WS_DESTS);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.subaddr_indices.len(), c::SIGN_WS_SUBIDX);
         #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.ptx.len(), c::SIGN_WS_PTX);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.tx_bytes.len(), c::SIGN_WS_TX_BYTES);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.ki.len(), c::SIGN_WS_KI);
         #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.tki.len(), c::SIGN_WS_TKI);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.sel.len(), c::SIGN_WS_SEL_OUT);
+        #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.kstr.len(), c::SIGN_WS_KSTR);
         #[cfg(feature = "chain-xmr")]
         assert_eq!(ws.record_dests.len(), c::SIGN_WS_RECORD_DESTS);
@@ -3732,6 +3740,7 @@ mod tests {
     /// behavior-transparent).
     #[test]
     #[cfg(feature = "alloc-fallback")]
+    #[cfg(feature = "chain-btc")] // signs a BTC PSBT fixture: no btc, no fixture path
     fn ffi_ws_path_matches_shell_path() {
         const PSBT: &[u8] = include_bytes!("../../tests/fixtures/sparrow_signet_12k.psbt");
         // the sign payload is the CBOR bytes-item wrapping the PSBT (P1-01: the

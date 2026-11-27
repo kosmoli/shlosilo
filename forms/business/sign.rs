@@ -2568,7 +2568,9 @@ mod tests {
     #[cfg(feature = "alloc-fallback")]
     extern crate alloc;
     // (alloc::vec import dropped — test literals use the qualified form)
-    #[cfg(feature = "chain-eth")]
+    // BTC fixtures build `Vec::new()` inside `bt_vec!` too, so gating this on chain-eth alone
+    // broke the btc-only and btc-xmr test faces (chain-subset batch S7).
+    #[cfg(any(feature = "chain-btc", feature = "chain-eth"))]
     use alloc::vec::Vec;
 
     #[test]
@@ -4100,6 +4102,7 @@ mod t04_overlay_pins {
         );
     }
 
+    #[cfg(feature = "chain-xmr")]
     #[test]
     fn cn_phase_zeroizes_overlay_on_unwind() {
         extern crate alloc;
