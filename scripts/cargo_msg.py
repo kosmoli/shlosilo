@@ -74,7 +74,12 @@ def artifacts(path):
         for name in names:
             if not name or name in found:
                 continue
-            if not name.endswith(PRODUCT_EXTS) or not os.path.isfile(name):
+            # A bin target's product is `executable`, and on bare-metal targets it has NO
+            # extension (`shlosilo-pico2`, not `shlosilo-pico2.elf`). Filtering by extension
+            # alone silently dropped exactly the file a firmware receipt must hash — measured
+            # on a pico2 delivery build whose receipt said "produced no artifact".
+            is_product = name.endswith(PRODUCT_EXTS) or name == exe
+            if not is_product or not os.path.isfile(name):
                 continue
             # `<target>/<profile>/build/<pkg>/<hash>/out/...` = a build script's output.
             if os.sep + "build" + os.sep in name and os.sep + "out" + os.sep in name:
