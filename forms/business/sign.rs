@@ -51,16 +51,20 @@ pub enum SignInput<'a> {
 /// Upper bound on signature length (varies by ChainKind; used for buffer pre-checks)
 pub fn stub_signature_len(chain_kind: crate::types::chain_kind::ChainKind) -> usize {
     use crate::types::chain_kind::ChainKind;
+    use crate::types::sign_protocol::SignProtocol;
+    // A wired chain answers from its signing protocol: the width is a property of the protocol
+    // (ECDSA with or without the recovery byte, Schnorr, CLSAG), not of the chain name.
+    if let Some(protocol) = SignProtocol::primary_for_chain(chain_kind) {
+        return protocol.signature_len();
+    }
+    // Chains this product does not sign for keep a placeholder so the buffer pre-check table
+    // stays total. They have no SignProtocol on purpose (`primary_for_chain` answers None) — the
+    // capability vocabulary is where "the library can do it, no wired chain uses it" lives.
     match chain_kind {
-        ChainKind::Btc => 64,  // ECDSA P2WPKH 64 bytes
-        ChainKind::Eth => 65,  // ECDSA r/s/v 65 bytes
-        ChainKind::Xmr => 96,  // CLSAG proof ≈ 96 bytes
-        ChainKind::Tron => 65, // ECDSA (same as ETH)
-        ChainKind::Sol => 64,  // EdDSA 64 bytes
-        ChainKind::Apt | ChainKind::Sui | ChainKind::Near => 64,
-        ChainKind::Ada => 64, // EdDSA 64 bytes
-        ChainKind::Ar => 512, // RSA-PSS 512 bytes
-        _ => 96,              // other chains use the maximum estimate
+        ChainKind::Tron => 65, // ECDSA (same shape as ETH)
+        ChainKind::Sol | ChainKind::Apt | ChainKind::Sui | ChainKind::Near | ChainKind::Ada => 64,
+        ChainKind::Ar => 512, // RSA-PSS, library-only
+        _ => 96,              // maximum estimate for anything else
     }
 }
 

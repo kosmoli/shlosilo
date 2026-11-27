@@ -15,6 +15,7 @@ pub mod secret_bytes;
 /// XMR arm) names it; a build without the primitive cannot see the type at all.
 #[cfg(feature = "prim-ed25519")]
 pub mod secret_scalar;
+pub mod sign_protocol;
 pub mod slice_vec;
 
 pub use secret_bytes::SecretBytes;
