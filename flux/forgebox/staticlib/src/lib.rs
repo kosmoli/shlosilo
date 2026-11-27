@@ -169,14 +169,11 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_sign_session_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_sign_session_view_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_session_free_ffi as *const ()),
-    Addr(shlosilo::ffi::c_abi::r3::shlosilo_xmr_pairing_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ki_store_merge_ffi as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_ur_decode_free as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_sign_failure_text as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_pairing_failure_reason as *const ()),
     Addr(shlosilo::ffi::c_abi::r3::shlosilo_pairing_failure_hint as *const ()),
-    Addr(shlosilo::ffi::c_abi::shlosilo_gencache_table_sizes as *const ()),
-    Addr(shlosilo::ffi::c_abi::shlosilo_gencache_provide_table as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_key_session_fingerprint as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_review_ws_len as *const ()),
     Addr(shlosilo::ffi::c_abi::shlosilo_review_ffi as *const ()),
@@ -224,6 +221,13 @@ static KEEP_FFI: &[Addr] = &[
     Addr(shlosilo_flux_keysource::keysource::ffi::shlosilo_keysource_qr_ws_len as *const ()),
     Addr(shlosilo_flux_keysource::keysource::ffi::shlosilo_keysource_qr_open_ffi as *const ()),
     Addr(shlosilo_flux_keysource::keysource::ffi::shlosilo_keysource_qr_close_ffi as *const ()),
+    // present only when: cfg(feature = "chain-xmr")
+    #[cfg(feature = "chain-xmr")]
+    Addr(shlosilo::ffi::c_abi::r3::shlosilo_xmr_pairing_ffi as *const ()),
+    #[cfg(feature = "chain-xmr")]
+    Addr(shlosilo::ffi::c_abi::shlosilo_gencache_table_sizes as *const ()),
+    #[cfg(feature = "chain-xmr")]
+    Addr(shlosilo::ffi::c_abi::shlosilo_gencache_provide_table as *const ()),
     // present only when: cfg(feature = "se")
     #[cfg(feature = "se")]
     Addr(shlosilo_flux_keysource::keysource::se_ffi::shlosilo_keysource_se_ws_len as *const ()),

@@ -278,8 +278,35 @@ def render(entries):
 
 
 def main():
+    # `--features <csv> --out <path>`: render the table for a NAMED feature set into a file
+    # outside the tree, instead of rewriting the shim. A subset build needs a keep table that
+    # does not reference entry points its chain set removed — those would be unresolved symbols
+    # at link time, which is exactly what the unconditional table could not express before the
+    # shim declared its own chain features.
+    feats = None
+    out_path = None
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg == "--features" and i + 1 < len(argv):
+            feats = {f.strip() for f in argv[i + 1].split(",") if f.strip()}
+        elif arg == "--out" and i + 1 < len(argv):
+            out_path = argv[i + 1]
+
     entries = collect()
+    if feats is not None:
+        kept = []
+        for name, mod, cfg in entries:
+            named = set(re.findall(r'feature\s*=\s*"([^"]+)"', cfg or ""))
+            if named - feats:
+                continue  # this entry point does not exist in the named feature set
+            kept.append((name, mod, cfg))
+        entries = kept
     block = render(entries)
+    if out_path:
+        Path(out_path).write_text(block + "\n")
+        print("wrote %d entries to %s (features: %s)" % (len(entries), out_path,
+                                                         ",".join(sorted(feats or []))))
+        return
     text = SHIM.read_text()
     if MARKER_START in text:
         head = text[: text.index(MARKER_START)].rstrip() + "\n\n"

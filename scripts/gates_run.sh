@@ -155,6 +155,11 @@ python3 scripts/check_capabilities.py --self-test > /tmp/g_capscope_selftest.log
 # The run-time half (artifact byte equality across 64-bit host / 32-bit board / M33) cannot
 # run here - it needs the board - and lives in the S2/S3 receipt.
 bash scripts/check_purity32.sh > /tmp/g_purity32.log 2>&1; echo "PURITY32=$?"
+# Header + keep table per combination (design §4/§9.3-3, batch S6). The all-on surfaces must
+# reproduce byte-identically from the generator (otherwise it is a second opinion, not the same
+# surface), a chain subset must shrink the keep table, and the XMR-only entry point must follow
+# the declared set in both directions.
+bash scripts/check_header_per_combo.sh > /tmp/g_hdrcombo.log 2>&1; echo "HDRCOMBO=$?"
 # Chain axis (design note §9.4, batch 2): the 7 combinations (3 single + 3 double +
 # 1 all-on) compile on the host face, and the symbol criterion is DOUBLE-EDGED — a
 # disabled chain must own zero symbols in the rlib AND an enabled chain's sampled

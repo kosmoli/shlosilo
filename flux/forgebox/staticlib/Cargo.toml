@@ -31,8 +31,16 @@ crate-type = ["staticlib"]
 # does not exist here would leave them permanently compiled out - the table would not follow
 # the module.
 [features]
-default = ["se"]
+# Chain axis: the shim NAMES its chain subset through its own forwarding features (the same
+# shape flux/pico2 uses). `default` keeps the three-chain product face, so a plain build is
+# unchanged; a carrier that wants one chain turns `default` off and names it. Keeping the
+# switch here rather than as a literal on the `shlosilo` line is what makes the keep-table
+# entries for a chain-gated FFI symbol follow the build instead of assuming all three.
+default = ["se", "chain-btc", "chain-eth", "chain-xmr"]
 se = ["shlosilo-flux-keysource/se"]
+chain-btc = ["shlosilo/chain-btc"]
+chain-eth = ["shlosilo/chain-eth"]
+chain-xmr = ["shlosilo/chain-xmr"]
 
 [dependencies]
 # Flux-side key acquisition face (Task 4): KeySource trait + QrKeySource thin
@@ -44,11 +52,8 @@ se = ["shlosilo-flux-keysource/se"]
 shlosilo-flux-keysource = { path = "../../keysource" }
 # The diagnostic FFI features compiled into the .a for the C host.
 shlosilo = { path = "../../..", default-features = false, features = [
-    # Chain axis (batch 1): the C host drives every chain through the same ABI, so the
-    # staticlib names all three. A carrier-specific subset is a build.sh decision later.
-    "chain-btc",
-    "chain-eth",
-    "chain-xmr",
+    # Chain features arrive through this package's own `chain-*` features (see [features]);
+    # a literal list here is what made a subset build unreachable from the carrier side.
     "generator-cache-ffi",
     "cn-timing-ffi",
     "tx-phase-timing-ffi",
