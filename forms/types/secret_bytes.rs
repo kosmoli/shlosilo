@@ -118,6 +118,9 @@ mod tests {
     #[cfg(feature = "chain-xmr")]
     use crate::chain::xmr::tx_builder::{SignedTx, TxInputSpec, TxKeyPair, TxOutputSpec};
     use crate::derivation::bip32_secp256k1::ExtendedPrivKey;
+    // Primitive axis (S9 batch B): the type only exists with `prim-ed25519`, so the
+    // not-Clone/not-Copy pin follows it (the assertion is preserved, not dropped).
+    #[cfg(feature = "prim-ed25519")]
     use crate::derivation::slip10_ed25519::Slip10ExtendedKey;
     use crate::entropy::bip39_passphrase::Bip39Seed;
     use crate::entropy::mnemonic::Mnemonic;
@@ -152,6 +155,7 @@ mod tests {
     static_assertions::assert_not_impl_any!(PersonalSignInput: Clone, Copy);
     static_assertions::assert_not_impl_any!(Bip39Seed: Clone, Copy);
     static_assertions::assert_not_impl_any!(ExtendedPrivKey: Clone, Copy);
+    #[cfg(feature = "prim-ed25519")]
     static_assertions::assert_not_impl_any!(Slip10ExtendedKey: Clone, Copy);
     static_assertions::assert_not_impl_any!(Mnemonic: Clone, Copy);
 

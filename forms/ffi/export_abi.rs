@@ -302,10 +302,17 @@ mod tests {
         0x16,
     ];
 
+    // Primitive axis (S9 batch B): every session-driven entry below needs a live
+    // `KeySession`, and the only constructor (`from_entropy`) needs the Ed25519 key
+    // formula. The type itself stays shape-stable in every build (the ABI depends on it),
+    // so what is gated is the FIXTURE, not the entry: `count_and_labels_come_from_one_source`
+    // still runs everywhere because it never builds a session.
+    #[cfg(feature = "prim-scalar-reduce")]
     fn session_slot() -> (MaybeUninit<KeySession>, ()) {
         (MaybeUninit::uninit(), ())
     }
 
+    #[cfg(feature = "prim-scalar-reduce")]
     fn place(slot: &mut MaybeUninit<KeySession>) -> *const KeySession {
         let s = KeySession::from_entropy(&ENTROPY, b"").expect("session");
         let p = slot.as_mut_ptr();
@@ -313,6 +320,7 @@ mod tests {
         p
     }
 
+    #[cfg(feature = "prim-scalar-reduce")]
     fn export(session: *const KeySession, id: u32) -> (i32, String) {
         let mut out = vec![0u8; EXPORT_BUF_MAX];
         let mut actual: c_uint = 0;
@@ -355,6 +363,7 @@ mod tests {
         assert_eq!(shlosilo_export_format_max_len() as usize, EXPORT_BUF_MAX);
     }
 
+    #[cfg(feature = "prim-scalar-reduce")]
     #[test]
     fn every_format_round_trips_through_the_entry() {
         let (mut slot, _) = session_slot();
@@ -367,6 +376,7 @@ mod tests {
         unsafe { core::ptr::drop_in_place(slot.as_mut_ptr()) };
     }
 
+    #[cfg(feature = "prim-scalar-reduce")]
     #[test]
     fn null_session_and_small_buffer_are_refused() {
         let mut out = [0u8; EXPORT_BUF_MAX];
@@ -419,6 +429,7 @@ mod tests {
     /// The device's renderer choice: UR shapes report a type, text shapes do not,
     /// and the payload lengths land where the reference firmware's fragment rule
     /// puts them (account 3 parts, ETH key 1 part, text shapes unframed).
+    #[cfg(feature = "prim-scalar-reduce")]
     #[test]
     fn ur_types_and_payload_sizes_drive_the_renderer() {
         let (mut slot, _) = session_slot();
@@ -461,6 +472,7 @@ mod tests {
         unsafe { core::ptr::drop_in_place(slot.as_mut_ptr()) };
     }
 
+    #[cfg(feature = "prim-scalar-reduce")]
     #[test]
     fn unknown_format_id_is_refused() {
         let (mut slot, _) = session_slot();

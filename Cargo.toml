@@ -82,13 +82,13 @@ k256 = { version = "0.14", default-features = false, features = ["ecdsa", "schno
 # BIP-32 HD derivation (BTC + ETH + Cosmos)
 # primeorder = internal Field/PrimeField traits of k256 0.14
 primeorder = { version = "0.14", default-features = false, features = ["critical-section"] }
-ed25519-dalek = { version = "2.1", default-features = false, features = ["fast", "zeroize"] }  # Ed25519 (XMR / SOL / Cardano); std only on host (see the target config below)
+ed25519-dalek = { version = "2.1", default-features = false, features = ["fast", "zeroize"], optional = true }  # Ed25519 (XMR / SOL / Cardano); owned by `prim-ed25519`; std only on host (see the target config below)
 monero-ed25519 = { version = "0.1", default-features = false, optional = true }  # Ed25519 + Pedersen commitment (XMR)
 # "generator-cache" = shlosilo vendor patch (raw extended-coordinate serialize/reconstruct pair for the BP+ generator cache); see patches/curve25519-dalek-generator-cache.patch
-curve25519-dalek = { version = "4", default-features = false, features = ["zeroize", "precomputed-tables", "rand_core", "generator-cache"] }  # Ed25519 foundation (curve25519-dalek 4 already serves as the SemVer abstraction layer)
+curve25519-dalek = { version = "4", default-features = false, features = ["zeroize", "precomputed-tables", "rand_core", "generator-cache"], optional = true }  # Ed25519 foundation (curve25519-dalek 4 already serves as the SemVer abstraction layer); owned by `prim-ed25519`
 monero-clsag = { version = "0.1", default-features = false, optional = true }  # CLSAG ring signature (XMR)
 monero-bulletproofs = { path = "vendor/monero-bulletproofs", default-features = false, features = ["compile-time-generators"], optional = true }  # Bulletproofs+; vendor patch: generator loop decompresses to avoid vec![decompress();2048] blowing the stack
-base58-monero = { version = "2", default-features = false }  # XMR base58 (encoding class, audited; check feature omitted because encode_check has a bug and we hand-write it)
+base58-monero = { version = "2", default-features = false, optional = true }  # XMR base58 (encoding class, audited; check feature omitted because encode_check has a bug and we hand-write it); owned by `prim-base58-monero`
 # explicit so alloc-fallback can map the alloc re-export root (vendor-patched)
 std-shims = { version = "0.1.5", default-features = false, optional = true }
 monero-io = { version = "0.1.0", default-features = false, optional = true }
@@ -164,9 +164,9 @@ generator-cache-ffi = []
 # Z5.2b: transitional generator no-storage fallback (vendor alloc-fallback).
 # Host/tests default ON; device builds (Z6 no-allocator acceptance) build with
 # --no-default-features (plus std as needed) and MUST provide table storage.
-alloc-fallback = ["monero-bulletproofs?/alloc-fallback", "monero-clsag?/alloc-fallback", "curve25519-dalek/alloc-fallback", "curve25519-dalek/alloc", "cuprate-cryptonight?/alloc-fallback", "std-shims?/alloc", "monero-io?/alloc", "monero-bulletproofs-generators/alloc", "base58-monero/alloc"]
+alloc-fallback = ["monero-bulletproofs?/alloc-fallback", "monero-clsag?/alloc-fallback", "curve25519-dalek?/alloc-fallback", "curve25519-dalek?/alloc", "cuprate-cryptonight?/alloc-fallback", "std-shims?/alloc", "monero-io?/alloc", "monero-bulletproofs-generators/alloc", "base58-monero?/alloc"]
 # Device primitive perf-bench FFI (raw per-op costs; diagnostic only).
-perf-bench-ffi = ["curve25519-dalek/perf-bench"]
+perf-bench-ffi = ["curve25519-dalek?/perf-bench"]
 # Measurement-only knob (chain axis batch 3, §9.5-2 / §9.4): k256's precomputed
 # tables are OFF by default because the once_cell Lazy table costs ~31 KB of RAM
 # (see the k256 dependency line). This feature exists so the cost can be MEASURED
@@ -199,9 +199,70 @@ tx-phase-timing-ffi = ["prove-timing-ffi"]
 #      an optional dependency from a feature that has nothing to do with the
 #      chain — `alloc-fallback` alone would drag the whole XMR stack back into a
 #      BTC-only build and silently undo this batch.
-chain-btc = []
-chain-eth = []
+# ===== primitive axis (chain-axis design §3, S9) =====
+# One feature per capability that OWNS a dependency. `chain-*` above implies these (see their
+# lists), and `build_declared.sh` exports SHLOSILO_PRIMS from `capabilities/<chain>.toml` so
+# build.rs can compare the declaration against the features cargo actually resolved.
+#
+# Rule (measured in batch 3, kept here): a feature that names an optional dependency MUST use a
+# weak reference (`dep?/feat`). A strong one re-activates the dependency from a feature that has
+# nothing to do with the primitive — `alloc-fallback` alone would drag Ed25519 back into a
+# secp256k1-only build and silently undo this axis.
+# secp256k1 owns NO optional dependency on purpose: every wired chain (BTC and ETH) needs it, and
+# the Layer-A module plus derivation/bip32 sit under both. A feature that gates nothing is still
+# useful — it lets the declaration say what a build uses — but pretending it can be cut would be
+# the kind of claim this axis exists to prevent.
+prim-secp256k1 = []
+# OWNS the two Ed25519 crates (S9 batch B). Turning this off drops `ed25519-dalek` and
+# `curve25519-dalek` from the graph, which is the point of the axis; every consumer of
+# `curve_primitive::ed25519` / `types::secret_scalar` is gated on this feature.
+prim-ed25519 = ["dep:ed25519-dalek", "dep:curve25519-dalek"]
+prim-scalar-reduce = ["prim-ed25519"]
+# OWNS the audited XMR base58 crate. Debt D1: before this batch `base58-monero` reached a
+# BTC-only build through the ungated export-protocol face; the gate now follows the
+# exporters too (see business/export_readonly.rs).
+prim-base58-monero = ["dep:base58-monero"]
+# Semantic tiers: no dependency of their own, but the capability table names them, so a build
+# that declares a chain without them would be a declaration the code cannot honour.
+#
+# `prim-clsag` / `prim-bulletproof` deliberately do NOT own `dep:monero-clsag` /
+# `dep:monero-bulletproofs` even though they name those capabilities. Measured (S9 batch B):
+# enabling either one WITHOUT `chain-xmr` fails to compile inside the vendored crate
+# (`vendor/monero-clsag/src/lib.rs: use std_shims::vec::Vec` — `std-shims`/alloc come from
+# the chain feature, not from a primitive). A feature that cannot be enabled is worse than a
+# feature that owns nothing, so the vendor crates stay owned by `chain-xmr` below and the
+# primitives stay semantic. They also imply `prim-ed25519`, which is the real graph edge.
+prim-ecdsa = ["prim-secp256k1"]
+prim-schnorr = ["prim-secp256k1"]
+prim-bip32 = ["prim-secp256k1"]
+prim-clsag = ["prim-ed25519"]
+prim-bulletproof = ["prim-ed25519"]
+prim-bech32 = []
+prim-base58check = []
+prim-psbt = ["prim-secp256k1"]
+prim-crypto-psbt = ["prim-psbt"]
+
+chain-btc = [
+    "prim-secp256k1",
+    "prim-ecdsa",
+    "prim-schnorr",
+    "prim-bip32",
+    "prim-base58check",
+    "prim-bech32",
+    "prim-psbt",
+    "prim-crypto-psbt",
+]
+chain-eth = [
+    "prim-secp256k1",
+    "prim-ecdsa",
+    "prim-bip32",
+]
 chain-xmr = [
+    "prim-ed25519",
+    "prim-scalar-reduce",
+    "prim-clsag",
+    "prim-bulletproof",
+    "prim-base58-monero",
     "dep:monero-clsag",
     "dep:monero-bulletproofs",
     "dep:monero-ed25519",
@@ -213,7 +274,7 @@ chain-xmr = [
 ]
 default = ["std", "alloc-fallback", "chain-btc", "chain-eth", "chain-xmr"]
 # std enabled (on by default, only for cargo test; Phase 5 real implementation switches to panic = "abort" without std)
-std = ["rand_core/std"]
+std = ["rand_core/std", "ed25519-dalek?/std"]
 # alloc enabled (ffi module uses Vec as a staging buffer for path elements)
 # alloc = []  # heapless itself is no_std
 # Device-side stage timing instrumentation (diagnostic only, never in production firmware)
@@ -259,9 +320,14 @@ path = "forms/lib.rs"
 crate-type = ["rlib"]
 
 # host (Linux/macOS): critical-section via std, ed25519-dalek with std enabled
+# S9 batch B: `ed25519-dalek` is optional now (owned by `prim-ed25519`). This target row
+# stays `optional = true` too — a required row here re-activates the crate for every host
+# build and would make the btc-only host face keep the graph the axis exists to cut. The
+# `std` feature carries `ed25519-dalek?/std` instead (weak reference, so `std` alone does
+# not pull the crate back).
 [target.'cfg(not(target_os = "none"))'.dependencies]
 critical-section = { version = "1", features = ["std"] }
-ed25519-dalek = { version = "2.1", features = ["std"] }
+ed25519-dalek = { version = "2.1", optional = true }
 
 # embedded (thumbv7em-none-eabihf etc.): critical-section RawRestoreState = u8,
 # aligned with embassy-rp's critical-section-impl (flux/pico2) and with the

@@ -12,5 +12,7 @@ pub mod crypto_hd_key;
 pub mod crypto_psbt;
 pub mod eth_sign_request;
 pub mod eth_signature;
+/// Needs both the Monero base58 addressee and the Ed25519 scalar it exports.
+#[cfg(all(feature = "prim-ed25519", feature = "prim-base58-monero"))]
 pub mod json_monero_viewkey;
 pub mod zcash_accounts;

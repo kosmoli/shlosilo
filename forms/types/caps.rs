@@ -44,8 +44,34 @@ pub const SIGN_BP_CHUNK_TERMS: usize = crate::limits::SIGN_BP_CHUNK_TERMS;
 /// output). The tables region is reserved for the widest table type (vartime
 /// NAF5: 16 x 160 B per term), so at the 12-term chunk (pico2) the figure is
 /// 33,856 B although the CT path itself touches only 16,128 B of it.
-pub const SIGN_SCRATCH_BYTES: usize =
-    curve25519_dalek::scratch::StrausScratch::storage_bytes(SIGN_BP_CHUNK_TERMS);
+///
+/// **Why the formula is spelled out instead of calling the vendor (S9 batch B)**: this
+/// constant is an ABI value the device carriers size a static buffer from
+/// (`flux/pico2/src/sign_pool.rs`, `console.rs`) in EVERY combination, so it must not
+/// vanish when `prim-ed25519` — the feature that owns `curve25519-dalek` — is off. The
+/// arithmetic below is `StrausScratch::storage_bytes(terms)` (vendor/curve25519-dalek,
+/// `scratch.rs`: `terms*16*WIDEST_POINT + terms*256 + 64`, `WIDEST_POINT = 160`), and the
+/// gated assertion right after pins the two to the same number wherever that crate is
+/// compiled in, so the copy cannot drift silently. A `cfg` on the constant itself was the
+/// alternative and is worse: the same build flag would change an ABI value.
+pub const SIGN_SCRATCH_BYTES: usize = {
+    // The formula is `StrausScratch::storage_bytes` (vendor/curve25519-dalek, `scratch.rs`:
+    // `terms*16*WIDEST_POINT + terms*256 + 64`, `WIDEST_POINT = 160`), kept here because
+    // this constant must survive a build that does not link `curve25519-dalek` at all.
+    // Kept INSIDE the initializer so cbindgen neither exports a `#define` here (it skipped
+    // this constant before, when it was a vendor call) nor shifts the header layout.
+    const fn straus_scratch_bytes(terms: usize) -> usize {
+        terms * (16 * 160) + terms * 256 + 64
+    }
+    straus_scratch_bytes(SIGN_BP_CHUNK_TERMS)
+};
+
+#[cfg(feature = "prim-ed25519")]
+const _: () = assert!(
+    SIGN_SCRATCH_BYTES
+        == curve25519_dalek::scratch::StrausScratch::storage_bytes(SIGN_BP_CHUNK_TERMS),
+    "SIGN_SCRATCH_BYTES must equal the vendored StrausScratch::storage_bytes formula"
+);
 #[cfg(feature = "chain-xmr")]
 pub const SIGN_WS_BP_STRAUS_BYTES: usize =
     SIGN_WS_BP_CHUNK_MAX * (16 * 160) + SIGN_WS_BP_CHUNK_MAX * 256 + 64;

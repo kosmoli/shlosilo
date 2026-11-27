@@ -22,7 +22,13 @@
 
 pub mod bip32_secp256k1;
 pub mod bip32_secp256k1_multisig;
+// Primitive axis (S9 batch B): SLIP-10 and Icarus derive `Ed25519Scalar`s, so they follow
+// `prim-ed25519`. `monero_reduce_scalar` stays compiled in every build — its `MoneroPath`
+// is non-secret metadata `KeySession` stores unconditionally; only the key-material half of
+// that file is gated (see its doc comment).
+#[cfg(feature = "prim-ed25519")]
 pub mod icarus_ed25519;
 pub mod monero_reduce_scalar;
 pub mod path;
+#[cfg(feature = "prim-ed25519")]
 pub mod slip10_ed25519;

@@ -18,9 +18,16 @@
 //! | 4 | `MoneroViewOnlyJsonUnlabelled` | Feather |
 //! | 5 | `MoneroViewOnlyJsonLabelled` | Cake pairing leg |
 
+// Primitive axis (S9 batch B): the two Monero JSON shapes are the only part of this file
+// that needs the XMR leg, so only they are gated. `ExportFormat` itself is NOT gated — the
+// ABI and the device UI enumerate all five formats in every build, and formats 4/5 answer the
+// pre-existing `FeatureNotImplemented` when the primitives are not compiled in.
+#[cfg(all(feature = "prim-scalar-reduce", feature = "prim-base58-monero"))]
 use crate::address::xmr as xmr_address;
+#[cfg(all(feature = "prim-scalar-reduce", feature = "prim-base58-monero"))]
 use crate::curve_primitive::ed25519::{base_mul_raw, scalar_to_bytes};
 use crate::derivation::bip32_secp256k1::{master_fingerprint_from_seed, xpub_from_seed};
+#[cfg(all(feature = "prim-scalar-reduce", feature = "prim-base58-monero"))]
 use crate::derivation::monero_reduce_scalar::{self, MoneroPath};
 use crate::derivation::path::DerivationPath;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -84,6 +91,7 @@ fn eth_path(coin: u32) -> DerivationPath {
 /// as ASCII hex. It used to be a plain `[u8; 64]` with no owner — the export's *purpose* is to
 /// hand that key over, but the intermediate copy in this function is not the exported result
 /// and has no reason to outlive the call un-erased.
+#[cfg(all(feature = "prim-scalar-reduce", feature = "prim-base58-monero"))]
 fn monero_material(
     seed: &[u8; 64],
     network: Network,
@@ -103,6 +111,17 @@ fn monero_material(
     Ok((s, crate::types::SecretBytes::take(&mut view_hex)))
 }
 
+/// Without the XMR leg the two Monero shapes answer the pre-existing `FeatureNotImplemented`
+/// (never a wrong address / a zero view key). Same signature so `payload()` has one call site.
+#[cfg(not(all(feature = "prim-scalar-reduce", feature = "prim-base58-monero")))]
+fn monero_material(
+    _seed: &[u8; 64],
+    _network: Network,
+) -> Result<(heapless::String<112>, crate::types::SecretBytes<64>)> {
+    Err(ShlosiloError::new(ShlosiloErrorKind::FeatureNotImplemented))
+}
+
+#[cfg(all(feature = "prim-scalar-reduce", feature = "prim-base58-monero"))]
 fn hex32(bytes: &[u8; 32]) -> [u8; 64] {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = [0u8; 64];
@@ -270,6 +289,32 @@ mod tests {
 
     const SEED: [u8; 64] = [0x11u8; 64];
 
+    /// Whether the XMR leg (and therefore formats 4/5) is compiled in.
+    const MONERO_LEG: bool = cfg!(all(
+        feature = "prim-scalar-reduce",
+        feature = "prim-base58-monero"
+    ));
+
+    fn is_monero(f: ExportFormat) -> bool {
+        matches!(
+            f,
+            ExportFormat::MoneroViewOnlyJsonUnlabelled | ExportFormat::MoneroViewOnlyJsonLabelled
+        )
+    }
+
+    /// The formats this build can actually produce. `ExportFormat::ALL` always lists all
+    /// five (the ABI and the device menu are shape-stable — that is a hard rule), so the
+    /// sweep tests below iterate this instead. A build without the XMR leg additionally
+    /// proves that the disabled pair REFUSES — see
+    /// `monero_shapes_refuse_with_feature_not_implemented`, which is what keeps the
+    /// narrow face from being a silently smaller version of the wide one.
+    fn producible() -> impl Iterator<Item = ExportFormat> {
+        ExportFormat::ALL
+            .iter()
+            .copied()
+            .filter(|f| MONERO_LEG || !is_monero(*f))
+    }
+
     fn labels<'a>() -> ExportLabels<'a> {
         ExportLabels {
             label: Some("test-wallet"),
@@ -287,15 +332,15 @@ mod tests {
         // it. This pins the property that replaced that: the bytes are exactly what
         // payload+encode_into produce (same derivation, same encoding), and nothing past the
         // reported length is written - the buffer is poisoned with 0xAA so a stray write shows up.
-        for f in ExportFormat::ALL.iter() {
+        for f in producible() {
             let mut got = vec![0xAAu8; 8192];
-            let n = build(*f, &SEED, Network::BitcoinMainnet, &labels(), &mut got)
+            let n = build(f, &SEED, Network::BitcoinMainnet, &labels(), &mut got)
                 .unwrap_or_else(|e| panic!("{f:?} failed: {e:?}"));
 
             let mut pl = vec![0u8; crate::ur::ur_encode::UR_PAYLOAD_MAX_LEN];
-            let pn = payload(*f, &SEED, Network::BitcoinMainnet, &labels(), &mut pl).unwrap();
+            let pn = payload(f, &SEED, Network::BitcoinMainnet, &labels(), &mut pl).unwrap();
             let mut want = vec![0xAAu8; 8192];
-            let wn = match ur_type(*f) {
+            let wn = match ur_type(f) {
                 Some(tag) => crate::ur::ur_encode::encode_into(tag, &pl[..pn], &mut want).unwrap(),
                 None => {
                     want[..pn].copy_from_slice(&pl[..pn]);
@@ -318,8 +363,8 @@ mod tests {
     #[test]
     fn every_format_produces_something_recognisable() {
         let mut out = vec![0u8; 4096];
-        for (i, f) in ExportFormat::ALL.iter().enumerate() {
-            let n = build(*f, &SEED, Network::BitcoinMainnet, &labels(), &mut out)
+        for (i, f) in producible().enumerate() {
+            let n = build(f, &SEED, Network::BitcoinMainnet, &labels(), &mut out)
                 .unwrap_or_else(|e| panic!("format {i} ({:?}) failed: {e:?}", f));
             let s = core::str::from_utf8(&out[..n]).expect("ascii out");
             match f {
@@ -397,22 +442,71 @@ mod tests {
     fn formats_that_need_a_label_refuse_without_one() {
         let mut out = vec![0u8; 4096];
         let empty = ExportLabels::default();
-        for f in [
-            ExportFormat::BitcoinXpubUri,
-            ExportFormat::MoneroViewOnlyJsonLabelled,
-        ] {
+        // `BitcoinXpubUri` needs a label in every build; the labelled Monero JSON only
+        // exists (and therefore only needs one) where the XMR leg is compiled in.
+        assert!(
+            build(
+                ExportFormat::BitcoinXpubUri,
+                &SEED,
+                Network::BitcoinMainnet,
+                &empty,
+                &mut out
+            )
+            .is_err(),
+            "BitcoinXpubUri must require a label"
+        );
+        if MONERO_LEG {
             assert!(
-                build(f, &SEED, Network::BitcoinMainnet, &empty, &mut out).is_err(),
-                "{f:?} must require a label"
+                build(
+                    ExportFormat::MoneroViewOnlyJsonLabelled,
+                    &SEED,
+                    Network::BitcoinMainnet,
+                    &empty,
+                    &mut out
+                )
+                .is_err(),
+                "MoneroViewOnlyJsonLabelled must require a label"
             );
         }
         // formats that do not need one still work
-        for f in [
-            ExportFormat::UrCryptoAccount,
-            ExportFormat::UrCryptoHdKey,
-            ExportFormat::MoneroViewOnlyJsonUnlabelled,
-        ] {
+        for f in [ExportFormat::UrCryptoAccount, ExportFormat::UrCryptoHdKey] {
             assert!(build(f, &SEED, Network::BitcoinMainnet, &empty, &mut out).is_ok());
+        }
+        if MONERO_LEG {
+            assert!(build(
+                ExportFormat::MoneroViewOnlyJsonUnlabelled,
+                &SEED,
+                Network::BitcoinMainnet,
+                &empty,
+                &mut out
+            )
+            .is_ok());
+        }
+    }
+
+    /// The two Monero JSON shapes need the XMR leg. Where it is compiled out they must
+    /// REFUSE with the pre-existing kind — a zero view key or a fabricated address would be
+    /// worse than an error, and this is the test that holds that line (the sweep tests above
+    /// skip the pair only because it cannot be produced, not because the requirement lapsed).
+    #[cfg(not(all(feature = "prim-scalar-reduce", feature = "prim-base58-monero")))]
+    #[test]
+    fn monero_shapes_refuse_with_feature_not_implemented() {
+        let mut out = vec![0u8; 4096];
+        for f in [
+            ExportFormat::MoneroViewOnlyJsonUnlabelled,
+            ExportFormat::MoneroViewOnlyJsonLabelled,
+        ] {
+            let e = build(f, &SEED, Network::BitcoinMainnet, &labels(), &mut out)
+                .expect_err("the Monero shapes cannot exist without the XMR leg");
+            assert_eq!(
+                e.kind,
+                ShlosiloErrorKind::FeatureNotImplemented,
+                "{f:?} must answer the pre-existing kind"
+            );
+            assert!(
+                out.iter().all(|b| *b == 0),
+                "{f:?} must not write the buffer on refusal"
+            );
         }
     }
 

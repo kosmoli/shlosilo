@@ -1,8 +1,19 @@
 //! Monero reduce_scalar derivation (XMR core derivation)
 
+//! Primitive axis (S9 batch B): the KEY MATERIAL half of this module (the key pair, the
+//! `derive` formula, `derive_view_key`) needs `prim-scalar-reduce` (+ `prim-ed25519` below
+//! it). `MoneroPath` does not: it is three integers of non-secret metadata that `KeySession`
+//! stores unconditionally, so it stays available in every build. Gating the whole module
+//! would have dragged the session facade (and the C-ABI entries that take it) with it.
+#[cfg(feature = "prim-scalar-reduce")]
 use crate::curve_primitive::ed25519::Ed25519Scalar;
+#[cfg(feature = "prim-scalar-reduce")]
 use crate::error::Result;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+// `Zeroize` stays unconditional: `MoneroPath` derives it in every build (the path is not
+// secret, but KeySession zeroizes its own fields uniformly).
+use zeroize::Zeroize;
+#[cfg(feature = "prim-scalar-reduce")]
+use zeroize::ZeroizeOnDrop;
 
 /// Monero derivation path (v2 §2.7 key point: MoneroPath is not DerivationPath)
 ///
@@ -39,12 +50,14 @@ impl MoneroPath {
 /// let sig = clsag_ed25519::sign(spend, msg, ring, pseudo_out, aux)?;
 /// // kp auto ZeroizeOnDrop when leaving scope, signing done
 /// ```
+#[cfg(feature = "prim-scalar-reduce")]
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct MoneroKeyPair {
     spend_priv: Ed25519Scalar,
     view_priv: Ed25519Scalar,
 }
 
+#[cfg(feature = "prim-scalar-reduce")]
 impl MoneroKeyPair {
     /// Lend the spend private key (borrow, not clone)
     pub fn spend_priv(&self) -> &Ed25519Scalar {
@@ -56,6 +69,7 @@ impl MoneroKeyPair {
     }
 }
 
+#[cfg(feature = "prim-scalar-reduce")]
 impl core::fmt::Debug for MoneroKeyPair {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "MoneroKeyPair(<spend+view priv redacted>)")
@@ -72,6 +86,7 @@ impl core::fmt::Debug for MoneroKeyPair {
 ///
 /// This is keystone\'s standard path for generating a Monero keypair from a BIP-39 seed (P6.3 already
 /// cross-verified with base58-monero address encoding: DEST1 matches meta.json).
+#[cfg(feature = "prim-scalar-reduce")]
 pub fn derive(seed: &[u8], path: &MoneroPath) -> Result<MoneroKeyPair> {
     // Z2.4a (2026-09-24): path string built into a stack buffer (was alloc::format!)
     use crate::types::push::{push_dec, push_slice};
@@ -110,13 +125,14 @@ pub fn derive(seed: &[u8], path: &MoneroPath) -> Result<MoneroKeyPair> {
 /// View key derivation (for exporting view-only credentials)
 ///
 /// view = Hs(spend_private) (the second step of monero generate_keys)
+#[cfg(feature = "prim-scalar-reduce")]
 pub fn derive_view_key(spend_private: &Ed25519Scalar) -> Result<Ed25519Scalar> {
     let spend_bytes = crate::curve_primitive::ed25519::scalar_to_bytes(spend_private);
     let view_hash = crate::encoding::keccak256::hash(&spend_bytes)?;
     crate::curve_primitive::scalar_reduce::reduce_scalar(&view_hash)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "prim-scalar-reduce"))]
 mod tests {
     use super::*;
 

@@ -12,9 +12,16 @@
 //! - 5 files: secp256k1 / ed25519 / rsa / p256 + this mod.rs
 //! - per file: `{Curve}Scalar` + `{Curve}Point` + free functions (`unimplemented!()`) + `#[should_panic]` tests
 //! - Phase 4 replaces `unimplemented!()` with real algorithm calls (`k256` / `curve25519-dalek` / etc.)
+//!
+//! **Primitive axis (S9 batch B)**: the two Ed25519 files are the modules that OWN the
+//! `ed25519-dalek` / `curve25519-dalek` dependency pair, so they follow `prim-ed25519`.
+//! A build without that primitive cannot name them — which is exactly what makes the crates
+//! disappear from the graph instead of merely going unused.
 
+#[cfg(feature = "prim-ed25519")]
 pub mod ed25519;
 pub mod p256;
 pub mod rsa;
+#[cfg(feature = "prim-scalar-reduce")]
 pub mod scalar_reduce;
 pub mod secp256k1;

@@ -63,6 +63,9 @@ pub use business::{
 };
 /// Type-name re-export for caller-side workspace constructors (the SignWs BP+
 /// scratch element types); no API surface beyond naming.
+/// Primitive axis (S9 batch B): follows `prim-ed25519` — a build without that
+/// primitive does not link the crate, so it cannot name it either.
+#[cfg(feature = "prim-ed25519")]
 pub use curve25519_dalek;
 pub use entropy::mnemonic::WordCount;
 /// Chain axis (batch 3): these two are carried by `chain-xmr` and are optional
@@ -76,54 +79,69 @@ pub use monero_bulletproofs;
 pub use monero_ed25519;
 
 // Public Layer A types (Phase 2.1 stub — Phase 4 real algorithm integration)
+#[cfg(feature = "prim-ed25519")]
+pub use crate::curve_primitive::ed25519::{Ed25519Point, Ed25519Scalar};
 pub use crate::curve_primitive::{
-    ed25519::{Ed25519Point, Ed25519Scalar},
     p256::{P256Point, P256Scalar},
     rsa::{RsaPrivKey, RsaPubKey, RSA_SIGNATURE_MAX_LEN},
     secp256k1::{Secp256k1Point, Secp256k1Scalar},
 };
 
 // Public Layer B signature types (Phase 2.2 stub — Phase 4 real algorithm integration)
+#[cfg(feature = "prim-ed25519")]
 pub use crate::signature::{
     clsag_ed25519::{ClsagAux, ClsagProof, CLSAG_PROOF_MAX_LEN},
-    ecdsa_secp256k1::{EcdsaSignature, ECDSA_SIGNATURE_LEN},
     eddsa_ed25519::{EddsaSignature, EDDSA_SIGNATURE_LEN},
     fcmp_ed25519::{FcmpProof, FCMP_PROOF_MAX_LEN},
+};
+pub use crate::signature::{
+    ecdsa_secp256k1::{EcdsaSignature, ECDSA_SIGNATURE_LEN},
     rsa_pss::{RsaPssSignature, RSA_PSS_SIGNATURE_LEN},
     schnorr_secp256k1::{SchnorrSignature, SCHNORR_SIGNATURE_LEN},
 };
 
 // Public Layer C derivation types (Phase 2.2 stub — Phase 4 real algorithm integration)
+#[cfg(feature = "prim-ed25519")]
+pub use crate::derivation::{
+    icarus_ed25519::CardanoExtSk,
+    slip10_ed25519::{Slip10ExtendedKey, SLIP10_EXTENDED_KEY_LEN},
+};
+// The key pair needs the reduce (which itself implies `prim-ed25519`), so it follows
+// `prim-scalar-reduce` rather than the curve feature: a `prim-ed25519`-only build links the
+// curve but not the Monero key formula.
+#[cfg(feature = "prim-scalar-reduce")]
+pub use crate::derivation::monero_reduce_scalar::MoneroKeyPair;
 pub use crate::derivation::{
     bip32_secp256k1::{ExtendedPrivKey, EXTENDED_PRIVKEY_LEN},
-    icarus_ed25519::CardanoExtSk,
-    monero_reduce_scalar::{MoneroKeyPair, MoneroPath},
-    slip10_ed25519::{Slip10ExtendedKey, SLIP10_EXTENDED_KEY_LEN},
+    monero_reduce_scalar::MoneroPath,
 };
 
 // Public Layer C multisig types (unsupported in v1, returns MultisigNotSupported)
 pub use crate::derivation::bip32_secp256k1_multisig::{MultisigScript, MAX_MULTISIG_SIGNERS};
 
 // Public Layer D address types (Phase 2.3 stub — Phase 4 real encoding)
+#[cfg(all(feature = "prim-base58-monero", feature = "prim-ed25519"))]
+pub use crate::address::xmr::{XmrAddress, XMR_ADDRESS_MAX_LEN};
+#[cfg(feature = "prim-ed25519")]
 pub use crate::address::{
     aptos_sui::{AptosAddress, SuiAddress, APTOS_ADDRESS_LEN, SUI_ADDRESS_LEN},
+    cardano::{CardanoAddress, CARDANO_ADDRESS_MAX_LEN},
+    sol::{SolAddress, SOL_ADDRESS_MAX_LEN},
+};
+pub use crate::address::{
     arweave::{ArweaveAddress, ARWEAVE_ADDRESS_MAX_LEN},
     btc_legacy::BtcLegacyAddress,
     btc_segwit::{BtcAddress, SegwitVariant, BTC_ADDRESS_MAX_LEN},
-    cardano::{CardanoAddress, CARDANO_ADDRESS_MAX_LEN},
     eth::{EthAddress, ETH_ADDRESS_LEN},
-    sol::{SolAddress, SOL_ADDRESS_MAX_LEN},
     tron::TronAddress,
-    xmr::{XmrAddress, XMR_ADDRESS_MAX_LEN},
     xrp::{XrpAddress, XRP_ADDRESS_MAX_LEN},
 };
 
 // Public Layer E UR types (Phase 2.3 stub — Phase 4 real CBOR/Fountain)
+#[cfg(all(feature = "prim-ed25519", feature = "prim-base58-monero"))]
+pub use crate::ur::codec::json_monero_viewkey::{JsonMoneroViewkey, JSON_MONERO_VIEWKEY_MAX_LEN};
 pub use crate::ur::{
-    codec::{
-        crypto_hd_key::Bip32XPub,
-        json_monero_viewkey::{JsonMoneroViewkey, JSON_MONERO_VIEWKEY_MAX_LEN},
-    },
+    codec::crypto_hd_key::Bip32XPub,
     ur_decode::UrDecoded,
     ur_encode::{UrEncoded, UrTypeTag, UR_PAYLOAD_MAX_LEN},
 };

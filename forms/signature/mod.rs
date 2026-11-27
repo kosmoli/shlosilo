@@ -17,9 +17,15 @@
 //!   - `rsa_pss` → rsa
 //!   - `fcmp_ed25519` → real implementation deferred to Phase 7
 
+// Primitive axis (S9 batch B): the three Ed25519 schemes take `&Ed25519Scalar` /
+// `&Ed25519Point`, so they follow the curve primitive that owns those types (and the two
+// dalek crates behind them). The secp256k1 / RSA files are untouched.
+#[cfg(feature = "prim-ed25519")]
 pub mod clsag_ed25519;
 pub mod ecdsa_secp256k1;
+#[cfg(feature = "prim-ed25519")]
 pub mod eddsa_ed25519;
+#[cfg(feature = "prim-ed25519")]
 pub mod fcmp_ed25519;
 pub mod rsa_pss;
 pub mod schnorr_secp256k1;

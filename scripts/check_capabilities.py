@@ -51,7 +51,7 @@ SECTIONS = (
     "ur_codecs",
 )
 # Fields a capability may carry in the vocabulary table.
-VOCAB_FIELDS = {"sources", "crates", "scope", "note"}
+VOCAB_FIELDS = {"sources", "crates", "scope", "note", "feature"}
 # scope=chain   the capability belongs to a chain; that chain declares it
 # scope=shared  product-wide machinery (export/derivation plumbing); no chain owns it
 # scope=library implemented for a chain this product does not sign for yet; NO chain may
@@ -144,6 +144,7 @@ def load_vocab(caps):
                 "sources": list(sources),
                 "crates": list(crates),
                 "scope": scope,
+                "feature": entry.get("feature"),
             }
     if not vocab:
         raise Fail(EXIT_BLIND, "_primitives.toml: vocabulary is empty")
@@ -285,6 +286,33 @@ def scan(vocab):
     return per_file, files
 
 
+def cargo_feature_graph():
+    """`prim-*` implications of every `chain-*` feature, from cargo itself.
+
+    Read through `cargo metadata --no-deps` rather than by grepping Cargo.toml: the manifest is
+    parsed by the same tool that resolves it, so a hand-rolled reader cannot disagree with reality.
+    """
+    import json
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        # Fail closed: without the graph this check would silently verify nothing.
+        raise Fail(EXIT_SHAPE, f"cannot read the cargo feature graph ({exc})")
+    doc = json.loads(out)
+    for pkg in doc.get("packages", []):
+        if pkg.get("name") == "shlosilo":
+            return pkg.get("features", {})
+    raise Fail(EXIT_SHAPE, "cargo metadata does not know the `shlosilo` package")
+
+
 def chain_of(rel_path):
     parts = rel_path.split("/")
     if len(parts) >= 3 and parts[0] == "forms" and parts[1] == "chain":
@@ -369,6 +397,30 @@ def run(report_only=False, caps=None):
                "capability's only home" if name in debt_caps else "")
         )
 
+    # ── E: the cargo feature graph must carry exactly the declared capabilities ──
+    # Root-set check (design §3.3): for each chain, the `prim-*` features its `chain-*` feature
+    # implies must equal the set of `feature =` names on the capabilities that chain declares.
+    # Two independent sources again — the capability table on one side, cargo's own feature graph
+    # (`cargo metadata --no-deps`) on the other — so this is not the declaration checking itself.
+    # A capability with no `feature` (e.g. eip55_hex: no dependency of its own) simply does not
+    # participate; that is why the two lists can be equal rather than merely overlapping.
+    graph = cargo_feature_graph()
+    for chain, info in chains.items():
+        want = {vocab[name]["feature"] for name in info["declared"] if vocab[name]["feature"]}
+        have = {f for f in graph.get(f"chain-{chain}", []) if f.startswith("prim-")}
+        missing = sorted(want - have)
+        extra = sorted(have - want)
+        if missing:
+            problems.append(
+                f"E: chain-{chain} does not imply {missing}, but "
+                f"capabilities/{chain}.toml declares capabilities that need them"
+            )
+        if extra:
+            problems.append(
+                f"E: chain-{chain} implies {extra}, which no capability declared by "
+                f"capabilities/{chain}.toml maps to — a phantom feature (or a missing declaration)"
+            )
+
     # ── D: debt and declaration must not overlap ──
     # A debt entry says "this capability is compiled into COMBINATION although no chain in it
     # declares it". Declaring it in one of those chains would silence the check by inflating
@@ -392,6 +444,7 @@ def run(report_only=False, caps=None):
           f"across {len(chains)} chains; vocabulary: {len(vocab)}; debt entries: {len(debt)}")
     print(f"scan: {files_scanned} files, {total_refs} files with references, "
           f"{chain_refs} references inside chain modules")
+    print("feature graph: chain-* -> prim-* root sets match the declared capabilities")
     if library_refs:
         print("library-only capabilities referenced (implemented for chains this product does "
               f"not sign for yet): {', '.join(sorted(library_refs))}")

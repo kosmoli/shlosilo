@@ -3071,10 +3071,15 @@ pub mod r3 {
 /// than some targets need (thumbv7em's natural u64 alignment is 4, caught by
 /// this pin when it asserted `== 8`), which keeps the ABI stable while the
 /// in-Rust requirement (`align_of`) stays a subset of it.
+// Primitive axis (S9 batch B): the pin is about the dalek representation, so it can only
+// exist where that crate is compiled in. `SHLOSILO_GENPOINT_SIZE` itself stays unconditional
+// (it is an ABI constant the C side sizes buffers from in every combination).
+#[cfg(feature = "prim-ed25519")]
 const _: () = assert!(
     core::mem::size_of::<curve25519_dalek::EdwardsPoint>()
         == crate::types::caps::SHLOSILO_GENPOINT_SIZE
 );
+#[cfg(feature = "prim-ed25519")]
 const _: () = assert!(core::mem::align_of::<curve25519_dalek::EdwardsPoint>() <= 8);
 
 #[cfg(feature = "chain-xmr")]

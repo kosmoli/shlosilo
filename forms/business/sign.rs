@@ -198,6 +198,11 @@ pub fn wallet_fingerprint(spend_pub: &[u8; 32], view_pub: &[u8; 32]) -> [u8; 8] 
 /// wallet's spend/view pubs exactly like the sign path (MoneroPath, account 0)
 /// and fingerprints them. `seed` must be the SAME bytes the sign path derives
 /// from (BIP-39 seed = 64B) -- derive() is length-sensitive (BIP-32 HMAC).
+/// Primitive axis (S9 batch B): needs the Ed25519 key formula, so it does not exist in a
+/// build without `prim-scalar-reduce`. Deliberately NOT stubbed to a zero fingerprint: this
+/// value decides which wallet a retained key-image record belongs to (fix37), and a silent
+/// all-zero answer would bind records to the wrong wallet instead of failing loudly.
+#[cfg(feature = "prim-scalar-reduce")]
 pub fn wallet_fingerprint_from_seed(seed: &[u8]) -> [u8; 8] {
     use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
     use curve25519_dalek::scalar::Scalar;

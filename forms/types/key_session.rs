@@ -10,8 +10,17 @@
 //! runs `ZeroizeOnDrop` destructors, so a panic can leave key material in RAM —
 //! same residual-risk posture as the `secret_bytes` module docs.
 
+// Primitive axis (S9 batch B) — option "keep the facade": the STRUCT and every accessor
+// stay available in every build (the C-ABI takes `*const KeySession`, so removing the type
+// would remove symbols — design decision 1 forbids that). Only the construction formula is
+// gated: without `prim-scalar-reduce` (hence without `prim-ed25519`) `from_entropy` answers
+// the pre-existing `FeatureNotImplemented` instead of deriving.
+#[cfg(feature = "prim-scalar-reduce")]
 use crate::curve_primitive::ed25519::scalar_to_bytes;
-use crate::derivation::monero_reduce_scalar::{derive as monero_derive, MoneroPath};
+#[cfg(feature = "prim-scalar-reduce")]
+use crate::derivation::monero_reduce_scalar::derive as monero_derive;
+use crate::derivation::monero_reduce_scalar::MoneroPath;
+#[cfg(feature = "prim-scalar-reduce")]
 use crate::entropy::bip39_passphrase::mnemonic_to_seed;
 use crate::entropy::mnemonic::Mnemonic;
 use crate::error::{Result, ShlosiloError, ShlosiloErrorKind};
@@ -79,29 +88,41 @@ impl KeySession {
             }
         }
         let m = Mnemonic::from_entropy(entropy)?;
-        // Defense-in-depth: always passes for entropy-constructed mnemonics (the
-        // length gate above pre-validated the only inputs `Mnemonic` accepts).
-        // Kept as a from_entropy regression guard — removing it keeps tests green,
-        // but drops the belt-and-braces check if construction semantics ever change.
-        m.validate()?;
-        // Real BIP-39 seed (PBKDF2-HMAC-SHA512). Note: `Mnemonic::to_seed` is
-        // still the Phase 2 placeholder — `mnemonic_to_seed` is the production path.
-        let seed = mnemonic_to_seed(&m, passphrase)?;
-        let mut seed_buf: [u8; 64] = seed.into_bytes();
-        // Take over the plaintext seed BEFORE the fallible derive: if
-        // `monero_derive` fails below, `?` returns early and `seed_sb`'s Drop
-        // zeroizes the 64 bytes — with the old order they stayed on the stack.
-        let seed_sb = SecretBytes::take(&mut seed_buf);
-        let kp = monero_derive(seed_sb.expose(), &MoneroPath::mainnet(0))?;
-        let mut spend_bytes = scalar_to_bytes(kp.spend_priv());
-        let mut view_bytes = scalar_to_bytes(kp.view_priv());
-        Ok(Self {
-            seed: seed_sb,
-            spend_sk: SecretBytes::take(&mut spend_bytes),
-            view_sk: SecretBytes::take(&mut view_bytes),
-            path: MoneroPath::mainnet(0),
-            profile_id: 0,
-        })
+        // Primitive axis (S9 batch B): without `prim-scalar-reduce` the key formula does not
+        // exist, so the session refuses with the PRE-EXISTING kind instead of deriving with a
+        // different (or worse, a silently wrong) algorithm. The length policy above still runs
+        // first: a caller gets the same rejection order in every build.
+        #[cfg(not(feature = "prim-scalar-reduce"))]
+        {
+            let _ = (m, passphrase);
+            Err(ShlosiloError::new(ShlosiloErrorKind::FeatureNotImplemented))
+        }
+        #[cfg(feature = "prim-scalar-reduce")]
+        {
+            // Defense-in-depth: always passes for entropy-constructed mnemonics (the
+            // length gate above pre-validated the only inputs `Mnemonic` accepts).
+            // Kept as a from_entropy regression guard — removing it keeps tests green,
+            // but drops the belt-and-braces check if construction semantics ever change.
+            m.validate()?;
+            // Real BIP-39 seed (PBKDF2-HMAC-SHA512). Note: `Mnemonic::to_seed` is
+            // still the Phase 2 placeholder — `mnemonic_to_seed` is the production path.
+            let seed = mnemonic_to_seed(&m, passphrase)?;
+            let mut seed_buf: [u8; 64] = seed.into_bytes();
+            // Take over the plaintext seed BEFORE the fallible derive: if
+            // `monero_derive` fails below, `?` returns early and `seed_sb`'s Drop
+            // zeroizes the 64 bytes — with the old order they stayed on the stack.
+            let seed_sb = SecretBytes::take(&mut seed_buf);
+            let kp = monero_derive(seed_sb.expose(), &MoneroPath::mainnet(0))?;
+            let mut spend_bytes = scalar_to_bytes(kp.spend_priv());
+            let mut view_bytes = scalar_to_bytes(kp.view_priv());
+            Ok(Self {
+                seed: seed_sb,
+                spend_sk: SecretBytes::take(&mut spend_bytes),
+                view_sk: SecretBytes::take(&mut view_bytes),
+                path: MoneroPath::mainnet(0),
+                profile_id: 0,
+            })
+        }
     }
 
     /// WP1 I5: the bound profile byte (0 = unbound). Read only at the
@@ -131,7 +152,7 @@ impl KeySession {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "prim-scalar-reduce"))]
 mod tests {
     use super::*;
     use crate::derivation::monero_reduce_scalar::{derive as monero_derive, MoneroPath};
