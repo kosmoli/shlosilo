@@ -11,6 +11,7 @@ pub mod restore_seed;
 /// Sign-request review view (what the operator confirms before signing).
 /// Reads a payload only; never signs, never mutates session state.
 pub mod review;
+pub mod review_binding;
 pub mod sign;
 /// Cake direct pairing receive leg. The chain layer it wraps
 /// (`chain::xmr::key_image_export`) derives the container ChaCha key with

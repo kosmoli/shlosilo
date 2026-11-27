@@ -124,6 +124,33 @@ pub fn sign(
 /// XMR wallet key image records: none supplied. The XMR path then requires the
 /// spent transfers to cover every wallet index below `max(selected_transfers)`
 /// (see [`sign_with_entropy_records`]); anything else refuses to sign.
+/// Sign a request **that was reviewed**, refusing unless the payload still hashes to the digest
+/// the review face produced.
+///
+/// This is the "所审即所签" half of the two signing invariants (the other — "未授权不得签" — is the
+/// product flow's, held by `flux/shell`; see [`crate::business::review_binding`]). The check runs
+/// **before** anything else — no entropy staging, no workspace carve, no key material — so a
+/// mismatch costs one SHA-256 and cannot leave a half-signed state behind.
+///
+/// Carriers that review and sign in one uninterrupted call, with the same buffer, get this for
+/// free by construction; carriers that keep the payload across a reboot (or hand it through a
+/// static buffer in C) are the ones this exists for.
+///
+/// # Errors
+/// `InvariantViolation` when the payload is not the reviewed one. Every other error comes from
+/// the underlying signing path, unchanged.
+pub fn sign_reviewed(
+    sign_input: SignInput<'_>,
+    type_tag: crate::ur::ur_encode::UrTypeTag,
+    ur_payload: &[u8],
+    reviewed: crate::business::review_binding::ReviewedDigest,
+    entropy: &[u8],
+    output_buf: &mut [u8],
+) -> Result<usize> {
+    crate::business::review_binding::verify_reviewed(ur_payload, reviewed)?;
+    sign_with_entropy(sign_input, type_tag, ur_payload, entropy, output_buf)
+}
+
 pub fn sign_with_entropy(
     sign_input: SignInput<'_>,
     type_tag: crate::ur::ur_encode::UrTypeTag,
