@@ -179,6 +179,59 @@ fn sha256_dir(path: &str) -> String {
     sha256_hex(&buf)
 }
 
+/// The primitive-axis vocabulary (chain-axis design §3, S9).
+///
+/// Kept here as a closed list on purpose: the closure check reads `CARGO_FEATURE_PRIM_*`, and a
+/// prim feature that exists in Cargo.toml but not here would be invisible to the check — so the
+/// list must be complete and the check must fail when the compiled set contains something this
+/// vocabulary does not know. Adding a primitive means touching this list and
+/// `capabilities/_primitives.toml`, which is exactly the double entry the root-set check polices.
+const PRIM_FEATURES: &[&str] = &[
+    "prim-secp256k1",
+    "prim-ed25519",
+    "prim-scalar-reduce",
+    "prim-base58-monero",
+    "prim-ecdsa",
+    "prim-schnorr",
+    "prim-bip32",
+    "prim-clsag",
+    "prim-bulletproof",
+    "prim-bech32",
+    "prim-base58check",
+    "prim-psbt",
+    "prim-crypto-psbt",
+];
+
+/// The primitive set the compiler ACTUALLY resolved, in this file's canonical order.
+fn compiled_prims() -> Vec<&'static str> {
+    PRIM_FEATURES
+        .iter()
+        .filter(|name| {
+            let env = format!("CARGO_FEATURE_{}", name.replace('-', "_").to_uppercase());
+            std::env::var_os(env).is_some()
+        })
+        .copied()
+        .collect()
+}
+
+/// Any `CARGO_FEATURE_PRIM_*` env var whose name is not in [`PRIM_FEATURES`].
+///
+/// Fail-closed companion to `compiled_prims`: silently ignoring an unknown prim feature would let
+/// a new primitive bypass the closure check by not being listed here.
+fn unknown_prim_features() -> Vec<String> {
+    std::env::vars()
+        .filter(|(k, _)| k.starts_with("CARGO_FEATURE_PRIM_"))
+        .map(|(k, _)| k)
+        .filter(|k| {
+            let as_feature = k
+                .trim_start_matches("CARGO_FEATURE_")
+                .to_lowercase()
+                .replace('_', "-");
+            !PRIM_FEATURES.contains(&as_feature.as_str())
+        })
+        .collect()
+}
+
 /// The chain set the compiler ACTUALLY resolved, in canonical order.
 ///
 /// Read from `CARGO_FEATURE_CHAIN_*`, i.e. the feature set after unification for
@@ -228,6 +281,36 @@ fn declared_chains() -> Option<Vec<&'static str>> {
         "SHLOSILO_CHAINS is set but names no chain (raw {raw:?}); a manifest declares at least one"
     );
     Some(out)
+}
+
+/// The primitive closure the wrapper declared, or `None` for a bare cargo build.
+///
+/// Same contract as [`declared_chains`]: absent means "no declaration" (dev face), malformed is an
+/// error. Computed by the wrapper from `capabilities/*.toml` closed over cargo's feature graph —
+/// NOT read back from the resolved features, which would make the check compare cargo with itself.
+fn declared_prims() -> Option<(Vec<String>, Vec<String>)> {
+    let closure_raw = match std::env::var("SHLOSILO_PRIM_CLOSURE") {
+        Ok(raw) if !raw.trim().is_empty() => raw,
+        _ => return None,
+    };
+    let split = |raw: &str| -> Vec<String> {
+        raw.split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
+    };
+    let closure = split(&closure_raw);
+    let roots = std::env::var("SHLOSILO_PRIMS")
+        .map(|raw| split(&raw))
+        .unwrap_or_default();
+    for name in closure.iter().chain(roots.iter()) {
+        assert!(
+            PRIM_FEATURES.contains(&name.as_str()),
+            "the declaration names primitive {name:?}, which is not in this build script's \
+             vocabulary {PRIM_FEATURES:?}; add it to both or fix the typo"
+        );
+    }
+    Some((roots, closure))
 }
 
 fn csv(chains: &[&str]) -> String {
@@ -289,6 +372,8 @@ fn canonical_build_encoding(
     role: &str,
     build_script_sha: &str,
     wrapper_sha: &str,
+    prims: &str,
+    capabilities_sha: &str,
 ) -> String {
     // Fixed order: sorted by key, never the file's own line order (a profile rewrite
     // that only moves lines must not move the fingerprint).
@@ -309,6 +394,13 @@ fn canonical_build_encoding(
         push_field(&mut out, &format!("limits.{key}"), &value.to_string());
     }
     push_field(&mut out, "chains", &csv(chains));
+    // Schema 2 (S9 段 C): the compiled primitive set is now ENFORCED to equal the declared
+    // closure, so it belongs in the identity rather than being a claim about a table. The
+    // capabilities digest rides along because changing what a chain IS should move the
+    // fingerprint even when the compiled feature set happens to stay the same (a capability
+    // re-pointed at a different source module is such a change).
+    push_field(&mut out, "prims", prims);
+    push_field(&mut out, "capabilities_sha256", capabilities_sha);
     push_field(&mut out, "target", target);
     push_field(&mut out, "git_head", git_head);
     push_field(&mut out, "tree_state", tree_state);
@@ -485,6 +577,50 @@ fn emit_limits(identity: &str, dirty_list: &str) {
             );
         }
     }
+    // ── the primitive axis, same strictness, other direction removed (S9 段 C) ──────────────
+    // Equality, not "superset is fine": a primitive compiled but not declared means a dependency
+    // (and its code) rode in unaccounted for; a declared primitive missing means the binary
+    // promises a capability it does not carry. Both directions are failures for a signer.
+    let prims = compiled_prims();
+    if let Some((roots, expected)) = declared_prims() {
+        let mut missing: Vec<&String> = expected
+            .iter()
+            .filter(|f| !prims.contains(&(**f).as_str()))
+            .collect();
+        let mut extra: Vec<&str> = prims
+            .iter()
+            .copied()
+            .filter(|f| !expected.iter().any(|e| e == f))
+            .collect();
+        missing.sort();
+        extra.sort();
+        if !missing.is_empty() || !extra.is_empty() {
+            panic!(
+                "primitive axis mismatch (limits profile {profile}, build role {role}):\n\
+                 - declared chains  = [{}]  (SHLOSILO_CHAINS)\n\
+                 - declared roots   = [{}]  (capabilities/*.toml, from the build manifest)\n\
+                 - expected closure = [{}]  (roots closed over cargo's feature graph)\n\
+                 - compiled prims   = [{}]  (CARGO_FEATURE_PRIM_* after feature unification)\n\
+                 - missing (declared, not compiled) = {missing:?}\n\
+                 - extra   (compiled, not declared) = {extra:?}\n\
+                 Both directions fail: an extra primitive is code and dependencies nobody \
+                 accounted for, a missing one is a capability the image claims but cannot \
+                 honour. Fix capabilities/<chain>.toml or the build's --features.",
+                csv(&compiled),
+                roots.join(","),
+                expected.join(","),
+                prims.join(",")
+            );
+        }
+    }
+    // A prim feature this script does not know would bypass the check above by being invisible.
+    let unknown = unknown_prim_features();
+    assert!(
+        unknown.is_empty(),
+        "compiled primitive feature(s) {unknown:?} are not in this build script's vocabulary \
+         {PRIM_FEATURES:?}; the closure check cannot see them, so it must refuse rather than pass"
+    );
+
     let chain_on = |name: &str| -> bool { compiled.contains(&name) };
     // Limits keys that are only meaningful for one chain: required exactly while that
     // chain is compiled in, absent-allowed otherwise (a BTC-less build should not have
@@ -700,6 +836,8 @@ fn emit_limits(identity: &str, dirty_list: &str) {
         &role,
         &build_script_sha,
         &wrapper_sha,
+        &prims.join(","),
+        &capabilities_sha,
     );
     let build_fingerprint_sha = sha256_hex(canonical.as_bytes());
     // The 64-bit projection (Rust constant + C macro + FFI return): the first 8 bytes
@@ -864,10 +1002,12 @@ fn emit_limits(identity: &str, dirty_list: &str) {
          build_fingerprint_u64=0x{build_fingerprint_u64:016x}\n\
          limits_fingerprint=0x{fingerprint:016x}\n\
          capabilities_fingerprint={capabilities_sha}\n\
+         prims={}\n\
          git_head={git_head}\n\
          tree_state={tree_state}\n",
         std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".into()),
-        csv(&compiled)
+        csv(&compiled),
+        prims.join(",")
     );
     // `capabilities_fingerprint` is recorded here but is NOT yet an input to
     // BUILD_FINGERPRINT: the table declares what the product path uses while the build still

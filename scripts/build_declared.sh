@@ -290,8 +290,84 @@ fi
 
 # ── 6. declare, then build ───────────────────────────────────────────────────
 MANIFEST_SHA="$(sha256sum "$MANIFEST" | awk '{print $1}')"
+# ── the primitive half of the declaration (chain-axis design §3.3, S9 段 C) ──────────────
+# `SHLOSILO_PRIMS`      = the ROOT primitives the declared chains' capabilities name.
+# `SHLOSILO_PRIM_CLOSURE` = those roots closed over cargo's own feature graph, i.e. the exact
+#                          set `CARGO_FEATURE_PRIM_*` must equal. build.rs compares the closure
+#                          (it can see the compiled features but cannot see the feature graph),
+#                          and the `⊆` direction against the roots so a diagnostic can say which
+#                          root went missing rather than just "the sets differ".
+#
+# The closure is computed HERE, from `cargo metadata`, not in build.rs: build.rs runs inside a
+# cargo build, so asking cargo for metadata from it would recurse. And the expected set must not
+# be read back from the resolved features — that would be the declaration checking itself (the
+# review's circular-argument objection).
+PRIMS_DECL="$(python3 - "$CHAINS" <<'PY'
+import json, subprocess, sys, tomllib
+from pathlib import Path
+
+chains = [c.strip() for c in sys.argv[1].split(",") if c.strip()]
+
+# root primitives: the `feature = "prim-…"` of every capability the declared chains declare.
+roots = set()
+for chain in chains:
+    path = Path("capabilities") / f"{chain}.toml"
+    try:
+        with open(path, "rb") as fh:
+            doc = tomllib.load(fh)
+    except Exception as exc:
+        sys.exit(f"cannot read {path}: {exc}")
+    vocab = tomllib.load(open("capabilities/_primitives.toml", "rb"))
+    declared = set()
+    for section, table in doc.items():
+        if section in ("schema_version", "chain"):
+            continue
+        if isinstance(table, dict):
+            declared |= set(table)
+    for name in declared:
+        for section_table in vocab.values():
+            if isinstance(section_table, dict) and name in section_table:
+                feat = section_table[name].get("feature")
+                if feat:
+                    roots.add(feat)
+                break
+
+# close over cargo's feature graph — the SAME graph cargo will use, read through cargo itself.
+meta = json.loads(subprocess.run(
+    ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"],
+    capture_output=True, text=True, check=True).stdout)
+features = {}
+for pkg in meta.get("packages", []):
+    if pkg.get("name") == "shlosilo":
+        features = pkg.get("features", {})
+        break
+else:
+    sys.exit("cargo metadata does not know the shlosilo package")
+
+closure, todo = set(), list(roots)
+while todo:
+    feat = todo.pop()
+    if feat in closure:
+        continue
+    closure.add(feat)
+    for implied in features.get(feat, []):
+        # `dep:name` entries are dependency activations, not features.
+        if implied.startswith("dep:") or implied.startswith("dep="):
+            continue
+        todo.append(implied)
+
+print(",".join(sorted(roots)))
+print(",".join(sorted(closure)))
+PY
+)" || { echo "ERROR: cannot derive the declared primitive set ($MANIFEST)" >&2; exit 2; }
+SHLOSILO_PRIMS="$(printf '%s\n' "$PRIMS_DECL" | sed -n '1p')"
+SHLOSILO_PRIM_CLOSURE="$(printf '%s\n' "$PRIMS_DECL" | sed -n '2p')"
+[ -n "$SHLOSILO_PRIMS" ] || { echo "ERROR: the declared chains map to no primitive feature" >&2; exit 2; }
+
 export SHLOSILO_LIMITS="$LIMITS"
 export SHLOSILO_CHAINS="$CHAINS"
+export SHLOSILO_PRIMS
+export SHLOSILO_PRIM_CLOSURE
 export SHLOSILO_BUILD_ROLE="$ROLE"
 export SHLOSILO_BUILD_MANIFEST="$MANIFEST"
 export SHLOSILO_BUILD_MANIFEST_SHA256="$MANIFEST_SHA"
@@ -301,6 +377,7 @@ CMD=(cargo "$SUBCOMMAND" ${PASSTHRU[@]+"${PASSTHRU[@]}"} ${TARGET_ARGS[@]+"${TAR
 
 echo "== declared build: $MANIFEST"
 echo "   limits=$LIMITS  chains=$CHAINS  role=$ROLE  target=${EFFECTIVE_TARGET:-<host>}"
+echo "   prims (declared roots): $SHLOSILO_PRIMS"
 echo "   base features: $BASE_NOTE"
 echo "   ${CMD[*]}"
 
@@ -384,6 +461,9 @@ trap 'rm -f "$RECEIPT_BODY"; [ -n "${JSON_LOG:-}" ] && rm -f "$JSON_LOG"' EXIT
     echo "target         ${EFFECTIVE_TARGET:-<host>}"
     echo "chains_declared $CHAINS"
     echo "chains_built   $BUILT_CHAINS"
+    echo "prims_declared $SHLOSILO_PRIMS"
+    echo "prims_expected $SHLOSILO_PRIM_CLOSURE"
+    echo "prims_built    $(field prims)"
     echo "build_fingerprint_sha256 $(field build_fingerprint_sha256)"
     echo "build_fingerprint_u64    $(field build_fingerprint_u64)"
     echo "limits_fingerprint       $(field limits_fingerprint)  (FNV tripwire, not an identity)"

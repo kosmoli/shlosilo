@@ -105,6 +105,12 @@ chain_samples() {
 # SOL/Cardano/slip10/edDSA share, and the export-protocol face), so gating them would
 # move a capability axis rather than this one. See the Cargo.toml feature note.
 XMR_ONLY_RE='(monero-clsag|monero-bulletproofs|monero-bulletproofs-generators|monero-ed25519|monero-io|cuprate-cryptonight|std-shims|chacha20|hkdf) v'
+# Crates owned by the PRIMITIVE axis (S9): they must vanish when the primitive that owns them
+# is off, and must be present when it is on. Same double-edged argument as above — a count alone
+# cannot tell "dependency cut" from "instrument blind", and after S9 the btc-only face is the
+# first build in this repository that genuinely drops them.
+PRIM_ED25519_RE='(ed25519-dalek|curve25519-dalek) v'
+PRIM_B58_MONERO_RE='base58-monero v'
 
 # Positional count of the resolved graph: `cargo tree -e normal,build` lists one line
 # per node (build-dependencies are indented under an explicit marker line, which the
@@ -128,7 +134,9 @@ dep_account() {
         --no-default-features --features "$feats" 2>/dev/null)" || { printf 'ERR'; return; }
     nodes=$(printf '%s\n' "$tree_out" | grep -cE '^[^ ]')
     hits=$(printf '%s\n' "$tree_out" | grep -cE "$XMR_ONLY_RE")
-    printf '%s|%s' "$nodes" "$hits"
+    ed25519=$(printf '%s\n' "$tree_out" | grep -cE "$PRIM_ED25519_RE" || true)
+    b58monero=$(printf '%s\n' "$tree_out" | grep -cE "$PRIM_B58_MONERO_RE" || true)
+    printf '%s|%s|%s|%s' "$nodes" "$hits" "$ed25519" "$b58monero"
 }
 
 # Write a manifest for one combination: limits referenced BY NAME, chains explicitly
@@ -272,8 +280,7 @@ for combo in "${COMBOS[@]}"; do
     # asserted in both directions: a disabled chain must contribute no nodes, and the
     # all-on build must still show them (otherwise "absent" and "invisible" look alike).
     dep="$(dep_account "$combo")"
-    dep_nodes="${dep%%|*}"
-    dep_xmr="${dep##*|}"
+    IFS='|' read -r dep_nodes dep_xmr dep_ed dep_b58 <<< "$dep"
     case ",$combo," in
         *",xmr,"*)
             if [ "${dep_xmr:-0}" -eq 0 ]; then
@@ -290,7 +297,7 @@ for combo in "${COMBOS[@]}"; do
             fi
             ;;
     esac
-    printf '%s\n' "$combo|${dep_nodes:-?}|${dep_xmr:-?}" >> "$TMP_DIR/deps.txt"
+    printf '%s\n' "$combo|${dep_nodes:-?}|${dep_xmr:-?}|${dep_ed:-?}|${dep_b58:-?}" >> "$TMP_DIR/deps.txt"
 done
 
 # ── 5. NEGATIVE TEST (L2) ───────────────────────────────────────────────────
@@ -341,8 +348,26 @@ fi
 note ""
 note "== dependency account (resolved graph nodes: normal + build edges, dev excluded)"
 if [ -f "$TMP_DIR/deps.txt" ]; then
-    while IFS='|' read -r combo nodes xmr; do
-        printf '   %-14s nodes=%s  xmr-exclusive=%s\n' "$combo" "$nodes" "$xmr"
+    while IFS='|' read -r combo nodes xmr ed25519 b58; do
+        printf '   %-14s nodes=%s  xmr-exclusive=%s  ed25519-dalek+curve25519-dalek=%s  base58-monero=%s\n' \
+            "$combo" "$nodes" "$xmr" "$ed25519" "$b58"
+        # primitive axis, both directions (§9.4's lesson applied to S9)
+        case ",$combo," in
+            *",xmr,"*) want_ed=1 want_b58=1 ;;
+            *)         want_ed=0 want_b58=0 ;;
+        esac
+        if [ "$want_ed" -eq 0 ] && [ "${ed25519:-0}" -ne 0 ]; then
+            bad "deps $combo: primitive ed25519 is OFF but ${ed25519} Ed25519 crate(s) are still in the graph"
+        fi
+        if [ "$want_ed" -eq 1 ] && [ "${ed25519:-0}" -eq 0 ]; then
+            bad "deps $combo: primitive ed25519 is ON but no Ed25519 crate appears — instrument blind"
+        fi
+        if [ "$want_b58" -eq 0 ] && [ "${b58:-0}" -ne 0 ]; then
+            bad "deps $combo: primitive base58-monero is OFF but the crate is still in the graph"
+        fi
+        if [ "$want_b58" -eq 1 ] && [ "${b58:-0}" -eq 0 ]; then
+            bad "deps $combo: primitive base58-monero is ON but the crate is absent — instrument blind"
+        fi
     done < "$TMP_DIR/deps.txt"
 else
     bad "no dependency account collected"

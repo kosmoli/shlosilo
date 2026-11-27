@@ -12,8 +12,6 @@ What this checks (C1 scope — deliberately narrow, see "Scope" below):
                     only declare `wired = true` capabilities (declaring a primitive
                     the product does not use is how a capability table turns into
                     marketing).
-  D. debt separation — the frozen debt list is a SEPARATE file, and a debt entry may
-                    not name a capability that some chain declares as supported.
 
 Scope (stated on every run, and deliberately asserted): primitives are NOT cargo
 features yet, so nothing here proves a dependency closure. The closure check
@@ -59,12 +57,10 @@ VOCAB_FIELDS = {"sources", "crates", "scope", "note", "feature"}
 SCOPES = ("chain", "shared", "library")
 CHAIN_KEYS = {"schema_version", "chain"} | set(SECTIONS)
 CHAIN_META = {"name", "rules_version", "coin_type", "container"}
-DEBT_KEYS = {"schema_version", "debt"}
 
 EXIT_SHAPE = 10
 EXIT_ATTRIBUTION = 11
 EXIT_ORPHAN = 12
-EXIT_DEBT = 13
 EXIT_BLIND = 14
 
 BANNER = (
@@ -215,46 +211,6 @@ def load_chains(caps, vocab):
     return chains
 
 
-def load_debt(caps, vocab):
-    path = caps / "_debt.toml"
-    doc = load(path)
-    unknown = set(doc) - DEBT_KEYS
-    if unknown:
-        raise Fail(EXIT_SHAPE, f"_debt.toml: unknown top-level keys {sorted(unknown)}")
-    if doc.get("schema_version") != 1:
-        raise Fail(EXIT_SHAPE, "_debt.toml: schema_version must be 1")
-    entries = doc.get("debt", [])
-    if not isinstance(entries, list):
-        raise Fail(EXIT_SHAPE, "_debt.toml: `debt` must be an array of tables")
-    seen = set()
-    for entry in entries:
-        if not isinstance(entry, dict):
-            raise Fail(EXIT_SHAPE, "_debt.toml: every entry must be a table")
-        required = {"id", "combination", "capability", "via", "clear_in"}
-        optional = {"note"}
-        missing = required - set(entry)
-        if missing:
-            raise Fail(EXIT_SHAPE, f"_debt.toml: entry missing fields {sorted(missing)}")
-        extra = set(entry) - required - optional
-        if extra:
-            raise Fail(EXIT_SHAPE, f"_debt.toml: entry has unknown fields {sorted(extra)} "
-                                   f"(required {sorted(required)}, optional {sorted(optional)})")
-        if entry["id"] in seen:
-            raise Fail(EXIT_SHAPE, f"_debt.toml: duplicate id {entry['id']}")
-        seen.add(entry["id"])
-        if entry["capability"] not in vocab:
-            raise Fail(EXIT_SHAPE, f"_debt.toml: {entry['id']} names unknown capability "
-                                   f"'{entry['capability']}'")
-        via = entry["via"]
-        if not (REPO / via).is_file():
-            raise Fail(EXIT_SHAPE, f"_debt.toml: {entry['id']} via '{via}' does not exist — "
-                                   f"a debt entry must point at the path that causes the excess")
-        if not re.fullmatch(r"C[0-9]+", str(entry["clear_in"])):
-            raise Fail(EXIT_SHAPE, f"_debt.toml: {entry['id']} clear_in must be C<N> (got "
-                                   f"{entry['clear_in']!r})")
-    return entries
-
-
 def build_matchers(vocab):
     """Longest module path wins, so `ur::codec::crypto_psbt` is not read as `ur`."""
     items = []
@@ -327,7 +283,6 @@ def run(report_only=False, caps=None):
     caps = caps or CAPS
     vocab = load_vocab(caps)
     chains = load_chains(caps, vocab)
-    debt = load_debt(caps, vocab)
     per_file, files_scanned = scan(vocab)
 
     problems = []
@@ -385,7 +340,6 @@ def run(report_only=False, caps=None):
     for info in chains.values():
         owned |= set(info["declared"])
     shared_caps = {name for name, meta in vocab.items() if meta["scope"] == "shared"}
-    debt_caps = {entry["capability"] for entry in debt}
     library_refs = {n: f for n, f in shared_hits.items() if vocab[n]["scope"] == "library"}
     for name, files in shared_hits.items():
         if name in owned or name in shared_caps or vocab[name]["scope"] == "library":
@@ -393,8 +347,6 @@ def run(report_only=False, caps=None):
         problems.append(
             f"B: '{name}' is referenced by shared code ({', '.join(files[:2])}) but no chain "
             f"declares it and it is not scope=shared"
-            + (" — it is listed in _debt.toml, which licenses the excess but must not be the "
-               "capability's only home" if name in debt_caps else "")
         )
 
     # ── E: the cargo feature graph must carry exactly the declared capabilities ──
@@ -421,27 +373,9 @@ def run(report_only=False, caps=None):
                 f"capabilities/{chain}.toml maps to — a phantom feature (or a missing declaration)"
             )
 
-    # ── D: debt and declaration must not overlap ──
-    # A debt entry says "this capability is compiled into COMBINATION although no chain in it
-    # declares it". Declaring it in one of those chains would silence the check by inflating
-    # that chain's capability set — the exact move this separation exists to prevent.
-    for entry in debt:
-        cap = entry["capability"]
-        combo = [c.strip() for c in str(entry["combination"]).split(",") if c.strip()]
-        for chain in combo:
-            if chain not in chains:
-                raise Fail(EXIT_SHAPE, f"_debt.toml: {entry['id']} names unknown chain '{chain}'")
-            if cap in chains[chain]["declared"]:
-                problems.append(
-                    f"D: {entry['id']} lists '{cap}' as excess for combination "
-                    f"'{entry['combination']}', but capabilities/{chain}.toml declares it — "
-                    f"debt is not a place to legalise a declaration, and a declaration is not a "
-                    f"place to silence debt"
-                )
-
     print(f"chains: {', '.join(sorted(chains))}")
     print(f"capabilities declared: {sum(len(i['declared']) for i in chains.values())} "
-          f"across {len(chains)} chains; vocabulary: {len(vocab)}; debt entries: {len(debt)}")
+          f"across {len(chains)} chains; vocabulary: {len(vocab)}")
     print(f"scan: {files_scanned} files, {total_refs} files with references, "
           f"{chain_refs} references inside chain modules")
     print("feature graph: chain-* -> prim-* root sets match the declared capabilities")
@@ -467,7 +401,7 @@ def self_test():
 
     cases = []
 
-    def fixture(label, code, mutate=None, delete=(), debt=None):
+    def fixture(label, code, mutate=None, delete=()):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
             for src in CAPS.glob("*.toml"):
@@ -480,10 +414,8 @@ def self_test():
                     continue
                 text = tgt.read_text(encoding="utf-8")
                 tgt.write_text(mutate(text) if mutate else text, encoding="utf-8")
-            if debt is not None:
-                (tmpdir / "_debt.toml").write_text(debt, encoding="utf-8")
             # Two ways to go red: a Fail (shape problems, raised while loading) and a non-zero
-            # RETURN CODE (attribution / orphan / debt problems, collected then reported). A
+            # RETURN CODE (attribution / orphan problems, collected then reported). A
             # fixture that only watched exceptions reported four live checks as "no red".
             try:
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -510,9 +442,6 @@ def self_test():
             lambda d: d.replace("ecdsa = true", "# removed"))
     fixture("a chain directory without a declaration is refused", EXIT_ATTRIBUTION,
             delete=("btc.toml",))
-    fixture("debt may not name a capability its combination declares", EXIT_ORPHAN,
-            debt=('schema_version = 1\n\n[[debt]]\nid = "DX"\ncombination = "btc"\n'
-                  'capability = "ecdsa"\nvia = "forms/business/sign.rs"\nclear_in = "C3"\n'))
 
     failed = [c for c in cases if not c[1]]
     for label, ok, detail in cases:
