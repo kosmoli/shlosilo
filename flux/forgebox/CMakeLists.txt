@@ -141,6 +141,49 @@ if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
     message(STATUS "key supply: staticlib SE face = ${SHLOSILO_LIB_HAS_SE}, source set SE = ${SHLOSILO_WITH_SE}")
 endif()
 
+# ---- chain axis on the C surface (pool #99) ----
+# shlosilo.h guards chain-specific declarations behind `#if defined(SHLOSILO_CHAIN_*)` (cbindgen
+# `[defines]`), so this host must DECLARE the chain set it links against. One variable drives
+# both halves, the same shape the key-supply switch above uses: build.sh derives the staticlib
+# feature set and this declaration from SHLOSILO_CHAINS.
+#
+# Verification is deliberately asymmetric, and says so rather than implying coverage it lacks:
+# XMR is the only chain with chain-exclusive entry points (shlosilo_xmr_pairing_ffi and the
+# generator-cache pair), so the archive can confirm or refute that half in BOTH directions.
+# BTC and ETH carry no exclusive symbol, so their declaration is taken on trust - inventing a
+# check that cannot see them would only manufacture confidence. The loud signal for a wrong
+# BTC/ETH declaration is the C build itself: a declaration that is too narrow hides a prototype
+# the host calls (compile error), one that is too wide hides nothing and links.
+set(SHLOSILO_CHAINS "btc;eth;xmr" CACHE STRING "chain set this C host declares")
+foreach(_chain ${SHLOSILO_CHAINS})
+    if(NOT _chain MATCHES "^(btc|eth|xmr)$")
+        message(FATAL_ERROR "chain axis: unknown chain '${_chain}' in SHLOSILO_CHAINS='${SHLOSILO_CHAINS}' (expected btc, eth and/or xmr)")
+    endif()
+    string(TOUPPER "${_chain}" _chain_upper)
+    add_compile_options(-DSHLOSILO_CHAIN_${_chain_upper}=1)
+    message(STATUS "chain axis: declaring SHLOSILO_CHAIN_${_chain_upper}")
+endforeach()
+
+if(EXISTS "${SHLOSILO_PATH}/libshlosilo.a")
+    if(SHLOSILO_LIB_SYMBOLS MATCHES "shlosilo_xmr_pairing_ffi")
+        set(SHLOSILO_LIB_HAS_XMR TRUE)
+    else()
+        set(SHLOSILO_LIB_HAS_XMR FALSE)
+    endif()
+    list(FIND SHLOSILO_CHAINS "xmr" _xmr_declared)
+    if(_xmr_declared GREATER -1 AND NOT SHLOSILO_LIB_HAS_XMR)
+        message(FATAL_ERROR "chain axis: SHLOSILO_CHAINS declares xmr, but ${SHLOSILO_PATH}/libshlosilo.a has no XMR FFI face. Rebuild the staticlib with chain-xmr (build.sh derives it from SHLOSILO_CHAINS).")
+    elseif(_xmr_declared EQUAL -1 AND SHLOSILO_LIB_HAS_XMR)
+        message(FATAL_ERROR "chain axis: SHLOSILO_CHAINS does not declare xmr, but ${SHLOSILO_PATH}/libshlosilo.a carries the XMR FFI face - either the archive was built for more chains than this host declares, or the header guards now hide a surface that exists. Rebuild the staticlib without chain-xmr.")
+    endif()
+    if(_xmr_declared GREATER -1)
+        set(_xmr_declared_txt "yes")
+    else()
+        set(_xmr_declared_txt "no")
+    endif()
+    message(STATUS "chain axis: staticlib XMR face = ${SHLOSILO_LIB_HAS_XMR}, xmr declared = ${_xmr_declared_txt}")
+endif()
+
 # LVGL source files (smoke diagnostics only; the product UI does not use LVGL)
 if(SMOKE_SCREEN)
     file(GLOB_RECURSE LVGL

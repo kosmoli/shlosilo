@@ -75,7 +75,24 @@ echo "=== linking sim_l3 ==="
 # -I "$ID_DIR" is where the generated build identity header came from: the simulator
 # must compile against the SAME build the library came from, and run once to prove the
 # header and the library agree (see the assertion in sim_l3.c).
-gcc -Wall -Wextra \
+# Chain axis (pool #99): shlosilo.h guards chain-specific declarations behind
+# `#if defined(SHLOSILO_CHAIN_*)`, so every C host has to declare the chain set it links
+# against - this one included. It exercises the full product face (sim_l3.c calls the XMR
+# generator-cache entry points), so it declares all three. Leaving this out is not a silent
+# failure: the prototypes disappear and the calls below fail to compile, which is precisely how
+# this was found.
+SHLOSILO_CHAINS="${SHLOSILO_CHAINS:-btc,eth,xmr}"
+CHAIN_DEFINES=()
+IFS=',' read -r -a _chains <<< "$SHLOSILO_CHAINS"
+for _c in "${_chains[@]}"; do
+    case "$_c" in
+        btc|eth|xmr) CHAIN_DEFINES+=("-DSHLOSILO_CHAIN_$(echo "$_c" | tr '[:lower:]' '[:upper:]')=1") ;;
+        *) echo "SHLOSILO_CHAINS: unknown chain '$_c' (expected btc/eth/xmr)" >&2; exit 1 ;;
+    esac
+done
+echo "    chain axis: declaring ${SHLOSILO_CHAINS}"
+
+gcc -Wall -Wextra "${CHAIN_DEFINES[@]}" \
     -o "$APP_ROOT/sim_l3" "$APP_ROOT/sim_l3.c" \
     -I "$REPO_ROOT" -I "$ID_DIR" -L "$REPO_ROOT/target/release" \
     -lshlosilo -lpthread -ldl -lm

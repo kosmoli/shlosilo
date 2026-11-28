@@ -18,13 +18,24 @@
 #   3. Every `shlosilo_*` function the header declares exists in the ALL-ON keep table. The
 #      header may not advertise an entry point the product does not carry.
 #
+#   4. THE HEADER IS CHAIN-PARAMETRIC AND AGREES WITH THE ARCHIVE, PER COMBINATION (pool #99).
+#      `[defines]` in cbindgen.toml turns every `#[cfg(feature = "chain-*")]` into
+#      `#if defined(SHLOSILO_CHAIN_*)`, so one header serves every chain set and *what a host sees*
+#      depends on the macros it declares. The invariants checked here, per combination:
+#        a. the declarations the header would EXPOSE given this chain set, restricted to the entry
+#           points the shim can carry, EQUAL this combination's keep table - both directions;
+#        b. every exposed declaration outside the all-on keep table is a known host hook (the
+#           allocator and the panic hook), so a guard can never hide something the C host needs;
+#        c. at least one declaration is actually guarded, i.e. the narrowest set sees strictly
+#           fewer declarations than all-on (a no-op `[defines]` fails this, which is the point:
+#           it is the assertion that stops #99 from silently regressing).
+#      cbindgen output is still asserted identical across combinations: the parametricity lives in
+#      the `#if`s, not in four different files, and that is worth pinning.
+#
 # WHAT IS **NOT** ASSERTED, and why (say it here rather than let a reader assume coverage):
-#   The header itself is generated with `[defines]` ABSENT, so cbindgen ignores `#[cfg(feature)]`
-#   and emits every declaration for every chain set — all four combinations produce the SAME
-#   header. That is sound today only because every C host (forgebox) builds the full chain set.
-#   Guarding the header per chain needs `[defines]` in cbindgen.toml PLUS the C host declaring
-#   its chain set with `-DSHLOSILO_CHAIN_*`; without the second half the guards would silently
-#   hide entry points from the C build. Tracked as a pool item, not silently skipped.
+#   Which macros the C host actually defines - that is flux/forgebox's own configure-time check
+#   (CMakeLists.txt cross-checks the xmr half against `nm` on libshlosilo.a, and says in place
+#   why btc/eth cannot be verified that way).
 #
 # Usage: bash scripts/check_header_per_combo.sh
 # =============================================================================
@@ -109,8 +120,44 @@ for combo in "${COMBOS[@]}"; do
     fi
     header_fns "$hdr" > "$TMP_DIR/hdrfns-$tag.txt"
     keep_fns "$keep" > "$TMP_DIR/keepfns-$tag.txt"
+    [ "$combo" = "btc,eth,xmr" ] && cp "$TMP_DIR/keepfns-$tag.txt" "$TMP_DIR/keepfns-allon.txt"
     note "   header: $(wc -l < "$hdr") lines, $(wc -l < "$TMP_DIR/hdrfns-$tag.txt") function decls"
     note "   keep:   $(grep -c 'Addr(' "$keep") entries, $(wc -l < "$TMP_DIR/keepfns-$tag.txt") entry points"
+
+    # 4/a-c: what this chain set actually SEES in the header must equal what the shim carries.
+    vis="$TMP_DIR/visfns-$tag.txt"
+    # Piped through `LC_ALL=C sort`: the report is fed to `comm`, so its collation must match the
+    # keep-table extraction exactly. Depending on Python's own ordering here would make the gate
+    # report a difference between two identical sets (measured: it did).
+    if ! python3 scripts/header_chain_surface.py --header "$hdr" --chains "$combo" --kind proto \
+            2> "$TMP_DIR/vis-$tag.err" | LC_ALL=C sort -u > "$vis"; then
+        bad "$combo: header surface report failed:"
+        sed 's/^/      /' "$TMP_DIR/vis-$tag.err" | head -5
+    else
+        # a. restricted to the all-on keep table (host hooks are not entry points the shim carries)
+        # Reference: the union of every keep table generated so far. The all-on table is a
+        # superset of each subset, so building the union makes this assertion independent of
+        # loop order — and it stays honest even if the combos list is reordered.
+        allkeep="$TMP_DIR/keepfns-union.txt"
+        cat "$TMP_DIR"/keepfns-*.txt 2>/dev/null | LC_ALL=C sort -u > "$allkeep"
+        if [ -s "$allkeep" ]; then
+            LC_ALL=C comm -12 "$vis" "$allkeep" > "$TMP_DIR/viscarry-$tag.txt"
+            if diff -q "$TMP_DIR/viscarry-$tag.txt" "$TMP_DIR/keepfns-$tag.txt" > /dev/null; then
+                note "   header exposes exactly the entry points this chain set carries ($(wc -l < "$vis") decls)"
+            else
+                bad "$combo: header surface and keep table disagree:"
+                LC_ALL=C comm -3 "$TMP_DIR/viscarry-$tag.txt" "$TMP_DIR/keepfns-$tag.txt" \
+                    | head -8 | sed 's/^/      /'
+            fi
+        fi
+        # b. everything exposed that the shim cannot carry must be a host hook
+        unknown="$(LC_ALL=C comm -23 "$vis" "$TMP_DIR/keepfns-$tag.txt" \
+            | LC_ALL=C grep -vE '^(shlosilo_embedded_malloc|shlosilo_embedded_free|shlosilo_panic_hook)$' || true)"
+        if [ -n "$unknown" ]; then
+            bad "$combo: header exposes declarations that are neither carried nor host hooks:"
+            printf '%s\n' "$unknown" | head -8 | sed 's/^/      /'
+        fi
+    fi
 
     if [ "$combo" = "btc,eth,xmr" ]; then
         if diff -q "$hdr" "$HEADER" > /dev/null; then
@@ -209,13 +256,24 @@ for combo in btc eth xmr; do
         diff "$base" "$TMP_DIR/hdr-$tag.h" | head -8 | sed 's/^/      /'
     fi
 done
-note "   header is chain-set independent (no [defines] yet) — sound only while every C host"
-note "   builds the full chain set; see the pool item for the guarded-header work"
+# 4/c directly: a no-op `[defines]` (or a cbindgen that stops honouring it) makes every chain set
+# see the same surface. Assert the guards bite, so #99 cannot silently regress into #99.
+if [ -f "$TMP_DIR/visfns-btc.txt" ] && [ -f "$TMP_DIR/visfns-btc-eth-xmr.txt" ]; then
+    narrow="$(wc -l < "$TMP_DIR/visfns-btc.txt")"
+    widest="$(wc -l < "$TMP_DIR/visfns-btc-eth-xmr.txt")"
+    if [ "$narrow" -ge "$widest" ]; then
+        bad "the btc-only host sees $narrow declarations and all-on sees $widest: nothing is guarded,"
+        bad "   so the header no longer describes which entry points the archive carries."
+    else
+        note "   guards bite: btc-only sees $narrow decls, all-on sees $widest (chain-exclusive hidden)"
+    fi
+fi
 
 note ""
 if [ "$fail" -eq 0 ]; then
     note "HEADER PER COMBO: OK (all-on reproduces both committed surfaces byte-identically;"
     note "                   keep tables follow the declared chain set in both directions;"
+    note "                   the guarded header exposes exactly that surface per chain set;"
     note "                   the header declares nothing the product does not carry)"
 else
     note "HEADER PER COMBO: RED (see FAIL lines above)"

@@ -131,137 +131,190 @@
  */
 #define FEE_UNVERIFIED (1 << 9)
 
+#if defined(SHLOSILO_CHAIN_BTC)
 #define UNSIGNED_TX 0
+#endif
 
+#if defined(SHLOSILO_CHAIN_BTC)
 /**
  * BIP-125: nSequence < 0xfffffffe means replaceable
  */
 #define RBF_THRESHOLD 4294967294
+#endif
 
+#if defined(SHLOSILO_CHAIN_BTC)
 /**
  * nLockTime height/time boundary (BIP-65 / Bitcoin Core)
  */
 #define LOCKTIME_THRESHOLD 500000000
+#endif
 
+#if defined(SHLOSILO_CHAIN_BTC)
 /**
  * BIP-68 disable flag
  */
 #define SEQUENCE_LOCKTIME_DISABLE_FLAG (1 << 31)
+#endif
 
+#if defined(SHLOSILO_CHAIN_BTC)
 /**
  * BIP-68 type flag (set = time, clear = height)
  */
 #define SEQUENCE_LOCKTIME_TYPE_FLAG (1 << 22)
+#endif
 
+#if defined(SHLOSILO_CHAIN_BTC)
 /**
  * Above this value counts as "huge" (21M BTC, in sats)
  */
 #define MAX_MONEY_SATS (21000000 * 100000000)
+#endif
 
+#if defined(SHLOSILO_CHAIN_BTC)
 /**
  * P2PKH dust
  */
 #define DUST_SATS 546
+#endif
 
+#if defined(SHLOSILO_CHAIN_BTC)
 /**
  * Witness program version (always 1 for P2TR per BIP-86)
  */
 #define P2TR_WITNESS_VERSION 1
+#endif
 
+#if defined(SHLOSILO_CHAIN_ETH)
 /**
  * `bytesN` (N in 1..=32): payload = the raw `"0x…"` text.
  */
 #define KIND_BYTES32 0
+#endif
 
+#if defined(SHLOSILO_CHAIN_ETH)
 /**
  * `address`: payload = the raw `"0x…"` text.
  */
 #define KIND_ADDRESS 1
+#endif
 
+#if defined(SHLOSILO_CHAIN_ETH)
 /**
  * `uintN`: payload = the decimal text (string or JSON number literal).
  */
 #define KIND_UINT256 2
+#endif
 
+#if defined(SHLOSILO_CHAIN_ETH)
 /**
  * `intN`: payload = the decimal text (may carry a leading `-`).
  */
 #define KIND_INT256 3
+#endif
 
+#if defined(SHLOSILO_CHAIN_ETH)
 /**
  * `bool`: payload = `"true"` / `"false"`.
  */
 #define KIND_BOOL 4
+#endif
 
+#if defined(SHLOSILO_CHAIN_ETH)
 /**
  * `string`: payload = the decoded UTF-8 bytes.
  */
 #define KIND_STRING 5
+#endif
 
+#if defined(SHLOSILO_CHAIN_ETH)
 /**
  * `bytes`: payload = the raw text (dynamic hex or literal bytes).
  */
 #define KIND_BYTES 6
+#endif
 
+#if defined(SHLOSILO_CHAIN_ETH)
 /**
  * A struct: payload = the type name; children = the fields in declaration order.
  */
 #define KIND_STRUCT 7
+#endif
 
+#if defined(SHLOSILO_CHAIN_ETH)
 /**
  * An array: no payload; children = the elements in document order. Whether the
  * elements are atoms or structs is readable from `children_of(0).kind` (P3's fold
  * strategy needs exactly that, which is why there is no extra field for it).
  */
 #define KIND_ARRAY 8
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * CLSAG ring maximum length (XMR protocol default 11 = 1 real + 10 decoys)
  */
 #define DEFAULT_RING_LEN 11
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * CLSAG signature serialized length (64 bytes)
  * The actual monero-clsag Clsag struct serializes to ≈ 64 bytes
  */
 #define CLSAG_PROOF_LEN 64
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Key image length (32 bytes compressed)
  */
 #define KEY_IMAGE_LEN 32
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * The wire of key-image-with-signature: a continuous stream of `[32B image][64B signature]` records,
  * aligned with keystone `KeyImages::to_bytes` / `From<&Vec<u8>>` (96B stride).
  */
 #define KEY_IMAGE_RECORD_LEN 96
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Type 0: full borromean (pre-fork, deprecated)
  */
 #define FULL 0
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Type 1: simple borromean (deprecated)
  */
 #define SIMPLE 1
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Type 2: bulletproofs (per-output BP+ range proof)
  */
 #define BULLETPROOFS 2
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Type 3: bulletproofs2 (aggregated BP+, post-fork 1788000)
  */
 #define BULLETPROOFS_PLUS 3
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Entropy length lower bound (a misuse guard, not an entropy-quality check — see the module docs).
  */
 #define ENTROPY_MIN_LEN 16
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * wallet2 `m_subaddresses` map approximation window (the SUBADDRESS_LOOKAHEAD
  * class used by monero_c/cupcake). The sending wallet's fill loop
@@ -272,31 +325,45 @@
  * same). A cached map is the LuckyFox-layer upgrade.
  */
 #define SUB_LOOKAHEAD_MAJOR 8
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 #define SUB_LOOKAHEAD_MINOR 200
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * XMR tx version: 2 = RingCT (post-fork, only valid in mainnet)
  */
 #define TX_VERSION 2
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 #define PREFIX_OUTPUTS_MAX 64
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Legacy (pre-RingCT, deprecated)
  */
 #define TX_OUT_GEN 0
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * TxOutToKey: standard stealth output (RingCT compatible)
  */
 #define TX_OUT_TO_KEY 2
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * TxOutToTaggedKey: tagged-key output (subaddress)
  */
 #define TX_OUT_TO_TAGGED_KEY 3
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Construct and sign a full transaction from TxConstructionData (P1-06 core entry point)
  *
@@ -310,6 +377,7 @@
  * real monerod wire is ~2KiB single-input, cap 16KiB covers multi-input).
  */
 #define TX_WIRE_SLOT_MAX (16 * 1024)
+#endif
 
 /**
  * RSA-4096 maximum signature length (512 bytes for a 4096-bit key + PSS overhead)
@@ -593,6 +661,7 @@
 
 #define TX_PHASES 17
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Protocol-hard: Monero fixed ring size (post-v13 CLSAG). Never tunable.
  * Z5.3 pool cut: BP+ prove multiexp scratch, in (Scalar, EdwardsPoint)
@@ -601,9 +670,13 @@
  * is an explicit error before any proving starts.
  */
 #define SIGN_WS_BP_TERMS 2050
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 #define SIGN_WS_BP_STRAUS_BYTES (((SIGN_WS_BP_CHUNK_MAX * (16 * 160)) + (SIGN_WS_BP_CHUNK_MAX * 256)) + 64)
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * CryptoNight-V0 key-derivation scratchpad (algorithm-defined 2MB).
  * T-04 follow-up (2026-09-30): the ws segment is OVERLAID on the
@@ -613,12 +686,15 @@
  * fit is enforced at compile time below and pinned by layout tests.
  */
 #define SIGN_WS_CN_SCRATCH (1 << 21)
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Z5.3 C-cut B: WIP round ping-pong scratch (a/b/g/h double buffers) —
  * byte expression of `WipScratch::storage_bytes(SIGN_WS_BP_TERMS)`.
  */
 #define SIGN_WS_BP_WIP_BYTES (SIGN_WS_BP_TERMS * 960)
+#endif
 
 /**
  * Z4-7e: BIP32_DERIVATION records per input map (measured: 1 in the fixture;
@@ -644,29 +720,39 @@
 
 #define SHLOSILO_GENCACHE_BLOB_BYTES 262144
 
+#if defined(SHLOSILO_CHAIN_XMR)
 #define RING_MAX 16
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Soft: additional tx keys per source/output (real traffic 1-2).
  */
 #define EXTRA_KEYS_MAX 8
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Soft: `tx_extra` nonce payload bytes (payment IDs are 8/9B).
  */
 #define TX_EXTRA_NONCE_MAX 32
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Soft: `tx_extra` additional pubkeys (subaddress sends; one per output).
  */
 #define TX_EXTRA_PUBKEYS_MAX 16
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Soft: `original` address-string bytes (Monero base58 addresses: standard 95,
  * integrated 106 chars — real traffic never exceeds 106). Over-cap is an
  * explicit EncodingInvalidFormat Err (Z3.1 leaf: the container Vec is gone).
  */
 #define DEST_ORIGINAL_MAX 106
+#endif
 
 /**
  * Soft: the `origin` field of the ETH UR containers — `eth-sign-request` key 7
@@ -680,62 +766,84 @@
  */
 #define ETH_UR_ORIGIN_MAX_LEN 64
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: plaintext scratch == max unsigned-txset plain budget.
  */
 #define SIGN_WS_PLAIN 16384
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: unsigned-model tx slots.
  */
 #define SIGN_WS_TXES 8
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: source entries (flat, all txes).
  */
 #define SIGN_WS_SOURCES 32
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: the retained-leg staging (I13) — the FULL fp-matched retention
  * set for the keystone two-fill map. Mirrors `WalletKiRecord` capacity
  * (pairing-record pool, 64) — a larger retention batch refuses at the sign.
  */
 #define SIGN_WS_RETAINED 128
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: splitted destinations (flat).
  */
 #define SIGN_WS_SPLITS 64
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: selected-transfers bytes (flat).
  */
 #define SIGN_WS_SEL 256
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: tx_extra bytes == max plain budget.
  */
 #define SIGN_WS_EXTRA 16384
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: model destinations (flat).
  */
 #define SIGN_WS_DESTS 64
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: subaddress indices (flat).
  */
 #define SIGN_WS_SUBIDX 256
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: PendingTx slots.
  */
 #define SIGN_WS_PTX 8
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: signed-tx wire bytes (TX_WIRE_SLOT_MAX per tx).
  */
 #define SIGN_WS_TX_BYTES ((16 * 1024) * 8)
+#endif
 
 /**
  * Workspace: key images (flat).
@@ -744,33 +852,43 @@
  */
 #define SIGN_WS_KI 128
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: tx key image records (flat).
  * Raised 128 -> 256 (WP4): the Keyed tail's two-fill union =
  * new outputs (≤100) + retained transfers (≤128).
  */
 #define SIGN_WS_TKI 256
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: selected-transfers record bytes (flat).
  */
 #define SIGN_WS_SEL_OUT 256
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: key-image string bytes (67 per source).
  */
 #define SIGN_WS_KSTR (67 * 32)
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Workspace: records-face destinations (flat).
  */
 #define SIGN_WS_RECORD_DESTS 64
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * ClsagProof serialized cap: pseudo_out (32) + s[RING_MAX] (32*16) + c1 (32) + D (32).
  * Layout per clsag.rs sign(): `pseudo_out(32) ‖ s[mixin+1] ‖ c1 ‖ D`.
  */
 #define CLSAG_PROOF_MAX (32 * (RING_MAX + 3))
+#endif
 
 /**
  * Script-expression registry tags.
@@ -1254,6 +1372,7 @@ int shlosilo_supported_protocols_ffi(uint8_t *output_buf,
                                      unsigned int output_buf_len,
                                      unsigned int *actual_len);
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * INV-1: pure probe — reports the required buffer sizes for a generator set.
  * No side effects: does not touch the registry slot, consumes no RNG, derives
@@ -1272,7 +1391,9 @@ int32_t shlosilo_gencache_table_sizes(int32_t set,
                                       uint32_t *g_bytes,
                                       uint32_t *h_bytes,
                                       uint32_t *blob_bytes);
+#endif
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * INV-2/3/4: provide the decompressed-table storage for one generator set.
  * All validation happens before any state change or write; success commits
@@ -1292,6 +1413,7 @@ int32_t shlosilo_gencache_provide_table(int32_t set,
                                         uint32_t *h_bytes,
                                         uint8_t *blob,
                                         uint32_t *blob_bytes);
+#endif
 
 /**
  * Master fingerprint of a live key session (BIP-32 fingerprint of the master
@@ -1789,6 +1911,7 @@ int shlosilo_sign_session_view_ffi(const struct KeySession *session,
  */
 int shlosilo_session_free_ffi(struct KeySession **session);
 
+#if defined(SHLOSILO_CHAIN_XMR)
 /**
  * Cake direct pairing (T6): the `xmr-output` receive leg — seed-less
  * session entry, frozen signature shape mirroring [`shlosilo_sign_session_ffi`].
@@ -1851,6 +1974,7 @@ int shlosilo_xmr_pairing_ffi(const struct KeySession *session,
                              struct WalletKiRecord *ki_records_out,
                              unsigned int ki_records_cap,
                              unsigned int *ki_records_actual);
+#endif
 
 /**
  * Pairing retention store merge (pool §53 extraction, 2026-10-21): the

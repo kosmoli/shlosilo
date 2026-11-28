@@ -31,7 +31,11 @@ crate-type = ["rlib"]
 #
 # The switch is on the crate, not just the C build, because the SE face is a Rust module whose
 # FFI entries end up in the keep table: leaving it out must remove the code, not hide it.
-default = []
+default = ["chain-btc", "chain-eth", "chain-xmr"]
+# Forwarding features: a carrier that wants one chain switches `default` off and names it.
+chain-btc = ["shlosilo/chain-btc"]
+chain-eth = ["shlosilo/chain-eth"]
+chain-xmr = ["shlosilo/chain-xmr"]
 se = []
 
 [dependencies]
@@ -39,7 +43,11 @@ se = []
 # KeySession/SeedEntropy are core-only faces. Same feature posture as
 # flux/host-sim/staticlib's dependency on the core.
 # Chain axis: same reasoning as the shell — explicit, never inherited from `default`.
-shlosilo = { path = "../..", default-features = false, features = ["chain-btc", "chain-eth", "chain-xmr"] }
+# Chain axis (pool #102): the chain set must arrive through THIS package's forwarding features,
+# not as a literal list on the dependency line. A literal list here silently re-added all three
+# chains to every consumer, so `-p shlosilo-forgebox --no-default-features --features chain-btc`
+# still compiled XMR - "declare your chain set" was unenforceable at the carrier.
+shlosilo = { path = "../..", default-features = false }
 
 [dev-dependencies]
 # P1-03 discipline: assert_not_impl_any! pins "no Copy/Clone" compile-time

@@ -82,11 +82,37 @@ SHLOSILO_TARGET="${SHLOSILO_TARGET:-thumbv7em-none-eabihf}"
 # or ships a module the carrier cannot use.
 SHLOSILO_WITH_SE="${SHLOSILO_WITH_SE:-1}"
 case "$SHLOSILO_WITH_SE" in
-    1) SE_CARGO_FLAGS=(); SE_CMAKE=ON ;;
-    0) SE_CARGO_FLAGS=(--no-default-features); SE_CMAKE=OFF ;;
+    1) SE_CMAKE=ON ;;
+    0) SE_CMAKE=OFF ;;
     *) echo "SHLOSILO_WITH_SE must be 0 or 1 (got '$SHLOSILO_WITH_SE')" >&2; exit 1 ;;
 esac
 echo "key supply: $( [[ "$SE_CMAKE" == ON ]] && echo "plate + SE (SHLOSILO_WITH_SE=1)" || echo "plate only (SHLOSILO_WITH_SE=0)" )"
+
+# ---- chain set (pool #99) ----
+# Same one-variable-drives-both-halves rule as the key-supply switch above: the staticlib's
+# cargo features AND the C host's `-DSHLOSILO_CHAIN_*` declaration come from here, because a host
+# that declares a different set than the archive carries either cannot call what it links
+# (harmless) or fails at the link (loud) - but only if the two halves are derived together.
+# Default = the three-chain product face, so a plain `build.sh` is unchanged.
+if [[ "${build_options[btc_only]}" == true ]]; then
+    SHLOSILO_CHAINS="btc"
+else
+    SHLOSILO_CHAINS="${SHLOSILO_CHAINS:-btc,eth,xmr}"
+fi
+case "$SHLOSILO_CHAINS" in
+    btc|eth|xmr|btc,eth|xmr,btc|btc,eth,xmr) ;;
+    *) echo "SHLOSILO_CHAINS must be a comma list of btc/eth/xmr (got '$SHLOSILO_CHAINS')" >&2; exit 1 ;;
+esac
+CHAIN_CARGO_FLAGS=()
+if [[ "$SHLOSILO_CHAINS" != "btc,eth,xmr" || "$SHLOSILO_WITH_SE" != 1 ]]; then
+    _feats=()
+    [[ "$SHLOSILO_WITH_SE" == 1 ]] && _feats+=("se")
+    IFS=',' read -r -a _chain_list <<< "$SHLOSILO_CHAINS"
+    for _c in "${_chain_list[@]}"; do _feats+=("chain-$_c"); done
+    _feat_str="$(IFS=,; echo "${_feats[*]}")"
+    CHAIN_CARGO_FLAGS=(--no-default-features --features "$_feat_str")
+fi
+echo "chain axis: declaring ${SHLOSILO_CHAINS} (staticlib features: ${CHAIN_CARGO_FLAGS[*]:-default})"
 
 # forgebox CLI (firmware signing) lives in the Hermes node bin on the dev box.
 if [[ -d "$HOME/.hermes/node/bin" ]]; then
@@ -131,7 +157,7 @@ echo "Building with options: ${build_options[@]}"
 build_shlosilo() {
     local lib="$REPO_ROOT/target/$SHLOSILO_TARGET/release/libshlosilo.a"
 
-    echo "=== shlosilo staticlib: cargo build -p shlosilo-forgebox ($SHLOSILO_TARGET) ${SE_CARGO_FLAGS[*]:-} ==="
+    echo "=== shlosilo staticlib: cargo build -p shlosilo-forgebox ($SHLOSILO_TARGET) ${CHAIN_CARGO_FLAGS[*]:-} ==="
     # The keep-table must be current BEFORE the build: it is what keeps every
     # C-ABI entry point reachable through LTO. A new entry point without a
     # regenerated table would otherwise fail late, at the C link.
@@ -140,7 +166,7 @@ build_shlosilo() {
     # flux/forgebox/staticlib shim package, so no other consumer of the crate
     # is ever forced through a staticlib unit.
     ( cd "$REPO_ROOT" && SHLOSILO_LIMITS=forgebox cargo build -p shlosilo-forgebox \
-        "${SE_CARGO_FLAGS[@]}" --release --target "$SHLOSILO_TARGET" )
+        "${CHAIN_CARGO_FLAGS[@]}" --release --target "$SHLOSILO_TARGET" )
     mkdir -p "$SHLOSILO_DIR"
     arm-none-eabi-strip --strip-debug "$lib" -o "$SHLOSILO_DIR/libshlosilo.a"
     echo "    staticlib -> $SHLOSILO_DIR/libshlosilo.a ($(stat -c%s "$SHLOSILO_DIR/libshlosilo.a") bytes)"
@@ -240,9 +266,10 @@ execute_build() {
     if [[ "${build_options[production]}" == true ]]; then
         cmake_parm="${cmake_parm} -DBUILD_PRODUCTION=true"
     fi
-    if [[ "${build_options[btc_only]}" == true ]]; then
-        cmake_parm="${cmake_parm} -DBTC_ONLY=true"
-    fi
+    # The chain set reaches CMake as a declaration the header guards consume; the old
+    # `-DBTC_ONLY=true` was read by nothing and a `build.sh btc_only` silently produced the
+    # three-chain product.
+    cmake_parm="${cmake_parm} -DSHLOSILO_CHAINS=$(echo "$SHLOSILO_CHAINS" | tr ',' ';')"
     if [[ "${build_options[cypherpunk]}" == true ]]; then
         cmake_parm="${cmake_parm} -DCYBERPUNK=true"
     fi

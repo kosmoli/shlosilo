@@ -82,6 +82,29 @@ int shlosilo_keysource_se_close_ffi(uint8_t *ws);"""
 [parse]
 parse_deps = false
 
+# Chain axis on the C contract surface (pool #99, the second half lives in the host).
+#
+# Without `[defines]` cbindgen ignores `#[cfg(feature = ...)]` and every declaration lands in the
+# header unconditionally - which is only sound while every C host builds all three chains. With
+# these three mappings a chain-gated entry point is emitted inside `#if defined(...)`, so the
+# header states exactly the surface the linked archive carries.
+#
+# The host MUST declare its chain set (`-DSHLOSILO_CHAIN_*`) matching the archive it links:
+# a host that declares less than the archive carries simply cannot call the extra entry points
+# (harmless), while a host that declares more gets an unresolved symbol at link time (loud).
+# flux/forgebox derives the defines from its declared set AND checks that set against `nm` on
+# libshlosilo.a, so the two halves cannot drift silently.
+#
+# Only the chain axis is mapped on purpose: the primitive axis (`prim-*`) is internal to forms,
+# and leaking it here would make the C contract depend on how the library happens to be built.
+# The prim features therefore still produce "Missing [defines]" warnings from private
+# `const _: () = assert!(...)` items, which never reach the header by design - the gate
+# (HDRCOMBO) pins that known set so a *C-facing* prim-gated item cannot slip in unnoticed.
+[defines]
+"feature = chain-btc" = "SHLOSILO_CHAIN_BTC"
+"feature = chain-eth" = "SHLOSILO_CHAIN_ETH"
+"feature = chain-xmr" = "SHLOSILO_CHAIN_XMR"
+
 [export]
 # Audit #5 engineering-3: FFI contract surface whitelist — export only the entry points the C host actually calls.
 include = [
