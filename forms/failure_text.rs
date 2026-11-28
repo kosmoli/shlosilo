@@ -37,6 +37,15 @@ pub fn sign_failure_text(code: i32) -> &'static CStr {
 wallet key images out of date
 re-run the wallet key image sync, then retry"
         }
+        // ReviewedPayloadMismatch: the request mutated between the review page and the
+        // signature. Not a request-shape problem (the same bytes would have signed a
+        // moment earlier), so the hint is to start over rather than to change the
+        // payment. One phrase, no diagnostics: the code itself is the diagnostic.
+        x if x == ShlosiloErrorCode::ReviewedPayloadMismatch as i32 => {
+            c"sign failed
+request changed after review
+scan the request again from your wallet"
+        }
         // BufferTooSmall: signed output or request exceeded a fixed buffer
         // (too many inputs / outputs for one transaction).
         x if x == ShlosiloErrorCode::BufferTooSmall as i32 => {
@@ -148,5 +157,28 @@ pub fn pairing_failure_hint(code: i32) -> &'static CStr {
         c"device limit reached"
     } else {
         c"move camera away, retry"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The review-mismatch code must reach its own page, not the generic
+    /// "unknown code" one: the operator needs to know the request changed, and
+    /// the generic page would send them looking for a different problem.
+    #[test]
+    fn reviewed_payload_mismatch_has_its_own_page() {
+        let own = sign_failure_text(ShlosiloErrorCode::ReviewedPayloadMismatch as i32)
+            .to_str()
+            .unwrap();
+        let generic = sign_failure_text(-12345).to_str().unwrap();
+        assert!(own.contains("request changed after review"), "{own}");
+        assert!(own.contains("scan the request again"), "{own}");
+        assert_ne!(own, generic);
+        // Whatever else happens, the page must never leak the numeric code or an
+        // internal path: the first line is always the same fixed opener.
+        assert!(own.starts_with("sign failed\n"), "{own}");
+        assert!(!own.contains("-17"), "{own}");
     }
 }

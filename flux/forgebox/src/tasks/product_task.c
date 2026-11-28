@@ -288,6 +288,18 @@ static unsigned g_review_pages;
 /* Line i must not open a page when bit i is set (label/value pairs). Comes from the
  * library so the paginator never re-derives semantics; the geometry below is the
  * library's too (`shlosilo_review_page_count` / `_page_span`). */
+/* S11a: the digest of the bytes the review page was built from, and whether it is
+ * still about the request we are holding. 36 bytes of .bss buys the operator the
+ * guarantee that the signature covers what they read - the two-call FFI shape
+ * (review, then sign) otherwise only implies it by convention.
+ *
+ * Validity is set by a successful review and consumed (cleared) at the next
+ * request boundary and after every sign attempt, so a digest can never outlive
+ * the payload it describes. A stale digest could only ever cause a refusal, never
+ * a wrong signature, but a refusal for a request the operator never reviewed is
+ * still a lie to the user - hence the explicit reset rather than a longer life. */
+static uint8_t g_reviewed_digest[32];
+static int g_reviewed_valid;
 static uint64_t g_review_break_mask;
 static unsigned g_review_count;
 /* Sized from the row budget: a 43-input PSBT needs more rows than the old 16 x 48
@@ -1556,11 +1568,12 @@ static void sign_run(const char *uri, const char *type,
                                       g_pairing_ki, g_pairing_ki_n,
                                       g_wire_view,
                                       bp_scratch, bp_scratch_len,
-                                      /* reviewed_digest (S11a): NULL = no byte
-                                       * binding (legacy). The review gate above
-                                       * does not request a digest yet either, so
-                                       * this pair stays exactly as it shipped. */
-                                      NULL);
+                                      /* reviewed_digest (S11a): the digest the review
+                                       * gate published, or NULL when this request never
+                                       * went through a review page (an ungated type, or a
+                                       * path that signs without asking). One-shot: consumed
+                                       * right after the call below. */
+                                      (g_reviewed_valid != 0) ? g_reviewed_digest : NULL);
     } else if (uri != NULL) {
         rc = shlosilo_sign_ur_ffi(uri, k_sign_idx12, 12, NULL, 0, 0,
                                   entropy, sizeof(entropy),
@@ -1575,6 +1588,8 @@ static void sign_run(const char *uri, const char *type,
     }
     dt = osKernelGetTickCount() - t0;
     g_sign_busy = 0;
+    /* Consumed: whatever happened, that digest described this attempt only. */
+    g_reviewed_valid = 0;
     /* Footer datum (QR page): publish this run's wall clock ONLY when the call
      * produced a signature. Any other outcome — refused, buffer too small, key
      * error — clears the "known" flag so the page reads `sign -` instead of
@@ -2150,6 +2165,8 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
     int rc;
     int confirmed = 0;
 
+    /* No digest from this point until this call earns one (see g_reviewed_valid). */
+    g_reviewed_valid = 0;
     if (!review_type_gated(type)) {
         return 1;                       /* unchanged flow */
     }
@@ -2177,11 +2194,11 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
                                  (uint8_t *)g_review_lines, sizeof(g_review_lines),
                                  &used, &count, &flags, &in_out,
                                  &g_review_break_mask,
-                                 /* out_reviewed_digest (S11a): NULL = not requested.
-                                  * The binding is opt-in; wiring it to the sign call
-                                  * below is a later batch (this one keeps the C host
-                                  * byte-for-byte unchanged). */
-                                 NULL);
+                                 /* out_reviewed_digest (S11a): the digest of the exact
+                                  * bytes this page was built from. Only published when
+                                  * the review itself succeeds (see below), so a failed
+                                  * summary cannot leave a usable binding behind. */
+                                 g_reviewed_digest);
     }
     ExtFree(g_review_ws);
     g_review_ws = NULL;
@@ -2208,6 +2225,10 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
         UiSetLast("review unavailable - not signed");
         return 0;                       /* fail closed */
     }
+    /* The page below is what the operator will authorise, and the digest covers exactly
+     * the payload this call rendered from. Publish it now: past this point the only exits
+     * are the render loop and the confirmation prompt. */
+    g_reviewed_valid = 1;
     printf("review: %u lines flags=0x%x in=%u out=%u\r\n", (unsigned)count,
            (unsigned)flags, in_out >> 16, in_out & 0xffffu);
 

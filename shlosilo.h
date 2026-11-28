@@ -1331,7 +1331,7 @@ unsigned int shlosilo_review_ws_len(void);
  *
  * `out_reviewed_digest` (S11a) = SHA-256 of exactly the `payload` bytes this call
  * rendered. Hand it back as `reviewed_digest` on `shlosilo_sign_session_view_ffi`:
- * the sign then refuses with `InvariantViolation` unless the bytes it is about to
+ * the sign then refuses with `ReviewedPayloadMismatch` unless the bytes it is about to
  * sign still hash to it. Only the two-call flows need it — the single-shot entries
  * (`shlosilo_sign_ur_ffi`, `shlosilo_sign_typed_ffi`) parse and sign inside one
  * call, so the binding holds by construction there.
@@ -1709,7 +1709,7 @@ int shlosilo_sign_session_ffi(const struct KeySession *session,
  *
  * `reviewed_digest` (S11a) is the review/sign binding for the two-call flow: pass
  * the 32 bytes `shlosilo_review_ffi` returned and the sign refuses with
- * `InvariantViolation` unless `payload` still hashes to it — before the workspace is
+ * `ReviewedPayloadMismatch` unless `payload` still hashes to it — before the workspace is
  * carved, before any key material is touched. `NULL` = no binding (the historical
  * behaviour, byte-identical). The single-shot entries (`shlosilo_sign_ur_ffi`,
  * `shlosilo_sign_typed_ffi`) carry no such parameter: they parse and sign inside one

@@ -1985,7 +1985,7 @@ pub mod r3 {
         // (3b) S11a review/sign binding: the digest is checked HERE — before the workspace is
         // carved and before any key material or chain parsing is touched — and through the same
         // `verify_reviewed` the business entries use, so the ordering guarantee and the error kind
-        // (InvariantViolation) have one implementation. `None` skips it entirely, which is what
+        // (ReviewedPayloadMismatch) have one implementation. `None` skips it entirely, which is what
         // makes the digest-less entries byte-for-byte unchanged.
         if let Some(reviewed) = reviewed {
             crate::business::review_binding::verify_reviewed(payload_slice, reviewed)?;
@@ -2239,7 +2239,7 @@ pub mod r3 {
     ///
     /// `reviewed_digest` (S11a) is the review/sign binding for the two-call flow: pass
     /// the 32 bytes `shlosilo_review_ffi` returned and the sign refuses with
-    /// `InvariantViolation` unless `payload` still hashes to it — before the workspace is
+    /// `ReviewedPayloadMismatch` unless `payload` still hashes to it — before the workspace is
     /// carved, before any key material is touched. `NULL` = no binding (the historical
     /// behaviour, byte-identical). The single-shot entries (`shlosilo_sign_ur_ffi`,
     /// `shlosilo_sign_typed_ffi`) carry no such parameter: they parse and sign inside one
@@ -2285,7 +2285,7 @@ pub mod r3 {
         scratch: *mut u8,
         scratch_len: c_uint,
         // S11a: the digest the review call returned. NULL = no binding (legacy). Non-NULL must point
-        // to 32 readable bytes; the signer refuses with InvariantViolation when the payload does not
+        // to 32 readable bytes; the signer refuses with ReviewedPayloadMismatch when the payload does not
         // hash to it.
         reviewed_digest: *const u8, // 32 readable bytes, or NULL
     ) -> c_int {
@@ -3405,7 +3405,7 @@ pub extern "C" fn shlosilo_review_ws_len() -> c_uint {
 ///
 /// `out_reviewed_digest` (S11a) = SHA-256 of exactly the `payload` bytes this call
 /// rendered. Hand it back as `reviewed_digest` on `shlosilo_sign_session_view_ffi`:
-/// the sign then refuses with `InvariantViolation` unless the bytes it is about to
+/// the sign then refuses with `ReviewedPayloadMismatch` unless the bytes it is about to
 /// sign still hash to it. Only the two-call flows need it — the single-shot entries
 /// (`shlosilo_sign_ur_ffi`, `shlosilo_sign_typed_ffi`) parse and sign inside one
 /// call, so the binding holds by construction there.
@@ -4910,7 +4910,7 @@ mod tests {
         );
     }
 
-    /// Pin 2: one flipped payload byte with the ORIGINAL digest is `InvariantViolation`
+    /// Pin 2: one flipped payload byte with the ORIGINAL digest is `ReviewedPayloadMismatch`
     /// — the pre-existing "the library's own contract was broken" kind, no new code —
     /// and it refuses before anything is written.
     #[cfg(all(feature = "chain-eth", feature = "chain-xmr"))]
@@ -4939,7 +4939,7 @@ mod tests {
         let refused = run_sign_view(&session, &moved, digest.as_ptr());
         assert_eq!(
             refused.rc,
-            crate::error::ShlosiloErrorCode::InvariantViolation as i32,
+            crate::error::ShlosiloErrorCode::ReviewedPayloadMismatch as i32,
             "a payload that is not the reviewed one must be refused (rc={})",
             refused.rc
         );

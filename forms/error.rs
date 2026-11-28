@@ -122,6 +122,13 @@ pub enum ShlosiloErrorKind {
     /// transaction (a failing upstream node), and the device refuses rather
     /// than guessing a script type.
     PrevoutMissing = 0x0403_0002,
+    /// The bytes about to be signed do not hash to the digest the operator
+    /// reviewed. This is the one refusal in the sign path that is about the
+    /// request *changing* rather than the request being wrong, so it gets its
+    /// own code: collapsing it into the catch-all would show the generic
+    /// "unknown code" page for a security-relevant stop, and would also relabel
+    /// every unrelated invariant fault as a review mismatch.
+    ReviewedPayloadMismatch = 0x0403_0003,
 
     // ─── Invariant violations (0x05xx_xxxx) ───
     /// Internal impossible state (unreachable triggered)
@@ -238,6 +245,8 @@ pub enum ShlosiloErrorCode {
     PsbtOwnershipRejected = -15,
     /// Request input data missing (no prevout for an input) — see the kind.
     PrevoutMissing = -16,
+    /// See the kind: the request changed between review and signature.
+    ReviewedPayloadMismatch = -17,
     BufferTooSmall = -20,
     EncodingError = -21,
     InvalidUrPayload = -30,
@@ -269,6 +278,7 @@ impl ShlosiloErrorCode {
             ShlosiloErrorKind::BufferKindMismatch => Self::InvalidArgument,
             ShlosiloErrorKind::PsbtOwnershipMismatch => Self::PsbtOwnershipRejected,
             ShlosiloErrorKind::PrevoutMissing => Self::PrevoutMissing,
+            ShlosiloErrorKind::ReviewedPayloadMismatch => Self::ReviewedPayloadMismatch,
             ShlosiloErrorKind::UrPayloadInvalidCbor | ShlosiloErrorKind::UrPayloadUnknownType => {
                 Self::InvalidUrPayload
             }

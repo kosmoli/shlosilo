@@ -85,7 +85,9 @@ impl core::fmt::Debug for ReviewedDigest {
 pub fn verify_reviewed(payload: &[u8], reviewed: ReviewedDigest) -> Result<()> {
     let actual = ReviewedDigest::of(payload)?;
     if actual != reviewed {
-        return Err(ShlosiloError::new(ShlosiloErrorKind::InvariantViolation));
+        return Err(ShlosiloError::new(
+            ShlosiloErrorKind::ReviewedPayloadMismatch,
+        ));
     }
     Ok(())
 }
@@ -128,7 +130,7 @@ mod tests {
         let last = tampered.len() - 1;
         tampered[last] ^= 0x80;
         let err = verify_reviewed(&tampered, reviewed).expect_err("must refuse");
-        assert_eq!(err.kind, ShlosiloErrorKind::InvariantViolation);
+        assert_eq!(err.kind, ShlosiloErrorKind::ReviewedPayloadMismatch);
     }
 
     #[test]
@@ -136,7 +138,7 @@ mod tests {
         // The interesting case for a carrier: right payload, digest kept from a previous request.
         let elsewhere = ReviewedDigest::of(b"a different request").unwrap();
         let err = verify_reviewed(REQUEST, elsewhere).expect_err("must refuse");
-        assert_eq!(err.kind, ShlosiloErrorKind::InvariantViolation);
+        assert_eq!(err.kind, ShlosiloErrorKind::ReviewedPayloadMismatch);
     }
 
     /// The gate must fire **before** the signer looks at keys, entropy or the payload: a bogus
@@ -165,7 +167,7 @@ mod tests {
         .expect_err("signing bytes that were not reviewed must be refused");
         assert_eq!(
             err.kind,
-            ShlosiloErrorKind::InvariantViolation,
+            ShlosiloErrorKind::ReviewedPayloadMismatch,
             "the refusal must be the binding, not a downstream key/buffer error"
         );
     }
