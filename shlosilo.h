@@ -553,8 +553,15 @@
  * exported function set under this ABI's rule (no host built against a 0.5.0 header
  * has these declarations, and the C side's identity assertion keys on the ABI check
  * passing first), so the minor moves.
+ *
+ * 2026-11-28 (S11a binding through the C ABI): 6 -> 7. Parameter SHAPE change on two
+ * existing exports — `shlosilo_review_ffi` gained a trailing out-param
+ * (`out_reviewed_digest`, 32 writable bytes) and `shlosilo_sign_session_view_ffi`
+ * gained a trailing in-param (`reviewed_digest`, 32 readable bytes or NULL). A host
+ * built against the 0.6.0 header would call both with the old argument list, so under
+ * strict equality the minor must move.
  */
-#define SHLOSILO_CABI_VERSION_MINOR 6
+#define SHLOSILO_CABI_VERSION_MINOR 7
 
 #define SHLOSILO_CABI_VERSION_PATCH 0
 
@@ -1322,6 +1329,13 @@ unsigned int shlosilo_review_ws_len(void);
  * not compute breaks on its own, or the real-device defect of 2026-11-25 (a page
  * ending on `spender` with its address on the next page) comes back.
  *
+ * `out_reviewed_digest` (S11a) = SHA-256 of exactly the `payload` bytes this call
+ * rendered. Hand it back as `reviewed_digest` on `shlosilo_sign_session_view_ffi`:
+ * the sign then refuses with `InvariantViolation` unless the bytes it is about to
+ * sign still hash to it. Only the two-call flows need it — the single-shot entries
+ * (`shlosilo_sign_ur_ffi`, `shlosilo_sign_typed_ffi`) parse and sign inside one
+ * call, so the binding holds by construction there.
+ *
  * # Safety
  *
  * - `type_name` must be a NUL-terminated string with the NUL inside 65 readable bytes.
@@ -1330,6 +1344,7 @@ unsigned int shlosilo_review_ws_len(void);
  * - `ws` must be either `NULL` (pure probe) or point to `ws_len` writable bytes (`ws_len >= shlosilo_review_ws_len()`) that stay at a stable address for the call.
  * - `out_lines` must point to `out_lines_len` writable bytes.
  * - `out_used`, `out_line_count`, `out_flags`, `out_in_out` and `out_break_mask` must each be writable (`out_break_mask` may be `NULL`) and must not overlap each other, `out_lines`, `ws`, or any input buffer.
+ * - `out_reviewed_digest` must be either `NULL` or a pointer to 32 writable bytes that do not overlap any other argument. It is written ONLY on success (the zero-on-failure contract the other out-params follow): a refused call leaves it untouched.
  */
 int shlosilo_review_ffi(const char *type_name,
                         const uint8_t *payload,
@@ -1344,7 +1359,8 @@ int shlosilo_review_ffi(const char *type_name,
                         unsigned int *out_line_count,
                         unsigned int *out_flags,
                         unsigned int *out_in_out,
-                        uint64_t *out_break_mask);
+                        uint64_t *out_break_mask,
+                        uint8_t *out_reviewed_digest);
 
 /**
  * How many pages the operator will page through for a rendered review.
@@ -1691,6 +1707,14 @@ int shlosilo_sign_session_ffi(const struct KeySession *session,
  *   hardware 2026-11-02);
  * - any other value: `EncodingInvalidFormat` (never a silent fallback).
  *
+ * `reviewed_digest` (S11a) is the review/sign binding for the two-call flow: pass
+ * the 32 bytes `shlosilo_review_ffi` returned and the sign refuses with
+ * `InvariantViolation` unless `payload` still hashes to it — before the workspace is
+ * carved, before any key material is touched. `NULL` = no binding (the historical
+ * behaviour, byte-identical). The single-shot entries (`shlosilo_sign_ur_ffi`,
+ * `shlosilo_sign_typed_ffi`) carry no such parameter: they parse and sign inside one
+ * call, so there is no second look at the bytes for a carrier to get wrong.
+ *
  * # Safety
  *
  * - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
@@ -1702,6 +1726,7 @@ int shlosilo_sign_session_ffi(const struct KeySession *session,
  * - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
  * - `ki_records` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_len` readable `WalletKiRecord` values; it must not overlap `output_buf` or `ws`.
  * - `scratch` must be either `(NULL, 0)` (carve the temporary tables out of `ws`) or a non-NULL region of `scratch_len >= shlosilo_sign_scratch_len()` writable bytes aligned to `SHLOSILO_SIGN_SCRATCH_ALIGN`, live and unaliased for the whole call.
+ * - `reviewed_digest` must be either `NULL` or a pointer to 32 readable bytes (the digest a review call produced); it must not overlap any output buffer.
  */
 int shlosilo_sign_session_view_ffi(const struct KeySession *session,
                                    const char *type_name,
@@ -1718,7 +1743,8 @@ int shlosilo_sign_session_view_ffi(const struct KeySession *session,
                                    unsigned int ki_records_len,
                                    unsigned int wire_view,
                                    uint8_t *scratch,
-                                   unsigned int scratch_len);
+                                   unsigned int scratch_len,
+                                   const uint8_t *reviewed_digest);
 
 /**
  * Task 3 (2026-10-07): session reclaim — the handle lifecycle contract.

@@ -359,6 +359,7 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             0,
             core::ptr::null_mut(),
             0,
+            core::ptr::null(),
         )
     };
     let rc_k = unsafe {
@@ -379,6 +380,7 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             1,
             core::ptr::null_mut(),
             0,
+            core::ptr::null(),
         )
     };
     let mut n_bad: u32 = 0;
@@ -400,6 +402,7 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             7,
             core::ptr::null_mut(),
             0,
+            core::ptr::null(),
         )
     };
     assert_eq!(rc_i, OK, "view=0 must sign");
@@ -435,6 +438,7 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             1,
             core::ptr::null_mut(),
             0,
+            core::ptr::null(),
         )
     };
     assert_eq!(
@@ -463,6 +467,7 @@ fn f1_sign_session_ffi_real_fixture_ok() {
             0,
             core::ptr::null_mut(),
             0,
+            core::ptr::null(),
         )
     };
     assert_eq!(

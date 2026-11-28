@@ -368,6 +368,7 @@ fn review_ffi_reports_a_glue_mask_and_pages_with_it() {
             &mut flags,
             &mut in_out,
             &mut mask,
+            core::ptr::null_mut(),
         )
     };
     assert_eq!(rc, 0, "review must build");
@@ -433,6 +434,7 @@ fn review_ffi_packs_lines_and_meta() {
             core::ptr::null_mut(),
             core::ptr::null_mut(),
             core::ptr::null_mut(),
+            core::ptr::null_mut(),
         )
     };
     assert_eq!(rc, 0);
@@ -463,6 +465,7 @@ fn review_ffi_packs_lines_and_meta() {
             &mut count,
             &mut flags,
             &mut in_out,
+            core::ptr::null_mut(),
             core::ptr::null_mut(),
         )
     };
@@ -498,6 +501,7 @@ fn review_ffi_packs_lines_and_meta() {
             &mut count,
             &mut flags,
             &mut in_out,
+            core::ptr::null_mut(),
             core::ptr::null_mut(),
         )
     };
@@ -548,6 +552,7 @@ fn review_ffi_rejects_xmr_types() {
                 &mut count,
                 &mut flags,
                 &mut in_out,
+                core::ptr::null_mut(),
                 core::ptr::null_mut(),
             )
         };

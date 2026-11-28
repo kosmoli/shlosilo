@@ -321,6 +321,7 @@ fn review_ffi_accepts_misaligned_workspace() {
                 &mut flags,
                 &mut in_out,
                 core::ptr::null_mut(),
+                core::ptr::null_mut(),
             )
         };
         lines.truncate(used as usize);

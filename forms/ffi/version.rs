@@ -44,7 +44,14 @@ pub const SHLOSILO_CABI_VERSION_MAJOR: u16 = 0;
 /// exported function set under this ABI's rule (no host built against a 0.5.0 header
 /// has these declarations, and the C side's identity assertion keys on the ABI check
 /// passing first), so the minor moves.
-pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 6;
+///
+/// 2026-11-28 (S11a binding through the C ABI): 6 -> 7. Parameter SHAPE change on two
+/// existing exports — `shlosilo_review_ffi` gained a trailing out-param
+/// (`out_reviewed_digest`, 32 writable bytes) and `shlosilo_sign_session_view_ffi`
+/// gained a trailing in-param (`reviewed_digest`, 32 readable bytes or NULL). A host
+/// built against the 0.6.0 header would call both with the old argument list, so under
+/// strict equality the minor must move.
+pub const SHLOSILO_CABI_VERSION_MINOR: u16 = 7;
 pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
 
 /// C ABI version string (NUL-terminated)
@@ -63,7 +70,11 @@ pub const SHLOSILO_CABI_VERSION_PATCH: u16 = 0;
 /// **Chain axis batch 2 (2026-11-27)**: 0.5.0 → 0.6.0 — the export set grew by
 /// `shlosilo_build_fingerprint_ffi` and `shlosilo_build_chain_mask_ffi` (the C side can
 /// now verify the chain set and BUILD_FINGERPRINT of the library it linked).
-pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.6.0\0";
+///
+/// **S11a binding through the C ABI (2026-11-28)**: 0.6.0 → 0.7.0 — `shlosilo_review_ffi`
+/// gained `out_reviewed_digest` and `shlosilo_sign_session_view_ffi` gained
+/// `reviewed_digest` (the review/sign byte binding crosses the C ABI).
+pub const SHLOSILO_CABI_VERSION_STRING: &str = "v0.7.0\0";
 
 /// extern "C" returning the version string (C side strdups it before use)
 #[no_mangle]
@@ -115,8 +126,9 @@ mod tests {
         // External audit 2026-11-19 A2-01: 0.3.0 → 0.4.0 (`shlosilo_sign_ffi` 10 → 12 params)
         // Memory contract (2026-11-23): 0.4.0 → 0.5.0 (three sign entries gained scratch/scratch_len)
         // Chain axis batch 2 (2026-11-27): 0.5.0 → 0.6.0 (build fingerprint + chain mask exports)
+        // S11a binding (2026-11-28): 0.6.0 → 0.7.0 (review out_reviewed_digest + sign reviewed_digest)
         assert_eq!(SHLOSILO_CABI_VERSION_MAJOR, 0);
-        assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 6);
+        assert_eq!(SHLOSILO_CABI_VERSION_MINOR, 7);
         assert_eq!(SHLOSILO_CABI_VERSION_PATCH, 0);
     }
 

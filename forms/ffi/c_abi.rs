@@ -1101,6 +1101,14 @@ pub unsafe extern "C" fn shlosilo_supported_protocols_ffi(
 const _: c_int = ERR_NULL_POINTER;
 const _: c_int = ERR_BUFFER_TOO_SMALL;
 
+/// S11a: SHA-256 output width — the reviewed-digest wire size between
+/// `shlosilo_review_ffi` (out) and `shlosilo_sign_session_view_ffi` (in).
+///
+/// Deliberately `const`, not `pub`: `pub` items are projected into `shlosilo.h`
+/// as `#define`s, and the C side takes this width from the two entries' own
+/// documentation, not from a constant it would then have to keep in sync.
+const REVIEWED_DIGEST_LEN: usize = 32;
+
 // --- R3 typed multipart FFI (2026-08-31) ---------------------------------
 pub mod r3 {
     use super::*;
@@ -1847,6 +1855,9 @@ pub mod r3 {
                     ws_need,
                     scratch_slice,
                     crate::canonical::TailView::CAKE,
+                    // S11a: no review digest on the deprecated typed entry — it is a
+                    // single-shot call whose parse and sign share one payload.
+                    None,
                 )
             }
         });
@@ -1934,6 +1945,11 @@ pub mod r3 {
         // (empty positional array + tx_key_images map) is the keystone-ecosystem
         // shape. Both are canonical views of the same signed artifact.
         tail: crate::canonical::TailView,
+        // S11a: the review/sign binding. `None` = the caller supplied no digest (the
+        // historical behaviour); `Some` = refuse unless `payload` still hashes to it.
+        // Only the two-call session-view entry can carry one — the single-shot entries
+        // parse and sign in one pass, so their binding holds by construction.
+        reviewed: Option<crate::business::review_binding::ReviewedDigest>,
     ) -> Result<usize, ShlosiloError> {
         // (1) C string → &str (≤ 64 chars is enough for a type name)
         let mut tlen = 0usize;
@@ -1966,6 +1982,14 @@ pub mod r3 {
             )
         }
         .ok_or(ShlosiloError::new(ShlosiloErrorKind::UrPayloadTooLarge))?;
+        // (3b) S11a review/sign binding: the digest is checked HERE — before the workspace is
+        // carved and before any key material or chain parsing is touched — and through the same
+        // `verify_reviewed` the business entries use, so the ordering guarantee and the error kind
+        // (InvariantViolation) have one implementation. `None` skips it entirely, which is what
+        // makes the digest-less entries byte-for-byte unchanged.
+        if let Some(reviewed) = reviewed {
+            crate::business::review_binding::verify_reviewed(payload_slice, reviewed)?;
+        }
         // (4) P0-02 #2: (NULL, len>0) rejected
         let entropy_slice = unsafe {
             optional_bytes_in(
@@ -2192,6 +2216,10 @@ pub mod r3 {
                     ws_need,
                     None, // session entry: caller scratch not wired yet (ws carve)
                     crate::canonical::TailView::CAKE,
+                    // S11a: the plain session entry carries no digest parameter — the
+                    // binding lives on the VIEW entry, which is what the two-call
+                    // carrier flow (review, then sign) uses.
+                    None,
                 )
             }
         });
@@ -2209,6 +2237,14 @@ pub mod r3 {
     ///   hardware 2026-11-02);
     /// - any other value: `EncodingInvalidFormat` (never a silent fallback).
     ///
+    /// `reviewed_digest` (S11a) is the review/sign binding for the two-call flow: pass
+    /// the 32 bytes `shlosilo_review_ffi` returned and the sign refuses with
+    /// `InvariantViolation` unless `payload` still hashes to it — before the workspace is
+    /// carved, before any key material is touched. `NULL` = no binding (the historical
+    /// behaviour, byte-identical). The single-shot entries (`shlosilo_sign_ur_ffi`,
+    /// `shlosilo_sign_typed_ffi`) carry no such parameter: they parse and sign inside one
+    /// call, so there is no second look at the bytes for a carrier to get wrong.
+    ///
     /// # Safety
     ///
     /// - `session` must be a handle this library placed in caller memory, valid for the whole call: not freed, never used concurrently (threads or interrupt context), and released exactly once through the matching free entry.
@@ -2220,6 +2256,7 @@ pub mod r3 {
     /// - `ws` must point to `ws_len` writable bytes (`ws_len >= shlosilo_sign_ws_len()`), must stay at a stable address for the whole call, and must not overlap the other arguments.
     /// - `ki_records` must be either `(NULL, 0)` or a non-NULL pointer to `ki_records_len` readable `WalletKiRecord` values; it must not overlap `output_buf` or `ws`.
     /// - `scratch` must be either `(NULL, 0)` (carve the temporary tables out of `ws`) or a non-NULL region of `scratch_len >= shlosilo_sign_scratch_len()` writable bytes aligned to `SHLOSILO_SIGN_SCRATCH_ALIGN`, live and unaliased for the whole call.
+    /// - `reviewed_digest` must be either `NULL` or a pointer to 32 readable bytes (the digest a review call produced); it must not overlap any output buffer.
     #[no_mangle]
     pub unsafe extern "C" fn shlosilo_sign_session_view_ffi(
         session: *const KeySession, // flux-constructed; the FFI side only holds the pointer
@@ -2247,6 +2284,10 @@ pub mod r3 {
         // the temporary tables out of `ws` (the historical, slower tier).
         scratch: *mut u8,
         scratch_len: c_uint,
+        // S11a: the digest the review call returned. NULL = no binding (legacy). Non-NULL must point
+        // to 32 readable bytes; the signer refuses with InvariantViolation when the payload does not
+        // hash to it.
+        reviewed_digest: *const u8, // 32 readable bytes, or NULL
     ) -> c_int {
         let tail = match crate::canonical::TailView::from_abi(wire_view) {
             Some(t) => t,
@@ -2302,6 +2343,29 @@ pub mod r3 {
             // historical ws-carve tier, and a short or misaligned region is
             // refused rather than silently downgraded.
             let scratch_slice = unsafe { resolve_scratch(scratch, scratch_len, actual_len)? };
+            // S11a: the review/sign binding, resolved HERE for the same reason
+            // (`&[u8]` built outside would have to be captured by the closure).
+            // NULL keeps the legacy byte-for-byte behaviour; a non-NULL pointer
+            // that is not 32 readable bytes is refused, never truncated.
+            let reviewed: Option<crate::business::review_binding::ReviewedDigest> =
+                if reviewed_digest.is_null() {
+                    None
+                } else {
+                    let d = unsafe {
+                        checked_slice(
+                            reviewed_digest,
+                            REVIEWED_DIGEST_LEN,
+                            REVIEWED_DIGEST_LEN,
+                            false,
+                        )
+                    }
+                    .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::BufferKindMismatch))?;
+                    let mut bytes = [0u8; REVIEWED_DIGEST_LEN];
+                    bytes.copy_from_slice(d);
+                    Some(crate::business::review_binding::ReviewedDigest::from_bytes(
+                        bytes,
+                    ))
+                };
             // (13) wallet KI records: NULL/0 = no retention; a non-NULL
             // pointer with count 0 is likewise empty. Layout-compatible zero
             // copy (repr(C) WalletKiRecord); the sign path's span check bounds
@@ -2339,6 +2403,7 @@ pub mod r3 {
                     ws_need,
                     scratch_slice, // v2-安全 §6: caller BP+ table region (ws carve when NULL/0)
                     tail,
+                    reviewed, // S11a: Some = refuse unless the payload still hashes to it
                 )
             }
         });
@@ -3338,6 +3403,13 @@ pub extern "C" fn shlosilo_review_ws_len() -> c_uint {
 /// not compute breaks on its own, or the real-device defect of 2026-11-25 (a page
 /// ending on `spender` with its address on the next page) comes back.
 ///
+/// `out_reviewed_digest` (S11a) = SHA-256 of exactly the `payload` bytes this call
+/// rendered. Hand it back as `reviewed_digest` on `shlosilo_sign_session_view_ffi`:
+/// the sign then refuses with `InvariantViolation` unless the bytes it is about to
+/// sign still hash to it. Only the two-call flows need it — the single-shot entries
+/// (`shlosilo_sign_ur_ffi`, `shlosilo_sign_typed_ffi`) parse and sign inside one
+/// call, so the binding holds by construction there.
+///
 /// # Safety
 ///
 /// - `type_name` must be a NUL-terminated string with the NUL inside 65 readable bytes.
@@ -3346,6 +3418,7 @@ pub extern "C" fn shlosilo_review_ws_len() -> c_uint {
 /// - `ws` must be either `NULL` (pure probe) or point to `ws_len` writable bytes (`ws_len >= shlosilo_review_ws_len()`) that stay at a stable address for the call.
 /// - `out_lines` must point to `out_lines_len` writable bytes.
 /// - `out_used`, `out_line_count`, `out_flags`, `out_in_out` and `out_break_mask` must each be writable (`out_break_mask` may be `NULL`) and must not overlap each other, `out_lines`, `ws`, or any input buffer.
+/// - `out_reviewed_digest` must be either `NULL` or a pointer to 32 writable bytes that do not overlap any other argument. It is written ONLY on success (the zero-on-failure contract the other out-params follow): a refused call leaves it untouched.
 #[no_mangle]
 pub unsafe extern "C" fn shlosilo_review_ffi(
     type_name: *const c_char,
@@ -3362,6 +3435,10 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
     out_flags: *mut c_uint,
     out_in_out: *mut c_uint,
     out_break_mask: *mut u64,
+    // S11a: SHA-256 over the exact bytes this call rendered, so the carrier can prove later that
+    // it signs those bytes and not a buffer that moved in between. NULL = the caller does not
+    // want it (every existing C caller keeps working unchanged).
+    out_reviewed_digest: *mut u8, // 32 writable bytes
 ) -> c_int {
     unsafe { write_actual_len(out_used, 0) };
     unsafe { write_actual_len(out_line_count, 0) };
@@ -3506,6 +3583,22 @@ pub unsafe extern "C" fn shlosilo_review_ffi(
                 out[used] = 0;
                 used += 1;
                 count += 1;
+            }
+            // S11a: the digest is written HERE, at the end of the successful path — a
+            // refusal returns long before this line, so it cannot hand out a digest for bytes
+            // it never showed. It covers `payload_slice`, the same slice `review::build`
+            // rendered, so it cannot drift from the page. Written through the raw pointer: a
+            // `&mut [u8]` captured by this closure is not `UnwindSafe` and would not compile.
+            if !out_reviewed_digest.is_null() {
+                let reviewed =
+                    crate::business::review_binding::ReviewedDigest::of(payload_slice)?.to_bytes();
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        reviewed.as_ptr(),
+                        out_reviewed_digest,
+                        reviewed.len(),
+                    )
+                };
             }
             Ok((
                 used,
@@ -4353,17 +4446,35 @@ mod tests {
         ) -> c_int = shlosilo_sign_ur_ffi;
     }
 
-    /// End-to-end: ETH raw tx → ur:eth-sign-request/... → FFI returns the
-    /// `ur:eth-signature` container whose r/s/v match a direct sign.
+    /// A real `eth-sign-request` CBOR map carrying an EIP-1559 transfer, plus the
+    /// transaction it encodes (a direct-sign reference needs both).
     ///
-    /// E-1 (2026-11-24): this pin used to assert `out == expected.tx_bytes`, i.e.
-    /// the signed raw transaction. The exit now returns the eth-signature CBOR map
-    /// (r ‖ s ‖ v), so the assertion moved to its fields; the request also carries
-    /// key 1 now, because the container echoes the id and the exit refuses a
-    /// request without one.
+    /// ETH is the right vehicle for byte-equality pins: its signing path is
+    /// deterministic (RFC-6979), so "same length, same bytes" is an assertion a test
+    /// can actually make, where an XMR request would differ run to run.
+    ///
+    /// P1-01: the payload is the ur-registry map
+    /// {1: request_id (tag 37 UUID), 2: sign_data, 3: data_type=4, 4: chain_id=1};
+    /// data_type 4 = TypedTransaction, whose first payload byte (0x02) selects
+    /// EIP-1559 (data_type 1 would mean legacy bare RLP and is not signable).
+    /// The request id the helper's map carries (key 1, tag 37 UUID). The signed
+    /// container echoes it, so the end-to-end pin can check it without rebuilding it.
     #[cfg(feature = "chain-eth")]
-    #[test]
-    fn ffi_sign_ur_eth_end_to_end() {
+    const ETH_REQUEST_ID: [u8; 16] = [
+        0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad, 0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d, 0xcb,
+        0x6d,
+    ];
+
+    /// `amount` is a parameter so a pin can build a SECOND, equally valid request —
+    /// the adversary the review/sign binding exists for is a carrier that swaps the
+    /// transaction between the two calls, not one that corrupts the encoding.
+    #[cfg(feature = "chain-eth")]
+    fn eth1559_request_with(
+        amount: u128,
+    ) -> (
+        Vec<u8>,
+        crate::chain::eth::eip1559::Eip1559Transaction<'static>,
+    ) {
         use crate::chain::eth::{eip1559, rlp};
 
         let tx = eip1559::Eip1559Transaction {
@@ -4373,7 +4484,7 @@ mod tests {
             max_fee_per_gas: 2_000_000_000,
             gas_limit: 21_000,
             destination: Some([0x22u8; 20]),
-            amount: 999,
+            amount,
             data: Vec::new().into(),
         };
         let list = rlp::encode_list(&[
@@ -4394,14 +4505,7 @@ mod tests {
         raw.push(0x02u8);
         raw.extend_from_slice(&list);
 
-        // P1-01: payload = a real eth-sign-request CBOR map (ur-registry shape)
-        // {1: request_id (tag 37 UUID), 2: sign_data, 3: data_type=4, 4: chain_id=1}
-        // data_type 4 = TypedTransaction, whose first payload byte (0x02) selects EIP-1559;
-        // data_type 1 would mean legacy bare RLP and is not signable.
-        let request_id: [u8; 16] = [
-            0x9b, 0x1d, 0xeb, 0x4d, 0x3b, 0x7d, 0x4b, 0xad, 0x9b, 0xdd, 0x2b, 0x0d, 0x7b, 0x3d,
-            0xcb, 0x6d,
-        ];
+        let request_id = ETH_REQUEST_ID;
         let pairs = alloc::vec![
             (
                 crate::encoding::cbor::encode_uint(1),
@@ -4423,7 +4527,23 @@ mod tests {
                 crate::encoding::cbor::encode_uint(1)
             ),
         ];
-        let payload = crate::encoding::cbor::encode_map(&pairs);
+        (crate::encoding::cbor::encode_map(&pairs), tx)
+    }
+
+    /// End-to-end: ETH raw tx → ur:eth-sign-request/... → FFI returns the
+    /// `ur:eth-signature` container whose r/s/v match a direct sign.
+    ///
+    /// E-1 (2026-11-24): this pin used to assert `out == expected.tx_bytes`, i.e.
+    /// the signed raw transaction. The exit now returns the eth-signature CBOR map
+    /// (r ‖ s ‖ v), so the assertion moved to its fields; the request also carries
+    /// key 1 now, because the container echoes the id and the exit refuses a
+    /// request without one.
+    #[cfg(feature = "chain-eth")]
+    #[test]
+    fn ffi_sign_ur_eth_end_to_end() {
+        use crate::chain::eth::eip1559;
+
+        let (payload, tx) = eth1559_request_with(999);
         let enc =
             crate::ur::ur_encode::encode(crate::ur::ur_encode::UrTypeTag::EthSignRequest, &payload)
                 .unwrap();
@@ -4475,7 +4595,10 @@ mod tests {
         assert_ne!(out[0], 0x02, "E-1: the exit must not return a tx");
         let sig = crate::ur::codec::eth_signature::parse_eth_signature(&out[..n])
             .expect("eth-signature container");
-        assert_eq!(sig.request_id, request_id, "the request id must be echoed");
+        assert_eq!(
+            sig.request_id, ETH_REQUEST_ID,
+            "the request id must be echoed"
+        );
         assert_eq!(&sig.signature[..32], &expected.r[..], "r");
         assert_eq!(&sig.signature[32..64], &expected.s[..], "s");
         assert_eq!(sig.signature[64], expected.y_parity, "v = yParity (0/1)");
@@ -4537,5 +4660,333 @@ mod tests {
             )
         };
         assert_eq!(rc, ERR_NULL_POINTER);
+    }
+    // ── S11a: the review/sign byte binding, across the C ABI ─────────────────
+    //
+    // The two-call carrier flow (`shlosilo_review_ffi`, then
+    // `r3::shlosilo_sign_session_view_ffi`) hands the payload through C memory in
+    // between, so "the bytes signed are the bytes reviewed" used to rest on the
+    // carrier's discipline. These pins make it a mechanism: the review reports a
+    // SHA-256 of exactly what it rendered, the sign refuses anything that does not
+    // hash to it, and both NULL directions stay byte-for-byte unchanged.
+
+    /// The two frozen C shapes this batch changed. Any further change to the
+    /// parameter list below is CABI-breaking: bump `SHLOSILO_CABI_VERSION_MINOR`
+    /// in `ffi/version.rs` and regenerate `shlosilo.h` in the same commit (an old
+    /// host would otherwise pass the ABI check and call with the wrong arity).
+    #[test]
+    fn ffi_review_signature_pin() {
+        const _: unsafe extern "C" fn(
+            *const c_char, // type_name
+            *const u8,     // payload
+            c_uint,        // payload_len
+            c_uint,        // network
+            *const u8,     // master_fingerprint
+            *mut u8,       // ws
+            c_uint,        // ws_len
+            *mut u8,       // out_lines
+            c_uint,        // out_lines_len
+            *mut c_uint,   // out_used
+            *mut c_uint,   // out_line_count
+            *mut c_uint,   // out_flags
+            *mut c_uint,   // out_in_out
+            *mut u64,      // out_break_mask
+            *mut u8,       // out_reviewed_digest (S11a, 32 writable bytes or NULL)
+        ) -> c_int = shlosilo_review_ffi;
+    }
+
+    #[test]
+    fn ffi_sign_session_view_signature_pin() {
+        const _: unsafe extern "C" fn(
+            *const crate::types::key_session::KeySession, // session
+            *const c_char,                                // type_name
+            *const u8,                                    // payload
+            c_uint,                                       // payload_len
+            *const u8,                                    // entropy_ptr
+            c_uint,                                       // entropy_len
+            *mut u8,                                      // output_buf
+            c_uint,                                       // output_buf_len
+            *mut c_uint,                                  // actual_len
+            *mut u8,                                      // ws
+            c_uint,                                       // ws_len
+            *const crate::business::sign::WalletKiRecord, // ki_records
+            c_uint,                                       // ki_records_len
+            c_uint,                                       // wire_view
+            *mut u8,                                      // scratch
+            c_uint,                                       // scratch_len
+            *const u8, // reviewed_digest (S11a, 32 readable bytes or NULL)
+        ) -> c_int = r3::shlosilo_sign_session_view_ffi;
+    }
+
+    /// One review call through the C entry, with the caller's buffers.
+    #[cfg(feature = "chain-eth")]
+    struct ReviewedPage {
+        rc: c_int,
+        used: c_uint,
+        count: c_uint,
+        flags: c_uint,
+        in_out: c_uint,
+        break_mask: u64,
+        lines: Vec<u8>,
+    }
+
+    /// `digest_out` = NULL means "the caller does not want the digest" (the legacy
+    /// call shape); `lines_cap` lets a test hand the entry a buffer that is too small.
+    #[cfg(feature = "chain-eth")]
+    fn run_review(payload: &[u8], digest_out: *mut u8, lines_cap: usize) -> ReviewedPage {
+        let ty = alloc::ffi::CString::new("eth-sign-request").unwrap();
+        let ws_need = review_ws_len() as c_uint;
+        let mut ws = alloc::vec![0u8; ws_need as usize];
+        let mut line_buf = alloc::vec![0u8; lines_cap];
+        let mut page = ReviewedPage {
+            rc: 0,
+            used: 0,
+            count: 0,
+            flags: 0,
+            in_out: 0,
+            break_mask: 0,
+            lines: Vec::new(),
+        };
+        page.rc = unsafe {
+            shlosilo_review_ffi(
+                ty.as_ptr(),
+                payload.as_ptr(),
+                payload.len() as c_uint,
+                10,     // EthereumMainnet (the payload's own chain id is 1)
+                null(), // no master fingerprint
+                ws.as_mut_ptr(),
+                ws_need,
+                line_buf.as_mut_ptr(),
+                line_buf.len() as c_uint,
+                &mut page.used,
+                &mut page.count,
+                &mut page.flags,
+                &mut page.in_out,
+                &mut page.break_mask,
+                digest_out,
+            )
+        };
+        page.lines = line_buf;
+        page
+    }
+
+    #[cfg(feature = "chain-eth")]
+    struct SignOutcome {
+        rc: c_int,
+        actual: c_uint,
+        buffer: Vec<u8>,
+    }
+
+    #[cfg(feature = "chain-eth")]
+    impl SignOutcome {
+        fn signed(&self) -> &[u8] {
+            &self.buffer[..self.actual as usize]
+        }
+    }
+
+    /// The two-call sign entry. `reviewed` = NULL is the legacy shape.
+    #[cfg(feature = "chain-eth")]
+    fn run_sign_view(
+        session: &crate::types::key_session::KeySession,
+        payload: &[u8],
+        reviewed: *const u8,
+    ) -> SignOutcome {
+        let ty = alloc::ffi::CString::new("eth-sign-request").unwrap();
+        let ws_need = shlosilo_sign_ws_len();
+        let mut ws = alloc::vec![0u8; ws_need as usize];
+        let mut buffer = alloc::vec![0u8; 1024];
+        let mut actual: c_uint = 0xDEAD_BEEF;
+        let rc = unsafe {
+            r3::shlosilo_sign_session_view_ffi(
+                session,
+                ty.as_ptr(),
+                payload.as_ptr(),
+                payload.len() as c_uint,
+                null(), // entropy: the ETH path is deterministic (RFC-6979)
+                0,
+                buffer.as_mut_ptr(),
+                buffer.len() as c_uint,
+                &mut actual,
+                ws.as_mut_ptr(),
+                ws_need,
+                null(), // no pairing key-image retention (XMR only)
+                0,
+                0,          // wire_view = Indexed (the shipped legacy shape)
+                null_mut(), // scratch: carve the BP+ tables out of ws
+                0,
+                reviewed,
+            )
+        };
+        SignOutcome { rc, actual, buffer }
+    }
+
+    /// The plain session entry — the same core, no digest parameter at all. It is the
+    /// backward-compatibility reference: a NULL digest must produce exactly its bytes.
+    #[cfg(feature = "chain-eth")]
+    fn run_sign_plain(
+        session: &crate::types::key_session::KeySession,
+        payload: &[u8],
+    ) -> SignOutcome {
+        let ty = alloc::ffi::CString::new("eth-sign-request").unwrap();
+        let ws_need = shlosilo_sign_ws_len();
+        let mut ws = alloc::vec![0u8; ws_need as usize];
+        let mut buffer = alloc::vec![0u8; 1024];
+        let mut actual: c_uint = 0xDEAD_BEEF;
+        let rc = unsafe {
+            r3::shlosilo_sign_session_ffi(
+                session,
+                ty.as_ptr(),
+                payload.as_ptr(),
+                payload.len() as c_uint,
+                null(),
+                0,
+                buffer.as_mut_ptr(),
+                buffer.len() as c_uint,
+                &mut actual,
+                ws.as_mut_ptr(),
+                ws_need,
+                null(),
+                0,
+            )
+        };
+        SignOutcome { rc, actual, buffer }
+    }
+
+    /// Pin 1: the review hands back the SHA-256 of exactly the bytes it rendered, and
+    /// signing those same bytes with that digest is byte-identical to signing them
+    /// without one — the binding reports agreement, it does not change the signature.
+    // `chain-xmr` is required even though the request is ETH: the session entry needs a
+    // `KeySession`, and since the primitive axis exists (S9) its derivation is gated on
+    // `prim-scalar-reduce`, which only `chain-xmr` implies. Without the gate this test panics on
+    // `from_entropy(...).unwrap()` on a chain subset — measured, not guessed.
+    #[cfg(all(feature = "chain-eth", feature = "chain-xmr"))]
+    #[test]
+    fn ffi_review_digest_binds_the_sign_to_the_reviewed_bytes() {
+        let (payload, _tx) = eth1559_request_with(999);
+        let mut digest = [0u8; 32];
+        let page = run_review(&payload, digest.as_mut_ptr(), REVIEW_LINES_BUF);
+        assert_eq!(page.rc, OK, "review must build");
+        assert!(page.count > 0, "a page with no lines proves nothing");
+        assert_eq!(
+            digest,
+            crate::business::review_binding::ReviewedDigest::of(&payload)
+                .unwrap()
+                .to_bytes(),
+            "the out-param must be the SHA-256 of the payload the page was built from"
+        );
+
+        use crate::types::key_session::KeySession;
+        let session = KeySession::from_entropy(&[0x11u8; 16], b"").unwrap();
+        let bound = run_sign_view(&session, &payload, digest.as_ptr());
+        assert_eq!(
+            bound.rc, OK,
+            "the reviewed bytes must sign with their own digest (rc={})",
+            bound.rc
+        );
+        let plain = run_sign_view(&session, &payload, null());
+        assert_eq!(plain.rc, OK);
+        assert!(plain.actual > 0, "the control sign must produce output");
+        assert_eq!(
+            bound.actual, plain.actual,
+            "the digest must not change the signature length"
+        );
+        assert_eq!(
+            bound.signed(),
+            plain.signed(),
+            "the digest must not change the signature bytes"
+        );
+
+        // ... and a refused review must not leave a digest behind (zero-on-failure):
+        let mut untouched = [0xAAu8; 32];
+        let refused = run_review(&payload, untouched.as_mut_ptr(), 8);
+        assert_eq!(
+            refused.rc,
+            crate::error::ShlosiloErrorCode::BufferTooSmall as i32,
+            "a line buffer that cannot hold the page must be refused"
+        );
+        assert_eq!(
+            untouched, [0xAAu8; 32],
+            "a refused review must not write the digest"
+        );
+    }
+
+    /// Pin 2: one flipped payload byte with the ORIGINAL digest is `InvariantViolation`
+    /// — the pre-existing "the library's own contract was broken" kind, no new code —
+    /// and it refuses before anything is written.
+    #[cfg(all(feature = "chain-eth", feature = "chain-xmr"))]
+    #[test]
+    fn ffi_sign_refuses_a_payload_that_is_not_the_reviewed_one() {
+        let (payload, _tx) = eth1559_request_with(999);
+        let mut digest = [0u8; 32];
+        let page = run_review(&payload, digest.as_mut_ptr(), REVIEW_LINES_BUF);
+        assert_eq!(page.rc, OK);
+        use crate::types::key_session::KeySession;
+        let session = KeySession::from_entropy(&[0x11u8; 16], b"").unwrap();
+
+        // control: the reviewed bytes sign
+        assert_eq!(run_sign_view(&session, &payload, digest.as_ptr()).rc, OK);
+
+        // The adversary this exists for: a carrier that swaps the transaction between
+        // the two calls. `moved` is a fully valid request for a DIFFERENT amount, so it
+        // would sign happily on its own — the digest is the only thing that stops it.
+        let (moved, _moved_tx) = eth1559_request_with(1_000_000);
+        assert_ne!(moved, payload, "the two requests must actually differ");
+        assert_eq!(
+            run_sign_view(&session, &moved, null()).rc,
+            OK,
+            "control: the swapped request is signable, so a refusal below is the binding's doing"
+        );
+        let refused = run_sign_view(&session, &moved, digest.as_ptr());
+        assert_eq!(
+            refused.rc,
+            crate::error::ShlosiloErrorCode::InvariantViolation as i32,
+            "a payload that is not the reviewed one must be refused (rc={})",
+            refused.rc
+        );
+        assert_eq!(refused.actual, 0, "a refused sign reports no length");
+        assert!(
+            refused.buffer.iter().all(|&b| b == 0),
+            "a refused sign must not write any output byte"
+        );
+    }
+
+    /// Pin 3: NULL digest = the shipped behaviour, byte for byte. The plain session
+    /// entry shares the same core and never had a digest parameter, so it is the
+    /// reference the bound entry must reproduce exactly when the digest is absent.
+    #[cfg(all(feature = "chain-eth", feature = "chain-xmr"))]
+    #[test]
+    fn ffi_sign_without_a_digest_is_byte_identical() {
+        let (payload, _tx) = eth1559_request_with(999);
+        use crate::types::key_session::KeySession;
+        let session = KeySession::from_entropy(&[0x11u8; 16], b"").unwrap();
+        let view_null = run_sign_view(&session, &payload, null());
+        let plain = run_sign_plain(&session, &payload);
+        assert_eq!(view_null.rc, OK, "NULL digest must still sign");
+        assert_eq!(plain.rc, OK);
+        assert!(plain.actual > 0);
+        assert_eq!(view_null.actual, plain.actual);
+        assert_eq!(view_null.signed(), plain.signed());
+    }
+
+    /// Pin 4: NULL digest on the REVIEW side changes nothing — same lines, same
+    /// metadata — so every carrier that has not opted in keeps rendering the same page.
+    #[cfg(feature = "chain-eth")]
+    #[test]
+    fn ffi_review_without_a_digest_renders_the_same_page() {
+        let (payload, _tx) = eth1559_request_with(999);
+        let mut digest = [0u8; 32];
+        let with = run_review(&payload, digest.as_mut_ptr(), REVIEW_LINES_BUF);
+        let without = run_review(&payload, null_mut(), REVIEW_LINES_BUF);
+        assert_eq!(without.rc, OK, "NULL digest must still render");
+        assert_eq!(with.rc, OK);
+        assert_eq!(with.used, without.used, "same pack length");
+        assert_eq!(with.count, without.count, "same line count");
+        assert_eq!(with.flags, without.flags, "same risk flags");
+        assert_eq!(with.in_out, without.in_out, "same in/out counts");
+        assert_eq!(with.break_mask, without.break_mask, "same glue mask");
+        assert_eq!(
+            with.lines, without.lines,
+            "the page bytes must not depend on whether the digest was requested"
+        );
     }
 }

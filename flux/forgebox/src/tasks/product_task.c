@@ -1555,7 +1555,12 @@ static void sign_run(const char *uri, const char *type,
                                       ws, ws_need,
                                       g_pairing_ki, g_pairing_ki_n,
                                       g_wire_view,
-                                      bp_scratch, bp_scratch_len);
+                                      bp_scratch, bp_scratch_len,
+                                      /* reviewed_digest (S11a): NULL = no byte
+                                       * binding (legacy). The review gate above
+                                       * does not request a digest yet either, so
+                                       * this pair stays exactly as it shipped. */
+                                      NULL);
     } else if (uri != NULL) {
         rc = shlosilo_sign_ur_ffi(uri, k_sign_idx12, 12, NULL, 0, 0,
                                   entropy, sizeof(entropy),
@@ -2171,7 +2176,12 @@ static int review_gate(const char *type, const uint8_t *payload, unsigned plen)
                                  g_review_ws, ws_need,
                                  (uint8_t *)g_review_lines, sizeof(g_review_lines),
                                  &used, &count, &flags, &in_out,
-                                 &g_review_break_mask);
+                                 &g_review_break_mask,
+                                 /* out_reviewed_digest (S11a): NULL = not requested.
+                                  * The binding is opt-in; wiring it to the sign call
+                                  * below is a later batch (this one keeps the C host
+                                  * byte-for-byte unchanged). */
+                                 NULL);
     }
     ExtFree(g_review_ws);
     g_review_ws = NULL;
