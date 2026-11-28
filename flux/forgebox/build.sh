@@ -263,6 +263,17 @@ execute_build() {
         cmake_parm="${cmake_parm} -DCMAKE_C_COMPILER_LAUNCHER=ccache"
         cmake_parm="${cmake_parm} -DCMAKE_ASM_COMPILER_LAUNCHER=ccache"
     fi
+    # Diagnosis flavor pinned on EVERY configure, for the same reason SMOKE_SCREEN below is:
+    # `option()` reads the cache, so a `SHLOSILO_SIGN_FAIL_HEX=1` build leaves the flag ON in
+    # build/ and every later plain `build.sh` silently ships the field-diagnosis page (raw error
+    # codes on the screen) instead of the reference vocabulary. Measured: the build dir carried
+    # it while the image was being verified, and only a fresh worktree build made the difference
+    # visible.
+    if [[ "${SHLOSILO_SIGN_FAIL_HEX:-0}" == "1" ]]; then
+        cmake_parm="${cmake_parm} -DSIGN_FAIL_HEX=ON"
+    else
+        cmake_parm="${cmake_parm} -DSIGN_FAIL_HEX=OFF"
+    fi
     if [[ "${build_options[production]}" == true ]]; then
         cmake_parm="${cmake_parm} -DBUILD_PRODUCTION=true"
     fi

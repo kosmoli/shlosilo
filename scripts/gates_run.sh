@@ -85,6 +85,18 @@ bash flux/host-sim/build.sh > /tmp/g_hostsim.log 2>&1; echo "HOSTSIM_BUILD=$?"
 # changed exit shape passed locally while CI failed on its own copy of the grep.
 bash scripts/check_hostsim.sh > /tmp/g_sim.log 2>&1; echo "HOSTSIM_RUN=$?"
 bash flux/forgebox/build.sh > /tmp/g_forgebox.log 2>&1; echo "FORGEBOX=$?"
+# The reference build must not be a field-diagnosis build. `SIGN_FAIL_HEX` is a CMake `option()`,
+# so it is CACHED: a one-off `SHLOSILO_SIGN_FAIL_HEX=1` build leaves it ON and every later plain
+# `build.sh` silently ships raw error codes on the device's failure pages. build.sh now pins it per
+# configure; this is the independent check that the pin works (it caught the leak in a build dir
+# that had carried the flag since an earlier diagnosis session).
+if grep -q 'SHLOSILO_SIGN_FAIL_HEX' flux/forgebox/build/CMakeFiles/mh1903.elf.dir/flags.make 2>/dev/null; then
+    echo "FAIL: the reference forgebox build carries -DSHLOSILO_SIGN_FAIL_HEX (field-diagnosis" >&2
+    echo "      flavor leaked from a cached CMake option; build.sh must pin SIGN_FAIL_HEX=OFF)" >&2
+    echo "FORGEBOXFLAVOR=1"
+else
+    echo "FORGEBOXFLAVOR=0"
+fi
 # A4-15 (2026-11-21): the forgebox device image must not be able to reach the allocator from any
 # product face, and the instrument must be able to see allocations at all (it re-measures the pico2
 # image, which allocates, as a sensitivity control). Runs after FORGEBOX (builds the ELF) and PICO2.
