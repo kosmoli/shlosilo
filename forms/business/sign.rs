@@ -2086,13 +2086,15 @@ fn sign_btc<'a>(
         // ownership record in TAP_BIP32_DERIVATION (0x16) and is signed with a
         // Schnorr signature over the BIP-341 sighash; everything else keeps the
         // ECDSA/BIP-143 path below.
+        // The shape predicate lives in `chain::btc::spent` so this early check and the full
+        // classification below cannot disagree about what a taproot input looks like.
         let spent_spk_is_p2tr = psbt
             .input_map_checked(idx)
             .and_then(|m| {
                 let prev_out = psbt.unsigned_tx.inputs[idx].prev_out.clone();
                 psbt_mod::get_utxo_any(m, &prev_out)
             })
-            .map(|(_, spk)| spk.len() == 34 && spk[0] == 0x51 && spk[1] == 0x20)
+            .map(|(_, spk)| crate::chain::btc::spent::is_p2tr(spk))
             .unwrap_or(false);
         if spent_spk_is_p2tr {
             sign_btc_taproot_input(seed, &mut psbt, idx, local_fp, entropy)?;
@@ -2211,30 +2213,33 @@ fn sign_btc<'a>(
             return Err(err(ShlosiloErrorKind::PrevoutMissing));
         };
 
-        // S2/B-9: a legacy P2PKH prevout (`76a914…88ac`) signs the pre-BIP-143
-        // digest. The spent script must hash to the key derived above — the
-        // signer re-checks that binding and refuses a foreign prevout. A legacy
-        // input carries no witness, so only FINAL_SCRIPT_SIG is written.
-        if crate::chain::btc::p2pkh::is_p2pkh_spk(
+        // One classification decides the preimage/scheme (the crypto) and the shape decides the
+        // map slots written (the assembly). The previous form was a cascade of `if`s whose last
+        // branch was reachable by elimination — a fifth script shape would have landed there.
+        //
+        // A shape this signer does not spend (P2WSH, someone else's P2PKH/P2WPKH, bare multisig)
+        // answers `PsbtOwnershipMismatch`: "not ours" and "we cannot describe this" must not be
+        // guessed apart, and the old cascade refused exactly the same way.
+        let shape = crate::chain::btc::spent::classify(
             crate::types::wire_bytes::wire_slice(&spk),
             &pubkey_hash,
-        ) {
-            psbt_mod::sign_psbt_p2pkh(
+        )
+        .ok_or_else(|| err(ShlosiloErrorKind::PsbtOwnershipMismatch))?;
+        match shape {
+            // Legacy P2PKH signs the pre-BIP-143 digest; the signer re-checks that the spent
+            // script hashes to the key derived above and refuses a foreign prevout. No witness —
+            // only FINAL_SCRIPT_SIG is written.
+            crate::chain::btc::spent::SpentScript::P2pkh => psbt_mod::sign_psbt_p2pkh(
                 &mut psbt,
                 &psbt_mod::PsbtP2PKHSignInput {
                     input_index: idx,
                     private_key: &sk_bytes,
                     pubkey_hash,
                 },
-            )?;
-            continue;
-        }
-        // S2/B-4: a P2SH-wrapped P2WPKH prevout (BIP49) goes through the wrapper
-        // finalization, which re-derives the redeem script from this same key and
-        // refuses if it does not hash into the prevout.
-        let is_p2sh_p2wpkh = spk.len() == 23 && spk[0] == 0xa9 && spk[1] == 0x14 && spk[22] == 0x87;
-        if is_p2sh_p2wpkh {
-            psbt_mod::sign_psbt_p2sh_p2wpkh(
+            )?,
+            // BIP-49: the wrapper finalization re-derives the redeem script from this same key
+            // and refuses if it does not hash into the prevout.
+            crate::chain::btc::spent::SpentScript::P2shP2wpkh => psbt_mod::sign_psbt_p2sh_p2wpkh(
                 &mut psbt,
                 &psbt_mod::PsbtP2SHP2WPKHSignInput {
                     input_index: idx,
@@ -2242,20 +2247,20 @@ fn sign_btc<'a>(
                     pubkey_hash,
                     amount,
                 },
-            )?;
-            continue;
+            )?,
+            crate::chain::btc::spent::SpentScript::P2wpkh => psbt_mod::sign_psbt_p2wpkh(
+                &mut psbt,
+                &psbt_mod::PsbtSignInput {
+                    input_index: idx,
+                    private_key: &sk_bytes,
+                },
+            )?,
+            // Handled by the early taproot branch above, before any key derivation: a taproot
+            // input carries `TAP_BIP32_DERIVATION`, not the record this loop reads.
+            crate::chain::btc::spent::SpentScript::P2tr => {
+                return Err(err(ShlosiloErrorKind::InvariantViolation))
+            }
         }
-        if spk.len() != 22 || spk[0] != 0x00 || spk[1] != 0x14 || spk[2..22] != pubkey_hash {
-            return Err(err(ShlosiloErrorKind::PsbtOwnershipMismatch));
-        }
-
-        psbt_mod::sign_psbt_p2wpkh(
-            &mut psbt,
-            &psbt_mod::PsbtSignInput {
-                input_index: idx,
-                private_key: &sk_bytes,
-            },
-        )?;
     }
 
     // Dialect split: the legacy `psbt` type (Cake/Cupcake) extracts the final

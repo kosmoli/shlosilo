@@ -18,5 +18,6 @@ pub mod p2pkh;
 pub mod p2sh;
 pub mod p2wpkh;
 pub mod psbt;
+pub mod spent;
 pub mod summary;
 pub mod taproot;

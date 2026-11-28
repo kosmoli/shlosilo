@@ -37,8 +37,13 @@ use crate::types::chain_kind::ChainKind;
 /// digests under each, and using the wrong one produces a signature that verifies against nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EcdsaPreimage {
-    /// BIP-143 (segwit v0, and legacy via its own base serialization).
+    /// BIP-143 (segwit v0: P2WPKH and P2SH-wrapped P2WPKH).
     Bip143,
+    /// The pre-BIP-143 digest (SigVersion BASE): a legacy P2PKH input signs over the
+    /// scriptCode-carrying serialization, which is a DIFFERENT preimage from BIP-143 — not a
+    /// variant of it. Signing legacy with the BIP-143 construction produces a signature the
+    /// network rejects, and it verifies against nothing locally either.
+    LegacyBase,
     /// Ethereum legacy / EIP-155 (RLP of the unsigned fields; `chain_id` folds into `v` when set).
     EthereumLegacy { chain_id: Option<u64> },
     /// EIP-1559 (RLP with the fee-cap fields, typed envelope `0x02`).
@@ -92,10 +97,20 @@ pub enum SignProtocol {
 }
 
 impl SignProtocol {
-    /// A BTC segwit v0 (or legacy) input: ECDSA, BIP-143 preimage, bare `r || s` in the map.
-    pub const fn btc_input_ecdsa() -> Self {
+    /// A BTC segwit v0 input (P2WPKH, or P2SH-wrapped P2WPKH): ECDSA over the BIP-143 preimage,
+    /// bare `r || s` in the map.
+    pub const fn btc_input_segwit_v0() -> Self {
         Self::Secp256k1Ecdsa {
             preimage: EcdsaPreimage::Bip143,
+            output: EcdsaOutput::Rs64,
+        }
+    }
+
+    /// A BTC legacy P2PKH input: ECDSA over the SigVersion BASE preimage (see
+    /// [`EcdsaPreimage::LegacyBase`] for why it is not the BIP-143 one).
+    pub const fn btc_input_legacy() -> Self {
+        Self::Secp256k1Ecdsa {
+            preimage: EcdsaPreimage::LegacyBase,
             output: EcdsaOutput::Rs64,
         }
     }
@@ -138,7 +153,7 @@ impl SignProtocol {
     /// capacities and pre-checks (how wide is one signature), never to decide which crypto runs.
     pub const fn primary_for_chain(chain: ChainKind) -> Option<Self> {
         match chain {
-            ChainKind::Btc => Some(Self::btc_input_ecdsa()),
+            ChainKind::Btc => Some(Self::btc_input_segwit_v0()),
             ChainKind::Eth => Some(Self::ethereum_tx(EcdsaPreimage::EthereumFeeMarket)),
             ChainKind::Xmr => Some(Self::Edwards25519ClsagV2),
             _ => None,
@@ -152,7 +167,13 @@ mod tests {
 
     #[test]
     fn signature_widths_follow_the_output_shape() {
-        assert_eq!(SignProtocol::btc_input_ecdsa().signature_len(), 64);
+        assert_eq!(SignProtocol::btc_input_segwit_v0().signature_len(), 64);
+        assert_eq!(SignProtocol::btc_input_legacy().signature_len(), 64);
+        assert_ne!(
+            SignProtocol::btc_input_segwit_v0(),
+            SignProtocol::btc_input_legacy(),
+            "legacy and segwit v0 sign different preimages"
+        );
         assert_eq!(
             SignProtocol::ethereum_tx(EcdsaPreimage::EthereumLegacy { chain_id: None })
                 .signature_len(),
@@ -175,7 +196,8 @@ mod tests {
         let fee_market = SignProtocol::ethereum_tx(EcdsaPreimage::EthereumFeeMarket);
         let typed = SignProtocol::ethereum_tx(EcdsaPreimage::EthereumTypedData);
         let personal = SignProtocol::ethereum_tx(EcdsaPreimage::EthereumPersonal);
-        let btc = SignProtocol::btc_input_ecdsa();
+        let btc = SignProtocol::btc_input_segwit_v0();
+        let btc_legacy = SignProtocol::btc_input_legacy();
         let taproot = SignProtocol::btc_taproot_keypath();
 
         let all = [
@@ -185,6 +207,7 @@ mod tests {
             typed,
             personal,
             btc,
+            btc_legacy,
             taproot,
         ];
         for (i, a) in all.iter().enumerate() {
@@ -200,9 +223,15 @@ mod tests {
     fn same_curve_and_scheme_but_different_preimage_is_not_the_same_protocol() {
         // The specific confusion this module exists to prevent: BTC and ETH both run ECDSA over
         // secp256k1, and their preimages have nothing in common.
-        let btc = SignProtocol::btc_input_ecdsa();
+        let btc = SignProtocol::btc_input_segwit_v0();
+        let btc_legacy = SignProtocol::btc_input_legacy();
         let eth = SignProtocol::ethereum_tx(EcdsaPreimage::EthereumPersonal);
         assert_ne!(btc, eth);
+        assert_ne!(
+            btc_legacy, btc,
+            "legacy BTC is a third preimage, not a flavour of segwit v0"
+        );
+        assert_ne!(btc_legacy, eth);
         assert_eq!(btc.signature_len(), 64);
         assert_eq!(eth.signature_len(), 65);
     }
