@@ -24,7 +24,7 @@
 //! docs and the slice report for where that guarantee actually lives today.
 
 use shlosilo::business::review;
-use shlosilo::business::sign::{carve_sign_ws, sign_with_entropy_ws, SignInput};
+use shlosilo::business::sign::{carve_sign_ws, sign_reviewed_ws, SignInput};
 use shlosilo::error::{ErrorContext, ShlosiloError, ShlosiloErrorCode, ShlosiloErrorKind};
 use shlosilo::failure_text;
 use shlosilo::network::Network;
@@ -211,10 +211,18 @@ pub fn run_once<C: Carrier>(
     // no XMR builder (`type_table` marks XMR `is_sign` but `review_gated: false`), so the
     // flow stops at step 2 with "request type not supported". Both halves (no XMR review
     // face, no entropy seam) are gaps recorded in the slice report, not choices made here.
-    let signed = sign_with_entropy_ws(
+    // S11a: the bytes about to be signed must be the bytes the operator reviewed. The digest is
+    // taken over the same staged slice the review page was built from, and re-checked here — a
+    // carrier that reuses a static buffer across requests cannot silently sign the previous one.
+    let reviewed = match shlosilo::business::review_binding::ReviewedDigest::of(payload) {
+        Ok(digest) => digest,
+        Err(e) => return Err(refuse(carrier, e)),
+    };
+    let signed = sign_reviewed_ws(
         SignInput::Seed { seed: config.seed },
         tag,
         payload,
+        reviewed,
         &[],
         &[],
         Some(&mut sign_ws),

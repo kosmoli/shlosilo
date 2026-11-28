@@ -155,6 +155,28 @@ pub fn sign_reviewed(
     sign_with_entropy(sign_input, type_tag, ur_payload, entropy, output_buf)
 }
 
+/// [`sign_reviewed`] for callers that provision their own workspace (the zero-heap path).
+///
+/// Same ordering guarantee as the simple form: the digest is checked **before** the workspace is
+/// touched, so a mismatch cannot leave a carved workspace half-populated.
+#[allow(clippy::too_many_arguments)] // mirrors `sign_with_entropy_ws`'s frozen arg list
+pub fn sign_reviewed_ws(
+    sign_input: SignInput<'_>,
+    type_tag: crate::ur::ur_encode::UrTypeTag,
+    ur_payload: &[u8],
+    reviewed: crate::business::review_binding::ReviewedDigest,
+    ki_records: &[WalletKiRecord],
+    entropy: &[u8],
+    ws: Option<&mut SignWs<'_>>,
+    scratch: Option<&mut [u8]>,
+    output_buf: &mut [u8],
+) -> Result<usize> {
+    crate::business::review_binding::verify_reviewed(ur_payload, reviewed)?;
+    sign_with_entropy_ws(
+        sign_input, type_tag, ur_payload, ki_records, entropy, ws, scratch, output_buf,
+    )
+}
+
 pub fn sign_with_entropy(
     sign_input: SignInput<'_>,
     type_tag: crate::ur::ur_encode::UrTypeTag,
