@@ -2302,7 +2302,7 @@ fn sign_eth(
     output_buf: &mut [u8],
 ) -> Result<usize> {
     use crate::chain::eth::{eip155, eip1559, eip712_pool, from_rlp};
-    use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
+    use crate::ur::codec::eth_sign_request::parse_eth_sign_request;
     use crate::ur::codec::eth_signature::{
         encode_eth_signature_into, EthSignature, SIGNATURE_MAX_LEN, SIGNATURE_MIN_LEN,
     };
@@ -2325,11 +2325,15 @@ fn sign_eth(
     let req = parse_eth_sign_request(cbor_payload)?;
     // data_type selects the scheme BEFORE the payload is read (reference dialect:
     // `rust_c/src/ethereum/mod.rs::eth_sign_tx_dynamic` dispatches on data_type first).
-    let scheme = match req.data_type {
+    // One mapping, read by this face and by `review::build_eth` (see `chain::eth::scheme`): the
+    // scheme decides which preimage gets signed, so the two faces must not carry their own copies.
+    let eth_scheme = crate::chain::eth::scheme::EthScheme::for_data_type(req.data_type)
+        .ok_or_else(|| err(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    let scheme = match eth_scheme {
         // data_type 1 = legacy, EIP-155 protected (bare RLP, no type byte). The
         // unprotected 6-item shape has no replay protection and is refused by the
         // parser with its own code (FeatureNotImplemented), never as a format error.
-        EthSignDataType::Transaction => {
+        crate::chain::eth::scheme::EthScheme::Legacy => {
             let tx = from_rlp::parse_eip155_signing_request(req.sign_data)?;
             // P1-02 (ETH part), same rule as the typed path below: when the request
             // carries its own chain_id, it must agree with the transaction.
@@ -2340,7 +2344,7 @@ fn sign_eth(
             }
             Scheme::Legacy(tx)
         }
-        EthSignDataType::TypedTransaction => {
+        crate::chain::eth::scheme::EthScheme::FeeMarket => {
             // The first payload byte selects the scheme. Only EIP-1559 (0x02) is
             // signable today; the other valid type bytes are named so they do not
             // degrade into a generic format error.
@@ -2365,12 +2369,12 @@ fn sign_eth(
         }
         // data_type 3 = personal_sign (EIP-191): the payload is the raw message,
         // not a transaction, so none of the transaction gates apply.
-        EthSignDataType::PersonalMessage => Scheme::Personal,
+        crate::chain::eth::scheme::EthScheme::Personal => Scheme::Personal,
         // data_type 2 = EIP-712 typed data: `sign_data` IS the typed-data JSON document
         // (borrowed, never copied). The digest comes from the zero-heap container; the
         // pool borrows `req.sign_data` and the caller's region, so both stay alive here
         // and only the 32-byte digest leaves this arm.
-        EthSignDataType::TypedData => {
+        crate::chain::eth::scheme::EthScheme::TypedData => {
             // Envelope-vs-document chain consistency, before the container is even built:
             // `check_network` compares the payload against the network the CALLER declared,
             // which a carrier without a network selection never reaches, so the check that

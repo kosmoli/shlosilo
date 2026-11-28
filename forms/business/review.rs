@@ -1790,21 +1790,29 @@ fn build_eth_ws(payload: &[u8]) -> Result<ReviewView> {
 #[cfg(feature = "chain-eth")]
 pub fn build_eth(payload: &[u8], ws: &mut [u8]) -> Result<ReviewView> {
     use crate::chain::eth::from_rlp;
-    use crate::ur::codec::eth_sign_request::{parse_eth_sign_request, EthSignDataType};
+    use crate::ur::codec::eth_sign_request::parse_eth_sign_request;
 
     let req = parse_eth_sign_request(payload)?;
     let mut view = ReviewView::new();
     // `data_type` selects the scheme before the payload is read (same dispatch as
     // `sign_eth`). The review gate is fail-closed: a request this signer cannot
     // sign must never render as a send.
-    match req.data_type {
+    // Same mapping the signing face uses (`chain::eth::scheme`): the scheme decides which
+    // preimage gets signed, so a `data_type` added to one face and not the other would show the
+    // operator one shape and sign another. One enum, two exhaustive matches.
+    // `ok_or` and not a default arm: an unmapped `data_type` must be REFUSED by the review face
+    // exactly as the signing face refuses it (`EncodingInvalidFormat`), never rendered as some
+    // other scheme. A default here would be the very divergence this module removes.
+    let eth_scheme = crate::chain::eth::scheme::EthScheme::for_data_type(req.data_type)
+        .ok_or_else(|| ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat))?;
+    match eth_scheme {
         // data_type 1 = legacy, EIP-155 protected (bare RLP preimage, no type byte).
         //
         // E-1 (2026-11-25): this used to be refused as unimplemented. The page is the
         // same skeleton as the typed send with ONE fee — legacy has no base fee and no
         // priority tip, only `gas price`, so calling it "max fee" would describe a
         // scheme the operator is not signing.
-        EthSignDataType::Transaction => {
+        crate::chain::eth::scheme::EthScheme::Legacy => {
             let tx = from_rlp::parse_eip155_signing_request(req.sign_data)?;
             // Fail closed before rendering: a request whose own chain_id disagrees with
             // the transaction is one this device refuses to sign (same rule, same code
@@ -1836,7 +1844,7 @@ pub fn build_eth(payload: &[u8], ws: &mut [u8]) -> Result<ReviewView> {
             push_calldata(&mut view, calldata, tx.destination)?;
             return Ok(view);
         }
-        EthSignDataType::TypedTransaction => {
+        crate::chain::eth::scheme::EthScheme::FeeMarket => {
             // data_type 4: only EIP-1559 (first byte 0x02) is rendered or signed;
             // EIP-2930 / 4844 / 7702 and unknown/empty payloads stay refused.
             match req.sign_data.first() {
@@ -1847,7 +1855,7 @@ pub fn build_eth(payload: &[u8], ws: &mut [u8]) -> Result<ReviewView> {
                 _ => return Err(ShlosiloError::new(ShlosiloErrorKind::EncodingInvalidFormat)),
             }
         }
-        EthSignDataType::TypedData => {
+        crate::chain::eth::scheme::EthScheme::TypedData => {
             // E-3 P3: the real typed-data page. The request is re-parsed into the same
             // zero-heap container the signer uses, and the digest is recomputed before a
             // single line is rendered: a document this device cannot hash is a document
@@ -1867,7 +1875,7 @@ pub fn build_eth(payload: &[u8], ws: &mut [u8]) -> Result<ReviewView> {
             }
             return Ok(view);
         }
-        EthSignDataType::PersonalMessage => {
+        crate::chain::eth::scheme::EthScheme::Personal => {
             // This scheme IS signed (EIP-191, the exit returns r||s||v with v=27/28),
             // so the operator has to see what they are putting their key behind: a
             // message the screen cannot show is a message nobody can judge. The bytes
