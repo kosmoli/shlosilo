@@ -120,7 +120,12 @@ if [ "${shim_hits:-0}" -gt 0 ]; then
     # (b) + (c) the forwarding features and the product face
     shim_manifest="$(dirname "$REGISTERED_SHIM")/../Cargo.toml"
     for chain in btc eth xmr; do
-        if ! grep -qE "^chain-$chain *= *\[\"shlosilo/chain-$chain\"\]" "$shim_manifest"; then
+        # The requirement is that this feature forwards to the CORE crate's chain feature, not
+        # that the list holds nothing else: a shim may need to forward the same axis to another
+        # workspace member (flux/keysource also consumes `shlosilo` and must follow the same set,
+        # otherwise its QR key path silently degrades to "not implemented" instead of tracking the
+        # carrier's chains). Anchored so the core forwarding cannot be dropped.
+        if ! grep -qE "^chain-$chain *= *\[.*\"shlosilo/chain-$chain\"" "$shim_manifest"; then
             violations+=("$shim_manifest: feature chain-$chain does not forward to shlosilo/chain-$chain")
         fi
         if ! grep -qE '^default *= *\[' "$shim_manifest" \

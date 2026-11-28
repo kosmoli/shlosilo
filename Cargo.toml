@@ -166,7 +166,21 @@ generator-cache-ffi = []
 # --no-default-features (plus std as needed) and MUST provide table storage.
 alloc-fallback = ["monero-bulletproofs?/alloc-fallback", "monero-clsag?/alloc-fallback", "curve25519-dalek?/alloc-fallback", "curve25519-dalek?/alloc", "cuprate-cryptonight?/alloc-fallback", "std-shims?/alloc", "monero-io?/alloc", "monero-bulletproofs-generators/alloc", "base58-monero?/alloc"]
 # Device primitive perf-bench FFI (raw per-op costs; diagnostic only).
-perf-bench-ffi = ["curve25519-dalek?/perf-bench"]
+# The benchmark face measures the ed25519/Curve25519 primitives themselves, so it cannot
+# exist without them: enabling the face enables its subject. Without this the module was
+# compiled unconditionally and a `chain-btc`-only build failed with unresolvable imports -
+# invisible for as long as every build happened to include `chain-xmr` (pool #100).
+# The benchmark face measures the ed25519/Curve25519 primitives themselves, so it CANNOT exist
+# without them - and it reaches `monero_bulletproofs`, whose vendored crate only compiles with the
+# alloc/std-shims that `chain-xmr` brings (measured in S9 batch B; that is also why `prim-bulletproof`
+# owns no dependency). So this face implies `chain-xmr` rather than pretending to be chain-neutral:
+# before this, a `chain-btc`-only build failed with unresolvable imports, invisible as long as every
+# build happened to include XMR (pool #100).
+#
+# Consequence, stated so it is not discovered the hard way: a genuinely BTC-only carrier must not
+# enable the XMR diagnostic faces (`perf-bench-ffi`, `generator-cache-ffi`, `cn-timing-ffi`). If it
+# does, forgebox's configure-time cross-check refuses the build and names the mismatch.
+perf-bench-ffi = ["curve25519-dalek?/perf-bench", "prim-ed25519", "prim-bulletproof", "chain-xmr"]
 # Measurement-only knob (chain axis batch 3, §9.5-2 / §9.4): k256's precomputed
 # tables are OFF by default because the once_cell Lazy table costs ~31 KB of RAM
 # (see the k256 dependency line). This feature exists so the cost can be MEASURED

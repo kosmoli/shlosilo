@@ -38,9 +38,9 @@ crate-type = ["staticlib"]
 # entries for a chain-gated FFI symbol follow the build instead of assuming all three.
 default = ["se", "chain-btc", "chain-eth", "chain-xmr"]
 se = ["shlosilo-flux-keysource/se"]
-chain-btc = ["shlosilo/chain-btc"]
-chain-eth = ["shlosilo/chain-eth"]
-chain-xmr = ["shlosilo/chain-xmr"]
+chain-btc = ["shlosilo/chain-btc", "shlosilo-flux-keysource/chain-btc"]
+chain-eth = ["shlosilo/chain-eth", "shlosilo-flux-keysource/chain-eth"]
+chain-xmr = ["shlosilo/chain-xmr", "shlosilo-flux-keysource/chain-xmr"]
 
 [dependencies]
 # Flux-side key acquisition face (Task 4): KeySource trait + QrKeySource thin
@@ -49,7 +49,12 @@ chain-xmr = ["shlosilo/chain-xmr"]
 # with the caller.
 # The Keystone 3 Pro board carries ATECC608B + DS28S60, so this carrier turns `se` on by
 # default (above). A carrier without a secure element drops it with --no-default-features.
-shlosilo-flux-keysource = { path = "../../keysource" }
+# `default-features = false` is load-bearing: keysource's own `default` names the three chains
+# for standalone dev/test builds, so a carrier that forgets this re-adds all of them and a subset
+# build silently compiles the full chain set. Measured before the fix: a `--features chain-btc`
+# staticlib still exported shlosilo_xmr_pairing_ffi and both generator-cache entries (3 `T` XMR
+# symbols in the archive).
+shlosilo-flux-keysource = { path = "../../keysource", default-features = false }
 # The diagnostic FFI features compiled into the .a for the C host.
 shlosilo = { path = "../../..", default-features = false, features = [
     # Chain features arrive through this package's own `chain-*` features (see [features]);
